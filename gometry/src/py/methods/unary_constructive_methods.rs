@@ -994,7 +994,8 @@ tolerance : float, default 0.0
 clip : {'padded', 'envelope'} or Polygon, default 'padded'
     How to bound the unbounded outer cells: a padded box, the input
     envelope, or a `Polygon` to clip the diagram to.
-    Diagram vertices are synthesized and returned in XY.";
+    Diagram vertices are synthesized and returned in XY. Rounded clip
+    incidences need not lie on the source polygon under overlay membership.";
     scalar: r"
 
 Returns
@@ -1038,7 +1039,8 @@ tolerance : float, default 0.0
 clip : {'padded', 'envelope'} or Polygon, default 'padded'
     How to bound the unbounded outer cells: a padded box, the input
     envelope, or a `Polygon` to clip the diagram to.
-    Diagram vertices are synthesized and returned in XY.";
+    Diagram vertices are synthesized and returned in XY. Rounded clip
+    incidences need not lie on the source polygon under overlay membership.";
     scalar: r"
 
 Returns

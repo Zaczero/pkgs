@@ -2004,6 +2004,12 @@ class Geometry:
         Source ordinates are carried where meaningful; synthesized clip vertices use
         the operation's natural XY result.
 
+        In a geographic CRS, a subject or rectangle that crosses the seam, reaches a
+        pole, or has a non-canonical longitude is clipped through frame-aware overlay.
+        Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
+        rectangle horizontal edges follow parallels and use the same construction as
+        ``gm.box``.
+
         Parameters
         ----------
         minx, miny, maxx, maxy : float
@@ -3044,7 +3050,8 @@ class Geometry:
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
-            Diagram vertices are synthesized and returned in XY.
+            Diagram vertices are synthesized and returned in XY. Rounded clip
+            incidences need not lie on the source polygon under overlay membership.
 
         Returns
         -------
@@ -3823,7 +3830,8 @@ class Geometry:
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
-            Diagram vertices are synthesized and returned in XY.
+            Diagram vertices are synthesized and returned in XY. Rounded clip
+            incidences need not lie on the source polygon under overlay membership.
 
         Returns
         -------
@@ -6946,6 +6954,12 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Source ordinates are carried where meaningful; synthesized clip vertices use
         the operation's natural XY result.
 
+        In a geographic CRS, a subject or rectangle that crosses the seam, reaches a
+        pole, or has a non-canonical longitude is clipped through frame-aware overlay.
+        Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
+        rectangle horizontal edges follow parallels and use the same construction as
+        ``gm.box``.
+
         Parameters
         ----------
         minx, miny, maxx, maxy : float
@@ -8152,7 +8166,8 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
-            Diagram vertices are synthesized and returned in XY.
+            Diagram vertices are synthesized and returned in XY. Rounded clip
+            incidences need not lie on the source polygon under overlay membership.
 
         Returns
         -------
@@ -8978,7 +8993,8 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
-            Diagram vertices are synthesized and returned in XY.
+            Diagram vertices are synthesized and returned in XY. Rounded clip
+            incidences need not lie on the source polygon under overlay membership.
 
         Returns
         -------
@@ -16234,8 +16250,9 @@ def intersection(
 ) -> Geometry | GeometryArray:
     """Compute the set-theoretic intersection of ``left`` and ``right``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated in the coordinate plane. In a geographic CRS, topology resolves
+    longitude aliases, seam spellings, and pole longitudes in the CRS-native
+    frame; seam-crossing inputs are split into chart pieces before construction.
 
     Parameters
     ----------
@@ -16290,8 +16307,9 @@ def union(
 ) -> Geometry | GeometryArray:
     """Compute the set-theoretic union of ``left`` and ``right``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated in the coordinate plane. In a geographic CRS, topology resolves
+    longitude aliases, seam spellings, and pole longitudes in the CRS-native
+    frame; seam-crossing inputs are split into chart pieces before construction.
 
     Parameters
     ----------
@@ -16349,8 +16367,9 @@ def difference(
 ) -> Geometry | GeometryArray:
     """Compute the set-theoretic difference ``left - right``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated in the coordinate plane. In a geographic CRS, topology resolves
+    longitude aliases, seam spellings, and pole longitudes in the CRS-native
+    frame; seam-crossing inputs are split into chart pieces before construction.
 
     Parameters
     ----------
@@ -16407,8 +16426,9 @@ def symmetric_difference(
     """Compute the set-theoretic symmetric difference of ``left`` and
     ``right``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated in the coordinate plane. In a geographic CRS, topology resolves
+    longitude aliases, seam spellings, and pole longitudes in the CRS-native
+    frame; seam-crossing inputs are split into chart pieces before construction.
 
     Parameters
     ----------
@@ -16688,10 +16708,14 @@ def coverage_union(
     coverage** — polygons that tile a region edge-to-edge with no overlaps and
     no T-junctions (see ``coverage_is_valid``). It
     cancels the interior edges shared between adjacent polygons rather than
-    noding and classifying every intersection, so it is dramatically faster on
-    tilings (grids, parcels, administrative boundaries). On overlapping or
-    badly-noded input raises before the specialized dissolve runs; use
+    general noding and classification. On overlapping or badly-noded input it
+    raises before the specialized dissolve runs; use
     `union_all` there.
+
+    In a geographic CRS, rows whose raw bounds are unsound at the periodic seam,
+    a pole, or a non-canonical longitude are split into chart-safe pieces before
+    dissolve. Canonical seam-free and pole-free rows retain the direct path. The
+    result preserves the shared CRS and coordinate epoch.
 
     Parameters
     ----------
@@ -16795,7 +16819,11 @@ def coverage_clean(
 def union_all(
     values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
 ) -> Geometry:
-    """Union of many geometries into one (planar overlay).
+    """Union of many geometries into one.
+
+    Strictly disjoint inputs are assembled independently; inputs that can meet
+    use one joint arrangement. In a geographic CRS, topology resolves longitude
+    aliases and seam and pole equivalence in the native frame.
 
     Parameters
     ----------
@@ -16829,11 +16857,14 @@ def union_all(
 def intersection_all(
     values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
 ) -> Geometry:
-    """Common intersection of many geometries (planar overlay).
+    """Common intersection of many geometries.
 
-    The region inside every input, assembled from one joint arrangement. Mixed
-    dimensions narrow to the lowest shared dimension and an empty result keeps
-    that dimension's typed empty.
+    The region inside every input. When sound coordinate bounds prove operands
+    disjoint, returns the typed empty directly; in a geographic CRS this requires
+    every operand to be seam-free, pole-free, and canonically spelled. Otherwise,
+    the result is assembled from one joint arrangement. Mixed dimensions narrow
+    to the lowest shared dimension and an empty result keeps that dimension's
+    typed empty.
 
     Parameters
     ----------
@@ -16863,11 +16894,13 @@ def intersection_all(
 def symmetric_difference_all(
     values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
 ) -> Geometry:
-    """Symmetric difference of many geometries (planar overlay).
+    """Symmetric difference of many geometries.
 
-    The region covered by an odd number of inputs, assembled from one joint
-    arrangement. The result is order-independent (`▵` is associative and
-    commutative).
+    The region covered by an odd number of inputs. Strictly disjoint inputs are
+    assembled independently; inputs that can meet use one joint arrangement. In
+    a geographic CRS, topology resolves longitude aliases and seam and pole
+    equivalence in the native frame. The result is order-independent (`▵` is
+    associative and commutative).
 
     Parameters
     ----------
@@ -17236,67 +17269,9 @@ def _admit_geoparquet_geometry_storage(
 def from_arrow(
     data: _ArrowInput, *, crs: CrsInput | None = None, epoch: float | None = None
 ) -> GeometryArray[Geometry]:
-    """Build geometries from an Arrow array (``GeoArrow`` interchange).
-
-    Parameters
-    ----------
-    data : Arrow input
-        A PyArrow Array, ChunkedArray, Table, RecordBatch, or RecordBatchReader,
-        or an object exposing the Arrow C array or stream protocol.
-
-    crs : str or int, optional
-        CRS for arrays without embedded `GeoArrow` metadata. When metadata
-        carries a CRS, ``crs=`` must agree or `CRSMismatchError` is raised.
-
-    epoch : float, optional
-        Coordinate epoch (decimal year) for time-dependent frames.
-
-    Returns
-    -------
-    GeometryArray
-        Arrow containers return a `GeometryArray`, even when they hold one row.
-        CRS and coordinate epoch come from the `GeoArrow` metadata.
-
-    Raises
-    ------
-    TypeError
-        If ``data`` is not an Arrow container or Arrow C provider.
-
-    ParseError
-        If ``data`` is an Arrow object but not a supported `GeoArrow` layout.
-    CRSMismatchError
-        If embedded `GeoArrow` CRS or epoch metadata conflicts with ``crs`` /
-        ``epoch``.
-    CRSError
-        If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
-    GeometryError
-        If ``epoch`` is not a finite decimal year.
-
-    Notes
-    -----
-    Import copies the selected geometry schema and every span it validates or
-    decodes (validity, offsets, views, referenced BinaryView size entries,
-    coordinates, WKB payload) into owned storage, then validates and decodes
-    only that snapshot. Native
-    Arrow-C providers must not modify exported structs, pointer tables, schema
-    memory, or buffers before gometry invokes their release callback; direct
-    PyArrow objects must not be mutated while ``from_arrow`` is running. Arrow C
-    capsule producers (``__arrow_c_array__`` / ``__arrow_c_stream__``) are trusted
-    to be ABI-conforming — a deliberately hostile duck-typed producer that forges
-    its own buffers is out of the threat model (same line as pyarrow; the C Data
-    Interface carries no buffer capacity except BinaryView's mandatory
-    variadic-sizes buffer, which is enforced). See ``docs/ecosystem/arrow.md``.
-
-    See Also
-    --------
-    GeometryArray.to_arrow : Encode geometries as a GeoArrow array.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> arr = gm.GeometryArray([gm.Point(1, 2)])
-    >>> gm.from_arrow(arr.to_arrow()).to_wkt()
-    ['POINT (1 2)']
+    """Build geometries from an Arrow array, table, record batch, reader, or
+    Arrow-C provider. Protocol callbacks and PyArrow object inspection remain
+    attached; selected buffers are owned before the decoder is detached.
     """
 
 def from_features(
@@ -19054,8 +19029,8 @@ def tile_cover(
         If the geometry, zoom, ``cell_rule``, or ``max_cells`` is invalid, or
         if the returned coverage would exceed ``max_cells``.
     InvalidGeometryError
-        If the geometry is empty or any latitude is outside the Web Mercator
-        domain (±85.05112878 degrees).
+        If the geometry is empty or any non-polar latitude is outside the Web
+        Mercator domain (±85.05112878 degrees).
 
     Examples
     --------

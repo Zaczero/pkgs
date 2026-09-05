@@ -45,7 +45,6 @@ macro_rules! dense_id {
 }
 
 dense_id!(SiteId);
-dense_id!(PrimitiveId);
 dense_id!(VertexId);
 dense_id!(EdgeId);
 dense_id!(BoundaryFaceId);
@@ -94,17 +93,22 @@ impl Transition {
     }
 }
 
-struct DirectedPrimitive {
-    id: PrimitiveId,
+struct ScaffoldPrimitive {
     line: exact::ExactLine,
     start: exact::ExactPoint,
     end: exact::ExactPoint,
     frame_delta: i8,
     clip_delta: i32,
     owner: PrimitiveOwner,
-    separator: Option<[SiteId; 2]>,
     clip_source: Option<ClipSegmentId>,
     frame_side: Option<u8>,
+    events: Vec<exact::ExactPoint>,
+}
+
+struct ClippedSeparator {
+    pair: [SiteId; 2],
+    start: exact::ExactPoint,
+    end: exact::ExactPoint,
     events: Vec<exact::ExactPoint>,
 }
 
@@ -140,7 +144,9 @@ impl NormalizedClip<'_> {
 struct AtomSeed {
     start: exact::ExactPoint,
     end: exact::ExactPoint,
-    transition: Transition,
+    frame_delta: i8,
+    clip_delta: i32,
+    owner: PrimitiveOwner,
     separator: Option<[SiteId; 2]>,
     clip_source: Option<ClipSegmentId>,
     frame_side: Option<u8>,
@@ -911,44 +917,238 @@ impl SegmentIntersectionExt for exact::SegmentIntersection {
     }
 }
 
-fn build_primitives(
+fn clip_rectangle(clip: &NormalizedClip<'_>) -> Result<[exact::ExactPoint; 4]> {
+    if let [ring] = clip.rings.as_slice()
+        && ring.len() == 4
+    {
+        let rect = [
+            ring[0].clone(),
+            ring[1].clone(),
+            ring[2].clone(),
+            ring[3].clone(),
+        ];
+        let axis_aligned = rect[0].compare_y(&rect[1]).is_eq()
+            && rect[2].compare_y(&rect[3]).is_eq()
+            && rect[1].compare_x(&rect[2]).is_eq()
+            && rect[3].compare_x(&rect[0]).is_eq()
+            && rect[0].compare_x(&rect[1]).is_lt()
+            && rect[1].compare_y(&rect[2]).is_lt();
+        if axis_aligned {
+            return Ok(rect);
+        }
+    }
+    exact::axis_aligned_bounds(clip.rings.iter().flatten())
+}
+
+fn in_rectangle(rect: &[exact::ExactPoint; 4], point: &exact::ExactPoint) -> bool {
+    exact::point_in_cycle(rect, point) != exact::PointInCycle::Outside
+}
+
+fn sort_unique_along(
+    origin: &exact::ExactPoint,
+    hint: &exact::ExactPoint,
+    mut points: Vec<exact::ExactPoint>,
+) -> Vec<exact::ExactPoint> {
+    points.sort_by(|left, right| exact::compare_along(origin, hint, left, right));
+    points.dedup_by(|left, right| left.same_position(right));
+    points
+}
+
+fn span_from_points(
+    origin: &exact::ExactPoint,
+    hint: &exact::ExactPoint,
+    points: Vec<exact::ExactPoint>,
+) -> Option<(exact::ExactPoint, exact::ExactPoint)> {
+    let points = sort_unique_along(origin, hint, points);
+    (points.len() >= 2).then(|| (points[0].clone(), points[points.len() - 1].clone()))
+}
+
+fn separator_rectangle_hits(
+    pair: [XY; 2],
+    line: &exact::ExactLine,
+    rect: &[exact::ExactPoint; 4],
+    budget: &mut ExpansionBudget,
+) -> Result<Vec<exact::ExactPoint>> {
+    let certified = bisector_frame_intersections(pair, rect)?;
+    budget.add(certified.len().saturating_add(8))?;
+    let mut hits = Vec::new();
+    reserve_exact(&mut hits, certified.len().saturating_add(8))?;
+    hits.extend(certified.into_iter().map(|(_, point)| point));
+    for side in 0..4 {
+        let start = &rect[side];
+        let end = &rect[(side + 1) % 4];
+        if exact::signed_line_product(line, start) == ExactSign::Zero
+            && exact::signed_line_product(line, end) == ExactSign::Zero
+        {
+            hits.push(start.clone());
+            hits.push(end.clone());
+        }
+    }
+    Ok(hits)
+}
+
+fn clip_segment_to_rectangle(
+    start: &exact::ExactPoint,
+    end: &exact::ExactPoint,
+    pair: [XY; 2],
+    line: &exact::ExactLine,
+    rect: &[exact::ExactPoint; 4],
+    budget: &mut ExpansionBudget,
+) -> Result<Option<(exact::ExactPoint, exact::ExactPoint)>> {
+    budget.add(4)?;
+    let mut points = separator_rectangle_hits(pair, line, rect, budget)?;
+    budget.add(2)?;
+    reserve_exact(&mut points, 2)?;
+    if in_rectangle(rect, start) {
+        points.push(start.clone());
+    }
+    if in_rectangle(rect, end) {
+        points.push(end.clone());
+    }
+    points.retain(|point| exact::segment_intersection(start, end, point, point).is_point());
+    Ok(span_from_points(start, end, points))
+}
+
+fn hull_point_on_ray(
+    center: &exact::ExactPoint,
+    mid: &exact::ExactPoint,
+    sites: [&exact::ExactPoint; 2],
+    opposite_sign: ExactSign,
+    point: &exact::ExactPoint,
+) -> bool {
+    if point.same_position(center) {
+        return true;
+    }
+    if center.same_position(mid) {
+        return exact::orient_points(sites[0], sites[1], point) != opposite_sign;
+    }
+    if exact::orient_points(sites[0], sites[1], center) == opposite_sign {
+        exact::compare_along(center, mid, center, point) != Ordering::Greater
+    } else {
+        exact::compare_along(mid, center, center, point) != Ordering::Greater
+    }
+}
+
+fn clip_hull_ray_to_rectangle(
+    center: &exact::ExactPoint,
+    pair: [usize; 2],
+    opposite: usize,
+    line: &exact::ExactLine,
+    rect: &[exact::ExactPoint; 4],
     sites: &[Site],
-    primal_edges: &[CertifiedPrimalEdge],
-    complex: &DelaunayComplex,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<(exact::ExactPoint, exact::ExactPoint)>> {
+    budget.add(4)?;
+    let hits = separator_rectangle_hits(
+        [sites[pair[0]].point.xy(), sites[pair[1]].point.xy()],
+        line,
+        rect,
+        budget,
+    )?;
+    let left = exact::ExactPoint::from_xy(sites[pair[0]].point.xy());
+    let right = exact::ExactPoint::from_xy(sites[pair[1]].point.xy());
+    let mid = left.midpoint(&right);
+    let opposite_sign = exact::orient_points(
+        &left,
+        &right,
+        &exact::ExactPoint::from_xy(sites[opposite].point.xy()),
+    );
+    budget.add(hits.len().saturating_add(1))?;
+    let mut points = Vec::new();
+    reserve_exact(&mut points, hits.len().saturating_add(1))?;
+    if in_rectangle(rect, center) {
+        points.push(center.clone());
+    }
+    for hit in hits {
+        if hull_point_on_ray(center, &mid, [&left, &right], opposite_sign, &hit) {
+            points.push(hit);
+        }
+    }
+    if points.len() < 2 {
+        return Ok(None);
+    }
+    let (origin, hint) = if center.same_position(&mid) {
+        let Some(hint) = points
+            .iter()
+            .find(|point| !point.same_position(center))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        (center.clone(), hint)
+    } else if exact::orient_points(&left, &right, center) == opposite_sign {
+        (center.clone(), mid)
+    } else {
+        (mid, center.clone())
+    };
+    Ok(span_from_points(&origin, &hint, points))
+}
+
+fn coincident_frame_owner(
+    pair: [SiteId; 2],
+    ccw_start: &exact::ExactPoint,
+    ccw_end: &exact::ExactPoint,
+    sites: &[Site],
+) -> Result<SiteId> {
+    let mut inside = None;
+    for &id in &pair {
+        match exact::orient_points(
+            ccw_start,
+            ccw_end,
+            &exact::ExactPoint::from_xy(sites[id.0 as usize].point.xy()),
+        ) {
+            ExactSign::Positive => {
+                if inside.replace(id).is_some() {
+                    return Err(voronoi_error(
+                        "both separator sites lie inside a coincident frame side",
+                    ));
+                }
+            },
+            ExactSign::Negative => {},
+            ExactSign::Zero => {
+                return Err(voronoi_error("Voronoi separator contains its source site"));
+            },
+        }
+    }
+    inside.ok_or_else(|| voronoi_error("coincident frame separator has no interior site"))
+}
+
+fn build_scaffold(
+    rect: &[exact::ExactPoint; 4],
     clip: &NormalizedClip<'_>,
     budget: &mut ExpansionBudget,
-) -> Result<Vec<DirectedPrimitive>> {
-    let mut frame_inputs: Vec<_> = sites
-        .iter()
-        .map(|site| exact::ExactPoint::from_xy(site.point.xy()))
-        .collect();
-    frame_inputs.extend(clip.rings.iter().flatten().cloned());
-    frame_inputs.extend((0..complex.component_count()).map(|id| complex.center(id).clone()));
-    let frame = match exact::enclosing_frame_binary64(frame_inputs.iter()) {
-        Some(frame) => frame,
-        None => exact::enclosing_frame(&frame_inputs)?,
+) -> Result<Vec<ScaffoldPrimitive>> {
+    let outer_is_rect = clip.rings.first().is_some_and(|ring| {
+        ring.len() == 4 && (0..4).all(|side| ring[side].same_position(&rect[side]))
+    });
+    let clip_rings = if outer_is_rect {
+        &clip.rings[1..]
+    } else {
+        clip.rings.as_slice()
     };
-    let mut primitives = Vec::new();
+    let scaffold_count = 4_usize.saturating_add(clip_rings.iter().map(Vec::len).sum::<usize>());
+    budget.add(scaffold_count)?;
+    let mut scaffold = Vec::new();
+    scaffold
+        .try_reserve(scaffold_count)
+        .map_err(|_| voronoi_error("could not allocate exact Voronoi subdivision"))?;
     for side in 0..4 {
-        primitives.push(DirectedPrimitive {
-            id: PrimitiveId(0),
-            line: exact::ExactLine::through_points(&frame[side], &frame[(side + 1) % 4])?,
-            start: frame[side].clone(),
-            end: frame[(side + 1) % 4].clone(),
+        scaffold.push(ScaffoldPrimitive {
+            line: exact::ExactLine::through_points(&rect[side], &rect[(side + 1) % 4])?,
+            start: rect[side].clone(),
+            end: rect[(side + 1) % 4].clone(),
             frame_delta: 1,
-            clip_delta: 0,
+            clip_delta: i32::from(outer_is_rect),
             owner: PrimitiveOwner::FrameNearest,
-            separator: None,
-            clip_source: None,
+            clip_source: outer_is_rect.then_some(ClipSegmentId(side as u32)),
             frame_side: Some(side as u8),
             events: Vec::new(),
         });
     }
-    let mut clip_segment = 0_u32;
-    for ring in &clip.rings {
+    let mut clip_segment = if outer_is_rect { 4 } else { 0 };
+    for ring in clip_rings {
         for index in 0..ring.len() {
-            primitives.push(DirectedPrimitive {
-                id: PrimitiveId(0),
+            scaffold.push(ScaffoldPrimitive {
                 line: exact::ExactLine::through_points(
                     &ring[index],
                     &ring[(index + 1) % ring.len()],
@@ -958,7 +1158,6 @@ fn build_primitives(
                 frame_delta: 0,
                 clip_delta: 1,
                 owner: PrimitiveOwner::Preserve,
-                separator: None,
                 clip_source: Some(ClipSegmentId(clip_segment)),
                 frame_side: None,
                 events: Vec::new(),
@@ -970,15 +1169,41 @@ fn build_primitives(
     }
     for contact in &clip.contacts {
         for segment in contact.segments {
-            let primitive = primitives
+            let primitive = scaffold
                 .iter_mut()
                 .find(|primitive| primitive.clip_source == Some(ClipSegmentId(segment as u32)))
                 .ok_or_else(|| voronoi_error("validated clip contact has no source segment"))?;
             budgeted_try_push(&mut primitive.events, contact.point.clone(), budget)?;
         }
     }
+    register_frame_clip_contacts(&mut scaffold, budget)?;
+    for primitive in &mut scaffold {
+        if exact::signed_line_product(&primitive.line, &primitive.start) != ExactSign::Zero
+            || exact::signed_line_product(&primitive.line, &primitive.end) != ExactSign::Zero
+        {
+            return Err(voronoi_error(
+                "exact Voronoi primitive endpoints leave their support line",
+            ));
+        }
+        budget.add(2)?;
+        reserve_exact(&mut primitive.events, 2)?;
+        primitive
+            .events
+            .extend([primitive.start.clone(), primitive.end.clone()]);
+    }
+    Ok(scaffold)
+}
+
+fn emit_clipped_separators(
+    sites: &[Site],
+    primal_edges: &[CertifiedPrimalEdge],
+    complex: &DelaunayComplex,
+    rect: &[exact::ExactPoint; 4],
+    budget: &mut ExpansionBudget,
+) -> Result<Vec<ClippedSeparator>> {
+    let mut separators = Vec::new();
     for &primal in primal_edges {
-        let (site_pair, start, end) = match primal {
+        let (pair, span, line) = match primal {
             CertifiedPrimalEdge::Interior { sites: pair, faces } => {
                 let components = [
                     complex.component_of_face(faces[0]),
@@ -987,126 +1212,72 @@ fn build_primitives(
                 if components[0] == components[1] {
                     continue;
                 }
-                (
-                    pair,
-                    complex.center(components[0]).clone(),
-                    complex.center(components[1]).clone(),
-                )
+                let line = exact::ExactLine::perpendicular_bisector(
+                    sites[pair[0]].point.xy(),
+                    sites[pair[1]].point.xy(),
+                );
+                let Some(span) = clip_segment_to_rectangle(
+                    complex.center(components[0]),
+                    complex.center(components[1]),
+                    [sites[pair[0]].point.xy(), sites[pair[1]].point.xy()],
+                    &line,
+                    rect,
+                    budget,
+                )?
+                else {
+                    continue;
+                };
+                (pair, span, line)
             },
             CertifiedPrimalEdge::Hull {
                 sites: pair,
                 face,
                 opposite,
             } => {
-                let center = complex.center(complex.component_of_face(face)).clone();
                 let line = exact::ExactLine::perpendicular_bisector(
                     sites[pair[0]].point.xy(),
                     sites[pair[1]].point.xy(),
                 );
-                let opposite_point = exact::ExactPoint::from_xy(sites[opposite].point.xy());
-                let opposite_sign = exact::orient_points(
-                    &exact::ExactPoint::from_xy(sites[pair[0]].point.xy()),
-                    &exact::ExactPoint::from_xy(sites[pair[1]].point.xy()),
-                    &opposite_point,
-                );
-                let hits = frame_intersections(&line, &frame)?;
-                let hit = hits
-                    .into_iter()
-                    .map(|(_, point)| point)
-                    .find(|point| {
-                        exact::orient_points(
-                            &exact::ExactPoint::from_xy(sites[pair[0]].point.xy()),
-                            &exact::ExactPoint::from_xy(sites[pair[1]].point.xy()),
-                            point,
-                        ) != opposite_sign
-                    })
-                    .ok_or_else(|| {
-                        voronoi_error("certified Voronoi hull ray misses exact frame")
-                    })?;
-                (pair, center, hit)
+                let Some(span) = clip_hull_ray_to_rectangle(
+                    complex.center(complex.component_of_face(face)),
+                    pair,
+                    opposite,
+                    &line,
+                    rect,
+                    sites,
+                    budget,
+                )?
+                else {
+                    continue;
+                };
+                (pair, span, line)
             },
         };
-        let ids = [SiteId(site_pair[0] as u32), SiteId(site_pair[1] as u32)];
-        let (start, end) = orient_separator(start, end, ids, sites)?;
-        budget.add(1)?;
-        primitives
-            .try_reserve(1)
-            .map_err(|_| voronoi_error("could not allocate exact Voronoi subdivision"))?;
-        primitives.push(DirectedPrimitive {
-            id: PrimitiveId(0),
-            line: exact::ExactLine::perpendicular_bisector(
-                sites[site_pair[0]].point.xy(),
-                sites[site_pair[1]].point.xy(),
-            ),
-            start,
-            end,
-            frame_delta: 0,
-            clip_delta: 0,
-            owner: PrimitiveOwner::Boundary {
-                left: Some(ids[0]),
-                right: Some(ids[1]),
-            },
-            separator: Some(ids),
-            clip_source: None,
-            frame_side: None,
-            events: Vec::new(),
-        });
-    }
-    for (index, primitive) in primitives.iter_mut().enumerate() {
-        if exact::signed_line_product(&primitive.line, &primitive.start) != ExactSign::Zero
-            || exact::signed_line_product(&primitive.line, &primitive.end) != ExactSign::Zero
+        let ids = [SiteId(pair[0] as u32), SiteId(pair[1] as u32)];
+        let (start, end) = orient_separator(span.0, span.1, ids, sites)?;
+        if exact::signed_line_product(&line, &start) != ExactSign::Zero
+            || exact::signed_line_product(&line, &end) != ExactSign::Zero
         {
             return Err(voronoi_error(
                 "exact Voronoi primitive endpoints leave their support line",
             ));
         }
-        primitive.id =
-            PrimitiveId(u32::try_from(index).map_err(|_| voronoi_error("too many primitives"))?);
-        reserve_exact(&mut primitive.events, 2)?;
-        primitive
-            .events
-            .extend([primitive.start.clone(), primitive.end.clone()]);
+        budget.add(1)?;
+        separators
+            .try_reserve(1)
+            .map_err(|_| voronoi_error("could not allocate exact Voronoi subdivision"))?;
+        budget.add(2)?;
+        let mut events = Vec::new();
+        reserve_exact(&mut events, 2)?;
+        events.extend([start.clone(), end.clone()]);
+        separators.push(ClippedSeparator {
+            pair: ids,
+            start,
+            end,
+            events,
+        });
     }
-    let clip_count = clip_segment as usize;
-    let dual_start = 4_usize.saturating_add(clip_count);
-    let dual_count = primitives.len().saturating_sub(dual_start);
-    let pair_count = dual_count.saturating_mul(clip_count.saturating_add(4));
-    budget.add(pair_count)?;
-    for dual in dual_start..primitives.len() {
-        for (left, right, dual_frame) in (4..dual_start)
-            .map(|clip| (dual, clip, false))
-            .chain((0..4).map(|frame| (dual, frame, true)))
-        {
-            match exact::segment_intersection(
-                &primitives[left].start,
-                &primitives[left].end,
-                &primitives[right].start,
-                &primitives[right].end,
-            ) {
-                exact::SegmentIntersection::None => {},
-                exact::SegmentIntersection::Point(point) => {
-                    if dual_frame {
-                        if ![&primitives[left].start, &primitives[left].end]
-                            .iter()
-                            .any(|endpoint| endpoint.same_position(&point))
-                        {
-                            continue;
-                        }
-                    }
-                    budgeted_try_push(&mut primitives[left].events, point.clone(), budget)?;
-                    budgeted_try_push(&mut primitives[right].events, point, budget)?;
-                },
-                exact::SegmentIntersection::Overlap { start, end } => {
-                    budget.add(4)?;
-                    reserve_exact(&mut primitives[left].events, 2)?;
-                    primitives[left].events.extend([start.clone(), end.clone()]);
-                    reserve_exact(&mut primitives[right].events, 2)?;
-                    primitives[right].events.extend([start, end]);
-                },
-            }
-        }
-    }
-    Ok(primitives)
+    Ok(separators)
 }
 
 fn merge_owner(left: OwnerTransition, right: OwnerTransition) -> Result<OwnerTransition> {
@@ -1147,81 +1318,173 @@ fn fixed_coordinates(
     Ok(fixed)
 }
 
-fn node_primitives(
-    mut primitives: Vec<DirectedPrimitive>,
+fn emit_atom_windows(
+    start: &exact::ExactPoint,
+    end: &exact::ExactPoint,
+    events: &mut Vec<exact::ExactPoint>,
+    frame_delta: i8,
+    clip_delta: i32,
+    owner: PrimitiveOwner,
+    separator: Option<[SiteId; 2]>,
+    clip_source: Option<ClipSegmentId>,
+    frame_side: Option<u8>,
+    seeds: &mut Vec<AtomSeed>,
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
+    events.sort_by(|left, right| exact::compare_along(start, end, left, right));
+    events.dedup_by(|left, right| left.same_position(right));
+    if !events
+        .first()
+        .is_some_and(|point| point.same_position(start))
+        || !events
+            .last()
+            .is_some_and(|point| point.same_position(end))
+    {
+        return Err(voronoi_error(
+            "exact primitive event order lost an endpoint",
+        ));
+    }
+    for pair in events.windows(2) {
+        if exact::compare_along(start, end, &pair[0], &pair[1]) != Ordering::Less {
+            return Err(voronoi_error(
+                "exact primitive has unordered duplicate events",
+            ));
+        }
+        budgeted_try_push(
+            seeds,
+            AtomSeed {
+                start: pair[0].clone(),
+                end: pair[1].clone(),
+                frame_delta,
+                clip_delta,
+                owner,
+                separator,
+                clip_source,
+                frame_side,
+            },
+            budget,
+        )?;
+    }
+    Ok(())
+}
+
+fn register_frame_clip_contacts(
+    scaffold: &mut [ScaffoldPrimitive],
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
+    let (frames, clips) = scaffold.split_at_mut(4);
+    budget.add(4_usize.saturating_mul(clips.len()))?;
+    for clip_prim in clips {
+        for frame_prim in frames.iter_mut() {
+            match exact::segment_intersection(
+                &frame_prim.start,
+                &frame_prim.end,
+                &clip_prim.start,
+                &clip_prim.end,
+            ) {
+                exact::SegmentIntersection::None => {},
+                exact::SegmentIntersection::Point(point) => {
+                    budgeted_try_push(&mut frame_prim.events, point.clone(), budget)?;
+                    budgeted_try_push(&mut clip_prim.events, point, budget)?;
+                },
+                exact::SegmentIntersection::Overlap { start, end } => {
+                    push_split_events(
+                        &mut frame_prim.events,
+                        &mut clip_prim.events,
+                        start,
+                        end,
+                        budget,
+                    )?;
+                },
+            }
+        }
+    }
+    Ok(())
+}
+
+fn push_split_events(
+    left: &mut Vec<exact::ExactPoint>,
+    right: &mut Vec<exact::ExactPoint>,
+    start: exact::ExactPoint,
+    end: exact::ExactPoint,
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
+    budget.add(4)?;
+    reserve_exact(left, 2)?;
+    left.extend([start.clone(), end.clone()]);
+    reserve_exact(right, 2)?;
+    right.extend([start, end]);
+    Ok(())
+}
+
+fn node_scaffold_and_separators(
+    mut scaffold: Vec<ScaffoldPrimitive>,
+    mut separators: Vec<ClippedSeparator>,
     sites: &[Site],
     adjacency: &SiteAdjacency,
     clip: &NormalizedClip<'_>,
+    rect: &[exact::ExactPoint; 4],
     budget: &mut ExpansionBudget,
 ) -> Result<NodedAtoms> {
-    let mut seeds = Vec::new();
-    for primitive in &mut primitives {
-        primitive.events.sort_by(|left, right| {
-            exact::compare_along(&primitive.start, &primitive.end, left, right)
-        });
-        primitive
-            .events
-            .dedup_by(|left, right| left.same_position(right));
-        if !primitive
-            .events
-            .first()
-            .is_some_and(|point| point.same_position(&primitive.start))
-            || !primitive
-                .events
-                .last()
-                .is_some_and(|point| point.same_position(&primitive.end))
-        {
-            return Err(voronoi_error(
-                "exact primitive event order lost an endpoint",
-            ));
+    budget.add(separators.len().saturating_mul(scaffold.len()))?;
+    for separator in &mut separators {
+        for primitive in &mut scaffold {
+            match exact::segment_intersection(
+                &separator.start,
+                &separator.end,
+                &primitive.start,
+                &primitive.end,
+            ) {
+                exact::SegmentIntersection::None => {},
+                exact::SegmentIntersection::Point(point) => {
+                    budgeted_try_push(&mut separator.events, point.clone(), budget)?;
+                    budgeted_try_push(&mut primitive.events, point, budget)?;
+                },
+                exact::SegmentIntersection::Overlap { start, end } => {
+                    push_split_events(
+                        &mut separator.events,
+                        &mut primitive.events,
+                        start,
+                        end,
+                        budget,
+                    )?;
+                },
+            }
         }
     }
-    let mut frame_owner = SiteId(0);
-    for primitive in &primitives {
-        for pair in primitive.events.windows(2) {
-            if exact::compare_along(&primitive.start, &primitive.end, &pair[0], &pair[1])
-                != Ordering::Less
-            {
-                return Err(voronoi_error(
-                    "exact primitive has unordered duplicate events",
-                ));
-            }
-            let owner = match primitive.owner {
-                PrimitiveOwner::Preserve => OwnerTransition::Preserve,
-                PrimitiveOwner::Boundary { left, right } => {
-                    OwnerTransition::Boundary { left, right }
-                },
-                PrimitiveOwner::FrameNearest => OwnerTransition::Boundary {
-                    left: Some({
-                        frame_owner = nearest_site_walk(
-                            &pair[0].midpoint(&pair[1]),
-                            sites,
-                            adjacency,
-                            frame_owner,
-                            budget,
-                        )?;
-                        frame_owner
-                    }),
-                    right: None,
-                },
-            };
-            budgeted_try_push(
-                &mut seeds,
-                AtomSeed {
-                    start: pair[0].clone(),
-                    end: pair[1].clone(),
-                    transition: Transition {
-                        frame_delta: primitive.frame_delta,
-                        clip_delta: primitive.clip_delta,
-                        owner,
-                    },
-                    separator: primitive.separator,
-                    clip_source: primitive.clip_source,
-                    frame_side: primitive.frame_side,
-                },
-                budget,
-            )?;
-        }
+    let mut seeds = Vec::new();
+    for primitive in &mut scaffold {
+        emit_atom_windows(
+            &primitive.start,
+            &primitive.end,
+            &mut primitive.events,
+            primitive.frame_delta,
+            primitive.clip_delta,
+            primitive.owner,
+            None,
+            primitive.clip_source,
+            primitive.frame_side,
+            &mut seeds,
+            budget,
+        )?;
+    }
+    for separator in &mut separators {
+        emit_atom_windows(
+            &separator.start,
+            &separator.end,
+            &mut separator.events,
+            0,
+            0,
+            PrimitiveOwner::Boundary {
+                left: Some(separator.pair[0]),
+                right: Some(separator.pair[1]),
+            },
+            Some(separator.pair),
+            None,
+            None,
+            &mut seeds,
+            budget,
+        )?;
     }
     let mut event_points = Vec::new();
     reserve_exact(&mut event_points, seeds.len().saturating_mul(2))?;
@@ -1248,7 +1511,10 @@ fn node_primitives(
     #[derive(Clone)]
     struct MappedSeed {
         endpoints: [VertexId; 2],
-        transition: Transition,
+        reversed: bool,
+        frame_delta: i8,
+        clip_delta: i32,
+        owner: PrimitiveOwner,
         separator: Option<[SiteId; 2]>,
         clip_source: Option<ClipSegmentId>,
         frame_side: Option<u8>,
@@ -1257,17 +1523,27 @@ fn node_primitives(
     reserve_exact(&mut mapped, seeds.len())?;
     for seed in seeds {
         let mut endpoints = [vertex_id(&seed.start)?, vertex_id(&seed.end)?];
-        let mut transition = seed.transition;
         if endpoints[0] == endpoints[1] {
             return Err(voronoi_error("exact primitive produced a zero-length atom"));
         }
-        if endpoints[0] > endpoints[1] {
+        let reversed = endpoints[0] > endpoints[1];
+        if reversed {
             endpoints.swap(0, 1);
-            transition = transition.reversed();
         }
         mapped.push(MappedSeed {
             endpoints,
-            transition,
+            reversed,
+            frame_delta: if reversed {
+                -seed.frame_delta
+            } else {
+                seed.frame_delta
+            },
+            clip_delta: if reversed {
+                -seed.clip_delta
+            } else {
+                seed.clip_delta
+            },
+            owner: seed.owner,
             separator: seed.separator,
             clip_source: seed.clip_source,
             frame_side: seed.frame_side,
@@ -1276,29 +1552,25 @@ fn node_primitives(
     mapped.sort_by_key(|seed| seed.endpoints);
     let mut edges = Vec::new();
     let mut start = 0;
+    let mut frame_owner = SiteId(0);
     while start < mapped.len() {
         let mut end = start + 1;
         while end < mapped.len() && mapped[end].endpoints == mapped[start].endpoints {
             end += 1;
         }
-        let mut transition = Transition {
-            frame_delta: 0,
-            clip_delta: 0,
-            owner: OwnerTransition::Preserve,
-        };
+        let mut frame_delta = 0_i8;
+        let mut clip_delta = 0_i32;
+        let mut owner = OwnerTransition::Preserve;
         let mut separator = None;
         let mut clip_sources = Vec::new();
         let mut frame_side = None;
         for seed in &mapped[start..end] {
-            transition.frame_delta = transition
-                .frame_delta
-                .checked_add(seed.transition.frame_delta)
+            frame_delta = frame_delta
+                .checked_add(seed.frame_delta)
                 .ok_or_else(|| voronoi_error("exact frame winding overflow"))?;
-            transition.clip_delta = transition
-                .clip_delta
-                .checked_add(seed.transition.clip_delta)
+            clip_delta = clip_delta
+                .checked_add(seed.clip_delta)
                 .ok_or_else(|| voronoi_error("exact clip winding overflow"))?;
-            transition.owner = merge_owner(transition.owner, seed.transition.owner)?;
             if let Some(value) = seed.separator {
                 if separator.is_some_and(|existing| existing != value) {
                     return Err(voronoi_error("two Voronoi separators share one open atom"));
@@ -1315,13 +1587,87 @@ fn node_primitives(
                 frame_side = Some(value);
             }
         }
+        if let (Some(pair), Some(side)) = (separator, frame_side) {
+            let ccw_start = &rect[side as usize];
+            let ccw_end = &rect[(side as usize + 1) % 4];
+            let inside = coincident_frame_owner(pair, ccw_start, ccw_end, sites)?;
+            let mut coincident = OwnerTransition::Boundary {
+                left: Some(inside),
+                right: None,
+            };
+            let stored_start = &vertices[mapped[start].endpoints[0].0 as usize].point;
+            let stored_end = &vertices[mapped[start].endpoints[1].0 as usize].point;
+            if exact::compare_along(ccw_start, ccw_end, stored_start, stored_end) == Ordering::Greater
+            {
+                coincident = Transition {
+                    frame_delta: 0,
+                    clip_delta: 0,
+                    owner: coincident,
+                }
+                .reversed()
+                .owner;
+            }
+            owner = coincident;
+        } else {
+            for seed in &mapped[start..end] {
+                let resolved = match seed.owner {
+                    PrimitiveOwner::Preserve => OwnerTransition::Preserve,
+                    PrimitiveOwner::Boundary { left, right } => {
+                        let owner = OwnerTransition::Boundary { left, right };
+                        if seed.reversed {
+                            Transition {
+                                frame_delta: 0,
+                                clip_delta: 0,
+                                owner,
+                            }
+                            .reversed()
+                            .owner
+                        } else {
+                            owner
+                        }
+                    },
+                    PrimitiveOwner::FrameNearest => {
+                        let midpoint = vertices[seed.endpoints[0].0 as usize]
+                            .point
+                            .midpoint(&vertices[seed.endpoints[1].0 as usize].point);
+                        frame_owner = nearest_site_walk(
+                            &midpoint,
+                            sites,
+                            adjacency,
+                            frame_owner,
+                            budget,
+                        )?;
+                        let owner = OwnerTransition::Boundary {
+                            left: Some(frame_owner),
+                            right: None,
+                        };
+                        if seed.reversed {
+                            Transition {
+                                frame_delta: 0,
+                                clip_delta: 0,
+                                owner,
+                            }
+                            .reversed()
+                            .owner
+                        } else {
+                            owner
+                        }
+                    },
+                };
+                owner = merge_owner(owner, resolved)?;
+            }
+        }
         clip_sources.sort_unstable();
         clip_sources.dedup();
-        if transition.frame_delta != 0 || transition.clip_delta != 0 || separator.is_some() {
+        if frame_delta != 0 || clip_delta != 0 || separator.is_some() {
             budget.add(1)?;
             edges.push(AtomicEdge {
                 endpoints: mapped[start].endpoints,
-                forward: transition,
+                forward: Transition {
+                    frame_delta,
+                    clip_delta,
+                    owner,
+                },
                 separator,
                 clip_sources: clip_sources.into_boxed_slice(),
                 frame_side,
@@ -2150,11 +2496,7 @@ fn embed(
         .iter()
         .filter_map(|&edge_id| {
             let edge = &subdivision.edges[edge_id.0 as usize];
-            matches!(edge.forward.owner, OwnerTransition::Boundary {
-                left: Some(_),
-                right: Some(_)
-            })
-            .then(|| {
+            edge.separator.is_some().then(|| {
                 Ok((edge_id, [
                     embedded_point(edge.endpoints[0])?,
                     embedded_point(edge.endpoints[1])?,
@@ -2173,39 +2515,73 @@ fn embed(
         if rounded[0].same_position(&rounded[1]) {
             return Err(embedding_failure());
         }
-        if let OwnerTransition::Boundary { left, right } = edge.forward.owner {
-            let (Some(left), Some(right)) = (left, right) else {
+        if edge.separator.is_none() {
+            continue;
+        }
+        let check_left = |site: SiteId| {
+            exact::orient_points(
+                &rounded[0],
+                &rounded[1],
+                &exact::ExactPoint::from_xy(sites[site.0 as usize].point.xy()),
+            ) == ExactSign::Positive
+        };
+        let check_right = |site: SiteId| {
+            exact::orient_points(
+                &rounded[0],
+                &rounded[1],
+                &exact::ExactPoint::from_xy(sites[site.0 as usize].point.xy()),
+            ) == ExactSign::Negative
+        };
+        match edge.forward.owner {
+            OwnerTransition::Boundary {
+                left: Some(left),
+                right: Some(right),
+            } => {
+                if !check_left(left) || !check_right(right) {
+                    return Err(embedding_failure());
+                }
+            },
+            OwnerTransition::Boundary {
+                left: Some(left),
+                right: None,
+            } => {
+                if !check_left(left) {
+                    return Err(embedding_failure());
+                }
+            },
+            OwnerTransition::Boundary {
+                left: None,
+                right: Some(right),
+            } => {
+                if !check_right(right) {
+                    return Err(embedding_failure());
+                }
+            },
+            OwnerTransition::Boundary {
+                left: None,
+                right: None,
+            }
+            | OwnerTransition::Preserve => {
                 return Err(voronoi_error("live separator has incomplete ownership"));
-            };
-            let left_point = exact::ExactPoint::from_xy(sites[left.0 as usize].point.xy());
-            let right_point = exact::ExactPoint::from_xy(sites[right.0 as usize].point.xy());
-            if exact::orient_points(&rounded[0], &rounded[1], &left_point)
-                != ExactSign::Positive
-                || exact::orient_points(&rounded[0], &rounded[1], &right_point)
-                    != ExactSign::Negative
+            },
+        }
+        while marked_start < marked_candidates.len() && marked_candidates[marked_start].0 < edge_id {
+            marked_start += 1;
+        }
+        let mut candidate = marked_start;
+        while candidate < marked_candidates.len() && marked_candidates[candidate].0 == edge_id {
+            let site = &sites[marked_candidates[candidate].1.0 as usize];
+            if exact::segment_intersection(
+                &rounded[0],
+                &rounded[1],
+                &exact::ExactPoint::from_xy(site.point.xy()),
+                &exact::ExactPoint::from_xy(site.point.xy()),
+            )
+            .is_point()
             {
                 return Err(embedding_failure());
             }
-            while marked_start < marked_candidates.len()
-                && marked_candidates[marked_start].0 < edge_id
-            {
-                marked_start += 1;
-            }
-            let mut candidate = marked_start;
-            while candidate < marked_candidates.len() && marked_candidates[candidate].0 == edge_id {
-                let site = &sites[marked_candidates[candidate].1.0 as usize];
-                if exact::segment_intersection(
-                    &rounded[0],
-                    &rounded[1],
-                    &exact::ExactPoint::from_xy(site.point.xy()),
-                    &exact::ExactPoint::from_xy(site.point.xy()),
-                )
-                .is_point()
-                {
-                    return Err(embedding_failure());
-                }
-                candidate += 1;
-            }
+            candidate += 1;
         }
     }
     let indexed_edges: Vec<_> = live_edge_ids
@@ -2594,8 +2970,18 @@ pub(super) fn build(
     let complex = delaunay_complex(&mesh, sites)?;
     let primal_edges = mesh.primal_edges();
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), budget)?;
-    let primitives = build_primitives(sites, &primal_edges, &complex, &clip, budget)?;
-    let atoms = node_primitives(primitives, sites, &adjacency, &clip, budget)?;
+    let rect = clip_rectangle(&clip)?;
+    let scaffold = build_scaffold(&rect, &clip, budget)?;
+    let separators = emit_clipped_separators(sites, &primal_edges, &complex, &rect, budget)?;
+    let atoms = node_scaffold_and_separators(
+        scaffold,
+        separators,
+        sites,
+        &adjacency,
+        &clip,
+        &rect,
+        budget,
+    )?;
     let mut subdivision = build_exact_subdivision(atoms, budget)?;
     graft_components(&mut subdivision, sites, &adjacency, budget)?;
     let parts = assemble_cells(&subdivision, budget)?;
@@ -3308,6 +3694,386 @@ mod tests {
         .unwrap()
     }
 
+    fn sites_xy(points: &[(f64, f64)]) -> Vec<Site> {
+        points
+            .iter()
+            .enumerate()
+            .map(|(id, &(x, y))| Site {
+                id,
+                point: Point::new_raw_xy(x, y),
+            })
+            .collect()
+    }
+
+    fn separator_fixture() -> (Vec<Site>, Polygon) {
+        (
+            sites_xy(&[(-4.0, -3.0), (4.0, -2.0), (3.0, 4.0), (-3.0, 3.0), (0.0, 0.0)]),
+            Polygon::new(rectangle(-6.0, -6.0, 6.0, 6.0), Vec::new()),
+        )
+    }
+
+    fn coincident_frame_fixture() -> (Vec<Site>, Polygon) {
+        (
+            sites_xy(&[(0.0, -1.0), (0.0, 1.0), (2.0, 0.5)]),
+            Polygon::new(rectangle(-1.0, 0.0, 0.5, 2.0), Vec::new()),
+        )
+    }
+
+    fn node_polygon(sites: &[Site], polygon: &Polygon, budget: &mut ExpansionBudget) -> NodedAtoms {
+        let clip = normalize_clip(sites, VoronoiBoundary::Polygon(polygon), budget).unwrap();
+        let rect = clip_rectangle(&clip).unwrap();
+        let mesh = certified_delaunay(sites);
+        let complex = delaunay_complex(&mesh, sites).unwrap();
+        let primal_edges = mesh.primal_edges();
+        let adjacency = certified_site_adjacency(&primal_edges, sites.len(), budget).unwrap();
+        let scaffold = build_scaffold(&rect, &clip, budget).unwrap();
+        let separators =
+            emit_clipped_separators(sites, &primal_edges, &complex, &rect, budget).unwrap();
+        node_scaffold_and_separators(
+            scaffold,
+            separators,
+            sites,
+            &adjacency,
+            &clip,
+            &rect,
+            budget,
+        )
+        .unwrap()
+    }
+
+    fn old_frame_halfplane_holds(
+        edge: &AtomicEdge,
+        vertices: &[NodedVertex],
+        sites: &[Site],
+    ) -> bool {
+        let OwnerTransition::Boundary { left, right } = edge.forward.owner else {
+            return true;
+        };
+        let start = &vertices[edge.endpoints[0].0 as usize].point;
+        let end = &vertices[edge.endpoints[1].0 as usize].point;
+        left.is_none_or(|site| {
+            exact::orient_points(
+                start,
+                end,
+                &exact::ExactPoint::from_xy(sites[site.0 as usize].point.xy()),
+            ) == ExactSign::Positive
+        }) && right.is_none_or(|site| {
+            exact::orient_points(
+                start,
+                end,
+                &exact::ExactPoint::from_xy(sites[site.0 as usize].point.xy()),
+            ) == ExactSign::Negative
+        })
+    }
+
+    #[test]
+    fn canonical_separator_emitter_keeps_one_sorted_directed_edge_per_dual() {
+        let (sites, polygon) = separator_fixture();
+        let mut budget = ExpansionBudget::new("test", "canonical separators");
+        let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut budget).unwrap();
+        let rect = clip_rectangle(&clip).unwrap();
+        let mesh = certified_delaunay(&sites);
+        let complex = delaunay_complex(&mesh, &sites).unwrap();
+        let primal_edges = mesh.primal_edges();
+        let separators =
+            emit_clipped_separators(&sites, &primal_edges, &complex, &rect, &mut budget).unwrap();
+        let expected = primal_edges
+            .iter()
+            .filter(|edge| match edge {
+                CertifiedPrimalEdge::Interior { faces, .. } => {
+                    complex.component_of_face(faces[0]) != complex.component_of_face(faces[1])
+                },
+                CertifiedPrimalEdge::Hull { .. } => true,
+            })
+            .count();
+        assert_eq!(separators.len(), expected);
+        for separator in &separators {
+            assert!(separator.pair[0] < separator.pair[1]);
+            let left = exact::ExactPoint::from_xy(sites[separator.pair[0].0 as usize].point.xy());
+            assert_eq!(
+                exact::orient_points(&separator.start, &separator.end, &left),
+                ExactSign::Positive
+            );
+        }
+    }
+
+    #[test]
+    fn hull_center_outside_clip_aabb_keeps_the_enter_exit_chord() {
+        let (sites, polygon) = coincident_frame_fixture();
+        let mut budget = ExpansionBudget::new("test", "external center chord");
+        let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut budget).unwrap();
+        let rect = clip_rectangle(&clip).unwrap();
+        let mesh = certified_delaunay(&sites);
+        let complex = delaunay_complex(&mesh, &sites).unwrap();
+        let separators =
+            emit_clipped_separators(&sites, &mesh.primal_edges(), &complex, &rect, &mut budget)
+                .unwrap();
+        let pair = [SiteId(0), SiteId(1)];
+        let chord = separators
+            .iter()
+            .find(|separator| separator.pair == pair)
+            .expect("A-B hull ray clips to R");
+        let bottom = [
+            exact::ExactPoint::from_xy(XY::new(-1.0, 0.0)),
+            exact::ExactPoint::from_xy(XY::new(0.5, 0.0)),
+        ];
+        assert!(
+            chord.start.same_position(&bottom[0]) && chord.end.same_position(&bottom[1])
+                || chord.start.same_position(&bottom[1]) && chord.end.same_position(&bottom[0])
+        );
+        let center = complex.center(0);
+        assert!(!in_rectangle(&rect, center));
+        let adjacency =
+            certified_site_adjacency(&mesh.primal_edges(), sites.len(), &mut budget).unwrap();
+        let scaffold = build_scaffold(&rect, &clip, &mut budget).unwrap();
+        let atoms = node_scaffold_and_separators(
+            scaffold,
+            separators,
+            &sites,
+            &adjacency,
+            &clip,
+            &rect,
+            &mut budget,
+        )
+        .unwrap();
+        assert!(
+            !atoms
+                .vertices
+                .iter()
+                .any(|vertex| vertex.point.same_position(center))
+        );
+    }
+
+    #[test]
+    fn coincident_frame_separator_seeds_inside_owner_without_nearest_tie() {
+        let (sites, polygon) = coincident_frame_fixture();
+        let mut budget = ExpansionBudget::new("test", "coincident frame");
+        let atoms = node_polygon(&sites, &polygon, &mut budget);
+        let coincident: Vec<_> = atoms
+            .edges
+            .iter()
+            .filter(|edge| edge.separator == Some([SiteId(0), SiteId(1)]) && edge.frame_side.is_some())
+            .collect();
+        assert!(!coincident.is_empty());
+        for edge in &coincident {
+            match edge.forward.owner {
+                OwnerTransition::Boundary {
+                    left: Some(SiteId(1)),
+                    right: None,
+                }
+                | OwnerTransition::Boundary {
+                    left: None,
+                    right: Some(SiteId(1)),
+                } => {},
+                other => panic!("coincident frame owner {other:?}"),
+            }
+            let midpoint = atoms.vertices[edge.endpoints[0].0 as usize]
+                .point
+                .midpoint(&atoms.vertices[edge.endpoints[1].0 as usize].point);
+            assert!(nearest_site(&midpoint, &sites).is_err());
+        }
+        let mut fail_budget = ExpansionBudget::new("test", "frame-only tie");
+        let clip =
+            normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut fail_budget).unwrap();
+        let rect = clip_rectangle(&clip).unwrap();
+        let mesh = certified_delaunay(&sites);
+        let adjacency =
+            certified_site_adjacency(&mesh.primal_edges(), sites.len(), &mut fail_budget).unwrap();
+        let scaffold = build_scaffold(&rect, &clip, &mut fail_budget).unwrap();
+        assert!(
+            node_scaffold_and_separators(
+                scaffold,
+                Vec::new(),
+                &sites,
+                &adjacency,
+                &clip,
+                &rect,
+                &mut fail_budget,
+            )
+            .is_err()
+        );
+    }
+
+    fn closed_ring(points: &[(f64, f64)]) -> Ring {
+        Ring::closed(
+            points
+                .iter()
+                .chain(points.first())
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn assert_cells_cover_clip(cells: &[Shape], clip: &Polygon) {
+        assert!(!cells.is_empty());
+        assert!(cells.iter().all(|cell| match cell {
+            Shape::Polygon(polygon) => polygon_is_valid(polygon),
+            _ => false,
+        }));
+        let union = Shape::union_all(cells, Strictness::Lenient).unwrap();
+        let clip_shape = Shape::Polygon(clip.clone());
+        assert!(
+            clip_shape
+                .difference(&union, Strictness::Lenient)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            union
+                .difference(&clip_shape, Strictness::Lenient)
+                .unwrap()
+                .is_empty()
+        );
+        for (left, right) in cells
+            .iter()
+            .enumerate()
+            .flat_map(|(index, left)| cells[index + 1..].iter().map(move |right| (left, right)))
+        {
+            assert!(
+                left.intersection(right, Strictness::Lenient)
+                    .unwrap()
+                    .area()
+                    == 0.0
+            );
+        }
+    }
+
+    fn assert_one_cell_equals_clip(cells: &[Shape], clip: &Polygon) {
+        assert_eq!(cells.len(), 1);
+        let Shape::Polygon(_) = &cells[0] else {
+            panic!("Voronoi cells are polygons");
+        };
+        let cell = &cells[0];
+        let clip_shape = Shape::Polygon(clip.clone());
+        assert!(
+            clip_shape
+                .difference(cell, Strictness::Lenient)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            cell.difference(&clip_shape, Strictness::Lenient)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn site_shape(points: &[(f64, f64)]) -> Shape {
+        Shape::MultiPoint(
+            points
+                .iter()
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
+                .collect::<Vec<_>>()
+                .into(),
+        )
+    }
+
+    #[test]
+    fn diamond_clip_in_square_aabb_covers_clip_with_no_separator_through_contacts() {
+        let diamond = Polygon::new(
+            closed_ring(&[(0.0, 1.0), (1.0, 0.0), (2.0, 1.0), (1.0, 2.0)]),
+            Vec::new(),
+        );
+        let sites = [(10.0, 0.0), (12.0, 0.0), (11.0, 1.0)];
+        let cells = site_shape(&sites)
+            .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&diamond))
+            .unwrap();
+        assert_one_cell_equals_clip(&cells, &diamond);
+    }
+
+    #[test]
+    fn partial_collinear_frame_overlap_covers_clip() {
+        let clip = Polygon::new(
+            closed_ring(&[(1.0, 0.0), (3.0, 0.0), (3.0, 2.0), (0.0, 2.0)]),
+            Vec::new(),
+        );
+        let sites = [(2.0, 1.0), (1.2, 1.4), (2.4, 1.5)];
+        let cells = site_shape(&sites)
+            .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
+            .unwrap();
+        assert_cells_cover_clip(&cells, &clip);
+    }
+
+    #[test]
+    fn cyclically_rotated_rectangle_clip_covers_clip() {
+        let clip = Polygon::new(
+            closed_ring(&[(2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+            Vec::new(),
+        );
+        let sites = [(0.5, 0.5), (1.5, 0.5), (1.0, 1.5)];
+        let cells = site_shape(&sites)
+            .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
+            .unwrap();
+        assert_cells_cover_clip(&cells, &clip);
+    }
+
+    #[test]
+    fn holed_diamond_clip_covers_shell_minus_hole() {
+        let clip = Polygon::new(
+            closed_ring(&[(0.0, 1.0), (1.0, 0.0), (2.0, 1.0), (1.0, 2.0)]),
+            vec![closed_ring(&[(0.75, 0.75), (1.25, 0.75), (1.25, 1.25), (0.75, 1.25)])],
+        );
+        let sites = [(10.0, 0.0), (12.0, 0.0), (11.0, 1.0)];
+        let cells = site_shape(&sites)
+            .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
+            .unwrap();
+        assert_one_cell_equals_clip(&cells, &clip);
+        let Shape::Polygon(cell) = &cells[0] else {
+            panic!("Voronoi cells are polygons");
+        };
+        assert_eq!(cell.holes.len(), 1);
+    }
+
+    #[test]
+    fn public_polygon_admits_sites_on_and_outside_clip_aabb() {
+        let sites = sites_xy(&[(0.0, 0.0), (1.0, 0.0), (3.0, 1.0), (1.0, 1.0)]);
+        let polygon = Polygon::new(rectangle(0.0, 0.0, 2.0, 2.0), Vec::new());
+        let mut budget = ExpansionBudget::new("test", "sites on and outside R");
+        let atoms = node_polygon(&sites, &polygon, &mut budget);
+        assert!(
+            atoms.edges.iter().any(|edge| {
+                edge.separator.is_none()
+                    && edge.frame_side.is_some()
+                    && !old_frame_halfplane_holds(edge, &atoms.vertices, &sites)
+            }),
+            "old frame halfplane still holds on every frame-only atom"
+        );
+        build(&sites, VoronoiBoundary::Polygon(&polygon), &mut budget, true).unwrap();
+    }
+
+    #[test]
+    fn subnormal_clip_aabb_exact_lane_admits_sites_on_corners() {
+        let step = f64::from_bits(4);
+        let sites = sites_xy(&[(0.0, 0.0), (step, 0.0), (0.0, step)]);
+        let mut envelope_budget = ExpansionBudget::new("test", "units4 envelope");
+        build(
+            &sites,
+            VoronoiBoundary::Envelope,
+            &mut envelope_budget,
+            false,
+        )
+        .unwrap();
+        let polygon = Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new());
+        let mut polygon_budget = ExpansionBudget::new("test", "units4 polygon");
+        build(&sites, VoronoiBoundary::Polygon(&polygon), &mut polygon_budget, true).unwrap();
+    }
+
+    #[test]
+    fn canonical_separator_atoms_keep_one_identity_and_do_not_branch() {
+        let (sites, polygon) = separator_fixture();
+        let mut budget = ExpansionBudget::new("test", "canonical separators");
+        let atoms = node_polygon(&sites, &polygon, &mut budget);
+        let mut degree = std::collections::BTreeMap::<([SiteId; 2], VertexId), usize>::new();
+        for edge in atoms.edges {
+            if let Some(pair) = edge.separator {
+                *degree.entry((pair, edge.endpoints[0])).or_default() += 1;
+                *degree.entry((pair, edge.endpoints[1])).or_default() += 1;
+            }
+        }
+        assert!(degree.values().all(|degree| *degree <= 2));
+    }
+
     #[test]
     fn crossed_component_keeps_distinct_faces_with_the_same_owner() {
         let sites: Vec<_> = [(-10.0, -10.0), (0.0, 10.0), (10.0, -10.0)]
@@ -3322,15 +4088,7 @@ mod tests {
             -12.0, -1.0, 12.0, 1.0,
         )]);
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
-        let clip =
-            normalize_clip(&sites, VoronoiBoundary::Polygon(&clip_polygon), &mut budget).unwrap();
-        let mesh = certified_delaunay(&sites);
-        let complex = delaunay_complex(&mesh, &sites).unwrap();
-        let primal_edges = mesh.primal_edges();
-        let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
-        let primitives =
-            build_primitives(&sites, &primal_edges, &complex, &clip, &mut budget).unwrap();
-        let atoms = node_primitives(primitives, &sites, &adjacency, &clip, &mut budget).unwrap();
+        let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
         let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
         assert_boundary_walk_euler(&subdivision);
         let primal_edges = certified_delaunay(&sites).primal_edges();
@@ -3369,15 +4127,7 @@ mod tests {
             -1.0, -1.0, 1.0, 1.0,
         )]);
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
-        let clip =
-            normalize_clip(&sites, VoronoiBoundary::Polygon(&clip_polygon), &mut budget).unwrap();
-        let mesh = certified_delaunay(&sites);
-        let complex = delaunay_complex(&mesh, &sites).unwrap();
-        let primal_edges = mesh.primal_edges();
-        let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
-        let primitives =
-            build_primitives(&sites, &primal_edges, &complex, &clip, &mut budget).unwrap();
-        let atoms = node_primitives(primitives, &sites, &adjacency, &clip, &mut budget).unwrap();
+        let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
         let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
         assert_boundary_walk_euler(&subdivision);
         let primal_edges = certified_delaunay(&sites).primal_edges();
@@ -3939,7 +4689,7 @@ mod tests {
 //   (a) capping the two unbounded rays of a hull cell on the private frame,
 //   (b) clipping each cell to the clip rectangle, and
 //   (c) the rounding certificate.
-// Everything `build_primitives` / `node_primitives` / `build_exact_subdivision` /
+// Everything `emit_clipped_separators` / `node_scaffold_and_separators` /
 // `graft_components` / `assemble_cells` does is replaced by (a) and (b).
 //
 // Rectangle clips (`Envelope` / `Padded`) use the direct half-edge lane. The
@@ -4235,7 +4985,7 @@ fn incident_faces_for_site(
 }
 
 /// Cap one unbounded dual ray on the private frame. Identical construction to
-/// the shipped hull-edge lane in `build_primitives`.
+/// the shipped hull-edge lane in `emit_clipped_separators`.
 fn dual_ray_hit(
     sites: &[Site],
     pair: [usize; 2],

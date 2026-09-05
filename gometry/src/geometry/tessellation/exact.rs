@@ -1635,6 +1635,53 @@ pub(super) fn enclosing_frame(points: &[ExactPoint]) -> Result<[ExactPoint; 4]> 
     ])
 }
 
+/// Tight axis-aligned bounds of exact points: no pad, no enclosing super-frame.
+pub(super) fn axis_aligned_bounds<'a, I>(points: I) -> Result<[ExactPoint; 4]>
+where
+    I: IntoIterator<Item = &'a ExactPoint>,
+{
+    let mut points = points.into_iter();
+    let first = points
+        .next()
+        .ok_or_else(|| GeometryErrorKind::voronoi("empty exact frame input"))?;
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (
+        first.clone(),
+        first.clone(),
+        first.clone(),
+        first.clone(),
+    );
+    for point in points {
+        if point.compare_x(&min_x).is_lt() {
+            min_x = point.clone();
+        }
+        if point.compare_x(&max_x).is_gt() {
+            max_x = point.clone();
+        }
+        if point.compare_y(&min_y).is_lt() {
+            min_y = point.clone();
+        }
+        if point.compare_y(&max_y).is_gt() {
+            max_y = point.clone();
+        }
+    }
+    if min_x.compare_x(&max_x).is_eq() || min_y.compare_y(&max_y).is_eq() {
+        return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
+    }
+    let corner = |x: &ExactPoint, y: &ExactPoint| {
+        ExactPoint::homogeneous(
+            x.x().product(y.w()),
+            y.y().product(x.w()),
+            x.w().product(y.w()),
+        )
+    };
+    Ok([
+        corner(&min_x, &min_y),
+        corner(&max_x, &min_y),
+        corner(&max_x, &max_y),
+        corner(&min_x, &max_y),
+    ])
+}
+
 pub(super) fn rectangular_boundary(points: &[Point], padded: bool) -> Result<[ExactPoint; 4]> {
     let first = points
         .first()

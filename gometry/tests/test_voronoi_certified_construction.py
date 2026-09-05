@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
+from fractions import Fraction
 from itertools import combinations
 
 import gometry as gm
@@ -184,14 +185,17 @@ def _assert_topological_partition(
     active_sites: tuple[tuple[float, float], ...],
     require_exact_equality: bool,
 ) -> None:
-    """Extend the R20/R21 helpers with spill, validity, and completeness."""
+    """Certify Voronoi cells as a coverage of ``clip``.
+
+    The R20/R21 helpers keep overlay equality for dyadic axis-aligned clips.
+    Otherwise the certificate is validity, ``coverage_is_valid``, and
+    interior-disjointness of the rounded partition, not source-clip membership.
+    """
     if require_exact_equality:
         _assert_partition(cells, clip)
     else:
-        union = cells.union_all()
-        assert gm.difference(clip, union).is_empty
-        assert gm.difference(union, clip).is_empty
         assert all(cell.is_valid for cell in cells)
+        assert cells.coverage_is_valid()
         for left, right in combinations(cells, 2):
             assert gm.relate_pattern(left, right, 'F********'), gm.relate(left, right)
     assert len(cells) == len(active_sites)
@@ -284,23 +288,38 @@ def test_mixed_outer_and_unit_sites_keep_two_active_cells(
 
 @pytest.mark.parametrize('carrier', ['multipart', 'collection'])
 @pytest.mark.parametrize('frontend', ['scalar', 'packed'])
-def test_sloped_clip_has_one_valid_topological_snap_partition_for_every_order(
+def test_sloped_clip_has_one_valid_checked_rounded_partition_for_every_order(
     carrier: str, frontend: str
 ) -> None:
     sites = ((0.0, -0.2), (0.6, -0.2), (0.3, -0.8))
+    stored_far = 1.0 / 3.0
     clip = gm.Polygon([
         (0.0, 0.0),
-        (1.0, 1.0 / 3.0),
+        (1.0, stored_far),
         (1.0, -1.0),
         (0.0, -1.0),
         (0.0, 0.0),
     ])
+    contact_x = 0.3
+    exact_y = Fraction.from_float(contact_x) * Fraction.from_float(stored_far)
+    contact_y = float(exact_y)
+    assert contact_y == float.fromhex('0x1.9999999999999p-4')
+    contact_err = abs(exact_y - Fraction.from_float(contact_y))
+    for neighbor in (
+        math.nextafter(contact_y, -math.inf),
+        math.nextafter(contact_y, math.inf),
+    ):
+        assert contact_err < abs(exact_y - Fraction.from_float(neighbor))
+    contact = (contact_x, contact_y)
+    slope = gm.LineString([(0.0, 0.0), (1.0, stored_far)])
+    assert not gm.covers(slope, gm.Point(*contact))
     signatures = set()
     for order in itertools.permutations(sites):
         cells = _cells(_carrier(order, carrier), clip, frontend)
         _assert_topological_partition(
             cells, clip, active_sites=sites, require_exact_equality=False
         )
+        assert contact in {tuple(xy) for cell in cells for xy in cell.coords}
         signatures.add(tuple(sorted(cell.to_wkt() for cell in cells)))
     assert len(signatures) == 1
 
