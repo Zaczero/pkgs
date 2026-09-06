@@ -117,6 +117,10 @@ pub enum GeometryErrorKind {
     ExactRatioZeroDenominator,
     #[error("exact vertex is outside the finite binary64 range")]
     ExactCoordinateOutOfRange,
+    #[error(
+        "exact geometry embedding failed: distinct nodes {first} and {second} round to the same coordinate"
+    )]
+    ExactNodeCollision { first: u32, second: u32 },
     #[error("Frechet distance requires a LineString or single-line MultiLineString")]
     FrechetLineStringRequired,
     #[error("{0} cannot represent Z/M; remove the unsupported ordinates explicitly first")]

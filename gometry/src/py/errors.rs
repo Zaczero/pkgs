@@ -453,6 +453,7 @@ impl From<Error> for PyErr {
                 | G::SnapGridTooFine
                 | G::InvalidDe9imPattern(_)
                 | G::OffsetCapacityExceeded
+                | G::ExactNodeCollision { .. }
                 | G::PicklePayload(_) => GeometryError::new_err(message),
                 G::UnrepresentableOutput { operation } => with_attrs(
                     GeometryError::new_err(message),

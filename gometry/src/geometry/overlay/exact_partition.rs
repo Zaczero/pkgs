@@ -280,6 +280,26 @@ impl<'a> ExactPartition<'a> {
         Ok(coordinates)
     }
 
+    fn check_node_injectivity(nodes: &[NodeId], coordinates: &[XY]) -> Result<()> {
+        debug_assert_eq!(nodes.len(), coordinates.len());
+        let mut owners = HashMap::new();
+        owners
+            .try_reserve(nodes.len())
+            .map_err(|_| ResourceError::Allocation)?;
+        for (&node, &coordinate) in nodes.iter().zip(coordinates) {
+            if let Some(first) = owners.insert(PointKey::new(coordinate), node)
+                && first != node
+            {
+                return Err(GeometryErrorKind::ExactNodeCollision {
+                    first: first.0,
+                    second: node.0,
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
+
     pub(in crate::geometry) fn compare_nodes(
         &self,
         left: NodeId,
@@ -1565,6 +1585,41 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_node_injectivity_distinguishes_repetition_from_rounding_collision() {
+        let case = run(&[seg(0.0, 0.0, 2.0, 0.0)]);
+        let mut partition = case.partition();
+        let first = NodeId(partition.recipes.len() as u32);
+        partition.recipes.push(NodeRecipe::Constructed {
+            unique: 0,
+            num: ExactDyadic::try_from_f64(1.0).unwrap(),
+            den: ExactDyadic::try_from_f64(2.0).unwrap(),
+        });
+        let second = NodeId(partition.recipes.len() as u32);
+        partition.recipes.push(NodeRecipe::Constructed {
+            unique: 0,
+            num: ExactDyadic::try_from_f64(1.0)
+                .unwrap()
+                .try_add(ExactDyadic::try_from_f64(2.0_f64.powi(-54)).unwrap())
+                .unwrap(),
+            den: ExactDyadic::try_from_f64(2.0).unwrap(),
+        });
+        assert_eq!(
+            partition.compare_nodes(first, second).unwrap(),
+            Ordering::Less
+        );
+        let nodes = [first, second];
+        let coordinates = partition.round_nodes(&nodes).unwrap();
+        assert_eq!(coordinates, [XY::new(1.0, 0.0); 2]);
+        assert!(ExactPartition::check_node_injectivity(&nodes, &coordinates).is_err());
+        ExactPartition::check_node_injectivity(&[first, first], &coordinates).unwrap();
+        let endpoint = stored_node(&partition, XY::new(2.0, 0.0)).unwrap();
+        let nodes = [first, endpoint];
+        ExactPartition::check_node_injectivity(&nodes, &partition.round_nodes(&nodes).unwrap())
+            .unwrap();
+        ExactPartition::check_node_injectivity(&[], &[]).unwrap();
+    }
+
     #[test]
     fn selected_nodes_round_in_requested_order() {
         let case = run(&[seg(0.0, 0.0, 3.0, 1.0), seg(1.0, -1.0, 1.0, 1.0)]);
