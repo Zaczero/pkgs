@@ -127,7 +127,50 @@ struct GlobalFaces {
     count: u32,
 }
 
+struct BoundaryPlan {
+    walks: Vec<Vec<u32>>,
+    face_quotient: Vec<u32>,
+    walk_sides: Vec<Vec<[u32; 2]>>,
+}
+
 impl GlobalFaces {
+    fn boundary_plan(
+        &self,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        span_count: usize,
+        occupied: &[bool],
+    ) -> Result<BoundaryPlan> {
+        let walks = self.boundary_walks(topology, occupied)?;
+        let mut retained = Vec::new();
+        try_reserve_vec(&mut retained, span_count)?;
+        retained.resize(span_count, false);
+        for walk in &walks {
+            for &slot in walk {
+                retained[edges[slot as usize] as usize] = true;
+            }
+        }
+        let face_quotient = self.quotient(topology, edges, &retained)?;
+        let mut walk_sides = Vec::new();
+        try_reserve_vec(&mut walk_sides, walks.len())?;
+        for walk in &walks {
+            let mut sides = Vec::new();
+            try_reserve_vec(&mut sides, walk.len())?;
+            for &slot in walk {
+                let slot = slot as usize;
+                sides.push([slot, topology.twins[slot] as usize].map(|dart| {
+                    face_quotient[self.walk_faces[topology.face_of[dart] as usize] as usize]
+                }));
+            }
+            walk_sides.push(sides);
+        }
+        Ok(BoundaryPlan {
+            walks,
+            face_quotient,
+            walk_sides,
+        })
+    }
+
     fn boundary_walks(
         &self,
         topology: &IndexedTopology,
@@ -2506,6 +2549,14 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
+        let plan = faces
+            .boundary_plan(&topology, &edges, partition.spans.len(), &[
+                false, true, true,
+            ])
+            .unwrap();
+        assert_eq!(plan.face_quotient, [0, 1, 2]);
+        assert_eq!(plan.walk_sides, [vec![[1, 0]; 4], vec![[2, 0]; 4]]);
+        assert_eq!(plan.walks.len(), 2);
         let walks = faces
             .boundary_walks(&topology, &[false, true, true])
             .unwrap();
@@ -2542,6 +2593,12 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
+        let plan = faces
+            .boundary_plan(&topology, &edges, partition.spans.len(), &[false, true, true])
+            .unwrap();
+        assert_eq!(plan.face_quotient, [0, 1, 1]);
+        assert_eq!(plan.walk_sides, [vec![[1, 0]; 4]]);
+        assert_eq!(plan.walks.len(), 1);
         let walks = faces
             .boundary_walks(&topology, &[false, true, true])
             .unwrap();
