@@ -379,6 +379,55 @@ impl<'a> ExactPartition<'a> {
         Ok(())
     }
 
+    fn round_incident_items(&self, items: &[[NodeId; 2]]) -> Result<Vec<Segment>> {
+        let mut nodes = Vec::new();
+        let mut indices = HashMap::new();
+        for item in items {
+            for &node in item {
+                if indices.contains_key(&node) {
+                    continue;
+                }
+                indices
+                    .try_reserve(1)
+                    .map_err(|_| ResourceError::Allocation)?;
+                try_reserve_vec(&mut nodes, 1)?;
+                indices.insert(node, nodes.len());
+                nodes.push(node);
+            }
+        }
+        let coordinates = self.round_nodes(&nodes)?;
+        Self::check_node_injectivity(&nodes, &coordinates)?;
+        let mut segments = Vec::new();
+        try_reserve_vec(&mut segments, items.len())?;
+        for &[start, end] in items {
+            segments.push(Segment {
+                start: coordinates[indices[&start]],
+                end: coordinates[indices[&end]],
+            });
+        }
+        // A repeated node represents a live isolated point, not a new cut.
+        let mut contact = None;
+        let _ = try_for_each_candidate_pair(&segments, single_chain, |left, right| {
+            let endpoints = |index: usize| {
+                let segment = segments[index];
+                [
+                    (items[index][0], segment.start),
+                    (items[index][1], segment.end),
+                ]
+            };
+            if emitted_pair_preserves_incidence(endpoints(left), endpoints(right)) {
+                ControlFlow::Continue(())
+            } else {
+                contact = Some((left, right));
+                ControlFlow::Break(())
+            }
+        })?;
+        if let Some((first, second)) = contact {
+            return Err(GeometryErrorKind::ExactUnexpectedContact { first, second }.into());
+        }
+        Ok(segments)
+    }
+
     pub(in crate::geometry) fn compare_nodes(
         &self,
         left: NodeId,
@@ -1690,6 +1739,17 @@ mod tests {
         let nodes = [start, crossing, isolated];
         let coordinates = partition.round_nodes(&nodes).unwrap();
         ExactPartition::check_node_injectivity(&nodes, &coordinates).unwrap();
+        let emitted = partition
+            .round_incident_items(&[[start, crossing]])
+            .unwrap();
+        assert_eq!(emitted.len(), 1);
+        let error = partition
+            .round_incident_items(&[[start, crossing], [isolated; 2]])
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactUnexpectedContact { .. })
+        ));
         assert!(!emitted_pair_preserves_incidence(
             [(start, coordinates[0]), (crossing, coordinates[1])],
             [(isolated, coordinates[2]); 2],
