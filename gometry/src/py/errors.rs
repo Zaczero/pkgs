@@ -455,6 +455,7 @@ impl From<Error> for PyErr {
                 | G::OffsetCapacityExceeded
                 | G::ExactNodeCollision { .. }
                 | G::ExactUnexpectedContact { .. }
+                | G::ExactCyclicOrder { .. }
                 | G::PicklePayload(_) => GeometryError::new_err(message),
                 G::UnrepresentableOutput { operation } => with_attrs(
                     GeometryError::new_err(message),

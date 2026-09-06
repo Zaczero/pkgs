@@ -55,9 +55,7 @@ impl ArealCells {
         global: &GlobalFaces,
     ) -> Result<BoundaryPlan> {
         let (lines, points) = self.lower_dimensions(partition, topology, edges, global)?;
-        let mut plan = global.boundary_plan(
-            lines, topology, edges, partition, &self.faces,
-        )?;
+        let mut plan = global.boundary_plan(lines, topology, edges, partition, &self.faces)?;
         try_reserve_vec(&mut plan.points, points.len())?;
         for node in points {
             let index = node.0 as usize;
@@ -280,6 +278,17 @@ struct BoundaryPlan {
 }
 
 impl BoundaryPlan {
+    fn round_items(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+    ) -> Result<Vec<Segment>> {
+        let items = self.incident_items(partition, topology)?;
+        let segments = partition.round_incident_items(&items)?;
+        ExactPartition::check_emitted_fans(topology, &items, &segments)?;
+        Ok(segments)
+    }
+
     fn incident_items(
         &self,
         partition: &ExactPartition<'_>,
@@ -624,6 +633,74 @@ impl<'a> ExactPartition<'a> {
             return Err(GeometryErrorKind::ExactUnexpectedContact { first, second }.into());
         }
         Ok(segments)
+    }
+
+    fn check_emitted_fans(
+        topology: &IndexedTopology,
+        items: &[[NodeId; 2]],
+        segments: &[Segment],
+    ) -> Result<()> {
+        debug_assert_eq!(items.len(), segments.len());
+        let mut departures = HashMap::new();
+        for (&[start, end], segment) in items.iter().zip(segments) {
+            if start == end {
+                continue;
+            }
+            departures
+                .try_reserve(2)
+                .map_err(|_| ResourceError::Allocation)?;
+            departures.insert((start.0, end.0), (segment.start, segment.end));
+            departures.insert((end.0, start.0), (segment.end, segment.start));
+        }
+        for (node, range) in topology.starts.windows(2).enumerate() {
+            let mut first = None;
+            let mut previous = None;
+            let mut descents = 0;
+            let mut count = 0;
+            for slot in range[0] as usize..range[1] as usize {
+                let target = topology.targets[slot];
+                let Some((origin, point)) = departures.remove(&(node as u32, target)) else {
+                    continue;
+                };
+                let current = (target, point);
+                first.get_or_insert((origin, current));
+                if let Some((last_target, last_point)) = previous {
+                    descents += usize::from(
+                        crate::geometry::arrangement::compare_departures(
+                            origin,
+                            last_point,
+                            last_target,
+                            point,
+                            target,
+                        ) == Ordering::Greater,
+                    );
+                }
+                previous = Some(current);
+                count += 1;
+            }
+            if count > 2 {
+                let (origin, (first_target, first_point)) = first.unwrap();
+                let (last_target, last_point) = previous.unwrap();
+                descents += usize::from(
+                    crate::geometry::arrangement::compare_departures(
+                        origin,
+                        last_point,
+                        last_target,
+                        first_point,
+                        first_target,
+                    ) == Ordering::Greater,
+                );
+                // A cyclically sorted sequence crosses the positive-x cut once.
+                if descents != 1 {
+                    return Err(GeometryErrorKind::ExactCyclicOrder { node: node as u32 }.into());
+                }
+            }
+        }
+        debug_assert!(
+            departures.is_empty(),
+            "emitted chords must retain exact dart identities"
+        );
+        Ok(())
     }
 
     pub(in crate::geometry) fn compare_nodes(
@@ -1965,12 +2042,12 @@ mod tests {
                 || (span.end == start && span.start == crossing);
         }
         cells.nodes[isolated.0 as usize] = true;
-        let plan = cells.emission_plan(&partition, &topology, &edges, &faces).unwrap();
+        let plan = cells
+            .emission_plan(&partition, &topology, &edges, &faces)
+            .unwrap();
         let items = plan.incident_items(&partition, &topology).unwrap();
         assert_eq!(items.len(), 2);
-        let error = partition
-            .round_incident_items(&items)
-            .unwrap_err();
+        let error = partition.round_incident_items(&items).unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactUnexpectedContact { .. })
@@ -2216,16 +2293,23 @@ mod tests {
             .lower_dimensions(&partition, &topology, &edges, &faces)
             .unwrap();
         assert!(lines.is_empty());
-        assert_eq!(points, [stored_node(&partition, XY::new(6.0, 6.0)).unwrap()]);
-        let plan = cells.emission_plan(&partition, &topology, &edges, &faces).unwrap();
+        assert_eq!(
+            points,
+            [stored_node(&partition, XY::new(6.0, 6.0)).unwrap()]
+        );
+        let plan = cells
+            .emission_plan(&partition, &topology, &edges, &faces)
+            .unwrap();
         assert_eq!(plan.points, [(points[0], 0)]);
         assert!(plan.lines.is_empty());
         assert_eq!(plan.walks.len(), 1);
-        let items = plan.incident_items(&partition, &topology).unwrap();
-        let rounded = partition.round_incident_items(&items).unwrap();
+        let rounded = plan.round_items(&partition, &topology).unwrap();
         let mut actual: Vec<_> = rounded.iter().map(|span| (span.start, span.end)).collect();
         assert_eq!(actual.pop(), Some((XY::new(6.0, 6.0), XY::new(6.0, 6.0))));
-        let first = actual.iter().position(|&(start, _)| start == XY::new(0.0, 0.0)).unwrap();
+        let first = actual
+            .iter()
+            .position(|&(start, _)| start == XY::new(0.0, 0.0))
+            .unwrap();
         actual.rotate_left(first);
         assert_eq!(actual, [
             (XY::new(0.0, 0.0), XY::new(4.0, 0.0)),
@@ -3152,6 +3236,44 @@ mod tests {
     }
 
     #[test]
+    fn emitted_fan_accepts_rotation_but_rejects_reflection() {
+        let case = run(&[
+            seg(0.0, 0.0, 2.0, 0.0),
+            seg(0.0, 0.0, 0.0, 3.0),
+            seg(0.0, 0.0, -4.0, 0.0),
+            seg(0.0, 0.0, 0.0, -5.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let plan = faces
+            .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, &partition, &[false])
+            .unwrap();
+        let items = plan.incident_items(&partition, &topology).unwrap();
+        let segments = plan.round_items(&partition, &topology).unwrap();
+        let rotated: Vec<_> = segments
+            .iter()
+            .map(|segment| Segment {
+                start: XY::new(-segment.start.y, segment.start.x),
+                end: XY::new(-segment.end.y, segment.end.x),
+            })
+            .collect();
+        ExactPartition::check_emitted_fans(&topology, &items, &rotated).unwrap();
+        let reflected: Vec<_> = segments
+            .iter()
+            .map(|segment| Segment {
+                start: XY::new(segment.start.x, -segment.start.y),
+                end: XY::new(segment.end.x, -segment.end.y),
+            })
+            .collect();
+        let error = ExactPartition::check_emitted_fans(&topology, &items, &reflected).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactCyclicOrder { .. })
+        ));
+    }
+
+    #[test]
     fn point_left_by_omitted_spoke_keeps_its_bounded_host() {
         let case = run(&[
             seg(0.0, 0.0, 4.0, 0.0),
@@ -3175,14 +3297,16 @@ mod tests {
             }
         }
         cells.nodes[point.0 as usize] = true;
-        let plan = cells.emission_plan(&partition, &topology, &edges, &faces).unwrap();
+        let plan = cells
+            .emission_plan(&partition, &topology, &edges, &faces)
+            .unwrap();
         assert_eq!(plan.points, [(point, 1)]);
         assert_eq!(plan.lines.len(), 4);
         assert!(plan.walks.is_empty());
         let items = plan.incident_items(&partition, &topology).unwrap();
         assert_eq!(items.len(), 5);
         assert_eq!(items[4], [point, point]);
-        let rounded = partition.round_incident_items(&items).unwrap();
+        let rounded = plan.round_items(&partition, &topology).unwrap();
         assert_eq!(rounded[4].start, XY::new(2.0, 2.0));
         assert_eq!(rounded[4].end, XY::new(2.0, 2.0));
     }
@@ -3199,14 +3323,18 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         let plan = faces
-            .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, &partition, &[false, false])
+            .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, &partition, &[
+                false, false,
+            ])
             .unwrap();
         assert!(plan.walks.is_empty());
         assert_eq!(plan.lines, [0, 1, 2, 3]);
         assert_eq!(plan.line_sides, [[1, 0]; 4]);
         assert_eq!(plan.face_quotient, [0, 1]);
         let open = faces
-            .boundary_plan(vec![0, 1, 2], &topology, &edges, &partition, &[false, false])
+            .boundary_plan(vec![0, 1, 2], &topology, &edges, &partition, &[
+                false, false,
+            ])
             .unwrap();
         assert_eq!(open.face_quotient, [0, 0]);
         assert_eq!(open.line_sides, [[0, 0]; 3]);

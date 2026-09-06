@@ -125,6 +125,8 @@ pub enum GeometryErrorKind {
         "exact geometry embedding failed: unprescribed contact between emitted items {first} and {second}"
     )]
     ExactUnexpectedContact { first: usize, second: usize },
+    #[error("exact geometry embedding failed: cyclic order changed at node {node}")]
+    ExactCyclicOrder { node: u32 },
     #[error("Frechet distance requires a LineString or single-line MultiLineString")]
     FrechetLineStringRequired,
     #[error("{0} cannot represent Z/M; remove the unsupported ordinates explicitly first")]
