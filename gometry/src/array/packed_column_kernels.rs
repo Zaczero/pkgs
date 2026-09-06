@@ -1225,14 +1225,22 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                         continue;
                     };
                     let point = point_columns.coords().point_at(physical);
-                    let x = crate::geometry::affine_about_origin_ordinate(
-                        a, b, pivot_x, pivot_x, pivot_y, point.x, point.y,
-                    )
-                    .map_err(|error| row_err(logical, error))?;
-                    let y = crate::geometry::affine_about_origin_ordinate(
-                        d, e, pivot_y, pivot_x, pivot_y, point.x, point.y,
-                    )
-                    .map_err(|error| row_err(logical, error))?;
+                    let x = if a == 1.0 && crate::geometry::same_topological_coordinate(b, 0.0) {
+                        point.x
+                    } else {
+                        crate::geometry::affine_about_origin_ordinate(
+                            a, b, pivot_x, pivot_x, pivot_y, point.x, point.y,
+                        )
+                        .map_err(|error| row_err(logical, error))?
+                    };
+                    let y = if crate::geometry::same_topological_coordinate(d, 0.0) && e == 1.0 {
+                        point.y
+                    } else {
+                        crate::geometry::affine_about_origin_ordinate(
+                            d, e, pivot_y, pivot_x, pivot_y, point.x, point.y,
+                        )
+                        .map_err(|error| row_err(logical, error))?
+                    };
                     builder.push(
                         Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
                             .map_err(|error| row_err(logical, error))?,

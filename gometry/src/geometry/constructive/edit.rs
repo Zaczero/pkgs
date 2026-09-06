@@ -459,9 +459,6 @@ pub(crate) fn affine_about_origin_ordinate(
     value_x: f64,
     value_y: f64,
 ) -> Result<f64> {
-    if coefficient_x == 1.0 && same_topological_coordinate(coefficient_y, 0.0) {
-        return Ok(value_x);
-    }
     if !coefficient_x.is_finite()
         || !coefficient_y.is_finite()
         || !output_origin.is_finite()
@@ -694,12 +691,16 @@ impl Shape {
         self.try_map_coordseqs(
             |seq| seq.try_affine_about_origin(linear, origin),
             |point| {
-                let x = affine_about_origin_ordinate(
-                    m00, m01, ox, ox, oy, point.x, point.y,
-                )?;
-                let y = affine_about_origin_ordinate(
-                    m10, m11, oy, ox, oy, point.x, point.y,
-                )?;
+                let x = if m00 == 1.0 && same_topological_coordinate(m01, 0.0) {
+                    point.x
+                } else {
+                    affine_about_origin_ordinate(m00, m01, ox, ox, oy, point.x, point.y)?
+                };
+                let y = if same_topological_coordinate(m10, 0.0) && m11 == 1.0 {
+                    point.y
+                } else {
+                    affine_about_origin_ordinate(m10, m11, oy, ox, oy, point.x, point.y)?
+                };
                 Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
             },
         )

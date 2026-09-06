@@ -251,6 +251,11 @@ def test_origin_scale_preserves_identity_row_and_signed_zero():
     assert point.x == 0.0
     assert _float_bits(point.x) == _float_bits(-0.0)
 
+    point = gm.Point(1.0, -0.0).scale(2.0, 1.0, origin=(0.0, 0.0))
+    packed = gm.GeometryArray([point]).scale(2.0, 1.0, origin=(0.0, 0.0))[0]
+    assert _float_bits(point.y) == _float_bits(-0.0)
+    assert _float_bits(packed.y) == _float_bits(-0.0)
+
     line = gm.LineString([(-0.0, -0.0), (1.0, -0.0)])
     result = line.scale(2.0, 1.0, origin=(0.0, 0.0))
     assert [_float_bits(xy[1]) for xy in result.coords] == [

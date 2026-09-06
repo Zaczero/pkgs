@@ -5,7 +5,8 @@ use crate::geometry::constructive::{
     WalkJoinRule, winding_buffer, winding_erosion, winding_stroke,
 };
 use crate::geometry::{
-    BufferCapStyle, CoordSeq, LineSeq, MAX_NESTING, Point, Polygon, Ring, Segment, Shape, XY,
+    affine_about_origin_ordinate, BufferCapStyle, CoordSeq, LineSeq, MAX_NESTING, Point, Polygon,
+    Ring, Segment, Shape, XY,
 };
 
 #[test]
@@ -37,6 +38,14 @@ fn affine_scale_keeps_the_independent_reciprocal_axis() {
     };
     assert_eq!(point.x.to_bits(), 0.0_f64.to_bits());
     assert_eq!(point.y.to_bits(), 1e-300_f64.to_bits());
+}
+
+#[test]
+fn affine_origin_row_uses_both_input_pivots() {
+    assert_eq!(
+        affine_about_origin_ordinate(1.0, 0.0, 7.0, 2.0, 7.0, 3.0, 0.0).unwrap(),
+        8.0
+    );
 }
 
 #[cfg(test)]
