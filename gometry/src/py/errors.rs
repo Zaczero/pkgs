@@ -456,6 +456,7 @@ impl From<Error> for PyErr {
                 | G::ExactNodeCollision { .. }
                 | G::ExactUnexpectedContact { .. }
                 | G::ExactCyclicOrder { .. }
+                | G::ExactGlobalFace { .. }
                 | G::PicklePayload(_) => GeometryError::new_err(message),
                 G::UnrepresentableOutput { operation } => with_attrs(
                     GeometryError::new_err(message),

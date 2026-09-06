@@ -286,7 +286,133 @@ impl BoundaryPlan {
         let items = self.incident_items(partition, topology)?;
         let segments = partition.round_incident_items(&items)?;
         ExactPartition::check_emitted_fans(topology, &items, &segments)?;
+        self.check_global_faces(partition, &items, &segments)?;
         Ok(segments)
+    }
+
+    // Incidence and cyclic order fix each connected embedding up to its exterior.
+    // Fixing that face and the hosts of disconnected components fixes the global faces.
+    fn check_global_faces(
+        &self,
+        partition: &ExactPartition<'_>,
+        items: &[[NodeId; 2]],
+        segments: &[Segment],
+    ) -> Result<()> {
+        let mut sides = Vec::new();
+        try_reserve_vec(&mut sides, items.len())?;
+        sides.extend(self.walk_sides.iter().flatten().copied());
+        sides.extend_from_slice(&self.line_sides);
+        sides.extend(self.points.iter().map(|&(_, host)| [host, host]));
+        debug_assert_eq!(sides.len(), items.len());
+        debug_assert_eq!(segments.len(), items.len());
+        let mut parents = Vec::new();
+        let mut coordinates = Vec::new();
+        try_reserve_vec(&mut parents, partition.recipes.len())?;
+        try_reserve_vec(&mut coordinates, partition.recipes.len())?;
+        parents.extend(0..partition.recipes.len() as u32);
+        coordinates.resize(partition.recipes.len(), None);
+        for (&[start, end], segment) in items.iter().zip(segments) {
+            coordinates[start.0 as usize] = Some(segment.start);
+            coordinates[end.0 as usize] = Some(segment.end);
+            let mut left = start.0;
+            let mut right = end.0;
+            while parents[left as usize] != left {
+                parents[left as usize] = parents[parents[left as usize] as usize];
+                left = parents[left as usize];
+            }
+            while parents[right as usize] != right {
+                parents[right as usize] = parents[parents[right as usize] as usize];
+                right = parents[right as usize];
+            }
+            parents[left.max(right) as usize] = left.min(right);
+        }
+        let mut roots = Vec::new();
+        try_reserve_vec(&mut roots, parents.len())?;
+        roots.resize(parents.len(), None);
+        for node in 0..parents.len() {
+            parents[node] = parents[parents[node] as usize];
+            let Some(point) = coordinates[node] else {
+                continue;
+            };
+            let root = &mut roots[parents[node] as usize];
+            if root.is_none_or(|(_, prior): (usize, XY)| {
+                point.x < prior.x || (point.x == prior.x && point.y < prior.y)
+            }) {
+                *root = Some((node, point));
+            }
+        }
+        let mut winding = Vec::new();
+        try_reserve_vec(&mut winding, self.face_quotient.len())?;
+        winding.resize(self.face_quotient.len(), 0_i64);
+        for (component, root) in roots.into_iter().enumerate() {
+            let Some((node, point)) = root else { continue };
+            let mut exterior = None;
+            let mut chosen = None;
+            let mut has_upper = false;
+            for (index, &[start, end]) in items.iter().enumerate() {
+                let (target, target_point, face) = if start.0 as usize == node {
+                    (end.0, segments[index].end, sides[index][0])
+                } else if end.0 as usize == node {
+                    (start.0, segments[index].start, sides[index][1])
+                } else {
+                    continue;
+                };
+                if target as usize == node {
+                    exterior = Some(face);
+                    continue;
+                }
+                let upper = target_point.y >= point.y;
+                if chosen.is_none()
+                    || (upper && !has_upper)
+                    || (upper == has_upper && {
+                        let (prior_target, prior_point) = chosen.unwrap();
+                        crate::geometry::arrangement::compare_departures(
+                            point,
+                            prior_point,
+                            prior_target,
+                            target_point,
+                            target,
+                        ) == Ordering::Less
+                    })
+                {
+                    chosen = Some((target, target_point));
+                    exterior = Some(face);
+                    has_upper = upper;
+                }
+            }
+            let exterior = exterior.unwrap();
+            winding.fill(0);
+            // Other components supply closed face-boundary chains. Their winding
+            // identifies the host without a ray-intersection coordinate or noder.
+            for (index, &[start, _]) in items.iter().enumerate() {
+                if parents[start.0 as usize] as usize == component {
+                    continue;
+                }
+                let Segment { start, end } = segments[index];
+                let delta = if start.y <= point.y && point.y < end.y {
+                    i64::from(
+                        stored_orientation_sign(start.x, start.y, end.x, end.y, point.x, point.y)
+                            == ExactSign::Positive,
+                    )
+                } else if end.y <= point.y && point.y < start.y {
+                    -i64::from(
+                        stored_orientation_sign(start.x, start.y, end.x, end.y, point.x, point.y)
+                            == ExactSign::Negative,
+                    )
+                } else {
+                    0
+                };
+                winding[sides[index][0] as usize] += delta;
+                winding[sides[index][1] as usize] -= delta;
+            }
+            if winding.iter().enumerate().any(|(face, &value)| {
+                let expected = i64::from(face == exterior as usize) - i64::from(face == 0);
+                value != expected
+            }) {
+                return Err(GeometryErrorKind::ExactGlobalFace { node: node as u32 }.into());
+            }
+        }
+        Ok(())
     }
 
     fn incident_items(
@@ -3146,6 +3272,21 @@ mod tests {
         assert_eq!(plan.face_quotient, [0, 1, 2]);
         assert_eq!(plan.walk_sides[0], vec![[host, 0]; 4]);
         assert_eq!(plan.walk_sides[1].len(), 4);
+        let mut displaced = plan.round_items(&partition, &topology).unwrap();
+        assert_eq!(displaced.len(), 8);
+        for segment in &mut displaced[4..] {
+            segment.start.x += 20.0;
+            segment.end.x += 20.0;
+        }
+        let items = plan.incident_items(&partition, &topology).unwrap();
+        ExactPartition::check_emitted_fans(&topology, &items, &displaced).unwrap();
+        let error = plan
+            .check_global_faces(&partition, &items, &displaced)
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactGlobalFace { .. })
+        ));
         for sides in &plan.walk_sides[1] {
             assert_eq!(sides[0], host);
             assert_ne!(sides[1], 0);
@@ -3186,6 +3327,7 @@ mod tests {
             .unwrap();
         assert!(empty.walks.is_empty());
         assert!(empty.walk_sides.is_empty());
+        assert!(empty.round_items(&partition, &topology).unwrap().is_empty());
         assert_eq!(empty.face_quotient, [0, 0, 0]);
     }
 
@@ -3212,6 +3354,7 @@ mod tests {
             .unwrap();
         assert_eq!(plan.face_quotient, [0, 1, 2]);
         assert_eq!(plan.walk_sides, [vec![[1, 0]; 4], vec![[2, 0]; 4]]);
+        assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 8);
         assert_eq!(plan.walks.len(), 2);
         let walks = faces
             .boundary_walks(&topology, &[false, true, true])
@@ -3309,6 +3452,29 @@ mod tests {
         let rounded = plan.round_items(&partition, &topology).unwrap();
         assert_eq!(rounded[4].start, XY::new(2.0, 2.0));
         assert_eq!(rounded[4].end, XY::new(2.0, 2.0));
+        let reflected: Vec<_> = rounded
+            .iter()
+            .map(|segment| Segment {
+                start: XY::new(segment.start.x, -segment.start.y),
+                end: XY::new(segment.end.x, -segment.end.y),
+            })
+            .collect();
+        ExactPartition::check_emitted_fans(&topology, &items, &reflected).unwrap();
+        let error = plan
+            .check_global_faces(&partition, &items, &reflected)
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactGlobalFace { .. })
+        ));
+        let mut displaced = rounded;
+        displaced[4] = seg(6.0, 6.0, 6.0, 6.0);
+        let error = plan
+            .check_global_faces(&partition, &items, &displaced)
+            .unwrap_err();
+        assert!(matches!(error.kind(), crate::error::ErrorKind::Geometry(
+            GeometryErrorKind::ExactGlobalFace { node }
+        ) if *node == point.0));
     }
 
     #[test]
