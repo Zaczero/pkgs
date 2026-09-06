@@ -14,7 +14,7 @@ use crate::array::{
     Frame, GeometryArrayStorage, GeometryKind, InvalidGeometryError, LogicalRow, LogicalRows,
     OriginSpec, PackedColumns, Point, PointColumnBuilder, PolygonLevel, Py, PyAny, PyErr,
     PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection, RowSelectionRef, Shape,
-    TotalBoundsCache, ValidityMask, affine_about, contiguous_physical_range,
+    TotalBoundsCache, ValidityMask, contiguous_physical_range,
     packed_per_row_self_origin_affine_columns, physical_row, point_logical_len, prepared,
     row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
 };
@@ -720,13 +720,9 @@ PackedStorage::Polygons { .. }) => {
         ))
     }
 
-    /// Columnar affine lane for ANY packed storage (points, lines, polygons):
-    /// one uniform matrix maps the shared coordinate columns directly and the
-    /// CSR offsets (vertex indices, structure-only) are reused unchanged — no
-    /// per-row `Shape` materialization or re-pack, and the packed layout is
-    /// preserved for downstream zero-copy/Arrow export. Bit-identical to the
-    /// per-shape path, which is itself just `try_map_xy` (no re-orientation),
-    /// so a reflecting matrix flips winding the same way on both. `Mixed`
+    /// Detached packed lane for an explicit six-coefficient affine matrix.
+    /// CSR offsets are reused unchanged and the packed layout is preserved;
+    /// origin-relative transforms use the exact pivot lane below. `Mixed`
     /// defers.
     pub(crate) fn packed_affine(
         &self,
@@ -749,46 +745,40 @@ PackedStorage::Polygons { .. }) => {
         })
     }
 
-    /// Affine helper for a self-relative origin. A **fixed** `(x, y)` pivot
-    /// folds into ONE matrix, so the whole array takes the columnar
-    /// [`packed_affine`](Self::packed_affine) lane (Points/Lines/Polygons
-    /// alike — the same path `affine_transform` uses). A
-    /// `'centroid'`/`'center'` origin is each ELEMENT's own center: a point
-    /// is its own center (identity, the array is its own result); lines and
-    /// polygons take a per-row pivot column loop (see
-    /// [`packed_per_row_self_origin_affine`](Self::packed_per_row_self_origin_affine)).
-    /// `matrix` builds the origin-at-zero form; the pivot is re-seated here.
+    /// Exact affine helper for a self-relative origin. A fixed pivot and an
+    /// element-relative pivot both stay explicit so no translation offset can
+    /// overflow before the coordinate expression is evaluated.
     pub(crate) fn packed_self_origin_affine(
         &self,
         py: Python<'_>,
         spec: OriginSpec,
-        matrix: impl FnOnce() -> [f64; 6],
+        matrix: impl FnOnce() -> [f64; 4],
     ) -> PyResult<Option<Self>> {
         let matrix = matrix();
-        if affine_matrix_is_identity(matrix) {
+        if !matrix.iter().all(|value| value.is_finite()) {
+            let error: crate::error::Error =
+                crate::geometry::GeometryErrorKind::NonFiniteCoordinate.into();
+            return Err(PyErr::from(error));
+        }
+        if affine_linear_is_identity(matrix) {
             return Ok(Some(self.clone()));
         }
-        match spec {
-            OriginSpec::Centroid | OriginSpec::Center => {
-                self.packed_per_row_self_origin_affine(py, spec, || matrix)
-            },
-            OriginSpec::Fixed(pivot_x, pivot_y) => {
-                let [a, b, d, e, _, _] = matrix;
-                self.packed_affine(py, &affine_about(a, b, d, e, (pivot_x, pivot_y)))
-            },
-        }
+        self.packed_per_row_self_origin_affine(py, spec, || matrix)
     }
 
-    /// Per-row self-origin affine for packed lines/polygons: each CSR window
-    /// gets its own pivot from column kernels, then [`CoordSeq::try_affine`]
-    /// on that window. Points are identity; mixed storage returns `None`.
+    /// Per-row self-origin affine for packed storage: each CSR window gets its
+    /// pivot from column kernels and uses the exact origin-relative evaluator.
+    /// Points are identity only for their own centroid/center; mixed storage
+    /// returns `None`.
     pub(crate) fn packed_per_row_self_origin_affine(
         &self,
         py: Python<'_>,
         spec: OriginSpec,
-        matrix: impl FnOnce() -> [f64; 6],
+        matrix: impl FnOnce() -> [f64; 4],
     ) -> PyResult<Option<Self>> {
-        if let Some(identity) = self.packed_points_identity() {
+        if matches!(spec, OriginSpec::Centroid | OriginSpec::Center)
+            && let Some(identity) = self.packed_points_identity()
+        {
             return Ok(Some(identity));
         }
         let matrix = matrix();
@@ -1033,15 +1023,13 @@ PackedStorage::Polygons { .. }) => {
 
 #[expect(
     clippy::float_cmp,
-    reason = "affine identity rows are exact coefficients"
+    reason = "exact identity linear coefficients may share storage"
 )]
-fn affine_matrix_is_identity(matrix: [f64; 6]) -> bool {
+fn affine_linear_is_identity(matrix: [f64; 4]) -> bool {
     matrix[0] == 1.0
         && crate::geometry::same_topological_coordinate(matrix[1], 0.0)
         && crate::geometry::same_topological_coordinate(matrix[2], 0.0)
         && matrix[3] == 1.0
-        && crate::geometry::same_topological_coordinate(matrix[4], 0.0)
-        && crate::geometry::same_topological_coordinate(matrix[5], 0.0)
 }
 
 #[cfg(test)]

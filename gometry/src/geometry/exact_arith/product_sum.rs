@@ -72,7 +72,7 @@ impl ExactSum {
         if sign == Ordering::Equal {
             return 0.0;
         }
-        let value = round_nonnegative_area(&magnitude);
+        let value = round_nonnegative(&magnitude, PRODUCT_MIN_EXP - 1);
         if value == 0.0 {
             0.0
         } else if sign == Ordering::Less {
@@ -80,6 +80,18 @@ impl ExactSum {
         } else {
             value
         }
+    }
+
+    /// Round this exact product sum to binary64, ties-to-even. Exact zero is
+    /// canonical `+0.0`; a nonzero negative result that underflows keeps its
+    /// `-0.0` sign. The caller owns finite-coordinate admission for infinity.
+    pub(crate) fn round_to_binary64(&self) -> f64 {
+        let (sign, magnitude) = self.signed_magnitude();
+        if sign == Ordering::Equal {
+            return 0.0;
+        }
+        let value = round_nonnegative(&magnitude, PRODUCT_MIN_EXP);
+        if sign == Ordering::Less { -value } else { value }
     }
 
     pub(crate) fn ordering(&self) -> Ordering {
@@ -458,19 +470,20 @@ fn subtract_magnitude<const N: usize>(larger: &[u64; N], smaller: &[u64; N]) -> 
     result
 }
 
-/// `magnitude` is the exact `|Σ x_i y_{i+1} − x_{i+1} y_i|` in units of
-/// `2^-2148`. The returned value is `|Σ|/2` rounded to binary64.
-///
-/// Area `A = M · 2^-2149`. With `k = ⌊log₂ M⌋`, a normal encoding has unbiased
-/// exponent `k - 2149` and is used iff `k >= 1127` (`A >= 2^-1022`).
-fn round_nonnegative_area(magnitude: &[u64; LIMBS]) -> f64 {
+/// Round a nonnegative exact sum whose limb quantum is `2^quantum_exp`.
+/// Rounding is nearest-even, including subnormal and overflow boundaries.
+fn round_nonnegative(magnitude: &[u64; LIMBS], quantum_exp: i32) -> f64 {
     let Some(k) = most_significant_bit(magnitude) else {
         return 0.0;
     };
-    if k < 1127 {
-        let mut units = bits_from(magnitude, 1126, 52);
-        let guard = limb_bit(magnitude, 1074);
-        let sticky = or_bits_through(magnitude, 1073);
+    let normal_threshold = usize::try_from(-1022 - quantum_exp)
+        .expect("product-sum normal threshold fits usize");
+    if k < normal_threshold {
+        let subnormal_shift = usize::try_from(-1074 - quantum_exp)
+            .expect("product-sum subnormal shift fits usize");
+        let mut units = bits_from(magnitude, subnormal_shift + 51, 52);
+        let guard = limb_bit(magnitude, subnormal_shift - 1);
+        let sticky = or_bits_through(magnitude, subnormal_shift - 2);
         if guard && (sticky || units & 1 != 0) {
             units += 1;
         }
@@ -482,7 +495,7 @@ fn round_nonnegative_area(magnitude: &[u64; LIMBS]) -> f64 {
         if guard && (sticky || mantissa & 1 != 0) {
             mantissa += 1;
         }
-        let mut exponent = k as i32 - 2149;
+        let mut exponent = k as i32 + quantum_exp;
         if mantissa == 1_u64 << 53 {
             mantissa = 1_u64 << 52;
             exponent += 1;
@@ -494,6 +507,11 @@ fn round_nonnegative_area(magnitude: &[u64; LIMBS]) -> f64 {
         let fraction = mantissa & ((1_u64 << 52) - 1);
         f64::from_bits((biased << 52) | fraction)
     }
+}
+
+#[cfg(test)]
+fn round_nonnegative_area(magnitude: &[u64; LIMBS]) -> f64 {
+    round_nonnegative(magnitude, PRODUCT_MIN_EXP - 1)
 }
 
 fn most_significant_bit(limbs: &[u64; LIMBS]) -> Option<usize> {
@@ -784,6 +802,34 @@ mod tests {
         assert!(limb_bit(&sum.positive, 4195));
         assert!(!limb_bit(&sum.positive, 4143));
         assert!(!limb_bit(&sum.positive, 4196));
+    }
+
+    #[test]
+    fn raw_sum_rounds_at_midpoint_and_subnormal_boundaries() {
+        let midpoint = actual_sum(&[
+            (1, 1.0, 1.0),
+            (1, 2.0_f64.powi(-53), 1.0),
+        ]);
+        assert_eq!(midpoint.round_to_binary64().to_bits(), 1.0_f64.to_bits());
+
+        let min_subnormal = actual_sum(&[(1, f64::from_bits(1), 1.0)]);
+        assert_eq!(min_subnormal.round_to_binary64().to_bits(), 1_u64);
+
+        let negative_underflow = actual_sum(&[(-1, f64::from_bits(1), 0.5)]);
+        assert_eq!(
+            negative_underflow.round_to_binary64().to_bits(),
+            (-0.0_f64).to_bits()
+        );
+        assert_eq!(negative_underflow.round_to_area().to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn raw_sum_rounds_the_binary64_overflow_midpoint() {
+        let below = actual_sum(&[(1, f64::MAX, 1.0), (1, 2.0_f64.powi(969), 1.0)]);
+        assert_eq!(below.round_to_binary64().to_bits(), f64::MAX.to_bits());
+
+        let midpoint = actual_sum(&[(1, f64::MAX, 1.0), (1, 2.0_f64.powi(970), 1.0)]);
+        assert!(midpoint.round_to_binary64().is_infinite());
     }
 
     fn product_bit_offset(lhs: f64, rhs: f64) -> usize {

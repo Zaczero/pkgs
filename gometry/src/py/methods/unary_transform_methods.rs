@@ -1,7 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::geometry::affine_about;
 use crate::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input, DefaultedI64Input,
     DistanceUnit, F64Param, GeometryArrayStorage, GridOrigin, OriginSpec, PyGeometry,

@@ -3,6 +3,8 @@ Z/M preservation, and per-element array semantics.
 """
 
 import math
+import struct
+import sys
 
 import gometry as gm
 import pytest
@@ -185,13 +187,22 @@ def test_packed_translate_matches_scalar_rows_bitwise(array):
     assert result.is_missing.tolist() == expected.is_missing.tolist()
 
 
+@pytest.mark.parametrize(
+    'transform',
+    [
+        lambda geometry, origin: geometry.rotate(30.0, origin=origin),
+        lambda geometry, origin: geometry.scale(1.5, 0.75, origin=origin),
+        lambda geometry, origin: geometry.skew(12.5, -3.0, origin=origin),
+    ],
+    ids=['rotate', 'scale', 'skew'],
+)
 @pytest.mark.parametrize('array', _packed_transform_cases())
 @pytest.mark.parametrize('origin', ['centroid', (1.25, -0.5)])
-def test_packed_skew_matches_scalar_rows_bitwise(array, origin):
-    result = array.skew(12.5, -3.0, origin=origin)
+def test_packed_origin_transforms_match_scalar_rows_bitwise(transform, array, origin):
+    result = transform(array, origin)
     expected = _scalar_array(
         array,
-        lambda geometry: geometry.skew(12.5, -3.0, origin=origin),
+        lambda geometry: transform(geometry, origin),
     )
     assert _wkb_rows(result) == _wkb_rows(expected)
     assert result.is_missing.tolist() == expected.is_missing.tolist()
@@ -224,3 +235,94 @@ def test_reverse_does_not_reuse_direction_dependent_prepared_rows() -> None:
     reversed_array = array.reverse()
 
     assert reversed_array.line_interpolate(0)[0] == gm.Point(31, 1)
+
+
+def _float_bits(value):
+    return struct.pack('>d', value)
+
+
+def test_origin_scale_rounds_finite_cancellation_exactly():
+    result = gm.Point(1.0, 1.0).scale(2.0, 2.0, origin=(1e16, 1e16))
+    assert result.coords.to_nested()[:2] == [-9999999999999998.0, -9999999999999998.0]
+
+
+def test_origin_scale_preserves_identity_row_and_signed_zero():
+    point = gm.Point(-0.0, 3.0).scale(1.0, 2.0, origin=(1e16, 0.0))
+    assert point.x == 0.0
+    assert _float_bits(point.x) == _float_bits(-0.0)
+
+    line = gm.LineString([(-0.0, -0.0), (1.0, -0.0)])
+    result = line.scale(2.0, 1.0, origin=(0.0, 0.0))
+    assert [_float_bits(xy[1]) for xy in result.coords] == [
+        _float_bits(-0.0),
+        _float_bits(-0.0),
+    ]
+
+
+def test_origin_scale_ties_to_even_at_binary64_midpoint():
+    upper = math.nextafter(1.0, math.inf)
+    result = gm.Point(1.0, 0.0).scale(0.5, 1.0, origin=(upper, 0.0))
+    assert _float_bits(result.x) == _float_bits(1.0)
+
+
+def test_origin_scale_rounds_just_above_midpoint_up():
+    factor = 0.0009765624999999985
+    origin = 0.0009765625000000015
+    result = gm.Point(2.0, 0.0).scale(factor, 1.0, origin=(origin, 0.0))
+    assert _float_bits(result.x) == bytes.fromhex('3f67fdfffffffffd')
+
+
+def test_origin_scale_negative_subnormal_underflow_keeps_sign():
+    minimum_subnormal = float.fromhex('0x0.0000000000001p-1022')
+    result = gm.Point(-minimum_subnormal, 0.0).scale(0.5, 1.0, origin=(0.0, 0.0))
+    assert _float_bits(result.x) == _float_bits(-0.0)
+
+
+def test_origin_scale_overflow_midpoint_is_rejected():
+    maximum = sys.float_info.max
+    previous = math.nextafter(maximum, -math.inf)
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.Point(maximum, 0.0).scale(1.5, 1.0, origin=(previous, 0.0))
+
+
+def test_origin_scale_maximum_self_pivot_matches_packed_lane():
+    maximum = sys.float_info.max
+    point = gm.Point(maximum, maximum)
+    scalar = point.scale(2.0, 2.0, origin=(maximum, maximum))
+    packed = gm.GeometryArray([point]).scale(2.0, 2.0, origin=(maximum, maximum))[0]
+    assert scalar.to_wkb() == packed.to_wkb()
+    assert scalar.coords.to_nested()[:2] == [maximum, maximum]
+
+
+@pytest.mark.parametrize(
+    'transform',
+    [
+        lambda geometry, pivot: geometry.rotate(90.0, origin=pivot),
+        lambda geometry, pivot: geometry.scale(2.0, 2.0, origin=pivot),
+        lambda geometry, pivot: geometry.skew(45.0, 0.0, origin=pivot),
+    ],
+    ids=['rotate', 'scale', 'skew'],
+)
+def test_origin_transforms_keep_maximum_self_pivot_in_packed_lane(transform):
+    maximum = sys.float_info.max
+    point = gm.Point(maximum, maximum)
+    scalar = transform(point, (maximum, maximum))
+    packed = transform(gm.GeometryArray([point]), (maximum, maximum))[0]
+    assert scalar.to_wkb() == packed.to_wkb()
+    assert scalar.coords.to_nested()[:2] == [maximum, maximum]
+
+
+@pytest.mark.parametrize(
+    'transform',
+    [
+        lambda geometry: geometry.rotate(30.0, origin=(1.25, -0.5)),
+        lambda geometry: geometry.scale(1.5, 0.75, origin=(1.25, -0.5)),
+        lambda geometry: geometry.skew(12.5, -3.0, origin=(1.25, -0.5)),
+    ],
+    ids=['rotate', 'scale', 'skew'],
+)
+def test_origin_transforms_match_packed_and_mixed_rows(transform):
+    line = gm.LineString([(0.1, 0.1), (0.9, 0.9), (1.1, -2.3)])
+    packed = transform(gm.GeometryArray([line]))[0]
+    mixed = transform(gm.GeometryArray([line, gm.Point(100.0, 100.0)]))[0]
+    assert packed.to_wkb() == mixed.to_wkb()

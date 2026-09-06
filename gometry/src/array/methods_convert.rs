@@ -1,7 +1,7 @@
 use crate::array::PackedStorage;
 use crate::array::{
     Arc, Bounds, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec, PackedColumnError,
-    PackedColumns, PyGeometryArray, PyResult, Python, Result, Shape, affine_about,
+    PackedColumns, PyGeometryArray, PyResult, Python, Result, Shape,
     clip_lines_packed_xy, geometry, reverse_coord_windows, subdivide_line_columns,
     subdivide_polygon_columns, validate_densify_fraction, validate_max_segment_length,
 };
@@ -231,7 +231,7 @@ impl PyGeometryArray {
         Python::attach(|py| {
             self.packed_self_origin_affine(py, spec, || {
                 let (sin, cos) = angle.sin_cos();
-                affine_about(cos, -sin, sin, cos, (0.0, 0.0))
+                [cos, -sin, sin, cos]
             })
             .transpose()
         })
@@ -245,7 +245,7 @@ impl PyGeometryArray {
     ) -> Option<PyResult<Self>> {
         Python::attach(|py| {
             self.packed_self_origin_affine(py, spec, || {
-                affine_about(xfact, 0.0, 0.0, yfact, (0.0, 0.0))
+                [xfact, 0.0, 0.0, yfact]
             })
             .transpose()
         })
@@ -259,7 +259,7 @@ impl PyGeometryArray {
     ) -> Option<PyResult<Self>> {
         Python::attach(|py| {
             self.packed_self_origin_affine(py, spec, || {
-                affine_about(1.0, tan_x, tan_y, 1.0, (0.0, 0.0))
+                [1.0, tan_x, tan_y, 1.0]
             })
             .transpose()
         })

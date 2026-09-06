@@ -121,7 +121,7 @@ pub(crate) fn packed_line_row_pivot(
             }
         },
         OriginSpec::Center => Ok(packed_line_bounds_center_pivot(xs, ys, window)),
-        OriginSpec::Fixed(..) => unreachable!("fixed origins use packed_affine"),
+        OriginSpec::Fixed(x, y) => Ok((x, y)),
     }
 }
 
@@ -165,7 +165,7 @@ pub(crate) fn packed_polygon_row_pivot(
             ring_offsets,
             rings,
         )),
-        OriginSpec::Fixed(..) => unreachable!("fixed origins use packed_affine"),
+        OriginSpec::Fixed(x, y) => Ok((x, y)),
     }
 }
 

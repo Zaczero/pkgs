@@ -164,16 +164,6 @@ pub(crate) fn compare_ring_rotation(
         .unwrap_or(Ordering::Equal)
 }
 
-/// Build the 6-tuple `(a, b, d, e, xoff, yoff)` for a linear map `[a, b; d, e]`
-/// applied about `origin`: translate(-origin), apply linear,
-/// translate(+origin).
-pub(crate) fn affine_about(a: f64, b: f64, d: f64, e: f64, origin: (f64, f64)) -> [f64; 6] {
-    let (ox, oy) = origin;
-    let xoff = ox - (a * ox + b * oy);
-    let yoff = oy - (d * ox + e * oy);
-    [a, b, d, e, xoff, yoff]
-}
-
 /// Decimal scales for the boundary-validated quantize precisions (0..=15,
 /// enforced at the Python boundary) — a table lookup instead of a runtime
 /// `powi` loop per quantize call.

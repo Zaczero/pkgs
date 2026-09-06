@@ -4,7 +4,7 @@
 )]
 use crate::py::methods::unary_transform_methods::{
     Bound, DefaultedF64Input, GeometryArrayStorage, OriginSpec, PyAny, PyGeometry, PyGeometryArray,
-    PyResult, Python, affine_about, angle_radians, finite_f64_required, parse_affine_matrix,
+    PyResult, Python, angle_radians, finite_f64_required, parse_affine_matrix,
     parse_precision, pymethods,
 };
 
@@ -180,8 +180,6 @@ impl PyGeometry {
             y_angle.resolve_scalar(py, "y_angle")?.to_radians()
         };
         let spec = origin;
-        let tan_x = xs.tan();
-        let tan_y = ys.tan();
         unary_spine_shapes!(
             scalar,
             py,
@@ -189,11 +187,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Skew,
             None,
             default,
-            move |data, ctx| {
-                let origin = spec.resolve_shape(data.shape())?;
-                let seated = affine_about(1.0, tan_x, tan_y, 1.0, origin);
-                crate::dispatch::kernels::unary_affine_transform(data, ctx, &seated)
-            }
+            move |data, ctx| crate::dispatch::kernels::unary_skew(data, ctx, xs, ys, spec)
         )
     }
 }
@@ -379,9 +373,7 @@ impl PyGeometryArray {
                 tan_y,
             },
             move |data, ctx| {
-                let origin = spec.resolve_shape(data.shape())?;
-                let seated = affine_about(1.0, tan_x, tan_y, 1.0, origin);
-                crate::dispatch::kernels::unary_affine_transform(data, ctx, &seated)
+                crate::dispatch::kernels::unary_skew(data, ctx, xs, ys, spec)
             }
         )
     }

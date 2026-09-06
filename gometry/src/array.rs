@@ -19,7 +19,7 @@ pub(crate) use crate::broadcast::{CollectRows, rows_err};
 use crate::error::{Error, Result};
 use crate::geometry::CsrOffsetColumn;
 pub(crate) use crate::geometry::{
-    CsrOffsetBuilder, PolygonLevel, RingLevel, affine_about, concat_coord_columns,
+    CsrOffsetBuilder, PolygonLevel, RingLevel, concat_coord_columns,
     line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
     polygon_is_valid, polygon_row_point_membership,
 };

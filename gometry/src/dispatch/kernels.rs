@@ -625,6 +625,18 @@ pub(crate) fn unary_scale(
         .scale(xfact, yfact, origin.resolve_shape(data.shape())?)
 }
 
+/// Skew kernel shared by the spine-routed free function.
+pub(crate) fn unary_skew(
+    data: &PreparedPlan,
+    _ctx: &CachelessRowContext<'_>,
+    x_angle: f64,
+    y_angle: f64,
+    origin: OriginSpec,
+) -> Result<Shape> {
+    data.shape()
+        .skew(x_angle, y_angle, origin.resolve_shape(data.shape())?)
+}
+
 /// Reverse kernel shared by the spine-routed free function.
 pub(crate) fn unary_reverse(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     data.shape().reverse()

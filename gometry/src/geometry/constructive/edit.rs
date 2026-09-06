@@ -8,10 +8,12 @@ use crate::geometry::constructive::{
     remove_repeated_line_points, remove_repeated_points, segmentize_points_budgeted,
     snap_column_simd, split,
 };
+use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::{
-    AxisFrame, Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, OrdinateAxis, Point,
-    Polygon, ReduceSimd, Ring, Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
+    Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
+    LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, OrdinateAxis, Point,
+    Polygon, ReduceSimd, Ring,
+    Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
     clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
     column_all_finite, compare_point_slices, compare_points, compare_polygons, compare_shapes,
     line_parts_to_shape, same_topological_coordinate, set_point_ordinate, simd_xy_map_f64,
@@ -152,6 +154,50 @@ impl CoordSeq {
                 self.carried_ms(),
             ))
         }
+    }
+
+    /// Exact origin-relative affine transform of the XY columns. Identity
+    /// rows carry their source column unchanged; every other row is rounded
+    /// from its exact five-product expression in [`ExactSum`].
+    pub(crate) fn try_affine_about_origin(
+        &self,
+        linear: [f64; 4],
+        origin: (f64, f64),
+    ) -> Result<Self> {
+        let [a, b, d, e] = linear;
+        if !linear.iter().all(|value| value.is_finite())
+            || !origin.0.is_finite()
+            || !origin.1.is_finite()
+        {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        let x_identity = a == 1.0 && same_topological_coordinate(b, 0.0);
+        let y_identity = same_topological_coordinate(d, 0.0) && e == 1.0;
+        if x_identity && y_identity {
+            return Ok(self.clone());
+        }
+        let n = self.len();
+        let (xs, ys) = (self.xs(), self.ys());
+        let mut out_x = (!x_identity).then(|| vec![0.0; n].into_boxed_slice());
+        let mut out_y = (!y_identity).then(|| vec![0.0; n].into_boxed_slice());
+        for index in 0..n {
+            if let Some(out_x) = out_x.as_mut() {
+                out_x[index] = affine_about_origin_ordinate(
+                    a, b, origin.0, origin.0, origin.1, xs[index], ys[index],
+                )?;
+            }
+            if let Some(out_y) = out_y.as_mut() {
+                out_y[index] = affine_about_origin_ordinate(
+                    d, e, origin.1, origin.0, origin.1, xs[index], ys[index],
+                )?;
+            }
+        }
+        Ok(Self::from_columns(
+            out_x.map_or_else(|| self.carried_xs(), Into::into),
+            out_y.map_or_else(|| self.carried_ys(), Into::into),
+            self.carried_zs(),
+            self.carried_ms(),
+        ))
     }
 
     /// Snap the X/Y columns onto the grid `origin + k * size` (per-axis), Z/M
@@ -361,9 +407,9 @@ impl Shape {
     }
 
     /// Columnar XY transform over every coordinate sequence of the shape
-    /// (Z/M untouched), validating finiteness once per column. The shared
-    /// engine behind `affine_transform` and friends — routes every coordinate
-    /// sequence through the SIMD [`CoordSeq::try_affine`] column kernel.
+    /// (Z/M untouched), validating finiteness once per column. This is the
+    /// matrix-form affine path; origin-relative transforms use their exact
+    /// pivot evaluator below.
     #[expect(
         clippy::many_single_char_names,
         reason = "a,b,d,e are the canonical affine matrix coefficients"
@@ -399,6 +445,44 @@ pub(crate) fn affine_x_row_identity(a: f64, b: f64, xoff: f64) -> bool {
 )]
 pub(crate) fn affine_y_row_identity(d: f64, e: f64, yoff: f64) -> bool {
     same_topological_coordinate(d, 0.0) && e == 1.0 && same_topological_coordinate(yoff, 0.0)
+}
+
+/// Round one non-identity origin-relative affine row from the exact stored
+/// binary64 expression. Identity rows are handled by callers so signed zero
+/// and unchanged coordinates remain bit-identical.
+pub(crate) fn affine_about_origin_ordinate(
+    coefficient_x: f64,
+    coefficient_y: f64,
+    output_origin: f64,
+    origin_x: f64,
+    origin_y: f64,
+    value_x: f64,
+    value_y: f64,
+) -> Result<f64> {
+    if coefficient_x == 1.0 && same_topological_coordinate(coefficient_y, 0.0) {
+        return Ok(value_x);
+    }
+    if !coefficient_x.is_finite()
+        || !coefficient_y.is_finite()
+        || !output_origin.is_finite()
+        || !origin_x.is_finite()
+        || !origin_y.is_finite()
+        || !value_x.is_finite()
+        || !value_y.is_finite()
+    {
+        return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+    }
+    let mut sum = ExactSum::zero();
+    sum.add_product(1, coefficient_x, value_x);
+    sum.add_product(1, coefficient_y, value_y);
+    sum.add_product(1, output_origin, 1.0);
+    sum.add_product(-1, coefficient_x, origin_x);
+    sum.add_product(-1, coefficient_y, origin_y);
+    let value = sum.round_to_binary64();
+    value
+        .is_finite()
+        .then_some(value)
+        .ok_or_else(|| GeometryErrorKind::NonFiniteCoordinate.into())
 }
 
 /// Affine map with power-of-two pre-scale of the input coordinates so
@@ -606,50 +690,19 @@ impl Shape {
         {
             return Ok(self.clone());
         }
-        self.map_points(&|point| {
-            // Classic form first (bit-stable for ordinary coordinates).
-            let dx = point.x - ox;
-            let dy = point.y - oy;
-            let mut x = ox + m00 * dx + m01 * dy;
-            let mut y = oy + m10 * dx + m11 * dy;
-            if !x.is_finite() || !y.is_finite() {
-                // Frame axes independently. A common scale chosen from a
-                // huge X turns a still-stored 1e-300 Y delta into zero before
-                // a diagonal scale can preserve it; packed execution already
-                // keeps that axis, so scalar must share the same frame rule.
-                let extent_x = point.x.abs().max(ox.abs());
-                let extent_y = point.y.abs().max(oy.abs());
-                if let Some(frame) =
-                    AxisFrame::from_origin_extents(Point::new_raw_xy(ox, oy), extent_x, extent_y)
-                {
-                    let local = frame.frame_xy(point.x, point.y);
-                    let sx = frame.scale_x();
-                    let sy = frame.scale_y();
-                    // Diagonal transforms are the common `scale` path.  They
-                    // stay entirely in their own axis frame: evaluating a
-                    // zero off-axis coefficient through `0 * (huge / tiny)`
-                    // would manufacture NaN and erase an unrelated axis.
-                    // General affine maps retain the cross terms below.
-                    let scaled_x = ox * sx
-                        + m00 * local.x
-                        + if m01 == 0.0 {
-                            0.0
-                        } else {
-                            (m01 * (local.y / sy)) * sx
-                        };
-                    let scaled_y = oy * sy
-                        + if m10 == 0.0 {
-                            0.0
-                        } else {
-                            (m10 * (local.x / sx)) * sy
-                        }
-                        + m11 * local.y;
-                    x = scaled_x / sx;
-                    y = scaled_y / sy;
-                }
-            }
-            Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
-        })
+        let linear = [m00, m01, m10, m11];
+        self.try_map_coordseqs(
+            |seq| seq.try_affine_about_origin(linear, origin),
+            |point| {
+                let x = affine_about_origin_ordinate(
+                    m00, m01, ox, ox, oy, point.x, point.y,
+                )?;
+                let y = affine_about_origin_ordinate(
+                    m10, m11, oy, ox, oy, point.x, point.y,
+                )?;
+                Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
+            },
+        )
     }
 
     pub fn translate(&self, xoff: f64, yoff: f64) -> Result<Self> {

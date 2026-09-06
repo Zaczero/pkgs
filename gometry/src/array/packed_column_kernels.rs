@@ -26,10 +26,13 @@ use crate::array::storage_helpers::{
 use crate::array::{
     Bounds, CoordSeq, CsrOffsetBuilder, GeometryArrayStorage, OriginSpec, PackedColumnBuilder,
     PackedColumnOutput, PointRowLayout, Result, RingLevel, RowSelectionRef, Shape, ValidityMask,
-    affine_about, column_window, crs, line_logical_len, polygon_logical_len, polygon_rings_range,
-    row_bounds_3d, row_bounds_values,
+    column_window, crs, line_logical_len, polygon_logical_len, polygon_rings_range, row_bounds_3d,
+    row_bounds_values,
 };
-use crate::geometry::{CoordSeqBuilder, CoordWindow, LineSeq, XY, clip_segment, same_point};
+use crate::geometry::{
+    CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, XY, ZOrdinate, clip_segment,
+    same_point,
+};
 
 /// Emit one round buffer polygon per packed point without per-row shapes.
 ///
@@ -1176,24 +1179,73 @@ pub(crate) fn subdivide_polygon_columns(
 pub(crate) fn packed_per_row_self_origin_affine_columns(
     columns: PackedColumns<'_>,
     spec: OriginSpec,
-    matrix: [f64; 6],
+    linear: [f64; 4],
 ) -> PackedColumnResult<PackedColumnOutput> {
-    let [a, b, d, e, _, _] = matrix;
+    let [a, b, d, e] = linear;
     match columns {
-        PackedColumns::Points(point_columns) => Ok(PackedColumnOutput::Points(
-            point_columns.contiguous_coords().unwrap_or_else(|| {
-                let mut builder = CoordSeqBuilder::with_capacity(
-                    point_columns.coords().axes(),
-                    point_columns.rows().present_count(),
-                );
-                for (_, physical) in point_columns.rows().cursor() {
-                    if let Some(physical) = physical {
-                        builder.push_at(point_columns.coords(), physical);
-                    }
+        PackedColumns::Points(point_columns) => match spec {
+            OriginSpec::Centroid | OriginSpec::Center => {
+                Ok(PackedColumnOutput::Points(
+                    point_columns.contiguous_coords().unwrap_or_else(|| {
+                        let mut builder = CoordSeqBuilder::with_capacity(
+                            point_columns.coords().axes(),
+                            point_columns.rows().present_count(),
+                        );
+                        for (_, physical) in point_columns.rows().cursor() {
+                            if let Some(physical) = physical {
+                                builder.push_at(point_columns.coords(), physical);
+                            }
+                        }
+                        builder.finish_infallible()
+                    }),
+                ))
+            },
+            OriginSpec::Fixed(pivot_x, pivot_y) => {
+                let rows = point_columns.rows();
+                let axes = point_columns.coords().axes();
+                let capacity = if rows.is_compact() {
+                    rows.present_count()
+                } else {
+                    rows.len()
+                };
+                let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
+                let mut has_missing = false;
+                for (logical, physical) in rows.cursor() {
+                    let Some(physical) = physical else {
+                        if rows.is_compact() {
+                            continue;
+                        }
+                        has_missing = true;
+                        builder.push(Point::new_raw_axes(
+                            f64::NAN,
+                            f64::NAN,
+                            ZOrdinate(axes.has_z().then_some(f64::NAN)),
+                            MOrdinate(axes.has_m().then_some(f64::NAN)),
+                        ));
+                        continue;
+                    };
+                    let point = point_columns.coords().point_at(physical);
+                    let x = crate::geometry::affine_about_origin_ordinate(
+                        a, b, pivot_x, pivot_x, pivot_y, point.x, point.y,
+                    )
+                    .map_err(|error| row_err(logical, error))?;
+                    let y = crate::geometry::affine_about_origin_ordinate(
+                        d, e, pivot_y, pivot_x, pivot_y, point.x, point.y,
+                    )
+                    .map_err(|error| row_err(logical, error))?;
+                    builder.push(
+                        Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
+                            .map_err(|error| row_err(logical, error))?,
+                    );
                 }
-                builder.finish_infallible()
-            }),
-        )),
+                let coords = if rows.is_compact() || !has_missing {
+                    builder.finish().map_err(batch_err)?
+                } else {
+                    builder.finish_with_missing_placeholders()
+                };
+                Ok(PackedColumnOutput::Points(coords))
+            },
+        },
         PackedColumns::Lines(line_columns) => {
             let coords = line_columns.coords();
             let XyColumns { xs, ys } = line_columns.physical_xy();
@@ -1211,9 +1263,8 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 }
                 let pivot = packed_line_row_pivot(spec, xs, ys, window.clone())
                     .map_err(|error| row_err(row, error))?;
-                let row_matrix = affine_about(a, b, d, e, pivot);
                 builder
-                    .push_affine(coords, window, &row_matrix)
+                    .push_affine_about_origin(coords, window, linear, pivot)
                     .map_err(|error| row_err(row, error))?;
             }
             let cap = builder.vertex_len();
@@ -1241,11 +1292,10 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 let rings = polygon_columns.polygon_rings(row);
                 let pivot = packed_polygon_row_pivot(spec, xs, ys, ring_offsets, rings.clone())
                     .map_err(|error| row_err(row, error))?;
-                let row_matrix = affine_about(a, b, d, e, pivot);
                 for ring in rings {
                     let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
                     builder
-                        .push_affine(coords, window, &row_matrix)
+                        .push_affine_about_origin(coords, window, linear, pivot)
                         .map_err(|error| row_err(row, error))?;
                     output_rings += 1;
                 }

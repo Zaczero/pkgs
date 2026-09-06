@@ -115,16 +115,7 @@ impl PackedColumnBuilder {
         Ok(())
     }
 
-    /// Affine-map one CSR window (origin-at-zero matrix) without closing a row.
-    pub(crate) fn extend_affine(
-        &mut self,
-        coords: &CoordSeq,
-        window: Range<usize>,
-        matrix: &[f64; 6],
-    ) -> CrateResult<()> {
-        let transformed = coords
-            .view(CoordWindow::from_range(window, coords.len()))
-            .try_affine(matrix)?;
+    fn extend_coords(&mut self, transformed: CoordSeq) -> CrateResult<()> {
         self.try_reserve_columns(transformed.len())?;
         self.xs.extend_from_slice(transformed.xs());
         self.ys.extend_from_slice(transformed.ys());
@@ -137,14 +128,29 @@ impl PackedColumnBuilder {
         Ok(())
     }
 
-    /// Affine-map one CSR window (origin-at-zero matrix), then close the row.
-    pub(crate) fn push_affine(
+    /// Exact affine-map one CSR window about `origin` without closing a row.
+    pub(crate) fn extend_affine_about_origin(
         &mut self,
         coords: &CoordSeq,
         window: Range<usize>,
-        matrix: &[f64; 6],
+        linear: [f64; 4],
+        origin: (f64, f64),
     ) -> CrateResult<()> {
-        self.extend_affine(coords, window, matrix)?;
+        let transformed = coords
+            .view(CoordWindow::from_range(window, coords.len()))
+            .try_affine_about_origin(linear, origin)?;
+        self.extend_coords(transformed)
+    }
+
+    /// Exact affine-map one CSR window about `origin`, then close the row.
+    pub(crate) fn push_affine_about_origin(
+        &mut self,
+        coords: &CoordSeq,
+        window: Range<usize>,
+        linear: [f64; 4],
+        origin: (f64, f64),
+    ) -> CrateResult<()> {
+        self.extend_affine_about_origin(coords, window, linear, origin)?;
         self.offsets.push_end(self.xs.len(), i32::MAX as usize)?;
         Ok(())
     }

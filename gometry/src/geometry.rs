@@ -119,8 +119,9 @@ use constructive::{
     decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference, winding_region,
 };
 pub(crate) use constructive::{
-    DEFAULT_MITER_LIMIT, SegmentPlacement, affine_about, densify_points_budgeted_with_placement,
-    rdp_keep, segmentize_points_budgeted, stable_affine_xy, stable_snap_ordinate,
+    DEFAULT_MITER_LIMIT, SegmentPlacement, affine_about_origin_ordinate,
+    densify_points_budgeted_with_placement, rdp_keep, segmentize_points_budgeted,
+    stable_affine_xy, stable_snap_ordinate,
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, RTreeObject, coverage_clean, coverage_invalid_edges,
