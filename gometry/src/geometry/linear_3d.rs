@@ -7,7 +7,6 @@ use crate::error::Result;
 use crate::geometry::tessellation::exact::{ExactDyadic, round_sqrt_ratio};
 use crate::geometry::{DdInterval, GeometryErrorKind, Ordering, dd_strict_cmp};
 
-#[derive(Clone)]
 struct ExactSquaredDistance {
     numerator: ExactDyadic,
     denominator: ExactDyadic,
@@ -115,8 +114,9 @@ fn exact_boundary_squared(
         exact_point_segment_squared(p2, p1, q1)?,
         exact_point_segment_squared(q2, p1, q1)?,
     ];
-    let mut best = candidates[0].clone();
-    for candidate in candidates.into_iter().skip(1) {
+    let mut candidates = candidates.into_iter();
+    let mut best = candidates.next().expect("four boundary candidates");
+    for candidate in candidates {
         best = exact_min_squared(best, candidate)?;
         if best.numerator.is_zero() {
             break;
@@ -154,11 +154,11 @@ fn exact_segment_squared(
     let c = exact_dot(&d1, &r)?;
     let f = exact_dot(&d2, &r)?;
     let delta = a.try_product(&e)?.try_subtract(b.try_product(&b)?)?;
-    if delta.cmp(&zero) == Ordering::Less {
-        return Err(GeometryErrorKind::message(
-            "exact 3D segment determinant was negative",
-        ));
-    }
+    debug_assert_ne!(
+        delta.cmp(&zero),
+        Ordering::Less,
+        "exact Gram determinant must be nonnegative"
+    );
     if delta.is_zero() {
         return exact_boundary_squared(&p1, &q1, &p2, &q2);
     }
@@ -348,5 +348,30 @@ mod tests {
             ],)
             .is_none()
         );
+    }
+
+    #[test]
+    fn exact_fallback_propagates_allocation_failures() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::{allocation_count, fail_allocations_after};
+
+        let inputs = ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.1, 0.0], [
+            1.0, -0.1, 0.0,
+        ]);
+        let (result, allocations) = allocation_count(|| {
+            segment_segment_distance_3d(inputs.0, inputs.1, inputs.2, inputs.3)
+        });
+        assert_eq!(result.expect("exact fallback result"), 0.0);
+        assert!(allocations > 0);
+        for prefix in 0..allocations {
+            let result = fail_allocations_after(prefix, || {
+                segment_segment_distance_3d(inputs.0, inputs.1, inputs.2, inputs.3)
+            });
+            let error = result.expect_err("allocation failure must propagate");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
     }
 }
