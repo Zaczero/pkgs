@@ -17,6 +17,17 @@ use crate::geometry::{
 
 const GEODESIC_LEAF_SEGMENTS: usize = 8;
 
+fn geodesic_leaf_count(segment_count: usize) -> usize {
+    if segment_count <= GEODESIC_LEAF_SEGMENTS {
+        return 1;
+    }
+    let quotient = segment_count / GEODESIC_LEAF_SEGMENTS;
+    let base = 1usize << quotient.ilog2();
+    // At `base * threshold` segments the balanced tree has `base` leaves;
+    // it gains one leaf per segment until the next complete level.
+    (base * 2).min(base + segment_count - GEODESIC_LEAF_SEGMENTS * base)
+}
+
 #[derive(Clone, Copy)]
 struct GeodesicLeaf {
     first: u32,
@@ -46,20 +57,16 @@ impl GeodesicFacetBvh {
         if segment_count == 0 || segment_count > BvhCode::LEAF_BIT / 2 {
             return None;
         }
-        let max_leaf_count = segments.len();
-        // Perfect binary tree over `n` leaves uses `2n-1` nodes, but near a
-        // power of two the recursive partition often realises far fewer
-        // internal nodes. Reserve capacity and shrink to the filled range
-        // after build so we do not keep an ~8× over-allocation.
-        let node_capacity = 2 * max_leaf_count - 1;
+        let leaf_count = geodesic_leaf_count(segments.len());
+        let node_count = leaf_count.checked_mul(2)?.checked_sub(1)?;
         let mut tree = Self {
-            anchors: vec![Point::new_raw_xy(0.0, 0.0); node_capacity].into_boxed_slice(),
-            reaches: vec![0.0; node_capacity].into_boxed_slice(),
-            codes: vec![0; node_capacity].into_boxed_slice(),
+            anchors: vec![Point::new_raw_xy(0.0, 0.0); node_count].into_boxed_slice(),
+            reaches: vec![0.0; node_count].into_boxed_slice(),
+            codes: vec![0; node_count].into_boxed_slice(),
             leaves: Box::default(),
             segment_ids: Box::default(),
         };
-        let mut leaves = Vec::with_capacity(max_leaf_count);
+        let mut leaves = Vec::with_capacity(leaf_count);
         let mut segment_ids = Vec::with_capacity(segments.len());
         let mut aux_cache = HashMap::with_capacity(segments.len() + 1);
         let mut ids = segments
@@ -92,22 +99,7 @@ impl GeodesicFacetBvh {
             &mut segment_ids,
             metric,
         );
-        // `next` is the count of realized nodes; drop unused tail capacity
-        // (near power-of-two leaf counts this was ~8× over-reserved).
-        if next < node_capacity {
-            let mut anchors = tree.anchors.into_vec();
-            let mut reaches = tree.reaches.into_vec();
-            let mut codes = tree.codes.into_vec();
-            anchors.truncate(next);
-            reaches.truncate(next);
-            codes.truncate(next);
-            anchors.shrink_to_fit();
-            reaches.shrink_to_fit();
-            codes.shrink_to_fit();
-            tree.anchors = anchors.into_boxed_slice();
-            tree.reaches = reaches.into_boxed_slice();
-            tree.codes = codes.into_boxed_slice();
-        }
+        debug_assert_eq!(next, node_count);
         tree.leaves = leaves.into_boxed_slice();
         tree.segment_ids = segment_ids.into_boxed_slice();
         Some(tree)
@@ -451,4 +443,44 @@ pub(super) fn geodesic_witness_is_better(
         candidate.distance < best.distance
             || (candidate.distance == best.distance && candidate.order < best.order)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GEODESIC_LEAF_SEGMENTS, geodesic_leaf_count};
+
+    #[test]
+    fn balanced_leaf_count_matches_split_boundaries() {
+        for (segment_count, expected_leaves, expected_nodes) in [
+            (1, 1, 1),
+            (8, 1, 1),
+            (9, 2, 3),
+            (16, 2, 3),
+            (17, 3, 5),
+            (18, 4, 7),
+            (32, 4, 7),
+            (33, 5, 9),
+            (34, 6, 11),
+            (35, 7, 13),
+            (36, 8, 15),
+            (64, 8, 15),
+            (65, 9, 17),
+            (72, 16, 31),
+            (128, 16, 31),
+            (129, 17, 33),
+            (144, 32, 63),
+            (256, 32, 63),
+            (257, 33, 65),
+            (512, 64, 127),
+            (513, 65, 129),
+        ] {
+            let leaves = geodesic_leaf_count(segment_count);
+            assert_eq!(leaves, expected_leaves, "segments={segment_count}");
+            assert_eq!(2 * leaves - 1, expected_nodes, "segments={segment_count}");
+        }
+
+        assert_eq!(18usize.div_ceil(GEODESIC_LEAF_SEGMENTS), 3);
+        assert_eq!(2 * 18usize.div_ceil(GEODESIC_LEAF_SEGMENTS) - 1, 5);
+        assert_eq!(geodesic_leaf_count(18), 4);
+    }
 }
