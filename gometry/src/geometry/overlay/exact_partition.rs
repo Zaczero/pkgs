@@ -312,6 +312,7 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     pub isolated: Vec<NodeId>,
     /// Node ownership in explicit input-point occurrence order, including duplicates.
     pub point_nodes: Vec<NodeId>,
+    pub point_sources: Vec<(NodeId, u32)>,
 }
 
 impl<'a> ExactPartition<'a> {
@@ -1174,6 +1175,17 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         point_nodes.push(NodeId(node));
     }
 
+    let mut point_sources = Vec::new();
+    for (source, segment) in unique.iter().enumerate() {
+        if same_point(segment.start, segment.end) {
+            let node =
+                NodeId(compact_of[start_handle[source] as usize].expect("compacted endpoint"));
+            let owners = provenance.owners(source);
+            try_reserve_vec(&mut point_sources, owners.len())?;
+            point_sources.extend(owners.iter().map(|&(ordinal, _)| (node, ordinal)));
+        }
+    }
+
     Ok(ExactPartition {
         unique,
         recipes,
@@ -1181,6 +1193,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         provenance: atom_provenance,
         isolated: isolated_nodes,
         point_nodes,
+        point_sources,
     })
 }
 
@@ -1908,6 +1921,28 @@ mod tests {
             ([0, 0, 1, 0], true),
             ([0, 1, 0, 0], false),
         ]);
+    }
+
+    #[test]
+    fn zero_length_sources_keep_owners_at_incident_and_isolated_nodes() {
+        let (unique, provenance) = dedup_undirected_segments_sourced([
+            seg(1.0, 0.0, 1.0, 0.0),
+            seg(0.0, 0.0, 2.0, 0.0),
+            seg(1.0, 0.0, 1.0, 0.0),
+            seg(3.0, 2.0, 3.0, 2.0),
+        ]);
+        let mut budget = ExpansionBudget::new("exact_partition", "items");
+        let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
+        let incident = stored_node(&partition, XY::new(1.0, 0.0)).unwrap();
+        let isolated = stored_node(&partition, XY::new(3.0, 2.0)).unwrap();
+        assert_eq!(partition.point_sources, [
+            (incident, 0),
+            (incident, 2),
+            (isolated, 3)
+        ]);
+        assert_eq!(partition.isolated, [isolated]);
+        assert_eq!(partition.spans.len(), 2);
+        assert!(partition.point_nodes.is_empty());
     }
 
     #[test]
