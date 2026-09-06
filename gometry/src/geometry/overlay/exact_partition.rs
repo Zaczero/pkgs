@@ -664,6 +664,9 @@ impl GlobalFaces {
         let mut visited = Vec::new();
         try_reserve_vec(&mut visited, selected.len())?;
         visited.resize(selected.len(), false);
+        let mut positions = Vec::new();
+        try_reserve_vec(&mut positions, topology.starts.len() - 1)?;
+        positions.resize(topology.starts.len() - 1, None);
         let mut walks = Vec::new();
         for start in 0..selected.len() {
             if !selected[start] || visited[start] {
@@ -675,8 +678,21 @@ impl GlobalFaces {
                 debug_assert!(!visited[slot]);
                 visited[slot] = true;
                 try_reserve_vec(&mut walk, 1)?;
+                positions[topology.owners[slot] as usize] = Some(walk.len());
                 walk.push(slot as u32);
                 let target = topology.targets[slot] as usize;
+                // A tangent hole can share a boundary walk with its shell.
+                // Cut closed cycles by exact identity before any rounding.
+                if let Some(begin) = positions[target] {
+                    let mut cycle = Vec::new();
+                    try_reserve_vec(&mut cycle, walk.len() - begin)?;
+                    for dart in walk.drain(begin..) {
+                        positions[topology.owners[dart as usize] as usize] = None;
+                        cycle.push(dart);
+                    }
+                    try_reserve_vec(&mut walks, 1)?;
+                    walks.push(cycle);
+                }
                 let first = topology.starts[target] as usize;
                 let end = topology.starts[target + 1] as usize;
                 let twin = topology.twins[slot] as usize;
@@ -693,8 +709,7 @@ impl GlobalFaces {
                     break;
                 }
             }
-            try_reserve_vec(&mut walks, 1)?;
-            walks.push(walk);
+            debug_assert!(walk.is_empty());
         }
         Ok(walks)
     }
@@ -3546,6 +3561,49 @@ mod tests {
         assert!(empty.source_darts.is_empty());
         assert!(empty.round_items(&partition, &topology).unwrap().is_empty());
         assert_eq!(empty.face_quotient, [0, 0, 0]);
+    }
+
+    #[test]
+    fn selected_boundaries_split_a_hole_touching_its_shell() {
+        let case = run(&[
+            seg(0.0, 0.0, 6.0, 0.0),
+            seg(6.0, 0.0, 6.0, 6.0),
+            seg(6.0, 6.0, 0.0, 6.0),
+            seg(0.0, 6.0, 0.0, 0.0),
+            seg(0.0, 3.0, 2.0, 2.0),
+            seg(2.0, 2.0, 2.0, 4.0),
+            seg(2.0, 4.0, 0.0, 3.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let origin = stored_node(&partition, XY::new(0.0, 0.0)).unwrap();
+        let east = stored_node(&partition, XY::new(6.0, 0.0)).unwrap();
+        let bottom = (topology.starts[origin.0 as usize]..topology.starts[origin.0 as usize + 1])
+            .find(|&slot| topology.targets[slot as usize] == east.0)
+            .unwrap();
+        let host = faces.walk_faces[topology.face_of[bottom as usize] as usize];
+        let mut occupied = vec![false; faces.count as usize];
+        occupied[host as usize] = true;
+        let plan = faces
+            .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
+            .unwrap();
+        let mut lengths: Vec<_> = plan.walks.iter().map(Vec::len).collect();
+        lengths.sort_unstable();
+        assert_eq!(lengths, [3, 5]);
+        let contact = stored_node(&partition, XY::new(0.0, 3.0)).unwrap();
+        for walk in &plan.walks {
+            assert_eq!(
+                walk.iter()
+                    .filter(|chord| {
+                        topology.owners[plan.source_darts[chord.sources.start] as usize]
+                            == contact.0
+                    })
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 8);
     }
 
     #[test]
