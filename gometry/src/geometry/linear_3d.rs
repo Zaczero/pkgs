@@ -4,7 +4,7 @@
 )]
 
 use crate::error::Result;
-use crate::geometry::tessellation::exact::ExactDyadic;
+use crate::geometry::tessellation::exact::{ExactDyadic, round_sqrt_ratio};
 use crate::geometry::{DdInterval, GeometryErrorKind, Ordering, dd_strict_cmp};
 
 #[derive(Clone)]
@@ -188,56 +188,6 @@ fn exact_segment_squared(
     exact_boundary_squared(&p1, &q1, &p2, &q2)
 }
 
-fn round_sqrt_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
-    if numerator.is_zero() {
-        return Ok(0.0);
-    }
-    let max = ExactDyadic::try_from_f64(f64::MAX)?;
-    let overflow_midpoint = max.try_add(ExactDyadic::try_from_f64(2.0_f64.powi(970))?)?;
-    let overflow_squared = overflow_midpoint
-        .try_product(&overflow_midpoint)?
-        .try_product(denominator)?;
-    if numerator.cmp(&overflow_squared) != Ordering::Less {
-        return Ok(f64::INFINITY);
-    }
-    let mut low = 0_u64;
-    let mut high = f64::MAX.to_bits();
-    while low < high {
-        let mid = low + (high - low).div_ceil(2);
-        let candidate = ExactDyadic::try_from_f64(f64::from_bits(mid))?;
-        let square = candidate
-            .try_product(&candidate)?
-            .try_product(denominator)?;
-        if square.cmp(numerator) == Ordering::Greater {
-            high = mid - 1;
-        } else {
-            low = mid;
-        }
-    }
-    if low == f64::MAX.to_bits() {
-        return Ok(f64::MAX);
-    }
-    let lower = f64::from_bits(low);
-    let upper = f64::from_bits(low + 1);
-    let midpoint_sum =
-        ExactDyadic::try_from_f64(lower)?.try_add(ExactDyadic::try_from_f64(upper)?)?;
-    let midpoint_squared = midpoint_sum
-        .try_product(&midpoint_sum)?
-        .try_product(denominator)?;
-    let four_numerator = numerator.try_product(&ExactDyadic::try_from_f64(4.0)?)?;
-    Ok(match four_numerator.cmp(&midpoint_squared) {
-        Ordering::Less => lower,
-        Ordering::Greater => upper,
-        Ordering::Equal => {
-            if low & 1 == 0 {
-                lower
-            } else {
-                upper
-            }
-        },
-    })
-}
-
 fn exact_segment_distance_3d(
     p1: [f64; 3],
     q1: [f64; 3],
@@ -365,31 +315,6 @@ pub(crate) fn segment_segment_distance_3d(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sqrt_ratio_rounds_tie_to_even_without_squared_rounding() {
-        let lower = ExactDyadic::try_from_f64(1.0).expect("finite one");
-        let upper = ExactDyadic::try_from_f64(1.0_f64.next_up()).expect("finite successor");
-        let midpoint = lower
-            .try_add(upper)
-            .expect("midpoint sum")
-            .try_product(&ExactDyadic::try_from_f64(0.5).expect("finite half"))
-            .expect("midpoint");
-        let squared = midpoint.try_product(&midpoint).expect("squared midpoint");
-        assert_eq!(
-            round_sqrt_ratio(&squared, &ExactDyadic::try_from_f64(1.0).unwrap()).unwrap(),
-            1.0
-        );
-    }
-
-    #[test]
-    fn sqrt_ratio_handles_non_dyadic_distance() {
-        let squared = ExactDyadic::try_from_f64(2.0).expect("finite two");
-        assert_eq!(
-            round_sqrt_ratio(&squared, &ExactDyadic::try_from_f64(1.0).unwrap()).unwrap(),
-            2.0_f64.sqrt()
-        );
-    }
 
     #[test]
     fn dd_filter_accepts_strict_interior_cases() {
