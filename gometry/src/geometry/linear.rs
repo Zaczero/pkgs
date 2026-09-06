@@ -6,6 +6,7 @@
 //! locate / substring (by distance/fraction and by M), plus the geodesic-aware
 //! splitting helpers.
 
+use super::linear_3d;
 use crate::Finite;
 use crate::error::Result;
 use crate::geometry::{
@@ -141,226 +142,13 @@ impl PreparedPlan {
     }
 }
 
-/// Minimum Euclidean distance between two 3D segments (Ericson, *Real-Time
-/// Collision Detection*, ClosestPtSegmentSegment in distance form). A
-/// degenerate endpoint pair (`p == q`) acts as a point, so point/point,
-/// point/segment, and segment/segment all share this one kernel.
 pub(crate) fn segment_segment_distance_3d(
     p1: [f64; 3],
     q1: [f64; 3],
     p2: [f64; 3],
     q2: [f64; 3],
-) -> f64 {
-    // Same honesty contract as [`finish_planar_squared_min`]: ordinary
-    // positive finite answers stay on the fast path (bit-identical); zero and
-    // non-finite results recompute in a scaled local frame / endpoint hypot
-    // so false-zero underflow and overflow cannot masquerade as contact/inf.
-    let classic = segment_segment_distance_3d_local(p1, q1, p2, q2);
-    if classic > 0.0 && classic.is_finite() {
-        // Finite positive is trustworthy only when intermediate differences
-        // could not have overflowed: if any absolute coordinate is huge,
-        // re-evaluate with power-of-two scale *before* subtraction.
-        let max_abs = p1
-            .into_iter()
-            .chain(q1)
-            .chain(p2)
-            .chain(q2)
-            .fold(0.0_f64, |acc, v| acc.max(v.abs()));
-        if max_abs < 1e150 {
-            return classic;
-        }
-    }
-    finish_distance_3d_min(
-        if classic > 0.0 && classic.is_finite() {
-            0.0
-        } else {
-            classic
-        },
-        || {
-            // Scale original operands BEFORE subtraction so ±1e308 pairs do not
-            // overflow the direction vector to inf (which yielded wrong finite
-            // distances ≈1.4e308 for crossing axes).
-            let max_abs = p1
-                .into_iter()
-                .chain(q1)
-                .chain(p2)
-                .chain(q2)
-                .fold(0.0_f64, |acc, v| acc.max(v.abs()));
-            if !(max_abs.is_finite() && max_abs > 0.0) {
-                return endpoint_pair_min_distance_3d(p1, q1, p2, q2);
-            }
-            let scale = 1.0 / max_abs;
-            let scl = |pt: [f64; 3]| [pt[0] * scale, pt[1] * scale, pt[2] * scale];
-            let local = segment_segment_distance_3d_local(scl(p1), scl(q1), scl(p2), scl(q2));
-            if local.is_finite() {
-                local / scale
-            } else {
-                endpoint_pair_min_distance_3d(p1, q1, p2, q2)
-            }
-        },
-    )
-}
-
-/// 3D twin of [`finish_planar_squared_min`]: when the fast answer is zero or
-/// non-finite, recompute; true contact may still return 0.
-fn finish_distance_3d_min(classic: f64, recompute: impl FnOnce() -> f64) -> f64 {
-    if classic > 0.0 && classic.is_finite() {
-        classic
-    } else {
-        let rescued = recompute();
-        // Prefer a finite positive rescue over false-zero / overflow classic.
-        if rescued.is_finite() {
-            rescued
-        } else {
-            classic
-        }
-    }
-}
-
-/// Ericson segment–segment closest-point distance in a pre-normalized frame
-/// (caller ensures dots stay finite when possible).
-#[expect(clippy::many_single_char_names, reason = "Ericson textbook notation")]
-fn segment_segment_distance_3d_local(
-    p1: [f64; 3],
-    q1: [f64; 3],
-    p2: [f64; 3],
-    q2: [f64; 3],
-) -> f64 {
-    let sub = |u: [f64; 3], v: [f64; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
-    let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
-    let d1 = sub(q1, p1);
-    let d2 = sub(q2, p2);
-    let r = sub(p1, p2);
-    let a = dot(d1, d1);
-    let e = dot(d2, d2);
-    let f = dot(d2, r);
-    if !a.is_finite() || !e.is_finite() {
-        return f64::INFINITY;
-    }
-    let (s, t);
-    if a == 0.0 && e == 0.0 {
-        s = 0.0;
-        t = 0.0;
-    } else if a == 0.0 {
-        s = 0.0;
-        t = (f / e).clamp(0.0, 1.0);
-    } else {
-        let c = dot(d1, r);
-        if e == 0.0 {
-            t = 0.0;
-            s = (-c / a).clamp(0.0, 1.0);
-        } else {
-            let b = dot(d1, d2);
-            #[expect(
-                clippy::suspicious_operation_groupings,
-                reason = "textbook segment-segment closest-point denominator a*e - b*b (Ericson, Real-Time Collision Detection); clippy's a*b suggestion is wrong"
-            )]
-            let denom = a * e - b * b;
-            let s0 = if denom == 0.0 || !denom.is_finite() {
-                0.0
-            } else {
-                let num = b * f - c * e;
-                if num.is_finite() {
-                    (num / denom).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                }
-            };
-            let t0 = if e == 0.0 {
-                0.0
-            } else {
-                let num = b * s0 + f;
-                if num.is_finite() { num / e } else { 0.0 }
-            };
-            // Clamp t; recompute s on the boundary (same for non-finite or t<0).
-            if !t0.is_finite() || t0 < 0.0 {
-                t = 0.0;
-                s = (-c / a).clamp(0.0, 1.0);
-            } else if t0 > 1.0 {
-                t = 1.0;
-                s = ((b - c) / a).clamp(0.0, 1.0);
-            } else {
-                t = t0;
-                s = s0;
-            }
-        }
-    }
-    // Classic `p + d*param` (bit-identical to the pre-rescue path when finite).
-    let c1 = [p1[0] + d1[0] * s, p1[1] + d1[1] * s, p1[2] + d1[2] * s];
-    let c2 = [p2[0] + d2[0] * t, p2[1] + d2[1] * t, p2[2] + d2[2] * t];
-    let diff = sub(c1, c2);
-    let squared = dot(diff, diff);
-    if squared_norm_is_trustworthy(squared, diff[0] == 0.0 && diff[1] == 0.0 && diff[2] == 0.0) {
-        squared.sqrt()
-    } else {
-        hypot3(diff[0], diff[1], diff[2])
-    }
-}
-
-fn hypot3(dx: f64, dy: f64, dz: f64) -> f64 {
-    let scale = dx.abs().max(dy.abs()).max(dz.abs());
-    if scale == 0.0 {
-        return 0.0;
-    }
-    if !scale.is_finite() {
-        // One component is already non-finite.
-        return f64::INFINITY;
-    }
-    let (x, y, z) = (dx / scale, dy / scale, dz / scale);
-    scale * (x * x + y * y + z * z).sqrt()
-}
-
-fn endpoint_pair_min_distance_3d(p1: [f64; 3], q1: [f64; 3], p2: [f64; 3], q2: [f64; 3]) -> f64 {
-    let ends_a = [p1, q1];
-    let ends_b = [p2, q2];
-    let mut best = f64::INFINITY;
-    for a in ends_a {
-        for b in ends_b {
-            let d = hypot3(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-            if d < best {
-                best = d;
-            }
-        }
-    }
-    // Also project each endpoint onto the other segment via 1D parameter
-    // using length-normalized directions when possible.
-    for &pt in &ends_a {
-        best = best.min(point_segment_distance_3d(pt, p2, q2));
-    }
-    for &pt in &ends_b {
-        best = best.min(point_segment_distance_3d(pt, p1, q1));
-    }
-    best
-}
-
-fn point_segment_distance_3d(point: [f64; 3], start: [f64; 3], end: [f64; 3]) -> f64 {
-    let ab = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
-    let ap = [
-        point[0] - start[0],
-        point[1] - start[1],
-        point[2] - start[2],
-    ];
-    let ab_len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-    let param = if ab_len2 == 0.0 || !ab_len2.is_finite() {
-        0.0
-    } else {
-        let num = ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2];
-        if num.is_finite() {
-            (num / ab_len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        }
-    };
-    let closest = [
-        start[0] * (1.0 - param) + end[0] * param,
-        start[1] * (1.0 - param) + end[1] * param,
-        start[2] * (1.0 - param) + end[2] * param,
-    ];
-    hypot3(
-        point[0] - closest[0],
-        point[1] - closest[1],
-        point[2] - closest[2],
-    )
+) -> Result<f64> {
+    linear_3d::segment_segment_distance_3d(p1, q1, p2, q2)
 }
 
 impl Shape {
@@ -392,7 +180,7 @@ impl Shape {
         }
         let left = Distance3dParts::build(self);
         let right = Distance3dParts::build(other);
-        Ok(distance_3d_with_parts(&left, &right))
+        distance_3d_with_parts(&left, &right)
     }
 
     /// Distribute an M ordinate from `start_m` to `end_m` over the arc length

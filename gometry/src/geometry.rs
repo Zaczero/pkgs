@@ -84,6 +84,7 @@ mod generated_budget;
 mod geodesic_bvh;
 mod line_index;
 mod linear;
+mod linear_3d;
 mod ordinates;
 mod overlay;
 pub(crate) use overlay::overlay_all;
@@ -160,6 +161,7 @@ use overlay::{
 pub(crate) use packed_line_metrics::PackedLineColumnView;
 pub(crate) use packed_line_metrics::scale_metric_values;
 pub(crate) use point_location::{PointBatchTester, PolygonPointIndex};
+pub(in crate::geometry) use segments::{DdInterval, dd_strict_cmp};
 use predicates::{
     LineworkChains, TouchDirections, classify_ring_pair, face_interior_point, polygon_rings_issue,
     ring_classify_point, ring_contains_interior, ring_edge_membership, ring_encloses_pole,

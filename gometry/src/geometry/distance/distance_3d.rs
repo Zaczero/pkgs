@@ -225,15 +225,15 @@ impl SegmentBvh3d {
         probe_parts: &Distance3dParts,
         target_segments: &[Segment3d],
         mut best: f64,
-    ) -> f64 {
+    ) -> crate::error::Result<f64> {
         let mut stack = Vec::new();
         for &probe in &probe_parts.segments {
-            self.visit_with_targets(probe, target_segments, &mut stack, &mut best);
+            self.visit_with_targets(probe, target_segments, &mut stack, &mut best)?;
             if best == 0.0 {
-                return 0.0;
+                return Ok(0.0);
             }
         }
-        best
+        Ok(best)
     }
 
     #[expect(
@@ -246,7 +246,7 @@ impl SegmentBvh3d {
         targets: &[Segment3d],
         stack: &mut Vec<usize>,
         best: &mut f64,
-    ) {
+    ) -> crate::error::Result<()> {
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
@@ -261,7 +261,7 @@ impl SegmentBvh3d {
                         probe.end,
                         target.start,
                         target.end,
-                    );
+                    )?;
                     if distance < *best {
                         *best = distance;
                     }
@@ -271,6 +271,7 @@ impl SegmentBvh3d {
                 },
             }
         }
+        Ok(())
     }
 
     fn push_nearer_last(&self, stack: &mut Vec<usize>, first_child: usize, probe_aabb: Aabb3d) {
@@ -311,13 +312,16 @@ pub(crate) fn segment_segment_distance_3d(
     q1: [f64; 3],
     p2: [f64; 3],
     q2: [f64; 3],
-) -> f64 {
+) -> crate::error::Result<f64> {
     crate::geometry::linear::segment_segment_distance_3d(p1, q1, p2, q2)
 }
 
-pub(crate) fn distance_3d_with_parts(left: &Distance3dParts, right: &Distance3dParts) -> f64 {
+pub(crate) fn distance_3d_with_parts(
+    left: &Distance3dParts,
+    right: &Distance3dParts,
+) -> crate::error::Result<f64> {
     if left.segments.is_empty() || right.segments.is_empty() {
-        return f64::INFINITY;
+        return Ok(f64::INFINITY);
     }
     let (probe, target) = if left.segments.len() <= right.segments.len() {
         (left, right)
@@ -339,20 +343,23 @@ pub(crate) fn distance_3d_with_parts(left: &Distance3dParts, right: &Distance3dP
                 left_segment.end,
                 right_segment.start,
                 right_segment.end,
-            );
+            )?;
             if distance < best {
                 best = distance;
                 if best == 0.0 {
-                    return 0.0;
+                    return Ok(0.0);
                 }
             }
         }
     }
-    best
+    Ok(best)
 }
 
 #[cfg(test)]
-pub(crate) fn distance_3d_brute_parts(left: &Distance3dParts, right: &Distance3dParts) -> f64 {
+pub(crate) fn distance_3d_brute_parts(
+    left: &Distance3dParts,
+    right: &Distance3dParts,
+) -> crate::error::Result<f64> {
     let mut best = f64::INFINITY;
     for &left_segment in &left.segments {
         for &right_segment in &right.segments {
@@ -361,14 +368,14 @@ pub(crate) fn distance_3d_brute_parts(left: &Distance3dParts, right: &Distance3d
                 left_segment.end,
                 right_segment.start,
                 right_segment.end,
-            );
+            )?;
             if distance < best {
                 best = distance;
                 if best == 0.0 {
-                    return 0.0;
+                    return Ok(0.0);
                 }
             }
         }
     }
-    best
+    Ok(best)
 }

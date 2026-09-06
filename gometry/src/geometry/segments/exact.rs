@@ -5,6 +5,7 @@
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
+use crate::geometry::Ordering;
 pub(super) use crate::geometry::exact_arith::{dd_diff, exact_power_of_two};
 use crate::geometry::exact_arith::{SPLITTER, dd_add, dd_mul, scale_shift_for_magnitude, two_sum};
 use crate::geometry::tessellation::exact::Interval;
@@ -156,20 +157,20 @@ pub(super) fn dd_interpolate(start: f64, end: f64, fraction: (f64, f64)) -> f64 
 }
 
 #[derive(Clone, Copy)]
-struct DdInterval {
+pub(in crate::geometry) struct DdInterval {
     head: f64,
     tail: Interval,
 }
 
 impl DdInterval {
-    const fn exact(value: f64) -> Self {
+    pub(in crate::geometry) const fn exact(value: f64) -> Self {
         Self {
             head: value,
             tail: Interval::exact(0.0),
         }
     }
 
-    fn difference(left: f64, right: f64) -> Option<Self> {
+    pub(in crate::geometry) fn difference(left: f64, right: f64) -> Option<Self> {
         let (head, tail) = two_sum(left, -right);
         head.is_finite().then_some(Self {
             head,
@@ -177,7 +178,7 @@ impl DdInterval {
         })
     }
 
-    fn add(self, other: Self) -> Option<Self> {
+    pub(in crate::geometry) fn add(self, other: Self) -> Option<Self> {
         let (head, tail) = two_sum(self.head, other.head);
         if !head.is_finite() {
             return None;
@@ -187,7 +188,7 @@ impl DdInterval {
         tail.is_finite().then_some(Self { head, tail })
     }
 
-    fn sub(self, other: Self) -> Option<Self> {
+    pub(in crate::geometry) fn sub(self, other: Self) -> Option<Self> {
         let (head, tail) = two_sum(self.head, -other.head);
         if !head.is_finite() {
             return None;
@@ -205,7 +206,7 @@ impl DdInterval {
     /// The high-high product uses Dekker's error-free transform only when its
     /// result is normal (or algebraically zero); every cross term, including
     /// low-low, is then accumulated through the shared outward interval.
-    fn mul(self, other: Self) -> Option<Self> {
+    pub(in crate::geometry) fn mul(self, other: Self) -> Option<Self> {
         let head_is_zero = binary_zero(self.head) || binary_zero(other.head);
         let high_product = self.head * other.head;
         if !head_is_zero && !high_product.is_normal() {
@@ -232,7 +233,7 @@ impl DdInterval {
         tail.is_finite().then_some(Self { head, tail })
     }
 
-    fn square(self) -> Option<Self> {
+    pub(in crate::geometry) fn square(self) -> Option<Self> {
         let head_is_zero = binary_zero(self.head);
         let high_product = self.head * self.head;
         if !head_is_zero && !high_product.is_normal() {
@@ -259,7 +260,7 @@ impl DdInterval {
         tail.is_finite().then_some(Self { head, tail })
     }
 
-    fn scale(self, value: f64) -> Option<Self> {
+    pub(in crate::geometry) fn scale(self, value: f64) -> Option<Self> {
         self.mul(Self::exact(value))
     }
 
@@ -271,10 +272,46 @@ impl DdInterval {
         }
     }
 
-    fn approximate_pair(self) -> (f64, f64) {
+    pub(in crate::geometry) fn approximate_pair(self) -> (f64, f64) {
         let midpoint = self.tail.lo * 0.5 + self.tail.hi * 0.5;
         (self.head, midpoint)
     }
+}
+
+fn signed_sum_order(left: f64, right: f64) -> Ordering {
+    if binary_zero(left) {
+        return if binary_zero(right) {
+            Ordering::Equal
+        } else {
+            right.total_cmp(&0.0)
+        };
+    }
+    if binary_zero(right) {
+        return left.total_cmp(&0.0);
+    }
+    if left.is_sign_positive() == right.is_sign_positive() {
+        return left.total_cmp(&0.0);
+    }
+    match left.abs().total_cmp(&right.abs()) {
+        Ordering::Greater => left.total_cmp(&0.0),
+        Ordering::Less => right.total_cmp(&0.0),
+        Ordering::Equal => Ordering::Equal,
+    }
+}
+
+/// Strictly compare two outward DD enclosures without rounding `head + tail`
+/// through a single `f64`.
+pub(in crate::geometry) fn dd_strict_cmp(
+    left: DdInterval,
+    right: DdInterval,
+) -> Option<Ordering> {
+    let difference = left.sub(right)?;
+    if !difference.head.is_finite() || !difference.tail.is_finite() {
+        return None;
+    }
+    let lo = signed_sum_order(difference.head, difference.tail.lo);
+    let hi = signed_sum_order(difference.head, difference.tail.hi);
+    (lo == hi && lo != Ordering::Equal).then_some(lo)
 }
 
 const fn binary_zero(value: f64) -> bool {

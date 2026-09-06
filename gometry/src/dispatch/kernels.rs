@@ -836,7 +836,7 @@ pub(crate) fn binary_distance_3d(
             crate::geometry::distance_3d_with_parts(
                 left.distance_3d_parts(),
                 right.distance_3d_parts(),
-            ),
+            )?,
             to_metre,
         ));
     }

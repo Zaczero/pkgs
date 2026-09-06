@@ -22,6 +22,7 @@ mod exact;
 pub(crate) use exact::orientation;
 pub(in crate::geometry) use exact::stored_orientation_sign;
 pub(super) use exact::{CCW_ERRBOUND_A, orientation_xy, ray_crossing_is_right};
+pub(in crate::geometry) use exact::{DdInterval, dd_strict_cmp};
 use exact::{
     certified_projection, dd_clamp_unit, dd_cross, dd_diff, dd_interpolate, dd_quotient,
     exact_power_of_two, segment_pair_scale_shifts,

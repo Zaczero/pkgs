@@ -941,8 +941,8 @@ fn distance_3d_with_parts_matches_brute_oracle() {
     for (left_z, right_z) in cases {
         let left_parts = Distance3dParts::build(&left_z);
         let right_parts = Distance3dParts::build(&right_z);
-        let brute = distance_3d_brute_parts(&left_parts, &right_parts);
-        let pruned = distance_3d_with_parts(&left_parts, &right_parts);
+        let brute = distance_3d_brute_parts(&left_parts, &right_parts).expect("exact brute distance");
+        let pruned = distance_3d_with_parts(&left_parts, &right_parts).expect("exact pruned distance");
         assert_eq!(
             pruned.to_bits(),
             brute.to_bits(),
