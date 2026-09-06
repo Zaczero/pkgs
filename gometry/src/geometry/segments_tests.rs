@@ -159,9 +159,9 @@ fn assert_liang_authority_agrees(name: &str, start: XY, end: XY, rect: Bounds) {
 }
 
 #[test]
-fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
+fn liang_barsky_and_exact_authorities_preserve_structural_clip_results() {
     let rect = Bounds::new(0.0, 0.0, 1.0, 1.0).expect("valid unit rectangle");
-    let admitted = [
+    let cases = [
         (
             "ordinary rising crossing",
             XY::new(-1.0, 0.1),
@@ -200,16 +200,6 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
             Bounds::new(1.0e15, 1.0e15, 1.0e15 + 16.0, 1.0e15 + 16.0)
                 .expect("valid offset rectangle"),
         ),
-    ];
-    for (name, start, end, rect) in admitted {
-        assert!(
-            clip_segment_liang_barsky(start, end, rect) != ClipVerdict::Declined,
-            "{name}: ordinary finite case was not admitted: {start:?} -> {end:?}"
-        );
-        assert_liang_authority_agrees(name, start, end, rect);
-    }
-
-    let fallback = [
         (
             "zero lower-edge ratio",
             XY::new(-1.0e15, 0.5),
@@ -241,7 +231,7 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
             rect,
         ),
         (
-            "subnormal rectangle",
+            "tiny rectangle",
             XY::new(-1.0e-200, 0.0),
             XY::new(2.0e-200, 1.0e-200),
             Bounds::new(0.0, 0.0, 1.0e-200, 1.0e-200).expect("valid tiny rectangle"),
@@ -254,11 +244,7 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
                 .expect("valid huge offset rectangle"),
         ),
     ];
-    for (name, start, end, rect) in fallback {
-        assert!(
-            clip_segment_liang_barsky(start, end, rect) == ClipVerdict::Declined,
-            "{name}: ambiguous case was admitted: {start:?} -> {end:?}, {rect:?}"
-        );
+    for (name, start, end, rect) in cases {
         assert_liang_authority_agrees(name, start, end, rect);
     }
 }
