@@ -500,7 +500,7 @@ impl GlobalFaces {
         partition: &ExactPartition<'_>,
         occupied: &[bool],
     ) -> Result<BoundaryPlan> {
-        let walks = self.boundary_walks(topology, occupied)?;
+        let mut walks = self.boundary_walks(topology, occupied)?;
         let mut retained = Vec::new();
         try_reserve_vec(&mut retained, partition.spans.len())?;
         retained.resize(partition.spans.len(), false);
@@ -513,6 +513,46 @@ impl GlobalFaces {
             }
         }
         let face_quotient = self.quotient(topology, edges, &retained)?;
+        let mut protected = Vec::new();
+        try_reserve_vec(&mut protected, partition.recipes.len())?;
+        protected.resize(partition.recipes.len(), false);
+        for &node in &partition.point_nodes {
+            protected[node.0 as usize] = true;
+        }
+        for &(node, _) in &partition.point_sources {
+            protected[node.0 as usize] = true;
+        }
+        let sides = |slot: u32| {
+            [slot, topology.twins[slot as usize]].map(|dart| {
+                face_quotient[self.walk_faces[topology.face_of[dart as usize] as usize] as usize]
+            })
+        };
+        let can_join = |left: u32, right: u32| -> Result<bool> {
+            let node = topology.owners[right as usize] as usize;
+            if protected[node] || sides(left) != sides(right) {
+                return Ok(false);
+            }
+            let row = topology.starts[node] as usize..topology.starts[node + 1] as usize;
+            if row.filter(|&slot| retained[edges[slot] as usize]).count() != 2 {
+                return Ok(false);
+            }
+            let source = |slot: u32| {
+                partition.unique[partition.spans[edges[slot as usize] as usize].unique as usize]
+            };
+            let a = source(left);
+            let b = source(right);
+            let difference = |end, start| {
+                ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)
+            };
+            let ax = difference(a.end.x, a.start.x)?;
+            let ay = difference(a.end.y, a.start.y)?;
+            let bx = difference(b.end.x, b.start.x)?;
+            let by = difference(b.end.y, b.start.y)?;
+            Ok(ax
+                .try_product(&by)?
+                .try_subtract(ay.try_product(&bx)?)?
+                .is_zero())
+        };
         let mut span_slots = Vec::new();
         try_reserve_vec(&mut span_slots, partition.spans.len())?;
         span_slots.resize(partition.spans.len(), 0);
@@ -526,21 +566,36 @@ impl GlobalFaces {
             try_reserve_vec(&mut source_darts, 1)?;
             let start = source_darts.len();
             source_darts.push(slot);
-            let sides = [slot, topology.twins[slot as usize]].map(|dart| {
-                face_quotient[self.walk_faces[topology.face_of[dart as usize] as usize] as usize]
-            });
             Ok(PlannedChord {
                 sources: start..start + 1,
-                sides,
+                sides: sides(slot),
             })
         };
         let mut planned_walks = Vec::new();
         try_reserve_vec(&mut planned_walks, walks.len())?;
-        for walk in &walks {
+        for walk in &mut walks {
+            // Start at a retained corner so a joined source range never wraps.
+            for index in 0..walk.len() {
+                let prior = if index == 0 {
+                    walk.len() - 1
+                } else {
+                    index - 1
+                };
+                if !can_join(walk[prior], walk[index])? {
+                    walk.rotate_left(index);
+                    break;
+                }
+            }
             let mut chords = Vec::new();
             try_reserve_vec(&mut chords, walk.len())?;
-            for &slot in walk {
-                chords.push(make_chord(slot)?);
+            for (index, &slot) in walk.iter().enumerate() {
+                let chord = make_chord(slot)?;
+                if index > 0 && can_join(walk[index - 1], slot)? {
+                    let previous: &mut PlannedChord = chords.last_mut().unwrap();
+                    previous.sources.end = chord.sources.end;
+                } else {
+                    chords.push(chord);
+                }
             }
             planned_walks.push(chords);
         }
@@ -2143,6 +2198,72 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn boundary_contraction_preserves_explicit_points_and_source_paths() {
+        for (name, protect, attach_line) in [
+            ("unprotected", false, false),
+            ("explicit point", true, false),
+            ("line junction", false, true),
+        ] {
+            let mut sources = vec![
+                seg(1.0, 0.0, 2.0, 0.0),
+                seg(2.0, 0.0, 2.0, 2.0),
+                seg(2.0, 2.0, 0.0, 2.0),
+                seg(0.0, 2.0, 0.0, 0.0),
+                seg(0.0, 0.0, 1.0, 0.0),
+            ];
+            if protect {
+                sources.push(seg(1.0, 0.0, 1.0, 0.0));
+            }
+            if attach_line {
+                sources.push(seg(1.0, 0.0, 1.0, -1.0));
+            }
+            let case = run(&sources);
+            let partition = case.partition();
+            let (topology, edges) = partition.local_topology().unwrap();
+            let faces = partition.global_faces(&topology, &edges).unwrap();
+            assert_eq!(faces.count, 2);
+            let lines = if attach_line {
+                let endpoint = stored_node(&partition, XY::new(1.0, -1.0)).unwrap();
+                vec![
+                    partition
+                        .spans
+                        .iter()
+                        .position(|span| span.start == endpoint || span.end == endpoint)
+                        .unwrap() as u32,
+                ]
+            } else {
+                Vec::new()
+            };
+            let plan = faces
+                .boundary_plan(lines, &topology, &edges, &partition, &[false, true])
+                .unwrap();
+            assert_eq!(plan.walks.len(), 1);
+            assert_eq!(plan.source_darts.len(), if attach_line { 6 } else { 5 });
+            let emitted = plan.round_items(&partition, &topology).unwrap();
+            assert_eq!(
+                plan.walks[0].len(),
+                if protect || attach_line { 5 } else { 4 },
+                "{name}"
+            );
+            assert_eq!(
+                emitted.len(),
+                plan.walks[0].len() + usize::from(attach_line)
+            );
+            assert_eq!(
+                emitted
+                    .iter()
+                    .any(|segment| segment.start == XY::new(1.0, 0.0)),
+                protect || attach_line,
+            );
+            if !protect && !attach_line {
+                assert!(emitted.iter().any(|segment| {
+                    segment.start == XY::new(0.0, 0.0) && segment.end == XY::new(2.0, 0.0)
+                }));
+            }
+        }
+    }
+
     #[test]
     fn rounded_chord_can_hit_an_isolated_node_without_node_collision() {
         let point = XY::new(0.5, 1.0 / 6.0);
