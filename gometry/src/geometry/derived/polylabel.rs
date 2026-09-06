@@ -4,11 +4,14 @@
 )]
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::num::NonZeroU32;
 
+use crate::error::Result;
+use crate::geometry::tessellation::exact::{ExactDyadic, round_sqrt_ratio, try_compare_ratios};
 use crate::geometry::{
-    AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeqBuilder, Coordinates as _,
-    ExpansionBudget, FacetBvh, Point, PolylabelCell, PreparedLinework, Segment,
-    Shape, XY,
+    AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
+    ExpansionBudget, FacetBvh, Orientation, Point, Polygon, PolylabelCell, PreparedLinework, Ring,
+    Segment, Shape, XY, orientation,
 };
 impl Eq for PolylabelCell {}
 
@@ -139,12 +142,9 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
     (center, *support)
 }
 
-/// The pole of inaccessibility (`center`) and its nearest point on the
-/// boundary linework (`witness`) — the inscribed circle's center and a point
-/// on its circumference. The witness rides the same boundary index the search
-/// builds, so it costs one extra `O(log segments)` descent rather than the
-/// `boundary()` ring clone plus brute `O(segments)` nearest-point scan it
-/// replaces (the whole fixed `maximum_inscribed_circle` tail).
+/// The pole of inaccessibility, returned after denormalizing the search center.
+/// Maximum-circle clearance is recomputed separately in source coordinates;
+/// a rounded nearest-point witness is not a continuum-distance certificate.
 struct PolylabelFrame {
     shape: Shape,
     frame: AxisFrame,
@@ -268,24 +268,16 @@ fn normalized_polylabel_frame(
     }))
 }
 
-pub(crate) fn polylabel_point(
-    shape: &Shape,
-    tolerance: Option<f64>,
-) -> crate::error::Result<(Point, Point)> {
+pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<Point> {
     let Some(bounds) = shape.bounds() else {
         let origin = Point::new_raw_xy(0.0, 0.0);
-        return Ok((origin, origin));
+        return Ok(origin);
     };
     // Degenerate input — a zero-width bounding box (a sliver or a point): the
-    // representative point is the answer and its boundary projection the
-    // witness. Build the original-frame field only on this rare branch.
+    // representative point is the answer. Build the original-frame field only
+    // on this rare branch.
     let Some(frame) = normalized_polylabel_frame(shape, bounds)? else {
-        let original_field = PolylabelField::new(shape, 0.0, None);
-        let center = representative_point(shape, bounds);
-        return Ok((
-            center,
-            original_field.nearest_boundary(center).unwrap_or(center),
-        ));
+        return Ok(representative_point(shape, bounds));
     };
     let normalized_bounds = frame
         .shape
@@ -293,8 +285,7 @@ pub(crate) fn polylabel_point(
         .expect("non-empty normalized polygon retains bounds");
     let mut field = PolylabelField::new(&frame.shape, frame.max_inradius, Some(frame.frame));
     if field.is_empty() {
-        let center = representative_point(shape, bounds);
-        return Ok((center, center));
+        return Ok(representative_point(shape, bounds));
     }
 
     // Tolerance remains in public Euclidean coordinates.  The framed field
@@ -347,10 +338,365 @@ pub(crate) fn polylabel_point(
         Point::new_raw_xy(world.x, world.y)
     };
     let center = denormalize(best.center);
-    let witness = field
-        .nearest_boundary(best.center)
-        .map_or(center, denormalize);
-    Ok((center, witness))
+    Ok(center)
+}
+
+struct ExactSquaredRatio {
+    numerator: ExactDyadic,
+    denominator: ExactDyadic,
+}
+
+impl ExactSquaredRatio {
+    fn cmp(&self, other: &Self) -> Result<Ordering> {
+        try_compare_ratios(
+            &self.numerator,
+            &self.denominator,
+            &other.numerator,
+            &other.denominator,
+        )
+    }
+
+    fn round_sqrt(&self) -> Result<f64> {
+        round_sqrt_ratio(&self.numerator, &self.denominator)
+    }
+}
+
+fn exact_difference(left: f64, right: f64) -> Result<ExactDyadic> {
+    ExactDyadic::try_from_f64(left)?.try_subtract(ExactDyadic::try_from_f64(right)?)
+}
+
+fn exact_squared_sum(left: &ExactDyadic, right: &ExactDyadic) -> Result<ExactDyadic> {
+    left.try_product(left)?.try_add(right.try_product(right)?)
+}
+
+fn exact_point_pair_squared(left: XY, right: XY) -> Result<ExactSquaredRatio> {
+    let dx = exact_difference(left.x, right.x)?;
+    let dy = exact_difference(left.y, right.y)?;
+    Ok(ExactSquaredRatio {
+        numerator: exact_squared_sum(&dx, &dy)?,
+        denominator: ExactDyadic::try_from_f64(1.0)?,
+    })
+}
+
+fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactSquaredRatio> {
+    let point = point.xy();
+    let dx = exact_difference(segment.end.x, segment.start.x)?;
+    let dy = exact_difference(segment.end.y, segment.start.y)?;
+    let qx = exact_difference(point.x, segment.start.x)?;
+    let qy = exact_difference(point.y, segment.start.y)?;
+    let denominator = dx.try_product(&dx)?.try_add(dy.try_product(&dy)?)?;
+    let zero = ExactDyadic::try_from_f64(0.0)?;
+    if denominator.is_zero() {
+        return exact_point_pair_squared(point, segment.start);
+    }
+    let numerator = qx.try_product(&dx)?.try_add(qy.try_product(&dy)?)?;
+    if numerator.cmp(&zero) != Ordering::Greater {
+        return exact_point_pair_squared(point, segment.start);
+    }
+    if numerator.cmp(&denominator) != Ordering::Less {
+        return exact_point_pair_squared(point, segment.end);
+    }
+    let point_squared = exact_squared_sum(&qx, &qy)?;
+    Ok(ExactSquaredRatio {
+        numerator: point_squared
+            .try_product(&denominator)?
+            .try_subtract(numerator.try_product(&numerator)?)?,
+        denominator,
+    })
+}
+
+fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
+    let mut best: Option<ExactSquaredRatio> = None;
+    let mut error = None;
+    shape.for_each_segment(|segment| {
+        if error.is_some() {
+            return;
+        }
+        let candidate = match exact_point_segment_squared(center, segment) {
+            Ok(candidate) => candidate,
+            Err(failure) => {
+                error = Some(failure);
+                return;
+            },
+        };
+        let replace = match &best {
+            None => true,
+            Some(current) => match candidate.cmp(current) {
+                Ok(order) => order == Ordering::Less,
+                Err(failure) => {
+                    error = Some(failure);
+                    false
+                },
+            },
+        };
+        if replace {
+            best = Some(candidate);
+        }
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    best.map_or(Ok(0.0), |distance| distance.round_sqrt())
+}
+
+#[derive(Clone)]
+struct ExactParameter {
+    numerator: ExactDyadic,
+    denominator: ExactDyadic,
+}
+
+impl ExactParameter {
+    fn cmp(&self, other: &Self) -> Result<Ordering> {
+        try_compare_ratios(
+            &self.numerator,
+            &self.denominator,
+            &other.numerator,
+            &other.denominator,
+        )
+    }
+}
+
+fn exact_cross(
+    left_x: &ExactDyadic,
+    left_y: &ExactDyadic,
+    right_x: &ExactDyadic,
+    right_y: &ExactDyadic,
+) -> Result<ExactDyadic> {
+    left_x
+        .try_product(right_y)?
+        .try_subtract(left_y.try_product(right_x)?)
+}
+
+fn update_lower(
+    lower: &mut ExactParameter,
+    lower_closed: &mut bool,
+    bound: ExactParameter,
+) -> Result<()> {
+    match bound.cmp(lower)? {
+        Ordering::Greater => {
+            *lower = bound;
+            *lower_closed = false;
+        },
+        Ordering::Equal => *lower_closed = false,
+        Ordering::Less => {},
+    }
+    Ok(())
+}
+
+fn update_upper(
+    upper: &mut ExactParameter,
+    upper_closed: &mut bool,
+    bound: ExactParameter,
+) -> Result<()> {
+    match bound.cmp(upper)? {
+        Ordering::Less => {
+            *upper = bound;
+            *upper_closed = false;
+        },
+        Ordering::Equal => *upper_closed = false,
+        Ordering::Greater => {},
+    }
+    Ok(())
+}
+
+fn interval_is_empty(
+    lower: &ExactParameter,
+    lower_closed: bool,
+    upper: &ExactParameter,
+    upper_closed: bool,
+) -> Result<bool> {
+    Ok(match lower.cmp(upper)? {
+        Ordering::Greater => true,
+        Ordering::Equal => !(lower_closed && upper_closed),
+        Ordering::Less => false,
+    })
+}
+
+/// Whether a source segment has any point in the candidate's open interior.
+/// The candidate is convex, so each edge contributes one exact affine strict
+/// half-plane in the source segment parameter. The interval remains closed at
+/// the source endpoints; only candidate boundary contacts are strict.
+fn segment_enters_candidate(
+    segment: Segment,
+    candidate: &[Point],
+    counter_clockwise: bool,
+) -> Result<bool> {
+    let zero = ExactDyadic::try_from_f64(0.0)?;
+    let one = ExactDyadic::try_from_f64(1.0)?;
+    let lower_bound = ExactParameter {
+        numerator: zero.clone(),
+        denominator: one.clone(),
+    };
+    let upper_bound = ExactParameter {
+        numerator: one.clone(),
+        denominator: one,
+    };
+    let mut lower = lower_bound;
+    let mut upper = upper_bound;
+    let mut lower_closed = true;
+    let mut upper_closed = true;
+    let source_dx = exact_difference(segment.end.x, segment.start.x)?;
+    let source_dy = exact_difference(segment.end.y, segment.start.y)?;
+
+    for index in 0..candidate.len() {
+        let start = candidate[index];
+        let end = candidate[(index + 1) % candidate.len()];
+        let edge_dx = exact_difference(end.x, start.x)?;
+        let edge_dy = exact_difference(end.y, start.y)?;
+        let start_x = exact_difference(segment.start.x, start.x)?;
+        let start_y = exact_difference(segment.start.y, start.y)?;
+        let c0 = exact_cross(&edge_dx, &edge_dy, &start_x, &start_y)?;
+        let c1 = exact_cross(&edge_dx, &edge_dy, &source_dx, &source_dy)?;
+        let (c0, c1) = if counter_clockwise {
+            (c0, c1)
+        } else {
+            (
+                zero.clone().try_subtract(c0)?,
+                zero.clone().try_subtract(c1)?,
+            )
+        };
+        match c1.sign() {
+            crate::geometry::exact_arith::ExactSign::Zero => {
+                if c0.sign() != crate::geometry::exact_arith::ExactSign::Positive {
+                    return Ok(false);
+                }
+            },
+            crate::geometry::exact_arith::ExactSign::Positive => {
+                update_lower(&mut lower, &mut lower_closed, ExactParameter {
+                    numerator: zero.clone().try_subtract(c0)?,
+                    denominator: c1,
+                })?;
+            },
+            crate::geometry::exact_arith::ExactSign::Negative => {
+                update_upper(&mut upper, &mut upper_closed, ExactParameter {
+                    numerator: c0,
+                    denominator: zero.clone().try_subtract(c1)?,
+                })?;
+            },
+        }
+        if interval_is_empty(&lower, lower_closed, &upper, upper_closed)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn candidate_center_is_strictly_inside(
+    candidate: &[Point],
+    center: Point,
+    counter_clockwise: bool,
+) -> bool {
+    candidate.iter().enumerate().all(|(index, &start)| {
+        let end = candidate[(index + 1) % candidate.len()];
+        matches!(
+            (counter_clockwise, orientation(start, end, center)),
+            (true, Orientation::CounterClockwise) | (false, Orientation::Clockwise)
+        )
+    })
+}
+
+fn source_boundary_enters_candidate(
+    shape: &Shape,
+    candidate: &[Point],
+    counter_clockwise: bool,
+) -> Result<bool> {
+    let mut enters = false;
+    let mut error = None;
+    shape.for_each_segment(|segment| {
+        if enters || error.is_some() {
+            return;
+        }
+        match segment_enters_candidate(segment, candidate, counter_clockwise) {
+            Ok(true) => enters = true,
+            Ok(false) => {},
+            Err(failure) => error = Some(failure),
+        }
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(enters)
+}
+
+pub(crate) fn polylabel_center_radius(
+    shape: &Shape,
+    tolerance: Option<f64>,
+) -> Result<(Point, f64)> {
+    let center = polylabel_point(shape, tolerance)?;
+    Ok((center, exact_boundary_radius(shape, center)?))
+}
+
+pub(crate) fn build_inscribed_circle(
+    shape: &Shape,
+    center: Point,
+    radius: f64,
+    quadrant_segments: NonZeroU32,
+    certify_source: bool,
+) -> Result<Shape> {
+    let steps = 4_usize
+        .checked_mul(quadrant_segments.get() as usize)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let vertices = steps
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments");
+    budget.add(vertices)?;
+    if !center.x.is_finite() || !center.y.is_finite() || !radius.is_finite() {
+        return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+            "maximum_inscribed_circle",
+        ));
+    }
+    let mut points = Vec::new();
+    crate::try_reserve_vec(&mut points, steps)?;
+    let quadrant = quadrant_segments.get() as usize;
+    for step in 0..steps {
+        let (unit_x, unit_y) = if step.is_multiple_of(quadrant) {
+            match (step / quadrant) % 4 {
+                0 => (1.0, 0.0),
+                1 => (0.0, 1.0),
+                2 => (-1.0, 0.0),
+                _ => (0.0, -1.0),
+            }
+        } else {
+            let (sin, cos) = (std::f64::consts::TAU * step as f64 / steps as f64).sin_cos();
+            (cos, sin)
+        };
+        let x = center.x + radius * unit_x;
+        let y = center.y + radius * unit_y;
+        if !x.is_finite() || !y.is_finite() {
+            return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+                "maximum_inscribed_circle",
+            ));
+        }
+        points.push(Point::new_raw_xy(x, y));
+    }
+    let mut closed = Vec::new();
+    crate::try_reserve_vec(&mut closed, vertices)?;
+    closed.extend_from_slice(&points);
+    closed.push(points[0]);
+    let seq = CoordSeq::try_from_points(&closed)?;
+    let winding = crate::geometry::ring_winding(&seq);
+    let strict_convex = crate::geometry::predicates::shell_is_strictly_convex(&seq);
+    if winding.is_degenerate() || !strict_convex {
+        return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+            "maximum_inscribed_circle",
+        ));
+    }
+    let counter_clockwise = winding.is_ccw();
+    let center_in_candidate = candidate_center_is_strictly_inside(&points, center, counter_clockwise);
+    if !center_in_candidate
+        || (certify_source
+            && (!shape.contains_point(center)
+                || source_boundary_enters_candidate(shape, &points, counter_clockwise)?))
+    {
+        return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+            "maximum_inscribed_circle",
+        ));
+    }
+    Ok(Shape::Polygon(Polygon::new(
+        Ring::from_closed(seq),
+        Vec::new(),
+    )))
 }
 
 pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
@@ -368,10 +714,9 @@ pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
 /// `O(log segments)` SIMD branch-and-bound descent rather than the per-cell
 /// `O(segments)` scan it replaces. Containment (the distance sign) rides a
 /// direct ray cast — needed for only the seed and boundary-straddling cells,
-/// far below a full hierarchical `PointBatchTester` build's payoff. The same
-/// BVH then yields the inscribed circle's boundary contact point, so
-/// `maximum_inscribed_circle` never rebuilds or rescans the boundary for its
-/// radius.
+/// far below a full hierarchical `PointBatchTester` build's payoff. The
+/// maximum-inscribed-circle owner performs its own exact source-coordinate
+/// clearance fold after the public center is denormalized.
 struct PolylabelField<'a> {
     shape: &'a Shape,
     linework: PreparedLinework,
@@ -404,35 +749,6 @@ impl<'a> PolylabelField<'a> {
 
     const fn is_empty(&self) -> bool {
         self.linework.segment_count() == 0
-    }
-
-    /// The point on the boundary linework nearest `center` (the inscribed
-    /// circle's contact point), full ordinates reconstructed. Reuses the
-    /// search's index — one branch-and-bound descent — so the witness costs
-    /// nothing like the brute scan it replaces. `None` only when there is no
-    /// linework.
-    fn nearest_boundary(&self, center: Point) -> Option<Point> {
-        if let Some(frame) = self.frame {
-            let mut nearest = None;
-            let mut best = f64::INFINITY;
-            self.linework.for_each_segment(|segment| {
-                let (candidate, distance) =
-                    framed_metric_nearest_on_segment(frame, center, segment);
-                if distance < best {
-                    best = distance;
-                    nearest = Some(candidate);
-                }
-            });
-            return nearest;
-        }
-        let candidate = self.bvh.as_ref().map_or_else(
-            || {
-                self.linework
-                    .nearest_to_points(std::iter::once(center), None)
-            },
-            |bvh| bvh.nearest_to_points(&self.linework, std::iter::once(center), None),
-        );
-        candidate.map(|candidate| candidate.target)
     }
 
     /// Unsigned distance from `point` to the boundary linework. The BVH runs
@@ -524,7 +840,30 @@ impl<'a> PolylabelField<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::{ErrorKind, ResourceError};
     use crate::{Polygon, Ring};
+
+    fn circle_points(center: Point, radius: f64) -> Vec<Point> {
+        let mut points = Vec::with_capacity(64);
+        for step in 0..64 {
+            let (unit_x, unit_y) = if step % 16 == 0 {
+                match (step / 16) % 4 {
+                    0 => (1.0, 0.0),
+                    1 => (0.0, 1.0),
+                    2 => (-1.0, 0.0),
+                    _ => (0.0, -1.0),
+                }
+            } else {
+                let (sin, cos) = (std::f64::consts::TAU * step as f64 / 64.0).sin_cos();
+                (cos, sin)
+            };
+            points.push(Point::new_raw_xy(
+                center.x + radius * unit_x,
+                center.y + radius * unit_y,
+            ));
+        }
+        points
+    }
 
     #[test]
     fn reciprocal_ribbon_keeps_the_physical_nearest_edge() {
@@ -540,13 +879,161 @@ mod tests {
             ]),
             Vec::new(),
         ));
-        let (center, witness) = polylabel_point(&shape, None).expect("finite ribbon");
+        let center = polylabel_point(&shape, None).expect("finite ribbon");
         assert_eq!(center, Point::new_raw_xy(0.0, 0.0));
-        assert_eq!(center.y.hypot(witness.y).to_bits(), half_height.to_bits());
+    }
+
+    #[test]
+    fn source_tangent_does_not_enter_inscribed_circle() {
+        let center = Point::new_raw_xy(1.0, 1.0);
+        let points = circle_points(center, 1.0);
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(2.0, 0.0),
+        };
+        assert!(!segment_enters_candidate(segment, &points, true).unwrap());
+        for segment in [
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(2.0, 0.0),
+            },
+            Segment {
+                start: XY::new(2.0, 0.0),
+                end: XY::new(2.0, 2.0),
+            },
+            Segment {
+                start: XY::new(2.0, 2.0),
+                end: XY::new(0.0, 2.0),
+            },
+            Segment {
+                start: XY::new(0.0, 2.0),
+                end: XY::new(0.0, 0.0),
+            },
+        ] {
+            assert!(!segment_enters_candidate(segment, &points, true).unwrap());
+        }
+        let mut closed = points.clone();
+        closed.push(points[0]);
+        let seq = CoordSeq::from_points(&closed);
+        assert!(!crate::geometry::ring_winding(&seq).is_degenerate());
+        assert!(crate::geometry::shell_is_convex(&seq));
+        assert!(candidate_center_is_strictly_inside(&points, center, true));
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(2.0, 0.0),
+                Point::new_raw_xy(2.0, 2.0),
+                Point::new_raw_xy(0.0, 2.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ]),
+            Vec::new(),
+        ));
+        assert!(source.contains_point(center));
+        assert!(!source_boundary_enters_candidate(&source, &points, true).unwrap());
+    }
+
+    #[test]
+    fn exact_boundary_radius_uses_the_smallest_stored_distance() {
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(0.1, 0.1),
+                Point::new_raw_xy(0.3, 0.1),
+                Point::new_raw_xy(0.3, 0.3),
+                Point::new_raw_xy(0.1, 0.3),
+                Point::new_raw_xy(0.1, 0.1),
+            ]),
+            Vec::new(),
+        ));
         assert_eq!(
-            center.x.to_bits(),
-            witness.x.to_bits(),
-            "nearest edge is horizontal"
+            exact_boundary_radius(&shape, Point::new_raw_xy(0.2, 0.2))
+                .unwrap()
+                .to_bits(),
+            0x3FB9_9999_9999_9998
         );
+    }
+
+    #[test]
+    fn exact_boundary_radius_handles_reciprocal_source_axes() {
+        let extent = 1.0e150;
+        let half_height = 1.0e-150;
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(-extent, -half_height),
+                Point::new_raw_xy(extent, -half_height),
+                Point::new_raw_xy(extent, half_height),
+                Point::new_raw_xy(-extent, half_height),
+                Point::new_raw_xy(-extent, -half_height),
+            ]),
+            Vec::new(),
+        ));
+        assert_eq!(
+            exact_boundary_radius(&shape, Point::new_raw_xy(0.0, 0.0))
+                .unwrap()
+                .to_bits(),
+            half_height.to_bits()
+        );
+    }
+
+    #[test]
+    fn source_hole_inside_candidate_is_rejected_without_boundary_contact() {
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(10.0, 0.0),
+                Point::new_raw_xy(10.0, 10.0),
+                Point::new_raw_xy(0.0, 10.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ]),
+            vec![Ring::from_closed(vec![
+                Point::new_raw_xy(4.5, 4.5),
+                Point::new_raw_xy(5.5, 4.5),
+                Point::new_raw_xy(5.5, 5.5),
+                Point::new_raw_xy(4.5, 5.5),
+                Point::new_raw_xy(4.5, 4.5),
+            ])],
+        ));
+        let candidate = circle_points(Point::new_raw_xy(5.0, 3.0), 3.0);
+        assert!(source.contains_point(Point::new_raw_xy(5.0, 3.0)));
+        assert!(source_boundary_enters_candidate(&source, &candidate, true).unwrap());
+    }
+
+    #[test]
+    fn candidate_center_must_be_strictly_inside_every_edge() {
+        let candidate = circle_points(Point::new_raw_xy(5.0, 3.0), 3.0);
+        assert!(candidate_center_is_strictly_inside(
+            &candidate,
+            Point::new_raw_xy(5.0, 3.0),
+            true,
+        ));
+        assert!(!candidate_center_is_strictly_inside(
+            &candidate,
+            Point::new_raw_xy(5.0, 6.0),
+            true,
+        ));
+    }
+
+    #[test]
+    fn exact_boundary_radius_propagates_allocation_failure() {
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(2.0, 0.0),
+                Point::new_raw_xy(2.0, 2.0),
+                Point::new_raw_xy(0.0, 2.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ]),
+            Vec::new(),
+        ));
+        let result = crate::test_support::fail_allocations_after(0, || {
+            exact_boundary_radius(&shape, Point::new_raw_xy(1.0, 1.0))
+        });
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                )
+        ));
     }
 }

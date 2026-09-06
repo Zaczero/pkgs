@@ -15,6 +15,7 @@ use crate::numeric::Positive;
 use crate::{
     F64Param, I64Param, line_interpolate_shape, line_interpolate_shape_m, line_substring_shape,
     line_substring_shape_m, metric_concave_hull, metric_constructive_shape,
+    metric_maximum_inscribed_circle,
     metric_constructive_shape_budgeted, metric_frechet_densified, metric_hausdorff_densified,
     metric_interpolate_m, metric_maximum_inscribed_radius, metric_minimum_bounding_circle,
     metric_minimum_bounding_radius, metric_minimum_clearance, metric_minimum_clearance_line,
@@ -267,12 +268,11 @@ pub(crate) fn unary_maximum_inscribed_circle(
     tolerance: Option<&F64Param>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::MaximumInscribedCircle)?;
-    metric_optional_constructive_shape(
+    metric_maximum_inscribed_circle(
         model,
         ctx.frame.crs_str(),
         data.shape(),
         tolerance.map(|value| value.get(ctx.lane.row())),
-        Shape::maximum_inscribed_circle,
     )
 }
 

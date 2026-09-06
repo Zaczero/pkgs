@@ -2,10 +2,11 @@ use std::num::NonZeroU32;
 
 use crate::error::Result;
 use crate::geometry::derived::{
-    areal_centroid, canonicalize_concave_hull_points, collection_surface_point, lineal_centroid,
-    lineal_surface_point, minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point,
-    native_concave_hull, point_centroid, polygonal_surface_point, polylabel_point,
-    shape_from_open_hull, shape_from_selected_hull, smallest_enclosing_circle,
+    areal_centroid, build_inscribed_circle, canonicalize_concave_hull_points,
+    collection_surface_point, lineal_centroid, lineal_surface_point, minimum_area_rectangle,
+    monotone_chain_hull, multipoint_surface_point, native_concave_hull, point_centroid,
+    polygonal_surface_point, polylabel_center_radius, polylabel_point, shape_from_open_hull,
+    shape_from_selected_hull, smallest_enclosing_circle,
 };
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, DEFAULT_MITER_LIMIT, GeometryErrorKind, GeometryKind, LineSeq,
@@ -175,14 +176,14 @@ impl Shape {
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
             .transpose()?;
         match self {
+            Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => Ok(Self::empty_point()),
             Self::Polygon(_) | Self::MultiPolygon(_) if !self.is_empty() => {
-                Ok(Self::Point(polylabel_point(self, tolerance)?.0))
+                Ok(Self::Point(polylabel_point(self, tolerance)?))
             },
             // The representative point of any empty polygonal input is the
             // empty point, matching Shapely's
             // `point_on_surface(POLYGON EMPTY) == POINT EMPTY`.
-            Self::MultiPolygon(_)
-            | Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
+            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
                 Ok(Self::empty_point())
             },
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
@@ -243,31 +244,40 @@ impl Shape {
     /// (both are filled `Polygon`s); the radius alone is
     /// [`maximum_inscribed_radius`](Self::maximum_inscribed_radius).
     pub fn maximum_inscribed_circle(&self, tolerance: Option<f64>) -> Result<Self> {
+        self.maximum_inscribed_circle_in_frame(tolerance, true)
+    }
+
+    /// Run the planar maximum-circle kernel in a local projected frame without
+    /// asserting source-frame literal containment. Geographic construction is
+    /// an explicitly approximate local-projection operation.
+    pub(crate) fn maximum_inscribed_circle_in_frame(
+        &self,
+        tolerance: Option<f64>,
+        certify_source: bool,
+    ) -> Result<Self> {
         let tolerance = tolerance
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
             .transpose()?;
         match self {
-            // The search yields both the center and its boundary contact point
-            // from one shared boundary index — no second `boundary()` clone or
-            // brute nearest-point scan.
+            Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => {
+                Ok(Self::empty_polygon())
+            },
             Self::Polygon(_) | Self::MultiPolygon(_) if !self.is_empty() => {
-                let (center, witness) = polylabel_point(self, tolerance)?;
-                let radius = (center.x - witness.x).hypot(center.y - witness.y);
+                let (center, radius) = polylabel_center_radius(self, tolerance)?;
                 if radius == 0.0 {
                     // A degenerate (zero-area) polygon has no inscribed disk;
-                    // the pole is its own witness — return that point.
+                    // preserve the existing center-point result.
                     return Ok(Self::Point(center));
                 }
-                Self::Point(center).buffer_with_style(
+                build_inscribed_circle(
+                    self,
+                    center,
                     radius,
-                    BufferCapStyle::Round,
-                    BufferJoinStyle::Round,
                     CIRCLE_QUADRANT_SEGMENTS,
-                    Positive::try_new("miter_limit", DEFAULT_MITER_LIMIT)?,
+                    certify_source,
                 )
             },
-            Self::MultiPolygon(_)
-            | Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
+            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
                 Ok(Self::empty_polygon())
             },
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
@@ -282,12 +292,11 @@ impl Shape {
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
             .transpose()?;
         match self {
+            Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => Ok(f64::NAN),
             Self::Polygon(_) | Self::MultiPolygon(_) if !self.is_empty() => {
-                let (center, witness) = polylabel_point(self, tolerance)?;
-                Ok((center.x - witness.x).hypot(center.y - witness.y))
+                Ok(polylabel_center_radius(self, tolerance)?.1)
             },
-            Self::MultiPolygon(_)
-            | Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(f64::NAN),
+            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(f64::NAN),
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
         }
     }

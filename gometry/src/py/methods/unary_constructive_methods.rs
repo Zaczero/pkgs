@@ -374,8 +374,11 @@ centroid : Area/length-weighted center (may fall outside).
 
 Raises
 ------
+GeometryError
+    If a finite planar/projected result cannot be represented as a contained
+    polygon without changing its center or radius.
 InvalidGeometryError
-    If the inscribed circle cannot be computed.
+    If invalid polygonal structure prevents the operation from completing.
 
 Examples
 --------

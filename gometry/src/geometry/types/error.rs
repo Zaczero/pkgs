@@ -135,6 +135,8 @@ pub enum GeometryErrorKind {
     RepairFailed(Box<str>),
     #[error("packed geometry exceeds the i32 offset capacity for GeoArrow list arrays")]
     OffsetCapacityExceeded,
+    #[error("{operation} output could not be represented as a contained geometry")]
+    UnrepresentableOutput { operation: &'static str },
     #[error("offset buffer is malformed: CSR offsets must start at 0 and be non-decreasing")]
     MalformedCsrOffsets,
     /// A serialized pickle payload violated the private packed-storage
@@ -246,6 +248,10 @@ impl GeometryErrorKind {
     )]
     pub fn message(message: impl Into<Box<str>>) -> CrateError {
         Self::Invalid(message.into()).into()
+    }
+
+    pub fn unrepresentable_output(operation: &'static str) -> CrateError {
+        Self::UnrepresentableOutput { operation }.into()
     }
 
     #[expect(

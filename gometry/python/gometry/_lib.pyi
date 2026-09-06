@@ -2686,8 +2686,11 @@ class Geometry:
 
         Raises
         ------
+        GeometryError
+            If a finite planar/projected result cannot be represented as a contained
+            polygon without changing its center or radius.
         InvalidGeometryError
-            If the inscribed circle cannot be computed.
+            If invalid polygonal structure prevents the operation from completing.
 
         Examples
         --------
@@ -7823,8 +7826,11 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
         Raises
         ------
+        GeometryError
+            If a finite planar/projected result cannot be represented as a contained
+            polygon without changing its center or radius.
         InvalidGeometryError
-            If the inscribed circle cannot be computed.
+            If invalid polygonal structure prevents the operation from completing.
 
         Examples
         --------

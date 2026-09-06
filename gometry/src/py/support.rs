@@ -72,9 +72,10 @@ pub(crate) use bounds_index::{
 };
 pub(crate) use constructive::{
     VoronoiClipInput, geodesic_by_identity, metric_concave_hull, metric_constructive_shape,
-    metric_constructive_shape_budgeted, metric_interpolate_m, metric_minimum_bounding_circle,
-    metric_minimum_bounding_radius, metric_optional_constructive_shape, owned_voronoi_boundary,
-    py_polygonize_full, voronoi_edges_flatten, voronoi_flatten,
+    metric_constructive_shape_budgeted, metric_interpolate_m, metric_maximum_inscribed_circle,
+    metric_minimum_bounding_circle, metric_minimum_bounding_radius,
+    metric_optional_constructive_shape, owned_voronoi_boundary, py_polygonize_full,
+    voronoi_edges_flatten, voronoi_flatten,
 };
 pub(crate) use extract::{
     CoercedCollectedGeometryItems, GeometryValues, OwnedBytes, coerce_collected_geometry_items,

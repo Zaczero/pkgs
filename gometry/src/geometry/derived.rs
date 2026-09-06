@@ -19,7 +19,9 @@ pub(crate) use hull::{
     geometric_xy_cmp, monotone_chain_hull, shape_from_open_hull, shape_from_selected_hull,
 };
 pub(crate) use minimum_rectangle::minimum_area_rectangle;
-pub(crate) use polylabel::{polylabel_point, smallest_enclosing_circle};
+pub(crate) use polylabel::{
+    build_inscribed_circle, polylabel_center_radius, polylabel_point, smallest_enclosing_circle,
+};
 pub(crate) use surface::{
     collection_surface_point, lineal_surface_point, multipoint_surface_point,
     point_on_surface_line_columns, point_on_surface_polygon_row_columns, polygonal_surface_point,

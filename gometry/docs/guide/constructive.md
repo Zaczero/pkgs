@@ -332,6 +332,15 @@ scale-aware `tolerance=None` default derived from each geometry's extent. Pass a
 positive tolerance only when you need an explicit error bound; array methods
 also accept one tolerance per row.
 
+For CRS-free and projected planar input, a positive-radius
+`maximum_inscribed_circle` returns a contained 64-vertex `Polygon`, or raises
+`GeometryError` when finite-coordinate rounding cannot represent that contained
+result without changing the requested center or radius. Empty
+polygonal input returns `POLYGON EMPTY`. A zero-radius result returns a finite
+`Point` only when its center is covered by the source; otherwise it raises
+`GeometryError`. Geographic results retain the documented local-projection
+approximation.
+
 The circle result is a geometry, and the radius result is numeric:
 
 ```python exec="on" source="block" result="text"

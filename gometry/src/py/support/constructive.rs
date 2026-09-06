@@ -283,6 +283,27 @@ pub(crate) fn metric_optional_constructive_shape(
     }
 }
 
+/// CRS-aware maximum-inscribed-circle construction. Geographic results run
+/// the planar kernel in a local projection and retain that operation's
+/// approximation contract rather than asserting source-frame containment.
+pub(crate) fn metric_maximum_inscribed_circle(
+    model: &crate::crs::MetricModel,
+    crs: Option<&str>,
+    shape: &Shape,
+    tolerance: Option<f64>,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { to_metre } => {
+            shape.maximum_inscribed_circle(tolerance.map(|value| value / to_metre.get()))
+        },
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            geodesic_local_shape(shape, crs, true, state, |shape| {
+                shape.maximum_inscribed_circle_in_frame(tolerance, false)
+            })
+        },
+    }
+}
+
 /// CRS-aware concave hull. Projected/CRS-free inputs run the native kernel in
 /// the receiver coordinate frame (scaling `length_threshold` for projected SI
 /// metrics). Geographic inputs use a local projection only to decide which
