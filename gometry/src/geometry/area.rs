@@ -4,11 +4,11 @@
 use std::simd::num::SimdFloat as _;
 
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
+use crate::geometry::exact_arith::product_sum::ExactSum;
 #[cfg(test)]
 use crate::geometry::expansion::{
     expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim,
 };
-use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::types::{Coordinates, Point, XY};
 use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area, wrap_index};
 
@@ -966,10 +966,7 @@ fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
     unsigned_area(&open_cycle_sum(points))
 }
 
-fn cmp_closed_ring_magnitude<C: Coordinates + ?Sized>(
-    left: &C,
-    right: &C,
-) -> std::cmp::Ordering {
+fn cmp_closed_ring_magnitude<C: Coordinates + ?Sized>(left: &C, right: &C) -> std::cmp::Ordering {
     closed_ring_sum(left).compare_unsigned(&closed_ring_sum(right))
 }
 
@@ -1227,10 +1224,7 @@ mod tests {
     fn shoelace_measure_preserves_extreme_semantic_values() {
         let mixed_xs = [0.0, f64::from_bits(1), 2.0_f64.powi(-20), 0.0];
         let mixed_ys = [0.0, f64::from_bits(2), 2.0_f64.powi(-20), 0.0];
-        assert_eq!(
-            shoelace_measure_columns(&mixed_xs, &mixed_ys, 3).0,
-            0.0
-        );
+        assert_eq!(shoelace_measure_columns(&mixed_xs, &mixed_ys, 3).0, 0.0);
 
         let huge_xs = [0.0, 1e300, 1e300, 0.0, 0.0];
         let huge_ys = [0.0, 0.0, 1e300, 1e300, 0.0];
@@ -1460,11 +1454,7 @@ mod tests {
             ring_area_measure(&closed[..]).get().to_bits(),
             2.0_f64.powi(-55).to_bits()
         );
-        let open = [
-            XY::new(1.0, 0.0),
-            XY::new(0.0, 1.0),
-            XY::new(tiny, 1.0),
-        ];
+        let open = [XY::new(1.0, 0.0), XY::new(0.0, 1.0), XY::new(tiny, 1.0)];
         assert_eq!(
             open_xy_cycle_magnitude(&open).get().to_bits(),
             2.0_f64.powi(-55).to_bits()

@@ -12,9 +12,9 @@
 
 use std::cmp::Ordering;
 
+use crate::error::ResourceError;
 #[cfg(test)]
 use crate::geometry::GENERATED_ITEM_LIMIT;
-use crate::error::ResourceError;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::{GeometryErrorKind, Point, Result, XY};
 use crate::try_reserve_vec;
@@ -52,8 +52,6 @@ impl ExactSign {
         }
     }
 }
-
-
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::geometry) struct ExactDyadic {
@@ -368,10 +366,10 @@ impl ExactDyadic {
             return Ok(self);
         }
         let exponent = self.exponent.min(other.exponent);
-        let left_shift = usize::try_from(self.exponent - exponent)
-            .map_err(|_| ResourceError::SizeOverflow)?;
-        let right_shift = usize::try_from(other.exponent - exponent)
-            .map_err(|_| ResourceError::SizeOverflow)?;
+        let left_shift =
+            usize::try_from(self.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
+        let right_shift =
+            usize::try_from(other.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
         let left = Aligned::new(&self.limbs, left_shift);
         let right = Aligned::new(&other.limbs, right_shift);
         let (negative, limbs) = if self.negative == other.negative {
@@ -636,7 +634,7 @@ fn lattice_integers<const N: usize>(values: [f64; N]) -> Option<[i128; N]> {
             continue;
         }
         let bits = value.to_bits();
-        let biased = ((bits >> 52) & 0x7ff) as i32;
+        let biased = ((bits >> 52) & 0x7FF) as i32;
         let fraction = bits & ((1_u64 << 52) - 1);
         let (mut mantissa, mut exponent) = if biased == 0 {
             (fraction, -1074)
@@ -646,7 +644,11 @@ fn lattice_integers<const N: usize>(values: [f64; N]) -> Option<[i128; N]> {
         let trailing = mantissa.trailing_zeros();
         mantissa >>= trailing;
         exponent += trailing as i32;
-        mantissas[index] = if value < 0.0 { -(mantissa as i64) } else { mantissa as i64 };
+        mantissas[index] = if value < 0.0 {
+            -(mantissa as i64)
+        } else {
+            mantissa as i64
+        };
         exponents[index] = exponent;
     }
     let common = exponents.iter().copied().min().unwrap_or(i32::MAX);
@@ -756,11 +758,19 @@ fn incircle_filtered(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
 
 pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
     if let Some(sign) = incircle_float(a, b, c, d) {
-        debug_assert_eq!(sign, incircle_dyadic(a, b, c, d), "float-filtered incircle disagrees");
+        debug_assert_eq!(
+            sign,
+            incircle_dyadic(a, b, c, d),
+            "float-filtered incircle disagrees"
+        );
         return sign;
     }
     if let Some(sign) = incircle_lattice(a, b, c, d) {
-        debug_assert_eq!(sign, incircle_dyadic(a, b, c, d), "lattice incircle disagrees");
+        debug_assert_eq!(
+            sign,
+            incircle_dyadic(a, b, c, d),
+            "lattice incircle disagrees"
+        );
         return sign;
     }
     if let Some(sign) = incircle_filtered(a, b, c, d) {
@@ -832,7 +842,10 @@ impl Interval {
 
     /// `Some(Less)` / `Some(Greater)` only when the two intervals are strictly
     /// separated, which proves the order of the contained exact values.
-    #[expect(clippy::float_cmp, reason = "an exact interval is one double, and two of them are equal exactly when their doubles are")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "an exact interval is one double, and two of them are equal exactly when their doubles are"
+    )]
     fn compare(self, other: Self) -> Option<Ordering> {
         if self.hi < other.lo {
             Some(Ordering::Less)
@@ -1047,7 +1060,10 @@ enum Recipe {
     Circumcenter([XY; 3]),
     /// The perpendicular bisector of the two sites meeting the frame side
     /// through the two corners.
-    BisectorHit { sites: [XY; 2], side: [XY; 2] },
+    BisectorHit {
+        sites: [XY; 2],
+        side: [XY; 2],
+    },
 }
 
 impl Recipe {
@@ -1067,9 +1083,10 @@ impl Recipe {
                 };
                 key(a) == key(b)
             },
-            (Self::BisectorHit { sites: a, side: sa }, Self::BisectorHit { sites: b, side: sb }) => {
-                same_pair(*a, *b) && same_pair(*sa, *sb)
-            },
+            (
+                Self::BisectorHit { sites: a, side: sa },
+                Self::BisectorHit { sites: b, side: sb },
+            ) => same_pair(*a, *b) && same_pair(*sa, *sb),
             _ => false,
         }
     }
@@ -1093,7 +1110,10 @@ impl ExactPoint {
     /// A circumcenter whose nearest-even rounding is certified: the exact
     /// value lies within half an ulp of `center.rounded`, so within its two
     /// binary64 neighbours, which are the bounds every comparison reads first.
-    fn certified_circumcenter(sites: [XY; 3], center: &super::circumcenter::CertifiedCenter) -> Self {
+    fn certified_circumcenter(
+        sites: [XY; 3],
+        center: &super::circumcenter::CertifiedCenter,
+    ) -> Self {
         Self {
             coords: Coords::Certified {
                 recipe: Recipe::Circumcenter(sites),
@@ -1101,8 +1121,14 @@ impl ExactPoint {
                 exact: std::cell::OnceCell::new(),
             },
             bounds: [
-                Interval { lo: center.bounds[0].0, hi: center.bounds[0].1 },
-                Interval { lo: center.bounds[1].0, hi: center.bounds[1].1 },
+                Interval {
+                    lo: center.bounds[0].0,
+                    hi: center.bounds[0].1,
+                },
+                Interval {
+                    lo: center.bounds[1].0,
+                    hi: center.bounds[1].1,
+                },
             ],
         }
     }
@@ -1125,8 +1151,11 @@ impl ExactPoint {
                     ),
                     Recipe::BisectorHit { sites, side } => intersection_homogeneous(
                         &ExactLine::perpendicular_bisector(sites[0], sites[1]),
-                        &ExactLine::through_points(&Self::from_xy(side[0]), &Self::from_xy(side[1]))
-                            .expect("a frame side has two distinct corners"),
+                        &ExactLine::through_points(
+                            &Self::from_xy(side[0]),
+                            &Self::from_xy(side[1]),
+                        )
+                        .expect("a frame side has two distinct corners"),
                     ),
                 };
                 Box::new(coords)
@@ -1145,7 +1174,10 @@ impl ExactPoint {
 
     /// Where the perpendicular bisector of `sites` meets the frame side
     /// through `side`, certified.
-    #[expect(clippy::float_cmp, reason = "an axis-aligned side's two corners share a coordinate exactly, by construction")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "an axis-aligned side's two corners share a coordinate exactly, by construction"
+    )]
     pub(super) fn certified_bisector_hit(sites: [XY; 2], side: [XY; 2]) -> FrameHit {
         use super::circumcenter::{BisectorHit, SideAxis, certified_bisector_hit};
         let (axis, value) = if side[0].x == side[1].x {
@@ -1165,8 +1197,17 @@ impl ExactPoint {
             SideAxis::FixedY => XY::new(free, value),
         };
         let bounds = match axis {
-            SideAxis::FixedX => [Interval::exact(value), Interval { lo: free.next_down(), hi: free.next_up() }],
-            SideAxis::FixedY => [Interval { lo: free.next_down(), hi: free.next_up() }, Interval::exact(value)],
+            SideAxis::FixedX => [Interval::exact(value), Interval {
+                lo: free.next_down(),
+                hi: free.next_up(),
+            }],
+            SideAxis::FixedY => [
+                Interval {
+                    lo: free.next_down(),
+                    hi: free.next_up(),
+                },
+                Interval::exact(value),
+            ],
         };
         FrameHit::Point(Self {
             coords: Coords::Certified {
@@ -1520,7 +1561,10 @@ fn cycle_orientation_exact(open_cycle: &[ExactPoint]) -> Result<ExactSign> {
     for index in 0..open_cycle.len() {
         let left = &open_cycle[index];
         let right = &open_cycle[(index + 1) % open_cycle.len()];
-        let term_n = left.x().product(right.y()).subtract(left.y().product(right.x()));
+        let term_n = left
+            .x()
+            .product(right.y())
+            .subtract(left.y().product(right.x()));
         let term_d = left.w().product(right.w());
         numerator = numerator.product(&term_d).add(term_n.product(&denominator));
         denominator = denominator.product(&term_d);
@@ -1625,7 +1669,10 @@ fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) ->
 /// so the cheap construction is CERTIFIED, not assumed. `None` means no
 /// admissible binary64 box exists and the caller must fall back to the exact
 /// degree-8 construction.
-#[expect(clippy::needless_pass_by_value, reason = "the iterator is re-walked once per widening round")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the iterator is re-walked once per widening round"
+)]
 pub(super) fn enclosing_frame_binary64<'a>(
     points: impl Iterator<Item = &'a ExactPoint> + Clone,
 ) -> Option<[ExactPoint; 4]> {
@@ -1758,7 +1805,11 @@ pub(super) fn enclosing_frame(points: &[ExactPoint]) -> Result<[ExactPoint; 4]> 
     let ly = coordinate(min_y.y(), min_y.w(), false);
     let uy = coordinate(max_y.y(), max_y.w(), true);
     let make = |x: &ExactPoint, y: &ExactPoint| {
-        ExactPoint::homogeneous(x.x().product(y.w()), y.x().product(x.w()), x.w().product(y.w()))
+        ExactPoint::homogeneous(
+            x.x().product(y.w()),
+            y.x().product(x.w()),
+            x.w().product(y.w()),
+        )
     };
     Ok([
         make(&lx, &ly),
@@ -1777,12 +1828,8 @@ where
     let first = points
         .next()
         .ok_or_else(|| GeometryErrorKind::voronoi("empty exact frame input"))?;
-    let (mut min_x, mut max_x, mut min_y, mut max_y) = (
-        first.clone(),
-        first.clone(),
-        first.clone(),
-        first.clone(),
-    );
+    let (mut min_x, mut max_x, mut min_y, mut max_y) =
+        (first.clone(), first.clone(), first.clone(), first.clone());
     for point in points {
         if point.compare_x(&min_x).is_lt() {
             min_x = point.clone();
@@ -1833,7 +1880,11 @@ pub(super) fn rectangular_boundary(points: &[Point], padded: bool) -> Result<[Ex
         // cells partition exactly the rectangle they report.
         let span_x = ExactDyadic::from_f64(max_x).subtract(ExactDyadic::from_f64(min_x));
         let span_y = ExactDyadic::from_f64(max_y).subtract(ExactDyadic::from_f64(min_y));
-        let span = if span_x.cmp(&span_y).is_gt() { span_x } else { span_y };
+        let span = if span_x.cmp(&span_y).is_gt() {
+            span_x
+        } else {
+            span_y
+        };
         if span.is_zero() {
             return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
         }
@@ -1857,7 +1908,9 @@ pub(super) fn rectangular_boundary(points: &[Point], padded: bool) -> Result<[Ex
         min_y = outward(min_y, false)?;
         max_y = outward(max_y, true)?;
         if !(min_x.is_finite() && max_x.is_finite() && min_y.is_finite() && max_y.is_finite()) {
-            return Err(GeometryErrorKind::voronoi("padded Voronoi frame overflows binary64").into());
+            return Err(
+                GeometryErrorKind::voronoi("padded Voronoi frame overflows binary64").into(),
+            );
         }
     }
     Ok([
@@ -2357,7 +2410,11 @@ pub(in crate::geometry) fn round_sqrt_ratio(
         Ordering::Less => lower,
         Ordering::Greater => upper,
         Ordering::Equal => {
-            if low & 1 == 0 { lower } else { upper }
+            if low & 1 == 0 {
+                lower
+            } else {
+                upper
+            }
         },
     })
 }
@@ -2394,8 +2451,8 @@ mod sqrt_ratio_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::geometry::exact_arith::ExactSign;
     use super::*;
+    use crate::geometry::exact_arith::ExactSign;
 
     fn dyadic_orientation_sign(a: XY, b: XY, c: XY) -> ExactSign {
         let difference = |left: f64, right: f64| {
@@ -2415,27 +2472,16 @@ mod tests {
             let east = XY::new(scale, 0.0);
             let north = XY::new(0.0, scale);
             let inside = XY::new(scale * 0.25, scale * 0.25);
-            assert_eq!(
-                super::orient2d(origin, east, north),
-                ExactSign::Positive
-            );
+            assert_eq!(super::orient2d(origin, east, north), ExactSign::Positive);
             assert_eq!(
                 super::incircle(origin, east, north, inside),
                 ExactSign::Positive
             );
             if let Some(sign) = super::orient2d_float(origin, east, north) {
-                assert_eq!(
-                    sign,
-                    ExactSign::Positive,
-                    "orientation exponent {exponent}"
-                );
+                assert_eq!(sign, ExactSign::Positive, "orientation exponent {exponent}");
             }
             if let Some(sign) = super::incircle_float(origin, east, north, inside) {
-                assert_eq!(
-                    sign,
-                    ExactSign::Positive,
-                    "incircle exponent {exponent}"
-                );
+                assert_eq!(sign, ExactSign::Positive, "incircle exponent {exponent}");
             }
         }
     }
@@ -2511,8 +2557,11 @@ mod tests {
     /// Cases that decline are still checked through the complete predicate;
     /// decline is conservative and is not itself a contract here.
     #[test]
-    #[expect(clippy::many_single_char_names, reason = "a, b, c, d are the predicate's four points")]
-    fn float_filters_never_contradict_the_dyadic_predicates() {
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "a, b, c, d are the predicate's four points"
+    )]
+    fn filtered_predicates_never_contradict_exact_signs() {
         let mu = f64::from_bits(1);
         let orientation_cases = [
             (
@@ -2574,9 +2623,16 @@ mod tests {
         ];
         for &(name, a, b, c, expected) in &orientation_cases {
             assert_eq!(dyadic_orientation_sign(a, b, c), expected, "{name}: dyadic");
-            assert_eq!(super::orient2d(a, b, c), expected, "{name}: complete predicate");
+            assert_eq!(
+                super::orient2d(a, b, c),
+                expected,
+                "{name}: complete predicate"
+            );
             if let Some(sign) = super::orient2d_float(a, b, c) {
                 assert_eq!(sign, expected, "{name}: float filter");
+            }
+            if let Some(sign) = super::orient2d_lattice(a, b, c) {
+                assert_eq!(sign, expected, "{name}: lattice filter");
             }
         }
 
@@ -2640,10 +2696,21 @@ mod tests {
             ),
         ];
         for &(name, a, b, c, d, expected) in &incircle_cases {
-            assert_eq!(super::incircle_dyadic(a, b, c, d), expected, "{name}: dyadic");
-            assert_eq!(super::incircle(a, b, c, d), expected, "{name}: complete predicate");
+            assert_eq!(
+                super::incircle_dyadic(a, b, c, d),
+                expected,
+                "{name}: dyadic"
+            );
+            assert_eq!(
+                super::incircle(a, b, c, d),
+                expected,
+                "{name}: complete predicate"
+            );
             if let Some(sign) = super::incircle_float(a, b, c, d) {
                 assert_eq!(sign, expected, "{name}: float filter");
+            }
+            if let Some(sign) = super::incircle_lattice(a, b, c, d) {
+                assert_eq!(sign, expected, "{name}: lattice filter");
             }
         }
     }
@@ -2885,12 +2952,7 @@ mod tests {
 
     #[test]
     fn certified_materialization_preserves_exact_homogeneous_coordinates() {
-        let center = circumcenter(
-            XY::new(0.0, 0.0),
-            XY::new(4.0, 0.0),
-            XY::new(0.0, 2.0),
-        )
-        .unwrap();
+        let center = circumcenter(XY::new(0.0, 0.0), XY::new(4.0, 0.0), XY::new(0.0, 2.0)).unwrap();
         assert_eq!(
             compare_ratios(
                 center.x(),
@@ -2910,13 +2972,14 @@ mod tests {
             Ordering::Equal,
         );
 
-        let hit = match ExactPoint::certified_bisector_hit(
-            [XY::new(0.0, 0.0), XY::new(4.0, 2.0)],
-            [XY::new(-10.0, 7.0), XY::new(10.0, 7.0)],
-        ) {
-            FrameHit::Point(point) => point,
-            other => panic!("expected a certified bisector hit, got {other:?}"),
-        };
+        let hit =
+            match ExactPoint::certified_bisector_hit([XY::new(0.0, 0.0), XY::new(4.0, 2.0)], [
+                XY::new(-10.0, 7.0),
+                XY::new(10.0, 7.0),
+            ]) {
+                FrameHit::Point(point) => point,
+                other => panic!("expected a certified bisector hit, got {other:?}"),
+            };
         assert_eq!(
             compare_ratios(
                 hit.x(),
@@ -3220,135 +3283,5 @@ mod tests {
         ];
         assert!(enclosing_frame_binary64(extremes.iter()).is_none());
         enclosing_frame(&extremes).expect("exact fallback frame");
-    }
-}
-
-#[cfg(test)]
-mod lattice_predicates {
-    use super::*;
-
-    fn dyadic_orientation_sign(a: XY, b: XY, c: XY) -> ExactSign {
-        let difference = |left: f64, right: f64| {
-            ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right))
-        };
-        difference(b.x, a.x)
-            .product(&difference(c.y, a.y))
-            .subtract(difference(b.y, a.y).product(&difference(c.x, a.x)))
-            .sign()
-    }
-
-    #[test]
-    fn lattice_signs_match_exact_known_cases() {
-        let tiny = f64::from_bits(1);
-        let orientation_cases = [
-            (
-                "unit ccw",
-                XY::new(0.0, 0.0),
-                XY::new(1.0, 0.0),
-                XY::new(0.0, 1.0),
-                ExactSign::Positive,
-            ),
-            (
-                "unit cw",
-                XY::new(0.0, 0.0),
-                XY::new(1.0, 0.0),
-                XY::new(0.0, -1.0),
-                ExactSign::Negative,
-            ),
-            (
-                "unit collinear",
-                XY::new(0.0, 0.0),
-                XY::new(1.0, 1.0),
-                XY::new(2.0, 2.0),
-                ExactSign::Zero,
-            ),
-            (
-                "one ulp",
-                XY::new(0.0, 1.0),
-                XY::new(1.0, f64::from_bits(0x3FF0_0000_0000_0001)),
-                XY::new(2.0, 1.0),
-                ExactSign::Negative,
-            ),
-            (
-                "subnormal triangle",
-                XY::new(0.0, 0.0),
-                XY::new(tiny, 0.0),
-                XY::new(0.0, tiny),
-                ExactSign::Positive,
-            ),
-            (
-                "lattice exponent spread",
-                XY::new(1.0, 1.0),
-                XY::new(2.0_f64.powi(30), 0.0),
-                XY::new(0.0, 3.0),
-                ExactSign::Positive,
-            ),
-        ];
-        for &(name, a, b, c, expected) in &orientation_cases {
-            assert_eq!(dyadic_orientation_sign(a, b, c), expected, "{name}: dyadic");
-            assert_eq!(super::orient2d(a, b, c), expected, "{name}: complete predicate");
-            if let Some(sign) = super::orient2d_lattice(a, b, c) {
-                assert_eq!(sign, expected, "{name}: lattice predicate");
-            }
-        }
-
-        let scale = 2.0_f64.powi(-270);
-        let incircle_cases = [
-            (
-                "unit inside",
-                XY::new(0.0, 0.0),
-                XY::new(1.0, 0.0),
-                XY::new(0.0, 1.0),
-                XY::new(0.25, 0.25),
-                ExactSign::Positive,
-            ),
-            (
-                "unit outside",
-                XY::new(0.0, 0.0),
-                XY::new(1.0, 0.0),
-                XY::new(0.0, 1.0),
-                XY::new(2.0, 2.0),
-                ExactSign::Negative,
-            ),
-            (
-                "unit cocircular",
-                XY::new(0.0, 0.0),
-                XY::new(1.0, 0.0),
-                XY::new(1.0, 1.0),
-                XY::new(0.0, 1.0),
-                ExactSign::Zero,
-            ),
-            (
-                "tiny cocircular",
-                XY::new(5.0 * scale, 0.0),
-                XY::new(3.0 * scale, 4.0 * scale),
-                XY::new(0.0, 5.0 * scale),
-                XY::new(-3.0 * scale, 4.0 * scale),
-                ExactSign::Zero,
-            ),
-            (
-                "half lattice inside",
-                XY::new(0.0, 0.0),
-                XY::new(2.0, 0.0),
-                XY::new(0.0, 2.0),
-                XY::new(0.5, 0.5),
-                ExactSign::Positive,
-            ),
-            (
-                "non-lattice",
-                XY::new(0.1, 0.2),
-                XY::new(1.0, 0.0),
-                XY::new(1.0, 1.0),
-                XY::new(0.0, 1.0),
-                ExactSign::Negative,
-            ),
-        ];
-        for &(name, a, b, c, d, expected) in &incircle_cases {
-            assert_eq!(super::incircle_dyadic(a, b, c, d), expected, "{name}: dyadic");
-            assert_eq!(super::incircle(a, b, c, d), expected, "{name}: complete predicate");
-            if let Some(sign) = super::incircle_lattice(a, b, c, d) {
-                assert_eq!(sign, expected, "{name}: lattice predicate");
-            }
-        }
     }
 }

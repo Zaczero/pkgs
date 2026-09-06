@@ -4,14 +4,11 @@
 //! finite or infinite IEEE result, while bounded exact predicates can decline a
 //! result that exceeds their capacity or finite domain.
 
-pub(crate) use crate::geometry::exact_arith::{fast_two_sum, two_product_exact as two_product, two_sum};
 use std::cmp::Ordering;
 
-
-
-
-
-
+pub(crate) use crate::geometry::exact_arith::{
+    fast_two_sum, two_product_exact as two_product, two_sum,
+};
 
 /// Sum two increasing-magnitude expansions into caller-owned storage.
 ///
@@ -193,34 +190,30 @@ mod tests {
 
     // The old implementation remains a characterization oracle. Expansion
     // length and limb spelling are not part of its semantic contract.
-    fn exact_expansion_value(expansion: &[f64]) -> Option<ExactDyadic> {
+    fn exact_expansion_value(expansion: &[f64]) -> ExactDyadic {
         expansion
             .iter()
             .copied()
-            .all(f64::is_finite)
-            .then(|| {
-                expansion.iter().copied().fold(
-                    ExactDyadic::from_f64(0.0),
-                    |sum, limb| sum.add(ExactDyadic::from_f64(limb)),
-                )
+            .fold(ExactDyadic::from_f64(0.0), |sum, limb| {
+                sum.add(ExactDyadic::from_f64(limb))
             })
     }
 
     fn assert_semantically_equal(left: &[f64], right: &[f64]) {
         let left_finite = left.iter().all(|value| value.is_finite());
         let right_finite = right.iter().all(|value| value.is_finite());
-        assert_eq!(
-            left_finite,
-            right_finite,
-            "finite admission changed"
-        );
+        assert_eq!(left_finite, right_finite, "finite admission changed");
         if left_finite {
-            assert_eq!(expansion_sign(left), expansion_sign(right), "expansion sign changed");
-            if let (Some(left), Some(right)) =
-                (exact_expansion_value(left), exact_expansion_value(right))
-            {
-                assert_eq!(left, right, "exact expansion value changed");
-            }
+            assert_eq!(
+                expansion_sign(left),
+                expansion_sign(right),
+                "expansion sign changed"
+            );
+            assert_eq!(
+                exact_expansion_value(left),
+                exact_expansion_value(right),
+                "exact expansion value changed"
+            );
         }
     }
 

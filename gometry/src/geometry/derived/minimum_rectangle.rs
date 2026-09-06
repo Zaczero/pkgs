@@ -8,6 +8,7 @@
 use std::cmp::Ordering;
 
 use crate::error::Result;
+use crate::geometry::exact_arith::product_sum::{ExactSum, LIMBS, PRODUCT_MIN_EXP, cmp_magnitude};
 use crate::geometry::exact_arith::{
     checked_dd_mul as double_double_mul, checked_two_product as two_product,
     dd_add as double_double_add, dd_sub as double_double_sub, two_sum,
@@ -15,8 +16,6 @@ use crate::geometry::exact_arith::{
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, Orientation, Point, axis_pow2_scale, orientation, point_distance,
 };
-
-use crate::geometry::exact_arith::product_sum::{ExactSum, LIMBS, PRODUCT_MIN_EXP, cmp_magnitude};
 const PROJECTION_ERRBOUND: f64 = 8.0 * f64::EPSILON;
 const DOUBLE_LIMBS: usize = LIMBS * 2;
 const TRIPLE_LIMBS: usize = LIMBS * 3 + 1;
@@ -608,14 +607,6 @@ fn double_double_delta(
     (result.0.is_finite() && result.1.is_finite()).then_some(result)
 }
 
-
-
-
-
-
-
-
-
 fn double_double_div(numerator: DoubleDouble, denominator: DoubleDouble) -> Option<DoubleDouble> {
     let quotient = numerator.0 / denominator.0;
     if !quotient.is_finite() {
@@ -628,8 +619,6 @@ fn double_double_div(numerator: DoubleDouble, denominator: DoubleDouble) -> Opti
         .is_finite()
         .then(|| double_double_add((quotient, 0.0), (correction, 0.0)))
 }
-
-
 
 /// A certified floating filter for the exact score.  It deliberately charges
 /// the input-coordinate products, rather than trusting a rounded

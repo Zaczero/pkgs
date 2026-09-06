@@ -220,9 +220,7 @@ mod tests {
                 true,
             ),
         ];
-        for &(name, lhs_bits, rhs_bits, expected_head, expected_fused_tail, underflow) in
-            &cases
-        {
+        for &(name, lhs_bits, rhs_bits, expected_head, expected_fused_tail, underflow) in &cases {
             let (lhs, rhs) = (f64::from_bits(lhs_bits), f64::from_bits(rhs_bits));
             let (head, tail) = two_product(lhs, rhs);
             assert_eq!(head.to_bits(), expected_head, "{name}: head");
