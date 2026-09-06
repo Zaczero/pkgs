@@ -283,12 +283,77 @@ struct BoundaryPlan {
 }
 
 impl BoundaryPlan {
+    fn line_walks(&self, topology: &IndexedTopology) -> Result<Vec<Vec<(usize, bool)>>> {
+        if self.lines.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut ends = Vec::new();
+        try_reserve_vec(&mut ends, self.lines.len())?;
+        let mut incidence = Vec::new();
+        try_reserve_vec(&mut incidence, topology.starts.len() - 1)?;
+        incidence.resize(topology.starts.len() - 1, (0_usize, [0_usize; 2]));
+        for (index, chord) in self.lines.iter().enumerate() {
+            let pair = [
+                topology.owners[self.source_darts[chord.sources.start] as usize] as usize,
+                topology.targets[self.source_darts[chord.sources.end - 1] as usize] as usize,
+            ];
+            for node in pair {
+                let (degree, edges) = &mut incidence[node];
+                if *degree < 2 {
+                    edges[*degree] = index;
+                }
+                *degree += 1;
+            }
+            ends.push(pair);
+        }
+        let mut used = Vec::new();
+        try_reserve_vec(&mut used, self.lines.len())?;
+        used.resize(self.lines.len(), false);
+        let mut walks = Vec::new();
+        // Open chains precede the remaining all-degree-two cycles.
+        for cycles in [false, true] {
+            for seed in 0..ends.len() {
+                if used[seed] {
+                    continue;
+                }
+                let start = ends[seed].iter().position(|&node| incidence[node].0 != 2);
+                if !cycles && start.is_none() {
+                    continue;
+                }
+                let mut from = ends[seed][start.unwrap_or(0)];
+                let mut edge = seed;
+                let mut walk = Vec::new();
+                loop {
+                    used[edge] = true;
+                    let reversed = ends[edge][0] != from;
+                    try_reserve_vec(&mut walk, 1)?;
+                    walk.push((edge, reversed));
+                    let far = ends[edge][usize::from(!reversed)];
+                    let (degree, adjacent) = incidence[far];
+                    if degree != 2 {
+                        break;
+                    }
+                    let next = adjacent[usize::from(adjacent[0] == edge)];
+                    if used[next] {
+                        break;
+                    }
+                    edge = next;
+                    from = far;
+                }
+                try_reserve_vec(&mut walks, 1)?;
+                walks.push(walk);
+            }
+        }
+        Ok(walks)
+    }
+
     fn emit_xy_parts(
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let groups = self.polygon_walks(partition, topology)?;
+        let line_walks = self.line_walks(topology)?;
         let segments = self.round_items(partition, topology)?;
         let mut remaining = segments.as_slice();
         let mut rings = Vec::new();
@@ -330,14 +395,26 @@ impl BoundaryPlan {
         }
         let (chords, isolated) = remaining.split_at(self.lines.len());
         let mut lines = Vec::new();
-        try_reserve_vec(&mut lines, chords.len())?;
-        for chord in chords {
+        try_reserve_vec(&mut lines, line_walks.len())?;
+        for walk in line_walks {
             let mut xs = Vec::new();
             let mut ys = Vec::new();
-            try_reserve_vec(&mut xs, 2)?;
-            try_reserve_vec(&mut ys, 2)?;
-            xs.extend([chord.start.x, chord.end.x]);
-            ys.extend([chord.start.y, chord.end.y]);
+            try_reserve_vec(&mut xs, walk.len() + 1)?;
+            try_reserve_vec(&mut ys, walk.len() + 1)?;
+            for (index, reversed) in walk {
+                let chord = chords[index];
+                let (start, end) = if reversed {
+                    (chord.end, chord.start)
+                } else {
+                    (chord.start, chord.end)
+                };
+                if xs.is_empty() {
+                    xs.push(start.x);
+                    ys.push(start.y);
+                }
+                xs.push(end.x);
+                ys.push(end.y);
+            }
             lines.push(CoordSeq::try_from_vecs(xs, ys, None, None)?);
         }
         let mut points = Vec::new();
@@ -3829,6 +3906,102 @@ mod tests {
             .collect();
         corners.sort_by(|left, right| left.partial_cmp(right).unwrap());
         assert_eq!(corners, [(0.0, 0.0), (0.0, 4.0), (4.0, 0.0), (4.0, 4.0)]);
+    }
+
+    #[test]
+    fn certified_line_serialization_keeps_bends_and_protected_vertices() {
+        let case = run(&[
+            seg(2.0, 0.0, 1.0, 0.0),
+            seg(0.0, 0.0, 1.0, 0.0),
+            seg(2.0, 0.0, 2.0, 3.0),
+            seg(1.0, 0.0, 1.0, 0.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let cells = ArealCells {
+            faces: vec![false; faces.count as usize],
+            spans: vec![true; partition.spans.len()],
+            nodes: vec![true; partition.recipes.len()],
+        };
+        let plan = cells
+            .emission_plan(&partition, &topology, &edges, &faces)
+            .unwrap();
+        let (points, lines, polygons) = plan.emit_xy_parts(&partition, &topology).unwrap();
+        assert!(points.is_empty());
+        assert!(polygons.is_empty());
+        assert_eq!(lines.len(), 1);
+        let mut coordinates: Vec<_> = lines[0]
+            .xs()
+            .iter()
+            .copied()
+            .zip(lines[0].ys().iter().copied())
+            .collect();
+        if coordinates[0] != (0.0, 0.0) {
+            coordinates.reverse();
+        }
+        assert_eq!(coordinates, [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 3.0)
+        ]);
+    }
+
+    #[test]
+    fn certified_line_serialization_closes_cycles_and_stops_at_junctions() {
+        for spur in [false, true] {
+            let mut segments = vec![
+                seg(0.0, 0.0, 4.0, 0.0),
+                seg(4.0, 4.0, 4.0, 0.0),
+                seg(4.0, 4.0, 0.0, 4.0),
+                seg(0.0, 0.0, 0.0, 4.0),
+            ];
+            if spur {
+                segments.push(seg(0.0, 0.0, -2.0, 0.0));
+            }
+            let case = run(&segments);
+            let partition = case.partition();
+            let (topology, edges) = partition.local_topology().unwrap();
+            let faces = partition.global_faces(&topology, &edges).unwrap();
+            let cells = ArealCells {
+                faces: vec![false; faces.count as usize],
+                spans: vec![true; partition.spans.len()],
+                nodes: vec![true; partition.recipes.len()],
+            };
+            let plan = cells
+                .emission_plan(&partition, &topology, &edges, &faces)
+                .unwrap();
+            let (points, lines, polygons) = plan.emit_xy_parts(&partition, &topology).unwrap();
+            assert!(points.is_empty());
+            assert!(polygons.is_empty());
+            assert_eq!(lines.len(), if spur { 2 } else { 1 });
+            let cycle = lines.iter().find(|line| line.xs().len() == 5).unwrap();
+            let coordinates: Vec<_> = cycle
+                .xs()
+                .iter()
+                .copied()
+                .zip(cycle.ys().iter().copied())
+                .collect();
+            assert_eq!(coordinates.first(), coordinates.last());
+            let mut corners = coordinates[..4].to_vec();
+            let origin = corners
+                .iter()
+                .position(|&point| point == (0.0, 0.0))
+                .unwrap();
+            corners.rotate_left(origin);
+            if corners[1] == (4.0, 0.0) {
+                corners[1..].reverse();
+            }
+            assert_eq!(corners, [(0.0, 0.0), (0.0, 4.0), (4.0, 4.0), (4.0, 0.0)]);
+            if spur {
+                let line = lines.iter().find(|line| line.xs().len() == 2).unwrap();
+                let mut xs = line.xs().to_vec();
+                xs.sort_by(f64::total_cmp);
+                assert_eq!(xs, [-2.0, 0.0]);
+                assert_eq!(line.ys(), [0.0, 0.0]);
+            }
+        }
     }
 
     #[test]
