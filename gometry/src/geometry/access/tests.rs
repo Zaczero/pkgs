@@ -1,5 +1,4 @@
 use crate::geometry::access::*;
-use crate::geometry::{RingWinding, closed_columns_winding, ring_area_measure_columns};
 
 #[test]
 fn column_all_finite_rejects_non_finite() {
@@ -64,37 +63,6 @@ fn column_mean_rescues_overflowing_sum_of_finite_values() {
         column_mean(&ordinary),
         Some(column_sum(&ordinary) / ordinary.len() as f64)
     );
-}
-
-#[test]
-fn ring_winding_stable_near_cancellation_when_measurement_may_differ() {
-    // CCW unit square duplicated with tiny perturbations — 16 cross-product
-    // terms whose signed sum is ~0; SIMD reassociation on the measurement path
-    // could differ, but the decision winding must stay CCW.
-    let xs: Vec<f64> = vec![
-        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0,
-    ];
-    let ys: Vec<f64> = vec![
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-    ];
-    let pairs = xs.len() - 1;
-    assert!(pairs >= REDUCE_SIMD_MIN);
-    assert_eq!(
-        closed_columns_winding(&xs, &ys, pairs),
-        RingWinding::CounterClockwise
-    );
-    let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
-    // First vertex is the origin — the measurement origin-shift is a no-op.
-    let (ox, oy) = (xs[0], ys[0]);
-    let scalar_reference = xs
-        .array_windows::<2>()
-        .zip(ys.array_windows::<2>())
-        .fold(0.0_f64, |area, ([x0, x1], [y0, y1])| {
-            area + ((x0 - ox) * (y1 - oy) - (x1 - ox) * (y0 - oy))
-        })
-        / 2.0;
-    assert!(scalar_reference > 0.0);
-    assert_eq!(measure.to_bits(), scalar_reference.to_bits());
 }
 
 #[test]

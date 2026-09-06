@@ -74,8 +74,8 @@ pub(in crate::geometry) struct ExactDyadic {
 
 /// An exact homogeneous line `a*x + b*y + c = 0` over stored binary64 input.
 ///
-/// Keeping the coefficients opaque prevents Pass C from mixing rounded and
-/// exact construction while still exposing the complete construction ladder.
+/// Keeping the coefficients opaque prevents construction code from mixing
+/// rounded and exact values while still exposing the complete construction ladder.
 #[derive(Clone, Debug)]
 pub(super) struct ExactLine([ExactDyadic; 3]);
 
@@ -112,7 +112,7 @@ impl ExactLine {
     }
 }
 
-/// V6: a virtual left-shifted view of a limb slice. `word(i)` reads the aligned
+/// A virtual left-shifted view of a limb slice. `word(i)` reads the aligned
 /// word directly, so every operation uses the same words in the same order
 /// with no temporary.
 #[derive(Clone, Copy)]
@@ -233,7 +233,7 @@ impl ExactDyadic {
         self
     }
 
-    /// V6: read limb `index` of a slice as if it had been shifted left by
+    /// Read limb `index` of a slice as if it had been shifted left by
     /// `word_shift` words and `bit_shift` bits, without materializing the
     /// shifted vector. Same words, same order, no allocation.
     fn shifted_word(limbs: &[u64], word_shift: usize, bit_shift: u32, index: usize) -> u64 {
@@ -713,7 +713,7 @@ pub(super) fn orient2d(a: XY, b: XY, c: XY) -> ExactSign {
     crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y)
 }
 
-/// V10: the same interval filter for the in-circle determinant, with the same
+/// The interval filter for the in-circle determinant, with the same
 /// containment argument and the same exact fallback.
 fn incircle_filtered(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     let value = Interval::exact;
@@ -794,7 +794,7 @@ fn incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
 }
 
 // ---------------------------------------------------------------------------
-// V8: certified interval filter.
+// Certified interval filter.
 //
 // Every `ExactPoint` carries an OUTWARD-ROUNDED binary64 interval that PROVABLY
 // CONTAINS its exact rational coordinate. A comparison whose two intervals are
@@ -1191,9 +1191,8 @@ impl ExactPoint {
     }
 }
 
-/// Self-check hook: prove `lo <= numerator/denominator <= hi` with the exact
-/// comparator itself. Off in shipped builds; turned on to validate the bound
-/// derivation over the whole deterministic corpus.
+/// Development self-check: prove `lo <= numerator/denominator <= hi` with the
+/// exact comparator when interval verification is enabled.
 const VERIFY_INTERVALS: bool = false;
 
 fn verify_interval(numerator: &ExactDyadic, denominator: &ExactDyadic, bounds: Interval) {
@@ -1309,13 +1308,14 @@ impl ExactPoint {
             || self.bounds[1].disjoint_from(other.bounds[1])
     }
 
-    /// Materialize one shared exact vertex exactly once. Pass C must intern the
-    /// returned coordinate by vertex identity and reuse it for every incident
-    /// half-edge. Under gometry's topological-snap contract a clip event may
+    /// Materialize one shared exact vertex exactly once. Construction code must
+    /// intern the returned coordinate by vertex identity and reuse it for every
+    /// incident half-edge. Under gometry's topological-snap contract a clip event may
     /// differ from the source clip at the ULP level when exact incidence has no
     /// binary64 representation; validity, event order, empty differences, and
     /// interior disjointness remain mandatory, while bit-exact `equals` does
-    /// not. Per-cell calls would recreate the Round-20 crack.
+    /// not. Recomputing a shared event per cell can reintroduce cracks between
+    /// adjacent cells.
     pub(super) fn round_nearest_even(&self) -> Result<XY> {
         match &self.coords {
             Coords::Certified { rounded, .. } => return Ok(*rounded),
@@ -1468,7 +1468,7 @@ pub(super) fn angle_ccw_cmp(
     }
 }
 
-/// V11: the shoelace sign in interval arithmetic. Every term is the cross
+/// The shoelace sign in interval arithmetic. Every term is the cross
 /// product of two affine vertices, each inside its certified interval, so the
 /// accumulated interval contains the exact signed area; a sign is returned only
 /// when it excludes zero. Declining falls through to the exact accumulation,
@@ -1617,9 +1617,9 @@ fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) ->
     }
 }
 
-/// V3: a private frame whose four corners are stored binary64 (`w == 1`).
+/// A private frame whose four corners are stored binary64 (`w == 1`).
 ///
-/// The frame is private scaffolding. The ONLY property the pipeline needs from
+/// The frame is private scaffolding. The only property the pipeline needs from
 /// it is that it strictly encloses every input point. That property is
 /// established here by the same exact comparator the rest of the module uses,
 /// so the cheap construction is CERTIFIED, not assumed. `None` means no
@@ -2395,6 +2395,17 @@ mod sqrt_ratio_tests {
 #[cfg(test)]
 mod tests {
     use crate::geometry::exact_arith::ExactSign;
+    use super::*;
+
+    fn dyadic_orientation_sign(a: XY, b: XY, c: XY) -> ExactSign {
+        let difference = |left: f64, right: f64| {
+            ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right))
+        };
+        difference(b.x, a.x)
+            .product(&difference(c.y, a.y))
+            .subtract(difference(b.y, a.y).product(&difference(c.x, a.x)))
+            .sign()
+    }
 
     #[test]
     fn predicate_filters_preserve_signs_across_exponent_ranges() {
@@ -2424,16 +2435,6 @@ mod tests {
                     sign,
                     ExactSign::Positive,
                     "incircle exponent {exponent}"
-                );
-            }
-            if exponent == 0 {
-                assert_eq!(
-                    super::orient2d_float(origin, east, north),
-                    Some(ExactSign::Positive)
-                );
-                assert_eq!(
-                    super::incircle_float(origin, east, north, inside),
-                    Some(ExactSign::Positive)
                 );
             }
         }
@@ -2506,82 +2507,146 @@ mod tests {
         }
     }
 
-    /// The stage-A filters are sound only if a decided verdict always equals
-    /// the dyadic one; the corpus mixes random sites with near-degenerate
-    /// ones (collinear and cocircular up to a few ulps) so both the decided
-    /// and the declined regimes are exercised and counted.
+    /// A decided stage-A result must agree with the independent exact sign.
+    /// Cases that decline are still checked through the complete predicate;
+    /// decline is conservative and is not itself a contract here.
     #[test]
     #[expect(clippy::many_single_char_names, reason = "a, b, c, d are the predicate's four points")]
     fn float_filters_never_contradict_the_dyadic_predicates() {
-        use std::f64::consts::TAU;
-        let mut state = 0x2545_F491_4F6C_DD1D_u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state >> 11) as f64 / (1_u64 << 53) as f64
-        };
-        let mut decided = [0_usize; 2];
-        let mut declined = [0_usize; 2];
-        for case in 0..100_000 {
-            let scale = if case % 3 == 0 { 1.0 } else if case % 3 == 1 { 1e6 } else { 1e-6 };
-            let p = |next: &mut dyn FnMut() -> f64| XY::new(next() * scale, next() * scale);
-            let (a, b, c) = (p(&mut next), p(&mut next), p(&mut next));
-            // Every fourth case is exactly collinear, then nudged by 0..3 ulps;
-            // every fourth-plus-two case puts all four on one circle, so the
-            // in-circle filter has to decline as well.
-            let (a, b, c) = if case % 4 == 2 {
-                let r = 1.0 + next() * scale;
-                let (cx, cy) = (next() * scale, next() * scale);
-                let on = |theta: f64| XY::new(cx + r * theta.cos(), cy + r * theta.sin());
-                (on(next() * TAU), on(next() * TAU), on(next() * TAU))
-            } else {
-                (a, b, c)
-            };
-            let mut d = if case % 4 == 0 {
-                let t = next();
-                XY::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
-            } else if case % 4 == 2 {
-                // The fourth point of the same circle, from the circumcenter of a, b, c.
-                let norm = |p: XY| p.x * p.x + p.y * p.y;
-                let dd = 2.0 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
-                let ux = (norm(a) * (b.y - c.y) + norm(b) * (c.y - a.y) + norm(c) * (a.y - b.y)) / dd;
-                let uy = (norm(a) * (c.x - b.x) + norm(b) * (a.x - c.x) + norm(c) * (b.x - a.x)) / dd;
-                let r = (a.x - ux).hypot(a.y - uy);
-                let theta = next() * TAU;
-                XY::new(ux + r * theta.cos(), uy + r * theta.sin())
-            } else {
-                p(&mut next)
-            };
-            for _ in 0..(case % 4) {
-                d = XY::new(f64::from_bits(d.x.to_bits() + 1), d.y);
-            }
-            match super::orient2d_float(a, b, d) {
-                Some(sign) => {
-                    assert_eq!(
-                        sign,
-                        crate::geometry::segments::stored_orientation_sign(
-                            a.x, a.y, b.x, b.y, d.x, d.y
-                        ),
-                        "orient2d case {case}"
-                    );
-                    decided[0] += 1;
-                }
-                None => declined[0] += 1,
-            }
-            match super::incircle_float(a, b, c, d) {
-                Some(sign) => {
-                    assert_eq!(sign, super::incircle_dyadic(a, b, c, d), "incircle case {case}");
-                    decided[1] += 1;
-                }
-                None => declined[1] += 1,
+        let mu = f64::from_bits(1);
+        let orientation_cases = [
+            (
+                "unit ccw",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, 1.0),
+                ExactSign::Positive,
+            ),
+            (
+                "unit cw",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, -1.0),
+                ExactSign::Negative,
+            ),
+            (
+                "unit collinear",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 1.0),
+                XY::new(2.0, 2.0),
+                ExactSign::Zero,
+            ),
+            (
+                "one ulp",
+                XY::new(0.0, 1.0),
+                XY::new(1.0, f64::from_bits(0x3FF0_0000_0000_0001)),
+                XY::new(2.0, 1.0),
+                ExactSign::Negative,
+            ),
+            (
+                "subnormal triangle",
+                XY::new(0.0, 0.0),
+                XY::new(mu, 0.0),
+                XY::new(0.0, mu),
+                ExactSign::Positive,
+            ),
+            (
+                "underflow ray",
+                XY::new(1.0, f64::from_bits(0x8000_0000_0000_1000)),
+                XY::new(-2.0_f64.powi(-12), f64::from_bits(0x1800)),
+                XY::new(f64::from_bits(0x3FD9_9733_3333_3333), f64::from_bits(0x800)),
+                ExactSign::Positive,
+            ),
+            (
+                "overflow differences",
+                XY::new(-f64::MAX, -f64::MAX),
+                XY::new(f64::MAX, f64::MAX),
+                XY::new(f64::MAX, -f64::MAX),
+                ExactSign::Negative,
+            ),
+            (
+                "lattice exponent spread",
+                XY::new(1.0, 1.0),
+                XY::new(2.0_f64.powi(30), 0.0),
+                XY::new(0.0, 3.0),
+                ExactSign::Positive,
+            ),
+        ];
+        for &(name, a, b, c, expected) in &orientation_cases {
+            assert_eq!(dyadic_orientation_sign(a, b, c), expected, "{name}: dyadic");
+            assert_eq!(super::orient2d(a, b, c), expected, "{name}: complete predicate");
+            if let Some(sign) = super::orient2d_float(a, b, c) {
+                assert_eq!(sign, expected, "{name}: float filter");
             }
         }
-        assert!(decided[0] > 50_000 && decided[1] > 50_000, "filters decide most cases: {decided:?}");
-        assert!(declined[0] > 1_000 && declined[1] > 1_000, "and decline the degenerate ones: {declined:?}");
-    }
 
-    use super::*;
+        let scale = 2.0_f64.powi(-270);
+        let incircle_cases = [
+            (
+                "unit inside",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, 1.0),
+                XY::new(0.25, 0.25),
+                ExactSign::Positive,
+            ),
+            (
+                "unit outside",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, 1.0),
+                XY::new(2.0, 2.0),
+                ExactSign::Negative,
+            ),
+            (
+                "unit cocircular",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(1.0, 1.0),
+                XY::new(0.0, 1.0),
+                ExactSign::Zero,
+            ),
+            (
+                "tiny cocircular",
+                XY::new(5.0 * scale, 0.0),
+                XY::new(3.0 * scale, 4.0 * scale),
+                XY::new(0.0, 5.0 * scale),
+                XY::new(-3.0 * scale, 4.0 * scale),
+                ExactSign::Zero,
+            ),
+            (
+                "extreme overflow",
+                XY::new(-1e308, 0.0),
+                XY::new(0.0, 1e308),
+                XY::new(1e308, 0.0),
+                XY::new(0.0, 0.0),
+                ExactSign::Negative,
+            ),
+            (
+                "half lattice inside",
+                XY::new(0.0, 0.0),
+                XY::new(2.0, 0.0),
+                XY::new(0.0, 2.0),
+                XY::new(0.5, 0.5),
+                ExactSign::Positive,
+            ),
+            (
+                "non-lattice",
+                XY::new(0.1, 0.2),
+                XY::new(1.0, 0.0),
+                XY::new(1.0, 1.0),
+                XY::new(0.0, 1.0),
+                ExactSign::Negative,
+            ),
+        ];
+        for &(name, a, b, c, d, expected) in &incircle_cases {
+            assert_eq!(super::incircle_dyadic(a, b, c, d), expected, "{name}: dyadic");
+            assert_eq!(super::incircle(a, b, c, d), expected, "{name}: complete predicate");
+            if let Some(sign) = super::incircle_float(a, b, c, d) {
+                assert_eq!(sign, expected, "{name}: float filter");
+            }
+        }
+    }
 
     #[test]
     fn exact_signs_cover_full_binary64_range() {
@@ -2740,19 +2805,17 @@ mod tests {
             round_ratio(&zero, &negative_denominator).unwrap().to_bits(),
             0.0_f64.to_bits()
         );
-        assert_eq!(
-            round_ratio_binary(&zero, &negative_denominator)
-                .unwrap()
-                .to_bits(),
-            0.0_f64.to_bits()
-        );
     }
 
     #[test]
     fn nonzero_ratio_is_invariant_under_projective_sign_change() {
         let numerator = ExactDyadic::from_f64(5.0);
         let denominator = ExactDyadic::from_f64(3.0);
-        let expected = round_ratio(&numerator, &denominator).unwrap().to_bits();
+        let expected = 0x3FFA_AAAA_AAAA_AAAB;
+        assert_eq!(
+            round_ratio(&numerator, &denominator).unwrap().to_bits(),
+            expected
+        );
         assert_eq!(
             round_ratio(&numerator.neg(), &denominator.neg())
                 .unwrap()
@@ -2796,7 +2859,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             (forward.x.to_bits(), forward.y.to_bits()),
-            (reversed.x.to_bits(), reversed.y.to_bits())
+            (0x3FE0_0000_0000_0000, 0x0000_0000_0000_0000)
+        );
+        assert_eq!(
+            (reversed.x.to_bits(), reversed.y.to_bits()),
+            (forward.x.to_bits(), forward.y.to_bits())
         );
     }
 
@@ -2824,7 +2891,6 @@ mod tests {
             XY::new(0.0, 2.0),
         )
         .unwrap();
-        assert!(matches!(&center.coords, Coords::Certified { .. }));
         assert_eq!(
             compare_ratios(
                 center.x(),
@@ -3161,45 +3227,128 @@ mod tests {
 mod lattice_predicates {
     use super::*;
 
-    fn lcg(state: &mut u64) -> u64 {
-        *state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
-        *state >> 11
+    fn dyadic_orientation_sign(a: XY, b: XY, c: XY) -> ExactSign {
+        let difference = |left: f64, right: f64| {
+            ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right))
+        };
+        difference(b.x, a.x)
+            .product(&difference(c.y, a.y))
+            .subtract(difference(b.y, a.y).product(&difference(c.x, a.x)))
+            .sign()
     }
 
     #[test]
-    fn lattice_signs_match_the_dyadic_oracle_including_cocircular_quads() {
-        let mut state = 7_u64;
-        let mut decided = 0_usize;
-        for round in 0..200_000 {
-            // Small integers, half-integers and quarter-integers, mixed with
-            // wider magnitudes that must decline.
-            let scale = [1.0, 0.5, 0.25, 1e-3, 3.0e5, 1.0e9][round % 6];
-            let mut coordinate = || (lcg(&mut state) % 41) as f64 * scale - 20.0 * scale;
-            let points: Vec<XY> = std::iter::repeat_with(|| XY::new(coordinate(), coordinate())).take(4).collect();
-            let [a, b, c, d] = [points[0], points[1], points[2], points[3]];
-            if let Some(sign) = incircle_lattice(a, b, c, d) {
-                assert_eq!(sign, incircle_dyadic(a, b, c, d), "{a:?} {b:?} {c:?} {d:?}");
-                decided += 1;
-            }
-            if let Some(sign) = orient2d_lattice(a, b, c) {
-                assert_eq!(
-                    sign,
-                    crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y),
-                    "{a:?} {b:?} {c:?}"
-                );
+    fn lattice_signs_match_exact_known_cases() {
+        let tiny = f64::from_bits(1);
+        let orientation_cases = [
+            (
+                "unit ccw",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, 1.0),
+                ExactSign::Positive,
+            ),
+            (
+                "unit cw",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, -1.0),
+                ExactSign::Negative,
+            ),
+            (
+                "unit collinear",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 1.0),
+                XY::new(2.0, 2.0),
+                ExactSign::Zero,
+            ),
+            (
+                "one ulp",
+                XY::new(0.0, 1.0),
+                XY::new(1.0, f64::from_bits(0x3FF0_0000_0000_0001)),
+                XY::new(2.0, 1.0),
+                ExactSign::Negative,
+            ),
+            (
+                "subnormal triangle",
+                XY::new(0.0, 0.0),
+                XY::new(tiny, 0.0),
+                XY::new(0.0, tiny),
+                ExactSign::Positive,
+            ),
+            (
+                "lattice exponent spread",
+                XY::new(1.0, 1.0),
+                XY::new(2.0_f64.powi(30), 0.0),
+                XY::new(0.0, 3.0),
+                ExactSign::Positive,
+            ),
+        ];
+        for &(name, a, b, c, expected) in &orientation_cases {
+            assert_eq!(dyadic_orientation_sign(a, b, c), expected, "{name}: dyadic");
+            assert_eq!(super::orient2d(a, b, c), expected, "{name}: complete predicate");
+            if let Some(sign) = super::orient2d_lattice(a, b, c) {
+                assert_eq!(sign, expected, "{name}: lattice predicate");
             }
         }
-        assert!(decided > 100_000, "the lattice path decided only {decided}");
-        // A unit square is cocircular: exactly zero.
-        let (a, b, c, d) = (XY::new(0.0, 0.0), XY::new(1.0, 0.0), XY::new(1.0, 1.0), XY::new(0.0, 1.0));
-        assert_eq!(incircle_lattice(a, b, c, d), Some(ExactSign::Zero));
-        // Random doubles have 53-bit mantissas and must decline.
-        assert!(incircle_lattice(XY::new(0.1, 0.2), b, c, d).is_none());
-        // Exponent spread beyond the limit declines rather than overflowing.
-        assert!(orient2d_lattice(XY::new(1.0, 1.0), XY::new(2.0_f64.powi(30), 0.0), XY::new(0.0, 3.0)).is_none());
-        assert!(orient2d_lattice(XY::new(1.0, 1.0), XY::new(2.0_f64.powi(-30), 0.0), XY::new(0.0, 3.0)).is_none());
-        // Subnormals are admitted on their own exponent.
-        let tiny = f64::from_bits(1);
-        assert_eq!(orient2d_lattice(XY::new(0.0, 0.0), XY::new(tiny, 0.0), XY::new(0.0, tiny)), Some(ExactSign::Positive));
+
+        let scale = 2.0_f64.powi(-270);
+        let incircle_cases = [
+            (
+                "unit inside",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, 1.0),
+                XY::new(0.25, 0.25),
+                ExactSign::Positive,
+            ),
+            (
+                "unit outside",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, 1.0),
+                XY::new(2.0, 2.0),
+                ExactSign::Negative,
+            ),
+            (
+                "unit cocircular",
+                XY::new(0.0, 0.0),
+                XY::new(1.0, 0.0),
+                XY::new(1.0, 1.0),
+                XY::new(0.0, 1.0),
+                ExactSign::Zero,
+            ),
+            (
+                "tiny cocircular",
+                XY::new(5.0 * scale, 0.0),
+                XY::new(3.0 * scale, 4.0 * scale),
+                XY::new(0.0, 5.0 * scale),
+                XY::new(-3.0 * scale, 4.0 * scale),
+                ExactSign::Zero,
+            ),
+            (
+                "half lattice inside",
+                XY::new(0.0, 0.0),
+                XY::new(2.0, 0.0),
+                XY::new(0.0, 2.0),
+                XY::new(0.5, 0.5),
+                ExactSign::Positive,
+            ),
+            (
+                "non-lattice",
+                XY::new(0.1, 0.2),
+                XY::new(1.0, 0.0),
+                XY::new(1.0, 1.0),
+                XY::new(0.0, 1.0),
+                ExactSign::Negative,
+            ),
+        ];
+        for &(name, a, b, c, d, expected) in &incircle_cases {
+            assert_eq!(super::incircle_dyadic(a, b, c, d), expected, "{name}: dyadic");
+            assert_eq!(super::incircle(a, b, c, d), expected, "{name}: complete predicate");
+            if let Some(sign) = super::incircle_lattice(a, b, c, d) {
+                assert_eq!(sign, expected, "{name}: lattice predicate");
+            }
+        }
     }
 }

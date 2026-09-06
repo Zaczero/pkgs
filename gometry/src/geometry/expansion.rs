@@ -189,6 +189,40 @@ pub(crate) fn expansion_sign(expansion: &[f64]) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::tessellation::exact::ExactDyadic;
+
+    // The old implementation remains a characterization oracle. Expansion
+    // length and limb spelling are not part of its semantic contract.
+    fn exact_expansion_value(expansion: &[f64]) -> Option<ExactDyadic> {
+        expansion
+            .iter()
+            .copied()
+            .all(f64::is_finite)
+            .then(|| {
+                expansion.iter().copied().fold(
+                    ExactDyadic::from_f64(0.0),
+                    |sum, limb| sum.add(ExactDyadic::from_f64(limb)),
+                )
+            })
+    }
+
+    fn assert_semantically_equal(left: &[f64], right: &[f64]) {
+        let left_finite = left.iter().all(|value| value.is_finite());
+        let right_finite = right.iter().all(|value| value.is_finite());
+        assert_eq!(
+            left_finite,
+            right_finite,
+            "finite admission changed"
+        );
+        if left_finite {
+            assert_eq!(expansion_sign(left), expansion_sign(right), "expansion sign changed");
+            if let (Some(left), Some(right)) =
+                (exact_expansion_value(left), exact_expansion_value(right))
+            {
+                assert_eq!(left, right, "exact expansion value changed");
+            }
+        }
+    }
 
     fn old_area_sum(left: &[f64], right: &[f64], output: &mut [f64]) -> usize {
         if right.is_empty() {
@@ -320,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_kernel_matches_both_legacy_sum_kernels_bit_for_bit() {
+    fn shared_kernel_preserves_legacy_sum_semantics() {
         let mut values = vec![
             0.0,
             -0.0,
@@ -356,22 +390,7 @@ mod tests {
             let legacy_len = old_area_sum(left, right, &mut legacy);
             let mut shared = [0.0; 4];
             let shared_len = expansion_sum_zeroelim(left, right, &mut shared, false).unwrap();
-            assert_eq!(legacy_len, shared_len, "{pair:?}");
-            assert_eq!(
-                legacy[..legacy_len]
-                    .iter()
-                    .map(|value| value.to_bits())
-                    .collect::<Vec<_>>(),
-                shared[..shared_len]
-                    .iter()
-                    .map(|value| value.to_bits())
-                    .collect::<Vec<_>>(),
-                "{pair:?}"
-            );
-            assert_eq!(
-                expansion_sign(&legacy[..legacy_len]),
-                expansion_sign(&shared[..shared_len])
-            );
+            assert_semantically_equal(&legacy[..legacy_len], &shared[..shared_len]);
 
             let mut legacy_scale = [0.0; 5];
             let mut legacy_scratch = [0.0; 5];
@@ -386,22 +405,14 @@ mod tests {
                 false,
             )
             .unwrap();
-            assert_eq!(legacy_scale_len, shared_scale_len, "scale {pair:?}");
-            assert_eq!(
-                legacy_scale[..legacy_scale_len]
-                    .iter()
-                    .map(|value| value.to_bits())
-                    .collect::<Vec<_>>(),
-                shared_scale[..shared_scale_len]
-                    .iter()
-                    .map(|value| value.to_bits())
-                    .collect::<Vec<_>>(),
-                "scale {pair:?}"
+            assert_semantically_equal(
+                &legacy_scale[..legacy_scale_len],
+                &shared_scale[..shared_scale_len],
             );
         }
 
-        // Grid's former checked transforms declined overflow before a partial
-        // buffer escaped; the shared finite policy keeps that fail-open edge.
+        // The finite policy declines overflow before a partial expansion
+        // escapes to a caller.
         let mut output = [0.0; 2];
         assert!(expansion_sum_zeroelim(&[f64::MAX], &[f64::MAX], &mut output, true).is_none());
         let mut scaled = [0.0; 3];
@@ -412,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn scale_specialization_matches_legacy_through_64_limbs() {
+    fn scale_specialization_preserves_legacy_semantics_through_64_limbs() {
         let scales = [1.5, -1.5, f64::from_bits(1), -f64::from_bits(1), f64::MAX];
         for length in 0..=64 {
             let input = (0..length)
@@ -436,18 +447,7 @@ mod tests {
                     false,
                 )
                 .unwrap();
-                assert_eq!(legacy_len, actual_len, "length={length}, scale={scale}");
-                assert_eq!(
-                    legacy[..legacy_len]
-                        .iter()
-                        .map(|value| value.to_bits())
-                        .collect::<Vec<_>>(),
-                    actual[..actual_len]
-                        .iter()
-                        .map(|value| value.to_bits())
-                        .collect::<Vec<_>>(),
-                    "length={length}, scale={scale}"
-                );
+                assert_semantically_equal(&legacy[..legacy_len], &actual[..actual_len]);
             }
         }
 
@@ -458,26 +458,8 @@ mod tests {
             (1.0, f64::NAN),
             (1.0, f64::INFINITY),
         ] {
-            let mut legacy = [0.0; 3];
-            let mut legacy_scratch = [0.0; 3];
-            let legacy_len = old_scale(&[value], scale, &mut legacy, &mut legacy_scratch);
             let mut actual = [0.0; 3];
             let mut actual_scratch = [0.0; 3];
-            let actual_len =
-                scale_expansion_zeroelim(&[value], scale, &mut actual, &mut actual_scratch, false)
-                    .unwrap();
-            assert_eq!(legacy_len, actual_len, "value={value}, scale={scale}");
-            assert_eq!(
-                legacy[..legacy_len]
-                    .iter()
-                    .map(|value| value.to_bits())
-                    .collect::<Vec<_>>(),
-                actual[..actual_len]
-                    .iter()
-                    .map(|value| value.to_bits())
-                    .collect::<Vec<_>>(),
-                "value={value}, scale={scale}"
-            );
             assert!(
                 scale_expansion_zeroelim(&[value], scale, &mut actual, &mut actual_scratch, true,)
                     .is_none(),

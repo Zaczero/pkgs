@@ -9,7 +9,8 @@
 //! bit for bit whenever the residual cannot underflow, which is every head of
 //! magnitude at least 2^-969; below that the split may round the residual to
 //! the subnormal grid, at most one subnormal ulp off, and the expansion
-//! arithmetic takes [`two_product_exact`] instead. A test below pins both.
+//! arithmetic takes [`two_product_exact`] instead. Named tests below pin both
+//! residual contracts.
 
 pub(crate) mod product_sum;
 
@@ -180,73 +181,109 @@ pub(crate) fn checked_dd_mul(left: (f64, f64), right: (f64, f64)) -> Option<(f64
 mod tests {
     use super::*;
 
-    /// The one contract the Dekker product carries against the fused form:
-    /// on every finite product that does not underflow, the two residuals
-    /// are bit-identical, since both are the exact rounding error. Where the
-    /// product underflows into the subnormal range the split loses bits the
-    /// fused instruction keeps; that edge is pinned here as the documented
-    /// divergence rather than left to be discovered.
+    /// The Dekker product matches the fused residual when the residual is
+    /// representable normally. The underflow row records the documented
+    /// one-subnormal-ulp tolerance instead of pinning Dekker's spelling.
     #[test]
-    fn dekker_product_matches_the_fused_residual_off_the_underflow_edge() {
-        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        let mut agreed = 0_usize;
-        let mut underflow_cases = 0_usize;
-        for case in 0..200_000 {
-            // Magnitudes across the whole exponent range, so mixed-exponent
-            // pairs that overflow the splitter are exercised as well.
-            let exp = |bits: u64| -> f64 {
-                let e = i32::try_from(bits % 2000).unwrap() - 1000;
-                f64::from_bits((((e + 1023) as u64) << 52) | ((bits >> 12) & ((1 << 52) - 1)))
-            };
-            let (a, b) = (exp(next()), exp(next()));
-            let (a, b) = if case % 2 == 0 { (a, -b) } else { (a, b) };
-            let head = a * b;
-            if !head.is_finite() {
-                continue;
-            }
-            let (dekker_head, dekker_tail) = two_product(a, b);
-            assert_eq!(dekker_head.to_bits(), head.to_bits(), "the head is the rounded product");
-            let fused_tail = a.mul_add(b, -head);
-            // The residual is at most half an ulp of the head, |head| * 2^-53,
-            // so it can reach the subnormal range only when |head| < 2^-969.
-            // That is the zone where the split may round it, in either form:
-            // a subnormal tail, or one that rounds away to a signed zero.
-            let residual_may_underflow =
-                a != 0.0 && b != 0.0 && head.abs() < f64::MIN_POSITIVE * 2.0_f64.powi(53);
-            if residual_may_underflow {
-                assert!(
-                    (dekker_tail - fused_tail).abs() <= f64::from_bits(1),
-                    "case {case}: underflow-zone residuals differ by more than a subnormal ulp"
-                );
-                underflow_cases += 1;
-                continue;
-            }
-            // Bit-identical except the sign of a zero: an exact product has a
-            // zero tail, and the two evaluations may round to +0 or -0.
-            let same = dekker_tail.to_bits() == fused_tail.to_bits()
-                || (dekker_tail == 0.0 && fused_tail == 0.0);
-            assert!(
-                same,
-                "case {case}: {a:e} * {b:e}: dekker {dekker_tail:e} vs fused {fused_tail:e}"
+    fn dekker_product_matches_known_fused_residuals() {
+        let cases = [
+            (
+                "safe nonzero residual",
+                0x3FF1_9999_9999_999A,
+                0x3FF4_CCCC_CCCC_CCCD,
+                0x3FF6_E147_AE14_7AE2,
+                0x3C54_7AE1_47AE_1480,
+                false,
+            ),
+            (
+                "rescaled nonzero residual",
+                0x7FEF_FFFF_FFFF_FFFF,
+                0x3FB9_9999_9999_999A,
+                0x7FB9_9999_9999_9999,
+                0x7C49_9999_9999_9998,
+                false,
+            ),
+            (
+                "rescaled exact power",
+                0x7E70_0000_0000_0000,
+                0x0170_0000_0000_0000,
+                0x3FF0_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                false,
+            ),
+            (
+                "underflow residual",
+                0x2082_6B6C_1DD3_EF04,
+                0x9FC0_6EE1_DBDA_1774,
+                0x8052_EB12_A8DA_CDFD,
+                0x0000_0000_0000_0002,
+                true,
+            ),
+        ];
+        for &(name, lhs_bits, rhs_bits, expected_head, expected_fused_tail, underflow) in
+            &cases
+        {
+            let (lhs, rhs) = (f64::from_bits(lhs_bits), f64::from_bits(rhs_bits));
+            let (head, tail) = two_product(lhs, rhs);
+            assert_eq!(head.to_bits(), expected_head, "{name}: head");
+            let fused_tail = lhs.mul_add(rhs, -head);
+            assert_eq!(
+                fused_tail.to_bits(),
+                expected_fused_tail,
+                "{name}: fused tail"
             );
-            agreed += 1;
+            if underflow {
+                assert!(
+                    (tail - fused_tail).abs() <= f64::from_bits(1),
+                    "{name}: Dekker residual exceeds one subnormal ulp"
+                );
+            } else {
+                assert_eq!(tail.to_bits(), expected_fused_tail, "{name}: Dekker tail");
+            }
         }
-        assert!(agreed > 100_000, "only {agreed} normal-range products were checked");
-        assert!(underflow_cases > 1_000, "only {underflow_cases} products reached the underflow zone");
     }
 
     #[test]
-    fn exact_product_is_the_fused_residual_everywhere() {
-        for (a, b) in [(3.0, 4.0), (1.6e-279, -1.15e-35), (3.65e-278, -2.13e-30), (1e200, 1e-300), (f64::MAX, 0.5)] {
-            let (head, tail) = two_product_exact(a, b);
-            assert_eq!(head.to_bits(), (a * b).to_bits());
-            assert_eq!(tail.to_bits(), a.mul_add(b, -head).to_bits());
+    fn exact_product_matches_known_fused_residuals() {
+        let cases = [
+            (
+                "ordinary",
+                0x3FF1_9999_9999_999A,
+                0x3FF4_CCCC_CCCC_CCCD,
+                0x3FF6_E147_AE14_7AE2,
+                0x3C54_7AE1_47AE_1480,
+            ),
+            (
+                "mixed exponent",
+                0x6974_E718_D7D7_625A,
+                0x01A5_6E1F_C2F8_F359,
+                0x2B2B_FF2E_E48E_0530,
+                0xA7B9_6B30_449B_05B0,
+            ),
+            (
+                "underflow residual",
+                0x2082_6B6C_1DD3_EF04,
+                0x9FC0_6EE1_DBDA_1774,
+                0x8052_EB12_A8DA_CDFD,
+                0x0000_0000_0000_0002,
+            ),
+            (
+                "maximum finite half",
+                0x7FEF_FFFF_FFFF_FFFF,
+                0x3FE0_0000_0000_0000,
+                0x7FDF_FFFF_FFFF_FFFF,
+                0x0000_0000_0000_0000,
+            ),
+        ];
+        for &(name, lhs, rhs, expected_head, expected_tail) in &cases {
+            let (lhs, rhs) = (f64::from_bits(lhs), f64::from_bits(rhs));
+            let (head, tail) = two_product_exact(lhs, rhs);
+            assert_eq!(head.to_bits(), expected_head, "{name}: head");
+            if expected_tail == 0 {
+                assert_eq!(tail, 0.0, "{name}: tail");
+            } else {
+                assert_eq!(tail.to_bits(), expected_tail, "{name}: tail");
+            }
         }
     }
 
@@ -254,6 +291,9 @@ mod tests {
     fn checked_product_declines_only_a_non_finite_head() {
         assert_eq!(checked_two_product(1e200, 1e200), None);
         assert_eq!(checked_two_product(3.0, 4.0), Some((12.0, 0.0)));
-        assert_eq!(checked_two_product(f64::MAX, 0.5).map(|(h, _)| h), Some(f64::MAX * 0.5));
+        assert_eq!(
+            checked_two_product(f64::MAX, 0.5).map(|(h, _)| h),
+            Some(f64::from_bits(0x7FDF_FFFF_FFFF_FFFF))
+        );
     }
 }

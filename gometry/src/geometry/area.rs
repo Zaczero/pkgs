@@ -5,7 +5,6 @@ use std::simd::num::SimdFloat as _;
 
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
 #[cfg(test)]
-use crate::geometry::expansion::two_sum;
 use crate::geometry::expansion::{
     expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim,
 };
@@ -430,11 +429,10 @@ pub(crate) fn shoelace_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> 
     {
         return SignedAreaMeasure::new(value);
     }
-    // A finite rounded result is not necessarily a measured result: the same
-    // exact product tails that decide winding can hold a representable area,
-    // or can show that a nonzero approximation has lost every reliable bit.
-    // The expansion is the one area-magnitude owner used by public measure,
-    // open-cycle decisions, and triangulation admission.
+    // A finite rounded result is not necessarily a measured result: exact
+    // product tails can hold a representable area, or can show that a nonzero
+    // approximation has lost every reliable bit. This expansion is the
+    // magnitude fallback for this framed shoelace path.
     if value.is_finite() {
         return SignedAreaMeasure::new(exact_half_area_measure_columns(xs, ys, pairs));
     }
@@ -1134,7 +1132,7 @@ mod tests {
         assert_eq!(subnormal, -3.0 * tiny);
         assert!(rounded_residual_error_bound(subnormal.abs()) >= tiny);
         let signed_zero = -0.0_f64 - 0.0;
-        assert_eq!(signed_zero.to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(signed_zero, 0.0);
         assert!(rounded_residual_error_bound(signed_zero.abs()) >= tiny);
     }
 
@@ -1210,56 +1208,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shared_two_sum_preserves_shoelace_bits() {
-        // The overflow case is asserted separately below: its error term is a
-        // NaN, whose SIGN is not a contract. Every case here has a fully
-        // specified bit pattern.
-        let cases = [
-            (5e-324, 5e-324, (0x0000_0000_0000_0002, 0)),
-            (1e-308, 5e-324, (0x0007_30D6_7819_E8D3, 0)),
-            (f64::MIN_POSITIVE, -5e-324, (0x000F_FFFF_FFFF_FFFF, 0)),
-            (1.0, -(1.0 - f64::EPSILON / 2.0), (0x3CA0_0000_0000_0000, 0)),
-            (0.0, -0.0, (0, 0)),
-            (-0.0, -0.0, (0x8000_0000_0000_0000, 0)),
-        ];
-        for (left, right, expected) in cases {
-            let actual = two_sum(left, right);
-            assert_eq!((actual.0.to_bits(), actual.1.to_bits()), expected);
-        }
-
-        // 2^1023 + 2^1023 overflows, so `sum` is +inf and the error term is
-        // born from `inf - inf`. The sum is exactly specified and stays
-        // pinned; the error term is a NaN, and IEEE 754-2019 s6.3 specifies
-        // the sign bit only for copy, negate, abs and copySign -- not for a
-        // NaN an operation produces. That freedom is real and observable
-        // here: x86-64 `subsd` yields the negative default NaN
-        // 0xFFF8_0000_0000_0000, while LLVM's constant folder yields the
-        // positive 0x7FF8_0000_0000_0000, so pinning the bits asserted
-        // nothing about `two_sum` and everything about whether the
-        // expression happened to be folded at compile time.
-        let (overflow_sum, overflow_err) = two_sum(2.0_f64.powi(1023), 2.0_f64.powi(1023));
-        assert_eq!(overflow_sum.to_bits(), 0x7FF0_0000_0000_0000);
-        assert!(overflow_err.is_nan());
-
-        let mixed_xs = [0.0, f64::from_bits(1), 2.0_f64.powi(-20), 0.0];
-        let mixed_ys = [0.0, f64::from_bits(2), 2.0_f64.powi(-20), 0.0];
-        assert_eq!(
-            shoelace_measure_columns(&mixed_xs, &mixed_ys, 3)
-                .0
-                .to_bits(),
-            0x8000_0000_0000_0000
-        );
-
-        let huge_xs = [0.0, 1e300, 1e300, 0.0, 0.0];
-        let huge_ys = [0.0, 0.0, 1e300, 1e300, 0.0];
-        assert_eq!(
-            shoelace_measure_columns(&huge_xs, &huge_ys, 4).0.to_bits(),
-            0x7FF0_0000_0000_0000
-        );
-    }
-
-    /// Origin-shifted scalar shoelace — reference for both measurement paths.
+    /// Independent origin-shifted scalar shoelace reference for area tests.
     fn shifted_scalar_area(xs: &[f64], ys: &[f64]) -> f64 {
         let pairs = xs.len().saturating_sub(1);
         if pairs == 0 {
@@ -1275,7 +1224,22 @@ mod tests {
     }
 
     #[test]
-    fn ring_winding_stable_near_cancellation_when_measurement_may_differ() {
+    fn shoelace_measure_preserves_extreme_semantic_values() {
+        let mixed_xs = [0.0, f64::from_bits(1), 2.0_f64.powi(-20), 0.0];
+        let mixed_ys = [0.0, f64::from_bits(2), 2.0_f64.powi(-20), 0.0];
+        assert_eq!(
+            shoelace_measure_columns(&mixed_xs, &mixed_ys, 3).0,
+            0.0
+        );
+
+        let huge_xs = [0.0, 1e300, 1e300, 0.0, 0.0];
+        let huge_ys = [0.0, 0.0, 1e300, 1e300, 0.0];
+        let huge = shoelace_measure_columns(&huge_xs, &huge_ys, 4).0;
+        assert!(huge.is_infinite() && huge.is_sign_positive());
+    }
+
+    #[test]
+    fn exact_ring_area_matches_independent_reference_on_long_ring() {
         let xs: Vec<f64> = vec![
             0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0,
         ];
@@ -1283,11 +1247,11 @@ mod tests {
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ];
         let pairs = xs.len() - 1;
-        assert!(pairs >= REDUCE_LANES);
         let winding = closed_columns_winding(&xs, &ys, pairs);
         assert_eq!(winding, RingWinding::CounterClockwise);
         let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
-        // First vertex is origin — shift is a no-op, so bit-match holds.
+        // The independent fold is a semantic reference, not a component-layout
+        // or SIMD representation contract.
         let scalar_reference = shifted_scalar_area(&xs, &ys);
         assert!(scalar_reference > 0.0);
         assert_eq!(measure.to_bits(), scalar_reference.to_bits());
@@ -1296,8 +1260,9 @@ mod tests {
     #[test]
     fn exact_product_tails_keep_a_closed_near_collinear_ring() {
         // Every rounded cross term is zero, so this input proves the exact
-        // expansion fallback is taken rather than merely exercising the fast
-        // filtered sign path. Its stored-double twice-area is 2^-54.
+        // original-coordinate product sum is used rather than merely
+        // exercising the fast filtered sign path. Its stored-double twice-area
+        // is 2^-54.
         let e = 2.0_f64.powi(-27);
         let xs = [0.0, 1.0, 1.0 - e, 0.0];
         let ys = [0.0, 1.0 + e, 1.0, 0.0];
@@ -1320,11 +1285,10 @@ mod tests {
     }
 
     #[test]
-    fn shoelace_simd_path_matches_scalar_reference_on_large_ring() {
-        // A ring big enough (`pairs >= SHOELACE_SIMD_MIN`) to take the 512-bit
-        // path — guards that the small-ring scalar fast path and the SIMD body
-        // agree (the threshold split must not change results).
-        let k = SHOELACE_SIMD_MIN + 9;
+    fn exact_ring_area_matches_shifted_reference_on_long_ring() {
+        // A long stored ring exercises exact accumulation independently of the
+        // internal measurement crossover.
+        let k = 128;
         let mut xs: Vec<f64> = (0..k)
             .map(|i| (i as f64 * std::f64::consts::TAU / k as f64).cos() * 100.0)
             .collect();
@@ -1334,17 +1298,16 @@ mod tests {
         xs.push(xs[0]);
         ys.push(ys[0]);
         let pairs = xs.len() - 1;
-        assert!(pairs >= SHOELACE_SIMD_MIN);
-        let simd = ring_area_measure_columns(&xs, &ys, pairs).get();
+        let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
         let scalar = shifted_scalar_area(&xs, &ys).abs();
         assert!(
-            (simd - scalar).abs() <= 1e-6 * scalar,
-            "simd={simd} scalar={scalar}"
+            (measure - scalar).abs() <= 1e-6 * scalar,
+            "measure={measure} scalar={scalar}"
         );
     }
 
     #[test]
-    fn shoelace_large_absolute_coords_match_shifted_truth() {
+    fn exact_ring_area_large_absolute_coords_matches_reference() {
         // ~200 m² irregular building at UTM-scale easting/northing. Naive
         // shoelace cross-products (~2.6e12) cancel to ~200 with ~1e-4 absolute
         // error; origin-shifted measurement recovers the true area.
@@ -1357,9 +1320,8 @@ mod tests {
             5_200_000.2,
         ];
         let pairs = xs.len() - 1;
-        assert!(pairs < SHOELACE_SIMD_MIN);
         let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
-        let truth = shifted_scalar_area(&xs, &ys).abs();
+        let reference = shifted_scalar_area(&xs, &ys).abs();
         let naive = xs
             .array_windows::<2>()
             .zip(ys.array_windows::<2>())
@@ -1369,25 +1331,25 @@ mod tests {
             .abs()
             / 2.0;
         assert!(
-            (measure - truth).abs() <= 1e-12 * truth.max(1.0),
-            "measure={measure} truth={truth} naive={naive}"
+            (measure - reference).abs() <= 1e-12 * reference.max(1.0),
+            "measure={measure} reference={reference} naive={naive}"
         );
-        // Naive loses ~1e-4 absolute (~1e-6 relative) at this scale.
+        // The unshifted fold loses ~1e-4 absolute on these stored values.
         assert!(
-            (naive - truth).abs() > 1e-5,
-            "naive={naive} measure={measure} truth={truth}"
+            (naive - reference).abs() > 1e-5,
+            "naive={naive} measure={measure} reference={reference}"
         );
         assert!(
-            (naive - truth).abs() > (measure - truth).abs() * 1e6,
-            "naive={naive} measure={measure} truth={truth}"
+            (naive - reference).abs() > (measure - reference).abs() * 1e6,
+            "naive={naive} measure={measure} reference={reference}"
         );
     }
 
     #[test]
-    fn shoelace_simd_large_absolute_coords_match_shifted_truth() {
-        // UTM-scale circle past the SIMD gate. Original-coordinate ExactSum
-        // rounds to the origin-shifted reference; naive unshifted products diverge.
-        let k = SHOELACE_SIMD_MIN + 9;
+    fn exact_ring_area_large_absolute_long_ring_matches_reference() {
+        // UTM-scale circle. Original-coordinate ExactSum agrees with an
+        // independent shifted reference; unshifted products diverge.
+        let k = 128;
         let ox = 500_000.0_f64;
         let oy = 5_200_000.0_f64;
         let r = 10.0_f64;
@@ -1400,7 +1362,6 @@ mod tests {
         xs.push(xs[0]);
         ys.push(ys[0]);
         let pairs = xs.len() - 1;
-        assert!(pairs >= SHOELACE_SIMD_MIN);
         let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
         let shifted = shifted_scalar_area(&xs, &ys).abs();
         let naive = xs

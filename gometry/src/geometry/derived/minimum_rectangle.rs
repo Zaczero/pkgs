@@ -1564,11 +1564,11 @@ mod tests {
     }
 
     #[test]
-    fn first_caliper_support_order_matches_global_exact_extrema() {
-        // `select_minimum_candidate`'s debug assertions compare every
-        // unwrapped support pointer with an independent full exact scan.  The
+    fn caliper_support_progression_handles_rotated_hulls() {
+        // `select_minimum_candidate`'s debug assertions require every
+        // unwrapped pointer to stop at an exact local support maximum. The
         // affine family below exercises rotations, anisotropy, and offsets
-        // while this test supplies several hull sizes.
+        // across several hull sizes.
         for vertices in [3, 5, 12, 31, 64] {
             for (angle, offset) in [(0.0_f64, 0.0), (0.37, 5.0e6), (1.17, -1.0e12)] {
                 let (sin, cos) = angle.sin_cos();
@@ -1761,8 +1761,8 @@ mod tests {
 
     #[test]
     fn score_divides_by_the_exact_rounded_basis_norm() {
-        // A temporary witness script showed that exact support widths alone choose edge
-        // zero, while the physical area `(da * do) / N` chooses edge one.
+        // Exact support widths alone choose edge zero on this fixture, while
+        // the physical area `(da * do) / N` chooses edge one.
         let hull = [
             point(
                 f64::from_bits(0x4010_2EB2_5C0F_1A90),
