@@ -1665,6 +1665,38 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
 #[cfg(test)]
 mod tests {
     #[test]
+    fn rounded_chord_can_hit_an_isolated_node_without_node_collision() {
+        let point = XY::new(0.5, 1.0 / 6.0);
+        let case = run(&[
+            seg(0.0, 0.0, 3.0, 1.0),
+            seg(1.0, -1.0, 1.0, 1.0),
+            seg(point.x, point.y, point.x, point.y),
+        ]);
+        let partition = case.partition();
+        let start = stored_node(&partition, XY::new(0.0, 0.0)).unwrap();
+        let crossing = NodeId(
+            partition
+                .recipes
+                .iter()
+                .position(|recipe| matches!(recipe, NodeRecipe::Constructed { .. }))
+                .unwrap() as u32,
+        );
+        let isolated = partition.point_nodes[0];
+        assert!(partition.isolated.contains(&isolated));
+        assert!(partition.spans.iter().any(|span| {
+            (span.start == start && span.end == crossing)
+                || (span.end == start && span.start == crossing)
+        }));
+        let nodes = [start, crossing, isolated];
+        let coordinates = partition.round_nodes(&nodes).unwrap();
+        ExactPartition::check_node_injectivity(&nodes, &coordinates).unwrap();
+        assert!(!emitted_pair_preserves_incidence(
+            [(start, coordinates[0]), (crossing, coordinates[1])],
+            [(isolated, coordinates[2]); 2],
+        ));
+    }
+
+    #[test]
     fn emitted_chords_allow_only_prescribed_endpoint_contacts() {
         let a = (NodeId(0), XY::new(0.0, 0.0));
         let b = (NodeId(1), XY::new(2.0, 0.0));
