@@ -283,6 +283,75 @@ struct BoundaryPlan {
 }
 
 impl BoundaryPlan {
+    fn polygon_walks(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+    ) -> Result<Vec<Vec<usize>>> {
+        let mut shells = Vec::new();
+        try_reserve_vec(&mut shells, self.face_quotient.len())?;
+        shells.resize(self.face_quotient.len(), None);
+        let mut holes = Vec::new();
+        let mut polygons = Vec::new();
+        for (index, walk) in self.walks.iter().enumerate() {
+            let departure = |chord: &PlannedChord| self.source_darts[chord.sources.start];
+            let mut minimum = 0;
+            for candidate in 1..walk.len() {
+                if partition.compare_nodes(
+                    NodeId(topology.owners[departure(&walk[candidate]) as usize]),
+                    NodeId(topology.owners[departure(&walk[minimum]) as usize]),
+                )? == Ordering::Less
+                {
+                    minimum = candidate;
+                }
+            }
+            let outgoing = departure(&walk[minimum]);
+            let prior = &walk[if minimum == 0 {
+                walk.len() - 1
+            } else {
+                minimum - 1
+            }];
+            let incoming = topology.twins[self.source_darts[prior.sources.end - 1] as usize];
+            let root = NodeId(topology.owners[outgoing as usize]);
+            let [_, ry, rw] = partition.homogeneous(root)?;
+            let upper = |slot: u32| -> Result<bool> {
+                let [_, y, w] = partition.homogeneous(NodeId(topology.targets[slot as usize]))?;
+                Ok(try_compare_ratios(&y, &w, &ry, &rw)? != Ordering::Less)
+            };
+            let outgoing_upper = upper(outgoing)?;
+            let incoming_upper = upper(incoming)?;
+            // At the exact leftmost vertex both rays point right. The fan's
+            // angular cut is +x, so a lower outgoing ray precedes an upper one.
+            let is_shell = if outgoing_upper != incoming_upper {
+                !outgoing_upper
+            } else {
+                outgoing < incoming
+            };
+            // Each bounded occupied face has one outer cycle; its other
+            // cycles bound holes, even when they touch that outer cycle.
+            let host = walk[0].sides[0] as usize;
+            debug_assert!(walk.iter().all(|chord| chord.sides[0] as usize == host));
+            if is_shell {
+                debug_assert!(shells[host].is_none());
+                shells[host] = Some(polygons.len());
+                let mut rings = Vec::new();
+                try_reserve_vec(&mut rings, 1)?;
+                rings.push(index);
+                try_reserve_vec(&mut polygons, 1)?;
+                polygons.push(rings);
+            } else {
+                try_reserve_vec(&mut holes, 1)?;
+                holes.push((host, index));
+            }
+        }
+        for (host, hole) in holes {
+            let rings = &mut polygons[shells[host].expect("bounded occupied face has a shell")];
+            try_reserve_vec(rings, 1)?;
+            rings.push(hole);
+        }
+        Ok(polygons)
+    }
+
     fn check_emitted_fans(&self, topology: &IndexedTopology, segments: &[Segment]) -> Result<()> {
         let mut darts = Vec::new();
         for chord in self.walks.iter().flatten().chain(&self.lines) {
@@ -3503,6 +3572,9 @@ mod tests {
             vec![[host, 0]; 4]
         );
         assert_eq!(plan.walks[1].len(), 4);
+        assert_eq!(plan.polygon_walks(&partition, &topology).unwrap(), [vec![
+            0, 1
+        ]]);
         let mut displaced = plan.round_items(&partition, &topology).unwrap();
         assert_eq!(displaced.len(), 8);
         for segment in &mut displaced[4..] {
@@ -3591,6 +3663,15 @@ mod tests {
         let mut lengths: Vec<_> = plan.walks.iter().map(Vec::len).collect();
         lengths.sort_unstable();
         assert_eq!(lengths, [3, 5]);
+        let polygons = plan.polygon_walks(&partition, &topology).unwrap();
+        assert_eq!(polygons.len(), 1);
+        assert_eq!(
+            polygons[0]
+                .iter()
+                .map(|&ring| plan.walks[ring].len())
+                .collect::<Vec<_>>(),
+            [5, 3]
+        );
         let contact = stored_node(&partition, XY::new(0.0, 3.0)).unwrap();
         for walk in &plan.walks {
             assert_eq!(
@@ -3604,6 +3685,88 @@ mod tests {
             );
         }
         assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn selected_polygon_walks_classify_constructed_extrema() {
+        for sources in [
+            [
+                seg(-2.0, 0.0, 2.0, 0.0),
+                seg(-1.0, -2.0, 1.0, 4.0),
+                seg(-1.0, 2.0, 2.0, -1.0),
+            ],
+            [
+                seg(-4.0, 4.0, 4.0, -4.0),
+                seg(-4.0, 9.0, 4.0, -7.0),
+                seg(-4.0, 11.0, 4.0, -13.0),
+            ],
+        ] {
+            let case = run(&sources);
+            let partition = case.partition();
+            let (topology, edges) = partition.local_topology().unwrap();
+            let faces = partition.global_faces(&topology, &edges).unwrap();
+            let occupied: Vec<_> = (0..faces.count).map(|face| face != 0).collect();
+            let plan = faces
+                .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
+                .unwrap();
+            let polygons = plan.polygon_walks(&partition, &topology).unwrap();
+            assert_eq!(polygons.len(), 1);
+            assert_eq!(polygons[0].len(), 1);
+            assert_eq!(plan.walks[polygons[0][0]].len(), 3);
+            for chord in &plan.walks[polygons[0][0]] {
+                let node = NodeId(topology.owners[plan.source_darts[chord.sources.start] as usize]);
+                assert!(!matches!(partition.recipe(node), NodeRecipe::Stored(_)));
+            }
+            assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 3);
+        }
+    }
+
+    #[test]
+    fn selected_polygon_walks_keep_an_island_inside_a_hole_separate() {
+        let case = run(&[
+            seg(0.0, 0.0, 10.0, 0.0),
+            seg(10.0, 0.0, 10.0, 10.0),
+            seg(10.0, 10.0, 0.0, 10.0),
+            seg(0.0, 10.0, 0.0, 0.0),
+            seg(2.0, 2.0, 8.0, 2.0),
+            seg(8.0, 2.0, 8.0, 8.0),
+            seg(8.0, 8.0, 2.0, 8.0),
+            seg(2.0, 8.0, 2.0, 2.0),
+            seg(4.0, 4.0, 6.0, 4.0),
+            seg(6.0, 4.0, 6.0, 6.0),
+            seg(6.0, 6.0, 4.0, 6.0),
+            seg(4.0, 6.0, 4.0, 4.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let hole = stored_node(&partition, XY::new(2.0, 2.0)).unwrap();
+        let island = stored_node(&partition, XY::new(4.0, 4.0)).unwrap();
+        let island_host = faces.component_hosts[topology.component_of[island.0 as usize] as usize];
+        let outer_interior = faces.component_hosts[topology.component_of[hole.0 as usize] as usize];
+        let occupied: Vec<_> = (0..faces.count)
+            .map(|face| face == outer_interior || (face != 0 && face != island_host))
+            .collect();
+        let plan = faces
+            .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
+            .unwrap();
+        let polygons = plan.polygon_walks(&partition, &topology).unwrap();
+        let mut ring_counts: Vec<_> = polygons.iter().map(Vec::len).collect();
+        ring_counts.sort_unstable();
+        assert_eq!(ring_counts, [1, 2]);
+        for polygon in polygons {
+            let first = &plan.walks[polygon[0]][0];
+            let node = NodeId(topology.owners[plan.source_darts[first.sources.start] as usize]);
+            let NodeRecipe::Stored(key) = partition.recipe(node) else {
+                panic!("stored square corner")
+            };
+            if polygon.len() == 1 {
+                assert!((4.0..=6.0).contains(&key.xy().x));
+            } else {
+                assert!(key.xy().x == 0.0 || key.xy().x == 10.0);
+            }
+        }
+        assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 12);
     }
 
     #[test]
