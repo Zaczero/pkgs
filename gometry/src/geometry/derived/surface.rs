@@ -94,25 +94,26 @@ pub(crate) fn point_on_surface_polygon_row_columns(
     point_on_surface_polygon_boundary_columns(xs, ys, ring_offsets, rings)
 }
 
-/// Interior representative of a polygonal shape: the midpoint of the
-/// widest even-odd chord where the horizontal bisector of the bounding
-/// box crosses the boundary linework. The half-open crossing rule
+/// Interior representative of borrowed polygon components: the midpoint of
+/// the widest even-odd chord where the horizontal bisector of their combined
+/// bounding box crosses the boundary linework. The half-open crossing rule
 /// (`start_below != end_below`) keeps the parity consistent through
 /// vertices, exactly like the ring raycasts. Holes and all parts
 /// participate as plain edges, so the widest interval always lies inside
 /// some part and outside every hole. `None` falls back to the generic
 /// engine (degenerate zero-area input where the bisector finds no chord).
-pub(crate) fn polygonal_surface_point(shape: &Shape) -> Option<Point> {
-    let bounds = shape.bounds()?;
+pub(crate) fn polygonal_surface_point<'a>(
+    polygons: impl Iterator<Item = &'a Polygon> + Clone,
+) -> Option<Point> {
+    let mut polygon_bounds = polygons.clone().filter_map(Polygon::bounds);
+    let mut bounds = polygon_bounds.next()?;
+    for polygon_bounds in polygon_bounds {
+        bounds.include_bounds(polygon_bounds);
+    }
     let mid = f64::midpoint(bounds.miny(), bounds.maxy());
     let mut crossings: Vec<f64> = Vec::new();
     // Columnar chord scan: read each ring's coordinate windows directly —
     // no per-segment struct or visitor indirection on the 2n-compare loop.
-    let polygons: &[Polygon] = match shape {
-        Shape::Polygon(polygon) => std::slice::from_ref(polygon),
-        Shape::MultiPolygon(polygons) => polygons,
-        _ => return None,
-    };
     for polygon in polygons {
         for ring in polygon.rings() {
             if !push_chord_crossings(ring.xs(), ring.ys(), mid, &mut crossings) {
@@ -175,8 +176,7 @@ pub(crate) fn lineal_surface_point<'a>(
 
 /// The multipoint vertex nearest its centroid — a representative that is always
 /// one of the input points (so `covered_by` holds), no geo-rs conversion.
-pub(crate) fn multipoint_surface_point(points: &CoordSeq) -> Option<Point> {
-    let (xs, ys) = (points.xs(), points.ys());
+pub(crate) fn multipoint_surface_point(xs: &[f64], ys: &[f64]) -> Option<Point> {
     let count = xs.len();
     if count == 0 {
         return None;
@@ -210,7 +210,7 @@ fn gather_surface_components<'a>(
         match part {
             Shape::Point(point) => points.push(*point),
             Shape::MultiPoint(seq) => {
-                points.extend((0..seq.len()).map(|index| seq.point_at(index)));
+                points.extend(seq.iter());
             },
             Shape::LineString(seq) => lines.push(seq.as_coords()),
             Shape::MultiLineString(seqs) => lines.extend(seqs.iter().map(LineSeq::as_coords)),
@@ -235,11 +235,7 @@ pub(crate) fn collection_surface_point(parts: &[Shape]) -> Option<Point> {
     let mut points: Vec<Point> = Vec::new();
     gather_surface_components(parts, &mut polygons, &mut lines, &mut points);
     if !polygons.is_empty() {
-        let areal = Shape::multi_polygon(
-            crate::geometry::CoordinateAxes::XY,
-            polygons.iter().map(|&polygon| polygon.clone()).collect(),
-        );
-        if let Some(point) = polygonal_surface_point(&areal) {
+        if let Some(point) = polygonal_surface_point(polygons.iter().copied()) {
             return Some(point);
         }
         // Degenerate areal: its boundary rings carry the representative point.
@@ -256,7 +252,10 @@ pub(crate) fn collection_surface_point(parts: &[Shape]) -> Option<Point> {
     {
         return Some(point);
     }
-    (!points.is_empty())
-        .then(|| multipoint_surface_point(&CoordSeq::from_points(&points)))
-        .flatten()
+    if points.is_empty() {
+        return None;
+    }
+    let xs = points.iter().map(|point| point.x).collect::<Vec<_>>();
+    let ys = points.iter().map(|point| point.y).collect::<Vec<_>>();
+    multipoint_surface_point(&xs, &ys)
 }

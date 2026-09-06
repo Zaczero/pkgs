@@ -56,3 +56,62 @@ def test_holed_point_on_surface_is_inside_shell_outside_holes() -> None:
     assert gm.covers(donut, point)
     hole = gm.box(3, 3, 7, 7)
     assert not gm.contains(hole, point)
+
+
+@pytest.mark.parametrize(
+    ('tag', 'ordinates'),
+    [('Z', '7'), ('M', '7'), ('ZM', '7 8')],
+    ids=['xyz', 'xym', 'xyzm'],
+)
+def test_mixed_axis_polygon_collection_uses_xy_scan(tag: str, ordinates: str) -> None:
+    collection = gm.from_wkt(
+        'GEOMETRYCOLLECTION ('
+        'POLYGON ((0 0, 2 0, 2 4, 0 4, 0 0)), '
+        f'POLYGON {tag} ((10 0 {ordinates}, 14 0 {ordinates}, '
+        f'14 4 {ordinates}, 10 4 {ordinates}, 10 0 {ordinates}))'
+        ')'
+    )
+
+    for value in (collection, gm.GeometryArray([collection])[0]):
+        point = value.point_on_surface()
+        assert point.to_wkt() == 'POINT (12 2)'
+        assert point.coordinate_axes == 'XY'
+        assert gm.covered_by(point, value)
+
+
+def test_mixed_axis_point_collection_uses_xy_selector() -> None:
+    collection = gm.GeometryCollection([
+        gm.from_wkt('POINT Z (0 0 7)'),
+        gm.Point(2, 0),
+        gm.Point(10, 0),
+    ])
+
+    for value in (collection, gm.GeometryArray([collection])[0]):
+        point = value.point_on_surface()
+        assert point.to_wkt() == 'POINT (2 0)'
+        assert point.coordinate_axes == 'XY'
+        assert gm.covered_by(point, value)
+
+
+def test_sparse_multipoint_member_is_skipped_by_collection_surface_point() -> None:
+    collection = gm.GeometryCollection([gm.MultiPoint([gm.Point(), gm.Point(1, 2)])])
+
+    for value in (collection, gm.GeometryArray([collection])[0]):
+        point = value.point_on_surface()
+        assert point.to_wkt() == 'POINT (1 2)'
+        assert gm.covered_by(point, value)
+
+
+def test_mixed_axis_degenerate_polygon_collection_uses_boundary_fallback() -> None:
+    collection = gm.from_wkt(
+        'GEOMETRYCOLLECTION ('
+        'POLYGON ((0 0, 1 0, 3 0, 0 0)), '
+        'POLYGON Z ((10 0 1, 11 0 1, 10 0 1, 10 0 1))'
+        ')'
+    )
+
+    for value in (collection, gm.GeometryArray([collection])[0]):
+        point = value.point_on_surface()
+        assert point.to_wkt() == 'POINT (3 0)'
+        assert point.coordinate_axes == 'XY'
+        assert gm.covered_by(point, value)

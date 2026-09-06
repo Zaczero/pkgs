@@ -76,9 +76,12 @@ impl Shape {
         // allocation machinery (measured 1.5 us per small box, 8x
         // shapely); one half-open chord scan at the bbox bisector is a
         // few hundred ns and needs no conversion.
-        if matches!(self, Self::Polygon(_) | Self::MultiPolygon(_))
-            && let Some(point) = polygonal_surface_point(self)
-        {
+        let polygonal = match self {
+            Self::Polygon(polygon) => polygonal_surface_point(std::iter::once(polygon)),
+            Self::MultiPolygon(polygons) => polygonal_surface_point(polygons.as_slice().iter()),
+            _ => None,
+        };
+        if let Some(point) = polygonal {
             return Ok(Self::Point(point));
         }
         // Lineal and puntal representatives are own columnar kernels too — a
@@ -87,7 +90,7 @@ impl Shape {
         // degenerate polygons take the dimensional cascade below.
         let native = match self {
             Self::Point(point) => Some(Point::new_raw_xy(point.x, point.y)),
-            Self::MultiPoint(points) => multipoint_surface_point(points),
+            Self::MultiPoint(points) => multipoint_surface_point(points.xs(), points.ys()),
             Self::LineString(line) => lineal_surface_point(std::iter::once(line.as_coords())),
             Self::MultiLineString(lines) => {
                 lineal_surface_point(lines.iter().map(LineSeq::as_coords))
