@@ -601,8 +601,42 @@ impl GlobalFaces {
         }
         let mut planned_lines = Vec::new();
         try_reserve_vec(&mut planned_lines, lines.len())?;
+        let mut line_remaining = Vec::new();
+        try_reserve_vec(&mut line_remaining, partition.spans.len())?;
+        line_remaining.resize(partition.spans.len(), false);
         for &span in &lines {
-            planned_lines.push(make_chord(span_slots[span as usize] as u32)?);
+            line_remaining[span as usize] = true;
+        }
+        let continuation = |slot: u32, remaining: &[bool]| -> Result<Option<u32>> {
+            let node = topology.targets[slot as usize] as usize;
+            let twin = topology.twins[slot as usize];
+            for next in topology.starts[node]..topology.starts[node + 1] {
+                if next != twin && remaining[edges[next as usize] as usize] && can_join(slot, next)?
+                {
+                    return Ok(Some(next));
+                }
+            }
+            Ok(None)
+        };
+        for &span in &lines {
+            if !line_remaining[span as usize] {
+                continue;
+            }
+            let mut backwards = topology.twins[span_slots[span as usize]];
+            while let Some(next) = continuation(backwards, &line_remaining)? {
+                backwards = next;
+            }
+            let mut slot = topology.twins[backwards as usize];
+            let mut chord = make_chord(slot)?;
+            loop {
+                line_remaining[edges[slot as usize] as usize] = false;
+                let Some(next) = continuation(slot, &line_remaining)? else {
+                    break;
+                };
+                chord.sources.end = make_chord(next)?.sources.end;
+                slot = next;
+            }
+            planned_lines.push(chord);
         }
         Ok(BoundaryPlan {
             source_darts,
@@ -2198,6 +2232,44 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn line_contraction_preserves_bends_and_protected_points() {
+        for protect in [false, true] {
+            let mut sources = vec![
+                seg(2.0, 0.0, 1.0, 0.0),
+                seg(0.0, 0.0, 1.0, 0.0),
+                seg(2.0, 0.0, 2.0, 1.0),
+            ];
+            if protect {
+                sources.push(seg(1.0, 0.0, 1.0, 0.0));
+            }
+            let case = run(&sources);
+            let partition = case.partition();
+            let (topology, edges) = partition.local_topology().unwrap();
+            let faces = partition.global_faces(&topology, &edges).unwrap();
+            let plan = faces
+                .boundary_plan(
+                    (0..partition.spans.len() as u32).collect(),
+                    &topology,
+                    &edges,
+                    &partition,
+                    &[false],
+                )
+                .unwrap();
+            let emitted = plan.round_items(&partition, &topology).unwrap();
+            assert_eq!(emitted.len(), if protect { 3 } else { 2 });
+            assert_eq!(plan.source_darts.len(), 3);
+            assert!(emitted.iter().any(|segment| {
+                segment.start == XY::new(2.0, 0.0) && segment.end == XY::new(2.0, 1.0)
+            }));
+            if !protect {
+                assert!(emitted.iter().any(|segment| {
+                    segment.start == XY::new(2.0, 0.0) && segment.end == XY::new(0.0, 0.0)
+                }));
+            }
+        }
+    }
+
     #[test]
     fn boundary_contraction_preserves_explicit_points_and_source_paths() {
         for (name, protect, attach_line) in [
