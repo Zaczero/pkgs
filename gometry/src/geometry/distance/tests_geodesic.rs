@@ -13,14 +13,15 @@ use crate::geometry::distance::geodesic_sweep::geodesic_capped_witness_sweep_wit
 use crate::geometry::distance::tests::{
     assert_geodesic_close, assert_same_witness, brute_geodesic_distance,
     brute_geodesic_nearest_points, geodesic_bvh_oracle_cases, geodesic_distance_oracle_cases,
-    dense_line, geodesic_nearest_oracle_cases, line, multipoint, p, polygon,
+    geodesic_nearest_oracle_cases, line, multipoint, p, polygon,
 };
 use crate::geometry::distance::{
     GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_min_distance_to_target,
     geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicParts, MOrdinate, Point, PreparedPlan, Shape, ZOrdinate,
+    FrameDependentCaches, GeodesicMetric, GeodesicParts, MOrdinate, Point, PreparedPlan, Shape,
+    ZOrdinate,
 };
 
 fn fresh_bvh_parts(template: &GeodesicParts) -> GeodesicParts {
@@ -31,6 +32,18 @@ fn fresh_bvh_parts(template: &GeodesicParts) -> GeodesicParts {
         caps: None,
         facet_bvh: std::sync::OnceLock::new(),
     }
+}
+
+fn disconnected_bvh_target() -> Shape {
+    Shape::geometry_collection(
+        (0..65)
+            .map(|index| {
+                let longitude = index as f64 * 2.0;
+                line(vec![p(longitude, 0.0), p(longitude, 1.0)])
+            })
+            .collect(),
+    )
+    .expect("disconnected BVH target is valid")
 }
 
 fn brute_geodesic_directed_hausdorff(
@@ -330,7 +343,7 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
 fn geodesic_bvh_allocation_failures_are_retryable() -> Result<()> {
     use crate::test_support::{allocation_count, fail_allocations_after};
 
-    let target = dense_line(-2.0, 0.0, 65);
+    let target = disconnected_bvh_target();
     with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
         let template = target.geodesic_parts(metric)?;
         let warm = fresh_bvh_parts(&template);
@@ -383,7 +396,7 @@ fn geodesic_bvh_none_remains_for_empty_and_below_threshold_parts() -> Result<()>
 fn geodesic_sweep_propagates_bvh_allocation_failure() -> Result<()> {
     use crate::test_support::fail_allocations_after;
 
-    let target = dense_line(-2.0, 0.0, 65);
+    let target = disconnected_bvh_target();
     let probe = [p(0.0, 0.0)];
     let small = line(vec![p(-1.0, 0.0), p(1.0, 0.0)]);
     with_ellipsoid_metric("EPSG:4326", &[&target, &small], |metric| {
@@ -547,7 +560,8 @@ fn geodesic_filled_area_operations_are_explicitly_unsupported() -> Result<()> {
     with_ellipsoid_metric("EPSG:4326", &[&area, &point], |metric| {
         area.geodesic_cap(metric).unwrap_err();
         area.geodesic_distance(&point, metric).unwrap_err();
-        area.geodesic_hausdorff_distance(&point, metric).unwrap_err();
+        area.geodesic_hausdorff_distance(&point, metric)
+            .unwrap_err();
         area.geodesic_nearest_points(&point, metric).unwrap_err();
         Ok(())
     })?;

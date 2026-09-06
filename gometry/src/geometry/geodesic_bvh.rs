@@ -49,13 +49,32 @@ pub(crate) struct GeodesicFacetBvh {
 }
 
 fn try_boxed_filled<T: Copy>(len: usize, value: T) -> Result<Box<[T]>> {
-    let mut values = Box::<[T]>::try_new_uninit_slice(len)
-        .map_err(|_| ResourceError::Allocation)?;
+    let mut values =
+        Box::<[T]>::try_new_uninit_slice(len).map_err(|_| ResourceError::Allocation)?;
     for slot in &mut *values {
         slot.write(value);
     }
     // SAFETY: every element was initialized with a valid copy of `value` above.
     Ok(unsafe { values.assume_init() })
+}
+
+fn cached_auxiliary_unit(
+    aux_cache: &mut HashMap<(u64, u64), [f64; 3]>,
+    point: crate::geometry::XY,
+    metric: &impl GeodesicMetric,
+) -> Result<[f64; 3]> {
+    let key = (point.x.to_bits(), point.y.to_bits());
+    if let Some(&auxiliary) = aux_cache.get(&key) {
+        return Ok(auxiliary);
+    }
+    if aux_cache.len() == aux_cache.capacity() {
+        aux_cache
+            .try_reserve(1)
+            .map_err(|_| ResourceError::Allocation)?;
+    }
+    let auxiliary = metric.auxiliary_unit(point);
+    aux_cache.insert(key, auxiliary);
+    Ok(auxiliary)
 }
 
 impl GeodesicFacetBvh {
@@ -78,31 +97,23 @@ impl GeodesicFacetBvh {
             leaves: try_boxed_filled(leaf_count, GeodesicLeaf { first: 0, len: 0 })?,
             segment_ids: try_boxed_filled(segments.len(), 0)?,
         };
-        let endpoint_capacity = segments
-            .len()
-            .checked_mul(2)
-            .ok_or(ResourceError::SizeOverflow)?;
         let mut aux_cache = HashMap::new();
         aux_cache
-            .try_reserve(endpoint_capacity)
+            .try_reserve(segments.len() + 1)
             .map_err(|_| ResourceError::Allocation)?;
         let mut ids = Vec::new();
         crate::try_reserve_vec(&mut ids, segments.len())?;
         for (index, segment) in segments.iter().enumerate() {
-            let start_aux = *aux_cache
-                .entry((segment.start.x.to_bits(), segment.start.y.to_bits()))
-                .or_insert_with(|| metric.auxiliary_unit(segment.start.xy()));
-            let end_aux = *aux_cache
-                .entry((segment.end.x.to_bits(), segment.end.y.to_bits()))
-                .or_insert_with(|| metric.auxiliary_unit(segment.end.xy()));
-            crate::try_push_vec(&mut ids, SegmentBuild {
+            let start_aux = cached_auxiliary_unit(&mut aux_cache, segment.start.xy(), metric)?;
+            let end_aux = cached_auxiliary_unit(&mut aux_cache, segment.end.xy(), metric)?;
+            ids.push(SegmentBuild {
                 index: index as u32,
                 centroid: [
                     start_aux[0] + end_aux[0],
                     start_aux[1] + end_aux[1],
                     start_aux[2] + end_aux[2],
                 ],
-            })?;
+            });
         }
         let mut next_leaf = 0;
         let mut next_segment_id = 0;
