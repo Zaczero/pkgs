@@ -19,7 +19,8 @@ use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
-    point_in_segment_envelope, segment_envelopes_disjoint, stored_orientation_sign,
+    point_in_segment_envelope, point_on_segment, segment_envelopes_disjoint,
+    stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, try_compare_ratios};
 use crate::geometry::{
@@ -131,6 +132,41 @@ struct BoundaryPlan {
     walks: Vec<Vec<u32>>,
     face_quotient: Vec<u32>,
     walk_sides: Vec<Vec<[u32; 2]>>,
+}
+
+fn emitted_pair_preserves_incidence(left: [(NodeId, XY); 2], right: [(NodeId, XY); 2]) -> bool {
+    if left[0].0 != left[1].0
+        && left
+            .iter()
+            .all(|&(node, _)| right.iter().any(|&(other, _)| node == other))
+    {
+        return false;
+    }
+    for (endpoints, other) in [(left, right), (right, left)] {
+        for (node, point) in endpoints {
+            if point_on_segment(point, other[0].1, other[1].1)
+                && !other.iter().any(|&(other_node, _)| node == other_node)
+            {
+                return false;
+            }
+        }
+    }
+    let signs = |endpoints: [(NodeId, XY); 2], other: [(NodeId, XY); 2]| {
+        other.map(|(_, point)| {
+            stored_orientation_sign(
+                endpoints[0].1.x,
+                endpoints[0].1.y,
+                endpoints[1].1.x,
+                endpoints[1].1.y,
+                point.x,
+                point.y,
+            )
+        })
+    };
+    let straddles = |pair: [ExactSign; 2]| {
+        pair[0] != ExactSign::Zero && pair[1] != ExactSign::Zero && pair[0] != pair[1]
+    };
+    !(straddles(signs(left, right)) && straddles(signs(right, left)))
 }
 
 impl GlobalFaces {
@@ -1629,6 +1665,29 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
 #[cfg(test)]
 mod tests {
     #[test]
+    fn emitted_chords_allow_only_prescribed_endpoint_contacts() {
+        let a = (NodeId(0), XY::new(0.0, 0.0));
+        let b = (NodeId(1), XY::new(2.0, 0.0));
+        let c = (NodeId(2), XY::new(2.0, 2.0));
+        let d = (NodeId(3), XY::new(4.0, 0.0));
+        let middle = (NodeId(4), XY::new(1.0, 0.0));
+        for right in [[b, c], [b, d], [b, b], [c, c]] {
+            assert!(emitted_pair_preserves_incidence([a, b], right));
+            assert!(emitted_pair_preserves_incidence(right, [a, b]));
+        }
+        for right in [[middle, c], [middle, d], [middle, middle], [b, a]] {
+            assert!(!emitted_pair_preserves_incidence([a, b], right));
+            assert!(!emitted_pair_preserves_incidence(right, [a, b]));
+        }
+        let crossing = [
+            (NodeId(5), XY::new(1.0, -1.0)),
+            (NodeId(6), XY::new(1.0, 1.0)),
+        ];
+        assert!(!emitted_pair_preserves_incidence([a, b], crossing));
+        assert!(!emitted_pair_preserves_incidence(crossing, [a, b]));
+    }
+
+    #[test]
     fn live_node_injectivity_distinguishes_repetition_from_rounding_collision() {
         let case = run(&[seg(0.0, 0.0, 2.0, 0.0)]);
         let mut partition = case.partition();
@@ -2594,7 +2653,9 @@ mod tests {
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
         let plan = faces
-            .boundary_plan(&topology, &edges, partition.spans.len(), &[false, true, true])
+            .boundary_plan(&topology, &edges, partition.spans.len(), &[
+                false, true, true,
+            ])
             .unwrap();
         assert_eq!(plan.face_quotient, [0, 1, 1]);
         assert_eq!(plan.walk_sides, [vec![[1, 0]; 4]]);
