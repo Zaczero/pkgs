@@ -140,8 +140,7 @@ pub(crate) use facet_bvh::{
 };
 pub(crate) use generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
 use geodesic_bvh::{
-    GeodesicFacetBvh, GeodesicWitnessCandidate, WitnessPointOutcome, geodesic_witness_is_better,
-    witness_refine_limit,
+    GeodesicFacetBvh, GeodesicWitnessCandidate, geodesic_witness_is_better, witness_refine_limit,
 };
 pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric};
 pub(crate) use linear::MeasureRange;

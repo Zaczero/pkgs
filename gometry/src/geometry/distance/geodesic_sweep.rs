@@ -3,8 +3,7 @@ use crate::geometry::distance::geodesic_scratch;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
 use crate::geometry::{
     GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
-    GeodesicWitnessCandidate, Point, Segment, WitnessPointOutcome, geodesic_witness_is_better,
-    witness_refine_limit,
+    GeodesicWitnessCandidate, Point, Segment, geodesic_witness_is_better, witness_refine_limit,
 };
 pub(crate) const GEODESIC_CAP_GROUP: usize = 16;
 
@@ -434,89 +433,6 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
     Ok(best)
 }
 
-fn geodesic_capped_witness_vertex_with_parts(
-    vertex: Point,
-    vertex_index: u32,
-    target_parts: &GeodesicParts,
-    metric: &impl GeodesicMetric,
-    mut best: Option<GeodesicWitnessCandidate>,
-    order_offset: usize,
-    swapped: bool,
-) -> Result<Option<GeodesicWitnessCandidate>> {
-    let Some(caps) = target_parts.caps.as_ref() else {
-        return Ok(None);
-    };
-    let width = target_parts.segments.len() + target_parts.point_only.len();
-    for (
-        group_index,
-        &CapGroup {
-            anchor: group_anchor,
-            reach,
-        },
-    ) in caps.groups.iter().enumerate()
-    {
-        let best_distance = best
-            .as_ref()
-            .map_or(f64::INFINITY, |candidate| candidate.distance);
-        if metric.point_distance_lower_bound(vertex, group_anchor) - reach > best_distance {
-            continue;
-        }
-        let first = group_index * GEODESIC_CAP_GROUP;
-        let chunk = &target_parts.segments
-            [first..target_parts.segments.len().min(first + GEODESIC_CAP_GROUP)];
-        for (offset, &segment) in chunk.iter().enumerate() {
-            let edge_index = first + offset;
-            let order = order_offset + vertex_index as usize * width + edge_index;
-            let best_distance = witness_refine_limit(best.as_ref(), order);
-            let bound =
-                metric.point_distance_lower_bound(vertex, segment.start) - caps.lengths[edge_index];
-            if bound > best_distance {
-                continue;
-            }
-            let witness = metric.point_segment_witness(vertex, segment, best_distance)?;
-            let candidate = GeodesicWitnessCandidate {
-                probe: vertex,
-                target: witness.foot,
-                distance: witness.distance,
-                order,
-                swapped,
-            };
-            if geodesic_witness_is_better(best.as_ref(), &candidate) {
-                best = Some(candidate);
-            }
-        }
-    }
-    if !target_parts.point_only.is_empty() {
-        for (point_index, &point) in target_parts.point_only.iter().enumerate() {
-            let order = order_offset
-                + vertex_index as usize * width
-                + target_parts.segments.len()
-                + point_index;
-            let best_distance = witness_refine_limit(best.as_ref(), order);
-            if metric.point_distance_lower_bound(vertex, point) > best_distance {
-                continue;
-            }
-            let distance = metric.segment_length(vertex, point);
-            let witness = GeodesicSegmentWitness {
-                distance,
-                foot: point,
-                along: 0.0,
-            };
-            let candidate = GeodesicWitnessCandidate {
-                probe: vertex,
-                target: witness.foot,
-                distance: witness.distance,
-                order,
-                swapped,
-            };
-            if geodesic_witness_is_better(best.as_ref(), &candidate) {
-                best = Some(candidate);
-            }
-        }
-    }
-    Ok(best)
-}
-
 #[expect(
     clippy::large_types_passed_by_value,
     reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
@@ -535,7 +451,7 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
     if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         let mut best = best;
         for (vertex_index, &vertex) in vertices.iter().enumerate() {
-            best = match bvh.witness_point(
+            best = bvh.witness_point(
                 vertex,
                 vertex_index as u32,
                 target_parts,
@@ -545,18 +461,7 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
                 order_offset,
                 swapped,
                 width,
-            )? {
-                WitnessPointOutcome::Best(updated) => updated,
-                WitnessPointOutcome::LimitExceeded => geodesic_capped_witness_vertex_with_parts(
-                    vertex,
-                    vertex_index as u32,
-                    target_parts,
-                    metric,
-                    best,
-                    order_offset,
-                    swapped,
-                )?,
-            };
+            )?;
         }
         Ok(best)
     } else {

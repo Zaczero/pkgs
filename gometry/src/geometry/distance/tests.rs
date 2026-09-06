@@ -226,7 +226,7 @@ pub(super) fn dense_tie_lines() -> Shape {
         p(-1.0, -2.0),
         p(-1.0, 2.0),
     ]];
-    for group in 0..32 {
+    for group in 0..128 {
         let lon = 20.0 + f64::from(group);
         lines.push(vec![p(lon, -2.0), p(lon, 2.0)]);
         lines.push(vec![p(-lon, -2.0), p(-lon, 2.0)]);
@@ -549,7 +549,7 @@ pub(super) fn geodesic_bvh_oracle_cases() -> Vec<(&'static str, Shape, Shape, bo
         (
             "complex_line",
             multipoint(vec![p(-2.0, 1.0), p(2.0, -1.0), p(0.5, 1.5)]),
-            dense_line(-2.0, 0.0, 96),
+            dense_line(-2.0, 0.0, 513),
             true,
         ),
         (
@@ -562,6 +562,16 @@ pub(super) fn geodesic_bvh_oracle_cases() -> Vec<(&'static str, Shape, Shape, bo
             "nearest_tie",
             Shape::Point(p(0.0, 0.0)),
             dense_tie_lines(),
+            true,
+        ),
+        (
+            "large_line_with_point_only",
+            Shape::Point(p(5.0, 5.0)),
+            Shape::geometry_collection(vec![
+                dense_line(-2.0, 0.0, 513),
+                multipoint(vec![p(5.0, 5.0)]),
+            ])
+            .expect("test collection is valid"),
             true,
         ),
     ]

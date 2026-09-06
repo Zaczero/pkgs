@@ -16,12 +16,6 @@ use crate::geometry::{
 };
 
 const GEODESIC_LEAF_SEGMENTS: usize = 8;
-const GEODESIC_BVH_MAX_POINT_VISITS: usize = 64;
-
-pub(super) enum WitnessPointOutcome {
-    LimitExceeded,
-    Best(Option<GeodesicWitnessCandidate>),
-}
 
 #[derive(Clone, Copy)]
 struct GeodesicLeaf {
@@ -203,15 +197,10 @@ impl GeodesicFacetBvh {
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
         mut best: f64,
-    ) -> Result<Option<f64>> {
-        let mut visits = 0;
+    ) -> Result<f64> {
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
-            visits += 1;
-            if visits > GEODESIC_BVH_MAX_POINT_VISITS {
-                return Ok(None);
-            }
             let node = node as usize;
             if self.bound(point, node, metric) > best {
                 continue;
@@ -239,7 +228,7 @@ impl GeodesicFacetBvh {
                 best = best.min(metric.segment_length(point, target));
             }
         }
-        Ok(Some(best))
+        Ok(best)
     }
 
     pub(super) fn witness_point(
@@ -253,15 +242,10 @@ impl GeodesicFacetBvh {
         order_offset: usize,
         swapped: bool,
         width: usize,
-    ) -> Result<WitnessPointOutcome> {
-        let mut visits = 0;
+    ) -> Result<Option<GeodesicWitnessCandidate>> {
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
-            visits += 1;
-            if visits > GEODESIC_BVH_MAX_POINT_VISITS {
-                return Ok(WitnessPointOutcome::LimitExceeded);
-            }
             let node = node as usize;
             let best_distance = best
                 .as_ref()
@@ -324,7 +308,7 @@ impl GeodesicFacetBvh {
                 }
             }
         }
-        Ok(WitnessPointOutcome::Best(best))
+        Ok(best)
     }
 
     pub(super) fn dwithin_point(
@@ -334,15 +318,10 @@ impl GeodesicFacetBvh {
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
         limit: f64,
-    ) -> Result<Option<bool>> {
-        let mut visits = 0;
+    ) -> Result<bool> {
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
-            visits += 1;
-            if visits > GEODESIC_BVH_MAX_POINT_VISITS {
-                return Ok(None);
-            }
             let node = node as usize;
             if self.bound(point, node, metric) > limit {
                 continue;
@@ -358,7 +337,7 @@ impl GeodesicFacetBvh {
                         if bound <= limit
                             && metric.point_to_segment_within(point, segment, limit)?
                         {
-                            return Ok(Some(true));
+                            return Ok(true);
                         }
                     }
                 },
@@ -369,10 +348,10 @@ impl GeodesicFacetBvh {
                 },
             }
         }
-        Ok(Some(parts.point_only.iter().any(|&target| {
+        Ok(parts.point_only.iter().any(|&target| {
             metric.point_distance_lower_bound(point, target) <= limit
                 && metric.segment_length(point, target) <= limit
-        })))
+        }))
     }
 
     fn push_nearer_last(
