@@ -278,6 +278,35 @@ struct BoundaryPlan {
     walk_sides: Vec<Vec<[u32; 2]>>,
 }
 
+impl BoundaryPlan {
+    fn incident_items(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+    ) -> Result<Vec<[NodeId; 2]>> {
+        let mut items = Vec::new();
+        for walk in &self.walks {
+            try_reserve_vec(&mut items, walk.len())?;
+            for &slot in walk {
+                items.push([
+                    NodeId(topology.owners[slot as usize]),
+                    NodeId(topology.targets[slot as usize]),
+                ]);
+            }
+        }
+        try_reserve_vec(&mut items, self.lines.len())?;
+        for &index in &self.lines {
+            let span = &partition.spans[index as usize];
+            items.push([span.start, span.end]);
+        }
+        try_reserve_vec(&mut items, self.points.len())?;
+        for &(node, _) in &self.points {
+            items.push([node, node]);
+        }
+        Ok(items)
+    }
+}
+
 fn emitted_pair_preserves_incidence(left: [(NodeId, XY); 2], right: [(NodeId, XY); 2]) -> bool {
     if left[0].0 != left[1].0
         && left
@@ -1906,8 +1935,23 @@ mod tests {
             .round_incident_items(&[[start, crossing]])
             .unwrap();
         assert_eq!(emitted.len(), 1);
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let mut cells = ArealCells {
+            faces: vec![false; faces.count as usize],
+            spans: vec![false; partition.spans.len()],
+            nodes: vec![false; partition.recipes.len()],
+        };
+        for (index, span) in partition.spans.iter().enumerate() {
+            cells.spans[index] = (span.start == start && span.end == crossing)
+                || (span.end == start && span.start == crossing);
+        }
+        cells.nodes[isolated.0 as usize] = true;
+        let plan = cells.emission_plan(&partition, &topology, &edges, &faces).unwrap();
+        let items = plan.incident_items(&partition, &topology).unwrap();
+        assert_eq!(items.len(), 2);
         let error = partition
-            .round_incident_items(&[[start, crossing], [isolated; 2]])
+            .round_incident_items(&items)
             .unwrap_err();
         assert!(matches!(
             error.kind(),
@@ -3117,6 +3161,12 @@ mod tests {
         assert_eq!(plan.points, [(point, 1)]);
         assert_eq!(plan.lines.len(), 4);
         assert!(plan.walks.is_empty());
+        let items = plan.incident_items(&partition, &topology).unwrap();
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[4], [point, point]);
+        let rounded = partition.round_incident_items(&items).unwrap();
+        assert_eq!(rounded[4].start, XY::new(2.0, 2.0));
+        assert_eq!(rounded[4].end, XY::new(2.0, 2.0));
     }
 
     #[test]
