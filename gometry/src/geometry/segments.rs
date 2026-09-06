@@ -21,9 +21,8 @@ use crate::geometry::{
 mod exact;
 
 pub(crate) use exact::orientation;
-pub(in crate::geometry) use exact::stored_orientation_sign;
 pub(super) use exact::{CCW_ERRBOUND_A, orientation_xy, ray_crossing_is_right};
-pub(in crate::geometry) use exact::{DdInterval, dd_strict_cmp};
+pub(in crate::geometry) use exact::{DdInterval, dd_strict_cmp, stored_orientation_sign};
 use exact::{
     certified_projection, dd_clamp_unit, dd_cross, dd_diff, dd_interpolate, dd_quotient,
     exact_power_of_two, segment_pair_scale_shifts,
@@ -727,48 +726,59 @@ enum ClipParameter {
 }
 
 impl ClipParameter {
-    fn cmp(
-        &self,
-        other: &Self,
-        zero: &ExactDyadic,
-        one: &ExactDyadic,
-    ) -> Result<Ordering> {
+    fn cmp(&self, other: &Self, zero: &ExactDyadic, one: &ExactDyadic) -> Result<Ordering> {
         match (self, other) {
             (Self::Start, Self::Start) | (Self::End, Self::End) => Ok(Ordering::Equal),
             (Self::Start, Self::End) => Ok(Ordering::Less),
             (Self::End, Self::Start) => Ok(Ordering::Greater),
-            (Self::Start, Self::Ratio { numerator, denominator }) => {
-                crate::geometry::tessellation::exact::try_compare_ratios(
-                    zero,
-                    one,
+            (
+                Self::Start,
+                Self::Ratio {
                     numerator,
                     denominator,
-                )
-            },
-            (Self::End, Self::Ratio { numerator, denominator }) => {
-                crate::geometry::tessellation::exact::try_compare_ratios(
-                    one,
-                    one,
+                },
+            ) => crate::geometry::tessellation::exact::try_compare_ratios(
+                zero,
+                one,
+                numerator,
+                denominator,
+            ),
+            (
+                Self::End,
+                Self::Ratio {
                     numerator,
                     denominator,
-                )
-            },
-            (Self::Ratio { numerator, denominator }, Self::Start) => {
-                crate::geometry::tessellation::exact::try_compare_ratios(
+                },
+            ) => crate::geometry::tessellation::exact::try_compare_ratios(
+                one,
+                one,
+                numerator,
+                denominator,
+            ),
+            (
+                Self::Ratio {
                     numerator,
                     denominator,
-                    zero,
-                    one,
-                )
-            },
-            (Self::Ratio { numerator, denominator }, Self::End) => {
-                crate::geometry::tessellation::exact::try_compare_ratios(
+                },
+                Self::Start,
+            ) => crate::geometry::tessellation::exact::try_compare_ratios(
+                numerator,
+                denominator,
+                zero,
+                one,
+            ),
+            (
+                Self::Ratio {
                     numerator,
                     denominator,
-                    one,
-                    one,
-                )
-            },
+                },
+                Self::End,
+            ) => crate::geometry::tessellation::exact::try_compare_ratios(
+                numerator,
+                denominator,
+                one,
+                one,
+            ),
             (
                 Self::Ratio {
                     numerator: left_numerator,
@@ -814,10 +824,10 @@ fn clip_segment_parameter(segment: Segment, point: XY) -> Result<ClipParameter> 
     } else {
         (point.y, segment.start.y, segment.end.y)
     };
-    let numerator = ExactDyadic::try_from_f64(point)?
-        .try_subtract(ExactDyadic::try_from_f64(start)?)?;
-    let denominator = ExactDyadic::try_from_f64(end)?
-        .try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    let numerator =
+        ExactDyadic::try_from_f64(point)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    let denominator =
+        ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
     Ok(ClipParameter::Ratio {
         numerator,
         denominator,
@@ -838,8 +848,8 @@ fn clip_segment_edge_cross_exact(
     let end_x = ExactDyadic::try_from_f64(segment.end.x)?;
     let start_y = ExactDyadic::try_from_f64(segment.start.y)?;
     let end_y = ExactDyadic::try_from_f64(segment.end.y)?;
-    let delta_x = end_x.try_subtract(start_x.clone())?;
-    let delta_y = end_y.try_subtract(start_y.clone())?;
+    let delta_x = end_x.try_subtract(start_x.try_clone()?)?;
+    let delta_y = end_y.try_subtract(start_y.try_clone()?)?;
     if same_topological_coordinate(edge_start.x, edge_end.x) {
         let edge_x = ExactDyadic::try_from_f64(edge_start.x)?;
         let offset = edge_x.try_subtract(start_x)?;
@@ -880,7 +890,10 @@ fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> ClipVerdict {
 
 /// The lane's own answer, where `None` declines to the next authority so the
 /// error-bounded arithmetic can decline with `?`.
-#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
+#[expect(
+    clippy::float_cmp,
+    reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact"
+)]
 fn liang_barsky_decided(start: XY, end: XY, rect: Bounds) -> Option<ClipVerdict> {
     #[derive(Clone, Copy)]
     enum Edge {
@@ -978,7 +991,9 @@ fn liang_barsky_decided(start: XY, end: XY, rect: Bounds) -> Option<ClipVerdict>
         }
     }
     if lower > upper {
-        return (compare_with_error(lower, lower_error, upper, upper_error) == Some(std::cmp::Ordering::Greater)).then_some(ClipVerdict::Disjoint);
+        return (compare_with_error(lower, lower_error, upper, upper_error)
+            == Some(std::cmp::Ordering::Greater))
+        .then_some(ClipVerdict::Disjoint);
     }
     if lower == upper {
         return (lower_error == 0.0 && upper_error == 0.0).then_some(ClipVerdict::Disjoint);

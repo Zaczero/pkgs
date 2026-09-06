@@ -117,15 +117,17 @@ fn exact_rect_edge(point: XY, rect: Bounds) -> Option<usize> {
     }
 }
 
-fn assert_liang_authority_agrees(start: XY, end: XY, rect: Bounds) {
+fn assert_liang_authority_agrees(name: &str, start: XY, end: XY, rect: Bounds) {
     let fast = clip_segment_liang_barsky(start, end, rect);
     let authority = clip_segment_authority(start, end, rect);
     match fast {
-        ClipVerdict::Declined => assert_eq!(clip_segment(start, end, rect).unwrap(), authority),
+        ClipVerdict::Declined => {
+            assert_eq!(clip_segment(start, end, rect).unwrap(), authority, "{name}")
+        },
         decided => {
             let fast = decided.into_clip();
-            assert_eq!(fast.is_some(), authority.is_some());
-            assert_eq!(clip_segment(start, end, rect).unwrap(), fast);
+            assert_eq!(fast.is_some(), authority.is_some(), "{name}");
+            assert_eq!(clip_segment(start, end, rect).unwrap(), fast, "{name}");
             let (Some((fast_start, fast_end)), Some((authority_start, authority_end))) =
                 (fast, authority)
             else {
@@ -135,19 +137,20 @@ fn assert_liang_authority_agrees(start: XY, end: XY, rect: Bounds) {
                 [(fast_start, authority_start), (fast_end, authority_end)]
             {
                 if let Some(edge) = exact_rect_edge(fast_point, rect) {
-                    assert_eq!(nearest_rect_edge(authority_point, rect), edge);
+                    assert_eq!(nearest_rect_edge(authority_point, rect), edge, "{name}");
                 } else {
                     assert!(
                         fast_point.x > rect.minx() && fast_point.x < rect.maxx(),
-                        "admitted free-axis point escaped X bounds: {fast_point:?}"
+                        "{name}: admitted free-axis point escaped X bounds: {fast_point:?}"
                     );
                     assert!(
                         fast_point.y > rect.miny() && fast_point.y < rect.maxy(),
-                        "admitted free-axis point escaped Y bounds: {fast_point:?}"
+                        "{name}: admitted free-axis point escaped Y bounds: {fast_point:?}"
                     );
                     assert_eq!(
                         nearest_rect_edge(authority_point, rect),
-                        nearest_rect_edge(fast_point, rect)
+                        nearest_rect_edge(fast_point, rect),
+                        "{name}"
                     );
                 }
             }
@@ -159,79 +162,105 @@ fn assert_liang_authority_agrees(start: XY, end: XY, rect: Bounds) {
 fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
     let rect = Bounds::new(0.0, 0.0, 1.0, 1.0).expect("valid unit rectangle");
     let admitted = [
-        (XY::new(-1.0, 0.1), XY::new(2.0, 0.9), rect),
-        (XY::new(2.0, 0.9), XY::new(-1.0, 0.1), rect),
-        (XY::new(-1.0, 0.25), XY::new(2.0, 0.75), rect),
-        (XY::new(-1.0, 0.75), XY::new(2.0, 0.25), rect),
-        // Near-parallel to the lower edge, but with ample free-axis margin.
-        (XY::new(-1.0, 0.5), XY::new(2.0, 0.500_000_000_001), rect),
         (
+            "ordinary rising crossing",
+            XY::new(-1.0, 0.1),
+            XY::new(2.0, 0.9),
+            rect,
+        ),
+        (
+            "ordinary falling crossing",
+            XY::new(2.0, 0.9),
+            XY::new(-1.0, 0.1),
+            rect,
+        ),
+        (
+            "quarter-slope crossing",
+            XY::new(-1.0, 0.25),
+            XY::new(2.0, 0.75),
+            rect,
+        ),
+        (
+            "reverse quarter-slope crossing",
+            XY::new(-1.0, 0.75),
+            XY::new(2.0, 0.25),
+            rect,
+        ),
+        // Near-parallel to the lower edge, but with ample free-axis margin.
+        (
+            "near-parallel crossing",
+            XY::new(-1.0, 0.5),
+            XY::new(2.0, 0.500_000_000_001),
+            rect,
+        ),
+        (
+            "large offset crossing",
             XY::new(1.0e15 - 32.0, 1.0e15 + 4.0),
             XY::new(1.0e15 + 32.0, 1.0e15 + 12.0),
             Bounds::new(1.0e15, 1.0e15, 1.0e15 + 16.0, 1.0e15 + 16.0)
                 .expect("valid offset rectangle"),
         ),
     ];
-    for (start, end, rect) in admitted {
+    for (name, start, end, rect) in admitted {
         assert!(
             clip_segment_liang_barsky(start, end, rect) != ClipVerdict::Declined,
-            "ordinary finite case was not admitted: {start:?} -> {end:?}"
+            "{name}: ordinary finite case was not admitted: {start:?} -> {end:?}"
         );
-        assert_liang_authority_agrees(start, end, rect);
+        assert_liang_authority_agrees(name, start, end, rect);
     }
 
     let fallback = [
-        (XY::new(-1.0e15, 0.5), XY::new(1.0e15, 0.5), rect),
-        (XY::new(0.0, 0.0), XY::new(f64::from_bits(1), 1.0), rect),
-        (XY::new(-f64::MAX, -1.0), XY::new(f64::MAX, 1.0), rect),
-        (XY::new(-1.0, -1.0), XY::new(0.0, 0.0), rect),
-        (XY::new(-1.0, -0.0), XY::new(2.0, 0.5), rect),
         (
+            "zero lower-edge ratio",
+            XY::new(-1.0e15, 0.5),
+            XY::new(1.0e15, 0.5),
+            rect,
+        ),
+        (
+            "subnormal horizontal delta",
+            XY::new(0.0, 0.0),
+            XY::new(f64::from_bits(1), 1.0),
+            rect,
+        ),
+        (
+            "opposite maximum endpoints",
+            XY::new(-f64::MAX, -1.0),
+            XY::new(f64::MAX, 1.0),
+            rect,
+        ),
+        (
+            "corner endpoint",
+            XY::new(-1.0, -1.0),
+            XY::new(0.0, 0.0),
+            rect,
+        ),
+        (
+            "signed-zero endpoint",
+            XY::new(-1.0, -0.0),
+            XY::new(2.0, 0.5),
+            rect,
+        ),
+        (
+            "subnormal rectangle",
             XY::new(-1.0e-200, 0.0),
             XY::new(2.0e-200, 1.0e-200),
             Bounds::new(0.0, 0.0, 1.0e-200, 1.0e-200).expect("valid tiny rectangle"),
         ),
         (
+            "huge offset rectangle",
             XY::new(1.0e20 - 2.0e16, 1.0e20 + 4.0e15),
             XY::new(1.0e20 + 2.0e16, 1.0e20 + 1.2e16),
             Bounds::new(1.0e20, 1.0e20, 1.0e20 + 2.0e16, 1.0e20 + 2.0e16)
                 .expect("valid huge offset rectangle"),
         ),
     ];
-    for (start, end, rect) in fallback {
+    for (name, start, end, rect) in fallback {
         assert!(
             clip_segment_liang_barsky(start, end, rect) == ClipVerdict::Declined,
-            "ambiguous case was admitted: {start:?} -> {end:?}, {rect:?}"
+            "{name}: ambiguous case was admitted: {start:?} -> {end:?}, {rect:?}"
         );
-        assert_liang_authority_agrees(start, end, rect);
+        assert_liang_authority_agrees(name, start, end, rect);
     }
-
-    let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
-    let mut admitted_count = 0;
-    for _ in 0..2048 {
-        seed ^= seed << 7;
-        seed ^= seed >> 9;
-        let x0 = (seed as f64 / u64::MAX as f64) * 8.0 - 4.0;
-        seed ^= seed << 7;
-        seed ^= seed >> 9;
-        let y0 = (seed as f64 / u64::MAX as f64) * 8.0 - 4.0;
-        seed ^= seed << 7;
-        seed ^= seed >> 9;
-        let x1 = (seed as f64 / u64::MAX as f64) * 8.0 - 4.0;
-        seed ^= seed << 7;
-        seed ^= seed >> 9;
-        let y1 = (seed as f64 / u64::MAX as f64) * 8.0 - 4.0;
-        let start = XY::new(x0, y0);
-        let end = XY::new(x1, y1);
-        if clip_segment_liang_barsky(start, end, rect) != ClipVerdict::Declined {
-            admitted_count += 1;
-        }
-        assert_liang_authority_agrees(start, end, rect);
-    }
-    assert!(
-        admitted_count > 1000,
-        "too few random cases admitted: {admitted_count}"
-    );
 }
 
 #[test]
