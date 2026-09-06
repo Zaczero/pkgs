@@ -575,6 +575,9 @@ mod binary_areal_overlay_tests {
             let right = square(3.0, -1.0, 5.0, 1.0);
             for (left, right) in [(&left, &right), (&right, &left)] {
                 let result = assert_intersection_matches_joint_graph(name, left, right);
+                if name == "collapsed ring" {
+                    assert!(result.equals(&line(&[(3.0, 0.0), (4.0, 0.0)])), "{result:?}");
+                }
                 if name == "retraced exterior spur" {
                     // Opposite traversals cancel under the areal nonzero rule.
                     assert!(result.is_empty(), "{result:?}");
