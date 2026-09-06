@@ -2201,7 +2201,7 @@ class Geometry:
         312
         """
 
-    def unique_points(self) -> MultiPoint:
+    def unique_points(self) -> MultiPoint | GeometryCollection:
         """Distinct vertices in first-occurrence order. Vertices compare by exact
         structural identity (every active ordinate by bit pattern, the
         ``equals_identical`` notion), so XYZ points that differ only in Z stay
@@ -2209,8 +2209,11 @@ class Geometry:
 
         Returns
         -------
-        MultiPoint
-            The distinct vertices (``MULTIPOINT EMPTY`` for an empty geometry).
+        MultiPoint or GeometryCollection
+            The distinct vertices. Homogeneous surviving vertices use a ``MultiPoint``;
+            when surviving vertices carry different axis layouts, a ``GeometryCollection``
+            of ordered ``Point`` members preserves each layout without promotion or loss.
+            An empty input returns a typed ``MULTIPOINT EMPTY``.
 
         See Also
         --------
@@ -7158,7 +7161,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         312
         """
 
-    def unique_points(self) -> GeometryArray[MultiPoint]:
+    def unique_points(self) -> GeometryArray[MultiPoint | GeometryCollection]:
         """Distinct vertices in first-occurrence order. Vertices compare by exact
         structural identity (every active ordinate by bit pattern, the
         ``equals_identical`` notion), so XYZ points that differ only in Z stay
@@ -7167,7 +7170,8 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Returns
         -------
         GeometryArray
-            One ``MultiPoint`` of distinct vertices per row.
+            One distinct-vertex result per row: a ``MultiPoint`` for homogeneous rows or
+            a ``GeometryCollection`` of ordered ``Point`` members for heterogeneous rows.
 
         See Also
         --------

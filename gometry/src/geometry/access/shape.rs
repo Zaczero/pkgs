@@ -260,11 +260,12 @@ impl Shape {
         points
     }
 
-    /// Distinct vertices in first-occurrence order, as a `MultiPoint`.
+    /// Distinct vertices in first-occurrence order.
     /// The dedup key is full structural identity (axes + every active
     /// ordinate by bit pattern, the `equals_identical` notion) — unlike
-    /// `remove_repeated_points`, which collapses only consecutive runs
-    /// within a tolerance.
+    /// `remove_repeated_points`, which collapses only consecutive runs within
+    /// a tolerance. Homogeneous survivors use a `MultiPoint`; heterogeneous
+    /// survivors remain ordered `Point` members of a `GeometryCollection`.
     pub fn unique_points(&self) -> Self {
         // A point atom is already its own unique set — no hashing.
         if let Self::Point(point) = self {
@@ -278,7 +279,14 @@ impl Shape {
                 unique.push(point);
             }
         });
-        Self::multi_point(self.axes(), CoordSeq::from_points(&unique))
+        let Some(first) = unique.first().copied() else {
+            return Self::multi_point(self.axes(), CoordSeq::from_points(&unique));
+        };
+        if unique.iter().all(|point| point.axes() == first.axes()) {
+            return Self::multi_point(first.axes(), CoordSeq::from_points(&unique));
+        }
+        Self::geometry_collection(unique.into_iter().map(Self::Point).collect())
+            .expect("unique point collection is nonempty and shallow")
     }
 
     /// Visit every segment-bearing coordinate chain — linestrings,

@@ -963,8 +963,11 @@ distinct.";
 
 Returns
 -------
-MultiPoint
-    The distinct vertices (``MULTIPOINT EMPTY`` for an empty geometry).
+MultiPoint or GeometryCollection
+    The distinct vertices. Homogeneous surviving vertices use a ``MultiPoint``;
+    when surviving vertices carry different axis layouts, a ``GeometryCollection``
+    of ordered ``Point`` members preserves each layout without promotion or loss.
+    An empty input returns a typed ``MULTIPOINT EMPTY``.
 
 ";
     array: r"
@@ -972,7 +975,8 @@ MultiPoint
 Returns
 -------
 GeometryArray
-    One ``MultiPoint`` of distinct vertices per row.
+    One distinct-vertex result per row: a ``MultiPoint`` for homogeneous rows or
+    a ``GeometryCollection`` of ordered ``Point`` members for heterogeneous rows.
 
 ";
     tail: r"See Also

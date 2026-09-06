@@ -641,6 +641,89 @@ def test_unique_points_dedups_in_first_occurrence_order() -> None:
     assert gm.from_wkt('LINESTRING EMPTY').unique_points().is_empty
 
 
+def test_unique_points_preserves_heterogeneous_point_identity_and_order() -> None:
+    source = gm.GeometryCollection([
+        gm.Point(0, 0),
+        gm.Point(0, 0, z=10),
+        gm.Point(0, 0, m=20),
+        gm.Point(0, 0, z=30, m=40),
+        gm.Point(0, 0),
+    ])
+
+    result = source.unique_points()
+
+    assert result.geometry_type == 'GeometryCollection'
+    assert result.coordinate_axes == 'XYZM'
+    assert [part.coordinate_axes for part in result.parts] == ['XY', 'XYZ', 'XYM', 'XYZM']
+    assert [list(part.coords) for part in result.parts] == [
+        [(0.0, 0.0)],
+        [(0.0, 0.0, 10.0)],
+        [(0.0, 0.0, 20.0)],
+        [(0.0, 0.0, 30.0, 40.0)],
+    ]
+    assert result == gm.from_wkb(result.to_wkb())
+
+
+def test_unique_points_keeps_homogeneous_singleton_and_empty_outputs() -> None:
+    singleton = gm.GeometryCollection([gm.Point(1, 2, z=3)])
+    assert singleton.unique_points().geometry_type == 'MultiPoint'
+    assert singleton.unique_points().coordinate_axes == 'XYZ'
+
+    empty = gm.from_wkt('POINT Z EMPTY').unique_points()
+    assert empty.geometry_type == 'MultiPoint'
+    assert empty.coordinate_axes == 'XYZ'
+    assert empty.is_empty
+
+    sparse = gm.from_wkt('MULTIPOINT Z ((0 0 1), EMPTY, (1 1 2))').unique_points()
+    assert sparse.geometry_type == 'MultiPoint'
+    assert sparse.coordinate_axes == 'XYZ'
+    assert list(sparse.coords) == [(0.0, 0.0, 1.0), (1.0, 1.0, 2.0)]
+
+
+def test_unique_points_does_not_promote_axes_from_empty_collection_members() -> None:
+    source = gm.GeometryCollection([
+        gm.from_wkt('POINT Z EMPTY'),
+        gm.Point(2, 3),
+        gm.from_wkt('POINT M EMPTY'),
+    ])
+
+    result = source.unique_points()
+
+    assert result.geometry_type == 'MultiPoint'
+    assert result.coordinate_axes == 'XY'
+    assert list(result.coords) == [(2.0, 3.0)]
+
+    all_empty = gm.GeometryCollection([
+        gm.from_wkt('POINT Z EMPTY'),
+        gm.from_wkt('POINT M EMPTY'),
+    ]).unique_points()
+    assert all_empty.geometry_type == 'MultiPoint'
+    assert all_empty.coordinate_axes == 'XYZM'
+    assert all_empty.is_empty
+
+
+def test_unique_points_scalar_and_array_preserve_per_row_result_shapes() -> None:
+    mixed = gm.GeometryCollection([
+        gm.Point(0, 0),
+        gm.Point(1, 1, z=10),
+        gm.Point(2, 2, m=20),
+        gm.Point(3, 3, z=30, m=40),
+    ])
+    homogeneous = gm.MultiPoint([(0, 0), (1, 1)])
+    empty = gm.from_wkt('POINT Z EMPTY')
+
+    result = gm.GeometryArray([mixed, homogeneous, empty]).unique_points()
+
+    assert [part.geometry_type for part in result] == [
+        'GeometryCollection',
+        'MultiPoint',
+        'MultiPoint',
+    ]
+    assert result[0] == gm.from_wkb(result[0].to_wkb())
+    assert result[1].coordinate_axes == 'XY'
+    assert result[2].coordinate_axes == 'XYZ'
+
+
 def test_reverse_and_orient_polygons_are_rust_backed() -> None:
     line = gm.LineString(
         [(0, 0), (1, 0), (2, 0)], z=[0, 2, 4], m=[10, 12, 14], crs=4326
