@@ -5,9 +5,10 @@ use super::lower_bound::{LowerBoundKernel, exact_auxiliary_sphere_bound};
 use super::segment::geodesic_segment_minimum;
 use super::{EllipsoidMetric, GEODESIC_LINE_CACHE, geodesic_counters};
 use crate::error::Result;
+use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{
     CoordSeq, Coordinates, FrameDependentCaches, GeodesicMetric, GeodesicSegment, LineSeq, Point,
-    PreparedPlan, Shape,
+    PreparedPlan, Shape, XY,
 };
 
 fn p(x: f64, y: f64) -> Point {
@@ -43,6 +44,40 @@ fn point_only_points(shape: &Shape) -> Vec<Point> {
         },
         _ => Vec::new(),
     }
+}
+
+#[test]
+fn auxiliary_unit_uses_native_xy_conversion_and_raw_zero_semantics() {
+    let geodesic = Geodesic::wgs84();
+    let degree = AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
+    let grad = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
+    let native = GeographicFrame::try_new(degree, grad, 2.0_f64.to_radians()).unwrap();
+    let native_metric = EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, native);
+    let canonical_metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+
+    let native_xy = XY::new(0.0, 50.0);
+    let (longitude, latitude) = native.to_geodesic_xy(native_xy.x, native_xy.y).unwrap();
+    assert_eq!(longitude, 2.0);
+    assert!((latitude - 45.0).abs() <= 1e-12);
+    assert_eq!(
+        native_metric.auxiliary_unit(native_xy),
+        canonical_metric.auxiliary_unit(XY::new(longitude, latitude))
+    );
+
+    let positive_latitude = canonical_metric.auxiliary_unit(XY::new(1.0, 0.0));
+    let negative_latitude = canonical_metric.auxiliary_unit(XY::new(1.0, -0.0));
+    assert_eq!(
+        positive_latitude[0].to_bits(),
+        negative_latitude[0].to_bits()
+    );
+    assert_eq!(
+        positive_latitude[1].to_bits(),
+        negative_latitude[1].to_bits()
+    );
+    assert_ne!(
+        positive_latitude[2].to_bits(),
+        negative_latitude[2].to_bits()
+    );
 }
 
 #[test]

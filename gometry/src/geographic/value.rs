@@ -331,7 +331,11 @@ impl GeographicFrame {
         Ok(())
     }
 
-    fn to_geodesic_xy(self, longitude: f64, latitude: f64) -> Result<(f64, f64), GeographicError> {
+    pub(crate) fn to_geodesic_xy(
+        self,
+        longitude: f64,
+        latitude: f64,
+    ) -> Result<(f64, f64), GeographicError> {
         let longitude = self.longitude.canonicalize(longitude)?.get();
         let longitude = if self == Self::crs84() {
             longitude

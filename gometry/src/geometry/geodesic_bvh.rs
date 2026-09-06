@@ -74,11 +74,11 @@ impl GeodesicFacetBvh {
             .enumerate()
             .map(|(index, segment)| {
                 let start_aux = *aux_cache
-                    .entry(segment.start)
-                    .or_insert_with(|| metric.auxiliary_unit(segment.start));
+                    .entry((segment.start.x.to_bits(), segment.start.y.to_bits()))
+                    .or_insert_with(|| metric.auxiliary_unit(segment.start.xy()));
                 let end_aux = *aux_cache
-                    .entry(segment.end)
-                    .or_insert_with(|| metric.auxiliary_unit(segment.end));
+                    .entry((segment.end.x.to_bits(), segment.end.y.to_bits()))
+                    .or_insert_with(|| metric.auxiliary_unit(segment.end.xy()));
                 SegmentBuild {
                     index: index as u32,
                     centroid: [

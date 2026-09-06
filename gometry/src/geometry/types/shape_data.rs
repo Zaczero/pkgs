@@ -833,10 +833,11 @@ pub trait GeodesicMetric {
     }
 
     /// Auxiliary-sphere location used only to partition the geodesic facet
-    /// tree. Implementations with a native angular frame convert here; the
-    /// default retains the historical degree-frame behavior for geometry-only
-    /// metrics.
-    fn auxiliary_unit(&self, point: Point) -> [f64; 3] {
+    /// tree. Providers receive native-frame XY only: Z/M and axis presence are
+    /// not part of this heuristic. Implementations with a native angular frame
+    /// convert here; the default retains the historical degree-frame behavior
+    /// for geometry-only metrics.
+    fn auxiliary_unit(&self, point: XY) -> [f64; 3] {
         let lon = point.x.to_radians();
         let lat = point.y.to_radians();
         let beta = f64::atan((1.0 - 1.0 / 298.257_223_563) * lat.tan())

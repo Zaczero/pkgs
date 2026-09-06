@@ -9,7 +9,7 @@ use crate::crs::geodesic::{
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    GeodesicMetric, GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, ZOrdinate,
+    GeodesicMetric, GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, XY, ZOrdinate,
 };
 
 pub(crate) fn inverse_distance(
@@ -129,8 +129,12 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         crate::crs::ensure_geographic_domain_in_frame(self.frame, shape)
     }
 
-    fn auxiliary_unit(&self, point: Point) -> [f64; 3] {
-        auxiliary_unit(self.to_geodesic_point(point))
+    fn auxiliary_unit(&self, point: XY) -> [f64; 3] {
+        let (longitude, latitude) = self
+            .frame
+            .to_geodesic_xy(point.x, point.y)
+            .expect("geographic metric received an admitted point");
+        auxiliary_unit(XY::new(longitude, latitude))
     }
 
     fn make_segment(&self, start: Point, end: Point) -> crate::error::Result<GeodesicSegment> {
@@ -318,7 +322,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
     }
 }
 
-fn auxiliary_unit(point: Point) -> [f64; 3] {
+fn auxiliary_unit(point: XY) -> [f64; 3] {
     let lon = point.x.to_radians();
     let lat = point.y.to_radians();
     // WGS84-ish reduced latitude is enough for a split heuristic; the

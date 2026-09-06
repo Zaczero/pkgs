@@ -19,7 +19,9 @@ use crate::geometry::distance::{
     GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_min_distance_to_target,
     geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
 };
-use crate::geometry::{FrameDependentCaches, GeodesicMetric, PreparedPlan, Shape};
+use crate::geometry::{
+    FrameDependentCaches, GeodesicMetric, MOrdinate, Point, PreparedPlan, Shape, ZOrdinate,
+};
 
 fn brute_geodesic_directed_hausdorff(
     source: &Shape,
@@ -187,6 +189,126 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
             Ok(())
         })?;
     }
+    Ok(())
+}
+
+fn straight_ordinate_line(z: bool) -> Shape {
+    line(
+        (0..65)
+            .map(|index| {
+                let x = -2.0 + f64::from(index) / 16.0;
+                if z {
+                    Point::new_axes(
+                        x,
+                        0.0,
+                        ZOrdinate(Some(100.0 + f64::from(index))),
+                        MOrdinate(None),
+                    )
+                } else {
+                    Point::new_axes(
+                        x,
+                        0.0,
+                        ZOrdinate(None),
+                        MOrdinate(Some(200.0 + f64::from(index))),
+                    )
+                }
+                .expect("finite ordinate test point")
+            })
+            .collect(),
+    )
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
+)]
+fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Result<()> {
+    let z_line = straight_ordinate_line(true);
+    let m_line = straight_ordinate_line(false);
+    let probe = p(0.0, 1.0);
+    let cases = [
+        (
+            "xyz_first",
+            Shape::geometry_collection(vec![z_line.clone(), m_line.clone()])
+                .expect("mixed ordinate collection"),
+            Some(132.0),
+            None,
+        ),
+        (
+            "xym_first",
+            Shape::geometry_collection(vec![m_line, z_line]).expect("mixed ordinate collection"),
+            None,
+            Some(232.0),
+        ),
+    ];
+
+    with_ellipsoid_metric("EPSG:4326", &[], |metric| {
+        for (name, target, expected_z, expected_m) in cases {
+            let target_parts = target.geodesic_parts(metric)?;
+            assert!(
+                target_parts.geodesic_bvh(metric)?.is_some(),
+                "{name} bvh presence"
+            );
+            let vertices = [probe];
+            let mut rows = Vec::new();
+            let expected_distance = geodesic_capped_sweep_with_parts(
+                &vertices,
+                &target_parts,
+                metric,
+                f64::INFINITY,
+                &mut rows,
+            )?;
+            let actual_distance =
+                geodesic_sweep_with_parts(&vertices, &target_parts, metric, f64::INFINITY)?;
+            assert_geodesic_close(
+                &format!("{name} distance"),
+                actual_distance,
+                expected_distance,
+            );
+
+            for limit in [
+                0.0,
+                expected_distance * 0.5,
+                expected_distance,
+                f64::next_up(expected_distance),
+            ] {
+                let expected = geodesic_capped_dwithin_with_parts(
+                    &vertices,
+                    &target_parts,
+                    metric,
+                    limit,
+                    &mut rows,
+                )?;
+                let actual =
+                    geodesic_dwithin_sweep_with_parts(&vertices, &target_parts, metric, limit)?;
+                assert_eq!(actual, expected, "{name} dwithin {limit}");
+            }
+
+            let expected_witness = geodesic_capped_witness_sweep_with_parts(
+                &vertices,
+                &target_parts,
+                metric,
+                None,
+                0,
+                false,
+                &mut rows,
+            )?;
+            let actual_witness = geodesic_witness_sweep_with_parts(
+                &vertices,
+                &target_parts,
+                metric,
+                None,
+                0,
+                false,
+            )?;
+            assert_same_witness(name, actual_witness, expected_witness);
+            let target = actual_witness.expect("non-empty witness").target;
+            assert_eq!(target.z(), expected_z, "{name} target Z");
+            assert_eq!(target.m(), expected_m, "{name} target M");
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
