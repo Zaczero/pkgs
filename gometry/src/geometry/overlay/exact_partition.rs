@@ -128,6 +128,58 @@ struct GlobalFaces {
 }
 
 impl GlobalFaces {
+    fn boundary_walks(
+        &self,
+        topology: &IndexedTopology,
+        occupied: &[bool],
+    ) -> Result<Vec<Vec<u32>>> {
+        let mut selected = Vec::new();
+        try_reserve_vec(&mut selected, topology.targets.len())?;
+        for (slot, &walk) in topology.face_of.iter().enumerate() {
+            let other = topology.face_of[topology.twins[slot] as usize];
+            selected.push(
+                occupied[self.walk_faces[walk as usize] as usize]
+                    && !occupied[self.walk_faces[other as usize] as usize],
+            );
+        }
+        let mut visited = Vec::new();
+        try_reserve_vec(&mut visited, selected.len())?;
+        visited.resize(selected.len(), false);
+        let mut walks = Vec::new();
+        for start in 0..selected.len() {
+            if !selected[start] || visited[start] {
+                continue;
+            }
+            let mut walk = Vec::new();
+            let mut slot = start;
+            loop {
+                debug_assert!(!visited[slot]);
+                visited[slot] = true;
+                try_reserve_vec(&mut walk, 1)?;
+                walk.push(slot as u32);
+                let target = topology.targets[slot] as usize;
+                let first = topology.starts[target] as usize;
+                let end = topology.starts[target + 1] as usize;
+                let twin = topology.twins[slot] as usize;
+                // Skip omitted wedges clockwise from the incoming twin.
+                slot = twin;
+                loop {
+                    slot = if slot == first { end - 1 } else { slot - 1 };
+                    if selected[slot] {
+                        break;
+                    }
+                    debug_assert_ne!(slot, twin, "selected boundary has no successor");
+                }
+                if slot == start {
+                    break;
+                }
+            }
+            try_reserve_vec(&mut walks, 1)?;
+            walks.push(walk);
+        }
+        Ok(walks)
+    }
+
     fn quotient(
         &self,
         topology: &IndexedTopology,
@@ -2315,6 +2367,113 @@ mod tests {
     }
 
     #[test]
+    fn selected_boundaries_keep_hole_direction_and_host_face() {
+        let case = run(&[
+            seg(0.0, 0.0, 6.0, 0.0),
+            seg(6.0, 0.0, 6.0, 6.0),
+            seg(6.0, 6.0, 0.0, 6.0),
+            seg(0.0, 6.0, 0.0, 0.0),
+            seg(2.0, 2.0, 4.0, 2.0),
+            seg(4.0, 2.0, 4.0, 4.0),
+            seg(4.0, 4.0, 2.0, 4.0),
+            seg(2.0, 4.0, 2.0, 2.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        assert_eq!(faces.count, 3);
+        let inner = stored_node(&partition, XY::new(2.0, 2.0)).unwrap();
+        let host = faces.component_hosts[topology.component_of[inner.0 as usize] as usize];
+        let mut occupied = vec![false; 3];
+        occupied[host as usize] = true;
+        let plan = faces
+            .boundary_plan(&topology, &edges, partition.spans.len(), &occupied)
+            .unwrap();
+        assert_eq!(plan.face_quotient, [0, 1, 2]);
+        assert_eq!(plan.walk_sides[0], vec![[host, 0]; 4]);
+        assert_eq!(plan.walk_sides[1].len(), 4);
+        for sides in &plan.walk_sides[1] {
+            assert_eq!(sides[0], host);
+            assert_ne!(sides[1], 0);
+            assert_ne!(sides[1], host);
+        }
+        let walks = plan.walks;
+        assert_eq!(walks.len(), 2);
+        for (walk, expected) in
+            walks
+                .iter()
+                .zip([[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0)], [
+                    (2.0, 2.0),
+                    (2.0, 4.0),
+                    (4.0, 4.0),
+                    (4.0, 2.0),
+                ]])
+        {
+            let actual: Vec<_> = walk
+                .iter()
+                .map(|&slot| {
+                    assert_eq!(
+                        faces.walk_faces[topology.face_of[slot as usize] as usize],
+                        host
+                    );
+                    let NodeRecipe::Stored(key) =
+                        partition.recipe(NodeId(topology.owners[slot as usize]))
+                    else {
+                        panic!("square corners are stored");
+                    };
+                    let point = key.xy();
+                    (point.x, point.y)
+                })
+                .collect();
+            assert_eq!(actual, expected);
+        }
+        let empty = faces
+            .boundary_plan(&topology, &edges, partition.spans.len(), &[false; 3])
+            .unwrap();
+        assert!(empty.walks.is_empty());
+        assert!(empty.walk_sides.is_empty());
+        assert_eq!(empty.face_quotient, [0, 0, 0]);
+    }
+
+    #[test]
+    fn selected_boundaries_keep_point_touching_regions_separate() {
+        let case = run(&[
+            seg(0.0, 0.0, 2.0, 0.0),
+            seg(2.0, 0.0, 2.0, 2.0),
+            seg(2.0, 2.0, 0.0, 2.0),
+            seg(0.0, 2.0, 0.0, 0.0),
+            seg(2.0, 2.0, 4.0, 2.0),
+            seg(4.0, 2.0, 4.0, 4.0),
+            seg(4.0, 4.0, 2.0, 4.0),
+            seg(2.0, 4.0, 2.0, 2.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        assert_eq!(faces.count, 3);
+        let walks = faces
+            .boundary_walks(&topology, &[false, true, true])
+            .unwrap();
+        assert_eq!(walks.len(), 2);
+        let contact = stored_node(&partition, XY::new(2.0, 2.0)).unwrap();
+        for walk in walks {
+            assert_eq!(walk.len(), 4);
+            assert_eq!(
+                walk.iter()
+                    .filter(|&&slot| topology.owners[slot as usize] == contact.0)
+                    .count(),
+                1
+            );
+        }
+        assert!(
+            faces
+                .boundary_walks(&topology, &[false, false, false])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn omitted_atoms_merge_faces_and_preserve_isolated_hosts() {
         let case = run(&[
             seg(0.0, 0.0, 4.0, 0.0),
@@ -2328,6 +2487,20 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
+        let walks = faces
+            .boundary_walks(&topology, &[false, true, true])
+            .unwrap();
+        assert_eq!(walks.len(), 1);
+        let boundary: Vec<_> = walks[0]
+            .iter()
+            .map(|&slot| partition.recipe(NodeId(topology.owners[slot as usize])))
+            .collect();
+        assert_eq!(boundary, [
+            partition.recipe(stored_node(&partition, XY::new(0.0, 0.0)).unwrap()),
+            partition.recipe(stored_node(&partition, XY::new(4.0, 0.0)).unwrap()),
+            partition.recipe(stored_node(&partition, XY::new(4.0, 4.0)).unwrap()),
+            partition.recipe(stored_node(&partition, XY::new(0.0, 4.0)).unwrap()),
+        ]);
         let mut retained = vec![true; partition.spans.len()];
         let identity = faces.quotient(&topology, &edges, &retained).unwrap();
         for (face, &mapped) in identity.iter().enumerate() {
