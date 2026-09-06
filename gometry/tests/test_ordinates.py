@@ -400,6 +400,80 @@ def test_hull_first_seen_ordinates_on_scalar_and_array() -> None:
         assert hulls[1].coordinate_axes == 'XYZ'
 
 
+def _run_hull(value: object, op: str, length_threshold: float = 0.0) -> object:
+    if op == 'convex_hull':
+        return getattr(value, op)()
+    return getattr(value, op)(concavity=0.0, length_threshold=length_threshold)
+
+
+def _mixed_selected_hull(vertex_count: int) -> gm.Geometry:
+    if vertex_count == 2:
+        points = [gm.Point(0.0, 0.0, z=10.0), gm.Point(1.0, 1.0)]
+    else:
+        points = [
+            gm.Point(0.0, 0.0, z=10.0),
+            gm.Point(1.0, 0.0),
+            gm.Point(0.0, 1.0),
+        ]
+    return gm.GeometryCollection(points)
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+@pytest.mark.parametrize('vertex_count', [2, 3], ids=['two-selected', 'three-selected'])
+def test_hull_rejects_mixed_selected_axes_scalar(op: str, vertex_count: int) -> None:
+    with pytest.raises(gm.InvalidGeometryError):
+        _run_hull(_mixed_selected_hull(vertex_count), op)
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+@pytest.mark.parametrize('vertex_count', [2, 3], ids=['two-selected', 'three-selected'])
+def test_hull_rejects_mixed_selected_axes_array(op: str, vertex_count: int) -> None:
+    values = gm.GeometryArray([_mixed_selected_hull(vertex_count)])
+    with pytest.raises(gm.InvalidGeometryError) as error:
+        _run_hull(values, op)
+    assert error.value.__notes__ == ['while processing array element 0']
+
+
+def _homogeneous_selected_mixed_interior() -> gm.Geometry:
+    return gm.GeometryCollection([
+        gm.Point(0.0, 0.0, z=10.0),
+        gm.Point(4.0, 0.0, z=20.0),
+        gm.Point(4.0, 4.0, z=30.0),
+        gm.Point(0.0, 4.0, z=40.0),
+        gm.Point(2.0, 2.0),
+    ])
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+@pytest.mark.parametrize('as_array', [False, True], ids=['scalar', 'array'])
+def test_hull_ignores_mixed_axes_on_unselected_interior(
+    op: str, as_array: bool
+) -> None:
+    source = _homogeneous_selected_mixed_interior()
+    value = gm.GeometryArray([source]) if as_array else source
+    result = _run_hull(value, op, length_threshold=100.0)
+    hull = result[0] if as_array else result
+    expected = {
+        (0.0, 0.0, 10.0),
+        (4.0, 0.0, 20.0),
+        (4.0, 4.0, 30.0),
+        (0.0, 4.0, 40.0),
+    }
+    coordinates = list(hull.coords)
+    assert hull.coordinate_axes == 'XYZ'
+    assert coordinates[0] == coordinates[-1]
+    assert set(coordinates[:-1]) == expected
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+def test_hull_missing_rows_keep_alignment_without_nan_conversion(op: str) -> None:
+    values = gm.GeometryArray([_homogeneous_selected_mixed_interior(), None])
+    result = _run_hull(values, op, length_threshold=100.0)
+    assert result.is_missing.tolist() == [False, True]
+    assert result[1] is None
+    assert result[0].coordinate_axes == 'XYZ'
+
+
 def test_convex_hull_akl_filter_keeps_known_hull_vertices() -> None:
     corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
     interior = [(1.0 + (index % 16) * 0.5, 1.0 + (index // 16) * 0.5) for index in range(256)]

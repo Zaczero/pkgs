@@ -15,7 +15,9 @@ pub(crate) use centroid::{
     point_centroid,
 };
 pub(crate) use concave::{canonicalize_concave_hull_points, native_concave_hull};
-pub(crate) use hull::{geometric_xy_cmp, monotone_chain_hull, shape_from_open_hull};
+pub(crate) use hull::{
+    geometric_xy_cmp, monotone_chain_hull, shape_from_open_hull, shape_from_selected_hull,
+};
 pub(crate) use minimum_rectangle::minimum_area_rectangle;
 pub(crate) use polylabel::{polylabel_point, smallest_enclosing_circle};
 pub(crate) use surface::{

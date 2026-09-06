@@ -164,7 +164,8 @@ GeometryArray
 Raises
 ------
 GeometryError
-    If parameters are non-finite.
+    If parameters are non-finite or selected hull vertices have different
+    coordinate axis layouts.
 
 See Also
 --------
@@ -202,7 +203,12 @@ GeometryArray
     One convex hull per row.
 
 ";
-    tail: r"See Also
+    tail: r"Raises
+------
+GeometryError
+    If selected hull vertices have different coordinate axis layouts.
+
+See Also
 --------
 concave_hull : Concave hull that can follow non-convex outlines.
 

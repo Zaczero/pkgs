@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
     GeodesicMetric as _, Point, PointKey,
-    VertexProvenance, emit_from_original, geometric_xy_cmp, shape_from_open_hull,
+    VertexProvenance, emit_from_original, geometric_xy_cmp, shape_from_selected_hull,
     smallest_enclosing_circle,
 };
 use crate::py::support::{
@@ -343,7 +343,7 @@ pub(crate) fn metric_concave_hull(
                 }
                 Ok(provenance)
             },
-            |points| Ok(shape_from_open_hull(&points, Shape::empty_polygon)),
+            |points| shape_from_selected_hull(&points, Shape::empty_polygon),
         ),
     }
 }

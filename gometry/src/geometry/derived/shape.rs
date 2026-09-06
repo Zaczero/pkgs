@@ -5,7 +5,7 @@ use crate::geometry::derived::{
     areal_centroid, canonicalize_concave_hull_points, collection_surface_point, lineal_centroid,
     lineal_surface_point, minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point,
     native_concave_hull, point_centroid, polygonal_surface_point, polylabel_point,
-    shape_from_open_hull, smallest_enclosing_circle,
+    shape_from_open_hull, shape_from_selected_hull, smallest_enclosing_circle,
 };
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, DEFAULT_MITER_LIMIT, GeometryErrorKind, GeometryKind, LineSeq,
@@ -128,7 +128,7 @@ impl Shape {
             .into_iter()
             .map(|index| points[index])
             .collect();
-        Ok(shape_from_open_hull(&hull, empty_geometry))
+        shape_from_selected_hull(&hull, empty_geometry)
     }
 
     pub fn concave_hull(&self, concavity: f64, length_threshold: f64) -> Result<Self> {
@@ -144,7 +144,7 @@ impl Shape {
             .into_iter()
             .map(|index| points[index])
             .collect();
-        Ok(shape_from_open_hull(&hull, Self::empty_polygon))
+        shape_from_selected_hull(&hull, Self::empty_polygon)
     }
 
     /// The west/south/east/north extreme vertices `[west, south, east,

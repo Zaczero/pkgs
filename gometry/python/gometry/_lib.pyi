@@ -2839,7 +2839,8 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If parameters are non-finite.
+            If parameters are non-finite or selected hull vertices have different
+            coordinate axis layouts.
 
         See Also
         --------
@@ -3570,6 +3571,11 @@ class Geometry:
         -------
         Point, LineString, or Polygon
             The convex hull; degenerate inputs reduce dimension.
+
+        Raises
+        ------
+        GeometryError
+            If selected hull vertices have different coordinate axis layouts.
 
         See Also
         --------
@@ -7972,7 +7978,8 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Raises
         ------
         GeometryError
-            If parameters are non-finite.
+            If parameters are non-finite or selected hull vertices have different
+            coordinate axis layouts.
 
         See Also
         --------
@@ -8744,6 +8751,11 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         -------
         GeometryArray
             One convex hull per row.
+
+        Raises
+        ------
+        GeometryError
+            If selected hull vertices have different coordinate axis layouts.
 
         See Also
         --------

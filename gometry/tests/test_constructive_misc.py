@@ -286,6 +286,55 @@ def test_geographic_concave_hull_preserves_selected_input_vertices_exactly() -> 
     assert all(vertex in input_vertices for vertex in selected)
 
 
+@pytest.mark.parametrize('as_array', [False, True], ids=['scalar', 'array'])
+def test_geographic_concave_hull_preserves_selected_zm_provenance(
+    as_array: bool,
+) -> None:
+    outer = [
+        (13.123456789012344, 52.123456789012344, 10.0, 1.0),
+        (13.223456789012343, 52.123456789012344, 20.0, 2.0),
+        (13.223456789012343, 52.22345678901234, 30.0, 3.0),
+        (13.123456789012344, 52.22345678901234, 40.0, 4.0),
+    ]
+    source = gm.GeometryCollection(
+        [gm.Point(x, y, z=z, m=m) for x, y, z, m in outer]
+        + [gm.Point(13.173456789012344, 52.17345678901234)],
+        crs=4326,
+    )
+    value = gm.GeometryArray([source], crs=4326) if as_array else source
+    hull = value.concave_hull(length_threshold=100000.0)
+    if as_array:
+        hull = hull[0]
+    coordinates = list(hull.exterior.coords)
+    assert hull.coordinate_axes == 'XYZM'
+    assert hull.crs == 'EPSG:4326'
+    assert coordinates[0] == coordinates[-1]
+    assert set(coordinates[:-1]) == set(outer)
+
+
+@pytest.mark.parametrize('vertex_count', [2, 3], ids=['two-selected', 'three-selected'])
+def test_geographic_concave_hull_rejects_mixed_selected_axes(vertex_count: int) -> None:
+    points = (
+        [gm.Point(13.0, 52.0, z=10.0), gm.Point(13.1, 52.1)]
+        if vertex_count == 2
+        else [
+            gm.Point(13.0, 52.0, z=10.0),
+            gm.Point(13.1, 52.0),
+            gm.Point(13.0, 52.1),
+        ]
+    )
+    source = gm.GeometryCollection(points, crs=4326)
+    with pytest.raises(gm.InvalidGeometryError):
+        source.concave_hull(length_threshold=100000.0)
+
+
+def test_geographic_concave_hull_empty_preserves_polygon_type() -> None:
+    empty = gm.GeometryCollection([], crs=4326)
+    hull = empty.concave_hull()
+    assert hull.to_wkt() == 'POLYGON EMPTY'
+    assert hull.crs == 'EPSG:4326'
+
+
 def test_envelope_and_mrr_empty_are_typed() -> None:
     for wkt in (
         'POLYGON EMPTY',

@@ -1,8 +1,9 @@
 use std::cmp::Ordering;
 
+use crate::error::Result;
 use crate::geometry::{
-    LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale, orientation,
-    same_topological_coordinate, scaled_residual,
+    CoordSeq, LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale,
+    orientation, same_topological_coordinate, scaled_residual,
 };
 /// Reduce an open monotone-chain hull (0–2 vertices degenerate to
 /// point/line; 3+ close into a polygon shell).
@@ -15,6 +16,30 @@ pub(crate) fn shape_from_open_hull(hull: &[Point], empty: impl FnOnce() -> Shape
             let mut ring = hull.to_vec();
             ring.push(ring[0]);
             Shape::Polygon(Polygon::new(Ring::from_closed(ring), Vec::new()))
+        },
+    }
+}
+
+/// Assemble a hull whose vertices are selected copies of source points.
+/// Selected axes must be homogeneous; unselected source vertices are ignored.
+pub(crate) fn shape_from_selected_hull(
+    hull: &[Point],
+    empty: impl FnOnce() -> Shape,
+) -> Result<Shape> {
+    match hull {
+        [] => Ok(empty()),
+        [point] => Ok(Shape::Point(*point)),
+        [_, _] => Ok(Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_points(hull)?,
+        ))),
+        _ => {
+            let mut ring = hull.to_vec();
+            let first = ring[0];
+            ring.push(first);
+            Ok(Shape::Polygon(Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&ring)?),
+                Vec::new(),
+            )))
         },
     }
 }
