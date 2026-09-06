@@ -376,6 +376,49 @@ def test_polygonize_full_groups_noded_diagnostics_by_source_row() -> None:
     ] == [0, 0]
 
 
+def test_polygonize_full_diagnostic_rows_scope_conflicting_z_and_empty_rows() -> None:
+    first = gm.from_wkt('LINESTRING Z (0 0 1, 1 0 2)')
+    missing = None
+    second = gm.from_wkt('LINESTRING Z (0 0 99, -1 0 100)')
+
+    result = gm.polygonize_full(gm.GeometryArray([first, missing, second]))
+
+    assert len(result.dangles) == 3
+    assert len(result.dangles[0]) == 1
+    assert result.dangles[0][0].coordinate_axes == 'XYZ'
+    assert sorted(result.dangles[0][0].coords.to_nested()) == [
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 2.0),
+    ]
+    assert len(result.dangles[1]) == 0
+    assert len(result.dangles[2]) == 1
+    assert result.dangles[2][0].coordinate_axes == 'XYZ'
+    assert sorted(result.dangles[2][0].coords.to_nested()) == [
+        (-1.0, 0.0, 100.0),
+        (0.0, 0.0, 99.0),
+    ]
+
+
+def test_polygonize_full_diagnostic_rows_scope_mixed_axes() -> None:
+    z_line = gm.from_wkt('LINESTRING Z (0 0 1, 1 0 2)')
+    m_line = gm.from_wkt('LINESTRING M (0 0 10, -1 0 20)')
+
+    result = gm.polygonize_full(gm.GeometryArray([z_line, None, m_line]))
+
+    assert len(result.dangles) == 3
+    assert result.dangles[0][0].coordinate_axes == 'XYZ'
+    assert sorted(result.dangles[0][0].coords.to_nested()) == [
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 2.0),
+    ]
+    assert len(result.dangles[1]) == 0
+    assert result.dangles[2][0].coordinate_axes == 'XYM'
+    assert sorted(result.dangles[2][0].coords.to_nested()) == [
+        (-1.0, 0.0, 20.0),
+        (0.0, 0.0, 10.0),
+    ]
+
+
 def test_pickle_and_copy_round_trip_all_data_types() -> None:
     """Data types pickle (multiprocessing/caching just work); Z/M, leaf type,
     CRS, and epoch all survive. copy/deepcopy ride the same protocol.

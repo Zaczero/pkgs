@@ -544,29 +544,6 @@ pub(super) fn carry_each(
         .collect()
 }
 
-pub(super) fn carry_each_rows(
-    outputs: Vec<Vec<Shape>>,
-    inputs: &[&Shape],
-    operation: &str,
-    strict: bool,
-) -> Result<Vec<Vec<Shape>>> {
-    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
-        return Ok(outputs);
-    }
-    let source = OrdinateSource::build(inputs);
-    let declared_axes = inputs
-        .iter()
-        .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
-    outputs
-        .into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|output| carry_or_degrade(&output, &source, declared_axes, operation, strict))
-                .collect()
-        })
-        .collect()
-}
-
 /// Source every vertex's Z/M from `source`; strict internal verification raises
 /// when a declared axis cannot be carried. Lenient output drops only axes that
 /// have a conflict or an unsourced vertex.

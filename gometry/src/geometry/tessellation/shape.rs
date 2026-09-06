@@ -12,7 +12,7 @@ use crate::geometry::tessellation::{
 use crate::geometry::{
     AxisFrame, CoordSeq, CsrOffsetColumn, Dimension, ExpansionBudget, GeometryErrorKind, GeometryKind, HashSet,
     Point, PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape, TopologyGraph, VoronoiBoundary,
-    carry_each, carry_each_rows, empty_geometry, line_segments,
+    carry_each, empty_geometry, line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
@@ -577,11 +577,19 @@ GeometryKind::MultiPoint, axes) => {
     pub fn polygonize_full_all(shapes: &[&Self], strict: bool) -> Result<PolygonizeFull> {
         let graph = TopologyGraph::cartesian_many(shapes);
         let full = polygonize_full(&graph, shapes.len());
+        let carry_diagnostic_rows = |rows: Vec<Vec<Shape>>| {
+            rows.into_iter()
+                .enumerate()
+                .map(|(row, outputs)| {
+                    carry_each(outputs, &[shapes[row]], "polygonize_full", strict)
+                })
+                .collect::<Result<Vec<_>>>()
+        };
         Ok(PolygonizeFull {
             polygons: carry_each(full.polygons, shapes, "polygonize_full", strict)?,
-            cuts: carry_each_rows(full.cuts, shapes, "polygonize_full", strict)?,
-            dangles: carry_each_rows(full.dangles, shapes, "polygonize_full", strict)?,
-            invalid_rings: carry_each_rows(full.invalid_rings, shapes, "polygonize_full", strict)?,
+            cuts: carry_diagnostic_rows(full.cuts)?,
+            dangles: carry_diagnostic_rows(full.dangles)?,
+            invalid_rings: carry_diagnostic_rows(full.invalid_rings)?,
         })
     }
 }

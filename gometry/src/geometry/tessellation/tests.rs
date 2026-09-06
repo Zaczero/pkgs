@@ -250,6 +250,27 @@ fn build_area_strict_rejects_mixed_output_axes() {
 }
 
 #[test]
+fn polygonize_full_strict_scopes_diagnostic_axes_to_source_rows() {
+    let z_line = Shape::LineString(LineSeq::from_proven(CoordSeq::from(vec![
+        xyz(0.0, 0.0, 1.0),
+        xyz(1.0, 0.0, 2.0),
+    ])));
+    let m_line = Shape::LineString(LineSeq::from_proven(CoordSeq::from(vec![
+        Point::new_axes(0.0, 0.0, ZOrdinate(None), MOrdinate(Some(10.0)))
+            .expect("finite test coordinate"),
+        Point::new_axes(-1.0, 0.0, ZOrdinate(None), MOrdinate(Some(20.0)))
+            .expect("finite test coordinate"),
+    ])));
+    let sources = [&z_line, &m_line];
+
+    let full = Shape::polygonize_full_all(&sources, true)
+        .expect("each diagnostic row has one source axis");
+
+    assert_eq!(full.dangles[0][0].coordinate_axes(), "XYZ");
+    assert_eq!(full.dangles[1][0].coordinate_axes(), "XYM");
+}
+
+#[test]
 fn constrained_pentagon_retains_reciprocal_axes() {
     // 1e77 × 1e-77: squared circumcircle products of these vertices underflow
     // in floating point, which once lost an axis. This is a topology test:
