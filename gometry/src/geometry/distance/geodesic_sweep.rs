@@ -282,27 +282,9 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
     let Some(caps) = target_parts.caps.as_ref() else {
         return Ok(false);
     };
-    geodesic_capped_dwithin_sweep_core(
-        vertices,
-        &target_parts.segments,
-        &target_parts.point_only,
-        caps.view(),
-        metric,
-        distance,
-        rows,
-    )
-}
-
-fn geodesic_capped_dwithin_sweep_core(
-    vertices: &[Point],
-    segments: &[GeodesicSegment],
-    point_only: &[Point],
-    caps: GeodesicSweepCapsView<'_>,
-    metric: &impl GeodesicMetric,
-    distance: f64,
-    rows: &mut Vec<RowProbe>,
-) -> Result<bool> {
-    geodesic_ordered_rows_into(vertices, caps, metric, false, rows);
+    let segments = &target_parts.segments;
+    let point_only = &target_parts.point_only;
+    geodesic_ordered_rows_into(vertices, caps.view(), metric, false, rows);
     for &RowProbe {
         bound: row_bound,
         vertex: vertex_index,
@@ -471,30 +453,27 @@ fn geodesic_capped_witness_sweep_core(
                 }
             }
         }
-        if !point_only.is_empty() {
-            for (point_index, &point) in point_only.iter().enumerate() {
-                let order =
-                    order_offset + vertex_index as usize * width + segments.len() + point_index;
-                let best_distance = witness_refine_limit(best.as_ref(), order);
-                if metric.point_distance_lower_bound(vertex, point) > best_distance {
-                    continue;
-                }
-                let distance = metric.segment_length(vertex, point);
-                let witness = GeodesicSegmentWitness {
-                    distance,
-                    foot: point,
-                    along: 0.0,
-                };
-                let candidate = GeodesicWitnessCandidate {
-                    probe: vertex,
-                    target: witness.foot,
-                    distance: witness.distance,
-                    order,
-                    swapped,
-                };
-                if geodesic_witness_is_better(best.as_ref(), &candidate) {
-                    best = Some(candidate);
-                }
+        for (point_index, &point) in point_only.iter().enumerate() {
+            let order = order_offset + vertex_index as usize * width + segments.len() + point_index;
+            let best_distance = witness_refine_limit(best.as_ref(), order);
+            if metric.point_distance_lower_bound(vertex, point) > best_distance {
+                continue;
+            }
+            let distance = metric.segment_length(vertex, point);
+            let witness = GeodesicSegmentWitness {
+                distance,
+                foot: point,
+                along: 0.0,
+            };
+            let candidate = GeodesicWitnessCandidate {
+                probe: vertex,
+                target: witness.foot,
+                distance: witness.distance,
+                order,
+                swapped,
+            };
+            if geodesic_witness_is_better(best.as_ref(), &candidate) {
+                best = Some(candidate);
             }
         }
     }
