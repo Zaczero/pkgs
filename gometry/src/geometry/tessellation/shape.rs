@@ -462,14 +462,14 @@ GeometryKind::MultiPoint, axes) => {
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, axes) => {
                 Self::typed_empty(GeometryKind::MultiLineString, *axes)
             },
-            Self::LineString(points) => line_boundary(points),
-            Self::MultiLineString(lines) => multiline_boundary(lines),
+            Self::LineString(points) => line_boundary(points, points.axes()),
+            Self::MultiLineString(lines) => multiline_boundary(lines, lines.axes()),
             // A polygon's boundary IS its rings as linework: clone the ring
             // coordinate columns straight into the result (one `LineString`, or
             // a `MultiLineString` when there are holes / parts) — no per-vertex
             // `Point` round-trip through `to_vec` + column rebuild.
             Self::Polygon(polygon) => {
-                rings_to_boundary(polygon.rings().map(Ring::as_line).collect())
+                rings_to_boundary(polygon.rings().map(Ring::as_line).collect(), polygon.axes())
             },
             Self::MultiPolygon(polygons) => rings_to_boundary(
                 polygons
@@ -477,6 +477,7 @@ GeometryKind::MultiPoint, axes) => {
                     .flat_map(Polygon::rings)
                     .map(Ring::as_line)
                     .collect(),
+                polygons.axes(),
             ),
             Self::GeometryCollection(geometries) => {
                 let boundaries: Vec<_> = geometries
