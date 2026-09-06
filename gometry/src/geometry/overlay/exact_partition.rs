@@ -56,7 +56,7 @@ impl ArealCells {
     ) -> Result<BoundaryPlan> {
         let (lines, points) = self.lower_dimensions(partition, topology, edges, global)?;
         let mut plan = global.boundary_plan(
-            lines, topology, edges, partition.spans.len(), &self.faces,
+            lines, topology, edges, partition, &self.faces,
         )?;
         try_reserve_vec(&mut plan.points, points.len())?;
         for node in points {
@@ -273,6 +273,7 @@ struct GlobalFaces {
 struct BoundaryPlan {
     walks: Vec<Vec<u32>>,
     lines: Vec<u32>,
+    line_sides: Vec<[u32; 2]>,
     points: Vec<(NodeId, u32)>,
     face_quotient: Vec<u32>,
     walk_sides: Vec<Vec<[u32; 2]>>,
@@ -348,13 +349,13 @@ impl GlobalFaces {
         lines: Vec<u32>,
         topology: &IndexedTopology,
         edges: &[u32],
-        span_count: usize,
+        partition: &ExactPartition<'_>,
         occupied: &[bool],
     ) -> Result<BoundaryPlan> {
         let walks = self.boundary_walks(topology, occupied)?;
         let mut retained = Vec::new();
-        try_reserve_vec(&mut retained, span_count)?;
-        retained.resize(span_count, false);
+        try_reserve_vec(&mut retained, partition.spans.len())?;
+        retained.resize(partition.spans.len(), false);
         for &span in &lines {
             retained[span as usize] = true;
         }
@@ -364,6 +365,22 @@ impl GlobalFaces {
             }
         }
         let face_quotient = self.quotient(topology, edges, &retained)?;
+        let mut span_slots = Vec::new();
+        try_reserve_vec(&mut span_slots, partition.spans.len())?;
+        span_slots.resize(partition.spans.len(), 0);
+        for (slot, &span) in edges.iter().enumerate() {
+            if topology.owners[slot] == partition.spans[span as usize].start.0 {
+                span_slots[span as usize] = slot;
+            }
+        }
+        let mut line_sides = Vec::new();
+        try_reserve_vec(&mut line_sides, lines.len())?;
+        for &span in &lines {
+            let slot = span_slots[span as usize];
+            line_sides.push([slot, topology.twins[slot] as usize].map(|dart| {
+                face_quotient[self.walk_faces[topology.face_of[dart] as usize] as usize]
+            }));
+        }
         let mut walk_sides = Vec::new();
         try_reserve_vec(&mut walk_sides, walks.len())?;
         for walk in &walks {
@@ -380,6 +397,7 @@ impl GlobalFaces {
         Ok(BoundaryPlan {
             walks,
             lines,
+            line_sides,
             points: Vec::new(),
             face_quotient,
             walk_sides,
@@ -3039,7 +3057,7 @@ mod tests {
         let mut occupied = vec![false; 3];
         occupied[host as usize] = true;
         let plan = faces
-            .boundary_plan(Vec::new(), &topology, &edges, partition.spans.len(), &occupied)
+            .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
             .unwrap();
         assert_eq!(plan.face_quotient, [0, 1, 2]);
         assert_eq!(plan.walk_sides[0], vec![[host, 0]; 4]);
@@ -3080,7 +3098,7 @@ mod tests {
             assert_eq!(actual, expected);
         }
         let empty = faces
-            .boundary_plan(Vec::new(), &topology, &edges, partition.spans.len(), &[false; 3])
+            .boundary_plan(Vec::new(), &topology, &edges, &partition, &[false; 3])
             .unwrap();
         assert!(empty.walks.is_empty());
         assert!(empty.walk_sides.is_empty());
@@ -3104,7 +3122,7 @@ mod tests {
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
         let plan = faces
-            .boundary_plan(Vec::new(), &topology, &edges, partition.spans.len(), &[
+            .boundary_plan(Vec::new(), &topology, &edges, &partition, &[
                 false, true, true,
             ])
             .unwrap();
@@ -3181,15 +3199,17 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         let plan = faces
-            .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, 4, &[false, false])
+            .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, &partition, &[false, false])
             .unwrap();
         assert!(plan.walks.is_empty());
         assert_eq!(plan.lines, [0, 1, 2, 3]);
+        assert_eq!(plan.line_sides, [[1, 0]; 4]);
         assert_eq!(plan.face_quotient, [0, 1]);
         let open = faces
-            .boundary_plan(vec![0, 1, 2], &topology, &edges, 4, &[false, false])
+            .boundary_plan(vec![0, 1, 2], &topology, &edges, &partition, &[false, false])
             .unwrap();
         assert_eq!(open.face_quotient, [0, 0]);
+        assert_eq!(open.line_sides, [[0, 0]; 3]);
     }
 
     #[test]
@@ -3207,7 +3227,7 @@ mod tests {
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
         let plan = faces
-            .boundary_plan(Vec::new(), &topology, &edges, partition.spans.len(), &[
+            .boundary_plan(Vec::new(), &topology, &edges, &partition, &[
                 false, true, true,
             ])
             .unwrap();
