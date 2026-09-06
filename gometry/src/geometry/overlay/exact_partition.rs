@@ -46,6 +46,51 @@ struct ArealCells {
     nodes: Vec<bool>,
 }
 
+impl ArealCells {
+    fn lower_dimensions(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+    ) -> Result<(Vec<u32>, Vec<NodeId>)> {
+        let mut covered_spans = Vec::new();
+        try_reserve_vec(&mut covered_spans, self.spans.len())?;
+        covered_spans.resize(self.spans.len(), false);
+        for (slot, &span) in edges.iter().enumerate() {
+            let face = global.walk_faces[topology.face_of[slot] as usize];
+            covered_spans[span as usize] |= self.faces[face as usize];
+        }
+        let mut covered_nodes = Vec::new();
+        try_reserve_vec(&mut covered_nodes, self.nodes.len())?;
+        covered_nodes.resize(self.nodes.len(), false);
+        let mut lines = Vec::new();
+        for (index, span) in partition.spans.iter().enumerate() {
+            if self.spans[index] || covered_spans[index] {
+                covered_nodes[span.start.0 as usize] = true;
+                covered_nodes[span.end.0 as usize] = true;
+            }
+            if self.spans[index] && !covered_spans[index] {
+                try_reserve_vec(&mut lines, 1)?;
+                lines.push(index as u32);
+            }
+        }
+        for node in &partition.isolated {
+            let component = topology.component_of[node.0 as usize];
+            covered_nodes[node.0 as usize] |=
+                self.faces[global.component_hosts[component as usize] as usize];
+        }
+        let mut points = Vec::new();
+        for (index, &selected) in self.nodes.iter().enumerate() {
+            if selected && !covered_nodes[index] {
+                try_reserve_vec(&mut points, 1)?;
+                points.push(NodeId(index as u32));
+            }
+        }
+        Ok((lines, points))
+    }
+}
+
 impl ArealSources {
     fn new(polygons: &[impl AsRef<Polygon>]) -> Result<Self> {
         let mut sources = Self {
@@ -1999,6 +2044,38 @@ mod tests {
             };
             assert_eq!(filled, point.xy().x >= 8.0 || point.xy().y == 0.0);
         }
+        let (lines, points) = cells
+            .lower_dimensions(&partition, &topology, &edges, &faces)
+            .unwrap();
+        assert!(points.is_empty());
+        let mut intervals = lines
+            .iter()
+            .map(|&index| {
+                let span = partition.spans[index as usize];
+                let NodeRecipe::Stored(start) = partition.recipe(span.start) else {
+                    panic!("stored-only fixture constructed a node");
+                };
+                let NodeRecipe::Stored(end) = partition.recipe(span.end) else {
+                    panic!("stored-only fixture constructed a node");
+                };
+                assert_eq!((start.xy().y, end.xy().y), (0.0, 0.0));
+                (start.xy().x.min(end.xy().x), start.xy().x.max(end.xy().x))
+            })
+            .collect::<Vec<_>>();
+        intervals.sort_by(|left, right| left.0.total_cmp(&right.0));
+        assert_eq!(intervals, [(0.0, 2.0), (2.0, 4.0)]);
+        let plan = cells
+            .emission_plan(&partition, &topology, &edges, &faces)
+            .unwrap();
+        let (points, lines, polygons) = plan.emit_xy_parts(&partition, &topology).unwrap();
+        assert!(points.is_empty());
+        assert_eq!(lines.len(), 1);
+        let mut endpoints = lines[0].xs().to_vec();
+        endpoints.sort_by(f64::total_cmp);
+        assert_eq!(endpoints, [0.0, 4.0]);
+        assert_eq!(lines[0].ys(), [0.0, 0.0]);
+        assert_eq!(polygons.len(), 1);
+        assert!(polygons[0].holes.is_empty());
     }
 
     #[test]
@@ -2039,6 +2116,11 @@ mod tests {
             XY::new(6.0, 6.0),
         ]);
         assert_eq!(cells.spans.iter().filter(|&&filled| filled).count(), 4);
+        let (lines, points) = cells
+            .lower_dimensions(&partition, &topology, &edges, &faces)
+            .unwrap();
+        assert!(lines.is_empty());
+        assert_eq!(points, [stored_node(&partition, XY::new(6.0, 6.0)).unwrap()]);
     }
 
     #[test]
