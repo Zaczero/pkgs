@@ -7,8 +7,8 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::geometry::{
-    Coordinates, Point, axis_extent, axis_pow2_scale, finish_planar_squared_min,
-    packed_line_metrics, point_distance, point_distance_squared, same_topological_coordinate,
+    CoordSeq, Point, axis_extent, axis_pow2_scale, packed_line_metrics, point_distance,
+    same_topological_coordinate,
 };
 pub(crate) fn frechet_distance_line_columns(
     left_xs: &[f64],
@@ -77,124 +77,21 @@ pub(crate) fn frechet_distance_line_columns_batch(
     }
 }
 
-pub(crate) fn discrete_frechet_distance<A: Coordinates + ?Sized, B: Coordinates + ?Sized>(
-    left: &A,
-    right: &B,
-) -> f64 {
-    if left.coord_count() <= right.coord_count() {
-        frechet_dp(left, right)
-    } else {
-        frechet_dp(right, left)
-    }
-}
-
-pub(crate) fn discrete_frechet_distance_with_scratch<
-    A: Coordinates + ?Sized,
-    B: Coordinates + ?Sized,
->(
-    left: &A,
-    right: &B,
-    scratch: &mut FrechetDpScratch,
-) -> f64 {
-    if left.coord_count() <= right.coord_count() {
-        frechet_dp_with_scratch(left, right, scratch)
-    } else {
-        frechet_dp_with_scratch(right, left, scratch)
-    }
-}
-
-/// The discrete-Fréchet DP with `short` as the row dimension.
-pub(crate) fn frechet_dp<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
-    short: &S,
-    long: &L,
-) -> f64 {
+pub(crate) fn discrete_frechet_distance(left: &CoordSeq, right: &CoordSeq) -> f64 {
     let mut scratch = FrechetDpScratch::default();
-    frechet_dp_with_scratch(short, long, &mut scratch)
+    discrete_frechet_distance_with_scratch(left, right, &mut scratch)
 }
 
-fn frechet_dp_with_scratch<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
-    short: &S,
-    long: &L,
+pub(crate) fn discrete_frechet_distance_with_scratch(
+    left: &CoordSeq,
+    right: &CoordSeq,
     scratch: &mut FrechetDpScratch,
 ) -> f64 {
-    debug_assert!(short.coord_count() > 0 && long.coord_count() > 0);
-    // SoA lane: the O(n·m) inner loop reads raw coordinate columns —
-    // no per-cell `Point` gather and no first-column branch.
-    if let (Some((short_xs, short_ys)), Some((long_xs, long_ys))) =
-        (short.xy_columns(), long.xy_columns())
-    {
-        return frechet_dp_columns_with_dp_scratch(short_xs, short_ys, long_xs, long_ys, scratch);
+    if left.len() <= right.len() {
+        frechet_dp_columns_with_dp_scratch(left.xs(), left.ys(), right.xs(), right.ys(), scratch)
+    } else {
+        frechet_dp_columns_with_dp_scratch(right.xs(), right.ys(), left.xs(), left.ys(), scratch)
     }
-
-    // First DP row initialized separately, then a branch-free inner loop:
-    // no per-cell (row, column) match and no `Vec<Point>` staging.
-    let width = short.coord_count();
-    let mut previous = vec![0.0_f64; width];
-    let mut current = vec![0.0_f64; width];
-    let mut long_points = long.iter_coords();
-    let first_long = long_points.next().expect("non-empty linework");
-    let mut running = 0.0_f64;
-    for (cell, short_point) in std::iter::zip(&mut previous, short.iter_coords()) {
-        running = running.max(point_distance_squared(first_long, short_point));
-        *cell = running;
-    }
-    for long_point in long_points {
-        let mut first = true;
-        let mut left_value = 0.0;
-        for (short_index, short_point) in short.iter_coords().enumerate() {
-            let distance_squared = point_distance_squared(long_point, short_point);
-            let reach = if first {
-                first = false;
-                previous[0]
-            } else {
-                previous[short_index]
-                    .min(previous[short_index - 1])
-                    .min(left_value)
-            };
-            left_value = distance_squared.max(reach);
-            current[short_index] = left_value;
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-    let answer2 = previous[width - 1];
-    // Shared squared-norm trust: normal → sqrt; zero/subnormal → distance DP.
-    finish_planar_squared_min(answer2, || frechet_dp_distance(short, long))
-}
-
-/// Distance-space discrete Fréchet over coordinate iterators (underflow rescue).
-fn frechet_dp_distance<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
-    short: &S,
-    long: &L,
-) -> f64 {
-    let width = short.coord_count();
-    let mut previous = vec![0.0_f64; width];
-    let mut current = vec![0.0_f64; width];
-    let mut long_points = long.iter_coords();
-    let first_long = long_points.next().expect("non-empty linework");
-    let mut running = 0.0_f64;
-    for (cell, short_point) in std::iter::zip(&mut previous, short.iter_coords()) {
-        running = running.max(point_distance(first_long, short_point));
-        *cell = running;
-    }
-    for long_point in long_points {
-        let mut first = true;
-        let mut left_value = 0.0;
-        for (short_index, short_point) in short.iter_coords().enumerate() {
-            let distance = point_distance(long_point, short_point);
-            let reach = if first {
-                first = false;
-                previous[0]
-            } else {
-                previous[short_index]
-                    .min(previous[short_index - 1])
-                    .min(left_value)
-            };
-            left_value = distance.max(reach);
-            current[short_index] = left_value;
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-    previous[width - 1]
 }
 
 /// A valid UPPER BOUND on the discrete Fréchet² — the squared bottleneck of
@@ -279,7 +176,7 @@ thread_local! {
         const { crate::scratch_pool::ScratchPool::new(FrechetDpScratch::new()) };
 }
 
-/// [`frechet_dp`] over raw `SoA` columns, with EXACT band pruning. The full
+/// Planar discrete Fréchet over raw `SoA` columns, with EXACT band pruning. The full
 /// `O(n·m)` table is unnecessary: with an achievable upper bound `ub²`
 /// ([`frechet_greedy_ub_squared`]), every cell whose reachability value
 /// exceeds `ub²` is provably off any optimal coupling (its bottleneck would be
@@ -535,7 +432,8 @@ fn frechet_columns_vertexwise_equal(
             })
 }
 
-/// Distance-space discrete Fréchet DP (rescue for squared underflow only).
+/// Distance-space discrete Fréchet DP (rescue for zero, subnormal, or
+/// non-finite squared answers).
 fn frechet_dp_columns_distance(
     short_xs: &[f64],
     short_ys: &[f64],

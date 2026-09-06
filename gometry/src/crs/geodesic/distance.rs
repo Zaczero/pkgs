@@ -173,10 +173,9 @@ pub(crate) fn geodesic_frechet_at(
     b: &Shape,
     state: &RuntimeState,
 ) -> Result<f64> {
-    // Fréchet requires non-empty linework on both sides; `single_linework`
-    // raises `EmptyLinework` for empty input, exactly like the planar path
-    // (do NOT short-circuit empty to inf — that is the distance/Hausdorff
-    // convention, not Fréchet's).
+    // Public metric dispatch handles empty shapes before selecting this arm,
+    // so the geodesic and planar public lanes share the infinity sentinel.
+    // Direct callers here still pass through `single_linework`'s checks.
     let left = a.single_linework()?;
     let right = b.single_linework()?;
     with_ellipsoid_metric_at(crs, &[a, b], state, |metric| {
