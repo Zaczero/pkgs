@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use ahash::HashSetExt as _;
 
 use crate::error::Result;
@@ -110,44 +112,10 @@ impl Shape {
         reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
     )]
     pub fn for_each_point(&self, mut visit: impl FnMut(Point)) {
-        self.for_each_point_inner(&mut visit);
-    }
-
-    fn for_each_point_inner<F: FnMut(Point)>(&self, visit: &mut F) {
-        match self {
-            Self::Point(point) => visit(*point),
-            Self::MultiPoint(points) => {
-                for point in points {
-                    visit(point);
-                }
-            },
-            Self::LineString(points) => {
-                for point in points {
-                    visit(point);
-                }
-            },
-            Self::MultiLineString(lines) => {
-                for point in lines.iter().flatten() {
-                    visit(point);
-                }
-            },
-            Self::Polygon(polygon) => {
-                for point in polygon.points() {
-                    visit(point);
-                }
-            },
-            Self::MultiPolygon(polygons) => {
-                for point in polygons.iter().flat_map(Polygon::points) {
-                    visit(point);
-                }
-            },
-            Self::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    geometry.for_each_point_inner(visit);
-                }
-            },
-            Self::Empty(..) => {},
-        }
+        let _: ControlFlow<()> = self.try_for_each_point_inner(&mut |point| {
+            visit(point);
+            ControlFlow::Continue(())
+        });
     }
 
     /// Whether any vertex satisfies `predicate`, short-circuiting on the first
@@ -157,24 +125,16 @@ impl Shape {
         reason = "predicate type is intentionally opaque at this one-pass traversal boundary"
     )]
     pub fn any_point(&self, mut predicate: impl FnMut(Point) -> bool) -> bool {
-        self.any_point_inner(&mut predicate)
-    }
-
-    fn any_point_inner<F: FnMut(Point) -> bool>(&self, predicate: &mut F) -> bool {
-        match self {
-            Self::Point(point) => predicate(*point),
-            Self::MultiPoint(points) => points.iter().any(&mut *predicate),
-            Self::LineString(points) => points.iter().any(&mut *predicate),
-            Self::MultiLineString(lines) => lines.iter().flatten().any(&mut *predicate),
-            Self::Polygon(polygon) => polygon.points().any(&mut *predicate),
-            Self::MultiPolygon(polygons) => polygons
-                .iter()
-                .any(|polygon| polygon.points().any(&mut *predicate)),
-            Self::GeometryCollection(geometries) => geometries
-                .iter()
-                .any(|geometry| geometry.any_point_inner(predicate)),
-            Self::Empty(..) => false,
-        }
+        matches!(
+            self.try_for_each_point_inner(&mut |point| {
+                if predicate(point) {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            }),
+            ControlFlow::Break(())
+        )
     }
 
     /// Visit every vertex until `visit` returns `Err`, short-circuiting — the
@@ -189,13 +149,19 @@ impl Shape {
         &self,
         mut visit: impl FnMut(Point) -> Result<(), E>,
     ) -> Result<(), E> {
-        self.try_for_each_point_inner(&mut visit)
+        match self.try_for_each_point_inner(&mut |point| match visit(point) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(error),
+        }) {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(error) => Err(error),
+        }
     }
 
-    fn try_for_each_point_inner<E, F: FnMut(Point) -> Result<(), E>>(
+    fn try_for_each_point_inner<B, F: FnMut(Point) -> ControlFlow<B>>(
         &self,
         visit: &mut F,
-    ) -> Result<(), E> {
+    ) -> ControlFlow<B> {
         match self {
             Self::Point(point) => visit(*point)?,
             Self::MultiPoint(points) => {
@@ -230,7 +196,7 @@ impl Shape {
             },
             Self::Empty(..) => {},
         }
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     /// Append every vertex to `out` without allocating a boxed iterator — the

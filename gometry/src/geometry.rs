@@ -436,68 +436,20 @@ impl Shape {
     /// edges of (multi)polygons, recursively through collections — without
     /// materializing a `Vec`. Point-only shapes have no segments.
     pub(crate) fn for_each_segment(&self, mut visit: impl FnMut(Segment)) {
-        self.for_each_segment_inner(&mut visit);
+        self.for_each_segment_chain(|chain| {
+            line_segments(chain).for_each(&mut visit);
+        });
     }
 
     /// [`for_each_segment`](Self::for_each_segment) with FULL ordinate
     /// carry: each edge as its two `Point`s (Z/M intact) — the ordinate
     /// lanes' traversal (the planar `Segment` is XY-only by design).
     pub(crate) fn for_each_vertex_pair(&self, mut visit: impl FnMut(Point, Point)) {
-        self.for_each_vertex_pair_inner(&mut visit);
-    }
-
-    fn for_each_vertex_pair_inner<F: FnMut(Point, Point)>(&self, visit: &mut F) {
-        fn lines<F: FnMut(Point, Point)>(seq: &CoordSeq, visit: &mut F) {
-            for [start, end] in seq.segment_pairs() {
+        self.for_each_segment_chain(|chain| {
+            for [start, end] in chain.segment_pairs() {
                 visit(start, end);
             }
-        }
-        match self {
-            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => {},
-            Self::LineString(points) => lines(points, visit),
-            Self::MultiLineString(parts) => {
-                for line in parts {
-                    lines(line, visit);
-                }
-            },
-            Self::Polygon(polygon) => {
-                for ring in polygon.rings() {
-                    lines(ring, visit);
-                }
-            },
-            Self::MultiPolygon(polygons) => {
-                for polygon in polygons {
-                    for ring in polygon.rings() {
-                        lines(ring, visit);
-                    }
-                }
-            },
-            Self::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    geometry.for_each_vertex_pair_inner(visit);
-                }
-            },
-        }
-    }
-
-    fn for_each_segment_inner<F: FnMut(Segment)>(&self, visit: &mut F) {
-        match self {
-            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => {},
-            Self::LineString(points) => line_segments(points).for_each(&mut *visit),
-            Self::MultiLineString(lines) => {
-                lines.iter().flat_map(line_segments).for_each(&mut *visit);
-            },
-            Self::Polygon(polygon) => polygon.segments().for_each(&mut *visit),
-            Self::MultiPolygon(polygons) => polygons
-                .iter()
-                .flat_map(Polygon::segments)
-                .for_each(&mut *visit),
-            Self::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    geometry.for_each_segment_inner(visit);
-                }
-            },
-        }
+        });
     }
 
     /// Raw coordinate payload in bytes — the stored `f64` ordinate columns.
@@ -829,10 +781,6 @@ impl Polygon {
 
     fn snap_to_reference(&self, reference: &SnapReference) -> Self {
         self.map_ring_seqs(|ring| CoordSeq::from(snap_ring_to_reference(ring, reference)))
-    }
-
-    fn segments(&self) -> impl Iterator<Item = Segment> + '_ {
-        line_segments(&self.shell).chain(self.holes.iter().flat_map(line_segments))
     }
 
     /// Total ring-edge count across the shell and every hole — `O(rings)`,

@@ -1,4 +1,141 @@
 use crate::geometry::access::*;
+use crate::geometry::{
+    CoordSeq, CoordinateAxes, GeometryKind, LineSeq, MOrdinate, MultiLineString, MultiMember,
+    MultiPoint, MultiPolygon, Point, Polygon, Ring, Shape, ZOrdinate,
+};
+
+fn point(x: f64, y: f64, z: f64, m: f64) -> Point {
+    Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m))).expect("finite point")
+}
+
+fn line(points: &[Point]) -> LineSeq {
+    LineSeq::try_new(CoordSeq::from_points(points)).expect("line has enough vertices")
+}
+
+fn ring(points: &[Point]) -> Ring {
+    Ring::closed(points.to_vec()).expect("ring is valid")
+}
+
+#[test]
+fn point_walkers_share_nested_preorder_and_short_circuit() {
+    let points = [
+        point(1.0, 1.0, 101.0, 1001.0),
+        point(2.0, 2.0, 102.0, 1002.0),
+        point(3.0, 3.0, 103.0, 1003.0),
+        point(4.0, 4.0, 104.0, 1004.0),
+        point(5.0, 5.0, 105.0, 1005.0),
+        point(6.0, 6.0, 106.0, 1006.0),
+    ];
+    let multipoint = MultiPoint::try_new(CoordinateAxes::XYZM, vec![
+        MultiMember::Empty,
+        MultiMember::Value(points[1]),
+        MultiMember::Empty,
+        MultiMember::Value(points[2]),
+    ])
+    .expect("homogeneous multipoint");
+    let polygon = Polygon::new(ring(&[points[3], points[4], points[5], points[3]]), vec![]);
+    let shape = Shape::geometry_collection(vec![
+        Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XYZM),
+        Shape::Point(points[0]),
+        Shape::geometry_collection(vec![
+            Shape::MultiPoint(multipoint),
+            Shape::LineString(line(&[points[3], points[4]])),
+            Shape::Polygon(polygon),
+        ])
+        .expect("nested collection"),
+        Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XYZM),
+    ])
+    .expect("collection");
+
+    let mut visited = Vec::new();
+    shape.for_each_point(|point| visited.push(point));
+    assert_eq!(visited, [
+        points[0], points[1], points[2], points[3], points[4], points[3], points[4], points[5],
+        points[3]
+    ]);
+
+    let mut any_visited = Vec::new();
+    assert!(shape.any_point(|point| {
+        any_visited.push(point);
+        point == points[2]
+    }));
+    assert_eq!(any_visited, [points[0], points[1], points[2]]);
+
+    let mut try_visited = Vec::new();
+    let result: Result<(), Point> = shape.try_for_each_point(|point| {
+        try_visited.push(point);
+        (point != points[2]).then_some(()).ok_or(point)
+    });
+    assert_eq!(result, Err(points[2]));
+    assert_eq!(try_visited, [points[0], points[1], points[2]]);
+}
+
+#[test]
+fn segment_walkers_share_chain_order_without_crossing_and_keep_ordinates() {
+    let line_points = [
+        point(10.0, 10.0, 110.0, 1010.0),
+        point(11.0, 11.0, 111.0, 1011.0),
+        point(12.0, 12.0, 112.0, 1012.0),
+    ];
+    let shell_points = [
+        point(20.0, 20.0, 120.0, 1020.0),
+        point(21.0, 20.0, 121.0, 1021.0),
+        point(21.0, 21.0, 122.0, 1022.0),
+        point(20.0, 20.0, 120.0, 1020.0),
+    ];
+    let hole_points = [
+        point(20.25, 20.25, 125.0, 1025.0),
+        point(20.75, 20.25, 126.0, 1026.0),
+        point(20.75, 20.75, 127.0, 1027.0),
+        point(20.25, 20.25, 125.0, 1025.0),
+    ];
+    let polygon = Polygon::new(ring(&shell_points), vec![ring(&hole_points)]);
+    let lines = MultiLineString::try_new(CoordinateAxes::XYZM, vec![
+        MultiMember::Empty,
+        MultiMember::Value(line(&line_points)),
+    ])
+    .expect("homogeneous multiline");
+    let polygons = MultiPolygon::try_new(CoordinateAxes::XYZM, vec![
+        MultiMember::Empty,
+        MultiMember::Value(polygon),
+    ])
+    .expect("homogeneous multipolygon");
+    let shape = Shape::geometry_collection(vec![
+        Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XYZM),
+        Shape::MultiLineString(lines),
+        Shape::geometry_collection(vec![Shape::MultiPolygon(polygons)]).expect("nested collection"),
+    ])
+    .expect("collection");
+
+    let expected_pairs = vec![
+        (line_points[0], line_points[1]),
+        (line_points[1], line_points[2]),
+        (shell_points[0], shell_points[1]),
+        (shell_points[1], shell_points[2]),
+        (shell_points[2], shell_points[3]),
+        (hole_points[0], hole_points[1]),
+        (hole_points[1], hole_points[2]),
+        (hole_points[2], hole_points[3]),
+    ];
+    let mut pairs = Vec::new();
+    shape.for_each_vertex_pair(|start, end| pairs.push((start, end)));
+    assert_eq!(pairs, expected_pairs);
+
+    let mut segments = Vec::new();
+    shape.for_each_segment(|segment| {
+        segments.push((
+            (segment.start.x, segment.start.y),
+            (segment.end.x, segment.end.y),
+        ))
+    });
+    assert_eq!(
+        segments,
+        expected_pairs
+            .iter()
+            .map(|(start, end)| ((start.x, start.y), (end.x, end.y)))
+            .collect::<Vec<_>>()
+    );
+}
 
 #[test]
 fn column_all_finite_rejects_non_finite() {
