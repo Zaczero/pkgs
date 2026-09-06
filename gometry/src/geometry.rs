@@ -214,7 +214,7 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
     predicates::polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, rings, point)
 }
 pub(crate) use relate::{
-    De9im, GeographicPrepared, graph_intersects_rectangle_data, graph_relate_data,
+    De9im, GeographicPrepared, graph_intersects_bounds, graph_relate_data,
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
     graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
     graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,

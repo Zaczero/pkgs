@@ -16,8 +16,8 @@ use std::sync::{Arc, OnceLock};
 
 use crate::geometry::{
     Bounds, CoordSeq, Point, PointBatchTester, Polygon, PreparedPlan, RectContact, Segment,
-    SegmentIndex, Shape, Strictness, XY, bounds_to_shape, graph_intersects_rectangle_data,
-    line_segments, segment_vs_rect,
+    SegmentIndex, Shape, Strictness, XY, bounds_to_shape, graph_intersects_bounds, line_segments,
+    segment_vs_rect,
 };
 use crate::grid::affine_source::{
     GeographicCoverageSource, RectClass as AffineRectClass, SphericalGridTarget,
@@ -151,15 +151,7 @@ impl<'a> GeographicCandidateClassifier<'a> {
         match graph.covers_rectangle(bounds) {
             Some(true) => RectClass::Interior,
             Some(false) => {
-                let candidate = bounds_to_shape(bounds);
-                if graph_intersects_rectangle_data(
-                    self.authority_plan,
-                    Some(graph),
-                    None,
-                    &candidate,
-                )
-                .unwrap_or(true)
-                {
+                if graph_intersects_bounds(graph, bounds) {
                     RectClass::Boundary
                 } else {
                     RectClass::Outside

@@ -567,17 +567,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                         .get_or_init(|| scalar_cache.geographic_topology_graph(scalar, frame))
                         .as_ref(),
                 };
-                crate::geometry::graph_intersects_rectangle_data(
-                    scalar_orig,
-                    Some(scalar_graph),
-                    match domain {
-                        TopologyDomain::Cartesian => None,
-                        TopologyDomain::Geographic(frame) => {
-                            Some(GeographicPrepared::new(scalar_orig, scalar_cache, frame))
-                        },
-                    },
-                    shape,
-                )
+                Some(crate::geometry::graph_intersects_bounds(scalar_graph, bounds))
             })
         })
     };

@@ -675,30 +675,11 @@ const fn areal_vertex_location(any: bool, all: bool) -> Loc {
     }
 }
 
-/// Exact `intersects` certificate for a rectangle row. A closed rectangle
-/// intersects a source iff one of its corners is on the source, one source
-/// graph node lies in the rectangle, or their boundary segments meet. The
-/// general case still returns the complete matrix below this certificate.
-pub(crate) fn graph_intersects_rectangle_data(
-    source: &PreparedPlan,
-    source_graph: Option<&TopologyGraph>,
-    geographic_source: Option<GeographicPrepared<'_>>,
-    rectangle: &Shape,
-) -> Option<bool> {
-    let bounds = rectangle.bounds()?;
-    if !is_axis_aligned_rectangle(rectangle, bounds) {
-        return None;
-    }
-    let geographic_graph;
-    #[expect(clippy::option_if_let_else, reason = "the else branch initializes the deferred binding the graph borrows from")]
-    let graph = if let Some(graph) = source_graph {
-        graph
-    } else if let Some(source) = geographic_source {
-        geographic_graph = source.graph();
-        geographic_graph.as_ref()
-    } else {
-        source.topology_graph()
-    };
+/// Exact `intersects` check for a supported rectangle against a source graph.
+/// A closed rectangle intersects a source iff one of its corners is on the
+/// source, one source graph node lies in the rectangle, or their boundary
+/// segments meet. Callers own rectangle admission before reaching this scan.
+pub(crate) fn graph_intersects_bounds(graph: &TopologyGraph, bounds: Bounds) -> bool {
     if bounds
         .corners()
         .into_iter()
@@ -709,17 +690,17 @@ pub(crate) fn graph_intersects_rectangle_data(
             .iter()
             .any(|node| bounds.contains_xy(node.point))
     {
-        return Some(true);
+        return true;
     }
     let rectangle_edges = rectangle_edges(bounds);
-    Some(graph.edges.iter().any(|edge| {
+    graph.edges.iter().any(|edge| {
         bounds.contains_xy(edge.segment.start)
             || bounds.contains_xy(edge.segment.end)
             || rectangle_edges
                 .iter()
                 .copied()
                 .any(|candidate| segments_intersect(edge.segment, candidate))
-    }))
+    })
 }
 
 const fn rectangle_edges(bounds: Bounds) -> [Segment; 4] {
