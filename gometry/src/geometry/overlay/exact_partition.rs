@@ -25,8 +25,8 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, try_compare_ratios};
 use crate::geometry::{
-    ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Polygon, Result, Segment, XY,
-    for_each_candidate_pair, same_point, single_chain,
+    CoordSeq, ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _, Point, PointKey,
+    Polygon, Result, Ring, Segment, XY, for_each_candidate_pair, same_point, single_chain,
 };
 use crate::try_reserve_vec;
 
@@ -283,6 +283,73 @@ struct BoundaryPlan {
 }
 
 impl BoundaryPlan {
+    fn emit_xy_parts(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+    ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
+        let groups = self.polygon_walks(partition, topology)?;
+        let segments = self.round_items(partition, topology)?;
+        let mut remaining = segments.as_slice();
+        let mut rings = Vec::new();
+        try_reserve_vec(&mut rings, self.walks.len())?;
+        for walk in &self.walks {
+            let (chords, rest) = remaining.split_at(walk.len());
+            remaining = rest;
+            let mut xs = Vec::new();
+            let mut ys = Vec::new();
+            try_reserve_vec(&mut xs, chords.len() + 1)?;
+            try_reserve_vec(&mut ys, chords.len() + 1)?;
+            for chord in chords {
+                xs.push(chord.start.x);
+                ys.push(chord.start.y);
+            }
+            xs.push(chords[0].start.x);
+            ys.push(chords[0].start.y);
+            rings.push(Some(Ring::from_closed(CoordSeq::try_from_vecs(
+                xs, ys, None, None,
+            )?)));
+        }
+        let mut polygons = Vec::new();
+        try_reserve_vec(&mut polygons, groups.len())?;
+        for group in groups {
+            let mut indices = group.into_iter();
+            let shell = rings[indices.next().expect("polygon has a shell")]
+                .take()
+                .expect("each ring has one polygon owner");
+            let mut holes = Vec::new();
+            try_reserve_vec(&mut holes, indices.len())?;
+            for index in indices {
+                holes.push(
+                    rings[index]
+                        .take()
+                        .expect("each ring has one polygon owner"),
+                );
+            }
+            polygons.push(Polygon::new(shell, holes)?);
+        }
+        let (chords, isolated) = remaining.split_at(self.lines.len());
+        let mut lines = Vec::new();
+        try_reserve_vec(&mut lines, chords.len())?;
+        for chord in chords {
+            let mut xs = Vec::new();
+            let mut ys = Vec::new();
+            try_reserve_vec(&mut xs, 2)?;
+            try_reserve_vec(&mut ys, 2)?;
+            xs.extend([chord.start.x, chord.end.x]);
+            ys.extend([chord.start.y, chord.end.y]);
+            lines.push(CoordSeq::try_from_vecs(xs, ys, None, None)?);
+        }
+        let mut points = Vec::new();
+        try_reserve_vec(&mut points, isolated.len())?;
+        points.extend(
+            isolated
+                .iter()
+                .map(|item| Point::new_raw_xy(item.start.x, item.start.y)),
+        );
+        Ok((points, lines, polygons))
+    }
+
     fn polygon_walks(
         &self,
         partition: &ExactPartition<'_>,
@@ -932,7 +999,7 @@ impl<'a> ExactPartition<'a> {
         }
         // A repeated node represents a live isolated point, not a new cut.
         let mut contact = None;
-        let _ = try_for_each_candidate_pair(&segments, single_chain, |left, right| {
+        let _ = for_each_candidate_pair(&segments, single_chain, |left, right| {
             let endpoints = |index: usize| {
                 let segment = segments[index];
                 [
@@ -2467,7 +2534,7 @@ mod tests {
             .unwrap();
         let items = plan.incident_items(&topology).unwrap();
         assert_eq!(items.len(), 2);
-        let error = partition.round_incident_items(&items).unwrap_err();
+        let error = plan.emit_xy_parts(&partition, &topology).unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactUnexpectedContact { .. })
@@ -3722,6 +3789,49 @@ mod tests {
     }
 
     #[test]
+    fn certified_parts_serialize_polygon_line_and_isolated_point() {
+        let case = run(&[
+            seg(0.0, 0.0, 4.0, 0.0),
+            seg(4.0, 0.0, 4.0, 4.0),
+            seg(4.0, 4.0, 0.0, 4.0),
+            seg(0.0, 4.0, 0.0, 0.0),
+            seg(6.0, 1.0, 8.0, 1.0),
+            seg(10.0, 3.0, 10.0, 3.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let cells = ArealCells {
+            faces: (0..faces.count).map(|face| face != 0).collect(),
+            spans: vec![true; partition.spans.len()],
+            nodes: vec![true; partition.recipes.len()],
+        };
+        let plan = cells
+            .emission_plan(&partition, &topology, &edges, &faces)
+            .unwrap();
+        let (points, lines, polygons) = plan.emit_xy_parts(&partition, &topology).unwrap();
+        assert_eq!(points.iter().map(|point| point.xy()).collect::<Vec<_>>(), [
+            XY::new(10.0, 3.0)
+        ]);
+        assert_eq!(lines.len(), 1);
+        let mut endpoints = lines[0].xs().to_vec();
+        endpoints.sort_by(f64::total_cmp);
+        assert_eq!(endpoints, [6.0, 8.0]);
+        assert_eq!(lines[0].ys(), [1.0, 1.0]);
+        assert_eq!(polygons.len(), 1);
+        assert!(polygons[0].holes.is_empty());
+        let shell = &polygons[0].shell;
+        assert_eq!(shell.coords().xs().len(), 5);
+        let mut corners: Vec<_> = shell
+            .iter()
+            .take(4)
+            .map(|point| (point.x, point.y))
+            .collect();
+        corners.sort_by(|left, right| left.partial_cmp(right).unwrap());
+        assert_eq!(corners, [(0.0, 0.0), (0.0, 4.0), (4.0, 0.0), (4.0, 4.0)]);
+    }
+
+    #[test]
     fn selected_polygon_walks_keep_an_island_inside_a_hole_separate() {
         let case = run(&[
             seg(0.0, 0.0, 10.0, 0.0),
@@ -3767,6 +3877,42 @@ mod tests {
             }
         }
         assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 12);
+        let (points, lines, polygons) = plan.emit_xy_parts(&partition, &topology).unwrap();
+        assert!(points.is_empty());
+        assert!(lines.is_empty());
+        assert_eq!(polygons.len(), 2);
+        let outer = polygons
+            .iter()
+            .find(|polygon| !polygon.holes.is_empty())
+            .unwrap();
+        assert_eq!(outer.holes.len(), 1);
+        assert!(
+            outer
+                .shell
+                .coords()
+                .xs()
+                .iter()
+                .all(|&x| x == 0.0 || x == 10.0)
+        );
+        assert!(
+            outer.holes[0]
+                .coords()
+                .xs()
+                .iter()
+                .all(|&x| x == 2.0 || x == 8.0)
+        );
+        let island = polygons
+            .iter()
+            .find(|polygon| polygon.holes.is_empty())
+            .unwrap();
+        assert!(
+            island
+                .shell
+                .coords()
+                .xs()
+                .iter()
+                .all(|&x| x == 4.0 || x == 6.0)
+        );
     }
 
     #[test]

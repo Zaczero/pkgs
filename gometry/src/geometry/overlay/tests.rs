@@ -546,15 +546,16 @@ mod binary_areal_overlay_tests {
     #[test]
     fn collapsed_shell_does_not_emit_an_areal_hole_as_linework() {
         let shell = polygon(&[(0.0, 0.0), (4.0, 0.0), (2.0, 0.0), (0.0, 0.0)]).shell;
-        let hole = polygon(&[
-            (1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0),
-        ]).shell;
-        let source = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let hole = polygon(&[(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)]).shell;
+        let source = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
         let enclosing = square(-1.0, -1.0, 5.0, 5.0);
         let expected = line(&[(0.0, 0.0), (4.0, 0.0)]);
         for (left, right) in [(&source, &enclosing), (&enclosing, &source)] {
             let result = left.intersection(right, Strictness::Lenient).unwrap();
-            assert!(result.equals(&expected), "{result:?} != {expected:?}");
+            assert!(
+                result.equals(&expected).unwrap(),
+                "{result:?} != {expected:?}"
+            );
         }
     }
 
@@ -591,7 +592,10 @@ mod binary_areal_overlay_tests {
             for (left, right) in [(&left, &right), (&right, &left)] {
                 let result = assert_intersection_matches_joint_graph(name, left, right);
                 if name == "collapsed ring" {
-                    assert!(result.equals(&line(&[(3.0, 0.0), (4.0, 0.0)])), "{result:?}");
+                    assert!(
+                        result.equals(&line(&[(3.0, 0.0), (4.0, 0.0)])).unwrap(),
+                        "{result:?}"
+                    );
                 }
                 if name == "retraced exterior spur" {
                     // Opposite traversals cancel under the areal nonzero rule.
