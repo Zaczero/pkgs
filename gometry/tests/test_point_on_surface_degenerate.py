@@ -71,12 +71,14 @@ def test_mixed_axis_polygon_collection_uses_xy_scan(tag: str, ordinates: str) ->
         f'14 4 {ordinates}, 10 4 {ordinates}, 10 0 {ordinates}))'
         ')'
     )
+    array_result = gm.GeometryArray([collection, None]).point_on_surface()
+    assert array_result.is_missing.tolist() == [False, True]
 
-    for value in (collection, gm.GeometryArray([collection])[0]):
-        point = value.point_on_surface()
-        assert point.to_wkt() == 'POINT (12 2)'
+    for point in (collection.point_on_surface(), array_result[0]):
+        assert type(point) is gm.Point
+        assert (point.x, point.y) == (12.0, 2.0)
         assert point.coordinate_axes == 'XY'
-        assert gm.covered_by(point, value)
+        assert gm.covered_by(point, collection)
 
 
 def test_mixed_axis_point_collection_uses_xy_selector() -> None:
@@ -85,21 +87,24 @@ def test_mixed_axis_point_collection_uses_xy_selector() -> None:
         gm.Point(2, 0),
         gm.Point(10, 0),
     ])
+    array_point = gm.GeometryArray([collection]).point_on_surface()[0]
 
-    for value in (collection, gm.GeometryArray([collection])[0]):
-        point = value.point_on_surface()
-        assert point.to_wkt() == 'POINT (2 0)'
+    for point in (collection.point_on_surface(), array_point):
+        assert type(point) is gm.Point
+        assert (point.x, point.y) == (2.0, 0.0)
         assert point.coordinate_axes == 'XY'
-        assert gm.covered_by(point, value)
+        assert gm.covered_by(point, collection)
 
 
 def test_sparse_multipoint_member_is_skipped_by_collection_surface_point() -> None:
     collection = gm.GeometryCollection([gm.MultiPoint([gm.Point(), gm.Point(1, 2)])])
+    array_point = gm.GeometryArray([collection]).point_on_surface()[0]
 
-    for value in (collection, gm.GeometryArray([collection])[0]):
-        point = value.point_on_surface()
-        assert point.to_wkt() == 'POINT (1 2)'
-        assert gm.covered_by(point, value)
+    for point in (collection.point_on_surface(), array_point):
+        assert type(point) is gm.Point
+        assert (point.x, point.y) == (1.0, 2.0)
+        assert point.coordinate_axes == 'XY'
+        assert gm.covered_by(point, collection)
 
 
 def test_mixed_axis_degenerate_polygon_collection_uses_boundary_fallback() -> None:
@@ -109,9 +114,10 @@ def test_mixed_axis_degenerate_polygon_collection_uses_boundary_fallback() -> No
         'POLYGON Z ((10 0 1, 11 0 1, 10 0 1, 10 0 1))'
         ')'
     )
+    array_point = gm.GeometryArray([collection]).point_on_surface()[0]
 
-    for value in (collection, gm.GeometryArray([collection])[0]):
-        point = value.point_on_surface()
-        assert point.to_wkt() == 'POINT (3 0)'
+    for point in (collection.point_on_surface(), array_point):
+        assert type(point) is gm.Point
+        assert (point.x, point.y) == (3.0, 0.0)
         assert point.coordinate_axes == 'XY'
-        assert gm.covered_by(point, value)
+        assert gm.covered_by(point, collection)
