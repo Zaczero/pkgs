@@ -979,7 +979,14 @@ GeometryArray
     a ``GeometryCollection`` of ordered ``Point`` members for heterogeneous rows.
 
 ";
-    tail: r"See Also
+    tail: r"Notes
+-----
+A heterogeneous result follows ordinary ``GeometryCollection`` semantics:
+``is_simple`` is false by convention and structural equality remains type-sensitive.
+Mixed-axis and collection exports use WKB for Arrow interchange; see
+[Arrow & storage](../ecosystem/arrow.md).
+
+See Also
 --------
 remove_repeated_points : Collapse consecutive duplicate vertices in place, keeping the geometry kind.
 

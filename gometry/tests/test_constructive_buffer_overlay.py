@@ -709,19 +709,28 @@ def test_unique_points_scalar_and_array_preserve_per_row_result_shapes() -> None
         gm.Point(2, 2, m=20),
         gm.Point(3, 3, z=30, m=40),
     ])
+    expected_mixed = gm.GeometryCollection([
+        gm.Point(0, 0),
+        gm.Point(1, 1, z=10),
+        gm.Point(2, 2, m=20),
+        gm.Point(3, 3, z=30, m=40),
+    ])
     homogeneous = gm.MultiPoint([(0, 0), (1, 1)])
     empty = gm.from_wkt('POINT Z EMPTY')
 
-    result = gm.GeometryArray([mixed, homogeneous, empty]).unique_points()
+    result = gm.GeometryArray([mixed, homogeneous, None, empty]).unique_points()
 
-    assert [part.geometry_type for part in result] == [
+    assert [None if part is None else part.geometry_type for part in result] == [
         'GeometryCollection',
         'MultiPoint',
+        None,
         'MultiPoint',
     ]
+    assert result[0] == expected_mixed
     assert result[0] == gm.from_wkb(result[0].to_wkb())
     assert result[1].coordinate_axes == 'XY'
-    assert result[2].coordinate_axes == 'XYZ'
+    assert result[2] is None
+    assert result[3].coordinate_axes == 'XYZ'
 
 
 def test_reverse_and_orient_polygons_are_rust_backed() -> None:
