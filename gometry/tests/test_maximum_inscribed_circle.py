@@ -42,6 +42,13 @@ def test_maximum_inscribed_circle_respects_an_enclosed_hole() -> None:
     assert not gm.covers(circle, gm.Point(5, 5))
 
 
+def test_maximum_inscribed_circle_emits_boundary_point_for_degenerate_ring() -> None:
+    source = gm.from_wkt('POLYGON ((0 0, 1 0, 0 0, 1 0, 0 0))')
+    result = source.maximum_inscribed_circle(tolerance=1e-12)
+    assert result.geometry_type == 'Point'
+    assert gm.covers(source, result)
+
+
 def test_maximum_inscribed_circle_rejects_unrepresentable_diamond() -> None:
     diamond = gm.Polygon([(0, 1), (-1, 0), (0, -1), (1, 0)])
     with pytest.raises(gm.GeometryError) as raised:

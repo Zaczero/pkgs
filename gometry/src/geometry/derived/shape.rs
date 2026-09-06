@@ -3,10 +3,10 @@ use std::num::NonZeroU32;
 use crate::error::Result;
 use crate::geometry::derived::{
     areal_centroid, build_inscribed_circle, canonicalize_concave_hull_points,
-    collection_surface_point, lineal_centroid, lineal_surface_point, minimum_area_rectangle,
-    monotone_chain_hull, multipoint_surface_point, native_concave_hull, point_centroid,
-    polygonal_surface_point, polylabel_center_radius, polylabel_point, shape_from_open_hull,
-    shape_from_selected_hull, smallest_enclosing_circle,
+    collection_surface_point, emit_zero_radius_point, lineal_centroid, lineal_surface_point,
+    minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point, native_concave_hull,
+    point_centroid, polygonal_surface_point, polylabel_center_radius, polylabel_point,
+    shape_from_open_hull, shape_from_selected_hull, smallest_enclosing_circle,
 };
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, DEFAULT_MITER_LIMIT, GeometryErrorKind, GeometryKind, LineSeq,
@@ -177,7 +177,7 @@ impl Shape {
             .transpose()?;
         match self {
             Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => Ok(Self::empty_point()),
-            Self::Polygon(_) | Self::MultiPolygon(_) if !self.is_empty() => {
+            Self::Polygon(_) | Self::MultiPolygon(_) => {
                 Ok(Self::Point(polylabel_point(self, tolerance)?))
             },
             // The representative point of any empty polygonal input is the
@@ -262,12 +262,10 @@ impl Shape {
             Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => {
                 Ok(Self::empty_polygon())
             },
-            Self::Polygon(_) | Self::MultiPolygon(_) if !self.is_empty() => {
+            Self::Polygon(_) | Self::MultiPolygon(_) => {
                 let (center, radius) = polylabel_center_radius(self, tolerance)?;
                 if radius == 0.0 {
-                    // A degenerate (zero-area) polygon has no inscribed disk;
-                    // preserve the existing center-point result.
-                    return Ok(Self::Point(center));
+                    return emit_zero_radius_point(self, center);
                 }
                 build_inscribed_circle(
                     self,
@@ -293,7 +291,7 @@ impl Shape {
             .transpose()?;
         match self {
             Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => Ok(f64::NAN),
-            Self::Polygon(_) | Self::MultiPolygon(_) if !self.is_empty() => {
+            Self::Polygon(_) | Self::MultiPolygon(_) => {
                 Ok(polylabel_center_radius(self, tolerance)?.1)
             },
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(f64::NAN),

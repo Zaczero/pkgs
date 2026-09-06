@@ -341,24 +341,10 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
     Ok(center)
 }
 
-struct ExactSquaredRatio {
-    numerator: ExactDyadic,
-    denominator: ExactDyadic,
-}
+type ExactRatio = (ExactDyadic, ExactDyadic);
 
-impl ExactSquaredRatio {
-    fn cmp(&self, other: &Self) -> Result<Ordering> {
-        try_compare_ratios(
-            &self.numerator,
-            &self.denominator,
-            &other.numerator,
-            &other.denominator,
-        )
-    }
-
-    fn round_sqrt(&self) -> Result<f64> {
-        round_sqrt_ratio(&self.numerator, &self.denominator)
-    }
+fn compare_exact_ratios(left: &ExactRatio, right: &ExactRatio) -> Result<Ordering> {
+    try_compare_ratios(&left.0, &left.1, &right.0, &right.1)
 }
 
 fn exact_difference(left: f64, right: f64) -> Result<ExactDyadic> {
@@ -369,16 +355,16 @@ fn exact_squared_sum(left: &ExactDyadic, right: &ExactDyadic) -> Result<ExactDya
     left.try_product(left)?.try_add(right.try_product(right)?)
 }
 
-fn exact_point_pair_squared(left: XY, right: XY) -> Result<ExactSquaredRatio> {
+fn exact_point_pair_squared(left: XY, right: XY) -> Result<ExactRatio> {
     let dx = exact_difference(left.x, right.x)?;
     let dy = exact_difference(left.y, right.y)?;
-    Ok(ExactSquaredRatio {
-        numerator: exact_squared_sum(&dx, &dy)?,
-        denominator: ExactDyadic::try_from_f64(1.0)?,
-    })
+    Ok((
+        exact_squared_sum(&dx, &dy)?,
+        ExactDyadic::try_from_f64(1.0)?,
+    ))
 }
 
-fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactSquaredRatio> {
+fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactRatio> {
     let point = point.xy();
     let dx = exact_difference(segment.end.x, segment.start.x)?;
     let dy = exact_difference(segment.end.y, segment.start.y)?;
@@ -397,16 +383,16 @@ fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactSq
         return exact_point_pair_squared(point, segment.end);
     }
     let point_squared = exact_squared_sum(&qx, &qy)?;
-    Ok(ExactSquaredRatio {
-        numerator: point_squared
+    Ok((
+        point_squared
             .try_product(&denominator)?
             .try_subtract(numerator.try_product(&numerator)?)?,
         denominator,
-    })
+    ))
 }
 
 fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
-    let mut best: Option<ExactSquaredRatio> = None;
+    let mut best: Option<ExactRatio> = None;
     let mut error = None;
     shape.for_each_segment(|segment| {
         if error.is_some() {
@@ -421,7 +407,7 @@ fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
         };
         let replace = match &best {
             None => true,
-            Some(current) => match candidate.cmp(current) {
+            Some(current) => match compare_exact_ratios(&candidate, current) {
                 Ok(order) => order == Ordering::Less,
                 Err(failure) => {
                     error = Some(failure);
@@ -436,24 +422,9 @@ fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
     if let Some(error) = error {
         return Err(error);
     }
-    best.map_or(Ok(0.0), |distance| distance.round_sqrt())
-}
-
-#[derive(Clone)]
-struct ExactParameter {
-    numerator: ExactDyadic,
-    denominator: ExactDyadic,
-}
-
-impl ExactParameter {
-    fn cmp(&self, other: &Self) -> Result<Ordering> {
-        try_compare_ratios(
-            &self.numerator,
-            &self.denominator,
-            &other.numerator,
-            &other.denominator,
-        )
-    }
+    best.map_or(Ok(0.0), |distance| {
+        round_sqrt_ratio(&distance.0, &distance.1)
+    })
 }
 
 fn exact_cross(
@@ -467,12 +438,8 @@ fn exact_cross(
         .try_subtract(left_y.try_product(right_x)?)
 }
 
-fn update_lower(
-    lower: &mut ExactParameter,
-    lower_closed: &mut bool,
-    bound: ExactParameter,
-) -> Result<()> {
-    match bound.cmp(lower)? {
+fn update_lower(lower: &mut ExactRatio, lower_closed: &mut bool, bound: ExactRatio) -> Result<()> {
+    match compare_exact_ratios(&bound, lower)? {
         Ordering::Greater => {
             *lower = bound;
             *lower_closed = false;
@@ -483,12 +450,8 @@ fn update_lower(
     Ok(())
 }
 
-fn update_upper(
-    upper: &mut ExactParameter,
-    upper_closed: &mut bool,
-    bound: ExactParameter,
-) -> Result<()> {
-    match bound.cmp(upper)? {
+fn update_upper(upper: &mut ExactRatio, upper_closed: &mut bool, bound: ExactRatio) -> Result<()> {
+    match compare_exact_ratios(&bound, upper)? {
         Ordering::Less => {
             *upper = bound;
             *upper_closed = false;
@@ -500,12 +463,12 @@ fn update_upper(
 }
 
 fn interval_is_empty(
-    lower: &ExactParameter,
+    lower: &ExactRatio,
     lower_closed: bool,
-    upper: &ExactParameter,
+    upper: &ExactRatio,
     upper_closed: bool,
 ) -> Result<bool> {
-    Ok(match lower.cmp(upper)? {
+    Ok(match compare_exact_ratios(lower, upper)? {
         Ordering::Greater => true,
         Ordering::Equal => !(lower_closed && upper_closed),
         Ordering::Less => false,
@@ -523,14 +486,8 @@ fn segment_enters_candidate(
 ) -> Result<bool> {
     let zero = ExactDyadic::try_from_f64(0.0)?;
     let one = ExactDyadic::try_from_f64(1.0)?;
-    let lower_bound = ExactParameter {
-        numerator: zero.clone(),
-        denominator: one.clone(),
-    };
-    let upper_bound = ExactParameter {
-        numerator: one.clone(),
-        denominator: one,
-    };
+    let lower_bound = (zero.try_clone()?, one.try_clone()?);
+    let upper_bound = (one.try_clone()?, one);
     let mut lower = lower_bound;
     let mut upper = upper_bound;
     let mut lower_closed = true;
@@ -551,8 +508,8 @@ fn segment_enters_candidate(
             (c0, c1)
         } else {
             (
-                zero.clone().try_subtract(c0)?,
-                zero.clone().try_subtract(c1)?,
+                zero.try_clone()?.try_subtract(c0)?,
+                zero.try_clone()?.try_subtract(c1)?,
             )
         };
         match c1.sign() {
@@ -562,16 +519,18 @@ fn segment_enters_candidate(
                 }
             },
             crate::geometry::exact_arith::ExactSign::Positive => {
-                update_lower(&mut lower, &mut lower_closed, ExactParameter {
-                    numerator: zero.clone().try_subtract(c0)?,
-                    denominator: c1,
-                })?;
+                update_lower(
+                    &mut lower,
+                    &mut lower_closed,
+                    (zero.try_clone()?.try_subtract(c0)?, c1),
+                )?;
             },
             crate::geometry::exact_arith::ExactSign::Negative => {
-                update_upper(&mut upper, &mut upper_closed, ExactParameter {
-                    numerator: c0,
-                    denominator: zero.clone().try_subtract(c1)?,
-                })?;
+                update_upper(
+                    &mut upper,
+                    &mut upper_closed,
+                    (c0, zero.try_clone()?.try_subtract(c1)?),
+                )?;
             },
         }
         if interval_is_empty(&lower, lower_closed, &upper, upper_closed)? {
@@ -624,6 +583,18 @@ pub(crate) fn polylabel_center_radius(
 ) -> Result<(Point, f64)> {
     let center = polylabel_point(shape, tolerance)?;
     Ok((center, exact_boundary_radius(shape, center)?))
+}
+
+pub(crate) fn emit_zero_radius_point(shape: &Shape, center: Point) -> Result<Shape> {
+    // A positive subnormal clearance may round to zero; closed membership, not
+    // the rounded radius, decides whether the emitted point belongs to source.
+    if center.x.is_finite() && center.y.is_finite() && shape.covers_point(center) {
+        Ok(Shape::Point(center))
+    } else {
+        Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+            "maximum_inscribed_circle",
+        ))
+    }
 }
 
 pub(crate) fn build_inscribed_circle(
@@ -683,7 +654,8 @@ pub(crate) fn build_inscribed_circle(
         ));
     }
     let counter_clockwise = winding.is_ccw();
-    let center_in_candidate = candidate_center_is_strictly_inside(&points, center, counter_clockwise);
+    let center_in_candidate =
+        candidate_center_is_strictly_inside(&points, center, counter_clockwise);
     if !center_in_candidate
         || (certify_source
             && (!shape.contains_point(center)
@@ -865,6 +837,18 @@ mod tests {
         points
     }
 
+    fn degenerate_line_shape() -> Shape {
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(2.0, 0.0),
+                Point::new_raw_xy(1.0, 0.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ]),
+            Vec::new(),
+        ))
+    }
+
     #[test]
     fn reciprocal_ribbon_keeps_the_physical_nearest_edge() {
         let extent = 1.0e162;
@@ -881,6 +865,35 @@ mod tests {
         ));
         let center = polylabel_point(&shape, None).expect("finite ribbon");
         assert_eq!(center, Point::new_raw_xy(0.0, 0.0));
+    }
+
+    #[test]
+    fn zero_radius_boundary_point_uses_closed_membership() {
+        let shape = degenerate_line_shape();
+        let result = shape.maximum_inscribed_circle(None).unwrap();
+        let Shape::Point(point) = result else {
+            panic!("degenerate maximum circle must emit its point center");
+        };
+        assert!(shape.covers_point(point));
+        assert!(!shape.contains_point(point));
+    }
+
+    #[test]
+    fn zero_radius_outside_point_is_rejected_at_emission_boundary() {
+        let shape = degenerate_line_shape();
+        let result = emit_zero_radius_point(&shape, Point::new_raw_xy(1.0, 1.0));
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Geometry(
+                        crate::geometry::GeometryErrorKind::UnrepresentableOutput {
+                            operation: "maximum_inscribed_circle"
+                        }
+                    )
+                )
+        ));
     }
 
     #[test]
