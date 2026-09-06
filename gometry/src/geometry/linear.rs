@@ -7,14 +7,14 @@
 //! splitting helpers.
 
 use super::linear_3d;
-use crate::Finite;
-use crate::HeapSize;
+use crate::error::Result;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
     HasZ, LineIndex, LineSeq, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan,
     Segment, SegmentMetric, SegmentProjection, Shape, distance_3d_with_parts, point_distance,
     same_point, segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
 };
+use crate::{Finite, HeapSize};
 
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
 ///
@@ -308,7 +308,7 @@ impl Shape {
         metric: &M,
     ) -> Result<Self> {
         let m = Finite::try_new("m", m)?.get();
-        let index = MeasuredLineIndex::build(self)?;
+        let index = MeasuredLineIndex::build(self).map_err(crate::error::Error::from)?;
         Ok(Self::Point(index.interpolate_finite(m, metric)))
     }
 
@@ -323,7 +323,7 @@ impl Shape {
         point: Point,
         metric: &M,
     ) -> Result<f64> {
-        let index = MeasuredLineIndex::build(self)?;
+        let index = MeasuredLineIndex::build(self).map_err(crate::error::Error::from)?;
         index.locate(point, metric)
     }
 
@@ -338,7 +338,7 @@ impl Shape {
         range: MeasureRange,
         metric: &M,
     ) -> Result<Self> {
-        let index = MeasuredLineIndex::build(self)?;
+        let index = MeasuredLineIndex::build(self).map_err(crate::error::Error::from)?;
         index.substring(range, metric)
     }
 }
@@ -372,6 +372,26 @@ impl PreparedPlan {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MeasuredLineAdmission {
+    NotLineal,
+    Empty,
+    MissingMeasure,
+    NonMonotonic,
+}
+
+impl From<MeasuredLineAdmission> for crate::error::Error {
+    fn from(admission: MeasuredLineAdmission) -> Self {
+        let kind = match admission {
+            MeasuredLineAdmission::NotLineal => GeometryErrorKind::LineStringRequired,
+            MeasuredLineAdmission::Empty => GeometryErrorKind::EmptyLinework,
+            MeasuredLineAdmission::MissingMeasure => GeometryErrorKind::MissingMeasure,
+            MeasuredLineAdmission::NonMonotonic => GeometryErrorKind::NonMonotonicMeasure,
+        };
+        kind.into()
+    }
+}
+
 /// Immutable M-linear-referencing product for one lineal shape.
 ///
 /// The product retains row/part views over the source columns rather than
@@ -385,33 +405,44 @@ pub(crate) struct MeasuredLineIndex {
 }
 
 impl MeasuredLineIndex {
-    pub(crate) fn build(shape: &Shape) -> Result<Self> {
-        let lines = shape.linework()?;
-        let parts = lines
-            .iter()
-            .map(|line| (*line).clone())
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+    pub(crate) fn build(shape: &Shape) -> std::result::Result<Self, MeasuredLineAdmission> {
+        let parts = match shape {
+            Shape::LineString(line) => vec![line.as_coords().clone()].into_boxed_slice(),
+            Shape::MultiLineString(lines) => lines
+                .iter()
+                .map(LineSeq::as_coords)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
+                return Err(MeasuredLineAdmission::Empty);
+            },
+            _ => return Err(MeasuredLineAdmission::NotLineal),
+        };
         let mut first = None;
         let mut last = None;
         let mut previous: Option<Point> = None;
         for part in &parts {
             for point in part.iter() {
                 if point.m().is_none() {
-                    return Err(GeometryErrorKind::MissingMeasure.into());
+                    return Err(MeasuredLineAdmission::MissingMeasure);
                 }
                 if let Some(previous) = previous
                     && point.m().unwrap_or(0.0) < previous.m().unwrap_or(0.0)
                 {
-                    return Err(GeometryErrorKind::NonMonotonicMeasure.into());
+                    return Err(MeasuredLineAdmission::NonMonotonic);
                 }
                 first.get_or_insert(point);
                 last = Some(point);
                 previous = Some(point);
             }
         }
-        let first = first.ok_or(GeometryErrorKind::EmptyLinework)?;
-        let last = last.expect("a non-empty measured line has a last vertex");
+        let Some(first) = first else {
+            return Err(MeasuredLineAdmission::Empty);
+        };
+        let Some(last) = last else {
+            return Err(MeasuredLineAdmission::Empty);
+        };
         Ok(Self { parts, first, last })
     }
 
@@ -430,10 +461,7 @@ impl MeasuredLineIndex {
     }
 
     fn interpolate_finite<M: SegmentMetric>(&self, target: f64, metric: &M) -> Point {
-        let target = target.clamp(
-            self.first.m().unwrap_or(0.0),
-            self.last.m().unwrap_or(0.0),
-        );
+        let target = target.clamp(self.first.m().unwrap_or(0.0), self.last.m().unwrap_or(0.0));
         let mut result = None;
         self.for_each_window(|start, end| {
             let (start_m, end_m) = (start.m().unwrap_or(0.0), end.m().unwrap_or(0.0));
@@ -489,16 +517,9 @@ impl MeasuredLineIndex {
         Ok(best_measure)
     }
 
-    fn substring<M: SegmentMetric>(
-        &self,
-        range: MeasureRange,
-        metric: &M,
-    ) -> Result<Shape> {
+    fn substring<M: SegmentMetric>(&self, range: MeasureRange, metric: &M) -> Result<Shape> {
         let (m0, m1) = (range.start(), range.end());
-        let (lo, hi) = (
-            self.first.m().unwrap_or(0.0),
-            self.last.m().unwrap_or(0.0),
-        );
+        let (lo, hi) = (self.first.m().unwrap_or(0.0), self.last.m().unwrap_or(0.0));
         let start = m0.clamp(lo, hi);
         let end = m1.clamp(lo, hi);
         if start.total_cmp(&end) == Ordering::Equal {
@@ -546,37 +567,21 @@ impl MeasuredLineIndex {
 /// Cached admission result for the measured line product.
 pub(crate) enum MeasuredLineIndexSlot {
     Index(MeasuredLineIndex),
-    NotLineal,
-    Empty,
-    MissingMeasure,
-    NonMonotonic,
-    Invalid(Box<str>),
+    Rejected(MeasuredLineAdmission),
 }
 
 impl MeasuredLineIndexSlot {
     pub(crate) fn build(shape: &Shape) -> Self {
         match MeasuredLineIndex::build(shape) {
             Ok(index) => Self::Index(index),
-            Err(error) => match error.kind() {
-                ErrorKind::Geometry(GeometryErrorKind::EmptyLinework) => Self::Empty,
-                ErrorKind::Geometry(GeometryErrorKind::LineStringRequired) => Self::NotLineal,
-                ErrorKind::Geometry(GeometryErrorKind::MissingMeasure) => Self::MissingMeasure,
-                ErrorKind::Geometry(GeometryErrorKind::NonMonotonicMeasure) => {
-                    Self::NonMonotonic
-                },
-                other => Self::Invalid(format!("{other}").into()),
-            },
+            Err(admission) => Self::Rejected(admission),
         }
     }
 
     pub(crate) fn get(&self) -> Result<&MeasuredLineIndex> {
         match self {
             Self::Index(index) => Ok(index),
-            Self::NotLineal => Err(GeometryErrorKind::LineStringRequired.into()),
-            Self::Empty => Err(GeometryErrorKind::EmptyLinework.into()),
-            Self::MissingMeasure => Err(GeometryErrorKind::MissingMeasure.into()),
-            Self::NonMonotonic => Err(GeometryErrorKind::NonMonotonicMeasure.into()),
-            Self::Invalid(message) => Err(GeometryErrorKind::message(message.as_ref())),
+            Self::Rejected(admission) => Err((*admission).into()),
         }
     }
 }
@@ -591,8 +596,7 @@ impl HeapSize for MeasuredLineIndexSlot {
     fn heap_bytes(&self) -> usize {
         match self {
             Self::Index(index) => index.heap_bytes(),
-            Self::Invalid(message) => message.len(),
-            Self::NotLineal | Self::Empty | Self::MissingMeasure | Self::NonMonotonic => 0,
+            Self::Rejected(_) => 0,
         }
     }
 }
