@@ -2220,7 +2220,7 @@ class Geometry:
         A heterogeneous result follows ordinary ``GeometryCollection`` semantics:
         ``is_simple`` is false by convention and structural equality remains type-sensitive.
         Mixed-axis and collection exports use WKB for Arrow interchange; see
-        [Arrow & storage](../ecosystem/arrow.md).
+        [Arrow & storage](../../ecosystem/arrow.md).
 
         See Also
         --------
@@ -7194,7 +7194,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         A heterogeneous result follows ordinary ``GeometryCollection`` semantics:
         ``is_simple`` is false by convention and structural equality remains type-sensitive.
         Mixed-axis and collection exports use WKB for Arrow interchange; see
-        [Arrow & storage](../ecosystem/arrow.md).
+        [Arrow & storage](../../ecosystem/arrow.md).
 
         See Also
         --------
