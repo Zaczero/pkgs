@@ -47,6 +47,32 @@ struct ArealCells {
 }
 
 impl ArealCells {
+    fn emission_plan(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+    ) -> Result<BoundaryPlan> {
+        let (lines, points) = self.lower_dimensions(partition, topology, edges, global)?;
+        let mut plan = global.boundary_plan(
+            lines, topology, edges, partition.spans.len(), &self.faces,
+        )?;
+        try_reserve_vec(&mut plan.points, points.len())?;
+        for node in points {
+            let index = node.0 as usize;
+            let first = topology.starts[index] as usize;
+            let host = if topology.starts[index] == topology.starts[index + 1] {
+                global.component_hosts[topology.component_of[index] as usize]
+            } else {
+                // All incident spans were omitted, so their face sectors merge.
+                global.walk_faces[topology.face_of[first] as usize]
+            };
+            plan.points.push((node, plan.face_quotient[host as usize]));
+        }
+        Ok(plan)
+    }
+
     fn lower_dimensions(
         &self,
         partition: &ExactPartition<'_>,
@@ -247,6 +273,7 @@ struct GlobalFaces {
 struct BoundaryPlan {
     walks: Vec<Vec<u32>>,
     lines: Vec<u32>,
+    points: Vec<(NodeId, u32)>,
     face_quotient: Vec<u32>,
     walk_sides: Vec<Vec<[u32; 2]>>,
 }
@@ -324,6 +351,7 @@ impl GlobalFaces {
         Ok(BoundaryPlan {
             walks,
             lines,
+            points: Vec::new(),
             face_quotient,
             walk_sides,
         })
@@ -2127,6 +2155,22 @@ mod tests {
             .unwrap();
         assert!(lines.is_empty());
         assert_eq!(points, [stored_node(&partition, XY::new(6.0, 6.0)).unwrap()]);
+        let plan = cells.emission_plan(&partition, &topology, &edges, &faces).unwrap();
+        assert_eq!(plan.points, [(points[0], 0)]);
+        assert!(plan.lines.is_empty());
+        assert_eq!(plan.walks.len(), 1);
+        let items = plan.incident_items(&partition, &topology).unwrap();
+        let rounded = partition.round_incident_items(&items).unwrap();
+        let mut actual: Vec<_> = rounded.iter().map(|span| (span.start, span.end)).collect();
+        assert_eq!(actual.pop(), Some((XY::new(6.0, 6.0), XY::new(6.0, 6.0))));
+        let first = actual.iter().position(|&(start, _)| start == XY::new(0.0, 0.0)).unwrap();
+        actual.rotate_left(first);
+        assert_eq!(actual, [
+            (XY::new(0.0, 0.0), XY::new(4.0, 0.0)),
+            (XY::new(4.0, 0.0), XY::new(4.0, 4.0)),
+            (XY::new(4.0, 4.0), XY::new(0.0, 4.0)),
+            (XY::new(0.0, 4.0), XY::new(0.0, 0.0)),
+        ]);
     }
 
     #[test]
@@ -3043,6 +3087,36 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn point_left_by_omitted_spoke_keeps_its_bounded_host() {
+        let case = run(&[
+            seg(0.0, 0.0, 4.0, 0.0),
+            seg(4.0, 0.0, 4.0, 4.0),
+            seg(4.0, 4.0, 0.0, 4.0),
+            seg(0.0, 4.0, 0.0, 0.0),
+            seg(0.0, 0.0, 2.0, 2.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let point = stored_node(&partition, XY::new(2.0, 2.0)).unwrap();
+        let mut cells = ArealCells {
+            faces: vec![false; faces.count as usize],
+            spans: vec![true; partition.spans.len()],
+            nodes: vec![false; partition.recipes.len()],
+        };
+        for (index, span) in partition.spans.iter().enumerate() {
+            if span.start == point || span.end == point {
+                cells.spans[index] = false;
+            }
+        }
+        cells.nodes[point.0 as usize] = true;
+        let plan = cells.emission_plan(&partition, &topology, &edges, &faces).unwrap();
+        assert_eq!(plan.points, [(point, 1)]);
+        assert_eq!(plan.lines.len(), 4);
+        assert!(plan.walks.is_empty());
     }
 
     #[test]
