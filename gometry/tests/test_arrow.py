@@ -2,6 +2,7 @@
 extension metadata, IPC roundtrips, and decode strictness.
 """
 
+import ctypes
 import io
 import json as _json
 import math
@@ -218,6 +219,169 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
         (0.0, 0.0, 10.0, 20.0),
         (1.0, 1.0, 11.0, 21.0),
     ]
+
+
+@pytest.mark.parametrize(
+    ('wkt', 'axes', 'fields', 'depth', 'extension_name'),
+    [
+        ('MULTILINESTRING (EMPTY)', 'XY', ('x', 'y'), 2, 'geoarrow.multilinestring'),
+        ('MULTILINESTRING Z (EMPTY)', 'XYZ', ('x', 'y', 'z'), 2, 'geoarrow.multilinestring'),
+        ('MULTILINESTRING M (EMPTY)', 'XYM', ('x', 'y', 'm'), 2, 'geoarrow.multilinestring'),
+        (
+            'MULTILINESTRING ZM (EMPTY)',
+            'XYZM',
+            ('x', 'y', 'z', 'm'),
+            2,
+            'geoarrow.multilinestring',
+        ),
+        ('MULTIPOLYGON (EMPTY)', 'XY', ('x', 'y'), 3, 'geoarrow.multipolygon'),
+        ('MULTIPOLYGON Z (EMPTY)', 'XYZ', ('x', 'y', 'z'), 3, 'geoarrow.multipolygon'),
+        ('MULTIPOLYGON M (EMPTY)', 'XYM', ('x', 'y', 'm'), 3, 'geoarrow.multipolygon'),
+        (
+            'MULTIPOLYGON ZM (EMPTY)',
+            'XYZM',
+            ('x', 'y', 'z', 'm'),
+            3,
+            'geoarrow.multipolygon',
+        ),
+    ],
+    ids=[
+        'multilinestring-xy',
+        'multilinestring-xyz',
+        'multilinestring-xym',
+        'multilinestring-xyzm',
+        'multipolygon-xy',
+        'multipolygon-xyz',
+        'multipolygon-xym',
+        'multipolygon-xyzm',
+    ],
+)
+def test_explicit_empty_multipart_arrow_export_preserves_axes(
+    wkt: str,
+    axes: str,
+    fields: tuple[str, ...],
+    depth: int,
+    extension_name: str,
+) -> None:
+    """Native Arrow keeps axes and one explicit empty multipart member."""
+    geometry = gm.from_wkt(wkt)
+    values = gm.GeometryArray([geometry])
+    coordinate = pa.struct([pa.field(name, pa.float64()) for name in fields])
+    storage_type = coordinate
+    for _ in range(depth):
+        storage_type = pa.list_(storage_type)
+
+    for owner in (geometry, values):
+        arrow = owner.to_arrow()
+        assert arrow.type.extension_name == extension_name
+        assert arrow.type.storage_type == storage_type
+        assert arrow.storage.to_pylist() == [[[]]]
+        restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+        assert restored.to_wkt() == [geometry.to_wkt()]
+        assert restored[0].coordinate_axes == axes
+        assert len(restored[0]) == 1
+
+        # PyArrow's low-level import consumes the same public C schema and array
+        # capsules that a foreign Arrow consumer receives.
+        schema_capsule = owner.__arrow_c_schema__()
+        _, array_capsule = owner.__arrow_c_array__()
+        get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
+        get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+        get_pointer.restype = ctypes.c_void_p
+        schema_pointer = get_pointer(schema_capsule, b'arrow_schema')
+        array_pointer = get_pointer(array_capsule, b'arrow_array')
+        c_array = pa.Array._import_from_c(array_pointer, schema_pointer)
+        assert c_array.type.extension_name == extension_name
+        assert c_array.type.storage_type == storage_type
+
+        class ArrayOnly:
+            def __init__(self, source: object) -> None:
+                self.source = source
+
+            def __arrow_c_array__(self, requested_schema: object | None = None) -> object:
+                return self.source.__arrow_c_array__(requested_schema)  # type: ignore[attr-defined]
+
+        class StreamOnly:
+            def __init__(self, source: object) -> None:
+                self.source = source
+
+            def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+                return self.source.__arrow_c_stream__(requested_schema)  # type: ignore[attr-defined]
+
+        c_restored = cast('gm.GeometryArray', gm.from_arrow(ArrayOnly(owner)))
+        assert c_restored.to_wkt() == [geometry.to_wkt()]
+        assert c_restored[0].coordinate_axes == axes
+        stream_restored = cast('gm.GeometryArray', gm.from_arrow(StreamOnly(owner)))
+        assert stream_restored.to_wkt() == [geometry.to_wkt()]
+        assert stream_restored[0].coordinate_axes == axes
+
+
+def test_explicit_empty_multipart_arrow_controls_preserve_other_contracts() -> None:
+    """Typed empties, missing rows, nonempty members, and frames stay distinct."""
+    for wkt, axes in (
+        ('MULTILINESTRING Z EMPTY', 'XYZ'),
+        ('MULTIPOLYGON ZM EMPTY', 'XYZM'),
+    ):
+        geometry = gm.from_wkt(wkt)
+        arrow = geometry.to_arrow()
+        assert arrow.type.extension_name == 'geoarrow.wkb'
+        restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+        assert restored.to_wkt() == [wkt]
+        assert restored[0].coordinate_axes == axes
+        assert len(restored[0]) == 0
+
+    geometry = gm.from_wkt('MULTILINESTRING ZM (EMPTY)')
+    missing = gm.GeometryArray([geometry, None])
+    restored = cast('gm.GeometryArray', gm.from_arrow(missing.to_arrow()))
+    assert restored.is_missing.tolist() == [False, True]
+    assert restored.to_wkt() == [geometry.to_wkt(), None]
+    assert restored[0].coordinate_axes == 'XYZM'
+
+    mixed = gm.from_wkt(
+        'MULTIPOLYGON ZM '
+        ' (EMPTY, ((0 0 1 2, 1 0 1 2, 0 1 1 2, 0 0 1 2)))'
+    )
+    mixed_arrow = mixed.to_arrow()
+    assert mixed_arrow.type.storage_type == pa.list_(
+        pa.list_(
+            pa.list_(
+                pa.struct([
+                    pa.field('x', pa.float64()),
+                    pa.field('y', pa.float64()),
+                    pa.field('z', pa.float64()),
+                    pa.field('m', pa.float64()),
+                ])
+            )
+        )
+    )
+    mixed_restored = cast('gm.GeometryArray', gm.from_arrow(mixed_arrow))
+    assert mixed_restored.to_wkt() == [mixed.to_wkt()]
+    assert mixed_restored[0].coordinate_axes == 'XYZM'
+    assert len(mixed_restored[0]) == 2
+
+    for wkts, axes in (
+        (
+            ('MULTILINESTRING Z (EMPTY)', 'MULTILINESTRING M (EMPTY)'),
+            ('XYZ', 'XYM'),
+        ),
+        (
+            ('MULTIPOLYGON Z (EMPTY)', 'MULTIPOLYGON ZM (EMPTY)'),
+            ('XYZ', 'XYZM'),
+        ),
+    ):
+        mixed_axes = gm.GeometryArray([gm.from_wkt(wkt) for wkt in wkts])
+        mixed_axes_arrow = mixed_axes.to_arrow()
+        assert mixed_axes_arrow.type.extension_name == 'geoarrow.wkb'
+        mixed_axes_restored = cast('gm.GeometryArray', gm.from_arrow(mixed_axes_arrow))
+        assert mixed_axes_restored.to_wkt() == list(wkts)
+        assert [value.coordinate_axes for value in mixed_axes_restored] == list(axes)
+
+    framed = gm.from_wkt('MULTILINESTRING ZM (EMPTY)', crs=4326, epoch=2020.0)
+    framed_restored = cast('gm.GeometryArray', gm.from_arrow(framed.to_arrow()))
+    assert framed_restored.to_wkt(drop_epoch=True) == [framed.to_wkt(drop_epoch=True)]
+    assert framed_restored[0].coordinate_axes == 'XYZM'
+    assert framed_restored.crs == 'EPSG:4326'
+    assert framed_restored.epoch == 2020.0
 
 
 def test_to_arrow_forced_wkb_encoding_roundtrips() -> None:

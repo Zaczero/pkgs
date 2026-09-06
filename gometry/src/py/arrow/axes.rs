@@ -13,11 +13,16 @@ pub(crate) fn accumulate_geometry_axes(shape: &Shape, axes: &mut Option<Coordina
         Shape::Point(point) => fold(axes, CoordinateAxes::from_point(*point)),
         Shape::MultiPoint(coords) => fold(axes, coords.axes()),
         Shape::LineString(coords) => fold(axes, coords.axes()),
-        Shape::MultiLineString(lines) => lines.iter().all(|coords| fold(axes, coords.axes())),
+        Shape::MultiLineString(lines) => {
+            fold(axes, lines.axes()) && lines.iter().all(|coords| fold(axes, coords.axes()))
+        },
         Shape::Polygon(polygon) => polygon.rings().all(|coords| fold(axes, coords.axes())),
-        Shape::MultiPolygon(polygons) => polygons
-            .iter()
-            .all(|polygon| polygon.rings().all(|coords| fold(axes, coords.axes()))),
+        Shape::MultiPolygon(polygons) => {
+            fold(axes, polygons.axes())
+                && polygons
+                    .iter()
+                    .all(|polygon| polygon.rings().all(|coords| fold(axes, coords.axes())))
+        },
         Shape::GeometryCollection(geometries) => geometries
             .iter()
             .all(|geometry| accumulate_geometry_axes(geometry, axes)),
