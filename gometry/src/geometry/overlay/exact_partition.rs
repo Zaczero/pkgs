@@ -2,8 +2,9 @@
 //!
 //! Borrows unique undirected representatives and existing CSR provenance.
 //! Constructed nodes keep one source-parameter recipe after equal-param union;
-//! stored nodes keep `PointKey`. Arrangement, overlay, and checked embedding
-//! are later cuts.
+//! stored nodes keep `PointKey`. Exact cyclic walks and visibility links define
+//! global faces; stored-ring winding selects cells and an emission plan.
+//! Emission checks rounded incidence, cyclic order, and global-face identity.
 //!
 //! Candidates come from the shared fallible sweep over unique segments plus
 //! extra isolated points as zero-length items. Contact-derived cuts, compact
