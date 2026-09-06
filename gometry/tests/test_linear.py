@@ -394,6 +394,22 @@ def test_measured_lrs_rejects_non_monotone_m_and_handles_plateaus() -> None:
     assert gm.equals(plateau.line_interpolate(0.0, basis='m'), gm.Point(0, 0))
 
 
+def test_measured_lrs_keeps_zero_xy_vertices_multipart_windows_and_first_wins() -> None:
+    zero_xy = gm.from_wkt('LINESTRING ZM (0 0 1 0, 0 0 2 1, 10 0 3 2)')
+    assert zero_xy.line_interpolate(1.0, basis='m').to_wkt() == 'POINT ZM (0 0 2 1)'
+    assert zero_xy.line_substring(1.0, 1.0, basis='m').to_wkt() == 'POINT ZM (0 0 2 1)'
+    assert zero_xy.line_locate(gm.Point(0, 0), basis='m') == 0.0
+
+    multipart = gm.from_wkt('MULTILINESTRING M ((0 0 0, 10 0 10), (20 0 20, 30 0 30))')
+    assert multipart.line_interpolate(15.0, basis='m').to_wkt() == 'POINT M (15 0 15)'
+    bad_boundary = gm.from_wkt('MULTILINESTRING M ((0 0 0, 10 0 10), (20 0 9, 30 0 30))')
+    with pytest.raises(ValueError, match='monotonic'):
+        bad_boundary.line_interpolate(10.0, basis='m')
+
+    overlapping = gm.from_wkt('LINESTRING M (0 0 0, 10 0 10, 0 0 20)')
+    assert overlapping.line_locate(gm.Point(5, 1), basis='m') == pytest.approx(5.0)
+
+
 def test_linear_referencing_is_crs_aware_with_a_planar_escape() -> None:
     line = gm.LineString([(0, 0), (1, 0)], crs=4326)
     assert line.line_interpolate(50000).x == pytest.approx(0.4492, abs=0.001)

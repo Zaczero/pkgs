@@ -12,7 +12,8 @@ use crate::error::Result;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
     DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, LineIndex, LineIndexSlot,
-    PlanarMetric, PointBatchTester, SegmentMetric, bounds_to_shape,
+    MeasuredLineIndex, MeasuredLineIndexSlot, PlanarMetric, PointBatchTester, SegmentMetric,
+    bounds_to_shape,
 };
 
 /// One-frame sidecar for state that depends on the coordinate frame rather
@@ -231,6 +232,7 @@ struct MetricPlan {
     distance: OnceLock<Box<DistanceParts>>,
     distance_3d: OnceLock<Box<crate::geometry::Distance3dParts>>,
     line_index: OnceLock<Box<LineIndexSlot>>,
+    measured_line_index: OnceLock<Box<MeasuredLineIndexSlot>>,
 }
 
 /// One reusable execution plan for one immutable geometry.
@@ -410,6 +412,13 @@ impl PreparedPlan {
             .get()
     }
 
+    pub(crate) fn measured_line_index(&self) -> Result<&MeasuredLineIndex> {
+        self.metric()
+            .measured_line_index
+            .get_or_init(|| Box::new(MeasuredLineIndexSlot::build(self.shape())))
+            .get()
+    }
+
     pub(crate) fn geodesic_line_index(
         &self,
         frame_cache: &FrameDependentCaches,
@@ -527,7 +536,10 @@ impl HeapSize for TopologyPlan {
 
 impl HeapSize for MetricPlan {
     fn heap_bytes(&self) -> usize {
-        self.distance.heap_bytes() + self.distance_3d.heap_bytes() + self.line_index.heap_bytes()
+        self.distance.heap_bytes()
+            + self.distance_3d.heap_bytes()
+            + self.line_index.heap_bytes()
+            + self.measured_line_index.heap_bytes()
     }
 }
 
@@ -625,6 +637,7 @@ mod frame_cache_tests {
 
     use super::*;
     use crate::geometry::{CoordSeq, LineSeq};
+    use crate::test_support::allocation_count;
 
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
@@ -693,6 +706,39 @@ mod frame_cache_tests {
             .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
             .expect("cached line index");
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn repeated_measured_lrs_reuses_one_column_product() {
+        let shape = PreparedPlan::new(Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(
+                vec![0.0, 1.0, 2.0],
+                vec![0.0, 1.0, 0.0],
+                None,
+                Some(vec![0.0, 1.0, 2.0]),
+            ))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ));
+        let first = shape
+            .measured_line_index()
+            .expect("measured line index") as *const _;
+        let second = shape
+            .measured_line_index()
+            .expect("cached measured line index") as *const _;
+        assert_eq!(first, second);
+        assert!(shape.retained_heap_bytes() > 0);
+        let (_, interpolation_allocations) = allocation_count(|| {
+            shape
+                .line_interpolate_point_m_with(1.5, &PlanarMetric)
+                .expect("measured interpolation")
+        });
+        let (_, locate_allocations) = allocation_count(|| {
+            shape
+                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+                .expect("measured locate")
+        });
+        assert_eq!(interpolation_allocations, 0);
+        assert_eq!(locate_allocations, 0);
     }
 
     #[test]

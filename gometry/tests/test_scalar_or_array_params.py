@@ -312,6 +312,26 @@ def test_line_substring_m_basis_accepts_per_element_measures() -> None:
     assert subs[1].length == pytest.approx(5.0)
 
 
+def test_measured_lrs_preserves_selected_alias_rows() -> None:
+    lines = gm.GeometryArray([
+        gm.from_wkt('LINESTRING M (0 0 0, 10 0 100)'),
+        gm.from_wkt('LINESTRING M (0 10 0, 10 10 200)'),
+    ])
+    selected = lines[[1, 1, 0]]
+    points = selected.line_interpolate(100.0, basis='m')
+    assert [point.to_wkt() for point in points] == [
+        'POINT M (5 10 100)',
+        'POINT M (5 10 100)',
+        'POINT M (10 0 100)',
+    ]
+    substrings = selected.line_substring(50.0, 150.0, basis='m')
+    assert [piece.to_wkt() for piece in substrings] == [
+        'LINESTRING M (2.5 10 50, 7.5 10 150)',
+        'LINESTRING M (2.5 10 50, 7.5 10 150)',
+        'LINESTRING M (5 0 50, 10 0 100)',
+    ]
+
+
 def test_interpolate_m_accepts_per_element_range() -> None:
     """``interpolate_m`` takes per-row start/end measures."""
     lines = _three_lines()

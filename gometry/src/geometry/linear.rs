@@ -8,7 +8,7 @@
 
 use super::linear_3d;
 use crate::Finite;
-use crate::error::Result;
+use crate::HeapSize;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
     HasZ, LineIndex, LineSeq, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan,
@@ -296,25 +296,6 @@ impl Shape {
         })
     }
 
-    /// Vertices of this geometry's linework, validated to carry monotonic
-    /// non-decreasing M ordinates (the precondition for M linear referencing).
-    fn measured_vertices(&self) -> Result<Vec<Point>> {
-        let vertices: Vec<Point> = self.linework()?.into_iter().flatten().collect();
-        if vertices.is_empty() {
-            return Err(GeometryErrorKind::EmptyLinework.into());
-        }
-        if !vertices.iter().all(|vertex| vertex.m().is_some()) {
-            return Err(GeometryErrorKind::MissingMeasure.into());
-        }
-        if vertices
-            .array_windows::<2>()
-            .any(|[start, end]| end.m().unwrap_or(0.0) < start.m().unwrap_or(0.0))
-        {
-            return Err(GeometryErrorKind::NonMonotonicMeasure.into());
-        }
-        Ok(vertices)
-    }
-
     /// Point at measure `m` along this geometry's M ordinate. `m` is clamped to
     /// the `[m_first, m_last]` range.
     pub fn line_interpolate_point_m(&self, m: f64) -> Result<Self> {
@@ -327,32 +308,8 @@ impl Shape {
         metric: &M,
     ) -> Result<Self> {
         let m = Finite::try_new("m", m)?.get();
-        let vertices = self.measured_vertices()?;
-        let target = m.clamp(
-            vertices[0].m().unwrap_or(0.0),
-            vertices[vertices.len() - 1].m().unwrap_or(0.0),
-        );
-        for [start, end] in vertices.array_windows::<2>() {
-            let (start_m, end_m) = (start.m().unwrap_or(0.0), end.m().unwrap_or(0.0));
-            if target <= end_m {
-                #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
-                if target == start_m {
-                    return Ok(Self::Point(*start));
-                }
-                #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
-                if target == end_m {
-                    return Ok(Self::Point(*end));
-                }
-                let span = end_m - start_m;
-                let fraction = if span == 0.0 {
-                    0.0
-                } else {
-                    (target - start_m) / span
-                };
-                return Ok(Self::Point(metric.interpolate(*start, *end, fraction)));
-            }
-        }
-        Ok(Self::Point(vertices[vertices.len() - 1]))
+        let index = MeasuredLineIndex::build(self)?;
+        Ok(Self::Point(index.interpolate_finite(m, metric)))
     }
 
     /// Interpolated M ordinate at the location on this geometry nearest
@@ -366,19 +323,8 @@ impl Shape {
         point: Point,
         metric: &M,
     ) -> Result<f64> {
-        let vertices = self.measured_vertices()?;
-        let mut best_distance = f64::INFINITY;
-        let mut best_measure = vertices[0].m().unwrap_or(0.0);
-        for [start, end] in vertices.array_windows::<2>() {
-            let length = metric.length(*start, *end);
-            let (distance, measure) =
-                metric.locate_with_measure(point, *start, *end, length, best_distance)?;
-            if distance < best_distance {
-                best_distance = distance;
-                best_measure = measure;
-            }
-        }
-        Ok(best_measure)
+        let index = MeasuredLineIndex::build(self)?;
+        index.locate(point, metric)
     }
 
     /// Sub-line between measures `m0` and `m1` along this geometry's M
@@ -392,25 +338,180 @@ impl Shape {
         range: MeasureRange,
         metric: &M,
     ) -> Result<Self> {
+        let index = MeasuredLineIndex::build(self)?;
+        index.substring(range, metric)
+    }
+}
+
+impl PreparedPlan {
+    pub(crate) fn line_interpolate_point_m_with<M: SegmentMetric>(
+        &self,
+        m: f64,
+        metric: &M,
+    ) -> Result<Shape> {
+        let m = Finite::try_new("m", m)?.get();
+        Ok(Shape::Point(
+            self.measured_line_index()?.interpolate_finite(m, metric),
+        ))
+    }
+
+    pub(crate) fn line_locate_point_m_with<M: SegmentMetric>(
+        &self,
+        point: Point,
+        metric: &M,
+    ) -> Result<f64> {
+        self.measured_line_index()?.locate(point, metric)
+    }
+
+    pub(crate) fn line_substring_m_with<M: SegmentMetric>(
+        &self,
+        range: MeasureRange,
+        metric: &M,
+    ) -> Result<Shape> {
+        self.measured_line_index()?.substring(range, metric)
+    }
+}
+
+/// Immutable M-linear-referencing product for one lineal shape.
+///
+/// The product retains row/part views over the source columns rather than
+/// gathering an AoS point buffer. Iteration deliberately crosses multipart
+/// boundaries, matching the flattened vertex walk used by the public M
+/// operations.
+pub(crate) struct MeasuredLineIndex {
+    parts: Box<[CoordSeq]>,
+    first: Point,
+    last: Point,
+}
+
+impl MeasuredLineIndex {
+    pub(crate) fn build(shape: &Shape) -> Result<Self> {
+        let lines = shape.linework()?;
+        let parts = lines
+            .iter()
+            .map(|line| (*line).clone())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let mut first = None;
+        let mut last = None;
+        let mut previous: Option<Point> = None;
+        for part in &parts {
+            for point in part.iter() {
+                if point.m().is_none() {
+                    return Err(GeometryErrorKind::MissingMeasure.into());
+                }
+                if let Some(previous) = previous
+                    && point.m().unwrap_or(0.0) < previous.m().unwrap_or(0.0)
+                {
+                    return Err(GeometryErrorKind::NonMonotonicMeasure.into());
+                }
+                first.get_or_insert(point);
+                last = Some(point);
+                previous = Some(point);
+            }
+        }
+        let first = first.ok_or(GeometryErrorKind::EmptyLinework)?;
+        let last = last.expect("a non-empty measured line has a last vertex");
+        Ok(Self { parts, first, last })
+    }
+
+    fn for_each_window(&self, mut visit: impl FnMut(Point, Point) -> bool) {
+        let mut previous = None;
+        for part in &self.parts {
+            for point in part.iter() {
+                if let Some(start) = previous
+                    && !visit(start, point)
+                {
+                    return;
+                }
+                previous = Some(point);
+            }
+        }
+    }
+
+    fn interpolate_finite<M: SegmentMetric>(&self, target: f64, metric: &M) -> Point {
+        let target = target.clamp(
+            self.first.m().unwrap_or(0.0),
+            self.last.m().unwrap_or(0.0),
+        );
+        let mut result = None;
+        self.for_each_window(|start, end| {
+            let (start_m, end_m) = (start.m().unwrap_or(0.0), end.m().unwrap_or(0.0));
+            if target > end_m {
+                return true;
+            }
+            #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
+            if target == start_m {
+                result = Some(start);
+                return false;
+            }
+            #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
+            if target == end_m {
+                result = Some(end);
+                return false;
+            }
+            let span = end_m - start_m;
+            let fraction = if span == 0.0 {
+                0.0
+            } else {
+                (target - start_m) / span
+            };
+            result = Some(metric.interpolate(start, end, fraction));
+            false
+        });
+        result.unwrap_or(self.last)
+    }
+
+    fn locate<M: SegmentMetric>(&self, point: Point, metric: &M) -> Result<f64> {
+        let mut best_distance = f64::INFINITY;
+        let mut best_measure = self.first.m().unwrap_or(0.0);
+        let mut previous = None;
+        for part in &self.parts {
+            for end in part.iter() {
+                let Some(start) = previous else {
+                    previous = Some(end);
+                    continue;
+                };
+                let length = if M::LOCATE_WITH_MEASURE_NEEDS_LENGTH {
+                    metric.length(start, end)
+                } else {
+                    0.0
+                };
+                let (distance, measure) =
+                    metric.locate_with_measure(point, start, end, length, best_distance)?;
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_measure = measure;
+                }
+                previous = Some(end);
+            }
+        }
+        Ok(best_measure)
+    }
+
+    fn substring<M: SegmentMetric>(
+        &self,
+        range: MeasureRange,
+        metric: &M,
+    ) -> Result<Shape> {
         let (m0, m1) = (range.start(), range.end());
-        let vertices = self.measured_vertices()?;
         let (lo, hi) = (
-            vertices[0].m().unwrap_or(0.0),
-            vertices[vertices.len() - 1].m().unwrap_or(0.0),
+            self.first.m().unwrap_or(0.0),
+            self.last.m().unwrap_or(0.0),
         );
         let start = m0.clamp(lo, hi);
         let end = m1.clamp(lo, hi);
         if start.total_cmp(&end) == Ordering::Equal {
-            return self.line_interpolate_point_m_with(start, metric);
+            return Ok(Shape::Point(self.interpolate_finite(start, metric)));
         }
         let mut result = Vec::new();
-        for [segment_start, segment_end] in vertices.array_windows::<2>() {
+        self.for_each_window(|segment_start, segment_end| {
             let (start_m, end_m) = (
                 segment_start.m().unwrap_or(0.0),
                 segment_end.m().unwrap_or(0.0),
             );
             if end_m < start || start_m > end {
-                continue;
+                return true;
             }
             let span = end_m - start_m;
             let fraction = |measure: f64| {
@@ -423,21 +524,76 @@ impl Shape {
             #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
             let at = |measure: f64| {
                 if measure == start_m {
-                    *segment_start
+                    segment_start
                 } else if measure == end_m {
-                    *segment_end
+                    segment_end
                 } else {
-                    metric.interpolate(*segment_start, *segment_end, fraction(measure))
+                    metric.interpolate(segment_start, segment_end, fraction(measure))
                 }
             };
             push_distinct_point(&mut result, at(start.max(start_m)));
             push_distinct_point(&mut result, at(end.min(end_m)));
-        }
+            true
+        });
         Ok(match result.len() {
-            0 => self.line_interpolate_point_m_with(start, metric)?,
-            1 => Self::Point(result[0]),
-            _ => Self::LineString(LineSeq::from_proven(CoordSeq::from(result))),
+            0 => Shape::Point(self.interpolate_finite(start, metric)),
+            1 => Shape::Point(result[0]),
+            _ => Shape::LineString(LineSeq::from_proven(CoordSeq::from(result))),
         })
+    }
+}
+
+/// Cached admission result for the measured line product.
+pub(crate) enum MeasuredLineIndexSlot {
+    Index(MeasuredLineIndex),
+    NotLineal,
+    Empty,
+    MissingMeasure,
+    NonMonotonic,
+    Invalid(Box<str>),
+}
+
+impl MeasuredLineIndexSlot {
+    pub(crate) fn build(shape: &Shape) -> Self {
+        match MeasuredLineIndex::build(shape) {
+            Ok(index) => Self::Index(index),
+            Err(error) => match error.kind() {
+                ErrorKind::Geometry(GeometryErrorKind::EmptyLinework) => Self::Empty,
+                ErrorKind::Geometry(GeometryErrorKind::LineStringRequired) => Self::NotLineal,
+                ErrorKind::Geometry(GeometryErrorKind::MissingMeasure) => Self::MissingMeasure,
+                ErrorKind::Geometry(GeometryErrorKind::NonMonotonicMeasure) => {
+                    Self::NonMonotonic
+                },
+                other => Self::Invalid(format!("{other}").into()),
+            },
+        }
+    }
+
+    pub(crate) fn get(&self) -> Result<&MeasuredLineIndex> {
+        match self {
+            Self::Index(index) => Ok(index),
+            Self::NotLineal => Err(GeometryErrorKind::LineStringRequired.into()),
+            Self::Empty => Err(GeometryErrorKind::EmptyLinework.into()),
+            Self::MissingMeasure => Err(GeometryErrorKind::MissingMeasure.into()),
+            Self::NonMonotonic => Err(GeometryErrorKind::NonMonotonicMeasure.into()),
+            Self::Invalid(message) => Err(GeometryErrorKind::message(message.as_ref())),
+        }
+    }
+}
+
+impl HeapSize for MeasuredLineIndex {
+    fn heap_bytes(&self) -> usize {
+        self.parts.heap_bytes()
+    }
+}
+
+impl HeapSize for MeasuredLineIndexSlot {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Index(index) => index.heap_bytes(),
+            Self::Invalid(message) => message.len(),
+            Self::NotLineal | Self::Empty | Self::MissingMeasure | Self::NonMonotonic => 0,
+        }
     }
 }
 

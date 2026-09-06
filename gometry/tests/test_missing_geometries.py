@@ -552,6 +552,30 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     located_m = measured_rows.line_locate(gm.Point(5.0, 0.0), basis='m')
     assert located_m[0] == pytest.approx(50.0)
     assert math.isnan(located_m[1])
+    interpolated_m = measured_rows.line_interpolate(50.0, basis='m')
+    assert interpolated_m[0].to_wkt() == 'POINT M (5 0 50)'
+    assert interpolated_m[1] is None
+    substrings_m = measured_rows.line_substring(25.0, 75.0, basis='m')
+    assert substrings_m[0].to_wkt() == 'LINESTRING M (2.5 0 25, 7.5 0 75)'
+    assert substrings_m[1] is None
+
+    invalid_m = gm.GeometryArray([
+        measured,
+        gm.from_wkt('LINESTRING M (0 0 0, 5 0 50, 2 0 20)'),
+        gm.LineString([(0.0, 0.0), (10.0, 0.0)]),
+    ])
+    invalid_points = invalid_m.line_interpolate(25.0, basis='m')
+    assert invalid_points[0].to_wkt() == 'POINT M (2.5 0 25)'
+    assert invalid_points[1].is_empty
+    assert invalid_points[2].is_empty
+    invalid_locations = invalid_m.line_locate(gm.Point(2.5, 0.0), basis='m')
+    assert invalid_locations[0] == pytest.approx(25.0)
+    assert math.isnan(invalid_locations[1])
+    assert math.isnan(invalid_locations[2])
+    invalid_substrings = invalid_m.line_substring(25.0, 75.0, basis='m')
+    assert invalid_substrings[0].to_wkt() == 'LINESTRING M (2.5 0 25, 7.5 0 75)'
+    assert invalid_substrings[1].is_empty
+    assert invalid_substrings[2].is_empty
 
 
 def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:

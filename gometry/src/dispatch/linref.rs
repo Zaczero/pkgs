@@ -16,7 +16,7 @@ use crate::{
     DistanceUnit, GeometryArrayStorage, InterpolatePlan, PyGeometry, PyGeometryArray,
     crs_line_locate_point, geometry_array_line_locate_point_geometry,
     line_interpolate_points_shape, line_locate_shape, line_locate_shape_m,
-    line_locate_shape_m_value, require_locate_point, require_locate_points,
+    require_locate_point, require_locate_points,
 };
 
 fn line_locate_geometry_points(
@@ -281,14 +281,14 @@ pub(crate) fn line_locate_point_m_input(
                 crate::resolve_line_metric(array.crs_str(), None, false, MetricOp::LineLocate)?;
             let array = array.clone();
             detach_collect_f64(py, move || {
-                array
-                    .row_operation()
-                    .rows_with_missing(|| f64::NAN)
+                let mut rows = array.row_operation();
+                rows.rows_with_missing(|| f64::NAN)
                     .map(|row| match row {
                         ArrayRow::Missing { value, .. } => Ok(value),
-                        ArrayRow::Present(row) => row.row().with_shape(|shape| {
-                            degrade_linref_float(line_locate_shape_m_value(&model, shape, query))
-                        }),
+                        ArrayRow::Present(row) => {
+                            let line = rows.prepared(row);
+                            degrade_linref_float(line_locate_shape_m(&model, &line, query))
+                        },
                     })
                     .collect_rows()
             })
@@ -301,18 +301,17 @@ pub(crate) fn line_locate_point_m_input(
             let array = array.clone();
             let points = points.clone();
             detach_collect_f64(py, move || {
-                array
-                    .row_operation()
-                    .rows_with_missing(|| f64::NAN)
-                    .zip(points.row_operation().rows_with_missing(|| f64::NAN))
+                let mut rows = array.row_operation();
+                let point_rows = points.row_operation();
+                rows.rows_with_missing(|| f64::NAN)
+                    .zip(point_rows.rows_with_missing(|| f64::NAN))
                     .map(|(line, point)| match (line, point) {
                         (ArrayRow::Present(line), ArrayRow::Present(point)) => {
                             let crate::array::ShapeRow::Point(query) = point.row() else {
                                 return Ok(f64::NAN);
                             };
-                            line.row().with_shape(|line| {
-                                degrade_linref_float(line_locate_shape_m_value(&model, line, query))
-                            })
+                            let line = rows.prepared(line);
+                            degrade_linref_float(line_locate_shape_m(&model, &line, query))
                         },
                         _ => Ok(f64::NAN),
                     })

@@ -30,6 +30,10 @@ pub(crate) trait SegmentMetric {
     /// planar projection is cheaper
     /// than the ordering would be).
     const ORDERED_LOCATE: bool = false;
+    /// Whether `locate_with_measure` needs the segment length argument.
+    /// Planar M interpolation keeps the certified projection ratio and does
+    /// not use the length; geodesic refinement needs its along-track scale.
+    const LOCATE_WITH_MEASURE_NEEDS_LENGTH: bool = true;
 
     /// Cheap lower bound on this segment's locate distance (`0.0` when the
     /// metric has none). Sound: never exceeds the true distance.
@@ -79,6 +83,8 @@ pub(crate) trait SegmentMetric {
 pub(crate) struct PlanarMetric;
 
 impl SegmentMetric for PlanarMetric {
+    const LOCATE_WITH_MEASURE_NEEDS_LENGTH: bool = false;
+
     fn length(&self, start: Point, end: Point) -> f64 {
         // The guarded sqrt form: a libm `hypot` per segment is the dominant
         // cost of the cold prefix build (38% of `line_interpolate_point` in

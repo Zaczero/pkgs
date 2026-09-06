@@ -144,7 +144,7 @@ use geodesic_bvh::{
     GeodesicFacetBvh, GeodesicWitnessCandidate, geodesic_witness_is_better, witness_refine_limit,
 };
 pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric};
-pub(crate) use linear::MeasureRange;
+pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
 use linear::{normalize_line_distance, push_distinct_point};
 pub(crate) use ordinates::{
     carry_direct_point_ordinates, carry_direct_points_ordinates, carry_overlay_ordinates,

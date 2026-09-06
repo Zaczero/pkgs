@@ -159,7 +159,7 @@ use py::support::{
     is_concrete_batch, is_mapping_like, is_py_bytes_or_bytearray, is_wgs84_family_crs,
     is_wkt_string, line_interpolate_coordseq, line_interpolate_points_coordseq,
     line_interpolate_points_shape, line_interpolate_shape, line_interpolate_shape_m,
-    line_locate_coordseq, line_locate_shape, line_locate_shape_m, line_locate_shape_m_value,
+    line_locate_coordseq, line_locate_shape, line_locate_shape_m,
     line_substring_coordseq, line_substring_shape, line_substring_shape_m, mapping_as_dict,
     metric_concave_hull, metric_constructive_shape, metric_constructive_shape_budgeted,
     metric_interpolate_m, metric_minimum_bounding_circle, metric_minimum_bounding_radius,

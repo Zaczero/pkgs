@@ -8,7 +8,7 @@ use crate::broadcast::{
     rows_err,
 };
 use crate::dispatch::metric::{CachelessRowContext, Lane, LinearReferenceRow, MetricScratch};
-use crate::dispatch::operation::Operation;
+use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::packed::{
     PackedUnary, try_unary_packed_array, try_unary_packed_bool, try_unary_packed_bounds,
     try_unary_packed_f64,
@@ -97,7 +97,9 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
         | Operation::IsSimple
         | Operation::IsRing
         | Operation::Bounds
-        | Operation::ClipByRect => UnaryRowMode::Prepared,
+        | Operation::ClipByRect
+        | Operation::Metric(MetricOp::LineInterpolate)
+        | Operation::Metric(MetricOp::LineSubstring) => UnaryRowMode::Prepared,
         _ => UnaryRowMode::ShapeOnly,
     }
 }
