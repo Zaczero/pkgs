@@ -3,7 +3,7 @@ use crate::geometry::distance::geodesic_scratch;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
 use crate::geometry::{
     GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
-    GeodesicWitnessCandidate, Point, Segment, geodesic_witness_is_better, witness_refine_limit,
+    GeodesicWitnessCandidate, Point, geodesic_witness_is_better, witness_refine_limit,
 };
 pub(crate) const GEODESIC_CAP_GROUP: usize = 16;
 
@@ -24,7 +24,6 @@ crate::heapless!(CapGroup);
 pub(crate) struct GeodesicSweepCapsAccum {
     anchor: Option<Point>,
     global_reach: f64,
-    lengths: Vec<f64>,
     groups: Vec<CapGroup>,
     group_anchor: Option<Point>,
     group_reach: f64,
@@ -36,7 +35,6 @@ impl GeodesicSweepCapsAccum {
         Self {
             anchor: None,
             global_reach: 0.0,
-            lengths: Vec::with_capacity(segment_count),
             groups: Vec::with_capacity(segment_count.div_ceil(GEODESIC_CAP_GROUP)),
             group_anchor: None,
             group_reach: 0.0,
@@ -59,7 +57,6 @@ impl GeodesicSweepCapsAccum {
         let group_anchor = self.group_anchor.expect("group anchor set with segment");
         let from_group = metric.segment_length(group_anchor, segment.start);
         self.group_reach = self.group_reach.max(from_group + segment.length);
-        self.lengths.push(segment.length);
         self.group_len += 1;
         if self.group_len == GEODESIC_CAP_GROUP {
             self.flush_group(metric);
@@ -96,7 +93,6 @@ impl GeodesicSweepCapsAccum {
         Some(GeodesicSweepCaps {
             anchor,
             global_reach,
-            lengths: self.lengths,
             groups: self.groups,
         })
     }
@@ -105,7 +101,6 @@ impl GeodesicSweepCapsAccum {
 pub(in crate::geometry) struct GeodesicSweepCaps {
     pub(in crate::geometry) anchor: Point,
     pub(in crate::geometry) global_reach: f64,
-    pub(in crate::geometry) lengths: Vec<f64>,
     pub(in crate::geometry) groups: Vec<CapGroup>,
 }
 
@@ -113,7 +108,6 @@ pub(in crate::geometry) struct GeodesicSweepCaps {
 pub(crate) struct GeodesicSweepCapsView<'a> {
     pub(crate) anchor: Point,
     pub(crate) global_reach: f64,
-    pub(crate) lengths: &'a [f64],
     pub(crate) groups: &'a [CapGroup],
 }
 
@@ -122,74 +116,30 @@ impl GeodesicSweepCaps {
         GeodesicSweepCapsView {
             anchor: self.anchor,
             global_reach: self.global_reach,
-            lengths: &self.lengths,
             groups: &self.groups,
         }
     }
 }
 
-pub(crate) trait GeodesicSweepEdge {
-    fn start(&self) -> Point;
-    fn end(&self) -> Point;
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the metric is consumed only through its trait contract; a named generic would not clarify this object-safe API"
-    )]
-    fn length(&self, metric: &impl GeodesicMetric) -> f64;
-}
-
-impl GeodesicSweepEdge for Segment {
-    fn start(&self) -> Point {
-        self.start.point()
-    }
-
-    fn end(&self) -> Point {
-        self.end.point()
-    }
-
-    fn length(&self, metric: &impl GeodesicMetric) -> f64 {
-        metric.segment_length(self.start(), self.end())
-    }
-}
-
-impl GeodesicSweepEdge for GeodesicSegment {
-    fn start(&self) -> Point {
-        self.start
-    }
-
-    fn end(&self) -> Point {
-        self.end
-    }
-
-    fn length(&self, _metric: &impl GeodesicMetric) -> f64 {
-        self.length
-    }
-}
-
-pub(crate) fn geodesic_sweep_caps_into<'a, E: GeodesicSweepEdge>(
-    edges: &[E],
+pub(crate) fn geodesic_sweep_caps_into<'a>(
+    segments: &[GeodesicSegment],
     point_only: &[Point],
     metric: &impl GeodesicMetric,
-    lengths: &'a mut Vec<f64>,
     groups: &'a mut Vec<CapGroup>,
 ) -> Option<GeodesicSweepCapsView<'a>> {
-    lengths.clear();
     groups.clear();
-    let anchor = edges
+    let anchor = segments
         .first()
-        .map(GeodesicSweepEdge::start)
+        .map(|segment| segment.start)
         .or_else(|| point_only.first().copied())?;
     let mut global_reach = 0.0_f64;
-    lengths.reserve(edges.len());
-    groups.reserve(edges.len().div_ceil(GEODESIC_CAP_GROUP));
-    for chunk in edges.chunks(GEODESIC_CAP_GROUP) {
-        let group_anchor = chunk[0].start();
+    groups.reserve(segments.len().div_ceil(GEODESIC_CAP_GROUP));
+    for chunk in segments.chunks(GEODESIC_CAP_GROUP) {
+        let group_anchor = chunk[0].start;
         let mut reach = 0.0_f64;
-        for edge in chunk {
-            let length = edge.length(metric);
-            let from_group = metric.segment_length(group_anchor, edge.start());
-            reach = reach.max(from_group + length);
-            lengths.push(length);
+        for segment in chunk {
+            let from_group = metric.segment_length(group_anchor, segment.start);
+            reach = reach.max(from_group + segment.length);
         }
         global_reach = global_reach.max(metric.segment_length(anchor, group_anchor) + reach);
         groups.push(CapGroup {
@@ -203,15 +153,10 @@ pub(crate) fn geodesic_sweep_caps_into<'a, E: GeodesicSweepEdge>(
     Some(GeodesicSweepCapsView {
         anchor,
         global_reach,
-        lengths,
         groups,
     })
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn geodesic_ordered_rows_into(
     vertices: &[Point],
     caps: GeodesicSweepCapsView<'_>,
@@ -240,37 +185,61 @@ pub(crate) fn geodesic_ordered_rows_into(
     }
 }
 
-pub(crate) fn geodesic_capped_witness_sweep(
+pub(crate) fn geodesic_capped_sweep(
     vertices: &[Point],
-    edges: &[GeodesicSegment],
+    segments: &[GeodesicSegment],
     point_only: &[Point],
     metric: &impl GeodesicMetric,
-    mut best: Option<GeodesicWitnessCandidate>,
-    order_offset: usize,
-    swapped: bool,
-    cap_lengths: &mut Vec<f64>,
+    best: f64,
     cap_groups: &mut Vec<CapGroup>,
     rows: &mut Vec<RowProbe>,
-) -> Result<Option<GeodesicWitnessCandidate>> {
-    let Some(caps) = geodesic_sweep_caps_into(edges, point_only, metric, cap_lengths, cap_groups)
-    else {
+) -> Result<f64> {
+    let Some(caps) = geodesic_sweep_caps_into(segments, point_only, metric, cap_groups) else {
         return Ok(best);
     };
-    geodesic_ordered_rows_into(vertices, caps, metric, true, rows);
-    let width = edges.len() + point_only.len();
+    geodesic_capped_distance_sweep_core(vertices, segments, point_only, caps, metric, best, rows)
+}
+
+pub(crate) fn geodesic_capped_sweep_with_parts(
+    vertices: &[Point],
+    target_parts: &GeodesicParts,
+    metric: &impl GeodesicMetric,
+    best: f64,
+    rows: &mut Vec<RowProbe>,
+) -> Result<f64> {
+    let Some(caps) = target_parts.caps.as_ref() else {
+        return Ok(best);
+    };
+    geodesic_capped_distance_sweep_core(
+        vertices,
+        &target_parts.segments,
+        &target_parts.point_only,
+        caps.view(),
+        metric,
+        best,
+        rows,
+    )
+}
+
+fn geodesic_capped_distance_sweep_core(
+    vertices: &[Point],
+    segments: &[GeodesicSegment],
+    point_only: &[Point],
+    caps: GeodesicSweepCapsView<'_>,
+    metric: &impl GeodesicMetric,
+    mut best: f64,
+    rows: &mut Vec<RowProbe>,
+) -> Result<f64> {
+    geodesic_ordered_rows_into(vertices, caps, metric, false, rows);
     for &RowProbe {
         bound: row_bound,
         vertex: vertex_index,
     } in rows.iter()
     {
-        let best_distance = best
-            .as_ref()
-            .map_or(f64::INFINITY, |candidate| candidate.distance);
-        if row_bound > best_distance {
+        if row_bound > best {
             break;
         }
         let vertex = vertices[vertex_index as usize];
-        // Tier 3: group caps, then member caps, then exact.
         for (
             group_index,
             &CapGroup {
@@ -279,68 +248,146 @@ pub(crate) fn geodesic_capped_witness_sweep(
             },
         ) in caps.groups.iter().enumerate()
         {
-            let best_distance = best
-                .as_ref()
-                .map_or(f64::INFINITY, |candidate| candidate.distance);
-            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > best_distance {
+            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > best {
                 continue;
             }
             let first = group_index * GEODESIC_CAP_GROUP;
-            let chunk = &edges[first..edges.len().min(first + GEODESIC_CAP_GROUP)];
-            for (offset, edge) in chunk.iter().enumerate() {
-                let edge_index = first + offset;
-                let order = order_offset + vertex_index as usize * width + edge_index;
-                let best_distance = witness_refine_limit(best.as_ref(), order);
-                let bound = metric.point_distance_lower_bound(vertex, edge.start())
-                    - caps.lengths[edge_index];
-                if bound > best_distance {
+            let chunk = &segments[first..segments.len().min(first + GEODESIC_CAP_GROUP)];
+            for &segment in chunk {
+                let bound =
+                    metric.point_distance_lower_bound(vertex, segment.start) - segment.length;
+                if bound > best {
                     continue;
                 }
-                let witness = metric.point_segment_witness(vertex, *edge, best_distance)?;
-                let candidate = GeodesicWitnessCandidate {
-                    probe: vertex,
-                    target: witness.foot,
-                    distance: witness.distance,
-                    order,
-                    swapped,
-                };
-                if geodesic_witness_is_better(best.as_ref(), &candidate) {
-                    best = Some(candidate);
-                }
+                best = best.min(metric.point_to_segment(vertex, segment, best)?);
             }
         }
-        for (point_index, &point) in point_only.iter().enumerate() {
-            let order = order_offset + vertex_index as usize * width + edges.len() + point_index;
-            let best_distance = witness_refine_limit(best.as_ref(), order);
-            if metric.point_distance_lower_bound(vertex, point) > best_distance {
+        for &point in point_only {
+            if metric.point_distance_lower_bound(vertex, point) > best {
                 continue;
             }
-            let distance = metric.segment_length(vertex, point);
-            let witness = GeodesicSegmentWitness {
-                distance,
-                foot: point,
-                along: 0.0,
-            };
-            let candidate = GeodesicWitnessCandidate {
-                probe: vertex,
-                target: witness.foot,
-                distance: witness.distance,
-                order,
-                swapped,
-            };
-            if geodesic_witness_is_better(best.as_ref(), &candidate) {
-                best = Some(candidate);
-            }
+            best = best.min(metric.segment_length(vertex, point));
         }
     }
     Ok(best)
 }
 
+pub(crate) fn geodesic_capped_dwithin_with_parts(
+    vertices: &[Point],
+    target_parts: &GeodesicParts,
+    metric: &impl GeodesicMetric,
+    distance: f64,
+    rows: &mut Vec<RowProbe>,
+) -> Result<bool> {
+    let Some(caps) = target_parts.caps.as_ref() else {
+        return Ok(false);
+    };
+    geodesic_capped_dwithin_sweep_core(
+        vertices,
+        &target_parts.segments,
+        &target_parts.point_only,
+        caps.view(),
+        metric,
+        distance,
+        rows,
+    )
+}
+
+fn geodesic_capped_dwithin_sweep_core(
+    vertices: &[Point],
+    segments: &[GeodesicSegment],
+    point_only: &[Point],
+    caps: GeodesicSweepCapsView<'_>,
+    metric: &impl GeodesicMetric,
+    distance: f64,
+    rows: &mut Vec<RowProbe>,
+) -> Result<bool> {
+    geodesic_ordered_rows_into(vertices, caps, metric, false, rows);
+    for &RowProbe {
+        bound: row_bound,
+        vertex: vertex_index,
+    } in rows.iter()
+    {
+        if row_bound > distance {
+            break;
+        }
+        let vertex = vertices[vertex_index as usize];
+        for (
+            group_index,
+            &CapGroup {
+                anchor: group_anchor,
+                reach,
+            },
+        ) in caps.groups.iter().enumerate()
+        {
+            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > distance {
+                continue;
+            }
+            let first = group_index * GEODESIC_CAP_GROUP;
+            let chunk = &segments[first..segments.len().min(first + GEODESIC_CAP_GROUP)];
+            for &segment in chunk {
+                let bound =
+                    metric.point_distance_lower_bound(vertex, segment.start) - segment.length;
+                if bound > distance {
+                    continue;
+                }
+                if metric.point_to_segment_within(vertex, segment, distance)? {
+                    return Ok(true);
+                }
+            }
+        }
+        for &point in point_only {
+            if metric.point_distance_lower_bound(vertex, point) > distance {
+                continue;
+            }
+            if metric.segment_length(vertex, point) <= distance {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
+pub(crate) fn geodesic_capped_witness_sweep(
+    vertices: &[Point],
+    segments: &[GeodesicSegment],
+    point_only: &[Point],
+    metric: &impl GeodesicMetric,
+    best: Option<GeodesicWitnessCandidate>,
+    order_offset: usize,
+    swapped: bool,
+    cap_groups: &mut Vec<CapGroup>,
+    rows: &mut Vec<RowProbe>,
+) -> Result<Option<GeodesicWitnessCandidate>> {
+    let Some(caps) = geodesic_sweep_caps_into(segments, point_only, metric, cap_groups) else {
+        return Ok(best);
+    };
+    geodesic_capped_witness_sweep_core(
+        vertices,
+        segments,
+        point_only,
+        caps,
+        metric,
+        best,
+        order_offset,
+        swapped,
+        rows,
+    )
+}
+
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_capped_witness_sweep_with_parts(
     vertices: &[Point],
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
-    mut best: Option<GeodesicWitnessCandidate>,
+    best: Option<GeodesicWitnessCandidate>,
     order_offset: usize,
     swapped: bool,
     rows: &mut Vec<RowProbe>,
@@ -348,8 +395,32 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
     let Some(caps) = target_parts.caps.as_ref() else {
         return Ok(best);
     };
-    geodesic_ordered_rows_into(vertices, caps.view(), metric, true, rows);
-    let width = target_parts.segments.len() + target_parts.point_only.len();
+    geodesic_capped_witness_sweep_core(
+        vertices,
+        &target_parts.segments,
+        &target_parts.point_only,
+        caps.view(),
+        metric,
+        best,
+        order_offset,
+        swapped,
+        rows,
+    )
+}
+
+fn geodesic_capped_witness_sweep_core(
+    vertices: &[Point],
+    segments: &[GeodesicSegment],
+    point_only: &[Point],
+    caps: GeodesicSweepCapsView<'_>,
+    metric: &impl GeodesicMetric,
+    mut best: Option<GeodesicWitnessCandidate>,
+    order_offset: usize,
+    swapped: bool,
+    rows: &mut Vec<RowProbe>,
+) -> Result<Option<GeodesicWitnessCandidate>> {
+    geodesic_ordered_rows_into(vertices, caps, metric, true, rows);
+    let width = segments.len() + point_only.len();
     for &RowProbe {
         bound: row_bound,
         vertex: vertex_index,
@@ -377,14 +448,13 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
                 continue;
             }
             let first = group_index * GEODESIC_CAP_GROUP;
-            let chunk = &target_parts.segments
-                [first..target_parts.segments.len().min(first + GEODESIC_CAP_GROUP)];
+            let chunk = &segments[first..segments.len().min(first + GEODESIC_CAP_GROUP)];
             for (offset, &segment) in chunk.iter().enumerate() {
                 let edge_index = first + offset;
                 let order = order_offset + vertex_index as usize * width + edge_index;
                 let best_distance = witness_refine_limit(best.as_ref(), order);
-                let bound = metric.point_distance_lower_bound(vertex, segment.start)
-                    - caps.lengths[edge_index];
+                let bound =
+                    metric.point_distance_lower_bound(vertex, segment.start) - segment.length;
                 if bound > best_distance {
                     continue;
                 }
@@ -401,12 +471,10 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
                 }
             }
         }
-        if !target_parts.point_only.is_empty() {
-            for (point_index, &point) in target_parts.point_only.iter().enumerate() {
-                let order = order_offset
-                    + vertex_index as usize * width
-                    + target_parts.segments.len()
-                    + point_index;
+        if !point_only.is_empty() {
+            for (point_index, &point) in point_only.iter().enumerate() {
+                let order =
+                    order_offset + vertex_index as usize * width + segments.len() + point_index;
                 let best_distance = witness_refine_limit(best.as_ref(), order);
                 if metric.point_distance_lower_bound(vertex, point) > best_distance {
                     continue;

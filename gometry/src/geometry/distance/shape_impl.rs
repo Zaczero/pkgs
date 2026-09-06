@@ -1,4 +1,3 @@
-use crate::geometry::distance;
 use crate::geometry::distance::{
     GeodesicSweepCapsAccum, HausdorffFeature, HausdorffTarget, Result, any_parts_within,
     collect_geodesic_segments_into, collect_point_only_into, compact_hausdorff_params,
@@ -12,7 +11,7 @@ use crate::geometry::distance::{
 use crate::geometry::frame::SimilarityFrame;
 use crate::geometry::{
     Coordinates, DistanceParts, GeodesicMetric, GeodesicParts, GeodesicSegment, Orientation, Point,
-    Polygon, PreparedLinework, Segment, Shape, ShapeData, XY, axis_pow2_scale,
+    Polygon, PreparedLinework, Segment, Shape, ShapeData, XY, axis_pow2_scale, distance,
     finish_planar_squared_min, nearest_points, orientation, point_distance, point_segment_distance,
     power_of_two_exponent, same_point, scale_by_power_of_two, scaled_residual, segment_projection,
 };
@@ -170,7 +169,6 @@ impl Shape {
             &scratch.right_point_only,
             metric,
             best,
-            &mut scratch.cap_lengths,
             &mut scratch.cap_groups,
             &mut scratch.rows,
         )?;
@@ -180,7 +178,6 @@ impl Shape {
             &scratch.left_point_only,
             metric,
             best,
-            &mut scratch.cap_lengths,
             &mut scratch.cap_groups,
             &mut scratch.rows,
         )?;
@@ -282,7 +279,6 @@ impl Shape {
             None,
             0,
             false,
-            &mut scratch.cap_lengths,
             &mut scratch.cap_groups,
             &mut scratch.rows,
         )?;
@@ -294,7 +290,6 @@ impl Shape {
             best,
             reverse_order_offset,
             true,
-            &mut scratch.cap_lengths,
             &mut scratch.cap_groups,
             &mut scratch.rows,
         )?;

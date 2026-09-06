@@ -6,18 +6,20 @@ use crate::crs::with_ellipsoid_metric;
 use crate::error::{ErrorKind, ResourceError, Result};
 use crate::geometry::distance::frechet::frechet_dp_columns;
 use crate::geometry::distance::geodesic_parts::{
-    geodesic_cap_from_parts, geodesic_capped_dwithin_with_parts, geodesic_capped_sweep_with_parts,
-    geodesic_dwithin_sweep_with_parts, geodesic_sweep_with_parts,
+    geodesic_cap_from_parts, geodesic_dwithin_sweep_with_parts, geodesic_sweep_with_parts,
 };
-use crate::geometry::distance::geodesic_sweep::geodesic_capped_witness_sweep_with_parts;
+use crate::geometry::distance::geodesic_sweep::{
+    geodesic_capped_witness_sweep_with_parts, geodesic_sweep_caps_into,
+};
 use crate::geometry::distance::tests::{
     assert_geodesic_close, assert_same_witness, brute_geodesic_distance,
     brute_geodesic_nearest_points, geodesic_bvh_oracle_cases, geodesic_distance_oracle_cases,
     geodesic_nearest_oracle_cases, line, multipoint, p, polygon,
 };
 use crate::geometry::distance::{
-    GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_min_distance_to_target,
-    geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
+    GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_capped_dwithin_with_parts,
+    geodesic_capped_sweep_with_parts, geodesic_min_distance_to_target,
+    geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
     FrameDependentCaches, GeodesicMetric, GeodesicParts, MOrdinate, Point, PreparedPlan, Shape,
@@ -697,20 +699,17 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
                 geodesic_cap_from_parts(&parts, metric),
                 "{name}: streamed cap vs parts cap"
             );
-            let mut cap_lengths = Vec::new();
             let mut cap_groups = Vec::new();
             let rebuilt = geodesic_sweep_caps_into(
                 &parts.segments,
                 &parts.point_only,
                 metric,
-                &mut cap_lengths,
                 &mut cap_groups,
             )
             .map(|view| (view.anchor, view.global_reach));
             let rebuilt = rebuilt.map(|(anchor, global_reach)| GeodesicSweepCaps {
                 anchor,
                 global_reach,
-                lengths: cap_lengths,
                 groups: cap_groups,
             });
             match (&parts.caps, rebuilt) {
@@ -721,7 +720,6 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
                         (built.global_reach - rebuilt.global_reach).abs() <= 1e-6,
                         "{name}: cap reach"
                     );
-                    assert_eq!(built.lengths, rebuilt.lengths, "{name}: cap lengths");
                     assert_eq!(built.groups, rebuilt.groups, "{name}: cap groups");
                 },
                 _ => panic!("{name}: fused sweep caps presence mismatch"),

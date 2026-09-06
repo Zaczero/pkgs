@@ -9,7 +9,6 @@ pub(crate) struct GeodesicScratch {
     pub(crate) right_edges: Vec<GeodesicSegment>,
     pub(crate) left_point_only: Vec<Point>,
     pub(crate) right_point_only: Vec<Point>,
-    pub(crate) cap_lengths: Vec<f64>,
     pub(crate) cap_groups: Vec<CapGroup>,
     pub(crate) rows: Vec<RowProbe>,
     pub(crate) stack: Vec<u32>,
@@ -24,7 +23,6 @@ impl GeodesicScratch {
             right_edges: Vec::new(),
             left_point_only: Vec::new(),
             right_point_only: Vec::new(),
-            cap_lengths: Vec::new(),
             cap_groups: Vec::new(),
             rows: Vec::new(),
             stack: Vec::new(),
@@ -40,7 +38,6 @@ impl crate::scratch_pool::RetainScratch for GeodesicScratch {
         self.right_edges.clear();
         self.left_point_only.clear();
         self.right_point_only.clear();
-        self.cap_lengths.clear();
         self.cap_groups.clear();
         self.rows.clear();
         self.stack.clear();
@@ -62,9 +59,6 @@ impl crate::scratch_pool::RetainScratch for GeodesicScratch {
             ))
             .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
                 &self.right_point_only,
-            ))
-            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
-                &self.cap_lengths,
             ))
             .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
                 &self.cap_groups,

@@ -1,12 +1,11 @@
-use crate::geometry::distance;
 use crate::error::Result;
 use crate::geometry::distance::{
-    CapGroup, GEODESIC_CAP_GROUP, RowProbe, collect_point_only_into, geodesic_ordered_rows_into,
-    geodesic_scratch, geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
+    collect_point_only_into, geodesic_capped_dwithin_with_parts, geodesic_capped_sweep_with_parts,
+    geodesic_scratch, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicPartsKey,
-    GeodesicSegment, Point, PreparedPlan, Shape,
+    FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicPartsKey, Point,
+    PreparedPlan, Shape, distance,
 };
 
 /// Validate the geodesic linework domain and reject filled areal operands.
@@ -268,134 +267,6 @@ pub(crate) fn geodesic_nearest_points_with_parts(
     }))
 }
 
-/// One directed geodesic sweep `vertices -> (segments + isolated points)`
-/// under auxiliary-sphere cap bounds, tiered:
-///
-/// 1. Per target, TWO Karney inverses (once): its length and its distance from
-///    its GROUP anchor — `σ ≤ s/b` makes `s(anchor, start) + length` a proven
-///    upper bound on any target point's aux-sphere reach, so groups of
-///    [`CAP_GROUP`] targets carry one conservative cap each (a two-level cap
-///    hierarchy, flat arrays).
-/// 2. Per vertex, one trigonometric bound against the global cap; rows process
-///    in ascending order and the first row past the running best retires every
-///    remaining vertex.
-/// 3. Inside a surviving row, each GROUP bound can retire [`CAP_GROUP`] targets
-///    with one trigonometric evaluation; surviving members gate individually
-///    (`s(v, x) ≥ bound(v, start) − length`) before any exact Karney work.
-///
-pub(crate) fn geodesic_capped_sweep(
-    vertices: &[Point],
-    segments: &[GeodesicSegment],
-    point_only: &[Point],
-    metric: &impl GeodesicMetric,
-    mut best: f64,
-    cap_lengths: &mut Vec<f64>,
-    cap_groups: &mut Vec<CapGroup>,
-    rows: &mut Vec<RowProbe>,
-) -> Result<f64> {
-    let Some(caps) =
-        geodesic_sweep_caps_into(segments, point_only, metric, cap_lengths, cap_groups)
-    else {
-        return Ok(best);
-    };
-    geodesic_ordered_rows_into(vertices, caps, metric, false, rows);
-    for &RowProbe {
-        bound: row_bound,
-        vertex: vertex_index,
-    } in rows.iter()
-    {
-        if row_bound > best {
-            break;
-        }
-        let vertex = vertices[vertex_index as usize];
-        // Tier 3: group caps, then member caps, then exact.
-        for (
-            group_index,
-            &CapGroup {
-                anchor: group_anchor,
-                reach,
-            },
-        ) in caps.groups.iter().enumerate()
-        {
-            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > best {
-                continue;
-            }
-            let first = group_index * GEODESIC_CAP_GROUP;
-            let chunk = &segments[first..segments.len().min(first + GEODESIC_CAP_GROUP)];
-            for (offset, segment) in chunk.iter().enumerate() {
-                let bound = metric.point_distance_lower_bound(vertex, segment.start)
-                    - caps.lengths[first + offset];
-                if bound > best {
-                    continue;
-                }
-                best = best.min(metric.point_to_segment(vertex, *segment, best)?);
-            }
-        }
-        for &point in point_only {
-            if metric.point_distance_lower_bound(vertex, point) > best {
-                continue;
-            }
-            best = best.min(metric.segment_length(vertex, point));
-        }
-    }
-    Ok(best)
-}
-
-pub(crate) fn geodesic_capped_sweep_with_parts(
-    vertices: &[Point],
-    target_parts: &GeodesicParts,
-    metric: &impl GeodesicMetric,
-    mut best: f64,
-    rows: &mut Vec<RowProbe>,
-) -> Result<f64> {
-    let Some(caps) = target_parts.caps.as_ref() else {
-        return Ok(best);
-    };
-    geodesic_ordered_rows_into(vertices, caps.view(), metric, false, rows);
-    for &RowProbe {
-        bound: row_bound,
-        vertex: vertex_index,
-    } in rows.iter()
-    {
-        if row_bound > best {
-            break;
-        }
-        let vertex = vertices[vertex_index as usize];
-        for (
-            group_index,
-            &CapGroup {
-                anchor: group_anchor,
-                reach,
-            },
-        ) in caps.groups.iter().enumerate()
-        {
-            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > best {
-                continue;
-            }
-            let first = group_index * GEODESIC_CAP_GROUP;
-            let chunk = &target_parts.segments
-                [first..target_parts.segments.len().min(first + GEODESIC_CAP_GROUP)];
-            for (offset, &segment) in chunk.iter().enumerate() {
-                let bound = metric.point_distance_lower_bound(vertex, segment.start)
-                    - caps.lengths[first + offset];
-                if bound > best {
-                    continue;
-                }
-                best = best.min(metric.point_to_segment(vertex, segment, best)?);
-            }
-        }
-        if !target_parts.point_only.is_empty() {
-            for &point in &target_parts.point_only {
-                if metric.point_distance_lower_bound(vertex, point) > best {
-                    continue;
-                }
-                best = best.min(metric.segment_length(vertex, point));
-            }
-        }
-    }
-    Ok(best)
-}
-
 pub(crate) fn geodesic_sweep_with_parts(
     vertices: &[Point],
     target_parts: &GeodesicParts,
@@ -453,65 +324,6 @@ pub(crate) fn geodesic_point_distance_with_parts_and_scratch(
             &mut scratch.rows,
         )
     }
-}
-
-pub(crate) fn geodesic_capped_dwithin_with_parts(
-    vertices: &[Point],
-    target_parts: &GeodesicParts,
-    metric: &impl GeodesicMetric,
-    distance: f64,
-    rows: &mut Vec<RowProbe>,
-) -> Result<bool> {
-    let Some(caps) = target_parts.caps.as_ref() else {
-        return Ok(false);
-    };
-    geodesic_ordered_rows_into(vertices, caps.view(), metric, false, rows);
-    for &RowProbe {
-        bound: row_bound,
-        vertex: vertex_index,
-    } in rows.iter()
-    {
-        if row_bound > distance {
-            break;
-        }
-        let vertex = vertices[vertex_index as usize];
-        for (
-            group_index,
-            &CapGroup {
-                anchor: group_anchor,
-                reach,
-            },
-        ) in caps.groups.iter().enumerate()
-        {
-            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > distance {
-                continue;
-            }
-            let first = group_index * GEODESIC_CAP_GROUP;
-            let chunk = &target_parts.segments
-                [first..target_parts.segments.len().min(first + GEODESIC_CAP_GROUP)];
-            for (offset, &segment) in chunk.iter().enumerate() {
-                let bound = metric.point_distance_lower_bound(vertex, segment.start)
-                    - caps.lengths[first + offset];
-                if bound > distance {
-                    continue;
-                }
-                if metric.point_to_segment_within(vertex, segment, distance)? {
-                    return Ok(true);
-                }
-            }
-        }
-        if !target_parts.point_only.is_empty() {
-            for &point in &target_parts.point_only {
-                if metric.point_distance_lower_bound(vertex, point) > distance {
-                    continue;
-                }
-                if metric.segment_length(vertex, point) <= distance {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
 }
 
 pub(crate) fn geodesic_dwithin_sweep_with_parts(

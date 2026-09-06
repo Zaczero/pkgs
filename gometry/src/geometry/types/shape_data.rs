@@ -573,7 +573,7 @@ impl HeapSize for GeodesicParts {
 
 impl HeapSize for GeodesicSweepCaps {
     fn heap_bytes(&self) -> usize {
-        self.lengths.heap_bytes() + self.groups.heap_bytes()
+        self.groups.heap_bytes()
     }
 }
 

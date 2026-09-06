@@ -29,8 +29,8 @@ pub(crate) use geodesic_hausdorff_helpers::{
     geodesic_max_min_on_source_segment, geodesic_min_distance_to_target,
 };
 pub(crate) use geodesic_parts::{
-    ensure_geodesic_linework, geodesic_cap_streaming, geodesic_capped_sweep,
-    geodesic_distance_with_parts, geodesic_dwithin_with_parts, geodesic_nearest_points_with_parts,
+    ensure_geodesic_linework, geodesic_cap_streaming, geodesic_distance_with_parts,
+    geodesic_dwithin_with_parts, geodesic_nearest_points_with_parts,
     geodesic_point_distance_with_parts_and_scratch, geodesic_point_dwithin_with_parts_and_scratch,
     geodesic_segments_cross_streaming,
 };
@@ -39,8 +39,9 @@ pub(crate) use geodesic_scratch::{
 };
 pub(in crate::geometry) use geodesic_sweep::GeodesicSweepCaps;
 pub(crate) use geodesic_sweep::{
-    CapGroup, GEODESIC_CAP_GROUP, GeodesicSweepCapsAccum, RowProbe, geodesic_capped_witness_sweep,
-    geodesic_ordered_rows_into, geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
+    CapGroup, GeodesicSweepCapsAccum, RowProbe, geodesic_capped_dwithin_with_parts,
+    geodesic_capped_sweep, geodesic_capped_sweep_with_parts, geodesic_capped_witness_sweep,
+    geodesic_witness_sweep_with_parts,
 };
 pub(crate) use hausdorff::{
     HausdorffFeature, HausdorffTarget, compact_hausdorff_params,
