@@ -37,6 +37,7 @@ struct ArealSources {
     source_rings: Vec<Option<u32>>,
     polygon_rings: Vec<Range<usize>>,
     ring_count: usize,
+    collapsed_rings: Vec<(u32, Range<usize>)>,
 }
 
 impl ArealSources {
@@ -46,6 +47,7 @@ impl ArealSources {
             source_rings: Vec::new(),
             polygon_rings: Vec::new(),
             ring_count: 0,
+            collapsed_rings: Vec::new(),
         };
         try_reserve_vec(&mut sources.polygon_rings, polygons.len())?;
         for polygon in polygons {
@@ -58,6 +60,8 @@ impl ArealSources {
                     .checked_add(1)
                     .ok_or(ResourceError::SizeOverflow)?;
                 let (xs, ys) = (ring.xs(), ring.ys());
+                let collapsed = crate::geometry::ring_is_collinear(ring.coords());
+                let first_segment = sources.segments.len();
                 let mut count = xs.len();
                 if count > 1 && xs[0] == xs[count - 1] && ys[0] == ys[count - 1] {
                     count -= 1;
@@ -76,7 +80,13 @@ impl ArealSources {
                         start: XY::new(xs[from], ys[from]),
                         end: XY::new(xs[to], ys[to]),
                     });
-                    sources.source_rings.push(Some(ring_id));
+                    sources.source_rings.push((!collapsed).then_some(ring_id));
+                }
+                if collapsed {
+                    try_reserve_vec(&mut sources.collapsed_rings, 1)?;
+                    sources
+                        .collapsed_rings
+                        .push((ring_id, first_segment..sources.segments.len()));
                 }
             }
             sources.polygon_rings.push(first_ring..sources.ring_count);
@@ -1834,6 +1844,70 @@ mod tests {
         assert_eq!(rounded[1].y.to_bits(), 0x3FD5555555555555);
         assert_eq!(rounded[2], XY::new(3.0, 1.0));
         assert!(partition.round_nodes(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn collapsed_ring_sources_retain_support_without_winding_labels() {
+        let polygons = [
+            "POLYGON ((0 0,4 0,2 0,0 0),(1 1,3 1,3 3,1 3,1 1))",
+            "POLYGON ((8 0,12 0,12 4,8 4,8 0),(9 2,11 2,10 2,9 2))",
+        ]
+        .map(|wkt| match crate::io::parse_wkt(wkt).unwrap() {
+            crate::geometry::Shape::Polygon(polygon) => polygon,
+            _ => unreachable!(),
+        });
+        let sources = super::ArealSources::new(&polygons).unwrap();
+        assert_eq!(sources.collapsed_rings, [(0, 0..3), (3, 11..14)]);
+        assert_eq!(sources.polygon_rings, [0..2, 2..4]);
+        assert_eq!(sources.source_rings, [
+            None,
+            None,
+            None,
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(2),
+            None,
+            None,
+            None,
+        ]);
+        assert_eq!(sources.segments[0].start, XY::new(0.0, 0.0));
+        assert_eq!(sources.segments[0].end, XY::new(4.0, 0.0));
+        assert_eq!(sources.segments[11].start, XY::new(9.0, 2.0));
+        assert_eq!(sources.segments[11].end, XY::new(11.0, 2.0));
+        assert!(!sources.occupied(&[0, 1, 0, 0], false));
+        assert!(sources.occupied(&[0, 0, 1, 0], false));
+        let case = run(&sources.segments);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let mut labels = Vec::new();
+        partition
+            .visit_face_windings(
+                &topology,
+                &edges,
+                &faces,
+                &sources.source_rings,
+                sources.ring_count,
+                |_, winding| {
+                    labels.push((
+                        [winding[0], winding[1], winding[2], winding[3]],
+                        sources.occupied(winding, false),
+                    ));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        labels.sort_unstable();
+        assert_eq!(labels, [
+            ([0, 0, 0, 0], false),
+            ([0, 0, 1, 0], true),
+            ([0, 1, 0, 0], false),
+        ]);
     }
 
     #[test]
