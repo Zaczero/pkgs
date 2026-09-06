@@ -103,6 +103,148 @@ def test_coverage_union_keeps_point_touching_parts_separate() -> None:
     assert union.area == pytest.approx(2.0)
 
 
+def test_coverage_union_mixed_axes_stays_homogeneous_in_sparse_path() -> None:
+    xy = gm.box(0, 0, 1, 1)
+    xyz = gm.box(3, 0, 4, 1).set_z(7.0)
+    xym = gm.box(6, 0, 7, 1).set_m(9.0)
+    xyzm = gm.box(9, 0, 10, 1).set_z(11.0).set_m(12.0)
+    xyz_second = gm.box(12, 0, 13, 1).set_z(8.0)
+    explicit_empty_xy = gm.from_wkt('MULTIPOLYGON (EMPTY, ((0 0, 1 0, 1 1, 0 1, 0 0)))')
+    explicit_empty_xyz = gm.from_wkt(
+        'MULTIPOLYGON Z (EMPTY, ((3 0 7, 4 0 8, 4 1 9, 3 1 10, 3 0 7)))'
+    )
+
+    cases = [
+        (
+            'xy_xyz',
+            xy,
+            xyz,
+            'XY',
+            [
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (0.0, 0.0),
+                (3.0, 0.0),
+                (4.0, 0.0),
+                (4.0, 1.0),
+                (3.0, 1.0),
+                (3.0, 0.0),
+            ],
+        ),
+        (
+            'xyz_xym',
+            xyz,
+            xym,
+            'XY',
+            [
+                (3.0, 0.0),
+                (4.0, 0.0),
+                (4.0, 1.0),
+                (3.0, 1.0),
+                (3.0, 0.0),
+                (6.0, 0.0),
+                (7.0, 0.0),
+                (7.0, 1.0),
+                (6.0, 1.0),
+                (6.0, 0.0),
+            ],
+        ),
+        (
+            'xyz_xyzm',
+            xyz,
+            xyzm,
+            'XYZ',
+            [
+                (3.0, 0.0, 7.0),
+                (4.0, 0.0, 7.0),
+                (4.0, 1.0, 7.0),
+                (3.0, 1.0, 7.0),
+                (3.0, 0.0, 7.0),
+                (9.0, 0.0, 11.0),
+                (10.0, 0.0, 11.0),
+                (10.0, 1.0, 11.0),
+                (9.0, 1.0, 11.0),
+                (9.0, 0.0, 11.0),
+            ],
+        ),
+        (
+            'xyz_xyz',
+            xyz,
+            xyz_second,
+            'XYZ',
+            [
+                (3.0, 0.0, 7.0),
+                (4.0, 0.0, 7.0),
+                (4.0, 1.0, 7.0),
+                (3.0, 1.0, 7.0),
+                (3.0, 0.0, 7.0),
+                (12.0, 0.0, 8.0),
+                (13.0, 0.0, 8.0),
+                (13.0, 1.0, 8.0),
+                (12.0, 1.0, 8.0),
+                (12.0, 0.0, 8.0),
+            ],
+        ),
+        (
+            'explicit_empty_xy_xyz',
+            explicit_empty_xy,
+            explicit_empty_xyz,
+            'XY',
+            [
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (0.0, 0.0),
+                (3.0, 0.0),
+                (4.0, 0.0),
+                (4.0, 1.0),
+                (3.0, 1.0),
+                (3.0, 0.0),
+            ],
+        ),
+    ]
+    for name, left, right, axes, expected in cases:
+        for order, rows in (('forward', (left, right)), ('reverse', (right, left))):
+            label = f'{name}/{order}'
+            result = gm.coverage_union(list(rows))
+            assert result.geometry_type == 'MultiPolygon', label
+            assert result.coordinate_axes == axes, label
+            assert result.area == pytest.approx(2.0), label
+            assert all(part.coordinate_axes == axes for part in result.parts), label
+            actual = [
+                coordinate
+                for polygon in result.coords.to_nested()
+                for ring in polygon
+                for coordinate in ring
+            ]
+            assert sorted(actual) == sorted(expected), label
+
+
+def test_coverage_union_all_empty_members_use_declared_union_axes() -> None:
+    cases = [
+        (
+            gm.from_wkt('MULTIPOLYGON (EMPTY)'),
+            gm.from_wkt('MULTIPOLYGON Z (EMPTY)'),
+            'XYZ',
+        ),
+        (
+            gm.from_wkt('MULTIPOLYGON Z (EMPTY)'),
+            gm.from_wkt('MULTIPOLYGON M (EMPTY)'),
+            'XYZM',
+        ),
+    ]
+    for left, right, axes in cases:
+        for rows in ((left, right), (right, left)):
+            result = gm.coverage_union(list(rows))
+            assert result.geometry_type == 'Polygon'
+            assert result.is_empty
+            assert result.coordinate_axes == axes
+            assert result.area == 0.0
+
+
 def test_coverage_union_does_not_bypass_invalid_shape_fallback() -> None:
     """Rows admitted by the legacy coverage validator keep the old dissolve path."""
     bowtie = gm.from_wkt('POLYGON ((0 0, 2 2, 0 2, 2 0, 0 0))')

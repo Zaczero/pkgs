@@ -27,9 +27,9 @@ impl Shape {
     /// The axes carried by this geometry's coordinates (the union over all
     /// vertices). The single source of truth for dimensionality.
     pub fn axes(&self) -> CoordinateAxes {
-        // Ordinate presence is a per-chain COLUMN flag in the SoA storage
-        // (`CoordSeq.zs/ms: Option<Box<[f64]>>`), so this folds O(parts)
-        // flags — never a per-vertex scan.
+        // Coordinate sequences store ordinate presence in column flags, and
+        // multipart payloads retain their validated common axes. Polygon rings
+        // and geometry collections still use the structural scans below.
         let mut has_z = false;
         let mut has_m = false;
         self.fold_axes(&mut has_z, &mut has_m);
@@ -56,10 +56,6 @@ impl Shape {
             Self::MultiLineString(lines) => {
                 *has_z |= lines.axes().has_z();
                 *has_m |= lines.axes().has_m();
-                for line in lines {
-                    *has_z |= line.zs().is_some();
-                    *has_m |= line.ms().is_some();
-                }
             },
             Self::Polygon(polygon) => {
                 for ring in polygon.rings() {
@@ -70,12 +66,6 @@ impl Shape {
             Self::MultiPolygon(polygons) => {
                 *has_z |= polygons.axes().has_z();
                 *has_m |= polygons.axes().has_m();
-                for polygon in polygons {
-                    for ring in polygon.rings() {
-                        *has_z |= ring.zs().is_some();
-                        *has_m |= ring.ms().is_some();
-                    }
-                }
             },
             Self::GeometryCollection(geometries) => {
                 for geometry in geometries {

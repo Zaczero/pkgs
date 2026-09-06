@@ -567,6 +567,20 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
                 _ => unreachable!("coverage rows are polygonal"),
             }
         }
+        // The direct path already proves these parts are the complete union.
+        // Make only its temporary payload homogeneous; keep source_refs intact
+        // so carry_overlay_ordinates remains the owner of ordinate retention.
+        let parts = if parts.first().is_some_and(|first| {
+            let axes = first.axes();
+            parts.iter().any(|polygon| polygon.axes() != axes)
+        }) {
+            parts
+                .into_iter()
+                .map(|polygon| polygon.map_ring_seqs(CoordSeq::force_2d))
+                .collect()
+        } else {
+            parts
+        };
         return carry_overlay_ordinates(
             polygon_parts_to_shape(parts),
             &source_refs,
