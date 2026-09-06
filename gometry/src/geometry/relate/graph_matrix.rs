@@ -92,7 +92,7 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De
     if let Some(matrix) = super::direct_linework_relate(left, right) {
         return matrix;
     }
-    graph_relate_data_oracle(left, right)
+    graph_relate_data_fallback(left, right)
 }
 
 /// The source-graph relation path, retained as the complete fallback and the
@@ -100,27 +100,22 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De
 /// through `graph_relate_data`, which now admits the direct engines first and
 /// would compare an engine with itself.
 pub(crate) fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
-    graph_relate_data_with_graphs(left, right, left.topology_graph(), right.topology_graph())
-}
-
-/// Compute a Cartesian relation from topology graphs already resolved by the
-/// caller. The direct areal fold remains the first admission path.
-fn graph_relate_data_with_graphs(
-    left: &PreparedPlan,
-    right: &PreparedPlan,
-    left_graph: &TopologyGraph,
-    right_graph: &TopologyGraph,
-) -> De9im {
     if let Some(matrix) = try_areal_relate(left.shape(), right.shape()) {
         return matrix;
     }
+    graph_relate_data_fallback(left, right)
+}
+
+/// Compute a Cartesian relation from source graphs, resolving only the graphs
+/// needed by a point specialization.
+fn graph_relate_data_fallback(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
     if let Some(point) = shape_point(right.shape()) {
-        return graph_relate_to_point(left_graph, point);
+        return graph_relate_to_point(left.topology_graph(), point);
     }
     if let Some(point) = shape_point(left.shape()) {
-        return graph_relate_to_point(right_graph, point).transpose();
+        return graph_relate_to_point(right.topology_graph(), point).transpose();
     }
-    graph_relate(left_graph, right_graph)
+    graph_relate(left.topology_graph(), right.topology_graph())
 }
 
 /// Compute a Cartesian relation while reusing the left operand's resolved
@@ -2191,6 +2186,34 @@ mod tests {
             let right = PreparedPlan::new(right);
             assert_eq!(graph_relate_data(&left, &right).text(), expected.text());
         }
+    }
+
+    #[test]
+    fn areal_oracle_does_not_build_graphs_for_direct_relation() {
+        let left = PreparedPlan::new(Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0)));
+        let right = PreparedPlan::new(Shape::Polygon(rectangle(1.0, 1.0, 2.0, 2.0)));
+
+        assert_eq!(graph_relate_data_oracle(&left, &right).text(), "212FF1FF2");
+        assert_eq!(left.topology_graph_accesses(), 0);
+        assert_eq!(right.topology_graph_accesses(), 0);
+    }
+
+    #[test]
+    fn cartesian_point_fallback_builds_only_the_nonpoint_graph() {
+        let area = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
+        let point = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+
+        let left = PreparedPlan::new(area.clone());
+        let right = PreparedPlan::new(point.clone());
+        graph_relate_data_oracle(&left, &right);
+        assert_eq!(left.topology_graph_accesses(), 1);
+        assert_eq!(right.topology_graph_accesses(), 0);
+
+        let left = PreparedPlan::new(point);
+        let right = PreparedPlan::new(area);
+        graph_relate_data(&left, &right);
+        assert_eq!(left.topology_graph_accesses(), 0);
+        assert_eq!(right.topology_graph_accesses(), 1);
     }
 
     #[test]
