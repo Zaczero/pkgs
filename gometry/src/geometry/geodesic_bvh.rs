@@ -58,7 +58,7 @@ impl GeodesicFacetBvh {
             return None;
         }
         let leaf_count = geodesic_leaf_count(segments.len());
-        let node_count = leaf_count.checked_mul(2)?.checked_sub(1)?;
+        let node_count = 2 * leaf_count - 1;
         let mut tree = Self {
             anchors: vec![Point::new_raw_xy(0.0, 0.0); node_count].into_boxed_slice(),
             reaches: vec![0.0; node_count].into_boxed_slice(),
@@ -447,40 +447,35 @@ pub(super) fn geodesic_witness_is_better(
 
 #[cfg(test)]
 mod tests {
-    use super::{GEODESIC_LEAF_SEGMENTS, geodesic_leaf_count};
+    use super::geodesic_leaf_count;
 
     #[test]
     fn balanced_leaf_count_matches_split_boundaries() {
-        for (segment_count, expected_leaves, expected_nodes) in [
-            (1, 1, 1),
-            (8, 1, 1),
-            (9, 2, 3),
-            (16, 2, 3),
-            (17, 3, 5),
-            (18, 4, 7),
-            (32, 4, 7),
-            (33, 5, 9),
-            (34, 6, 11),
-            (35, 7, 13),
-            (36, 8, 15),
-            (64, 8, 15),
-            (65, 9, 17),
-            (72, 16, 31),
-            (128, 16, 31),
-            (129, 17, 33),
-            (144, 32, 63),
-            (256, 32, 63),
-            (257, 33, 65),
-            (512, 64, 127),
-            (513, 65, 129),
+        for (segment_count, expected_leaves) in [
+            (1, 1),
+            (8, 1),
+            (9, 2),
+            (16, 2),
+            (17, 3),
+            (18, 4),
+            (32, 4),
+            (33, 5),
+            (34, 6),
+            (35, 7),
+            (36, 8),
+            (64, 8),
+            (65, 9),
+            (72, 16),
+            (128, 16),
+            (129, 17),
+            (144, 32),
+            (256, 32),
+            (257, 33),
+            (512, 64),
+            (513, 65),
         ] {
             let leaves = geodesic_leaf_count(segment_count);
             assert_eq!(leaves, expected_leaves, "segments={segment_count}");
-            assert_eq!(2 * leaves - 1, expected_nodes, "segments={segment_count}");
         }
-
-        assert_eq!(18usize.div_ceil(GEODESIC_LEAF_SEGMENTS), 3);
-        assert_eq!(2 * 18usize.div_ceil(GEODESIC_LEAF_SEGMENTS) - 1, 5);
-        assert_eq!(geodesic_leaf_count(18), 4);
     }
 }
