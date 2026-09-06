@@ -278,6 +278,34 @@ struct BoundaryPlan {
 }
 
 impl BoundaryPlan {
+    fn check_emitted_fans(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        segments: &[Segment],
+    ) -> Result<()> {
+        let mut darts = Vec::new();
+        for walk in &self.walks {
+            try_reserve_vec(&mut darts, walk.len())?;
+            for &slot in walk {
+                darts.push([slot, topology.twins[slot as usize]]);
+            }
+        }
+        try_reserve_vec(&mut darts, self.lines.len())?;
+        for &index in &self.lines {
+            let span = &partition.spans[index as usize];
+            let range = topology.starts[span.start.0 as usize] as usize
+                ..topology.starts[span.start.0 as usize + 1] as usize;
+            let slot = range
+                .into_iter()
+                .find(|&slot| topology.targets[slot] == span.end.0)
+                .unwrap();
+            darts.push([slot as u32, topology.twins[slot]]);
+        }
+        debug_assert_eq!(segments.len(), darts.len() + self.points.len());
+        ExactPartition::check_emitted_fans(topology, &darts, &segments[..darts.len()])
+    }
+
     fn round_items(
         &self,
         partition: &ExactPartition<'_>,
@@ -285,7 +313,7 @@ impl BoundaryPlan {
     ) -> Result<Vec<Segment>> {
         let items = self.incident_items(partition, topology)?;
         let segments = partition.round_incident_items(&items)?;
-        ExactPartition::check_emitted_fans(topology, &items, &segments)?;
+        self.check_emitted_fans(partition, topology, &segments)?;
         self.check_global_faces(partition, &items, &segments)?;
         Ok(segments)
     }
@@ -763,20 +791,18 @@ impl<'a> ExactPartition<'a> {
 
     fn check_emitted_fans(
         topology: &IndexedTopology,
-        items: &[[NodeId; 2]],
+        darts: &[[u32; 2]],
         segments: &[Segment],
     ) -> Result<()> {
-        debug_assert_eq!(items.len(), segments.len());
+        debug_assert_eq!(darts.len(), segments.len());
         let mut departures = HashMap::new();
-        for (&[start, end], segment) in items.iter().zip(segments) {
-            if start == end {
-                continue;
-            }
+        for (&[start, end], segment) in darts.iter().zip(segments) {
             departures
                 .try_reserve(2)
                 .map_err(|_| ResourceError::Allocation)?;
-            departures.insert((start.0, end.0), (segment.start, segment.end));
-            departures.insert((end.0, start.0), (segment.end, segment.start));
+            let prior_start = departures.insert(start, (segment.start, segment.end));
+            let prior_end = departures.insert(end, (segment.end, segment.start));
+            debug_assert!(prior_start.is_none() && prior_end.is_none());
         }
         for (node, range) in topology.starts.windows(2).enumerate() {
             let mut first = None;
@@ -784,8 +810,8 @@ impl<'a> ExactPartition<'a> {
             let mut descents = 0;
             let mut count = 0;
             for slot in range[0] as usize..range[1] as usize {
-                let target = topology.targets[slot];
-                let Some((origin, point)) = departures.remove(&(node as u32, target)) else {
+                let target = slot as u32;
+                let Some((origin, point)) = departures.remove(&target) else {
                     continue;
                 };
                 let current = (target, point);
@@ -3279,7 +3305,8 @@ mod tests {
             segment.end.x += 20.0;
         }
         let items = plan.incident_items(&partition, &topology).unwrap();
-        ExactPartition::check_emitted_fans(&topology, &items, &displaced).unwrap();
+        plan.check_emitted_fans(&partition, &topology, &displaced)
+            .unwrap();
         let error = plan
             .check_global_faces(&partition, &items, &displaced)
             .unwrap_err();
@@ -3392,7 +3419,6 @@ mod tests {
         let plan = faces
             .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, &partition, &[false])
             .unwrap();
-        let items = plan.incident_items(&partition, &topology).unwrap();
         let segments = plan.round_items(&partition, &topology).unwrap();
         let rotated: Vec<_> = segments
             .iter()
@@ -3401,7 +3427,8 @@ mod tests {
                 end: XY::new(-segment.end.y, segment.end.x),
             })
             .collect();
-        ExactPartition::check_emitted_fans(&topology, &items, &rotated).unwrap();
+        plan.check_emitted_fans(&partition, &topology, &rotated)
+            .unwrap();
         let reflected: Vec<_> = segments
             .iter()
             .map(|segment| Segment {
@@ -3409,11 +3436,57 @@ mod tests {
                 end: XY::new(segment.end.x, -segment.end.y),
             })
             .collect();
-        let error = ExactPartition::check_emitted_fans(&topology, &items, &reflected).unwrap_err();
+        let error = plan
+            .check_emitted_fans(&partition, &topology, &reflected)
+            .unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactCyclicOrder { .. })
         ));
+    }
+
+    #[test]
+    fn joined_chords_keep_endpoint_dart_order() {
+        let case = run(&[
+            seg(0.0, 0.0, 1.0, 0.0),
+            seg(1.0, 0.0, 2.0, 0.0),
+            seg(0.0, 0.0, 0.0, 1.0),
+            seg(0.0, 1.0, 0.0, 3.0),
+            seg(0.0, 0.0, -1.0, 0.0),
+            seg(-1.0, 0.0, -4.0, 0.0),
+            seg(0.0, 0.0, 0.0, -1.0),
+            seg(0.0, -1.0, 0.0, -5.0),
+        ]);
+        let partition = case.partition();
+        let (topology, _) = partition.local_topology().unwrap();
+        let origin = stored_node(&partition, XY::new(0.0, 0.0)).unwrap();
+        let mut darts = Vec::new();
+        let mut chords = Vec::new();
+        for endpoint in [
+            XY::new(2.0, 0.0),
+            XY::new(0.0, 3.0),
+            XY::new(-4.0, 0.0),
+            XY::new(0.0, -5.0),
+        ] {
+            let leaf = stored_node(&partition, endpoint).unwrap();
+            let end_slot = topology.starts[leaf.0 as usize];
+            let middle = topology.targets[end_slot as usize];
+            let start_slot = (topology.starts[origin.0 as usize]
+                ..topology.starts[origin.0 as usize + 1])
+                .find(|&slot| topology.targets[slot as usize] == middle)
+                .unwrap();
+            darts.push([start_slot, end_slot]);
+            chords.push(Segment {
+                start: XY::new(0.0, 0.0),
+                end: endpoint,
+            });
+        }
+        ExactPartition::check_emitted_fans(&topology, &darts, &chords).unwrap();
+        chords.swap(1, 2);
+        let error = ExactPartition::check_emitted_fans(&topology, &darts, &chords).unwrap_err();
+        assert!(matches!(error.kind(), crate::error::ErrorKind::Geometry(
+            GeometryErrorKind::ExactCyclicOrder { node }
+        ) if *node == origin.0));
     }
 
     #[test]
@@ -3459,7 +3532,8 @@ mod tests {
                 end: XY::new(segment.end.x, -segment.end.y),
             })
             .collect();
-        ExactPartition::check_emitted_fans(&topology, &items, &reflected).unwrap();
+        plan.check_emitted_fans(&partition, &topology, &reflected)
+            .unwrap();
         let error = plan
             .check_global_faces(&partition, &items, &reflected)
             .unwrap_err();
