@@ -246,6 +246,7 @@ struct GlobalFaces {
 
 struct BoundaryPlan {
     walks: Vec<Vec<u32>>,
+    lines: Vec<u32>,
     face_quotient: Vec<u32>,
     walk_sides: Vec<Vec<[u32; 2]>>,
 }
@@ -288,6 +289,7 @@ fn emitted_pair_preserves_incidence(left: [(NodeId, XY); 2], right: [(NodeId, XY
 impl GlobalFaces {
     fn boundary_plan(
         &self,
+        lines: Vec<u32>,
         topology: &IndexedTopology,
         edges: &[u32],
         span_count: usize,
@@ -297,6 +299,9 @@ impl GlobalFaces {
         let mut retained = Vec::new();
         try_reserve_vec(&mut retained, span_count)?;
         retained.resize(span_count, false);
+        for &span in &lines {
+            retained[span as usize] = true;
+        }
         for walk in &walks {
             for &slot in walk {
                 retained[edges[slot as usize] as usize] = true;
@@ -318,6 +323,7 @@ impl GlobalFaces {
         }
         Ok(BoundaryPlan {
             walks,
+            lines,
             face_quotient,
             walk_sides,
         })
@@ -2945,7 +2951,7 @@ mod tests {
         let mut occupied = vec![false; 3];
         occupied[host as usize] = true;
         let plan = faces
-            .boundary_plan(&topology, &edges, partition.spans.len(), &occupied)
+            .boundary_plan(Vec::new(), &topology, &edges, partition.spans.len(), &occupied)
             .unwrap();
         assert_eq!(plan.face_quotient, [0, 1, 2]);
         assert_eq!(plan.walk_sides[0], vec![[host, 0]; 4]);
@@ -2986,7 +2992,7 @@ mod tests {
             assert_eq!(actual, expected);
         }
         let empty = faces
-            .boundary_plan(&topology, &edges, partition.spans.len(), &[false; 3])
+            .boundary_plan(Vec::new(), &topology, &edges, partition.spans.len(), &[false; 3])
             .unwrap();
         assert!(empty.walks.is_empty());
         assert!(empty.walk_sides.is_empty());
@@ -3010,7 +3016,7 @@ mod tests {
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
         let plan = faces
-            .boundary_plan(&topology, &edges, partition.spans.len(), &[
+            .boundary_plan(Vec::new(), &topology, &edges, partition.spans.len(), &[
                 false, true, true,
             ])
             .unwrap();
@@ -3040,6 +3046,29 @@ mod tests {
     }
 
     #[test]
+    fn retained_line_cycle_preserves_its_bounded_face() {
+        let case = run(&[
+            seg(0.0, 0.0, 4.0, 0.0),
+            seg(4.0, 0.0, 4.0, 4.0),
+            seg(4.0, 4.0, 0.0, 4.0),
+            seg(0.0, 4.0, 0.0, 0.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let plan = faces
+            .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, 4, &[false, false])
+            .unwrap();
+        assert!(plan.walks.is_empty());
+        assert_eq!(plan.lines, [0, 1, 2, 3]);
+        assert_eq!(plan.face_quotient, [0, 1]);
+        let open = faces
+            .boundary_plan(vec![0, 1, 2], &topology, &edges, 4, &[false, false])
+            .unwrap();
+        assert_eq!(open.face_quotient, [0, 0]);
+    }
+
+    #[test]
     fn omitted_atoms_merge_faces_and_preserve_isolated_hosts() {
         let case = run(&[
             seg(0.0, 0.0, 4.0, 0.0),
@@ -3054,7 +3083,7 @@ mod tests {
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
         let plan = faces
-            .boundary_plan(&topology, &edges, partition.spans.len(), &[
+            .boundary_plan(Vec::new(), &topology, &edges, partition.spans.len(), &[
                 false, true, true,
             ])
             .unwrap();
