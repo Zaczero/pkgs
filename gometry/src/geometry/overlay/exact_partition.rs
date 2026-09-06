@@ -40,6 +40,12 @@ struct ArealSources {
     collapsed_rings: Vec<(u32, Range<usize>)>,
 }
 
+struct ArealCells {
+    faces: Vec<bool>,
+    spans: Vec<bool>,
+    nodes: Vec<bool>,
+}
+
 impl ArealSources {
     fn new(polygons: &[impl AsRef<Polygon>]) -> Result<Self> {
         let mut sources = Self {
@@ -106,6 +112,61 @@ impl ArealSources {
             let mut rings = rings.clone();
             rings.next().is_some_and(filled) && !rings.any(filled)
         })
+    }
+
+    fn cells(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+        odd: bool,
+    ) -> Result<ArealCells> {
+        let mut cells = ArealCells {
+            faces: Vec::new(),
+            spans: Vec::new(),
+            nodes: Vec::new(),
+        };
+        try_reserve_vec(&mut cells.faces, global.count as usize)?;
+        cells.faces.resize(global.count as usize, false);
+        try_reserve_vec(&mut cells.spans, partition.spans.len())?;
+        cells.spans.resize(partition.spans.len(), false);
+        try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
+        cells.nodes.resize(partition.recipes.len(), false);
+        partition.visit_face_windings(
+            topology,
+            edges,
+            global,
+            &self.source_rings,
+            self.ring_count,
+            |face, winding| {
+                cells.faces[face as usize] = self.occupied(winding, odd);
+                Ok(())
+            },
+        )?;
+        for (slot, &span) in edges.iter().enumerate() {
+            let face = global.walk_faces[topology.face_of[slot] as usize];
+            cells.spans[span as usize] |= cells.faces[face as usize];
+        }
+        for (index, span) in partition.spans.iter().enumerate() {
+            cells.spans[index] |= partition
+                .owners(index)
+                .iter()
+                .any(|&(source, _)| self.source_rings[source as usize].is_none());
+            if cells.spans[index] {
+                cells.nodes[span.start.0 as usize] = true;
+                cells.nodes[span.end.0 as usize] = true;
+            }
+        }
+        for &(node, source) in &partition.point_sources {
+            cells.nodes[node.0 as usize] |= self.source_rings[source as usize].is_none();
+        }
+        for node in &partition.isolated {
+            let component = topology.component_of[node.0 as usize];
+            let host = global.component_hosts[component as usize];
+            cells.nodes[node.0 as usize] |= cells.faces[host as usize];
+        }
+        Ok(cells)
     }
 }
 
@@ -1921,6 +1982,63 @@ mod tests {
             ([0, 0, 1, 0], true),
             ([0, 1, 0, 0], false),
         ]);
+        let cells = sources
+            .cells(&partition, &topology, &edges, &faces, false)
+            .unwrap();
+        assert_eq!(cells.faces.iter().filter(|&&filled| filled).count(), 1);
+        for (index, span) in partition.spans.iter().enumerate() {
+            let NodeRecipe::Stored(start) = partition.recipe(span.start) else {
+                panic!("stored-only fixture constructed a node");
+            };
+            let expected = start.xy().x >= 8.0 || start.xy().y == 0.0;
+            assert_eq!(cells.spans[index], expected);
+        }
+        for (index, &filled) in cells.nodes.iter().enumerate() {
+            let NodeRecipe::Stored(point) = partition.recipe(NodeId(index as u32)) else {
+                panic!("stored-only fixture constructed a node");
+            };
+            assert_eq!(filled, point.xy().x >= 8.0 || point.xy().y == 0.0);
+        }
+    }
+
+    #[test]
+    fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
+        let polygons = [
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,-2 0,0 0))",
+            "POLYGON ((6 6,6 6,6 6,6 6))",
+        ]
+        .map(|wkt| match crate::io::parse_wkt(wkt).unwrap() {
+            crate::geometry::Shape::Polygon(polygon) => polygon,
+            _ => unreachable!(),
+        });
+        let sources = ArealSources::new(&polygons).unwrap();
+        let (unique, provenance) =
+            dedup_undirected_segments_sourced(sources.segments.iter().copied());
+        let mut budget = ExpansionBudget::new("exact_partition", "items");
+        let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let cells = sources
+            .cells(&partition, &topology, &edges, &faces, false)
+            .unwrap();
+        let mut selected = Vec::new();
+        for (index, &filled) in cells.nodes.iter().enumerate() {
+            if filled {
+                let NodeRecipe::Stored(point) = partition.recipe(NodeId(index as u32)) else {
+                    panic!("stored-only fixture constructed a node");
+                };
+                selected.push(point.xy());
+            }
+        }
+        selected.sort_by(|left, right| left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y)));
+        assert_eq!(selected, [
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 4.0),
+            XY::new(4.0, 0.0),
+            XY::new(4.0, 4.0),
+            XY::new(6.0, 6.0),
+        ]);
+        assert_eq!(cells.spans.iter().filter(|&&filled| filled).count(), 4);
     }
 
     #[test]
