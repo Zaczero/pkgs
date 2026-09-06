@@ -7,6 +7,7 @@ use crate::array::{
     Point, Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape, TransformOptionArgs,
     ValidityMask, coordinate_epoch_option, crs, note_array_row, parse_crs, pymethods,
 };
+use crate::geometry::{OrdinateAxis, set_point_ordinate};
 
 fn transform_failure_pyerr(failure: crate::crs::TransformFailure) -> PyErr {
     let error: PyErr = failure.error.into();
@@ -418,19 +419,14 @@ impl Ordinate {
     }
 
     fn set_point(self, point: Point, value: Option<f64>, overwrite: bool) -> Point {
-        let z = match self {
-            Self::Z => value.or_else(|| (!overwrite).then(|| point.z()).flatten()),
-            Self::M => point.z(),
-        };
-        let m = match self {
-            Self::Z => point.m(),
-            Self::M => value.or_else(|| (!overwrite).then(|| point.m()).flatten()),
-        };
-        Point::new_raw_axes(
-            point.x,
-            point.y,
-            crate::geometry::ZOrdinate(z),
-            crate::geometry::MOrdinate(m),
+        set_point_ordinate(
+            point,
+            match self {
+                Self::Z => OrdinateAxis::Z,
+                Self::M => OrdinateAxis::M,
+            },
+            value,
+            overwrite,
         )
     }
 

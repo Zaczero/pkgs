@@ -24,7 +24,7 @@ use crate::py::errors::InvalidGeometryError;
 use crate::{
     CoordSeq, PyBuffer, collect_py_iter_at_most_from_iter, collect_py_iter_exact,
     collect_py_iter_exact_from_iter, collect_py_iter_from_iter, f64_required, f64_scalar_named,
-    finite_f64_required, py_iter_or_error,
+    finite_coordinate_required, finite_f64_required, py_iter_or_error,
 };
 
 pub(crate) struct CoordinateInput {
@@ -126,6 +126,19 @@ impl DefaultedF64Input {
         match self {
             Self::Default(value) => Ok(value),
             Self::Supplied(value) => finite_f64_required(name, value.bind(py)),
+        }
+    }
+
+    /// Resolve a scalar coordinate ordinate, preserving the structural
+    /// `InvalidGeometryError` used by coordinate admission.
+    pub(crate) fn resolve_coordinate_scalar(
+        self,
+        py: Python<'_>,
+        name: &str,
+    ) -> PyResult<f64> {
+        match self {
+            Self::Default(value) => Ok(value),
+            Self::Supplied(value) => finite_coordinate_required(name, value.bind(py)),
         }
     }
 

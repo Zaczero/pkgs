@@ -181,6 +181,52 @@ def test_set_z_and_set_m_retag_empties() -> None:
     assert nested.to_wkt() == 'GEOMETRYCOLLECTION (POINT Z EMPTY)'
 
 
+@pytest.mark.parametrize('method', ['set_z', 'set_m', 'force_3d'])
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
+def test_ordinate_setters_reject_nonfinite_before_empty_or_noop(
+    method: str, value: float
+) -> None:
+    geometries = [
+        gm.Point(1, 2),
+        gm.from_wkt('POINT Z (1 2 3)'),
+        gm.from_wkt('POINT Z EMPTY'),
+        gm.from_wkt('MULTIPOINT (EMPTY, (1 2))'),
+    ]
+    for geometry in geometries:
+        with pytest.raises(gm.InvalidGeometryError):
+            getattr(geometry, method)(value)
+
+
+@pytest.mark.parametrize('method', ['set_z', 'set_m', 'force_3d'])
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
+def test_array_ordinate_setters_reject_nonfinite_before_missing_or_noop(
+    method: str, value: float
+) -> None:
+    arrays = [
+        gm.GeometryArray([gm.Point(1, 2), None]),
+        gm.GeometryArray([gm.Point(1, 2, z=3)]),
+        gm.GeometryArray([gm.Point(1, 2), gm.Point(3, 4, z=5)]),
+        gm.GeometryArray([]),
+    ]
+    for array in arrays:
+        with pytest.raises(gm.InvalidGeometryError):
+            getattr(array, method)(value)
+
+
+def test_ordinate_updates_preserve_signed_zero_and_full_zm() -> None:
+    source = gm.from_wkt('POINT ZM (-0 0 -0 0)')
+    z_updated = next(iter(source.set_z(7.0).coords))
+    m_updated = next(iter(source.set_m(8.0).coords))
+    both_updated = next(iter(source.set_z(7.0).set_m(8.0).coords))
+
+    assert z_updated == (-0.0, 0.0, 7.0, 0.0)
+    assert m_updated == (-0.0, 0.0, -0.0, 8.0)
+    assert both_updated == (-0.0, 0.0, 7.0, 8.0)
+    assert math.copysign(1.0, z_updated[0]) == -1.0
+    assert math.copysign(1.0, z_updated[1]) == 1.0
+    assert math.copysign(1.0, m_updated[2]) == -1.0
+
+
 def test_empty_equality_is_axes_sensitive() -> None:
     """Value equality compares the declared axes of empties (mirroring
     equals_identical): an XY empty and a Z empty are distinct values with

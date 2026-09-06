@@ -10,19 +10,13 @@ use crate::geometry::constructive::{
 };
 use crate::geometry::{
     AxisFrame, Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon,
-    ReduceSimd, Ring, Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
+    HasM, HasZ, LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, OrdinateAxis, Point,
+    Polygon, ReduceSimd, Ring, Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
     clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
     column_all_finite, compare_point_slices, compare_points, compare_polygons, compare_shapes,
-    line_parts_to_shape, same_topological_coordinate, simd_xy_map_f64, simd_xy_map_one_f64,
+    line_parts_to_shape, same_topological_coordinate, set_point_ordinate, simd_xy_map_f64,
+    simd_xy_map_one_f64,
 };
-
-/// Which optional ordinate [`Shape::set_z`]/[`Shape::set_m`] act on.
-#[derive(Clone, Copy)]
-enum OrdinateAxis {
-    Z,
-    M,
-}
 
 impl CoordSeq {
     /// `op` over every `(x, y)` pair, Z/M columns carried through untouched —
@@ -530,12 +524,7 @@ impl Shape {
         }
         self.try_map_coordseqs(
             |seq| Ok(seq.set_ordinate(axis, value, overwrite)),
-            |point| {
-                Ok(CoordSeq::from(vec![*point])
-                    .set_ordinate(axis, value, overwrite)
-                    .first()
-                    .expect("single-point sequence"))
-            },
+            |point| Ok(set_point_ordinate(*point, axis, value, overwrite)),
         )
     }
 

@@ -181,6 +181,45 @@ pub(crate) use util::{
     unique_xy_points, wrap_index,
 };
 
+/// Which optional ordinate an edit replaces or clears.
+#[derive(Clone, Copy)]
+pub(crate) enum OrdinateAxis {
+    Z,
+    M,
+}
+
+/// Replace one optional ordinate on a point without rebuilding a coordinate sequence.
+pub(crate) fn set_point_ordinate(
+    point: Point,
+    axis: OrdinateAxis,
+    value: Option<f64>,
+    overwrite: bool,
+) -> Point {
+    let current = match axis {
+        OrdinateAxis::Z => point.z(),
+        OrdinateAxis::M => point.m(),
+    };
+    let value = match value {
+        None => None,
+        Some(value) if overwrite || current.is_none() => Some(value),
+        Some(_) => current,
+    };
+    match axis {
+        OrdinateAxis::Z => Point::new_raw_axes(
+            point.x,
+            point.y,
+            ZOrdinate(value),
+            MOrdinate(point.m()),
+        ),
+        OrdinateAxis::M => Point::new_raw_axes(
+            point.x,
+            point.y,
+            ZOrdinate(point.z()),
+            MOrdinate(value),
+        ),
+    }
+}
+
 /// Whether raw coordinate bounds can represent an operand in a geographic frame.
 ///
 /// Longitude spellings cannot be compared as Cartesian coordinates across the

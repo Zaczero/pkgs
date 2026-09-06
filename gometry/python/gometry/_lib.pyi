@@ -3382,7 +3382,7 @@ class Geometry:
         Parameters
         ----------
         z : float or None
-            Z to assign at every vertex, or ``None`` to remove the Z ordinate.
+            Finite Z to assign at every vertex, or ``None`` to remove the Z ordinate.
 
         Returns
         -------
@@ -3410,7 +3410,7 @@ class Geometry:
         Parameters
         ----------
         z : float, default 0.0
-            Z to assign where it is missing.
+            Finite Z to assign where it is missing.
 
         Returns
         -------
@@ -3644,7 +3644,7 @@ class Geometry:
         Parameters
         ----------
         m : float or None
-            M to assign at every vertex, or ``None`` to remove the M ordinate.
+            Finite M to assign at every vertex, or ``None`` to remove the M ordinate.
 
         Returns
         -------
@@ -8560,7 +8560,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Parameters
         ----------
         z : float or None
-            Z to assign at every vertex, or ``None`` to remove the Z ordinate.
+            Finite Z to assign at every vertex, or ``None`` to remove the Z ordinate.
 
         Returns
         -------
@@ -8588,7 +8588,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Parameters
         ----------
         z : float, default 0.0
-            Z to assign where it is missing.
+            Finite Z to assign where it is missing.
 
         Returns
         -------
@@ -8824,7 +8824,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Parameters
         ----------
         m : float or None
-            M to assign at every vertex, or ``None`` to remove the M ordinate.
+            Finite M to assign at every vertex, or ``None`` to remove the M ordinate.
 
         Returns
         -------

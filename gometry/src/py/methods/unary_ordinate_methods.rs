@@ -3,8 +3,9 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 
-use crate::{PyGeometry, PyGeometryArray};
+use crate::{DefaultedF64Input, PyGeometry, PyGeometryArray};
 
 method_doc! {
     doc_force_2d;
@@ -47,7 +48,7 @@ to 3D.
 Parameters
 ----------
 z : float, default 0.0
-    Z to assign where it is missing.";
+    Finite Z to assign where it is missing.";
     scalar: r"
 
 Returns
@@ -88,7 +89,7 @@ use force_3d; to drop to XY, use force_2d.
 Parameters
 ----------
 z : float or None
-    Z to assign at every vertex, or ``None`` to remove the Z ordinate.";
+    Finite Z to assign at every vertex, or ``None`` to remove the Z ordinate.";
     scalar: r"
 
 Returns
@@ -127,7 +128,7 @@ ordinate. Z passes through unchanged.
 Parameters
 ----------
 m : float or None
-    M to assign at every vertex, or ``None`` to remove the M ordinate.";
+    Finite M to assign at every vertex, or ``None`` to remove the M ordinate.";
     scalar: r"
 
 Returns
@@ -167,8 +168,9 @@ unary_shape_method!(
 #[pymethods]
 impl PyGeometry {
     #[doc = doc_force_3d!(scalar)]
-    #[pyo3(signature = (z = 0.0))]
-    pub fn force_3d(&self, py: Python<'_>, z: f64) -> PyResult<crate::Typed> {
+    #[pyo3(signature = (z = DefaultedF64Input::Default(0.0)))]
+    pub fn force_3d(&self, py: Python<'_>, z: DefaultedF64Input) -> PyResult<crate::Typed> {
+        let z = z.resolve_coordinate_scalar(py, "z")?;
         unary_spine_shapes!(
             scalar,
             py,
@@ -182,7 +184,10 @@ impl PyGeometry {
 
     #[doc = doc_set_z!(scalar)]
     #[pyo3(signature = (z))]
-    pub fn set_z(&self, py: Python<'_>, z: Option<f64>) -> PyResult<crate::Typed> {
+    pub fn set_z(&self, py: Python<'_>, z: Option<&Bound<'_, PyAny>>) -> PyResult<crate::Typed> {
+        let z = z
+            .map(|value| crate::finite_coordinate_required("z", value))
+            .transpose()?;
         unary_spine_shapes!(
             scalar,
             py,
@@ -196,7 +201,10 @@ impl PyGeometry {
 
     #[doc = doc_set_m!(scalar)]
     #[pyo3(signature = (m))]
-    pub fn set_m(&self, py: Python<'_>, m: Option<f64>) -> PyResult<crate::Typed> {
+    pub fn set_m(&self, py: Python<'_>, m: Option<&Bound<'_, PyAny>>) -> PyResult<crate::Typed> {
+        let m = m
+            .map(|value| crate::finite_coordinate_required("m", value))
+            .transpose()?;
         unary_spine_shapes!(
             scalar,
             py,
@@ -212,8 +220,9 @@ impl PyGeometry {
 #[pymethods]
 impl PyGeometryArray {
     #[doc = doc_force_3d!(array)]
-    #[pyo3(signature = (z = 0.0))]
-    pub fn force_3d(&self, py: Python<'_>, z: f64) -> PyResult<Self> {
+    #[pyo3(signature = (z = DefaultedF64Input::Default(0.0)))]
+    pub fn force_3d(&self, py: Python<'_>, z: DefaultedF64Input) -> PyResult<Self> {
+        let z = z.resolve_coordinate_scalar(py, "z")?;
         unary_spine_shapes_extras!(
             array,
             py,
@@ -227,7 +236,10 @@ impl PyGeometryArray {
 
     #[doc = doc_set_z!(array)]
     #[pyo3(signature = (z))]
-    pub fn set_z(&self, py: Python<'_>, z: Option<f64>) -> PyResult<Self> {
+    pub fn set_z(&self, py: Python<'_>, z: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let z = z
+            .map(|value| crate::finite_coordinate_required("z", value))
+            .transpose()?;
         unary_spine_shapes_extras!(
             array,
             py,
@@ -244,7 +256,10 @@ impl PyGeometryArray {
 
     #[doc = doc_set_m!(array)]
     #[pyo3(signature = (m))]
-    pub fn set_m(&self, py: Python<'_>, m: Option<f64>) -> PyResult<Self> {
+    pub fn set_m(&self, py: Python<'_>, m: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let m = m
+            .map(|value| crate::finite_coordinate_required("m", value))
+            .transpose()?;
         unary_spine_shapes_extras!(
             array,
             py,
