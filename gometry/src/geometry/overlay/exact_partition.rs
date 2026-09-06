@@ -268,39 +268,27 @@ struct GlobalFaces {
     count: u32,
 }
 
+struct PlannedChord {
+    sources: Range<usize>,
+    sides: [u32; 2],
+}
+
 struct BoundaryPlan {
-    walks: Vec<Vec<u32>>,
-    lines: Vec<u32>,
-    line_sides: Vec<[u32; 2]>,
+    source_darts: Vec<u32>,
+    walks: Vec<Vec<PlannedChord>>,
+    lines: Vec<PlannedChord>,
     points: Vec<(NodeId, u32)>,
     face_quotient: Vec<u32>,
-    walk_sides: Vec<Vec<[u32; 2]>>,
 }
 
 impl BoundaryPlan {
-    fn check_emitted_fans(
-        &self,
-        partition: &ExactPartition<'_>,
-        topology: &IndexedTopology,
-        segments: &[Segment],
-    ) -> Result<()> {
+    fn check_emitted_fans(&self, topology: &IndexedTopology, segments: &[Segment]) -> Result<()> {
         let mut darts = Vec::new();
-        for walk in &self.walks {
-            try_reserve_vec(&mut darts, walk.len())?;
-            for &slot in walk {
-                darts.push([slot, topology.twins[slot as usize]]);
-            }
-        }
-        try_reserve_vec(&mut darts, self.lines.len())?;
-        for &index in &self.lines {
-            let span = &partition.spans[index as usize];
-            let range = topology.starts[span.start.0 as usize] as usize
-                ..topology.starts[span.start.0 as usize + 1] as usize;
-            let slot = range
-                .into_iter()
-                .find(|&slot| topology.targets[slot] == span.end.0)
-                .unwrap();
-            darts.push([slot as u32, topology.twins[slot]]);
+        for chord in self.walks.iter().flatten().chain(&self.lines) {
+            try_reserve_vec(&mut darts, 1)?;
+            let first = self.source_darts[chord.sources.start];
+            let last = self.source_darts[chord.sources.end - 1];
+            darts.push([first, topology.twins[last as usize]]);
         }
         debug_assert_eq!(segments.len(), darts.len() + self.points.len());
         ExactPartition::check_emitted_fans(topology, &darts, &segments[..darts.len()])
@@ -311,9 +299,9 @@ impl BoundaryPlan {
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
     ) -> Result<Vec<Segment>> {
-        let items = self.incident_items(partition, topology)?;
+        let items = self.incident_items(topology)?;
         let segments = partition.round_incident_items(&items)?;
-        self.check_emitted_fans(partition, topology, &segments)?;
+        self.check_emitted_fans(topology, &segments)?;
         self.check_global_faces(partition, &items, &segments)?;
         Ok(segments)
     }
@@ -328,8 +316,13 @@ impl BoundaryPlan {
     ) -> Result<()> {
         let mut sides = Vec::new();
         try_reserve_vec(&mut sides, items.len())?;
-        sides.extend(self.walk_sides.iter().flatten().copied());
-        sides.extend_from_slice(&self.line_sides);
+        sides.extend(
+            self.walks
+                .iter()
+                .flatten()
+                .chain(&self.lines)
+                .map(|chord| chord.sides),
+        );
         sides.extend(self.points.iter().map(|&(_, host)| [host, host]));
         debug_assert_eq!(sides.len(), items.len());
         debug_assert_eq!(segments.len(), items.len());
@@ -443,25 +436,16 @@ impl BoundaryPlan {
         Ok(())
     }
 
-    fn incident_items(
-        &self,
-        partition: &ExactPartition<'_>,
-        topology: &IndexedTopology,
-    ) -> Result<Vec<[NodeId; 2]>> {
+    fn incident_items(&self, topology: &IndexedTopology) -> Result<Vec<[NodeId; 2]>> {
         let mut items = Vec::new();
-        for walk in &self.walks {
-            try_reserve_vec(&mut items, walk.len())?;
-            for &slot in walk {
-                items.push([
-                    NodeId(topology.owners[slot as usize]),
-                    NodeId(topology.targets[slot as usize]),
-                ]);
-            }
-        }
-        try_reserve_vec(&mut items, self.lines.len())?;
-        for &index in &self.lines {
-            let span = &partition.spans[index as usize];
-            items.push([span.start, span.end]);
+        for chord in self.walks.iter().flatten().chain(&self.lines) {
+            try_reserve_vec(&mut items, 1)?;
+            let first = self.source_darts[chord.sources.start] as usize;
+            let last = self.source_darts[chord.sources.end - 1] as usize;
+            items.push([
+                NodeId(topology.owners[first]),
+                NodeId(topology.targets[last]),
+            ]);
         }
         try_reserve_vec(&mut items, self.points.len())?;
         for &(node, _) in &self.points {
@@ -536,34 +520,40 @@ impl GlobalFaces {
                 span_slots[span as usize] = slot;
             }
         }
-        let mut line_sides = Vec::new();
-        try_reserve_vec(&mut line_sides, lines.len())?;
-        for &span in &lines {
-            let slot = span_slots[span as usize];
-            line_sides.push([slot, topology.twins[slot] as usize].map(|dart| {
-                face_quotient[self.walk_faces[topology.face_of[dart] as usize] as usize]
-            }));
-        }
-        let mut walk_sides = Vec::new();
-        try_reserve_vec(&mut walk_sides, walks.len())?;
+        let mut source_darts = Vec::new();
+        let mut make_chord = |slot: u32| -> Result<PlannedChord> {
+            try_reserve_vec(&mut source_darts, 1)?;
+            let start = source_darts.len();
+            source_darts.push(slot);
+            let sides = [slot, topology.twins[slot as usize]].map(|dart| {
+                face_quotient[self.walk_faces[topology.face_of[dart as usize] as usize] as usize]
+            });
+            Ok(PlannedChord {
+                sources: start..start + 1,
+                sides,
+            })
+        };
+        let mut planned_walks = Vec::new();
+        try_reserve_vec(&mut planned_walks, walks.len())?;
         for walk in &walks {
-            let mut sides = Vec::new();
-            try_reserve_vec(&mut sides, walk.len())?;
+            let mut chords = Vec::new();
+            try_reserve_vec(&mut chords, walk.len())?;
             for &slot in walk {
-                let slot = slot as usize;
-                sides.push([slot, topology.twins[slot] as usize].map(|dart| {
-                    face_quotient[self.walk_faces[topology.face_of[dart] as usize] as usize]
-                }));
+                chords.push(make_chord(slot)?);
             }
-            walk_sides.push(sides);
+            planned_walks.push(chords);
+        }
+        let mut planned_lines = Vec::new();
+        try_reserve_vec(&mut planned_lines, lines.len())?;
+        for &span in &lines {
+            planned_lines.push(make_chord(span_slots[span as usize] as u32)?);
         }
         Ok(BoundaryPlan {
-            walks,
-            lines,
-            line_sides,
+            source_darts,
+            walks: planned_walks,
+            lines: planned_lines,
             points: Vec::new(),
             face_quotient,
-            walk_sides,
         })
     }
 
@@ -2197,7 +2187,7 @@ mod tests {
         let plan = cells
             .emission_plan(&partition, &topology, &edges, &faces)
             .unwrap();
-        let items = plan.incident_items(&partition, &topology).unwrap();
+        let items = plan.incident_items(&topology).unwrap();
         assert_eq!(items.len(), 2);
         let error = partition.round_incident_items(&items).unwrap_err();
         assert!(matches!(
@@ -3296,17 +3286,22 @@ mod tests {
             .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
             .unwrap();
         assert_eq!(plan.face_quotient, [0, 1, 2]);
-        assert_eq!(plan.walk_sides[0], vec![[host, 0]; 4]);
-        assert_eq!(plan.walk_sides[1].len(), 4);
+        assert_eq!(
+            plan.walks[0]
+                .iter()
+                .map(|chord| chord.sides)
+                .collect::<Vec<_>>(),
+            vec![[host, 0]; 4]
+        );
+        assert_eq!(plan.walks[1].len(), 4);
         let mut displaced = plan.round_items(&partition, &topology).unwrap();
         assert_eq!(displaced.len(), 8);
         for segment in &mut displaced[4..] {
             segment.start.x += 20.0;
             segment.end.x += 20.0;
         }
-        let items = plan.incident_items(&partition, &topology).unwrap();
-        plan.check_emitted_fans(&partition, &topology, &displaced)
-            .unwrap();
+        let items = plan.incident_items(&topology).unwrap();
+        plan.check_emitted_fans(&topology, &displaced).unwrap();
         let error = plan
             .check_global_faces(&partition, &items, &displaced)
             .unwrap_err();
@@ -3314,7 +3309,7 @@ mod tests {
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactGlobalFace { .. })
         ));
-        for sides in &plan.walk_sides[1] {
+        for sides in plan.walks[1].iter().map(|chord| chord.sides) {
             assert_eq!(sides[0], host);
             assert_ne!(sides[1], 0);
             assert_ne!(sides[1], host);
@@ -3333,7 +3328,8 @@ mod tests {
         {
             let actual: Vec<_> = walk
                 .iter()
-                .map(|&slot| {
+                .map(|chord| {
+                    let slot = plan.source_darts[chord.sources.start];
                     assert_eq!(
                         faces.walk_faces[topology.face_of[slot as usize] as usize],
                         host
@@ -3353,7 +3349,7 @@ mod tests {
             .boundary_plan(Vec::new(), &topology, &edges, &partition, &[false; 3])
             .unwrap();
         assert!(empty.walks.is_empty());
-        assert!(empty.walk_sides.is_empty());
+        assert!(empty.source_darts.is_empty());
         assert!(empty.round_items(&partition, &topology).unwrap().is_empty());
         assert_eq!(empty.face_quotient, [0, 0, 0]);
     }
@@ -3380,7 +3376,13 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(plan.face_quotient, [0, 1, 2]);
-        assert_eq!(plan.walk_sides, [vec![[1, 0]; 4], vec![[2, 0]; 4]]);
+        assert_eq!(
+            plan.walks
+                .iter()
+                .map(|walk| walk.iter().map(|chord| chord.sides).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            [vec![[1, 0]; 4], vec![[2, 0]; 4]]
+        );
         assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 8);
         assert_eq!(plan.walks.len(), 2);
         let walks = faces
@@ -3427,8 +3429,7 @@ mod tests {
                 end: XY::new(-segment.end.y, segment.end.x),
             })
             .collect();
-        plan.check_emitted_fans(&partition, &topology, &rotated)
-            .unwrap();
+        plan.check_emitted_fans(&topology, &rotated).unwrap();
         let reflected: Vec<_> = segments
             .iter()
             .map(|segment| Segment {
@@ -3436,9 +3437,7 @@ mod tests {
                 end: XY::new(segment.end.x, -segment.end.y),
             })
             .collect();
-        let error = plan
-            .check_emitted_fans(&partition, &topology, &reflected)
-            .unwrap_err();
+        let error = plan.check_emitted_fans(&topology, &reflected).unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactCyclicOrder { .. })
@@ -3482,6 +3481,34 @@ mod tests {
             });
         }
         ExactPartition::check_emitted_fans(&topology, &darts, &chords).unwrap();
+        let plan = BoundaryPlan {
+            source_darts: darts
+                .iter()
+                .flat_map(|&[start, end]| [start, topology.twins[end as usize]])
+                .collect(),
+            walks: Vec::new(),
+            lines: (0..4)
+                .map(|index| PlannedChord {
+                    sources: index * 2..index * 2 + 2,
+                    sides: [0, 0],
+                })
+                .collect(),
+            points: Vec::new(),
+            face_quotient: vec![0],
+        };
+        let emitted = plan.round_items(&partition, &topology).unwrap();
+        assert_eq!(
+            emitted
+                .iter()
+                .map(|segment| (segment.start, segment.end))
+                .collect::<Vec<_>>(),
+            [
+                (XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
+                (XY::new(0.0, 0.0), XY::new(0.0, 3.0)),
+                (XY::new(0.0, 0.0), XY::new(-4.0, 0.0)),
+                (XY::new(0.0, 0.0), XY::new(0.0, -5.0)),
+            ]
+        );
         chords.swap(1, 2);
         let error = ExactPartition::check_emitted_fans(&topology, &darts, &chords).unwrap_err();
         assert!(matches!(error.kind(), crate::error::ErrorKind::Geometry(
@@ -3519,7 +3546,7 @@ mod tests {
         assert_eq!(plan.points, [(point, 1)]);
         assert_eq!(plan.lines.len(), 4);
         assert!(plan.walks.is_empty());
-        let items = plan.incident_items(&partition, &topology).unwrap();
+        let items = plan.incident_items(&topology).unwrap();
         assert_eq!(items.len(), 5);
         assert_eq!(items[4], [point, point]);
         let rounded = plan.round_items(&partition, &topology).unwrap();
@@ -3532,8 +3559,7 @@ mod tests {
                 end: XY::new(segment.end.x, -segment.end.y),
             })
             .collect();
-        plan.check_emitted_fans(&partition, &topology, &reflected)
-            .unwrap();
+        plan.check_emitted_fans(&topology, &reflected).unwrap();
         let error = plan
             .check_global_faces(&partition, &items, &reflected)
             .unwrap_err();
@@ -3568,8 +3594,21 @@ mod tests {
             ])
             .unwrap();
         assert!(plan.walks.is_empty());
-        assert_eq!(plan.lines, [0, 1, 2, 3]);
-        assert_eq!(plan.line_sides, [[1, 0]; 4]);
+        assert_eq!(
+            plan.lines
+                .iter()
+                .flat_map(|chord| &plan.source_darts[chord.sources.clone()])
+                .map(|&slot| edges[slot as usize])
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(
+            plan.lines
+                .iter()
+                .map(|chord| chord.sides)
+                .collect::<Vec<_>>(),
+            [[1, 0]; 4]
+        );
         assert_eq!(plan.face_quotient, [0, 1]);
         let open = faces
             .boundary_plan(vec![0, 1, 2], &topology, &edges, &partition, &[
@@ -3577,7 +3616,13 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(open.face_quotient, [0, 0]);
-        assert_eq!(open.line_sides, [[0, 0]; 3]);
+        assert_eq!(
+            open.lines
+                .iter()
+                .map(|chord| chord.sides)
+                .collect::<Vec<_>>(),
+            [[0, 0]; 3]
+        );
     }
 
     #[test]
@@ -3600,7 +3645,13 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(plan.face_quotient, [0, 1, 1]);
-        assert_eq!(plan.walk_sides, [vec![[1, 0]; 4]]);
+        assert_eq!(
+            plan.walks
+                .iter()
+                .map(|walk| walk.iter().map(|chord| chord.sides).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            [vec![[1, 0]; 4]]
+        );
         assert_eq!(plan.walks.len(), 1);
         let walks = faces
             .boundary_walks(&topology, &[false, true, true])
