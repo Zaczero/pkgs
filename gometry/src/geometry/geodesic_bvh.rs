@@ -10,7 +10,7 @@
 
 use crate::HeapSize;
 use crate::collections::HashMap;
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
 use crate::geometry::{
     BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, HashMapExt as _, Point,
 };
@@ -48,61 +48,78 @@ pub(crate) struct GeodesicFacetBvh {
     segment_ids: Box<[u32]>,
 }
 
+fn try_boxed_filled<T: Copy>(len: usize, value: T) -> Result<Box<[T]>> {
+    let mut values = Box::<[T]>::try_new_uninit_slice(len)
+        .map_err(|_| ResourceError::Allocation)?;
+    for slot in &mut *values {
+        slot.write(value);
+    }
+    // SAFETY: every element was initialized with a valid copy of `value` above.
+    Ok(unsafe { values.assume_init() })
+}
+
 impl GeodesicFacetBvh {
     pub(super) fn build(
         segments: &[GeodesicSegment],
         metric: &impl GeodesicMetric,
-    ) -> Option<Self> {
-        let segment_count = u32::try_from(segments.len()).ok()?;
+    ) -> Result<Option<Self>> {
+        let Some(segment_count) = u32::try_from(segments.len()).ok() else {
+            return Ok(None);
+        };
         if segment_count == 0 || segment_count > BvhCode::LEAF_BIT / 2 {
-            return None;
+            return Ok(None);
         }
         let leaf_count = geodesic_leaf_count(segments.len());
         let node_count = 2 * leaf_count - 1;
         let mut tree = Self {
-            anchors: vec![Point::new_raw_xy(0.0, 0.0); node_count].into_boxed_slice(),
-            reaches: vec![0.0; node_count].into_boxed_slice(),
-            codes: vec![0; node_count].into_boxed_slice(),
-            leaves: Box::default(),
-            segment_ids: Box::default(),
+            anchors: try_boxed_filled(node_count, Point::new_raw_xy(0.0, 0.0))?,
+            reaches: try_boxed_filled(node_count, 0.0)?,
+            codes: try_boxed_filled(node_count, 0)?,
+            leaves: try_boxed_filled(leaf_count, GeodesicLeaf { first: 0, len: 0 })?,
+            segment_ids: try_boxed_filled(segments.len(), 0)?,
         };
-        let mut leaves = Vec::with_capacity(leaf_count);
-        let mut segment_ids = Vec::with_capacity(segments.len());
-        let mut aux_cache = HashMap::with_capacity(segments.len() + 1);
-        let mut ids = segments
-            .iter()
-            .enumerate()
-            .map(|(index, segment)| {
-                let start_aux = *aux_cache
-                    .entry((segment.start.x.to_bits(), segment.start.y.to_bits()))
-                    .or_insert_with(|| metric.auxiliary_unit(segment.start.xy()));
-                let end_aux = *aux_cache
-                    .entry((segment.end.x.to_bits(), segment.end.y.to_bits()))
-                    .or_insert_with(|| metric.auxiliary_unit(segment.end.xy()));
-                SegmentBuild {
-                    index: index as u32,
-                    centroid: [
-                        start_aux[0] + end_aux[0],
-                        start_aux[1] + end_aux[1],
-                        start_aux[2] + end_aux[2],
-                    ],
-                }
-            })
-            .collect::<Vec<_>>();
+        let endpoint_capacity = segments
+            .len()
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut aux_cache = HashMap::new();
+        aux_cache
+            .try_reserve(endpoint_capacity)
+            .map_err(|_| ResourceError::Allocation)?;
+        let mut ids = Vec::new();
+        crate::try_reserve_vec(&mut ids, segments.len())?;
+        for (index, segment) in segments.iter().enumerate() {
+            let start_aux = *aux_cache
+                .entry((segment.start.x.to_bits(), segment.start.y.to_bits()))
+                .or_insert_with(|| metric.auxiliary_unit(segment.start.xy()));
+            let end_aux = *aux_cache
+                .entry((segment.end.x.to_bits(), segment.end.y.to_bits()))
+                .or_insert_with(|| metric.auxiliary_unit(segment.end.xy()));
+            crate::try_push_vec(&mut ids, SegmentBuild {
+                index: index as u32,
+                centroid: [
+                    start_aux[0] + end_aux[0],
+                    start_aux[1] + end_aux[1],
+                    start_aux[2] + end_aux[2],
+                ],
+            })?;
+        }
+        let mut next_leaf = 0;
+        let mut next_segment_id = 0;
         let mut next = 1;
         tree.fill_node(
             0,
             &mut next,
             segments,
             &mut ids,
-            &mut leaves,
-            &mut segment_ids,
+            &mut next_leaf,
+            &mut next_segment_id,
             metric,
         );
         debug_assert_eq!(next, node_count);
-        tree.leaves = leaves.into_boxed_slice();
-        tree.segment_ids = segment_ids.into_boxed_slice();
-        Some(tree)
+        debug_assert_eq!(next_leaf, leaf_count);
+        debug_assert_eq!(next_segment_id, segments.len());
+        Ok(Some(tree))
     }
 
     fn fill_node(
@@ -111,17 +128,21 @@ impl GeodesicFacetBvh {
         next: &mut usize,
         segments: &[GeodesicSegment],
         ids: &mut [SegmentBuild],
-        leaves: &mut Vec<GeodesicLeaf>,
-        segment_ids: &mut Vec<u32>,
+        next_leaf: &mut usize,
+        next_segment_id: &mut usize,
         metric: &impl GeodesicMetric,
     ) {
         if ids.len() <= GEODESIC_LEAF_SEGMENTS {
             ids.sort_unstable_by_key(|entry| entry.index);
-            let first = segment_ids.len() as u32;
-            segment_ids.extend(ids.iter().map(|entry| entry.index));
+            let first = *next_segment_id as u32;
+            for entry in ids.iter() {
+                self.segment_ids[*next_segment_id] = entry.index;
+                *next_segment_id += 1;
+            }
             let len = ids.len() as u8;
-            let leaf_index = leaves.len() as u32;
-            leaves.push(GeodesicLeaf { first, len });
+            let leaf_index = *next_leaf as u32;
+            self.leaves[*next_leaf] = GeodesicLeaf { first, len };
+            *next_leaf += 1;
             self.codes[node] = BvhCode::leaf(leaf_index as usize).raw();
             self.fill_cap(node, segments, ids, metric);
             return;
@@ -143,8 +164,8 @@ impl GeodesicFacetBvh {
             next,
             segments,
             lower,
-            leaves,
-            segment_ids,
+            next_leaf,
+            next_segment_id,
             metric,
         );
         self.fill_node(
@@ -152,8 +173,8 @@ impl GeodesicFacetBvh {
             next,
             segments,
             upper,
-            leaves,
-            segment_ids,
+            next_leaf,
+            next_segment_id,
             metric,
         );
         self.anchors[node] = self.anchors[first_child];

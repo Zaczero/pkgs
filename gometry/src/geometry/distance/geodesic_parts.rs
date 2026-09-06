@@ -404,7 +404,7 @@ pub(crate) fn geodesic_sweep_with_parts(
 ) -> Result<f64> {
     let mut scratch = geodesic_scratch();
     let scratch = &mut *scratch;
-    if let Some(bvh) = target_parts.geodesic_bvh(metric) {
+    if let Some(bvh) = target_parts.geodesic_bvh(metric)? {
         for &vertex in vertices {
             best =
                 bvh.min_point_distance(vertex, target_parts, metric, &mut scratch.stack, best)?;
@@ -422,7 +422,7 @@ pub(crate) fn geodesic_point_distance_with_parts(
     stack: Option<&mut Vec<u32>>,
 ) -> Result<f64> {
     let mut scratch = geodesic_scratch();
-    let bvh = target_parts.geodesic_bvh(metric);
+    let bvh = target_parts.geodesic_bvh(metric)?;
     geodesic_point_distance_with_parts_and_scratch(
         point,
         target_parts,
@@ -522,7 +522,7 @@ pub(crate) fn geodesic_dwithin_sweep_with_parts(
 ) -> Result<bool> {
     let mut scratch = geodesic_scratch();
     let scratch = &mut *scratch;
-    if let Some(bvh) = target_parts.geodesic_bvh(metric) {
+    if let Some(bvh) = target_parts.geodesic_bvh(metric)? {
         vertices.iter().try_fold(false, |found, &vertex| {
             if found {
                 return Ok(true);
@@ -548,7 +548,7 @@ pub(crate) fn geodesic_point_dwithin_with_parts(
     stack: Option<&mut Vec<u32>>,
 ) -> Result<bool> {
     let mut scratch = geodesic_scratch();
-    let bvh = target_parts.geodesic_bvh(metric);
+    let bvh = target_parts.geodesic_bvh(metric)?;
     geodesic_point_dwithin_with_parts_and_scratch(
         point,
         target_parts,

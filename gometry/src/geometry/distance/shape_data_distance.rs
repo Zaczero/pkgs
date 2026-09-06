@@ -408,7 +408,7 @@ impl PreparedPlan {
             metric.runtime_generation(),
         );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
-        let bvh = parts.geodesic_bvh(metric);
+        let bvh = parts.geodesic_bvh(metric)?;
         let mut scratch = distance::geodesic_scratch();
         let mut stack = Vec::new();
         probes
@@ -446,7 +446,7 @@ impl PreparedPlan {
             metric.runtime_generation(),
         );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
-        let bvh = parts.geodesic_bvh(metric);
+        let bvh = parts.geodesic_bvh(metric)?;
         let mut scratch = distance::geodesic_scratch();
         let mut stack = Vec::new();
         probes

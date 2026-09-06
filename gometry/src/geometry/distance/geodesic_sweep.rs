@@ -448,7 +448,7 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
     let mut scratch = geodesic_scratch();
     let scratch = &mut *scratch;
     let width = target_parts.segments.len() + target_parts.point_only.len();
-    if let Some(bvh) = target_parts.geodesic_bvh(metric) {
+    if let Some(bvh) = target_parts.geodesic_bvh(metric)? {
         let mut best = best;
         for (vertex_index, &vertex) in vertices.iter().enumerate() {
             best = bvh.witness_point(
@@ -478,13 +478,18 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
 }
 
 impl GeodesicParts {
-    pub(crate) fn geodesic_bvh(&self, metric: &impl GeodesicMetric) -> Option<&GeodesicFacetBvh> {
+    pub(crate) fn geodesic_bvh(
+        &self,
+        metric: &impl GeodesicMetric,
+    ) -> Result<Option<&GeodesicFacetBvh>> {
         self.facet_bvh
-            .get_or_init(|| {
-                (self.segments.len() >= BVH_MIN_INDEXED_SEGMENTS)
-                    .then(|| GeodesicFacetBvh::build(&self.segments, metric))
-                    .flatten()
+            .get_or_try_init(|| {
+                if self.segments.len() >= BVH_MIN_INDEXED_SEGMENTS {
+                    GeodesicFacetBvh::build(&self.segments, metric)
+                } else {
+                    Ok(None)
+                }
             })
-            .as_ref()
+            .map(|bvh| bvh.as_ref())
     }
 }

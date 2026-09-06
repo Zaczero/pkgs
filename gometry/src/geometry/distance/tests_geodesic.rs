@@ -3,7 +3,7 @@
     reason = "tests assert, and return Result only to propagate setup errors"
 )]
 use crate::crs::with_ellipsoid_metric;
-use crate::error::Result;
+use crate::error::{ErrorKind, ResourceError, Result};
 use crate::geometry::distance::frechet::frechet_dp_columns;
 use crate::geometry::distance::geodesic_parts::{
     geodesic_cap_from_parts, geodesic_capped_dwithin_with_parts, geodesic_capped_sweep_with_parts,
@@ -13,15 +13,25 @@ use crate::geometry::distance::geodesic_sweep::geodesic_capped_witness_sweep_wit
 use crate::geometry::distance::tests::{
     assert_geodesic_close, assert_same_witness, brute_geodesic_distance,
     brute_geodesic_nearest_points, geodesic_bvh_oracle_cases, geodesic_distance_oracle_cases,
-    geodesic_nearest_oracle_cases, line, multipoint, p, polygon,
+    dense_line, geodesic_nearest_oracle_cases, line, multipoint, p, polygon,
 };
 use crate::geometry::distance::{
     GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_min_distance_to_target,
     geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, MOrdinate, Point, PreparedPlan, Shape, ZOrdinate,
+    FrameDependentCaches, GeodesicMetric, GeodesicParts, MOrdinate, Point, PreparedPlan, Shape, ZOrdinate,
 };
+
+fn fresh_bvh_parts(template: &GeodesicParts) -> GeodesicParts {
+    GeodesicParts {
+        points: Box::default(),
+        segments: template.segments.clone(),
+        point_only: Box::default(),
+        caps: None,
+        facet_bvh: std::sync::OnceLock::new(),
+    }
+}
 
 fn brute_geodesic_directed_hausdorff(
     source: &Shape,
@@ -129,7 +139,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
         with_ellipsoid_metric("EPSG:4326", &[&probes, &target], |metric| {
             let target_parts = target.geodesic_parts(metric)?;
             assert_eq!(
-                target_parts.geodesic_bvh(metric).is_some(),
+                target_parts.geodesic_bvh(metric)?.is_some(),
                 expect_bvh,
                 "{name} bvh presence"
             );
@@ -307,6 +317,92 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
             assert_eq!(target.z(), expected_z, "{name} target Z");
             assert_eq!(target.m(), expected_m, "{name} target M");
         }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for metric setup and uses assertions for fault outcomes"
+)]
+fn geodesic_bvh_allocation_failures_are_retryable() -> Result<()> {
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    let target = dense_line(-2.0, 0.0, 65);
+    with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
+        let template = target.geodesic_parts(metric)?;
+        let warm = fresh_bvh_parts(&template);
+        warm.geodesic_bvh(metric)?;
+        let counted = fresh_bvh_parts(&template);
+        let (_, allocations) = allocation_count(|| counted.geodesic_bvh(metric));
+        assert!(allocations > 0);
+
+        for prefix in 0..allocations {
+            let parts = fresh_bvh_parts(&template);
+            let result = fail_allocations_after(prefix, || parts.geodesic_bvh(metric));
+            let error = result
+                .err()
+                .unwrap_or_else(|| panic!("allocation prefix {prefix} unexpectedly succeeded"));
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            assert!(parts.facet_bvh.get().is_none());
+            assert!(parts.geodesic_bvh(metric)?.is_some());
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geodesic_bvh_none_remains_for_empty_and_below_threshold_parts() -> Result<()> {
+    use crate::test_support::fail_allocations_after;
+
+    let small = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
+    let empty = Shape::empty_point();
+    with_ellipsoid_metric("EPSG:4326", &[&small, &empty], |metric| {
+        let small_parts = small.geodesic_parts(metric)?;
+        let small_result = fail_allocations_after(0, || small_parts.geodesic_bvh(metric));
+        assert!(matches!(small_result, Ok(None)));
+
+        let empty_parts = empty.geodesic_parts(metric)?;
+        assert!(matches!(empty_parts.geodesic_bvh(metric), Ok(None)));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for metric setup and uses assertions for fault outcomes"
+)]
+fn geodesic_sweep_propagates_bvh_allocation_failure() -> Result<()> {
+    use crate::test_support::fail_allocations_after;
+
+    let target = dense_line(-2.0, 0.0, 65);
+    let probe = [p(0.0, 0.0)];
+    let small = line(vec![p(-1.0, 0.0), p(1.0, 0.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&target, &small], |metric| {
+        let small_parts = small.geodesic_parts(metric)?;
+        geodesic_sweep_with_parts(&probe, &small_parts, metric, f64::INFINITY)?;
+
+        let template = target.geodesic_parts(metric)?;
+        let parts = fresh_bvh_parts(&template);
+        let result = fail_allocations_after(0, || {
+            geodesic_sweep_with_parts(&probe, &parts, metric, f64::INFINITY)
+        });
+        let error = result
+            .err()
+            .expect("BVH allocation failure was swallowed by capped fallback");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert!(parts.facet_bvh.get().is_none());
         Ok(())
     })?;
     Ok(())
