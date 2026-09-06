@@ -11,8 +11,8 @@ use crate::error::Result;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
     HasZ, LineIndex, LineSeq, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan,
-    Segment, SegmentMetric, SegmentProjection, Shape, distance_3d_with_parts, point_distance,
-    same_point, segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
+    Segment, SegmentMetric, SegmentProjection, Shape, distance_3d_with_parts, interpolate_fraction,
+    point_distance, same_point, segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
 
@@ -309,7 +309,7 @@ impl Shape {
     ) -> Result<Self> {
         let m = Finite::try_new("m", m)?.get();
         let index = MeasuredLineIndex::build(self).map_err(crate::error::Error::from)?;
-        Ok(Self::Point(index.interpolate_finite(m, metric)))
+        Ok(Self::Point(index.interpolate_finite(m, metric)?))
     }
 
     /// Interpolated M ordinate at the location on this geometry nearest
@@ -351,7 +351,7 @@ impl PreparedPlan {
     ) -> Result<Shape> {
         let m = Finite::try_new("m", m)?.get();
         Ok(Shape::Point(
-            self.measured_line_index()?.interpolate_finite(m, metric),
+            self.measured_line_index()?.interpolate_finite(m, metric)?,
         ))
     }
 
@@ -446,48 +446,44 @@ impl MeasuredLineIndex {
         Ok(Self { parts, first, last })
     }
 
-    fn for_each_window(&self, mut visit: impl FnMut(Point, Point) -> bool) {
+    fn for_each_window(&self, mut visit: impl FnMut(Point, Point) -> Result<bool>) -> Result<()> {
         let mut previous = None;
         for part in &self.parts {
             for point in part.iter() {
                 if let Some(start) = previous
-                    && !visit(start, point)
+                    && !visit(start, point)?
                 {
-                    return;
+                    return Ok(());
                 }
                 previous = Some(point);
             }
         }
+        Ok(())
     }
 
-    fn interpolate_finite<M: SegmentMetric>(&self, target: f64, metric: &M) -> Point {
+    fn interpolate_finite<M: SegmentMetric>(&self, target: f64, metric: &M) -> Result<Point> {
         let target = target.clamp(self.first.m().unwrap_or(0.0), self.last.m().unwrap_or(0.0));
         let mut result = None;
-        self.for_each_window(|start, end| {
+        self.for_each_window(|start, end| -> Result<bool> {
             let (start_m, end_m) = (start.m().unwrap_or(0.0), end.m().unwrap_or(0.0));
             if target > end_m {
-                return true;
+                return Ok(true);
             }
             #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
             if target == start_m {
                 result = Some(start);
-                return false;
+                return Ok(false);
             }
             #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
             if target == end_m {
                 result = Some(end);
-                return false;
+                return Ok(false);
             }
-            let span = end_m - start_m;
-            let fraction = if span == 0.0 {
-                0.0
-            } else {
-                (target - start_m) / span
-            };
+            let fraction = interpolate_fraction(start_m, end_m, target)?;
             result = Some(metric.interpolate(start, end, fraction));
-            false
-        });
-        result.unwrap_or(self.last)
+            Ok(false)
+        })?;
+        Ok(result.unwrap_or(self.last))
     }
 
     fn locate<M: SegmentMetric>(&self, point: Point, metric: &M) -> Result<f64> {
@@ -523,41 +519,34 @@ impl MeasuredLineIndex {
         let start = m0.clamp(lo, hi);
         let end = m1.clamp(lo, hi);
         if start.total_cmp(&end) == Ordering::Equal {
-            return Ok(Shape::Point(self.interpolate_finite(start, metric)));
+            return Ok(Shape::Point(self.interpolate_finite(start, metric)?));
         }
         let mut result = Vec::new();
-        self.for_each_window(|segment_start, segment_end| {
+        self.for_each_window(|segment_start, segment_end| -> Result<bool> {
             let (start_m, end_m) = (
                 segment_start.m().unwrap_or(0.0),
                 segment_end.m().unwrap_or(0.0),
             );
             if end_m < start || start_m > end {
-                return true;
+                return Ok(true);
             }
-            let span = end_m - start_m;
-            let fraction = |measure: f64| {
-                if span == 0.0 {
-                    0.0
-                } else {
-                    (measure - start_m) / span
-                }
-            };
+            let fraction = |measure: f64| interpolate_fraction(start_m, end_m, measure);
             #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
-            let at = |measure: f64| {
+            let at = |measure: f64| -> Result<Point> {
                 if measure == start_m {
-                    segment_start
+                    Ok(segment_start)
                 } else if measure == end_m {
-                    segment_end
+                    Ok(segment_end)
                 } else {
-                    metric.interpolate(segment_start, segment_end, fraction(measure))
+                    Ok(metric.interpolate(segment_start, segment_end, fraction(measure)?))
                 }
             };
-            push_distinct_point(&mut result, at(start.max(start_m)));
-            push_distinct_point(&mut result, at(end.min(end_m)));
-            true
-        });
+            push_distinct_point(&mut result, at(start.max(start_m))?);
+            push_distinct_point(&mut result, at(end.min(end_m))?);
+            Ok(true)
+        })?;
         Ok(match result.len() {
-            0 => Shape::Point(self.interpolate_finite(start, metric)),
+            0 => Shape::Point(self.interpolate_finite(start, metric)?),
             1 => Shape::Point(result[0]),
             _ => Shape::LineString(LineSeq::from_proven(CoordSeq::from(result))),
         })

@@ -236,7 +236,7 @@ pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIn
 pub(crate) use segments::clip_segment;
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
-pub(crate) use segments::interpolate_f64;
+pub(crate) use segments::{interpolate_f64, interpolate_fraction};
 use segments::{
     CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SharedSpan, SquaredDistanceKey,
     interpolate_optional, interpolate_segment_point, nearest_points, orientation_xy,

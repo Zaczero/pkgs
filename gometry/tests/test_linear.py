@@ -3,6 +3,7 @@ lines by points, and empty-linework error contracts.
 """
 
 import math
+import sys
 from typing import cast
 
 import gometry as gm
@@ -408,6 +409,31 @@ def test_measured_lrs_keeps_zero_xy_vertices_multipart_windows_and_first_wins() 
 
     overlapping = gm.from_wkt('LINESTRING M (0 0 0, 10 0 10, 0 0 20)')
     assert overlapping.line_locate(gm.Point(5, 1), basis='m') == pytest.approx(5.0)
+
+
+def test_measured_lrs_handles_opposite_sign_extreme_m_with_z_and_arrays() -> None:
+    maximum = sys.float_info.max
+    line = gm.from_wkt(
+        f'LINESTRING ZM (0 0 10 {-maximum}, 2 0 20 {maximum})',
+        crs=4326,
+    )
+
+    midpoint = cast('gm.Point', line.line_interpolate(0.0, basis='m'))
+    assert (midpoint.x, midpoint.y, midpoint.z, midpoint.m) == (1.0, 0.0, 15.0, 0.0)
+    substring = cast('gm.LineString', line.line_substring(-maximum, 0.0, basis='m'))
+    assert list(substring.coords)[1] == (1.0, 0.0, 15.0, 0.0)
+    assert list(substring.coords)[0] == (0.0, 0.0, 10.0, -maximum)
+
+    rows = gm.GeometryArray([line], crs=4326)
+    array_midpoint = rows.line_interpolate(0.0, basis='m')[0]
+    array_substring = rows.line_substring(-maximum, 0.0, basis='m')[0]
+    assert (array_midpoint.x, array_midpoint.y, array_midpoint.z, array_midpoint.m) == (
+        1.0,
+        0.0,
+        15.0,
+        0.0,
+    )
+    assert list(array_substring.coords)[1] == (1.0, 0.0, 15.0, 0.0)
 
 
 def test_linear_referencing_is_crs_aware_with_a_planar_escape() -> None:

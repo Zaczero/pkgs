@@ -637,7 +637,8 @@ mod frame_cache_tests {
 
     use super::*;
     use crate::geometry::{CoordSeq, LineSeq};
-    use crate::test_support::allocation_count;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
@@ -739,6 +740,38 @@ mod frame_cache_tests {
         });
         assert_eq!(interpolation_allocations, 0);
         assert_eq!(locate_allocations, 0);
+    }
+
+    #[test]
+    fn exact_measured_fraction_propagates_each_allocation_failure() {
+        let max = f64::MAX;
+        let shape = PreparedPlan::new(Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(
+                vec![0.0, 2.0],
+                vec![0.0, 0.0],
+                Some(vec![10.0, 20.0]),
+                Some(vec![-max, max]),
+            ))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ));
+        shape.measured_line_index().expect("measured line index");
+
+        let (_, allocations) = allocation_count(|| {
+            shape
+                .line_interpolate_point_m_with(0.0, &PlanarMetric)
+                .expect("exact measured interpolation")
+        });
+        assert!(allocations > 0);
+        for prefix in 0..allocations {
+            let error = fail_allocations_after(prefix, || {
+                shape.line_interpolate_point_m_with(0.0, &PlanarMetric)
+            })
+            .unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
     }
 
     #[test]

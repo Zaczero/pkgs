@@ -10,6 +10,7 @@
 //! projection, and interpolation primitives used across distance, overlay,
 //! linear-referencing, and predicate modules.
 
+use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
@@ -1832,6 +1833,25 @@ pub(crate) fn interpolate_f64(start: f64, end: f64, fraction: f64) -> f64 {
     // direct two products overflow with opposite signs.
     let scale = axis_pow2_scale(start.abs().max(end.abs()));
     (start * scale * (1.0 - fraction) + end * scale * fraction) / scale
+}
+
+/// Fraction for a finite interpolation interval. Keep the established
+/// arithmetic on the ordinary path; exact stored-binary64 ratio arithmetic is
+/// only needed when the source interval or target residual overflows.
+pub(crate) fn interpolate_fraction(start: f64, end: f64, target: f64) -> Result<f64> {
+    let numerator = target - start;
+    let denominator = end - start;
+    if denominator == 0.0 {
+        return Ok(0.0);
+    }
+    if numerator.is_finite() && denominator.is_finite() {
+        return Ok(numerator / denominator);
+    }
+    let numerator = ExactDyadic::try_from_f64(target)?
+        .try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    let denominator = ExactDyadic::try_from_f64(end)?
+        .try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    round_ratio(&numerator, &denominator)
 }
 
 /// Reconstruct the free axis at a known held-axis crossing without forming
