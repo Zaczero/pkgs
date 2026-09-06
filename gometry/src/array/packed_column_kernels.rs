@@ -220,7 +220,9 @@ pub(crate) fn clip_lines_packed_xy(
                 XY::new(xs[index], ys[index]),
                 XY::new(xs[index + 1], ys[index + 1]),
                 rect,
-            ) else {
+            )
+            .map_err(|error| row_err(row, error))?
+            else {
                 continue;
             };
             if same_point(clipped_start, clipped_end) {

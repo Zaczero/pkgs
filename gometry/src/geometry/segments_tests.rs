@@ -121,11 +121,11 @@ fn assert_liang_authority_agrees(start: XY, end: XY, rect: Bounds) {
     let fast = clip_segment_liang_barsky(start, end, rect);
     let authority = clip_segment_authority(start, end, rect);
     match fast {
-        ClipVerdict::Declined => assert_eq!(clip_segment(start, end, rect), authority),
+        ClipVerdict::Declined => assert_eq!(clip_segment(start, end, rect).unwrap(), authority),
         decided => {
             let fast = decided.into_clip();
             assert_eq!(fast.is_some(), authority.is_some());
-            assert_eq!(clip_segment(start, end, rect), fast);
+            assert_eq!(clip_segment(start, end, rect).unwrap(), fast);
             let (Some((fast_start, fast_end)), Some((authority_start, authority_end))) =
                 (fast, authority)
             else {
@@ -231,6 +231,61 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
     assert!(
         admitted_count > 1000,
         "too few random cases admitted: {admitted_count}"
+    );
+}
+
+#[test]
+fn exact_clip_rounds_thin_boundary_crossings_in_source_order() {
+    let rect = Bounds::new(0.0, 0.0, 1.0, 1.0).expect("valid unit rectangle");
+    let cases = [
+        (XY::new(-1.0e15, 0.0), XY::new(1.0e15, 1.0e-20), [
+            XY::new(0.0, f64::from_bits(0x3BB7_9CA1_0C92_4223)),
+            XY::new(1.0, f64::from_bits(0x3BB7_9CA1_0C92_422A)),
+        ]),
+        (XY::new(1.0e15, 1.0e-20), XY::new(-1.0e15, 0.0), [
+            XY::new(1.0, f64::from_bits(0x3BB7_9CA1_0C92_422A)),
+            XY::new(0.0, f64::from_bits(0x3BB7_9CA1_0C92_4223)),
+        ]),
+        (XY::new(-1.0e15, 0.0), XY::new(1.0e15, 1.0e-19), [
+            XY::new(0.0, f64::from_bits(0x3BED_83C9_4FB6_D2AC)),
+            XY::new(1.0, f64::from_bits(0x3BED_83C9_4FB6_D2B4)),
+        ]),
+    ];
+    for (start, end, expected) in cases {
+        let actual = clip_segment(start, end, rect)
+            .expect("exact clip placement")
+            .expect("positive-length clip");
+        assert_eq!(actual.0, expected[0]);
+        assert_eq!(actual.1, expected[1]);
+    }
+}
+
+#[test]
+fn exact_clip_rounds_mixed_exponent_boundary_crossings() {
+    let tiny = 2.0_f64.powi(-601);
+    let rect = Bounds::new(0.0, 0.0, 1.0, 2.0_f64.powi(600)).expect("valid rectangle");
+    let actual = clip_segment(
+        XY::new(2.0_f64.powi(-600), -tiny),
+        XY::new(-2.0_f64.powi(500), 2.0_f64.powi(500)),
+        rect,
+    )
+    .expect("exact clip placement")
+    .expect("positive-length clip");
+    assert_eq!(actual.0, XY::new(tiny, 0.0));
+    assert_eq!(actual.1, XY::new(0.0, tiny));
+
+    let unit = Bounds::new(0.0, 0.0, 1.0, 1.0).expect("valid unit rectangle");
+    let actual = clip_segment(
+        XY::new(f64::from_bits(1), 2.0_f64.powi(-500)),
+        XY::new(-2.0_f64.powi(500), -2.0_f64.powi(1023)),
+        unit,
+    )
+    .expect("exact clip placement")
+    .expect("positive-length clip");
+    assert_eq!(actual.0, XY::new(f64::from_bits(1), 2.0_f64.powi(-500)));
+    assert_eq!(
+        actual.1,
+        XY::new(0.0, f64::from_bits(0x20AF_FFFF_FFFF_FFFC))
     );
 }
 

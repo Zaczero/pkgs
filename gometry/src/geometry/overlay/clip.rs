@@ -6,6 +6,7 @@ use std::simd::cmp::SimdPartialOrd as _;
 
 use ahash::HashSetExt as _;
 
+use crate::error::Result;
 use crate::geometry::overlay::{OverlayOp, binary_areal_overlay, rect_polygon};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, LineSeq, Point, PointKey, Polygon,
@@ -53,17 +54,20 @@ pub(in crate::geometry) fn clip_polygonal_parts<P: AsRef<Polygon>>(
     )
 }
 
-pub(crate) fn clipped_linestring<C: Coordinates + ?Sized>(points: &C, rect: Bounds) -> Shape {
-    line_parts_to_shape(clipped_line_parts(points, rect))
+pub(crate) fn clipped_linestring<C: Coordinates + ?Sized>(
+    points: &C,
+    rect: Bounds,
+) -> Result<Shape> {
+    Ok(line_parts_to_shape(clipped_line_parts(points, rect)?))
 }
 
 pub(crate) fn clipped_line_parts<C: Coordinates + ?Sized>(
     points: &C,
     rect: Bounds,
-) -> Vec<Vec<Point>> {
+) -> Result<Vec<Vec<Point>>> {
     let mut parts: Vec<Vec<Point>> = Vec::new();
     for segment in line_segments(points) {
-        let Some((start, end)) = clip_segment(segment.start, segment.end, rect) else {
+        let Some((start, end)) = clip_segment(segment.start, segment.end, rect)? else {
             continue;
         };
         if same_point(start, end) {
@@ -76,7 +80,7 @@ pub(crate) fn clipped_line_parts<C: Coordinates + ?Sized>(
             _ => parts.push(vec![start.point(), end.point()]),
         }
     }
-    parts
+    Ok(parts)
 }
 
 pub(crate) fn line_parts_to_shape(mut parts: Vec<Vec<Point>>) -> Shape {

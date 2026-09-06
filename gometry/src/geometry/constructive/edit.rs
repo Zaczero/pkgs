@@ -913,16 +913,16 @@ impl Shape {
             // corners, which derive from no input vertex — there the policy
             // decides (restore-or-raise vs pure X/Y).
             Self::LineString(points) => carry_ordinates(
-                clipped_linestring(points, rect),
+                clipped_linestring(points, rect)?,
                 &[self],
                 "clip_by_rect",
                 drop,
             )?,
             Self::MultiLineString(lines) => {
-                let clipped = lines
-                    .iter()
-                    .flat_map(|line| clipped_line_parts(line, rect))
-                    .collect::<Vec<_>>();
+                let mut clipped = Vec::new();
+                for line in lines {
+                    clipped.extend(clipped_line_parts(line, rect)?);
+                }
                 carry_ordinates(line_parts_to_shape(clipped), &[self], "clip_by_rect", drop)?
             },
             Self::Polygon(polygon) => carry_ordinates(

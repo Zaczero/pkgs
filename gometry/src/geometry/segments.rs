@@ -505,17 +505,17 @@ pub(crate) fn clip_segment(
     start: impl Into<XY>,
     end: impl Into<XY>,
     rect: Bounds,
-) -> Option<(XY, XY)> {
+) -> Result<Option<(XY, XY)>> {
     let (start, end) = (start.into(), end.into());
     match clip_segment_axis_aligned(start, end, rect) {
         ClipVerdict::Declined => {},
-        decided => return decided.into_clip(),
+        decided => return Ok(decided.into_clip()),
     }
     match clip_segment_liang_barsky(start, end, rect) {
         ClipVerdict::Declined => {},
-        decided => return decided.into_clip(),
+        decided => return Ok(decided.into_clip()),
     }
-    clip_segment_edge_bisection(start, end, rect)
+    clip_segment_exact(start, end, rect)
 }
 
 /// What a fast clip lane says about a segment: nothing (the next authority
@@ -540,7 +540,9 @@ impl ClipVerdict {
 #[cfg(test)]
 fn clip_segment_authority(start: XY, end: XY, rect: Bounds) -> Option<(XY, XY)> {
     match clip_segment_axis_aligned(start, end, rect) {
-        ClipVerdict::Declined => clip_segment_edge_bisection(start, end, rect),
+        ClipVerdict::Declined => {
+            clip_segment_exact(start, end, rect).expect("exact clip authority")
+        },
         decided => decided.into_clip(),
     }
 }
@@ -593,11 +595,11 @@ fn clip_segment_axis_aligned(start: XY, end: XY, rect: Bounds) -> ClipVerdict {
     ClipVerdict::Declined
 }
 
-fn clip_segment_edge_bisection(start: XY, end: XY, rect: Bounds) -> Option<(XY, XY)> {
-    // Diagonal: parameterize intersections on the SHORT rect edges, not on
-    // the segment. When |segment| ≫ |rect|, t=(edge-start)/dx collapses both
-    // boundaries to the same value and loses the window; bisection on a unit
-    // edge with robust orient2d stays accurate.
+fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY)>> {
+    // Exact orientations decide which closed rectangle edges meet the stored
+    // segment. Strict crossings use the axis-specific rational placement below;
+    // the generic DD crossing witness is a rounded approximation, not an
+    // authority for clipping.
     let corners = [
         XY::new(rect.minx(), rect.miny()),
         XY::new(rect.maxx(), rect.miny()),
@@ -610,82 +612,268 @@ fn clip_segment_edge_bisection(start: XY, end: XY, rect: Bounds) -> Option<(XY, 
         (corners[2], corners[3]),
         (corners[3], corners[0]),
     ];
-    let dx = end.x - start.x;
-    let dy = end.y - start.y;
-    let mut hits: [(f64, XY); 6] = [(0.0, start); 6];
+    let segment = Segment { start, end };
+    let zero = ExactDyadic::try_from_f64(0.0)?;
+    let one = ExactDyadic::try_from_f64(1.0)?;
+    let mut hits: [Option<ClipHit>; 6] = [const { None }; 6];
     let mut n_hits = 0_usize;
-    // Order hits on the dominant monotone coordinate so huge diagonal segments
-    // (e.g. ±2^53 through the unit box) do not cancel the projection key to
-    // the same value for distinct edge hits.
-    let abs_dx = dx.abs();
-    let abs_dy = dy.abs();
-    let push = |p: XY, hits: &mut [(f64, XY); 6], n: &mut usize| {
-        if *n >= hits.len() {
-            return;
-        }
-        if hits[..*n].iter().any(|&(_, q)| {
-            same_topological_coordinate(q.x, p.x) && same_topological_coordinate(q.y, p.y)
-        }) {
-            return;
-        }
-        // Sort by the dominant world ordinate (not a parametric t). For a
-        // huge diagonal, `t = (p - origin)·d / |d|²` and even `(p.x-ox)/dx`
-        // collapse distinct unit-box hits to the same value once |origin|
-        // exceeds the box (1 lost against 1e20). The monotone coordinate
-        // keeps (0,0) and (1,1) ordered.
-        let key = if abs_dx >= abs_dy {
-            if dx >= 0.0 { p.x } else { -p.x }
-        } else if dy >= 0.0 {
-            p.y
-        } else {
-            -p.y
-        };
-        hits[*n] = (key, p);
-        *n += 1;
-    };
     let point_in = |p: XY| {
         p.x >= rect.minx() && p.x <= rect.maxx() && p.y >= rect.miny() && p.y <= rect.maxy()
     };
     if point_in(start) {
-        push(start, &mut hits, &mut n_hits);
+        push_clip_hit(
+            ClipHit {
+                parameter: ClipParameter::Start,
+                point: start,
+            },
+            &mut hits,
+            &mut n_hits,
+        );
     }
     if point_in(end) {
-        push(end, &mut hits, &mut n_hits);
+        push_clip_hit(
+            ClipHit {
+                parameter: ClipParameter::End,
+                point: end,
+            },
+            &mut hits,
+            &mut n_hits,
+        );
     }
-    for (a, b) in edges {
-        if let Some(p) = segment_rect_edge_hit(start, end, a, b) {
-            // Hit must also lie on the segment's bounding range.
-            let on_seg = p.x >= start.x.min(end.x)
-                && p.x <= start.x.max(end.x)
-                && p.y >= start.y.min(end.y)
-                && p.y <= start.y.max(end.y);
-            if on_seg {
-                push(p, &mut hits, &mut n_hits);
+    for (edge_start, edge_end) in edges {
+        let edge = Segment {
+            start: edge_start,
+            end: edge_end,
+        };
+        let orientations = PairOrientations::new(segment, edge);
+        if orientations.all_collinear() {
+            if let Some(span) = collinear_shared_span_exact(segment, edge) {
+                push_clip_hit(
+                    ClipHit {
+                        parameter: clip_segment_parameter(segment, span.start)?,
+                        point: span.start,
+                    },
+                    &mut hits,
+                    &mut n_hits,
+                );
+                push_clip_hit(
+                    ClipHit {
+                        parameter: clip_segment_parameter(segment, span.end)?,
+                        point: span.end,
+                    },
+                    &mut hits,
+                    &mut n_hits,
+                );
+            }
+        } else if orientations.straddles_or_touches() {
+            if orientations.has_collinear() {
+                if let Some(point) =
+                    segment_cross_point_with_orientations(segment, edge, orientations)
+                {
+                    push_clip_hit(
+                        ClipHit {
+                            parameter: clip_segment_parameter(segment, point)?,
+                            point,
+                        },
+                        &mut hits,
+                        &mut n_hits,
+                    );
+                }
+            } else {
+                push_clip_hit(
+                    clip_segment_edge_cross_exact(segment, edge_start, edge_end)?,
+                    &mut hits,
+                    &mut n_hits,
+                );
             }
         }
     }
     if n_hits < 2 {
-        return None;
+        return Ok(None);
     }
-    let (mut i_min, mut i_max) = (0_usize, 0_usize);
+    let mut i_min = 0_usize;
+    let mut i_max = 0_usize;
     for i in 1..n_hits {
-        if hits[i].0 < hits[i_min].0 {
+        let left = hits[i].as_ref().expect("stored clip hit");
+        let min = hits[i_min].as_ref().expect("stored clip hit");
+        if left.parameter.cmp(&min.parameter, &zero, &one)?.is_lt() {
             i_min = i;
         }
-        if hits[i].0 > hits[i_max].0 {
+        let max = hits[i_max].as_ref().expect("stored clip hit");
+        if left.parameter.cmp(&max.parameter, &zero, &one)?.is_gt() {
             i_max = i;
         }
     }
-    let (p_min, p_max) = (hits[i_min].1, hits[i_max].1);
+    let p_min = hits[i_min].as_ref().expect("stored clip hit").point;
+    let p_max = hits[i_max].as_ref().expect("stored clip hit").point;
     if same_point(p_min, p_max) {
-        return None;
+        return Ok(None);
     }
-    Some((p_min, p_max))
+    Ok(Some((p_min, p_max)))
+}
+
+struct ClipHit {
+    parameter: ClipParameter,
+    point: XY,
+}
+
+enum ClipParameter {
+    Start,
+    Ratio {
+        numerator: ExactDyadic,
+        denominator: ExactDyadic,
+    },
+    End,
+}
+
+impl ClipParameter {
+    fn cmp(
+        &self,
+        other: &Self,
+        zero: &ExactDyadic,
+        one: &ExactDyadic,
+    ) -> Result<Ordering> {
+        match (self, other) {
+            (Self::Start, Self::Start) | (Self::End, Self::End) => Ok(Ordering::Equal),
+            (Self::Start, Self::End) => Ok(Ordering::Less),
+            (Self::End, Self::Start) => Ok(Ordering::Greater),
+            (Self::Start, Self::Ratio { numerator, denominator }) => {
+                crate::geometry::tessellation::exact::try_compare_ratios(
+                    zero,
+                    one,
+                    numerator,
+                    denominator,
+                )
+            },
+            (Self::End, Self::Ratio { numerator, denominator }) => {
+                crate::geometry::tessellation::exact::try_compare_ratios(
+                    one,
+                    one,
+                    numerator,
+                    denominator,
+                )
+            },
+            (Self::Ratio { numerator, denominator }, Self::Start) => {
+                crate::geometry::tessellation::exact::try_compare_ratios(
+                    numerator,
+                    denominator,
+                    zero,
+                    one,
+                )
+            },
+            (Self::Ratio { numerator, denominator }, Self::End) => {
+                crate::geometry::tessellation::exact::try_compare_ratios(
+                    numerator,
+                    denominator,
+                    one,
+                    one,
+                )
+            },
+            (
+                Self::Ratio {
+                    numerator: left_numerator,
+                    denominator: left_denominator,
+                },
+                Self::Ratio {
+                    numerator: right_numerator,
+                    denominator: right_denominator,
+                },
+            ) => crate::geometry::tessellation::exact::try_compare_ratios(
+                left_numerator,
+                left_denominator,
+                right_numerator,
+                right_denominator,
+            ),
+        }
+    }
+}
+
+fn push_clip_hit(hits: ClipHit, output: &mut [Option<ClipHit>; 6], count: &mut usize) {
+    if *count >= output.len()
+        || output[..*count]
+            .iter()
+            .flatten()
+            .any(|existing| same_point(existing.point, hits.point))
+    {
+        return;
+    }
+    output[*count] = Some(hits);
+    *count += 1;
+}
+
+fn clip_segment_parameter(segment: Segment, point: XY) -> Result<ClipParameter> {
+    if same_point(segment.start, point) {
+        return Ok(ClipParameter::Start);
+    }
+    if same_point(segment.end, point) {
+        return Ok(ClipParameter::End);
+    }
+    let use_x = !same_topological_coordinate(segment.start.x, segment.end.x);
+    let (point, start, end) = if use_x {
+        (point.x, segment.start.x, segment.end.x)
+    } else {
+        (point.y, segment.start.y, segment.end.y)
+    };
+    let numerator = ExactDyadic::try_from_f64(point)?
+        .try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    let denominator = ExactDyadic::try_from_f64(end)?
+        .try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    Ok(ClipParameter::Ratio {
+        numerator,
+        denominator,
+    })
+}
+
+fn clip_segment_edge_cross_exact(
+    segment: Segment,
+    edge_start: XY,
+    edge_end: XY,
+) -> Result<ClipHit> {
+    debug_assert!(
+        same_topological_coordinate(edge_start.x, edge_end.x)
+            || same_topological_coordinate(edge_start.y, edge_end.y),
+        "rectangle edge must be axis aligned"
+    );
+    let start_x = ExactDyadic::try_from_f64(segment.start.x)?;
+    let end_x = ExactDyadic::try_from_f64(segment.end.x)?;
+    let start_y = ExactDyadic::try_from_f64(segment.start.y)?;
+    let end_y = ExactDyadic::try_from_f64(segment.end.y)?;
+    let delta_x = end_x.try_subtract(start_x.clone())?;
+    let delta_y = end_y.try_subtract(start_y.clone())?;
+    if same_topological_coordinate(edge_start.x, edge_end.x) {
+        let edge_x = ExactDyadic::try_from_f64(edge_start.x)?;
+        let offset = edge_x.try_subtract(start_x)?;
+        let numerator = start_y
+            .try_product(&delta_x)?
+            .try_add(delta_y.try_product(&offset)?)?;
+        let free = round_ratio(&numerator, &delta_x)?;
+        Ok(ClipHit {
+            parameter: ClipParameter::Ratio {
+                numerator: offset,
+                denominator: delta_x,
+            },
+            point: XY::new(edge_start.x, free),
+        })
+    } else {
+        let edge_y = ExactDyadic::try_from_f64(edge_start.y)?;
+        let offset = edge_y.try_subtract(start_y)?;
+        let numerator = start_x
+            .try_product(&delta_y)?
+            .try_add(delta_x.try_product(&offset)?)?;
+        let free = round_ratio(&numerator, &delta_y)?;
+        Ok(ClipHit {
+            parameter: ClipParameter::Ratio {
+                numerator: offset,
+                denominator: delta_y,
+            },
+            point: XY::new(free, edge_start.y),
+        })
+    }
 }
 
 /// Liang-Barsky lane admitted only when every subtraction, ratio, and free-axis
 /// reconstruction has a finite, separated rounding cell. `None` declines to
-/// the edge-bisection authority; `Some(None)` is a proved disjoint segment.
+/// the exact rectangle-edge authority; `Some(None)` is a proved disjoint segment.
 fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> ClipVerdict {
     liang_barsky_decided(start, end, rect).unwrap_or(ClipVerdict::Declined)
 }
@@ -876,7 +1064,10 @@ fn subtraction_with_ulp_error(left: f64, right: f64) -> Option<(f64, f64)> {
     Some((value, ulp_error(value)?))
 }
 
-#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
+#[expect(
+    clippy::float_cmp,
+    reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact"
+)]
 fn compare_with_error(
     left: f64,
     left_error: f64,
@@ -952,41 +1143,6 @@ fn reconstruct_free_axis(
         delta.abs() * fraction_error + fraction.abs() * delta_error + delta_error * fraction_error;
     let error = propagated + ulp_error(value)?;
     value.is_finite().then_some((value, error))
-}
-
-/// Intersection of the infinite line `start→end` with the short rect edge
-/// `edge_a→edge_b`, found by bisection on the edge (unit-scale) using robust
-/// orientation. Returns `None` if the edge is not crossed.
-fn segment_rect_edge_hit(start: XY, end: XY, edge_a: XY, edge_b: XY) -> Option<XY> {
-    let o_a = orientation(start, end, edge_a);
-    let o_b = orientation(start, end, edge_b);
-    // No crossing if both strictly on the same side.
-    match (o_a, o_b) {
-        (Orientation::Clockwise, Orientation::Clockwise)
-        | (Orientation::CounterClockwise, Orientation::CounterClockwise) => return None,
-        (Orientation::Collinear, _) => return Some(edge_a),
-        (_, Orientation::Collinear) => return Some(edge_b),
-        _ => {},
-    }
-    // Bisect the short edge until the midpoint is collinear (or max iters).
-    let mut lo = edge_a;
-    let mut hi = edge_b;
-    let mut o_lo = o_a;
-    for _ in 0..64 {
-        let mid = XY::new(f64::midpoint(lo.x, hi.x), f64::midpoint(lo.y, hi.y));
-        match orientation(start, end, mid) {
-            Orientation::Collinear => return Some(mid),
-            o if o == o_lo => {
-                lo = mid;
-                o_lo = o;
-            },
-            _ => hi = mid,
-        }
-    }
-    Some(XY::new(
-        f64::midpoint(lo.x, hi.x),
-        f64::midpoint(lo.y, hi.y),
-    ))
 }
 
 #[cfg(test)]
@@ -1847,10 +2003,10 @@ pub(crate) fn interpolate_fraction(start: f64, end: f64, target: f64) -> Result<
     if numerator.is_finite() && denominator.is_finite() {
         return Ok(numerator / denominator);
     }
-    let numerator = ExactDyadic::try_from_f64(target)?
-        .try_subtract(ExactDyadic::try_from_f64(start)?)?;
-    let denominator = ExactDyadic::try_from_f64(end)?
-        .try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    let numerator =
+        ExactDyadic::try_from_f64(target)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    let denominator =
+        ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
     round_ratio(&numerator, &denominator)
 }
 
@@ -2645,11 +2801,7 @@ pub(crate) fn points_dwithin(left: impl Into<XY>, right: impl Into<XY>, limit: f
 /// straight segment, so X suffices unless it is constant. The other axis
 /// makes rounded off-support cuts deterministic and keeps equal point keys
 /// adjacent for deduplication.
-pub(crate) fn compare_along_segment(
-    segment: Segment,
-    left: XY,
-    right: XY,
-) -> std::cmp::Ordering {
+pub(crate) fn compare_along_segment(segment: Segment, left: XY, right: XY) -> std::cmp::Ordering {
     let x_primary = segment.start.x != segment.end.x;
     let compare_axis = |left: f64, right: f64, start: f64, end: f64| {
         if left == right {
@@ -2661,13 +2813,11 @@ pub(crate) fn compare_along_segment(
         }
     };
     if x_primary {
-        compare_axis(left.x, right.x, segment.start.x, segment.end.x).then_with(|| {
-            compare_axis(left.y, right.y, segment.start.y, segment.end.y)
-        })
+        compare_axis(left.x, right.x, segment.start.x, segment.end.x)
+            .then_with(|| compare_axis(left.y, right.y, segment.start.y, segment.end.y))
     } else {
-        compare_axis(left.y, right.y, segment.start.y, segment.end.y).then_with(|| {
-            compare_axis(left.x, right.x, segment.start.x, segment.end.x)
-        })
+        compare_axis(left.y, right.y, segment.start.y, segment.end.y)
+            .then_with(|| compare_axis(left.x, right.x, segment.start.x, segment.end.x))
     }
 }
 

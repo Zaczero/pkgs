@@ -44,6 +44,71 @@ def test_extreme_clip_carries_zm_in_source_order(reverse: bool) -> None:
         assert m == _diagonal_ordinate(start[0], end[0], x, start[3], end[3])
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize(
+    ('y_end', 'expected_y'),
+    [
+        (1.0e-20, (5.0e-21, 5.000000000000005e-21)),
+        (1.0e-19, (5.0e-20, 5.0000000000000047e-20)),
+    ],
+)
+def test_exact_clip_rounds_thin_crossings(
+    reverse: bool, y_end: float, expected_y: tuple[float, float]
+) -> None:
+    forward = [(-1.0e15, 0.0), (1.0e15, y_end)]
+    source = list(reversed(forward)) if reverse else forward
+    clipped = gm.LineString(source).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    expected = [(0.0, expected_y[0]), (1.0, expected_y[1])]
+    if reverse:
+        expected.reverse()
+    assert list(clipped.coords) == expected
+
+
+def test_exact_clip_rounds_mixed_exponent_crossings() -> None:
+    tiny = 2.0**-601
+    line = gm.LineString([(2.0**-600, -tiny), (-2.0**500, 2.0**500)])
+    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 2.0**600)
+    assert list(clipped.coords) == [(tiny, 0.0), (0.0, tiny)]
+
+    line = gm.LineString([(2.0**-1074, 2.0**-500), (-2.0**500, -2.0**1023)])
+    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert list(clipped.coords) == [
+        (2.0**-1074, 2.0**-500),
+        (0.0, float.fromhex('0x1.ffffffffffffcp-501')),
+    ]
+
+
+def test_exact_clip_rounds_thin_crossing_zm_and_packed_missing_rows() -> None:
+    line = gm.LineString(
+        [(-1.0e15, 0.0, 100.0, 1000.0), (1.0e15, 1.0e-20, 300.0, 3000.0)]
+    )
+    expected = [
+        (0.0, 5.0e-21, 200.0, 2000.0),
+        (1.0, 5.000000000000005e-21, 200.00000000000009, 2000.000000000001),
+    ]
+    assert list(line.clip_by_rect(0.0, 0.0, 1.0, 1.0).coords) == expected
+
+    rows = gm.GeometryArray([gm.LineString([(-1.0e15, 0.0), (1.0e15, 1.0e-20)]), None])
+    result = rows.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert list(result[0].coords) == [(0.0, 5.0e-21), (1.0, 5.000000000000005e-21)]
+    assert result.is_missing.tolist() == [False, True]
+
+
+def test_exact_clip_preserves_closed_boundaries_signed_zero_and_degenerate_rectangles() -> None:
+    signed = gm.LineString([(-2.0, -0.0), (2.0, -0.0)]).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert [point[1].hex() for point in signed.coords] == ['-0x0.0p+0', '-0x0.0p+0']
+
+    collinear = gm.LineString([(-2.0, 0.0), (2.0, 0.0)]).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert list(collinear.coords) == [(0.0, 0.0), (1.0, 0.0)]
+    corner_touch = gm.LineString([(-1.0, 1.0), (0.0, 0.0)]).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert corner_touch.is_empty
+
+    vertical = gm.LineString([(0.0, -1.0), (0.0, 2.0)]).clip_by_rect(0.0, 0.0, 0.0, 1.0)
+    horizontal = gm.LineString([(-1.0, 0.0), (2.0, 0.0)]).clip_by_rect(0.0, 0.0, 1.0, 0.0)
+    assert list(vertical.coords) == [(0.0, 0.0), (0.0, 1.0)]
+    assert list(horizontal.coords) == [(0.0, 0.0), (1.0, 0.0)]
+
+
 def test_vw_opposite_sign_extremes_uses_scaled_original_operands() -> None:
     """The overflowing `x - origin` frame still removes the sub-threshold vertex."""
     coords = [(-1e308, 0.0), (0.0, 1e307), (1e308, 0.0)]
