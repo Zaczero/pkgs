@@ -5,7 +5,6 @@ use std::simd::num::SimdFloat as _;
 
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
 use crate::geometry::exact_arith::product_sum::ExactSum;
-#[cfg(test)]
 use crate::geometry::expansion::{
     expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim,
 };

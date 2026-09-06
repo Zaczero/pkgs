@@ -31,8 +31,6 @@ pub(crate) use access::{
     simd_mask_any, simd_select_indices, simd_xy_map_f64, squared_norm_untrusted_mask,
     try_simd_map_f64, xy_bounds_columns,
 };
-#[cfg(test)]
-pub(crate) use area::ring_area_measure_columns;
 pub(crate) use area::{
     AreaSign, RingWinding, closed_columns_winding,
     open_point_cycle_decision, open_point_cycle_winding,
