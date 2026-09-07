@@ -277,8 +277,11 @@ impl PreparedLinework {
         }
     }
 
-    /// One probe's minimum squared distance to the linework and the witness
-    /// segment index (global, `u32::MAX` when empty).
+    /// One probe's minimum distance to the linework and the witness segment
+    /// index (global, `u32::MAX` when empty). `SQUARED` selects squared space
+    /// or overflow-safe `hypot`; both the min and the index come from the
+    /// same kernel. Callers that publish a squared field square once at their
+    /// boundary.
     pub(crate) fn min_point_distance_with_witness<const SQUARED: bool>(
         &self,
         x: f64,
@@ -291,33 +294,17 @@ impl PreparedLinework {
         let gate = if SQUARED {
             aabb_distance_squared(aabb, point_aabb(x, y))
         } else {
-            let gate = aabb_distance(aabb, point_aabb(x, y));
-            if gate >= best {
-                return (best, u32::MAX);
-            }
-            // Hypot-space path: fold distances, track witness by segment index.
-            let point = Point::new_raw_xy(x, y);
-            let mut witness = u32::MAX;
-            for &facet in &self.facets {
-                for index in 0..facet.segment_count as usize {
-                    let candidate = point_segment_distance(point, self.segment(facet, index));
-                    if candidate < best {
-                        best = candidate;
-                        witness = facet.first_segment + index as u32;
-                    }
-                }
-            }
-            return (best * best, witness);
+            aabb_distance(aabb, point_aabb(x, y))
         };
         if gate >= best {
             return (best, u32::MAX);
         }
         let mut witness = u32::MAX;
         for &facet in &self.facets {
-            let candidate = self.facet_point_distance_squared(facet, x, y);
+            let (candidate, index) = self.facet_min_with_witness::<SQUARED>(facet, x, y);
             if candidate < best {
                 best = candidate;
-                witness = self.facet_point_distance_with_witness(facet, x, y).1;
+                witness = index;
             }
         }
         (best, witness)
@@ -333,9 +320,9 @@ impl PreparedLinework {
         debug_assert_eq!(probes.len(), out_dist.len());
         debug_assert_eq!(probes.len(), out_witness.len());
         for (index, &(x, y)) in probes.iter().enumerate() {
-            let (distance_squared, witness) =
+            let (distance, witness) =
                 self.min_point_distance_with_witness::<SQUARED>(x, y, f64::INFINITY);
-            out_dist[index] = distance_squared;
+            out_dist[index] = distance;
             out_witness[index] = witness;
         }
     }
@@ -461,9 +448,12 @@ impl PreparedLinework {
         None
     }
 
-    /// Minimum squared distance from `(px, py)` to one facet's segments and
-    /// the global segment index of the witness edge.
-    pub(crate) fn facet_point_distance_with_witness(
+    /// Minimum distance from `(px, py)` to one facet's segments and the
+    /// global index of the argmin edge. `SQUARED` selects the kernel; min and
+    /// index always come from that same walk so a SIMD facet min cannot name
+    /// a different witness. Hausdorff therefore does not use
+    /// [`Self::facet_point_distance_squared`] on this path.
+    pub(crate) fn facet_min_with_witness<const SQUARED: bool>(
         &self,
         facet: Facet,
         px: f64,
@@ -473,10 +463,13 @@ impl PreparedLinework {
         let mut best = f64::INFINITY;
         let mut witness = facet.first_segment;
         for index in 0..facet.segment_count as usize {
-            let distance_squared =
-                point_segment_distance_squared(point, self.segment(facet, index));
-            if distance_squared < best {
-                best = distance_squared;
+            let candidate = if SQUARED {
+                point_segment_distance_squared(point, self.segment(facet, index))
+            } else {
+                point_segment_distance(point, self.segment(facet, index))
+            };
+            if candidate < best {
+                best = candidate;
                 witness = facet.first_segment + index as u32;
             }
         }

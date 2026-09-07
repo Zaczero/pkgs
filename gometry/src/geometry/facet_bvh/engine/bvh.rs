@@ -179,14 +179,11 @@ impl FacetBvh {
             match BvhCode::new(self.codes[index as usize]).decode() {
                 BvhNode::Leaf(facet_index) => {
                     let facet = linework.facets[facet_index];
-                    let candidate = if SQUARED {
-                        linework.facet_point_distance_squared(facet, x, y)
-                    } else {
-                        linework.facet_point_distance(facet, Point::new_raw_xy(x, y))
-                    };
+                    let (candidate, witness_index) =
+                        linework.facet_min_with_witness::<SQUARED>(facet, x, y);
                     if candidate < best {
                         best = candidate;
-                        witness = linework.facet_point_distance_with_witness(facet, x, y).1;
+                        witness = witness_index;
                     }
                 },
                 BvhNode::Internal(first_child) => {
@@ -209,15 +206,14 @@ impl FacetBvh {
         debug_assert_eq!(probes.len(), out_dist.len());
         debug_assert_eq!(probes.len(), out_witness.len());
         for (index, &(x, y)) in probes.iter().enumerate() {
-            let (distance_squared, witness) = self
-                .min_point_distance_with_witness_stack::<SQUARED>(
-                    linework,
-                    x,
-                    y,
-                    stack,
-                    f64::INFINITY,
-                );
-            out_dist[index] = distance_squared;
+            let (distance, witness) = self.min_point_distance_with_witness_stack::<SQUARED>(
+                linework,
+                x,
+                y,
+                stack,
+                f64::INFINITY,
+            );
+            out_dist[index] = distance;
             out_witness[index] = witness;
         }
     }

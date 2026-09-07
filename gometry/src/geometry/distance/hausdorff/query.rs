@@ -1,8 +1,10 @@
-#[cfg(test)]
-use crate::geometry::facet_bvh;
 use crate::geometry::distance::SQUARED_SPACE_MAX_MAGNITUDE;
 use crate::geometry::distance::hausdorff::{HausdorffFeature, sqrt_distance_squared};
+#[cfg(test)]
+use crate::geometry::facet_bvh;
 use crate::geometry::facet_bvh::{BVH_MIN_INDEXED_SEGMENTS, FacetBvh, PreparedLinework};
+#[cfg(test)]
+use crate::geometry::{LineSeq, Point};
 use crate::geometry::{Shape, XY, point_distance_squared, point_segment_distance_squared};
 use crate::scratch_pool::{RetainScratch, ScratchPool, flat_vec_retained_bytes};
 
@@ -80,6 +82,81 @@ mod scratch_tests {
                 (segment_count - 1) as u32,
                 "force_bvh={force_bvh}"
             );
+        }
+    }
+
+    fn probe(
+        xs: &[f64],
+        ys: &[f64],
+        force_bvh: bool,
+        px: f64,
+        py: f64,
+    ) -> (HausdorffLineworkQuery, HausdorffProbeResult) {
+        let query = HausdorffLineworkQuery::from_open_xy_columns(xs, ys, force_bvh);
+        let mut result = [HausdorffProbeResult::default()];
+        query.batch_probe(&[(px, py)], &mut result, &mut Vec::new());
+        (query, result[0])
+    }
+
+    #[test]
+    fn hypot_query_squares_once_at_the_probe_boundary() {
+        let xs = [2e150, 3e150];
+        let ys = [0.0, 0.0];
+        for force_bvh in [false, true] {
+            let (query, result) = probe(&xs, &ys, force_bvh, 2e150, 2.0);
+            assert!(
+                !query.squared_safe,
+                "force_bvh={force_bvh}: magnitude > {SQUARED_SPACE_MAX_MAGNITUDE}"
+            );
+            assert_eq!(result.distance_squared, 4.0, "force_bvh={force_bvh}");
+            assert_eq!(
+                query
+                    .linework
+                    .min_points_distance::<false>(std::iter::once((2e150, 2.0)), f64::INFINITY),
+                2.0,
+                "force_bvh={force_bvh}: non-witness hypot stays hypot"
+            );
+        }
+        let source = Shape::LineString(LineSeq::segment(
+            Point::new_raw_xy(2e150, 2.0),
+            Point::new_raw_xy(3e150, 2.0),
+        ));
+        let target = Shape::LineString(LineSeq::segment(
+            Point::new_raw_xy(2e150, 0.0),
+            Point::new_raw_xy(3e150, 0.0),
+        ));
+        assert_eq!(source.hausdorff_distance(&target), 2.0);
+    }
+
+    #[test]
+    fn hypot_witness_picks_the_nearer_overflowing_segment() {
+        let xs = [2e155, 2.1e155, 1e155];
+        let ys = [0.0, 0.0, 0.0];
+        for force_bvh in [false, true] {
+            let (query, result) = probe(&xs, &ys, force_bvh, 0.0, 0.0);
+            assert_eq!(query.linework.segment_count(), 2, "force_bvh={force_bvh}");
+            assert_eq!(query.linework.facets.len(), 1, "force_bvh={force_bvh}");
+            assert!(
+                !query.squared_safe,
+                "force_bvh={force_bvh}: magnitude > {SQUARED_SPACE_MAX_MAGNITUDE}"
+            );
+            assert_eq!(result.feature_id, 1, "force_bvh={force_bvh}");
+        }
+    }
+
+    #[test]
+    fn hypot_witness_picks_the_nearer_underflowing_second_segment() {
+        let xs = [2e150, 3e150, 3e150];
+        let ys = [8e-200, 8e-200, 0.0];
+        for force_bvh in [false, true] {
+            let (query, result) = probe(&xs, &ys, force_bvh, 3e150, 1e-200);
+            assert_eq!(query.linework.segment_count(), 2, "force_bvh={force_bvh}");
+            assert_eq!(query.linework.facets.len(), 1, "force_bvh={force_bvh}");
+            assert!(
+                !query.squared_safe,
+                "force_bvh={force_bvh}: magnitude > {SQUARED_SPACE_MAX_MAGNITUDE}"
+            );
+            assert_eq!(result.feature_id, 1, "force_bvh={force_bvh}");
         }
     }
 }
@@ -193,11 +270,15 @@ impl HausdorffLineworkQuery {
             self.linework
                 .batch_min_point_distance_with_witness::<SQUARED>(probes, dist, witness);
         }
-        for (slot, (&distance_squared, &feature_id)) in
+        for (slot, (&distance, &feature_id)) in
             std::iter::zip(out.iter_mut(), std::iter::zip(dist.iter(), witness.iter()))
         {
             *slot = HausdorffProbeResult {
-                distance_squared,
+                distance_squared: if SQUARED {
+                    distance
+                } else {
+                    distance * distance
+                },
                 feature_id,
             };
         }
