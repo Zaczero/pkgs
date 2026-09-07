@@ -1,8 +1,10 @@
-//! Production [`ProjContext`] and [`with_proj_context`] (R13-L3 keystone).
+//! RAII [`ProjContext`] ownership and scoped context access for CRS operations.
 //!
-//! Free of `proj-sys` so compile-fail fixtures can `#[path]`-include this
-//! module. FFI create/destroy/config ride [`super::proj_env`], which production
-//! wires to libPROJ and the fixture stubs.
+//! [`ProjContext`] retains the unique libPROJ context and its diagnostic state,
+//! then destroys both through the creating thread's lifecycle. Creation,
+//! destruction, and runtime configuration are delegated to
+//! [`super::proj_env`]; callers use the scoped helpers to borrow the typed
+//! owner.
 //!
 //! # Type-level contract
 //!
