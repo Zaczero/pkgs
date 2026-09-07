@@ -188,14 +188,7 @@ fn py_int_to_json_number(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     }
 }
 
-/// Recursively convert a Python object to `serde_json::Value` without a
-/// `json.dumps` round-trip. `projection` lets geometry-only ingestion skip
-/// feature properties while sharing the same bounded recursive walker.
-fn py_to_json_value_inner(
-    value: &Bound<'_, PyAny>,
-    projection: JsonProjection,
-    depth: usize,
-) -> PyResult<Value> {
+fn json_value_depth_check(projection: JsonProjection, depth: usize) -> PyResult<()> {
     let max_depth = match projection {
         JsonProjection::Full => crate::geometry::MAX_NESTING,
         JsonProjection::Geometry => MAX_JSON_NESTING,
@@ -206,6 +199,59 @@ fn py_to_json_value_inner(
         ))
         .into());
     }
+    Ok(())
+}
+
+fn py_to_json_value_mapping(
+    dict: &Bound<'_, PyDict>,
+    projection: JsonProjection,
+    depth: usize,
+) -> PyResult<Value> {
+    let mut map = serde_json::Map::new();
+    for (key, val) in dict.iter() {
+        let key_str = key.extract::<String>()?;
+        let child_projection = match projection {
+            JsonProjection::Full => Some(JsonProjection::Full),
+            // Keep legacy ``crs`` at every nesting level (Feature geometry,
+            // FeatureCollection members, GeometryCollection children) so
+            // reconciliation can see every declaration — not only the root.
+            JsonProjection::Geometry if key_str == "crs" => Some(JsonProjection::Full),
+            JsonProjection::Geometry
+                if matches!(
+                    key_str.as_str(),
+                    "type" | "coordinates" | "geometries" | "geometry" | "features"
+                ) =>
+            {
+                Some(JsonProjection::Geometry)
+            },
+            // Presence-only stub for ``properties``: RFC 7946 §7.1 forbids
+            // it on Geometry objects, but Geometry projection must not
+            // materialize property values (opaque / non-JSON side data).
+            JsonProjection::Geometry if key_str == "properties" => {
+                map.insert(key_str.clone(), Value::Null);
+                None
+            },
+            JsonProjection::Geometry => None,
+        };
+        if let Some(child_projection) = child_projection {
+            map.insert(
+                key_str,
+                py_to_json_value_inner(&val, child_projection, depth + 1)?,
+            );
+        }
+    }
+    Ok(Value::Object(map))
+}
+
+/// Recursively convert a Python object to `serde_json::Value` without a
+/// `json.dumps` round-trip. `projection` lets geometry-only ingestion skip
+/// feature properties while sharing the same bounded recursive walker.
+fn py_to_json_value_inner(
+    value: &Bound<'_, PyAny>,
+    projection: JsonProjection,
+    depth: usize,
+) -> PyResult<Value> {
+    json_value_depth_check(projection, depth)?;
     if value.is_none() {
         return Ok(Value::Null);
     }
@@ -219,40 +265,7 @@ fn py_to_json_value_inner(
     // MappingProxyType, keys()-only ducks) — copy once via the keystone, then
     // walk the retained dict. Exact PyDict takes the shallow-clone fast path.
     if let Some(dict) = mapping_as_dict(value)? {
-        let mut map = serde_json::Map::new();
-        for (key, val) in dict.iter() {
-            let key_str = key.extract::<String>()?;
-            let child_projection = match projection {
-                JsonProjection::Full => Some(JsonProjection::Full),
-                // Keep legacy ``crs`` at every nesting level (Feature geometry,
-                // FeatureCollection members, GeometryCollection children) so
-                // reconciliation can see every declaration — not only the root.
-                JsonProjection::Geometry if key_str == "crs" => Some(JsonProjection::Full),
-                JsonProjection::Geometry
-                    if matches!(
-                        key_str.as_str(),
-                        "type" | "coordinates" | "geometries" | "geometry" | "features"
-                    ) =>
-                {
-                    Some(JsonProjection::Geometry)
-                },
-                // Presence-only stub for ``properties``: RFC 7946 §7.1 forbids
-                // it on Geometry objects, but Geometry projection must not
-                // materialize property values (opaque / non-JSON side data).
-                JsonProjection::Geometry if key_str == "properties" => {
-                    map.insert(key_str.clone(), Value::Null);
-                    None
-                },
-                JsonProjection::Geometry => None,
-            };
-            if let Some(child_projection) = child_projection {
-                map.insert(
-                    key_str,
-                    py_to_json_value_inner(&val, child_projection, depth + 1)?,
-                );
-            }
-        }
-        return Ok(Value::Object(map));
+        return py_to_json_value_mapping(&dict, projection, depth);
     }
     if let Ok(list) = value.cast::<PyList>() {
         let mut values = crate::try_vec_with_capacity(list.len())?;
@@ -399,7 +412,8 @@ fn parse_geojson_input(
 
 fn parse_geojson_geometry_mapping(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Some(dict) = mapping_as_dict(value)? {
-        return py_to_json_value_inner(&dict, JsonProjection::Geometry, 0);
+        json_value_depth_check(JsonProjection::Geometry, 0)?;
+        return py_to_json_value_mapping(&dict, JsonProjection::Geometry, 0);
     }
     let text = json_dumps(value.py())?
         .call1((value,))?
