@@ -671,14 +671,16 @@ mod consecutive_dedup_tests {
 
 #[cfg(test)]
 mod subdivide_columns_tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::geometry::ExpansionBudget;
     use crate::geometry::constructive::{densify_points_budgeted, segmentize_points_budgeted};
+    use crate::geographic::GeographicFrame;
+    use geographiclib_rs::Geodesic;
 
     #[test]
     fn densify_xyzm_interpolates_every_ordinate_lane() {
-        use std::sync::Arc;
-
         let line = CoordSeq::from_columns(
             Arc::from([0.0, 4.0]),
             Arc::from([0.0, 0.0]),
@@ -710,6 +712,109 @@ mod subdivide_columns_tests {
         .unwrap();
         assert_eq!(segmented.len(), 4);
         assert_eq!(segmented.xs(), &[0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn geographic_segmentize_preserves_curved_xy_and_interpolated_zm() {
+        let line = CoordSeq::from_columns(
+            Arc::from([0.0, 10.0]),
+            Arc::from([0.0, 10.0]),
+            Some(Arc::from([10.0, 30.0])),
+            Some(Arc::from([100.0, 300.0])),
+        );
+        let geodesic = Geodesic::wgs84();
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let segmented = segmentize_points_budgeted(
+            &line,
+            1_000_000.0,
+            crate::geometry::SegmentPlacement::Geodesic(
+                &geodesic,
+                GeographicFrame::crs84(),
+            ),
+            &mut budget,
+        )
+        .unwrap();
+
+        assert_eq!(segmented.len(), 3);
+        assert_eq!(segmented.xs()[0].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(segmented.ys()[0].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(segmented.xs()[2].to_bits(), 10.0_f64.to_bits());
+        assert_eq!(segmented.ys()[2].to_bits(), 10.0_f64.to_bits());
+        assert!((segmented.xs()[1] - 4.961882922527124).abs() <= 1e-12);
+        assert!((segmented.ys()[1] - 5.01950880089445).abs() <= 1e-12);
+        assert_eq!(segmented.zs().unwrap(), &[10.0, 20.0, 30.0]);
+        assert_eq!(segmented.ms().unwrap(), &[100.0, 200.0, 300.0]);
+    }
+
+    #[test]
+    fn geographic_segmentize_selects_equatorial_interpolation_per_segment() {
+        let line: CoordSeq = vec![
+            Point::new(-10.0, 0.0).unwrap(),
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(10.0, 10.0).unwrap(),
+        ]
+        .into();
+        let geodesic = Geodesic::wgs84();
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let segmented = segmentize_points_budgeted(
+            &line,
+            1_000_000.0,
+            crate::geometry::SegmentPlacement::Geodesic(
+                &geodesic,
+                GeographicFrame::crs84(),
+            ),
+            &mut budget,
+        )
+        .unwrap();
+
+        assert_eq!(segmented.len(), 5);
+        assert_eq!(segmented.xs()[1], -5.0);
+        assert_eq!(segmented.ys()[1].to_bits(), 0.0_f64.to_bits());
+        assert!((segmented.xs()[3] - 4.961882922527124).abs() <= 1e-12);
+        assert!((segmented.ys()[3] - 5.01950880089445).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn geographic_segmentize_keeps_antipodal_equator_on_geodesic_path() {
+        let line: CoordSeq =
+            vec![Point::new(0.0, 0.0).unwrap(), Point::new(180.0, 0.0).unwrap()].into();
+        let geodesic = Geodesic::wgs84();
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let segmented = segmentize_points_budgeted(
+            &line,
+            11_000_000.0,
+            crate::geometry::SegmentPlacement::Geodesic(
+                &geodesic,
+                GeographicFrame::crs84(),
+            ),
+            &mut budget,
+        )
+        .unwrap();
+
+        assert_eq!(segmented.len(), 3);
+        assert!((segmented.ys()[1].abs() - 90.0).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn geographic_segmentize_does_not_charge_or_materialize_one_piece() {
+        let line: CoordSeq =
+            vec![Point::new(0.0, 0.0).unwrap(), Point::new(1.0, 0.0).unwrap()].into();
+        let geodesic = Geodesic::wgs84();
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let segmented = segmentize_points_budgeted(
+            &line,
+            2_000_000.0,
+            crate::geometry::SegmentPlacement::Geodesic(
+                &geodesic,
+                GeographicFrame::crs84(),
+            ),
+            &mut budget,
+        )
+        .unwrap();
+
+        assert_eq!(budget.used(), 0);
+        assert_eq!(segmented.xs(), line.xs());
+        assert_eq!(segmented.ys(), line.ys());
     }
 
     #[test]

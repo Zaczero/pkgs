@@ -127,6 +127,31 @@ def test_geographic_refinement_validates_coordinates_and_skips_missing_rows() ->
     assert refined.is_missing.tolist() == [False, True]
 
 
+def test_geographic_segmentize_preserves_xyzm_and_array_metadata_with_missing_row() -> None:
+    valid = gm.LineString(
+        [(0.0, 0.0), (10.0, 10.0)],
+        z=[10.0, 30.0],
+        m=[100.0, 300.0],
+        crs=4326,
+        epoch=2020.0,
+    )
+    refined = gm.GeometryArray([valid, None], crs=4326, epoch=2020.0).segmentize(
+        1_000_000.0
+    )
+
+    assert refined.is_missing.tolist() == [False, True]
+    assert refined.crs == 'EPSG:4326'
+    assert refined.epoch == 2020.0
+    assert refined[0].coords.to_nested() == pytest.approx(
+        [
+            (0.0, 0.0, 10.0, 100.0),
+            (4.961882922527124, 5.01950880089445, 20.0, 200.0),
+            (10.0, 10.0, 30.0, 300.0),
+        ],
+        abs=1e-12,
+    )
+
+
 @pytest.mark.parametrize(
     ('coordinates', 'expected_xy', 'expected_substring_xy'),
     [

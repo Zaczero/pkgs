@@ -287,23 +287,42 @@ pub(crate) fn segmentize_points_budgeted(
     placement: SegmentPlacement<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
+    if points.len() < 2 {
+        return Ok(points.clone());
+    }
+    if let SegmentPlacement::Geodesic(geodesic, frame) = placement {
+        // Keep the inverse solution only for segments whose admitted output
+        // contains an interior vertex. The empty vector preserves the
+        // zero-generated path's existing storage behavior.
+        let mut solutions = Vec::new();
+        let steps = line_segments(points)
+            .enumerate()
+            .map(|(segment_index, _segment)| {
+                let plan = geodesic_segment_plan(geodesic, frame, points, segment_index)?;
+                let steps = segmentize_steps(plan.solution.3, max_segment_length);
+                if steps.max(1) > 1 {
+                    crate::boundary::try_push_vec(&mut solutions, plan)?;
+                }
+                Ok(steps)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return subdivide_columns_from_steps(
+            points,
+            SubdivisionEmission::Geodesic(GeodesicEmitter::retained(
+                geodesic,
+                frame,
+                solutions.as_slice(),
+            )),
+            steps,
+            budget,
+        );
+    }
     // Measure a segment the same way the vertices will be placed, or the step
     // count and the geometry disagree: a geodesic placement measured planarly
     // would emit pieces longer than requested near the poles.
     let length_of = |segment: Segment| match placement {
         SegmentPlacement::Planar => Ok(point_distance(segment.start, segment.end)),
-        SegmentPlacement::Geodesic(geodesic, frame) => {
-            let start = frame
-                .to_geodesic_point(Point::new_raw_xy(segment.start.x, segment.start.y))
-                .expect("geographic subdivision received admitted coordinates");
-            let end = frame
-                .to_geodesic_point(Point::new_raw_xy(segment.end.x, segment.end.y))
-                .expect("geographic subdivision received admitted coordinates");
-            crate::crs::geodesic_line_solution_const::<false>(
-                geodesic, start.x, start.y, end.x, end.y,
-            )
-            .map(|(_, _, _, total)| total)
-        },
+        SegmentPlacement::Geodesic(..) => unreachable!("geodesic placement handled above"),
     };
     subdivide_columns(
         points,
@@ -366,6 +385,134 @@ fn densify_steps(segment: Segment, steps: usize) -> usize {
     }
 }
 
+#[derive(Clone, Copy)]
+struct GeodesicSegmentPlan {
+    solution: (f64, f64, f64, f64),
+    canonical_end: XY,
+}
+
+fn geodesic_segment_plan(
+    geodesic: &geographiclib_rs::Geodesic,
+    frame: GeographicFrame,
+    points: &CoordSeq,
+    segment_index: usize,
+) -> Result<GeodesicSegmentPlan> {
+    let start = frame
+        .to_geodesic_point(Point::new_raw_xy(
+            points.xs()[segment_index],
+            points.ys()[segment_index],
+        ))
+        .expect("geographic subdivision received admitted coordinates");
+    let end = frame
+        .to_geodesic_point(Point::new_raw_xy(
+            points.xs()[segment_index + 1],
+            points.ys()[segment_index + 1],
+        ))
+        .expect("geographic subdivision received admitted coordinates");
+    let solution = crate::crs::geodesic_line_solution_const::<false>(
+        geodesic, start.x, start.y, end.x, end.y,
+    )?;
+    Ok(GeodesicSegmentPlan {
+        solution,
+        canonical_end: end.xy(),
+    })
+}
+
+enum GeodesicPlanSource<'a> {
+    Recompute,
+    Retained(std::slice::Iter<'a, GeodesicSegmentPlan>),
+}
+
+struct GeodesicEmitter<'a> {
+    geodesic: &'a geographiclib_rs::Geodesic,
+    frame: GeographicFrame,
+    plans: GeodesicPlanSource<'a>,
+}
+
+impl<'a> GeodesicEmitter<'a> {
+    fn recompute(geodesic: &'a geographiclib_rs::Geodesic, frame: GeographicFrame) -> Self {
+        Self {
+            geodesic,
+            frame,
+            plans: GeodesicPlanSource::Recompute,
+        }
+    }
+
+    fn retained(
+        geodesic: &'a geographiclib_rs::Geodesic,
+        frame: GeographicFrame,
+        plans: &'a [GeodesicSegmentPlan],
+    ) -> Self {
+        Self {
+            geodesic,
+            frame,
+            plans: GeodesicPlanSource::Retained(plans.iter()),
+        }
+    }
+
+    fn emit(
+        &mut self,
+        points: &CoordSeq,
+        xs: &mut Vec<f64>,
+        ys: &mut Vec<f64>,
+        segment_index: usize,
+        steps: usize,
+    ) -> Result<()> {
+        let plan = match &mut self.plans {
+            GeodesicPlanSource::Recompute => {
+                if steps == 1 {
+                    // Densify has no planning solve to reuse. Preserve the
+                    // existing inverse-error boundary even when no vertex is
+                    // emitted for this segment.
+                    geodesic_segment_plan(self.geodesic, self.frame, points, segment_index)?;
+                    return Ok(());
+                }
+                geodesic_segment_plan(self.geodesic, self.frame, points, segment_index)?
+            },
+            GeodesicPlanSource::Retained(plans) => {
+                if steps == 1 {
+                    // The same admitted endpoint conversion and inverse have
+                    // already succeeded during planning. Geodesic and frame
+                    // are immutable here, so this materializer has no work.
+                    return Ok(());
+                }
+                *plans
+                    .next()
+                    .expect("geodesic subdivision plan matches segment steps")
+            },
+        };
+        emit_geodesic_plan(self.geodesic, self.frame, plan, steps, xs, ys)
+    }
+
+    fn assert_exhausted(&self) {
+        if let GeodesicPlanSource::Retained(plans) = &self.plans {
+            debug_assert!(plans.as_slice().is_empty());
+        }
+    }
+}
+
+enum SubdivisionEmission<'a> {
+    Planar,
+    Geodesic(GeodesicEmitter<'a>),
+}
+
+impl<'a> SubdivisionEmission<'a> {
+    fn recompute(placement: SegmentPlacement<'a>) -> Self {
+        match placement {
+            SegmentPlacement::Planar => Self::Planar,
+            SegmentPlacement::Geodesic(geodesic, frame) => {
+                Self::Geodesic(GeodesicEmitter::recompute(geodesic, frame))
+            },
+        }
+    }
+
+    fn assert_exhausted(&self) {
+        if let Self::Geodesic(emitter) = self {
+            emitter.assert_exhausted();
+        }
+    }
+}
+
 trait SubdivisionSink {
     fn source(&mut self, source_index: usize) -> Result<()>;
     fn interior(&mut self, segment_index: usize, steps: usize) -> Result<()>;
@@ -421,7 +568,7 @@ pub(crate) enum SegmentPlacement<'a> {
 
 struct SubdivisionColumns<'a> {
     points: &'a CoordSeq,
-    placement: SegmentPlacement<'a>,
+    emission: SubdivisionEmission<'a>,
     xs: Vec<f64>,
     ys: Vec<f64>,
     zs: Option<Vec<f64>>,
@@ -429,10 +576,10 @@ struct SubdivisionColumns<'a> {
 }
 
 impl<'a> SubdivisionColumns<'a> {
-    fn new(points: &'a CoordSeq, placement: SegmentPlacement<'a>, total: usize) -> Self {
+    fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Self {
         Self {
             points,
-            placement,
+            emission,
             xs: Vec::with_capacity(total),
             ys: Vec::with_capacity(total),
             zs: points.zs().map(|_| Vec::with_capacity(total)),
@@ -469,63 +616,45 @@ impl<'a> SubdivisionColumns<'a> {
     }
 }
 
-impl SubdivisionColumns<'_> {
-    /// Place `steps - 1` interior vertices at equal geodesic distances along
-    /// the segment. One inverse solve per segment, then one direct solve per
-    /// inserted vertex.
-    ///
-    /// A degenerate segment is handled by the shared geodesic solver. A solver
-    /// failure is reported rather than replaced with a planar lon/lat point:
-    /// the latter would change the metric curve while preserving its vertex
-    /// count.
-    fn push_geodesic(
-        &mut self,
-        geodesic: &geographiclib_rs::Geodesic,
-        domain: TopologyDomain,
-        segment_index: usize,
-        steps: usize,
-    ) -> Result<()> {
-        let (xs, ys) = (self.points.xs(), self.points.ys());
-        let (mut x0, mut y0) = (xs[segment_index], ys[segment_index]);
-        let (mut x1, mut y1) = (xs[segment_index + 1], ys[segment_index + 1]);
-        if let TopologyDomain::Geographic(frame) = domain {
-            let start = frame
-                .to_geodesic_point(Point::new_raw_xy(x0, y0))
-                .expect("geographic subdivision received admitted coordinates");
-            let end = frame
-                .to_geodesic_point(Point::new_raw_xy(x1, y1))
-                .expect("geographic subdivision received admitted coordinates");
-            (x0, y0) = (start.x, start.y);
-            (x1, y1) = (end.x, end.y);
+fn emit_geodesic_plan(
+    geodesic: &geographiclib_rs::Geodesic,
+    frame: GeographicFrame,
+    plan: GeodesicSegmentPlan,
+    steps: usize,
+    xs: &mut Vec<f64>,
+    ys: &mut Vec<f64>,
+) -> Result<()> {
+    // `plan` contains canonical degrees; restore the caller's angular frame
+    // only for inserted coordinates. Source vertices and Z/M stay in their
+    // original columns in `SubdivisionColumns`.
+    let (x0, y0, ..) = plan.solution;
+    let (x1, y1) = (plan.canonical_end.x, plan.canonical_end.y);
+    let equatorial = y0 == 0.0 && y1 == 0.0 && (x1 - x0).abs() < 180.0;
+    for step in 1..steps {
+        let fraction = step as f64 / steps as f64;
+        let (mut longitude, mut latitude) = if equatorial {
+            (interpolate_f64(x0, x1, fraction), 0.0)
+        } else {
+            let info = crate::crs::geodesic_interpolate_on_line_const::<false, true>(
+                geodesic,
+                plan.solution,
+                fraction,
+            )?;
+            (info.longitude, info.latitude)
+        };
+        let point = frame
+            .point_from_geodesic(Point::new_raw_xy(longitude, latitude))
+            .expect("geographic subdivision produced a finite coordinate");
+        (longitude, latitude) = (point.x, point.y);
+        if !(longitude.is_finite() && latitude.is_finite()) {
+            return Err(GeometryErrorKind::message(
+                "geodesic subdivision calculation produced a non-finite coordinate",
+            ));
         }
-        let solution = crate::crs::geodesic_line_solution_const::<false>(geodesic, x0, y0, x1, y1)?;
-        for step in 1..steps {
-            let fraction = step as f64 / steps as f64;
-            let equatorial = y0 == 0.0 && y1 == 0.0 && (x1 - x0).abs() < 180.0;
-            let (mut longitude, mut latitude) = if equatorial {
-                (interpolate_f64(x0, x1, fraction), 0.0)
-            } else {
-                let info = crate::crs::geodesic_interpolate_on_line_const::<false, true>(
-                    geodesic, solution, fraction,
-                )?;
-                (info.longitude, info.latitude)
-            };
-            if let TopologyDomain::Geographic(frame) = domain {
-                let point = frame
-                    .point_from_geodesic(Point::new_raw_xy(longitude, latitude))
-                    .expect("geographic subdivision produced a finite coordinate");
-                (longitude, latitude) = (point.x, point.y);
-            }
-            if !(longitude.is_finite() && latitude.is_finite()) {
-                return Err(GeometryErrorKind::message(
-                    "geodesic subdivision calculation produced a non-finite coordinate",
-                ));
-            }
-            self.xs.push(longitude);
-            self.ys.push(latitude);
-        }
-        Ok(())
+        xs.push(longitude);
+        ys.push(latitude);
     }
+    Ok(())
 }
 
 impl SubdivisionSink for SubdivisionColumns<'_> {
@@ -542,15 +671,16 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
     }
 
     fn interior(&mut self, segment_index: usize, steps: usize) -> Result<()> {
-        match self.placement {
-            SegmentPlacement::Planar => {
+        match &mut self.emission {
+            SubdivisionEmission::Planar => {
                 Self::push_interpolated(&mut self.xs, self.points.xs(), segment_index, steps);
                 Self::push_interpolated(&mut self.ys, self.points.ys(), segment_index, steps);
             },
-            SegmentPlacement::Geodesic(geodesic, frame) => {
-                self.push_geodesic(
-                    geodesic,
-                    TopologyDomain::Geographic(frame),
+            SubdivisionEmission::Geodesic(emitter) => {
+                emitter.emit(
+                    self.points,
+                    &mut self.xs,
+                    &mut self.ys,
                     segment_index,
                     steps,
                 )?;
@@ -586,6 +716,21 @@ pub(crate) fn subdivide_columns(
     let steps: Vec<usize> = line_segments(points)
         .map(steps_for)
         .collect::<Result<_>>()?;
+    subdivide_columns_from_steps(
+        points,
+        SubdivisionEmission::recompute(placement),
+        steps,
+        budget,
+    )
+}
+
+fn subdivide_columns_from_steps<'a>(
+    points: &'a CoordSeq,
+    emission: SubdivisionEmission<'a>,
+    steps: Vec<usize>,
+    budget: &mut ExpansionBudget,
+) -> Result<CoordSeq> {
+    let count = points.len();
     let mut count_sink = SubdivisionCount { emitted: 0 };
     emit_subdivision(&steps, &mut count_sink)?;
     let total = count_sink.emitted;
@@ -598,8 +743,9 @@ pub(crate) fn subdivide_columns(
         // the input IS the output, share it.
         return Ok(points.clone());
     }
-    let mut output = SubdivisionColumns::new(points, placement, total);
+    let mut output = SubdivisionColumns::new(points, emission, total);
     emit_subdivision(&steps, &mut output)?;
+    output.emission.assert_exhausted();
     Ok(output.finish())
 }
 
@@ -879,13 +1025,12 @@ impl Shape {
                         MultiMember::Empty => MultiMember::Empty,
                         MultiMember::Value(index) => {
                             let polygon = &polygons.as_slice()[index];
-                            dedup_ring(&polygon.shell)
-                                .map_or(MultiMember::Empty, |shell| {
-                                    MultiMember::Value(Polygon::new(
-                                        shell,
-                                        polygon.holes.iter().filter_map(dedup_ring).collect(),
-                                    ))
-                                })
+                            dedup_ring(&polygon.shell).map_or(MultiMember::Empty, |shell| {
+                                MultiMember::Value(Polygon::new(
+                                    shell,
+                                    polygon.holes.iter().filter_map(dedup_ring).collect(),
+                                ))
+                            })
                         },
                     })
                     .collect();
