@@ -420,6 +420,7 @@ impl<T: HeapSize> HeapSize for YStabbingIndex<T> {
     fn heap_bytes(&self) -> usize {
         self.items.heap_bytes()
             + self.spans.heap_bytes()
+            + self.x_spans.heap_bytes()
             + match &self.plan {
                 YPlan::Linear => 0,
                 YPlan::DenseBands {
@@ -429,6 +430,10 @@ impl<T: HeapSize> HeapSize for YStabbingIndex<T> {
                 } => band_offsets.heap_bytes() + band_items.heap_bytes(),
                 YPlan::IntervalTree { nodes, .. } => nodes.heap_bytes(),
             }
+            + self
+                .envelopes
+                .as_ref()
+                .map_or(0, super::bulk_rtree_heap_bytes)
     }
 }
 
@@ -692,6 +697,7 @@ fn query_itree_node<B>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HeapSize;
 
     fn collect_at(index: &YStabbingIndex<u32>, y: f64) -> Vec<u32> {
         let mut out = Vec::new();
@@ -859,5 +865,55 @@ mod tests {
             assert_eq!(collect_edge_ids(&index, y), from_slice, "y={y}");
         }
         assert!(!slice.is_empty());
+    }
+
+    #[test]
+    fn heap_bytes_includes_x_spans_on_linear_plan() {
+        let items: Vec<u32> = (0..8).collect();
+        let index = YStabbingIndex::build(items, |&i| {
+            let y = f64::from(i);
+            (0.0, 1.0, y, y + 0.5)
+        });
+        assert_eq!(index.plan_kind(), "linear");
+        assert!(index.envelopes.is_none());
+        assert_eq!(
+            index.heap_bytes(),
+            index.items.heap_bytes()
+                + index.spans.heap_bytes()
+                + index.x_spans.heap_bytes()
+        );
+        assert_eq!(
+            index.x_spans.heap_bytes(),
+            8 * std::mem::size_of::<(f64, f64)>()
+        );
+    }
+
+    #[test]
+    fn heap_bytes_includes_nonempty_envelope_tree() {
+        let n = 64_u32;
+        let finite = YStabbingIndex::build((0..n).collect(), |&i| {
+            let x = f64::from(i);
+            (x, x + 1.0, 0.0, 1000.0)
+        });
+        let infinite = YStabbingIndex::build((0..n).collect(), |_| {
+            (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1000.0)
+        });
+        assert_eq!(finite.plan_kind(), "tree");
+        assert_eq!(infinite.plan_kind(), "tree");
+        assert!(infinite.envelopes.is_none());
+        let tree = finite
+            .envelopes
+            .as_ref()
+            .expect("finite X builds an envelope tree");
+        assert!(
+            !tree.root().children().is_empty(),
+            "envelope tree must occupy used child slots"
+        );
+        let envelope_bytes = super::super::bulk_rtree_heap_bytes(tree);
+        assert!(envelope_bytes > 0, "nonempty tree must report used slots");
+        assert_eq!(
+            finite.heap_bytes() - infinite.heap_bytes(),
+            envelope_bytes
+        );
     }
 }

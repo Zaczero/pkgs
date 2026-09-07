@@ -9,9 +9,32 @@
 //! pairs whose envelopes prove they cannot matter, so results are identical
 //! to the brute-force scans (`min` over distances is order-independent).
 
+use rstar::{RTreeNode, RTreeObject};
+
+use super::BulkRTree;
+
 mod index;
 mod stabbing;
 mod sweep;
+
+/// Used child-slot bytes of a bulk-loaded R-tree.
+///
+/// Walks `root().children()`, a slice. Each slot is `size_of::<RTreeNode<T>>()`.
+/// Spare `Vec` capacity is not visible through that API, so this is not RSS
+/// and not an exact allocator footprint: an empty bulk-load still reserves
+/// `MAX_SIZE + 1` root slots and reports 0. Leaves here (`SegmentEntry`,
+/// `[f64; 2]`, `EnvelopeEntry`) are heapless payloads already inside the
+/// slot; nested leaf heap is not charged.
+fn bulk_rtree_heap_bytes<T: RTreeObject>(tree: &BulkRTree<T>) -> usize {
+    fn node_bytes<T: RTreeObject>(node: &RTreeNode<T>) -> usize {
+        std::mem::size_of::<RTreeNode<T>>()
+            + match node {
+                RTreeNode::Leaf(_) => 0,
+                RTreeNode::Parent(parent) => parent.children().iter().map(node_bytes).sum(),
+            }
+    }
+    tree.root().children().iter().map(node_bytes).sum()
+}
 
 pub(crate) use index::{PointSetIndex, SegmentIndex};
 pub(crate) use stabbing::{EdgeId, EdgeYIndex, YStabbingIndex, uses_linear_plan_for_len};

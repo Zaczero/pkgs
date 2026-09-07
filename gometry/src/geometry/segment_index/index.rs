@@ -43,17 +43,7 @@ pub(crate) struct SegmentIndex {
 
 impl HeapSize for SegmentIndex {
     fn heap_bytes(&self) -> usize {
-        fn node_bytes(node: &RTreeNode<SegmentEntry>) -> usize {
-            match node {
-                RTreeNode::Leaf(_) => std::mem::size_of::<RTreeNode<SegmentEntry>>(),
-                RTreeNode::Parent(parent) => {
-                    std::mem::size_of::<RTreeNode<SegmentEntry>>()
-                        + parent.children().iter().map(node_bytes).sum::<usize>()
-                },
-            }
-        }
-
-        self.tree.root().children().iter().map(node_bytes).sum()
+        super::bulk_rtree_heap_bytes(&self.tree)
     }
 }
 
@@ -211,17 +201,7 @@ impl PointSetIndex {
 
 impl HeapSize for PointSetIndex {
     fn heap_bytes(&self) -> usize {
-        fn node_bytes(node: &RTreeNode<[f64; 2]>) -> usize {
-            match node {
-                RTreeNode::Leaf(_) => std::mem::size_of::<RTreeNode<[f64; 2]>>(),
-                RTreeNode::Parent(parent) => {
-                    std::mem::size_of::<RTreeNode<[f64; 2]>>()
-                        + parent.children().iter().map(node_bytes).sum::<usize>()
-                },
-            }
-        }
-
-        self.tree.root().children().iter().map(node_bytes).sum()
+        super::bulk_rtree_heap_bytes(&self.tree)
     }
 }
 
