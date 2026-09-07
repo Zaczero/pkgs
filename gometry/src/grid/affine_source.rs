@@ -942,7 +942,9 @@ impl ExactExpansion {
                 } else {
                     [tail, 0.0]
                 };
-                let term_len = if tail == 0.0 { usize::from(head != 0.0) } else {
+                let term_len = if tail == 0.0 {
+                    usize::from(head != 0.0)
+                } else {
                     1 + usize::from(head != 0.0)
                 };
                 if term_len == 0 {
@@ -2145,14 +2147,9 @@ fn selection_closed_between(
     middle: &ExactRatio,
     right: &ExactRatio,
 ) -> Option<bool> {
-    let left_right = left.ordering(right)?;
     let left_middle = left.ordering(middle)?;
     let middle_right = middle.ordering(right)?;
-    Some(match left_right {
-        Ordering::Less => left_middle != Ordering::Greater && middle_right != Ordering::Greater,
-        Ordering::Greater => left_middle != Ordering::Less && middle_right != Ordering::Less,
-        Ordering::Equal => left_middle == Ordering::Equal,
-    })
+    Some(closed_between_orderings(left_middle, middle_right))
 }
 
 /// Exact even-odd point location in the finite lifted fill.  This direct
@@ -2293,19 +2290,18 @@ fn classify_lifted_edge<
     GridPointClass::Exterior
 }
 
+fn closed_between_orderings(left_middle: Ordering, middle_right: Ordering) -> bool {
+    left_middle == Ordering::Equal || middle_right == Ordering::Equal || left_middle == middle_right
+}
+
 fn closed_between_expansion(
     left: &ExactExpansion,
     middle: &ExactExpansion,
     right: &ExactExpansion,
 ) -> Option<bool> {
-    let left_right = left.sub(right)?.ordering();
     let left_middle = left.sub(middle)?.ordering();
     let middle_right = middle.sub(right)?.ordering();
-    Some(match left_right {
-        Ordering::Less => left_middle != Ordering::Greater && middle_right != Ordering::Greater,
-        Ordering::Greater => left_middle != Ordering::Less && middle_right != Ordering::Less,
-        Ordering::Equal => left_middle == Ordering::Equal,
-    })
+    Some(closed_between_orderings(left_middle, middle_right))
 }
 
 fn closed_between_planar_points<
@@ -3540,28 +3536,17 @@ fn closed_between(
     middle: LiftedLongitude,
     right: LiftedLongitude,
 ) -> Option<bool> {
-    let left_right = left.ordering(right)?;
     let left_middle = left.ordering(middle)?;
     let middle_right = middle.ordering(right)?;
-    Some(match left_right {
-        Ordering::Less => left_middle != Ordering::Greater && middle_right != Ordering::Greater,
-        Ordering::Greater => left_middle != Ordering::Less && middle_right != Ordering::Less,
-        Ordering::Equal => left_middle == Ordering::Equal,
-    })
+    Some(closed_between_orderings(left_middle, middle_right))
 }
 
 fn closed_between_raw(left: f64, middle: f64, right: f64) -> Option<bool> {
-    let left = ExactExpansion::from_f64(left)?;
-    let middle = ExactExpansion::from_f64(middle)?;
-    let right = ExactExpansion::from_f64(right)?;
-    let left_right = left.sub(&right)?.ordering();
-    let left_middle = left.sub(&middle)?.ordering();
-    let middle_right = middle.sub(&right)?.ordering();
-    Some(match left_right {
-        Ordering::Less => left_middle != Ordering::Greater && middle_right != Ordering::Greater,
-        Ordering::Greater => left_middle != Ordering::Less && middle_right != Ordering::Less,
-        Ordering::Equal => left_middle == Ordering::Equal,
-    })
+    closed_between_expansion(
+        &ExactExpansion::from_f64(left)?,
+        &ExactExpansion::from_f64(middle)?,
+        &ExactExpansion::from_f64(right)?,
+    )
 }
 
 /// A stored source point, retaining the exact binary64 inputs instead of a
@@ -4452,7 +4437,6 @@ fn append_lifted_chain(
         }
     }
     lifted.push(chain);
-
 }
 
 /// Retain the raw authority point even when its selection transform cannot be

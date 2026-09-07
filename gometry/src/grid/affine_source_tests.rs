@@ -6,11 +6,12 @@ use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape, is_axis_al
 use crate::grid::affine_source::{
     CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactParentParameter,
     ExactPlanarPoint, ExactRatio, FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass,
-    LiftKind, LiftedChain, ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass,
-    SourceEdgeKey, SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge,
-    authority_edge_proxy_envelopes, build_authority_edge_index,
-    classify_lifted_ring_bucket, combine_polygon_point_classes, exact_affine_level,
-    exact_axis_rectangle, exact_segment_touches_rectangle, integer_levels_between, lifted_step,
+    LiftKind, LiftedChain, LiftedLongitude, ParentCrossing, ParentParameterKey,
+    PartitionConstraint, RectClass, SourceEdgeKey, SourceVertexKey, SphericalGridTarget,
+    SymbolicAffineEdge, authority_edge_proxy_envelopes, build_authority_edge_index,
+    classify_lifted_ring_bucket, closed_between, closed_between_expansion, closed_between_raw,
+    combine_polygon_point_classes, exact_affine_level, exact_axis_rectangle,
+    exact_segment_touches_rectangle, integer_levels_between, lifted_step, selection_closed_between,
     subdivided_axis_aligned_rectangle,
 };
 use crate::grid::spherical_arc::{
@@ -1513,9 +1514,7 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
     edge.start.longitude.raw = f64::MAX;
     edge.end.longitude.raw = f64::MAX;
     assert!(authority_edge_proxy_envelopes(&edge).is_none());
-    assert!(
-        build_authority_edge_index(std::slice::from_ref(&edge)).is_none()
-    );
+    assert!(build_authority_edge_index(std::slice::from_ref(&edge)).is_none());
 
     let source = GeographicCoverageSource {
         target: SphericalGridTarget::H3(Resolution::Two),
@@ -1538,4 +1537,67 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
         ),
         RectClass::Boundary
     );
+}
+
+fn interval_oracle(left: f64, middle: f64, right: f64) -> bool {
+    let lo = left.min(right);
+    let hi = left.max(right);
+    lo <= middle && middle <= hi
+}
+
+fn assert_all_oracles(left: f64, middle: f64, right: f64, expected: Option<bool>) {
+    let expansion = closed_between_expansion(
+        &ExactExpansion::from_f64(left).unwrap(),
+        &ExactExpansion::from_f64(middle).unwrap(),
+        &ExactExpansion::from_f64(right).unwrap(),
+    );
+    let raw = closed_between_raw(left, middle, right);
+    let lifted = closed_between(
+        LiftedLongitude {
+            raw: left,
+            turns: 0,
+        },
+        LiftedLongitude {
+            raw: middle,
+            turns: 0,
+        },
+        LiftedLongitude {
+            raw: right,
+            turns: 0,
+        },
+    );
+    let ratio = selection_closed_between(
+        &ExactRatio::from_f64(left).unwrap(),
+        &ExactRatio::from_f64(middle).unwrap(),
+        &ExactRatio::from_f64(right).unwrap(),
+    );
+    assert_eq!(expansion, expected, "expansion {left} {middle} {right}");
+    assert_eq!(raw, expected, "raw {left} {middle} {right}");
+    assert_eq!(lifted, expected, "lifted {left} {middle} {right}");
+    assert_eq!(ratio, expected, "ratio {left} {middle} {right}");
+}
+
+#[test]
+fn closed_between_matches_integer_minmax_on_all_interval_oracles() {
+    let values = [-2.0, -0.0, 0.0, 1.0, 2.0, 5.0];
+    for &left in &values {
+        for &middle in &values {
+            for &right in &values {
+                assert_all_oracles(
+                    left,
+                    middle,
+                    right,
+                    Some(interval_oracle(left, middle, right)),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn closed_between_certifies_overflowing_endpoint_span() {
+    assert_all_oracles(1e308, 0.0, -1e308, Some(true));
+    assert_all_oracles(-1e308, 0.0, 1e308, Some(true));
+    assert_all_oracles(1e308, 1e308, -1e308, None);
+    assert_all_oracles(-1e308, -1e308, 1e308, None);
 }
