@@ -470,12 +470,12 @@ fn keep_ring(
     ring: &Ring,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
-) -> Result<RingKeep> {
-    Ok(match kept_coords(ring.coords(), scratch, keep_mask) {
+) -> RingKeep {
+    match kept_coords(ring.coords(), scratch, keep_mask) {
         None => RingKeep::Same,
         Some(coords) if coords.len() < Ring::MIN_VERTICES_CLOSED => RingKeep::Drop,
         Some(coords) => RingKeep::New(Ring::from_closed(coords)),
-    })
+    }
 }
 
 enum PolygonKeep {
@@ -498,11 +498,12 @@ fn keep_polygon(
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
 ) -> Result<PolygonKeep> {
-    let shell_out = keep_ring(&polygon.shell, scratch, keep_mask)?;
-    if matches!(shell_out, RingKeep::Drop) {
-        return Ok(PolygonKeep::Empty);
-    }
-    let mut holes_out = if matches!(shell_out, RingKeep::New(_)) {
+    let new_shell = match keep_ring(&polygon.shell, scratch, keep_mask) {
+        RingKeep::Drop => return Ok(PolygonKeep::Empty),
+        RingKeep::Same => None,
+        RingKeep::New(shell) => Some(shell),
+    };
+    let mut holes_out = if new_shell.is_some() {
         let mut holes = Vec::new();
         crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
         Some(holes)
@@ -510,7 +511,7 @@ fn keep_polygon(
         None
     };
     for (index, hole) in polygon.holes.iter().enumerate() {
-        match keep_ring(hole, scratch, keep_mask)? {
+        match keep_ring(hole, scratch, keep_mask) {
             RingKeep::Same => {
                 if let Some(holes) = holes_out.as_mut() {
                     crate::try_push_vec(holes, hole.clone())?;
@@ -532,15 +533,12 @@ fn keep_polygon(
             },
         }
     }
-    Ok(match (shell_out, holes_out) {
-        (RingKeep::Same, None) => PolygonKeep::Same,
-        (RingKeep::Same, Some(holes)) => {
-            PolygonKeep::New(Polygon::new(polygon.shell.clone(), holes))
-        },
-        (RingKeep::New(shell), holes) => {
-            PolygonKeep::New(Polygon::new(shell, holes.unwrap_or_default()))
-        },
-        (RingKeep::Drop, _) => PolygonKeep::Empty,
+    Ok(match holes_out {
+        None => PolygonKeep::Same,
+        Some(holes) => PolygonKeep::New(Polygon::new(
+            new_shell.unwrap_or_else(|| polygon.shell.clone()),
+            holes,
+        )),
     })
 }
 
@@ -1004,10 +1002,12 @@ mod keep_identity_tests {
     use std::sync::Arc;
 
     use super::RawSimplify;
+    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{
         CoordSeq, CoordinateAxes, GeometryKind, LineSeq, MultiLineString, MultiPolygon, Polygon,
         Ring, Shape,
     };
+    use crate::test_support::fail_allocations_after;
 
     fn line_xy(xs: &[f64], ys: &[f64]) -> LineSeq {
         LineSeq::from_proven(CoordSeq::from_columns(
@@ -1172,6 +1172,19 @@ mod keep_identity_tests {
         assert_eq!(out.as_slice()[0].xs().as_ptr(), first_ptr);
         assert_eq!(out.as_slice()[1].xs(), &[0.0, 2.0]);
         assert_eq!(out.as_slice()[2].xs().as_ptr(), last_ptr);
+    }
+
+    #[test]
+    fn prefix_line_member_staging_reports_allocation_failure() {
+        let first = line_xy(&[0.0, 0.0], &[0.0, 1.0]);
+        let middle = line_xy(&[0.0, 1.0, 2.0], &[0.0, 0.0, 0.0]);
+        let last = line_xy(&[3.0, 3.0], &[0.0, 1.0]);
+        let lines = MultiLineString::from_dense(vec![first, middle, last]).unwrap();
+        let result = fail_allocations_after(0, || super::try_prefix_line_members(&lines, 1));
+        assert!(matches!(
+            result,
+            Err(error) if matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation))
+        ));
     }
 
     #[test]
