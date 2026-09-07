@@ -587,6 +587,50 @@ def test_h3_directed_edges() -> None:
         gm.H3Edge('zzz')
 
 
+def test_h3_vertex_and_edge_value_counts_and_factorize() -> None:
+    cell = gm.H3Cell(13.4, 52.5, resolution=7)
+    cases = [
+        (gm.H3VertexArray, list(cell.vertices[:3])),
+        (gm.H3EdgeArray, list(cell.edges[:3])),
+    ]
+    for array_type, items in cases:
+        first, second, third = items
+        values = array_type([first, second, first, third, second, second])
+        codes, uniques = values.factorize()
+        assert isinstance(uniques, array_type)
+        assert list(uniques) == [first, second, third]
+        np.testing.assert_array_equal(codes, [0, 1, 0, 2, 1, 1])
+        assert codes.dtype == np.int64
+        assert not codes.flags.writeable
+
+        counted, counts = values.value_counts()
+        assert isinstance(counted, array_type)
+        assert list(counted) == [second, first, third]
+        np.testing.assert_array_equal(counts, [3, 2, 1])
+        assert counts.dtype == np.int64
+        assert not counts.flags.writeable
+
+        empty = array_type([])
+        empty_codes, empty_uniques = empty.factorize()
+        empty_counted, empty_counts = empty.value_counts()
+        assert isinstance(empty_uniques, array_type)
+        assert isinstance(empty_counted, array_type)
+        assert len(empty_uniques) == len(empty_counted) == 0
+        np.testing.assert_array_equal(empty_codes, [])
+        np.testing.assert_array_equal(empty_counts, [])
+        assert empty_codes.dtype == np.int64
+        assert empty_counts.dtype == np.int64
+
+        selected = values[[2, 0, 5]]
+        selected_codes, selected_uniques = selected.factorize()
+        assert list(selected) == [first, first, second]
+        assert list(selected_uniques) == [first, second]
+        np.testing.assert_array_equal(selected_codes, [0, 0, 1])
+        selected_counted, selected_counts = selected.value_counts()
+        assert list(selected_counted) == [first, second]
+        np.testing.assert_array_equal(selected_counts, [2, 1])
+
+
 def test_h3_index_scalar_and_bulk_parsing_share_validation() -> None:
     cell = gm.H3Cell(13.4, 52.5, resolution=7)
     vertex = cell.vertices[0]

@@ -258,9 +258,9 @@ macro_rules! h3_index_array_common {
                 Ok(ids)
             }
 
-            fn factorized_entries(
+            fn value_count_entries(
                 &self,
-            ) -> std::result::Result<(Vec<u64>, Vec<i64>, Vec<i64>), FactorizationError> {
+            ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
                 let mut slot_of: HashMap<u64, usize> = HashMap::new();
                 if slot_of.try_reserve(self.len()).is_err() {
                     return Err(FactorizationError::Native(
@@ -269,8 +269,6 @@ macro_rules! h3_index_array_common {
                 }
                 let mut uniques = Vec::new();
                 let mut counts = Vec::new();
-                let mut codes = Vec::new();
-                crate::try_reserve_vec(&mut codes, self.len())?;
                 for row in 0..self.len() {
                     let id = self.id_at(row);
                     let slot = match slot_of.entry(id) {
@@ -287,13 +285,40 @@ macro_rules! h3_index_array_common {
                         return Err(FactorizationError::CountOverflow);
                     };
                     counts[slot] = count;
+                }
+                Ok((uniques, counts))
+            }
+
+            fn factorize_entries(
+                &self,
+            ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+                let mut slot_of: HashMap<u64, usize> = HashMap::new();
+                if slot_of.try_reserve(self.len()).is_err() {
+                    return Err(FactorizationError::Native(
+                        crate::error::ResourceError::Allocation.into(),
+                    ));
+                }
+                let mut uniques = Vec::new();
+                let mut codes = Vec::new();
+                crate::try_reserve_vec(&mut codes, self.len())?;
+                for row in 0..self.len() {
+                    let id = self.id_at(row);
+                    let slot = match slot_of.entry(id) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            let slot = uniques.len();
+                            entry.insert(slot);
+                            crate::try_push_vec(&mut uniques, id)?;
+                            slot
+                        },
+                    };
                     let code = match i64::try_from(slot) {
                         Ok(code) => code,
                         Err(_) => return Err(FactorizationError::CodeOverflow),
                     };
                     crate::try_push_vec(&mut codes, code)?;
                 }
-                Ok((uniques, counts, codes))
+                Ok((uniques, codes))
             }
         }
 
@@ -567,8 +592,7 @@ macro_rules! h3_index_array_common {
     /// [1, 1, 1, 1, 1, 1]
 fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 let result = (|| -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
-                    let (uniques, counts, codes) = self.factorized_entries()?;
-                    drop(codes);
+                    let (uniques, counts) = self.value_count_entries()?;
                     let mut order = Vec::new();
                     crate::try_reserve_vec(&mut order, uniques.len())?;
                     for slot in 0..uniques.len() {
@@ -630,11 +654,10 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     /// >>> len(codes) == len(edges)
     /// True
 fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-                let (uniques, counts, codes) = match self.factorized_entries() {
+                let (uniques, codes) = match self.factorize_entries() {
                     Ok(values) => values,
                     Err(error) => return Err(error.into_py_err()),
                 };
-                drop(counts);
                 let codes = match crate::py::numpy::int64_array(py, codes) {
                     Ok(codes) => codes,
                     Err(error) => {
@@ -880,7 +903,10 @@ impl PyH3VertexArray {
     }
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled `H3VertexArray` from its 64-bit indexes (internal).
 #[pyfunction]
 pub(super) fn _unpickle_h3_vertex_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3VertexArray> {
@@ -998,7 +1024,10 @@ impl PyH3EdgeArray {
     }
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled `H3EdgeArray` from its 64-bit indexes (internal).
 #[pyfunction]
 pub(super) fn _unpickle_h3_edge_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3EdgeArray> {
@@ -1015,53 +1044,57 @@ mod tests {
     use super::{FactorizationError, PyH3EdgeArray, PyH3VertexArray};
     use crate::test_support::{allocation_count, fail_allocations_after};
 
+    fn assert_native_allocation_converts_to_memory_error<F>(
+        py: Python<'_>,
+        label: &str,
+        assemble: F,
+    ) where
+        F: Fn() -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError>,
+    {
+        assemble().unwrap_or_else(|_| panic!("warm {label} pass must succeed"));
+        let ((), allocations) = allocation_count(|| {
+            assemble().unwrap_or_else(|_| panic!("counting {label} pass must succeed"));
+        });
+        assert!(allocations > 0);
+        let error = fail_allocations_after(allocations - 1, || {
+            let error = match assemble() {
+                Ok(_) => panic!("the measured {label} allocation must fail"),
+                Err(error) => error,
+            };
+            assert!(matches!(&error, FactorizationError::Native(_)));
+            error.into_py_err()
+        });
+        assert!(error.is_instance_of::<PyMemoryError>(py));
+        drop(error);
+    }
+
     #[test]
-    fn h3_factorized_entries_allocation_error_converts_to_memory_error() {
+    fn h3_value_count_entries_allocation_error_converts_to_memory_error() {
         Python::initialize();
         Python::attach(|py| {
             let vertices = PyH3VertexArray::from_ids(vec![1, 2, 3]);
-            vertices
-                .factorized_entries()
-                .expect("warm H3 vertex factorize pass must succeed");
-            let ((), vertex_allocations) = allocation_count(|| {
-                vertices
-                    .factorized_entries()
-                    .expect("counting H3 vertex factorize pass must succeed");
+            assert_native_allocation_converts_to_memory_error(py, "H3 vertex value-count", || {
+                vertices.value_count_entries()
             });
-            assert!(vertex_allocations > 0);
-            let vertex_error = fail_allocations_after(vertex_allocations - 1, || {
-                let error = match vertices.factorized_entries() {
-                    Ok(_) => panic!("the measured H3 vertex allocation must fail"),
-                    Err(error) => error,
-                };
-                assert!(matches!(&error, FactorizationError::Native(_)));
-                let error = error.into_py_err();
-                error
-            });
-            assert!(vertex_error.is_instance_of::<PyMemoryError>(py));
-            drop(vertex_error);
-
             let edges = PyH3EdgeArray::from_ids(vec![1, 2, 3]);
-            edges
-                .factorized_entries()
-                .expect("warm H3 edge factorize pass must succeed");
-            let ((), edge_allocations) = allocation_count(|| {
-                edges
-                    .factorized_entries()
-                    .expect("counting H3 edge factorize pass must succeed");
+            assert_native_allocation_converts_to_memory_error(py, "H3 edge value-count", || {
+                edges.value_count_entries()
             });
-            assert!(edge_allocations > 0);
-            let edge_error = fail_allocations_after(edge_allocations - 1, || {
-                let error = match edges.factorized_entries() {
-                    Ok(_) => panic!("the measured H3 edge allocation must fail"),
-                    Err(error) => error,
-                };
-                assert!(matches!(&error, FactorizationError::Native(_)));
-                let error = error.into_py_err();
-                error
+        });
+    }
+
+    #[test]
+    fn h3_factorize_entries_allocation_error_converts_to_memory_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let vertices = PyH3VertexArray::from_ids(vec![1, 2, 3]);
+            assert_native_allocation_converts_to_memory_error(py, "H3 vertex factorize", || {
+                vertices.factorize_entries()
             });
-            assert!(edge_error.is_instance_of::<PyMemoryError>(py));
-            drop(edge_error);
+            let edges = PyH3EdgeArray::from_ids(vec![1, 2, 3]);
+            assert_native_allocation_converts_to_memory_error(py, "H3 edge factorize", || {
+                edges.factorize_entries()
+            });
         });
     }
 }
