@@ -7,41 +7,15 @@ use std::simd::cmp::SimdPartialOrd as _;
 
 use crate::NonNegative;
 use crate::error::Result;
-use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_filter};
+use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind, LineSeq,
-    MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, REDUCE_LANES, ReduceSimd,
-    Ring, Segment, Shape, TopologyGuard, XY, dedup_consecutive_points, line_segments,
+    MultiLineString, MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, REDUCE_LANES,
+    ReduceSimd, Ring, Segment, Shape, TopologyGuard, XY, dedup_consecutive_points, line_segments,
     open_point_cycle_winding, orientation, point_segment_distance, point_segment_distance_squared,
     same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
     vw_area_tolerance, wrap_index,
 };
-/// One chain through iterative Douglas-Peucker as a keep-mask over the
-/// original points: surviving vertices are the INPUT vertices (bit-exact,
-/// full Z/M), endpoints always survive, and a range splits at its
-/// farthest interior vertex while that deviation exceeds the tolerance
-/// (matching the classic strictly-greater rule). `None` when EVERY
-/// vertex survives — the caller reuses the input chain without
-/// re-materializing it (tolerances below the feature size cost only the
-/// scan). Deviations compare in MULTIPLIED squared space (`cross²` vs
-/// `tolerance² × chord²` — no division per candidate); non-finite
-/// products rescue through the exact general kernel.
-pub(crate) fn rdp_chain(points: &CoordSeq, tolerance: f64) -> Option<Vec<Point>> {
-    let mut keep = Vec::new();
-    // Scalar callers own a one-shot work stack; the packed path reuses one.
-    let mut stack = Vec::new();
-    let kept = rdp_keep(points.xs(), points.ys(), tolerance, &mut keep, &mut stack)?;
-    if kept == points.len() {
-        return None;
-    }
-    Some(
-        points
-            .iter_coords()
-            .zip(&keep)
-            .filter_map(|(point, &kept)| kept.then_some(point))
-            .collect(),
-    )
-}
 
 /// The Douglas-Peucker keep mask over raw columns: `keep` and `stack` are
 /// cleared and refilled (reusable across packed-array rows); `Some(kept_count)`
@@ -445,6 +419,221 @@ fn has_three_distinct_xy(coords: &CoordSeq) -> bool {
     false
 }
 
+/// Operation-local keep-count identity. `Unchanged` means every chain kept
+/// every vertex, so the caller clones `self` instead of staging output.
+enum RawSimplify {
+    Unchanged,
+    Changed(Shape),
+}
+
+impl RawSimplify {
+    fn into_shape(self, original: &Shape) -> Shape {
+        match self {
+            Self::Unchanged => original.clone(),
+            Self::Changed(shape) => shape,
+        }
+    }
+}
+
+#[derive(Default)]
+struct KeepScratch {
+    keep: Vec<bool>,
+    stack: Vec<(usize, usize)>,
+}
+
+/// One keep-mask pass. `None` when the kernel says the chain is too short or
+/// every vertex survives — reuse the input chain, do not `select`.
+fn kept_coords(
+    points: &CoordSeq,
+    scratch: &mut KeepScratch,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+) -> Option<CoordSeq> {
+    let kept = keep_mask(points.xs(), points.ys(), scratch)?;
+    (kept != points.len()).then(|| {
+        points.select(
+            scratch
+                .keep
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &kept)| kept.then_some(index)),
+        )
+    })
+}
+
+enum RingKeep {
+    Same,
+    Drop,
+    New(Ring),
+}
+
+fn keep_ring(
+    ring: &Ring,
+    scratch: &mut KeepScratch,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+) -> RingKeep {
+    match kept_coords(ring.coords(), scratch, keep_mask) {
+        None => RingKeep::Same,
+        Some(coords) if coords.len() < Ring::MIN_VERTICES_CLOSED => RingKeep::Drop,
+        Some(coords) => RingKeep::New(Ring::from_closed(coords)),
+    }
+}
+
+enum PolygonKeep {
+    Same,
+    Empty,
+    New(Polygon),
+}
+
+fn keep_polygon(
+    polygon: &Polygon,
+    scratch: &mut KeepScratch,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+) -> PolygonKeep {
+    match keep_ring(&polygon.shell, scratch, keep_mask) {
+        RingKeep::Drop => PolygonKeep::Empty,
+        RingKeep::Same => {
+            let mut holes_out: Option<Vec<Ring>> = None;
+            for (index, hole) in polygon.holes.iter().enumerate() {
+                match keep_ring(hole, scratch, keep_mask) {
+                    RingKeep::Same => {
+                        if let Some(holes) = holes_out.as_mut() {
+                            holes.push(hole.clone());
+                        }
+                    },
+                    RingKeep::Drop => {
+                        holes_out.get_or_insert_with(|| polygon.holes[..index].to_vec());
+                    },
+                    RingKeep::New(ring) => {
+                        holes_out
+                            .get_or_insert_with(|| polygon.holes[..index].to_vec())
+                            .push(ring);
+                    },
+                }
+            }
+            match holes_out {
+                None => PolygonKeep::Same,
+                Some(holes) => PolygonKeep::New(Polygon::new(polygon.shell.clone(), holes)),
+            }
+        },
+        RingKeep::New(shell) => {
+            let mut holes = Vec::with_capacity(polygon.holes.len());
+            for hole in polygon.holes.iter() {
+                match keep_ring(hole, scratch, keep_mask) {
+                    RingKeep::Same => holes.push(hole.clone()),
+                    RingKeep::Drop => {},
+                    RingKeep::New(ring) => holes.push(ring),
+                }
+            }
+            PolygonKeep::New(Polygon::new(shell, holes))
+        },
+    }
+}
+
+fn keep_multi_lines(
+    lines: &MultiLineString,
+    scratch: &mut KeepScratch,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+) -> RawSimplify {
+    let mut out: Option<Vec<MultiMember<LineSeq>>> = None;
+    for (index, member) in lines.members().enumerate() {
+        match member {
+            MultiMember::Empty => {
+                if let Some(members) = out.as_mut() {
+                    members.push(MultiMember::Empty);
+                }
+            },
+            MultiMember::Value(value) => {
+                let line = &lines.as_slice()[value];
+                match kept_coords(line, scratch, keep_mask) {
+                    None => {
+                        if let Some(members) = out.as_mut() {
+                            members.push(MultiMember::Value(line.clone()));
+                        }
+                    },
+                    Some(coords) => {
+                        out.get_or_insert_with(|| {
+                            lines
+                                .members()
+                                .take(index)
+                                .map(|member| match member {
+                                    MultiMember::Empty => MultiMember::Empty,
+                                    MultiMember::Value(value) => {
+                                        MultiMember::Value(lines.as_slice()[value].clone())
+                                    },
+                                })
+                                .collect()
+                        })
+                        .push(MultiMember::Value(LineSeq::from_proven(coords)));
+                    },
+                }
+            },
+        }
+    }
+    match out {
+        None => RawSimplify::Unchanged,
+        Some(members) => RawSimplify::Changed(Shape::MultiLineString(MultiLineString::from_values(
+            lines.axes(),
+            members,
+        ))),
+    }
+}
+
+fn keep_multi_polygons(
+    polygons: &MultiPolygon,
+    scratch: &mut KeepScratch,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+) -> RawSimplify {
+    let mut out: Option<Vec<MultiMember<Polygon>>> = None;
+    for (index, member) in polygons.members().enumerate() {
+        match member {
+            MultiMember::Empty => {
+                if let Some(members) = out.as_mut() {
+                    members.push(MultiMember::Empty);
+                }
+            },
+            MultiMember::Value(value) => {
+                let polygon = &polygons.as_slice()[value];
+                match keep_polygon(polygon, scratch, keep_mask) {
+                    PolygonKeep::Same => {
+                        if let Some(members) = out.as_mut() {
+                            members.push(MultiMember::Value(polygon.clone()));
+                        }
+                    },
+                    PolygonKeep::Empty => {
+                        out.get_or_insert_with(|| prefix_polygon_members(polygons, index))
+                            .push(MultiMember::Empty);
+                    },
+                    PolygonKeep::New(polygon) => {
+                        out.get_or_insert_with(|| prefix_polygon_members(polygons, index))
+                            .push(MultiMember::Value(polygon));
+                    },
+                }
+            },
+        }
+    }
+    match out {
+        None => RawSimplify::Unchanged,
+        Some(members) => RawSimplify::Changed(Shape::MultiPolygon(MultiPolygon::from_values(
+            polygons.axes(),
+            members,
+        ))),
+    }
+}
+
+fn prefix_polygon_members(
+    polygons: &MultiPolygon,
+    end: usize,
+) -> Vec<MultiMember<Polygon>> {
+    polygons
+        .members()
+        .take(end)
+        .map(|member| match member {
+            MultiMember::Empty => MultiMember::Empty,
+            MultiMember::Value(value) => MultiMember::Value(polygons.as_slice()[value].clone()),
+        })
+        .collect()
+}
+
 impl Shape {
     /// Douglas-Peucker simplification. With `preserve_topology` (the
     /// default), an output that raw DP made invalid (a collapsed or
@@ -458,22 +647,32 @@ impl Shape {
     /// call would pay the slow guarded walk — and it runs on the REDUCED
     /// output through the indexed validity kernel, so it is cheap.
     pub fn simplify_dp(&self, tolerance: f64, preserve_topology: bool) -> Result<Self> {
-        let raw = self.simplify_dp_raw(tolerance)?;
-        // Without the topology guard, raw DP can collapse a polygon ring below
-        // its three distinct corners (a sliver) — a degenerate INVALID polygon.
-        // Drop collapsed areal rings so a vanished polygon is `POLYGON EMPTY`
-        // (matching Shapely), never an invalid 2-vertex ring.
-        if !preserve_topology {
-            return raw.dropping_collapsed_rings();
+        match self.simplify_raw_dp(tolerance)? {
+            RawSimplify::Unchanged => {
+                if preserve_topology {
+                    Ok(self.clone())
+                } else {
+                    self.clone().dropping_collapsed_rings()
+                }
+            },
+            RawSimplify::Changed(raw) => {
+                // Without the topology guard, raw DP can collapse a polygon ring
+                // below its three distinct corners (a sliver) — a degenerate
+                // INVALID polygon. Drop collapsed areal rings so a vanished
+                // polygon is `POLYGON EMPTY` (matching Shapely), never an
+                // invalid 2-vertex ring.
+                if !preserve_topology {
+                    return raw.dropping_collapsed_rings();
+                }
+                // Keep-count identity already returned `Unchanged`. The validity
+                // branch-check only runs when vertices actually dropped.
+                if self.simplify_kept_topology(&raw) {
+                    Ok(raw)
+                } else {
+                    self.simplify_guarded(tolerance)
+                }
+            },
         }
-        // An unchanged output has, by identity, exactly the input's
-        // topology — the validity branch-check only runs when vertices
-        // actually dropped (tolerances below the feature size skip it
-        // entirely).
-        if raw == *self || self.simplify_kept_topology(&raw) {
-            return Ok(raw);
-        }
-        self.simplify_guarded(tolerance)
     }
 
     /// Drop areal rings that simplification collapsed below three distinct
@@ -593,46 +792,7 @@ impl Shape {
     }
 
     pub fn simplify_dp_raw(&self, tolerance: f64) -> Result<Self> {
-        let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        // Own Douglas-Peucker: a keep-mask over the ORIGINAL points, so
-        // Z/M survive verbatim with no geo round-trip, no libm `hypot`
-        // distances (the scalar-libcall trap geo's kernel pays per
-        // candidate), and no post-hoc ordinate resolution pass.
-        let simplify_ring = |ring: &Ring| -> Option<Ring> {
-            let coords = rdp_chain(ring.coords(), tolerance)
-                .map_or_else(|| ring.coords().clone(), CoordSeq::from);
-            (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_closed(coords))
-        };
-        let simplify_polygon = |polygon: &Polygon| -> Option<Polygon> {
-            Some(Polygon::new(
-                simplify_ring(&polygon.shell)?,
-                polygon.holes.iter().filter_map(&simplify_ring).collect(),
-            ))
-        };
-        Ok(match self {
-            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
-            Self::LineString(_) | Self::MultiLineString(_) => {
-                self.map_chains(&|points: &CoordSeq| rdp_chain(points, tolerance))?
-            },
-            Self::Polygon(polygon) => simplify_polygon(polygon).map_or_else(
-                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
-                Self::Polygon,
-            ),
-            Self::MultiPolygon(polygons) => {
-                let members = polygons
-                    .members()
-                    .map(|member| match member {
-                        MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(index) => simplify_polygon(&polygons.as_slice()[index])
-                            .map_or(MultiMember::Empty, MultiMember::Value),
-                    })
-                    .collect();
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
-            },
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
-                geometries.try_map_members(|geometry| geometry.simplify_dp_raw(tolerance))?,
-            ),
-        })
+        Ok(self.simplify_raw_dp(tolerance)?.into_shape(self))
     }
 
     /// Visvalingam-Whyatt simplification with the same topology contract
@@ -643,69 +803,97 @@ impl Shape {
     /// same value is directly comparable between `simplify`, `simplify_vw`,
     /// and `coverage_simplify`.
     pub fn simplify_vw(&self, tolerance: f64, preserve_topology: bool) -> Result<Self> {
-        let raw = self.simplify_vw_raw(tolerance)?;
-        if !preserve_topology {
-            return raw.dropping_collapsed_rings();
+        match self.simplify_raw_vw(tolerance)? {
+            RawSimplify::Unchanged => {
+                if preserve_topology {
+                    Ok(self.clone())
+                } else {
+                    self.clone().dropping_collapsed_rings()
+                }
+            },
+            RawSimplify::Changed(raw) => {
+                if !preserve_topology {
+                    return raw.dropping_collapsed_rings();
+                }
+                if self.simplify_kept_topology(&raw) {
+                    Ok(raw)
+                } else {
+                    let area_tolerance = vw_area_tolerance(tolerance);
+                    self.simplify_guarded_with(|prev, vertex, next| {
+                        let area = triangle_area(prev, vertex, next);
+                        (area < area_tolerance).then_some(area)
+                    })
+                }
+            },
         }
-        if raw == *self || self.simplify_kept_topology(&raw) {
-            return Ok(raw);
-        }
-        let area_tolerance = vw_area_tolerance(tolerance);
-        self.simplify_guarded_with(|prev, vertex, next| {
-            let area = triangle_area(prev, vertex, next);
-            (area < area_tolerance).then_some(area)
-        })
     }
 
     pub fn simplify_vw_raw(&self, tolerance: f64) -> Result<Self> {
+        Ok(self.simplify_raw_vw(tolerance)?.into_shape(self))
+    }
+
+    fn simplify_raw_dp(&self, tolerance: f64) -> Result<RawSimplify> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        // Native heap-driven Visvalingam-Whyatt — no geo round-trip, and
-        // surviving vertices KEEP their Z/M (matching the DP route). Area
-        // threshold is derived inside `vw_keep` after any scale frame.
-        // Visvalingam removes interior vertices only, never an endpoint, so a
-        // line stays a line.
-        let vw_line =
-            |points: &LineSeq| -> LineSeq { LineSeq::from_proven(vw_filter(points, tolerance)) };
-        let vw_ring = |ring: &Ring| -> Option<Ring> {
-            let coords = vw_filter(ring.coords(), tolerance);
-            (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_closed(coords))
-        };
-        let vw_polygon = |polygon: &Polygon| -> Option<Polygon> {
-            Some(Polygon::new(
-                vw_ring(&polygon.shell)?,
-                polygon.holes.iter().filter_map(&vw_ring).collect(),
-            ))
-        };
-        let simplified = match self {
-            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => return Ok(self.clone()),
-            Self::LineString(points) => Self::LineString(vw_line(points)),
-            Self::MultiLineString(lines) => {
-                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<_, crate::error::Error>(vw_line(line))
-                })?)
+        let mut scratch = KeepScratch::default();
+        self.simplify_raw(&mut scratch, &mut |xs, ys, scratch| {
+            rdp_keep(xs, ys, tolerance, &mut scratch.keep, &mut scratch.stack)
+        })
+    }
+
+    fn simplify_raw_vw(&self, tolerance: f64) -> Result<RawSimplify> {
+        let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
+        let mut scratch = KeepScratch::default();
+        self.simplify_raw(&mut scratch, &mut |xs, ys, scratch| {
+            vw_keep(xs, ys, tolerance, &mut scratch.keep)
+        })
+    }
+
+    fn simplify_raw(
+        &self,
+        scratch: &mut KeepScratch,
+        keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+    ) -> Result<RawSimplify> {
+        Ok(match self {
+            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => RawSimplify::Unchanged,
+            Self::LineString(points) => match kept_coords(points, scratch, keep_mask) {
+                None => RawSimplify::Unchanged,
+                Some(coords) => {
+                    RawSimplify::Changed(Self::LineString(LineSeq::from_proven(coords)))
+                },
             },
-            Self::Polygon(polygon) => vw_polygon(polygon).map_or_else(
-                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
-                Self::Polygon,
-            ),
-            Self::MultiPolygon(polygons) => {
-                let members = polygons
-                    .members()
-                    .map(|member| match member {
-                        MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(index) => vw_polygon(&polygons.as_slice()[index])
-                            .map_or(MultiMember::Empty, MultiMember::Value),
-                    })
-                    .collect();
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
+            Self::MultiLineString(lines) => keep_multi_lines(lines, scratch, keep_mask),
+            Self::Polygon(polygon) => match keep_polygon(polygon, scratch, keep_mask) {
+                PolygonKeep::Same => RawSimplify::Unchanged,
+                PolygonKeep::Empty => RawSimplify::Changed(Self::typed_empty(
+                    GeometryKind::Polygon,
+                    polygon.axes(),
+                )),
+                PolygonKeep::New(polygon) => RawSimplify::Changed(Self::Polygon(polygon)),
             },
+            Self::MultiPolygon(polygons) => keep_multi_polygons(polygons, scratch, keep_mask),
             Self::GeometryCollection(geometries) => {
-                return Ok(Self::GeometryCollection(geometries.try_map_members(
-                    |geometry| geometry.simplify_vw_raw(tolerance),
-                )?));
+                let mut out: Option<Vec<Shape>> = None;
+                for (index, geometry) in geometries.iter().enumerate() {
+                    match geometry.simplify_raw(scratch, keep_mask)? {
+                        RawSimplify::Unchanged => {
+                            if let Some(members) = out.as_mut() {
+                                members.push(geometry.clone());
+                            }
+                        },
+                        RawSimplify::Changed(shape) => {
+                            out.get_or_insert_with(|| geometries.as_slice()[..index].to_vec())
+                                .push(shape);
+                        },
+                    }
+                }
+                match out {
+                    None => RawSimplify::Unchanged,
+                    Some(members) => RawSimplify::Changed(Self::GeometryCollection(
+                        geometries.try_rebuild_members(members)?,
+                    )),
+                }
             },
-        };
-        Ok(simplified)
+        })
     }
 }
 
@@ -756,5 +944,255 @@ mod collapsed_ring_distinct_tests {
             assert!(!has_three_distinct_xy(&two));
             assert!(has_three_distinct_xy(&three));
         });
+    }
+}
+
+#[cfg(test)]
+mod keep_identity_tests {
+    use std::sync::Arc;
+
+    use super::RawSimplify;
+    use crate::geometry::{
+        CoordSeq, CoordinateAxes, GeometryKind, LineSeq, MultiLineString, MultiPolygon, Polygon,
+        Ring, Shape,
+    };
+    use crate::test_support::allocation_count;
+
+    fn line_xy(xs: &[f64], ys: &[f64]) -> LineSeq {
+        LineSeq::from_proven(CoordSeq::from_columns(
+            Arc::from(xs),
+            Arc::from(ys),
+            None,
+            None,
+        ))
+    }
+
+    fn closed_ring(xs: &[f64], ys: &[f64]) -> Ring {
+        Ring::from_closed(CoordSeq::from_columns(
+            Arc::from(xs),
+            Arc::from(ys),
+            None,
+            None,
+        ))
+    }
+
+    fn square() -> Shape {
+        Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 4.0, 4.0, 0.0, 0.0], &[0.0, 0.0, 4.0, 4.0, 0.0]),
+            Vec::new(),
+        ))
+    }
+
+    #[test]
+    fn vw_zero_keep_all_shares_line_columns() {
+        let line = Shape::LineString(line_xy(&[0.0, 1.0, 2.0], &[0.0, 1.0, 0.0]));
+        let Shape::LineString(src) = &line else {
+            panic!("line fixture");
+        };
+        let (cloned, clone_n) = allocation_count(|| line.clone());
+        let (out, keep_n) = allocation_count(|| line.simplify_vw(0.0, true).unwrap());
+        assert_eq!(out, cloned);
+        let Shape::LineString(got) = &out else {
+            panic!("keep-all remains a line");
+        };
+        assert_eq!(got.xs().as_ptr(), src.xs().as_ptr());
+        assert_eq!(got.ys().as_ptr(), src.ys().as_ptr());
+        let (_, select_n) = allocation_count(|| src.select(0..src.len()));
+        assert!(select_n > 0, "a full-column select must be visible");
+        let _scratch = keep_n.saturating_sub(clone_n);
+    }
+
+    #[test]
+    fn dp_zero_drops_collinear_interior() {
+        let line = Shape::LineString(line_xy(&[0.0, 1.0, 2.0], &[0.0, 0.0, 0.0]));
+        let Shape::LineString(out) = line.simplify_dp(0.0, true).unwrap() else {
+            panic!("collinear DP remains a line");
+        };
+        assert_eq!(out.xs(), &[0.0, 2.0]);
+        assert_eq!(out.ys(), &[0.0, 0.0]);
+    }
+
+    #[test]
+    fn dp_below_feature_keep_all_on_a_corner() {
+        let line = Shape::LineString(line_xy(&[0.0, 1.0, 2.0], &[0.0, 1.0, 0.0]));
+        let Shape::LineString(src) = &line else {
+            panic!("line fixture");
+        };
+        // Tolerance 0 never splits (zero-threshold recovery). A tolerance
+        // below the corner height keeps every vertex.
+        let out = line.simplify_dp(1e-9, true).unwrap();
+        let Shape::LineString(got) = &out else {
+            panic!("keep-all remains a line");
+        };
+        assert_eq!(got.xs().as_ptr(), src.xs().as_ptr());
+        assert_eq!(out, line);
+    }
+
+    #[test]
+    fn vw_zero_preserves_nan_and_signed_zero_bits() {
+        let nan = f64::NAN;
+        let line = Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
+            Arc::from([-0.0, 1.0, 2.0]),
+            Arc::from([0.0, -0.0, 0.0]),
+            Some(Arc::from([nan, 1.0, nan])),
+            Some(Arc::from([0.0, nan, -0.0])),
+        )));
+        let out = line.simplify_vw(0.0, true).unwrap();
+        assert_eq!(out, line);
+        let Shape::LineString(src) = &line else {
+            panic!("line fixture");
+        };
+        let Shape::LineString(got) = &out else {
+            panic!("keep-all remains a line");
+        };
+        assert_eq!(got.xs().as_ptr(), src.xs().as_ptr());
+        assert_eq!(got.zs().unwrap()[0].to_bits(), nan.to_bits());
+        assert_eq!(got.xs()[0].to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(got.ms().unwrap()[2].to_bits(), (-0.0_f64).to_bits());
+    }
+
+    #[test]
+    fn dp_zero_keeps_repeated_xy_with_distinct_zm() {
+        let line = Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
+            Arc::from([0.0, 1.0, 0.0]),
+            Arc::from([0.0, 0.0, 0.0]),
+            Some(Arc::from([1.0, 2.0, 9.0])),
+            Some(Arc::from([10.0, 20.0, 90.0])),
+        )));
+        let Shape::LineString(out) = line.simplify_dp(0.0, true).unwrap() else {
+            panic!("A-B-A DP remains a line");
+        };
+        assert_eq!(out.xs(), &[0.0, 0.0]);
+        assert_eq!(out.zs(), Some(&[1.0, 9.0][..]));
+        assert_eq!(out.ms(), Some(&[10.0, 90.0][..]));
+    }
+
+    #[test]
+    fn middle_hole_drop_clones_unchanged_prefix() {
+        let shell = closed_ring(&[0.0, 8.0, 8.0, 0.0, 0.0], &[0.0, 0.0, 8.0, 8.0, 0.0]);
+        let keep_a = closed_ring(&[1.0, 2.0, 2.0, 1.0, 1.0], &[1.0, 1.0, 2.0, 2.0, 1.0]);
+        let drop = closed_ring(&[4.0, 6.0, 5.0, 4.0], &[4.0, 4.0, 4.01, 4.0]);
+        let keep_b = closed_ring(&[1.0, 2.0, 2.0, 1.0, 1.0], &[5.0, 5.0, 6.0, 6.0, 5.0]);
+        let a_ptr = keep_a.xs().as_ptr();
+        let b_ptr = keep_b.xs().as_ptr();
+        let polygon = Shape::Polygon(Polygon::new(shell, vec![keep_a, drop, keep_b]));
+        // 0.5 keeps the 1×1 holes (diagonal offset ≈ 0.707) and drops the
+        // 0.01-high spike below four closed vertices.
+        let Shape::Polygon(out) = polygon.simplify_dp_raw(0.5).unwrap() else {
+            panic!("shell remains a polygon");
+        };
+        assert_eq!(out.holes.len(), 2);
+        assert_eq!(out.holes[0].xs().as_ptr(), a_ptr);
+        assert_eq!(out.holes[1].xs().as_ptr(), b_ptr);
+    }
+
+    #[test]
+    fn shell_drop_is_typed_empty() {
+        let sliver = Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 1.0, 0.5, 0.0], &[0.0, 0.0, 0.1, 0.0]),
+            Vec::new(),
+        ));
+        assert_eq!(
+            sliver.simplify_dp_raw(1.0).unwrap(),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XY)
+        );
+    }
+
+    #[test]
+    fn collapsed_keep_all_drops_only_when_topology_is_off() {
+        let collapsed = Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 0.0, 0.0, 0.0], &[0.0, 0.0, 0.0, 0.0]),
+            Vec::new(),
+        ));
+        assert_eq!(collapsed.simplify_vw(0.0, true).unwrap(), collapsed);
+        assert_eq!(
+            collapsed.simplify_vw(0.0, false).unwrap(),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XY)
+        );
+    }
+
+    #[test]
+    fn middle_multiline_member_stages_after_first_change() {
+        let first = line_xy(&[0.0, 0.0], &[0.0, 1.0]);
+        let middle = line_xy(&[0.0, 1.0, 2.0], &[0.0, 0.0, 0.0]);
+        let last = line_xy(&[3.0, 3.0], &[0.0, 1.0]);
+        let first_ptr = first.xs().as_ptr();
+        let last_ptr = last.xs().as_ptr();
+        let shape = Shape::MultiLineString(
+            MultiLineString::from_dense(vec![first, middle, last]).unwrap(),
+        );
+        let Shape::MultiLineString(out) = shape.simplify_dp(0.0, true).unwrap() else {
+            panic!("multilinestring remains");
+        };
+        assert_eq!(out.as_slice()[0].xs().as_ptr(), first_ptr);
+        assert_eq!(out.as_slice()[1].xs(), &[0.0, 2.0]);
+        assert_eq!(out.as_slice()[2].xs().as_ptr(), last_ptr);
+    }
+
+    #[test]
+    fn empty_collection_is_unchanged() {
+        let empty = Shape::geometry_collection(vec![]).unwrap();
+        assert_eq!(empty.simplify_dp(1.0, true).unwrap(), empty);
+        assert_eq!(empty.simplify_vw(1.0, false).unwrap(), empty);
+        assert!(matches!(
+            empty.simplify_raw_dp(1.0).unwrap(),
+            RawSimplify::Unchanged
+        ));
+    }
+
+    #[test]
+    fn middle_collection_member_clones_prefix() {
+        let first = Shape::LineString(line_xy(&[0.0, 0.0], &[0.0, 1.0]));
+        let middle = Shape::LineString(line_xy(&[0.0, 1.0, 2.0], &[0.0, 0.0, 0.0]));
+        let last = Shape::LineString(line_xy(&[3.0, 3.0], &[0.0, 1.0]));
+        let Shape::LineString(first_line) = &first else {
+            panic!("line fixture");
+        };
+        let first_ptr = first_line.xs().as_ptr();
+        let collection = Shape::geometry_collection(vec![first, middle, last]).unwrap();
+        let Shape::GeometryCollection(out) = collection.simplify_dp(0.0, true).unwrap() else {
+            panic!("collection remains");
+        };
+        let Shape::LineString(got_first) = &out.as_slice()[0] else {
+            panic!("first member remains a line");
+        };
+        assert_eq!(got_first.xs().as_ptr(), first_ptr);
+        let Shape::LineString(got_middle) = &out.as_slice()[1] else {
+            panic!("middle member remains a line");
+        };
+        assert_eq!(got_middle.xs(), &[0.0, 2.0]);
+    }
+
+    #[test]
+    fn square_keep_all_is_unchanged_for_both_methods() {
+        let polygon = square();
+        assert!(matches!(
+            polygon.simplify_raw_dp(1e-9).unwrap(),
+            RawSimplify::Unchanged
+        ));
+        assert!(matches!(
+            polygon.simplify_raw_vw(0.0).unwrap(),
+            RawSimplify::Unchanged
+        ));
+        assert_eq!(polygon.simplify_dp(1e-9, true).unwrap(), polygon);
+        assert_eq!(polygon.simplify_vw(0.0, false).unwrap(), polygon);
+    }
+
+    #[test]
+    fn multipolygon_member_emptying_is_changed() {
+        let kept = Polygon::new(
+            closed_ring(&[0.0, 4.0, 4.0, 0.0, 0.0], &[0.0, 0.0, 4.0, 4.0, 0.0]),
+            Vec::new(),
+        );
+        let sliver = Polygon::new(
+            closed_ring(&[10.0, 11.0, 10.5, 10.0], &[0.0, 0.0, 0.1, 0.0]),
+            Vec::new(),
+        );
+        let shape = Shape::MultiPolygon(MultiPolygon::from_dense(vec![kept, sliver]).unwrap());
+        let Shape::MultiPolygon(out) = shape.simplify_dp_raw(1.0).unwrap() else {
+            panic!("multipolygon remains");
+        };
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.as_slice().len(), 1);
     }
 }

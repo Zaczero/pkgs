@@ -588,29 +588,6 @@ pub(crate) fn vw_keep(
     Some(keep.iter().filter(|&&kept| kept).count())
 }
 
-/// One Visvalingam-Whyatt pass over a coordinate sequence: interior
-/// vertices drop in ascending effective-area order (binary heap over the
-/// non-negative area BITS — bit order IS numeric order — with lazy
-/// invalidation over doubly-linked neighbors) until every survivor's
-/// triangle area reaches the distance-scale threshold. Endpoints are pinned,
-/// so a closed ring keeps its closure. Survivors keep their Z/M.
-pub(crate) fn vw_filter(points: &CoordSeq, distance_tolerance: f64) -> CoordSeq {
-    let count = points.coord_count();
-    if count < 3 {
-        return points.clone();
-    }
-    let (xs, ys) = (points.xs(), points.ys());
-    let mut keep = Vec::new();
-    if vw_keep(xs, ys, distance_tolerance, &mut keep).is_none() {
-        return points.clone();
-    }
-    points.select(
-        keep.iter()
-            .enumerate()
-            .filter_map(|(index, &kept)| kept.then_some(index)),
-    )
-}
-
 #[cfg(test)]
 mod vw_frame_tests {
     use super::*;
