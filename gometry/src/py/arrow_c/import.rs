@@ -212,8 +212,10 @@ pub(crate) fn import_stream(
         let (classification, struct_child) = NativeArrowClassification::from_schema(&classified);
         let mut accumulator = NativeArrowAccumulator::new();
         accumulator.admit_classification(&classification)?;
+        let mut batch_index: usize = 0;
 
         loop {
+            crate::check_python_signals(py, batch_index)?;
             let mut array = empty_array();
             let next_status = get_next(stream, &raw mut array);
             if next_status != 0 {
@@ -239,6 +241,7 @@ pub(crate) fn import_stream(
                 .detach(move || batch.decode())
                 .map_err(crate::py::arrow_c::NativeArrowDecodeError::into_py_err)?;
             accumulator.push_decoded(decoded)?;
+            batch_index = batch_index.wrapping_add(1);
         }
         accumulator.finish(py, crs, epoch).map(Some)
     }

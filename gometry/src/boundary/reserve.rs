@@ -616,15 +616,15 @@ pub(crate) fn copy_one_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>
 /// object is constructed.
 pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<String>> {
     let mut out = Vec::new();
-    if let Ok(hint) = values.len() {
+    if let Some(hint) = advisory_len(values)? {
         try_reserve_hint(&mut out, hint)?;
     }
-    let iter = values
-        .try_iter()
-        .map_err(|_| PyTypeError::new_err(format!("{what} must be an iterable of strings")))?;
-    for item in iter {
-        let item =
-            item.map_err(|_| PyTypeError::new_err(format!("{what} elements have the wrong type")))?;
+    let iter = py_iter_or_error(values, || {
+        PyTypeError::new_err(format!("{what} must be an iterable of strings"))
+    })?;
+    for (index, item) in iter.enumerate() {
+        let item = item?;
+        check_python_signals(values.py(), index)?;
         let text: &str = item
             .extract()
             .map_err(|_| PyTypeError::new_err(format!("{what} elements have the wrong type")))?;
@@ -1099,5 +1099,97 @@ mod tests {
         assert!(try_reserve_vec(&mut values, usize::MAX).is_err());
         assert!(values.is_empty());
         assert_eq!(values.capacity(), 0);
+    }
+
+    #[test]
+    fn string_collection_checks_native_pending_interrupt_before_exhaustion() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let _signal_guard = crate::test_support::PythonSignalTestGuard::new(py);
+            let item = pyo3::types::PyString::new(py, "native-code");
+            let total = 65;
+            let iterator = crate::test_support::native_boundary_iterator(
+                py,
+                item.as_any(),
+                total,
+                Some(0),
+                None,
+            )?;
+            let result = collect_py_strings(iterator.bind(py).as_any(), "code");
+            let late_signal = py.check_signals().err();
+            let error = match result {
+                Err(error) => error,
+                Ok(values) => panic!(
+                    "native string collection completed after consuming {}; late signal={}",
+                    values.len(),
+                    late_signal.is_some()
+                ),
+            };
+
+            assert!(error.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py));
+            assert!(
+                late_signal.is_none(),
+                "signal was observed after the target returned"
+            );
+            let state = iterator.bind(py).borrow();
+            assert!(state.calls() < total, "finite provider was exhausted");
+            assert!(
+                state.remaining() > 0,
+                "finite provider has no remaining item"
+            );
+            Ok(())
+        })
+        .expect("native string collection signal test");
+    }
+
+    #[test]
+    fn string_collection_preserves_provider_exception_identity() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let _signal_guard = crate::test_support::PythonSignalTestGuard::new(py);
+            let sentinel = pyo3::exceptions::PyRuntimeError::new_err("iterator sentinel")
+                .value(py)
+                .clone()
+                .into_any()
+                .unbind();
+            let item = pyo3::types::PyString::new(py, "native-code");
+            let iterator = crate::test_support::native_boundary_iterator(
+                py,
+                item.as_any(),
+                3,
+                None,
+                Some((1, sentinel.clone_ref(py))),
+            )?;
+            let result = collect_py_strings(iterator.bind(py).as_any(), "code");
+            let late_signal = py.check_signals().err();
+            let error = result.expect_err("provider sentinel must be returned");
+
+            assert!(late_signal.is_none());
+            assert_eq!(error.value(py).as_ptr(), sentinel.as_ptr());
+            let state = iterator.bind(py).borrow();
+            assert_eq!(state.calls(), 2);
+            assert_eq!(state.remaining(), 2);
+            Ok(())
+        })
+        .expect("provider exception identity test");
+    }
+
+    #[test]
+    fn string_collection_keeps_returned_wrong_type_as_type_error() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let _signal_guard = crate::test_support::PythonSignalTestGuard::new(py);
+            let item = pyo3::types::PyInt::new(py, 7);
+            let iterator =
+                crate::test_support::native_boundary_iterator(py, item.as_any(), 1, None, None)?;
+            let error = collect_py_strings(iterator.bind(py).as_any(), "code")
+                .expect_err("integer item must be rejected");
+
+            assert!(error.is_instance_of::<PyTypeError>(py));
+            assert!(error.to_string().contains("elements have the wrong type"));
+            assert!(py.check_signals().is_ok());
+            Ok(())
+        })
+        .expect("wrong item type test");
     }
 }

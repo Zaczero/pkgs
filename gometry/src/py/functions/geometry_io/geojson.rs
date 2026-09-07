@@ -908,6 +908,7 @@ fn build_features(
     let mut row_count = 0;
     for (row_index, row) in rows.enumerate() {
         let row = row?;
+        crate::check_python_signals(py, row_index)?;
         row_count = row_index + 1;
         let FeatureRow {
             geometry,
@@ -1646,4 +1647,104 @@ fn feature_value_shapes_and_missing(
         present,
         crate::array::sparse_missing_mask(features.len(), &missing_rows),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
+    use pyo3::types::PyDict;
+
+    use super::*;
+
+    fn null_feature(py: Python<'_>) -> Bound<'_, PyDict> {
+        let feature = PyDict::new(py);
+        feature.set_item("type", "Feature").expect("feature type");
+        feature
+            .set_item("geometry", py.None())
+            .expect("feature geometry");
+        feature
+            .set_item("properties", PyDict::new(py))
+            .expect("feature properties");
+        feature
+    }
+
+    #[test]
+    fn feature_build_checks_native_pending_interrupt_before_exhaustion() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let _signal_guard = crate::test_support::PythonSignalTestGuard::new(py);
+            let feature = null_feature(py);
+            let total = 2;
+            let iterator = crate::test_support::native_boundary_iterator(
+                py,
+                feature.as_any(),
+                total,
+                Some(0),
+                None,
+            )?;
+            let result = build_python_features(py, iterator.bind(py).as_any(), None, None);
+            let late_signal = py.check_signals().err();
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => {
+                    let state = iterator.bind(py).borrow();
+                    panic!(
+                        "Feature build completed after {} calls, {} rows remain; late signal={}",
+                        state.calls(),
+                        state.remaining(),
+                        late_signal.is_some()
+                    )
+                },
+            };
+
+            assert!(error.is_instance_of::<PyKeyboardInterrupt>(py));
+            assert!(
+                late_signal.is_none(),
+                "signal was observed after Feature build"
+            );
+            let state = iterator.bind(py).borrow();
+            assert!(
+                state.calls() < total,
+                "finite Feature provider was exhausted"
+            );
+            assert!(
+                state.remaining() > 0,
+                "finite Feature provider has no remaining row"
+            );
+            Ok(())
+        })
+        .expect("Feature build signal test");
+    }
+
+    #[test]
+    fn feature_build_preserves_native_provider_exception_identity() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let _signal_guard = crate::test_support::PythonSignalTestGuard::new(py);
+            let sentinel = PyRuntimeError::new_err("Feature iterator sentinel")
+                .value(py)
+                .clone()
+                .into_any()
+                .unbind();
+            let feature = null_feature(py);
+            let iterator = crate::test_support::native_boundary_iterator(
+                py,
+                feature.as_any(),
+                2,
+                None,
+                Some((0, sentinel.clone_ref(py))),
+            )?;
+            let result = build_python_features(py, iterator.bind(py).as_any(), None, None);
+            let late_signal = py.check_signals().err();
+            let error = result.expect_err("Feature provider sentinel must be returned");
+
+            assert!(late_signal.is_none());
+            assert_eq!(error.value(py).as_ptr(), sentinel.as_ptr());
+            let state = iterator.bind(py).borrow();
+            assert_eq!(state.calls(), 1);
+            assert_eq!(state.remaining(), 2);
+            Ok(())
+        })
+        .expect("Feature provider exception identity test");
+    }
 }

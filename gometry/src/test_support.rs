@@ -1,6 +1,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::sync::{Mutex, MutexGuard};
 
+use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
 
 pub(crate) struct CountingAllocator;
@@ -95,6 +97,128 @@ pub(crate) fn fail_allocations_after<T>(count: usize, operation: impl FnOnce() -
     let result = operation();
     drop(guard);
     result
+}
+
+#[pyclass(module = "gometry_test")]
+pub(crate) struct NativeBoundaryIterator {
+    item: Py<PyAny>,
+    remaining: usize,
+    calls: usize,
+    interrupt_at: Option<usize>,
+    error_at: Option<usize>,
+    error: Option<Py<PyAny>>,
+}
+
+#[pymethods]
+impl NativeBoundaryIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        let call = self.calls;
+        self.calls = self.calls.wrapping_add(1);
+        if self.error_at == Some(call) {
+            return Err(PyErr::from_value(
+                self.error
+                    .as_ref()
+                    .expect("error_at requires an exception")
+                    .bind(py)
+                    .clone(),
+            ));
+        }
+        self.remaining -= 1;
+        if self.interrupt_at == Some(call) {
+            // Queue the interrupt while this native protocol method still owns
+            // control; the consumer's explicit checkpoint observes it later.
+            unsafe { pyo3::ffi::PyErr_SetInterrupt() };
+        }
+        Ok(Some(self.item.clone_ref(py)))
+    }
+}
+
+impl NativeBoundaryIterator {
+    pub(crate) fn calls(&self) -> usize {
+        self.calls
+    }
+
+    pub(crate) fn remaining(&self) -> usize {
+        self.remaining
+    }
+}
+
+pub(crate) fn native_boundary_iterator(
+    py: Python<'_>,
+    item: &Bound<'_, PyAny>,
+    remaining: usize,
+    interrupt_at: Option<usize>,
+    sentinel: Option<(usize, Py<PyAny>)>,
+) -> PyResult<Py<NativeBoundaryIterator>> {
+    let (error_at, error) = sentinel.map_or((None, None), |(at, error)| (Some(at), Some(error)));
+    Py::new(py, NativeBoundaryIterator {
+        item: item.clone().unbind(),
+        remaining,
+        calls: 0,
+        interrupt_at,
+        error_at,
+        error,
+    })
+}
+
+static PYTHON_SIGNAL_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) struct PythonSignalTestGuard {
+    _lock: MutexGuard<'static, ()>,
+    previous_handler: Py<PyAny>,
+}
+
+impl PythonSignalTestGuard {
+    pub(crate) fn new(py: Python<'_>) -> Self {
+        let lock = PYTHON_SIGNAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let signal = py.import("signal").expect("import signal for test");
+        let sigint = signal.getattr("SIGINT").expect("read SIGINT");
+        let default_handler = signal
+            .getattr("default_int_handler")
+            .expect("read default SIGINT handler");
+        let previous_handler = signal
+            .call_method1("signal", (sigint, default_handler))
+            .expect("install default SIGINT handler")
+            .unbind();
+
+        let guard = Self {
+            _lock: lock,
+            previous_handler,
+        };
+
+        // Positive control: verify this interpreter/thread observes the native
+        // pending-interrupt API before any owner-specific exercise begins.
+        unsafe { pyo3::ffi::PyErr_SetInterrupt() };
+        let error = py
+            .check_signals()
+            .expect_err("PyErr_SetInterrupt must reach the handler");
+        assert!(error.is_instance_of::<PyKeyboardInterrupt>(py));
+        guard
+    }
+}
+
+impl Drop for PythonSignalTestGuard {
+    fn drop(&mut self) {
+        Python::attach(|py| {
+            // Clear a signal left by a failing assertion before restoring the
+            // caller's handler, so it cannot poison the next embedded test.
+            let _ = py.check_signals();
+            if let Ok(signal) = py.import("signal")
+                && let Ok(sigint) = signal.getattr("SIGINT")
+            {
+                let _ = signal.call_method1("signal", (sigint, self.previous_handler.bind(py)));
+            }
+        });
+    }
 }
 
 pub(crate) fn initialize_python() {
