@@ -6,9 +6,12 @@
 //!
 //! # Type-level contract
 //!
-//! Safe crate-internal APIs take `&ProjContext`. A caller that extracts a raw
-//! pointer via [`ProjContext::as_ptr`] cannot pass that raw pointer to a typed
-//! consumer without **E0308**. Compile-fail `escaping_context` pins this.
+//! Safe crate-internal APIs take `&ProjContext`. `with_proj_context` lends that
+//! borrow only for the closure, so the reference cannot outlive its owner.
+//! `ProjContext::as_ptr` exposes a raw pointer for a final FFI expression; raw
+//! pointers are not lifetime-tracked, so every later dereference or use must
+//! uphold the owner's lifetime, creating-thread, and pointer-validity
+//! obligations in its unsafe FFI boundary.
 
 use std::ptr::NonNull;
 
@@ -115,7 +118,11 @@ impl ProjContext {
         Ok(context)
     }
 
-    /// Raw context pointer for the final FFI expression only.
+    /// Raw context pointer for a final FFI expression.
+    ///
+    /// The pointer is not lifetime-tracked. Callers must keep any dereference
+    /// or FFI use within this owner's lifetime and creating thread and uphold
+    /// the pointer-validity contract of that FFI operation.
     pub(crate) const fn as_ptr(&self) -> *mut ContextRaw {
         self.raw.as_ptr()
     }
@@ -144,8 +151,10 @@ impl Drop for ProjContext {
 
 /// Run `operation` with a short-lived typed context.
 ///
-/// The closure receives `&ProjContext` so a safe crate-internal caller cannot
-/// return a raw `*mut PJ_CONTEXT` and use it after the owner drops.
+/// The closure receives a borrow that cannot outlive the context owner. A
+/// closure may copy a raw pointer obtained from [`ProjContext::as_ptr`], but
+/// that raw pointer does not extend the owner's lifetime; any later use is an
+/// unsafe FFI obligation of the caller.
 pub(crate) fn with_proj_context<R>(operation: impl FnOnce(&ProjContext) -> R) -> EnvResult<R> {
     let state = runtime_state_snapshot()?;
     with_proj_context_at(&state, operation)
@@ -158,16 +167,3 @@ pub(crate) fn with_proj_context_at<R>(
     let context = ProjContext::new_with_state(state)?;
     Ok(operation(&context))
 }
-
-/// Typed-consumer gate used by the `escaping_context` compile-fail fixture.
-///
-/// Named regression: change the parameter to `*mut ContextRaw` (the type
-/// [`ProjContext::as_ptr`] returns). The fixture passes exactly that raw type,
-/// so the regression makes the fragment **compile** and the compile-fail gate
-/// goes red. A different raw type (e.g. `*mut c_void`) is the wrong regression
-/// — it still yields E0308 for the wrong reason.
-#[expect(
-    dead_code,
-    reason = "compile-fail fixture consumer; production callers take &ProjContext directly"
-)]
-pub(crate) const fn require_typed_proj_context(_context: &ProjContext) {}

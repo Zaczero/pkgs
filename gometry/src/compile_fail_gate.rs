@@ -41,7 +41,7 @@ use serde_json::Value;
 
 /// One fixture: path, property name, expected code, message needle.
 struct Fixture {
-    /// Path relative to `src/`, e.g. `crs/compile_fail/escaping_context.rs`.
+    /// Path relative to `src/`, e.g. `py/arrow_c/compile_fail/item_d_foreign_buffer_borrow.rs`.
     rel: &'static str,
     property: &'static str,
     code: &'static str,
@@ -53,13 +53,6 @@ struct Fixture {
 
 /// Explicit manifest — discovery must match this set exactly.
 const MANIFEST: &[Fixture] = &[
-    Fixture {
-        rel: "crs/compile_fail/escaping_context.rs",
-        property: "crs/no_raw_context_escape",
-        code: "E0308",
-        // Span label / child note: "expected `&ProjContext`, found …"
-        message_needle: "&ProjContext",
-    },
     Fixture {
         rel: "py/arrow_c/compile_fail/item_c_mutable_pyclass.rs",
         property: "item_c/sealed_immutable_i64_owner",

@@ -2,8 +2,8 @@
 //! Includes the real production module so a regression (making the type Send)
 //! turns this fixture green and the gate red.
 //!
-//! What blocks Send: `PhantomData<Rc<()>>` (and independently `NonNull<u8>`
-//! is Send but not Sync — Send is blocked by the Rc phantom).
+//! What blocks Send: `NonNull<u8>` is neither Send nor Sync, and
+//! `PhantomData<Rc<()>>` independently reinforces both negative auto traits.
 
 #[path = "../foreign_buffer.rs"]
 mod foreign_buffer;
