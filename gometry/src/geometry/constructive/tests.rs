@@ -687,6 +687,48 @@ mod consecutive_dedup_tests {
         assert_eq!(out.zs(), Some(&[1.0, 9.0][..]));
         assert_eq!(out.ms(), Some(&[10.0, 90.0][..]));
     }
+
+    #[test]
+    fn dropping_collapsed_shell_keeps_xyzm_empty() {
+        use std::sync::Arc;
+
+        let collapsed = Ring::from_closed(CoordSeq::from_columns(
+            Arc::from([0.0, 0.0, 0.0, 0.0]),
+            Arc::from([0.0, 0.0, 0.0, 0.0]),
+            Some(Arc::from([1.0, 2.0, 3.0, 1.0])),
+            Some(Arc::from([10.0, 20.0, 30.0, 10.0])),
+        ));
+        let polygon = Shape::Polygon(Polygon::new(collapsed, Vec::new()));
+        assert_eq!(
+            polygon.simplify_vw(0.0, false).unwrap(),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZM)
+        );
+    }
+
+    #[test]
+    fn dropping_collapsed_hole_keeps_the_shell() {
+        use std::sync::Arc;
+
+        let shell = Ring::from_closed(CoordSeq::from_columns(
+            Arc::from([0.0, 4.0, 0.0, 0.0]),
+            Arc::from([0.0, 0.0, 4.0, 0.0]),
+            None,
+            None,
+        ));
+        let hole = Ring::from_closed(CoordSeq::from_columns(
+            Arc::from([1.0, 1.0, 1.0, 1.0]),
+            Arc::from([1.0, 1.0, 1.0, 1.0]),
+            None,
+            None,
+        ));
+        let polygon = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let Shape::Polygon(out) = polygon.simplify_vw(0.0, false).unwrap() else {
+            panic!("three-corner shell must remain a polygon");
+        };
+        assert_eq!(out.holes.len(), 0);
+        assert_eq!(out.shell.xs(), &[0.0, 4.0, 0.0, 0.0]);
+        assert_eq!(out.shell.ys(), &[0.0, 0.0, 4.0, 0.0]);
+    }
 }
 
 #[cfg(test)]

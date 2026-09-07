@@ -10,11 +10,11 @@ use crate::error::Result;
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_filter};
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind, LineSeq,
-    MultiMember, MultiPolygon, Orientation, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring,
-    Segment, Shape, TopologyGuard, XY, dedup_consecutive_points, line_segments,
+    MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, REDUCE_LANES, ReduceSimd,
+    Ring, Segment, Shape, TopologyGuard, XY, dedup_consecutive_points, line_segments,
     open_point_cycle_winding, orientation, point_segment_distance, point_segment_distance_squared,
     same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
-    unique_xy_points, vw_area_tolerance, wrap_index,
+    vw_area_tolerance, wrap_index,
 };
 /// One chain through iterative Douglas-Peucker as a keep-mask over the
 /// original points: surviving vertices are the INPUT vertices (bit-exact,
@@ -428,6 +428,23 @@ pub(crate) fn split(
     Ok(())
 }
 
+/// Whether `coords` contains at least three XY-distinct vertices under
+/// [`PointKey`] equality (±0.0 unified, NaN by payload bits).
+fn has_three_distinct_xy(coords: &CoordSeq) -> bool {
+    let mut first = None;
+    let mut second = None;
+    for (&x, &y) in coords.xs().iter().zip(coords.ys()) {
+        let key = PointKey::new(XY::new(x, y));
+        match (first, second) {
+            (None, _) => first = Some(key),
+            (Some(a), None) if key != a => second = Some(key),
+            (Some(a), Some(b)) if key != a && key != b => return true,
+            _ => {},
+        }
+    }
+    false
+}
+
 impl Shape {
     /// Douglas-Peucker simplification. With `preserve_topology` (the
     /// default), an output that raw DP made invalid (a collapsed or
@@ -466,7 +483,7 @@ impl Shape {
     /// from leaking a degenerate invalid polygon.
     fn dropping_collapsed_rings(self) -> Result<Self> {
         fn clean(polygon: &Polygon) -> Option<Polygon> {
-            if unique_xy_points(&polygon.shell).len() < 3 {
+            if !has_three_distinct_xy(polygon.shell.coords()) {
                 return None;
             }
             Some(Polygon::new(
@@ -474,7 +491,7 @@ impl Shape {
                 polygon
                     .holes
                     .iter()
-                    .filter(|hole| unique_xy_points(*hole).len() >= 3)
+                    .filter(|hole| has_three_distinct_xy(hole.coords()))
                     .cloned()
                     .collect(),
             ))
@@ -689,5 +706,55 @@ impl Shape {
             },
         };
         Ok(simplified)
+    }
+}
+
+#[cfg(test)]
+mod collapsed_ring_distinct_tests {
+    use std::sync::Arc;
+
+    use super::has_three_distinct_xy;
+    use crate::geometry::CoordSeq;
+    use crate::test_support::fail_allocations_after;
+
+    fn columns(xs: &[f64], ys: &[f64]) -> CoordSeq {
+        CoordSeq::from_columns(Arc::from(xs), Arc::from(ys), None, None)
+    }
+
+    #[test]
+    fn three_distinct_xy_counts_zero_two_and_three() {
+        assert!(!has_three_distinct_xy(&columns(&[], &[])));
+        assert!(!has_three_distinct_xy(&columns(&[0.0; 4], &[0.0; 4])));
+        assert!(!has_three_distinct_xy(&columns(
+            &[0.0, 1.0, 0.0, 1.0, 0.0],
+            &[0.0, 0.0, 0.0, 0.0, 0.0],
+        )));
+        assert!(has_three_distinct_xy(&columns(&[0.0, 1.0, 0.0, 0.0], &[
+            0.0, 0.0, 1.0, 0.0
+        ],)));
+    }
+
+    #[test]
+    fn three_collinear_xy_remain_distinct() {
+        assert!(has_three_distinct_xy(&columns(&[0.0, 1.0, 2.0, 0.0], &[
+            0.0, 0.0, 0.0, 0.0
+        ],)));
+    }
+
+    #[test]
+    fn signed_zero_shares_a_point_key() {
+        assert!(!has_three_distinct_xy(&columns(&[0.0, -0.0, 0.0], &[
+            0.0, 0.0, -0.0
+        ],)));
+    }
+
+    #[test]
+    fn three_distinct_xy_scan_allocates_nothing() {
+        let two = columns(&[0.0, 1.0, 0.0, 1.0, 0.0], &[0.0; 5]);
+        let three = columns(&[0.0, 1.0, 0.0, 0.0], &[0.0, 0.0, 1.0, 0.0]);
+        fail_allocations_after(0, || {
+            assert!(!has_three_distinct_xy(&two));
+            assert!(has_three_distinct_xy(&three));
+        });
     }
 }
