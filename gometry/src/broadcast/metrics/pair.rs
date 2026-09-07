@@ -813,7 +813,9 @@ pub(crate) fn metric_maximum_inscribed_radius(
         |_, _, state| {
             let source = crs.unwrap_or("EPSG:4326");
             let local = crs::estimate_local_crs_at(shape, source, state)?;
-            crs::transform_at(shape, source, &local, state)?.maximum_inscribed_radius(tolerance)
+            crs::transform_at(shape, source, &local.definition, state)
+                .map_err(|error| local.annotate_error(error))?
+                .maximum_inscribed_radius(tolerance)
         },
     )
 }

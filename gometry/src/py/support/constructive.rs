@@ -382,7 +382,8 @@ pub(crate) fn geodesic_by_identity(
     let original = shape.points_vec();
     let source = crs.unwrap_or("EPSG:4326");
     let local = crate::crs::estimate_local_crs_at(shape, source, state)?;
-    let projected = crate::crs::transform_at(shape, source, &local, state)?;
+    let projected = crate::crs::transform_at(shape, source, &local.definition, state)
+        .map_err(|error| local.annotate_error(error))?;
     if projected.coord_count() != original.len() {
         return Err(crate::crs::CrsError::invalid(
             "internal identity projection changed point count",
@@ -517,15 +518,17 @@ fn geodesic_local_shape(
     }
     let source = crs.unwrap_or("EPSG:4326");
     let local = crate::crs::estimate_local_crs_at(shape, source, state)?;
-    let projected = crate::crs::transform_at(shape, source, &local, state)?;
+    let projected = crate::crs::transform_at(shape, source, &local.definition, state)
+        .map_err(|error| local.annotate_error(error))?;
     let result = op(&projected)?;
-    let restored = crate::crs::transform_at(&result, &local, source, state)?;
+    let restored = crate::crs::transform_at(&result, &local.definition, source, state)
+        .map_err(|error| local.annotate_error(error))?;
     // Distance-driven ops (buffer/offset/densify) demand metric accuracy, so
     // they reject a result that exceeds the local projection's linear
     // scale-error budget. The minimum bounding *circle* is an intentionally
     // approximate bounding primitive (like bounds/centroid) that must remain
     // usable at city-to-continental scale, so it skips the fit check.
-    if checked && !crate::crs::local_crs_fits_at(&restored, source, &local, state)? {
+    if checked && !crate::crs::local_crs_fits_at(&restored, source, &local.definition, state)? {
         return Err(crate::crs::CrsError::invalid(format!(
             "constructive result exceeds the {:.1}% linear scale-error limit in one local projection; use a smaller distance, split the geometry, or choose a projected CRS explicitly",
             crate::crs::LOCAL_SCALE_ERROR_LIMIT * 100.0

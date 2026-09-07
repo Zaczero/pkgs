@@ -406,8 +406,12 @@ def test_crs_operation_area_matches_pyproj_oracle() -> None:
             accuracy=10.0,
             allow_ballpark=False,
         )
-    with pytest.raises(gm.TransformError, match='cannot create CRS transform'):
+    with pytest.raises(
+        gm.TransformError, match='cannot create CRS transform'
+    ) as transform_error:
         local_point.to_crs(4326, area_of_interest=remote_area, allow_ballpark=False)
+    assert transform_error.value.source == 'EPSG:2263'
+    assert transform_error.value.target == 'EPSG:4326'
     antimeridian_bounds = (170.0, -10.0, -170.0, 10.0)
     antimeridian_pyproj = pyproj.Transformer.from_crs(4326, 3857, always_xy=True)
     assert gm.crs_transform_bounds(4326, 3857, antimeridian_bounds) == pytest.approx(

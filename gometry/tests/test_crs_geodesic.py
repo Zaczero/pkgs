@@ -2,6 +2,7 @@
 runtime config, cache info, and the PROJ authority metadata surface.
 """
 
+import json
 import math
 from typing import cast
 
@@ -112,6 +113,22 @@ def test_geodesic_buffer_uses_local_projection_and_preserves_crs() -> None:
     assert eroded_point.area == pytest.approx(0.0)
     with pytest.raises(ValueError, match='distance must be finite'):
         point.buffer(math.inf)
+
+
+def test_large_polar_buffer_uses_concise_local_crs_diagnostic() -> None:
+    with pytest.raises(gm.TransformError) as excinfo:
+        gm.Point(0.0, 89.9999, crs=4326).buffer(50_000_000)
+
+    error = excinfo.value
+    assert error.target == 'EPSG:4326'
+    assert error.source is not None
+    definition = json.loads(error.source)
+    assert definition['name'] == 'Local conformal CRS'
+    assert definition['type'] == 'ProjectedCRS'
+    message = str(error)
+    assert 'Local conformal CRS' in message
+    assert 'projjson.schema.json' not in message
+    assert 'Point outside of projection domain' in message
 
 
 LATITUDE_DOMAIN_MSG = (

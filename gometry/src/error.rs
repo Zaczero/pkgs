@@ -97,6 +97,21 @@ impl Error {
         }
         self
     }
+
+    pub(crate) fn annotate_crs_display(
+        &mut self,
+        definition: &str,
+        display_name: Option<&'static str>,
+    ) {
+        let Some(display_name) = display_name else {
+            return;
+        };
+        if let ErrorStorage::Owned(kind) = &mut self.0
+            && let ErrorKind::Crs(error) = kind.as_mut()
+        {
+            error.annotate_display(definition, display_name);
+        }
+    }
 }
 
 impl From<ErrorKind> for Error {

@@ -190,8 +190,10 @@ def test_epoch_without_crs_is_a_crs_error_not_a_mismatch() -> None:
 
 
 def test_transform_error_on_transform_failures() -> None:
-    with pytest.raises(errors.TransformError, match='Web Mercator'):
+    with pytest.raises(errors.TransformError, match='Web Mercator') as excinfo:
         gm.Point(0, 89.9, crs=4326).to_crs(3857)
+    assert excinfo.value.source is None
+    assert excinfo.value.target is None
 
 
 def test_parse_error_on_malformed_input() -> None:

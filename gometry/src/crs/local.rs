@@ -14,10 +14,38 @@ use crate::crs::{
     CrsObjectKind, OperationParameterInfo, RuntimeState, Shape, factors_at, info_with_state,
     is_wgs84_lonlat, normalize, parse_epsg, to_projjson_with_options_at, transform_at, utm_crs,
 };
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(crate) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
+const LOCAL_CRS_DISPLAY_NAME: &str = "Local conformal CRS";
+
+#[derive(Debug)]
+pub(crate) struct LocalCrsDefinition {
+    pub(crate) definition: String,
+    pub(crate) display_name: Option<&'static str>,
+}
+
+impl LocalCrsDefinition {
+    fn authority(definition: String) -> Self {
+        Self {
+            definition,
+            display_name: None,
+        }
+    }
+
+    fn custom(definition: String) -> Self {
+        Self {
+            definition,
+            display_name: Some(LOCAL_CRS_DISPLAY_NAME),
+        }
+    }
+
+    pub(crate) fn annotate_error(&self, mut error: Error) -> Error {
+        error.annotate_crs_display(&self.definition, self.display_name);
+        error
+    }
+}
 
 /// Estimate one conformal metric CRS for all coordinates in `shape`.
 ///
@@ -25,14 +53,14 @@ pub(crate) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
 /// longitude/latitude would turn a convenience method into a relabeling trap.
 pub(crate) fn estimate_local_crs(shape: &Shape, source_crs: &str) -> Result<String> {
     let state = crate::crs::runtime_state_snapshot()?;
-    estimate_local_crs_at(shape, source_crs, &state)
+    Ok(estimate_local_crs_at(shape, source_crs, &state)?.definition)
 }
 
 pub(crate) fn estimate_local_crs_at(
     shape: &Shape,
     source_crs: &str,
     state: &RuntimeState,
-) -> Result<String> {
+) -> Result<LocalCrsDefinition> {
     let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
         Cow::Borrowed(shape)
     } else {
@@ -51,7 +79,7 @@ pub(crate) fn estimate_local_crs_at(
             Pole::South => "EPSG:5042",
         };
         if candidate_fits(ups, &extent.samples, state)? {
-            return Ok(ups.to_owned());
+            return Ok(LocalCrsDefinition::authority(ups.to_owned()));
         }
         return best_custom_candidate(source_crs, &extent, state);
     }
@@ -65,7 +93,7 @@ pub(crate) fn estimate_local_crs_at(
         state,
     )?;
     if candidate_fits(&utm, &extent.samples, state)? {
-        return Ok(utm);
+        return Ok(LocalCrsDefinition::authority(utm));
     }
 
     best_custom_candidate(source_crs, &extent, state).map_err(|_| {
@@ -196,7 +224,7 @@ fn best_custom_candidate(
     source_crs: &str,
     extent: &LocalExtent,
     state: &RuntimeState,
-) -> Result<String> {
+) -> Result<LocalCrsDefinition> {
     let info = info_with_state(source_crs, state)?;
     let base = info
         .geodetic_crs
@@ -220,7 +248,7 @@ fn best_custom_candidate(
     let candidate = serde_json::json!({
         "$schema": "https://proj.org/schemas/v0.7/projjson.schema.json",
         "type": "ProjectedCRS",
-        "name": "Local conformal CRS",
+        "name": LOCAL_CRS_DISPLAY_NAME,
         "base_crs": base_crs,
         "conversion": {
             "name": "Local Transverse Mercator",
@@ -245,7 +273,7 @@ fn best_custom_candidate(
     let candidates = [candidate];
     for candidate in candidates {
         if candidate_fits(&candidate, &extent.samples, state)? {
-            return normalize(&candidate);
+            return Ok(LocalCrsDefinition::custom(normalize(&candidate)?));
         }
     }
     Err(CrsError::invalid(
