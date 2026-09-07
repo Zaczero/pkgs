@@ -1,12 +1,14 @@
-use crate::boundary::geographic;
 use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdFloat as _;
 
+use crate::boundary::geographic;
 use crate::boundary::geographic::invalid_lonlat_error;
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{CrsError, geographic_metric_frame_at};
-use crate::error::Result;
-use crate::geographic::{GeographicFrame, ScalarGeographicView};
+use crate::error::{ResourceError, Result};
+use crate::geographic::{
+    GeographicError, GeographicFrame, GeographicViewError, ScalarGeographicView,
+};
 use crate::geometry::{CoordSeq, REDUCE_LANES, ReduceSimd, Shape, simd_mask_any};
 
 /// Validate geometry coordinates in their CRS-native geographic frame. This
@@ -16,23 +18,20 @@ pub(crate) fn ensure_geographic_domain_in_frame(
     frame: GeographicFrame,
     shape: &Shape,
 ) -> Result<()> {
-    ScalarGeographicView::try_new(frame, shape)
-        .map(|_| ())
-        .map_err(|error| {
-            let mut invalid = None;
-            shape.for_each_point(|point| {
-                if invalid.is_none()
-                    && (frame.longitude().canonicalize(point.x).is_err()
-                        || crate::geographic::Latitude::try_new(frame, point.y).is_err())
-                {
-                    invalid = Some(point);
-                }
-            });
-            invalid.map_or_else(
-                || crate::geometry::GeometryErrorKind::message(error.to_string()),
-                |point| geographic::invalid_lonlat_error(point.x, point.y),
-            )
-        })
+    match ScalarGeographicView::try_new(frame, shape) {
+        Ok(_) => Ok(()),
+        Err(GeographicViewError::Resource) => Err(ResourceError::Allocation.into()),
+        Err(GeographicViewError::Diagnostic(diagnostic)) => match diagnostic.source {
+            GeographicError::NonFinite { .. } | GeographicError::LatitudeOutOfRange { .. } => Err(
+                geographic::invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y),
+            ),
+            GeographicError::SeamTransitOverflow
+            | GeographicError::InvalidAngularFactor { .. }
+            | GeographicError::InvalidSweep { .. } => Err(
+                crate::geometry::GeometryErrorKind::message(diagnostic.to_string()),
+            ),
+        },
+    }
 }
 
 pub(crate) fn ensure_geographic_lonlat_in_frame(

@@ -4,7 +4,7 @@ use super::{
     CanonicalLongitude, GeographicError, GeographicFrame, Latitude, RingTurn, SeamIdentity,
 };
 use crate::array::CheckedRingWindow;
-use crate::geometry::{CoordSeq, MultiMember, Point, Ring, Shape};
+use crate::geometry::{CoordSeq, MultiMember, Point, Ring, Shape, XY};
 
 const INLINE_MEMBER_DEPTH: usize = 4;
 
@@ -40,20 +40,12 @@ impl MemberPathBuilder {
             if self.overflow.is_empty() {
                 self.overflow
                     .try_reserve(INLINE_MEMBER_DEPTH + 1)
-                    .map_err(|_| {
-                        GeographicViewError::new(
-                            GeographicLocation::default(),
-                            GeographicError::MemberPathAllocation,
-                        )
-                    })?;
+                    .map_err(|_| GeographicViewError::Resource)?;
                 self.overflow.extend_from_slice(&self.inline);
             } else {
-                self.overflow.try_reserve(1).map_err(|_| {
-                    GeographicViewError::new(
-                        GeographicLocation::default(),
-                        GeographicError::MemberPathAllocation,
-                    )
-                })?;
+                self.overflow
+                    .try_reserve(1)
+                    .map_err(|_| GeographicViewError::Resource)?;
             }
             self.overflow.push(member);
         }
@@ -75,12 +67,7 @@ impl MemberPathBuilder {
         if !self.overflow.is_empty() {
             overflow
                 .try_reserve_exact(self.overflow.len())
-                .map_err(|_| {
-                    GeographicViewError::new(
-                        GeographicLocation::default(),
-                        GeographicError::MemberPathAllocation,
-                    )
-                })?;
+                .map_err(|_| GeographicViewError::Resource)?;
             overflow.extend_from_slice(&self.overflow);
         }
         Ok(GeographicMemberPath {
@@ -100,21 +87,13 @@ pub(crate) struct GeographicLocation {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct GeographicViewError {
-    pub(crate) location: Box<GeographicLocation>,
-    pub(crate) source: Box<GeographicError>,
+pub(crate) struct GeographicDiagnostic {
+    pub(crate) location: GeographicLocation,
+    pub(crate) native: XY,
+    pub(crate) source: GeographicError,
 }
 
-impl GeographicViewError {
-    fn new(location: GeographicLocation, source: GeographicError) -> Self {
-        Self {
-            location: Box::new(location),
-            source: Box::new(source),
-        }
-    }
-}
-
-impl fmt::Display for GeographicViewError {
+impl fmt::Display for GeographicDiagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(row) = self.location.row {
             write!(f, "geographic row {row}")?;
@@ -135,9 +114,40 @@ impl fmt::Display for GeographicViewError {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum GeographicViewError {
+    Diagnostic(Box<GeographicDiagnostic>),
+    Resource,
+}
+
+impl GeographicViewError {
+    fn diagnostic(location: GeographicLocation, native: XY, source: GeographicError) -> Self {
+        match Box::try_new(GeographicDiagnostic {
+            location,
+            native,
+            source,
+        }) {
+            Ok(diagnostic) => Self::Diagnostic(diagnostic),
+            Err(_) => Self::Resource,
+        }
+    }
+}
+
+impl fmt::Display for GeographicViewError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Diagnostic(diagnostic) => diagnostic.fmt(f),
+            Self::Resource => f.write_str("memory allocation failed"),
+        }
+    }
+}
+
 impl std::error::Error for GeographicViewError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.source.as_ref())
+        match self {
+            Self::Diagnostic(diagnostic) => Some(&diagnostic.source),
+            Self::Resource => None,
+        }
     }
 }
 
@@ -175,11 +185,23 @@ fn coordinate(
 ) -> Result<GeographicCoordinate, GeographicViewError> {
     let longitude = match frame.longitude().canonicalize(point.x) {
         Ok(longitude) => longitude,
-        Err(source) => return Err(GeographicViewError::new(location()?, source)),
+        Err(source) => {
+            return Err(GeographicViewError::diagnostic(
+                location()?,
+                XY::from(point),
+                source,
+            ));
+        },
     };
     let latitude = match Latitude::try_new(frame, point.y) {
         Ok(latitude) => latitude,
-        Err(source) => return Err(GeographicViewError::new(location()?, source)),
+        Err(source) => {
+            return Err(GeographicViewError::diagnostic(
+                location()?,
+                XY::from(point),
+                source,
+            ));
+        },
     };
     Ok(GeographicCoordinate {
         native: point,
@@ -404,8 +426,17 @@ impl RingSummary {
     ) -> Result<Self, GeographicViewError> {
         let axis = frame.longitude();
         let mut seam_transits = 0_i64;
-        let mut south = Latitude::try_new(frame, ring.y(0))
-            .map_err(|source| GeographicViewError::new(GeographicLocation::default(), source))?;
+        let fail = |index: usize, source: GeographicError| {
+            GeographicViewError::diagnostic(
+                GeographicLocation {
+                    coordinate: index,
+                    ..GeographicLocation::default()
+                },
+                XY::new(ring.x(index), ring.y(index)),
+                source,
+            )
+        };
+        let mut south = Latitude::try_new(frame, ring.y(0)).map_err(|source| fail(0, source))?;
         let mut north = south;
         let mut west = ring.x(0);
         let mut east = west;
@@ -413,24 +444,9 @@ impl RingSummary {
             frame
                 .longitude()
                 .canonicalize(ring.x(index))
-                .map_err(|source| {
-                    GeographicViewError::new(
-                        GeographicLocation {
-                            coordinate: index,
-                            ..GeographicLocation::default()
-                        },
-                        source,
-                    )
-                })?;
-            let latitude = Latitude::try_new(frame, ring.y(index)).map_err(|source| {
-                GeographicViewError::new(
-                    GeographicLocation {
-                        coordinate: index,
-                        ..GeographicLocation::default()
-                    },
-                    source,
-                )
-            })?;
+                .map_err(|source| fail(index, source))?;
+            let latitude =
+                Latitude::try_new(frame, ring.y(index)).map_err(|source| fail(index, source))?;
             if latitude.get() < south.get() {
                 south = latitude;
             }
@@ -442,26 +458,10 @@ impl RingSummary {
             if index + 1 < ring.len() {
                 let transit = axis
                     .seam_transit(ring.x(index), ring.x(index + 1))
-                    .map_err(|source| {
-                        GeographicViewError::new(
-                            GeographicLocation {
-                                coordinate: index + 1,
-                                ..GeographicLocation::default()
-                            },
-                            source,
-                        )
-                    })?;
+                    .map_err(|source| fail(index + 1, source))?;
                 seam_transits = seam_transits
                     .checked_add(i64::from(transit))
-                    .ok_or_else(|| {
-                        GeographicViewError::new(
-                            GeographicLocation {
-                                coordinate: index + 1,
-                                ..GeographicLocation::default()
-                            },
-                            GeographicError::SeamTransitOverflow,
-                        )
-                    })?;
+                    .ok_or_else(|| fail(index + 1, GeographicError::SeamTransitOverflow))?;
             }
         }
         let turn = match seam_transits {

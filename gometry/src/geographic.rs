@@ -10,7 +10,9 @@ pub(crate) use value::{
     AngularFactor, CanonicalLongitude, GeographicFrame, Latitude, PeriodicAxis, RingTurn,
     SeamIdentity, TurnDirection,
 };
-pub(crate) use view::{GeographicRing, RingDomain, RingSummary, ScalarGeographicView};
+pub(crate) use view::{
+    GeographicRing, GeographicViewError, RingDomain, RingSummary, ScalarGeographicView,
+};
 
 #[derive(Clone, Copy, Debug, Error, PartialEq)]
 pub(crate) enum GeographicError {
@@ -22,8 +24,6 @@ pub(crate) enum GeographicError {
     LatitudeOutOfRange { value: f64 },
     #[error("circular interval sweep {sweep} is outside [0, {period})")]
     InvalidSweep { sweep: f64, period: f64 },
-    #[error("memory allocation failed while retaining a nested geographic member path")]
-    MemberPathAllocation,
     #[error("ring seam transit count overflowed")]
     SeamTransitOverflow,
 }

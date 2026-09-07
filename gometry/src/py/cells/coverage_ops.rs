@@ -6,7 +6,7 @@
 
 use pyo3::prelude::*;
 
-use crate::geographic::{GeographicFrame, ScalarGeographicView};
+use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
 use crate::geometry::{CoordSeq, LineSeq, Shape, TopologyDomain};
 use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
@@ -326,8 +326,15 @@ pub(crate) fn coverage_factory_geometry(
     // lane receives the same physical-pole spelling before it can derive a
     // working image, a rectangle certificate, or aggregate components.
     let shape = normalize_grid_source(&shape);
-    ScalarGeographicView::try_new(GeographicFrame::crs84(), &shape)
-        .expect("the normalized result of public CRS84 admission is a valid geographic view");
+    match ScalarGeographicView::try_new(GeographicFrame::crs84(), &shape) {
+        Ok(_) => {},
+        Err(GeographicViewError::Resource) => {
+            return Err(crate::error::Error::from(crate::error::ResourceError::Allocation).into());
+        },
+        Err(GeographicViewError::Diagnostic(diagnostic)) => {
+            return Err(InvalidGeometryError::new_err(diagnostic.to_string()));
+        },
+    }
     if shape.is_empty() {
         return Err(empty_coverage_err(label));
     }

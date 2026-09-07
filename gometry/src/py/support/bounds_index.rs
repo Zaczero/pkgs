@@ -1,8 +1,9 @@
 use rstar::Envelope as _;
 
 use crate::geographic::{
-    CircularInterval, GeographicFrame, GeographicRing, LongitudeWindows, RingDomain, RingSummary,
-    RingTurn, ScalarGeographicView, SeamIdentity, union_circular_intervals,
+    CircularInterval, GeographicFrame, GeographicRing, GeographicViewError, LongitudeWindows,
+    RingDomain, RingSummary, RingTurn, ScalarGeographicView, SeamIdentity,
+    union_circular_intervals,
 };
 use crate::geometry::TopologyDomain;
 use crate::predicates::engine::IndexEnvelope;
@@ -208,12 +209,22 @@ fn for_each_part(
     Ok(())
 }
 
+fn geographic_view_py_error(error: GeographicViewError) -> pyo3::PyErr {
+    match error {
+        GeographicViewError::Resource => {
+            crate::error::Error::from(crate::error::ResourceError::Allocation).into()
+        },
+        GeographicViewError::Diagnostic(diagnostic) => {
+            InvalidGeometryError::new_err(diagnostic.to_string())
+        },
+    }
+}
+
 fn geographic_index_envelopes(
     shape: &Shape,
     frame: GeographicFrame,
 ) -> pyo3::PyResult<Vec<AABB<[f64; 2]>>> {
-    let view = ScalarGeographicView::try_new(frame, shape)
-        .map_err(|error| InvalidGeometryError::new_err(error.to_string()))?;
+    let view = ScalarGeographicView::try_new(frame, shape).map_err(geographic_view_py_error)?;
     let mut intervals = Vec::new();
     let mut south = f64::INFINITY;
     let mut north = f64::NEG_INFINITY;
@@ -327,7 +338,7 @@ fn try_for_each_ring_summary(
         ) -> pyo3::PyResult<()> {
             for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
                 let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
-                    .map_err(|source| InvalidGeometryError::new_err(source.to_string()))?;
+                    .map_err(geographic_view_py_error)?;
                 visit(summary);
             }
             Ok(())

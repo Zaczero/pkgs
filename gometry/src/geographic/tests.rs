@@ -1,5 +1,5 @@
 use super::value::EdgeDirection;
-use super::view::RingLatitudeSpan;
+use super::view::{GeographicDiagnostic, RingLatitudeSpan};
 use super::*;
 
 fn factor(value: f64) -> AngularFactor {
@@ -22,6 +22,13 @@ fn xy_seq(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::CoordSeq {
 
 fn ring(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::Ring {
     crate::geometry::Ring::closed_coordseq(xy_seq(xs, ys)).unwrap()
+}
+
+fn require_diagnostic(error: GeographicViewError) -> Box<GeographicDiagnostic> {
+    match error {
+        GeographicViewError::Diagnostic(diagnostic) => diagnostic,
+        GeographicViewError::Resource => panic!("expected a coordinate diagnostic"),
+    }
 }
 
 #[test]
@@ -95,10 +102,13 @@ fn latitude_admission_is_one_exterior_ulp_and_contextual() {
     let rejected = crate::geometry::Shape::Point(
         crate::geometry::Point::new(0.0, pole.next_up().next_up()).unwrap(),
     );
-    let error = ScalarGeographicView::try_new(degrees(), &rejected).unwrap_err();
+    let error =
+        require_diagnostic(ScalarGeographicView::try_new(degrees(), &rejected).unwrap_err());
     assert_eq!(error.location.coordinate, 0);
+    assert_bits(error.native.x, 0.0);
+    assert_bits(error.native.y, pole.next_up().next_up());
     assert!(matches!(
-        *error.source,
+        error.source,
         GeographicError::LatitudeOutOfRange { .. }
     ));
 }
@@ -220,10 +230,12 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
             .expect("test collection is valid"),
     ])
     .expect("test collection is valid");
-    let error = ScalarGeographicView::try_new(degrees(), &nested).unwrap_err();
+    let error = require_diagnostic(ScalarGeographicView::try_new(degrees(), &nested).unwrap_err());
     assert_eq!(error.location.members.as_slice(), [0, 0, 1]);
     assert_eq!(error.location.ring, Some(1));
     assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 1.5);
+    assert_bits(error.native.y, 91.0);
 }
 
 fn deeply_nested_line(coordinate_count: usize) -> crate::geometry::Shape {
@@ -331,16 +343,77 @@ fn nested_invalid_coordinate_reports_longitude_before_latitude() {
             .expect("test collection is valid"),
     ])
     .expect("test collection is valid");
-    let error = ScalarGeographicView::try_new(degrees(), &nested).unwrap_err();
+    let error = require_diagnostic(ScalarGeographicView::try_new(degrees(), &nested).unwrap_err());
     assert_eq!(error.location.members.as_slice(), [0, 0, 1]);
     assert_eq!(error.location.ring, Some(1));
     assert_eq!(error.location.coordinate, 2);
+    assert!(error.native.x.is_nan());
+    assert_bits(error.native.y, 91.0);
     assert!(matches!(
-        *error.source,
+        error.source,
         GeographicError::NonFinite {
             name: "longitude",
             value,
         } if value.is_nan()
+    ));
+}
+
+#[test]
+fn nested_path_allocation_failure_is_resource() {
+    let shape = deeply_nested_line(2);
+    let error = crate::test_support::fail_allocations_after(0, || {
+        ScalarGeographicView::try_new(degrees(), &shape).unwrap_err()
+    });
+    assert!(matches!(error, GeographicViewError::Resource));
+}
+
+#[test]
+fn diagnostic_box_failure_is_resource() {
+    let rejected = crate::geometry::Shape::Point(crate::geometry::Point::new(0.0, 91.0).unwrap());
+    let error = crate::test_support::fail_allocations_after(0, || {
+        ScalarGeographicView::try_new(degrees(), &rejected).unwrap_err()
+    });
+    assert!(matches!(error, GeographicViewError::Resource));
+}
+
+#[test]
+fn domain_admission_reports_first_native_xy() {
+    let shape = crate::geometry::Shape::LineString(
+        crate::geometry::LineSeq::try_new(xy_seq(vec![0.0, 10.0], vec![95.0, 91.0])).unwrap(),
+    );
+    let error = crate::crs::ensure_geographic_domain_in_frame(degrees(), &shape).unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("invalid longitude/latitude (0, 95)"),
+        "{message}"
+    );
+    assert!(!message.contains("(10, 91)"), "{message}");
+}
+
+#[test]
+fn domain_path_allocation_is_not_masked_by_later_invalid_coordinate() {
+    let point = crate::geometry::Shape::Point(crate::geometry::Point::new(0.0, 95.0).unwrap());
+    let nested = (0..5).fold(point, |shape, _| {
+        crate::geometry::Shape::geometry_collection(vec![shape]).expect("test collection is valid")
+    });
+    let error = crate::test_support::fail_allocations_after(0, || {
+        crate::crs::ensure_geographic_domain_in_frame(degrees(), &nested).unwrap_err()
+    });
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+    ));
+}
+
+#[test]
+fn domain_nested_valid_path_allocation_is_resource() {
+    let nested = deeply_nested_line(2);
+    let error = crate::test_support::fail_allocations_after(0, || {
+        crate::crs::ensure_geographic_domain_in_frame(degrees(), &nested).unwrap_err()
+    });
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
     ));
 }
 

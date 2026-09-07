@@ -1,7 +1,7 @@
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
 use crate::geographic::{
-    GeographicFrame, GeographicRing, Latitude, RingDomain, RingSummary, RingTurn,
-    ScalarGeographicView,
+    GeographicFrame, GeographicRing, GeographicViewError, Latitude, RingDomain, RingSummary,
+    RingTurn, ScalarGeographicView,
 };
 use crate::geometry::antimeridian::{
     collect_points, dedup_consecutive, resolve_seam_aliases, segment_coords,
@@ -17,8 +17,7 @@ impl Shape {
     /// coordinates exist only for this operation; source coordinates remain
     /// the storage authority.
     pub(crate) fn split_antimeridian_in_frame(&self, frame: GeographicFrame) -> Result<Self> {
-        let view = ScalarGeographicView::try_new(frame, self)
-            .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+        let view = ScalarGeographicView::try_new(frame, self).map_err(split_view_error)?;
         split_geographic_view(view)
     }
 
@@ -164,6 +163,15 @@ impl Shape {
     }
 }
 
+fn split_view_error(error: GeographicViewError) -> crate::error::Error {
+    match error {
+        GeographicViewError::Resource => ResourceError::Allocation.into(),
+        GeographicViewError::Diagnostic(diagnostic) => {
+            GeometryErrorKind::antimeridian_split_failed(diagnostic.to_string())
+        },
+    }
+}
+
 fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
     let frame = view.frame();
     let longitude_scale = frame.longitude().unit().radians_per_unit().to_degrees();
@@ -228,8 +236,7 @@ fn chart_ring(
     latitude_scale: f64,
 ) -> Result<Ring> {
     let geographic = GeographicRing::from_ring(ring);
-    let summary = RingSummary::try_new(frame, &geographic)
-        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+    let summary = RingSummary::try_new(frame, &geographic).map_err(split_view_error)?;
     let mut points = Vec::new();
     points.reserve_exact(geographic.len());
     if matches!(summary.domain, RingDomain::FullLongitude(_))
