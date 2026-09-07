@@ -10,7 +10,7 @@
 
 use numpy::PyUntypedArray;
 use pyo3::FromPyObject;
-use pyo3::exceptions::{PyOverflowError, PyTypeError};
+use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString};
 
@@ -57,12 +57,13 @@ pub(crate) fn py_u64_if_index(name: &str, value: &Bound<'_, PyAny>) -> PyResult<
 
 /// Strict signed machine-index admission. The conversion remains at the
 /// declared platform-index boundary; no intermediate Rust integer is used to
-/// probe the Python value.
+/// probe the Python value. A returned integer outside that boundary is an
+/// `IndexError`; provider errors from `__index__` pass through unchanged.
 pub(crate) fn py_isize_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<isize> {
     let integer = py_index_object(name, value)?;
     integer
         .extract::<isize>()
-        .map_err(|_| PyTypeError::new_err(format!("{name} is too large")))
+        .map_err(|_| PyIndexError::new_err(format!("{name} is too large")))
 }
 
 pub(crate) fn py_usize_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<usize> {

@@ -256,6 +256,58 @@ def test_index_provider_errors_are_not_reclassified() -> None:
         gm.SpatialIndex([gm.Point(0, 0)]).__contains__(RaisingIndex())
 
 
+def test_positional_index_provider_exception_instances_are_preserved() -> None:
+    array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+
+    class Provider:
+        def __init__(self, error: BaseException) -> None:
+            self.error = error
+
+        def __index__(self):
+            raise self.error
+
+    class IntProvider(int):
+        def __new__(cls, error: BaseException):
+            value = int.__new__(cls, 0)
+            value.error = error
+            return value
+
+        def __index__(self):
+            raise self.error
+
+    def assert_same(call, error: BaseException) -> None:
+        with pytest.raises(type(error)) as excinfo:
+            call()
+        assert excinfo.value is error
+
+    point = gm.Point(0, 0)
+    row_views = (
+        point.coords,
+        gm.GeometryCollection([point]).parts,
+        gm.get_coordinates(
+            gm.GeometryArray([point, gm.Point(1, 1)]), return_index=True
+        ),
+    )
+    for error_type in (gm.GeometryError, TypeError, RuntimeError):
+        error = error_type('provider error')
+        assert_same(lambda error=error: array[Provider(error)], error)
+
+        for view in row_views:
+            error = error_type('provider error')
+            assert_same(lambda error=error, view=view: view[Provider(error)], error)
+
+        error = error_type('provider error')
+        assert_same(lambda error=error: array[[Provider(error)]], error)
+
+        error = error_type('provider error')
+        assert_same(
+            lambda error=error: array._replace_at([Provider(error)], [None]), error
+        )
+
+        error = error_type('provider error')
+        assert_same(lambda error=error: array[(IntProvider(error),)], error)
+
+
 def test_one_shot_coordinate_and_part_sources_are_consumed_once() -> None:
     class Once:
         def __init__(self, values):

@@ -510,6 +510,48 @@ def test_numpy_integer_index_overflow_is_an_index_error_for_all_receivers() -> N
             array[selector]
 
 
+@pytest.mark.parametrize('index', [10**100, -(10**100)], ids=['positive', 'negative'])
+def test_scalar_python_index_overflow_is_an_index_error(index: int) -> None:
+    receivers = _indexing_receivers()
+    for array, _identity in receivers:
+        with pytest.raises(IndexError):
+            array[index]
+
+    point = gm.Point(0, 0)
+    collection = gm.GeometryCollection([point])
+    groups = gm.get_coordinates(
+        gm.GeometryArray([point, gm.Point(1, 1)]), return_index=True
+    )
+    assert point.coords[0] == point.coords[-1] == (0.0, 0.0)
+    assert collection.parts[0] == collection.parts[-1]
+    assert groups[0].tolist() == [[0.0, 0.0]]
+    assert groups[-1].tolist() == [[1.0, 1.0]]
+    for view in (point.coords, collection.parts, groups):
+        with pytest.raises(IndexError):
+            view[index]
+
+
+def test_scalar_tuple_list_and_replace_at_index_boundaries() -> None:
+    array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+    assert tuple(array[0].coords[0]) == (0.0, 0.0)
+    assert tuple(array[-1].coords[0]) == (1.0, 1.0)
+
+    for index in (10**100, -(10**100)):
+        with pytest.raises(IndexError):
+            array[(index,)]
+        with pytest.raises(IndexError):
+            array[[index]]
+        with pytest.raises(IndexError):
+            array._replace_at([index], [None])
+
+    with pytest.raises(TypeError):
+        array[1.5]
+    with pytest.raises(TypeError):
+        array[True]
+    with pytest.raises(TypeError):
+        array._replace_at([1.5], [None])
+
+
 def test_strided_numpy_boolean_masks_cover_all_receivers() -> None:
     selector = np.array([True, False, True, False, False])[::2]
     for array, identity in _indexing_receivers():

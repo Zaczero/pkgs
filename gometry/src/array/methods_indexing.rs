@@ -295,16 +295,7 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
                 let sequence = tuple.cast::<PySequence>()?.clone();
                 return classify_and_collect_generic_sequence(tuple.py(), &sequence);
             }
-            crate::try_push(
-                &mut indices,
-                crate::py_isize_required("index", &item).map_err(|error| {
-                    if error.is_instance_of::<PyTypeError>(tuple.py()) {
-                        PyIndexError::new_err("index is too large")
-                    } else {
-                        error
-                    }
-                })?,
-            )?;
+            crate::try_push(&mut indices, crate::py_isize_required("index", &item)?)?;
         }
         return Ok(CollectedFancyIndex::Indices(indices));
     }
