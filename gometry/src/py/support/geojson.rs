@@ -188,20 +188,6 @@ fn py_int_to_json_number(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     }
 }
 
-fn json_value_depth_check(projection: JsonProjection, depth: usize) -> PyResult<()> {
-    let max_depth = match projection {
-        JsonProjection::Full => crate::geometry::MAX_NESTING,
-        JsonProjection::Geometry => MAX_JSON_NESTING,
-    };
-    if depth > max_depth {
-        return Err(crate::io::IoError::geojson(format!(
-            "JSON nesting exceeds the limit of {max_depth}"
-        ))
-        .into());
-    }
-    Ok(())
-}
-
 fn py_to_json_value_mapping(
     dict: &Bound<'_, PyDict>,
     projection: JsonProjection,
@@ -251,7 +237,16 @@ fn py_to_json_value_inner(
     projection: JsonProjection,
     depth: usize,
 ) -> PyResult<Value> {
-    json_value_depth_check(projection, depth)?;
+    let max_depth = match projection {
+        JsonProjection::Full => crate::geometry::MAX_NESTING,
+        JsonProjection::Geometry => MAX_JSON_NESTING,
+    };
+    if depth > max_depth {
+        return Err(crate::io::IoError::geojson(format!(
+            "JSON nesting exceeds the limit of {max_depth}"
+        ))
+        .into());
+    }
     if value.is_none() {
         return Ok(Value::Null);
     }
@@ -412,7 +407,6 @@ fn parse_geojson_input(
 
 fn parse_geojson_geometry_mapping(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Some(dict) = mapping_as_dict(value)? {
-        json_value_depth_check(JsonProjection::Geometry, 0)?;
         return py_to_json_value_mapping(&dict, JsonProjection::Geometry, 0);
     }
     let text = json_dumps(value.py())?
