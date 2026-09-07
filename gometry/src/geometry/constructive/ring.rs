@@ -45,7 +45,7 @@ pub(crate) fn orient_ring<C: Coordinates + ?Sized>(points: &C, clockwise: bool) 
 
 /// Orient an admitted ring without copying its coordinate columns when the
 /// requested winding already matches.
-pub(crate) fn oriented_ring(ring: &Ring, clockwise: bool) -> Ring {
+pub(in crate::geometry) fn oriented_ring(ring: &Ring, clockwise: bool) -> Ring {
     if ring_winding(ring).reverse_for_clockwise(clockwise) {
         Ring::from_closed(ring.coords().reversed())
     } else {
@@ -95,17 +95,17 @@ mod tests {
     fn polygon_orientation_reverses_wrong_xyzm_shell_and_keeps_hole() {
         let shell = xyzm_ring(&[
             (0.0, 0.0, 1.0, 11.0),
-            (0.0, 1.0, 2.0, 22.0),
-            (1.0, 1.0, 3.0, 33.0),
-            (1.0, 0.0, 4.0, 44.0),
+            (0.0, 4.0, 2.0, 22.0),
+            (4.0, 4.0, 3.0, 33.0),
+            (4.0, 0.0, 4.0, 44.0),
             (0.0, 0.0, 1.0, 11.0),
         ]);
         let hole = xyzm_ring(&[
-            (2.0, 2.0, 5.0, 55.0),
-            (2.0, 3.0, 6.0, 66.0),
-            (3.0, 3.0, 7.0, 77.0),
-            (3.0, 2.0, 8.0, 88.0),
-            (2.0, 2.0, 5.0, 55.0),
+            (1.0, 1.0, 5.0, 55.0),
+            (1.0, 2.0, 6.0, 66.0),
+            (2.0, 2.0, 7.0, 77.0),
+            (2.0, 1.0, 8.0, 88.0),
+            (1.0, 1.0, 5.0, 55.0),
         ]);
         let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
         let oriented = shape.orient_polygons(false).expect("orientation succeeds");
@@ -113,17 +113,55 @@ mod tests {
         let expected = Shape::Polygon(Polygon::new(
             xyzm_ring(&[
                 (0.0, 0.0, 1.0, 11.0),
-                (1.0, 0.0, 4.0, 44.0),
-                (1.0, 1.0, 3.0, 33.0),
-                (0.0, 1.0, 2.0, 22.0),
+                (4.0, 0.0, 4.0, 44.0),
+                (4.0, 4.0, 3.0, 33.0),
+                (0.0, 4.0, 2.0, 22.0),
                 (0.0, 0.0, 1.0, 11.0),
             ]),
             vec![xyzm_ring(&[
-                (2.0, 2.0, 5.0, 55.0),
-                (2.0, 3.0, 6.0, 66.0),
-                (3.0, 3.0, 7.0, 77.0),
-                (3.0, 2.0, 8.0, 88.0),
-                (2.0, 2.0, 5.0, 55.0),
+                (1.0, 1.0, 5.0, 55.0),
+                (1.0, 2.0, 6.0, 66.0),
+                (2.0, 2.0, 7.0, 77.0),
+                (2.0, 1.0, 8.0, 88.0),
+                (1.0, 1.0, 5.0, 55.0),
+            ])],
+        ));
+        assert_eq!(oriented, expected);
+    }
+
+    #[test]
+    fn polygon_orientation_reverses_wrong_xyzm_hole() {
+        let shell = xyzm_ring(&[
+            (0.0, 0.0, 1.0, 11.0),
+            (4.0, 0.0, 2.0, 22.0),
+            (4.0, 4.0, 3.0, 33.0),
+            (0.0, 4.0, 4.0, 44.0),
+            (0.0, 0.0, 1.0, 11.0),
+        ]);
+        let hole = xyzm_ring(&[
+            (1.0, 1.0, 5.0, 55.0),
+            (2.0, 1.0, 6.0, 66.0),
+            (2.0, 2.0, 7.0, 77.0),
+            (1.0, 2.0, 8.0, 88.0),
+            (1.0, 1.0, 5.0, 55.0),
+        ]);
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let oriented = shape.orient_polygons(false).expect("orientation succeeds");
+
+        let expected = Shape::Polygon(Polygon::new(
+            xyzm_ring(&[
+                (0.0, 0.0, 1.0, 11.0),
+                (4.0, 0.0, 2.0, 22.0),
+                (4.0, 4.0, 3.0, 33.0),
+                (0.0, 4.0, 4.0, 44.0),
+                (0.0, 0.0, 1.0, 11.0),
+            ]),
+            vec![xyzm_ring(&[
+                (1.0, 1.0, 5.0, 55.0),
+                (1.0, 2.0, 8.0, 88.0),
+                (2.0, 2.0, 7.0, 77.0),
+                (2.0, 1.0, 6.0, 66.0),
+                (1.0, 1.0, 5.0, 55.0),
             ])],
         ));
         assert_eq!(oriented, expected);

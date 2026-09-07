@@ -20,9 +20,9 @@ pub(crate) use offset::{
     BUFFER_INPUT_SIMPLIFY_FACTOR, DEFAULT_MITER_LIMIT, line_intersection, reversed_points,
     sided_strip_parts,
 };
-pub(in crate::geometry) use ring::canonical_ring_seq;
+pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{
-    canonical_ring, decimal_scale, normalized_line, orient_ring, oriented_ring,
+    canonical_ring, decimal_scale, normalized_line, orient_ring,
     quantize_column_simd, quantize_to_scale, snap_column_simd, stable_snap_ordinate, vw_filter,
     vw_keep,
 };
