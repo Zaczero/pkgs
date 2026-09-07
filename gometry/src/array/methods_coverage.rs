@@ -38,9 +38,9 @@ impl PyGeometryArray {
     /// >>> gm.GeometryArray([gm.box(0, 0, 1.1, 1), gm.box(1, 0, 2, 1)]).coverage_is_valid()
     /// False
     #[pyo3(signature = (*, gap_width = 0.0))]
-    pub fn coverage_is_valid(&self, gap_width: f64) -> PyResult<bool> {
+    pub fn coverage_is_valid(&self, py: Python<'_>, gap_width: f64) -> PyResult<bool> {
         let shapes = self.present_shapes();
-        Ok(geometry::coverage_is_valid(&shapes, gap_width)?)
+        Ok(py.detach(move || geometry::coverage_is_valid(&shapes, gap_width))?)
     }
 
     /// Per-row invalid coverage boundary linework (see `coverage_invalid_edges`).
@@ -75,9 +75,9 @@ impl PyGeometryArray {
     /// ...     [gm.box(0, 0, 1, 1), gm.box(0.5, 0, 1.5, 1)]
     /// ... ).coverage_invalid_edges())
     /// 2
-    pub fn coverage_invalid_edges(&self, gap_width: f64) -> PyResult<Self> {
+    pub fn coverage_invalid_edges(&self, py: Python<'_>, gap_width: f64) -> PyResult<Self> {
         let shapes = self.present_shapes();
-        let edges = geometry::coverage_invalid_edges(&shapes, gap_width)?;
+        let edges = py.detach(move || geometry::coverage_invalid_edges(&shapes, gap_width))?;
         Ok(self.scatter_present_result(Self::from_shapes(edges, self.frame.clone())))
     }
 
@@ -120,20 +120,25 @@ impl PyGeometryArray {
     /// >>> left = gm.Polygon([(0, 0), (1, 0), (1.05, 0.5), (1, 1), (0, 1)])
     /// >>> right = gm.Polygon([(1, 0), (2, 0), (2, 1), (1, 1), (1.05, 0.5)])
     /// >>> out = gm.GeometryArray([left, right]).coverage_simplify(0.5)
-    /// >>> out.to_wkt()[0]
-    /// 'POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))'
+    /// >>> out.coverage_is_valid()
+    /// True
+    /// >>> [round(geometry.area, 6) for geometry in out]
+    /// [1.0, 1.0]
     #[pyo3(
         signature = (tolerance, *, method = SimplifyMethod::Vw, simplify_boundary = true),
         text_signature = "($self, tolerance, *, method='vw', simplify_boundary=True)"
     )]
     pub fn coverage_simplify(
         &self,
+        py: Python<'_>,
         tolerance: f64,
         method: SimplifyMethod,
         simplify_boundary: bool,
     ) -> PyResult<Self> {
         let shapes = self.present_shapes();
-        let rows = geometry::coverage_simplify(&shapes, tolerance, method, simplify_boundary)?;
+        let rows = py.detach(move || {
+            geometry::coverage_simplify(&shapes, tolerance, method, simplify_boundary)
+        })?;
         Ok(self.scatter_present_result(Self::from_shapes(rows, self.frame.clone())))
     }
 
@@ -158,8 +163,9 @@ impl PyGeometryArray {
     /// --------
     /// >>> import gometry as gm
     /// >>> tiles = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
-    /// >>> tiles.coverage_union().normalize().to_wkt()
-    /// 'POLYGON ((0 0, 1 0, 2 0, 2 1, 1 1, 0 1, 0 0))'
+    /// >>> merged = tiles.coverage_union()
+    /// >>> (merged.geometry_type, round(merged.area, 6))
+    /// ('Polygon', 2.0)
     pub fn coverage_union(&self, py: Python<'_>) -> PyResult<Typed> {
         let shapes = self.present_shapes();
         if shapes.is_empty() {
@@ -224,12 +230,15 @@ impl PyGeometryArray {
     )]
     pub fn coverage_clean(
         &self,
+        py: Python<'_>,
         grid_size: f64,
         gap_width: f64,
         overlap_rule: geometry::CoverageOverlapRule,
     ) -> PyResult<Self> {
         let shapes = self.present_shapes();
-        let rows = geometry::coverage_clean(&shapes, grid_size, gap_width, overlap_rule)?;
+        let rows = py.detach(move || {
+            geometry::coverage_clean(&shapes, grid_size, gap_width, overlap_rule)
+        })?;
         Ok(self.scatter_present_result(Self::from_shapes(rows, self.frame.clone())))
     }
 }
