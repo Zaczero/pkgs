@@ -597,3 +597,42 @@ fn soundness_matrix_success_is_dense_geom_or_none() {
     assert!(bounding_cell_bbox(Bounds::new_raw(135.0, 0.0, 135.0, 5.0)).is_none());
     assert!(bounding_cell_bbox(Bounds::new_raw(-135.0, 0.0, -135.0, 5.0)).is_none());
 }
+
+#[test]
+fn admitted_bbox_latitudes_fold_outward_sliver_and_keep_inward() {
+    const SLIVER: f64 = 1.0e-12;
+    let north_out = super::normalize_admitted_bbox_latitudes(Bounds::new_raw(
+        10.0,
+        80.0,
+        20.0,
+        90.0 + SLIVER,
+    ));
+    assert_eq!(north_out.minx(), 10.0);
+    assert_eq!(north_out.maxx(), 20.0);
+    assert_eq!(north_out.miny(), 80.0);
+    assert_eq!(north_out.maxy(), 90.0);
+
+    let south_out = super::normalize_admitted_bbox_latitudes(Bounds::new_raw(
+        -20.0,
+        -90.0 - SLIVER,
+        -10.0,
+        -80.0,
+    ));
+    assert_eq!(south_out.minx(), -20.0);
+    assert_eq!(south_out.maxx(), -10.0);
+    assert_eq!(south_out.miny(), -90.0);
+    assert_eq!(south_out.maxy(), -80.0);
+
+    let inward_north = 90.0 - SLIVER;
+    let inward_south = -90.0 + SLIVER;
+    let inward = super::normalize_admitted_bbox_latitudes(Bounds::new_raw(
+        1.0,
+        inward_south,
+        2.0,
+        inward_north,
+    ));
+    assert_eq!(inward.minx(), 1.0);
+    assert_eq!(inward.maxx(), 2.0);
+    assert_eq!(inward.miny().to_bits(), inward_south.to_bits());
+    assert_eq!(inward.maxy().to_bits(), inward_north.to_bits());
+}

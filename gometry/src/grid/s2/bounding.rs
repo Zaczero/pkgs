@@ -78,10 +78,22 @@ pub(crate) fn bounding_cell(shape: &Shape) -> Option<CellId> {
     bounding_cell_bbox(bounds)
 }
 
+/// Fold only the admitted exterior latitude sliver onto the physical poles.
+/// Longitudes, including west-of-east seam windows, stay as spelled.
+fn normalize_admitted_bbox_latitudes(bounds: Bounds) -> Bounds {
+    Bounds::new_raw(
+        bounds.minx(),
+        crate::boundary::geographic::normalize_accepted_latitude(bounds.miny()),
+        bounds.maxx(),
+        crate::boundary::geographic::normalize_accepted_latitude(bounds.maxy()),
+    )
+}
+
 /// Deepest cell whose closed spherical halfspaces contain every rectangle in
 /// a seam-aware extent. L30 leaves only choose an ancestor path; acceptance is
 /// exclusively by complete halfspace proofs.
 fn bounding_cell_regions(bounds: Bounds) -> Option<CellId> {
+    let bounds = normalize_admitted_bbox_latitudes(bounds);
     let windows = longitude_windows(bounds);
     let mut leaves = Vec::with_capacity(windows.len() * 4);
     for window in &windows {
@@ -181,6 +193,7 @@ fn deepest_margin_child_regions(root: CellId, windows: &[LonLatBBox]) -> CellId 
 
 /// Deepest cell that **provably** contains the lon/lat rectangle `bounds`.
 pub(crate) fn bounding_cell_bbox(bounds: Bounds) -> Option<CellId> {
+    let bounds = normalize_admitted_bbox_latitudes(bounds);
     let minx = bounds.minx();
     let miny = bounds.miny();
     let maxx = bounds.maxx();
