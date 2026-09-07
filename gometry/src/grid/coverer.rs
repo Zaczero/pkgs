@@ -105,11 +105,8 @@ pub(crate) struct NativeRectClassifier {
 struct GeographicCandidateClassifier<'a> {
     authority: GeographicCoverageSource,
     working: NativeRectClassifier,
-    authority_plan: &'a PreparedPlan,
-    authority_cache: &'a crate::geometry::FrameDependentCaches,
-    authority_view: crate::geographic::ScalarGeographicView<'a>,
+    prepared: crate::geometry::GeographicPrepared<'a>,
     authority_graph: OnceLock<Arc<crate::geometry::TopologyGraph>>,
-    frame: crate::geographic::GeographicFrame,
 }
 
 impl<'a> GeographicCandidateClassifier<'a> {
@@ -124,20 +121,13 @@ impl<'a> GeographicCandidateClassifier<'a> {
             GeographicCoverageSource::from_validated(authority, SphericalGridTarget::Rectangular)
                 .map_err(|_| crate::error::ResourceError::Allocation)?;
         let working = NativeRectClassifier::new(working)?;
-        let authority_view = crate::geometry::GeographicPrepared::try_new(
-            authority_plan,
-            authority_cache,
-            frame,
-        )?
-        .view();
+        let prepared =
+            crate::geometry::GeographicPrepared::try_new(authority_plan, authority_cache, frame)?;
         Ok(Self {
             authority,
             working,
-            authority_plan,
-            authority_cache,
-            authority_view,
+            prepared,
             authority_graph: OnceLock::new(),
-            frame,
         })
     }
 
@@ -169,13 +159,14 @@ impl<'a> GeographicCandidateClassifier<'a> {
                 let candidate = bounds_to_shape(bounds);
                 let candidate_plan = PreparedPlan::transient(&candidate);
                 let candidate_cache = crate::geometry::FrameDependentCaches::default();
-                let operands = PreparedTopologyPair::try_for_domain(
-                    self.authority_plan,
-                    self.authority_cache,
-                    &candidate_plan,
-                    &candidate_cache,
-                    crate::geometry::TopologyDomain::Geographic(self.frame),
-                )?;
+                let operands = PreparedTopologyPair::Geographic {
+                    left: self.prepared,
+                    right: crate::geometry::GeographicPrepared::try_new(
+                        &candidate_plan,
+                        &candidate_cache,
+                        self.prepared.frame(),
+                    )?,
+                };
                 if topology_scalar_pair(&Predicate::Covers.spec(), operands) {
                     RectClass::Interior
                 } else if topology_scalar_pair(&Predicate::Intersects.spec(), operands) {
@@ -189,10 +180,7 @@ impl<'a> GeographicCandidateClassifier<'a> {
 
     fn authority_graph(&self) -> &crate::geometry::TopologyGraph {
         self.authority_graph
-            .get_or_init(|| {
-                self.authority_cache
-                    .geographic_topology_graph(self.authority_view)
-            })
+            .get_or_init(|| self.prepared.graph())
             .as_ref()
     }
 
@@ -699,7 +687,10 @@ mod tests {
         ) {
             Ok(_) => panic!("world at precision 10 must exceed the cell budget"),
             Err(CoverError::Budget(err)) => {
-                assert_eq!(err.limit, usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap());
+                assert_eq!(
+                    err.limit,
+                    usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()
+                );
                 assert!(err.to_string().contains("max_cells"));
             },
             Err(CoverError::Preparation(err)) => panic!("unexpected preparation error: {err}"),
@@ -835,7 +826,9 @@ mod tests {
         for token in ["e", "s"] {
             let cell = geohash::Geohash::parse(token).unwrap();
             assert_eq!(
-                classifier.refine_bounds(cell.bounds()).expect("fixture admits"),
+                classifier
+                    .refine_bounds(cell.bounds())
+                    .expect("fixture admits"),
                 RectClass::Interior,
                 "cell {token}"
             );
@@ -936,7 +929,9 @@ mod tests {
             RectClass::Outside
         );
         assert_eq!(
-            classifier.refine_bounds(intersects).expect("fixture admits"),
+            classifier
+                .refine_bounds(intersects)
+                .expect("fixture admits"),
             RectClass::Boundary
         );
         assert_eq!(

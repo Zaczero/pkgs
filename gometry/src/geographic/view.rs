@@ -364,6 +364,20 @@ pub(crate) struct GeographicInputs<'a> {
 }
 
 impl<'a> GeographicInputs<'a> {
+    pub(crate) fn try_from_first_and_shapes(
+        first: ScalarGeographicView<'a>,
+        rest: impl ExactSizeIterator<Item = &'a Shape>,
+    ) -> Result<Self, GeographicViewError> {
+        let frame = first.frame();
+        let mut inputs = Self::try_from_shapes(frame, rest)?;
+        inputs
+            .views
+            .try_reserve(1)
+            .map_err(|_| GeographicViewError::Resource)?;
+        inputs.views.insert(0, first);
+        Ok(inputs)
+    }
+
     pub(crate) fn try_from_shapes(
         frame: GeographicFrame,
         shapes: impl ExactSizeIterator<Item = &'a Shape>,
@@ -379,10 +393,7 @@ impl<'a> GeographicInputs<'a> {
 
     /// Copy indexed views from this batch. Frame comes from `self`; indices
     /// are this batch's positions. Does not re-admit.
-    pub(crate) fn try_selected(
-        &self,
-        indices: &[usize],
-    ) -> Result<Self, GeographicViewError> {
+    pub(crate) fn try_selected(&self, indices: &[usize]) -> Result<Self, GeographicViewError> {
         let mut views = Vec::new();
         views
             .try_reserve_exact(indices.len())

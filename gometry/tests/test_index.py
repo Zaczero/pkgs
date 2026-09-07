@@ -16,6 +16,14 @@ def match_rows(matches: gm.Groups) -> list[list[int]]:
     return [row.tolist() for row in matches]
 
 
+@pytest.mark.parametrize('predicate', ['crosses', 'overlaps'])
+def test_geographic_index_kind_gate_precedes_query_admission(predicate):
+    index = gm.SpatialIndex([gm.LineString([(0, 0), (1, 0)], crs=4326)])
+    query = gm.Point(0, 91, crs=4326)
+    assert ids(index.query(query, predicate=predicate)) == []
+    assert match_rows(index.query(gm.GeometryArray([query]), predicate=predicate)) == [[]]
+
+
 def geodesic_box_boundary(
     bounds: tuple[float, float, float, float],
 ) -> gm.LineString:

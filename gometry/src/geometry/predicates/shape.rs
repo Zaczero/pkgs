@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
 use crate::geometry::{
-    CompiledPattern, Coordinates as _, FrameDependentCaches, GeometryErrorKind, Point,
-    PreparedPlan, Shape, TopologyDomain, graph_relate_shapes, point_equals_exact, point_on_segment,
+    CompiledPattern, Coordinates as _, GeometryErrorKind, Point,
+    PreparedPlan, Shape, graph_relate_shapes, point_equals_exact, point_on_segment,
     points_equal_exact, same_point,
 };
 
@@ -176,14 +176,10 @@ impl Shape {
             CompiledPattern::new(pattern).ok_or_else(|| Self::invalid_de9im_pattern(pattern))?;
         let left = PreparedPlan::transient(self);
         let right = PreparedPlan::transient(other);
-        let cache = FrameDependentCaches::default();
-        let pair = crate::predicates::engine::PreparedTopologyPair::for_domain(
-            &left,
-            &cache,
-            &right,
-            &cache,
-            TopologyDomain::Cartesian,
-        );
+        let pair = crate::predicates::engine::PreparedTopologyPair::Cartesian {
+            left: &left,
+            right: &right,
+        };
         Ok(crate::predicates::engine::topology_scalar_pattern(
             compiled, &pair,
         ))

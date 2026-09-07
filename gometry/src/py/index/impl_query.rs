@@ -1,9 +1,7 @@
 use super::impl_nearest::{HeapNearest, NearestState, OneNearest};
 use crate::array::ValidityMask;
 use crate::geometry::{PreparedPlan, TopologyDomain};
-use crate::predicates::engine::{
-    GateOperand, PredicateSpec, PreparedTopologyPair, row_kind_empty,
-};
+use crate::predicates::engine::{GateOperand, PredicateSpec, PreparedTopologyPair, row_kind_empty};
 use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error, native_memory_error};
 use crate::py::index::{
     AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, Frame, GeodesicCapsCache,
@@ -19,17 +17,8 @@ use crate::{CsrBuilder, try_push_vec};
 fn geographic_keep(
     spec: &PredicateSpec,
     query: crate::geometry::GeographicPrepared<'_>,
-    candidate_row: ShapeRow<'_>,
-    candidate: &PreparedPlan,
-    candidate_cache: &crate::geometry::FrameDependentCaches,
+    candidate: crate::geometry::GeographicPrepared<'_>,
 ) -> PyResult<bool> {
-    let (query_kind, _) = row_kind_empty(ShapeRow::Shape(query.plan().shape()));
-    let (candidate_kind, _) = row_kind_empty(candidate_row);
-    if let Some(verdict) = spec.predicate.kind_gate(query_kind, candidate_kind) {
-        return Ok(verdict);
-    }
-    let candidate =
-        crate::geometry::GeographicPrepared::try_new(candidate, candidate_cache, query.frame())?;
     if let Some(verdict) = spec.pre_topology(
         GateOperand::from_prepared(&query),
         GateOperand::from_prepared(&candidate),
@@ -43,6 +32,20 @@ fn geographic_keep(
             right: candidate,
         },
     ))
+}
+
+fn admitted_query<'a>(
+    slot: &mut Option<crate::geometry::GeographicPrepared<'a>>,
+    plan: &'a PreparedPlan,
+    cache: &'a crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
+) -> crate::error::Result<crate::geometry::GeographicPrepared<'a>> {
+    if let Some(prepared) = *slot {
+        return Ok(prepared);
+    }
+    let prepared = crate::geometry::GeographicPrepared::try_new(plan, cache, frame)?;
+    *slot = Some(prepared);
+    Ok(prepared)
 }
 
 impl PySpatialIndex {
@@ -163,16 +166,7 @@ impl PySpatialIndex {
                 (Some(spec), _) => {
                     let query = products.prepared(i);
                     let query_cache = products.frame_cache(i);
-                    let query_prepared = match domain {
-                        TopologyDomain::Cartesian => None,
-                        TopologyDomain::Geographic(frame) => Some(
-                            crate::geometry::GeographicPrepared::try_new(
-                                &query,
-                                &query_cache,
-                                frame,
-                            )?,
-                        ),
-                    };
+                    let mut query_prepared = None;
                     retain_row(&mut candidates, 0, |idx| match domain {
                         TopologyDomain::Cartesian => {
                             if let Some(verdict) = spec.pre_topology(
@@ -190,14 +184,24 @@ impl PySpatialIndex {
                                 },
                             ))
                         },
-                        TopologyDomain::Geographic(_) => {
+                        TopologyDomain::Geographic(frame) => {
+                            if let Some(verdict) = spec.predicate.kind_gate(
+                                row_kind_empty(products.row(i)).0,
+                                row_kind_empty(products.row(idx)).0,
+                            ) {
+                                return Ok(verdict);
+                            }
+                            let query =
+                                admitted_query(&mut query_prepared, &query, &query_cache, frame)?;
                             let data = products.prepared(idx);
                             geographic_keep(
                                 &spec,
-                                query_prepared.expect("geographic query is admitted"),
-                                products.row(idx),
-                                &data,
-                                &products.frame_cache(idx),
+                                query,
+                                crate::geometry::GeographicPrepared::try_new(
+                                    &data,
+                                    &products.frame_cache(idx),
+                                    frame,
+                                )?,
                             )
                         },
                     })?;
@@ -855,11 +859,18 @@ impl PySpatialIndex {
         let spec = predicate.spec();
         let mut keep = crate::try_vec_with_capacity(ids.len())?;
         keep.resize(ids.len(), false);
+        let mut query_proofs = Vec::new();
+        if matches!(domain, TopologyDomain::Geographic(_)) {
+            crate::try_reserve_vec(&mut query_proofs, queries.len())?;
+            query_proofs.resize(queries.len(), None);
+        }
         let mut index_products = self.rows.operation();
         let mut start = 0;
         while start < candidates.len() {
             let idx = candidates[start].0;
             let data = index_products.prepared(idx);
+            let candidate_cache = index_products.frame_cache(idx);
+            let mut candidate_proof = None;
             let mut end = start;
             while end < candidates.len() && candidates[end].0 == idx {
                 let (_, row, position) = candidates[end];
@@ -877,13 +888,24 @@ impl PySpatialIndex {
                             domain,
                         )?,
                     ),
-                    TopologyDomain::Geographic(frame) => geographic_keep(
-                        &spec,
-                        crate::geometry::GeographicPrepared::try_new(query, query_cache, frame)?,
-                        ShapeRow::Shape(data.shape()),
-                        &data,
-                        &index_products.frame_cache(idx),
-                    )?,
+                    TopologyDomain::Geographic(frame) => {
+                        if let Some(verdict) = spec.predicate.kind_gate(
+                            crate::geometry::GeometryKind::Point,
+                            row_kind_empty(ShapeRow::Shape(data.shape())).0,
+                        ) {
+                            verdict
+                        } else {
+                            let query =
+                                admitted_query(&mut query_proofs[row], query, query_cache, frame)?;
+                            let candidate = admitted_query(
+                                &mut candidate_proof,
+                                &data,
+                                &candidate_cache,
+                                frame,
+                            )?;
+                            geographic_keep(&spec, query, candidate)?
+                        }
+                    },
                 };
                 end += 1;
             }
@@ -983,16 +1005,7 @@ impl PySpatialIndex {
                 // shared batch engine (prepared/cached exactly like the
                 // broadcast surfaces); candidate handles feed it directly.
                 let query_cache = geometry.frame_cache();
-                let query_prepared = match domain {
-                    TopologyDomain::Cartesian => None,
-                    TopologyDomain::Geographic(frame) => Some(
-                        crate::geometry::GeographicPrepared::try_new(
-                            &query_plan,
-                            &query_cache,
-                            frame,
-                        )?,
-                    ),
-                };
+                let mut query_prepared = None;
                 retain_row(&mut matches, 0, |idx| match domain {
                     TopologyDomain::Cartesian => {
                         if let Some(verdict) = spec.pre_topology(
@@ -1013,14 +1026,24 @@ impl PySpatialIndex {
                             },
                         ))
                     },
-                    TopologyDomain::Geographic(_) => {
+                    TopologyDomain::Geographic(frame) => {
+                        if let Some(verdict) = spec.predicate.kind_gate(
+                            row_kind_empty(ShapeRow::Shape(query_plan.shape())).0,
+                            row_kind_empty(products.row(idx)).0,
+                        ) {
+                            return Ok(verdict);
+                        }
+                        let query =
+                            admitted_query(&mut query_prepared, &query_plan, &query_cache, frame)?;
                         let data = products.prepared(idx);
                         geographic_keep(
                             &spec,
-                            query_prepared.expect("geographic query is admitted"),
-                            products.row(idx),
-                            &data,
-                            &products.frame_cache(idx),
+                            query,
+                            crate::geometry::GeographicPrepared::try_new(
+                                &data,
+                                &products.frame_cache(idx),
+                                frame,
+                            )?,
                         )
                     },
                 })?;
@@ -1131,12 +1154,7 @@ impl PySpatialIndex {
         let domain = crate::geometry::topology_domain(frame)?;
         // The query is fixed for every candidate, so read its gate facts once.
         // A candidate the gate settles is never prepared at all.
-        let query_prepared = match domain {
-            TopologyDomain::Cartesian => None,
-            TopologyDomain::Geographic(frame) => Some(
-                crate::geometry::GeographicPrepared::try_new(shape, query_cache, frame)?,
-            ),
-        };
+        let mut query_prepared = None;
         let mut products = self.rows.operation();
         retain_row(out, row_start, |idx| match domain {
             TopologyDomain::Cartesian => {
@@ -1155,14 +1173,23 @@ impl PySpatialIndex {
                     },
                 ))
             },
-            TopologyDomain::Geographic(_) => {
+            TopologyDomain::Geographic(frame) => {
+                if let Some(verdict) = spec.predicate.kind_gate(
+                    row_kind_empty(ShapeRow::Shape(shape.shape())).0,
+                    row_kind_empty(products.row(idx)).0,
+                ) {
+                    return Ok(verdict);
+                }
+                let query = admitted_query(&mut query_prepared, shape, query_cache, frame)?;
                 let data = products.prepared(idx);
                 geographic_keep(
                     &spec,
-                    query_prepared.expect("geographic query is admitted"),
-                    products.row(idx),
-                    &data,
-                    &products.frame_cache(idx),
+                    query,
+                    crate::geometry::GeographicPrepared::try_new(
+                        &data,
+                        &products.frame_cache(idx),
+                        frame,
+                    )?,
                 )
             },
         })?;
@@ -1314,16 +1341,7 @@ impl PySpatialIndex {
             match (&spec, model, predicate) {
                 (Some(spec), ..) => {
                     let query_cache = query_rows.frame_cache(row);
-                    let query_prepared = match domain {
-                        TopologyDomain::Cartesian => None,
-                        TopologyDomain::Geographic(frame) => Some(
-                            crate::geometry::GeographicPrepared::try_new(
-                                &query,
-                                &query_cache,
-                                frame,
-                            )?,
-                        ),
-                    };
+                    let mut query_prepared = None;
                     retain_row(ids, row_start, |idx| match domain {
                         TopologyDomain::Cartesian => {
                             if let Some(verdict) = spec.pre_topology(
@@ -1344,14 +1362,24 @@ impl PySpatialIndex {
                                 },
                             ))
                         },
-                        TopologyDomain::Geographic(_) => {
+                        TopologyDomain::Geographic(frame) => {
+                            if let Some(verdict) = spec.predicate.kind_gate(
+                                row_kind_empty(ShapeRow::Shape(query.shape())).0,
+                                row_kind_empty(index_products.row(idx)).0,
+                            ) {
+                                return Ok(verdict);
+                            }
+                            let query =
+                                admitted_query(&mut query_prepared, &query, &query_cache, frame)?;
                             let data = index_products.prepared(idx);
                             geographic_keep(
                                 spec,
-                                query_prepared.expect("geographic query is admitted"),
-                                index_products.row(idx),
-                                &data,
-                                &index_products.frame_cache(idx),
+                                query,
+                                crate::geometry::GeographicPrepared::try_new(
+                                    &data,
+                                    &index_products.frame_cache(idx),
+                                    frame,
+                                )?,
                             )
                         },
                     })?;

@@ -1,5 +1,5 @@
 use crate::collections::{HashSet, HashSetExt as _};
-use crate::geometry::{Point, Polygon, PreparedPlan, Ring, Shape, TopologyDomain};
+use crate::geometry::{GeographicPrepared, Point, Polygon, PreparedPlan, Ring, Shape};
 use crate::grid::affine_source::visit_grid_cover_components;
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
@@ -9,6 +9,7 @@ use crate::py::cells::h3::{CellIndex, LatLng, Resolution, TiledCell, h3_latlng};
 pub(super) enum H3TileError {
     Budget(CoverBudgetExceeded),
     Allocation,
+    Preparation(crate::error::Error),
 }
 
 fn try_insert_cell(cells: &mut HashSet<CellIndex>, cell: CellIndex) -> Result<bool, H3TileError> {
@@ -27,22 +28,17 @@ fn check_budget(produced: usize, max_cells: Option<usize>) -> Result<(), H3TileE
 /// WGS84). Every candidate reaches the frame-keyed quotient topology graph;
 /// the flood's edge walk is only a cheap candidate generator.
 fn checked_predicate(
-    authority: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
+    authority: GeographicPrepared<'_>,
     cell: CellIndex,
 ) -> Result<bool, H3TileError> {
     let center = LatLng::from(cell);
     let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(center.lng(), center.lat())));
     let probe_cache = crate::geometry::FrameDependentCaches::default();
-    let operands = PreparedTopologyPair::try_for_domain(
-        authority,
-        authority_cache,
-        &probe,
-        &probe_cache,
-        TopologyDomain::Geographic(frame),
-    )
-    .map_err(|_| H3TileError::Allocation)?;
+    let operands = PreparedTopologyPair::Geographic {
+        left: authority,
+        right: GeographicPrepared::try_new(&probe, &probe_cache, authority.frame())
+            .map_err(H3TileError::Preparation)?,
+    };
     Ok(topology_scalar_pair(&Predicate::Covers.spec(), operands))
 }
 
@@ -58,6 +54,8 @@ pub(super) fn h3_tile(
     resolution: Resolution,
     max_cells: Option<usize>,
 ) -> Result<Vec<TiledCell>, H3TileError> {
+    let authority = GeographicPrepared::try_new(authority, authority_cache, frame)
+        .map_err(H3TileError::Preparation)?;
     // Union every part's coverage. One pass; the set is bounded by
     // `max_cells` (when set), checked at every insertion, so a
     // world-scale polygon at a fine resolution fails before flooding memory.
@@ -68,18 +66,13 @@ pub(super) fn h3_tile(
     // component is traversed independently against the shared authority, then
     // the shared map performs the sole deduplicated global budget check.
     visit_grid_cover_components(shape, &mut |component| {
-        h3_tile_shape(
-            component,
-            authority,
-            authority_cache,
-            frame,
-            resolution,
-            max_cells,
-            &mut coverage,
-        )
+        h3_tile_shape(component, authority, resolution, max_cells, &mut coverage)
     })?;
     let mut cells = Vec::new();
-    #[expect(clippy::iter_over_hash_type, reason = "the cells are sorted before they leave")]
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "the cells are sorted before they leave"
+    )]
     for cell in coverage {
         crate::boundary::try_push_vec(&mut cells, TiledCell { cell })
             .map_err(|_| H3TileError::Allocation)?;
@@ -92,44 +85,18 @@ pub(super) fn h3_tile(
 /// decomposed by `visit_grid_cover_components` before reaching this owner.
 pub(super) fn h3_tile_shape(
     shape: &Shape,
-    authority: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
+    authority: GeographicPrepared<'_>,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
 ) -> Result<(), H3TileError> {
     match shape {
         Shape::Polygon(polygon) => {
-            h3_tile_polygon(
-                polygon,
-                authority,
-                authority_cache,
-                frame,
-                resolution,
-                max_cells,
-                coverage,
-            )?;
+            h3_tile_polygon(polygon, authority, resolution, max_cells, coverage)?;
         },
-        Shape::Point(point) => h3_tile_point(
-            *point,
-            authority,
-            authority_cache,
-            frame,
-            resolution,
-            max_cells,
-            coverage,
-        )?,
+        Shape::Point(point) => h3_tile_point(*point, authority, resolution, max_cells, coverage)?,
         Shape::LineString(coords) => {
-            h3_tile_line(
-                authority,
-                authority_cache,
-                frame,
-                coords,
-                resolution,
-                max_cells,
-                coverage,
-            )?;
+            h3_tile_line(authority, coords, resolution, max_cells, coverage)?;
         },
         // `visit_grid_cover_components` admits only these three atomic kinds
         // and skips empties. Keeping the invariant explicit prevents a second
@@ -148,9 +115,7 @@ pub(super) fn h3_tile_shape(
 /// Non-area `within` is owned by the certified traversal, not this tiler.
 pub(super) fn h3_tile_point(
     point: Point,
-    authority: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
+    authority: GeographicPrepared<'_>,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -159,7 +124,7 @@ pub(super) fn h3_tile_point(
         return Ok(());
     };
     let cell = latlng.to_cell(resolution);
-    if checked_predicate(authority, authority_cache, frame, cell)? {
+    if checked_predicate(authority, cell)? {
         try_insert_cell(coverage, cell)?;
         check_budget(coverage.len(), max_cells)?;
     }
@@ -177,9 +142,7 @@ fn points_equal_signed_zero(a: Point, b: Point) -> bool {
 /// Center-rule cells for a line.  Exact overlap/bbox line contact belongs to
 /// the affine carrier and ordered H3 arcs, never this sample-ring helper.
 pub(super) fn h3_tile_line(
-    authority: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
+    authority: GeographicPrepared<'_>,
     coords: &crate::geometry::CoordSeq,
     resolution: Resolution,
     max_cells: Option<usize>,
@@ -193,7 +156,7 @@ pub(super) fn h3_tile_line(
             if !try_insert_cell(&mut seen, cell)? {
                 continue;
             }
-            if checked_predicate(authority, authority_cache, frame, cell)? {
+            if checked_predicate(authority, cell)? {
                 try_insert_cell(coverage, cell)?;
                 check_budget(coverage.len(), max_cells)?;
             }
@@ -205,9 +168,7 @@ pub(super) fn h3_tile_line(
 /// Checked inward flood: every first-seen neighbor is tested against the
 /// authority; only matched cells are recorded and enqueued.
 fn flood_checked(
-    authority: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
+    authority: GeographicPrepared<'_>,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
     seen: &mut HashSet<CellIndex>,
@@ -220,9 +181,7 @@ fn flood_checked(
             for &raw in h3_one_ring(cell, scratch) {
                 let neighbor =
                     CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
-                if try_insert_cell(seen, neighbor)?
-                    && checked_predicate(authority, authority_cache, frame, neighbor)?
-                {
+                if try_insert_cell(seen, neighbor)? && checked_predicate(authority, neighbor)? {
                     try_insert_cell(coverage, neighbor)?;
                     check_budget(coverage.len(), max_cells)?;
                     crate::boundary::try_push_vec(&mut next, neighbor)
@@ -238,9 +197,7 @@ fn flood_checked(
 /// Flood-fill one polygon's center-rule H3 coverage into `coverage`.
 pub(super) fn h3_tile_polygon(
     polygon: &Polygon,
-    authority: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
+    authority: GeographicPrepared<'_>,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -261,7 +218,7 @@ pub(super) fn h3_tile_polygon(
             for &raw in h3_one_ring(edge_cell, &mut scratch) {
                 let cell = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
                 if try_insert_cell(&mut seen, cell)? {
-                    let matched = checked_predicate(authority, authority_cache, frame, cell)?;
+                    let matched = checked_predicate(authority, cell)?;
                     if matched {
                         try_insert_cell(coverage, cell)?;
                         check_budget(coverage.len(), max_cells)?;
@@ -279,8 +236,6 @@ pub(super) fn h3_tile_polygon(
             polygon,
             &part_source,
             authority,
-            authority_cache,
-            frame,
             resolution,
             max_cells,
             coverage,
@@ -293,7 +248,7 @@ pub(super) fn h3_tile_polygon(
         for &raw in h3_one_ring(cell, &mut scratch) {
             let neighbor = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
             if try_insert_cell(&mut seen, neighbor)? {
-                let matched = checked_predicate(authority, authority_cache, frame, neighbor)?;
+                let matched = checked_predicate(authority, neighbor)?;
                 if matched {
                     try_insert_cell(coverage, neighbor)?;
                     check_budget(coverage.len(), max_cells)?;
@@ -307,8 +262,6 @@ pub(super) fn h3_tile_polygon(
     // 4. INWARD FLOOD: each newly retained center reaches the same authority.
     flood_checked(
         authority,
-        authority_cache,
-        frame,
         max_cells,
         coverage,
         &mut seen,
@@ -321,9 +274,7 @@ pub(super) fn h3_tile_polygon(
 fn h3_tile_polygon_seeds_center(
     polygon: &Polygon,
     part_source: &Shape,
-    authority: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
+    authority: GeographicPrepared<'_>,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -351,7 +302,7 @@ fn h3_tile_polygon_seeds_center(
         }
     }
     for &seed in &seed_band {
-        if checked_predicate(authority, authority_cache, frame, seed)? {
+        if checked_predicate(authority, seed)? {
             try_insert_cell(coverage, seed)?;
             check_budget(coverage.len(), max_cells)?;
         }
@@ -531,6 +482,30 @@ pub(super) fn h3_cell_shape(cell: CellIndex) -> Shape {
 mod edge_trace_tests {
     use super::*;
     use crate::geometry::CoordSeq;
+    use crate::py::cells::coverage_ops::GridCoverError;
+
+    #[test]
+    fn invalid_authority_retains_its_geometry_diagnostic() {
+        let shape = Shape::Point(Point::new_raw_xy(0.0, 91.0));
+        let authority = PreparedPlan::transient(&shape);
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        let error = h3_tile(&shape, &authority, &cache, frame, Resolution::Six, None)
+            .err()
+            .expect("invalid latitude must fail before tiling");
+        let GridCoverError::Native(error) = GridCoverError::from(error)
+        else {
+            panic!("admission must retain its native error");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("invalid longitude/latitude (0, 91)")
+        );
+    }
 
     #[test]
     fn streaming_edge_sink_stops_before_a_long_trace_is_materialized() {

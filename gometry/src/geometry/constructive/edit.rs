@@ -11,9 +11,8 @@ use crate::geometry::constructive::{
 use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
-    LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, OrdinateAxis, Point,
-    Polygon, ReduceSimd, Ring,
-    Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
+    LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon,
+    ReduceSimd, Ring, Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
     clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
     column_all_finite, compare_point_slices, compare_points, compare_polygons, compare_shapes,
     line_parts_to_shape, same_topological_coordinate, set_point_ordinate, simd_xy_map_f64,
@@ -587,17 +586,20 @@ impl Shape {
         }
         let axes = self.axes_with_ordinate(axis, value.is_some());
         if let Self::MultiPoint(points) = self
-            && points.is_empty() {
-                return Ok(Self::MultiPoint(points.with_axes(axes)));
-            }
+            && points.is_empty()
+        {
+            return Ok(Self::MultiPoint(points.with_axes(axes)));
+        }
         if let Self::MultiLineString(lines) = self
-            && lines.is_empty() {
-                return Ok(Self::MultiLineString(lines.with_axes(axes)));
-            }
+            && lines.is_empty()
+        {
+            return Ok(Self::MultiLineString(lines.with_axes(axes)));
+        }
         if let Self::MultiPolygon(polygons) = self
-            && polygons.is_empty() {
-                return Ok(Self::MultiPolygon(polygons.with_axes(axes)));
-            }
+            && polygons.is_empty()
+        {
+            return Ok(Self::MultiPolygon(polygons.with_axes(axes)));
+        }
         if let Self::GeometryCollection(geometries) = self {
             return Ok(Self::GeometryCollection(geometries.try_map_members(
                 |geometry| geometry.set_ordinate(axis, value, overwrite),
@@ -826,11 +828,8 @@ impl Shape {
     ) -> Result<Self> {
         let subject_plan = crate::geometry::PreparedPlan::transient(self);
         let subject_cache = crate::geometry::FrameDependentCaches::default();
-        let subject = crate::geometry::GeographicPrepared::try_new(
-            &subject_plan,
-            &subject_cache,
-            frame,
-        )?;
+        let subject =
+            crate::geometry::GeographicPrepared::try_new(&subject_plan, &subject_cache, frame)?;
         let subject_bounds_sound = bounds.is_none_or(|bounds| {
             crate::geometry::admitted_bounds_are_sound(subject.view(), bounds)
         });
@@ -860,10 +859,16 @@ impl Shape {
         } else {
             crate::geometry::geographic_bounds_to_shape(rect, frame)?
         };
-        let clipped = Self::intersection_all_topo(
-            &[self, &rectangle],
-            crate::geometry::TopologyDomain::Geographic(frame),
+        let originals = crate::geographic::GeographicInputs::try_from_first_and_shapes(
+            subject.view(),
+            std::iter::once(&rectangle),
+        )
+        .map_err(crate::geometry::overlay::overlay_view_error)?;
+        let clipped = crate::geometry::overlay::overlay_all_geographic_from(
+            originals,
+            crate::geometry::overlay::OverlayOp::Intersection,
             Strictness::from(drop),
+            true,
         )?;
         Ok(if clipped.is_empty() {
             empty_clip_shape(self)
@@ -1081,8 +1086,10 @@ impl Shape {
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
                         crate::geometry::MultiMember::Value(index) => {
-                            remove_repeated_polygon(&polygons.as_slice()[index])
-                                .map_or(crate::geometry::MultiMember::Empty, crate::geometry::MultiMember::Value)
+                            remove_repeated_polygon(&polygons.as_slice()[index]).map_or(
+                                crate::geometry::MultiMember::Empty,
+                                crate::geometry::MultiMember::Value,
+                            )
                         },
                     })
                     .collect();

@@ -33,6 +33,7 @@ impl From<H3TileError> for GridCoverError {
         match error {
             H3TileError::Budget(error) => Self::Budget(error),
             H3TileError::Allocation => Self::Native(ResourceError::Allocation.into()),
+            H3TileError::Preparation(error) => Self::Native(error),
         }
     }
 }

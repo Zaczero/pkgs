@@ -1,5 +1,3 @@
-use crate::geometry::clean_union;
-use crate::geometry::relate;
 use std::borrow::Borrow;
 use std::ops::ControlFlow;
 
@@ -14,12 +12,11 @@ use crate::geometry::overlay::{
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
-    GeometryErrorKind,
-    GeometryKind, HashMap, HashMapExt as _, HashSet, Point, PointBatchTester, PointKey, Segment,
-    SegmentIndex, Shape, TopologyDomain, TopologyGraph, XY, carry_direct_points_ordinates,
-    carry_direct_overlay_ordinates, carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
-    column_all_finite, ordered_edge,
-    point_on_segment, same_point, segment_midpoint, shell_is_convex,
+    GeometryErrorKind, GeometryKind, HashMap, HashMapExt as _, HashSet, Point, PointBatchTester,
+    PointKey, Segment, SegmentIndex, Shape, TopologyDomain, TopologyGraph, XY,
+    carry_direct_overlay_ordinates, carry_direct_points_ordinates, carry_overlay_ordinates,
+    carry_overlay_ordinates_from_graph, clean_union, column_all_finite, ordered_edge,
+    point_on_segment, relate, same_point, segment_midpoint, shell_is_convex,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -120,51 +117,86 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         .into());
     }
 
-    let (bounds_facts, originals) = match domain {
-        TopologyDomain::Cartesian => (overlay_bounds_facts_cartesian(geometries, op), None),
+    match domain {
+        TopologyDomain::Cartesian => {
+            let mut refs = Vec::new();
+            crate::try_reserve_vec(&mut refs, geometries.len())?;
+            refs.extend(geometries.iter().map(std::borrow::Borrow::borrow));
+            overlay_admitted(
+                OverlayInputs::Cartesian(&refs),
+                op,
+                strictness,
+                bounds_certificates,
+            )
+        },
         TopologyDomain::Geographic(frame) => {
             let originals = GeographicInputs::try_from_shapes(
                 frame,
                 geometries.iter().map(std::borrow::Borrow::borrow),
             )
             .map_err(overlay_view_error)?;
-            let facts = overlay_bounds_facts_geographic(&originals, op);
-            (facts, Some(originals))
+            overlay_all_geographic_from(originals, op, strictness, bounds_certificates)
         },
+    }
+}
+
+pub(in crate::geometry) fn overlay_all_geographic_from(
+    originals: GeographicInputs<'_>,
+    op: OverlayOp,
+    strictness: crate::geometry::Strictness,
+    bounds_certificates: bool,
+) -> Result<Shape> {
+    overlay_admitted(
+        OverlayInputs::Geographic(&originals),
+        op,
+        strictness,
+        bounds_certificates,
+    )
+}
+
+fn overlay_admitted(
+    originals: OverlayInputs<'_, '_>,
+    op: OverlayOp,
+    strictness: crate::geometry::Strictness,
+    bounds_certificates: bool,
+) -> Result<Shape> {
+    let domain = originals.domain();
+    let bounds_facts = match originals {
+        OverlayInputs::Cartesian(shapes) => overlay_bounds_facts_cartesian(shapes, op),
+        OverlayInputs::Geographic(inputs) => overlay_bounds_facts_geographic(inputs, op),
     };
 
     if bounds_certificates
-        && geometries.len() > 1
+        && originals.len() > 1
         && op == OverlayOp::Intersection
         && bounds_facts.raw_coordinate_bounds_sound
         && intersection_bounds_empty(&bounds_facts.bounds)
     {
         return Ok(empty_nary_overlay_shape(
-            &geometries
-                .iter()
-                .map(|geometry| geometry.borrow())
+            &(0..originals.len())
+                .map(|index| originals.shape(index))
                 .collect::<Vec<_>>(),
             op,
         ));
     }
 
-    if domain == TopologyDomain::Cartesian
-        && geometries.len() == 2
+    if let OverlayInputs::Cartesian(shapes) = originals
+        && shapes.len() == 2
         && op == OverlayOp::Intersection
-        && let Some(shape) = direct_point_intersection(geometries, strictness)?
+        && let Some(shape) = direct_point_intersection(shapes, strictness)?
     {
         return Ok(shape);
     }
 
-    let mut sources: Vec<Shape> = match (domain, originals.as_ref()) {
-        (TopologyDomain::Geographic(frame), Some(originals)) => {
+    let mut sources: Vec<Shape> = match originals {
+        OverlayInputs::Geographic(originals) => {
+            let frame = originals.frame();
             let mut sources = Vec::new();
             sources
                 .try_reserve_exact(originals.views().len())
                 .map_err(|_| ResourceError::Allocation)?;
             for view in originals.views() {
-                let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame)
-                {
+                let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
                     crate::geometry::split_geographic_view(*view)?.normalize()?
                 } else {
                     view.shape().normalize()?
@@ -173,9 +205,9 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
             }
             sources
         },
-        _ => geometries
+        OverlayInputs::Cartesian(shapes) => shapes
             .iter()
-            .map(|geometry| geometry.borrow().normalize())
+            .map(|geometry| geometry.normalize())
             .collect::<Result<_>>()?,
     };
 
@@ -205,11 +237,11 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     let input_crosses = match domain {
         TopologyDomain::Cartesian => false,
         TopologyDomain::Geographic(frame) => {
-            crate::geometry::crosses_antimeridian_in_frame(geometries[0].borrow(), frame)
+            crate::geometry::crosses_antimeridian_in_frame(originals.shape(0), frame)
         },
     };
-    if geometries.len() == 1 && op == OverlayOp::Intersection && !input_crosses {
-        return Ok(geometries[0].borrow().clone());
+    if originals.len() == 1 && op == OverlayOp::Intersection && !input_crosses {
+        return Ok(originals.shape(0).clone());
     }
     // Inputs whose bounds never meet cannot interact, so for the commutative
     // operations the result is the concatenation of each connected
@@ -220,27 +252,26 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     // is the old all-disjoint certificate; a difference partitions only
     // when nothing meets its left operand, which the certificate below
     // still decides.
-    let components = if bounds_certificates
-        && geometries.len() > 1
-        && bounds_facts.raw_coordinate_bounds_sound
-    {
-        match op {
-            OverlayOp::Union | OverlayOp::SymmetricDifference => {
-                let bounds: Vec<Option<Bounds>> = refs.iter().map(|shape| shape.bounds()).collect();
-                Some(bounds_components(&bounds)).filter(|components| components.len() > 1)
-            },
-            OverlayOp::Difference | OverlayOp::Intersection => {
-                disjoint_bounds_certify(&bounds_facts.bounds, op)
-                    .then(|| (0..refs.len()).map(|index| vec![index]).collect())
-            },
-        }
-    } else {
-        None
-    };
+    let components =
+        if bounds_certificates && originals.len() > 1 && bounds_facts.raw_coordinate_bounds_sound {
+            match op {
+                OverlayOp::Union | OverlayOp::SymmetricDifference => {
+                    let bounds: Vec<Option<Bounds>> =
+                        refs.iter().map(|shape| shape.bounds()).collect();
+                    Some(bounds_components(&bounds)).filter(|components| components.len() > 1)
+                },
+                OverlayOp::Difference | OverlayOp::Intersection => {
+                    disjoint_bounds_certify(&bounds_facts.bounds, op)
+                        .then(|| (0..refs.len()).map(|index| vec![index]).collect())
+                },
+            }
+        } else {
+            None
+        };
     let disjoint_bounds = components.is_some();
     let convex_shape = if !disjoint_bounds
         && domain == TopologyDomain::Cartesian
-        && geometries.len() == 2
+        && originals.len() == 2
         && op == OverlayOp::Intersection
     {
         convex_polygon_intersection(&refs)
@@ -249,7 +280,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     };
     let polygon_line = if !disjoint_bounds
         && domain == TopologyDomain::Cartesian
-        && geometries.len() == 2
+        && originals.len() == 2
         && op == OverlayOp::Intersection
     {
         assemble_polygon_line_intersection(&refs)?
@@ -282,11 +313,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         );
     } else {
         (
-            assemble_overlay(
-                staged,
-                op,
-                bounds_facts.raw_polygon_loops_eligible,
-            )?,
+            assemble_overlay(staged, op, bounds_facts.raw_polygon_loops_eligible)?,
             None,
         )
     };
@@ -559,10 +586,7 @@ fn assemble_polygon_line_intersection(inputs: &[&Shape]) -> Result<Option<(Shape
         })
     {
         let (points, lines) = polygon_line_overlay(&graph, polygon_row, line_row);
-        return Ok(Some((
-            build_overlay_shape(points, &lines, &[])?,
-            graph,
-        )));
+        return Ok(Some((build_overlay_shape(points, &lines, &[])?, graph)));
     }
     Ok(None)
 }
@@ -588,10 +612,7 @@ fn polygon_line_overlay(
             TopologyLocation::Exterior
         };
         if location != TopologyLocation::Exterior {
-            lines.push(CoordSeq::from(vec![
-                edge.segment.start,
-                edge.segment.end,
-            ]));
+            lines.push(CoordSeq::from(vec![edge.segment.start, edge.segment.end]));
         }
     }
 
@@ -685,7 +706,7 @@ impl<'a, 's> OverlayInputs<'a, 's> {
     }
 }
 
-fn overlay_view_error(
+pub(in crate::geometry) fn overlay_view_error(
     error: crate::geographic::GeographicViewError,
 ) -> crate::error::Error {
     match error {
@@ -739,14 +760,9 @@ fn overlay_bounds_facts_geographic(
         .iter()
         .map(|view| view.shape().bounds())
         .collect();
-    let raw_coordinate_bounds_sound = originals
-        .views()
-        .iter()
-        .zip(&bounds)
-        .all(|(view, bounds)| {
-            bounds.is_some_and(|bounds| {
-                crate::geometry::admitted_bounds_are_sound(*view, bounds)
-            })
+    let raw_coordinate_bounds_sound =
+        originals.views().iter().zip(&bounds).all(|(view, bounds)| {
+            bounds.is_some_and(|bounds| crate::geometry::admitted_bounds_are_sound(*view, bounds))
         });
     overlay_bounds_facts_from(
         bounds,
@@ -991,7 +1007,6 @@ fn assemble_components_overlay(
     build_overlay_shape(points, &lines, &polygons)
 }
 
-
 /// Overlay Cartesian linework operands straight from noding provenance:
 /// the joint segment pool is self-noded once, every atomic piece comes back
 /// with the input rows that own it, and the operation is a membership rule
@@ -1038,7 +1053,12 @@ fn assemble_line_only_overlay(inputs: &[&Shape], op: OverlayOp) -> Result<Shape>
         let entry = merged
             .entry(crate::geometry::undirected_segment_edge_key(segment))
             .or_insert((segment, Vec::new()));
-        entry.1.extend(provenance.owners(piece).iter().map(|&(owner, _)| row_of[owner as usize]));
+        entry.1.extend(
+            provenance
+                .owners(piece)
+                .iter()
+                .map(|&(owner, _)| row_of[owner as usize]),
+        );
     }
     let atomic: Vec<(Segment, Vec<u32>)> = merged
         .into_values()
@@ -1136,7 +1156,7 @@ fn crossing_table(
     }
     let mut crossings: HashMap<PointKey, Crossing> = HashMap::with_capacity(scan.events.len());
     for &(ordinal, point) in &scan.events {
-        let (row, _, _) = site_of[ordinal as usize];
+        let (row, ..) = site_of[ordinal as usize];
         let entry = crossings.entry(PointKey::new(point)).or_insert(Crossing {
             cut_ordinals: Vec::new(),
             kept_cuts: 0,
@@ -1154,7 +1174,7 @@ fn crossing_table(
         }
     }
     for &(_, point, landing) in &scan.touches {
-        let (row, _, _) = site_of[landing as usize];
+        let (row, ..) = site_of[landing as usize];
         let entry = crossings
             .get_mut(&PointKey::new(point))
             .expect("a touch is one of the events");
@@ -1216,11 +1236,17 @@ fn cut_lines_overlay(inputs: &[&Shape], pool: &[Segment], op: OverlayOp) -> Resu
     let lines: Vec<(usize, &CoordSeq)> = inputs
         .iter()
         .enumerate()
-        .flat_map(|(row, shape)| line_only_parts(shape).into_iter().map(move |line| (row, line)))
+        .flat_map(|(row, shape)| {
+            line_only_parts(shape)
+                .into_iter()
+                .map(move |line| (row, line))
+        })
         .collect();
     if !scan.events.is_empty()
         && lines.iter().any(|(_, line)| {
-            line.first().zip(line.last()).is_some_and(|(first, last)| same_point(first.xy(), last.xy()))
+            line.first()
+                .zip(line.last())
+                .is_some_and(|(first, last)| same_point(first.xy(), last.xy()))
         })
     {
         return Ok(None);
@@ -1269,7 +1295,10 @@ fn cut_lines_overlay(inputs: &[&Shape], pool: &[Segment], op: OverlayOp) -> Resu
             if !kept {
                 continue;
             }
-            if points.last().is_none_or(|last| !same_point(last.xy(), start)) {
+            if points
+                .last()
+                .is_none_or(|last| !same_point(last.xy(), start))
+            {
                 points.push(start.point());
             }
             // Every cut is a vertex of the noded line, in the order the
@@ -1342,7 +1371,9 @@ fn line_only_parts(shape: &Shape) -> Vec<&CoordSeq> {
     match shape {
         Shape::LineString(line) => vec![line],
         Shape::MultiLineString(lines) => lines.iter().map(|line| &**line).collect(),
-        Shape::GeometryCollection(geometries) => geometries.iter().flat_map(line_only_parts).collect(),
+        Shape::GeometryCollection(geometries) => {
+            geometries.iter().flat_map(line_only_parts).collect()
+        },
         _ => Vec::new(),
     }
 }
@@ -1366,7 +1397,6 @@ pub(super) fn nondegenerate_line_only(shape: &Shape) -> bool {
         | Shape::Empty(..) => false,
     }
 }
-
 
 fn append_overlay_parts(
     shape: Shape,
@@ -1392,7 +1422,10 @@ fn append_overlay_parts(
     }
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn overlay_polygons(
     graph: &TopologyGraph,
     sources: &[TopologyGraph],
@@ -1814,10 +1847,7 @@ fn overlay_lines(
             },
         };
         if keep {
-            lines.push(CoordSeq::from(vec![
-                edge.segment.start,
-                edge.segment.end,
-            ]));
+            lines.push(CoordSeq::from(vec![edge.segment.start, edge.segment.end]));
         }
     }
     lines
