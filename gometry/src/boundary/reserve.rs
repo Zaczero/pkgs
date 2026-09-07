@@ -989,6 +989,7 @@ mod tests {
     use pyo3::exceptions::PyMemoryError;
 
     use super::*;
+    use crate::error::ErrorKind;
     use crate::test_support::fail_allocations_after;
 
     #[test]
@@ -1230,14 +1231,64 @@ mod tests {
     }
 
     #[test]
-    fn csr_builder_new_and_clear_survive_rejected_capacity() {
-        assert!(CsrBuilder::<u8>::with_capacity(usize::MAX, 0).is_err());
-        assert!(CsrBuilder::<u8>::with_capacity(0, usize::MAX).is_err());
-        let mut builder = CsrBuilder::<u8>::new();
-        builder.clear();
-        let (values, offsets) = builder.finish().expect("empty finish after rejection");
+    fn csr_builder_new_and_clear_succeed_under_allocation_rejection() {
+        let builder = fail_allocations_after(0, || {
+            let mut builder = CsrBuilder::<u8>::new();
+            builder.clear();
+            builder
+        });
+        let (values, offsets) = builder.finish().expect("finish after rejected new/clear");
         assert!(values.is_empty());
         assert_eq!(offsets, [0]);
+    }
+
+    #[test]
+    fn csr_builder_empty_finish_returns_allocation_error_when_zero_offset_fails() {
+        let error = fail_allocations_after(0, || CsrBuilder::<u8>::new().finish())
+            .expect_err("empty finish must allocate the zero offset");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn csr_builder_push_end_allocation_failure_drops_payload_and_allows_reuse() {
+        struct DropProbe {
+            id: u8,
+            dropped: Rc<RefCell<Vec<u8>>>,
+        }
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.dropped.borrow_mut().push(self.id);
+            }
+        }
+
+        let dropped = Rc::new(RefCell::new(Vec::with_capacity(3)));
+        let probe = |id| DropProbe {
+            id,
+            dropped: Rc::clone(&dropped),
+        };
+        let mut builder = CsrBuilder::<DropProbe>::new();
+        builder.push(probe(1)).expect("retained value");
+        builder.push(probe(2)).expect("retained value");
+        let error = fail_allocations_after(0, || builder.push_end(2))
+            .expect_err("offset growth must fail under rejection");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        let mut ids = dropped.borrow().clone();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2]);
+        drop(error);
+
+        builder.push(probe(3)).expect("reuse after offset fault");
+        builder.push_end(1).expect("reuse row end");
+        let (values, offsets) = builder.finish().expect("reused CSR");
+        assert_eq!(offsets, [0, 1]);
+        assert_eq!(values.iter().map(|value| value.id).collect::<Vec<_>>(), [3]);
     }
 
     #[test]
