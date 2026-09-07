@@ -1485,27 +1485,27 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     ///     counts vary, so the result is a Groups, not a rectangular
     ///     CellArray.
     #[getter]
-    pub(crate) fn neighbors(&self) -> PyResult<crate::py::vectors::Groups> {
+    pub(crate) fn neighbors(&self, py: Python<'_>) -> PyResult<crate::py::vectors::Groups> {
         let kind = self.kind();
-        let mut builder = crate::CsrBuilder::<u64>::new();
-        dispatch_cell_grid!(self, G, {
-            for row in 0..self.len() {
-                if self.is_row_missing(row) {
-                    builder.push_row(std::iter::empty::<u64>()).map_err(pyo3::PyErr::from)?;
-                    continue;
+        let cells = self.clone();
+        let (ids, offsets) = py.detach(move || {
+            dispatch_cell_grid!(&cells, G, {
+                let mut builder = crate::CsrBuilder::<u64>::new();
+                for row in 0..cells.len() {
+                    if cells.is_row_missing(row) {
+                        builder.push_row(std::iter::empty::<u64>())?;
+                        continue;
+                    }
+                    let cell = G::from_validated_id(cells.id_at(row));
+                    builder.push_row(
+                        GridCell::neighbors(cell)
+                            .into_iter()
+                            .map(GridCell::hash_key),
+                    )?;
                 }
-                let cell = G::from_validated_id(self.id_at(row));
-                builder
-                    .push_row(
-                         GridCell::neighbors(cell)
-                             .into_iter()
-                             .map(GridCell::hash_key),
-                    )
-                    .map_err(pyo3::PyErr::from)?;
-            }
-            Ok::<(), pyo3::PyErr>(())
+                builder.finish()
+            })
         })?;
-        let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         crate::py::vectors::Groups::from_cell_flat(kind, ids, offsets)
     }
 
@@ -1541,32 +1541,32 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let kind = self.kind();
         let cells = self.clone();
         let depth = dispatch_cell_grid!(self, G, {
-            if cells.logical_cells::<G>().next().is_some() {
-                let depth = depth.filter(|value| !value.is_none()).map(G::parse_depth).transpose()?;
-                if let Some(target) = depth
-                    && target < cells
-                        .logical_cells::<G>()
-                        .next()
-                        .expect("present cell was checked above")
-                        .depth()
-                {
-                    return Err(GeometryError::new_err(format!(
-                        "children {} must be >= cell {}",
-                        G::DEPTH_NAME,
-                        G::DEPTH_NAME
-                    )));
-                }
-                depth
-            } else {
-                None
+            match cells.logical_cells::<G>().next() {
+                Some(first) => {
+                    let depth = depth
+                        .filter(|value| !value.is_none())
+                        .map(G::parse_depth)
+                        .transpose()?;
+                    if let Some(target) = depth
+                        && target < first.depth()
+                    {
+                        return Err(GeometryError::new_err(format!(
+                            "children {} must be >= cell {}",
+                            G::DEPTH_NAME,
+                            G::DEPTH_NAME
+                        )));
+                    }
+                    depth
+                },
+                None => None,
             }
         });
         let (ids, offsets) = py.detach(move || {
-            let mut builder = crate::CsrBuilder::<u64>::new();
             dispatch_cell_grid!(&cells, G, {
+                let mut builder = crate::CsrBuilder::<u64>::new();
                 for row in 0..cells.len() {
                     if cells.is_row_missing(row) {
-                        builder.push_row(std::iter::empty::<u64>()).map_err(pyo3::PyErr::from)?;
+                        builder.push_row(std::iter::empty::<u64>())?;
                         continue;
                     }
                     let cell = G::from_validated_id(cells.id_at(row));
@@ -1576,18 +1576,16 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                             .filter(|target| *target <= G::MAX_DEPTH)
                     });
                     let Some(target) = target else {
-                        builder.push_row(std::iter::empty::<u64>()).map_err(pyo3::PyErr::from)?;
+                        builder.push_row(std::iter::empty::<u64>())?;
                         continue;
                     };
-                    builder
-                        .push_row(
-                            cell.children_to(target)?
-                                .into_iter()
-                                .map(GridCell::hash_key),
-                        )
-                        .map_err(pyo3::PyErr::from)?;
+                    builder.push_row(
+                        cell.children_to(target)?
+                            .into_iter()
+                            .map(GridCell::hash_key),
+                    )?;
                 }
-                builder.finish().map_err(PyErr::from)
+                builder.finish()
             })
         })?;
         crate::py::vectors::Groups::from_cell_flat(kind, ids, offsets)
@@ -1855,7 +1853,7 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::{GridKind, PyCellArray};
-    use crate::py::cells::FactorizationError;
+    use crate::py::cells::{FactorizationError, GeometryError};
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
@@ -1917,6 +1915,65 @@ mod tests {
             });
             assert!(error.is_instance_of::<PyMemoryError>(py));
             drop(error);
+        });
+    }
+
+    fn h3_id(lat: f64, lon: f64, resolution: u8) -> u64 {
+        u64::from(
+            h3o::LatLng::new(lat, lon)
+                .expect("finite latlng")
+                .to_cell(h3o::Resolution::try_from(resolution).expect("resolution")),
+        )
+    }
+
+    #[test]
+    fn children_allocation_error_after_depth_parse_is_memory_error_without_row_notes() {
+        Python::initialize();
+        Python::attach(|py| {
+            let cells = PyCellArray::from_ids(
+                GridKind::H3Cell,
+                vec![h3_id(37.7749, -122.4194, 7), h3_id(37.78, -122.41, 7)],
+            );
+            let error = fail_allocations_after(0, || match cells.children(py, None) {
+                Ok(_) => panic!("first CSR reserve must fail"),
+                Err(error) => error,
+            });
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+            assert!(!error.is_instance_of::<GeometryError>(py));
+            drop(error);
+        });
+    }
+
+    #[test]
+    fn empty_missing_and_max_depth_neighbors_children_succeed() {
+        Python::initialize();
+        Python::attach(|py| {
+            let empty = PyCellArray::from_ids(GridKind::H3Cell, Vec::new());
+            match empty.neighbors(py) {
+                Ok(groups) => drop(groups),
+                Err(error) => panic!("{error}"),
+            }
+            match empty.children(py, None) {
+                Ok(groups) => drop(groups),
+                Err(error) => panic!("{error}"),
+            }
+
+            let present = h3_id(37.7749, -122.4194, 7);
+            let missing = PyCellArray::from_ids_with_missing(
+                GridKind::H3Cell,
+                vec![present, 0],
+                vec![false, true],
+            );
+            match missing.neighbors(py) {
+                Ok(groups) => drop(groups),
+                Err(error) => panic!("{error}"),
+            }
+
+            let max = PyCellArray::from_ids(GridKind::H3Cell, vec![h3_id(37.7749, -122.4194, 15)]);
+            match max.children(py, None) {
+                Ok(groups) => drop(groups),
+                Err(error) => panic!("{error}"),
+            }
         });
     }
 }

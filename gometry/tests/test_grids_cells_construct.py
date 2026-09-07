@@ -334,6 +334,36 @@ def test_cell_array_neighbors_children_groups(cells, depth: int, child_n: int) -
     assert len(nb[0:1]) == 1
 
 
+def test_empty_cell_array_neighbors_children_are_empty_groups() -> None:
+    cells = gm.CellArray([], type=gm.H3Cell)
+    neighbors = cells.neighbors
+    children = cells.children()
+    assert isinstance(neighbors, gm.Groups) and len(neighbors) == 0
+    assert isinstance(children, gm.Groups) and len(children) == 0
+
+
+def test_max_depth_cell_array_children_are_empty_rows() -> None:
+    cell = gm.H3Cell(13.4, 52.5, resolution=15)
+    groups = gm.CellArray([cell]).children()
+    assert len(groups) == 1
+    assert len(groups[0]) == 0
+    assert len(cell.children()) == 0
+
+
+def test_cell_array_children_mixed_depth_matches_scalar_when_target_covers_all() -> None:
+    coarse = gm.H3Cell(13.4, 52.5, resolution=5)
+    fine = gm.H3Cell(13.4, 52.5, resolution=6)
+    cells = gm.CellArray([coarse, fine])
+    target = 7
+    groups = cells.children(target)
+    assert [len(row) for row in groups] == [
+        len(coarse.children(target)),
+        len(fine.children(target)),
+    ]
+    assert list(groups[0]) == list(coarse.children(target))
+    assert list(groups[1]) == list(fine.children(target))
+
+
 def test_h3_edge_vertex_arrays_do_not_expose_cell_hierarchy() -> None:
     """Edge/vertex arrays have no cell hierarchy, so those attributes do not exist."""
     cell = gm.H3Cell(13.4, 52.5, resolution=6)
