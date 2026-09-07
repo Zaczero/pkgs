@@ -320,25 +320,29 @@ pub(crate) fn coverage_factory_geometry(
     geometry: &PyGeometry,
     label: &str,
 ) -> PyResult<PyGeometry> {
-    let shape = lonlat_shape(geometry)?;
-    validate_lonlat_shape(&shape)?;
+    let source = lonlat_shape(geometry)?;
+    validate_lonlat_shape(&source)?;
     // This is the sole public grid-source normalization point.  Every grid
     // lane receives the same physical-pole spelling before it can derive a
     // working image, a rectangle certificate, or aggregate components.
-    let shape = normalize_grid_source(&shape);
-    match ScalarGeographicView::try_new(GeographicFrame::crs84(), &shape) {
-        Ok(_) => {},
-        Err(GeographicViewError::Resource) => {
-            return Err(crate::error::Error::from(crate::error::ResourceError::Allocation).into());
-        },
-        Err(GeographicViewError::Diagnostic(diagnostic)) => {
-            return Err(InvalidGeometryError::new_err(diagnostic.to_string()));
-        },
+    let normalized = normalize_grid_source(&source);
+    drop(source);
+    if let Err(error) = ScalarGeographicView::try_new(GeographicFrame::crs84(), &normalized) {
+        drop(normalized);
+        return Err(match error {
+            GeographicViewError::Resource => {
+                crate::error::Error::from(crate::error::ResourceError::Allocation).into()
+            },
+            GeographicViewError::Diagnostic(diagnostic) => {
+                InvalidGeometryError::new_err(diagnostic.to_string())
+            },
+        });
     }
-    if shape.is_empty() {
+    if normalized.is_empty() {
+        drop(normalized);
         return Err(empty_coverage_err(label));
     }
-    Ok(PyGeometry::wgs84(shape))
+    Ok(PyGeometry::wgs84(normalized))
 }
 
 /// Prepare the historical planar cover lanes with caller-owned WGS84

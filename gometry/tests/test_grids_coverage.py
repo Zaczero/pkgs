@@ -4,6 +4,15 @@ import gometry as gm
 import pytest
 
 
+def test_empty_source_cover_requires_non_empty_geometry() -> None:
+    empty = gm.from_wkt('POINT EMPTY', crs=4326)
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match='H3 coverage requires a non-empty geometry',
+    ):
+        gm.h3_cover(empty, resolution=5)
+
+
 def test_scalar_covers_return_cell_arrays() -> None:
     polygon = gm.box(-122.5, 37.7, -122.3, 37.85, crs=4326)
     cases = [
