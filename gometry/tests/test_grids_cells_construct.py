@@ -544,6 +544,12 @@ def test_masked_cell_array_row_preserving_operations(grid: GridCase) -> None:
         len(a.children()),
     ]
     assert values.token == [a.token, None, a.token]
+    codes, unique = values.factorize()
+    np.testing.assert_array_equal(codes, [0, -1, 0])
+    assert list(unique) == [a]
+    counted, counts = values.value_counts()
+    assert list(counted) == [a]
+    np.testing.assert_array_equal(counts, [2])
 
 
 def test_masked_cell_array_views_keep_mask_and_pickle_polarity() -> None:

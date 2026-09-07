@@ -12,7 +12,7 @@ use std::ptr;
 
 use pyo3::exceptions::{PyOSError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyCapsule, PyTuple};
+use pyo3::types::{PyAny, PyCapsule, PyString, PyTuple};
 
 use crate::py::arrow::NativeArrowAccumulator;
 use crate::py::arrow_c::{
@@ -255,29 +255,59 @@ unsafe fn stream_callback_error(
     status: i32,
     fallback: &str,
 ) -> PyErr {
+    // SAFETY: `ImportedStreamGuard` keeps the producer stream live and
+    // unmodified through this exception construction.
+    let detail =
+        unsafe { stream.as_mut() }.and_then(|stream| unsafe { stream_last_error_detail(stream) });
     if status == 12 {
-        return crate::py::errors::native_memory_error();
+        return native_stream_memory_error(py, detail.unwrap_or(fallback).as_bytes());
     }
-    // SAFETY: the stream guard keeps this producer live until the error is
-    // constructed; get_last_error is optional and checked.
-    let detail = unsafe { stream_last_error_detail(stream) }.unwrap_or_else(|| fallback.to_owned());
+    let detail = detail.map_or_else(|| fallback.to_owned(), str::to_owned);
     PyErr::from_type(py.get_type::<PyOSError>(), (status, detail))
 }
 
-unsafe fn stream_last_error_detail(stream: *mut ArrowArrayStream) -> Option<String> {
-    // SAFETY: stream live; get_last_error optional.
+/// Materialize a stream callback's borrowed diagnostic as a native
+/// `MemoryError` while retaining the provider text when Python can allocate a
+/// string for it. A Python-side materialization failure deliberately falls
+/// back to the compact native error rather than returning the secondary
+/// exception or allocating a Rust error message.
+fn native_stream_memory_error(py: Python<'_>, detail: &[u8]) -> PyErr {
+    let message = match PyString::from_bytes(py, detail) {
+        Ok(message) => message,
+        Err(error) => {
+            drop(error);
+            return crate::py::errors::native_memory_error();
+        },
+    };
+    // SAFETY: `message` is a live Python string and the public exception type
+    // borrows it through the non-stealing setter until `PyErr::fetch` adopts
+    // the pending exception.
     unsafe {
-        if let Some(get_last_error) = (*stream).get_last_error {
-            let ptr = get_last_error(stream);
-            if !ptr.is_null()
-                && let Ok(s) = std::ffi::CStr::from_ptr(ptr).to_str()
-                && !s.is_empty()
-            {
-                return Some(s.to_owned());
-            }
-        }
+        ffi::PyErr_SetObject(ffi::PyExc_MemoryError, message.as_ptr());
     }
-    None
+    debug_assert!(PyErr::occurred(py));
+    PyErr::fetch(py)
+}
+
+/// Borrow the provider's last-error string for the duration of the stream
+/// guard. The caller must keep the stream live and unmodified while using the
+/// returned reference.
+unsafe fn stream_last_error_detail<'a>(stream: &'a mut ArrowArrayStream) -> Option<&'a str> {
+    // SAFETY: stream live; get_last_error optional. The exclusive borrow keeps
+    // the provider stream unmodified while its returned NUL-terminated text is
+    // consumed.
+    unsafe {
+        let get_last_error = (*stream).get_last_error?;
+        let ptr = get_last_error(std::ptr::from_mut(stream));
+        if ptr.is_null() {
+            return None;
+        }
+        let bytes = std::ffi::CStr::from_ptr(ptr).to_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+        std::str::from_utf8(bytes).ok()
+    }
 }
 
 pub(crate) fn empty_schema() -> ArrowSchema {
@@ -291,5 +321,23 @@ pub(crate) fn empty_schema() -> ArrowSchema {
         dictionary: ptr::null_mut(),
         release: None,
         private_data: ptr::null_mut(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::exceptions::PyMemoryError;
+    use pyo3::prelude::*;
+
+    use super::native_stream_memory_error;
+
+    #[test]
+    fn failed_stream_detail_materialization_keeps_memory_error_identity() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = native_stream_memory_error(py, &[0xFF]);
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+            drop(error);
+        });
     }
 }

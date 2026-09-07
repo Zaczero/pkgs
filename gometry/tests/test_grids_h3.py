@@ -569,6 +569,9 @@ def test_h3_directed_edges() -> None:
     counted, counts = gm.H3EdgeArray([edges[0], edges[1], edges[0]]).value_counts()
     assert list(counted) == [edges[0], edges[1]]
     np.testing.assert_array_equal(counts, [2, 1])
+    codes, unique = edges.factorize()
+    np.testing.assert_array_equal(codes, np.arange(len(edges)))
+    assert list(unique) == list(edges)
     assert pickle.loads(pickle.dumps(edges)) == edges
     assert copy.copy(edges) is edges
     assert pickle.loads(pickle.dumps(edge)) == edge

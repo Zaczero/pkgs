@@ -395,11 +395,13 @@ impl PyCellArray {
     }
 
     /// Unique ids + per-unique counts (value_counts pass).
-    fn value_count_entries(&self) -> PyResult<(Vec<u64>, Vec<i64>)> {
+    fn value_count_entries(
+        &self,
+        overflowed: &mut bool,
+    ) -> crate::error::Result<(Vec<u64>, Vec<i64>)> {
         let mut slot_of: HashMap<u64, usize> = HashMap::new();
         if slot_of.try_reserve(self.len()).is_err() {
-            drop(slot_of);
-            return Err(crate::py::errors::native_memory_error());
+            return Err(crate::error::ResourceError::Allocation.into());
         }
         let mut uniques = Vec::new();
         let mut counts = Vec::new();
@@ -413,30 +415,35 @@ impl PyCellArray {
                 Entry::Vacant(entry) => {
                     let slot = uniques.len();
                     entry.insert(slot);
-                    crate::try_push(&mut uniques, id)?;
-                    crate::try_push(&mut counts, 0_i64)?;
+                    crate::try_push_vec(&mut uniques, id)?;
+                    crate::try_push_vec(&mut counts, 0_i64)?;
                     slot
                 },
             };
-            counts[slot] = counts[slot]
-                .checked_add(1)
-                .ok_or_else(|| PyOverflowError::new_err("cell value count overflows int64"))?;
+            let Some(count) = counts[slot].checked_add(1) else {
+                *overflowed = true;
+                break;
+            };
+            counts[slot] = count;
         }
         Ok((uniques, counts))
     }
 
     /// Unique ids + dense codes (factorize pass).
-    fn factorize_entries(&self) -> PyResult<(Vec<u64>, Vec<i64>)> {
+    fn factorize_entries(
+        &self,
+        overflowed: &mut bool,
+    ) -> crate::error::Result<(Vec<u64>, Vec<i64>)> {
         let mut slot_of: HashMap<u64, usize> = HashMap::new();
         if slot_of.try_reserve(self.len()).is_err() {
-            drop(slot_of);
-            return Err(crate::py::errors::native_memory_error());
+            return Err(crate::error::ResourceError::Allocation.into());
         }
         let mut uniques = Vec::new();
-        let mut codes = crate::try_vec_with_capacity(self.len())?;
+        let mut codes = Vec::new();
+        crate::try_reserve_vec(&mut codes, self.len())?;
         for row in 0..self.len() {
             if self.is_row_missing(row) {
-                crate::try_push(&mut codes, -1)?;
+                crate::try_push_vec(&mut codes, -1)?;
                 continue;
             }
             let id = self.id_at(row);
@@ -445,15 +452,18 @@ impl PyCellArray {
                 Entry::Vacant(entry) => {
                     let slot = uniques.len();
                     entry.insert(slot);
-                    crate::try_push(&mut uniques, id)?;
+                    crate::try_push_vec(&mut uniques, id)?;
                     slot
                 },
             };
-            crate::try_push(
-                &mut codes,
-                i64::try_from(slot)
-                    .map_err(|_| PyOverflowError::new_err("cell factor code overflows int64"))?,
-            )?;
+            let code = match i64::try_from(slot) {
+                Ok(code) => code,
+                Err(_) => {
+                    *overflowed = true;
+                    break;
+                },
+            };
+            crate::try_push_vec(&mut codes, code)?;
         }
         Ok((uniques, codes))
     }
@@ -1006,27 +1016,55 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
     /// >>> counts.tolist()
     /// [2]
 fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let (uniques, counts) = self.value_count_entries()?;
-        let mut order = crate::try_vec_with_capacity(uniques.len())?;
-        for slot in 0..uniques.len() {
-            crate::try_push(&mut order, slot)?;
+        let mut overflowed = false;
+        let result = (|| -> crate::error::Result<(Vec<u64>, Vec<i64>)> {
+            let (uniques, counts) = self.value_count_entries(&mut overflowed)?;
+            if overflowed {
+                return Ok((uniques, counts));
+            }
+            let mut order = Vec::new();
+            crate::try_reserve_vec(&mut order, uniques.len())?;
+            for slot in 0..uniques.len() {
+                crate::try_push_vec(&mut order, slot)?;
+            }
+            order.sort_by(|&left, &right| {
+                counts[right]
+                    .cmp(&counts[left])
+                    .then_with(|| left.cmp(&right))
+            });
+            let mut sorted_uniques = Vec::new();
+            let mut sorted_counts = Vec::new();
+            crate::try_reserve_pair(&mut sorted_uniques, &mut sorted_counts, order.len())?;
+            for &slot in &order {
+                crate::try_push_pair(
+                    &mut sorted_uniques,
+                    &mut sorted_counts,
+                    uniques[slot],
+                    counts[slot],
+                )?;
+            }
+            Ok((sorted_uniques, sorted_counts))
+        })();
+        let (sorted_uniques, sorted_counts) = result.map_err(PyErr::from)?;
+        if overflowed {
+            drop(sorted_uniques);
+            drop(sorted_counts);
+            return Err(PyOverflowError::new_err("cell value count overflows int64"));
         }
-        order.sort_by(|&left, &right| {
-            counts[right]
-                .cmp(&counts[left])
-                .then_with(|| left.cmp(&right))
-        });
-        let mut sorted_uniques = crate::try_vec_with_capacity(order.len())?;
-        let mut sorted_counts = crate::try_vec_with_capacity(order.len())?;
-        for &slot in &order {
-            crate::try_push(&mut sorted_uniques, uniques[slot])?;
-            crate::try_push(&mut sorted_counts, counts[slot])?;
-        }
-        let cells = Self::from_ids(self.kind(), sorted_uniques)
-            .into_pyobject(py)?
-            .into_any()
-            .unbind();
-        let counts = crate::py::numpy::int64_array(py, sorted_counts)?;
+        let cells = match Self::from_ids(self.kind(), sorted_uniques).into_pyobject(py) {
+            Ok(cells) => cells.into_any().unbind(),
+            Err(error) => {
+                drop(sorted_counts);
+                return Err(error);
+            },
+        };
+        let counts = match crate::py::numpy::int64_array(py, sorted_counts) {
+            Ok(counts) => counts,
+            Err(error) => {
+                drop(cells);
+                return Err(error);
+            },
+        };
         Ok(PyTuple::new(py, [cells, counts])?.into_any().unbind())
     }
 
@@ -1051,12 +1089,29 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     /// >>> codes.tolist()
     /// [0, 1]
 fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let (uniques, codes) = self.factorize_entries()?;
-        let codes = crate::py::numpy::int64_array(py, codes)?;
-        let cells = Self::from_ids(self.kind(), uniques)
-            .into_pyobject(py)?
-            .into_any()
-            .unbind();
+        let mut overflowed = false;
+        let (uniques, codes) = self
+            .factorize_entries(&mut overflowed)
+            .map_err(PyErr::from)?;
+        if overflowed {
+            drop(uniques);
+            drop(codes);
+            return Err(PyOverflowError::new_err("cell factor code overflows int64"));
+        }
+        let codes = match crate::py::numpy::int64_array(py, codes) {
+            Ok(codes) => codes,
+            Err(error) => {
+                drop(uniques);
+                return Err(error);
+            },
+        };
+        let cells = match Self::from_ids(self.kind(), uniques).into_pyobject(py) {
+            Ok(cells) => cells.into_any().unbind(),
+            Err(error) => {
+                drop(codes);
+                return Err(error);
+            },
+        };
         Ok(PyTuple::new(py, [codes, cells])?.into_any().unbind())
     }
 
@@ -1797,3 +1852,78 @@ pub(crate) fn _unpickle_cell_array(
     })
 }
 use pyo3::IntoPyObjectExt as _;
+
+#[cfg(test)]
+mod tests {
+    use pyo3::exceptions::PyMemoryError;
+    use pyo3::prelude::*;
+
+    use super::{GridKind, PyCellArray};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    #[test]
+    fn value_count_entries_returns_native_error_for_rejected_output_allocation() {
+        Python::initialize();
+        Python::attach(|py| {
+            let cells = PyCellArray::from_ids(GridKind::H3Cell, vec![1, 2, 3]);
+            let mut warm_overflowed = false;
+            match cells.value_count_entries(&mut warm_overflowed) {
+                Ok(_) => {},
+                Err(error) => panic!("warm value-count pass failed: {error}"),
+            }
+            let ((), allocations) = allocation_count(|| {
+                let mut overflowed = false;
+                match cells.value_count_entries(&mut overflowed) {
+                    Ok(_) => {},
+                    Err(error) => panic!("counting value-count pass failed: {error}"),
+                }
+            });
+            assert!(allocations > 0);
+
+            let error = fail_allocations_after(allocations - 1, || {
+                let mut overflowed = false;
+                let error = match cells.value_count_entries(&mut overflowed) {
+                    Ok(_) => panic!("the final value-count output allocation must fail"),
+                    Err(error) => error,
+                };
+                let error: PyErr = error.into();
+                error
+            });
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+            drop(error);
+        });
+    }
+
+    #[test]
+    fn factorize_entries_returns_native_error_for_rejected_output_allocation() {
+        Python::initialize();
+        Python::attach(|py| {
+            let cells = PyCellArray::from_ids(GridKind::H3Cell, vec![1, 2, 3]);
+            let mut warm_overflowed = false;
+            match cells.factorize_entries(&mut warm_overflowed) {
+                Ok(_) => {},
+                Err(error) => panic!("warm factorize pass failed: {error}"),
+            }
+            let ((), allocations) = allocation_count(|| {
+                let mut overflowed = false;
+                match cells.factorize_entries(&mut overflowed) {
+                    Ok(_) => {},
+                    Err(error) => panic!("counting factorize pass failed: {error}"),
+                }
+            });
+            assert!(allocations > 0);
+
+            let error = fail_allocations_after(allocations - 1, || {
+                let mut overflowed = false;
+                let error = match cells.factorize_entries(&mut overflowed) {
+                    Ok(_) => panic!("the final factorize output allocation must fail"),
+                    Err(error) => error,
+                };
+                let error: PyErr = error.into();
+                error
+            });
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+            drop(error);
+        });
+    }
+}
