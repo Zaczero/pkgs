@@ -210,7 +210,7 @@ fn interpolate_mixed_row_groups(
                     .with_row(logical, |plan| {
                         let line = rows.prepared(row);
                         line_interpolate_points_shape(
-                            &model,
+                            model,
                             &line,
                             &rows.frame_cache(logical),
                             plan,
