@@ -6,7 +6,6 @@ use crate::array::PackedStorage;
 use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyTypeError;
 
-use crate::geometry::LineSeq;
 use crate::py::cells::{
     Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult, Python,
     Shape, lonlat_shape,
@@ -466,32 +465,7 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
             }
         }
     }
-    if outline.is_empty() {
-        return Ok(None);
-    }
-    let polygons = crate::try_collect_results(
-        Shape::build_area_all(
-            &[&Shape::multi_line_string(
-                crate::geometry::CoordinateAxes::XY,
-                crate::try_collect_results(
-                    outline
-                        .into_iter()
-                        .map(|line| Ok::<_, PyErr>(LineSeq::from_proven(line))),
-                )?,
-            )],
-            true,
-        )?
-        .into_iter()
-        .filter_map(|shape| match shape {
-            Shape::Polygon(polygon) => Some(Ok(polygon)),
-            _ => None,
-        }),
-    )?;
-    if polygons.is_empty() {
-        return Ok(None);
-    }
-    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
-    Ok(Some(PyGeometry::typed_wgs84(shape)))
+    super::coverage_ops::polygonize_outline(outline)
 }
 
 /// Dissolve an arbitrary slice of rect-grid cells (geohash / tiles) into one

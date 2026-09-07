@@ -171,7 +171,7 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
     Ok(PyGeometry::typed_wgs84(shape))
 }
 
-fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
+pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
     if outline.is_empty() {
         return Ok(None);
     }
