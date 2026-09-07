@@ -16,33 +16,6 @@ use crate::py::index::{
 };
 use crate::{CsrBuilder, try_push_vec};
 
-fn cartesian_keep(
-    spec: &PredicateSpec,
-    query: &PreparedPlan,
-    query_cache: &crate::geometry::FrameDependentCaches,
-    query_operand: GateOperand<'_>,
-    candidate_row: ShapeRow<'_>,
-    candidate: &PreparedPlan,
-    candidate_cache: &crate::geometry::FrameDependentCaches,
-) -> PyResult<bool> {
-    if let Some(verdict) = spec.pre_topology(
-        query_operand,
-        GateOperand::cartesian(candidate_row, None),
-    ) {
-        return Ok(verdict);
-    }
-    Ok(topology_scalar_pair(
-        spec,
-        PreparedTopologyPair::try_for_domain(
-            query,
-            query_cache,
-            candidate,
-            candidate_cache,
-            TopologyDomain::Cartesian,
-        )?,
-    ))
-}
-
 fn geographic_keep(
     spec: &PredicateSpec,
     query: crate::geometry::GeographicPrepared<'_>,
@@ -209,15 +182,13 @@ impl PySpatialIndex {
                                 return Ok(verdict);
                             }
                             let data = products.prepared(idx);
-                            cartesian_keep(
+                            Ok(topology_scalar_pair(
                                 &spec,
-                                &query,
-                                &query_cache,
-                                GateOperand::cartesian(products.row(i), None),
-                                products.row(idx),
-                                &data,
-                                &products.frame_cache(idx),
-                            )
+                                PreparedTopologyPair::Cartesian {
+                                    left: &query,
+                                    right: &data,
+                                },
+                            ))
                         },
                         TopologyDomain::Geographic(_) => {
                             let data = products.prepared(idx);
@@ -1034,18 +1005,13 @@ impl PySpatialIndex {
                             return Ok(verdict);
                         }
                         let data = products.prepared(idx);
-                        cartesian_keep(
+                        Ok(topology_scalar_pair(
                             &spec,
-                            &query_plan,
-                            &query_cache,
-                            GateOperand::cartesian(
-                                ShapeRow::Shape(query_plan.shape()),
-                                query_plan.bounds(),
-                            ),
-                            products.row(idx),
-                            &data,
-                            &products.frame_cache(idx),
-                        )
+                            PreparedTopologyPair::Cartesian {
+                                left: &query_plan,
+                                right: &data,
+                            },
+                        ))
                     },
                     TopologyDomain::Geographic(_) => {
                         let data = products.prepared(idx);
@@ -1181,15 +1147,13 @@ impl PySpatialIndex {
                     return Ok(verdict);
                 }
                 let data = products.prepared(idx);
-                cartesian_keep(
+                Ok(topology_scalar_pair(
                     &spec,
-                    shape,
-                    query_cache,
-                    GateOperand::cartesian(ShapeRow::Shape(shape.shape()), Some(query_bounds)),
-                    products.row(idx),
-                    &data,
-                    &products.frame_cache(idx),
-                )
+                    PreparedTopologyPair::Cartesian {
+                        left: shape,
+                        right: &data,
+                    },
+                ))
             },
             TopologyDomain::Geographic(_) => {
                 let data = products.prepared(idx);
@@ -1372,18 +1336,13 @@ impl PySpatialIndex {
                                 return Ok(verdict);
                             }
                             let data = index_products.prepared(idx);
-                            cartesian_keep(
+                            Ok(topology_scalar_pair(
                                 spec,
-                                &query,
-                                &query_cache,
-                                GateOperand::cartesian(
-                                    ShapeRow::Shape(query.shape()),
-                                    query.bounds(),
-                                ),
-                                index_products.row(idx),
-                                &data,
-                                &index_products.frame_cache(idx),
-                            )
+                                PreparedTopologyPair::Cartesian {
+                                    left: &query,
+                                    right: &data,
+                                },
+                            ))
                         },
                         TopologyDomain::Geographic(_) => {
                             let data = index_products.prepared(idx);
