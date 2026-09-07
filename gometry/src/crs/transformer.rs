@@ -615,6 +615,7 @@ mod tests {
 
     #[test]
     fn empty_bulk_bounds_do_not_acquire_proj_pipeline() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::crs::clear_cache();
         let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:3857", TransformOptions {
             force_over: true,
