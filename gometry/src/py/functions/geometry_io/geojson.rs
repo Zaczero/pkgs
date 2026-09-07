@@ -824,7 +824,10 @@ fn python_feature_row(
         .get_item(pyo3::intern!(py, "crs"))?
         .map(|legacy| py_to_json_value(&legacy))
         .transpose()?;
-    let mut nested_legacy_crs = Vec::new();
+    let mut all_legacy_crs = Vec::new();
+    if let Some(legacy) = legacy_crs {
+        crate::try_push(&mut all_legacy_crs, legacy)?;
+    }
     let geometry = if geometry.is_none() {
         FeatureGeometryInput::Null
     } else {
@@ -832,14 +835,10 @@ fn python_feature_row(
         let mut nested = Vec::new();
         io::collect_geojson_legacy_crs(&value, &mut nested);
         for legacy in nested {
-            crate::try_push(&mut nested_legacy_crs, legacy.clone())?;
+            crate::try_push(&mut all_legacy_crs, legacy.clone())?;
         }
         FeatureGeometryInput::Json(value)
     };
-    let mut all_legacy_crs = nested_legacy_crs;
-    if let Some(legacy) = legacy_crs {
-        crate::try_push(&mut all_legacy_crs, legacy)?;
-    }
     Ok((
         FeatureRow {
             geometry,

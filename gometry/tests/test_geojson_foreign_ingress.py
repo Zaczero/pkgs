@@ -68,6 +68,7 @@ def test_d23_geometry_array_mapping_with_crs_kwarg() -> None:
 # ---------------------------------------------------------------------------
 
 _LEGACY_3857 = {'type': 'name', 'properties': {'name': 'EPSG:3857'}}
+_LEGACY_4258 = {'type': 'name', 'properties': {'name': 'EPSG:4258'}}
 _LEGACY_4326 = {'type': 'name', 'properties': {'name': 'EPSG:4326'}}
 _LEGACY_CRS84 = {'type': 'name', 'properties': {'name': 'OGC:CRS84'}}
 
@@ -139,6 +140,38 @@ def test_d21_from_geojson_nested_crs_all_frontends() -> None:
         ) as exc_info:
             gm.from_geojson(data, crs=4326)
         assert exc_info.value.format == 'geojson'
+
+
+@pytest.mark.parametrize(
+    'carrier',
+    [
+        pytest.param('mapping', id='mapping'),
+        pytest.param('text', id='text'),
+        pytest.param('bytes', id='bytes'),
+    ],
+)
+def test_from_features_reports_envelope_crs_conflict_first(carrier: str) -> None:
+    """Feature envelope CRS wins diagnostic precedence for every carrier."""
+    feature = {
+        'type': 'Feature',
+        'crs': _LEGACY_3857,
+        'geometry': {
+            'type': 'Point',
+            'coordinates': [1, 2],
+            'crs': _LEGACY_4258,
+        },
+        'properties': {},
+    }
+    encoded = json.dumps(feature)
+    data = {
+        'mapping': feature,
+        'text': encoded,
+        'bytes': encoded.encode(),
+    }[carrier]
+
+    with pytest.raises(gm.ParseError, match=r'\(EPSG:3857\)') as exc_info:
+        gm.from_features(data, crs=4326)
+    assert exc_info.value.format == 'geojson'
 
 
 def test_d21_from_geojson_matching_nested_crs_accepted() -> None:
