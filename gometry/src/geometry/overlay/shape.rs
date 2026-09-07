@@ -6,7 +6,7 @@ use ahash::{HashMapExt as _, HashSetExt as _};
 
 use crate::error::Result;
 use crate::geometry::overlay::{
-    OverlayOp, Strictness, empty_overlay_shape, merge_chains, overlay_all,
+    OverlayOp, Strictness, merge_chains, overlay_all,
 };
 use crate::geometry::{
     CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, PointKey,
@@ -34,24 +34,17 @@ impl Shape {
         self.overlay(other, OverlayOp::SymmetricDifference, strictness)
     }
 
-    /// Dispatch an overlay op, then normalize an empty result to the op's
-    /// dimension-typed empty (see [`empty_overlay_shape`]). A vanishing
-    /// intersection/difference/symdiff/union participates in gometry's
-    /// typed-empty model — `POLYGON EMPTY` for a polygon−polygon difference
-    /// that cancels, not an untyped `GEOMETRYCOLLECTION EMPTY` stray among
-    /// typed siblings in an array result.
+    /// Dispatch an overlay op. `overlay_all` owns the operation's
+    /// dimension-typed empty normalization for binary and n-ary inputs, so a
+    /// vanishing result remains `POLYGON EMPTY` for a canceled polygon
+    /// difference rather than an untyped collection among array siblings.
     pub(crate) fn overlay(
         &self,
         other: &Self,
         op: OverlayOp,
         strictness: Strictness,
     ) -> Result<Self> {
-        let result = self.overlay_inner(other, op, strictness)?;
-        Ok(if result.is_empty() {
-            empty_overlay_shape(self, other, op)
-        } else {
-            result
-        })
+        self.overlay_inner(other, op, strictness)
     }
 
     /// Mixed-dimension set overlay over X/Y, restoring Z/M afterwards via the

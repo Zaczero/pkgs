@@ -1,8 +1,5 @@
 use ahash::HashSetExt as _;
 
-use crate::geometry::overlay::{
-    OverlayOp, empty_shape_for_dimension_with_axes, overlay_declared_axes,
-};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashMapExt as _,
     HashSet, LineSeq, Point, PointKey, Polygon, Ring, Segment, Shape, point_on_segment,
@@ -64,24 +61,6 @@ pub(crate) fn drop_collinear_vertices(mut vertices: Vec<Point>) -> Vec<Point> {
 /// or on a polygon is not an independent component). Each surviving bucket
 /// narrows to a leaf or multi-geometry; mixed dimensions yield a
 /// `GeometryCollection` ordered by ascending dimension (point, line, polygon).
-/// Empty output is an empty `GeometryCollection`.
-/// The dimension-typed empty for an overlay op whose result came out empty.
-/// Typed to the MAXIMUM dimension the op's result could carry — intersection
-/// `min(da, db)`, difference `da` (the minuend), union/symdiff `max(da, db)` —
-/// so an empty overlay is `POINT`/`LINESTRING`/`POLYGON EMPTY` consistent with
-/// gometry's typed-empty model and Shapely, instead of an untyped collection.
-/// The empty keeps the operation's declared axes even though it has no
-/// coordinates from which to resolve them.
-pub(crate) fn empty_overlay_shape(a: &Shape, b: &Shape, op: OverlayOp) -> Shape {
-    let (da, db) = (a.topological_dimension(), b.topological_dimension());
-    let dimension = match op {
-        OverlayOp::Intersection => da.min(db),
-        OverlayOp::Difference => da,
-        OverlayOp::Union | OverlayOp::SymmetricDifference => da.max(db),
-    };
-    empty_shape_for_dimension_with_axes(dimension, overlay_declared_axes(&[a, b], op))
-}
-
 /// Dissolve polyline `edges` into maximal connected chains: concatenate
 /// through every shared endpoint of degree exactly 2 and split at chain termini
 /// and degree-`>= 3` junctions, preserving each edge's interior vertices.

@@ -1136,6 +1136,20 @@ def test_pooled_reductions_skip_missing_iterable_rows() -> None:
     ).all()
 
 
+@pytest.mark.parametrize(
+    ('operation_name', 'message'),
+    [
+        ('union_all', 'union_all requires at least one geometry'),
+        ('intersection_all', 'intersection_all requires at least one geometry'),
+        ('symmetric_difference_all', 'symmetric_difference_all requires at least one geometry'),
+    ],
+)
+def test_pooled_reductions_reject_all_missing_rows(operation_name: str, message: str) -> None:
+    operation = getattr(gm, operation_name)
+    with pytest.raises(gm.InvalidGeometryError, match=message):
+        operation([None, None])
+
+
 def test_repeated_ops_on_a_fancy_selection_stay_consistent() -> None:
     # Packed operations materialize only operation-scoped columns: repeated
     # reductions retain no selected coordinate payload on the source.

@@ -355,15 +355,32 @@ def test_empty_overlay_is_dimension_typed() -> None:
     poly_in = gm.from_wkt('POLYGON((1 1,3 1,3 3,1 3,1 1))')
     line = gm.from_wkt('LINESTRING(5 5,6 6)')
     point = gm.from_wkt('POINT(9 9)')
-    assert gm.intersection(poly, poly_far).to_wkt() == 'POLYGON EMPTY'
-    assert gm.intersection(line, poly).to_wkt() == 'LINESTRING EMPTY'
-    assert gm.intersection(point, poly).to_wkt() == 'POINT EMPTY'
-    assert gm.difference(poly_in, poly).to_wkt() == 'POLYGON EMPTY'
-    assert gm.symmetric_difference(poly, poly).to_wkt() == 'POLYGON EMPTY'
-    assert gm.symmetric_difference(line, line).to_wkt() == 'LINESTRING EMPTY'
-    assert gm.union(gm.Polygon(), gm.Polygon()).to_wkt() == 'POLYGON EMPTY'
+
+    def assert_empty(value: gm.Geometry, geometry_type: str, axes: str = 'XY') -> None:
+        assert value.is_empty
+        assert value.geometry_type == geometry_type
+        assert value.coordinate_axes == axes
+
+    assert_empty(gm.intersection(poly, poly_far), 'Polygon')
+    assert_empty(gm.intersection(line, poly), 'LineString')
+    assert_empty(gm.intersection(point, poly), 'Point')
+    assert_empty(gm.difference(poly_in, poly), 'Polygon')
+    assert_empty(gm.symmetric_difference(poly, poly), 'Polygon')
+    assert_empty(gm.symmetric_difference(line, line), 'LineString')
+    assert_empty(gm.union(gm.Polygon(), gm.Polygon()), 'Polygon')
     left = gm.GeometryArray([poly, poly])
     right = gm.GeometryArray([poly_in, poly_far])
     out = gm.intersection(left, right)
     assert [out[i].geometry_type for i in range(2)] == ['Polygon', 'Polygon']
-    assert out[1].to_wkt() == 'POLYGON EMPTY'
+    assert out[1].is_empty and out[1].coordinate_axes == 'XY'
+
+    z_empty = gm.from_wkt('POLYGON Z EMPTY')
+    m_empty = gm.from_wkt('POLYGON M EMPTY')
+    assert_empty(gm.intersection(z_empty, m_empty), 'Polygon', 'XYZM')
+    assert_empty(gm.union(z_empty, m_empty), 'Polygon', 'XYZM')
+    assert_empty(gm.symmetric_difference(z_empty, m_empty), 'Polygon', 'XYZM')
+    assert_empty(gm.difference(z_empty, m_empty), 'Polygon', 'XYZ')
+
+    point_z = gm.from_wkt('POINT Z EMPTY')
+    assert_empty(gm.intersection(point_z, m_empty), 'Point', 'XYZM')
+    assert_empty(gm.union(point_z, m_empty), 'Polygon', 'XYZM')
