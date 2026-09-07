@@ -119,9 +119,10 @@ enum ScanFlow {
 ///
 /// Both are linear in the crossing count, but this path walks two monotone
 /// chains, a larger constant than the sweep's banded `n log n`. The advantage
-/// therefore narrows with size and reverses. Measured on two overlapping
-/// convex rings (union, one host): 4.3x faster at 16 total vertices, 1.7x at
-/// 256, 1.2x at 600, level near this bound, and 1.2x slower at 2400.
+/// therefore narrows with size and reverses. With materialized index chains,
+/// measured on two overlapping convex rings (union, one host): 4.3x faster at
+/// 16 total vertices, 1.7x at 256, 1.2x at 600, level near this bound, and
+/// 1.2x slower at 2400.
 const CONVEX_CONTACT_MAX_VERTICES: usize = 1000;
 
 /// Two staged operand shells that the convex walk can address: one left and
@@ -191,11 +192,7 @@ impl ChainRange {
 }
 
 const fn ccw_len(from: usize, to: usize, n: usize) -> usize {
-    if to >= from {
-        to - from
-    } else {
-        n - from + to
-    }
+    if to >= from { to - from } else { n - from + to }
 }
 
 /// Upper and lower x-monotone edge-index chains for a CCW convex shell.
@@ -262,13 +259,7 @@ fn scan_chains(
     let mut ia = 0_usize;
     let mut ib = 0_usize;
     let mut crossed = false;
-    while ia < chain_a.len && ib < chain_b.len {
-        let Some(index_a) = chain_a.get(ia) else {
-            break;
-        };
-        let Some(index_b) = chain_b.get(ib) else {
-            break;
-        };
+    while let (Some(index_a), Some(index_b)) = (chain_a.get(ia), chain_b.get(ib)) {
         let seg_a = pool.segments[index_a];
         let seg_b = pool.segments[index_b];
         let (a_minx, a_maxx) = segment_x_extent(seg_a);
@@ -491,7 +482,10 @@ mod tests {
         );
         let pool = build_operand_pool(std::slice::from_ref(&left), std::slice::from_ref(&right));
         let scan = try_collect(&pool).expect("non-strict convex overlay may still walk");
-        assert!(scan.has_cross, "overlapping collinear-bottom rectangles cross");
+        assert!(
+            scan.has_cross,
+            "overlapping collinear-bottom rectangles cross"
+        );
     }
 
     /// Old `chain_edge_indices` walk: CCW `from` to `to` exclusive, then
@@ -537,7 +531,11 @@ mod tests {
             reverse,
         };
         let oracle = iterative_ccw_then_maybe_reverse(n, from, to, reverse, base);
-        assert_eq!(range.len, oracle.len(), "n={n} from={from} to={to} reverse={reverse} base={base}");
+        assert_eq!(
+            range.len,
+            oracle.len(),
+            "n={n} from={from} to={to} reverse={reverse} base={base}"
+        );
         assert_eq!(
             range_sequence(range),
             oracle,
@@ -590,7 +588,13 @@ mod tests {
             let [upper, lower] = ring_chains(ring);
             assert_eq!(
                 range_sequence(upper),
-                iterative_ccw_then_maybe_reverse(n, leftmost, rightmost, false, ring.segments.start)
+                iterative_ccw_then_maybe_reverse(
+                    n,
+                    leftmost,
+                    rightmost,
+                    false,
+                    ring.segments.start
+                )
             );
             assert_eq!(
                 range_sequence(lower),
@@ -609,7 +613,10 @@ mod tests {
             ]),
             Vec::new(),
         );
-        let tri_pool = build_operand_pool(std::slice::from_ref(&triangle), std::slice::from_ref(&right));
+        let tri_pool = build_operand_pool(
+            std::slice::from_ref(&triangle),
+            std::slice::from_ref(&right),
+        );
         let [upper, lower] = ring_chains(&tri_pool.rings[0]);
         assert_ne!(upper.len, lower.len, "triangle chains are asymmetric");
         let (_, allocations) = crate::test_support::allocation_count(|| {
