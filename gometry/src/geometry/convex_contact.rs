@@ -42,7 +42,8 @@ pub(super) fn try_classify(left: &Polygon, right: &Polygon) -> Option<ConvexRela
     }
 
     let pool = build_operand_pool(std::slice::from_ref(left), std::slice::from_ref(right));
-    if scan_pool(&pool, |_, _| {})? {
+    let (left_ring, right_ring) = staged_shell_pair(&pool)?;
+    if scan_rings(&pool, left_ring, right_ring, |_, _| {})? {
         return Some(ConvexRelation::ProperCrossing);
     }
 
@@ -85,11 +86,6 @@ pub(super) fn try_collect(pool: &OperandPool) -> Option<ConvexBoundaryScan> {
     Some(ConvexBoundaryScan { cuts, has_cross })
 }
 
-fn scan_pool(pool: &OperandPool, mut on_cross: impl FnMut(usize, XY)) -> Option<bool> {
-    let (left, right) = eligible_rings(pool)?;
-    scan_rings(pool, left, right, &mut on_cross)
-}
-
 fn scan_rings(
     pool: &OperandPool,
     left: &OrientedRing,
@@ -129,7 +125,11 @@ enum ScanFlow {
 /// bound, and 1.2x slower at 2400.
 const CONVEX_CONTACT_MAX_VERTICES: usize = 1000;
 
-fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> {
+/// Two staged operand shells that the convex walk can address: one left and
+/// one right, neither a hole, first polygon each side, under the vertex cap.
+/// Overlay still has to prove envelope overlap and non-strict convexity;
+/// classify already proved strict convexity and bounds on the source CoordSeq.
+fn staged_shell_pair(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> {
     if pool.rings.len() != 2 {
         return None;
     }
@@ -144,11 +144,18 @@ fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> 
     {
         return None;
     }
-    let a = left.points.as_ref();
-    let b = right.points.as_ref();
-    if a.len() < 3 || b.len() < 3 || a.len() + b.len() > CONVEX_CONTACT_MAX_VERTICES {
+    let a = left.points.len();
+    let b = right.points.len();
+    if a < 3 || b < 3 || a + b > CONVEX_CONTACT_MAX_VERTICES {
         return None;
     }
+    Some((left, right))
+}
+
+fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> {
+    let (left, right) = staged_shell_pair(pool)?;
+    let a = left.points.as_ref();
+    let b = right.points.as_ref();
     // Envelope before convexity: both are linear, but convexity spends an
     // exact orientation predicate per vertex, so a disjoint pair should not
     // pay for it.
@@ -412,5 +419,59 @@ mod tests {
             try_collect(&pool).is_none(),
             "touching shared edge must fall back to general sweep"
         );
+        assert!(
+            try_classify(&a, &b).is_none(),
+            "shared-edge classify must fall back to the arrangement"
+        );
+    }
+
+    fn collinear_bottom(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
+        Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(minx, miny),
+                Point::new_raw_xy(f64::midpoint(minx, maxx), miny),
+                Point::new_raw_xy(maxx, miny),
+                Point::new_raw_xy(maxx, maxy),
+                Point::new_raw_xy(minx, maxy),
+                Point::new_raw_xy(minx, miny),
+            ]),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn holes_decline_classify_and_overlay_fast_paths() {
+        let shell = rectangle(0.0, 0.0, 4.0, 4.0);
+        let hole = Ring::from_closed(vec![
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(2.0, 1.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(1.0, 1.0),
+        ]);
+        let holed = Polygon::new(shell.shell.clone(), vec![hole]);
+        let other = rectangle(3.0, 3.0, 6.0, 6.0);
+        assert!(
+            try_classify(&holed, &other).is_none(),
+            "a hole forbids the relate shortcut"
+        );
+        let pool = build_operand_pool(std::slice::from_ref(&holed), std::slice::from_ref(&other));
+        assert!(
+            try_collect(&pool).is_none(),
+            "a hole forbids the overlay chain walk"
+        );
+    }
+
+    #[test]
+    fn collinear_shell_is_overlay_only() {
+        let left = collinear_bottom(0.0, 0.0, 4.0, 4.0);
+        let right = rectangle(2.0, 2.0, 6.0, 6.0);
+        assert!(
+            try_classify(&left, &right).is_none(),
+            "collinear turns are not a strict convex relate class"
+        );
+        let pool = build_operand_pool(std::slice::from_ref(&left), std::slice::from_ref(&right));
+        let scan = try_collect(&pool).expect("non-strict convex overlay may still walk");
+        assert!(scan.has_cross, "overlapping collinear-bottom rectangles cross");
     }
 }
