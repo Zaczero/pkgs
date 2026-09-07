@@ -260,13 +260,16 @@ fn earcut_keeps_first_duplicate_xy_m_ordinate() {
         .polygon_triangles()
         .expect("duplicate XY triangulates");
     assert!(!triangles.is_empty());
+    let mut saw_origin = false;
     for triangle in &triangles {
         for corner in triangle_corners(triangle).expect("triangle polygon") {
             if corner.x == 0.0 && corner.y == 0.0 {
+                saw_origin = true;
                 assert_eq!(corner.m(), Some(1.0));
             }
         }
     }
+    assert!(saw_origin);
 }
 
 #[test]
@@ -344,39 +347,116 @@ fn earcut_donut_bridge_keeps_source_ordinates() {
     }
 }
 
+fn xy_bits(point: Point) -> (u64, u64) {
+    (
+        crate::geometry::canonical_f64_bits(point.x),
+        crate::geometry::canonical_f64_bits(point.y),
+    )
+}
+
+/// Unique-XY source map taken from the input rings before clip. First-kept
+/// on a duplicate would still win; this fixture must not repeat XY.
+fn unique_xy_source_map(polygon: &Polygon) -> std::collections::HashMap<(u64, u64), Point> {
+    let mut map = std::collections::HashMap::new();
+    for ring in polygon.rings() {
+        for point in open_ring(ring.coords()) {
+            let key = xy_bits(point);
+            assert!(
+                map.insert(key, point).is_none(),
+                "mixed-ring fixture XY must be unique, got {point:?}"
+            );
+        }
+    }
+    map
+}
+
+fn mixed_ring_polygon() -> Polygon {
+    // Distinct shell Z so a fabricated constant cannot pass. Hole is XY in
+    // the lower-left. Ring starts at the (8,3)/(10,4)/(8,5) convex bump so
+    // that shell-only ear is clipped before the hole fan.
+    polygon(
+        vec![
+            xyz(8.0, 3.0, 3.0),
+            xyz(10.0, 4.0, 4.0),
+            xyz(8.0, 5.0, 5.0),
+            xyz(8.0, 8.0, 6.0),
+            xyz(0.0, 8.0, 7.0),
+            xyz(0.0, 0.0, 1.0),
+            xyz(8.0, 0.0, 2.0),
+            xyz(8.0, 3.0, 3.0),
+        ],
+        vec![vec![xy(1.0, 1.0), xy(2.0, 1.0), xy(1.0, 2.0), xy(1.0, 1.0)]],
+    )
+}
+
 #[test]
 fn earcut_mixed_ring_succeeds_with_per_triangle_common_axes() {
-    let source = Shape::Polygon(polygon(
-        vec![
-            xyz(0.0, 0.0, 3.0),
-            xyz(4.0, 0.0, 3.0),
-            xyz(4.0, 4.0, 3.0),
-            xyz(0.0, 4.0, 3.0),
-            xyz(0.0, 0.0, 3.0),
-        ],
-        vec![vec![
-            xy(1.0, 1.0),
-            xy(1.0, 2.0),
-            xy(2.0, 2.0),
-            xy(2.0, 1.0),
-            xy(1.0, 1.0),
-        ]],
-    ));
-    let triangles = source
+    let polygon = mixed_ring_polygon();
+    let source = unique_xy_source_map(&polygon);
+    let triangles = Shape::Polygon(polygon)
         .polygon_triangles()
         .expect("kernel mixed-ring polygon triangulates");
     assert!(!triangles.is_empty());
+    let mut saw_mixed_source = false;
+    let mut saw_all_xyz_source = false;
     for triangle in &triangles {
         let corners = triangle_corners(triangle).expect("triangle polygon");
-        let all_z = corners.iter().all(|corner| corner.z().is_some());
-        if all_z {
+        let sources = corners.map(|corner| {
+            *source
+                .get(&xy_bits(corner))
+                .expect("triangle corner was not a source vertex")
+        });
+        let all_xyz = sources.iter().all(|point| point.z().is_some());
+        let any_xyz = sources.iter().any(|point| point.z().is_some());
+        if all_xyz {
+            saw_all_xyz_source = true;
             assert_eq!(triangle.axes(), CoordinateAxes::XYZ);
-            assert!(corners.iter().all(|corner| corner.z() == Some(3.0)));
+            for (corner, origin) in corners.iter().zip(sources) {
+                assert_eq!(corner.z(), origin.z());
+            }
         } else {
+            if any_xyz {
+                saw_mixed_source = true;
+            }
             assert_eq!(triangle.axes(), CoordinateAxes::XY);
             assert!(corners.iter().all(|corner| corner.z().is_none()));
         }
     }
+    assert!(
+        saw_mixed_source,
+        "fixture must emit a mixed-source triangle"
+    );
+    assert!(
+        saw_all_xyz_source,
+        "fixture must emit an all-XYZ shell triangle"
+    );
+}
+
+#[test]
+fn earcut_packed_axes_none_on_mixed_rings_some_on_homogeneous() {
+    assert_eq!(
+        Shape::Polygon(mixed_ring_polygon()).earcut_packed_axes(),
+        None
+    );
+    let homogeneous = polygon(
+        vec![
+            xyz(0.0, 0.0, 1.0),
+            xyz(4.0, 0.0, 2.0),
+            xyz(4.0, 4.0, 3.0),
+            xyz(0.0, 4.0, 4.0),
+            xyz(0.0, 0.0, 1.0),
+        ],
+        vec![vec![
+            xyz(1.0, 1.0, 5.0),
+            xyz(2.0, 1.0, 6.0),
+            xyz(1.0, 2.0, 7.0),
+            xyz(1.0, 1.0, 5.0),
+        ]],
+    );
+    assert_eq!(
+        Shape::Polygon(homogeneous).earcut_packed_axes(),
+        Some(CoordinateAxes::XYZ)
+    );
 }
 
 #[test]
