@@ -168,7 +168,10 @@ unary_shape_method!(
 #[pymethods]
 impl PyGeometry {
     #[doc = doc_force_3d!(scalar)]
-    #[pyo3(signature = (z = DefaultedF64Input::Default(0.0)))]
+    #[pyo3(
+        signature = (z = DefaultedF64Input::Default(0.0)),
+        text_signature = "($self, z=0.0)"
+    )]
     pub fn force_3d(&self, py: Python<'_>, z: DefaultedF64Input) -> PyResult<crate::Typed> {
         let z = z.resolve_coordinate_scalar(py, "z")?;
         unary_spine_shapes!(
@@ -220,7 +223,10 @@ impl PyGeometry {
 #[pymethods]
 impl PyGeometryArray {
     #[doc = doc_force_3d!(array)]
-    #[pyo3(signature = (z = DefaultedF64Input::Default(0.0)))]
+    #[pyo3(
+        signature = (z = DefaultedF64Input::Default(0.0)),
+        text_signature = "($self, z=0.0)"
+    )]
     pub fn force_3d(&self, py: Python<'_>, z: DefaultedF64Input) -> PyResult<Self> {
         let z = z.resolve_coordinate_scalar(py, "z")?;
         unary_spine_shapes_extras!(
