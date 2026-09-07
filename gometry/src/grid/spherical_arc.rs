@@ -394,10 +394,6 @@ pub(crate) enum PhysicalEndpointKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExactArcKind {
     General,
-    #[cfg(test)]
-    Equator,
-    #[cfg(test)]
-    AxisMeridian(AxisMeridian),
     UnresolvedMeridian,
 }
 
@@ -427,18 +423,6 @@ pub(crate) struct AffineEndpointIdentity {
 }
 
 impl AxisMeridian {
-    #[cfg(test)]
-    fn radian_shifts(self) -> Option<[Bound; 3]> {
-        let base = match self {
-            Self::Prime => Bound::exact(0.0)?,
-            Self::EastQuarter => Bound::new(HALF_PI_LO, HALF_PI_HI)?,
-            Self::Antimeridian => Bound::new(PI_LO, PI_HI)?,
-            Self::WestQuarter => Bound::new(-HALF_PI_HI, -HALF_PI_LO)?,
-        };
-        let tau = Bound::new(2.0 * PI_LO, 2.0 * PI_HI)?;
-        Some([base.sub(tau)?, base, base.add(tau)?])
-    }
-
     #[cfg(test)]
     fn from_exact_degrees(value: f64) -> Option<Self> {
         if value == 0.0 {
@@ -1337,7 +1321,6 @@ pub(crate) struct OrderedMinorArc {
     end: Vec3Bound,
     normal: Vec3Bound,
     longitude: Option<DirectedLongitudeSpan>,
-    latitude: Option<LongitudeSpan>,
     pub(crate) kind: ExactArcKind,
 }
 
@@ -1422,7 +1405,6 @@ impl OrderedMinorArc {
             end,
             normal,
             longitude,
-            latitude: None,
             kind,
         }
     }
@@ -1437,14 +1419,6 @@ impl OrderedMinorArc {
             Vec3Bound::exact(end).expect("finite test ray"),
         )
         .expect("valid test minor arc")
-    }
-
-    #[cfg(test)]
-    fn from_test_axis(start: [f64; 3], end: [f64; 3], axis: AxisMeridian) -> Self {
-        let mut arc = Self::from_test_points(start, end);
-        arc.kind = ExactArcKind::AxisMeridian(axis);
-        arc.latitude = arc_latitude_span(arc.start, arc.end);
-        arc
     }
 
     fn position(self, point: Vec3Bound) -> ArcPosition {
@@ -2730,11 +2704,6 @@ impl AffineSourceArc {
     }
 
     #[cfg(test)]
-    const fn is_equatorial(self) -> bool {
-        matches!(self.map.structure, AffineStructure::Equator)
-    }
-
-    #[cfg(test)]
     fn is_axis(self, axis: AxisMeridian) -> bool {
         matches!(self.map.structure, AffineStructure::ConstantLongitude { axis: Some(value) } if value == axis)
     }
@@ -3049,22 +3018,13 @@ fn classify_arc_contact_with_h3_fan(
     if let Some(contact) = classify_matching_pole_contact(source, arc, fan) {
         return contact;
     }
-    match arc.kind {
-        #[cfg(test)]
-        ExactArcKind::Equator => classify_with_arc_shifts(source, arc, |source, arc| {
-            classify_equator_contact(source, arc, fan)
-        }),
-        #[cfg(test)]
-        ExactArcKind::AxisMeridian(axis) => classify_axis_meridian_contact(source, arc, axis, fan),
-        ExactArcKind::General => classify_with_arc_shifts(source, arc, |source, arc| {
-            if source.is_vertical() {
-                classify_vertical_contact(source, arc)
-            } else {
-                classify_general_contact(source, arc)
-            }
-        }),
-        ExactArcKind::UnresolvedMeridian => unreachable!("returned before dispatch"),
-    }
+    classify_with_arc_shifts(source, arc, |source, arc| {
+        if source.is_vertical() {
+            classify_vertical_contact(source, arc)
+        } else {
+            classify_general_contact(source, arc)
+        }
+    })
 }
 
 #[expect(
@@ -3286,230 +3246,6 @@ fn classify_vertical_contact(source: AffineSourceArc, arc: &OrderedMinorArc) -> 
     }
 }
 
-#[cfg(test)]
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn classify_equator_contact(
-    source: AffineSourceArc,
-    arc: &OrderedMinorArc,
-    fan: Option<&H3FanPlan>,
-) -> ArcContact {
-    let (Some(source_lon), Some(arc_lon), Some(phi)) = (
-        source.longitude_span(),
-        arc.longitude.and_then(DirectedLongitudeSpan::envelope),
-        source.latitude_span(),
-    ) else {
-        return ArcContact::Uncertain;
-    };
-    let longitude_overlap = source_lon.overlap(arc_lon);
-    if source.is_equatorial() {
-        return match longitude_overlap {
-            LongitudeOverlap::Disjoint => ArcContact::None,
-            LongitudeOverlap::Contact { inner: Some(_), .. } => {
-                classify_structural_arc_overlap(source, arc, fan, StructuralCoordinate::Longitude)
-            },
-            LongitudeOverlap::Contact { inner: None, .. } => ArcContact::Uncertain,
-        };
-    }
-    if phi.upper.strictly_positive() || phi.lower.strictly_negative() {
-        return ArcContact::None;
-    }
-    let Some(t) = source.map.phi0.neg().div(source.map.dphi) else {
-        return ArcContact::Uncertain;
-    };
-    if t.hi < source.domain.lo || t.lo > source.domain.hi {
-        return ArcContact::None;
-    }
-    if !strictly_inside_domain(source, t) {
-        return ArcContact::Uncertain;
-    }
-    let Some(longitude) = source.lambda_at(t) else {
-        return ArcContact::Uncertain;
-    };
-    if arc_lon.strictly_contains(longitude) {
-        ArcContact::Open
-    } else {
-        ArcContact::Uncertain
-    }
-}
-
-#[cfg(test)]
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn classify_axis_meridian_contact(
-    source: AffineSourceArc,
-    arc: &OrderedMinorArc,
-    axis: AxisMeridian,
-    fan: Option<&H3FanPlan>,
-) -> ArcContact {
-    let Some(arc_latitude) = arc.latitude else {
-        return ArcContact::Uncertain;
-    };
-    if source.is_axis(axis) {
-        let Some(source_latitude) = source.latitude_span() else {
-            return ArcContact::Uncertain;
-        };
-        return match source_latitude.overlap(arc_latitude) {
-            LongitudeOverlap::Disjoint => ArcContact::None,
-            LongitudeOverlap::Contact { inner: Some(_), .. } => {
-                classify_structural_arc_overlap(source, arc, fan, StructuralCoordinate::Latitude)
-            },
-            LongitudeOverlap::Contact { inner: None, .. } => ArcContact::Uncertain,
-        };
-    }
-    if source.is_vertical() {
-        let Some(source_longitude) = source.longitude_span() else {
-            return ArcContact::Uncertain;
-        };
-        for target in axis.radian_shifts().into_iter().flatten() {
-            if source_longitude.lower.intersection(target).is_some() {
-                return ArcContact::Uncertain;
-            }
-        }
-        return ArcContact::None;
-    }
-    let mut found_candidate = false;
-    for target in axis.radian_shifts().into_iter().flatten() {
-        let Some(t) = target
-            .sub(source.map.lambda0)
-            .and_then(|delta| delta.div(source.map.dlambda))
-        else {
-            return ArcContact::Uncertain;
-        };
-        if t.hi < source.domain.lo || t.lo > source.domain.hi {
-            continue;
-        }
-        found_candidate = true;
-        if !strictly_inside_domain(source, t) {
-            return ArcContact::Uncertain;
-        }
-        let Some(latitude) = source.phi_at(t) else {
-            return ArcContact::Uncertain;
-        };
-        if arc_latitude.strictly_contains(latitude) {
-            return ArcContact::Open;
-        }
-        if latitude.hi < arc_latitude.lower.lo || latitude.lo > arc_latitude.upper.hi {
-            continue;
-        }
-        return ArcContact::Uncertain;
-    }
-    if found_candidate {
-        ArcContact::Uncertain
-    } else {
-        ArcContact::None
-    }
-}
-
-#[derive(Clone, Copy)]
-#[cfg(test)]
-enum StructuralCoordinate {
-    Longitude,
-    Latitude,
-}
-
-/// A source segment which is structurally carried by an equator or named
-/// meridian may overlap an H3 edge.  Its closed overlap is only ClosedOnly
-/// while it stays strictly inside that edge.  A possible cell vertex visit is
-/// delegated to the certified two-triangle fan; without that topology the
-/// relation must remain visibly ambiguous.
-#[cfg(test)]
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn classify_structural_arc_overlap(
-    source: AffineSourceArc,
-    arc: &OrderedMinorArc,
-    fan: Option<&H3FanPlan>,
-    coordinate: StructuralCoordinate,
-) -> ArcContact {
-    let (Some(source_span), Some(arc_span)) = (match coordinate {
-        StructuralCoordinate::Longitude => (
-            source.longitude_span(),
-            arc.longitude.and_then(DirectedLongitudeSpan::envelope),
-        ),
-        StructuralCoordinate::Latitude => (source.latitude_span(), arc.latitude),
-    }) else {
-        return ArcContact::Uncertain;
-    };
-
-    let mut result = ArcContact::ClosedOnly;
-    for (endpoint, key) in [
-        (arc_span.lower, arc.vertex_keys[0]),
-        (arc_span.upper, arc.vertex_keys[1]),
-    ] {
-        // Strict exclusion proves that the source never reaches this cell
-        // vertex.  Any remaining interval overlap is deliberately treated as
-        // a vertex event rather than decided from rounded coordinates.
-        if endpoint.hi < source_span.lower.lo || source_span.upper.hi < endpoint.lo {
-            continue;
-        }
-        let Some(fan) = fan else {
-            return ArcContact::Uncertain;
-        };
-        let parameter = match coordinate {
-            StructuralCoordinate::Longitude => source.parameter_at_longitude(endpoint),
-            StructuralCoordinate::Latitude => source.parameter_at_latitude(endpoint),
-        };
-        let Some(parameter) = parameter else {
-            return ArcContact::Uncertain;
-        };
-        let side = classify_vertex_sides(source, parameter, key, fan);
-        result = result.combine(side);
-        if result != ArcContact::ClosedOnly {
-            return result;
-        }
-    }
-    result
-}
-
-/// Applies every existing one-sided source tangent at a structural H3 vertex.
-/// An interior visit has two sides; a source endpoint has one.  Interval
-/// uncertainty about which case holds is never collapsed to a local proof.
-#[cfg(test)]
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn classify_vertex_sides(
-    source: AffineSourceArc,
-    parameter: Bound,
-    key: CellVertexKey,
-    fan: &H3FanPlan,
-) -> ArcContact {
-    let lower = source.domain.lo;
-    let upper = source.domain.hi;
-    if parameter.hi < lower || parameter.lo > upper {
-        return ArcContact::None;
-    }
-    let classify = |tangent: Option<Vec3Ball>| {
-        tangent.map_or(ArcContact::Uncertain, |tangent| {
-            match fan.side_at_vertex(key, tangent) {
-                FanSide::Open => ArcContact::Open,
-                FanSide::Exterior => ArcContact::ClosedOnly,
-                FanSide::Uncertain => ArcContact::Uncertain,
-            }
-        })
-    };
-    if parameter.is_exact_value(lower) {
-        return classify(source.tangent_at_parameter(parameter, 1));
-    }
-    if parameter.is_exact_value(upper) {
-        return classify(source.tangent_at_parameter(parameter, -1));
-    }
-    if lower < parameter.lo && parameter.hi < upper {
-        let forward = classify(source.tangent_at_parameter(parameter, 1));
-        let backward = classify(source.tangent_at_parameter(parameter, -1));
-        return forward.combine(backward);
-    }
-    ArcContact::Uncertain
-}
-
 #[expect(
     clippy::large_types_passed_by_value,
     reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
@@ -3554,15 +3290,6 @@ fn plane_at_overlap_longitude(
         }
         None
     })
-}
-
-#[cfg(test)]
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn strictly_inside_domain(source: AffineSourceArc, parameter: Bound) -> bool {
-    source.domain.lo < parameter.lo && parameter.hi < source.domain.hi
 }
 
 /// Exact representable samples strictly inside a certified inner interval.
@@ -3950,17 +3677,9 @@ fn certified_vector_longitude(point: Vec3Bound) -> Option<Bound> {
     longitude_bisection_bracket(point)
 }
 
-#[cfg(test)]
-fn arc_latitude_span(start: Vec3Bound, end: Vec3Bound) -> Option<LongitudeSpan> {
-    LongitudeSpan::ordered(
-        certified_vector_latitude(start)?,
-        certified_vector_latitude(end)?,
-    )
-}
-
-/// Certified latitude enclosure for the named-meridian structural path.  As
-/// for longitude, `atan2`/`hypot` are proposals only; signs against the raw
-/// vector and certified trigonometry establish the final bracket.
+/// Certified latitude enclosure of a unit vector.  As for longitude,
+/// `atan2`/`hypot` are proposals only; signs against the raw vector and
+/// certified trigonometry establish the final bracket.
 fn certified_vector_latitude(point: Vec3Bound) -> Option<Bound> {
     if point.x.is_exact_zero() && point.y.is_exact_zero() {
         if point.z.strictly_positive() {
@@ -5591,7 +5310,7 @@ mod tests {
         assert_eq!(
             arc.kind,
             ExactArcKind::General,
-            "only an explicit supplier tag may enter the equator branch"
+            "a strictly signed n.z is General even on the equatorial plane"
         );
         let tangent = test_affine_source_arc(20.0, 0.0, 70.0, 10.0).expect("finite source degrees");
         assert_eq!(classify_arc_contact(tangent, &arc), ArcContact::Uncertain);
@@ -5605,44 +5324,10 @@ mod tests {
     }
 
     #[test]
-    fn structural_equator_axis_and_zero_source_paths_are_explicit() {
-        let mut equator = OrderedMinorArc::from_test_points([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-        equator.kind = ExactArcKind::Equator;
-        let coincident = test_affine_source_arc(20.0, 0.0, 30.0, -0.0).unwrap();
-        assert_eq!(
-            classify_arc_contact(coincident, &equator),
-            ArcContact::ClosedOnly
-        );
-
+    fn zero_length_source_on_a_general_arc_is_uncertain() {
+        let arc = OrderedMinorArc::from_test_points([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         let point = test_affine_source_arc(45.0, 0.0, 45.0, 0.0).unwrap();
-        assert_eq!(classify_arc_contact(point, &equator), ArcContact::Uncertain);
-
-        let meridian =
-            OrderedMinorArc::from_test_axis([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], AxisMeridian::Prime);
-        let transverse = test_affine_source_arc(-10.0, 40.0, 10.0, 40.0).unwrap();
-        assert_eq!(
-            classify_arc_contact(transverse, &meridian),
-            ArcContact::Open
-        );
-
-        let mut north_arc =
-            OrderedMinorArc::from_test_axis([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], AxisMeridian::Prime);
-        north_arc.endpoints[0] = PhysicalEndpointKey::NorthPole;
-        let from_north = test_affine_source_arc(45.0, 90.0, 45.0, 80.0).unwrap();
-        assert_eq!(
-            classify_arc_contact(from_north, &north_arc),
-            ArcContact::Uncertain,
-            "a shared pole cannot use one supporting plane instead of an H3 fan"
-        );
-
-        let mut vertex_touch = OrderedMinorArc::from_test_points([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-        vertex_touch.kind = ExactArcKind::Equator;
-        let reaches_vertex = test_affine_source_arc(0.0, 0.0, 20.0, 0.0).unwrap();
-        assert_eq!(
-            classify_arc_contact(reaches_vertex, &vertex_touch),
-            ArcContact::Uncertain,
-            "a coincident equator edge that reaches a cell vertex needs its H3 fan sides"
-        );
+        assert_eq!(classify_arc_contact(point, &arc), ArcContact::Uncertain);
     }
 
     #[test]
