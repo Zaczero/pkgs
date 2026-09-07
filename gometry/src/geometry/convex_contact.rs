@@ -97,8 +97,8 @@ fn scan_rings(
     let left_edges = ring_chains(left);
     let right_edges = ring_chains(right);
 
-    for chain_a in &left_edges {
-        for chain_b in &right_edges {
+    for chain_a in left_edges {
+        for chain_b in right_edges {
             match scan_chains(pool, chain_a, chain_b, &mut on_cross) {
                 ScanFlow::Ok(crossed) => has_cross |= crossed,
                 ScanFlow::Bail => return None,
@@ -118,11 +118,10 @@ enum ScanFlow {
 /// this path declines the pair.
 ///
 /// Both are linear in the crossing count, but this path walks two monotone
-/// chains and materializes their edge-index vectors, a larger constant than
-/// the sweep's banded `n log n`. The advantage therefore narrows with size and
-/// reverses. Measured on two overlapping convex rings (union, one host): 4.3x
-/// faster at 16 total vertices, 1.7x at 256, 1.2x at 600, level near this
-/// bound, and 1.2x slower at 2400.
+/// chains, a larger constant than the sweep's banded `n log n`. The advantage
+/// therefore narrows with size and reverses. Measured on two overlapping
+/// convex rings (union, one host): 4.3x faster at 16 total vertices, 1.7x at
+/// 256, 1.2x at 600, level near this bound, and 1.2x slower at 2400.
 const CONVEX_CONTACT_MAX_VERTICES: usize = 1000;
 
 /// Two staged operand shells that the convex walk can address: one left and
@@ -169,8 +168,38 @@ fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> 
     Some((left, right))
 }
 
+/// Visit-order range over CCW pool edges of one x-monotone chain.
+///
+/// `reverse` only reorders visit indices; each slot is still the CCW edge
+/// `points[v] → points[wrap_index(v + 1, n)]` at `base + v`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ChainRange {
+    base: usize,
+    n: usize,
+    origin: usize,
+    len: usize,
+    reverse: bool,
+}
+
+impl ChainRange {
+    fn get(self, i: usize) -> Option<usize> {
+        (i < self.len).then(|| {
+            let j = if self.reverse { self.len - 1 - i } else { i };
+            self.base + wrap_index(self.origin + j, self.n)
+        })
+    }
+}
+
+const fn ccw_len(from: usize, to: usize, n: usize) -> usize {
+    if to >= from {
+        to - from
+    } else {
+        n - from + to
+    }
+}
+
 /// Upper and lower x-monotone edge-index chains for a CCW convex shell.
-fn ring_chains(ring: &OrientedRing) -> [Vec<usize>; 2] {
+fn ring_chains(ring: &OrientedRing) -> [ChainRange; 2] {
     let points = ring.points.as_ref();
     let n = points.len();
     let leftmost = extremal_vertex(points, |left, right| {
@@ -195,20 +224,23 @@ fn ring_chains(ring: &OrientedRing) -> [Vec<usize>; 2] {
             })
             == std::cmp::Ordering::Greater
     });
-    if leftmost == rightmost {
-        return [Vec::new(), Vec::new()];
-    }
     let base = ring.segments.start;
-    let upper = chain_edge_indices(n, leftmost, rightmost)
-        .into_iter()
-        .map(|edge| base + edge)
-        .collect();
-    let mut lower = chain_edge_indices(n, rightmost, leftmost)
-        .into_iter()
-        .map(|edge| base + edge)
-        .collect::<Vec<_>>();
-    lower.reverse();
-    [upper, lower]
+    [
+        ChainRange {
+            base,
+            n,
+            origin: leftmost,
+            len: ccw_len(leftmost, rightmost, n),
+            reverse: false,
+        },
+        ChainRange {
+            base,
+            n,
+            origin: rightmost,
+            len: ccw_len(rightmost, leftmost, n),
+            reverse: true,
+        },
+    ]
 }
 
 fn extremal_vertex(ring: &[XY], better: impl Fn(&XY, &XY) -> bool) -> usize {
@@ -221,37 +253,24 @@ fn extremal_vertex(ring: &[XY], better: impl Fn(&XY, &XY) -> bool) -> usize {
     index
 }
 
-/// Directed edge indices along a CCW walk from `from` to `to` (exclusive of
-/// `to`).
-fn chain_edge_indices(n: usize, from: usize, to: usize) -> Vec<usize> {
-    if from == to {
-        return Vec::new();
-    }
-    let mut edges = Vec::with_capacity(n.div_ceil(2));
-    let mut vertex = from;
-    loop {
-        edges.push(vertex);
-        let next = wrap_index(vertex + 1, n);
-        if next == to {
-            break;
-        }
-        vertex = next;
-    }
-    edges
-}
-
 fn scan_chains(
     pool: &OperandPool,
-    chain_a: &[usize],
-    chain_b: &[usize],
+    chain_a: ChainRange,
+    chain_b: ChainRange,
     on_cross: &mut impl FnMut(usize, XY),
 ) -> ScanFlow {
     let mut ia = 0_usize;
     let mut ib = 0_usize;
     let mut crossed = false;
-    while ia < chain_a.len() && ib < chain_b.len() {
-        let seg_a = pool.segments[chain_a[ia]];
-        let seg_b = pool.segments[chain_b[ib]];
+    while ia < chain_a.len && ib < chain_b.len {
+        let Some(index_a) = chain_a.get(ia) else {
+            break;
+        };
+        let Some(index_b) = chain_b.get(ib) else {
+            break;
+        };
+        let seg_a = pool.segments[index_a];
+        let seg_b = pool.segments[index_b];
         let (a_minx, a_maxx) = segment_x_extent(seg_a);
         let (b_minx, b_maxx) = segment_x_extent(seg_b);
         if a_maxx < b_minx {
@@ -266,8 +285,8 @@ fn scan_chains(
             match segment_contact_exact(seg_a, seg_b) {
                 Contact::Disjoint => {},
                 Contact::Cross { point } => {
-                    on_cross(chain_a[ia], point);
-                    on_cross(chain_b[ib], point);
+                    on_cross(index_a, point);
+                    on_cross(index_b, point);
                     crossed = true;
                 },
                 Contact::Touch { .. } | Contact::Collinear { .. } => return ScanFlow::Bail,
@@ -301,12 +320,12 @@ fn scan_chains(
 /// only a touch or a collinear overlap, and both of those end the walk anyway.
 fn skipped_pair_meets(
     pool: &OperandPool,
-    chain_a: &[usize],
+    chain_a: ChainRange,
     ia: usize,
-    chain_b: &[usize],
+    chain_b: ChainRange,
     ib: usize,
 ) -> bool {
-    let (Some(&left), Some(&right)) = (chain_a.get(ia), chain_b.get(ib)) else {
+    let (Some(left), Some(right)) = (chain_a.get(ia), chain_b.get(ib)) else {
         return false;
     };
     let (seg_a, seg_b) = (pool.segments[left], pool.segments[right]);
@@ -473,5 +492,131 @@ mod tests {
         let pool = build_operand_pool(std::slice::from_ref(&left), std::slice::from_ref(&right));
         let scan = try_collect(&pool).expect("non-strict convex overlay may still walk");
         assert!(scan.has_cross, "overlapping collinear-bottom rectangles cross");
+    }
+
+    /// Old `chain_edge_indices` walk: CCW `from` to `to` exclusive, then
+    /// optional reverse. Independent of [`ChainRange::get`].
+    fn iterative_ccw_then_maybe_reverse(
+        n: usize,
+        from: usize,
+        to: usize,
+        reverse: bool,
+        base: usize,
+    ) -> Vec<usize> {
+        if from == to {
+            return Vec::new();
+        }
+        let mut edges = Vec::new();
+        let mut vertex = from;
+        loop {
+            edges.push(base + vertex);
+            let next = wrap_index(vertex + 1, n);
+            if next == to {
+                break;
+            }
+            vertex = next;
+        }
+        if reverse {
+            edges.reverse();
+        }
+        edges
+    }
+
+    fn range_sequence(range: ChainRange) -> Vec<usize> {
+        (0..range.len)
+            .map(|i| range.get(i).expect("i is inside len"))
+            .collect()
+    }
+
+    fn assert_range_matches_oracle(n: usize, from: usize, to: usize, reverse: bool, base: usize) {
+        let range = ChainRange {
+            base,
+            n,
+            origin: from,
+            len: ccw_len(from, to, n),
+            reverse,
+        };
+        let oracle = iterative_ccw_then_maybe_reverse(n, from, to, reverse, base);
+        assert_eq!(range.len, oracle.len(), "n={n} from={from} to={to} reverse={reverse} base={base}");
+        assert_eq!(
+            range_sequence(range),
+            oracle,
+            "n={n} from={from} to={to} reverse={reverse} base={base}"
+        );
+        assert!(range.get(range.len).is_none());
+        assert!(range.get(range.len.saturating_add(1)).is_none());
+    }
+
+    #[test]
+    fn chain_range_matches_iterative_ccw_oracle() {
+        for reverse in [false, true] {
+            assert_range_matches_oracle(1, 0, 0, reverse, 0);
+            assert_range_matches_oracle(4, 0, 0, reverse, 0);
+            assert_range_matches_oracle(4, 0, 2, reverse, 0);
+            assert_range_matches_oracle(4, 2, 0, reverse, 0);
+            assert_range_matches_oracle(4, 3, 1, reverse, 7);
+            assert_range_matches_oracle(5, 0, 1, reverse, 0);
+            assert_range_matches_oracle(5, 1, 0, reverse, 0);
+            assert_range_matches_oracle(3, 2, 1, reverse, 4);
+            for from in 0..6 {
+                for to in 0..6 {
+                    assert_range_matches_oracle(6, from, to, reverse, 11);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ring_chains_match_oracle_and_allocate_nothing() {
+        let left = rectangle(0.0, 0.0, 4.0, 4.0);
+        let right = rectangle(8.0, 0.0, 9.0, 1.0);
+        let pool = build_operand_pool(std::slice::from_ref(&left), std::slice::from_ref(&right));
+        assert!(pool.rings[1].segments.start > 0);
+        for ring in &pool.rings {
+            let n = ring.points.len();
+            let points = ring.points.as_ref();
+            let leftmost = extremal_vertex(points, |a, b| {
+                a.x.partial_cmp(&b.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+                    == std::cmp::Ordering::Less
+            });
+            let rightmost = extremal_vertex(points, |a, b| {
+                a.x.partial_cmp(&b.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+                    == std::cmp::Ordering::Greater
+            });
+            let [upper, lower] = ring_chains(ring);
+            assert_eq!(
+                range_sequence(upper),
+                iterative_ccw_then_maybe_reverse(n, leftmost, rightmost, false, ring.segments.start)
+            );
+            assert_eq!(
+                range_sequence(lower),
+                iterative_ccw_then_maybe_reverse(n, rightmost, leftmost, true, ring.segments.start)
+            );
+            if leftmost != rightmost {
+                assert_eq!(upper.len + lower.len, n);
+            }
+        }
+        let triangle = Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(3.0, 0.0),
+                Point::new_raw_xy(1.0, 2.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ]),
+            Vec::new(),
+        );
+        let tri_pool = build_operand_pool(std::slice::from_ref(&triangle), std::slice::from_ref(&right));
+        let [upper, lower] = ring_chains(&tri_pool.rings[0]);
+        assert_ne!(upper.len, lower.len, "triangle chains are asymmetric");
+        let (_, allocations) = crate::test_support::allocation_count(|| {
+            ring_chains(&pool.rings[0]);
+            ring_chains(&pool.rings[1]);
+            ring_chains(&tri_pool.rings[0]);
+        });
+        assert_eq!(allocations, 0, "ChainRange construction must not allocate");
     }
 }
