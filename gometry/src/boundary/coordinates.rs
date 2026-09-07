@@ -247,61 +247,10 @@ impl CoordinateView {
     }
 
     /// Number of flattened coordinates. Structural — never materializes.
+    ///
+    /// Array-backed views derive the count from row maps, validity, and CSR
+    /// offsets; masked packed arrays count only their present rows.
     pub fn len(&self) -> usize {
-        match &self.owner {
-            CoordinateOwner::Shape(_) => {
-                let mut total = 0;
-                self.for_each(&mut |_, _, _, run| match run {
-                    CoordinateRun::Seq(seq) => total += seq.len(),
-                    CoordinateRun::Point(_) => total += 1,
-                });
-                total
-            },
-            CoordinateOwner::Array { storage, missing } => {
-                if let (Some(missing), GeometryArrayStorage::Packed(PackedStorage::Points { .. })) =
-                    (missing.as_ref(), storage.as_ref())
-                {
-                    return missing.present_count();
-                }
-                if missing.is_some() {
-                    let mut total = 0;
-                    self.for_each(&mut |_, _, _, run| match run {
-                        CoordinateRun::Seq(seq) => total += seq.len(),
-                        CoordinateRun::Point(_) => total += 1,
-                    });
-                    return total;
-                }
-                match storage.as_ref() {
-                    GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-                        crate::array::point_logical_len(coords, row_map.as_deref())
-                    },
-                    GeometryArrayStorage::Packed(PackedStorage::Lines {
-                        offsets, row_map, ..
-                    }) => {
-                        crate::array::packed_lines_coord_len(offsets.as_slice(), row_map.as_deref())
-                    },
-                    GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                        ring_offsets,
-                        polygon_offsets,
-                        row_map,
-                        ..
-                    }) => crate::array::packed_polygons_coord_len(
-                        ring_offsets.as_slice(),
-                        polygon_offsets.as_slice(),
-                        row_map.as_deref(),
-                    ),
-                    GeometryArrayStorage::Mixed(shapes) => {
-                        shapes.iter().map(Shape::coord_count).sum()
-                    },
-                }
-            },
-        }
-    }
-
-    /// Exact flattened size from storage metadata. Unlike `len`, this never
-    /// constructs coordinate runs or temporary polygon views; masked packed
-    /// arrays need only a cheap offsets/count pass.
-    fn flattened_capacity(&self) -> usize {
         match &self.owner {
             CoordinateOwner::Shape(shape) => shape.shape().coord_count(),
             CoordinateOwner::Array {
@@ -603,7 +552,7 @@ PackedStorage::Polygons { coords, row_map, .. }) => row_map.is_identity().then_s
 
     /// Flattened coordinates with path metadata.
     pub fn collect_points(&self) -> Vec<CoordinatePoint> {
-        let mut points = Vec::with_capacity(self.flattened_capacity());
+        let mut points = Vec::with_capacity(self.len());
         self.for_each_point(|coord| points.push(coord));
         points
     }
@@ -627,7 +576,7 @@ PackedStorage::Polygons { coords, row_map, .. }) => row_map.is_identity().then_s
     /// CSR offsets (or the point column length); every other owner walks
     /// coordinate runs once and fills each run's span with its logical row id.
     fn row_index_cast<T: Copy>(&self, cast: impl Fn(usize) -> T) -> crate::error::Result<Vec<T>> {
-        let capacity = self.flattened_capacity();
+        let capacity = self.len();
         let zero = cast(0);
 
         if let CoordinateOwner::Array {
@@ -943,7 +892,7 @@ PackedStorage::Polygons { row_map, .. }) => {
 
     fn gather_x(&self) -> crate::error::Result<Vec<f64>> {
         let mut out = Vec::new();
-        crate::boundary::try_reserve_vec(&mut out, self.flattened_capacity())?;
+        crate::boundary::try_reserve_vec(&mut out, self.len())?;
         match self.try_for_each_point(&mut |coord| match crate::boundary::try_push_vec(
             &mut out,
             coord.point.x,
@@ -1223,7 +1172,7 @@ fn visible_coordinate_bits(
 impl CoordinateView {
     fn gather_y(&self) -> crate::error::Result<Vec<f64>> {
         let mut out = Vec::new();
-        crate::boundary::try_reserve_vec(&mut out, self.flattened_capacity())?;
+        crate::boundary::try_reserve_vec(&mut out, self.len())?;
         match self.try_for_each_point(&mut |coord| match crate::boundary::try_push_vec(
             &mut out,
             coord.point.y,
@@ -1246,7 +1195,7 @@ impl CoordinateView {
         // ordinates while still preserving Some(NaN) as a real measured value
         // (a NaN-only lane would collapse the two). Peak is the dense+mask
         // working set, not a 16 B Option lane overlapping a dense prefix.
-        let capacity = self.flattened_capacity();
+        let capacity = self.len();
         let mut values = Vec::new();
         let mut present = Vec::new();
         crate::boundary::try_reserve_pair(&mut values, &mut present, capacity)?;
@@ -1587,7 +1536,7 @@ mod tests {
         let masked = gathered.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]));
         let masked_view = masked.coordinate_view();
         let masked_points = masked_view.collect_points();
-        assert_eq!(masked_view.flattened_capacity(), 10);
+        assert_eq!(masked_view.len(), 10);
         assert_eq!(masked_points.len(), 10);
         assert!(
             masked_points
