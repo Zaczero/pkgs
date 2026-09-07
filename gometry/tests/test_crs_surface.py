@@ -16,6 +16,30 @@ def test_crs_assignment_rejects_unknown_authority_metadata() -> None:
         gm.CRS('not-a-crs')
 
 
+@pytest.mark.parametrize(
+    'value',
+    [
+        'EPSG:not-a-code',
+        'EPSG:4294967296',
+        'EPSG:' + '1' * 100_000,
+    ],
+    ids=['malformed-suffix', 'u32-overflow', 'oversized-suffix'],
+)
+def test_crs_rejects_invalid_epsg_code_with_parse_diagnostic(value: str) -> None:
+    with pytest.raises(gm.CRSError) as excinfo:
+        gm.CRS(value)
+    assert type(excinfo.value) is gm.CRSError
+    assert str(excinfo.value) == (
+        'invalid EPSG code: expected an unsigned 32-bit decimal code'
+    )
+
+
+def test_crs_epsg_parse_diagnostic_stays_distinct_from_lookup() -> None:
+    with pytest.raises(gm.CRSError, match='could not resolve CRS'):
+        gm.CRS('EPSG:999999')
+    assert gm.CRS('epsg:4326').canonical == 'EPSG:4326'
+
+
 def test_crs_public_type_hints_resolve() -> None:
     from gometry import _lib, _types
 

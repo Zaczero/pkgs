@@ -159,9 +159,11 @@ pub(crate) fn normalize(value: &str) -> Result<String> {
     if let Some((authority, code)) = trimmed.split_once(':')
         && authority.eq_ignore_ascii_case("EPSG")
     {
-        let code = code
-            .parse::<u32>()
-            .map_err(|_| CrsError::invalid(value.to_owned()))?;
+        let code = code.parse::<u32>().map_err(|_| {
+            CrsError::invalid(
+                "invalid EPSG code: expected an unsigned 32-bit decimal code".to_owned(),
+            )
+        })?;
         return Ok(format!("EPSG:{code}"));
     }
     match trimmed {
