@@ -350,12 +350,11 @@ impl EdgeYIndex {
                 band_offsets,
                 band_items,
             } => {
-                let band = band_of(y, *min_y, *inv_band_height, band_count.get());
-                let start = band_offsets[band] as usize;
-                let end = band_offsets[band + 1] as usize;
+                let range =
+                    dense_band_range(y, *min_y, *inv_band_height, band_count.get(), band_offsets);
                 // SAFETY: EdgeId is a transparent u32 wrapper and the slice is
                 // only interpreted as edge ids from this index.
-                Some(unsafe { &*(&raw const band_items[start..end] as *const [EdgeId]) })
+                Some(unsafe { &*(&raw const band_items[range] as *const [EdgeId]) })
             },
             _ => None,
         }
@@ -363,22 +362,14 @@ impl EdgeYIndex {
 
     /// Visit candidate edge ids for probe `y`.
     ///
-    /// Dense bands reuse [`Self::dense_band_edges`]; linear and interval-tree
-    /// plans walk here. Stops early when `visit` returns [`ControlFlow::Break`].
+    /// Dense bands walk the same CSR range as [`Self::dense_band_edges`].
+    /// Stops early when `visit` returns [`ControlFlow::Break`].
     pub(crate) fn for_each_edge<B>(
         &self,
         y: f64,
         mut visit: impl FnMut(EdgeId) -> std::ops::ControlFlow<B>,
     ) -> Option<B> {
         use std::ops::ControlFlow;
-        if let Some(edges) = self.dense_band_edges(y) {
-            for &edge in edges {
-                if let ControlFlow::Break(b) = visit(edge) {
-                    return Some(b);
-                }
-            }
-            return None;
-        }
         match &self.plan {
             YPlan::Linear => {
                 for edge in 0..self.edge_count as u32 {
@@ -388,10 +379,25 @@ impl EdgeYIndex {
                 }
                 None
             },
+            YPlan::DenseBands {
+                min_y,
+                inv_band_height,
+                band_count,
+                band_offsets,
+                band_items,
+            } => {
+                let range =
+                    dense_band_range(y, *min_y, *inv_band_height, band_count.get(), band_offsets);
+                for &id in &band_items[range] {
+                    if let ControlFlow::Break(b) = visit(EdgeId(id)) {
+                        return Some(b);
+                    }
+                }
+                None
+            },
             YPlan::IntervalTree { nodes, root } => {
                 query_itree(nodes, *root, y, &mut |edge| visit(EdgeId(edge)))
             },
-            YPlan::DenseBands { .. } => None,
         }
     }
 }
@@ -435,6 +441,17 @@ impl HeapSize for ITreeNode {
 fn band_of(y: f64, min_y: f64, inv_band_height: f64, band_count: usize) -> usize {
     // Float→usize saturates out-of-range; negatives become 0.
     (((y - min_y) * inv_band_height) as usize).min(band_count.saturating_sub(1))
+}
+
+fn dense_band_range(
+    y: f64,
+    min_y: f64,
+    inv_band_height: f64,
+    band_count: usize,
+    offsets: &[u32],
+) -> std::ops::Range<usize> {
+    let band = band_of(y, min_y, inv_band_height, band_count);
+    offsets[band] as usize..offsets[band + 1] as usize
 }
 
 /// Checked dense-band sizing. Returns `Some((min_y, inv, band_count, total_refs))`
@@ -823,5 +840,24 @@ mod tests {
             broken.map(EdgeId::as_usize),
             slice.first().map(|edge| edge.as_usize())
         );
+    }
+
+    #[test]
+    fn edge_y_dense_for_each_edge_matches_slice_below_above_and_on_band_edge() {
+        let ys: Vec<f64> = (0..=128).map(f64::from).collect();
+        let index = EdgeYIndex::build(&ys);
+        let slice = index
+            .dense_band_edges(40.0)
+            .expect("short unit-span edges use dense bands");
+        for y in [-1.0, 0.0, 40.0, 128.0, 200.0] {
+            let from_slice = index
+                .dense_band_edges(y)
+                .expect("dense plan")
+                .iter()
+                .map(|edge| edge.as_usize() as u32)
+                .collect::<Vec<_>>();
+            assert_eq!(collect_edge_ids(&index, y), from_slice, "y={y}");
+        }
+        assert!(!slice.is_empty());
     }
 }
