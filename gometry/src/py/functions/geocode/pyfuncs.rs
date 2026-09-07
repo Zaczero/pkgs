@@ -2,9 +2,9 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::PackedStorage;
 use pyo3::types::PyTuple;
 
+use crate::array::PackedStorage;
 use crate::py::functions::geocode::pluscode::{
     olc_decode, olc_encode, olc_recover, olc_require_full, olc_shorten, validate_pluscode_length,
 };
@@ -22,7 +22,10 @@ fn geocode_array_codes(
     operation: impl Fn(f64, f64) -> PyResult<String>,
 ) -> PyResult<Vec<Option<String>>> {
     if array.is_compact_nullable() {
-        if !matches!(array.storage(), crate::GeometryArrayStorage::Packed(PackedStorage::Points { .. })) {
+        if !matches!(
+            array.storage(),
+            crate::GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+        ) {
             return Err(crate::py::errors::geometry_type_err(
                 "expected Point geometry",
             ));
@@ -141,7 +144,6 @@ fn geocode_encode_broadcast(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     lat: Option<&Bound<'_, PyAny>>,
-    validate_raw_domain: bool,
     operation: impl Fn(f64, f64) -> PyResult<String> + Copy,
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
@@ -188,9 +190,7 @@ fn geocode_encode_broadcast(
     )?;
     let encoded =
         crate::try_collect_results(lon.values.iter().zip(&lat.values).map(|(&lon, &lat)| {
-            if validate_raw_domain {
-                crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
-            }
+            crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
             operation(lon, lat)
         }))?;
     if scalar {
@@ -287,12 +287,7 @@ pub(crate) fn pluscode_encode(
     #[pyo3(from_py_with = crate::strict_i64)] length: i64,
 ) -> PyResult<Py<PyAny>> {
     let length = validate_pluscode_length(length)?;
-    let encode = |lon: f64, lat: f64| {
-        crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
-        Ok(olc_encode(lat, lon, length))
-    };
-    // Strict WGS84 domain for bare coordinates and geometries alike.
-    geocode_encode_broadcast(py, value, lat, true, encode)
+    geocode_encode_broadcast(py, value, lat, |lon, lat| Ok(olc_encode(lat, lon, length)))
 }
 
 /// Return the rectangular cell a plus code covers, as a WGS84 ``Polygon``.
@@ -476,7 +471,7 @@ pub(crate) fn osm_shortlink_encode(
         )));
     }
     let zoom = zoom as u8;
-    geocode_encode_broadcast(py, value, lat, true, |lon, lat| {
+    geocode_encode_broadcast(py, value, lat, |lon, lat| {
         Ok(shortlink_encode(lon, lat, zoom))
     })
 }
