@@ -5,8 +5,8 @@ use crate::geometry::constructive::{
     WalkJoinRule, winding_buffer, winding_erosion, winding_stroke,
 };
 use crate::geometry::{
-    affine_about_origin_ordinate, BufferCapStyle, CoordSeq, LineSeq, MAX_NESTING, Point, Polygon,
-    Ring, Segment, Shape, XY,
+    BufferCapStyle, CoordSeq, LineSeq, MAX_NESTING, Point, Polygon, Ring, Segment, Shape, XY,
+    affine_about_origin_ordinate,
 };
 
 #[test]
@@ -673,11 +673,12 @@ mod consecutive_dedup_tests {
 mod subdivide_columns_tests {
     use std::sync::Arc;
 
+    use geographiclib_rs::Geodesic;
+
     use super::*;
+    use crate::geographic::GeographicFrame;
     use crate::geometry::ExpansionBudget;
     use crate::geometry::constructive::{densify_points_budgeted, segmentize_points_budgeted};
-    use crate::geographic::GeographicFrame;
-    use geographiclib_rs::Geodesic;
 
     #[test]
     fn densify_xyzm_interpolates_every_ordinate_lane() {
@@ -727,10 +728,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             1_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(
-                &geodesic,
-                GeographicFrame::crs84(),
-            ),
+            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap();
@@ -759,10 +757,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             1_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(
-                &geodesic,
-                GeographicFrame::crs84(),
-            ),
+            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap();
@@ -775,18 +770,64 @@ mod subdivide_columns_tests {
     }
 
     #[test]
+    fn geographic_segmentize_consumes_sparse_plans_in_source_order() {
+        let line = CoordSeq::from_columns(
+            Arc::from([-0.0001, 0.0, 10.0, 10.0001, 20.0001, 20.0002]),
+            Arc::from([-0.0001, 0.0, 10.0, 10.0001, 20.0001, 20.0002]),
+            Some(Arc::from([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])),
+            Some(Arc::from([100.0, 200.0, 300.0, 400.0, 500.0, 600.0])),
+        );
+        let geodesic = Geodesic::wgs84();
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let segmented = segmentize_points_budgeted(
+            &line,
+            1_000_000.0,
+            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
+            &mut budget,
+        )
+        .unwrap();
+
+        // Midpoints are recorded from pyproj 3.8.0 (PROJ 9.8.1),
+        // Geod(ellps="WGS84").inv followed by fwd at half the inverse
+        // distance. The first value also anchors the existing public fixture.
+        assert_eq!(segmented.len(), 8);
+        assert_eq!(segmented.xs()[0].to_bits(), (-0.0001_f64).to_bits());
+        assert_eq!(segmented.ys()[0].to_bits(), (-0.0001_f64).to_bits());
+        assert_eq!(segmented.xs()[1].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(segmented.ys()[1].to_bits(), 0.0_f64.to_bits());
+        assert!((segmented.xs()[2] - 4.961882922527124).abs() <= 1e-12);
+        assert!((segmented.ys()[2] - 5.01950880089445).abs() <= 1e-12);
+        assert_eq!(segmented.xs()[3].to_bits(), 10.0_f64.to_bits());
+        assert_eq!(segmented.ys()[3].to_bits(), 10.0_f64.to_bits());
+        assert_eq!(segmented.xs()[4].to_bits(), 10.0001_f64.to_bits());
+        assert_eq!(segmented.ys()[4].to_bits(), 10.0001_f64.to_bits());
+        assert!((segmented.xs()[5] - 14.883313082425628).abs() <= 1e-12);
+        assert!((segmented.ys()[5] - 15.056212173359553).abs() <= 1e-12);
+        assert_eq!(segmented.xs()[6].to_bits(), 20.0001_f64.to_bits());
+        assert_eq!(segmented.ys()[6].to_bits(), 20.0001_f64.to_bits());
+        assert_eq!(segmented.xs()[7].to_bits(), 20.0002_f64.to_bits());
+        assert_eq!(segmented.ys()[7].to_bits(), 20.0002_f64.to_bits());
+        assert_eq!(segmented.zs().unwrap(), &[
+            10.0, 20.0, 25.0, 30.0, 40.0, 45.0, 50.0, 60.0
+        ]);
+        assert_eq!(segmented.ms().unwrap(), &[
+            100.0, 200.0, 250.0, 300.0, 400.0, 450.0, 500.0, 600.0
+        ]);
+    }
+
+    #[test]
     fn geographic_segmentize_keeps_antipodal_equator_on_geodesic_path() {
-        let line: CoordSeq =
-            vec![Point::new(0.0, 0.0).unwrap(), Point::new(180.0, 0.0).unwrap()].into();
+        let line: CoordSeq = vec![
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(180.0, 0.0).unwrap(),
+        ]
+        .into();
         let geodesic = Geodesic::wgs84();
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let segmented = segmentize_points_budgeted(
             &line,
             11_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(
-                &geodesic,
-                GeographicFrame::crs84(),
-            ),
+            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap();
@@ -796,7 +837,7 @@ mod subdivide_columns_tests {
     }
 
     #[test]
-    fn geographic_segmentize_does_not_charge_or_materialize_one_piece() {
+    fn geographic_segmentize_preserves_coordinates_without_charging() {
         let line: CoordSeq =
             vec![Point::new(0.0, 0.0).unwrap(), Point::new(1.0, 0.0).unwrap()].into();
         let geodesic = Geodesic::wgs84();
@@ -804,10 +845,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             2_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(
-                &geodesic,
-                GeographicFrame::crs84(),
-            ),
+            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap();

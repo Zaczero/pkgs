@@ -102,7 +102,7 @@ def test_geographic_fraction_densify_matches_geodesic_sampling_scalar_and_bulk()
     length_bulk = gm.GeometryArray([line]).segmentize(1_000_000.0)[0]
 
     assert tuple(scalar.coords[1]) == pytest.approx(
-        (4.961882922527124, 5.01950880089445), abs=1e-12
+        (4.961882922527124, 5.01950880089445), abs=1e-12, rel=0.0
     )
     assert tuple(scalar.coords[1]) == pytest.approx((expected.x, expected.y))
     assert tuple(bulk.coords[1]) == pytest.approx((expected.x, expected.y))
@@ -140,7 +140,7 @@ def test_geographic_segmentize_preserves_xyzm_and_array_metadata_with_missing_ro
     )
 
     assert refined.is_missing.tolist() == [False, True]
-    assert refined.crs == 'EPSG:4326'
+    assert refined.crs is not None and refined.crs.to_epsg() == 4326
     assert refined.epoch == 2020.0
     assert refined[0].coords.to_nested() == pytest.approx(
         [
@@ -149,6 +149,7 @@ def test_geographic_segmentize_preserves_xyzm_and_array_metadata_with_missing_ro
             (10.0, 10.0, 30.0, 300.0),
         ],
         abs=1e-12,
+        rel=0.0,
     )
 
 
@@ -181,14 +182,14 @@ def test_geographic_lrs_scalar_and_bulk_keep_the_same_seam_or_pole_path(
 
     scalar = line.line_interpolate(50.0, basis='m')
     bulk = array.line_interpolate([50.0], basis='m')[0]
-    assert (scalar.x, scalar.y) == pytest.approx(expected_xy, abs=1e-12)
-    assert (bulk.x, bulk.y) == pytest.approx(expected_xy, abs=1e-12)
+    assert (scalar.x, scalar.y) == pytest.approx(expected_xy, abs=1e-12, rel=0.0)
+    assert (bulk.x, bulk.y) == pytest.approx(expected_xy, abs=1e-12, rel=0.0)
     for substring in (
         line.line_substring(25.0, 75.0, basis='m'),
         array.line_substring(25.0, 75.0, basis='m')[0],
     ):
         assert [tuple(point[:2]) for point in substring.coords] == pytest.approx(
-            expected_substring_xy, abs=1e-12
+            expected_substring_xy, abs=1e-12, rel=0.0
         )
     assert line.line_locate(expected, basis='m') == pytest.approx(50.0, abs=1e-7)
     assert array.line_locate(gm.GeometryArray([expected]), basis='m')[

@@ -295,17 +295,14 @@ pub(crate) fn segmentize_points_budgeted(
         // contains an interior vertex. The empty vector preserves the
         // zero-generated path's existing storage behavior.
         let mut solutions = Vec::new();
-        let steps = line_segments(points)
-            .enumerate()
-            .map(|(segment_index, _segment)| {
-                let plan = geodesic_segment_plan(geodesic, frame, points, segment_index)?;
-                let steps = segmentize_steps(plan.solution.3, max_segment_length);
-                if steps.max(1) > 1 {
-                    crate::boundary::try_push_vec(&mut solutions, plan)?;
-                }
-                Ok(steps)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let steps = collect_steps(points, |segment_index, _segment| {
+            let plan = geodesic_segment_plan(geodesic, frame, points, segment_index)?;
+            let steps = segmentize_steps(plan.solution.3, max_segment_length);
+            if steps.max(1) > 1 {
+                crate::boundary::try_push_vec(&mut solutions, plan)?;
+            }
+            Ok(steps)
+        })?;
         return subdivide_columns_from_steps(
             points,
             SubdivisionEmission::Geodesic(GeodesicEmitter::retained(
@@ -317,17 +314,15 @@ pub(crate) fn segmentize_points_budgeted(
             budget,
         );
     }
-    // Measure a segment the same way the vertices will be placed, or the step
-    // count and the geometry disagree: a geodesic placement measured planarly
-    // would emit pieces longer than requested near the poles.
-    let length_of = |segment: Segment| match placement {
-        SegmentPlacement::Planar => Ok(point_distance(segment.start, segment.end)),
-        SegmentPlacement::Geodesic(..) => unreachable!("geodesic placement handled above"),
-    };
     subdivide_columns(
         points,
-        placement,
-        |segment| length_of(segment).map(|length| segmentize_steps(length, max_segment_length)),
+        SegmentPlacement::Planar,
+        |segment| {
+            Ok(segmentize_steps(
+                point_distance(segment.start, segment.end),
+                max_segment_length,
+            ))
+        },
         budget,
     )
 }
@@ -696,6 +691,18 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
     }
 }
 
+fn collect_steps(
+    points: &CoordSeq,
+    mut steps_for: impl FnMut(usize, Segment) -> Result<usize>,
+) -> Result<Vec<usize>> {
+    let mut steps = Vec::new();
+    for (segment_index, segment) in line_segments(points).enumerate() {
+        let step_count = steps_for(segment_index, segment)?;
+        crate::boundary::try_push_vec(&mut steps, step_count)?;
+    }
+    Ok(steps)
+}
+
 /// Split every segment of a chain into `steps_for(segment)` equal pieces,
 /// keeping every original vertex — the shared engine behind `segmentize`
 /// (length-driven) and `densify` (fraction-driven). Columnar: every
@@ -704,7 +711,7 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
 pub(crate) fn subdivide_columns(
     points: &CoordSeq,
     placement: SegmentPlacement<'_>,
-    steps_for: impl Fn(Segment) -> Result<usize>,
+    mut steps_for: impl FnMut(Segment) -> Result<usize>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     let count = points.len();
@@ -713,9 +720,7 @@ pub(crate) fn subdivide_columns(
     }
     // `steps_for` runs once per segment (not per output vertex); the exact
     // output size keeps every column a single allocation.
-    let steps: Vec<usize> = line_segments(points)
-        .map(steps_for)
-        .collect::<Result<_>>()?;
+    let steps = collect_steps(points, |_, segment| steps_for(segment))?;
     subdivide_columns_from_steps(
         points,
         SubdivisionEmission::recompute(placement),
