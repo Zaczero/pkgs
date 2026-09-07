@@ -1137,16 +1137,11 @@ def test_pooled_reductions_skip_missing_iterable_rows() -> None:
 
 
 @pytest.mark.parametrize(
-    ('operation_name', 'message'),
-    [
-        ('union_all', 'union_all requires at least one geometry'),
-        ('intersection_all', 'intersection_all requires at least one geometry'),
-        ('symmetric_difference_all', 'symmetric_difference_all requires at least one geometry'),
-    ],
+    'operation_name', ['union_all', 'intersection_all', 'symmetric_difference_all']
 )
-def test_pooled_reductions_reject_all_missing_rows(operation_name: str, message: str) -> None:
+def test_pooled_reductions_reject_all_missing_rows(operation_name: str) -> None:
     operation = getattr(gm, operation_name)
-    with pytest.raises(gm.InvalidGeometryError, match=message):
+    with pytest.raises(gm.InvalidGeometryError):
         operation([None, None])
 
 

@@ -55,23 +55,6 @@ pub(crate) fn drop_collinear_vertices(mut vertices: Vec<Point>) -> Vec<Point> {
     kept
 }
 
-/// Canonicalize overlay buckets into the narrowest representable `Shape`.
-///
-/// Points and lines covered by the polygon output are absorbed (a piece inside
-/// or on a polygon is not an independent component). Each surviving bucket
-/// narrows to a leaf or multi-geometry; mixed dimensions yield a
-/// `GeometryCollection` ordered by ascending dimension (point, line, polygon).
-/// Dissolve polyline `edges` into maximal connected chains: concatenate
-/// through every shared endpoint of degree exactly 2 and split at chain termini
-/// and degree-`>= 3` junctions, preserving each edge's interior vertices.
-/// Endpoint identity uses [`PointKey`] (canonical signed-zero), so a
-/// `+0.0`/`-0.0` joint still merges. This is the noded `LineMerger` shared by
-/// [`Shape::line_merge`] (edges are the input `LineString`s) and the overlay
-/// line sink (edges are atomic noded segments), so one degree-aware dissolve
-/// drives both — a Y/T junction splits all its arms instead of fusing two
-/// through it. Deterministic and hash-order independent: open chains seed from
-/// barrier endpoints in first-seen edge order, then any remaining all-degree-2
-/// cycles are walked from their lowest unused edge.
 /// One edge of a linework arrangement as the dissolve sees it: its two end
 /// keys, and its points streamed in either direction.
 pub(crate) trait ChainEdge {
@@ -241,6 +224,15 @@ pub(crate) fn build_overlay_shape(
     build_overlay_shape_from_chains(points, merge_chains(lines), polygons)
 }
 
+/// Canonicalize overlay buckets into the narrowest representable `Shape`.
+///
+/// Points and lines covered by the polygon output are absorbed (a piece inside
+/// or on a polygon is not an independent component). Each surviving bucket
+/// narrows to a leaf or multi-geometry; mixed dimensions yield a
+/// `GeometryCollection` ordered by ascending dimension (point, line, polygon).
+/// The n-ary overlay owner applies operation-specific typed-empty normalization
+/// after this bucket assembly returns an empty result.
+///
 /// [`build_overlay_shape`] for a lane that dissolved its linework itself.
 #[expect(
     clippy::redundant_closure_for_method_calls,

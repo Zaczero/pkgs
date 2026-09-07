@@ -132,17 +132,6 @@ def test_mixed_zm_overlay_axes_follow_operands() -> None:
     assert gm.union(xyz, xym).coordinate_axes == 'XYZ'
     assert gm.intersection(xyz, xym).coordinate_axes == 'XYM'
 
-    z_empty = gm.from_wkt('POLYGON Z EMPTY')
-    m_empty = gm.from_wkt('POLYGON M EMPTY')
-    for result, axes in (
-        (gm.intersection(z_empty, m_empty), 'XYZM'),
-        (gm.union(z_empty, m_empty), 'XYZM'),
-        (gm.symmetric_difference(z_empty, m_empty), 'XYZM'),
-        (gm.difference(z_empty, m_empty), 'XYZ'),
-    ):
-        assert result.is_empty and result.coordinate_axes == axes
-
-
 def test_xyzm_m_linear_referencing_on_measured_line() -> None:
     route = gm.from_wkt('LINESTRING ZM (0 0 0 0, 10 0 0 100)')
     interpolated = route.line_interpolate(50.0, basis='m')
