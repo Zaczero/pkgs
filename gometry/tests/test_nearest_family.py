@@ -35,46 +35,41 @@ def _xy(point: gm.Geometry) -> tuple[float, float]:
     return (float(point.coords.x[0]), float(point.coords.y[0]))
 
 
-def _assert_shortest_line_matches_oracles(
-    line: gm.Geometry, left: gm.Geometry, right: gm.Geometry
+_ANTIMERIDIAN_LONGITUDES = frozenset({180.0, -180.0})
+
+
+def _assert_lonlat(
+    got: tuple[float, float], expected: tuple[float, float]
 ) -> None:
-    scalar = gm.shortest_line(left, right)
-    first, second = gm.nearest_points(left, right)
+    gx, gy = got
+    ex, ey = expected
+    assert gy == pytest.approx(ey, rel=0.0, abs=0.0)
+    if ex in _ANTIMERIDIAN_LONGITUDES:
+        assert gx in _ANTIMERIDIAN_LONGITUDES
+    else:
+        assert gx == pytest.approx(ex, rel=0.0, abs=0.0)
+
+
+def _assert_shortest_line_row(
+    line: gm.Geometry,
+    want: tuple[tuple[float, float], tuple[float, float]],
+    left: gm.Geometry,
+    right: gm.Geometry,
+) -> None:
     ends = _endpoints(line)
-    assert ends == pytest.approx(_endpoints(scalar))
-    assert ends[0] == pytest.approx(_xy(first))
-    assert ends[1] == pytest.approx(_xy(second))
+    _assert_lonlat(ends[0], want[0])
+    _assert_lonlat(ends[1], want[1])
+    scalar_ends = _endpoints(gm.shortest_line(left, right))
+    first, second = gm.nearest_points(left, right)
+    _assert_lonlat(ends[0], scalar_ends[0])
+    _assert_lonlat(ends[1], scalar_ends[1])
+    _assert_lonlat(ends[0], _xy(first))
+    _assert_lonlat(ends[1], _xy(second))
     assert line.crs == left.crs
     assert line.epoch == left.epoch
     assert line.coordinate_axes == 'XY'
     assert not line.has_z
     assert not line.has_m
-
-
-def _assert_fixed_array_shortest_line_layouts(
-    fixed: gm.Geometry, present: list[gm.Geometry]
-) -> None:
-    dense = gm.GeometryArray(present)
-    scalar_left = gm.shortest_line(fixed, dense)
-    array_left = gm.shortest_line(dense, fixed)
-    assert scalar_left.is_missing.tolist() == [False, False]
-    assert array_left.is_missing.tolist() == [False, False]
-    assert scalar_left.crs == fixed.crs
-    assert scalar_left.epoch == fixed.epoch
-    assert array_left.crs == dense.crs
-    assert array_left.epoch == dense.epoch
-    for index, value in enumerate(present):
-        _assert_shortest_line_matches_oracles(scalar_left[index], fixed, value)
-        _assert_shortest_line_matches_oracles(array_left[index], value, fixed)
-
-    nullable = gm.GeometryArray([present[0], None, present[1]])
-    nullable_left = gm.shortest_line(nullable, fixed)
-    assert nullable_left.is_missing.tolist() == [False, True, False]
-    assert nullable_left[1] is None
-    assert nullable_left.crs == nullable.crs
-    assert nullable_left.epoch == nullable.epoch
-    _assert_shortest_line_matches_oracles(nullable_left[0], present[0], fixed)
-    _assert_shortest_line_matches_oracles(nullable_left[2], present[1], fixed)
 
 
 _CROSS_TYPES = [
@@ -399,19 +394,124 @@ class TestGeodesic:
             gm.shortest_line(point, line, unit='planar')
         ).to_wkt() == 'LINESTRING (0.5 0.5, 0.5 0)'
 
-    def test_seam_linework_witness_matches_scalar_and_nearest_points(self) -> None:
+    @pytest.mark.parametrize(
+        ('layout', 'fixed_is_left', 'expected'),
+        [
+            pytest.param(
+                'dense',
+                True,
+                [((180.0, 1.0), (180.0, 0.0)), ((180.0, 1.0), (170.0, 1.0))],
+                id='dense-scalar-left',
+            ),
+            pytest.param(
+                'dense',
+                False,
+                [((180.0, 0.0), (180.0, 1.0)), ((170.0, 1.0), (180.0, 1.0))],
+                id='dense-array-left',
+            ),
+            pytest.param(
+                'nullable',
+                False,
+                [((180.0, 0.0), (180.0, 1.0)), ((170.0, 1.0), (180.0, 1.0))],
+                id='nullable-array-left',
+            ),
+        ],
+    )
+    def test_seam_shortest_line_endpoints_are_antimeridian_foot_and_inputs(
+        self,
+        layout: str,
+        fixed_is_left: bool,
+        expected: list[tuple[tuple[float, float], tuple[float, float]]],
+    ) -> None:
+        # Equatorial 179→-179 is the 2° seam segment. (180, 1) sits on that
+        # meridian, so the foot is (180, 0), the same meridian as (-180, 0).
+        # The second row is point-point, so the vertices are the inputs.
         crossing = gm.LineString(
             [(179.0, 0.0), (-179.0, 0.0)], crs=4326, epoch=2020.0
         )
         plain = gm.Point(170.0, 1.0, crs=4326, epoch=2020.0)
         probe = gm.Point(180.0, 1.0, crs=4326, epoch=2020.0)
-        _assert_fixed_array_shortest_line_layouts(probe, [crossing, plain])
+        if layout == 'dense':
+            array = gm.GeometryArray([crossing, plain])
+            missing = [False, False]
+            pairs = [(crossing, expected[0]), (plain, expected[1])]
+        else:
+            array = gm.GeometryArray([crossing, None, plain])
+            missing = [False, True, False]
+            pairs = [(crossing, expected[0]), (None, None), (plain, expected[1])]
+        result = (
+            gm.shortest_line(probe, array)
+            if fixed_is_left
+            else gm.shortest_line(array, probe)
+        )
+        left_frame = probe if fixed_is_left else array
+        assert result.is_missing.tolist() == missing
+        assert result.crs == left_frame.crs
+        assert result.epoch == left_frame.epoch
+        for index, (value, want) in enumerate(pairs):
+            line = result[index]
+            if value is None:
+                assert line is None
+                continue
+            left, right = (probe, value) if fixed_is_left else (value, probe)
+            _assert_shortest_line_row(line, want, left, right)
 
-    def test_pole_point_witness_matches_scalar_and_nearest_points(self) -> None:
+    @pytest.mark.parametrize(
+        ('layout', 'fixed_is_left', 'expected'),
+        [
+            pytest.param(
+                'dense',
+                True,
+                [((0.0, 89.0), (0.0, 90.0)), ((0.0, 89.0), (180.0, 89.0))],
+                id='dense-scalar-left',
+            ),
+            pytest.param(
+                'dense',
+                False,
+                [((0.0, 90.0), (0.0, 89.0)), ((180.0, 89.0), (0.0, 89.0))],
+                id='dense-array-left',
+            ),
+            pytest.param(
+                'nullable',
+                False,
+                [((0.0, 90.0), (0.0, 89.0)), ((180.0, 89.0), (0.0, 89.0))],
+                id='nullable-array-left',
+            ),
+        ],
+    )
+    def test_pole_shortest_line_endpoints_are_input_points(
+        self,
+        layout: str,
+        fixed_is_left: bool,
+        expected: list[tuple[tuple[float, float], tuple[float, float]]],
+    ) -> None:
         pole = gm.Point(0.0, 90.0, crs=4326, epoch=2020.0)
         high = gm.Point(180.0, 89.0, crs=4326, epoch=2020.0)
         probe = gm.Point(0.0, 89.0, crs=4326, epoch=2020.0)
-        _assert_fixed_array_shortest_line_layouts(probe, [pole, high])
+        if layout == 'dense':
+            array = gm.GeometryArray([pole, high])
+            missing = [False, False]
+            pairs = [(pole, expected[0]), (high, expected[1])]
+        else:
+            array = gm.GeometryArray([pole, None, high])
+            missing = [False, True, False]
+            pairs = [(pole, expected[0]), (None, None), (high, expected[1])]
+        result = (
+            gm.shortest_line(probe, array)
+            if fixed_is_left
+            else gm.shortest_line(array, probe)
+        )
+        left_frame = probe if fixed_is_left else array
+        assert result.is_missing.tolist() == missing
+        assert result.crs == left_frame.crs
+        assert result.epoch == left_frame.epoch
+        for index, (value, want) in enumerate(pairs):
+            line = result[index]
+            if value is None:
+                assert line is None
+                continue
+            left, right = (probe, value) if fixed_is_left else (value, probe)
+            _assert_shortest_line_row(line, want, left, right)
 
 
 class TestCrossingWitnessIsCertified:
