@@ -285,8 +285,11 @@ impl PyGeometryArray {
         ))
     }
 
-    pub(crate) fn self_intersections_impl(&self) -> PyResult<crate::py::vectors::Groups> {
-        crate::py::vectors::Groups::from_self_intersection_rows(self)
+    pub(crate) fn self_intersections_impl(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<crate::py::vectors::Groups> {
+        crate::py::vectors::Groups::from_self_intersection_rows(py, self)
     }
 
     pub(crate) fn equals_exact(

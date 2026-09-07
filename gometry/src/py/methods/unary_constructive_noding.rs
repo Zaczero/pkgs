@@ -68,7 +68,7 @@ impl PyGeometryArray {
         self.extremes_impl(py)
     }
     #[doc = doc_self_intersections!(array)]
-    pub fn self_intersections(&self) -> PyResult<crate::py::vectors::Groups> {
-        self.self_intersections_impl()
+    pub fn self_intersections(&self, py: Python<'_>) -> PyResult<crate::py::vectors::Groups> {
+        self.self_intersections_impl(py)
     }
 }

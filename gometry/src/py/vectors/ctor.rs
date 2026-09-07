@@ -2,7 +2,11 @@
 //! outputs (usize ids cast zero-copy to i64) plus the ragged-row
 //! collectors for geometry and cell fan-outs.
 
+use pyo3::Python;
+
 use crate::CsrBuilder;
+use crate::error::Result;
+use crate::geometry::TopologyDomain;
 use crate::py::vectors::{
     Arc, GeometryError, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray,
     PyOverflowError, PyResult, Range, Shape, validate_csr_offsets,
@@ -179,33 +183,16 @@ impl Groups {
     }
 
     /// Element-wise self-intersection rows as one flat geometry column.
-    pub fn from_self_intersection_rows(array: &PyGeometryArray) -> PyResult<Self> {
-        let mut builder = CsrBuilder::<Shape>::new();
+    pub fn from_self_intersection_rows(
+        py: Python<'_>,
+        array: &PyGeometryArray,
+    ) -> PyResult<Self> {
         let domain = crate::geometry::topology_domain(&array.frame)?;
-        for row in array.row_operation().rows_with_missing(|| ()) {
-            match row {
-                crate::array::ArrayRow::Missing { .. } => builder
-                    .push_row(std::iter::empty())
-                    .map_err(pyo3::PyErr::from)?,
-                crate::array::ArrayRow::Present(row) => row
-                    .row()
-                    .with_shape(|shape| {
-                        builder.push_row(
-                            crate::geometry::self_intersections_in_frame(shape, domain)
-                                .into_iter()
-                                .map(Shape::Point),
-                        )
-                    })
-                    .map_err(pyo3::PyErr::from)?,
-            }
-        }
-        let (shapes, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
-        let values = Arc::new(PyGeometryArray::from_shapes(shapes, array.frame.clone()));
-        let rows = offsets
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
-        Self::from_geometry_csr(values, offsets.into(), 0..rows)
+        let builder = match py.detach(|| self_intersection_csr(array, domain)) {
+            Ok(builder) => builder,
+            Err(error) => return Err(error.into()),
+        };
+        Self::from_geometry_builder(array.frame.clone(), builder)
     }
 
     pub(super) fn from_cell_csr(
@@ -252,5 +239,162 @@ impl Groups {
             .checked_sub(1)
             .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
         Self::from_cell_csr(values, offsets.into(), 0..n)
+    }
+}
+
+fn self_intersection_csr(
+    array: &PyGeometryArray,
+    domain: TopologyDomain,
+) -> Result<CsrBuilder<Shape>> {
+    let mut builder = CsrBuilder::<Shape>::new();
+    for row in array.row_operation().rows_with_missing(|| ()) {
+        match row {
+            crate::array::ArrayRow::Missing { .. } => builder.push_row(std::iter::empty())?,
+            crate::array::ArrayRow::Present(row) => row.row().with_shape(|shape| {
+                builder.push_row(
+                    crate::geometry::self_intersections_in_frame(shape, domain)
+                        .into_iter()
+                        .map(Shape::Point),
+                )
+            })?,
+        }
+    }
+    Ok(builder)
+}
+
+#[cfg(test)]
+mod self_intersection_csr_tests {
+    use pyo3::prelude::*;
+
+    use super::{self_intersection_csr, Groups, GroupsValues};
+    use crate::array::ValidityMask;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::Shape;
+    use crate::array::PyGeometryArray;
+    use crate::boundary::{Frame, crs_arc_static};
+    use crate::io::parse_wkt;
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn line(wkt: &str) -> Shape {
+        parse_wkt(wkt).expect("test WKT")
+    }
+
+    fn domain(array: &PyGeometryArray) -> crate::geometry::TopologyDomain {
+        crate::geometry::topology_domain(&array.frame).expect("topology domain")
+    }
+
+    fn kernel_allocations(array: &PyGeometryArray) -> usize {
+        let domain = domain(array);
+        allocation_count(|| {
+            for row in array.row_operation().rows_with_missing(|| ()) {
+                if let crate::array::ArrayRow::Present(row) = row {
+                    row.row().with_shape(|shape| {
+                        let _ = crate::geometry::self_intersections_in_frame(shape, domain);
+                    });
+                }
+            }
+        })
+        .1
+    }
+
+    #[test]
+    fn crossing_line_keeps_the_intersection_point() {
+        let array = PyGeometryArray::from_shapes(
+            vec![line("LINESTRING (0 0, 2 0, 1 1, 1 -1)")],
+            Frame::None,
+        );
+        let (shapes, offsets) = self_intersection_csr(&array, domain(&array))
+            .expect("CSR walk")
+            .finish()
+            .expect("finish");
+        assert_eq!(offsets, [0, 1]);
+        let Shape::Point(point) = shapes[0] else {
+            panic!("intersection is a point");
+        };
+        assert_eq!((point.x, point.y), (1.0, 0.0));
+    }
+
+    #[test]
+    fn missing_and_empty_rows_keep_empty_offsets() {
+        let array = PyGeometryArray::from_shapes(
+            vec![
+                line("LINESTRING (0 0, 2 0, 1 1, 1 -1)"),
+                line("LINESTRING (0 0, 1 0)"),
+                line("LINESTRING EMPTY"),
+            ],
+            Frame::None,
+        )
+        .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]));
+        let (shapes, offsets) = self_intersection_csr(&array, domain(&array))
+            .expect("CSR walk")
+            .finish()
+            .expect("finish");
+        assert_eq!(offsets, [0, 1, 1, 1]);
+        assert_eq!(shapes.len(), 1);
+        let Shape::Point(point) = shapes[0] else {
+            panic!("intersection is a point");
+        };
+        assert_eq!((point.x, point.y), (1.0, 0.0));
+    }
+
+    #[test]
+    fn groups_reuse_the_input_frame() {
+        crate::test_support::initialize_python();
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("frame");
+        let array = PyGeometryArray::from_shapes(
+            vec![line("LINESTRING (0 0, 1 0)")],
+            frame.clone(),
+        );
+        let groups = Python::attach(|py| Groups::from_self_intersection_rows(py, &array))
+            .expect("groups");
+        let GroupsValues::Geometry(values) = &groups.values else {
+            panic!("geometry groups");
+        };
+        assert_eq!(values.frame, frame);
+        assert_eq!(groups.offsets.as_ref(), &[0, 0]);
+    }
+
+    #[test]
+    fn csr_allocation_failure_is_native_until_the_closure_exits() {
+        let array = PyGeometryArray::from_shapes(
+            vec![line("LINESTRING (0 0, 1 0)")],
+            Frame::None,
+        );
+        let domain = domain(&array);
+        let _ = kernel_allocations(&array);
+        drop(
+            self_intersection_csr(&array, domain).expect("warm walk before the fault window"),
+        );
+        let kernel = kernel_allocations(&array);
+        let (_, walk) = allocation_count(|| {
+            self_intersection_csr(&array, domain).expect("walk succeeds without a fault window")
+        });
+        assert!(
+            walk > kernel,
+            "CSR row growth must allocate after the infallible kernel (kernel={kernel}, walk={walk})"
+        );
+        let error = match fail_allocations_after(kernel, || self_intersection_csr(&array, domain)) {
+            Err(error) => error,
+            Ok(_) => panic!("offset growth must fail under rejection"),
+        };
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        crate::test_support::initialize_python();
+        let pyerr: PyErr = error.into();
+        Python::attach(|py| {
+            let value = pyerr.value(py);
+            if let Ok(notes) = value.getattr("__notes__") {
+                let notes: Vec<String> = notes.extract().unwrap_or_default();
+                assert!(
+                    notes
+                        .iter()
+                        .all(|note| !note.contains("array element")),
+                    "allocation failure must not grow a row note: {notes:?}"
+                );
+            }
+            drop(pyerr);
+        });
     }
 }
