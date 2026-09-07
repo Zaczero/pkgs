@@ -79,7 +79,10 @@ pub(crate) fn s2_cells(
     )
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled S2Cell from its 64-bit id (internal; see
 /// ``S2Cell.__reduce__``).
 #[pyfunction]
@@ -137,12 +140,11 @@ pub(crate) fn _unpickle_s2_cell(
 #[pyfunction]
 pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
     use crate::py::errors::InvalidGeometryError;
-    use crate::{exact_geometry, exact_geometry_array, lonlat_shape, validate_lonlat_shape};
+    use crate::{exact_geometry, exact_geometry_array, lonlat_shape};
 
     // Kernel routes single-point → L30 leaf and multi-point/region → R18 bbox.
     if let Some(geometry) = exact_geometry(value) {
         let shape = lonlat_shape(geometry)?;
-        validate_lonlat_shape(&shape)?;
         if shape.is_empty() {
             return Err(InvalidGeometryError::new_err(
                 "bounding cell requires a non-empty geometry",
@@ -155,7 +157,6 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
         let mut parts = Vec::new();
         for (_, shape) in array.present_shape_rows() {
             let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
-            validate_lonlat_shape(&shape)?;
             if !shape.is_empty() {
                 crate::try_push(&mut parts, shape)?;
             }

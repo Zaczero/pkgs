@@ -10,10 +10,7 @@ use crate::py::cells::{
     Shape, lonlat_shape,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
-use crate::{
-    PyGeometry, Typed, exact_geometry, exact_geometry_array,
-    expected_geometry_or_array, validate_lonlat_shape,
-};
+use crate::{PyGeometry, Typed, exact_geometry, exact_geometry_array, expected_geometry_or_array};
 
 /// Collect one cell identity or any iterable of identities.
 ///
@@ -80,25 +77,30 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
     use crate::geometry::Bounds;
     if let Some(geometry) = exact_geometry(value) {
         let shape = lonlat_shape(geometry)?;
-        validate_lonlat_shape(&shape)?;
         let bounds = if shape.crosses_antimeridian() {
             crate::geometry::geographic_crossing_bounds(&shape)
         } else {
             shape.bounds()
         };
-        return bounds.map_or_else(|| Err(InvalidGeometryError::new_err(
-                "bounding cell requires a non-empty geometry",
-            )), |bounds| Ok(BoundingQueryRegion {
-                bounds,
-                crosses_antimeridian: shape.crosses_antimeridian(),
-            }));
+        return bounds.map_or_else(
+            || {
+                Err(InvalidGeometryError::new_err(
+                    "bounding cell requires a non-empty geometry",
+                ))
+            },
+            |bounds| {
+                Ok(BoundingQueryRegion {
+                    bounds,
+                    crosses_antimeridian: shape.crosses_antimeridian(),
+                })
+            },
+        );
     }
     if let Some(array) = exact_geometry_array(value) {
         let crs = array.crs_str();
         let mut shapes = Vec::new();
         for (_, shape) in array.present_shape_rows() {
             let shape = crate::lonlat_shape_under(&shape, crs)?;
-            validate_lonlat_shape(&shape)?;
             if !shape.is_empty() {
                 crate::try_push(&mut shapes, shape.into_owned())?;
             }
@@ -117,12 +119,19 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
         } else {
             shape.bounds()
         };
-        return bounds.map_or_else(|| Err(InvalidGeometryError::new_err(
-                "bounding cell requires a non-empty geometry",
-            )), |bounds| Ok(BoundingQueryRegion {
-                bounds,
-                crosses_antimeridian: shape.crosses_antimeridian(),
-            }));
+        return bounds.map_or_else(
+            || {
+                Err(InvalidGeometryError::new_err(
+                    "bounding cell requires a non-empty geometry",
+                ))
+            },
+            |bounds| {
+                Ok(BoundingQueryRegion {
+                    bounds,
+                    crosses_antimeridian: shape.crosses_antimeridian(),
+                })
+            },
+        );
     }
     let values = match crate::parameter_values_exact(value.py(), value, "bounds", 4, |got| {
         GeometryError::new_err(format!("bounds must contain exactly 4 values, got {got}"))
@@ -287,13 +296,9 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     if !cells.as_slice().iter().all(|cell| cell.depth() == depth) {
         return Ok(None);
     }
-    let capacity = cells
-        .as_slice()
-        .len()
-        .checked_mul(4)
-        .ok_or_else(|| {
-            crate::py::errors::native_overflow_error("coverage outline size overflows usize")
-        })?;
+    let capacity = cells.as_slice().len().checked_mul(4).ok_or_else(|| {
+        crate::py::errors::native_overflow_error("coverage outline size overflows usize")
+    })?;
     let mut outline = crate::try_vec_with_capacity(capacity)?;
     for cell in cells.as_slice() {
         let bounds = cell.bounds();

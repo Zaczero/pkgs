@@ -62,6 +62,13 @@ def test_pluscode_rejects_out_of_range_bare_coordinates() -> None:
         gm.pluscode_encode(0.0, float('inf'))
     with pytest.raises(gm.InvalidGeometryError):
         gm.pluscode_encode(gm.Point(181.0, 91.0, crs=4326))
+    match_point = r'invalid longitude/latitude \(0, 95\)'
+    with pytest.raises(gm.InvalidGeometryError, match=match_point):
+        gm.pluscode_encode(gm.Point(0.0, 95.0, crs=4326))
+    with pytest.raises(gm.InvalidGeometryError, match=match_point):
+        gm.pluscode_encode(gm.GeometryArray([gm.Point(0.0, 95.0, crs=4326)]))
+    projected = gm.Point(8.628, 47.366, crs=4326).to_crs(3857)
+    assert gm.pluscode_encode(projected) == '8FVC9J8H+C6'
     # In-domain still encodes.
     assert isinstance(gm.pluscode_encode(-179.0, 20.0), str)
 

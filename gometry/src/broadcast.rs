@@ -21,7 +21,7 @@ use crate::{
     Python, Shape, ShapeData, broadcast_coordinate_input, coerce_geojson_geometry_value,
     coordinate_input_with_expected, coordinate_sequence_len_hint, crs, crs_arc, float64_array,
     geometry_type_err, is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value,
-    point_distance, scalar_vs_shapes, validate_lonlat_shape,
+    point_distance, scalar_vs_shapes,
 };
 mod element;
 pub(crate) use element::BulkElement;
@@ -38,15 +38,14 @@ pub(crate) use input::{
 };
 mod metrics;
 pub(crate) use metrics::{
-    DistanceUnit, FrechetMode, HausdorffMode, OptionalDensifyParam, SimilarityMode, SimilarityOp,
-    array_crs_distances, array_crs_dwithin, array_crs_dwithin_per_element, array_crs_metric_float,
-    array_crs_similarity_metric_per_densify, crs_metric_binary_geometry_broadcast, lonlat_points,
-    lonlat_shape, lonlat_shape_under, LonLatPointsError,
-    metric_frechet_densified, metric_hausdorff_densified,
-    metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_nearest_points, metric_shortest_line, pair_distance_geodesic, pair_distance_planar,
-    pair_dwithin_geodesic, pair_dwithin_planar, require_point, resolve_metric, resolve_metric_3d,
-    validate_densify,
+    DistanceUnit, FrechetMode, HausdorffMode, LonLatPointsError, OptionalDensifyParam,
+    SimilarityMode, SimilarityOp, array_crs_distances, array_crs_dwithin,
+    array_crs_dwithin_per_element, array_crs_metric_float, array_crs_similarity_metric_per_densify,
+    crs_metric_binary_geometry_broadcast, lonlat_points, lonlat_shape, lonlat_shape_under,
+    metric_frechet_densified, metric_hausdorff_densified, metric_maximum_inscribed_radius,
+    metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points,
+    metric_shortest_line, pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic,
+    pair_dwithin_planar, require_point, resolve_metric, resolve_metric_3d, validate_densify,
 };
 mod predicates;
 pub(crate) use predicates::{

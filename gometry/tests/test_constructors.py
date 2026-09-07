@@ -382,17 +382,32 @@ def test_points_numpy_rejects_nonfinite_coordinates() -> None:
 
 
 def test_lonlat_range_validation_on_grid_paths() -> None:
-    with pytest.raises(ValueError, match='invalid longitude/latitude'):
+    match_lon = r'invalid longitude/latitude \(181, 0\)'
+    match_lat = r'invalid longitude/latitude \(0, 91\)'
+    with pytest.raises(ValueError, match=match_lon):
         gm.h3_cover(gm.box(181, 0, 182, 1, crs=4326), resolution=1)
-    with pytest.raises(ValueError, match='invalid longitude/latitude'):
+    with pytest.raises(ValueError, match=match_lon):
         gm.s2_cover(gm.box(181, 0, 182, 1, crs=4326), level=1)
     # A reflected selection image requires |latitude| > 90. Cover ingress
     # rejects it, so it can never replace raw source authority on a public
     # H3/S2 path.
-    with pytest.raises(ValueError, match='invalid longitude/latitude'):
+    with pytest.raises(ValueError, match=match_lat):
         gm.h3_cover(gm.box(0, 91, 1, 92, crs=4326), resolution=1)
-    with pytest.raises(ValueError, match='invalid longitude/latitude'):
+    with pytest.raises(ValueError, match=match_lat):
         gm.s2_cover(gm.box(0, 91, 1, 92, crs=4326), level=1)
+
+    bad = gm.Point(0.0, 95.0, crs=4326)
+    match_point = r'invalid longitude/latitude \(0, 95\)'
+    with pytest.raises(ValueError, match=match_point):
+        gm.h3_cover(gm.GeometryArray([bad]), resolution=1)
+    with pytest.raises(ValueError, match=match_point):
+        gm.geohash_cells(gm.GeometryArray([bad]), precision=6)
+
+    geographic = gm.box(13.4, 52.5, 13.5, 52.6, crs=4326)
+    projected = geographic.to_crs(3857)
+    assert list(gm.h3_cover(projected, resolution=5)) == list(
+        gm.h3_cover(geographic, resolution=5)
+    )
 
 
 def test_d21_polygon_mixed_shell_hole_axes_rejected_at_construction() -> None:

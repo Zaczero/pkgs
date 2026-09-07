@@ -7,7 +7,7 @@
 use pyo3::prelude::*;
 
 use crate::py::errors::geometry_type_err;
-use crate::{GeometryErrorKind, Point, Polygon, Shape};
+use crate::{GeometryErrorKind, Shape};
 
 pub(crate) fn invalid_lonlat_error(lon: f64, lat: f64) -> crate::error::Error {
     GeometryErrorKind::message(format!(
@@ -83,60 +83,8 @@ pub(crate) fn lonlat_rect_area_m2(bounds: crate::geometry::Bounds) -> f64 {
     EARTH_AUTHALIC_RADIUS_M * EARTH_AUTHALIC_RADIUS_M * width * band
 }
 
-pub(crate) fn validate_lonlat_shape(shape: &Shape) -> PyResult<()> {
-    match shape {
-        Shape::Point(point) => validate_lonlat_point(*point),
-        Shape::MultiPoint(points) => {
-            for point in points {
-                validate_lonlat_point(point)?;
-            }
-            Ok(())
-        },
-        Shape::LineString(points) => {
-            for point in points {
-                validate_lonlat_point(point)?;
-            }
-            Ok(())
-        },
-        Shape::MultiLineString(lines) => {
-            for line in lines {
-                for point in line {
-                    validate_lonlat_point(point)?;
-                }
-            }
-            Ok(())
-        },
-        Shape::Polygon(polygon) => validate_lonlat_polygon(polygon),
-        Shape::MultiPolygon(polygons) => {
-            for polygon in polygons {
-                validate_lonlat_polygon(polygon)?;
-            }
-            Ok(())
-        },
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                validate_lonlat_shape(geometry)?;
-            }
-            Ok(())
-        },
-        Shape::Empty(..) => Ok(()),
-    }
-}
-
-pub(crate) fn validate_lonlat_polygon(polygon: &Polygon) -> PyResult<()> {
-    for point in &polygon.shell {
-        validate_lonlat_point(point)?;
-    }
-    for hole in polygon.holes.iter() {
-        for point in hole {
-            validate_lonlat_point(point)?;
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_lonlat_point(point: Point) -> PyResult<()> {
-    Ok(validate_lonlat_xy(point.x, point.y)?)
+pub(crate) fn validate_lonlat_shape(shape: &Shape) -> crate::error::Result<()> {
+    shape.try_for_each_point(|point| validate_lonlat_xy(point.x, point.y))
 }
 
 pub(crate) fn validate_lonlat_xy(lon: f64, lat: f64) -> crate::error::Result<()> {
@@ -154,4 +102,71 @@ pub(crate) fn point_xy(shape: &Shape) -> PyResult<(f64, f64)> {
         return Err(geometry_type_err("expected Point geometry"));
     };
     Ok((point.x, point.y))
+}
+
+#[cfg(test)]
+mod validate_lonlat_shape_tests {
+    use super::validate_lonlat_shape;
+    use crate::geometry::{
+        CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point, Polygon, Ring,
+        Shape,
+    };
+
+    fn xy_seq(xs: Vec<f64>, ys: Vec<f64>) -> CoordSeq {
+        CoordSeq::from_vecs(xs, ys, None, None)
+    }
+
+    fn domain_error(shape: &Shape) -> crate::error::Error {
+        validate_lonlat_shape(shape).expect_err("expected a domain error")
+    }
+
+    fn assert_first_xy(error: crate::error::Error, lon: f64, lat: f64) {
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+        let message = error.to_string();
+        let expected = format!("invalid longitude/latitude ({lon}, {lat})");
+        assert!(message.contains(&expected), "{message}");
+        assert!(
+            !message.contains("(10, 91)"),
+            "later vertex must not replace the first: {message}"
+        );
+    }
+
+    #[test]
+    fn first_vertex_is_the_diagnostic() {
+        let shape =
+            Shape::LineString(LineSeq::try_new(xy_seq(vec![0.0, 10.0], vec![95.0, 91.0])).unwrap());
+        assert_first_xy(domain_error(&shape), 0.0, 95.0);
+    }
+
+    #[test]
+    fn polygon_reports_hole_after_in_domain_shell() {
+        let shell = Ring::closed_coordseq(xy_seq(vec![0.0, 1.0, 1.0, 0.0, 0.0], vec![
+            0.0, 0.0, 1.0, 1.0, 0.0,
+        ]))
+        .unwrap();
+        let hole =
+            Ring::closed_coordseq(xy_seq(vec![0.2, 0.3, 0.3, 0.2], vec![95.0, 0.2, 0.3, 95.0]))
+                .unwrap();
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        assert_first_xy(domain_error(&shape), 0.2, 95.0);
+    }
+
+    #[test]
+    fn collection_reports_second_member() {
+        let shape = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            Shape::Point(Point::new_raw_xy(0.0, 95.0)),
+        ])
+        .unwrap();
+        assert_first_xy(domain_error(&shape), 0.0, 95.0);
+    }
+
+    #[test]
+    fn empty_shape_is_ok() {
+        validate_lonlat_shape(&Shape::Empty(GeometryKind::Point, CoordinateAxes::XY))
+            .expect("empty has no vertices");
+    }
 }

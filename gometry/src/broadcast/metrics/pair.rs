@@ -4,17 +4,17 @@
 )]
 use pyo3::types::PyAny;
 
-use crate::NonNegative;
 use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
 use crate::broadcast::metrics::{
     Bound, CoordinateAxes, Crs, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryInput,
     GeometryKind, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData, classify_input,
-    crs, geometry_type_err, validate_lonlat_shape,
+    crs, geometry_type_err,
 };
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan};
 use crate::py::errors::InvalidGeometryError;
+use crate::{NonNegative, validate_lonlat_shape};
 
 /// Monomorphized planar/geodesic dispatch for [`crs::MetricModel`] kernels.
 fn dispatch_metric_model<R>(
@@ -214,7 +214,7 @@ pub(crate) fn resolve_metric_3d(
 pub(crate) fn lonlat_shape_under<'a>(
     shape: &'a Shape,
     crs: Option<&str>,
-) -> PyResult<std::borrow::Cow<'a, Shape>> {
+) -> crate::error::Result<std::borrow::Cow<'a, Shape>> {
     let resolved = match crs.filter(|crs| !crs::is_wgs84_lonlat(crs)) {
         Some(crs) => std::borrow::Cow::Owned(crs::transform(shape, crs, "EPSG:4326")?),
         None => std::borrow::Cow::Borrowed(shape),
@@ -1159,5 +1159,50 @@ mod lonlat_points_tests {
             lonlat_points(&array),
             Err(LonLatPointsError::Type)
         ));
+    }
+}
+
+#[cfg(test)]
+mod lonlat_shape_under_tests {
+    use super::lonlat_shape_under;
+    use crate::geometry::{GeometryErrorKind, Point, Shape};
+
+    #[test]
+    fn domain_error_is_native_result() {
+        let shape = Shape::Point(Point::new_raw_xy(0.0, 95.0));
+        let error = lonlat_shape_under(&shape, None).expect_err("out of domain");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+        let message = error.to_string();
+        assert!(
+            message.contains("invalid longitude/latitude (0, 95)"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn nad83_transform_then_domain_is_native_geometry_error() {
+        let shape = Shape::Point(Point::new_raw_xy(0.0, 95.0));
+        let transformed = crate::crs::transform(&shape, "EPSG:4269", "EPSG:4326")
+            .expect("NAD83 to WGS84 must execute for (0, 95)");
+        let Shape::Point(point) = &transformed else {
+            panic!("NAD83 point transform must yield a point, got {transformed:?}");
+        };
+        crate::validate_lonlat_shape(&transformed)
+            .expect_err("transformed (0, 95) must fail native domain");
+        let error = lonlat_shape_under(&shape, Some("EPSG:4269"))
+            .expect_err("owned-Cow path must fail domain after transform");
+        assert!(
+            matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            ),
+            "expected domain Invalid after a successful transform, got {error}"
+        );
+        let expected = format!("invalid longitude/latitude ({}, {})", point.x, point.y);
+        let message = error.to_string();
+        assert!(message.contains(&expected), "{message}");
     }
 }

@@ -6,7 +6,7 @@ use crate::broadcast::{
     GeometryError, GeometryInput, GeometryKind, Point, Py, PyAnyMethods, PyGeometry,
     PyGeometryArray, PyResult, Python, Result, Shape, ShapeData, bool_array, broadcast2_geometry,
     classify_input, classify_required, crs, float64_array, geometry_type_err, mask_missing,
-    paired_arrays, point_distance, rows_err, validate_lonlat_shape,
+    paired_arrays, point_distance, rows_err,
 };
 
 crate::tokens::token_enum! {
@@ -34,10 +34,10 @@ pub(crate) use arrays::{
     crs_metric_binary_geometry_broadcast,
 };
 pub(crate) use pair::{
-    OptionalDensifyParam, binary_frame_crs, geodesic_point_columns_dwithin_shape_values,
-    geodesic_point_columns_to_shape_values, lonlat_points, lonlat_shape, lonlat_shape_under,
-    LonLatPointsError,
-    metric_frechet_densified, metric_frechet_densified_with_scratch, metric_hausdorff_densified,
+    LonLatPointsError, OptionalDensifyParam, binary_frame_crs,
+    geodesic_point_columns_dwithin_shape_values, geodesic_point_columns_to_shape_values,
+    lonlat_points, lonlat_shape, lonlat_shape_under, metric_frechet_densified,
+    metric_frechet_densified_with_scratch, metric_hausdorff_densified,
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
     metric_nearest_points, metric_shortest_line, pair_distance_geodesic, pair_distance_planar,
     pair_dwithin_geodesic, pair_dwithin_planar, require_nonempty_hausdorff, require_point,

@@ -14,7 +14,7 @@ use crate::grid::coverer::{self, RectCoverRule};
 use crate::py::cells::cell_ops::cell_array_from_keys;
 use crate::py::cells::{CellRule, GridKind, PyCellArray, coverage_to_polygon};
 use crate::py::errors::{GeometryError, InvalidGeometryError, integer_parameter_error};
-use crate::{PyGeometry, Typed, lonlat_shape, validate_lonlat_shape};
+use crate::{PyGeometry, Typed, lonlat_shape};
 
 /// Cell ids in the order required by dissolve membership searches.
 ///
@@ -321,7 +321,6 @@ pub(crate) fn coverage_factory_geometry(
     label: &str,
 ) -> PyResult<PyGeometry> {
     let source = lonlat_shape(geometry)?;
-    validate_lonlat_shape(&source)?;
     // This is the sole public grid-source normalization point.  Every grid
     // lane receives the same physical-pole spelling before it can derive a
     // working image, a rectangle certificate, or aggregate components.
