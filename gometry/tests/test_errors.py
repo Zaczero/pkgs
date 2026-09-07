@@ -375,6 +375,17 @@ def test_unknown_tokens_suggest_the_closest_spelling() -> None:
     assert 'did you mean' not in str(short3.value)
 
 
+def test_unknown_token_suggestions_keep_public_error_shape() -> None:
+    with pytest.raises(gm.GeometryError) as excinfo:
+        gm.box(0, 0, 1, 1).buffer(1, cap_style=' flatt ')
+    assert str(excinfo.value).startswith('unknown buffer cap_style " flatt "; ')
+    assert "did you mean 'flat'?" in str(excinfo.value)
+
+    with pytest.raises(gm.GeometryError) as empty:
+        gm.box(0, 0, 1, 1).simplify(1, method='')
+    assert 'did you mean' not in str(empty.value)
+
+
 def test_web_mercator_latitude_message_avoids_long_default_float() -> None:
     with pytest.raises(errors.TransformError) as excinfo:
         gm.Point(1e30, 1e30, crs=4326).to_crs(3857)

@@ -50,9 +50,11 @@ pub(crate) fn closest_token<'a>(value: &str, tokens: &[&'a str]) -> Option<&'a s
     // Floor of 2 made any 2–3 char token match any other; clamp so short
     // nonsense ('xx', 'zzz') stays silent while real typos still suggest.
     let threshold = (value.len() / 3).clamp(1, 2);
+    let max_token_len = tokens.iter().map(|token| token.len()).max()?;
+    let mut row = vec![0; max_token_len + 1];
     let mut best: Option<(usize, &str)> = None;
     for &token in tokens {
-        let distance = edit_distance_ascii_casefold(value.as_bytes(), token.as_bytes());
+        let distance = edit_distance_ascii_casefold(value.as_bytes(), token.as_bytes(), &mut row);
         if distance <= threshold && best.is_none_or(|(record, _)| distance < record) {
             best = Some((distance, token));
         }
@@ -60,22 +62,23 @@ pub(crate) fn closest_token<'a>(value: &str, tokens: &[&'a str]) -> Option<&'a s
     best.map(|(_, token)| token)
 }
 
-/// Case-insensitive Levenshtein distance over bytes (tokens are ASCII),
-/// two-row form.
-fn edit_distance_ascii_casefold(left: &[u8], right: &[u8]) -> usize {
-    let mut previous: Vec<usize> = (0..=right.len()).collect();
-    let mut current = vec![0; right.len() + 1];
-    for (row, &l) in left.iter().enumerate() {
-        current[0] = row + 1;
-        for (column, &r) in right.iter().enumerate() {
-            let substitution = previous[column] + usize::from(!l.eq_ignore_ascii_case(&r));
-            current[column + 1] = substitution
-                .min(previous[column + 1] + 1)
-                .min(current[column] + 1);
-        }
-        std::mem::swap(&mut previous, &mut current);
+/// Case-insensitive Levenshtein distance over bytes (tokens are ASCII), using
+/// one reusable row and a saved diagonal cell.
+fn edit_distance_ascii_casefold(left: &[u8], right: &[u8], row: &mut [usize]) -> usize {
+    for (column, value) in row.iter_mut().enumerate().take(right.len() + 1) {
+        *value = column;
     }
-    previous[right.len()]
+    for (row_index, &l) in left.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = row_index + 1;
+        for (column, &r) in right.iter().enumerate() {
+            let old_above = row[column + 1];
+            let substitution = diagonal + usize::from(!l.eq_ignore_ascii_case(&r));
+            row[column + 1] = substitution.min(old_above + 1).min(row[column] + 1);
+            diagonal = old_above;
+        }
+    }
+    row[right.len()]
 }
 
 /// Token normalizer for PROJ export options: trimmed ASCII uppercase with
@@ -240,3 +243,37 @@ macro_rules! token_from_pyobject {
     };
 }
 pub(crate) use token_from_pyobject;
+
+#[cfg(test)]
+mod tests {
+    use super::closest_token;
+
+    #[test]
+    fn closest_token_keeps_declaration_order_for_ties() {
+        assert_eq!(closest_token("ad", &["ab", "ac"]), Some("ab"));
+        assert_eq!(closest_token("ad", &["ac", "ab"]), Some("ac"));
+    }
+
+    #[test]
+    fn closest_token_handles_empty_inputs_and_tokens() {
+        assert_eq!(closest_token("", &["a"]), None);
+        assert_eq!(closest_token("round", &[]), None);
+        assert_eq!(closest_token("a", &[""]), Some(""));
+    }
+
+    #[test]
+    fn closest_token_resets_the_row_for_increasing_and_decreasing_lengths() {
+        let tokens = ["a", "bb", "ccc", "dddd"];
+        let reversed: Vec<_> = tokens.iter().copied().rev().collect();
+        assert_eq!(closest_token("ddddx", &tokens), Some("dddd"));
+        assert_eq!(closest_token("ddddx", &reversed), Some("dddd"));
+    }
+
+    #[test]
+    fn closest_token_keeps_raw_utf8_byte_comparison() {
+        assert_eq!(closest_token("FLATT", &["flat"]), Some("flat"));
+        assert_eq!(closest_token("é", &["é", "ê"]), Some("é"));
+        assert_eq!(closest_token("É", &["é", "ê"]), Some("é"));
+        assert_eq!(closest_token("É", &["e"]), None);
+    }
+}
