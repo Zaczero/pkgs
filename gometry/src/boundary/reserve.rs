@@ -188,7 +188,8 @@ pub(crate) fn try_reserve_heap<T>(heap: &mut BinaryHeap<T>, additional: usize) -
 
 /// One generic CSR owner for ragged output. Values grow fallibly and every
 /// row end is checked, monotonic, and representable as `i64` before it is
-/// retained. The zero-row representation is the valid offsets column `[0]`.
+/// retained. Empty offsets mean the implicit initial zero; the finished
+/// zero-row representation is the offsets column `[0]`.
 pub(crate) struct CsrBuilder<T> {
     values: Vec<T>,
     offsets: Vec<i64>,
@@ -198,7 +199,7 @@ impl<T> CsrBuilder<T> {
     pub(crate) fn new() -> Self {
         Self {
             values: Vec::new(),
-            offsets: vec![0],
+            offsets: Vec::new(),
         }
     }
 
@@ -209,7 +210,11 @@ impl<T> CsrBuilder<T> {
         let rows = row_capacity
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        if let Err(error) = try_reserve_vec(&mut builder.offsets, rows.saturating_sub(1)) {
+        if let Err(error) = try_reserve_vec(&mut builder.offsets, rows) {
+            builder.release();
+            return Err(error);
+        }
+        if let Err(error) = try_push_vec(&mut builder.offsets, 0) {
             builder.release();
             return Err(error);
         }
@@ -229,12 +234,12 @@ impl<T> CsrBuilder<T> {
 
     fn release(&mut self) {
         self.values = Vec::new();
-        self.offsets = vec![0];
+        self.offsets = Vec::new();
     }
 
     pub(crate) fn push(&mut self, value: T) -> Result<()> {
         if let Err(error) = try_push_vec(&mut self.values, value) {
-            self.offsets = Vec::new();
+            self.release();
             return Err(error);
         }
         Ok(())
@@ -256,13 +261,16 @@ impl<T> CsrBuilder<T> {
             self.release();
             return Err(ResourceError::SizeOverflow.into());
         };
-        let last = *self
-            .offsets
-            .last()
-            .expect("CSR builder always starts with a zero offset");
+        let last = self.offsets.last().copied().unwrap_or(0);
         if end < last {
             self.release();
             return Err(crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into());
+        }
+        if self.offsets.is_empty()
+            && let Err(error) = try_push_vec(&mut self.offsets, 0)
+        {
+            self.release();
+            return Err(error);
         }
         if let Err(error) = try_push_vec(&mut self.offsets, end) {
             self.release();
@@ -279,18 +287,8 @@ impl<T> CsrBuilder<T> {
         self.release();
     }
 
-    #[cfg(test)]
-    pub(crate) fn values(&self) -> &[T] {
-        &self.values
-    }
-
     pub(crate) const fn values_mut(&mut self) -> &mut Vec<T> {
         &mut self.values
-    }
-
-    #[cfg(test)]
-    pub(crate) fn offsets(&self) -> &[i64] {
-        &self.offsets
     }
 
     #[cfg(test)]
@@ -298,8 +296,18 @@ impl<T> CsrBuilder<T> {
         self.offsets[row] as usize..self.offsets[row + 1] as usize
     }
 
-    pub(crate) fn finish(self) -> (Vec<T>, Vec<i64>) {
-        (self.values, self.offsets)
+    pub(crate) fn finish(self) -> Result<(Vec<T>, Vec<i64>)> {
+        let Self {
+            values,
+            mut offsets,
+        } = self;
+        if offsets.is_empty()
+            && let Err(error) = try_push_vec(&mut offsets, 0)
+        {
+            drop(values);
+            return Err(error);
+        }
+        Ok((values, offsets))
     }
 }
 
@@ -1175,9 +1183,10 @@ mod tests {
         builder
             .push_row(std::iter::empty())
             .expect("second empty row");
-        assert_eq!(builder.values(), &[1, 2]);
-        assert_eq!(builder.offsets(), &[0, 0, 2, 2]);
         assert_eq!(builder.row_range(1), 0..2);
+        let (values, offsets) = builder.finish().expect("finish CSR");
+        assert_eq!(values, [1, 2]);
+        assert_eq!(offsets, [0, 0, 2, 2]);
     }
 
     #[test]
@@ -1185,13 +1194,19 @@ mod tests {
         let mut builder = CsrBuilder::<u8>::new();
         builder.push_end(3).expect("first end");
         assert!(builder.push_end(2).is_err());
-        assert!(builder.values().is_empty());
-        assert_eq!(builder.offsets(), &[0]);
+        builder
+            .push_row([2])
+            .expect("reuse after row-growth failure");
+        let (values, offsets) = builder.finish().expect("reused CSR");
+        assert_eq!(values, [2]);
+        assert_eq!(offsets, [0, 1]);
 
         let mut builder = CsrBuilder::<u8>::new();
         if usize::BITS > 63 {
             assert!(builder.push_end(i64::MAX as usize + 1).is_err());
-            assert_eq!(builder.offsets(), &[0]);
+            let (values, offsets) = builder.finish().expect("empty after overflow");
+            assert!(values.is_empty());
+            assert_eq!(offsets, [0]);
         } else {
             assert!(CsrBuilder::<u8>::with_capacity(0, usize::MAX).is_err());
         }
@@ -1200,16 +1215,29 @@ mod tests {
         builder.push_row([1]).expect("row");
         builder.clear();
         builder.push_row([2]).expect("reuse after clear");
-        assert_eq!(builder.values(), &[2]);
-        assert_eq!(builder.offsets(), &[0, 1]);
+        let (values, offsets) = builder.finish().expect("cleared CSR");
+        assert_eq!(values, [2]);
+        assert_eq!(offsets, [0, 1]);
     }
 
     #[test]
     fn csr_builder_treats_finite_hints_as_advisory() {
         let builder = CsrBuilder::<u8>::with_capacity_hint(usize::MAX, usize::MAX)
             .expect("lying finite hint is clamped");
-        assert!(builder.values().is_empty());
-        assert_eq!(builder.offsets(), &[0]);
+        let (values, offsets) = builder.finish().expect("empty reserved CSR");
+        assert!(values.is_empty());
+        assert_eq!(offsets, [0]);
+    }
+
+    #[test]
+    fn csr_builder_new_and_clear_survive_rejected_capacity() {
+        assert!(CsrBuilder::<u8>::with_capacity(usize::MAX, 0).is_err());
+        assert!(CsrBuilder::<u8>::with_capacity(0, usize::MAX).is_err());
+        let mut builder = CsrBuilder::<u8>::new();
+        builder.clear();
+        let (values, offsets) = builder.finish().expect("empty finish after rejection");
+        assert!(values.is_empty());
+        assert_eq!(offsets, [0]);
     }
 
     #[test]

@@ -771,13 +771,16 @@ impl PySpatialIndex {
                 )
             }));
         }
-        let (mut ids, offsets) = builder.finish();
+        let (mut ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         if ids.is_empty() {
             return Ok(RowMatches { ids, offsets });
         }
 
         let mut candidates = crate::try_vec_with_capacity(ids.len())?;
-        #[expect(clippy::needless_range_loop, reason = "the position is data: it is stored beside the id it indexes")]
+        #[expect(
+            clippy::needless_range_loop,
+            reason = "the position is data: it is stored beside the id it indexes"
+        )]
         for row in 0..points.len() {
             for position in offsets[row] as usize..offsets[row + 1] as usize {
                 try_push_vec(&mut candidates, (ids[position], row, position))?;
@@ -830,7 +833,7 @@ impl PySpatialIndex {
                 .map_err(pyo3::PyErr::from)?;
         }
         ids.truncate(refined_ids);
-        let (_, refined_offsets) = refined_offsets.finish();
+        let (_, refined_offsets) = refined_offsets.finish().map_err(pyo3::PyErr::from)?;
         Ok(RowMatches {
             ids,
             offsets: refined_offsets,
@@ -1240,7 +1243,7 @@ impl PySpatialIndex {
             let end = builder.len();
             builder.push_end(end).map_err(pyo3::PyErr::from)?;
         }
-        let (ids, offsets) = builder.finish();
+        let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         Ok(RowMatches { ids, offsets })
     }
 
@@ -1306,7 +1309,7 @@ impl PySpatialIndex {
             let end = builder.len();
             builder.push_end(end).map_err(pyo3::PyErr::from)?;
         }
-        let (ids, offsets) = builder.finish();
+        let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         Ok(RowMatches { ids, offsets })
     }
 }

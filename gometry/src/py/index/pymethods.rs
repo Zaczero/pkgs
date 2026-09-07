@@ -49,7 +49,10 @@ fn mapping_view(slf: Bound<'_, PySpatialIndex>, class_name: &str) -> PyResult<Py
         .unbind())
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 #[pyfunction]
 pub(crate) fn _unpickle_spatial_index(
     values: &crate::PyGeometryArray,
@@ -442,7 +445,7 @@ impl PySpatialIndex {
                         let end = builder.len();
                         builder.push_end(end).map_err(pyo3::PyErr::from)?;
                     }
-                    Ok::<_, pyo3::PyErr>(builder.finish())
+                    builder.finish().map_err(pyo3::PyErr::from)
                 })?;
                 return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
             }
@@ -498,7 +501,7 @@ impl PySpatialIndex {
                         }
                     },
                 }
-                Ok::<_, pyo3::PyErr>(builder.finish())
+                builder.finish().map_err(pyo3::PyErr::from)
             })?;
             return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
         }
@@ -747,7 +750,7 @@ impl PySpatialIndex {
                 let end = builder.len();
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
             }
-            let (ids, offsets) = builder.finish();
+            let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
             return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
@@ -930,7 +933,7 @@ impl PySpatialIndex {
                         }
                     },
                 }
-                let (ids, offsets) = builder.finish();
+                let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
                 Ok::<_, pyo3::PyErr>((ids, offsets, distances))
             })?;
             return format_nearest_rows(py, ids, offsets, distances, return_distance);

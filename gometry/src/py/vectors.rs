@@ -12,7 +12,6 @@
 //! / `_Int32Buffer` pyclasses move `Arc` column storage into pyarrow without a
 //! second byte copy on little-endian hosts.
 
-use crate::py::numpy;
 use std::borrow::Cow;
 use std::ffi::c_int;
 use std::ops::Range;
@@ -28,6 +27,7 @@ use crate::geometry::Shape;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::errors::GeometryError;
+use crate::py::numpy;
 use crate::py::numpy::{ImmutableI64Owner, frozen_i64_owner, frozen_i64_view, int64_array};
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{CsrBuilder, HeapSize};
@@ -94,7 +94,10 @@ fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> boo
                 }))
 }
 
-#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
+#[expect(
+    clippy::float_cmp,
+    reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact"
+)]
 fn coordinate_values_equal(left: &[f64], right: &[f64]) -> bool {
     left.len() == right.len()
         && left
@@ -770,7 +773,7 @@ impl Groups {
                                 let end = builder.len();
                                 builder.push_end(end).map_err(PyErr::from)?;
                             }
-                            let (ids, offsets) = builder.finish();
+                            let (ids, offsets) = builder.finish().map_err(PyErr::from)?;
                             let rows = 0..offsets.len() - 1;
                             Self {
                                 values: GroupsValues::Int64(ids.into()),
@@ -805,7 +808,7 @@ impl Groups {
                                 let end = builder.len();
                                 builder.push_end(end).map_err(PyErr::from)?;
                             }
-                            let (shapes, offsets) = builder.finish();
+                            let (shapes, offsets) = builder.finish().map_err(PyErr::from)?;
                             let flat = Arc::new(PyGeometryArray::from_shapes(
                                 shapes,
                                 values.frame.clone(),
@@ -821,7 +824,7 @@ impl Groups {
                                     .push_row(this.cell_row_view(row).logical_ids()?)
                                     .map_err(PyErr::from)?;
                             }
-                            let (ids, offsets) = builder.finish();
+                            let (ids, offsets) = builder.finish().map_err(PyErr::from)?;
                             Self::from_cell_flat(kind, ids, offsets)?
                         },
                         GroupsValues::Coordinates { values, dimensions } => {
@@ -1143,7 +1146,10 @@ impl Groups {
     }
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 #[pyfunction]
 pub(crate) fn _unpickle_int64_groups(
     ids: &Bound<'_, PyAny>,
@@ -1160,7 +1166,10 @@ pub(crate) fn _unpickle_int64_groups(
     })
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 #[pyfunction]
 pub(crate) fn _unpickle_geometry_groups(
     values: Py<PyGeometryArray>,
@@ -1178,7 +1187,10 @@ pub(crate) fn _unpickle_geometry_groups(
     })
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 #[pyfunction]
 pub(crate) fn _unpickle_cell_groups(
     values: Py<PyCellArray>,
@@ -1194,7 +1206,10 @@ pub(crate) fn _unpickle_cell_groups(
     })
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 #[pyfunction]
 pub(crate) fn _unpickle_coordinate_groups(
     values: &Bound<'_, PyAny>,

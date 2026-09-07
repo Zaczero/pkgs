@@ -76,7 +76,7 @@ impl Groups {
         frame: crate::Frame,
         builder: CsrBuilder<Shape>,
     ) -> PyResult<Self> {
-        let (shapes, offsets) = builder.finish();
+        let (shapes, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         let values = PyGeometryArray::from_shapes(shapes, frame);
         validate_csr_offsets(&offsets, values.len())?;
         let n = offsets
@@ -101,7 +101,7 @@ impl Groups {
         frame: crate::Frame,
         builder: CsrBuilder<crate::Point>,
     ) -> PyResult<Self> {
-        let (vertices, offsets) = builder.finish();
+        let (vertices, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         let values = if vertices.is_empty() {
             PyGeometryArray::from_shapes(Vec::new(), frame)
         } else {
@@ -127,7 +127,7 @@ impl Groups {
                 "coordinate dimensions must be positive",
             ));
         }
-        let (chunks, offsets) = builder.finish();
+        let (chunks, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         let mut values =
             crate::try_vec_with_capacity(chunks.len().checked_mul(dimensions).ok_or_else(
                 || PyOverflowError::new_err("coordinate matrix size overflows usize"),
@@ -173,7 +173,7 @@ impl Groups {
                     .map_err(pyo3::PyErr::from)?,
             }
         }
-        let (shapes, offsets) = builder.finish();
+        let (shapes, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         let values = Arc::new(PyGeometryArray::from_shapes(shapes, array.frame.clone()));
         let rows = offsets
             .len()
@@ -209,7 +209,7 @@ impl Groups {
                 .push_row(row.as_ref().iter().copied())
                 .map_err(pyo3::PyErr::from)?;
         }
-        let (ids, offsets) = builder.finish();
+        let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         Self::from_cell_flat(kind, ids, offsets)
     }
 

@@ -133,8 +133,11 @@ impl CsrOffsetBuilder {
     }
 
     pub(crate) fn finish(self, vertex_cap: usize) -> Result<CsrOffsetColumn> {
-        let (_, offsets) = self.builder.finish();
-        if offsets.last().is_some_and(|&last| last as usize > vertex_cap) {
+        let (_, offsets) = self.builder.finish()?;
+        if offsets
+            .last()
+            .is_some_and(|&last| last as usize > vertex_cap)
+        {
             return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
         }
         let mut values = Vec::new();
@@ -142,7 +145,9 @@ impl CsrOffsetBuilder {
         for offset in offsets {
             crate::boundary::try_push_vec(
                 &mut values,
-                CsrOffset(i32::try_from(offset).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?),
+                CsrOffset(
+                    i32::try_from(offset).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
+                ),
             )?;
         }
         Ok(CsrOffsetColumn {

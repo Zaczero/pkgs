@@ -1518,7 +1518,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             }
             Ok::<(), pyo3::PyErr>(())
         })?;
-        let (ids, offsets) = builder.finish();
+        let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         crate::py::vectors::Groups::from_cell_flat(kind, ids, offsets)
     }
 
@@ -1600,7 +1600,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                         )
                         .map_err(pyo3::PyErr::from)?;
                 }
-                Ok::<_, PyErr>(builder.finish())
+                builder.finish().map_err(PyErr::from)
             })
         })?;
         crate::py::vectors::Groups::from_cell_flat(kind, ids, offsets)
@@ -1797,7 +1797,10 @@ impl PyCellArray {
     }
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled CellArray from its public identities and logical mask.
 #[pyfunction]
 pub(crate) fn _unpickle_cell_array(
