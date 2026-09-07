@@ -468,14 +468,14 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     super::coverage_ops::polygonize_outline(outline)
 }
 
-/// Dissolve an arbitrary slice of rect-grid cells (geohash / tiles) into one
-/// outline geometry — the free-function twin of the coverage `to_polygon`,
-/// shared by `geohash_to_polygon` / `tiles_to_polygon`. Free-function input is
-/// arbitrary, so it is sorted and deduped first (the topology fast path needs
-/// sorted membership and one entry per cell); then [`rect_dissolve`] runs the
-/// uniform-depth edge-cancel pass, falling back to the antimeridian-aware
-/// boundary union for mixed-depth or degenerate sets. Empty input flows to
-/// `coverage_to_polygon`, which raises the documented `GeometryError`.
+/// Dissolve present geohash or tile cells from `CellArray.to_polygon`.
+///
+/// The caller already skipped missing rows and may pass an arbitrary logical
+/// selection. Sort and dedup for topology membership, then [`rect_dissolve`]
+/// runs the uniform-depth edge-cancel pass. Mixed-depth, degenerate, or
+/// empty-outline sets fall back to the antimeridian-aware boundary union.
+/// Empty input reaches `coverage_to_polygon`, which raises the documented
+/// `GeometryError`.
 pub(super) fn rect_cells_to_polygon<C: crate::grid::coverer::RectCell>(
     cells: Vec<C>,
 ) -> PyResult<Typed> {
