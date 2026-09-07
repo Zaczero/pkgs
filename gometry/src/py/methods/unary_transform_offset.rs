@@ -307,15 +307,9 @@ impl PyGeometry {
         } else {
             Bounds::new(minx, miny, maxx, maxy)?
         };
-        unary_spine_shapes!(
-            scalar,
-            py,
-            self,
-            crate::dispatch::Operation::ClipByRect,
-            None,
-            default,
-            move |data, ctx| crate::dispatch::kernels::unary_clip_by_rect(data, ctx, rect, false)
-        )
+        crate::dispatch::unary_scalar_shape_admitted(py, self, domain, move |data, ctx| {
+            crate::dispatch::kernels::unary_clip_by_rect(data, ctx, rect, false)
+        })
     }
 
     #[doc = doc_subdivide!(scalar)]

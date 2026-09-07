@@ -7,15 +7,34 @@ use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_input, expected_geometry_or_array,
     rows_err,
 };
-use crate::dispatch::metric::{CachelessRowContext, Lane, LinearReferenceRow, MetricScratch};
+use crate::dispatch::metric::{
+    CachelessRowContext, Lane, LinearReferenceRow, MetricCtx, MetricScratch,
+};
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::packed::{
     PackedUnary, try_unary_packed_array, try_unary_packed_bool, try_unary_packed_bounds,
     try_unary_packed_f64,
 };
 use crate::error::Result;
-use crate::geometry::{PreparedPlan, Shape};
+use crate::geometry::{PreparedPlan, Shape, TopologyDomain};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, Typed};
+
+fn execute_unary_scalar<R: BulkElement>(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send,
+) -> Result<R> {
+    let ctx = CachelessRowContext {
+        frame: &geometry.frame,
+        domain,
+        metric,
+        lane: Lane::Scalar,
+    };
+    let plan = geometry.plan_or_transient();
+    py.detach(move || kernel(&plan, &ctx))
+}
 
 /// Scalar geometry lane: resolve metric once, run one kernel, return the bulk element.
 pub(crate) fn unary_scalar<R: BulkElement>(
@@ -26,25 +45,17 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send,
 ) -> PyResult<R> {
     let resolver = op.resolver_with_unit(unit);
-    let frame = geometry.frame.clone();
-    let domain = crate::geometry::topology_domain(&frame)?;
+    let domain = crate::geometry::topology_domain(&geometry.frame)?;
     let mut metric_scratch = MetricScratch::default();
     let result = {
-        let metric = match resolver.resolve_ctx(&frame, &mut metric_scratch) {
+        let metric = match resolver.resolve_ctx(&geometry.frame, &mut metric_scratch) {
             Ok(metric) => metric,
             Err(error) => {
                 drop(metric_scratch);
                 return Err(error);
             },
         };
-        let ctx = CachelessRowContext {
-            frame: &frame,
-            domain,
-            metric,
-            lane: Lane::Scalar,
-        };
-        let plan = geometry.plan_or_transient();
-        py.detach(move || kernel(&plan, &ctx))
+        execute_unary_scalar(py, geometry, domain, metric, kernel)
     };
     drop(metric_scratch);
     result.map_err(PyErr::from)
@@ -114,6 +125,47 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
     }
 }
 
+fn execute_unary_rows<T: BulkElement>(
+    py: Python<'_>,
+    array: PyGeometryArray,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    mode: UnaryRowMode,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
+    + Send
+    + Sync,
+) -> std::result::Result<Vec<T>, (usize, crate::error::Error)> {
+    py.detach(move || {
+        let mut rows = array.row_operation();
+        rows.rows_with_missing(T::missing_value)
+            .map(|row| match row {
+                ArrayRow::Missing { value, .. } => Ok(value),
+                ArrayRow::Present(present) => {
+                    let row_index = present.logical();
+                    let shape_row = present.row();
+                    let ctx = CachelessRowContext {
+                        frame: &array.frame,
+                        domain,
+                        metric,
+                        lane: Lane::Array(row_index),
+                    };
+                    match mode {
+                        UnaryRowMode::ShapeOnly => {
+                            // Transient handle — never write prepared slots.
+                            let data = crate::array::PreparedRow::transient(shape_row);
+                            kernel(&data, &ctx, &mut rows)
+                        },
+                        UnaryRowMode::Prepared => {
+                            let data = rows.prepared_at(row_index, shape_row);
+                            kernel(&data, &ctx, &mut rows)
+                        },
+                    }
+                },
+            })
+            .collect_rows()
+    })
+}
+
 /// The per-row unary lane shared by every array return type: resolve the
 /// metric once, run the kernel over each row inside one ``py.detach``.
 fn run_unary_rows<T: BulkElement>(
@@ -125,53 +177,21 @@ fn run_unary_rows<T: BulkElement>(
     + Send
     + Sync,
 ) -> PyResult<(Vec<T>, Frame)> {
-    let frame = array.frame.clone();
-    let output_frame = frame.clone();
-    let domain = crate::geometry::topology_domain(&frame)?;
+    let domain = crate::geometry::topology_domain(&array.frame)?;
     let mut metric_scratch = MetricScratch::default();
-    let array = array.clone();
     let result = {
-        let metric = match resolver.resolve_ctx(&frame, &mut metric_scratch) {
+        let metric = match resolver.resolve_ctx(&array.frame, &mut metric_scratch) {
             Ok(metric) => metric,
             Err(error) => {
                 drop(metric_scratch);
                 return Err(error);
             },
         };
-        py.detach(move || {
-            let frame = &frame;
-            let mut rows = array.row_operation();
-            rows.rows_with_missing(T::missing_value)
-                .map(|row| match row {
-                    ArrayRow::Missing { value, .. } => Ok(value),
-                    ArrayRow::Present(present) => {
-                        let row_index = present.logical();
-                        let shape_row = present.row();
-                        let ctx = CachelessRowContext {
-                            frame,
-                            domain,
-                            metric,
-                            lane: Lane::Array(row_index),
-                        };
-                        match mode {
-                            UnaryRowMode::ShapeOnly => {
-                                // Transient handle — never write prepared slots.
-                                let data = crate::array::PreparedRow::transient(shape_row);
-                                kernel(&data, &ctx, &mut rows)
-                            },
-                            UnaryRowMode::Prepared => {
-                                let data = rows.prepared_at(row_index, shape_row);
-                                kernel(&data, &ctx, &mut rows)
-                            },
-                        }
-                    },
-                })
-                .collect_rows()
-        })
+        execute_unary_rows(py, array.clone(), domain, metric, mode, kernel)
     };
     drop(metric_scratch);
     let values = result.map_err(rows_err)?;
-    Ok((values, output_frame))
+    Ok((values, array.frame.clone()))
 }
 
 /// Scalar geometry method returning a typed leaf geometry.
@@ -185,6 +205,17 @@ pub(crate) fn unary_scalar_shape(
     let frame = geometry.frame.clone();
     let shape = unary_scalar(py, geometry, op, unit, kernel)?;
     Ok(Typed(PyGeometry::with_frame(shape, frame)))
+}
+
+pub(crate) fn unary_scalar_shape_admitted(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    domain: TopologyDomain,
+    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send,
+) -> PyResult<Typed> {
+    let shape =
+        execute_unary_scalar(py, geometry, domain, MetricCtx::None, kernel).map_err(PyErr::from)?;
+    Ok(Typed(PyGeometry::with_frame(shape, geometry.frame.clone())))
 }
 
 /// Array geometry method returning a `GeometryArray` — natively, without the
@@ -205,6 +236,19 @@ pub(crate) fn unary_array_shapes(
     let resolver = op.resolver_with_unit(unit);
     if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
         return result;
+    }
+    if let Some(PackedUnary::ClipByRect { domain, .. }) = packed {
+        let shapes = execute_unary_rows(
+            py,
+            array.clone(),
+            *domain,
+            MetricCtx::None,
+            unary_row_mode(op),
+            move |data, ctx, _rows| kernel(data, ctx),
+        )
+        .map_err(rows_err)?;
+        return Ok(PyGeometryArray::from_shapes(shapes, array.frame.clone())
+            .with_missing_mask(array.missing().cloned()));
     }
     let (shapes, frame) = run_unary_rows(
         py,
