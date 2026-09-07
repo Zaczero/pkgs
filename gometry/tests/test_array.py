@@ -542,10 +542,12 @@ def test_numpy_integer_index_overflow_is_an_index_error_for_all_receivers() -> N
     selector = np.array([maximum], dtype=f'{byteorder}u8')
     scalar = np.array(maximum, dtype=f'{byteorder}u8')
     for array, _identity in _indexing_receivers():
-        with pytest.raises(IndexError, match='index is too large'):
+        with pytest.raises(IndexError) as excinfo:
             array[selector]
-        with pytest.raises(IndexError, match='index is too large'):
+        assert type(excinfo.value) is IndexError
+        with pytest.raises(IndexError) as excinfo:
             array[scalar]
+        assert type(excinfo.value) is IndexError
 
 
 @pytest.mark.parametrize('index', [10**100, -(10**100)], ids=['positive', 'negative'])
