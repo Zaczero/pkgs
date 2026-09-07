@@ -408,11 +408,11 @@ pub(crate) fn s2_cover(
             };
             let cells =
                 crate::py::cells::s2::register::build_coverage(geometry, parsed, cell_rule)?;
-            crate::try_collect_results(
+            crate::py::cells::coverage_ops::try_collect_cover_ids(
                 crate::py::cells::coverage_ops::SortedCells::from_sorted(cells)
                     .into_vec()
                     .into_iter()
-                    .map(|cell| Ok::<_, pyo3::PyErr>(crate::grid::s2::cellid::CellId::raw(cell))),
+                    .map(crate::grid::s2::cellid::CellId::raw),
             )
         },
     )

@@ -4,7 +4,7 @@
 )]
 use pyo3::{PyAny, PyResult};
 
-use crate::geometry::{LineSeq, Point, Shape};
+use crate::geometry::{LineSeq, Point, Polygon, Ring, Shape};
 use crate::grid::s2::cellid::S2Level;
 use crate::grid::s2::projection::MAX_LEVEL as S2_MAX_LEVEL;
 use crate::py::cells::{Bound, PyAnyMethods as _};
@@ -53,7 +53,6 @@ pub(crate) fn parse_s2_level_validated(value: &Bound<'_, PyAny>) -> PyResult<S2L
 pub(crate) fn parse_s2_level(value: &Bound<'_, PyAny>) -> PyResult<u8> {
     parse_s2_level_validated(value).map(S2Level::get)
 }
-
 
 pub(crate) fn validate_s2_level_mod(level_mod: i64) -> PyResult<u8> {
     if !(1..=3).contains(&level_mod) {
@@ -116,25 +115,27 @@ pub(crate) fn parse_optional_s2_level(value: Option<&Bound<'_, PyAny>>) -> PyRes
     }
 }
 
-pub(crate) fn bounds_query_shape(bounds: crate::geometry::Bounds) -> PyResult<Shape> {
+pub(crate) fn bounds_query_shape(bounds: crate::geometry::Bounds) -> Shape {
     // Exact identity on purpose: only literally-degenerate bounds collapse
     // to lower-dimensional query shapes; near-degenerate boxes stay boxes.
     #[expect(clippy::float_cmp, reason = "exact degenerate-bounds dispatch")]
-    Ok(
-        if bounds.minx() == bounds.maxx() && bounds.miny() == bounds.maxy() {
-            Shape::Point(Point::new_raw_xy(bounds.minx(), bounds.miny()))
-        } else if bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy() {
-            Shape::LineString(LineSeq::segment(
+    if bounds.minx() == bounds.maxx() && bounds.miny() == bounds.maxy() {
+        Shape::Point(Point::new_raw_xy(bounds.minx(), bounds.miny()))
+    } else if bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy() {
+        Shape::LineString(LineSeq::segment(
+            Point::new_raw_xy(bounds.minx(), bounds.miny()),
+            Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
+        ))
+    } else {
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
                 Point::new_raw_xy(bounds.minx(), bounds.miny()),
+                Point::new_raw_xy(bounds.maxx(), bounds.miny()),
                 Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
-            ))
-        } else {
-            Shape::Polygon(crate::box_polygon(
-                bounds.minx(),
-                bounds.miny(),
-                bounds.maxx(),
-                bounds.maxy(),
-            )?)
-        },
-    )
+                Point::new_raw_xy(bounds.minx(), bounds.maxy()),
+                Point::new_raw_xy(bounds.minx(), bounds.miny()),
+            ]),
+            Vec::new(),
+        ))
+    }
 }

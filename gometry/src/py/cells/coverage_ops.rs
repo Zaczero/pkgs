@@ -6,15 +6,19 @@
 
 use pyo3::prelude::*;
 
-use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
+use crate::error::{Error, ResourceError};
+use crate::geographic::{
+    GeographicDiagnostic, GeographicFrame, GeographicViewError, ScalarGeographicView,
+};
 use crate::geometry::{CoordSeq, LineSeq, Shape, TopologyDomain};
 use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
 use crate::grid::coverer::{self, RectCoverRule};
+use crate::grid::{CoverBudgetExceeded, CoverError};
 use crate::py::cells::cell_ops::cell_array_from_keys;
 use crate::py::cells::{CellRule, GridKind, PyCellArray, coverage_to_polygon};
 use crate::py::errors::{GeometryError, InvalidGeometryError, integer_parameter_error};
-use crate::{PyGeometry, Typed, lonlat_shape};
+use crate::{PyGeometry, Typed, lonlat_shape_under};
 
 /// Cell ids in the order required by dissolve membership searches.
 ///
@@ -218,6 +222,87 @@ pub(crate) trait RectCoverSpec {
     fn id(cell: &Self::Cell) -> u64;
 }
 
+/// Native cover-factory error. Converted to `PyErr` only after the detach
+/// closure drops membership geometry, working shapes, and prior cell rows.
+#[derive(Debug)]
+pub(crate) enum GridCoverError {
+    Native(Error),
+    Budget(CoverBudgetExceeded),
+    Empty(&'static str),
+    TileLatitude(f64),
+    Geographic(Box<GeographicDiagnostic>),
+    H3Capacity,
+}
+
+impl From<Error> for GridCoverError {
+    fn from(error: Error) -> Self {
+        Self::Native(error)
+    }
+}
+
+impl From<ResourceError> for GridCoverError {
+    fn from(error: ResourceError) -> Self {
+        Self::Native(error.into())
+    }
+}
+
+impl From<CoverError> for GridCoverError {
+    fn from(error: CoverError) -> Self {
+        match error {
+            CoverError::Preparation(error) => Self::Native(error),
+            CoverError::Budget(error) => Self::Budget(error),
+        }
+    }
+}
+
+impl From<CoverBudgetExceeded> for GridCoverError {
+    fn from(error: CoverBudgetExceeded) -> Self {
+        Self::Budget(error)
+    }
+}
+
+impl From<GeographicViewError> for GridCoverError {
+    fn from(error: GeographicViewError) -> Self {
+        match error {
+            GeographicViewError::Resource => Self::Native(ResourceError::Allocation.into()),
+            GeographicViewError::Diagnostic(diagnostic) => Self::Geographic(diagnostic),
+        }
+    }
+}
+
+impl From<GridCoverError> for PyErr {
+    fn from(error: GridCoverError) -> Self {
+        match error {
+            GridCoverError::Native(error) => error.into(),
+            GridCoverError::Budget(error) => cover_budget_err(error),
+            GridCoverError::Empty(label) => empty_coverage_err(label),
+            GridCoverError::TileLatitude(lat) => InvalidGeometryError::new_err(format!(
+                "latitude {lat} is outside the Web Mercator domain ±85.05112878 degrees"
+            )),
+            GridCoverError::Geographic(diagnostic) => {
+                let message = diagnostic.to_string();
+                drop(diagnostic);
+                InvalidGeometryError::new_err(message)
+            },
+            GridCoverError::H3Capacity => {
+                GeometryError::new_err("H3 coverage traversal exceeded its representable capacity")
+            },
+        }
+    }
+}
+
+/// Fallible identity collect of cover cell ids. Prior ids drop before the
+/// allocation error leaves the collector.
+pub(crate) fn try_collect_cover_ids(
+    values: impl IntoIterator<Item = u64>,
+) -> Result<Vec<u64>, GridCoverError> {
+    let mut out = Vec::new();
+    for value in values {
+        crate::try_push_vec(&mut out, value)?;
+    }
+    Ok(out)
+}
+
 /// Build canonical cell ids from an admitted membership source and its working
 /// shape. Callers own source admission so tile-specific gates run before this.
 pub(crate) fn build_rect_coverage_ids<S>(
@@ -226,7 +311,7 @@ pub(crate) fn build_rect_coverage_ids<S>(
     depth: u8,
     cell_rule: CellRule,
     max_cells: Option<usize>,
-) -> PyResult<Vec<u64>>
+) -> Result<Vec<u64>, GridCoverError>
 where
     S: RectCoverSpec,
 {
@@ -242,23 +327,20 @@ where
         CellRule::Within => RectCoverRule::Within,
         CellRule::Center => RectCoverRule::Center,
     };
-    let ids = crate::try_collect_results(
-        coverer::cover(
-            authority,
-            cover_shape,
-            &authority_plan,
-            &authority_cache,
-            frame,
-            rule,
-            S::roots(),
-            depth,
-            max_cells,
-        )
-        .map_err(cover_error)?
-        .into_iter()
-        .map(|cell| Ok::<_, PyErr>(S::id(&cell))),
+    let covered = coverer::cover(
+        authority,
+        cover_shape,
+        &authority_plan,
+        &authority_cache,
+        frame,
+        rule,
+        S::roots(),
+        depth,
+        max_cells,
     )?;
-    Ok(SortedCells::from_sorted(ids).into_vec())
+    try_collect_cover_ids(covered.into_iter().map(|cell| S::id(&cell)))
+        .map(SortedCells::from_sorted)
+        .map(SortedCells::into_vec)
 }
 
 /// Shared error and source-normalization helpers for grid factories.
@@ -268,15 +350,8 @@ pub(crate) fn empty_coverage_err(label: &str) -> PyErr {
 
 /// Convert a covering cell-budget overflow into the Python `GeometryError`
 /// (the shared boundary mapping for every grid's `cover(...)` factory).
-pub(crate) fn cover_budget_err(err: crate::grid::CoverBudgetExceeded) -> PyErr {
+pub(crate) fn cover_budget_err(err: CoverBudgetExceeded) -> PyErr {
     integer_parameter_error(err.to_string(), "max_cells", err.limit as i64)
-}
-
-pub(crate) fn cover_error(err: crate::grid::CoverError) -> PyErr {
-    match err {
-        crate::grid::CoverError::Preparation(error) => error.into(),
-        crate::grid::CoverError::Budget(error) => cover_budget_err(error),
-    }
 }
 
 /// Parse the shared cover-factory `max_cells` parameter.
@@ -302,7 +377,7 @@ pub(crate) fn parse_max_cells(max_cells: Option<i64>) -> PyResult<Option<usize>>
 pub(crate) fn cover_working_shape(
     frame: &crate::boundary::metadata::Frame,
     lonlat: &Shape,
-) -> PyResult<Shape> {
+) -> Result<Shape, GridCoverError> {
     let domain = crate::geometry::topology_domain(frame)?;
     if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(lonlat, frame)
@@ -318,9 +393,9 @@ pub(crate) fn cover_working_shape(
 /// directly; only the historical planar tilers need a split working image.
 pub(crate) fn coverage_factory_geometry(
     geometry: &PyGeometry,
-    label: &str,
-) -> PyResult<PyGeometry> {
-    let source = lonlat_shape(geometry)?;
+    label: &'static str,
+) -> Result<PyGeometry, GridCoverError> {
+    let source = lonlat_shape_under(geometry.shape.shape(), geometry.crs_str())?.into_owned();
     // This is the sole public grid-source normalization point.  Every grid
     // lane receives the same physical-pole spelling before it can derive a
     // working image, a rectangle certificate, or aggregate components.
@@ -328,18 +403,11 @@ pub(crate) fn coverage_factory_geometry(
     drop(source);
     if let Err(error) = ScalarGeographicView::try_new(GeographicFrame::crs84(), &normalized) {
         drop(normalized);
-        return Err(match error {
-            GeographicViewError::Resource => {
-                crate::error::Error::from(crate::error::ResourceError::Allocation).into()
-            },
-            GeographicViewError::Diagnostic(diagnostic) => {
-                InvalidGeometryError::new_err(diagnostic.to_string())
-            },
-        });
+        return Err(error.into());
     }
     if normalized.is_empty() {
         drop(normalized);
-        return Err(empty_coverage_err(label));
+        return Err(GridCoverError::Empty(label));
     }
     Ok(PyGeometry::wgs84(normalized))
 }
@@ -350,8 +418,8 @@ pub(crate) fn coverage_factory_geometry(
 /// Returns the admitted membership geometry and its split working shape.
 pub(crate) fn coverage_factory_shapes(
     geometry: &PyGeometry,
-    label: &str,
-) -> PyResult<(PyGeometry, Shape)> {
+    label: &'static str,
+) -> Result<(PyGeometry, Shape), GridCoverError> {
     let membership_geometry = coverage_factory_geometry(geometry, label)?;
     let shape = membership_geometry.shape.as_ref();
     // `membership_geometry` is the admitted WGS84 source. Derive the working
@@ -371,7 +439,11 @@ pub(crate) fn rect_cell_array_for<S: RectCoverSpec>(
 
 #[cfg(test)]
 mod tests {
-    use super::SortedCells;
+    use super::{GridCoverError, SortedCells, coverage_factory_geometry, try_collect_cover_ids};
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geographic::{GeographicFrame, ScalarGeographicView};
+    use crate::geometry::{GeometryErrorKind, Point, Shape};
+    use crate::grid::CoverError;
 
     #[test]
     fn canonicalizes_shuffled_duplicates() {
@@ -389,5 +461,69 @@ mod tests {
     fn from_sorted_canonicalizes_an_invalid_producer() {
         let cells = SortedCells::from_sorted(vec![3, 1, 3, 2]);
         assert_eq!(cells.as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn scalar_empty_is_empty_coverage() {
+        let geometry = crate::PyGeometry::wgs84(Shape::empty_polygon());
+        let error = coverage_factory_geometry(&geometry, "H3").expect_err("empty scalar");
+        assert!(matches!(error, GridCoverError::Empty("H3")), "{error:?}");
+    }
+
+    #[test]
+    fn invalid_lonlat_is_native_geometry() {
+        let geometry = crate::PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(0.0, 95.0)));
+        let error = coverage_factory_geometry(&geometry, "H3").expect_err("out of domain");
+        let GridCoverError::Native(error) = error else {
+            panic!("expected native lonlat error, got {error:?}");
+        };
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("invalid longitude/latitude (0, 95)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn geographic_view_keeps_boxed_diagnostic() {
+        let shape = Shape::Point(Point::new_raw_xy(0.0, 91.0));
+        let error = ScalarGeographicView::try_new(GeographicFrame::crs84(), &shape)
+            .expect_err("latitude is outside the physical axis");
+        let mapped = GridCoverError::from(error);
+        let GridCoverError::Geographic(diagnostic) = mapped else {
+            panic!("expected geographic diagnostic, got {mapped:?}");
+        };
+        let message = diagnostic.to_string();
+        assert!(
+            message.contains("geographic shape") && message.contains("latitude 91"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn cover_error_preparation_is_native() {
+        let error = GridCoverError::from(CoverError::Preparation(
+            crate::geometry::GeometryErrorKind::message("prepared"),
+        ));
+        assert!(matches!(error, GridCoverError::Native(_)), "{error:?}");
+    }
+
+    #[test]
+    fn identity_id_collect_allocation_is_native_resource() {
+        let error = crate::test_support::fail_allocations_after(0, || {
+            try_collect_cover_ids([1_u64, 2, 3]).expect_err("id collect allocation must fail")
+        });
+        assert!(
+            matches!(error, GridCoverError::Native(ref inner) if matches!(
+                inner.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            )),
+            "{error:?}"
+        );
     }
 }

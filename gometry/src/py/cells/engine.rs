@@ -5,6 +5,8 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyTypeError;
 
+use crate::grid::CoverBudgetExceeded;
+use crate::py::cells::coverage_ops::GridCoverError;
 use crate::py::cells::{
     Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult, Python,
     Shape, lonlat_shape,
@@ -173,7 +175,7 @@ pub(crate) fn grid_cover_dispatch<'py>(
     geom: &Bound<'py, PyAny>,
     kind: GridKind,
     max_cells: Option<usize>,
-    build: impl Fn(&PyGeometry, Option<usize>) -> PyResult<Vec<u64>> + Send,
+    build: impl Fn(&PyGeometry, Option<usize>) -> Result<Vec<u64>, GridCoverError> + Send,
 ) -> PyResult<Py<PyAny>> {
     if let Some(geometry) = exact_geometry(geom) {
         let geometry = geometry.clone();
@@ -184,64 +186,66 @@ pub(crate) fn grid_cover_dispatch<'py>(
         return Err(expected_geometry_or_array());
     };
     let array = array.clone();
-    let rows = py.detach(move || {
-        let crs = array.crs_str().map(str::to_owned);
-        let mut produced = 0_usize;
-        crate::try_collect_results(
-            array
-                .row_operation()
-                .rows_with_missing(Vec::<u64>::new)
-                .map(|row| {
-                    let crate::array::ArrayRow::Present(row) = row else {
-                        return Ok(Vec::new());
-                    };
-                    row.row().with_shape(|shape| {
-                        let shape = crate::lonlat_shape_under(shape, crs.as_deref())?.into_owned();
-                        // Scalar factories reject empty sources, but an array must retain row
-                        // alignment. Represent a present empty exactly like a missing row in
-                        // the ragged cell result: an empty group, not a batch error.
-                        if shape.is_empty() {
-                            return Ok(Vec::new());
-                        }
-                        let remaining = remaining_cover_budget(produced, max_cells)?;
-                        if remaining == Some(0)
-                            && !matches!(&shape, crate::geometry::Shape::Empty(..))
-                        {
-                            return Err(crate::py::cells::coverage_ops::cover_budget_err(
-                                crate::grid::CoverBudgetExceeded::new(
-                                    max_cells.expect("finite budget"),
-                                ),
-                            ));
-                        }
-                        let ids = build(&PyGeometry::wgs84(shape), remaining)?;
-                        produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
-                        Ok(ids)
-                    })
-                }),
-        )
-    })?;
+    let rows = py.detach(move || cover_array_rows(&array, max_cells, build))?;
     crate::py::vectors::Groups::from_cell_rows(kind, rows)?.into_py_any(py)
+}
+
+fn cover_array_rows(
+    array: &crate::PyGeometryArray,
+    max_cells: Option<usize>,
+    build: impl Fn(&PyGeometry, Option<usize>) -> Result<Vec<u64>, GridCoverError>,
+) -> Result<Vec<Vec<u64>>, GridCoverError> {
+    let crs = array.crs_str();
+    let mut produced = 0_usize;
+    let mut out = Vec::new();
+    for row in array.row_operation().rows_with_missing(Vec::<u64>::new) {
+        let ids = match row {
+            crate::array::ArrayRow::Missing { .. } => Vec::new(),
+            crate::array::ArrayRow::Present(row) => row.row().with_shape(|shape| {
+                let shape = crate::lonlat_shape_under(shape, crs)?.into_owned();
+                // Scalar factories reject empty sources, but an array must retain row
+                // alignment. Represent a present empty exactly like a missing row in
+                // the ragged cell result: an empty group, not a batch error.
+                if shape.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let remaining = remaining_cover_budget(produced, max_cells)?;
+                if remaining == Some(0) {
+                    return Err(GridCoverError::Budget(CoverBudgetExceeded::new(
+                        max_cells.expect("finite budget"),
+                    )));
+                }
+                let geometry = PyGeometry::wgs84(shape);
+                let ids = build(&geometry, remaining)?;
+                drop(geometry);
+                produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
+                Ok(ids)
+            })?,
+        };
+        crate::try_push_vec(&mut out, ids)?;
+    }
+    Ok(out)
 }
 
 fn checked_cover_batch_len(
     produced: usize,
     row_len: usize,
     max_cells: Option<usize>,
-) -> PyResult<usize> {
+) -> Result<usize, CoverBudgetExceeded> {
     let produced = produced.saturating_add(row_len);
-    crate::grid::ensure_cover_budget(produced, max_cells)
-        .map_err(crate::py::cells::coverage_ops::cover_budget_err)?;
+    crate::grid::ensure_cover_budget(produced, max_cells)?;
     Ok(produced)
 }
 
-fn remaining_cover_budget(produced: usize, max_cells: Option<usize>) -> PyResult<Option<usize>> {
+fn remaining_cover_budget(
+    produced: usize,
+    max_cells: Option<usize>,
+) -> Result<Option<usize>, CoverBudgetExceeded> {
     max_cells
         .map(|limit| {
-            limit.checked_sub(produced).ok_or_else(|| {
-                crate::py::cells::coverage_ops::cover_budget_err(
-                    crate::grid::CoverBudgetExceeded::new(limit),
-                )
-            })
+            limit
+                .checked_sub(produced)
+                .ok_or_else(|| CoverBudgetExceeded::new(limit))
         })
         .transpose()
 }
@@ -350,8 +354,6 @@ mod tests {
 
     #[test]
     fn grouped_cover_budget_is_cumulative_and_overflow_safe() {
-        // `PyErr` rendering touches the interpreter even in a pure-Rust test.
-        crate::test_support::initialize_python();
         let limit = usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap();
         assert_eq!(
             checked_cover_batch_len(limit - 1, 1, Some(limit)).expect("at budget"),
@@ -372,5 +374,83 @@ mod tests {
         assert_eq!(remaining_cover_budget(3, Some(5)).unwrap(), Some(2));
         assert_eq!(remaining_cover_budget(5, Some(5)).unwrap(), Some(0));
         assert_eq!(remaining_cover_budget(usize::MAX, None).unwrap(), None);
+        let over = remaining_cover_budget(6, Some(5)).expect_err("produced past the cap");
+        assert!(over.to_string().contains("max_cells"));
+    }
+
+    fn point_array(points: Vec<(f64, f64)>) -> crate::PyGeometryArray {
+        crate::PyGeometryArray::packed_points(
+            crate::geometry::CoordSeq::from_vecs(
+                points.iter().map(|point| point.0).collect(),
+                points.iter().map(|point| point.1).collect(),
+                None,
+                None,
+            ),
+            crate::boundary::Frame::None,
+        )
+    }
+
+    #[test]
+    fn first_row_budget_beats_later_invalid_latitude() {
+        let array = point_array(vec![(13.4, 52.5), (0.0, 95.0)]);
+        let error = cover_array_rows(&array, Some(1), |_, _| Ok(vec![0, 1]))
+            .expect_err("row 0 must exhaust max_cells before row 1 lonlat");
+        let GridCoverError::Budget(budget) = error else {
+            panic!("expected budget error, got {error:?}");
+        };
+        assert!(budget.to_string().contains("max_cells"), "{budget}");
+    }
+
+    #[test]
+    fn later_row_domain_after_successful_row_is_native() {
+        let array = point_array(vec![(13.4, 52.5), (0.0, 95.0)]);
+        let error =
+            cover_array_rows(&array, None, |_, _| Ok(vec![0])).expect_err("row 1 invalid latitude");
+        let GridCoverError::Native(error) = error else {
+            panic!("expected native lonlat error, got {error:?}");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("invalid longitude/latitude (0, 95)"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn missing_and_empty_present_rows_are_empty_groups() {
+        let present = crate::PyGeometryArray::from_shapes(
+            vec![
+                crate::geometry::Shape::empty_polygon(),
+                crate::geometry::Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0)),
+            ],
+            crate::boundary::Frame::None,
+        );
+        let mask = crate::array::ValidityMask::from_vec(3, vec![false, true, false]).expect("mask");
+        let array = crate::PyGeometryArray::scatter_present_rows(&present, mask);
+        let rows = cover_array_rows(&array, None, |_, _| Ok(vec![7]))
+            .expect("empty and missing are groups");
+        assert_eq!(rows, vec![Vec::new(), Vec::new(), vec![7]]);
+    }
+
+    #[test]
+    fn allocation_failure_after_fixture_is_native_resource() {
+        let array = crate::PyGeometryArray::from_shapes(
+            vec![
+                crate::geometry::Shape::empty_polygon(),
+                crate::geometry::Shape::empty_polygon(),
+            ],
+            crate::boundary::Frame::None,
+        );
+        let error = crate::test_support::fail_allocations_after(0, || {
+            cover_array_rows(&array, None, |_, _| unreachable!("empty rows skip build"))
+                .expect_err("collector allocation must fail")
+        });
+        assert!(
+            matches!(error, GridCoverError::Native(ref inner) if matches!(
+                inner.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+            )),
+            "{error:?}"
+        );
     }
 }

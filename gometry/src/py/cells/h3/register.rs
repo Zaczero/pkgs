@@ -1,9 +1,10 @@
 use h3o::CellIndex;
 
 use super::tile::H3TileError;
+use crate::error::ResourceError;
 use crate::grid::h3_coverer::{H3CoverError, H3CoverPlan, H3TraversalRule, h3_cover_shape};
 use crate::py::cells::coverage_ops::{
-    cover_budget_err, coverage_factory_geometry, coverage_factory_shapes,
+    GridCoverError, coverage_factory_geometry, coverage_factory_shapes,
 };
 use crate::py::cells::h3::{
     _unpickle_h3_cell, _unpickle_h3_edge, _unpickle_h3_edge_array, _unpickle_h3_vertex,
@@ -12,10 +13,29 @@ use crate::py::cells::h3::{
     h3_cover, h3_difference, h3_intersection, h3_pentagons, h3_tile, h3_union,
 };
 use crate::py::cells::{
-    Bound, CellRule, GeometryError, H3_MAX_RESOLUTION, PyAny, PyErr, PyGeometry, PyModule,
+    Bound, CellRule, GeometryError, H3_MAX_RESOLUTION, PyAny, PyGeometry, PyModule,
     PyModuleMethods as _, PyResult, py_i64_required,
 };
-use crate::py::errors::native_memory_error;
+
+impl From<H3CoverError> for GridCoverError {
+    fn from(error: H3CoverError) -> Self {
+        match error {
+            H3CoverError::Budget(error) => Self::Budget(error),
+            H3CoverError::Allocation => Self::Native(ResourceError::Allocation.into()),
+            H3CoverError::CapacityOverflow => Self::H3Capacity,
+            H3CoverError::Geometry(error) => Self::Native(error),
+        }
+    }
+}
+
+impl From<H3TileError> for GridCoverError {
+    fn from(error: H3TileError) -> Self {
+        match error {
+            H3TileError::Budget(error) => Self::Budget(error),
+            H3TileError::Allocation => Self::Native(ResourceError::Allocation.into()),
+        }
+    }
+}
 
 /// Register the H3 classes, flat functions, and pickle rebuilders.
 pub(in crate::py::cells) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -43,7 +63,7 @@ pub(super) fn build_coverage(
     resolution: Resolution,
     cell_rule: CellRule,
     max_cells: Option<usize>,
-) -> PyResult<Vec<CellIndex>> {
+) -> Result<Vec<CellIndex>, GridCoverError> {
     let (membership_geometry, cells) = match cell_rule {
         // Center retains its specialized native tiler. The split shape is only
         // a traversal/seed working image; membership stays unsplit and normalized.
@@ -62,14 +82,11 @@ pub(super) fn build_coverage(
                 frame,
                 resolution,
                 max_cells,
-            )
-            .map_err(|error| match error {
-                H3TileError::Budget(error) => cover_budget_err(error),
-                H3TileError::Allocation => native_memory_error(),
-            })?;
-            let cells = crate::try_collect_results(
-                annotated.into_iter().map(|cell| Ok::<_, PyErr>(cell.cell)),
             )?;
+            let mut cells = Vec::new();
+            for cell in annotated {
+                crate::try_push_vec(&mut cells, cell.cell)?;
+            }
             (membership_geometry, cells)
         },
         CellRule::Within | CellRule::Overlap | CellRule::Bbox => {
@@ -85,32 +102,21 @@ pub(super) fn build_coverage(
                     CellRule::Center => unreachable!("center uses the specialized tiler"),
                 },
                 max_cells,
-            )
-            .map_err(h3_cover_err)?;
+            )?;
             // `within` is the universal mirror of overlap completeness. A
             // chord proxy may witness contact, but it cannot certify that the
             // true spherical cell stays inside the affine lon/lat source.
             // Therefore uncertainty fails CLOSED here (exclude Boundary), the
             // deliberate inverse of overlap's fail-OPEN completeness rule.
-            let cells = crate::try_collect_results(
-                annotated.into_iter().map(|cell| Ok::<_, PyErr>(cell.cell)),
-            )?;
+            let mut cells = Vec::new();
+            for cell in annotated {
+                crate::try_push_vec(&mut cells, cell.cell)?;
+            }
             (membership_geometry, cells)
         },
     };
     let _ = (membership_geometry, cell_rule, max_cells);
     Ok(cells)
-}
-
-pub(super) fn h3_cover_err(error: H3CoverError) -> PyErr {
-    match error {
-        H3CoverError::Budget(error) => cover_budget_err(error),
-        H3CoverError::Allocation => native_memory_error(),
-        H3CoverError::CapacityOverflow => {
-            GeometryError::new_err("H3 coverage traversal exceeded its representable capacity")
-        },
-        H3CoverError::Geometry(error) => error.into(),
-    }
 }
 
 pub(super) fn h3_resolution(value: u8) -> PyResult<Resolution> {

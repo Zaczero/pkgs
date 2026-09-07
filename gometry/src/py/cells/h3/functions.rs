@@ -1,4 +1,3 @@
-use crate::py::cells::h3;
 use crate::grid::spherical_arc::{H3BoundingWindow, h3_cell_contains_windows};
 use crate::py::cells::coverage_ops::SortedCells;
 use crate::py::cells::h3::register::build_coverage;
@@ -7,7 +6,7 @@ use crate::py::cells::h3::{
 };
 use crate::py::cells::{
     Bound, CellRule, GeometryError, GridKind, H3_MAX_RESOLUTION, Py, PyAny, PyCellArray, PyResult,
-    Python, bounding_query_region, dispatch_grid_cell_array, grid_cover_dispatch, pyfunction,
+    Python, bounding_query_region, dispatch_grid_cell_array, grid_cover_dispatch, h3, pyfunction,
 };
 use crate::py::errors::InvalidGeometryError;
 
@@ -302,11 +301,11 @@ pub(super) fn h3_cover(
         max_cells,
         |geometry, effective_max_cells| {
             let cells = build_coverage(geometry, resolution, cell_rule, effective_max_cells)?;
-            crate::try_collect_results(
+            crate::py::cells::coverage_ops::try_collect_cover_ids(
                 SortedCells::from_sorted(cells)
                     .into_vec()
                     .into_iter()
-                    .map(|cell| Ok::<_, pyo3::PyErr>(u64::from(cell))),
+                    .map(u64::from),
             )
         },
     )

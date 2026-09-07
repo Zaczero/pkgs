@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use rstar::{AABB, RTree, RTreeObject};
 
+use crate::error::ResourceError;
 use crate::geometry::{Coordinates as _, Shape};
 use crate::grid::affine_source::{
     GeographicCoverageSource, SphericalGridTarget, WorkingShapeRelation,
@@ -9,17 +10,24 @@ use crate::grid::affine_source::{
 };
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::coverer::{CoverRule, Coverer, Covering};
-use crate::py::cells::coverage_ops::{self, coverage_factory_shapes};
+use crate::py::cells::coverage_ops::{GridCoverError, coverage_factory_shapes};
 use crate::py::cells::s2::PyS2Cell;
 use crate::py::cells::s2::functions::{
     _unpickle_s2_cell, s2_bounding_cell, s2_cells, s2_cover, s2_difference, s2_intersection,
     s2_union,
 };
 use crate::py::cells::s2::parse::{S2LevelBudget, bounds_query_shape};
-use crate::py::cells::{
-    Bound, CellRule, PyErr, PyGeometry, PyModule, PyModuleMethods as _, PyResult,
-};
-use crate::py::errors::native_memory_error;
+use crate::py::cells::{Bound, CellRule, PyGeometry, PyModule, PyModuleMethods as _, PyResult};
+
+impl From<S2ComponentCoverError> for GridCoverError {
+    fn from(error: S2ComponentCoverError) -> Self {
+        match error {
+            S2ComponentCoverError::Budget(error) => Self::Budget(error),
+            S2ComponentCoverError::Preparation(error) => Self::Native(error),
+            S2ComponentCoverError::Allocation => Self::Native(ResourceError::Allocation.into()),
+        }
+    }
+}
 
 /// Failure that can occur while building a union of atomic S2 covers.
 ///
@@ -400,13 +408,13 @@ fn membership_from_tagged(
     tagged: Vec<(CellId, bool)>,
     cell_rule: CellRule,
     bbox_visible: Option<Vec<CellId>>,
-) -> PyResult<Vec<CellId>> {
+) -> Result<Vec<CellId>, GridCoverError> {
     if cell_rule == CellRule::Bbox {
         return Ok(bbox_visible.expect("bbox cells were built"));
     }
     let mut cells = Vec::new();
     if cell_rule == CellRule::Overlap {
-        crate::try_reserve_vec(&mut cells, tagged.len()).map_err(PyErr::from)?;
+        crate::try_reserve_vec(&mut cells, tagged.len())?;
     }
     match cell_rule {
         CellRule::Bbox => unreachable!("bbox membership returned before allocation"),
@@ -415,7 +423,7 @@ fn membership_from_tagged(
         // cells.
         CellRule::Overlap | CellRule::Within | CellRule::Center => {
             for (cell, _) in tagged {
-                crate::try_push_vec(&mut cells, cell).map_err(PyErr::from)?;
+                crate::try_push_vec(&mut cells, cell)?;
             }
         },
     }
@@ -431,7 +439,7 @@ pub(crate) fn build_coverage(
     geometry: &PyGeometry,
     budget: S2LevelBudget,
     cell_rule: CellRule,
-) -> PyResult<Vec<CellId>> {
+) -> Result<Vec<CellId>, GridCoverError> {
     let (membership_geometry, cover_shape) = coverage_factory_shapes(geometry, "S2")?;
     let (tagged, bbox_visible) = if cell_rule == CellRule::Bbox {
         // Cover each non-wrapped lon/lat window separately and deduplicate.
@@ -444,14 +452,15 @@ pub(crate) fn build_coverage(
         // `covers` after the split can incorrectly discard distinct polar
         // pieces (and changes a one-member MultiPolygon's result).
         let source_components = canonical_s2_components(&cover_shape)
-            .map_err(|_| native_memory_error())?;
+            .map_err(|_| GridCoverError::from(ResourceError::Allocation))?;
         let mut windows = Vec::new();
         for component in &source_components {
             for window in bbox_cover_windows(component)? {
-                crate::try_push_vec(&mut windows, window).map_err(PyErr::from)?;
+                crate::try_push_vec(&mut windows, window)?;
             }
         }
-        let cells = cover_s2_shapes(
+        let mut cells = Vec::new();
+        for (cell, _) in cover_s2_shapes(
             windows,
             budget.min_level,
             budget.max_level,
@@ -459,15 +468,9 @@ pub(crate) fn build_coverage(
             budget.max_cells,
             budget.target_cells,
             CoverRule::Overlap,
-        )
-        .map_err(|error| match error {
-            S2ComponentCoverError::Budget(error) => coverage_ops::cover_budget_err(error),
-            S2ComponentCoverError::Preparation(error) => error.into(),
-            S2ComponentCoverError::Allocation => native_memory_error(),
-        })?
-        .into_iter()
-        .map(|(cell, _)| Ok::<_, PyErr>(cell));
-        let cells = crate::try_collect_results(cells)?;
+        )? {
+            crate::try_push_vec(&mut cells, cell)?;
+        }
         (Vec::new(), Some(cells))
     } else {
         let rule = match cell_rule {
@@ -484,12 +487,7 @@ pub(crate) fn build_coverage(
             budget.max_cells,
             budget.target_cells,
             rule,
-        )
-        .map_err(|error| match error {
-            S2ComponentCoverError::Budget(error) => coverage_ops::cover_budget_err(error),
-            S2ComponentCoverError::Preparation(error) => error.into(),
-            S2ComponentCoverError::Allocation => native_memory_error(),
-        })?;
+        )?;
         (tagged, None)
     };
 
@@ -503,13 +501,13 @@ pub(crate) fn build_coverage(
 /// follows the same aggregate-decomposition owner as the other S2 rules. A
 /// single envelope with west > east (geographic wrap convention) splits into
 /// two boxes at ±180. Ordinary ordered bounds stay one window.
-fn bbox_cover_windows(shape: &Shape) -> PyResult<Vec<Shape>> {
+fn bbox_cover_windows(shape: &Shape) -> Result<Vec<Shape>, GridCoverError> {
     let mut windows = Vec::new();
     visit_grid_cover_components(shape, &mut |component| {
         push_bounds_windows(component.bounds(), &mut windows)
     })?;
     if windows.is_empty() {
-        Err(coverage_ops::empty_coverage_err("S2"))
+        Err(GridCoverError::Empty("S2"))
     } else {
         Ok(windows)
     }
@@ -518,7 +516,7 @@ fn bbox_cover_windows(shape: &Shape) -> PyResult<Vec<Shape>> {
 fn push_bounds_windows(
     bounds: Option<crate::geometry::Bounds>,
     out: &mut Vec<Shape>,
-) -> PyResult<()> {
+) -> Result<(), GridCoverError> {
     let Some(bounds) = bounds else {
         return Ok(());
     };
@@ -530,14 +528,14 @@ fn push_bounds_windows(
         // Antimeridian wrap: cover [west, 180] and [-180, east] separately.
         crate::try_push_vec(
             out,
-            bounds_query_shape(crate::geometry::Bounds::new_raw(west, south, 180.0, north))?,
+            bounds_query_shape(crate::geometry::Bounds::new_raw(west, south, 180.0, north)),
         )?;
         crate::try_push_vec(
             out,
-            bounds_query_shape(crate::geometry::Bounds::new_raw(-180.0, south, east, north))?,
+            bounds_query_shape(crate::geometry::Bounds::new_raw(-180.0, south, east, north)),
         )?;
     } else {
-        crate::try_push_vec(out, bounds_query_shape(bounds)?)?;
+        crate::try_push_vec(out, bounds_query_shape(bounds))?;
     }
     Ok(())
 }

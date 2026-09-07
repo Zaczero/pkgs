@@ -4,6 +4,14 @@ import gometry as gm
 import pytest
 
 
+COVER_CASES = [
+    (gm.h3_cover, {'resolution': 2}, 'H3'),
+    (gm.s2_cover, {'level': 3}, 'S2'),
+    (gm.geohash_cover, {'precision': 3}, 'geohash'),
+    (gm.tile_cover, {'zoom': 3}, 'Tile'),
+]
+
+
 def test_empty_source_cover_requires_non_empty_geometry() -> None:
     empty = gm.from_wkt('POINT EMPTY', crs=4326)
     with pytest.raises(
@@ -11,6 +19,45 @@ def test_empty_source_cover_requires_non_empty_geometry() -> None:
         match='H3 coverage requires a non-empty geometry',
     ):
         gm.h3_cover(empty, resolution=5)
+
+
+@pytest.mark.parametrize('cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile'])
+def test_scalar_empty_errors_and_array_empty_is_a_group(cover, depth, label) -> None:
+    empty = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=f'{label} coverage requires a non-empty geometry',
+    ):
+        cover(empty, **depth)
+    groups = cover(gm.GeometryArray([empty], crs=4326), **depth)
+    assert len(groups) == 1
+    assert len(groups[0]) == 0
+
+
+@pytest.mark.parametrize('cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile'])
+def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth, label) -> None:
+    assert label
+    first = gm.box(-2, -2, 2, 2, crs=4326)
+    later = gm.Point(0, 95, crs=4326)
+    with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
+        cover(gm.GeometryArray([first, later], crs=4326), max_cells=1, **depth)
+    assert excinfo.value.param == 'max_cells'
+    assert excinfo.value.value == 1
+
+
+@pytest.mark.parametrize('cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile'])
+def test_array_later_row_invalid_latitude_after_successful_row(cover, depth, label) -> None:
+    assert label
+    first = gm.box(-1, -1, 1, 1, crs=4326)
+    later = gm.Point(0, 95, crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'):
+        cover(gm.GeometryArray([first, later], crs=4326), max_cells=None, **depth)
+
+
+def test_tile_cover_rejects_latitude_outside_web_mercator() -> None:
+    point = gm.Point(0, 86, crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match='Web Mercator domain'):
+        gm.tile_cover(point, zoom=3)
 
 
 def test_scalar_covers_return_cell_arrays() -> None:

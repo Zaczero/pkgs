@@ -10,7 +10,6 @@ use crate::py::cells::{
     Bound, CellRule, GridKind, Py, PyAny, PyCellArray, PyResult, Python, grid_cover_dispatch,
     pyfunction,
 };
-use crate::py::errors::InvalidGeometryError;
 
 struct TileCoverSpec;
 impl RectCoverSpec for TileCoverSpec {
@@ -104,9 +103,7 @@ pub(super) fn tile_cover(
         |geometry, effective_max_cells| {
             let (membership, cover_shape) = coverage_factory_shapes(geometry, "Tile")?;
             if let Err(lat) = ensure_cover_shape_in_tile_domain(&cover_shape) {
-                return Err(InvalidGeometryError::new_err(format!(
-                    "latitude {lat} is outside the Web Mercator domain ±85.05112878 degrees"
-                )));
+                return Err(crate::py::cells::coverage_ops::GridCoverError::TileLatitude(lat));
             }
             build_rect_coverage_ids::<TileCoverSpec>(
                 &membership,
