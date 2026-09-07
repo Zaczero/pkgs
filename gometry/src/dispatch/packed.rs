@@ -1,9 +1,8 @@
-use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::array::{GeometryArrayStorage, RowSelection, RowSelectionRef};
+use crate::array::{GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef};
 use crate::boundary::input::OriginSpec;
 use crate::broadcast::{
     CollectRows as _, degrade_linref_linestring, degrade_linref_point_between, rows_err,
@@ -84,12 +83,17 @@ pub(crate) enum PackedUnary {
         rect: Bounds,
         domain: TopologyDomain,
     },
-    LineInterpolatePoint {
+}
+
+/// Distance-basis array linref parameters. Owns the admitted [`MetricModel`]
+/// once for packed hit and packed-miss.
+pub(crate) enum PackedLinearReference {
+    InterpolatePoint {
         distance: F64Param,
         normalized: bool,
         metric: MetricModel,
     },
-    LineSubstring {
+    Substring {
         start_distance: F64Param,
         end_distance: F64Param,
         normalized: bool,
@@ -363,71 +367,66 @@ pub(crate) fn try_unary_packed_array(
         (Operation::ClipByRect, PackedUnary::ClipByRect { rect, domain }) => {
             Some(array.clip_by_rect_unary_packed(py, *rect, false, *domain))
         },
-        (
-            Operation::Metric(MetricOp::LineInterpolate),
-            PackedUnary::LineInterpolatePoint {
-                distance,
-                normalized,
-                metric,
-            },
-        ) => {
-            let GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) = array.storage()
-            else {
-                return None;
-            };
-            Some(
-                linref_point_between_packed(
-                    py,
-                    Arc::clone(coords),
-                    offsets.clone(),
-                    row_map.clone(),
-                    array.len(),
-                    metric.clone(),
-                    distance.clone(),
-                    *normalized,
-                )
-                .map(|shapes| PyGeometryArray::from_shapes(shapes, array.frame.clone())),
-            )
-        },
-        (
-            Operation::Metric(MetricOp::LineSubstring),
-            PackedUnary::LineSubstring {
-                start_distance,
-                end_distance,
-                normalized,
-                metric,
-            },
-        ) => {
-            let GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) = array.storage()
-            else {
-                return None;
-            };
-            Some(
-                linref_substring_packed(
-                    py,
-                    Arc::clone(coords),
-                    offsets.clone(),
-                    row_map.clone(),
-                    array.len(),
-                    metric.clone(),
-                    start_distance.clone(),
-                    end_distance.clone(),
-                    *normalized,
-                )
-                .map(|shapes| PyGeometryArray::from_shapes(shapes, array.frame.clone())),
-            )
-        },
         _ => None,
     }
 }
+
+pub(crate) fn try_packed_linear_reference(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    packed: &PackedLinearReference,
+) -> Option<PyResult<PyGeometryArray>> {
+    if array.has_missing() {
+        return None;
+    }
+    let GeometryArrayStorage::Packed(PackedStorage::Lines {
+        coords,
+        offsets,
+        row_map,
+    }) = array.storage()
+    else {
+        return None;
+    };
+    match packed {
+        PackedLinearReference::InterpolatePoint {
+            distance,
+            normalized,
+            metric,
+        } => Some(
+            linref_point_between_packed(
+                py,
+                Arc::clone(coords),
+                offsets.clone(),
+                row_map.clone(),
+                array.len(),
+                metric.clone(),
+                distance.clone(),
+                *normalized,
+            )
+            .map(|shapes| PyGeometryArray::from_shapes(shapes, array.frame.clone())),
+        ),
+        PackedLinearReference::Substring {
+            start_distance,
+            end_distance,
+            normalized,
+            metric,
+        } => Some(
+            linref_substring_packed(
+                py,
+                Arc::clone(coords),
+                offsets.clone(),
+                row_map.clone(),
+                array.len(),
+                metric.clone(),
+                start_distance.clone(),
+                end_distance.clone(),
+                *normalized,
+            )
+            .map(|shapes| PyGeometryArray::from_shapes(shapes, array.frame.clone())),
+        ),
+    }
+}
+
 fn linref_point_between_packed(
     py: Python<'_>,
     coords: Arc<CoordSeq>,

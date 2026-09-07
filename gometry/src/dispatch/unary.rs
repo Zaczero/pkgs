@@ -12,8 +12,8 @@ use crate::dispatch::metric::{
 };
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::packed::{
-    PackedUnary, try_unary_packed_array, try_unary_packed_bool, try_unary_packed_bounds,
-    try_unary_packed_f64,
+    PackedLinearReference, PackedUnary, try_packed_linear_reference, try_unary_packed_array,
+    try_unary_packed_bool, try_unary_packed_bounds, try_unary_packed_f64,
 };
 use crate::error::Result;
 use crate::geometry::{PreparedPlan, Shape, TopologyDomain};
@@ -310,66 +310,46 @@ pub(crate) fn unary_scalar_linref_shape(
 pub(crate) fn unary_array_linref_shapes(
     py: Python<'_>,
     array: &PyGeometryArray,
-    op: Operation,
-    resolver: super::metric::MetricResolver,
-    packed: Option<&PackedUnary>,
+    packed: &PackedLinearReference,
     kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
-    if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
+    if let Some(result) = try_packed_linear_reference(py, array, packed) {
         return result;
     }
+    let model = match packed {
+        PackedLinearReference::InterpolatePoint { metric, .. }
+        | PackedLinearReference::Substring { metric, .. } => metric,
+    };
     let frame = array.frame.clone();
     let output_frame = frame.clone();
     let domain = crate::geometry::topology_domain(&frame)?;
-    let mut scratch = MetricScratch::default();
     let output_missing = array.missing().cloned();
     let array = array.clone();
-    let result = {
-        let metric = match resolver.resolve_ctx(&frame, &mut scratch) {
-            Ok(metric) => metric,
-            Err(error) => {
-                drop(scratch);
-                return Err(error);
-            },
-        };
-        let model = metric.require_model(
-            op.metric_op()
-                .expect("linear-reference operation must carry metric identity"),
-        );
-        let model = match model {
-            Ok(model) => model,
-            Err(error) => {
-                drop(scratch);
-                return Err(PyErr::from(error));
-            },
-        };
-        py.detach(move || {
-            let mut rows = array.row_operation();
-            rows.rows_with_missing(Shape::empty_point)
-                .map(|row| {
-                    let ArrayRow::Present(present) = row else {
-                        return Ok(Shape::empty_point());
-                    };
-                    let row_index = present.logical();
-                    let shape = present.row();
-                    let data = crate::array::PreparedRow::transient(shape);
-                    let cache = rows.frame_cache(row_index);
-                    let row = LinearReferenceRow {
-                        op: CachelessRowContext {
-                            frame: &frame,
-                            domain,
-                            metric,
-                            lane: Lane::Array(row_index),
-                        },
-                        model,
-                        cache: &cache,
-                    };
-                    kernel(&data, &row)
-                })
-                .collect_rows()
-        })
-    };
-    drop(scratch);
+    let result = py.detach(move || {
+        let mut rows = array.row_operation();
+        rows.rows_with_missing(Shape::empty_point)
+            .map(|row| {
+                let ArrayRow::Present(present) = row else {
+                    return Ok(Shape::empty_point());
+                };
+                let row_index = present.logical();
+                let shape = present.row();
+                let data = crate::array::PreparedRow::transient(shape);
+                let cache = rows.frame_cache(row_index);
+                let row = LinearReferenceRow {
+                    op: CachelessRowContext {
+                        frame: &frame,
+                        domain,
+                        metric: MetricCtx::None,
+                        lane: Lane::Array(row_index),
+                    },
+                    model,
+                    cache: &cache,
+                };
+                kernel(&data, &row)
+            })
+            .collect_rows()
+    });
     let shapes = match result {
         Ok(shapes) => shapes,
         Err(error) => {

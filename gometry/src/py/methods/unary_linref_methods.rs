@@ -569,23 +569,17 @@ impl PyGeometryArray {
             .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?
             .require_model(MetricOp::LineInterpolate)?
             .clone();
-        let packed = crate::dispatch::PackedUnary::LineInterpolatePoint {
+        let packed = crate::dispatch::PackedLinearReference::InterpolatePoint {
             distance: distance.clone(),
             normalized,
             metric: model,
         };
-        let value = crate::dispatch::unary_array_linref_shapes(
-            py,
-            self,
-            op,
-            resolver,
-            Some(&packed),
-            move |data, ctx| {
+        let value =
+            crate::dispatch::unary_array_linref_shapes(py, self, &packed, move |data, ctx| {
                 crate::dispatch::kernels::unary_line_interpolate_point(
                     data, ctx, &distance, normalized,
                 )
-            },
-        )?;
+            })?;
         value.into_pyobject(py).map(|value| value.unbind().into())
     }
 
@@ -631,28 +625,21 @@ impl PyGeometryArray {
             .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?
             .require_model(MetricOp::LineSubstring)?
             .clone();
-        let packed = crate::dispatch::PackedUnary::LineSubstring {
+        let packed = crate::dispatch::PackedLinearReference::Substring {
             start_distance: start_distance.clone(),
             end_distance: end_distance.clone(),
             normalized,
             metric: model,
         };
-        crate::dispatch::unary_array_linref_shapes(
-            py,
-            self,
-            op,
-            resolver,
-            Some(&packed),
-            move |data, ctx| {
-                crate::dispatch::kernels::unary_line_substring(
-                    data,
-                    ctx,
-                    &start_distance,
-                    &end_distance,
-                    normalized,
-                )
-            },
-        )
+        crate::dispatch::unary_array_linref_shapes(py, self, &packed, move |data, ctx| {
+            crate::dispatch::kernels::unary_line_substring(
+                data,
+                ctx,
+                &start_distance,
+                &end_distance,
+                normalized,
+            )
+        })
     }
 
     #[doc = doc_interpolate_m!(array)]
