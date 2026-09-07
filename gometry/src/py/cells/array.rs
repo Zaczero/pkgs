@@ -13,7 +13,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::{PyResult, Python, pyclass};
 use pyo3::types::{
     PyAny, PyBytes, PyBytesMethods as _, PyList, PyListMethods as _, PyString, PyTuple, PyType,
@@ -30,9 +30,9 @@ use crate::py::cells::grid_kind::{
     collect_ids, collect_inferred_ids, grid_kind_from_type, is_custom_index_provider,
 };
 use crate::py::cells::{
-    GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _, PyAnyMethods as _,
-    PyCellArrayIter, PyRef, checked_depth, py_i64_required, pyfunction, rect_cells_to_polygon,
-    uncompact_floor_error,
+    FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
+    PyAnyMethods as _, PyCellArrayIter, PyRef, checked_depth, py_i64_required, pyfunction,
+    rect_cells_to_polygon, uncompact_floor_error,
 };
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
 
@@ -73,29 +73,6 @@ struct CellStorage {
     /// Per-physical-row missing flags. `None` means every row is present
     /// (the common dense factory path). When `Some`, length equals `ids`.
     missing: Option<Arc<[bool]>>,
-}
-
-#[derive(Debug)]
-enum FactorizationError {
-    Native(crate::error::Error),
-    CountOverflow,
-    CodeOverflow,
-}
-
-impl From<crate::error::Error> for FactorizationError {
-    fn from(error: crate::error::Error) -> Self {
-        Self::Native(error)
-    }
-}
-
-impl FactorizationError {
-    fn into_py_err(self) -> PyErr {
-        match self {
-            Self::Native(error) => error.into(),
-            Self::CountOverflow => PyOverflowError::new_err("cell value count overflows int64"),
-            Self::CodeOverflow => PyOverflowError::new_err("cell factor code overflows int64"),
-        }
-    }
 }
 
 impl CellStorage {
@@ -1060,7 +1037,12 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         })();
         let (sorted_uniques, sorted_counts) = match result {
             Ok(values) => values,
-            Err(error) => return Err(error.into_py_err()),
+            Err(error) => {
+                return Err(error.into_py_err(
+                    "cell value count overflows int64",
+                    "cell factor code overflows int64",
+                ));
+            },
         };
         let cells = match Self::from_ids(self.kind(), sorted_uniques).into_pyobject(py) {
             Ok(cells) => cells.into_any().unbind(),
@@ -1102,7 +1084,12 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
 fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let (uniques, codes) = match self.factorize_entries() {
             Ok(values) => values,
-            Err(error) => return Err(error.into_py_err()),
+            Err(error) => {
+                return Err(error.into_py_err(
+                    "cell value count overflows int64",
+                    "cell factor code overflows int64",
+                ));
+            },
         };
         let codes = match crate::py::numpy::int64_array(py, codes) {
             Ok(codes) => codes,
@@ -1867,7 +1854,8 @@ mod tests {
     use pyo3::exceptions::PyMemoryError;
     use pyo3::prelude::*;
 
-    use super::{FactorizationError, GridKind, PyCellArray};
+    use super::{GridKind, PyCellArray};
+    use crate::py::cells::FactorizationError;
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
@@ -1891,8 +1879,10 @@ mod tests {
                     Err(error) => error,
                 };
                 assert!(matches!(&error, FactorizationError::Native(_)));
-                let error = error.into_py_err();
-                error
+                error.into_py_err(
+                    "cell value count overflows int64",
+                    "cell factor code overflows int64",
+                )
             });
             assert!(error.is_instance_of::<PyMemoryError>(py));
             drop(error);
@@ -1920,8 +1910,10 @@ mod tests {
                     Err(error) => error,
                 };
                 assert!(matches!(&error, FactorizationError::Native(_)));
-                let error = error.into_py_err();
-                error
+                error.into_py_err(
+                    "cell value count overflows int64",
+                    "cell factor code overflows int64",
+                )
             });
             assert!(error.is_instance_of::<PyMemoryError>(py));
             drop(error);

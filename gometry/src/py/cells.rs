@@ -3,6 +3,7 @@
 //! source geometry; exact membership uses free `covers`/`contains`/`intersects`
 //! predicates.
 
+use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -43,6 +44,29 @@ use engine::{
 };
 pub(crate) use grid_kind::{GridKind, uncompact_floor_error};
 pub(crate) use h3::{PyH3EdgeArray, PyH3VertexArray};
+
+#[derive(Debug)]
+enum FactorizationError {
+    Native(crate::error::Error),
+    CountOverflow,
+    CodeOverflow,
+}
+
+impl From<crate::error::Error> for FactorizationError {
+    fn from(error: crate::error::Error) -> Self {
+        Self::Native(error)
+    }
+}
+
+impl FactorizationError {
+    fn into_py_err(self, count_overflow: &'static str, code_overflow: &'static str) -> PyErr {
+        match self {
+            Self::Native(error) => error.into(),
+            Self::CountOverflow => PyOverflowError::new_err(count_overflow),
+            Self::CodeOverflow => PyOverflowError::new_err(code_overflow),
+        }
+    }
+}
 
 pub(crate) fn checked_depth(
     value: i64,

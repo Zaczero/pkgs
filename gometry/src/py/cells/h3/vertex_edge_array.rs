@@ -6,7 +6,7 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::PyAnyMethods as _;
 use pyo3::types::{PyAny, PyBool, PyInt, PyTuple};
 use pyo3::{
@@ -23,7 +23,7 @@ use crate::py::cells::h3::{
     DirectedEdgeIndex, LatLng, PyH3Edge, PyH3Vertex, VertexIndex, collect_h3_index_ids,
     h3_edge_index, h3_vertex_index, validate_h3_index_ids,
 };
-use crate::py::cells::{GridKind, Point, PyCellArray, Shape};
+use crate::py::cells::{FactorizationError, GridKind, Point, PyCellArray, Shape};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
 
 fn try_hex_token(id: u64) -> PyResult<String> {
@@ -153,29 +153,6 @@ fn collect_h3_vertex_ids(ids: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
 
 fn collect_h3_edge_ids(ids: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
     collect_h3_index_ids::<DirectedEdgeIndex>(ids, h3_edge_index)
-}
-
-#[derive(Debug)]
-enum FactorizationError {
-    Native(crate::error::Error),
-    CountOverflow,
-    CodeOverflow,
-}
-
-impl From<crate::error::Error> for FactorizationError {
-    fn from(error: crate::error::Error) -> Self {
-        Self::Native(error)
-    }
-}
-
-impl FactorizationError {
-    fn into_py_err(self) -> PyErr {
-        match self {
-            Self::Native(error) => error.into(),
-            Self::CountOverflow => PyOverflowError::new_err("H3 count overflows int64"),
-            Self::CodeOverflow => PyOverflowError::new_err("H3 factor code overflows int64"),
-        }
-    }
 }
 
 macro_rules! h3_index_array_common {
@@ -618,7 +595,12 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 })();
                 let (values, sorted_counts) = match result {
                     Ok(values) => values,
-                    Err(error) => return Err(error.into_py_err()),
+                    Err(error) => {
+                        return Err(error.into_py_err(
+                            "H3 count overflows int64",
+                            "H3 factor code overflows int64",
+                        ));
+                    },
                 };
                 let values = match Self::from_ids(values).into_pyobject(py) {
                     Ok(values) => values.into_any().unbind(),
@@ -656,7 +638,12 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
 fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 let (uniques, codes) = match self.factorize_entries() {
                     Ok(values) => values,
-                    Err(error) => return Err(error.into_py_err()),
+                    Err(error) => {
+                        return Err(error.into_py_err(
+                            "H3 count overflows int64",
+                            "H3 factor code overflows int64",
+                        ));
+                    },
                 };
                 let codes = match crate::py::numpy::int64_array(py, codes) {
                     Ok(codes) => codes,
@@ -1041,7 +1028,8 @@ mod tests {
     use pyo3::exceptions::PyMemoryError;
     use pyo3::prelude::*;
 
-    use super::{FactorizationError, PyH3EdgeArray, PyH3VertexArray};
+    use super::{PyH3EdgeArray, PyH3VertexArray};
+    use crate::py::cells::FactorizationError;
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn assert_native_allocation_converts_to_memory_error<F>(
@@ -1062,7 +1050,7 @@ mod tests {
                 Err(error) => error,
             };
             assert!(matches!(&error, FactorizationError::Native(_)));
-            error.into_py_err()
+            error.into_py_err("H3 count overflows int64", "H3 factor code overflows int64")
         });
         assert!(error.is_instance_of::<PyMemoryError>(py));
         drop(error);
