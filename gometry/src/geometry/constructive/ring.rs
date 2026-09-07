@@ -6,10 +6,10 @@ use crate::error::Result;
 use crate::geometry::constructive::reversed_points;
 use crate::geometry::{
     AxisFrame, BinaryHeap, CoordSeq, Coordinates, GeometryErrorKind, Ordering, Point, REDUCE_LANES,
-    ReduceSimd, axis_pow2_scale, compare_f64, compare_point_slices, compare_points,
-    power_of_two_exponent,
-    ring_winding, same_point, same_topological_coordinate, scale_by_power_of_two, simd_map_f64,
-    topology_coordinate_bits_simd, try_simd_map_f64, wrap_index,
+    ReduceSimd, Ring, axis_pow2_scale, compare_f64, compare_point_slices, compare_points,
+    power_of_two_exponent, ring_winding, same_point, same_topological_coordinate,
+    scale_by_power_of_two, simd_map_f64, topology_coordinate_bits_simd, try_simd_map_f64,
+    wrap_index,
 };
 pub(crate) fn normalized_line<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     let forward: Vec<Point> = points.iter_coords().collect();
@@ -43,8 +43,105 @@ pub(crate) fn orient_ring<C: Coordinates + ?Sized>(points: &C, clockwise: bool) 
     }
 }
 
+/// Orient an admitted ring without copying its coordinate columns when the
+/// requested winding already matches.
+pub(crate) fn oriented_ring(ring: &Ring, clockwise: bool) -> Ring {
+    if ring_winding(ring).reverse_for_clockwise(clockwise) {
+        Ring::from_closed(ring.coords().reversed())
+    } else {
+        ring.clone()
+    }
+}
+
 pub(crate) fn canonical_ring<C: Coordinates + ?Sized>(points: &C, clockwise: bool) -> Vec<Point> {
     rotate_ring_min_first(orient_ring(points, clockwise))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{MOrdinate, Polygon, Shape, ZOrdinate};
+    use crate::test_support::allocation_count;
+
+    fn xyzm_ring(points: &[(f64, f64, f64, f64)]) -> Ring {
+        Ring::closed(
+            points
+                .iter()
+                .map(|&(x, y, z, m)| {
+                    Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m)))
+                        .expect("finite XYZM test coordinate")
+                })
+                .collect(),
+        )
+        .expect("closed XYZM test ring")
+    }
+
+    #[test]
+    fn matching_winding_reuses_ring_columns() {
+        let ring = xyzm_ring(&[
+            (0.0, 0.0, 1.0, 11.0),
+            (1.0, 0.0, 2.0, 22.0),
+            (1.0, 1.0, 3.0, 33.0),
+            (0.0, 1.0, 4.0, 44.0),
+            (0.0, 0.0, 1.0, 11.0),
+        ]);
+        let (oriented, allocations) = allocation_count(|| oriented_ring(&ring, false));
+
+        assert_eq!(oriented, ring);
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn polygon_orientation_reverses_wrong_xyzm_shell_and_keeps_hole() {
+        let shell = xyzm_ring(&[
+            (0.0, 0.0, 1.0, 11.0),
+            (0.0, 1.0, 2.0, 22.0),
+            (1.0, 1.0, 3.0, 33.0),
+            (1.0, 0.0, 4.0, 44.0),
+            (0.0, 0.0, 1.0, 11.0),
+        ]);
+        let hole = xyzm_ring(&[
+            (2.0, 2.0, 5.0, 55.0),
+            (2.0, 3.0, 6.0, 66.0),
+            (3.0, 3.0, 7.0, 77.0),
+            (3.0, 2.0, 8.0, 88.0),
+            (2.0, 2.0, 5.0, 55.0),
+        ]);
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let oriented = shape.orient_polygons(false).expect("orientation succeeds");
+
+        let expected = Shape::Polygon(Polygon::new(
+            xyzm_ring(&[
+                (0.0, 0.0, 1.0, 11.0),
+                (1.0, 0.0, 4.0, 44.0),
+                (1.0, 1.0, 3.0, 33.0),
+                (0.0, 1.0, 2.0, 22.0),
+                (0.0, 0.0, 1.0, 11.0),
+            ]),
+            vec![xyzm_ring(&[
+                (2.0, 2.0, 5.0, 55.0),
+                (2.0, 3.0, 6.0, 66.0),
+                (3.0, 3.0, 7.0, 77.0),
+                (3.0, 2.0, 8.0, 88.0),
+                (2.0, 2.0, 5.0, 55.0),
+            ])],
+        ));
+        assert_eq!(oriented, expected);
+    }
+
+    #[test]
+    fn degenerate_winding_does_not_reverse_or_rotate_the_ring() {
+        let ring = xyzm_ring(&[
+            (0.0, 0.0, 1.0, 11.0),
+            (1.0, 0.0, 2.0, 22.0),
+            (2.0, 0.0, 3.0, 33.0),
+            (0.0, 0.0, 1.0, 11.0),
+        ]);
+        let (oriented, allocations) = allocation_count(|| oriented_ring(&ring, true));
+
+        assert_eq!(oriented, ring);
+        assert_eq!(allocations, 0);
+    }
 }
 
 /// Column-level [`canonical_ring`]: orientation by the shoelace sign,

@@ -724,13 +724,13 @@ impl Polygon {
     }
 
     fn orient(&self, exterior_cw: bool) -> Self {
-        let shell = Ring::from_closed(orient_ring(self.shell.coords(), exterior_cw));
+        let shell = constructive::oriented_ring(&self.shell, exterior_cw);
         let holes = if self.holes.is_empty() {
             Self::empty_holes()
         } else {
             self.holes
                 .iter()
-                .map(|hole| Ring::from_closed(orient_ring(hole.coords(), !exterior_cw)))
+                .map(|hole| constructive::oriented_ring(hole, !exterior_cw))
                 .collect::<Arc<[Ring]>>()
         };
         Self { shell, holes }
