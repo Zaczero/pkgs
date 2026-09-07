@@ -93,6 +93,30 @@ def _assert_voronoi_edges_are_source_bisectors(
 # ---------------------------------------------------------------------------
 
 
+def _assert_delaunay_covers_sites(sites: list[tuple[float, float]]) -> None:
+    triangles = gm.MultiPoint(sites).triangulate(method='delaunay')
+    verts: list[tuple[float, float]] = []
+    for triangle in triangles:
+        coords = list(triangle.exterior.coords)
+        assert coords[0] == coords[-1]
+        ring = coords[:-1]
+        assert len(ring) == 3
+        (x0, y0), (x1, y1), (x2, y2) = ring
+        assert (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0) != 0.0
+        verts.extend(ring)
+    for site in sites:
+        assert any(point[0] == site[0] and point[1] == site[1] for point in verts), site
+
+
+def test_delaunay_mixed_zero_hull_accounts_for_every_site() -> None:
+    """Signed-zero sites on x=0 still seed a mesh that contains every input."""
+    left = [(-0.0, -3.0), (0.0, -2.0), (-0.0, -1.0), (-3.0, 0.0)]
+    right = [(0.0, -3.0), (-0.0, -2.0), (-0.0, -1.0), (1.0, 0.0)]
+    both = [*left, (1.0, 0.0)]
+    for sites in (left, right, both):
+        _assert_delaunay_covers_sites(sites)
+
+
 def test_delaunay_square_tiny_and_huge_is_euler_complete() -> None:
     """Delaunay of a square must emit two triangles totaling side² at both extremes."""
     for side in (4.4e-16, 1e110):

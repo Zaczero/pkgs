@@ -7,6 +7,8 @@
 //! mesh types the Voronoi dual reads, the hull and collinear orders the
 //! engine seeds from, and the public entry points.
 
+use std::cmp::Ordering;
+
 use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
@@ -283,10 +285,7 @@ fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
     let orient = |a: usize, b: usize, c: usize| exact::orient2d(xy(a), xy(b), xy(c));
     let mut order: Vec<_> = (0..points.len()).collect();
     order.sort_unstable_by(|&a, &b| {
-        xy(a)
-            .x
-            .total_cmp(&xy(b).x)
-            .then_with(|| xy(a).y.total_cmp(&xy(b).y))
+        geometric_cmp(xy(a).x, xy(b).x).then_with(|| geometric_cmp(xy(a).y, xy(b).y))
     });
     if !corners {
         let Some(&last) = order.last() else {
@@ -354,20 +353,27 @@ fn collinear_order(points: &[Point]) -> Vec<usize> {
     );
     if maxx - minx >= maxy - miny {
         order.sort_unstable_by(|&left, &right| {
-            points[left]
-                .x
-                .total_cmp(&points[right].x)
-                .then_with(|| points[left].y.total_cmp(&points[right].y))
+            geometric_cmp(points[left].x, points[right].x)
+                .then_with(|| geometric_cmp(points[left].y, points[right].y))
         });
     } else {
         order.sort_unstable_by(|&left, &right| {
-            points[left]
-                .y
-                .total_cmp(&points[right].y)
-                .then_with(|| points[left].x.total_cmp(&points[right].x))
+            geometric_cmp(points[left].y, points[right].y)
+                .then_with(|| geometric_cmp(points[left].x, points[right].x))
         });
     }
     order
+}
+
+/// Geometric coordinate order: values that compare equal, including mixed
+/// signed zeros, tie; otherwise IEEE total order. Hull seeds need this lex
+/// instead of raw `total_cmp`, which would treat `-0` as left of `+0`.
+fn geometric_cmp(left: f64, right: f64) -> Ordering {
+    if left == right {
+        Ordering::Equal
+    } else {
+        left.total_cmp(&right)
+    }
 }
 
 /// Twin slots for a flat triangle list by directed-edge lookup.

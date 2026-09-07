@@ -333,6 +333,111 @@ fn reciprocal_delaunay_legalizes_with_the_source_incircle() {
     }
 }
 
+fn raw(x: f64, y: f64) -> Point {
+    Point::new_raw_xy(x, y)
+}
+
+fn sorted_indices(cycle: &[usize]) -> Vec<usize> {
+    let mut indices = cycle.to_vec();
+    indices.sort_unstable();
+    indices
+}
+
+fn assert_sites_covered_by_nondegenerate_triangles(points: &[Point]) {
+    let triangulation = super::delaunay::delaunay_triangulation(points);
+    let mut used = std::collections::HashSet::<usize>::new();
+    for triangle in triangulation.triangles.as_chunks::<3>().0 {
+        assert_ne!(
+            orientation(
+                points[triangle[0]].xy(),
+                points[triangle[1]].xy(),
+                points[triangle[2]].xy()
+            ),
+            Orientation::Collinear,
+            "degenerate face {triangle:?}"
+        );
+        used.extend(triangle);
+    }
+    assert_eq!(
+        used.len(),
+        points.len(),
+        "every input site must appear in a triangle, used={used:?}"
+    );
+}
+
+#[test]
+fn mixed_zero_left_only_corner_hull_keeps_the_axis_extreme() {
+    let points = [
+        raw(-0.0, -3.0),
+        raw(0.0, -2.0),
+        raw(-0.0, -1.0),
+        raw(-3.0, 0.0),
+    ];
+    assert_eq!(points[0].x.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(points[1].x.to_bits(), 0.0_f64.to_bits());
+    let hull = super::delaunay::exact_corner_hull_cycle(&points);
+    assert_eq!(sorted_indices(&hull), vec![0, 2, 3]);
+    assert_sites_covered_by_nondegenerate_triangles(&points);
+}
+
+#[test]
+fn mixed_zero_right_only_corner_hull_drops_the_collinear_midpoint() {
+    let points = [
+        raw(0.0, -3.0),
+        raw(-0.0, -2.0),
+        raw(-0.0, -1.0),
+        raw(1.0, 0.0),
+    ];
+    let hull = super::delaunay::exact_corner_hull_cycle(&points);
+    assert_eq!(sorted_indices(&hull), vec![0, 2, 3]);
+    assert_sites_covered_by_nondegenerate_triangles(&points);
+}
+
+#[test]
+fn mixed_zero_both_sides_corner_hull_matches_unsigned_zero() {
+    let mixed = [
+        raw(-0.0, -3.0),
+        raw(0.0, -2.0),
+        raw(-0.0, -1.0),
+        raw(-3.0, 0.0),
+        raw(1.0, 0.0),
+    ];
+    let unsigned = [
+        raw(0.0, -3.0),
+        raw(0.0, -2.0),
+        raw(0.0, -1.0),
+        raw(-3.0, 0.0),
+        raw(1.0, 0.0),
+    ];
+    let mixed_hull = super::delaunay::exact_corner_hull_cycle(&mixed);
+    let unsigned_hull = super::delaunay::exact_corner_hull_cycle(&unsigned);
+    assert_eq!(sorted_indices(&mixed_hull), sorted_indices(&unsigned_hull));
+    assert_eq!(sorted_indices(&mixed_hull), vec![0, 3, 4]);
+    assert_sites_covered_by_nondegenerate_triangles(&mixed);
+}
+
+#[test]
+fn mixed_zero_vertical_collinear_orders_by_y() {
+    let points = [
+        raw(-0.0, 2.0),
+        raw(0.0, -1.0),
+        raw(-0.0, 0.0),
+        raw(0.0, 1.0),
+    ];
+    assert_eq!(super::delaunay::exact_hull_cycle(&points), vec![1, 2, 3, 0]);
+}
+
+#[test]
+fn mixed_zero_horizontal_collinear_orders_by_x() {
+    let points = [
+        raw(2.0, -0.0),
+        raw(-1.0, 0.0),
+        raw(0.0, -0.0),
+        raw(1.0, 0.0),
+    ];
+    assert_eq!(super::delaunay::exact_hull_cycle(&points), vec![1, 2, 3, 0]);
+}
+
 fn polygon_vertices(polygon: &Polygon) -> Vec<Point> {
     let mut vertices = open_ring(polygon.shell.coords());
     for hole in polygon.holes.iter() {
