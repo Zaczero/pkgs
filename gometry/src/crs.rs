@@ -78,7 +78,7 @@ pub(crate) use catalog::{
     units_with_state, utm_zones, validate_search_limit,
 };
 use context::{ProjContext, with_proj_context, with_proj_context_at};
-pub(crate) use error::CrsError;
+pub(crate) use error::{CrsError, preserve_resource_error};
 #[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{

@@ -408,7 +408,8 @@ pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
 ///
 /// `Err(())` means the allocator refused the reservation — **do not** build a
 /// `PyErr` until any large retained buffers that exhausted memory have been
-/// dropped (see [`collect_py_iter`]). Use [`string_alloc_error`] after free.
+/// dropped (see [`collect_py_iter`]). Use the native memory-error owner after
+/// free.
 ///
 /// On unbounded ingest paths, `String::from` / `extract::<String>` allocate
 /// infallibly and abort under OOM instead of surfacing `MemoryError`.
@@ -418,18 +419,6 @@ pub(crate) fn try_string_from_str(s: &str) -> Result<String, ()> {
     buf.extend_from_slice(s.as_bytes());
     // SAFETY: `s` is valid UTF-8; we only copied its bytes into reserved space.
     Ok(unsafe { String::from_utf8_unchecked(buf) })
-}
-
-/// Native memory error for [`try_string_from_str`] failure — call only after
-/// releasing retained untrusted output that exhausted the heap.
-pub(crate) fn string_alloc_error() -> PyErr {
-    crate::py::errors::native_memory_error()
-}
-
-/// Native memory error for outer-vector growth failure — call only after
-/// releasing retained untrusted output.
-pub(crate) fn grow_sequence_error() -> PyErr {
-    crate::py::errors::native_memory_error()
 }
 
 /// Collect a fixed-length bool mask without generic `Vec<bool>: FromPyObject`
@@ -622,12 +611,12 @@ pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyRes
             .map_err(|_| PyTypeError::new_err(format!("{what} elements have the wrong type")))?;
         let Ok(owned) = try_string_from_str(text) else {
             drop(out);
-            return Err(string_alloc_error());
+            return Err(crate::py::errors::native_memory_error());
         };
         if try_reserve_next_raw(&mut out).is_err() {
             drop(owned);
             drop(out);
-            return Err(grow_sequence_error());
+            return Err(crate::py::errors::native_memory_error());
         }
         out.push(owned);
     }
@@ -857,7 +846,7 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
         // Free retained items before raising the native error (see invariant).
         if try_reserve_next_raw(&mut out).is_err() {
             drop(out);
-            return Err(grow_sequence_error());
+            return Err(crate::py::errors::native_memory_error());
         }
         match map(item) {
             Ok(value) => out.push(value),
@@ -968,6 +957,9 @@ pub(crate) fn collect_py_iter_at_most_from_iter<'py, T>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use pyo3::exceptions::PyMemoryError;
 
     use super::*;
@@ -1018,13 +1010,31 @@ mod tests {
     fn try_push_releases_retained_output_before_native_memory_error() {
         Python::initialize();
         Python::attach(|py| {
-            let mut values = Vec::with_capacity(1);
-            values.push(1_u8);
-            let result = fail_allocations_after(0, || try_push(&mut values, 2_u8));
+            struct DropProbe {
+                id: u8,
+                dropped: Rc<RefCell<Vec<u8>>>,
+            }
+
+            impl Drop for DropProbe {
+                fn drop(&mut self) {
+                    self.dropped.borrow_mut().push(self.id);
+                }
+            }
+
+            let dropped = Rc::new(RefCell::new(Vec::with_capacity(3)));
+            let probe = |id| DropProbe {
+                id,
+                dropped: Rc::clone(&dropped),
+            };
+            let mut values = Vec::with_capacity(2);
+            values.push(probe(1));
+            values.push(probe(2));
+            let result = fail_allocations_after(0, || try_push(&mut values, probe(3)));
             let error = result.expect_err("the persistent allocator must reject growth");
             assert!(error.is_instance_of::<PyMemoryError>(py));
-            assert!(values.is_empty());
-            assert_eq!(values.capacity(), 0);
+            let mut ids = dropped.borrow().clone();
+            ids.sort_unstable();
+            assert_eq!(ids, [1, 2, 3]);
             drop(error);
         });
     }

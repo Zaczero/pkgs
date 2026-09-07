@@ -419,7 +419,7 @@ fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<str>> {
         .to_str()
         .map_err(|_| PyTypeError::new_err(format!("{what} is not valid UTF-8")))?;
     let owned = crate::boundary::try_string_from_str(s)
-        .map_err(|()| crate::boundary::string_alloc_error())?;
+        .map_err(|()| crate::py::errors::native_memory_error())?;
     Ok(Arc::from(owned))
 }
 
@@ -685,7 +685,7 @@ fn validate_admitted_coordinate_storage(schema: &AdmittedArrowSchema) -> PyResul
             ));
         }
         let name = crate::boundary::try_string_from_str(child.name())
-            .map_err(|()| crate::boundary::string_alloc_error())?;
+            .map_err(|()| crate::py::errors::native_memory_error())?;
         crate::try_push(&mut fields, (name, child.format() == "g"))?;
     }
     crate::py::geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;

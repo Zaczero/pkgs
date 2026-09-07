@@ -5,7 +5,7 @@
 
 use thiserror::Error;
 
-use crate::error::Error as CrateError;
+use crate::error::{Error as CrateError, ErrorKind};
 
 #[derive(Debug, Error)]
 pub enum CrsError {
@@ -350,4 +350,17 @@ mod tests {
             ErrorKind::Resource(ResourceError::SizeOverflow)
         ));
     }
+}
+
+/// Rewrap an ordinary CRS failure without losing a typed resource failure.
+/// Callers supply the operation-specific CRS envelope; this helper only
+/// preserves the resource variants and never passes ordinary errors through.
+pub(crate) fn preserve_resource_error(
+    error: CrateError,
+    rewrap: impl FnOnce(&CrateError) -> CrateError,
+) -> CrateError {
+    if matches!(error.kind(), ErrorKind::Resource(_)) {
+        return error;
+    }
+    rewrap(&error)
 }

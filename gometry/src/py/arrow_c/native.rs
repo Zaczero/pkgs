@@ -935,7 +935,7 @@ fn build_owned_node_admitted(
             let Ok(name) = crate::boundary::try_string_from_str(child_schema.name()) else {
                 drop(children);
                 drop(field_names);
-                return Err(crate::boundary::string_alloc_error());
+                return Err(crate::py::errors::native_memory_error());
             };
             field_names.push(name);
             // SAFETY: children live under capture shell for this construction.

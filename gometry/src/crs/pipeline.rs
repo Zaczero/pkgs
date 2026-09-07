@@ -12,7 +12,8 @@ use crate::crs::{
     CrsError, GeometryErrorKind, OperationInfo, OwnedPj, ProjArea, ProjContext, ProjDirection,
     ProjPipeline, ProjTransformOptions, RuntimeState, TransformExecution, TransformFailure,
     TransformOptions, coordinates_are_finite, create_crs_transform_object, cstring,
-    operation_info_from_pj, proj_context_error_message, proj_transform_error, ptr,
+    operation_info_from_pj, preserve_resource_error, proj_context_error_message,
+    proj_transform_error, ptr,
 };
 use crate::error::Result;
 
@@ -37,8 +38,11 @@ impl ProjPipeline {
         let target_crs = cstring(target)?;
         let area = options.area_of_interest.map(ProjArea::new).transpose()?;
         let transform_options = ProjTransformOptions::new(options)?;
-        let context = ProjContext::new_with_state(state)
-            .map_err(|error| CrsError::transform_create(source, target, error.to_string()))?;
+        let context = ProjContext::new_with_state(state).map_err(|error| {
+            preserve_resource_error(error, |error| {
+                CrsError::transform_create(source, target, error.to_string())
+            })
+        })?;
         let source_transform_object =
             create_crs_transform_object(&context, &source_crs, source, options.source_epoch)?;
         let target_transform_object =
@@ -163,7 +167,9 @@ impl ProjPipeline {
     ) -> Result<Self> {
         let definition = cstring(definition)?;
         let context = ProjContext::new_with_state(state).map_err(|error| {
-            CrsError::crs_create(definition.to_string_lossy().into_owned(), error.to_string())
+            preserve_resource_error(error, |error| {
+                CrsError::crs_create(definition.to_string_lossy().into_owned(), error.to_string())
+            })
         })?;
         // SAFETY: DOC-H. Typed live context; definition is a live CString;
         // returns uniquely owned PJ or null.

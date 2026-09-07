@@ -11,8 +11,8 @@ use crate::crs::{
     OperationInfo, OwnedPj, ProjContext, ProjObject, ProjectionFactorColumns, ProjectionFactors,
     RuntimeState, TransformExecution, TransformOptions, c_option_ptrs, copy_proj_c_string,
     create_crs_transform_object, cstring, ensure_thread_caches_current, lru_resolve, normalize,
-    normalize_pair, proj_context_error_message, runtime_state_snapshot, with_proj_context_at,
-    with_proj_diagnostic_pipeline_at, with_proj_pipeline_at,
+    normalize_pair, preserve_resource_error, proj_context_error_message, runtime_state_snapshot,
+    with_proj_context_at, with_proj_diagnostic_pipeline_at, with_proj_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::column_all_finite;
@@ -197,8 +197,11 @@ fn projection_factors_object(
     state: &RuntimeState,
 ) -> Result<CachedProjectionFactorsObject> {
     let target_definition = cstring(target)?;
-    let context = ProjContext::new_with_state(state)
-        .map_err(|error| CrsError::crs_create(target, error.to_string()))?;
+    let context = ProjContext::new_with_state(state).map_err(|error| {
+        preserve_resource_error(error, |error| {
+            CrsError::crs_create(target, error.to_string())
+        })
+    })?;
     let target_object = create_crs_transform_object(&context, &target_definition, target, None)?;
     let mut projection = projection_string_for_factors(&context, &target_object, target)?;
     if let Some(stripped) = projection.strip_suffix(" +type=crs") {

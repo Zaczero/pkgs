@@ -13,8 +13,8 @@ use crate::crs::{
     OperationInfo, OwnedPj, ProjContext, ProjDirection, ProjObjList, ProjOperationFactoryContext,
     RuntimeState, TransformExecution, TransformOptions, TransformPlan, create_crs_transform_object,
     cstring, ensure_thread_caches_current, lru_resolve, normalize_pair, operation_info_from_pj,
-    proj_context_error_message, runtime_state_snapshot, validate_coordinate_lanes,
-    with_proj_diagnostic_pipeline_at,
+    preserve_resource_error, proj_context_error_message, runtime_state_snapshot,
+    validate_coordinate_lanes, with_proj_diagnostic_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::{REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, simd_indexed_map_f64};
@@ -63,7 +63,11 @@ pub(crate) fn roundtrip_errors(
                     &forward, &reverse, direction, iterations, x, y, zt,
                 )
                 .map(|errors| (errors, forward.execution()))
-                .map_err(|error| CrsError::transform(source, target, error.to_string()));
+                .map_err(|error| {
+                    preserve_resource_error(error, |error| {
+                        CrsError::transform(source, target, error.to_string())
+                    })
+                });
             }
         }
     }
@@ -498,8 +502,11 @@ pub(crate) fn operations_info_uncached(
 ) -> Result<Vec<OperationInfo>> {
     let source_crs = cstring(source)?;
     let target_crs = cstring(target)?;
-    let context = ProjContext::new_with_state(state)
-        .map_err(|error| CrsError::transform_create(source, target, error.to_string()))?;
+    let context = ProjContext::new_with_state(state).map_err(|error| {
+        preserve_resource_error(error, |error| {
+            CrsError::transform_create(source, target, error.to_string())
+        })
+    })?;
     let source_object =
         create_crs_transform_object(&context, &source_crs, source, options.source_epoch)?;
     let target_object =

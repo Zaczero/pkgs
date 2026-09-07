@@ -12,16 +12,18 @@ use crate::crs::{
     coordinate_system_type, copy_proj_c_string, crs_type_name, cstring,
     datum_admits_geometry_epoch, datum_info, domain_infos, ellipsoid_info, exported_owned_crs,
     geographic_frame, id_authority, live_crs_admits_geometry_epoch, optional_c_string,
-    owned_authority_object_info, owned_crs_coordinate_operation_info, prime_meridian_info,
-    proj_context_error_message, proj_transform_error, ptr, split_authority, sub_crs_infos,
+    owned_authority_object_info, owned_crs_coordinate_operation_info, preserve_resource_error,
+    prime_meridian_info, proj_context_error_message, proj_transform_error, ptr, split_authority,
+    sub_crs_infos,
 };
 use crate::error::Result;
 
 impl ProjObject {
     pub(super) fn new_with_state(crs: &str, state: &RuntimeState) -> Result<Self> {
         let definition = cstring(crs)?;
-        let context = ProjContext::new_with_state(state)
-            .map_err(|error| CrsError::crs_create(crs, error.to_string()))?;
+        let context = ProjContext::new_with_state(state).map_err(|error| {
+            preserve_resource_error(error, |error| CrsError::crs_create(crs, error.to_string()))
+        })?;
         // SAFETY: DOC-H. Typed live context; definition is a live CString;
         // returns uniquely owned PJ or null.
         let object = unsafe { proj_sys::proj_create(context.as_ptr(), definition.as_ptr()) };

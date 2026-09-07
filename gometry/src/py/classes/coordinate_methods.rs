@@ -141,7 +141,7 @@ impl RowContainer for CoordinateCursor {
                 }
             });
             let Some(points) = points else {
-                return Err(crate::grow_sequence_error());
+                return Err(crate::py::errors::native_memory_error());
             };
             points[row]
         } else {

@@ -2,6 +2,7 @@ use crate::py::crs::{
     Bound, PyAny, PyAnyMethods as _, PyErr, PyResult, PyStringMethods as _, PyTypeError, crs,
     pyfunction,
 };
+use crate::py::errors::native_memory_error;
 
 #[pyfunction(signature = (
     *,
@@ -101,14 +102,14 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
             let additional = paths.capacity().max(8);
             if paths.try_reserve(additional).is_err() {
                 drop(paths);
-                return Err(crate::grow_sequence_error());
+                return Err(native_memory_error());
             }
         }
         match take_path_string(&item, "search_paths entries") {
             Ok(owned) => paths.push(owned),
             Err(PathTakeError::Oom) => {
                 drop(paths);
-                return Err(crate::string_alloc_error());
+                return Err(native_memory_error());
             },
             Err(PathTakeError::Provider(err)) => {
                 drop(paths);
@@ -172,9 +173,9 @@ fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> 
     // abort under RLIMIT_AS on unbounded `search_paths` streams.
     match take_path_string(value, name) {
         Ok(s) => Ok(s),
-        Err(PathTakeError::Oom) => Err(crate::string_alloc_error()),
+        Err(PathTakeError::Oom) => Err(native_memory_error()),
         Err(PathTakeError::Provider(err) | PathTakeError::Err(err)) => Err(err),
-        }
+    }
 }
 
 /// Return the current CRS engine configuration.

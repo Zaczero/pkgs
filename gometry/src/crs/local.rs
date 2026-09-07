@@ -12,9 +12,10 @@ use crate::crs::in_core::{DatumKey, ParamUnit, Pole, datum_key, parse_param_valu
 use crate::crs::{
     AreaOfInterest, CrsCatalogOptions, CrsCoordinateOperationInfo, CrsError, CrsInfo,
     CrsObjectKind, OperationParameterInfo, RuntimeState, Shape, factors_at, info_with_state,
-    is_wgs84_lonlat, normalize, parse_epsg, to_projjson_with_options_at, transform_at, utm_crs,
+    is_wgs84_lonlat, normalize, parse_epsg, preserve_resource_error, to_projjson_with_options_at,
+    transform_at, utm_crs,
 };
-use crate::error::{Error, ErrorKind, Result};
+use crate::error::{Error, Result};
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(crate) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
@@ -100,13 +101,12 @@ pub(crate) fn estimate_local_crs_at(
 }
 
 fn best_custom_candidate_error(error: crate::error::Error) -> crate::error::Error {
-    if matches!(error.kind(), ErrorKind::Resource(_)) {
-        return error;
-    }
-    CrsError::invalid(format!(
-        "geometry cannot be represented by one local conformal CRS within the {:.1}% linear scale-error limit; split the geometry or choose a projected CRS explicitly",
-        LOCAL_SCALE_ERROR_LIMIT * 100.0
-    ))
+    preserve_resource_error(error, |_| {
+        CrsError::invalid(format!(
+            "geometry cannot be represented by one local conformal CRS within the {:.1}% linear scale-error limit; split the geometry or choose a projected CRS explicitly",
+            LOCAL_SCALE_ERROR_LIMIT * 100.0
+        ))
+    })
 }
 
 pub(crate) fn local_crs_fits_at(

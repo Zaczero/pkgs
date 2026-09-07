@@ -3,13 +3,13 @@
 //! invalidation, `cache_info`, and the `with_proj_pipeline`/
 //! `with_proj_operation` cached accessors. Reached via `use super::*`.
 
-use crate::crs::runtime;
 use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
     ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
-    TransformOptions, UnitInfo, WktVersion, proj_env, runtime_state_snapshot,
+    TransformOptions, UnitInfo, WktVersion, preserve_resource_error, proj_env, runtime,
+    runtime_state_snapshot,
 };
 use crate::error::Result;
 
@@ -400,9 +400,13 @@ pub(super) fn with_proj_pipeline_indexed_at<R>(
             result.map_err(|failure| {
                 let message = execution.diagnostic().unwrap_or_default();
                 let error = if message.is_empty() {
-                    CrsError::transform(source, target, failure.error.to_string())
+                    preserve_resource_error(failure.error, |error| {
+                        CrsError::transform(source, target, error.to_string())
+                    })
                 } else {
-                    CrsError::transform(source, target, format!("{}; {message}", failure.error))
+                    preserve_resource_error(failure.error, |error| {
+                        CrsError::transform(source, target, format!("{error}; {message}"))
+                    })
                 };
                 TransformFailure {
                     error,
@@ -412,7 +416,9 @@ pub(super) fn with_proj_pipeline_indexed_at<R>(
         } else {
             result.map_err(|failure| {
                 let coordinate = failure.coordinate;
-                let error = CrsError::transform(source, target, failure.error.to_string());
+                let error = preserve_resource_error(failure.error, |error| {
+                    CrsError::transform(source, target, error.to_string())
+                });
                 TransformFailure { error, coordinate }
             })
         }
@@ -466,7 +472,11 @@ pub(super) fn with_proj_diagnostic_pipeline_at<R>(
         if execution.diagnostic_count() > diagnostics_before {
             cache.remove(index);
         }
-        result.map_err(|error| CrsError::transform(source, target, error.to_string()))
+        result.map_err(|error| {
+            preserve_resource_error(error, |error| {
+                CrsError::transform(source, target, error.to_string())
+            })
+        })
     })
 }
 
@@ -495,7 +505,11 @@ pub(super) fn with_proj_operation_at<R>(
         if execution.diagnostic_count() > diagnostics_before {
             cache.remove(index);
         }
-        result.map_err(|error| CrsError::transform("coordinates", definition, error.to_string()))
+        result.map_err(|error| {
+            preserve_resource_error(error, |error| {
+                CrsError::transform("coordinates", definition, error.to_string())
+            })
+        })
     })
 }
 
