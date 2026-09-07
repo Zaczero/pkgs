@@ -440,7 +440,7 @@ pub(crate) fn unary_node(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) ->
     data.shape().node(Strictness::Lenient)
 }
 
-/// Build-area kernel shared by the spine-routed free function.
+/// Build-area kernel shared by the scalar and array unary method spine.
 pub(crate) fn unary_build_area(
     data: &PreparedPlan,
     _ctx: &CachelessRowContext<'_>,

@@ -736,6 +736,36 @@ def test_build_area_and_node_surfaces_agree() -> None:
     assert z_crossing.node().coordinate_axes == 'XYZ'
 
 
+def test_build_area_array_preserves_missing_middle_row() -> None:
+    rows = gm.GeometryArray([
+        gm.MultiLineString([
+            [(0, 0), (2, 0)],
+            [(2, 0), (2, 2)],
+            [(2, 2), (0, 2)],
+            [(0, 2), (0, 0)],
+        ]),
+        None,
+        gm.MultiLineString([
+            [(10, 10), (12, 10)],
+            [(12, 10), (12, 12)],
+            [(12, 12), (10, 12)],
+            [(10, 12), (10, 10)],
+        ]),
+    ])
+
+    built = rows.build_area()
+
+    assert len(built) == 3
+    assert built.is_missing.tolist() == [False, True, False]
+    assert built.geometry_type == ['Polygon', None, 'Polygon']
+    assert built[0].area == pytest.approx(4.0)
+    assert built[2].area == pytest.approx(4.0)
+    assert gm.covers(built[0], gm.Point(1, 1))
+    assert gm.covers(built[2], gm.Point(11, 11))
+    assert not gm.covers(built[0], gm.Point(11, 11))
+    assert not gm.covers(built[2], gm.Point(1, 1))
+
+
 def test_build_area_preserves_mixed_member_axes() -> None:
     source = gm.from_wkt(
         'GEOMETRYCOLLECTION ('

@@ -861,8 +861,8 @@ impl PyGeometryArray {
 
     /// Per-row polygonize: each input geometry's own linework → its polygons,
     /// one group per input (`= scalar polygonize per row`). Pool raw linework
-    /// with the free function ``polygonize`` on an iterable; passing a GeometryArray
-    /// there is rejected so the two meanings cannot be confused.
+    /// with the free function ``polygonize``; passing a GeometryArray there
+    /// pools its present rows.
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<crate::py::vectors::Groups> {
         self.flat_map_shapes_groups(py, move |shape| shape.polygonize(false))
     }

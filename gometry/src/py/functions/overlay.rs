@@ -360,8 +360,10 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
 ///
 /// Parameters
 /// ----------
-/// values : Geometry or iterable of Geometry
-///     One geometry or linework values to node and polygonize together.
+/// values : Geometry, GeometryArray, or iterable of Geometry-like values
+///     One geometry or linework values to node and polygonize together. Array
+///     and iterable inputs may contain ``None`` rows; they are omitted from the
+///     pooled linework.
 ///
 /// Returns
 /// -------
@@ -405,8 +407,11 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 ///
 /// Parameters
 /// ----------
-/// values : Geometry or iterable of Geometry
-///     One geometry or linework values to node and polygonize together.
+/// values : Geometry, GeometryArray, or iterable of Geometry-like values
+///     One geometry or linework values to node and polygonize together. Array
+///     and iterable inputs may contain ``None`` rows; they are omitted from the
+///     pooled linework, while diagnostic groups retain their source-row
+///     positions.
 ///
 /// Returns
 /// -------
