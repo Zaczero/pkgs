@@ -200,6 +200,20 @@ def test_bounding_cells_prove_the_full_region_not_only_vertices(name) -> None:
         assert point_result == factory(bounds)
 
 
+def test_bounding_array_projected_and_late_invalid() -> None:
+    match = r'invalid longitude/latitude \(0, 95\)'
+    good = gm.Point(13.4, 52.5, crs=4326)
+    bad = gm.Point(0.0, 95.0, crs=4326)
+    late = gm.GeometryArray([good, bad])
+    with pytest.raises(gm.InvalidGeometryError, match=match):
+        gm.h3_bounding_cell(late)
+    with pytest.raises(gm.InvalidGeometryError, match=match):
+        gm.s2_bounding_cell(late)
+    projected = gm.GeometryArray([good.to_crs(3857)])
+    assert gm.h3_bounding_cell(projected) == gm.h3_bounding_cell(good)
+    assert gm.s2_bounding_cell(projected) == gm.s2_bounding_cell(good)
+
+
 def test_bounding_cells_use_family_seam_contracts() -> None:
     line = gm.LineString([(179.9, 0.0), (-179.9, 0.0)], crs=4326)
     assert gm.h3_bounding_cell(line) is not None

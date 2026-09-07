@@ -97,14 +97,7 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
         );
     }
     if let Some(array) = exact_geometry_array(value) {
-        let crs = array.crs_str();
-        let mut shapes = Vec::new();
-        for (_, shape) in array.present_shape_rows() {
-            let shape = crate::lonlat_shape_under(&shape, crs)?;
-            if !shape.is_empty() {
-                crate::try_push(&mut shapes, shape.into_owned())?;
-            }
-        }
+        let mut shapes = crate::lonlat_nonempty_shapes(array)?;
         let shape = match shapes.len() {
             0 => {
                 return Err(InvalidGeometryError::new_err(

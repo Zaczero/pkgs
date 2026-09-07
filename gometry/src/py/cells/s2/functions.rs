@@ -153,14 +153,7 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
         return bounding_cell_result(crate::grid::s2::bounding::bounding_cell(&shape));
     }
     if let Some(array) = exact_geometry_array(value) {
-        let crs = array.crs_str();
-        let mut parts = Vec::new();
-        for (_, shape) in array.present_shape_rows() {
-            let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
-            if !shape.is_empty() {
-                crate::try_push(&mut parts, shape)?;
-            }
-        }
+        let mut parts = crate::lonlat_nonempty_shapes(array)?;
         if parts.is_empty() {
             return Err(InvalidGeometryError::new_err(
                 "bounding cell requires a non-empty geometry",
