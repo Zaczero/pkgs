@@ -952,11 +952,7 @@ fn assemble_components_overlay(
         subset.extend(component.iter().map(|&index| inputs[index]));
         let subset_noded = match noded {
             None => None,
-            Some(noded) => Some(GeographicInputs::try_from_views(
-                noded.frame(),
-                component.iter().map(|&index| noded.views()[index]),
-            )
-            .map_err(overlay_view_error)?),
+            Some(noded) => Some(noded.try_selected(component).map_err(overlay_view_error)?),
         };
         let shape = assemble_overlay(
             &subset,

@@ -369,25 +369,32 @@ impl<'a> GeographicInputs<'a> {
         shapes: impl ExactSizeIterator<Item = &'a Shape>,
     ) -> Result<Self, GeographicViewError> {
         let mut views = Vec::new();
-        views
-            .try_reserve_exact(shapes.len())
-            .map_err(|_| GeographicViewError::Resource)?;
+        let _ = views.try_reserve_exact(shapes.len());
         for shape in shapes {
-            views.push(ScalarGeographicView::try_new(frame, shape)?);
+            let view = ScalarGeographicView::try_new(frame, shape)?;
+            crate::try_push_vec(&mut views, view).map_err(|_| GeographicViewError::Resource)?;
         }
         Ok(Self { frame, views })
     }
 
-    pub(crate) fn try_from_views(
-        frame: GeographicFrame,
-        source: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
+    /// Copy indexed views from this batch. Frame comes from `self`; indices
+    /// are this batch's positions. Does not re-admit.
+    pub(crate) fn try_selected(
+        &self,
+        indices: &[usize],
     ) -> Result<Self, GeographicViewError> {
         let mut views = Vec::new();
         views
-            .try_reserve_exact(source.len())
+            .try_reserve_exact(indices.len())
             .map_err(|_| GeographicViewError::Resource)?;
-        views.extend(source);
-        Ok(Self { frame, views })
+        for &index in indices {
+            crate::try_push_vec(&mut views, self.views[index])
+                .map_err(|_| GeographicViewError::Resource)?;
+        }
+        Ok(Self {
+            frame: self.frame,
+            views,
+        })
     }
 
     pub(crate) const fn frame(&self) -> GeographicFrame {
