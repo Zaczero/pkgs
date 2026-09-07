@@ -1533,12 +1533,13 @@ def test_geodesic_full_scan_arm_matches_brute_force_for_shapes() -> None:
     idx = gm.SpatialIndex(items)
     rows = list(items)
     for query in (gm.Point(180.0, 10.0, crs=4326), gm.Point(170.0, 12.0, crs=4326)):
-        got_ids, _got_distances = idx.nearest(query, k=3, return_distance=True)
         brute = sorted(
             ((i, gm.distance(query, item)) for i, item in enumerate(rows)),
             key=lambda pair: (pair[1], pair[0]),
         )
-        assert ids(got_ids) == [i for i, _ in brute]
+        for k in (1, 3):
+            got_ids, _got_distances = idx.nearest(query, k=k, return_distance=True)
+            assert ids(got_ids) == [i for i, _ in brute[:k]]
         for radius in (1.0, 20000.0, 500000.0):
             assert ids(idx.query(query, predicate='dwithin', distance=radius)) == [
                 i for i, item in enumerate(rows) if gm.dwithin(query, item, radius)

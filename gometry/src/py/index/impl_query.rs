@@ -1,3 +1,4 @@
+use super::impl_nearest::{HeapNearest, NearestState, OneNearest};
 use crate::array::ValidityMask;
 use crate::geometry::{PreparedPlan, TopologyDomain};
 use crate::predicates::engine::{GateOperand, PredicateSpec};
@@ -8,11 +9,10 @@ use crate::py::index::{
     NearestCandidate, NonNegative, Point, PointRows, Predicate, PreparedIndexQuery, PyGeometry,
     PyGeometryArray, PyResult, PySpatialIndex, RowMatches, Shape, ShapeData, ShapeRow,
     bounds_envelope, crs, crs_label, epoch_label, global_geographic_candidate_envelope,
-    index_envelopes, nearest_candidates_from_heap, pair_distance_geodesic, pair_dwithin_geodesic,
-    pair_dwithin_planar, point_from_bounds, push_nearest_candidate, retain_row, sort_row_ids,
-    topology_scalar_pair,
+    index_envelopes, pair_distance_geodesic, pair_dwithin_geodesic, pair_dwithin_planar,
+    point_from_bounds, retain_row, sort_row_ids, topology_scalar_pair,
 };
-use crate::{CsrBuilder, try_push_vec, try_reserve_heap};
+use crate::{CsrBuilder, try_push_vec};
 
 impl PySpatialIndex {
     /// Every live entry — the STR bulk (row liveness skipped) then the
@@ -407,43 +407,55 @@ impl PySpatialIndex {
         }
         order.sort_unstable_by_key(|entry| entry.idx);
         order.dedup_by_key(|entry| entry.idx);
-        let mut order = BinaryHeap::from(order);
-        let mut nearest: BinaryHeap<NearestCandidate> = BinaryHeap::new();
+        let order = BinaryHeap::from(order);
         let mut products = self.rows.operation();
-        try_reserve_heap(&mut nearest, k.min(self.rows.len().saturating_add(1)))
-            .map_err(pyo3::PyErr::from)?;
-        while let Some(CapBound { bound, idx }) = order.pop() {
-            let ceiling = match (nearest.len() == k).then(|| nearest.peek()) {
-                Some(Some(worst)) => Some(worst.distance),
-                _ => None,
-            };
-            let ceiling = match (ceiling, max_distance) {
-                (Some(a), Some(b)) => Some(a.min(b.get())),
-                (Some(a), None) => Some(a),
-                (None, Some(a)) => Some(a.get()),
-                (None, None) => None,
-            };
-            if ceiling.is_some_and(|limit| bound > limit) {
-                break;
-            }
-            let row = products.row(idx);
-            if exclude.is_some_and(|shape| row.with_shape(|other| *other == *shape)) {
-                continue;
-            }
+        let exact = |idx| {
             let data = products.prepared(idx);
-            let distance = pair_distance_geodesic(
+            pair_distance_geodesic(
                 metric,
                 &data,
                 &products.frame_cache(idx),
                 query,
                 &query_cache_owner,
-            )?;
-            if max_distance.is_some_and(|max| distance > max.get()) {
-                continue;
-            }
-            push_nearest_candidate(&mut nearest, k, NearestCandidate::new(distance, idx))?;
+            )
+            .map_err(Into::into)
+        };
+        if k == 1 {
+            return self.geodesic_capped_nearest_shared(
+                order,
+                exact,
+                OneNearest::default(),
+                max_distance,
+                exclude,
+            );
         }
-        Ok(Some(nearest_candidates_from_heap(nearest)))
+        self.geodesic_capped_nearest_shared(
+            order,
+            exact,
+            HeapNearest::new(k, self.rows.len())?,
+            max_distance,
+            exclude,
+        )
+    }
+
+    fn geodesic_capped_nearest_shared<S: NearestState>(
+        &self,
+        mut order: BinaryHeap<CapBound>,
+        mut exact: impl FnMut(usize) -> PyResult<f64>,
+        mut state: S,
+        max_distance: Option<NonNegative>,
+        exclude: Option<&Shape>,
+    ) -> PyResult<Option<Vec<NearestCandidate>>> {
+        while let Some(CapBound { bound, idx }) = order.pop() {
+            if state
+                .ceiling(max_distance)
+                .is_some_and(|limit| bound > limit)
+            {
+                break;
+            }
+            self.consider_nearest_candidate(idx, &mut exact, max_distance, exclude, &mut state)?;
+        }
+        Ok(Some(state.finish()?))
     }
 
     pub(crate) fn geodesic_pruner(

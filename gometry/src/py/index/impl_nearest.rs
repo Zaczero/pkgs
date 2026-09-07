@@ -35,19 +35,19 @@ impl NearestVisited {
     }
 }
 
-trait NearestState {
+pub(super) trait NearestState {
     fn ceiling(&self, max_distance: Option<NonNegative>) -> Option<f64>;
     fn accept(&mut self, candidate: NearestCandidate) -> PyResult<()>;
-    fn finish(self) -> Vec<NearestCandidate>;
+    fn finish(self) -> PyResult<Vec<NearestCandidate>>;
 }
 
-struct HeapNearest {
+pub(super) struct HeapNearest {
     nearest: BinaryHeap<NearestCandidate>,
     k: usize,
 }
 
 impl HeapNearest {
-    fn new(k: usize, rows: usize) -> PyResult<Self> {
+    pub(super) fn new(k: usize, rows: usize) -> PyResult<Self> {
         let mut nearest = BinaryHeap::new();
         try_reserve_heap(&mut nearest, k.min(rows.saturating_add(1))).map_err(pyo3::PyErr::from)?;
         Ok(Self { nearest, k })
@@ -67,13 +67,13 @@ impl NearestState for HeapNearest {
         push_nearest_candidate(&mut self.nearest, self.k, candidate)
     }
 
-    fn finish(self) -> Vec<NearestCandidate> {
-        nearest_candidates_from_heap(self.nearest)
+    fn finish(self) -> PyResult<Vec<NearestCandidate>> {
+        Ok(nearest_candidates_from_heap(self.nearest))
     }
 }
 
 #[derive(Default)]
-struct OneNearest {
+pub(super) struct OneNearest {
     best: Option<NearestCandidate>,
 }
 
@@ -98,13 +98,22 @@ impl NearestState for OneNearest {
         Ok(())
     }
 
-    fn finish(self) -> Vec<NearestCandidate> {
-        self.best.into_iter().collect()
+    fn finish(self) -> PyResult<Vec<NearestCandidate>> {
+        let Some(best) = self.best else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        try_reserve_vec(&mut out, 1).map_err(pyo3::PyErr::from)?;
+        try_push_vec(&mut out, best).map_err(pyo3::PyErr::from)?;
+        Ok(out)
     }
 }
 
 #[inline]
-const fn combine_nearest_ceiling(nearest: Option<f64>, max_distance: Option<NonNegative>) -> Option<f64> {
+const fn combine_nearest_ceiling(
+    nearest: Option<f64>,
+    max_distance: Option<NonNegative>,
+) -> Option<f64> {
     match (nearest, max_distance) {
         (Some(a), Some(b)) => Some(a.min(b.get())),
         (Some(a), None) => Some(a),
@@ -432,33 +441,54 @@ impl PySpatialIndex {
         {
             return Ok(result);
         }
-        let mut nearest: BinaryHeap<NearestCandidate> = BinaryHeap::new();
-        try_reserve_heap(&mut nearest, k.min(self.__len__())).map_err(pyo3::PyErr::from)?;
-        visited.reset(self.rows.len())?;
         let query_cache_owner = query_cache();
         let mut rows = self.rows.operation();
+        let exact = |idx| {
+            let data = rows.prepared(idx);
+            pair_distance_geodesic(
+                resolved,
+                &data,
+                &rows.frame_cache(idx),
+                query,
+                &query_cache_owner,
+            )
+            .map_err(Into::into)
+        };
+        if k == 1 {
+            return self.geodesic_full_scan_shared(
+                exact,
+                OneNearest::default(),
+                max_distance,
+                exclude,
+                visited,
+            );
+        }
+        let state = HeapNearest::new(k, self.__len__())?;
+        self.geodesic_full_scan_shared(exact, state, max_distance, exclude, visited)
+    }
+
+    fn geodesic_full_scan_shared<S: NearestState>(
+        &self,
+        mut exact: impl FnMut(usize) -> PyResult<f64>,
+        mut state: S,
+        max_distance: Option<NonNegative>,
+        exclude: Option<&Shape>,
+        visited: &mut NearestVisited,
+    ) -> PyResult<Vec<NearestCandidate>> {
+        visited.reset(self.rows.len())?;
         for entry in self.live_entries() {
             if !visited.visit(entry.idx)? {
                 continue;
             }
-            let row = rows.row(entry.idx);
-            if exclude.is_some_and(|shape| row.with_shape(|other| *other == *shape)) {
-                continue;
-            }
-            let data = rows.prepared(entry.idx);
-            let distance = pair_distance_geodesic(
-                resolved,
-                &data,
-                &rows.frame_cache(entry.idx),
-                query,
-                &query_cache_owner,
+            self.consider_nearest_candidate(
+                entry.idx,
+                &mut exact,
+                max_distance,
+                exclude,
+                &mut state,
             )?;
-            if max_distance.is_some_and(|max| distance > max.get()) {
-                continue;
-            }
-            push_nearest_candidate(&mut nearest, k, NearestCandidate::new(distance, entry.idx))?;
         }
-        Ok(nearest_candidates_from_heap(nearest))
+        state.finish()
     }
 
     /// Best-first nearest traversal over the R-tree nodes: pop envelopes by
@@ -571,11 +601,11 @@ impl PySpatialIndex {
                 },
             }
         }
-        Ok(state.finish())
+        state.finish()
     }
 
     #[inline]
-    fn consider_nearest_candidate<S: NearestState>(
+    pub(super) fn consider_nearest_candidate<S: NearestState>(
         &self,
         entry_idx: usize,
         exact: &mut impl FnMut(usize) -> PyResult<f64>,
@@ -602,12 +632,37 @@ impl PySpatialIndex {
 #[cfg(test)]
 mod tests {
     use pyo3::Python;
+    use pyo3::exceptions::PyMemoryError;
 
-    use crate::py::index::parse_max_distance;
+    use super::{NearestState, OneNearest};
+    use crate::py::index::{NearestCandidate, parse_max_distance};
+    use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
     fn nearest_max_distance_rejects_nan_at_parser() {
         Python::initialize();
         parse_max_distance(Some(f64::NAN)).unwrap_err();
+    }
+
+    #[test]
+    fn one_nearest_empty_finish_does_not_allocate() {
+        let (result, allocations) = allocation_count(|| OneNearest::default().finish().unwrap());
+        assert!(result.is_empty());
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn one_nearest_nonempty_finish_rejects_allocation() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut state = OneNearest::default();
+            state
+                .accept(NearestCandidate::new(1.0, 0))
+                .expect("accept is allocation-free");
+            let error = fail_allocations_after(0, || {
+                state.finish().expect_err("nonempty finish must allocate")
+            });
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+        });
     }
 }
