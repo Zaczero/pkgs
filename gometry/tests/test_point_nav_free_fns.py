@@ -453,6 +453,35 @@ def test_rhumb_destination_path_scalar() -> None:
     assert (round(end.x, 3), round(end.y, 3)) == (2.683, 45.0)
 
 
+def test_rhumb_destination_mixed_axis_points_preserve_rows() -> None:
+    points = gm.GeometryArray([
+        gm.Point(-8.5, 41.2, crs=4326),
+        None,
+        gm.Point(122.4, -33.9, z=18.0, crs=4326),
+    ])
+    out = points.destination(45.0, 2500.0, path='rhumb')
+    assert out.is_missing.tolist() == [False, True, False]
+    assert out[1] is None
+    assert out[0].coordinate_axes == 'XY'
+    assert out[2].coordinate_axes == 'XYZ'
+    assert out[2].z == 18.0
+    assert out[0].to_wkb() == points[0].destination(45.0, 2500.0, path='rhumb').to_wkb()
+    assert out[2].to_wkb() == points[2].destination(45.0, 2500.0, path='rhumb').to_wkb()
+
+
+def test_rhumb_destination_nonpoint_array_keeps_row_type_error() -> None:
+    rows = gm.GeometryArray([
+        gm.Point(-5.0, 10.0, crs=4326),
+        gm.LineString([(-5.0, 10.0), (0.0, 12.0)], crs=4326),
+    ])
+    with pytest.raises(
+        gm.GeometryTypeError,
+        match=r"destination\(path='rhumb'\) requires a Point",
+    ) as err:
+        rows.destination(90.0, 1000.0, path='rhumb')
+    assert err.value.__notes__ == ['while processing array element 1']
+
+
 def test_point_between_rhumb_path_matches_inverse_direct_and_array_lanes() -> None:
     start = gm.Point(-73.8, 40.6, z=2.0, m=10.0, crs=4326)
     end = gm.Point(-0.5, 51.6, z=6.0, m=30.0, crs=4326)
