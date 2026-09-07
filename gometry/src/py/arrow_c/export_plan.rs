@@ -178,13 +178,13 @@ fn plan_geometry_array_wkb(
                 .ok_or_else(|| NativeArrowExportError::overflow("WKB size overflows usize"))?;
         }
     }
+    validate_wkb_total(total)?;
     crate::boundary::try_reserve_vec(&mut data, total).map_err(NativeArrowExportError::from)?;
     crate::boundary::try_push_vec(&mut offsets, 0_i32).map_err(NativeArrowExportError::from)?;
     for row in array.row_operation().rows_with_missing(|| ()) {
         if let ArrayRow::Present(row) = row {
-            row.row().with_shape(|shape| {
-                crate::io::write_wkb_to(&mut data, shape, crs.as_deref(), false)
-            })?;
+            row.row()
+                .with_shape(|shape| crate::io::write_wkb_to_srid(&mut data, shape, None))?;
         }
         crate::boundary::try_push_vec(
             &mut offsets,
@@ -669,6 +669,7 @@ fn plan_wkb_refs(
             .checked_add(crate::io::wkb_len(shape, false)?)
             .ok_or_else(|| NativeArrowExportError::overflow("WKB size overflows usize"))
     })?;
+    validate_wkb_total(total)?;
     let mut data = Vec::new();
     crate::boundary::try_reserve_vec(&mut data, total).map_err(NativeArrowExportError::from)?;
     let mut offsets = Vec::new();
@@ -682,7 +683,7 @@ fn plan_wkb_refs(
     .map_err(NativeArrowExportError::from)?;
     crate::boundary::try_push_vec(&mut offsets, 0_i32).map_err(NativeArrowExportError::from)?;
     for shape in shapes {
-        crate::io::write_wkb_to(&mut data, shape, crs.as_deref(), false)?;
+        crate::io::write_wkb_to_srid(&mut data, shape, None)?;
         crate::boundary::try_push_vec(
             &mut offsets,
             i32::try_from(data.len()).map_err(|_| offset_error())?,
@@ -795,6 +796,10 @@ fn offset_error() -> NativeArrowExportError {
     )
 }
 
+fn validate_wkb_total(total: usize) -> NativeArrowExportResult<()> {
+    i32::try_from(total).map(|_| ()).map_err(|_| offset_error())
+}
+
 fn mixed_axes_error() -> NativeArrowExportError {
     NativeArrowExportError::invalid_geometry("mixed Z/M coordinate axes")
 }
@@ -813,6 +818,15 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::*;
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn wkb_total_admission_rejects_i32_overflow_without_allocating() {
+        let error = validate_wkb_total((i32::MAX as usize) + 1)
+            .expect_err("WKB data total must fit Arrow i32 offsets");
+        assert!(matches!(error, NativeArrowExportError::Overflow(_)));
+        validate_wkb_total(i32::MAX as usize).unwrap();
+    }
 
     #[test]
     fn native_export_errors_keep_attached_exception_classification() {

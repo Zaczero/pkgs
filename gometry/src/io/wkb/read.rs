@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use crate::geometry::{
-    MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, ZOrdinate, column_all_finite,
+    CoordinateAxes, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
+    ZOrdinate, column_all_finite,
 };
 use crate::io::wkb::{
     CoordSeq, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG, GeometryErrorKind, GeometryKind,
     ISO_DIM_OFFSET, IoError, LineSeq, MAX_NESTING, ParseFormat, Point, Polygon, Result, Ring,
     Shape, WKB_COUNT, WKB_GEOMETRYCOLLECTION, WKB_HEADER_BASE, WKB_LINESTRING, WKB_MULTILINESTRING,
-    WKB_MULTIPOINT, WKB_MULTIPOLYGON, WKB_POINT, WKB_POLYGON, WkbAxes, WkbGeometry, parse_content,
+    WKB_MULTIPOINT, WKB_MULTIPOLYGON, WKB_POINT, WKB_POLYGON, WkbGeometry, parse_content,
     wkb_dimension,
 };
 
@@ -33,7 +34,7 @@ fn parse_wkb_inner(value: &[u8]) -> Result<WkbGeometry> {
     }
     Ok(WkbGeometry { shape, srid })
 }
-fn parse_wkb_type(value: u32) -> Result<(u32, WkbAxes)> {
+fn parse_wkb_type(value: u32) -> Result<(u32, CoordinateAxes)> {
     let ewkb_z = value & EWKB_Z_FLAG != 0;
     let ewkb_m = value & EWKB_M_FLAG != 0;
     let mut base = value & !(EWKB_Z_FLAG | EWKB_M_FLAG | EWKB_SRID_FLAG);
@@ -53,21 +54,27 @@ fn parse_wkb_type(value: u32) -> Result<(u32, WkbAxes)> {
             "WKB geometry type mixes ISO and EWKB dimensional encodings",
         ));
     }
-    Ok((base, WkbAxes {
-        z: ewkb_z || iso_z,
-        m: ewkb_m || iso_m,
-    }))
+    Ok((
+        base,
+        CoordinateAxes::new(HasZ(ewkb_z || iso_z), HasM(ewkb_m || iso_m)),
+    ))
 }
 
 /// OGC empty-point sentinel: every ordinate present in the WKB type is `NaN`.
-fn wkb_point_is_empty(x: f64, y: f64, z: Option<f64>, m: Option<f64>, axes: WkbAxes) -> bool {
+fn wkb_point_is_empty(
+    x: f64,
+    y: f64,
+    z: Option<f64>,
+    m: Option<f64>,
+    axes: CoordinateAxes,
+) -> bool {
     if !x.is_nan() || !y.is_nan() {
         return false;
     }
-    if axes.z && !z.is_some_and(f64::is_nan) {
+    if axes.has_z() && !z.is_some_and(f64::is_nan) {
         return false;
     }
-    if axes.m && !m.is_some_and(f64::is_nan) {
+    if axes.has_m() && !m.is_some_and(f64::is_nan) {
         return false;
     }
     true
@@ -94,8 +101,8 @@ impl WkbReader<'_> {
     }
 
     /// Homogeneous multi members must carry the same axes as the outer type.
-    fn require_member_axes(&self, outer: WkbAxes, member: WkbAxes) -> Result<()> {
-        if outer.z == member.z && outer.m == member.m {
+    fn require_member_axes(&self, outer: CoordinateAxes, member: CoordinateAxes) -> Result<()> {
+        if outer == member {
             Ok(())
         } else {
             Err(IoError::wkb(
@@ -118,7 +125,7 @@ impl WkbReader<'_> {
         Ok(vec)
     }
 
-    fn validate_coord_count(&self, count: usize, axes: WkbAxes) -> Result<()> {
+    fn validate_coord_count(&self, count: usize, axes: CoordinateAxes) -> Result<()> {
         // Encoding-true bound: each vertex costs `stride` payload bytes.
         let stride = wkb_dimension(axes) * size_of::<f64>();
         let required = count
@@ -162,8 +169,8 @@ impl WkbReader<'_> {
 }
 
 /// Resolve runtime axes to the const-generic decoder instantiations.
-fn decode_coordseq_axes<const BIG: bool>(bytes: &[u8], axes: WkbAxes) -> Result<CoordSeq> {
-    match (axes.z, axes.m) {
+fn decode_coordseq_axes<const BIG: bool>(bytes: &[u8], axes: CoordinateAxes) -> Result<CoordSeq> {
+    match (axes.has_z(), axes.has_m()) {
         (false, false) => decode_coordseq::<BIG, false, false>(bytes),
         (true, false) => decode_coordseq::<BIG, true, false>(bytes),
         (false, true) => decode_coordseq::<BIG, false, true>(bytes),
@@ -367,22 +374,17 @@ impl WkbReader<'_> {
                     self.read_nested_multipoint(byte_order, axes, srid, path, depth)?;
                 srid = effective;
                 if count == 0 {
-                    Shape::typed_empty(GeometryKind::MultiPoint, axes.coordinate_axes())
+                    Shape::typed_empty(GeometryKind::MultiPoint, axes)
                 } else {
-                    Shape::MultiPoint(
-                        MultiPoint::try_new(axes.coordinate_axes(), members).map_err(|_| {
-                            IoError::wkb("MULTIPOINT members must have matching coordinate axes")
-                        })?,
-                    )
+                    Shape::MultiPoint(MultiPoint::try_new(axes, members).map_err(|_| {
+                        IoError::wkb("MULTIPOINT members must have matching coordinate axes")
+                    })?)
                 }
             },
             WKB_LINESTRING => {
                 let count = self.read_u32(byte_order)? as usize;
                 if count == 0 {
-                    return Ok((
-                        Shape::typed_empty(GeometryKind::LineString, axes.coordinate_axes()),
-                        srid,
-                    ));
+                    return Ok((Shape::typed_empty(GeometryKind::LineString, axes), srid));
                 }
                 let points = self.read_coordseq(byte_order, axes, count)?;
                 Shape::LineString(LineSeq::try_new(points)?)
@@ -396,8 +398,8 @@ impl WkbReader<'_> {
                     path,
                     |shape| match shape {
                         Shape::LineString(points) => {
-                            let member_axes = WkbAxes::from_coordinate_axes(points.axes());
-                            if axes.z != member_axes.z || axes.m != member_axes.m {
+                            let member_axes = points.axes();
+                            if axes != member_axes {
                                 return Err(IoError::wkb(
                                     "WKB multi geometry member axes must match the outer type",
                                 ));
@@ -405,8 +407,8 @@ impl WkbReader<'_> {
                             Ok(MultiMember::Value(points))
                         },
                         Shape::Empty(GeometryKind::LineString, empty_axes) => {
-                            let member_axes = WkbAxes::from_coordinate_axes(empty_axes);
-                            if axes.z != member_axes.z || axes.m != member_axes.m {
+                            let member_axes = empty_axes;
+                            if axes != member_axes {
                                 return Err(IoError::wkb(
                                     "WKB multi geometry member axes must match the outer type",
                                 ));
@@ -419,17 +421,15 @@ impl WkbReader<'_> {
                 )?;
                 srid = effective;
                 if members.is_empty() {
-                    Shape::typed_empty(GeometryKind::MultiLineString, axes.coordinate_axes())
+                    Shape::typed_empty(GeometryKind::MultiLineString, axes)
                 } else {
-                    Shape::MultiLineString(
-                        MultiLineString::try_new(axes.coordinate_axes(), members).map_err(
-                            |_| {
-                                IoError::wkb(
-                                    "MULTILINESTRING members must have matching coordinate axes",
-                                )
-                            },
-                        )?,
-                    )
+                    Shape::MultiLineString(MultiLineString::try_new(axes, members).map_err(
+                        |_| {
+                            IoError::wkb(
+                                "MULTILINESTRING members must have matching coordinate axes",
+                            )
+                        },
+                    )?)
                 }
             },
             WKB_POLYGON => self.read_polygon_shape(byte_order, axes)?,
@@ -442,8 +442,8 @@ impl WkbReader<'_> {
                     path,
                     |shape| match shape {
                         Shape::Polygon(polygon) => {
-                            let member_axes = WkbAxes::from_polygon(&polygon);
-                            if axes.z != member_axes.z || axes.m != member_axes.m {
+                            let member_axes = polygon.axes();
+                            if axes != member_axes {
                                 return Err(IoError::wkb(
                                     "WKB multi geometry member axes must match the outer type",
                                 ));
@@ -453,8 +453,8 @@ impl WkbReader<'_> {
                         // Matching typed empty Polygon members remain explicit;
                         // validate their axes against the outer type.
                         Shape::Empty(GeometryKind::Polygon, empty_axes) => {
-                            let member_axes = WkbAxes::from_coordinate_axes(empty_axes);
-                            if axes.z != member_axes.z || axes.m != member_axes.m {
+                            let member_axes = empty_axes;
+                            if axes != member_axes {
                                 return Err(IoError::wkb(
                                     "WKB multi geometry member axes must match the outer type",
                                 ));
@@ -467,13 +467,11 @@ impl WkbReader<'_> {
                 )?;
                 srid = effective;
                 if members.is_empty() {
-                    Shape::typed_empty(GeometryKind::MultiPolygon, axes.coordinate_axes())
+                    Shape::typed_empty(GeometryKind::MultiPolygon, axes)
                 } else {
-                    Shape::MultiPolygon(
-                        MultiPolygon::try_new(axes.coordinate_axes(), members).map_err(|_| {
-                            IoError::wkb("MULTIPOLYGON members must have matching coordinate axes")
-                        })?,
-                    )
+                    Shape::MultiPolygon(MultiPolygon::try_new(axes, members).map_err(|_| {
+                        IoError::wkb("MULTIPOLYGON members must have matching coordinate axes")
+                    })?)
                 }
             },
             WKB_GEOMETRYCOLLECTION => {
@@ -481,7 +479,7 @@ impl WkbReader<'_> {
                     self.read_nested_shapes(byte_order, geometry_type, srid, path, depth)?;
                 srid = effective;
                 if members.is_empty() {
-                    Shape::typed_empty(GeometryKind::GeometryCollection, axes.coordinate_axes())
+                    Shape::typed_empty(GeometryKind::GeometryCollection, axes)
                 } else {
                     Shape::geometry_collection(members)?
                 }
@@ -538,16 +536,23 @@ impl WkbReader<'_> {
     /// ordinate `NaN`) to the typed empty carrying the header's axes. Raw
     /// ordinates are read first so the all-`NaN` sentinel is detected before
     /// `Point::new_axes` rejects non-finite coordinates.
-    fn read_point_shape(&mut self, byte_order: WkbByteOrder, axes: WkbAxes) -> Result<Shape> {
+    fn read_point_shape(
+        &mut self,
+        byte_order: WkbByteOrder,
+        axes: CoordinateAxes,
+    ) -> Result<Shape> {
         let x = self.read_f64(byte_order)?;
         let y = self.read_f64(byte_order)?;
-        let z = axes.z.then(|| self.read_f64(byte_order)).transpose()?;
-        let m = axes.m.then(|| self.read_f64(byte_order)).transpose()?;
+        let z = axes
+            .has_z()
+            .then(|| self.read_f64(byte_order))
+            .transpose()?;
+        let m = axes
+            .has_m()
+            .then(|| self.read_f64(byte_order))
+            .transpose()?;
         if wkb_point_is_empty(x, y, z, m, axes) {
-            return Ok(Shape::typed_empty(
-                GeometryKind::Point,
-                axes.coordinate_axes(),
-            ));
+            return Ok(Shape::typed_empty(GeometryKind::Point, axes));
         }
         Ok(Shape::Point(Point::new_axes(
             x,
@@ -566,7 +571,7 @@ impl WkbReader<'_> {
     fn read_coordseq(
         &mut self,
         byte_order: WkbByteOrder,
-        axes: WkbAxes,
+        axes: CoordinateAxes,
         count: usize,
     ) -> Result<CoordSeq> {
         self.validate_coord_count(count, axes)?;
@@ -590,7 +595,7 @@ impl WkbReader<'_> {
         }
     }
 
-    fn read_ring(&mut self, byte_order: WkbByteOrder, axes: WkbAxes) -> Result<CoordSeq> {
+    fn read_ring(&mut self, byte_order: WkbByteOrder, axes: CoordinateAxes) -> Result<CoordSeq> {
         let count = self.read_u32(byte_order)? as usize;
         // Floor only: ≥ MIN_VERTICES_OPEN corners. Shared `admit_closed_ring`
         // then silent-closes XY-open rings or rejects Z/M-open / too-short
@@ -607,14 +612,15 @@ impl WkbReader<'_> {
     /// Read a WKB polygon, decoding a zero-ring body to the typed empty
     /// polygon carrying the header's axes (the OGC empty-polygon convention)
     /// rather than erroring.
-    fn read_polygon_shape(&mut self, byte_order: WkbByteOrder, axes: WkbAxes) -> Result<Shape> {
+    fn read_polygon_shape(
+        &mut self,
+        byte_order: WkbByteOrder,
+        axes: CoordinateAxes,
+    ) -> Result<Shape> {
         let ring_count = self.read_u32(byte_order)? as usize;
         self.validate_ring_count(ring_count)?;
         if ring_count == 0 {
-            return Ok(Shape::typed_empty(
-                GeometryKind::Polygon,
-                axes.coordinate_axes(),
-            ));
+            return Ok(Shape::typed_empty(GeometryKind::Polygon, axes));
         }
         // Shared untrusted ring admission (same policy as WKT): silent-close
         // XY-open rings; reject Z/M-open; then pack. Winding/simplicity stay
@@ -671,7 +677,7 @@ impl WkbReader<'_> {
         &mut self,
         byte_order: WkbByteOrder,
         container: u32,
-        _outer_axes: WkbAxes,
+        _outer_axes: CoordinateAxes,
         inherited: Option<u32>,
         parent: Option<&WkbMemberPath<'_>>,
         mut extract: impl FnMut(Shape) -> Result<MultiMember<T>>,
@@ -709,7 +715,7 @@ impl WkbReader<'_> {
     fn read_nested_multipoint(
         &mut self,
         byte_order: WkbByteOrder,
-        axes: WkbAxes,
+        axes: CoordinateAxes,
         inherited: Option<u32>,
         parent: Option<&WkbMemberPath<'_>>,
         depth: usize,
@@ -729,7 +735,7 @@ impl WkbReader<'_> {
             effective = effective.or(member_srid);
             match shape {
                 Shape::Point(point) => {
-                    let member_axes = WkbAxes::from_point(point);
+                    let member_axes = CoordinateAxes::from_point(point);
                     if let Err(error) = self.require_member_axes(axes, member_axes) {
                         member_error.get_or_insert(error);
                         continue;
@@ -738,7 +744,7 @@ impl WkbReader<'_> {
                 },
                 // Matching typed empty Point members remain explicit.
                 Shape::Empty(GeometryKind::Point, empty_axes) => {
-                    let member_axes = WkbAxes::from_coordinate_axes(empty_axes);
+                    let member_axes = empty_axes;
                     if let Err(error) = self.require_member_axes(axes, member_axes) {
                         member_error.get_or_insert(error);
                     } else {

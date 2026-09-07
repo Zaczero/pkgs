@@ -303,25 +303,6 @@ impl SridCrsCache {
     }
 }
 
-#[derive(Clone, Copy)]
-struct WkbAxes {
-    z: bool,
-    m: bool,
-}
-
-/// The seven supported geometry kinds, shared by the WKT and WKB grammars:
-/// one enum drives keyword parsing, type-code encoding, and header writing.
-#[derive(Clone, Copy)]
-pub(crate) enum IoGeometryKind {
-    Point,
-    MultiPoint,
-    LineString,
-    MultiLineString,
-    Polygon,
-    MultiPolygon,
-    GeometryCollection,
-}
-
 /// Decoded WKB/EWKB payload: shape plus the normalized embedded SRID.
 ///
 /// `srid` is `None` for plain WKB and for PostGIS SRID 0 (unknown). Nonzero
@@ -334,7 +315,7 @@ pub(crate) struct WkbGeometry {
 }
 
 struct WktHeader<'a> {
-    geometry_type: IoGeometryKind,
+    geometry_type: GeometryKind,
     axes: CoordinateAxes,
     /// True when a Z / M / ZM dimensional tag was present on the type keyword.
     /// Untagged members of a tagged GeometryCollection inherit the outer axes;
@@ -363,7 +344,7 @@ pub(crate) use geojson::{
     reconcile_legacy_geojson_crs, reject_rfc7946_cross_type_members, reject_rfc7946_value_object,
     to_geojson_string,
 };
-pub(crate) use wkb::{parse_wkb, to_wkb, wkb_len, write_wkb_to, write_wkb_to_srid};
+pub(crate) use wkb::{parse_wkb, to_wkb, wkb_len, write_wkb_to_srid};
 pub(crate) use wkt::{
     WktDimension, WktNumberFormat, classify_wkt_type_token, parse_wkt, to_wkt, to_wkt_display,
     to_wkt_preview, to_wkt_with_dimension,

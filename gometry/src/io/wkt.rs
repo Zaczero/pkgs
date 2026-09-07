@@ -1,9 +1,9 @@
 #[cfg(test)]
 use crate::io::geojson;
 use crate::io::{
-    CoordSeq, CoordinateAxes, Coordinates, GeometryKind, IoError, IoGeometryKind, LineSeq,
-    MAX_NESTING, ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader, extended_srid_code,
-    parse_content, require_serializable_axes,
+    CoordSeq, CoordinateAxes, Coordinates, GeometryKind, IoError, LineSeq, MAX_NESTING,
+    ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader, extended_srid_code, parse_content,
+    require_serializable_axes,
 };
 
 mod read;

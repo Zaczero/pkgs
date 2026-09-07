@@ -6,8 +6,8 @@ use crate::geometry::{
     CoordSeqBuilder, HasM, HasZ, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
 };
 use crate::io::wkt::{
-    CoordSeq, CoordinateAxes, GeometryKind, IoError, IoGeometryKind, LineSeq, MAX_NESTING,
-    ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader, parse_content,
+    CoordSeq, CoordinateAxes, GeometryKind, IoError, LineSeq, MAX_NESTING, ParseFormat, Point,
+    Polygon, Result, Ring, Shape, WktHeader, parse_content,
 };
 
 pub(crate) fn parse_wkt(value: &str) -> Result<Shape> {
@@ -47,7 +47,7 @@ fn parse_wkt_inner(
     // ordinate-count inference (`POINT(1 2 3)` → XYZ, `POINT(1 2 3 4)` → XYZM).
     let axes_fixed = header.axes_explicit || inherited_axes.is_some();
     match header.geometry_type {
-        IoGeometryKind::GeometryCollection => {
+        GeometryKind::GeometryCollection => {
             let Some(body) = header.body else {
                 return Ok(Shape::typed_empty(
                     GeometryKind::GeometryCollection,
@@ -67,7 +67,7 @@ fn parse_wkt_inner(
                 .collect::<Result<Vec<_>>>()?;
             Ok(Shape::geometry_collection(members)?)
         },
-        IoGeometryKind::MultiPoint => {
+        GeometryKind::MultiPoint => {
             let Some(body) = header.body else {
                 return Ok(Shape::typed_empty(GeometryKind::MultiPoint, header.axes));
             };
@@ -78,7 +78,7 @@ fn parse_wkt_inner(
             };
             Ok(Shape::MultiPoint(parse_wkt_multi_points(body, axes)?))
         },
-        IoGeometryKind::MultiLineString => {
+        GeometryKind::MultiLineString => {
             let Some(body) = header.body else {
                 return Ok(Shape::typed_empty(
                     GeometryKind::MultiLineString,
@@ -110,7 +110,7 @@ fn parse_wkt_inner(
                     .collect::<Result<_>>()?,
             )?))
         },
-        IoGeometryKind::MultiPolygon => {
+        GeometryKind::MultiPolygon => {
             let Some(body) = header.body else {
                 return Ok(Shape::typed_empty(GeometryKind::MultiPolygon, header.axes));
             };
@@ -141,7 +141,7 @@ fn parse_wkt_inner(
                     .collect::<Result<_>>()?,
             )?))
         },
-        IoGeometryKind::Point => match header.body {
+        GeometryKind::Point => match header.body {
             Some(body) => {
                 let axes = if axes_fixed {
                     header.axes
@@ -152,7 +152,7 @@ fn parse_wkt_inner(
             },
             None => Ok(Shape::typed_empty(GeometryKind::Point, header.axes)),
         },
-        IoGeometryKind::LineString => {
+        GeometryKind::LineString => {
             let Some(body) = header.body else {
                 return Ok(Shape::typed_empty(GeometryKind::LineString, header.axes));
             };
@@ -164,7 +164,7 @@ fn parse_wkt_inner(
             let points = parse_wkt_points(body, axes)?;
             Ok(Shape::LineString(LineSeq::try_new(points)?))
         },
-        IoGeometryKind::Polygon => match header.body {
+        GeometryKind::Polygon => match header.body {
             Some(body) => {
                 let axes = if axes_fixed {
                     header.axes
@@ -275,7 +275,7 @@ fn strip_wkt_compact_axes(token: &[u8]) -> (&[u8], Option<CoordinateAxes>) {
 /// Spaced tags (`POINT M`) are handled by the header parser.
 pub(crate) fn classify_wkt_type_token(
     token: &str,
-) -> Option<(IoGeometryKind, Option<CoordinateAxes>)> {
+) -> Option<(GeometryKind, Option<CoordinateAxes>)> {
     if token.is_empty()
         || token.len() > WKT_MAX_TYPE_TOKEN_LEN
         || !token.as_bytes().iter().all(u8::is_ascii_alphabetic)
@@ -288,16 +288,16 @@ pub(crate) fn classify_wkt_type_token(
     parse_wkt_type_keyword_upper(&upper[..token.len()])
 }
 
-fn parse_wkt_type_keyword_upper(upper: &[u8]) -> Option<(IoGeometryKind, Option<CoordinateAxes>)> {
+fn parse_wkt_type_keyword_upper(upper: &[u8]) -> Option<(GeometryKind, Option<CoordinateAxes>)> {
     let (base, compact_axes) = strip_wkt_compact_axes(upper);
     let geometry_type = match base {
-        b"POINT" => IoGeometryKind::Point,
-        b"LINESTRING" => IoGeometryKind::LineString,
-        b"POLYGON" => IoGeometryKind::Polygon,
-        b"MULTIPOINT" => IoGeometryKind::MultiPoint,
-        b"MULTILINESTRING" => IoGeometryKind::MultiLineString,
-        b"MULTIPOLYGON" => IoGeometryKind::MultiPolygon,
-        b"GEOMETRYCOLLECTION" => IoGeometryKind::GeometryCollection,
+        b"POINT" => GeometryKind::Point,
+        b"LINESTRING" => GeometryKind::LineString,
+        b"POLYGON" => GeometryKind::Polygon,
+        b"MULTIPOINT" => GeometryKind::MultiPoint,
+        b"MULTILINESTRING" => GeometryKind::MultiLineString,
+        b"MULTIPOLYGON" => GeometryKind::MultiPolygon,
+        b"GEOMETRYCOLLECTION" => GeometryKind::GeometryCollection,
         _ => return None,
     };
     Some((geometry_type, compact_axes))

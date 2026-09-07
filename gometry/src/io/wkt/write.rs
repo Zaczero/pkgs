@@ -4,6 +4,7 @@ use crate::io::wkt::{
 };
 
 pub(crate) fn to_wkt(shape: &Shape) -> Result<String> {
+    require_serializable_axes(shape)?;
     format_wkt(shape, None, WktNumberFormat::Shortest)
 }
 
@@ -109,6 +110,7 @@ impl WktNumberFormat {
 /// WKT with display-formatted ordinates (see [`WktNumberFormat`]); backs
 /// `Geometry.__format__`.
 pub(crate) fn to_wkt_display(shape: &Shape, format: WktNumberFormat) -> Result<String> {
+    require_serializable_axes(shape)?;
     format_wkt(shape, None, format)
 }
 
@@ -147,6 +149,7 @@ fn format_wkt(
 /// error messages) that truncate anyway — a huge geometry pays for ~`limit`
 /// bytes, not its whole WKT.
 pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
+    require_serializable_axes(shape)?;
     let capacity = limit
         .checked_add(4096)
         .ok_or_else(|| IoError::wkt("WKT preview length overflows usize"))?;
@@ -435,17 +438,13 @@ fn write_wkt_point_impl<const Z: bool, const M: bool>(
     format.write(out, point.x);
     out.push(' ');
     format.write(out, point.y);
-    // A homogeneous multipart writes every member at the multipart's union
-    // axes; a member narrower than the union has its promoted Z/M filled with
-    // 0.0 (the `force_3d` convention), NEVER a fabricated NaN. For a scalar or
-    // uniform sequence the ordinate is always present, so no fill occurs.
     if Z {
         out.push(' ');
-        format.write(out, point.z().unwrap_or(0.0));
+        format.write(out, point.z().expect("WKT Z axis was preflighted"));
     }
     if M {
         out.push(' ');
-        format.write(out, point.m().unwrap_or(0.0));
+        format.write(out, point.m().expect("WKT M axis was preflighted"));
     }
 }
 

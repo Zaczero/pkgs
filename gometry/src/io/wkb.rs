@@ -1,10 +1,8 @@
-use crate::geometry::{HasM, HasZ};
 use crate::io::{
     CoordSeq, CoordinateAxes, Coordinates, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG,
-    GeometryErrorKind, GeometryKind, IoError, IoGeometryKind, LineSeq, MAX_NESTING, ParseFormat,
-    Point, Polygon, Result, Ring, Shape, WKB_GEOMETRYCOLLECTION, WKB_M_OFFSET, WKB_MULTILINESTRING,
-    WKB_MULTIPOINT, WKB_MULTIPOLYGON, WKB_Z_OFFSET, WKB_ZM_OFFSET, WkbAxes, WkbGeometry,
-    extended_srid_code, parse_content, require_serializable_axes,
+    GeometryErrorKind, GeometryKind, IoError, LineSeq, MAX_NESTING, ParseFormat, Point, Polygon,
+    Result, Ring, Shape, WKB_GEOMETRYCOLLECTION, WKB_M_OFFSET, WKB_MULTILINESTRING, WKB_MULTIPOINT,
+    WKB_MULTIPOLYGON, WKB_Z_OFFSET, WKB_ZM_OFFSET, WkbGeometry, extended_srid_code, parse_content,
 };
 
 const WKB_POINT: u32 = 1;
@@ -13,70 +11,40 @@ const WKB_POLYGON: u32 = 3;
 const WKB_HEADER_BASE: usize = 1 + 4; // byte-order byte + 4-byte geometry type
 const WKB_COUNT: usize = 4; // 4-byte element/ring count
 
-const fn wkb_dimension(axes: WkbAxes) -> usize {
-    2 + axes.z as usize + axes.m as usize
+const fn wkb_dimension(axes: CoordinateAxes) -> usize {
+    axes.dimension()
 }
 
-fn wkb_coords_len(count: usize, axes: WkbAxes) -> Result<usize> {
+fn wkb_coords_len(count: usize, axes: CoordinateAxes) -> Result<usize> {
     count
         .checked_mul(wkb_dimension(axes))
         .and_then(|bytes| bytes.checked_mul(size_of::<f64>()))
         .ok_or_else(|| IoError::wkb("WKB coordinate byte length overflows usize"))
 }
 
-impl WkbAxes {
-    fn from_point(point: Point) -> Self {
-        Self {
-            z: point.z().is_some(),
-            m: point.m().is_some(),
-        }
-    }
-
-    fn from_polygon(polygon: &Polygon) -> Self {
-        let mut axes = Self { z: false, m: false };
-        for ring in polygon.rings() {
-            let ring_axes = ring.axes();
-            axes.z |= ring_axes.has_z();
-            axes.m |= ring_axes.has_m();
-        }
-        axes
-    }
-
-    const fn from_coordinate_axes(axes: CoordinateAxes) -> Self {
-        Self {
-            z: axes.has_z(),
-            m: axes.has_m(),
-        }
-    }
-
-    const fn coordinate_axes(self) -> CoordinateAxes {
-        CoordinateAxes::new(HasZ(self.z), HasM(self.m))
-    }
-}
-
 /// ISO 1000/2000/3000 dimension offsets indexed by `(z as usize) << 1 | (m as
 /// usize)`.
 const ISO_DIM_OFFSET: [u32; 4] = [0, WKB_M_OFFSET, WKB_Z_OFFSET, WKB_ZM_OFFSET];
 
-fn wkb_type(kind: IoGeometryKind, axes: WkbAxes, extended: bool) -> u32 {
+fn wkb_type(kind: GeometryKind, axes: CoordinateAxes, extended: bool) -> u32 {
     let mut value = match kind {
-        IoGeometryKind::Point => WKB_POINT,
-        IoGeometryKind::MultiPoint => WKB_MULTIPOINT,
-        IoGeometryKind::LineString => WKB_LINESTRING,
-        IoGeometryKind::MultiLineString => WKB_MULTILINESTRING,
-        IoGeometryKind::Polygon => WKB_POLYGON,
-        IoGeometryKind::MultiPolygon => WKB_MULTIPOLYGON,
-        IoGeometryKind::GeometryCollection => WKB_GEOMETRYCOLLECTION,
+        GeometryKind::Point => WKB_POINT,
+        GeometryKind::MultiPoint => WKB_MULTIPOINT,
+        GeometryKind::LineString => WKB_LINESTRING,
+        GeometryKind::MultiLineString => WKB_MULTILINESTRING,
+        GeometryKind::Polygon => WKB_POLYGON,
+        GeometryKind::MultiPolygon => WKB_MULTIPOLYGON,
+        GeometryKind::GeometryCollection => WKB_GEOMETRYCOLLECTION,
     };
     if extended {
-        if axes.z {
+        if axes.has_z() {
             value |= EWKB_Z_FLAG;
         }
-        if axes.m {
+        if axes.has_m() {
             value |= EWKB_M_FLAG;
         }
     } else {
-        value += ISO_DIM_OFFSET[(usize::from(axes.z) << 1) | usize::from(axes.m)];
+        value += ISO_DIM_OFFSET[(usize::from(axes.has_z()) << 1) | usize::from(axes.has_m())];
     }
     value
 }
@@ -85,4 +53,4 @@ mod read;
 mod write;
 
 pub(crate) use read::parse_wkb;
-pub(crate) use write::{to_wkb, wkb_len, write_wkb_to, write_wkb_to_srid};
+pub(crate) use write::{to_wkb, wkb_len, write_wkb_to_srid};
