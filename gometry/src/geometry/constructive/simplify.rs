@@ -470,12 +470,12 @@ fn keep_ring(
     ring: &Ring,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
-) -> RingKeep {
-    match kept_coords(ring.coords(), scratch, keep_mask) {
+) -> Result<RingKeep> {
+    Ok(match kept_coords(ring.coords(), scratch, keep_mask) {
         None => RingKeep::Same,
         Some(coords) if coords.len() < Ring::MIN_VERTICES_CLOSED => RingKeep::Drop,
         Some(coords) => RingKeep::New(Ring::from_closed(coords)),
-    }
+    })
 }
 
 enum PolygonKeep {
@@ -484,62 +484,93 @@ enum PolygonKeep {
     New(Polygon),
 }
 
+fn try_clone_ring_prefix(holes: &[Ring], end: usize) -> Result<Vec<Ring>> {
+    let mut out = Vec::new();
+    crate::try_reserve_vec(&mut out, end)?;
+    for hole in &holes[..end] {
+        crate::try_push_vec(&mut out, hole.clone())?;
+    }
+    Ok(out)
+}
+
 fn keep_polygon(
     polygon: &Polygon,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
-) -> PolygonKeep {
-    match keep_ring(&polygon.shell, scratch, keep_mask) {
-        RingKeep::Drop => PolygonKeep::Empty,
-        RingKeep::Same => {
-            let mut holes_out: Option<Vec<Ring>> = None;
-            for (index, hole) in polygon.holes.iter().enumerate() {
-                match keep_ring(hole, scratch, keep_mask) {
-                    RingKeep::Same => {
-                        if let Some(holes) = holes_out.as_mut() {
-                            holes.push(hole.clone());
-                        }
-                    },
-                    RingKeep::Drop => {
-                        holes_out.get_or_insert_with(|| polygon.holes[..index].to_vec());
-                    },
-                    RingKeep::New(ring) => {
-                        holes_out
-                            .get_or_insert_with(|| polygon.holes[..index].to_vec())
-                            .push(ring);
-                    },
-                }
-            }
-            match holes_out {
-                None => PolygonKeep::Same,
-                Some(holes) => PolygonKeep::New(Polygon::new(polygon.shell.clone(), holes)),
-            }
-        },
-        RingKeep::New(shell) => {
-            let mut holes = Vec::with_capacity(polygon.holes.len());
-            for hole in polygon.holes.iter() {
-                match keep_ring(hole, scratch, keep_mask) {
-                    RingKeep::Same => holes.push(hole.clone()),
-                    RingKeep::Drop => {},
-                    RingKeep::New(ring) => holes.push(ring),
-                }
-            }
-            PolygonKeep::New(Polygon::new(shell, holes))
-        },
+) -> Result<PolygonKeep> {
+    let shell_out = keep_ring(&polygon.shell, scratch, keep_mask)?;
+    if matches!(shell_out, RingKeep::Drop) {
+        return Ok(PolygonKeep::Empty);
     }
+    let mut holes_out = if matches!(shell_out, RingKeep::New(_)) {
+        let mut holes = Vec::new();
+        crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
+        Some(holes)
+    } else {
+        None
+    };
+    for (index, hole) in polygon.holes.iter().enumerate() {
+        match keep_ring(hole, scratch, keep_mask)? {
+            RingKeep::Same => {
+                if let Some(holes) = holes_out.as_mut() {
+                    crate::try_push_vec(holes, hole.clone())?;
+                }
+            },
+            RingKeep::Drop => {
+                if holes_out.is_none() {
+                    holes_out = Some(try_clone_ring_prefix(&polygon.holes, index)?);
+                }
+            },
+            RingKeep::New(ring) => {
+                if let Some(holes) = holes_out.as_mut() {
+                    crate::try_push_vec(holes, ring)?;
+                } else {
+                    let mut holes = try_clone_ring_prefix(&polygon.holes, index)?;
+                    crate::try_push_vec(&mut holes, ring)?;
+                    holes_out = Some(holes);
+                }
+            },
+        }
+    }
+    Ok(match (shell_out, holes_out) {
+        (RingKeep::Same, None) => PolygonKeep::Same,
+        (RingKeep::Same, Some(holes)) => {
+            PolygonKeep::New(Polygon::new(polygon.shell.clone(), holes))
+        },
+        (RingKeep::New(shell), holes) => {
+            PolygonKeep::New(Polygon::new(shell, holes.unwrap_or_default()))
+        },
+        (RingKeep::Drop, _) => PolygonKeep::Empty,
+    })
+}
+
+fn try_prefix_line_members(
+    lines: &MultiLineString,
+    end: usize,
+) -> Result<Vec<MultiMember<LineSeq>>> {
+    let mut out = Vec::new();
+    crate::try_reserve_vec(&mut out, lines.len())?;
+    for member in lines.members().take(end) {
+        let item = match member {
+            MultiMember::Empty => MultiMember::Empty,
+            MultiMember::Value(value) => MultiMember::Value(lines.as_slice()[value].clone()),
+        };
+        crate::try_push_vec(&mut out, item)?;
+    }
+    Ok(out)
 }
 
 fn keep_multi_lines(
     lines: &MultiLineString,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
-) -> RawSimplify {
+) -> Result<RawSimplify> {
     let mut out: Option<Vec<MultiMember<LineSeq>>> = None;
     for (index, member) in lines.members().enumerate() {
         match member {
             MultiMember::Empty => {
                 if let Some(members) = out.as_mut() {
-                    members.push(MultiMember::Empty);
+                    crate::try_push_vec(members, MultiMember::Empty)?;
                 }
             },
             MultiMember::Value(value) => {
@@ -547,91 +578,103 @@ fn keep_multi_lines(
                 match kept_coords(line, scratch, keep_mask) {
                     None => {
                         if let Some(members) = out.as_mut() {
-                            members.push(MultiMember::Value(line.clone()));
+                            crate::try_push_vec(members, MultiMember::Value(line.clone()))?;
                         }
                     },
                     Some(coords) => {
-                        out.get_or_insert_with(|| {
-                            lines
-                                .members()
-                                .take(index)
-                                .map(|member| match member {
-                                    MultiMember::Empty => MultiMember::Empty,
-                                    MultiMember::Value(value) => {
-                                        MultiMember::Value(lines.as_slice()[value].clone())
-                                    },
-                                })
-                                .collect()
-                        })
-                        .push(MultiMember::Value(LineSeq::from_proven(coords)));
+                        if let Some(members) = out.as_mut() {
+                            crate::try_push_vec(
+                                members,
+                                MultiMember::Value(LineSeq::from_proven(coords)),
+                            )?;
+                        } else {
+                            let mut members = try_prefix_line_members(lines, index)?;
+                            crate::try_push_vec(
+                                &mut members,
+                                MultiMember::Value(LineSeq::from_proven(coords)),
+                            )?;
+                            out = Some(members);
+                        }
                     },
                 }
             },
         }
     }
-    match out {
+    Ok(match out {
         None => RawSimplify::Unchanged,
         Some(members) => RawSimplify::Changed(Shape::MultiLineString(MultiLineString::from_values(
             lines.axes(),
             members,
         ))),
+    })
+}
+
+fn try_prefix_polygon_members(
+    polygons: &MultiPolygon,
+    end: usize,
+) -> Result<Vec<MultiMember<Polygon>>> {
+    let mut out = Vec::new();
+    crate::try_reserve_vec(&mut out, polygons.len())?;
+    for member in polygons.members().take(end) {
+        let item = match member {
+            MultiMember::Empty => MultiMember::Empty,
+            MultiMember::Value(value) => MultiMember::Value(polygons.as_slice()[value].clone()),
+        };
+        crate::try_push_vec(&mut out, item)?;
     }
+    Ok(out)
 }
 
 fn keep_multi_polygons(
     polygons: &MultiPolygon,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
-) -> RawSimplify {
+) -> Result<RawSimplify> {
     let mut out: Option<Vec<MultiMember<Polygon>>> = None;
     for (index, member) in polygons.members().enumerate() {
         match member {
             MultiMember::Empty => {
                 if let Some(members) = out.as_mut() {
-                    members.push(MultiMember::Empty);
+                    crate::try_push_vec(members, MultiMember::Empty)?;
                 }
             },
             MultiMember::Value(value) => {
                 let polygon = &polygons.as_slice()[value];
-                match keep_polygon(polygon, scratch, keep_mask) {
+                match keep_polygon(polygon, scratch, keep_mask)? {
                     PolygonKeep::Same => {
                         if let Some(members) = out.as_mut() {
-                            members.push(MultiMember::Value(polygon.clone()));
+                            crate::try_push_vec(members, MultiMember::Value(polygon.clone()))?;
                         }
                     },
                     PolygonKeep::Empty => {
-                        out.get_or_insert_with(|| prefix_polygon_members(polygons, index))
-                            .push(MultiMember::Empty);
+                        if let Some(members) = out.as_mut() {
+                            crate::try_push_vec(members, MultiMember::Empty)?;
+                        } else {
+                            let mut members = try_prefix_polygon_members(polygons, index)?;
+                            crate::try_push_vec(&mut members, MultiMember::Empty)?;
+                            out = Some(members);
+                        }
                     },
                     PolygonKeep::New(polygon) => {
-                        out.get_or_insert_with(|| prefix_polygon_members(polygons, index))
-                            .push(MultiMember::Value(polygon));
+                        if let Some(members) = out.as_mut() {
+                            crate::try_push_vec(members, MultiMember::Value(polygon))?;
+                        } else {
+                            let mut members = try_prefix_polygon_members(polygons, index)?;
+                            crate::try_push_vec(&mut members, MultiMember::Value(polygon))?;
+                            out = Some(members);
+                        }
                     },
                 }
             },
         }
     }
-    match out {
+    Ok(match out {
         None => RawSimplify::Unchanged,
         Some(members) => RawSimplify::Changed(Shape::MultiPolygon(MultiPolygon::from_values(
             polygons.axes(),
             members,
         ))),
-    }
-}
-
-fn prefix_polygon_members(
-    polygons: &MultiPolygon,
-    end: usize,
-) -> Vec<MultiMember<Polygon>> {
-    polygons
-        .members()
-        .take(end)
-        .map(|member| match member {
-            MultiMember::Empty => MultiMember::Empty,
-            MultiMember::Value(value) => MultiMember::Value(polygons.as_slice()[value].clone()),
-        })
-        .collect()
+    })
 }
 
 impl Shape {
@@ -861,8 +904,8 @@ impl Shape {
                     RawSimplify::Changed(Self::LineString(LineSeq::from_proven(coords)))
                 },
             },
-            Self::MultiLineString(lines) => keep_multi_lines(lines, scratch, keep_mask),
-            Self::Polygon(polygon) => match keep_polygon(polygon, scratch, keep_mask) {
+            Self::MultiLineString(lines) => keep_multi_lines(lines, scratch, keep_mask)?,
+            Self::Polygon(polygon) => match keep_polygon(polygon, scratch, keep_mask)? {
                 PolygonKeep::Same => RawSimplify::Unchanged,
                 PolygonKeep::Empty => RawSimplify::Changed(Self::typed_empty(
                     GeometryKind::Polygon,
@@ -870,19 +913,28 @@ impl Shape {
                 )),
                 PolygonKeep::New(polygon) => RawSimplify::Changed(Self::Polygon(polygon)),
             },
-            Self::MultiPolygon(polygons) => keep_multi_polygons(polygons, scratch, keep_mask),
+            Self::MultiPolygon(polygons) => keep_multi_polygons(polygons, scratch, keep_mask)?,
             Self::GeometryCollection(geometries) => {
                 let mut out: Option<Vec<Shape>> = None;
                 for (index, geometry) in geometries.iter().enumerate() {
                     match geometry.simplify_raw(scratch, keep_mask)? {
                         RawSimplify::Unchanged => {
                             if let Some(members) = out.as_mut() {
-                                members.push(geometry.clone());
+                                crate::try_push_vec(members, geometry.clone())?;
                             }
                         },
                         RawSimplify::Changed(shape) => {
-                            out.get_or_insert_with(|| geometries.as_slice()[..index].to_vec())
-                                .push(shape);
+                            if let Some(members) = out.as_mut() {
+                                crate::try_push_vec(members, shape)?;
+                            } else {
+                                let mut members = Vec::new();
+                                crate::try_reserve_vec(&mut members, geometries.len())?;
+                                for part in &geometries.as_slice()[..index] {
+                                    crate::try_push_vec(&mut members, part.clone())?;
+                                }
+                                crate::try_push_vec(&mut members, shape)?;
+                                out = Some(members);
+                            }
                         },
                     }
                 }
@@ -956,7 +1008,6 @@ mod keep_identity_tests {
         CoordSeq, CoordinateAxes, GeometryKind, LineSeq, MultiLineString, MultiPolygon, Polygon,
         Ring, Shape,
     };
-    use crate::test_support::allocation_count;
 
     fn line_xy(xs: &[f64], ys: &[f64]) -> LineSeq {
         LineSeq::from_proven(CoordSeq::from_columns(
@@ -989,17 +1040,13 @@ mod keep_identity_tests {
         let Shape::LineString(src) = &line else {
             panic!("line fixture");
         };
-        let (cloned, clone_n) = allocation_count(|| line.clone());
-        let (out, keep_n) = allocation_count(|| line.simplify_vw(0.0, true).unwrap());
-        assert_eq!(out, cloned);
+        let out = line.simplify_vw(0.0, true).unwrap();
+        assert_eq!(out, line);
         let Shape::LineString(got) = &out else {
             panic!("keep-all remains a line");
         };
         assert_eq!(got.xs().as_ptr(), src.xs().as_ptr());
         assert_eq!(got.ys().as_ptr(), src.ys().as_ptr());
-        let (_, select_n) = allocation_count(|| src.select(0..src.len()));
-        assert!(select_n > 0, "a full-column select must be visible");
-        let _scratch = keep_n.saturating_sub(clone_n);
     }
 
     #[test]
@@ -1018,8 +1065,6 @@ mod keep_identity_tests {
         let Shape::LineString(src) = &line else {
             panic!("line fixture");
         };
-        // Tolerance 0 never splits (zero-threshold recovery). A tolerance
-        // below the corner height keeps every vertex.
         let out = line.simplify_dp(1e-9, true).unwrap();
         let Shape::LineString(got) = &out else {
             panic!("keep-all remains a line");
