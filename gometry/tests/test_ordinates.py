@@ -132,6 +132,7 @@ def test_mixed_zm_overlay_axes_follow_operands() -> None:
     assert gm.union(xyz, xym).coordinate_axes == 'XYZ'
     assert gm.intersection(xyz, xym).coordinate_axes == 'XYM'
 
+
 def test_xyzm_m_linear_referencing_on_measured_line() -> None:
     route = gm.from_wkt('LINESTRING ZM (0 0 0 0, 10 0 0 100)')
     interpolated = route.line_interpolate(50.0, basis='m')
