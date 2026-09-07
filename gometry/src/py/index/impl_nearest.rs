@@ -274,20 +274,22 @@ impl PySpatialIndex {
         let cover = index_envelopes(query.shape(), query_bounds, domain)?;
         let query_envelopes = cover.entries();
         let mut rows = self.rows.operation();
+        let bound = |envelope: &AABB<[f64; 2]>| {
+            query_envelopes
+                .iter()
+                .map(|query| aabb_box_distance_2(query, envelope))
+                .fold(f64::INFINITY, f64::min)
+                .sqrt()
+                * to_metre
+        };
+        let exact = |idx| {
+            let data = rows.prepared(idx);
+            Ok(pair_distance_planar(to_metre, &data, query))
+        };
         if k == 1 {
             return self.bound_ordered_nearest_shared(
-                |envelope| {
-                    query_envelopes
-                        .iter()
-                        .map(|query| aabb_box_distance_2(query, envelope))
-                        .fold(f64::INFINITY, f64::min)
-                        .sqrt()
-                        * to_metre
-                },
-                |idx| {
-                    let data = rows.prepared(idx);
-                    Ok(pair_distance_planar(to_metre, &data, query))
-                },
+                &bound,
+                exact,
                 OneNearest::default(),
                 max_distance,
                 exclude,
@@ -297,18 +299,8 @@ impl PySpatialIndex {
             );
         }
         self.bound_ordered_nearest(
-            |envelope| {
-                query_envelopes
-                    .iter()
-                    .map(|query| aabb_box_distance_2(query, envelope))
-                    .fold(f64::INFINITY, f64::min)
-                    .sqrt()
-                    * to_metre
-            },
-            |idx| {
-                let data = rows.prepared(idx);
-                Ok(pair_distance_planar(to_metre, &data, query))
-            },
+            &bound,
+            exact,
             k,
             max_distance,
             exclude,
@@ -397,20 +389,22 @@ impl PySpatialIndex {
             let mut rows = self.rows.operation();
             // Geodesic point query over an all-point index: prune with the
             // sound lower bound instead of Karney-evaluating every entry.
+            let bound = |envelope: &AABB<[f64; 2]>| pruner.envelope_lower_bound(envelope);
+            let exact = |idx| {
+                let data = rows.prepared(idx);
+                pair_distance_geodesic(
+                    resolved,
+                    &data,
+                    &rows.frame_cache(idx),
+                    query,
+                    &query_cache_owner,
+                )
+                .map_err(Into::into)
+            };
             if k == 1 {
                 return self.bound_ordered_nearest_shared(
-                    |envelope| pruner.envelope_lower_bound(envelope),
-                    |idx| {
-                        let data = rows.prepared(idx);
-                        pair_distance_geodesic(
-                            resolved,
-                            &data,
-                            &rows.frame_cache(idx),
-                            query,
-                            &query_cache_owner,
-                        )
-                        .map_err(Into::into)
-                    },
+                    &bound,
+                    exact,
                     OneNearest::default(),
                     max_distance,
                     exclude,
@@ -420,18 +414,8 @@ impl PySpatialIndex {
                 );
             }
             return self.bound_ordered_nearest(
-                |envelope| pruner.envelope_lower_bound(envelope),
-                |idx| {
-                    let data = rows.prepared(idx);
-                    pair_distance_geodesic(
-                        resolved,
-                        &data,
-                        &rows.frame_cache(idx),
-                        query,
-                        &query_cache_owner,
-                    )
-                    .map_err(Into::into)
-                },
+                &bound,
+                exact,
                 k,
                 max_distance,
                 exclude,
