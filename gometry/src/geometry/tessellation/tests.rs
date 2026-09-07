@@ -38,7 +38,6 @@ use crate::geometry::tessellation::earcut::{
     EarArena, ZScale, cleaned_earcut_ring, open_ring, validate_earcut_ring,
     validate_hole_interactions,
 };
-use crate::geometry::tessellation::sampling::triangle_corners;
 use crate::geometry::{
     CdtRefinement, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
     GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq, MOrdinate, MultiMember, MultiPolygon, Point,
@@ -670,6 +669,14 @@ fn mixed_zero_horizontal_collinear_orders_by_x() {
         raw(1.0, 0.0),
     ];
     assert_eq!(super::delaunay::exact_hull_cycle(&points), vec![1, 2, 3, 0]);
+}
+
+fn triangle_corners(triangle: &Shape) -> Option<[Point; 3]> {
+    let Shape::Polygon(polygon) = triangle else {
+        return None;
+    };
+    let shell = polygon.shell.coords();
+    (shell.coord_count() >= 3).then(|| [shell.nth_coord(0), shell.nth_coord(1), shell.nth_coord(2)])
 }
 
 fn polygon_vertices(polygon: &Polygon) -> Vec<Point> {

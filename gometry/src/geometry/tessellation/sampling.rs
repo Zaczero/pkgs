@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::geometry::tessellation::earcut_polygon_with;
-use crate::geometry::{Coordinates as _, Point, Shape};
+use crate::geometry::{Point, Shape};
 use crate::{try_push_vec, try_reserve_vec};
 
 /// A common power-of-two factor that keeps weight products finite for
@@ -70,16 +70,6 @@ pub(crate) fn collect_sample_triangles(shape: &Shape, out: &mut Vec<[Point; 3]>)
         _ => {},
     }
     Ok(())
-}
-
-/// The three corner points of a triangle `Shape::Polygon` produced by the
-/// triangulators (shell of four coordinates, closure last).
-pub(crate) fn triangle_corners(triangle: &Shape) -> Option<[Point; 3]> {
-    let Shape::Polygon(polygon) = triangle else {
-        return None;
-    };
-    let shell = polygon.shell.coords();
-    (shell.coord_count() >= 3).then(|| [shell.nth_coord(0), shell.nth_coord(1), shell.nth_coord(2)])
 }
 
 /// The splitmix64 step — the whole RNG behind `sample_points`: tiny,
