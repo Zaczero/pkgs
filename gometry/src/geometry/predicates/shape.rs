@@ -1,9 +1,9 @@
-use crate::geometry::relate;
 use crate::error::Result;
 use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
 use crate::geometry::{
-    Coordinates as _, GeometryErrorKind, Point, Shape, graph_relate_shapes, point_equals_exact,
-    point_on_segment, points_equal_exact, relate_pattern, same_point,
+    CompiledPattern, Coordinates as _, FrameDependentCaches, GeometryErrorKind, Point,
+    PreparedPlan, Shape, TopologyDomain, graph_relate_shapes, point_equals_exact, point_on_segment,
+    points_equal_exact, same_point,
 };
 
 impl Shape {
@@ -172,9 +172,21 @@ impl Shape {
 
 impl Shape {
     pub fn relate_pattern(&self, other: &Self, pattern: &str) -> Result<bool> {
-        let compiled = relate_pattern::CompiledPattern::new(pattern)
-            .ok_or_else(|| Self::invalid_de9im_pattern(pattern))?;
-        Ok(compiled.matches(relate::graph_relate_shapes(self, other)))
+        let compiled =
+            CompiledPattern::new(pattern).ok_or_else(|| Self::invalid_de9im_pattern(pattern))?;
+        let left = PreparedPlan::transient(self);
+        let right = PreparedPlan::transient(other);
+        let cache = FrameDependentCaches::default();
+        let pair = crate::predicates::engine::PreparedTopologyPair::for_domain(
+            &left,
+            &cache,
+            &right,
+            &cache,
+            TopologyDomain::Cartesian,
+        );
+        Ok(crate::predicates::engine::topology_scalar_pattern(
+            compiled, &pair,
+        ))
     }
 
     fn invalid_de9im_pattern(pattern: &str) -> crate::error::Error {

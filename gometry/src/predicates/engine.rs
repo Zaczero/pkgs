@@ -10,7 +10,7 @@
 use std::cell::OnceCell;
 
 use crate::geometry::{
-    Bounds, GeographicPrepared, PreparedPlan, TopologyDomain, graph_relate_data,
+    Bounds, CompiledPattern, GeographicPrepared, PreparedPlan, TopologyDomain, graph_relate_data,
     line_scalar_prefers_direct_polygon_relate,
 };
 
@@ -377,7 +377,10 @@ impl PredicateSpec {
         }
     }
 
-    #[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     /// Every answer available before either operand is prepared.
     ///
     /// Ordered by what each stage has to touch: declared kinds refute without
@@ -404,7 +407,10 @@ impl PredicateSpec {
         self.rectangles_meet(left, left_bounds, right, right_bounds)
     }
 
-    #[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     /// Two axis-aligned rectangles whose bounds overlap share ground, because
     /// each covers its own bounding box exactly. Reaching here means the
     /// bounds gate already found the boxes meet, so no graph decides this.
@@ -567,7 +573,10 @@ pub(crate) fn scalar_vs_shapes<'a>(
                         .get_or_init(|| scalar_cache.geographic_topology_graph(scalar, frame))
                         .as_ref(),
                 };
-                Some(crate::geometry::graph_intersects_bounds(scalar_graph, bounds))
+                Some(crate::geometry::graph_intersects_bounds(
+                    scalar_graph,
+                    bounds,
+                ))
             })
         })
     };
@@ -663,7 +672,10 @@ fn row_kind_empty(row: ShapeRow<'_>) -> (GeometryKind, bool) {
     }
 }
 
-#[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn topology_scalar_pair(
     spec: &PredicateSpec,
     operands: PreparedTopologyPair<'_>,
@@ -682,10 +694,9 @@ pub(crate) fn topology_scalar_pair(
     // carries the scalar's graph (the scalar-vs-array lane) is admitted the
     // same way, and the graph stays for what they decline.
     if let Some((left, right)) = operands.cartesian_plans()
-        && let Some(verdict) =
-            crate::geometry::direct_linework_predicate(spec, left, right)
-                .or_else(|| crate::geometry::direct_areal_predicate(spec, left, right))
-                .or_else(|| crate::geometry::direct_areal_linework_predicate(spec, left, right))
+        && let Some(verdict) = crate::geometry::direct_linework_predicate(spec, left, right)
+            .or_else(|| crate::geometry::direct_areal_predicate(spec, left, right))
+            .or_else(|| crate::geometry::direct_areal_linework_predicate(spec, left, right))
     {
         return verdict;
     }
@@ -697,7 +708,10 @@ pub(crate) fn topology_scalar_pair(
 /// curve's boundary cells stay open, since whether a closed line has a
 /// boundary is a staging fact), then the direct engines answer the pattern
 /// three-valued, and only a pair they decline builds the matrix.
-pub(crate) fn topology_scalar_pattern(pattern: [u8; 9], operands: &PreparedTopologyPair<'_>) -> bool {
+pub(crate) fn topology_scalar_pattern(
+    pattern: CompiledPattern,
+    operands: &PreparedTopologyPair<'_>,
+) -> bool {
     if let Some((left, right)) = operands.gate_operands()
         && let Some(verdict) = pattern_bounds_gate(pattern, &left, &right)
     {
@@ -710,14 +724,18 @@ pub(crate) fn topology_scalar_pattern(pattern: [u8; 9], operands: &PreparedTopol
     {
         return verdict;
     }
-    operands.relate().matches_bytes(pattern)
+    operands.relate().matches(pattern)
 }
 
 /// What sound, disjoint bounds prove about a pattern: the four inner cells
 /// are empty and each operand lies wholly in the other's exterior. The
 /// interval leaves a curve's boundary cells open, so a pattern that reads
 /// them stays undecided here rather than guessed.
-fn pattern_bounds_gate(pattern: [u8; 9], left: &GateOperand<'_>, right: &GateOperand<'_>) -> Option<bool> {
+fn pattern_bounds_gate(
+    pattern: CompiledPattern,
+    left: &GateOperand<'_>,
+    right: &GateOperand<'_>,
+) -> Option<bool> {
     use crate::geometry::{De9imInterval, Dimension, Loc, OperandShape, dimension};
     if !left.bounds_sound || !right.bounds_sound {
         return None;
@@ -792,33 +810,100 @@ mod tests {
     #[test]
     fn disjoint_bounds_decide_a_pattern_only_where_they_prove_it() {
         use crate::geometry::TopologyDomain;
-        let gate = |left: &crate::geometry::Shape, right: &crate::geometry::Shape, pattern: &[u8; 9]| {
-            let (lp, rp) = (PreparedPlan::transient(left), PreparedPlan::transient(right));
-            let lo = GateOperand::new(ShapeRow::Shape(lp.shape()), lp.bounds(), TopologyDomain::Cartesian);
-            let ro = GateOperand::new(ShapeRow::Shape(rp.shape()), rp.bounds(), TopologyDomain::Cartesian);
-            super::pattern_bounds_gate(*pattern, &lo, &ro)
-        };
+        let gate =
+            |left: &crate::geometry::Shape, right: &crate::geometry::Shape, pattern: &str| {
+                let (lp, rp) = (
+                    PreparedPlan::transient(left),
+                    PreparedPlan::transient(right),
+                );
+                let lo = GateOperand::new(
+                    ShapeRow::Shape(lp.shape()),
+                    lp.bounds(),
+                    TopologyDomain::Cartesian,
+                );
+                let ro = GateOperand::new(
+                    ShapeRow::Shape(rp.shape()),
+                    rp.bounds(),
+                    TopologyDomain::Cartesian,
+                );
+                super::pattern_bounds_gate(
+                    crate::geometry::CompiledPattern::new(pattern).unwrap(),
+                    &lo,
+                    &ro,
+                )
+            };
         let (a, b) = (rectangle(0.0, 0.0, 1.0, 1.0), rectangle(3.0, 3.0, 4.0, 4.0));
-        assert_eq!(gate(&a, &b, b"FF2FF1212"), Some(true), "the full disjoint areal matrix");
-        assert_eq!(gate(&a, &b, b"T********"), Some(false));
+        assert_eq!(
+            gate(&a, &b, "FF2FF1212"),
+            Some(true),
+            "the full disjoint areal matrix"
+        );
+        assert_eq!(gate(&a, &b, "T********"), Some(false));
         let (l, m) = (line((0.0, 0.0), (1.0, 1.0)), line((5.0, 5.0), (6.0, 6.0)));
-        assert_eq!(gate(&l, &m, b"FF*FF****"), Some(true), "disjoint, wildcards on the open cells");
-        assert_eq!(gate(&l, &m, b"FF1FF*1*2"), Some(true), "consistent on every settled cell, wildcards on the open ones");
-        assert_eq!(gate(&l, &m, b"FF1FF0102"), None, "BE reads a boundary cell the bounds cannot settle");
-        assert_eq!(gate(&l, &m, b"FF1FF*102"), None, "EB likewise");
-        assert_eq!(gate(&a, &l, b"FF2FF11F2"), None, "the line's EB cell is open even against an areal operand");
+        assert_eq!(
+            gate(&l, &m, "FF*FF****"),
+            Some(true),
+            "disjoint, wildcards on the open cells"
+        );
+        assert_eq!(
+            gate(&l, &m, "FF1FF*1*2"),
+            Some(true),
+            "consistent on every settled cell, wildcards on the open ones"
+        );
+        assert_eq!(
+            gate(&l, &m, "FF1FF0102"),
+            None,
+            "BE reads a boundary cell the bounds cannot settle"
+        );
+        assert_eq!(gate(&l, &m, "FF1FF*102"), None, "EB likewise");
+        assert_eq!(
+            gate(&a, &l, "FF2FF11F2"),
+            None,
+            "the line's EB cell is open even against an areal operand"
+        );
         // Polygon against a line disjoint from it: the line's EB cell is the
         // one the bounds cannot settle, and every other cell is decided.
         {
-            let cells: [&[u8; 9]; 9] = [b"T********", b"*T*******", b"**2******", b"***T*****", b"****T****", b"*****1***", b"******1**", b"*******T*", b"********2"];
-            let open: Vec<usize> = cells.iter().enumerate().filter(|(_, c)| gate(&a, &m, c).is_none()).map(|(i, _)| i).collect();
+            let cells: [&str; 9] = [
+                "T********",
+                "*T*******",
+                "**2******",
+                "***T*****",
+                "****T****",
+                "*****1***",
+                "******1**",
+                "*******T*",
+                "********2",
+            ];
+            let open: Vec<usize> = cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| gate(&a, &m, c).is_none())
+                .map(|(i, _)| i)
+                .collect();
             assert_eq!(open, vec![7], "only EB may be open for polygon-vs-line");
         }
-        assert_eq!(gate(&a, &m, b"FF2FF11F2"), None, "the line's EB cell is open even against an areal operand");
-        assert_eq!(gate(&a, &m, b"FF2FF11*2"), Some(true), "and settled everywhere else");
-        assert_eq!(gate(&a, &l, b"FF2FF11*2"), None, "a line inside the square's box: bounds meet, the gate declines");
+        assert_eq!(
+            gate(&a, &m, "FF2FF11F2"),
+            None,
+            "the line's EB cell is open even against an areal operand"
+        );
+        assert_eq!(
+            gate(&a, &m, "FF2FF11*2"),
+            Some(true),
+            "and settled everywhere else"
+        );
+        assert_eq!(
+            gate(&a, &l, "FF2FF11*2"),
+            None,
+            "a line inside the square's box: bounds meet, the gate declines"
+        );
         let touching = rectangle(1.0, 0.0, 2.0, 1.0);
-        assert_eq!(gate(&a, &touching, b"FF2FF1212"), None, "bounds meet: the gate declines");
+        assert_eq!(
+            gate(&a, &touching, "FF2FF1212"),
+            None,
+            "bounds meet: the gate declines"
+        );
     }
 
     use super::*;
@@ -1217,5 +1302,30 @@ mod tests {
             &cache,
         );
         assert_eq!(actual, [true]);
+    }
+
+    #[test]
+    fn native_relate_pattern_shares_topology_scalar_pattern() {
+        let (a, b) = (rectangle(0.0, 0.0, 1.0, 1.0), rectangle(3.0, 3.0, 4.0, 4.0));
+        for (literal, expected) in [
+            (b'F', true),
+            (b'T', false),
+            (b'*', true),
+            (b'0', false),
+            (b'1', false),
+            (b'2', false),
+        ] {
+            let mut cells = *b"*********";
+            cells[0] = literal;
+            let pattern = std::str::from_utf8(&cells).unwrap();
+            assert_eq!(
+                a.relate_pattern(&b, pattern).unwrap(),
+                expected,
+                "literal {}",
+                literal as char
+            );
+        }
+        assert_eq!(a.relate_pattern(&b, "FF2FF1212").unwrap(), true);
+        assert!(a.relate_pattern(&b, "bad").is_err());
     }
 }

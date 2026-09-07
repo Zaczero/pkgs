@@ -7,11 +7,10 @@
 //! relate broadcasts and coordinate-input broadcasts. The generic value cores
 //! live in the parent `broadcast`.
 
-use crate::array::PackedStorage;
 use pyo3::IntoPyObject as _;
 use pyo3::types::PyAny;
 
-use crate::array::{ArrayRow, ValidityMask};
+use crate::array::{ArrayRow, PackedStorage, ValidityMask};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     Bound, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput, GeometryArrayStorage,
@@ -207,7 +206,9 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
     // Packed point arrays are already a uniform-axis column — clone it directly
     // rather than gathering every row and repacking through
     // `CoordSeq::from_points`.
-    if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = splitters.storage() {
+    if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
+        splitters.storage()
+    {
         if splitters.is_compact_nullable() {
             let points = splitters
                 .row_operation()
@@ -270,7 +271,10 @@ pub(crate) fn ensure_same_len(left: usize, right: usize) -> PyResult<()> {
     }
 }
 
-#[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 fn relate_plan_pair(operands: PreparedTopologyPair<'_>) -> String {
     operands.relate().text()
 }
@@ -463,12 +467,10 @@ pub(crate) fn relate_pattern_broadcast(
     pattern: &str,
 ) -> PyResult<Py<PyAny>> {
     with_prepared_operands(py, left, right, |left, right| {
-        let pattern_owned = pattern.to_owned();
-        let compiled = crate::geometry::CompiledPattern::new(&pattern_owned)
+        let compiled = crate::geometry::CompiledPattern::new(pattern)
             .ok_or_else(|| invalid_de9im_pattern_err(pattern))?;
-        let bytes = compiled.bytes();
         topology_broadcast(py, left, right, "relate_pattern", move |operands| {
-            crate::predicates::engine::topology_scalar_pattern(bytes, &operands)
+            crate::predicates::engine::topology_scalar_pattern(compiled, &operands)
         })
     })
 }
@@ -614,9 +616,7 @@ fn xy_array_values(
     spec: PredicateSpec,
     domain: TopologyDomain,
 ) -> Result<Vec<bool>, (usize, crate::error::Error)> {
-    
-    x
-        .into_iter()
+    x.into_iter()
         .zip(y)
         .map(|(x, y)| Point::new_raw_xy(x, y))
         .map(|point| {

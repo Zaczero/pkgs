@@ -1,4 +1,4 @@
-use crate::geometry::Dimension;
+use crate::geometry::{CompiledPattern, Dimension};
 
 /// (`II IB IE / BI BB BE / EI EB EE`, `A` rows × `B` columns).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -56,41 +56,20 @@ impl De9im {
         String::from_utf8_lossy(&self.0).into_owned()
     }
 
-    /// OGC pattern match: `T` = non-empty, `F` = empty, digits exact,
-    /// `*` = anything. `None` for a malformed pattern (caller raises the
-    /// canonical error).
-    /// [`matches`](Self::matches) for a pattern already validated to nine
-    /// literals, as the engines carry it.
-    pub(crate) fn matches_bytes(self, pattern: [u8; 9]) -> bool {
-        self.matches(std::str::from_utf8(&pattern).expect("a validated pattern is ASCII"))
-            .expect("a validated pattern has nine literals")
-    }
-
-    /// The pattern that asks of the transposed pair what `pattern` asks of
-    /// this one: rows and columns swapped.
-    pub(crate) const fn transpose_pattern(pattern: [u8; 9]) -> [u8; 9] {
-        [
-            pattern[0], pattern[3], pattern[6],
-            pattern[1], pattern[4], pattern[7],
-            pattern[2], pattern[5], pattern[8],
-        ]
-    }
-
-    pub(crate) fn matches(self, pattern: &str) -> Option<bool> {
-        if pattern.len() != 9 {
-            return None;
-        }
+    /// OGC pattern match on an ingress-validated pattern: `T` = non-empty,
+    /// `F` = empty, digits exact, `*` = anything.
+    pub(crate) fn matches(self, pattern: CompiledPattern) -> bool {
         let mut verdict = true;
-        for (&entry, expected) in self.0.iter().zip(pattern.bytes()) {
+        for (&entry, expected) in self.0.iter().zip(pattern.cells()) {
             verdict &= match expected {
                 b'T' => entry != b'F',
                 b'F' => entry == b'F',
                 b'0' | b'1' | b'2' => entry == expected,
                 b'*' => true,
-                _ => return None,
+                _ => unreachable!("compiled DE-9IM pattern is validated"),
             };
         }
-        Some(verdict)
+        verdict
     }
 
     pub(crate) const fn is_touches(self) -> bool {

@@ -329,6 +329,33 @@ def test_de9im_predicates_are_exposed_for_scalar_array_index_and_join() -> None:
     assert gm.relate_pattern(left, right, 'T*T***T**')
     with pytest.raises(gm.GeometryError, match='invalid DE-9IM pattern'):
         gm.relate_pattern(left, right, 'bad')
+    disjoint_a = gm.box(0, 0, 1, 1)
+    disjoint_b = gm.box(3, 3, 4, 4)
+    for literal, expected in (
+        ('F', True),
+        ('T', False),
+        ('*', True),
+        ('0', False),
+        ('1', False),
+        ('2', False),
+    ):
+        assert gm.relate_pattern(disjoint_a, disjoint_b, f'{literal}********') is expected
+    assert gm.relate_pattern(disjoint_a, disjoint_b, 'FF2FF1212')
+    with pytest.raises(gm.GeometryError, match='invalid DE-9IM pattern'):
+        gm.relate_pattern(disjoint_a, disjoint_b, 'T*******')
+    with pytest.raises(gm.GeometryError, match='invalid DE-9IM pattern'):
+        gm.relate_pattern(disjoint_a, disjoint_b, 'T*******X')
+    with pytest.raises(gm.GeometryError, match='invalid DE-9IM pattern'):
+        gm.relate_pattern(disjoint_a, disjoint_b, 'T******ä')
+    with pytest.raises(gm.GeometryError, match='invalid DE-9IM pattern'):
+        gm.relate_pattern(
+            gm.box(0, 0, 1, 1, crs=4326),
+            gm.box(3, 3, 4, 4, crs=3857),
+            'bad',
+        )
+    missing = gm.GeometryArray([gm.box(0, 0, 1, 1), None])
+    with pytest.raises(gm.GeometryError, match='invalid DE-9IM pattern'):
+        gm.relate_pattern(gm.box(0, 0, 1, 1), missing, 'bad')
     assert ids(
         gm.SpatialIndex([vertical, right, separate]).query(
             horizontal, predicate='crosses'
