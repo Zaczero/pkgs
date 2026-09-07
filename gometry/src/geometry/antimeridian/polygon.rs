@@ -184,7 +184,7 @@ fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
     canonical
 }
 
-fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
+pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
     let frame = view.frame();
     let canonical = source_longitudes_are_canonical(view);
     if frame == GeographicFrame::crs84()

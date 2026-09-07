@@ -54,7 +54,7 @@ pub(crate) use types::{
 mod antimeridian;
 pub(crate) use antimeridian::{
     DerivedPointStrategy, crosses_antimeridian_coords_in_frame, crosses_antimeridian_in_frame,
-    geographic_crossing, geographic_crossing_bounds,
+    geographic_crossing, geographic_crossing_bounds, split_geographic_view,
     geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
     is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
     self_intersections_in_frame, topology_domain, unary_antimeridian_derived,

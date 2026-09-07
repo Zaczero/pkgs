@@ -5,7 +5,8 @@ use std::ops::ControlFlow;
 
 use ahash::HashSetExt as _;
 
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
+use crate::geographic::GeographicInputs;
 use crate::geometry::overlay::{
     OverlayOp, Strictness, build_overlay_shape, build_overlay_shape_from_chains, dedup_points,
     merge_chain_edges, overlay_declared_axes,
@@ -59,7 +60,7 @@ pub(super) fn overlay_all_line_oracle(
         sources.sort_unstable_by(crate::geometry::compare_shapes);
     }
     let refs = sources.iter().collect::<Vec<_>>();
-    let shape = assemble_overlay(&refs, TopologyDomain::Cartesian, op, false)?;
+    let shape = assemble_overlay(&refs, None, TopologyDomain::Cartesian, op, false)?;
     let shape = if shape.is_empty() {
         empty_nary_overlay_shape(&refs, op)
     } else {
@@ -89,6 +90,7 @@ pub(super) fn binary_intersection_joint_graph(
     let refs: Vec<&Shape> = sources.iter().collect();
     let shape = assemble_joint_graph_overlay(
         &refs,
+        None,
         TopologyDomain::Cartesian,
         OverlayOp::Intersection,
         false,
@@ -120,7 +122,17 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         .into());
     }
 
-    let bounds_facts = overlay_bounds_facts(geometries, domain, op)?;
+    let originals = match domain {
+        TopologyDomain::Cartesian => None,
+        TopologyDomain::Geographic(frame) => Some(
+            GeographicInputs::try_from_shapes(
+                frame,
+                geometries.iter().map(std::borrow::Borrow::borrow),
+            )
+            .map_err(overlay_view_error)?,
+        ),
+    };
+    let bounds_facts = overlay_bounds_facts(geometries, domain, op, originals.as_ref())?;
 
     if bounds_certificates
         && geometries.len() > 1
@@ -145,21 +157,28 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         return Ok(shape);
     }
 
-    let mut sources: Vec<Shape> = geometries
-        .iter()
-        .map(|geometry| {
-            let shape = geometry.borrow();
-            if let TopologyDomain::Geographic(frame) = domain
-                && crate::geometry::crosses_antimeridian_in_frame(shape, frame)
-            {
-                let normalized = shape.split_antimeridian_in_frame(frame)?.normalize()?;
-                Ok(normalized)
-            } else {
-                let normalized = shape.normalize()?;
-                Ok(normalized)
+    let mut sources: Vec<Shape> = match (domain, originals.as_ref()) {
+        (TopologyDomain::Geographic(frame), Some(originals)) => {
+            let mut sources = Vec::new();
+            sources
+                .try_reserve_exact(originals.views().len())
+                .map_err(|_| ResourceError::Allocation)?;
+            for view in originals.views() {
+                let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame)
+                {
+                    crate::geometry::split_geographic_view(*view)?.normalize()?
+                } else {
+                    view.shape().normalize()?
+                };
+                sources.push(shape);
             }
-        })
-        .collect::<Result<_>>()?;
+            sources
+        },
+        _ => geometries
+            .iter()
+            .map(|geometry| geometry.borrow().normalize())
+            .collect::<Result<_>>()?,
+    };
 
     // The left operand remains first for the only non-commutative operation.
     // Every other operation gets a canonical source order before graph
@@ -173,6 +192,13 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     }
 
     let refs: Vec<&Shape> = sources.iter().collect();
+    let noded = match domain {
+        TopologyDomain::Cartesian => None,
+        TopologyDomain::Geographic(frame) => Some(
+            GeographicInputs::try_from_shapes(frame, refs.iter().copied())
+                .map_err(overlay_view_error)?,
+        ),
+    };
     let input_crosses = match domain {
         TopologyDomain::Cartesian => false,
         TopologyDomain::Geographic(frame) => {
@@ -234,6 +260,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         (
             assemble_components_overlay(
                 &refs,
+                noded.as_ref(),
                 &components,
                 domain,
                 op,
@@ -254,7 +281,13 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         );
     } else {
         (
-            assemble_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?,
+            assemble_overlay(
+                &refs,
+                noded.as_ref(),
+                domain,
+                op,
+                bounds_facts.raw_polygon_loops_eligible,
+            )?,
             None,
         )
     };
@@ -652,6 +685,7 @@ fn overlay_bounds_facts<S: Borrow<Shape>>(
     inputs: &[S],
     domain: TopologyDomain,
     op: OverlayOp,
+    originals: Option<&GeographicInputs<'_>>,
 ) -> Result<OverlayBoundsFacts> {
     let bounds = inputs
         .iter()
@@ -659,16 +693,22 @@ fn overlay_bounds_facts<S: Borrow<Shape>>(
         .collect::<Vec<_>>();
     let raw_coordinate_bounds_sound = match domain {
         TopologyDomain::Cartesian => true,
-        TopologyDomain::Geographic(frame) => {
-            let mut all_sound = true;
-            for (input, bounds) in inputs.iter().zip(&bounds) {
-                let view = crate::geographic::ScalarGeographicView::try_new(frame, input.borrow())
-                    .map_err(overlay_view_error)?;
-                all_sound &= bounds.is_some_and(|bounds| {
-                    crate::geometry::admitted_bounds_are_sound(view, bounds)
-                });
-            }
-            all_sound
+        TopologyDomain::Geographic(_) => {
+            let Some(originals) = originals else {
+                return Err(GeometryErrorKind::message(
+                    "geographic overlay requires original admission",
+                )
+                .into());
+            };
+            originals
+                .views()
+                .iter()
+                .zip(&bounds)
+                .all(|(view, bounds)| {
+                    bounds.is_some_and(|bounds| {
+                        crate::geometry::admitted_bounds_are_sound(*view, bounds)
+                    })
+                })
         },
     };
     let raw_polygon_loops_eligible = op == OverlayOp::Union
@@ -773,6 +813,7 @@ fn intersection_bounds_empty(bounds: &[Option<Bounds>]) -> bool {
 
 fn assemble_overlay(
     inputs: &[&Shape],
+    noded: Option<&GeographicInputs<'_>>,
     domain: TopologyDomain,
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
@@ -833,40 +874,42 @@ fn assemble_overlay(
             return build_overlay_shape(Vec::new(), &[], &polygons);
         }
     }
-    assemble_joint_graph_overlay(inputs, domain, op, raw_polygon_loops_eligible)
+    assemble_joint_graph_overlay(inputs, noded, domain, op, raw_polygon_loops_eligible)
 }
 
 /// Mixed-dimensional overlay from joint noding and per-operand membership.
 fn assemble_joint_graph_overlay(
     inputs: &[&Shape],
+    noded: Option<&GeographicInputs<'_>>,
     domain: TopologyDomain,
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
 ) -> Result<Shape> {
     let graph = match domain {
         TopologyDomain::Cartesian => TopologyGraph::cartesian_many(inputs),
-        TopologyDomain::Geographic(frame) => {
-            let views = inputs
-                .iter()
-                .map(|shape| {
-                    crate::geographic::ScalarGeographicView::try_new(frame, shape)
-                        .map_err(overlay_view_error)
-                })
-                .collect::<Result<Vec<_>>>()?;
-            TopologyGraph::geographic_many(&views, frame)
+        TopologyDomain::Geographic(_) => {
+            let noded = noded.ok_or_else(|| {
+                GeometryErrorKind::message("geographic overlay requires noded admission")
+            })?;
+            TopologyGraph::geographic_many(noded)
         },
     };
-    let source_graphs: Vec<TopologyGraph> = inputs
-        .iter()
-        .map(|shape| match domain {
-            TopologyDomain::Cartesian => Ok(TopologyGraph::cartesian(shape)),
-            TopologyDomain::Geographic(frame) => {
-                let view = crate::geographic::ScalarGeographicView::try_new(frame, shape)
-                    .map_err(overlay_view_error)?;
-                Ok(TopologyGraph::geographic(view))
-            },
-        })
-        .collect::<Result<_>>()?;
+    let source_graphs: Vec<TopologyGraph> = match domain {
+        TopologyDomain::Cartesian => inputs
+            .iter()
+            .map(|shape| TopologyGraph::cartesian(shape))
+            .collect(),
+        TopologyDomain::Geographic(_) => {
+            let noded = noded.ok_or_else(|| {
+                GeometryErrorKind::message("geographic overlay requires noded admission")
+            })?;
+            noded
+                .views()
+                .iter()
+                .map(|view| TopologyGraph::geographic(*view))
+                .collect()
+        },
+    };
     let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible);
     // Overlay edges and candidate points are numerous for high-resolution
     // boundaries; prepare the retained polygons once instead of rescanning
@@ -889,6 +932,7 @@ fn assemble_joint_graph_overlay(
 /// component: everything that never met it cannot subtract from it.
 fn assemble_components_overlay(
     inputs: &[&Shape],
+    noded: Option<&GeographicInputs<'_>>,
     components: &[Vec<usize>],
     domain: TopologyDomain,
     op: OverlayOp,
@@ -901,8 +945,26 @@ fn assemble_components_overlay(
         if op == OverlayOp::Difference && !component.contains(&0) {
             continue;
         }
-        let subset: Vec<&Shape> = component.iter().map(|&index| inputs[index]).collect();
-        let shape = assemble_overlay(&subset, domain, op, raw_polygon_loops_eligible)?;
+        let mut subset = Vec::new();
+        subset
+            .try_reserve_exact(component.len())
+            .map_err(|_| ResourceError::Allocation)?;
+        subset.extend(component.iter().map(|&index| inputs[index]));
+        let subset_noded = match noded {
+            None => None,
+            Some(noded) => Some(GeographicInputs::try_from_views(
+                noded.frame(),
+                component.iter().map(|&index| noded.views()[index]),
+            )
+            .map_err(overlay_view_error)?),
+        };
+        let shape = assemble_overlay(
+            &subset,
+            subset_noded.as_ref(),
+            domain,
+            op,
+            raw_polygon_loops_eligible,
+        )?;
         append_overlay_parts(shape, &mut points, &mut lines, &mut polygons);
     }
     build_overlay_shape(points, &lines, &polygons)

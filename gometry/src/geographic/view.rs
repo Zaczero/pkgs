@@ -356,6 +356,49 @@ impl<'a> ScalarGeographicView<'a> {
     }
 }
 
+/// Admitted views of one geographic frame. Topology graphs consume this
+/// batch; overlay maps [`GeographicViewError`] at the call that builds it.
+pub(crate) struct GeographicInputs<'a> {
+    frame: GeographicFrame,
+    views: Vec<ScalarGeographicView<'a>>,
+}
+
+impl<'a> GeographicInputs<'a> {
+    pub(crate) fn try_from_shapes(
+        frame: GeographicFrame,
+        shapes: impl ExactSizeIterator<Item = &'a Shape>,
+    ) -> Result<Self, GeographicViewError> {
+        let mut views = Vec::new();
+        views
+            .try_reserve_exact(shapes.len())
+            .map_err(|_| GeographicViewError::Resource)?;
+        for shape in shapes {
+            views.push(ScalarGeographicView::try_new(frame, shape)?);
+        }
+        Ok(Self { frame, views })
+    }
+
+    pub(crate) fn try_from_views(
+        frame: GeographicFrame,
+        source: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
+    ) -> Result<Self, GeographicViewError> {
+        let mut views = Vec::new();
+        views
+            .try_reserve_exact(source.len())
+            .map_err(|_| GeographicViewError::Resource)?;
+        views.extend(source);
+        Ok(Self { frame, views })
+    }
+
+    pub(crate) const fn frame(&self) -> GeographicFrame {
+        self.frame
+    }
+
+    pub(crate) fn views(&self) -> &[ScalarGeographicView<'a>] {
+        &self.views
+    }
+}
+
 fn admitted_coordinate(frame: GeographicFrame, point: Point) -> GeographicCoordinate {
     GeographicCoordinate {
         native: point,

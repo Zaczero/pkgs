@@ -11,7 +11,7 @@ pub(crate) use value::{
     SeamIdentity, TurnDirection,
 };
 pub(crate) use view::{
-    GeographicDiagnostic, GeographicRing, GeographicViewError, RingDomain, RingSummary,
+    GeographicDiagnostic, GeographicInputs, GeographicRing, GeographicViewError, RingDomain, RingSummary,
     ScalarGeographicView,
 };
 

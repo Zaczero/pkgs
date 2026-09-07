@@ -241,23 +241,15 @@ impl TopologyGraph {
         for (source_row, shape) in shapes.iter().enumerate() {
             builder.collect(shape, source_row as u32);
         }
-        builder.finish_many(shapes)
+        builder.finish_many(shapes.iter().copied())
     }
 
-    pub(crate) fn geographic_many(
-        views: &[crate::geographic::ScalarGeographicView<'_>],
-        frame: crate::geographic::GeographicFrame,
-    ) -> Self {
-        debug_assert!(
-            views.iter().all(|view| view.frame() == frame),
-            "geographic_many takes the domain frame as authority; every view must match it"
-        );
-        let mut builder = GraphBuilder::new_many(TopologyDomain::Geographic(frame));
-        for (source_row, view) in views.iter().enumerate() {
+    pub(crate) fn geographic_many(inputs: &crate::geographic::GeographicInputs<'_>) -> Self {
+        let mut builder = GraphBuilder::new_many(TopologyDomain::Geographic(inputs.frame()));
+        for (source_row, view) in inputs.views().iter().enumerate() {
             builder.collect(view.shape(), source_row as u32);
         }
-        let shapes: Vec<&Shape> = views.iter().map(|view| view.shape()).collect();
-        builder.finish_many(&shapes)
+        builder.finish_many(inputs.views().iter().map(|view| view.shape()))
     }
 
     pub(crate) fn cartesian(shape: &Shape) -> Self {
@@ -1512,15 +1504,18 @@ impl GraphBuilder {
         )
     }
 
-    fn finish_many(self, shapes: &[&Shape]) -> TopologyGraph {
-        let effective_dimension = shapes.iter().filter_map(|shape| dimension(shape)).max();
-        self.finish_dimensions(
-            effective_dimension,
-            true,
-            shapes
-                .iter()
-                .any(|shape| shape_has_polygonal_members(shape)),
-        )
+    fn finish_many<'s>(self, shapes: impl IntoIterator<Item = &'s Shape>) -> TopologyGraph {
+        let mut effective_dimension = None;
+        let mut has_polygonal_members = false;
+        for shape in shapes {
+            effective_dimension = match (effective_dimension, dimension(shape)) {
+                (current, None) => current,
+                (None, next) => next,
+                (Some(current), Some(next)) => Some(current.max(next)),
+            };
+            has_polygonal_members |= shape_has_polygonal_members(shape);
+        }
+        self.finish_dimensions(effective_dimension, true, has_polygonal_members)
     }
 
     fn finish_dimensions(
