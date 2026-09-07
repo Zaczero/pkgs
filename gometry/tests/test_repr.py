@@ -114,6 +114,48 @@ def test_polygon_uses_evenodd_path():
     assert 'fill-rule="evenodd"' in svg
 
 
+def test_holed_polygon_and_multipolygon_keep_hole_subpaths():
+    polygon = gm.Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+        holes=[[(2, 2), (4, 2), (4, 4), (2, 4), (2, 2)]],
+    )
+    multipolygon = gm.MultiPolygon([
+        gm.Polygon(
+            [(20, 20), (30, 20), (30, 30), (20, 30), (20, 20)],
+            holes=[[(22, 22), (24, 22), (24, 24), (22, 24), (22, 22)]],
+        ),
+        gm.Polygon(
+            [(40, 40), (50, 40), (50, 50), (40, 50), (40, 40)],
+            holes=[[(42, 42), (44, 42), (44, 44), (42, 44), (42, 42)]],
+        ),
+    ])
+
+    def path_attributes(svg: str) -> list[dict[str, str]]:
+        path_elements = re.findall(r'<path\b[^>]*/>', svg)
+        return [
+            dict(re.findall(r'([A-Za-z_:][-A-Za-z0-9_.:]*)="([^"]*)"', element))
+            for element in path_elements
+        ]
+
+    polygon_paths = path_attributes(polygon._repr_svg_())
+    multipolygon_paths = path_attributes(multipolygon._repr_svg_())
+
+    assert len(polygon_paths) == 1
+    assert len(multipolygon_paths) == 2
+    assert all(
+        path['fill-rule'] == 'evenodd' for path in polygon_paths + multipolygon_paths
+    )
+    assert all(
+        path['d'].count('M') == 2 and path['d'].count('Z') == 2
+        for path in polygon_paths
+    )
+    assert all(
+        path['d'].count('M') == 2 and path['d'].count('Z') == 2
+        for path in multipolygon_paths
+    )
+    assert len({path['d'] for path in multipolygon_paths}) == 2
+
+
 def test_empty_geometry_does_not_raise():
     svg = gm.from_wkt('GEOMETRYCOLLECTION EMPTY')._repr_svg_()
     assert svg.startswith('<svg')

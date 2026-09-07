@@ -6,7 +6,7 @@
 //! string; no `PyO3`. The Y axis is flipped so geographic north points up.
 
 use crate::error::{ResourceError, Result};
-use crate::geometry::{Bounds, CoordSeq, Coordinates, Point, Shape};
+use crate::geometry::{Bounds, CoordSeq, Coordinates, Point, Polygon, Shape};
 
 struct TryString(String);
 
@@ -257,6 +257,23 @@ fn svg_elements_local(
             "<path d=\"{path}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{sw:.6}\"/>"
         ))
     };
+    let polygon_path = |out: &mut TryString, polygon: &Polygon| -> Result<()> {
+        let mut d = TryString::new();
+        d.write_fmt(format_args!(
+            "{}",
+            svg_path_points_local(&polygon.shell, true, minx, miny, scale)?
+        ))?;
+        for hole in polygon.holes.iter() {
+            d.write_fmt(format_args!(
+                " {}",
+                svg_path_points_local(hole, true, minx, miny, scale)?
+            ))?;
+        }
+        let d = d.finish();
+        out.write_fmt(format_args!(
+            "<path fill-rule=\"evenodd\" d=\"{d}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw:.6}\"/>"
+        ))
+    };
     match shape {
         Shape::Point(p) => circle(&mut out, p)?,
         Shape::MultiPoint(points) => {
@@ -270,40 +287,10 @@ fn svg_elements_local(
                 polyline(&mut out, line)?;
             }
         },
-        Shape::Polygon(polygon) => {
-            let mut d = TryString::new();
-            d.write_fmt(format_args!(
-                "{}",
-                svg_path_points_local(&polygon.shell, true, minx, miny, scale)?
-            ))?;
-            for hole in polygon.holes.iter() {
-                d.write_fmt(format_args!(
-                    " {}",
-                    svg_path_points_local(hole, true, minx, miny, scale)?
-                ))?;
-            }
-            let d = d.finish();
-            out.write_fmt(format_args!(
-                "<path fill-rule=\"evenodd\" d=\"{d}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw:.6}\"/>"
-            ))?;
-        },
+        Shape::Polygon(polygon) => polygon_path(&mut out, polygon)?,
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
-                let mut d = TryString::new();
-                d.write_fmt(format_args!(
-                    "{}",
-                    svg_path_points_local(&polygon.shell, true, minx, miny, scale)?
-                ))?;
-                for hole in polygon.holes.iter() {
-                    d.write_fmt(format_args!(
-                        " {}",
-                        svg_path_points_local(hole, true, minx, miny, scale)?
-                    ))?;
-                }
-                let d = d.finish();
-                out.write_fmt(format_args!(
-                    "<path fill-rule=\"evenodd\" d=\"{d}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw:.6}\"/>"
-                ))?;
+                polygon_path(&mut out, polygon)?;
             }
         },
         Shape::GeometryCollection(geometries) => {
