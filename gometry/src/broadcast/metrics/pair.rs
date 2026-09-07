@@ -2,10 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
 use pyo3::types::PyAny;
 
 use crate::NonNegative;
+use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
 use crate::broadcast::metrics::{
     Bound, CoordinateAxes, Crs, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryInput,
     GeometryKind, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData, classify_input,
@@ -258,10 +258,6 @@ pub(crate) enum LonLatPointsError {
     Row(usize, crate::error::Error),
 }
 
-fn lonlat_setup<T>(result: crate::error::Result<T>) -> Result<T, LonLatPointsError> {
-    result.map_err(LonLatPointsError::Setup)
-}
-
 fn lonlat_domain(row: usize, x: f64, y: f64) -> Result<(), LonLatPointsError> {
     crate::boundary::geographic::validate_lonlat_xy(x, y)
         .map_err(|error| LonLatPointsError::Row(row, error))
@@ -275,12 +271,15 @@ fn transform_present(
 ) -> Result<(), LonLatPointsError> {
     let mut px = Vec::new();
     let mut py = Vec::new();
-    lonlat_setup(crate::try_reserve_pair(&mut px, &mut py, present.len()))?;
+    crate::try_reserve_pair(&mut px, &mut py, present.len()).map_err(LonLatPointsError::Setup)?;
     for &row in present {
-        lonlat_setup(crate::try_push_pair(&mut px, &mut py, xs[row], ys[row]))?;
+        crate::try_push_pair(&mut px, &mut py, xs[row], ys[row])
+            .map_err(LonLatPointsError::Setup)?;
     }
-    let plan = lonlat_setup(crate::crs::TransformPlan::new(crs, "EPSG:4326"))?;
-    lonlat_setup(plan.transform_coordinates(&mut px, &mut py, crate::Zt::None))?;
+    let plan =
+        crate::crs::TransformPlan::new(crs, "EPSG:4326").map_err(LonLatPointsError::Setup)?;
+    plan.transform_coordinates(&mut px, &mut py, crate::Zt::None)
+        .map_err(LonLatPointsError::Setup)?;
     for (index, &row) in present.iter().enumerate() {
         lonlat_domain(row, px[index], py[index])?;
         xs[row] = px[index];
@@ -292,29 +291,29 @@ fn transform_present(
 fn compact_lonlat_points(
     array: &PyGeometryArray,
 ) -> Result<LonLatPointRows<'_>, LonLatPointsError> {
-    let projected_crs = array
-        .crs_str()
-        .filter(|crs| !crs::is_wgs84_lonlat(crs));
+    let projected_crs = array.crs_str().filter(|crs| !crs::is_wgs84_lonlat(crs));
     let mut xs = Vec::new();
     let mut ys = Vec::new();
     let mut present = Vec::new();
-    lonlat_setup(crate::try_reserve_pair(&mut xs, &mut ys, array.len()))?;
-    lonlat_setup(crate::try_reserve_vec(&mut present, array.len()))?;
+    crate::try_reserve_pair(&mut xs, &mut ys, array.len()).map_err(LonLatPointsError::Setup)?;
+    crate::try_reserve_vec(&mut present, array.len()).map_err(LonLatPointsError::Setup)?;
     for logical_row in array
         .row_operation()
         .rows_with_missing(|| (f64::NAN, f64::NAN))
     {
         match logical_row {
             ArrayRow::Missing { value, .. } => {
-                lonlat_setup(crate::try_push_pair(&mut xs, &mut ys, value.0, value.1))?;
+                crate::try_push_pair(&mut xs, &mut ys, value.0, value.1)
+                    .map_err(LonLatPointsError::Setup)?;
             },
             ArrayRow::Present(row) => {
                 let logical = row.logical();
                 let crate::array::ShapeRow::Point(point) = row.row() else {
                     unreachable!("compact point storage yields point rows")
                 };
-                lonlat_setup(crate::try_push_pair(&mut xs, &mut ys, point.x, point.y))?;
-                lonlat_setup(crate::try_push_vec(&mut present, logical))?;
+                crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)
+                    .map_err(LonLatPointsError::Setup)?;
+                crate::try_push_vec(&mut present, logical).map_err(LonLatPointsError::Setup)?;
             },
         }
     }
@@ -347,30 +346,31 @@ pub(crate) fn lonlat_points(
         .storage()
         .point_rows()
         .ok_or(LonLatPointsError::Type)?;
-    let projected_crs = array
-        .crs_str()
-        .filter(|crs| !crs::is_wgs84_lonlat(crs));
-    if projected_crs.is_none() || points.is_empty() {
-        for (row, point) in points.iter().enumerate() {
-            if array.is_row_missing(row) {
-                continue;
+    let projected_crs = array.crs_str().filter(|crs| !crs::is_wgs84_lonlat(crs));
+    let crs = match projected_crs {
+        Some(crs) if !points.is_empty() => crs,
+        _ => {
+            for (row, point) in points.iter().enumerate() {
+                if array.is_row_missing(row) {
+                    continue;
+                }
+                lonlat_domain(row, point.x, point.y)?;
             }
-            lonlat_domain(row, point.x, point.y)?;
-        }
-        return Ok(LonLatPointRows::Source(points));
-    }
-    let crs = projected_crs.expect("projected arm requires a CRS");
+            return Ok(LonLatPointRows::Source(points));
+        },
+    };
     let mut xs = Vec::new();
     let mut ys = Vec::new();
-    lonlat_setup(crate::try_reserve_pair(&mut xs, &mut ys, points.len()))?;
+    crate::try_reserve_pair(&mut xs, &mut ys, points.len()).map_err(LonLatPointsError::Setup)?;
     for point in points.iter() {
-        lonlat_setup(crate::try_push_pair(&mut xs, &mut ys, point.x, point.y))?;
+        crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)
+            .map_err(LonLatPointsError::Setup)?;
     }
     let mut present = Vec::new();
-    lonlat_setup(crate::try_reserve_vec(&mut present, points.len()))?;
+    crate::try_reserve_vec(&mut present, points.len()).map_err(LonLatPointsError::Setup)?;
     for row in 0..points.len() {
         if !array.is_row_missing(row) {
-            lonlat_setup(crate::try_push_vec(&mut present, row))?;
+            crate::try_push_vec(&mut present, row).map_err(LonLatPointsError::Setup)?;
         }
     }
     if !present.is_empty() {
@@ -455,11 +455,7 @@ fn contains_filled_area(shape: &Shape) -> bool {
     }
 }
 
-pub(crate) fn pair_distance_planar(
-    to_metre: f64,
-    a: &PreparedPlan,
-    b: &PreparedPlan,
-) -> f64 {
+pub(crate) fn pair_distance_planar(to_metre: f64, a: &PreparedPlan, b: &PreparedPlan) -> f64 {
     a.distance(b) * to_metre
 }
 
@@ -1133,15 +1129,24 @@ mod lonlat_points_tests {
 
     #[test]
     fn compact_projected_all_missing_skips_transform() {
+        // Same unavailable label Frame tests already store without a PROJ
+        // query. TransformPlan::new to EPSG:4326 fails; EPSG:3857 would
+        // succeed even on empty buffers, so Ok+len would not prove a skip.
+        let unavailable = "urn:example:unavailable";
         let present = packed_xy(
             Vec::new(),
             Vec::new(),
-            Frame::Crs(crs_arc_static("EPSG:3857")),
+            Frame::Crs(crs_arc_static(unavailable)),
         );
         let mask = ValidityMask::from_vec(2, vec![true, true]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask);
         assert!(array.is_compact_nullable());
-        let points = lonlat_points(&array).expect("all-missing compact skips TransformPlan");
+        assert!(
+            crate::crs::TransformPlan::new(unavailable, "EPSG:4326").is_err(),
+            "counterfactual: building the plan must fail"
+        );
+        let points =
+            lonlat_points(&array).expect("all-missing compact must not construct TransformPlan");
         assert!(matches!(points, LonLatPointRows::Columns { .. }));
         assert_eq!(points.len(), 2);
     }
