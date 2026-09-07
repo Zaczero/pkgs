@@ -12,10 +12,6 @@ use crate::crs::geodesic::{
 use crate::geographic::GeographicFrame;
 use crate::geometry::{Coordinates, GeodesicMetric as _, Point, Shape};
 
-/// Batch geodesic distances from packed lon/lat columns to one fixed
-/// point: CRS/domain validation and the geodesic cache resolve happen
-/// ONCE, then every pair runs the same point kernel the shape path uses
-/// (bit-identical to the per-row lane, minus its per-pair cache lookups).
 /// Element-wise geodesic distances between packed lon/lat columns (array ×
 /// array point pairs). Domain validation runs over both columns; the caller
 /// must resolve the geodesic once and pass it in (no per-pair CRS/cache work).
