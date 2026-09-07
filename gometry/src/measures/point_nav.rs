@@ -2240,56 +2240,26 @@ fn point_unary_geometry(
                     );
                 }
                 let missing = array.missing().cloned();
-                let Some(axes) =
+                if let Some(axes) =
                     uniform_point_axes_dispatch(&points, points.len(), missing.as_ref())
-                else {
-                    let output_frame = array.frame.clone();
-                    let frame = output_frame.clone();
-                    let shapes = py.detach(move || {
-                        array
-                            .row_operation()
-                            .rows_with_missing(|| Option::<Shape>::None)
-                            .map(|row| match row {
-                                crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                                crate::array::ArrayRow::Present(row) => {
-                                    let logical = row.logical();
-                                    row.row().with_shape(|shape| {
-                                        let geometry =
-                                            PyGeometry::with_frame(shape.clone(), frame.clone());
-                                        fallback(&geometry, logical)
-                                            .map(Some)
-                                            .map_err(|err| crate::note_array_row(err, logical))
-                                    })
-                                },
-                            })
-                            .collect::<PyResult<Vec<_>>>()
+                {
+                    let missing_for_rows = missing.clone();
+                    let coords = py.detach(move || {
+                        point_unary_geometry_coords_dispatch(
+                            point_op,
+                            &ctx,
+                            &points,
+                            points.len(),
+                            axes,
+                            missing_for_rows.as_ref(),
+                        )
                     })?;
-                    let present = PyGeometryArray::from_shapes(
-                        shapes.into_iter().flatten().collect(),
-                        output_frame,
-                    );
-                    return Ok(array
-                        .scatter_present_result(present)
+                    return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())
+                        .with_missing_mask(missing)
                         .into_pyobject(py)?
                         .unbind()
                         .into());
-                };
-                let missing_for_rows = missing.clone();
-                let coords = py.detach(move || {
-                    point_unary_geometry_coords_dispatch(
-                        point_op,
-                        &ctx,
-                        &points,
-                        points.len(),
-                        axes,
-                        missing_for_rows.as_ref(),
-                    )
-                })?;
-                return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())
-                    .with_missing_mask(missing)
-                    .into_pyobject(py)?
-                    .unbind()
-                    .into());
+                }
             }
             let output_frame = array.frame.clone();
             let frame = output_frame.clone();
