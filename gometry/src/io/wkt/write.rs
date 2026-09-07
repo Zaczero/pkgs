@@ -1,3 +1,4 @@
+use crate::geometry::GeometryErrorKind;
 use crate::io::wkt::{
     CoordinateAxes, Coordinates, GeometryKind, IoError, Point, Polygon, Result, Shape,
     extended_srid_code, require_serializable_axes,
@@ -139,7 +140,7 @@ fn format_wkt(
     let mut out = String::new();
     out.try_reserve(capacity)
         .map_err(|_| crate::error::ResourceError::Allocation)?;
-    write_wkt(&mut out, shape, output_dimension, format, usize::MAX);
+    write_wkt(&mut out, shape, output_dimension, format, usize::MAX)?;
     Ok(out)
 }
 
@@ -149,14 +150,13 @@ fn format_wkt(
 /// error messages) that truncate anyway — a huge geometry pays for ~`limit`
 /// bytes, not its whole WKT.
 pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
-    require_serializable_axes(shape)?;
     let capacity = limit
         .checked_add(4096)
         .ok_or_else(|| IoError::wkt("WKT preview length overflows usize"))?;
     let mut out = String::new();
     out.try_reserve(capacity)
         .map_err(|_| crate::error::ResourceError::Allocation)?;
-    write_wkt(&mut out, shape, None, WktNumberFormat::Shortest, limit);
+    write_wkt(&mut out, shape, None, WktNumberFormat::Shortest, limit)?;
     Ok(out)
 }
 
@@ -214,7 +214,7 @@ fn write_wkt(
     output_dimension: Option<WktDimension>,
     format: WktNumberFormat,
     limit: usize,
-) {
+) -> Result<()> {
     use std::fmt::Write as _;
     match shape {
         Shape::Point(point) => {
@@ -222,6 +222,7 @@ fn write_wkt(
             let _ = write!(out, "POINT{} (", axes.wkt_tag());
             write_wkt_point(out, *point, axes, format);
             out.push(')');
+            Ok(())
         },
         Shape::MultiPoint(points) => {
             let _ = write!(
@@ -252,12 +253,14 @@ fn write_wkt(
                 }
             }
             out.push(')');
+            Ok(())
         },
         Shape::LineString(points) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
             let _ = write!(out, "LINESTRING{} (", axes.wkt_tag());
             write_wkt_ring(out, points, axes, format, limit);
             out.push(')');
+            Ok(())
         },
         Shape::MultiLineString(lines) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
@@ -273,6 +276,7 @@ fn write_wkt(
                     crate::geometry::MultiMember::Empty => out.push_str("EMPTY"),
                     crate::geometry::MultiMember::Value(line_index) => {
                         let line = &lines.as_slice()[line_index];
+                        require_wkt_axes(line.axes(), axes)?;
                         out.push('(');
                         write_wkt_ring(out, line, axes, format, limit);
                         out.push(')');
@@ -280,12 +284,14 @@ fn write_wkt(
                 }
             }
             out.push(')');
+            Ok(())
         },
         Shape::Polygon(polygon) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
             let _ = write!(out, "POLYGON{} (", axes.wkt_tag());
-            write_wkt_polygon(out, polygon, axes, format, limit);
+            write_wkt_polygon(out, polygon, axes, format, limit)?;
             out.push(')');
+            Ok(())
         },
         Shape::MultiPolygon(polygons) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
@@ -307,12 +313,13 @@ fn write_wkt(
                             axes,
                             format,
                             limit,
-                        );
+                        )?;
                         out.push(')');
                     },
                 }
             }
             out.push(')');
+            Ok(())
         },
         Shape::GeometryCollection(geometries) => {
             out.push_str("GEOMETRYCOLLECTION (");
@@ -323,9 +330,10 @@ fn write_wkt(
                 if index > 0 {
                     out.push_str(", ");
                 }
-                write_wkt(out, geometry, output_dimension, format, limit);
+                write_wkt(out, geometry, output_dimension, format, limit)?;
             }
             out.push(')');
+            Ok(())
         },
         Shape::Empty(kind, axes) => {
             let keyword = match kind {
@@ -338,8 +346,20 @@ fn write_wkt(
                 GeometryKind::GeometryCollection => "GEOMETRYCOLLECTION",
             };
             write_wkt_empty(out, keyword, *axes, output_dimension);
+            Ok(())
         },
     }
+}
+
+fn require_wkt_axes(actual: CoordinateAxes, required: CoordinateAxes) -> Result<()> {
+    if (required.has_z() && !actual.has_z()) || (required.has_m() && !actual.has_m()) {
+        return Err(GeometryErrorKind::message(format!(
+            "WKT output requires {} axes, but this coordinate sequence carries {}",
+            required.as_str(),
+            actual.as_str(),
+        )));
+    }
+    Ok(())
 }
 
 /// `{KEYWORD}{ Z| M| ZM} EMPTY` — the dimensional tag survives emptiness,
@@ -393,21 +413,23 @@ fn write_wkt_polygon(
     axes: CoordinateAxes,
     format: WktNumberFormat,
     limit: usize,
-) {
+) -> Result<()> {
     match (axes.has_z(), axes.has_m()) {
-        (false, false) => write_wkt_polygon_impl::<false, false>(out, polygon, format, limit),
-        (true, false) => write_wkt_polygon_impl::<true, false>(out, polygon, format, limit),
-        (false, true) => write_wkt_polygon_impl::<false, true>(out, polygon, format, limit),
-        (true, true) => write_wkt_polygon_impl::<true, true>(out, polygon, format, limit),
+        (false, false) => write_wkt_polygon_impl::<false, false>(out, polygon, axes, format, limit),
+        (true, false) => write_wkt_polygon_impl::<true, false>(out, polygon, axes, format, limit),
+        (false, true) => write_wkt_polygon_impl::<false, true>(out, polygon, axes, format, limit),
+        (true, true) => write_wkt_polygon_impl::<true, true>(out, polygon, axes, format, limit),
     }
 }
 
 fn write_wkt_polygon_impl<const Z: bool, const M: bool>(
     out: &mut String,
     polygon: &Polygon,
+    axes: CoordinateAxes,
     format: WktNumberFormat,
     limit: usize,
-) {
+) -> Result<()> {
+    require_wkt_axes(polygon.shell.axes(), axes)?;
     out.push('(');
     write_wkt_ring_impl::<Z, M, _>(out, &polygon.shell, format, limit);
     out.push(')');
@@ -415,10 +437,12 @@ fn write_wkt_polygon_impl<const Z: bool, const M: bool>(
         if out.len() >= limit {
             break;
         }
+        require_wkt_axes(hole.axes(), axes)?;
         out.push_str(", (");
         write_wkt_ring_impl::<Z, M, _>(out, hole, format, limit);
         out.push(')');
     }
+    Ok(())
 }
 
 fn write_wkt_point(out: &mut String, point: Point, axes: CoordinateAxes, format: WktNumberFormat) {

@@ -123,6 +123,36 @@ mod tests {
     }
 
     #[test]
+    fn wkt_preview_validates_only_rings_it_reaches() {
+        let xyz = |x: f64, y: f64| {
+            Point::new_axes(x, y, ZOrdinate(Some(5.0)), MOrdinate(None)).expect("finite XYZ point")
+        };
+        let xy = |x: f64, y: f64| Point::new(x, y).expect("finite XY point");
+        let shell = Ring::from_closed(CoordSeq::from_points(&[
+            xyz(0.0, 0.0),
+            xyz(2.0, 0.0),
+            xyz(0.0, 2.0),
+            xyz(0.0, 0.0),
+        ]));
+        let late_xy_hole = Ring::from_closed(CoordSeq::from_points(&[
+            xy(0.5, 0.5),
+            xy(1.0, 0.5),
+            xy(0.5, 1.0),
+            xy(0.5, 0.5),
+        ]));
+        let shape = Shape::Polygon(Polygon::new(shell, vec![late_xy_hole]));
+
+        let preview = to_wkt_preview(&shape, 1).expect("unvisited late ring is irrelevant");
+        assert!(preview.starts_with("POLYGON Z"));
+
+        let error = to_wkt_preview(&shape, 1024)
+            .expect_err("full preview must visit and reject the late ring");
+        assert!(matches!(error.kind(), crate::error::ErrorKind::Geometry(_)));
+        let error = to_wkt(&shape).expect_err("full WKT admission rejects the late ring");
+        assert!(matches!(error.kind(), crate::error::ErrorKind::Geometry(_)));
+    }
+
+    #[test]
     fn shortest_wkt_numbers_preserve_policy_and_round_trip() {
         let cases = [
             (1.0, "1"),
