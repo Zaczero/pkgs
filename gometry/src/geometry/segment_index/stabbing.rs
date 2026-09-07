@@ -361,13 +361,24 @@ impl EdgeYIndex {
         }
     }
 
-    /// Visit candidate edge ids for probe `y` (tree / linear fallback).
+    /// Visit candidate edge ids for probe `y`.
+    ///
+    /// Dense bands reuse [`Self::dense_band_edges`]; linear and interval-tree
+    /// plans walk here. Stops early when `visit` returns [`ControlFlow::Break`].
     pub(crate) fn for_each_edge<B>(
         &self,
         y: f64,
         mut visit: impl FnMut(EdgeId) -> std::ops::ControlFlow<B>,
     ) -> Option<B> {
         use std::ops::ControlFlow;
+        if let Some(edges) = self.dense_band_edges(y) {
+            for &edge in edges {
+                if let ControlFlow::Break(b) = visit(edge) {
+                    return Some(b);
+                }
+            }
+            return None;
+        }
         match &self.plan {
             YPlan::Linear => {
                 for edge in 0..self.edge_count as u32 {
@@ -377,10 +388,10 @@ impl EdgeYIndex {
                 }
                 None
             },
-            YPlan::DenseBands { .. } => unreachable!("dense bands use the caller-owned open loop"),
             YPlan::IntervalTree { nodes, root } => {
                 query_itree(nodes, *root, y, &mut |edge| visit(EdgeId(edge)))
             },
+            YPlan::DenseBands { .. } => None,
         }
     }
 }
@@ -416,12 +427,6 @@ impl<T: HeapSize> HeapSize for YStabbingIndex<T> {
 }
 
 impl HeapSize for ITreeNode {
-    fn heap_bytes(&self) -> usize {
-        0
-    }
-}
-
-impl HeapSize for YPlan {
     fn heap_bytes(&self) -> usize {
         0
     }
@@ -780,5 +785,43 @@ mod tests {
         // Construction stays O(n).
         let bytes = index.heap_bytes();
         assert!(bytes < 1000 * 200, "expected O(n) heap, got {bytes}");
+    }
+
+    fn collect_edge_ids(index: &EdgeYIndex, y: f64) -> Vec<u32> {
+        let mut out = Vec::new();
+        let _ = index.for_each_edge(y, |edge| {
+            out.push(edge.as_usize() as u32);
+            std::ops::ControlFlow::<()>::Continue(())
+        });
+        out
+    }
+
+    #[test]
+    fn edge_y_dense_for_each_edge_matches_band_slice_and_stops_on_break() {
+        let ys: Vec<f64> = (0..=128).map(f64::from).collect();
+        let index = EdgeYIndex::build(&ys);
+        assert!(index.uses_indexed_plan());
+        let y = 40.25;
+        let slice = index
+            .dense_band_edges(y)
+            .expect("short unit-span edges use dense bands");
+        assert_eq!(
+            collect_edge_ids(&index, y),
+            slice
+                .iter()
+                .map(|edge| edge.as_usize() as u32)
+                .collect::<Vec<_>>()
+        );
+
+        let mut visits = 0_usize;
+        let broken = index.for_each_edge(y, |edge| {
+            visits += 1;
+            std::ops::ControlFlow::Break(edge)
+        });
+        assert_eq!(visits, 1);
+        assert_eq!(
+            broken.map(EdgeId::as_usize),
+            slice.first().map(|edge| edge.as_usize())
+        );
     }
 }
