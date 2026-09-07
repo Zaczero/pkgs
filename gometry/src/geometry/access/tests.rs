@@ -138,6 +138,31 @@ fn segment_walkers_share_chain_order_without_crossing_and_keep_ordinates() {
 }
 
 #[test]
+fn first_chain_error_stops_nested_collection_and_multipart_siblings() {
+    let first = line(&[point(0.0, 0.0, 1.0, 1.0), point(1.0, 0.0, 1.0, 1.0)]);
+    let multipart_sibling = line(&[point(10.0, 0.0, 1.0, 1.0), point(11.0, 0.0, 1.0, 1.0)]);
+    let collection_sibling = line(&[point(20.0, 0.0, 1.0, 1.0), point(21.0, 0.0, 1.0, 1.0)]);
+    let lines = MultiLineString::try_new(CoordinateAxes::XYZM, vec![
+        MultiMember::Value(first),
+        MultiMember::Value(multipart_sibling),
+    ])
+    .expect("multipart");
+    let shape = Shape::geometry_collection(vec![
+        Shape::geometry_collection(vec![Shape::MultiLineString(lines)]).expect("nested"),
+        Shape::LineString(collection_sibling),
+    ])
+    .expect("collection");
+
+    let error = shape.try_for_each_segment_chain(|chain| {
+        if chain.point_at(0).x == 0.0 {
+            return Err("first-chain");
+        }
+        panic!("visited sibling after first-chain error");
+    });
+    assert_eq!(error, Err("first-chain"));
+}
+
+#[test]
 fn column_all_finite_rejects_non_finite() {
     let column = vec![0.0, 1.0, f64::NAN, 3.0];
     assert!(!column_all_finite(&column));
