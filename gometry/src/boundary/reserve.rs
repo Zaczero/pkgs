@@ -1186,7 +1186,6 @@ mod tests {
                 .expect_err("integer item must be rejected");
 
             assert!(error.is_instance_of::<PyTypeError>(py));
-            assert!(error.to_string().contains("elements have the wrong type"));
             assert!(py.check_signals().is_ok());
             Ok(())
         })

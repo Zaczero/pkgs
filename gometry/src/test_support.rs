@@ -4,6 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
+use pyo3::sync::MutexExt;
 
 pub(crate) struct CountingAllocator;
 
@@ -105,8 +106,7 @@ pub(crate) struct NativeBoundaryIterator {
     remaining: usize,
     calls: usize,
     interrupt_at: Option<usize>,
-    error_at: Option<usize>,
-    error: Option<Py<PyAny>>,
+    error: Option<(usize, Py<PyAny>)>,
 }
 
 #[pymethods]
@@ -121,14 +121,10 @@ impl NativeBoundaryIterator {
         }
         let call = self.calls;
         self.calls = self.calls.wrapping_add(1);
-        if self.error_at == Some(call) {
-            return Err(PyErr::from_value(
-                self.error
-                    .as_ref()
-                    .expect("error_at requires an exception")
-                    .bind(py)
-                    .clone(),
-            ));
+        if let Some((error_at, error)) = self.error.as_ref()
+            && *error_at == call
+        {
+            return Err(PyErr::from_value(error.bind(py).clone()));
         }
         self.remaining -= 1;
         if self.interrupt_at == Some(call) {
@@ -157,14 +153,12 @@ pub(crate) fn native_boundary_iterator(
     interrupt_at: Option<usize>,
     sentinel: Option<(usize, Py<PyAny>)>,
 ) -> PyResult<Py<NativeBoundaryIterator>> {
-    let (error_at, error) = sentinel.map_or((None, None), |(at, error)| (Some(at), Some(error)));
     Py::new(py, NativeBoundaryIterator {
         item: item.clone().unbind(),
         remaining,
         calls: 0,
         interrupt_at,
-        error_at,
-        error,
+        error: sentinel,
     })
 }
 
@@ -178,7 +172,7 @@ pub(crate) struct PythonSignalTestGuard {
 impl PythonSignalTestGuard {
     pub(crate) fn new(py: Python<'_>) -> Self {
         let lock = PYTHON_SIGNAL_TEST_LOCK
-            .lock()
+            .lock_py_attached(py)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let signal = py.import("signal").expect("import signal for test");
         let sigint = signal.getattr("SIGINT").expect("read SIGINT");
