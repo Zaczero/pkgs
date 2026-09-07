@@ -317,6 +317,24 @@ def test_coordinate_columns_are_readonly_ndarrays() -> None:
     assert len(bare.z) == 1 == len(bare.m)
 
 
+@pytest.mark.parametrize('middle', [None, gm.from_wkt('POINT EMPTY')], ids=['missing', 'empty'])
+@pytest.mark.parametrize('axes, expected', [
+    ('XY', [[1, 2], [5, 6]]),
+    ('XYZ', [[1, 2, 3], [5, 6, np.nan]]),
+    ('XYM', [[1, 2, np.nan], [5, 6, 7]]),
+    ('XYZM', [[1, 2, 3, np.nan], [5, 6, np.nan, 7]]),
+])
+def test_coordinate_groups_preserve_empty_rows_and_absent_ordinates(middle, axes, expected):
+    array = gm.GeometryArray([
+        gm.from_wkt('POINT Z (1 2 3)'),
+        middle,
+        gm.from_wkt('POINT M (5 6 7)'),
+    ])
+    groups = gm.get_coordinates(array, axes=axes)
+    assert groups.offsets.tolist() == [0, 1, 1, 2]
+    np.testing.assert_array_equal(groups.values, expected)
+
+
 def test_get_coordinates() -> None:
     line = gm.LineString([(0, 0), (1, 2), (3, 4)])
     coords = gm.get_coordinates(line)

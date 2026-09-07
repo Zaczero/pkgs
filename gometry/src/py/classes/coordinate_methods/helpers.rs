@@ -11,7 +11,7 @@ use crate::py::classes::coordinate_methods::{
     Arc, CoordSeq, CoordinateAxes, CoordinateAxis, Point, PyCoordinates, PyGeometryArray,
     coordinates, point_tuple,
 };
-use crate::py::errors::{GeometryError, parameter_error};
+use crate::py::errors::parameter_error;
 use crate::py::numpy::{
     float64_array, float64_matrix, float64_slice_array, optional_float64_array,
 };
@@ -180,30 +180,26 @@ pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates
 
 fn coordinate_groups(
     array: &PyGeometryArray,
-    view: &coordinates::CoordinateView,
     order: &[CoordinateAxis],
-) -> PyResult<crate::py::vectors::Groups> {
+) -> crate::error::Result<crate::CsrBuilder<[f64; 4]>> {
+    let view = array.coordinate_view();
     let mut builder = crate::CsrBuilder::<[f64; 4]>::new();
     let mut active_row = None;
     let mut next_row = 0_usize;
     let result = view.try_for_each_point(&mut |coord| {
-        let Some(row) = coord.path.geometry else {
-            return std::ops::ControlFlow::Break(GeometryError::new_err(
-                "array coordinate group lost its source row",
-            ));
-        };
+        let row = coord.path.geometry.expect("array view tags every point");
         if active_row != Some(row) {
             if active_row.is_some() {
                 let end = builder.len();
                 if let Err(error) = builder.push_end(end) {
-                    return std::ops::ControlFlow::Break(error.into());
+                    return std::ops::ControlFlow::Break(error);
                 }
                 next_row += 1;
             }
             while next_row < row {
                 let end = builder.len();
                 if let Err(error) = builder.push_end(end) {
-                    return std::ops::ControlFlow::Break(error.into());
+                    return std::ops::ControlFlow::Break(error);
                 }
                 next_row += 1;
             }
@@ -215,7 +211,7 @@ fn coordinate_groups(
         }
         match builder.push(values) {
             Ok(()) => std::ops::ControlFlow::Continue(()),
-            Err(error) => std::ops::ControlFlow::Break(error.into()),
+            Err(error) => std::ops::ControlFlow::Break(error),
         }
     });
     if let std::ops::ControlFlow::Break(error) = result {
@@ -223,15 +219,75 @@ fn coordinate_groups(
     }
     if active_row.is_some() {
         let end = builder.len();
-        builder.push_end(end).map_err(pyo3::PyErr::from)?;
+        builder.push_end(end)?;
         next_row += 1;
     }
     while next_row < array.len() {
         let end = builder.len();
-        builder.push_end(end).map_err(pyo3::PyErr::from)?;
+        builder.push_end(end)?;
         next_row += 1;
     }
-    crate::py::vectors::Groups::from_coordinate_chunks(order.len(), builder)
+    Ok(builder)
+}
+
+#[cfg(test)]
+mod coordinate_groups_tests {
+    use super::*;
+    use crate::boundary::Frame;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::Shape;
+
+    #[test]
+    fn mixed_empty_rows_preserve_coordinate_spans() {
+        let array = PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+                Shape::empty_polygon(),
+                Shape::Point(Point::new_raw_xy(3.0, 4.0)),
+                Shape::empty_polygon(),
+            ],
+            Frame::None,
+        );
+        let (values, offsets) = coordinate_groups(&array, &[CoordinateAxis::X, CoordinateAxis::Y])
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert_eq!(offsets, [0, 1, 1, 2, 2]);
+        assert_eq!(values, [[1.0, 2.0, 0.0, 0.0], [3.0, 4.0, 0.0, 0.0]]);
+    }
+
+    #[test]
+    fn csr_reserve_failure_after_array_setup_is_native() {
+        let array = PyGeometryArray::packed_points(
+            CoordSeq::from_vecs(vec![1.0, 3.0], vec![2.0, 4.0], None, None),
+            Frame::None,
+        );
+        let error = crate::test_support::fail_allocations_after(0, || {
+            coordinate_groups(&array, &[CoordinateAxis::X, CoordinateAxis::Y])
+                .err()
+                .unwrap()
+        });
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+
+        let view = array.coordinate_view();
+        let mut builder = crate::CsrBuilder::new();
+        let mut visited = 0;
+        let result = crate::test_support::fail_allocations_after(0, || {
+            view.try_for_each_point(&mut |coord| {
+                visited += 1;
+                match builder.push(coord.point) {
+                    Ok(()) => std::ops::ControlFlow::Continue(()),
+                    Err(error) => std::ops::ControlFlow::Break(error),
+                }
+            })
+        });
+        assert_eq!(visited, 1);
+        assert!(matches!(result, std::ops::ControlFlow::Break(error)
+            if matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation))));
+    }
 }
 
 /// Extract scalar coordinates as a dense matrix, or array coordinates as
@@ -273,17 +329,20 @@ pub(crate) fn get_coordinates(
     return_index: bool,
 ) -> PyResult<Py<PyAny>> {
     let array;
-    let (input, grouped) = if let Ok(input) = classify_required(values) { (input, matches!(input, GeometryInput::Many(_))) } else {
+    let (input, grouped) = if let Ok(input) = classify_required(values) {
+        (input, matches!(input, GeometryInput::Many(_)))
+    } else {
         array = PyGeometryArray::new(values, None, None)?;
         (GeometryInput::Many(&array), false)
     };
-    let view = coordinate_view_for_input(input);
     let axes = axes.unwrap_or(CoordinateAxes::XY);
     let (order, dims) = coordinate_axis_order(axes);
     let order = &order[..dims];
     if grouped && let GeometryInput::Many(array) = input {
-        return coordinate_groups(array, &view, order)?.into_py_any(py);
+        let builder = coordinate_groups(array, order)?;
+        return crate::py::vectors::Groups::from_coordinate_chunks(dims, builder)?.into_py_any(py);
     }
+    let view = coordinate_view_for_input(input);
     let rows = view.len();
     // Coordinate matrix: always ride the SoA interleave when the view is one
     // contiguous packed column, independent of `return_index`. The index
