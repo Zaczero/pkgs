@@ -369,6 +369,46 @@ fn frame_conversion_uses_one_greenwich_seam_for_points_and_lanes() {
 }
 
 #[test]
+fn lane_conversion_leaves_the_failing_pair_and_later_pairs_unchanged() {
+    let paris = GeographicFrame::try_new(
+        factor(std::f64::consts::PI / 180.0),
+        factor(std::f64::consts::PI / 180.0),
+        2.0_f64.to_radians(),
+    )
+    .unwrap();
+
+    let mut xs = [0.0, 1.0, 10.0, 99.0];
+    let mut ys = [45.0, 100.0, 20.0];
+    let error = paris.to_geodesic_lanes_indexed(&mut xs, &mut ys).unwrap_err();
+    assert_eq!(error.0, 1);
+    assert!(matches!(
+        error.1,
+        GeographicError::LatitudeOutOfRange { value } if value == 100.0
+    ));
+    assert_eq!(xs, [2.0, 1.0, 10.0, 99.0]);
+    assert_eq!(ys, [45.0, 100.0, 20.0]);
+
+    let mut xs = [2.0, f64::NAN, 5.0, 99.0];
+    let mut ys = [45.0, 10.0, 20.0];
+    let error = paris
+        .lanes_indexed_from_geodesic(&mut xs, &mut ys)
+        .unwrap_err();
+    assert_eq!(error.0, 1);
+    assert!(matches!(
+        error.1,
+        GeographicError::NonFinite {
+            name: "geodesic coordinate",
+            ..
+        }
+    ));
+    assert_eq!(xs[0], 0.0);
+    assert_eq!(xs[1].to_bits(), f64::NAN.to_bits());
+    assert_eq!(xs[2], 5.0);
+    assert_eq!(xs[3], 99.0);
+    assert_eq!(ys, [45.0, 10.0, 20.0]);
+}
+
+#[test]
 fn longitude_canonicalization_pins_aliases_neighbors_and_nonfinite() {
     let axis = degrees().longitude();
     for (input, expected) in [

@@ -286,10 +286,8 @@ impl GeographicFrame {
         xs: &mut [f64],
         ys: &mut [f64],
     ) -> Result<(), GeographicError> {
-        for (longitude, latitude) in std::iter::zip(xs, ys) {
-            (*longitude, *latitude) = self.to_geodesic_xy(*longitude, *latitude)?;
-        }
-        Ok(())
+        self.to_geodesic_lanes_indexed(xs, ys)
+            .map_err(|(_, error)| error)
     }
 
     pub(crate) fn to_geodesic_lanes_indexed(
@@ -312,10 +310,8 @@ impl GeographicFrame {
         xs: &mut [f64],
         ys: &mut [f64],
     ) -> Result<(), GeographicError> {
-        for (longitude, latitude) in std::iter::zip(xs, ys) {
-            (*longitude, *latitude) = self.xy_from_geodesic(*longitude, *latitude)?;
-        }
-        Ok(())
+        self.lanes_indexed_from_geodesic(xs, ys)
+            .map_err(|(_, error)| error)
     }
 
     pub(crate) fn lanes_indexed_from_geodesic(
