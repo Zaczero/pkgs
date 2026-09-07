@@ -21,7 +21,7 @@ use crate::geometry::{
 pub(crate) struct GeographicPrepared<'a> {
     plan: &'a PreparedPlan,
     frame_cache: &'a crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
+    view: crate::geographic::ScalarGeographicView<'a>,
 }
 
 impl<'a> GeographicPrepared<'a> {
@@ -32,27 +32,81 @@ impl<'a> GeographicPrepared<'a> {
     }
 
     pub(crate) const fn frame(&self) -> crate::geographic::GeographicFrame {
-        self.frame
+        self.view.frame()
+    }
+
+    pub(crate) const fn view(self) -> crate::geographic::ScalarGeographicView<'a> {
+        self.view
+    }
+
+    /// Admit `plan.shape()` once. Box facts and the exact graph reuse this view.
+    pub(crate) fn try_new(
+        plan: &'a PreparedPlan,
+        frame_cache: &'a crate::geometry::FrameDependentCaches,
+        frame: crate::geographic::GeographicFrame,
+    ) -> crate::error::Result<Self> {
+        let view = match crate::geographic::ScalarGeographicView::try_new(frame, plan.shape()) {
+            Ok(view) => view,
+            Err(crate::geographic::GeographicViewError::Resource) => {
+                return Err(crate::error::ResourceError::Allocation.into());
+            },
+            Err(crate::geographic::GeographicViewError::Diagnostic(diagnostic)) => {
+                return Err(match diagnostic.source {
+                    crate::geographic::GeographicError::NonFinite { .. }
+                    | crate::geographic::GeographicError::LatitudeOutOfRange { .. } => {
+                        crate::boundary::geographic::invalid_lonlat_error(
+                            diagnostic.native.x,
+                            diagnostic.native.y,
+                        )
+                    },
+                    crate::geographic::GeographicError::SeamTransitOverflow
+                    | crate::geographic::GeographicError::InvalidAngularFactor { .. }
+                    | crate::geographic::GeographicError::InvalidSweep { .. } => {
+                        crate::geometry::GeometryErrorKind::message(diagnostic.to_string())
+                    },
+                });
+            },
+        };
+        Ok(Self {
+            plan,
+            frame_cache,
+            view,
+        })
     }
 }
 
 impl GeographicPrepared<'_> {
-    pub(crate) const fn new<'a>(
-        plan: &'a PreparedPlan,
-        frame_cache: &'a crate::geometry::FrameDependentCaches,
-        frame: crate::geographic::GeographicFrame,
-    ) -> GeographicPrepared<'a> {
-        GeographicPrepared {
-            plan,
-            frame_cache,
-            frame,
-        }
+    pub(crate) fn graph(self) -> std::sync::Arc<TopologyGraph> {
+        self.frame_cache.geographic_topology_graph(self.view)
     }
+}
 
-    fn graph(self) -> std::sync::Arc<TopologyGraph> {
-        self.frame_cache
-            .geographic_topology_graph(self.plan, self.frame)
+/// Whether admitted coordinates let a raw box stand in for the operand.
+///
+/// Seam-crossing and pole vertices, and bound edges the frame would move, make
+/// the box a lie. Clip rectangles without a shape stay longitude-edge-only.
+pub(crate) fn admitted_bounds_are_sound(
+    view: crate::geographic::ScalarGeographicView<'_>,
+    bounds: Bounds,
+) -> bool {
+    let frame = view.frame();
+    if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
+        return false;
     }
+    let mut reaches_pole = false;
+    view.for_each_coordinate(|coordinate| {
+        reaches_pole |= coordinate.identity(frame) == crate::geographic::SeamIdentity::Pole;
+    });
+    if reaches_pole {
+        return false;
+    }
+    let unmoved = |x: f64| {
+        frame
+            .longitude()
+            .canonicalize(x)
+            .is_ok_and(|canonical| canonical.get().to_bits() == x.to_bits())
+    };
+    unmoved(bounds.minx()) && unmoved(bounds.maxx())
 }
 
 /// Compute the complete relation matrix, using a direct Cartesian fold where
@@ -170,15 +224,15 @@ pub(crate) fn graph_relate_data_geographic(
     left: GeographicPrepared<'_>,
     right: GeographicPrepared<'_>,
 ) -> De9im {
-    debug_assert_eq!(left.frame, right.frame);
+    debug_assert_eq!(left.frame(), right.frame());
     if let Some(matrix) =
-        try_areal_relate_geographic(left.plan.shape(), right.plan.shape(), left.frame)
+        try_areal_relate_geographic(left.plan.shape(), right.plan.shape(), left.frame())
     {
         return matrix;
     }
     if let Some(point) = shape_point(right.plan.shape()) {
         if let Some(left_point) = shape_point(left.plan.shape()) {
-            return point_relate_point(left_point, point, left.frame).transpose();
+            return point_relate_point(left_point, point, left.frame()).transpose();
         }
         let left_graph = left.graph();
         return graph_relate_to_point(&left_graph, point);
@@ -199,13 +253,14 @@ pub(crate) fn graph_relate_data_geographic_with_left_graph(
     left_graph: &TopologyGraph,
     right: GeographicPrepared<'_>,
 ) -> De9im {
-    if let Some(matrix) = try_areal_relate_geographic(left.shape(), right.plan.shape(), right.frame)
+    if let Some(matrix) =
+        try_areal_relate_geographic(left.shape(), right.plan.shape(), right.frame())
     {
         return matrix;
     }
     if let Some(point) = shape_point(right.plan.shape()) {
         if let Some(left_point) = shape_point(left.shape()) {
-            return point_relate_point(left_point, point, right.frame).transpose();
+            return point_relate_point(left_point, point, right.frame()).transpose();
         }
         return graph_relate_to_point(left_graph, point);
     }
@@ -224,13 +279,14 @@ pub(crate) fn graph_relate_data_geographic_with_right_graph(
     right: &PreparedPlan,
     right_graph: &TopologyGraph,
 ) -> De9im {
-    if let Some(matrix) = try_areal_relate_geographic(left.plan.shape(), right.shape(), left.frame)
+    if let Some(matrix) =
+        try_areal_relate_geographic(left.plan.shape(), right.shape(), left.frame())
     {
         return matrix;
     }
     if let Some(point) = shape_point(right.shape()) {
         if let Some(left_point) = shape_point(left.plan.shape()) {
-            return point_relate_point(left_point, point, left.frame).transpose();
+            return point_relate_point(left_point, point, left.frame()).transpose();
         }
         let left_graph = left.graph();
         return graph_relate_to_point(&left_graph, point);
@@ -256,8 +312,8 @@ fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: Topology
             let left_cache = crate::geometry::FrameDependentCaches::default();
             let right_cache = crate::geometry::FrameDependentCaches::default();
             graph_relate_data_geographic(
-                GeographicPrepared::new(left, &left_cache, frame),
-                GeographicPrepared::new(right, &right_cache, frame),
+                GeographicPrepared::try_new(left, &left_cache, frame).expect("fixture admits"),
+                GeographicPrepared::try_new(right, &right_cache, frame).expect("fixture admits"),
             )
         },
     }
@@ -2235,8 +2291,12 @@ mod tests {
         let right = PreparedPlan::transient(right);
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
-        let left = GeographicPrepared::new(&left, &left_cache, frame).graph();
-        let right = GeographicPrepared::new(&right, &right_cache, frame).graph();
+        let left = GeographicPrepared::try_new(&left, &left_cache, frame)
+            .expect("fixture admits")
+            .graph();
+        let right = GeographicPrepared::try_new(&right, &right_cache, frame)
+            .expect("fixture admits")
+            .graph();
         graph_relate(&left, &right)
     }
 
@@ -2248,7 +2308,12 @@ mod tests {
     ) {
         let source_graph = frame.map_or_else(
             || TopologyGraph::cartesian(source),
-            |frame| TopologyGraph::geographic(source, frame),
+            |frame| {
+                TopologyGraph::geographic(
+                    crate::geographic::ScalarGeographicView::try_new(frame, source)
+                        .expect("fixture admits"),
+                )
+            },
         );
         let candidate = Shape::Polygon(rectangle(
             bounds.minx(),
@@ -2258,7 +2323,12 @@ mod tests {
         ));
         let candidate_graph = frame.map_or_else(
             || TopologyGraph::cartesian(&candidate),
-            |frame| TopologyGraph::geographic(&candidate, frame),
+            |frame| {
+                TopologyGraph::geographic(
+                    crate::geographic::ScalarGeographicView::try_new(frame, &candidate)
+                        .expect("fixture admits"),
+                )
+            },
         );
         let expected = graph_relate(&source_graph, &candidate_graph).is_covers();
         assert_eq!(
@@ -2402,7 +2472,10 @@ mod tests {
             .unwrap()
             .geographic_frame()
             .unwrap();
-        let geographic = TopologyGraph::geographic(&source, frame);
+        let geographic = TopologyGraph::geographic(
+            crate::geographic::ScalarGeographicView::try_new(frame, &source)
+                .expect("fixture admits"),
+        );
         assert_eq!(geographic.covers_rectangle(bounds), Some(false));
     }
 
@@ -2421,7 +2494,10 @@ mod tests {
             .unwrap()
             .geographic_frame()
             .unwrap();
-        let geographic = TopologyGraph::geographic(&source, frame);
+        let geographic = TopologyGraph::geographic(
+            crate::geographic::ScalarGeographicView::try_new(frame, &source)
+                .expect("fixture admits"),
+        );
         assert_eq!(geographic.covers_rectangle(bounds), None);
     }
 
@@ -2438,7 +2514,10 @@ mod tests {
             [-10.0, 90.0],
             [-10.0, 80.0],
         ]));
-        let graph = TopologyGraph::geographic(&source, frame);
+        let graph = TopologyGraph::geographic(
+            crate::geographic::ScalarGeographicView::try_new(frame, &source)
+                .expect("fixture admits"),
+        );
         for bounds in [
             Bounds::new_raw(-180.0, 81.0, -179.0, 85.0),
             Bounds::new_raw(0.0, 85.0, 10.0, 90.0),
@@ -2513,8 +2592,8 @@ mod tests {
             let right_cache = crate::geometry::FrameDependentCaches::default();
             assert_eq!(
                 graph_relate_data_geographic(
-                    GeographicPrepared::new(&left_plan, &left_cache, frame),
-                    GeographicPrepared::new(&right_plan, &right_cache, frame),
+                    GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits"),
+                    GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits"),
                 )
                 .0,
                 expected.0,
@@ -2560,8 +2639,8 @@ mod tests {
             let right_cache = crate::geometry::FrameDependentCaches::default();
             assert_eq!(
                 graph_relate_data_geographic(
-                    GeographicPrepared::new(&left_plan, &left_cache, frame),
-                    GeographicPrepared::new(&right_plan, &right_cache, frame),
+                    GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits"),
+                    GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits"),
                 )
                 .0,
                 expected.0,
@@ -2930,8 +3009,8 @@ mod tests {
             let right_cache = crate::geometry::FrameDependentCaches::default();
             assert_eq!(
                 graph_relate_data_geographic(
-                    GeographicPrepared::new(&left, &left_cache, frame),
-                    GeographicPrepared::new(&right, &right_cache, frame),
+                    GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits"),
+                    GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits"),
                 )
                 .text(),
                 expected
@@ -2956,8 +3035,8 @@ mod tests {
         let right_cache = crate::geometry::FrameDependentCaches::default();
         assert!(
             graph_relate_data_geographic(
-                GeographicPrepared::new(&left, &left_cache, frame),
-                GeographicPrepared::new(&right, &right_cache, frame),
+                GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits"),
+                GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits"),
             )
             .is_intersects()
         );
@@ -3030,8 +3109,14 @@ mod tests {
             .expect("EPSG:4326 must be available")
             .geographic_frame()
             .expect("EPSG:4326 must have a geographic frame");
-        let left_graph = TopologyGraph::geographic(&geographic_left, frame);
-        let right_graph = TopologyGraph::geographic(&geographic_right, frame);
+        let left_graph = TopologyGraph::geographic(
+            crate::geographic::ScalarGeographicView::try_new(frame, &geographic_left)
+                .expect("fixture admits"),
+        );
+        let right_graph = TopologyGraph::geographic(
+            crate::geographic::ScalarGeographicView::try_new(frame, &geographic_right)
+                .expect("fixture admits"),
+        );
         assert_eq!(
             graph_relate(&left_graph, &right_graph).text(),
             graph_relate_with_full_node_locations(&left_graph, &right_graph).text(),

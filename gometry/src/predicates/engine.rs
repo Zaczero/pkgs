@@ -47,20 +47,32 @@ pub(crate) enum PreparedTopologyPair<'a> {
 }
 
 impl<'a> PreparedTopologyPair<'a> {
-    pub(crate) const fn for_domain(
+    pub(crate) fn try_for_domain(
         left: &'a PreparedPlan,
         left_cache: &'a crate::geometry::FrameDependentCaches,
         right: &'a PreparedPlan,
         right_cache: &'a crate::geometry::FrameDependentCaches,
         domain: TopologyDomain,
-    ) -> Self {
+    ) -> crate::error::Result<Self> {
         match domain {
-            TopologyDomain::Cartesian => Self::Cartesian { left, right },
-            TopologyDomain::Geographic(frame) => Self::Geographic {
-                left: GeographicPrepared::new(left, left_cache, frame),
-                right: GeographicPrepared::new(right, right_cache, frame),
+            TopologyDomain::Cartesian => Ok(Self::Cartesian { left, right }),
+            TopologyDomain::Geographic(frame) => {
+                Self::try_geographic(left, left_cache, right, right_cache, frame)
             },
         }
+    }
+
+    pub(crate) fn try_geographic(
+        left: &'a PreparedPlan,
+        left_cache: &'a crate::geometry::FrameDependentCaches,
+        right: &'a PreparedPlan,
+        right_cache: &'a crate::geometry::FrameDependentCaches,
+        frame: crate::geographic::GeographicFrame,
+    ) -> crate::error::Result<Self> {
+        Ok(Self::Geographic {
+            left: GeographicPrepared::try_new(left, left_cache, frame)?,
+            right: GeographicPrepared::try_new(right, right_cache, frame)?,
+        })
     }
 
     /// The two operands as the pre-topology gates read them, when this pair
@@ -68,22 +80,20 @@ impl<'a> PreparedTopologyPair<'a> {
     /// paid the cost the gates exist to avoid, so it goes straight to the
     /// relation.
     fn gate_operands(&self) -> Option<(GateOperand<'a>, GateOperand<'a>)> {
-        let (left, right, domain) = match *self {
-            Self::Cartesian { left, right } => (left, right, TopologyDomain::Cartesian),
-            Self::Geographic { left, right } => (
-                left.plan(),
-                right.plan(),
-                TopologyDomain::Geographic(left.frame()),
-            ),
+        match *self {
+            Self::Cartesian { left, right } => Some((
+                GateOperand::cartesian(ShapeRow::Shape(left.shape()), left.bounds()),
+                GateOperand::cartesian(ShapeRow::Shape(right.shape()), right.bounds()),
+            )),
+            Self::Geographic { left, right } => Some((
+                GateOperand::from_prepared(&left),
+                GateOperand::from_prepared(&right),
+            )),
             Self::CartesianLeftGraph { .. }
             | Self::CartesianRightGraph { .. }
             | Self::GeographicLeftGraph { .. }
-            | Self::GeographicRightGraph { .. } => return None,
-        };
-        Some((
-            GateOperand::new(ShapeRow::Shape(left.shape()), left.bounds(), domain),
-            GateOperand::new(ShapeRow::Shape(right.shape()), right.bounds(), domain),
-        ))
+            | Self::GeographicRightGraph { .. } => None,
+        }
     }
 
     /// Both plans of a Cartesian pair, whichever graphs it carries.
@@ -457,27 +467,29 @@ pub(crate) struct GateOperand<'a> {
 }
 
 impl<'a> GateOperand<'a> {
-    /// Read the gate facts off `row`, preferring `bounds` when the caller
-    /// already holds them cached.
-    pub(crate) fn new(row: ShapeRow<'a>, bounds: Option<Bounds>, domain: TopologyDomain) -> Self {
+    /// Read Cartesian gate facts off `row`, preferring `bounds` when the caller
+    /// already holds them cached. Packed rows stay unmaterialized.
+    pub(crate) fn cartesian(row: ShapeRow<'a>, bounds: Option<Bounds>) -> Self {
         let (kind, _) = row_kind_empty(row);
         let bounds = bounds.or_else(|| row.quick_bounds());
-        // An axis-aligned box is a lie wherever longitude is a spelling rather
-        // than a position: across the seam, at a pole, and at a coordinate the
-        // frame would canonicalize. Those operands must reach the
-        // quotient-aware graph.
-        let bounds_sound = match domain {
-            TopologyDomain::Cartesian => true,
-            TopologyDomain::Geographic(frame) => bounds.is_some_and(|bounds| {
-                row.with_shape(|shape| {
-                    crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
-                        Some(shape),
-                        bounds,
-                        frame,
-                    )
-                })
-            }),
-        };
+        Self {
+            row,
+            kind,
+            bounds,
+            bounds_sound: true,
+        }
+    }
+
+    /// Geographic gate facts derived from one admitted operand. There is no
+    /// geographic operand except from a live [`GeographicPrepared`].
+    pub(crate) fn from_prepared(prepared: &GeographicPrepared<'a>) -> Self {
+        let plan = prepared.plan();
+        let row = ShapeRow::Shape(plan.shape());
+        let (kind, _) = row_kind_empty(row);
+        let bounds = plan.bounds();
+        let bounds_sound = bounds.is_some_and(|bounds| {
+            crate::geometry::admitted_bounds_are_sound(prepared.view(), bounds)
+        });
         Self {
             row,
             kind,
@@ -515,105 +527,75 @@ pub(crate) fn scalar_vs_shapes<'a>(
     array: Option<&PyGeometryArray>,
     domain: TopologyDomain,
     scalar_cache: &crate::geometry::FrameDependentCaches,
-) -> Vec<bool> {
-    let scalar_orig = scalar;
+) -> Result<Vec<bool>, (usize, crate::error::Error)> {
     let scalar_bounds = scalar.bounds();
     let element_bounds = array.and_then(PyGeometryArray::cached_element_bounds);
     let row_is_missing = |index: usize| array.is_some_and(|array| array.is_row_missing(index));
-    // The scalar operand is fixed for the whole call, so its gate facts are
-    // read once here and every row reads only its own.
-    let scalar_operand =
-        GateOperand::new(ShapeRow::Shape(scalar_orig.shape()), scalar_bounds, domain);
-    // Admit topology only when a certificate or exact pair reaches it. Once
-    // admitted, the fixed scalar graph remains query-local and shared by rows.
     let scalar_cartesian_graph = OnceCell::new();
-    let scalar_geographic_graph = OnceCell::new();
     let mut row_operation = array.map(PyGeometryArray::row_operation);
-    let gate = |index: usize, row: ShapeRow<'_>| -> Option<bool> {
-        let row_operand = GateOperand::new(
-            row,
-            element_bounds
-                .as_ref()
-                .and_then(|bounds| bounds.get(index).copied().flatten()),
-            domain,
-        );
-        let (left, right) = if scalar_is_left {
-            (scalar_operand, row_operand)
-        } else {
-            (row_operand, scalar_operand)
-        };
-        spec.pre_topology(left, right).or_else(|| {
-            // The graph-backed certificate reads one operand as a raw box and
-            // answers it against the other's charted graph, so it rests on the
-            // same premise the gates do and needs it of both sides: a box is a
-            // rectangle only where the frame would not move its longitudes.
-            if spec.predicate != Predicate::Intersects
-                || !left.bounds_are_sound()
-                || !right.bounds_are_sound()
-            {
-                return None;
-            }
-            if domain == TopologyDomain::Cartesian
-                && row.with_shape(|shape| {
-                    line_scalar_prefers_direct_polygon_relate(scalar.shape(), shape)
-                })
-            {
-                return None;
-            }
-            row.with_shape(|shape| {
-                let bounds = shape.bounds()?;
-                if !crate::geometry::is_axis_aligned_rectangle(shape, bounds) {
-                    return None;
-                }
-                let scalar_graph = match domain {
-                    TopologyDomain::Cartesian => {
-                        scalar_cartesian_graph.get_or_init(|| scalar.topology_graph())
-                    },
-                    TopologyDomain::Geographic(frame) => scalar_geographic_graph
-                        .get_or_init(|| scalar_cache.geographic_topology_graph(scalar, frame))
-                        .as_ref(),
+    match domain {
+        TopologyDomain::Cartesian => {
+            let scalar_operand =
+                GateOperand::cartesian(ShapeRow::Shape(scalar.shape()), scalar_bounds);
+            let gate = |index: usize, row: ShapeRow<'_>| -> Option<bool> {
+                let row_operand = GateOperand::cartesian(
+                    row,
+                    element_bounds
+                        .as_ref()
+                        .and_then(|bounds| bounds.get(index).copied().flatten()),
+                );
+                let (left, right) = if scalar_is_left {
+                    (scalar_operand, row_operand)
+                } else {
+                    (row_operand, scalar_operand)
                 };
-                Some(crate::geometry::graph_intersects_bounds(
-                    scalar_graph,
-                    bounds,
-                ))
-            })
-        })
-    };
-    elements
-        .map(|(index, row)| {
-            if row_is_missing(index) {
-                false
-            } else if let Some(row) = row {
-                gate(index, row).unwrap_or_else(|| {
-                    let element = row_operation.as_mut().map_or_else(
-                        || crate::array::PreparedRow::transient(row),
-                        |operation| operation.prepared_at(index, row),
-                    );
-                    let transient_cache = crate::geometry::FrameDependentCaches::default();
-                    let row_cache = row_operation
-                        .as_mut()
-                        .map(|operation| operation.frame_cache(index));
-                    let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
-                    // A line scalar has no reusable support for the direct
-                    // polygon/line fold. Select that fold before resolving the
-                    // scalar graph, so this path never constructs a line graph
-                    // only to transpose the polygon-side result.
-                    if domain == TopologyDomain::Cartesian
-                        && line_scalar_prefers_direct_polygon_relate(
-                            scalar.shape(),
-                            element.shape(),
-                        )
+                spec.pre_topology(left, right).or_else(|| {
+                    if spec.predicate != Predicate::Intersects
+                        || !left.bounds_are_sound()
+                        || !right.bounds_are_sound()
                     {
-                        let matrix = if scalar_is_left {
-                            graph_relate_data(scalar, &element)
-                        } else {
-                            graph_relate_data(&element, scalar)
-                        };
-                        return predicate_matrix_value(spec, matrix);
+                        return None;
                     }
-                    match domain {
-                        TopologyDomain::Cartesian => {
+                    if row.with_shape(|shape| {
+                        line_scalar_prefers_direct_polygon_relate(scalar.shape(), shape)
+                    }) {
+                        return None;
+                    }
+                    row.with_shape(|shape| {
+                        let bounds = shape.bounds()?;
+                        if !crate::geometry::is_axis_aligned_rectangle(shape, bounds) {
+                            return None;
+                        }
+                        let scalar_graph =
+                            scalar_cartesian_graph.get_or_init(|| scalar.topology_graph());
+                        Some(crate::geometry::graph_intersects_bounds(
+                            scalar_graph,
+                            bounds,
+                        ))
+                    })
+                })
+            };
+            elements
+                .map(|(index, row)| {
+                    let verdict = if row_is_missing(index) {
+                        false
+                    } else if let Some(row) = row {
+                        gate(index, row).unwrap_or_else(|| {
+                            let element = row_operation.as_mut().map_or_else(
+                                || crate::array::PreparedRow::transient(row),
+                                |operation| operation.prepared_at(index, row),
+                            );
+                            if line_scalar_prefers_direct_polygon_relate(
+                                scalar.shape(),
+                                element.shape(),
+                            ) {
+                                let matrix = if scalar_is_left {
+                                    graph_relate_data(scalar, &element)
+                                } else {
+                                    graph_relate_data(&element, scalar)
+                                };
+                                return predicate_matrix_value(spec, matrix);
+                            }
                             let scalar_graph =
                                 scalar_cartesian_graph.get_or_init(|| scalar.topology_graph());
                             let operands = if scalar_is_left {
@@ -630,39 +612,101 @@ pub(crate) fn scalar_vs_shapes<'a>(
                                 }
                             };
                             topology_scalar_pair(spec, operands)
-                        },
-                        TopologyDomain::Geographic(frame) => {
-                            let scalar_graph = scalar_geographic_graph
-                                .get_or_init(|| {
-                                    scalar_cache.geographic_topology_graph(scalar, frame)
-                                })
-                                .as_ref();
-                            let operands = if scalar_is_left {
-                                PreparedTopologyPair::GeographicLeftGraph {
-                                    left: scalar,
-                                    right: GeographicPrepared::new(&element, element_cache, frame),
-                                    left_graph: scalar_graph,
-                                }
-                            } else {
-                                PreparedTopologyPair::GeographicRightGraph {
-                                    left: GeographicPrepared::new(&element, element_cache, frame),
-                                    right: scalar,
-                                    right_graph: scalar_graph,
-                                }
-                            };
-                            topology_scalar_pair(spec, operands)
-                        },
-                    }
+                        })
+                    } else {
+                        false
+                    };
+                    Ok(verdict)
                 })
-            } else {
-                false
-            }
-        })
-        .collect()
+                .collect()
+        },
+        TopologyDomain::Geographic(frame) => {
+            let (scalar_kind, _) = row_kind_empty(ShapeRow::Shape(scalar.shape()));
+            let scalar_prepared = OnceCell::new();
+            let scalar_geographic_graph = OnceCell::new();
+            elements
+                .map(|(index, row)| {
+                    if row_is_missing(index) {
+                        return Ok(false);
+                    }
+                    let Some(row) = row else {
+                        return Ok(false);
+                    };
+                    let (row_kind, _) = row_kind_empty(row);
+                    let (left_kind, right_kind) = if scalar_is_left {
+                        (scalar_kind, row_kind)
+                    } else {
+                        (row_kind, scalar_kind)
+                    };
+                    if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind) {
+                        return Ok(verdict);
+                    }
+                    let element = row_operation.as_mut().map_or_else(
+                        || crate::array::PreparedRow::transient(row),
+                        |operation| operation.prepared_at(index, row),
+                    );
+                    let transient_cache = crate::geometry::FrameDependentCaches::default();
+                    let row_cache = row_operation
+                        .as_mut()
+                        .map(|operation| operation.frame_cache(index));
+                    let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
+                    let element_prepared = GeographicPrepared::try_new(&element, element_cache, frame)
+                        .map_err(|error| (index, error))?;
+                    let prepared = *scalar_prepared
+                        .get_or_try_init(|| GeographicPrepared::try_new(scalar, scalar_cache, frame))
+                        .map_err(|error| (index, error))?;
+                    let scalar_operand = GateOperand::from_prepared(&prepared);
+                    let row_operand = GateOperand::from_prepared(&element_prepared);
+                    let (left, right) = if scalar_is_left {
+                        (scalar_operand, row_operand)
+                    } else {
+                        (row_operand, scalar_operand)
+                    };
+                    if let Some(verdict) = spec.pre_topology(left, right) {
+                        return Ok(verdict);
+                    }
+                    if spec.predicate == Predicate::Intersects
+                        && left.bounds_are_sound()
+                        && right.bounds_are_sound()
+                    {
+                        let rectangle = element_prepared.plan().shape();
+                        if let Some(bounds) = rectangle.bounds()
+                            && crate::geometry::is_axis_aligned_rectangle(rectangle, bounds)
+                        {
+                            let scalar_graph = scalar_geographic_graph
+                                .get_or_init(|| prepared.graph())
+                                .as_ref();
+                            return Ok(crate::geometry::graph_intersects_bounds(
+                                scalar_graph,
+                                bounds,
+                            ));
+                        }
+                    }
+                    let scalar_graph = scalar_geographic_graph
+                        .get_or_init(|| prepared.graph())
+                        .as_ref();
+                    let operands = if scalar_is_left {
+                        PreparedTopologyPair::GeographicLeftGraph {
+                            left: scalar,
+                            right: element_prepared,
+                            left_graph: scalar_graph,
+                        }
+                    } else {
+                        PreparedTopologyPair::GeographicRightGraph {
+                            left: element_prepared,
+                            right: scalar,
+                            right_graph: scalar_graph,
+                        }
+                    };
+                    Ok(topology_scalar_pair(spec, operands))
+                })
+                .collect()
+        },
+    }
 }
 
 /// Declared kind + emptiness for one storage row (no materialize for packed).
-fn row_kind_empty(row: ShapeRow<'_>) -> (GeometryKind, bool) {
+pub(crate) fn row_kind_empty(row: ShapeRow<'_>) -> (GeometryKind, bool) {
     match row {
         ShapeRow::Point(_) => (GeometryKind::Point, false),
         ShapeRow::Line(_, start, end) => (GeometryKind::LineString, start == end),
@@ -809,23 +853,14 @@ mod tests {
     /// undecided rather than guessed.
     #[test]
     fn disjoint_bounds_decide_a_pattern_only_where_they_prove_it() {
-        use crate::geometry::TopologyDomain;
         let gate =
             |left: &crate::geometry::Shape, right: &crate::geometry::Shape, pattern: &str| {
                 let (lp, rp) = (
                     PreparedPlan::transient(left),
                     PreparedPlan::transient(right),
                 );
-                let lo = GateOperand::new(
-                    ShapeRow::Shape(lp.shape()),
-                    lp.bounds(),
-                    TopologyDomain::Cartesian,
-                );
-                let ro = GateOperand::new(
-                    ShapeRow::Shape(rp.shape()),
-                    rp.bounds(),
-                    TopologyDomain::Cartesian,
-                );
+                let lo = GateOperand::cartesian(ShapeRow::Shape(lp.shape()), lp.bounds());
+                let ro = GateOperand::cartesian(ShapeRow::Shape(rp.shape()), rp.bounds());
                 super::pattern_bounds_gate(
                     crate::geometry::CompiledPattern::new(pattern).unwrap(),
                     &lo,
@@ -958,7 +993,8 @@ mod tests {
                 None,
                 TopologyDomain::Cartesian,
                 &cache,
-            );
+            )
+            .expect("fixture admits");
             assert_eq!(actual, [true, false]);
         }
     }
@@ -979,7 +1015,8 @@ mod tests {
                 None,
                 TopologyDomain::Cartesian,
                 &cartesian_cache,
-            ),
+            )
+            .expect("fixture admits"),
             [false]
         );
         assert_eq!(cartesian.topology_graph_accesses(), 0);
@@ -997,7 +1034,8 @@ mod tests {
                 None,
                 TopologyDomain::Geographic(degrees()),
                 &geographic_cache,
-            ),
+            )
+            .expect("fixture admits"),
             [false]
         );
         assert_eq!(geographic_cache.geographic_topology_accesses(), 0);
@@ -1019,7 +1057,8 @@ mod tests {
                 None,
                 TopologyDomain::Cartesian,
                 &cartesian_cache,
-            ),
+            )
+            .expect("fixture admits"),
             [true, true]
         );
         assert_eq!(cartesian.topology_graph_accesses(), 1);
@@ -1039,7 +1078,8 @@ mod tests {
                     None,
                     TopologyDomain::Cartesian,
                     &crate::geometry::FrameDependentCaches::default(),
-                ),
+                )
+                .expect("fixture admits"),
                 [true]
             );
         }
@@ -1058,7 +1098,8 @@ mod tests {
                 None,
                 TopologyDomain::Geographic(degrees()),
                 &geographic_cache,
-            ),
+            )
+            .expect("fixture admits"),
             [true, true]
         );
         assert_eq!(geographic_cache.geographic_topology_accesses(), 1);
@@ -1086,7 +1127,8 @@ mod tests {
                 None,
                 TopologyDomain::Geographic(degrees()),
                 &crate::geometry::FrameDependentCaches::default(),
-            ),
+            )
+            .expect("fixture admits"),
             [true]
         );
     }
@@ -1113,7 +1155,8 @@ mod tests {
             Some(&array),
             TopologyDomain::Cartesian,
             &cache,
-        );
+        )
+        .expect("fixture admits");
         assert_eq!(actual, [true, false]);
     }
 
@@ -1228,7 +1271,8 @@ mod tests {
             None,
             TopologyDomain::Geographic(degrees()),
             &cache,
-        );
+        )
+        .expect("fixture admits");
         assert_eq!(actual, [true]);
     }
 
@@ -1252,7 +1296,8 @@ mod tests {
             None,
             TopologyDomain::Geographic(degrees()),
             &cache,
-        );
+        )
+        .expect("fixture admits");
         assert_eq!(actual, [true]);
     }
 
@@ -1274,7 +1319,8 @@ mod tests {
                     None,
                     TopologyDomain::Geographic(degrees()),
                     &cache,
-                );
+                )
+                .expect("fixture admits");
                 assert_eq!(actual, [true]);
             }
         }
@@ -1300,7 +1346,8 @@ mod tests {
             Some(&array),
             TopologyDomain::Geographic(degrees()),
             &cache,
-        );
+        )
+        .expect("fixture admits");
         assert_eq!(actual, [true]);
     }
 
@@ -1327,5 +1374,78 @@ mod tests {
         }
         assert_eq!(a.relate_pattern(&b, "FF2FF1212").unwrap(), true);
         assert!(a.relate_pattern(&b, "bad").is_err());
+    }
+
+    #[test]
+    fn geographic_nested_admission_allocation_is_resource() {
+        let nested = (0..5).fold(line((0.0, 0.0), (1.0, 0.0)), |shape, _| {
+            Shape::geometry_collection(vec![shape]).expect("test collection is valid")
+        });
+        let nested = PreparedPlan::new(nested);
+        let other = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let nested_cache = crate::geometry::FrameDependentCaches::default();
+        let other_cache = crate::geometry::FrameDependentCaches::default();
+        let frame = degrees();
+        let error = crate::test_support::fail_allocations_after(0, || {
+            match PreparedTopologyPair::try_for_domain(
+                &nested,
+                &nested_cache,
+                &other,
+                &other_cache,
+                TopologyDomain::Geographic(frame),
+            ) {
+                Ok(_) => panic!("nested path allocation must fail admission"),
+                Err(error) => error,
+            }
+        });
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn geographic_invalid_latitude_is_not_a_bounds_false() {
+        let query = PreparedPlan::new(rectangle(0.0, 0.0, 1.0, 1.0));
+        let invalid = Shape::Point(Point::new_raw_xy(0.5, 91.0));
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let error = scalar_vs_shapes(
+            &Predicate::Intersects.spec(),
+            &query,
+            [(0, Some(ShapeRow::Shape(&invalid)))].into_iter(),
+            true,
+            None,
+            TopologyDomain::Geographic(degrees()),
+            &cache,
+        )
+        .unwrap_err();
+        let message = error.1.to_string();
+        assert!(
+            message.contains("invalid longitude/latitude (0.5, 91)"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn geographic_try_for_domain_rejects_invalid_right_latitude() {
+        let left = PreparedPlan::new(rectangle(0.0, 0.0, 1.0, 1.0));
+        let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(10.0, 91.0)));
+        let left_cache = crate::geometry::FrameDependentCaches::default();
+        let right_cache = crate::geometry::FrameDependentCaches::default();
+        let error = match PreparedTopologyPair::try_for_domain(
+            &left,
+            &left_cache,
+            &right,
+            &right_cache,
+            TopologyDomain::Geographic(degrees()),
+        ) {
+            Ok(_) => panic!("invalid latitude must fail admission"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("invalid longitude/latitude (10, 91)"),
+            "{message}"
+        );
     }
 }

@@ -27,8 +27,8 @@ pub(crate) use direct::{
     direct_linework_relate, stage_linework, stage_rings,
 };
 pub(crate) use graph_matrix::{
-    GeographicPrepared, collect_polygons, graph_intersects_bounds, graph_relate_data,
-    ring_has_area, ring_is_sound,
+    GeographicPrepared, admitted_bounds_are_sound, collect_polygons, graph_intersects_bounds,
+    graph_relate_data, ring_has_area, ring_is_sound,
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
     graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
     graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,

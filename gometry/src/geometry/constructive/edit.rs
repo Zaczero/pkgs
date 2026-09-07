@@ -824,8 +824,15 @@ impl Shape {
         bounds: Option<Bounds>,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Self> {
+        let subject_plan = crate::geometry::PreparedPlan::transient(self);
+        let subject_cache = crate::geometry::FrameDependentCaches::default();
+        let subject = crate::geometry::GeographicPrepared::try_new(
+            &subject_plan,
+            &subject_cache,
+            frame,
+        )?;
         let subject_bounds_sound = bounds.is_none_or(|bounds| {
-            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(self), bounds, frame)
+            crate::geometry::admitted_bounds_are_sound(subject.view(), bounds)
         });
         let rectangle_bounds_sound =
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, rect, frame);

@@ -107,6 +107,7 @@ struct GeographicCandidateClassifier<'a> {
     working: NativeRectClassifier,
     authority_plan: &'a PreparedPlan,
     authority_cache: &'a crate::geometry::FrameDependentCaches,
+    authority_view: crate::geographic::ScalarGeographicView<'a>,
     authority_graph: OnceLock<Arc<crate::geometry::TopologyGraph>>,
     frame: crate::geographic::GeographicFrame,
 }
@@ -123,11 +124,18 @@ impl<'a> GeographicCandidateClassifier<'a> {
             GeographicCoverageSource::from_validated(authority, SphericalGridTarget::Rectangular)
                 .map_err(|_| crate::error::ResourceError::Allocation)?;
         let working = NativeRectClassifier::new(working)?;
+        let authority_view = crate::geometry::GeographicPrepared::try_new(
+            authority_plan,
+            authority_cache,
+            frame,
+        )?
+        .view();
         Ok(Self {
             authority,
             working,
             authority_plan,
             authority_cache,
+            authority_view,
             authority_graph: OnceLock::new(),
             frame,
         })
@@ -146,9 +154,9 @@ impl<'a> GeographicCandidateClassifier<'a> {
     /// Refine a provisional rectangle against the source-owned geographic
     /// graph. A pre-certified interior remains on the fast path; every other
     /// candidate reaches the cached authority graph.
-    fn refine_bounds(&self, bounds: Bounds) -> RectClass {
+    fn refine_bounds(&self, bounds: Bounds) -> Result<RectClass, crate::error::Error> {
         let graph = self.authority_graph();
-        match graph.covers_rectangle(bounds) {
+        Ok(match graph.covers_rectangle(bounds) {
             Some(true) => RectClass::Interior,
             Some(false) => {
                 if graph_intersects_bounds(graph, bounds) {
@@ -161,13 +169,13 @@ impl<'a> GeographicCandidateClassifier<'a> {
                 let candidate = bounds_to_shape(bounds);
                 let candidate_plan = PreparedPlan::transient(&candidate);
                 let candidate_cache = crate::geometry::FrameDependentCaches::default();
-                let operands = PreparedTopologyPair::for_domain(
+                let operands = PreparedTopologyPair::try_for_domain(
                     self.authority_plan,
                     self.authority_cache,
                     &candidate_plan,
                     &candidate_cache,
                     crate::geometry::TopologyDomain::Geographic(self.frame),
-                );
+                )?;
                 if topology_scalar_pair(&Predicate::Covers.spec(), operands) {
                     RectClass::Interior
                 } else if topology_scalar_pair(&Predicate::Intersects.spec(), operands) {
@@ -176,14 +184,14 @@ impl<'a> GeographicCandidateClassifier<'a> {
                     RectClass::Outside
                 }
             },
-        }
+        })
     }
 
     fn authority_graph(&self) -> &crate::geometry::TopologyGraph {
         self.authority_graph
             .get_or_init(|| {
                 self.authority_cache
-                    .geographic_topology_graph(self.authority_plan, self.frame)
+                    .geographic_topology_graph(self.authority_view)
             })
             .as_ref()
     }
@@ -491,7 +499,7 @@ pub(crate) fn cover<C: RectCell>(
                 }
             },
             RectClass::Boundary => {
-                match classifier.refine_bounds(bounds) {
+                match classifier.refine_bounds(bounds)? {
                     RectClass::Outside => {},
                     RectClass::Interior => {
                         if cell.depth() >= target_depth {
@@ -739,8 +747,13 @@ mod tests {
         )
         .expect("cover");
         let graph = authority_cache.geographic_topology_graph(
-            &authority_plan,
-            crate::geographic::GeographicFrame::crs84(),
+            crate::geometry::GeographicPrepared::try_new(
+                &authority_plan,
+                &authority_cache,
+                crate::geographic::GeographicFrame::crs84(),
+            )
+            .expect("fixture admits")
+            .view(),
         );
         let filtered: Vec<_> = overlap
             .into_iter()
@@ -781,8 +794,14 @@ mod tests {
         )
         .unwrap();
         let bounds = Bounds::new_raw(0.0, 81.0, 1.0, 82.0);
-        assert_eq!(classifier.refine_bounds(bounds), RectClass::Interior);
-        assert_eq!(classifier.refine_bounds(bounds), RectClass::Interior);
+        assert_eq!(
+            classifier.refine_bounds(bounds).expect("fixture admits"),
+            RectClass::Interior
+        );
+        assert_eq!(
+            classifier.refine_bounds(bounds).expect("fixture admits"),
+            RectClass::Interior
+        );
         assert_eq!(cache.geographic_topology_accesses(), 1);
         assert_eq!(cache.geographic_topology_builds(), 1);
     }
@@ -816,7 +835,7 @@ mod tests {
         for token in ["e", "s"] {
             let cell = geohash::Geohash::parse(token).unwrap();
             assert_eq!(
-                classifier.refine_bounds(cell.bounds()),
+                classifier.refine_bounds(cell.bounds()).expect("fixture admits"),
                 RectClass::Interior,
                 "cell {token}"
             );
@@ -875,7 +894,10 @@ mod tests {
             classifier.authority_graph().covers_rectangle(bounds),
             Some(false)
         );
-        assert_eq!(classifier.refine_bounds(bounds), RectClass::Boundary);
+        assert_eq!(
+            classifier.refine_bounds(bounds).expect("fixture admits"),
+            RectClass::Boundary
+        );
     }
 
     #[test]
@@ -909,9 +931,18 @@ mod tests {
         for bounds in [disjoint, intersects, covers] {
             assert_eq!(classifier.authority_graph().covers_rectangle(bounds), None);
         }
-        assert_eq!(classifier.refine_bounds(disjoint), RectClass::Outside);
-        assert_eq!(classifier.refine_bounds(intersects), RectClass::Boundary);
-        assert_eq!(classifier.refine_bounds(covers), RectClass::Interior);
+        assert_eq!(
+            classifier.refine_bounds(disjoint).expect("fixture admits"),
+            RectClass::Outside
+        );
+        assert_eq!(
+            classifier.refine_bounds(intersects).expect("fixture admits"),
+            RectClass::Boundary
+        );
+        assert_eq!(
+            classifier.refine_bounds(covers).expect("fixture admits"),
+            RectClass::Interior
+        );
     }
 
     #[test]

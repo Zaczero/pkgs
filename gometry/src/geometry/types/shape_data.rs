@@ -97,13 +97,12 @@ struct FrameDependentEntry {
 impl FrameDependentCaches {
     pub(crate) fn geographic_topology_graph(
         &self,
-        plan: &PreparedPlan,
-        frame: crate::geographic::GeographicFrame,
+        view: crate::geographic::ScalarGeographicView<'_>,
     ) -> Arc<crate::geometry::topology::TopologyGraph> {
         #[cfg(test)]
         self.geographic_topology_accesses
             .fetch_add(1, Ordering::Relaxed);
-        let key = GeographicTopologyKey::new(frame);
+        let key = GeographicTopologyKey::new(view.frame());
         let generation = {
             let mut slot = self
                 .geographic_topology
@@ -125,10 +124,7 @@ impl FrameDependentCaches {
         #[cfg(test)]
         self.geographic_topology_builds
             .fetch_add(1, Ordering::Relaxed);
-        let built = Arc::new(crate::geometry::topology::TopologyGraph::geographic(
-            plan.shape(),
-            frame,
-        ));
+        let built = Arc::new(crate::geometry::topology::TopologyGraph::geographic(view));
         let mut slot = self
             .geographic_topology
             .lock()

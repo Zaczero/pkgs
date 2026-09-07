@@ -24,7 +24,7 @@ use crate::error::Result;
 use crate::geometry::{PreparedPlan, TopologyDomain};
 use crate::predicates::PyPreparedGeometry;
 use crate::predicates::engine::{
-    GateOperand, Predicate, PreparedTopologyPair, topology_scalar_pair,
+    GateOperand, Predicate, PreparedTopologyPair, row_kind_empty, topology_scalar_pair,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
@@ -125,7 +125,8 @@ pub(crate) fn predicate_scalar_vs_array(
                 domain,
                 &scalar_cache,
             )
-        }),
+        })
+        .map_err(super::rows_err)?,
         missing.as_ref(),
     )
 }
@@ -158,46 +159,71 @@ pub(crate) fn predicate_pairwise_arrays(
                     // It never reaches an exact kernel, and the mask replaces
                     // this value on the way out.
                     let (ArrayRow::Present(left), ArrayRow::Present(right)) = (left, right) else {
-                        return false;
+                        return Ok(false);
                     };
                     let index = left.logical();
                     let left = left.row();
                     let right = right.row();
-                    if let Some(verdict) = spec.pre_topology(
-                        GateOperand::new(
-                            left,
-                            left_bounds
-                                .as_ref()
-                                .and_then(|bounds| bounds.get(index).copied().flatten()),
-                            domain,
-                        ),
-                        GateOperand::new(
-                            right,
-                            right_bounds
-                                .as_ref()
-                                .and_then(|bounds| bounds.get(index).copied().flatten()),
-                            domain,
-                        ),
-                    ) {
-                        return verdict;
+                    match domain {
+                        TopologyDomain::Cartesian => {
+                            if let Some(verdict) = spec.pre_topology(
+                                GateOperand::cartesian(
+                                    left,
+                                    left_bounds
+                                        .as_ref()
+                                        .and_then(|bounds| bounds.get(index).copied().flatten()),
+                                ),
+                                GateOperand::cartesian(
+                                    right,
+                                    right_bounds
+                                        .as_ref()
+                                        .and_then(|bounds| bounds.get(index).copied().flatten()),
+                                ),
+                            ) {
+                                return Ok(verdict);
+                            }
+                            let left = left_rows.prepared_at(index, left);
+                            let right = right_rows.prepared_at(index, right);
+                            let left_cache = left_rows.frame_cache(index);
+                            let right_cache = right_rows.frame_cache(index);
+                            Ok(topology_scalar_pair(
+                                &spec,
+                                PreparedTopologyPair::try_for_domain(
+                                    &left,
+                                    &left_cache,
+                                    &right,
+                                    &right_cache,
+                                    domain,
+                                )?,
+                            ))
+                        },
+                        TopologyDomain::Geographic(_) => {
+                            let (left_kind, _) = row_kind_empty(left);
+                            let (right_kind, _) = row_kind_empty(right);
+                            if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind)
+                            {
+                                return Ok(verdict);
+                            }
+                            let left = left_rows.prepared_at(index, left);
+                            let right = right_rows.prepared_at(index, right);
+                            let left_cache = left_rows.frame_cache(index);
+                            let right_cache = right_rows.frame_cache(index);
+                            Ok(topology_scalar_pair(
+                                &spec,
+                                PreparedTopologyPair::try_for_domain(
+                                    &left,
+                                    &left_cache,
+                                    &right,
+                                    &right_cache,
+                                    domain,
+                                )?,
+                            ))
+                        },
                     }
-                    let left = left_rows.prepared_at(index, left);
-                    let right = right_rows.prepared_at(index, right);
-                    let left_cache = left_rows.frame_cache(index);
-                    let right_cache = right_rows.frame_cache(index);
-                    topology_scalar_pair(
-                        &spec,
-                        PreparedTopologyPair::for_domain(
-                            &left,
-                            &left_cache,
-                            &right,
-                            &right_cache,
-                            domain,
-                        ),
-                    )
                 })
-                .collect::<Vec<_>>()
-        }),
+                .collect_rows()
+        })
+        .map_err(super::rows_err)?,
         missing.as_ref(),
     )
 }
@@ -312,7 +338,7 @@ where
                     let element_plan = rows.prepared_at(row, shape);
                     let element_cache = rows.frame_cache(row);
                     let operands = if scalar_is_left {
-                        PreparedTopologyPair::for_domain(
+                        PreparedTopologyPair::try_for_domain(
                             &scalar_plan,
                             &scalar_cache,
                             &element_plan,
@@ -320,14 +346,14 @@ where
                             domain,
                         )
                     } else {
-                        PreparedTopologyPair::for_domain(
+                        PreparedTopologyPair::try_for_domain(
                             &element_plan,
                             &element_cache,
                             &scalar_plan,
                             &scalar_cache,
                             domain,
                         )
-                    };
+                    }?;
                     Ok(evaluate(operands))
                 })
                 .collect_rows()
@@ -374,13 +400,13 @@ where
                     let right_plan = right_rows.prepared_at(right_index, right_shape);
                     let left_cache = left_rows.frame_cache(left_index);
                     let right_cache = right_rows.frame_cache(right_index);
-                    Ok(evaluate(PreparedTopologyPair::for_domain(
+                    Ok(evaluate(PreparedTopologyPair::try_for_domain(
                         &left_plan,
                         &left_cache,
                         &right_plan,
                         &right_cache,
                         domain,
-                    )))
+                    )?))
                 })
                 .collect_rows()
         })
@@ -417,14 +443,15 @@ where
             let left_cache = left.frame_cache();
             let right_cache = right.frame_cache();
             let value = py.detach(move || {
-                evaluate(PreparedTopologyPair::for_domain(
+                PreparedTopologyPair::try_for_domain(
                     &left_plan,
                     &left_cache,
                     &right_plan,
                     &right_cache,
                     domain,
-                ))
-            });
+                )
+                .map(evaluate)
+            })?;
             R::into_py(value, py, &frame)
         },
         (GeometryInput::One(left), GeometryInput::Many(right)) => {
@@ -592,13 +619,13 @@ fn xy_predicate_array_values(
                         let point_cache = crate::geometry::FrameDependentCaches::default();
                         Ok(topology_scalar_pair(
                             &spec,
-                            PreparedTopologyPair::for_domain(
+                            PreparedTopologyPair::try_for_domain(
                                 &row,
                                 &row_cache,
                                 &point,
                                 &point_cache,
                                 domain,
-                            ),
+                            )?,
                         ))
                     },
                 })
@@ -618,19 +645,18 @@ fn xy_array_values(
 ) -> Result<Vec<bool>, (usize, crate::error::Error)> {
     x.into_iter()
         .zip(y)
-        .map(|(x, y)| Point::new_raw_xy(x, y))
-        .map(|point| {
-            let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
+        .map(|(x, y)| {
+            let point = PreparedPlan::new(ShapeData::from(Shape::Point(Point::new_raw_xy(x, y))));
             let point_cache = crate::geometry::FrameDependentCaches::default();
             Ok(topology_scalar_pair(
                 &spec,
-                PreparedTopologyPair::for_domain(
+                PreparedTopologyPair::try_for_domain(
                     original,
                     original_cache,
                     &point,
                     &point_cache,
                     domain,
-                ),
+                )?,
             ))
         })
         .collect_rows()
@@ -657,17 +683,15 @@ pub(crate) fn xy_predicate_values(
         let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
         let point_cache = crate::geometry::FrameDependentCaches::default();
         let value = py.detach(move || {
-            topology_scalar_pair(
-                &spec,
-                PreparedTopologyPair::for_domain(
-                    &original,
-                    &original_cache,
-                    &point,
-                    &point_cache,
-                    domain,
-                ),
+            PreparedTopologyPair::try_for_domain(
+                &original,
+                &original_cache,
+                &point,
+                &point_cache,
+                domain,
             )
-        });
+            .map(|operands| topology_scalar_pair(&spec, operands))
+        })?;
         return Ok(py_bool(py, value));
     }
     let result = py
@@ -721,13 +745,14 @@ mod geographic_tests {
             .map(|&(x, y)| {
                 let point = PreparedPlan::new(Shape::Point(Point::new_raw_xy(x, y)));
                 let point_cache = crate::geometry::FrameDependentCaches::default();
-                PreparedTopologyPair::for_domain(
+                PreparedTopologyPair::try_for_domain(
                     &source,
                     &geometry.frame_cache(),
                     &point,
                     &point_cache,
                     domain,
                 )
+                .expect("fixture admits")
                 .relate()
                 .is_intersects()
             })

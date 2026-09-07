@@ -95,17 +95,17 @@ pub(crate) fn dispatch_predicate(
         let domain = crate::geometry::topology_domain(&left.frame)?;
         let spec = predicate.spec();
         let value = py.detach(move || {
-            crate::predicates::engine::topology_scalar_pair(
-                &spec,
-                crate::predicates::engine::PreparedTopologyPair::for_domain(
-                    &left_plan,
-                    &left_cache,
-                    &right_plan,
-                    &right_cache,
-                    domain,
-                ),
+            crate::predicates::engine::PreparedTopologyPair::try_for_domain(
+                &left_plan,
+                &left_cache,
+                &right_plan,
+                &right_cache,
+                domain,
             )
-        });
+            .map(|operands| {
+                crate::predicates::engine::topology_scalar_pair(&spec, operands)
+            })
+        })?;
         return Ok(crate::broadcast::py_bool(py, value));
     }
     dispatch_binary(

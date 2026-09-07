@@ -120,7 +120,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         .into());
     }
 
-    let bounds_facts = overlay_bounds_facts(geometries, domain, op);
+    let bounds_facts = overlay_bounds_facts(geometries, domain, op)?;
 
     if bounds_certificates
         && geometries.len() > 1
@@ -624,37 +624,63 @@ struct OverlayBoundsFacts {
     raw_polygon_loops_eligible: bool,
 }
 
+fn overlay_view_error(
+    error: crate::geographic::GeographicViewError,
+) -> crate::error::Error {
+    match error {
+        crate::geographic::GeographicViewError::Resource => {
+            crate::error::ResourceError::Allocation.into()
+        },
+        crate::geographic::GeographicViewError::Diagnostic(diagnostic) => match diagnostic.source {
+            crate::geographic::GeographicError::NonFinite { .. }
+            | crate::geographic::GeographicError::LatitudeOutOfRange { .. } => {
+                crate::boundary::geographic::invalid_lonlat_error(
+                    diagnostic.native.x,
+                    diagnostic.native.y,
+                )
+            },
+            crate::geographic::GeographicError::SeamTransitOverflow
+            | crate::geographic::GeographicError::InvalidAngularFactor { .. }
+            | crate::geographic::GeographicError::InvalidSweep { .. } => {
+                GeometryErrorKind::message(diagnostic.to_string())
+            },
+        },
+    }
+}
+
 fn overlay_bounds_facts<S: Borrow<Shape>>(
     inputs: &[S],
     domain: TopologyDomain,
     op: OverlayOp,
-) -> OverlayBoundsFacts {
+) -> Result<OverlayBoundsFacts> {
     let bounds = inputs
         .iter()
         .map(|input| input.borrow().bounds())
         .collect::<Vec<_>>();
     let raw_coordinate_bounds_sound = match domain {
         TopologyDomain::Cartesian => true,
-        TopologyDomain::Geographic(frame) => inputs.iter().zip(&bounds).all(|(input, bounds)| {
-            bounds.is_some_and(|bounds| {
-                crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
-                    Some(input.borrow()),
-                    bounds,
-                    frame,
-                )
-            })
-        }),
+        TopologyDomain::Geographic(frame) => {
+            let mut all_sound = true;
+            for (input, bounds) in inputs.iter().zip(&bounds) {
+                let view = crate::geographic::ScalarGeographicView::try_new(frame, input.borrow())
+                    .map_err(overlay_view_error)?;
+                all_sound &= bounds.is_some_and(|bounds| {
+                    crate::geometry::admitted_bounds_are_sound(view, bounds)
+                });
+            }
+            all_sound
+        },
     };
     let raw_polygon_loops_eligible = op == OverlayOp::Union
         && raw_coordinate_bounds_sound
         && !inputs
             .iter()
             .any(|input| has_nonempty_point_or_line_support(input.borrow()));
-    OverlayBoundsFacts {
+    Ok(OverlayBoundsFacts {
         bounds,
         raw_coordinate_bounds_sound,
         raw_polygon_loops_eligible,
-    }
+    })
 }
 
 /// The connected components of the inputs under bounds overlap, each as the
@@ -819,15 +845,28 @@ fn assemble_joint_graph_overlay(
 ) -> Result<Shape> {
     let graph = match domain {
         TopologyDomain::Cartesian => TopologyGraph::cartesian_many(inputs),
-        TopologyDomain::Geographic(frame) => TopologyGraph::geographic_many(inputs, frame),
+        TopologyDomain::Geographic(frame) => {
+            let views = inputs
+                .iter()
+                .map(|shape| {
+                    crate::geographic::ScalarGeographicView::try_new(frame, shape)
+                        .map_err(overlay_view_error)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            TopologyGraph::geographic_many(&views, frame)
+        },
     };
     let source_graphs: Vec<TopologyGraph> = inputs
         .iter()
         .map(|shape| match domain {
-            TopologyDomain::Cartesian => TopologyGraph::cartesian(shape),
-            TopologyDomain::Geographic(frame) => TopologyGraph::geographic(shape, frame),
+            TopologyDomain::Cartesian => Ok(TopologyGraph::cartesian(shape)),
+            TopologyDomain::Geographic(frame) => {
+                let view = crate::geographic::ScalarGeographicView::try_new(frame, shape)
+                    .map_err(overlay_view_error)?;
+                Ok(TopologyGraph::geographic(view))
+            },
         })
-        .collect();
+        .collect::<Result<_>>()?;
     let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible);
     // Overlay edges and candidate points are numerous for high-resolution
     // boundaries; prepare the retained polygons once instead of rescanning

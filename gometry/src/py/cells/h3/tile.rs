@@ -31,20 +31,19 @@ fn checked_predicate(
     authority_cache: &crate::geometry::FrameDependentCaches,
     frame: crate::geographic::GeographicFrame,
     cell: CellIndex,
-) -> bool {
+) -> Result<bool, H3TileError> {
     let center = LatLng::from(cell);
     let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(center.lng(), center.lat())));
     let probe_cache = crate::geometry::FrameDependentCaches::default();
-    topology_scalar_pair(
-        &Predicate::Covers.spec(),
-        PreparedTopologyPair::for_domain(
-            authority,
-            authority_cache,
-            &probe,
-            &probe_cache,
-            TopologyDomain::Geographic(frame),
-        ),
+    let operands = PreparedTopologyPair::try_for_domain(
+        authority,
+        authority_cache,
+        &probe,
+        &probe_cache,
+        TopologyDomain::Geographic(frame),
     )
+    .map_err(|_| H3TileError::Allocation)?;
+    Ok(topology_scalar_pair(&Predicate::Covers.spec(), operands))
 }
 
 /// A native H3 polyfill: each polygon is flood-filled independently from the
@@ -160,7 +159,7 @@ pub(super) fn h3_tile_point(
         return Ok(());
     };
     let cell = latlng.to_cell(resolution);
-    if checked_predicate(authority, authority_cache, frame, cell) {
+    if checked_predicate(authority, authority_cache, frame, cell)? {
         try_insert_cell(coverage, cell)?;
         check_budget(coverage.len(), max_cells)?;
     }
@@ -194,7 +193,7 @@ pub(super) fn h3_tile_line(
             if !try_insert_cell(&mut seen, cell)? {
                 continue;
             }
-            if checked_predicate(authority, authority_cache, frame, cell) {
+            if checked_predicate(authority, authority_cache, frame, cell)? {
                 try_insert_cell(coverage, cell)?;
                 check_budget(coverage.len(), max_cells)?;
             }
@@ -222,7 +221,7 @@ fn flood_checked(
                 let neighbor =
                     CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
                 if try_insert_cell(seen, neighbor)?
-                    && checked_predicate(authority, authority_cache, frame, neighbor)
+                    && checked_predicate(authority, authority_cache, frame, neighbor)?
                 {
                     try_insert_cell(coverage, neighbor)?;
                     check_budget(coverage.len(), max_cells)?;
@@ -262,7 +261,7 @@ pub(super) fn h3_tile_polygon(
             for &raw in h3_one_ring(edge_cell, &mut scratch) {
                 let cell = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
                 if try_insert_cell(&mut seen, cell)? {
-                    let matched = checked_predicate(authority, authority_cache, frame, cell);
+                    let matched = checked_predicate(authority, authority_cache, frame, cell)?;
                     if matched {
                         try_insert_cell(coverage, cell)?;
                         check_budget(coverage.len(), max_cells)?;
@@ -294,7 +293,7 @@ pub(super) fn h3_tile_polygon(
         for &raw in h3_one_ring(cell, &mut scratch) {
             let neighbor = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
             if try_insert_cell(&mut seen, neighbor)? {
-                let matched = checked_predicate(authority, authority_cache, frame, neighbor);
+                let matched = checked_predicate(authority, authority_cache, frame, neighbor)?;
                 if matched {
                     try_insert_cell(coverage, neighbor)?;
                     check_budget(coverage.len(), max_cells)?;
@@ -352,7 +351,7 @@ fn h3_tile_polygon_seeds_center(
         }
     }
     for &seed in &seed_band {
-        if checked_predicate(authority, authority_cache, frame, seed) {
+        if checked_predicate(authority, authority_cache, frame, seed)? {
             try_insert_cell(coverage, seed)?;
             check_budget(coverage.len(), max_cells)?;
         }

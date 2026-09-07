@@ -245,22 +245,27 @@ impl TopologyGraph {
     }
 
     pub(crate) fn geographic_many(
-        shapes: &[&Shape],
+        views: &[crate::geographic::ScalarGeographicView<'_>],
         frame: crate::geographic::GeographicFrame,
     ) -> Self {
+        debug_assert!(
+            views.iter().all(|view| view.frame() == frame),
+            "geographic_many takes the domain frame as authority; every view must match it"
+        );
         let mut builder = GraphBuilder::new_many(TopologyDomain::Geographic(frame));
-        for (source_row, shape) in shapes.iter().enumerate() {
-            builder.collect(shape, source_row as u32);
+        for (source_row, view) in views.iter().enumerate() {
+            builder.collect(view.shape(), source_row as u32);
         }
-        builder.finish_many(shapes)
+        let shapes: Vec<&Shape> = views.iter().map(|view| view.shape()).collect();
+        builder.finish_many(&shapes)
     }
 
     pub(crate) fn cartesian(shape: &Shape) -> Self {
         Self::build(shape, TopologyDomain::Cartesian)
     }
 
-    pub(crate) fn geographic(shape: &Shape, frame: crate::geographic::GeographicFrame) -> Self {
-        Self::build(shape, TopologyDomain::Geographic(frame))
+    pub(crate) fn geographic(view: crate::geographic::ScalarGeographicView<'_>) -> Self {
+        Self::build(view.shape(), TopologyDomain::Geographic(view.frame()))
     }
 
     pub(crate) fn node_for(&self, point: XY) -> Option<TopologyNodeId> {
@@ -2666,6 +2671,22 @@ mod tests {
             .unwrap()
     }
 
+    fn geographic_graph(shape: &Shape) -> TopologyGraph {
+        TopologyGraph::geographic(
+            crate::geographic::ScalarGeographicView::try_new(degrees(), shape)
+                .expect("fixture admits"),
+        )
+    }
+
+    fn geographic_graph_in(
+        shape: &Shape,
+        frame: crate::geographic::GeographicFrame,
+    ) -> TopologyGraph {
+        TopologyGraph::geographic(
+            crate::geographic::ScalarGeographicView::try_new(frame, shape).expect("fixture admits"),
+        )
+    }
+
     fn point(x: f64, y: f64) -> Point {
         Point::new_raw_xy(x, y)
     }
@@ -2729,7 +2750,7 @@ mod tests {
             ])
             .expect("homogeneous points"),
         );
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert_eq!(graph.nodes.len(), 1);
         assert!(graph.equivalent(XY::new(-180.0, 5.0), XY::new(180.0, 5.0)));
     }
@@ -2743,7 +2764,7 @@ mod tests {
             ])
             .expect("homogeneous points"),
         );
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert_eq!(graph.nodes.len(), 1);
         assert_eq!(graph.node_for(XY::new(0.0, 90.0)), Some(TopologyNodeId(0)));
     }
@@ -2751,7 +2772,7 @@ mod tests {
     #[test]
     fn chart_cut_is_line_interior_not_source_boundary() {
         let shape = Shape::LineString(line(&[(170.0, 0.0), (-170.0, 0.0)]));
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert_eq!(graph.edges.len(), 2);
         assert!(!graph.has_line_boundary(XY::new(180.0, 0.0)));
         assert!(graph.has_line_boundary(XY::new(170.0, 0.0)));
@@ -2795,7 +2816,7 @@ mod tests {
                 (175.0, -5.0),
             ]],
         ));
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert_eq!(
             geographic_ring_location(
                 graph.area_support[0].geographic_rings().0,
@@ -2827,7 +2848,7 @@ mod tests {
             ],
             &[],
         ));
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert!(graph.contains_area_interior(XY::new(-120.0, 85.0)));
         assert!(graph.contains_area_interior(XY::new(120.0, 85.0)));
         assert!(graph.contains_area_interior(XY::new(0.0, 90.0)));
@@ -2846,7 +2867,7 @@ mod tests {
             ],
             &[],
         ));
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert_eq!(
             graph.locate_point(XY::new(0.0, 0.0)),
             TopologyLocation::Interior
@@ -2874,7 +2895,7 @@ mod tests {
             Shape::LineString(line(&[(170.0, -2.0), (-170.0, 4.0)])),
             Shape::LineString(line(&[(-180.0, -3.0), (180.0, 3.0)])),
         ]);
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         for point in [
             XY::new(0.0, 1.0),
             XY::new(360.0, 1.0),
@@ -2897,7 +2918,7 @@ mod tests {
             Shape::LineString(line(&[(170.0, -2.0), (-170.0, 4.0)])),
             Shape::LineString(line(&[(-180.0, -3.0), (180.0, 3.0)])),
         ]);
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         let points = [
             XY::new(0.0, 1.0),
             XY::new(360.0, 1.0),
@@ -2924,7 +2945,7 @@ mod tests {
                 Shape::LineString(line(&[(-1.0, -1.0 + offset), (1.0, 1.0 + offset)]))
             })
             .collect();
-        let graph = TopologyGraph::geographic(&collection(lines), degrees());
+        let graph = geographic_graph(&collection(lines));
         let ((), allocations) = crate::test_support::allocation_count(|| {
             for _ in 0..8 {
                 let _ = graph.locate_point(XY::new(0.0, 0.0));
@@ -2956,7 +2977,7 @@ mod tests {
                 (-180.0, 80.0),
             ]],
         ));
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert_eq!(
             graph.locate_point(XY::new(0.0, 75.0)),
             TopologyLocation::Interior
@@ -2979,7 +3000,7 @@ mod tests {
         ));
         for count in [2, 3] {
             let graph =
-                TopologyGraph::geographic(&collection(vec![member.clone(); count]), degrees());
+                geographic_graph(&collection(vec![member.clone(); count]));
             assert_eq!(
                 graph.locate_point(XY::new(2.0, 2.0)),
                 TopologyLocation::Interior
@@ -2997,7 +3018,7 @@ mod tests {
             &[(0.0, 0.0), (4.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
             &[],
         ));
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert_eq!(
             graph.locate_point(XY::new(2.0, 0.0)),
             TopologyLocation::Boundary
@@ -3024,7 +3045,7 @@ mod tests {
             ],
             &[],
         ));
-        let graph = TopologyGraph::geographic(&shape, frame);
+        let graph = geographic_graph_in(&shape, frame);
         assert!(frame.longitude().period() > 399.0);
         assert_eq!(
             graph.locate_point(XY::new(0.0, frame.pole())),
@@ -3183,7 +3204,7 @@ mod tests {
         ]);
         for graph in [
             TopologyGraph::cartesian(&cartesian),
-            TopologyGraph::geographic(&geographic, degrees()),
+            geographic_graph(&geographic),
         ] {
             let mut points = Vec::new();
             points.extend(graph.nodes.iter().map(|node| node.point));
@@ -3251,7 +3272,7 @@ mod tests {
             ],
             &[],
         ));
-        let graph = TopologyGraph::geographic(&geographic, degrees());
+        let graph = geographic_graph(&geographic);
         for longitude in [-181.0, 179.0, 539.0] {
             let mut ids = Vec::new();
             let _: Option<()> = graph.for_each_area_interior(XY::new(longitude, 5.0), |polygon| {
@@ -3286,7 +3307,7 @@ mod tests {
         ]);
         for graph in [
             TopologyGraph::cartesian(&cartesian),
-            TopologyGraph::geographic(&geographic, degrees()),
+            geographic_graph(&geographic),
         ] {
             for node in &graph.nodes {
                 assert_eq!(node.location, graph.locate_point(node.point));
@@ -3364,7 +3385,7 @@ mod tests {
             ],
             &[],
         ));
-        let graph = TopologyGraph::geographic(&shape, degrees());
+        let graph = geographic_graph(&shape);
         assert!(graph.edges.iter().any(|edge| {
             graph.equivalent(edge.segment.start, XY::new(180.0, 0.0))
                 || graph.equivalent(edge.segment.end, XY::new(180.0, 0.0))
@@ -3375,7 +3396,7 @@ mod tests {
     #[test]
     fn geographic_chart_keeps_exact_one_ulp_source_endpoint() {
         let one_ulp_shape = geographic_one_ulp_endpoint_fixture();
-        let one_ulp_graph = TopologyGraph::geographic(&one_ulp_shape, degrees());
+        let one_ulp_graph = geographic_graph(&one_ulp_shape);
         let endpoint = f64::from_bits((-170.0_f64).to_bits() + 1);
         // A rounded `start + delta` would leave a second node at the shared
         // source endpoint instead of selecting its exact canonical copy.
