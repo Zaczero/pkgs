@@ -172,19 +172,31 @@ fn split_view_error(error: GeographicViewError) -> crate::error::Error {
     }
 }
 
+fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
+    let frame = view.frame();
+    let mut canonical = true;
+    view.for_each_coordinate(|coordinate| {
+        let native = coordinate.native().x;
+        let wrapped = coordinate.longitude().get();
+        let positive_seam = native.to_bits() == frame.longitude().half_period().to_bits();
+        canonical &= positive_seam || native.to_bits() == wrapped.to_bits();
+    });
+    canonical
+}
+
 fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
     let frame = view.frame();
+    let canonical = source_longitudes_are_canonical(view);
+    if frame == GeographicFrame::crs84()
+        && canonical
+        && !view.shape().crosses_antimeridian()
+    {
+        return Ok(view.shape().clone());
+    }
     let longitude_scale = frame.longitude().unit().radians_per_unit().to_degrees();
     let latitude_scale = frame.latitude_unit().radians_per_unit().to_degrees();
     let chart = chart_shape(view.shape(), frame, longitude_scale, latitude_scale)?;
-    let mut source_is_canonical = true;
-    view.for_each_coordinate(|coordinate| {
-        let native = coordinate.native().x;
-        let canonical = coordinate.longitude().get();
-        let positive_seam = native.to_bits() == frame.longitude().half_period().to_bits();
-        source_is_canonical &= positive_seam || native.to_bits() == canonical.to_bits();
-    });
-    if source_is_canonical && !chart.crosses_antimeridian() {
+    if canonical && !chart.crosses_antimeridian() {
         return Ok(view.shape().clone());
     }
     let split = chart.split_antimeridian_chart()?;
@@ -773,4 +785,125 @@ fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
         }
     }
     rings
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::geographic::{AngularFactor, GeographicFrame};
+    use crate::geometry::{
+        CoordSeq, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, ZOrdinate,
+    };
+    use crate::test_support::allocation_count;
+
+    fn line(xs: &[f64], ys: &[f64]) -> Shape {
+        Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(xs.to_vec(), ys.to_vec(), None, None)).unwrap(),
+        )
+    }
+
+    fn closed_ring(xs: &[f64], ys: &[f64]) -> Ring {
+        Ring::closed_coordseq(CoordSeq::from_vecs(xs.to_vec(), ys.to_vec(), None, None)).unwrap()
+    }
+
+    fn split_crs84(shape: &Shape) -> Shape {
+        shape
+            .split_antimeridian_in_frame(GeographicFrame::crs84())
+            .unwrap()
+    }
+
+    #[test]
+    fn degree_try_new_frame_equals_crs84() {
+        let degrees =
+            AngularFactor::try_new("angular unit", std::f64::consts::PI / 180.0).unwrap();
+        let frame = GeographicFrame::try_new(degrees, degrees, 0.0).unwrap();
+        assert_eq!(frame, GeographicFrame::crs84());
+    }
+
+    #[test]
+    fn crs84_canonical_noncrossing_line_matches_source_and_skips_chart_alloc() {
+        let shape = line(&[10.0, 20.0], &[1.0, 2.0]);
+        let (cloned, clone_n) = allocation_count(|| shape.clone());
+        let (split, split_n) = allocation_count(|| split_crs84(&shape));
+        assert_eq!(split, cloned);
+        assert_eq!(split_n, clone_n);
+        let crossing = line(&[170.0, -170.0], &[0.0, 0.0]);
+        let (_, crossing_n) = allocation_count(|| split_crs84(&crossing));
+        assert!(clone_n < crossing_n);
+    }
+
+    #[test]
+    fn crs84_half_period_endpoint_is_identity() {
+        let shape = line(&[180.0, 0.0], &[0.0, 0.0]);
+        assert_eq!(split_crs84(&shape), shape);
+    }
+
+    #[test]
+    fn crs84_full_period_pair_is_identity() {
+        let shape = line(&[-180.0, 180.0], &[0.0, 0.0]);
+        assert_eq!(split_crs84(&shape), shape);
+    }
+
+    #[test]
+    fn crs84_world_rectangle_is_identity() {
+        let shape = Shape::Polygon(Polygon::new(
+            closed_ring(
+                &[-180.0, 180.0, 180.0, -180.0, -180.0],
+                &[-90.0, -90.0, 90.0, 90.0, -90.0],
+            ),
+            Vec::new(),
+        ));
+        assert_eq!(split_crs84(&shape), shape);
+    }
+
+    #[test]
+    fn crs84_canonical_polygon_with_holes_is_identity() {
+        let shape = Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 10.0, 10.0, 0.0, 0.0], &[0.0, 0.0, 10.0, 10.0, 0.0]),
+            vec![closed_ring(
+                &[2.0, 4.0, 4.0, 2.0, 2.0],
+                &[2.0, 2.0, 4.0, 4.0, 2.0],
+            )],
+        ));
+        assert_eq!(split_crs84(&shape), shape);
+    }
+
+    #[test]
+    fn crs84_nested_xyzm_collection_is_identity() {
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(
+                vec![1.0, 2.0],
+                vec![3.0, 4.0],
+                Some(vec![10.0, 20.0]),
+                Some(vec![7.0, 8.0]),
+            ))
+            .unwrap(),
+        );
+        let point = Shape::Point(
+            Point::new_axes(5.0, 6.0, ZOrdinate(Some(1.0)), MOrdinate(Some(2.0))).unwrap(),
+        );
+        let inner = Shape::geometry_collection(vec![point]).unwrap();
+        let shape = Shape::geometry_collection(vec![line, inner]).unwrap();
+        assert_eq!(split_crs84(&shape), shape);
+    }
+
+    #[test]
+    fn crs84_zero_to_full_turn_band_rewrites() {
+        let shape = Shape::Polygon(Polygon::new(
+            closed_ring(
+                &[0.0, 360.0, 360.0, 0.0, 0.0],
+                &[-30.0, -30.0, 30.0, 30.0, -30.0],
+            ),
+            Vec::new(),
+        ));
+        let split = split_crs84(&shape);
+        assert_ne!(split, shape);
+        let expected = Shape::Polygon(Polygon::new(
+            closed_ring(
+                &[-180.0, 180.0, 180.0, -180.0, -180.0],
+                &[-30.0, -30.0, 30.0, 30.0, -30.0],
+            ),
+            Vec::new(),
+        ));
+        assert_eq!(split, expected);
+    }
 }

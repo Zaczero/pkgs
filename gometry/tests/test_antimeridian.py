@@ -401,6 +401,37 @@ def test_split_antimeridian_both_poles_reverse_winding() -> None:
     assert again.to_wkt() == split.to_wkt()
 
 
+def test_split_antimeridian_crs84_canonical_identity_and_full_turn_rewrite() -> None:
+    half_period = gm.LineString([(180, 0), (0, 0)], crs=4326)
+    assert half_period.split_antimeridian().to_wkt() == half_period.to_wkt()
+    full_period = gm.LineString([(-180, 0), (180, 0)], crs=4326)
+    assert full_period.split_antimeridian().to_wkt() == full_period.to_wkt()
+    world = gm.Polygon(
+        [(-180, -90), (180, -90), (180, 90), (-180, 90), (-180, -90)],
+        crs=4326,
+    )
+    assert world.split_antimeridian().to_wkt() == world.to_wkt()
+    with_holes = gm.Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+        holes=[[(2, 2), (4, 2), (4, 4), (2, 4), (2, 2)]],
+        crs=4326,
+    )
+    assert with_holes.split_antimeridian().to_wkt() == with_holes.to_wkt()
+    nested = gm.GeometryCollection(
+        [
+            gm.LineString([(1, 3), (2, 4)], z=[10, 20], m=[7, 8]),
+            gm.GeometryCollection([gm.Point(5, 6, z=1, m=2)]),
+        ],
+        crs=4326,
+    )
+    assert nested.split_antimeridian().to_wkt() == nested.to_wkt()
+    band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
+    assert (
+        band.split_antimeridian().to_wkt()
+        == 'POLYGON ((-180 -30, 180 -30, 180 30, -180 30, -180 -30))'
+    )
+
+
 def test_split_antimeridian_full_longitude_band() -> None:
     """A ring spanning the full longitude band splits and stays non-empty."""
     band = gm.Polygon([(170, -30), (-170, -30), (-170, 30), (170, 30)], crs=4326)
