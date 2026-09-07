@@ -34,7 +34,7 @@ pub(crate) use access::{
 pub(crate) use area::{
     AreaSign, RingWinding, closed_columns_winding,
     open_point_cycle_decision, open_point_cycle_winding,
-    open_xy_cycle_decision, open_xy_cycle_sign, open_xy_cycle_winding,
+    open_xy_cycle_decision, open_xy_cycle_magnitude, open_xy_cycle_sign, open_xy_cycle_winding,
     cmp_area_keys_then_closed, cmp_area_keys_then_open_columns, polygon_area_measure_columns,
     polygon_area_measure_with, ring_area_measure, ring_decision_area, ring_winding,
 };

@@ -13,7 +13,8 @@ use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, 
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::{
     AreaSign, CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
-    Orientation, Point, PointKey, Result, XY, orientation, ring_decision_area, same_point,
+    Orientation, Point, PointKey, Result, XY, open_xy_cycle_magnitude, orientation,
+    ring_decision_area, same_point,
 };
 
 #[path = "exact_delaunay.rs"]
@@ -79,14 +80,6 @@ fn effective_refinement(area: f64, refinement: CdtRefinement) -> CdtRefinement {
     }
 }
 
-fn triangle_area(a: Point, b: Point, c: Point) -> f64 {
-    // The post-refinement check stays on the same framed/exact area owner as
-    // the preflight admission: raw `(dx * dy - dy * dx) / 2` is precisely the
-    // reciprocal-axis underflow that made an inert max-area request look
-    // unsatisfied.
-    ring_decision_area(&[a, b, c, a][..]).magnitude().get()
-}
-
 fn validate_refinement_request(area: f64, refinement: CdtRefinement) -> Result<()> {
     if let CdtRefinement::On {
         min_angle: Some(angle),
@@ -131,7 +124,8 @@ fn validate_refined_triangle(a: Point, b: Point, c: Point, refinement: CdtRefine
         )));
     }
     if let Some(limit) = max_area
-        && triangle_area(a, b, c) > limit.get() * (1.0 + 1.0e-12)
+        && open_xy_cycle_magnitude(&[a.xy(), b.xy(), c.xy()]).get()
+            > limit.get() * (1.0 + 1.0e-12)
     {
         return Err(GeometryErrorKind::triangulation(format!(
             "constrained refinement did not satisfy max_area={}",

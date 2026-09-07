@@ -72,6 +72,29 @@ def test_max_area_caps_triangle_areas(sliver: gm.Polygon) -> None:
 
 
 @pytest.mark.parametrize(
+    'coords',
+    [
+        [(1e16, 1.0), (1.0, 0.0), (2.0, 1e-8)],
+        [(1.0, 0.0), (2.0, 1e-8), (1e16, 1.0)],
+        [(2.0, 1e-8), (1e16, 1.0), (1.0, 0.0)],
+    ],
+    ids=['A-first', 'B-first', 'C-first'],
+)
+def test_max_area_named_triangle_keeps_limit_across_ring_rotations(
+    coords: list[tuple[float, float]],
+) -> None:
+    """Refine and post-check share ExactSum magnitude; A-first must not skip then throw."""
+    max_area = 49999999.249974996
+    poly = gm.Polygon(coords)
+    assert poly.area > max_area
+    refined = poly.triangulate(method='constrained', max_area=max_area)
+    assert len(refined) > 0
+    slack = max_area * (1.0 + 1.0e-12)
+    for triangle in refined:
+        assert triangle.area <= slack
+
+
+@pytest.mark.parametrize(
     ('kwargs', 'pattern'),
     [
         ({'min_angle': 0}, 'min_angle must be a positive finite number'),

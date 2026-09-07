@@ -961,7 +961,7 @@ pub(crate) fn open_point_cycle_magnitude(points: &[Point]) -> AreaMeasure {
     unsigned_area(&open_cycle_sum(points))
 }
 
-fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
+pub(crate) fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
     unsigned_area(&open_cycle_sum(points))
 }
 

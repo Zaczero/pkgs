@@ -22,7 +22,7 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
-use crate::geometry::{Point, XY};
+use crate::geometry::{Point, XY, open_xy_cycle_magnitude};
 
 use super::exact_delaunay::{EMPTY, Located, Mesh, next_halfedge, prev_halfedge};
 
@@ -214,7 +214,9 @@ impl ConstrainedMesh {
                 let [a, b, c] = self.mesh.triangle(t);
                 let (pa, pb, pc) = (xy(a, points), xy(b, points), xy(c, points));
                 let violates = min_angle.is_some_and(|limit| triangle_min_angle_degrees(pa, pb, pc) < limit)
-                    || max_area.is_some_and(|limit| triangle_area(pa, pb, pc) > limit);
+                    || max_area.is_some_and(|limit| {
+                        open_xy_cycle_magnitude(&[pa, pb, pc]).get() > limit
+                    });
                 if violates {
                     bad = Some(t);
                     break;
@@ -339,10 +341,6 @@ fn between(a: XY, b: XY, p: XY) -> bool {
     lo_x <= p.x && p.x <= hi_x && lo_y <= p.y && p.y <= hi_y && p != a && p != b
 }
 
-pub(super) fn triangle_area(a: XY, b: XY, c: XY) -> f64 {
-    ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)).abs() / 2.0
-}
-
 pub(super) fn triangle_min_angle_degrees(a: XY, b: XY, c: XY) -> f64 {
     let side = |p: XY, q: XY| ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt();
     let (ab, bc, ca) = (side(a, b), side(b, c), side(c, a));
@@ -431,7 +429,10 @@ mod tests {
         for (t, &kept) in inside.iter().enumerate() {
             if kept && mesh.mesh.alive(t) {
                 let [a, b, c] = mesh.mesh.triangle(t);
-                assert!(triangle_area(pts[a].xy(), pts[b].xy(), pts[c].xy()) <= 25.0);
+                assert!(
+                    open_xy_cycle_magnitude(&[pts[a].xy(), pts[b].xy(), pts[c].xy()]).get()
+                        <= 25.0
+                );
             }
         }
         let mut pts2 = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
