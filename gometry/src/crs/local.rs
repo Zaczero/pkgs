@@ -14,7 +14,7 @@ use crate::crs::{
     CrsObjectKind, OperationParameterInfo, RuntimeState, Shape, factors_at, info_with_state,
     is_wgs84_lonlat, normalize, parse_epsg, to_projjson_with_options_at, transform_at, utm_crs,
 };
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorKind, Result};
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(crate) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
@@ -96,12 +96,17 @@ pub(crate) fn estimate_local_crs_at(
         return Ok(LocalCrsDefinition::authority(utm));
     }
 
-    best_custom_candidate(source_crs, &extent, state).map_err(|_| {
-        CrsError::invalid(format!(
-            "geometry cannot be represented by one local conformal CRS within the {:.1}% linear scale-error limit; split the geometry or choose a projected CRS explicitly",
-            LOCAL_SCALE_ERROR_LIMIT * 100.0
-        ))
-    })
+    best_custom_candidate(source_crs, &extent, state).map_err(best_custom_candidate_error)
+}
+
+fn best_custom_candidate_error(error: crate::error::Error) -> crate::error::Error {
+    if matches!(error.kind(), ErrorKind::Resource(_)) {
+        return error;
+    }
+    CrsError::invalid(format!(
+        "geometry cannot be represented by one local conformal CRS within the {:.1}% linear scale-error limit; split the geometry or choose a projected CRS explicitly",
+        LOCAL_SCALE_ERROR_LIMIT * 100.0
+    ))
 }
 
 pub(crate) fn local_crs_fits_at(
@@ -516,6 +521,8 @@ fn utm_zone(lon: f64, lat: f64) -> UtmZone {
 #[cfg(test)]
 mod metadata_tests {
     use super::*;
+    use crate::error::{Error, ErrorKind, ResourceError};
+    use crate::test_support::fail_allocations_after;
 
     fn epsg_param(code: &str, value: f64, factor: f64) -> OperationParameterInfo {
         OperationParameterInfo {
@@ -554,7 +561,11 @@ mod metadata_tests {
     fn stored_degree_equality_rejects_adjacent_floats_that_share_a_radian_product() {
         let factor = super::super::DEGREE_TO_RADIAN;
         let op = |code: &str, value: f64| operation(vec![epsg_param(code, value, factor)]);
-        assert!(angular_param_matches_degrees(&op("8802", 15.0), "8802", 15.0));
+        assert!(angular_param_matches_degrees(
+            &op("8802", 15.0),
+            "8802",
+            15.0
+        ));
         assert!(angular_param_matches_degrees(&op("8801", 0.0), "8801", 0.0));
         for expected in [-117.0_f64, -15.0, 15.0, 123.0] {
             let up = expected.next_up();
@@ -590,5 +601,15 @@ mod metadata_tests {
         ]);
         assert!(unique_epsg_param(&op, "8802").is_none());
         assert!(!angular_param_matches_degrees(&op, "8802", 9.0));
+    }
+
+    #[test]
+    fn custom_candidate_mapping_preserves_resource_errors_before_formatting() {
+        let error = Error::from(ResourceError::Allocation);
+        let mapped = fail_allocations_after(0, || best_custom_candidate_error(error));
+        assert!(matches!(
+            mapped.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
     }
 }
