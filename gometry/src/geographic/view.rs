@@ -323,17 +323,22 @@ impl<'a> ScalarGeographicView<'a> {
         self.frame
     }
 
-    pub(crate) fn try_for_each_coordinate(
-        self,
-        mut visit: impl FnMut(GeographicCoordinate) -> Result<(), GeographicViewError>,
-    ) -> Result<(), GeographicViewError> {
-        visit_shape(
-            self.frame,
-            self.shape,
-            None,
-            &mut MemberPathBuilder::default(),
-            &mut visit,
-        )
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
+    )]
+    pub(crate) fn for_each_coordinate(self, mut visit: impl FnMut(GeographicCoordinate)) {
+        self.shape.for_each_point(|point| {
+            visit(admitted_coordinate(self.frame, point));
+        });
+    }
+}
+
+fn admitted_coordinate(frame: GeographicFrame, point: Point) -> GeographicCoordinate {
+    GeographicCoordinate {
+        native: point,
+        longitude: frame.longitude().wrap_admitted(point.x),
+        latitude: Latitude::from_admitted(frame, point.y),
     }
 }
 

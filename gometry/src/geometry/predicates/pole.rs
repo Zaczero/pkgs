@@ -88,15 +88,8 @@ pub(crate) fn shape_reaches_geographic_pole_in_frame(
         return true;
     };
     let mut reaches = false;
-    if view
-        .try_for_each_coordinate(|coordinate| {
-            reaches |= coordinate.identity(frame) == SeamIdentity::Pole;
-            Ok(())
-        })
-        .is_err()
-    {
-        true
-    } else {
-        reaches
-    }
+    view.for_each_coordinate(|coordinate| {
+        reaches |= coordinate.identity(frame) == SeamIdentity::Pole;
+    });
+    reaches
 }

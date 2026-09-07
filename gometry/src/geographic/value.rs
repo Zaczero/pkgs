@@ -85,10 +85,6 @@ impl PeriodicAxis {
             .then_some(period)
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact zero and integer seam aliases are part of the coordinate contract"
-    )]
     pub(crate) fn canonicalize(self, value: f64) -> Result<CanonicalLongitude, GeographicError> {
         if !value.is_finite() {
             return Err(GeographicError::NonFinite {
@@ -96,6 +92,21 @@ impl PeriodicAxis {
                 value,
             });
         }
+        Ok(self.wrap_admitted(value))
+    }
+
+    /// Wrap a finite longitude with the canonical remainder, integer-period
+    /// aliases, and signed-zero spelling. Ingress must already have rejected
+    /// non-finite values.
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact zero and integer seam aliases are part of the coordinate contract"
+    )]
+    pub(super) fn wrap_admitted(self, value: f64) -> CanonicalLongitude {
+        debug_assert!(
+            value.is_finite(),
+            "wrap_admitted requires a finite longitude"
+        );
         // `value + half_period` can overflow. The remainder first keeps every
         // finite binary64 input admissible.
         let mut reduced = value % self.period;
@@ -121,7 +132,7 @@ impl PeriodicAxis {
         if reduced == 0.0 {
             reduced = 0.0;
         }
-        Ok(CanonicalLongitude(reduced))
+        CanonicalLongitude(reduced)
     }
 
     #[expect(
@@ -423,18 +434,36 @@ impl CanonicalLongitude {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Latitude(f64);
 impl Latitude {
-    #[expect(
-        clippy::float_cmp,
-        reason = "admission matches exactly the measured adjacent binary64 values"
-    )]
     pub(crate) fn try_new(frame: GeographicFrame, value: f64) -> Result<Self, GeographicError> {
-        let pole = frame.pole();
         if !value.is_finite() {
             return Err(GeographicError::NonFinite {
                 name: "latitude",
                 value,
             });
         }
+        let admitted = Self::from_admitted(frame, value);
+        let pole = frame.pole();
+        if admitted.get() < -pole || admitted.get() > pole {
+            return Err(GeographicError::LatitudeOutOfRange {
+                value: admitted.get(),
+            });
+        }
+        Ok(admitted)
+    }
+
+    /// Fold the one-exterior-ULP pole neighbor and signed zero. Ingress must
+    /// already have rejected non-finite values; range is checked by
+    /// [`Self::try_new`].
+    #[expect(
+        clippy::float_cmp,
+        reason = "admission matches exactly the measured adjacent binary64 values"
+    )]
+    pub(super) fn from_admitted(frame: GeographicFrame, value: f64) -> Self {
+        debug_assert!(
+            value.is_finite(),
+            "from_admitted requires a finite latitude"
+        );
+        let pole = frame.pole();
         // PROJ WKT angular-factor round trips can place the nominal pole one
         // native-unit ULP outside the derived pole. Admit exactly that measured
         // exterior neighbor; interior values remain bit-preserved.
@@ -445,11 +474,8 @@ impl Latitude {
         } else {
             value
         };
-        if value < -pole || value > pole {
-            return Err(GeographicError::LatitudeOutOfRange { value });
-        }
         let value = if value == 0.0 { 0.0 } else { value };
-        Ok(Self(value))
+        Self(value)
     }
     pub(crate) const fn get(self) -> f64 {
         self.0

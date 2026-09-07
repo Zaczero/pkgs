@@ -219,7 +219,7 @@ fn geographic_index_envelopes(
     let mut north = f64::NEG_INFINITY;
     let mut full_longitude = false;
     let mut allocation_error = None;
-    view.try_for_each_coordinate(|coordinate| {
+    view.for_each_coordinate(|coordinate| {
         south = south.min(coordinate.latitude().get());
         north = north.max(coordinate.latitude().get());
         if coordinate.identity(frame) == SeamIdentity::Pole {
@@ -236,9 +236,7 @@ fn geographic_index_envelopes(
         if let Err(error) = crate::try_push_vec(&mut intervals, interval) {
             allocation_error = Some(error);
         }
-        Ok(())
-    })
-    .map_err(|error| InvalidGeometryError::new_err(error.to_string()))?;
+    });
     if let Some(error) = allocation_error {
         return Err(error.into());
     }

@@ -31,11 +31,9 @@ fn scalar_view_borrows_literal_payload_and_reduces_only_on_access() {
     let view = ScalarGeographicView::try_new(degrees(), &shape).unwrap();
     assert!(std::ptr::eq(view.shape(), &raw const shape));
     let mut seen = None;
-    view.try_for_each_coordinate(|coordinate| {
+    view.for_each_coordinate(|coordinate| {
         seen = Some(coordinate);
-        Ok(())
-    })
-    .unwrap();
+    });
     let coordinate = seen.unwrap();
     assert_bits(coordinate.native().x, 540.0);
     assert_bits(coordinate.longitude().get(), -180.0);
@@ -52,11 +50,9 @@ fn pole_identity_supersedes_longitude() {
     .unwrap();
     let shape = crate::geometry::Shape::Point(crate::geometry::Point::new(1234.0, 90.0).unwrap());
     let view = ScalarGeographicView::try_new(paris, &shape).unwrap();
-    view.try_for_each_coordinate(|coordinate| {
+    view.for_each_coordinate(|coordinate| {
         assert_eq!(coordinate.identity(paris), SeamIdentity::Pole);
-        Ok(())
-    })
-    .unwrap();
+    });
 }
 
 #[test]
@@ -91,12 +87,10 @@ fn latitude_admission_is_one_exterior_ulp_and_contextual() {
     let admitted =
         crate::geometry::Shape::Point(crate::geometry::Point::new(0.0, pole.next_up()).unwrap());
     let view = ScalarGeographicView::try_new(degrees(), &admitted).unwrap();
-    view.try_for_each_coordinate(|coordinate| {
+    view.for_each_coordinate(|coordinate| {
         assert_bits(coordinate.latitude().get(), pole);
         assert_bits(coordinate.native().y, pole.next_up());
-        Ok(())
-    })
-    .unwrap();
+    });
 
     let rejected = crate::geometry::Shape::Point(
         crate::geometry::Point::new(0.0, pole.next_up().next_up()).unwrap(),
@@ -259,6 +253,59 @@ fn valid_deeply_nested_validation_does_not_allocate_per_coordinate() {
     });
     assert_eq!(one_allocations, 1);
     assert_eq!(many_allocations, one_allocations);
+}
+
+#[test]
+fn admitted_walk_rejects_allocation_after_view_construction() {
+    let shape = deeply_nested_line(128);
+    let view = ScalarGeographicView::try_new(degrees(), &shape).unwrap();
+    let mut count = 0;
+    crate::test_support::fail_allocations_after(0, || {
+        view.for_each_coordinate(|_| count += 1);
+    });
+    assert_eq!(count, 128);
+}
+
+#[test]
+fn admitted_walk_keeps_nested_empty_order_axes_wrap_and_ulp() {
+    use crate::geometry::{
+        CoordinateAxes, GeometryKind, LineSeq, MOrdinate, MultiMember, MultiPoint, Point, Shape,
+        ZOrdinate,
+    };
+
+    let pole = degrees().pole();
+    let wrapped = Point::new_axes(540.0, 45.0, ZOrdinate(Some(3.0)), MOrdinate(Some(4.0))).unwrap();
+    let ulp = Point::new(0.0, pole.next_up()).unwrap();
+    let points = MultiPoint::try_new(CoordinateAxes::XYZM, vec![
+        MultiMember::Empty,
+        MultiMember::Value(wrapped),
+        MultiMember::Empty,
+    ])
+    .unwrap();
+    let line = Shape::LineString(
+        LineSeq::try_new(xy_seq(vec![10.0, 20.0], vec![1.0, 2.0])).unwrap(),
+    );
+    let shape = Shape::geometry_collection(vec![
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+        Shape::MultiPoint(points),
+        Shape::Point(ulp),
+        line,
+    ])
+    .unwrap();
+    let view = ScalarGeographicView::try_new(degrees(), &shape).unwrap();
+    let mut seen = Vec::new();
+    view.for_each_coordinate(|coordinate| seen.push(coordinate));
+    assert_eq!(seen.len(), 4);
+    assert_bits(seen[0].native().x, 540.0);
+    assert_bits(seen[0].longitude().get(), -180.0);
+    assert_eq!(seen[0].native().z(), Some(3.0));
+    assert_eq!(seen[0].native().m(), Some(4.0));
+    assert_bits(seen[1].latitude().get(), pole);
+    assert_bits(seen[1].native().y, pole.next_up());
+    assert_bits(seen[2].native().x, 10.0);
+    assert_bits(seen[2].native().y, 1.0);
+    assert_bits(seen[3].native().x, 20.0);
+    assert_bits(seen[3].native().y, 2.0);
 }
 
 #[test]

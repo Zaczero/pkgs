@@ -170,14 +170,12 @@ fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
     let latitude_scale = frame.latitude_unit().radians_per_unit().to_degrees();
     let chart = chart_shape(view.shape(), frame, longitude_scale, latitude_scale)?;
     let mut source_is_canonical = true;
-    view.try_for_each_coordinate(|coordinate| {
+    view.for_each_coordinate(|coordinate| {
         let native = coordinate.native().x;
         let canonical = coordinate.longitude().get();
         let positive_seam = native.to_bits() == frame.longitude().half_period().to_bits();
         source_is_canonical &= positive_seam || native.to_bits() == canonical.to_bits();
-        Ok(())
-    })
-    .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+    });
     if source_is_canonical && !chart.crosses_antimeridian() {
         return Ok(view.shape().clone());
     }
