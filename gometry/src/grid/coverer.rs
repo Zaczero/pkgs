@@ -539,48 +539,6 @@ pub(crate) enum CellClass {
     Interior,
 }
 
-/// Pre-patch cover: recompute `cell.bounds()` every frame, single mixed stack.
-/// Test-only dual-path baseline for the bounds-carry optimization.
-#[cfg(test)]
-pub(crate) fn cover_recompute_baseline<C: RectCell>(
-    source: &Shape,
-    roots: Vec<C>,
-    target_depth: u8,
-    max_cells: Option<usize>,
-) -> Result<Vec<C>, CoverError> {
-    let classifier = NativeRectClassifier::new(source)?;
-    let mut cells = Vec::new();
-    let mut stack: Vec<(C, bool)> = roots.into_iter().map(|cell| (cell, false)).collect();
-    while let Some((cell, inherited_interior)) = stack.pop() {
-        let class = if inherited_interior {
-            RectClass::Interior
-        } else {
-            classifier.classify_bounds(cell.bounds())
-        };
-        match class {
-            RectClass::Outside => {},
-            RectClass::Interior => {
-                if cell.depth() >= target_depth {
-                    cells.push(cell);
-                    ensure_cover_budget(cells.len(), max_cells)?;
-                } else {
-                    stack.extend(cell.children().map(|child| (child, true)));
-                }
-            },
-            RectClass::Boundary => {
-                if cell.depth() >= target_depth {
-                    cells.push(cell);
-                    ensure_cover_budget(cells.len(), max_cells)?;
-                } else {
-                    stack.extend(cell.children().map(|child| (child, false)));
-                }
-            },
-        }
-    }
-    cells.sort_unstable();
-    Ok(cells)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,38 +660,6 @@ mod tests {
             error.kind(),
             ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
         ));
-    }
-
-    #[test]
-    fn cover_bounds_carry_matches_recompute() {
-        use crate::geometry::Ring;
-        use crate::grid::tile;
-        // Boundary-heavy lat band (z15) — the investigation's public case shape.
-        let shell = vec![
-            Point::new_raw_xy(-120.0, 30.0),
-            Point::new_raw_xy(-60.0, 30.0),
-            Point::new_raw_xy(-60.0, 30.5),
-            Point::new_raw_xy(-120.0, 30.5),
-            Point::new_raw_xy(-120.0, 30.0),
-        ];
-        let band = Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()));
-        let authority_plan = PreparedPlan::new(band.clone());
-        let authority_cache = crate::geometry::FrameDependentCaches::default();
-        let target = 15_u8;
-        let new = cover(
-            &band,
-            &band,
-            &authority_plan,
-            &authority_cache,
-            crate::geographic::GeographicFrame::crs84(),
-            RectCoverRule::Overlap,
-            vec![tile::root()],
-            target,
-            None,
-        )
-        .expect("cover");
-        let old = cover_recompute_baseline(&band, vec![tile::root()], target, None).expect("base");
-        assert_eq!(new, old, "bounds-carry must emit identical cells");
     }
 
     /// A near-world polygon covered at a fine depth expands past the shared
