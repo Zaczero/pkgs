@@ -316,15 +316,15 @@ impl RowProductsHandle {
     pub(crate) fn prepared_plan(
         &mut self,
         logical: usize,
-        shape: Arc<ShapeData>,
+        shape: impl FnOnce() -> Arc<ShapeData>,
     ) -> Arc<PreparedPlan> {
         let Some((chunk, offset)) = self.cell(logical).ok().flatten() else {
-            return Arc::new(PreparedPlan::new(shape));
+            return Arc::new(PreparedPlan::new(shape()));
         };
         Arc::clone(
             chunk.cells[offset]
                 .prepared
-                .get_or_init(|| Arc::new(PreparedPlan::new(shape))),
+                .get_or_init(|| Arc::new(PreparedPlan::new(shape()))),
         )
     }
 
@@ -365,7 +365,11 @@ impl RowProducts {
         self.operation().frame_cache(logical)
     }
 
-    pub(crate) fn prepared_plan(&self, logical: usize, shape: Arc<ShapeData>) -> Arc<PreparedPlan> {
+    pub(crate) fn prepared_plan(
+        &self,
+        logical: usize,
+        shape: impl FnOnce() -> Arc<ShapeData>,
+    ) -> Arc<PreparedPlan> {
         self.operation().prepared_plan(logical, shape)
     }
 
@@ -696,9 +700,9 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         match self.storage() {
             GeometryArrayStorage::Mixed(shapes) => {
-                let plan = self
-                    .row_products
-                    .prepared_plan(index, Arc::new(ShapeData::new(shapes[index].clone())));
+                let plan = self.row_products.prepared_plan(index, || {
+                    Arc::new(ShapeData::new(shapes[index].clone()))
+                });
                 PyGeometry::with_row_products(
                     Arc::clone(plan.shape_arc()),
                     frame,
@@ -735,6 +739,7 @@ mod frame_cache_row_tests {
     use super::*;
     use crate::boundary::{Frame, crs_arc_static};
     use crate::geometry::{CoordSeq, LineSeq, PlanarMetric, Point};
+    use crate::test_support::allocation_count;
 
     fn points() -> PyGeometryArray {
         PyGeometryArray::packed_points(
@@ -865,7 +870,7 @@ mod frame_cache_row_tests {
         RowProducts::reset_directory_resolution_count();
         let _ = handle.prepared_plan(
             0,
-            Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)))),
+            || Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)))),
         );
         let _ = handle.frame_cache(0);
         assert_eq!(RowProducts::directory_resolution_count(), 1);
@@ -889,7 +894,7 @@ mod frame_cache_row_tests {
             let aliases = RowProducts::preserving_physical_rows(1, &selected, &[0])
                 .expect("alias construction");
             let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(7.0, 11.0))));
-            let expected_plan = source.prepared_plan(source_row, Arc::clone(&shape));
+            let expected_plan = source.prepared_plan(source_row, || Arc::clone(&shape));
             let expected_frame = source.frame_cache(source_row);
 
             let mut handle = aliases.operation();
@@ -897,7 +902,10 @@ mod frame_cache_row_tests {
                 let plan = handle.cached_prepared_plan(0).expect("source prepared product");
                 assert!(Arc::ptr_eq(&plan, &expected_plan));
                 assert!(Arc::ptr_eq(&handle.frame_cache(0), &expected_frame));
-                assert!(Arc::ptr_eq(&handle.prepared_plan(0, Arc::clone(&shape)), &expected_plan));
+                assert!(Arc::ptr_eq(
+                    &handle.prepared_plan(0, || Arc::clone(&shape)),
+                    &expected_plan
+                ));
             }
 
             let mut handle = aliases.operation();
@@ -940,7 +948,7 @@ mod frame_cache_row_tests {
                 std::thread::spawn(move || {
                     products.operation().prepared_plan(
                         0,
-                        Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)))),
+                        || Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)))),
                     )
                 })
             }).take(8)
@@ -989,6 +997,32 @@ mod frame_cache_row_tests {
         // Different rows stay independent.
         let c = array.geometry_at(0);
         assert!(!Arc::ptr_eq(&a.shape, &c.shape));
+    }
+
+    #[test]
+    fn warm_mixed_geometry_at_avoids_rebuilding_shape_data() {
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(
+                vec![0.0, 1.0],
+                vec![0.0, 1.0],
+                Some(vec![2.0, 3.0]),
+                Some(vec![4.0, 5.0]),
+            ))
+            .expect("fixture line has XYZM vertices"),
+        );
+        let array = PyGeometryArray::mixed_shapes(
+            vec![line.clone(), Shape::Point(Point::new_raw_xy(3.0, 4.0)), line],
+            Frame::None,
+        )
+        .with_missing_mask(Some(
+            crate::array::ValidityMask::from_vec(3, vec![false, true, false])
+                .expect("validity length"),
+        ));
+
+        let (cold, cold_allocations) = allocation_count(|| array.geometry_at(0));
+        let (warm, warm_allocations) = allocation_count(|| array.geometry_at(0));
+        assert!(Arc::ptr_eq(&cold.shape, &warm.shape));
+        assert!(warm_allocations < cold_allocations);
     }
 
     #[test]

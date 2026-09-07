@@ -860,7 +860,7 @@ impl PyGeometry {
 
     pub(crate) fn prepared_plan(&self) -> Arc<PreparedPlan> {
         self.row_products
-            .prepared_plan(self.product_row, Arc::clone(&self.shape))
+            .prepared_plan(self.product_row, || Arc::clone(&self.shape))
     }
 
     pub(crate) fn cached_prepared_plan(&self) -> Option<Arc<PreparedPlan>> {
