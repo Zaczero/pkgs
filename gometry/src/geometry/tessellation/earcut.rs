@@ -9,25 +9,12 @@ use rstar::primitives::{GeomWithData, Rectangle};
 use crate::curves::morton_interleave;
 use crate::error::Result;
 use crate::geometry::{
-    AreaSign, Bounds, BulkRTree, Coordinates, GeometryErrorKind, HashSet, Orientation, Point,
-    PointKey, Polygon, Ring, RingWinding, Segment, SegmentIndex, Shape, XY,
-    dedup_consecutive_points, open_point_cycle_decision, open_point_cycle_winding, orientation,
-    orientation_xy, point_on_segment, ring_contains_interior, same_point, segments_intersect,
-    wrap_index,
+    AreaSign, Bounds, BulkRTree, CoordSeqBuilder, CoordinateAxes, Coordinates, GeometryErrorKind,
+    HasM, HasZ, HashSet, MOrdinate, Orientation, Point, PointKey, Polygon, Ring, RingWinding,
+    Segment, SegmentIndex, Shape, XY, ZOrdinate, dedup_consecutive_points,
+    open_point_cycle_decision, open_point_cycle_winding, orientation, orientation_xy,
+    point_on_segment, ring_contains_interior, same_point, segments_intersect, wrap_index,
 };
-
-pub(crate) fn polygon_triangles(polygon: &Polygon) -> Result<Vec<Shape>> {
-    earcut_polygon(polygon)
-}
-
-pub(crate) fn earcut_polygon(polygon: &Polygon) -> Result<Vec<Shape>> {
-    let mut triangles = Vec::new();
-    earcut_polygon_with(polygon, &mut |a, b, c| {
-        triangles.push(triangle_shape(a, b, c));
-        Ok(())
-    })?;
-    Ok(triangles)
-}
 
 /// Walk a polygon's ear-cut triangles through one caller-owned sink. The
 /// generated-output budget lives at that caller, so it can reject before a
@@ -764,11 +751,7 @@ pub(crate) fn open_ring<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     let len = points.coord_count();
     let closed = len > 1 && same_point(points.nth_coord(0), points.nth_coord(len - 1));
     let keep = if closed { len - 1 } else { len };
-    points
-        .iter_coords()
-        .take(keep)
-        .map(Point::force_2d)
-        .collect()
+    points.iter_coords().take(keep).collect()
 }
 
 pub(crate) fn closed_ring<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
@@ -779,11 +762,30 @@ pub(crate) fn closed_ring<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     ring
 }
 
-pub(crate) fn triangle_shape(a: Point, b: Point, c: Point) -> Shape {
-    Shape::Polygon(Polygon::new(
-        Ring::from_closed(vec![a, b, c, a]),
+/// Closed ear-clip triangle whose axes are the intersection of the three
+/// source corners — drop an unshared ordinate, never invent one.
+pub(crate) fn try_triangle_shape(a: Point, b: Point, c: Point) -> Result<Shape> {
+    let has_z = a.axes.has_z() && b.axes.has_z() && c.axes.has_z();
+    let has_m = a.axes.has_m() && b.axes.has_m() && c.axes.has_m();
+    let coerce = |point: Point| {
+        Point::new_raw_axes(
+            point.x,
+            point.y,
+            ZOrdinate(has_z.then_some(point.z)),
+            MOrdinate(has_m.then_some(point.m)),
+        )
+    };
+    let (a, b, c) = (coerce(a), coerce(b), coerce(c));
+    let axes = CoordinateAxes::new(HasZ(has_z), HasM(has_m));
+    let mut builder = CoordSeqBuilder::try_with_capacity(axes, 4)?;
+    builder.push(a);
+    builder.push(b);
+    builder.push(c);
+    builder.push(a);
+    Ok(Shape::Polygon(Polygon::new(
+        Ring::from_closed(builder.finish()?),
         Vec::new(),
-    ))
+    )))
 }
 
 pub(crate) fn point_in_ccw_triangle(

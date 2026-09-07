@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::geometry::tessellation::polygon_triangles;
+use crate::geometry::tessellation::earcut_polygon_with;
 use crate::geometry::{Coordinates as _, Point, Shape};
 use crate::{try_push_vec, try_reserve_vec};
 
@@ -55,19 +55,11 @@ pub(crate) fn sample_weighted<T>(
 pub(crate) fn collect_sample_triangles(shape: &Shape, out: &mut Vec<[Point; 3]>) -> Result<()> {
     match shape {
         Shape::Polygon(polygon) => {
-            out.extend(
-                polygon_triangles(polygon)?
-                    .iter()
-                    .filter_map(triangle_corners),
-            );
+            earcut_polygon_with(polygon, &mut |a, b, c| try_push_vec(out, [a, b, c]))?;
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
-                out.extend(
-                    polygon_triangles(polygon)?
-                        .iter()
-                        .filter_map(triangle_corners),
-                );
+                earcut_polygon_with(polygon, &mut |a, b, c| try_push_vec(out, [a, b, c]))?;
             }
         },
         Shape::GeometryCollection(geometries) => {

@@ -12,14 +12,14 @@ use pyo3::types::{PyBytes, PyTuple};
 
 use crate::array::{
     Arc, ArrayRow, Bound, CollectRows as _, CoordinateAxes, DefaultedF64Input, DistanceUnit, Error,
-    F64Param, Frame, I64Param, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometryArray,
-    PyResult, PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput,
-    array_binary_geometry, bool_array, cdt_refinement_values, crs, curves, exact_geometry,
-    exact_geometry_array, expected_geometry_or_array, fixed_geometry_array_nearest_points,
-    fixed_geometry_array_shortest_line_geodesic, geometry, io, metric_nearest_points,
-    metric_shortest_line, non_negative_int, note_array_row, owned_voronoi_boundary,
-    pair_packed_equals_exact, paired_arrays, parse_precision, parse_wkt_output_dimension,
-    require_geojson_crs, resolve_metric, row_sample_seed, rows_err,
+    F64Param, Frame, GeometryArrayStorage, I64Param, InvalidGeometryError, PackedStorage, Py,
+    PyAny, PyAnyMethods as _, PyGeometryArray, PyResult, PyValidationReport, Python, RepairMethod,
+    Result, Shape, VoronoiClipInput, array_binary_geometry, bool_array, cdt_refinement_values, crs,
+    curves, exact_geometry, exact_geometry_array, expected_geometry_or_array,
+    fixed_geometry_array_nearest_points, fixed_geometry_array_shortest_line_geodesic, geometry, io,
+    metric_nearest_points, metric_shortest_line, non_negative_int, note_array_row,
+    owned_voronoi_boundary, pair_packed_equals_exact, paired_arrays, parse_precision,
+    parse_wkt_output_dimension, require_geojson_crs, resolve_metric, row_sample_seed, rows_err,
     validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
 
@@ -663,9 +663,38 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
     ) -> PyResult<crate::py::vectors::Groups> {
+        if self.earcut_rows_pack() {
+            return self.flat_map_packed_triangles_groups_budgeted(
+                py,
+                "triangulate",
+                "method",
+                |_, shape, budget| shape.polygon_triangle_vertices_budgeted(budget),
+            );
+        }
         self.flat_map_shapes_groups_budgeted(py, "triangulate", "method", |_, shape, budget| {
             shape.polygon_triangles_budgeted(budget)
         })
+    }
+
+    fn earcut_rows_pack(&self) -> bool {
+        match self.storage() {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => true,
+            GeometryArrayStorage::Packed(_) => false,
+            GeometryArrayStorage::Mixed(_) => {
+                let mut axes = None;
+                for (_, shape) in self.present_shape_rows() {
+                    let Some(row) = shape.earcut_packed_axes() else {
+                        return false;
+                    };
+                    match axes {
+                        None => axes = Some(row),
+                        Some(prev) if prev == row => {},
+                        Some(_) => return false,
+                    }
+                }
+                axes.is_some()
+            },
+        }
     }
 
     pub(crate) fn sample_points_impl(

@@ -6,14 +6,15 @@ use crate::geometry::tessellation::{
     CdtRefinement, Site, build_area_lines, certified_delaunay, collect_sample_triangles,
     constrained_triangle_vertices, earcut_polygon_with, line_boundary, multiline_boundary,
     polygonize_full, polygonize_lines, rings_to_boundary, sample_weighted, snap_sites,
-    triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
+    try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
-    AxisFrame, CoordSeq, CsrOffsetColumn, Dimension, ExpansionBudget, GeometryErrorKind,
-    GeometryKind, HashSet, Point, PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape,
-    TopologyGraph, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
+    AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
+    GeometryErrorKind, GeometryKind, HashSet, Point, PointKey, Polygon, PolygonizeFull, Ring,
+    Segment, Shape, TopologyGraph, VoronoiBoundary, axis_extent, carry_each, empty_geometry,
+    line_segments,
 };
-use crate::{NonNegative, try_push_vec};
+use crate::{NonNegative, try_push_vec, try_reserve_vec};
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
 /// closed triangle ring is charged before its `Shape` is built.
@@ -49,12 +50,38 @@ impl<'budget> BudgetedTriangleSink<'budget> {
 
     pub(super) fn emit(&mut self, a: Point, b: Point, c: Point) -> Result<()> {
         self.budget.add(4)?;
-        self.shapes.push(triangle_shape(a, b, c));
-        Ok(())
+        let shape = try_triangle_shape(a, b, c)?;
+        try_push_vec(&mut self.shapes, shape)
     }
 
     pub(super) fn into_shapes(self) -> Vec<Shape> {
         self.shapes
+    }
+}
+
+/// Packed `[a, b, c, a]` emitter: charge four vertices, then grow the stream.
+pub(super) struct BudgetedPackedTriangleSink<'budget> {
+    budget: &'budget mut ExpansionBudget,
+    vertices: Vec<Point>,
+}
+
+impl<'budget> BudgetedPackedTriangleSink<'budget> {
+    pub(super) const fn new(budget: &'budget mut ExpansionBudget) -> Self {
+        Self {
+            budget,
+            vertices: Vec::new(),
+        }
+    }
+
+    pub(super) fn emit(&mut self, a: Point, b: Point, c: Point) -> Result<()> {
+        self.budget.add(4)?;
+        try_reserve_vec(&mut self.vertices, 4)?;
+        self.vertices.extend_from_slice(&[a, b, c, a]);
+        Ok(())
+    }
+
+    pub(super) fn into_vertices(self) -> Vec<Point> {
+        self.vertices
     }
 }
 
@@ -249,21 +276,70 @@ impl Shape {
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Self>> {
         let mut sink = BudgetedTriangleSink::new(budget);
+        self.earcut_with(&mut |a, b, c| sink.emit(a, b, c))?;
+        Ok(sink.into_shapes())
+    }
+
+    /// Axes every contributing ring shares, or `None` when rings disagree,
+    /// the operand is empty, or it is not areal. Packed triangle columns need
+    /// this before clip; `Polygon::axes` / `MultiPolygon::axes` are unions.
+    pub(crate) fn earcut_packed_axes(&self) -> Option<CoordinateAxes> {
+        fn rings_axes<'a>(rings: impl IntoIterator<Item = &'a Ring>) -> Option<CoordinateAxes> {
+            let mut axes = None;
+            for ring in rings {
+                let member = ring.axes();
+                match axes {
+                    None => axes = Some(member),
+                    Some(prev) if prev == member => {},
+                    Some(_) => return None,
+                }
+            }
+            axes
+        }
         match self {
-            Self::Polygon(polygon) => {
-                earcut_polygon_with(polygon, &mut |a, b, c| sink.emit(a, b, c))
+            Self::Polygon(polygon) => rings_axes(polygon.rings()),
+            Self::MultiPolygon(polygons) => {
+                let mut axes = None;
+                for polygon in polygons.iter() {
+                    let part = rings_axes(polygon.rings())?;
+                    match axes {
+                        None => axes = Some(part),
+                        Some(prev) if prev == part => {},
+                        Some(_) => return None,
+                    }
+                }
+                axes
             },
+            _ => None,
+        }
+    }
+
+    pub(crate) fn polygon_triangle_vertices(&self) -> Result<Vec<Point>> {
+        let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+        self.polygon_triangle_vertices_budgeted(&mut budget)
+    }
+
+    pub(crate) fn polygon_triangle_vertices_budgeted(
+        &self,
+        budget: &mut crate::geometry::ExpansionBudget,
+    ) -> Result<Vec<Point>> {
+        let mut sink = BudgetedPackedTriangleSink::new(budget);
+        self.earcut_with(&mut |a, b, c| sink.emit(a, b, c))?;
+        Ok(sink.into_vertices())
+    }
+
+    fn earcut_with(&self, emit: &mut impl FnMut(Point, Point, Point) -> Result<()>) -> Result<()> {
+        match self {
+            Self::Polygon(polygon) => earcut_polygon_with(polygon, emit),
             Self::MultiPolygon(polygons) => {
                 for polygon in polygons {
-                    earcut_polygon_with(polygon, &mut |a, b, c| sink.emit(a, b, c))?;
+                    earcut_polygon_with(polygon, emit)?;
                 }
                 Ok(())
             },
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(()),
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
-        }?;
-        let shapes = carry_each(sink.into_shapes(), &[self], "polygon_triangles", false)?;
-        Ok(shapes)
+        }
     }
 
     /// `count` planar-uniform random points on the geometry, deterministic

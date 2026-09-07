@@ -172,6 +172,14 @@ impl PyGeometry {
 
     pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let shape = Arc::clone(&self.shape);
+        if shape.earcut_packed_axes().is_some() {
+            let vertices = py.detach(move || shape.polygon_triangle_vertices())?;
+            return if vertices.is_empty() {
+                Ok(PyGeometryArray::from_shapes(Vec::new(), self.frame.clone()))
+            } else {
+                PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
+            };
+        }
         self.parts_to_array(py.detach(move || shape.polygon_triangles())?)
     }
 

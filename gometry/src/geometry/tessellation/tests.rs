@@ -5,7 +5,8 @@
 use crate::geometry::XY;
 use crate::geometry::tessellation::delaunay::take_constrained_output_reserves;
 use crate::geometry::tessellation::shape::{
-    BudgetedTriangleSink, canonical_voronoi_sites, take_delaunay_output_reserves,
+    BudgetedPackedTriangleSink, BudgetedTriangleSink, canonical_voronoi_sites,
+    take_delaunay_output_reserves,
 };
 
 #[test]
@@ -30,7 +31,7 @@ fn exact_segment_rejects_projective_point_at_infinity() {
         super::exact::SegmentIntersection::None
     ));
 }
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, ResourceError};
 use crate::geometry::segments::Orientation;
 use crate::geometry::tessellation::delaunay::cleanup_constraint_lines;
 use crate::geometry::tessellation::earcut::{
@@ -39,10 +40,12 @@ use crate::geometry::tessellation::earcut::{
 };
 use crate::geometry::tessellation::sampling::triangle_corners;
 use crate::geometry::{
-    CdtRefinement, CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
-    GeometryErrorKind, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, Strictness, ZOrdinate,
-    open_point_cycle_decision, orientation, ring_contains_interior,
+    CdtRefinement, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
+    GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq, MOrdinate, MultiMember, MultiPolygon, Point,
+    Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_decision, orientation,
+    ring_contains_interior,
 };
+use crate::test_support::fail_allocations_after;
 
 fn xy(x: f64, y: f64) -> Point {
     Point::new(x, y).expect("finite test coordinate")
@@ -50,6 +53,19 @@ fn xy(x: f64, y: f64) -> Point {
 
 fn xyz(x: f64, y: f64, z: f64) -> Point {
     Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(None)).expect("finite test coordinate")
+}
+
+fn xym(x: f64, y: f64, m: f64) -> Point {
+    Point::new_axes(x, y, ZOrdinate(None), MOrdinate(Some(m))).expect("finite test coordinate")
+}
+
+fn vertex_key(point: Point) -> (u64, u64, Option<u64>, Option<u64>) {
+    (
+        point.x.to_bits(),
+        point.y.to_bits(),
+        point.z().map(f64::to_bits),
+        point.m().map(f64::to_bits),
+    )
 }
 
 #[test]
@@ -166,6 +182,224 @@ fn triangle_sink_rejects_before_shape_allocation() {
     sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0))
         .unwrap_err();
     assert!(sink.into_shapes().is_empty());
+}
+
+#[test]
+fn triangle_sink_rejects_allocation_after_budget() {
+    let mut budget = ExpansionBudget::new("triangulate", "method");
+    let mut sink = BudgetedTriangleSink::new(&mut budget);
+    let error = fail_allocations_after(0, || sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0)))
+        .expect_err("output allocation must fail");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(ResourceError::Allocation)
+    ));
+    assert!(sink.into_shapes().is_empty());
+}
+
+#[test]
+fn packed_triangle_sink_rejects_before_and_on_allocation() {
+    let mut budget = ExpansionBudget::new("triangulate", "method");
+    budget.add(GENERATED_ITEM_LIMIT).unwrap();
+    let mut sink = BudgetedPackedTriangleSink::new(&mut budget);
+    sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0))
+        .unwrap_err();
+    assert!(sink.into_vertices().is_empty());
+
+    let mut budget = ExpansionBudget::new("triangulate", "method");
+    let mut sink = BudgetedPackedTriangleSink::new(&mut budget);
+    let error = fail_allocations_after(0, || sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0)))
+        .expect_err("output allocation must fail");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(ResourceError::Allocation)
+    ));
+    assert!(sink.into_vertices().is_empty());
+}
+
+#[test]
+fn earcut_keeps_first_duplicate_xy_ordinates() {
+    let source = Shape::Polygon(polygon(
+        vec![
+            xyz(0.0, 0.0, 1.0),
+            xyz(0.0, 0.0, 2.0),
+            xyz(1.0, 0.0, 3.0),
+            xyz(0.0, 1.0, 4.0),
+            xyz(0.0, 0.0, 1.0),
+        ],
+        Vec::new(),
+    ));
+    let triangles = source
+        .polygon_triangles()
+        .expect("duplicate XY triangulates");
+    assert!(!triangles.is_empty());
+    let mut saw_origin = false;
+    for triangle in &triangles {
+        for corner in triangle_corners(triangle).expect("triangle polygon") {
+            if corner.x == 0.0 && corner.y == 0.0 {
+                saw_origin = true;
+                assert_eq!(corner.z(), Some(1.0));
+            }
+        }
+    }
+    assert!(saw_origin);
+}
+
+#[test]
+fn earcut_keeps_first_duplicate_xy_m_ordinate() {
+    let source = Shape::Polygon(polygon(
+        vec![
+            xym(0.0, 0.0, 1.0),
+            xym(0.0, 0.0, 2.0),
+            xym(1.0, 0.0, 3.0),
+            xym(0.0, 1.0, 4.0),
+            xym(0.0, 0.0, 1.0),
+        ],
+        Vec::new(),
+    ));
+    let triangles = source
+        .polygon_triangles()
+        .expect("duplicate XY triangulates");
+    assert!(!triangles.is_empty());
+    for triangle in &triangles {
+        for corner in triangle_corners(triangle).expect("triangle polygon") {
+            if corner.x == 0.0 && corner.y == 0.0 {
+                assert_eq!(corner.m(), Some(1.0));
+            }
+        }
+    }
+}
+
+#[test]
+fn earcut_multipolygon_parts_keep_distinct_z_at_shared_xy() {
+    let left = polygon(
+        vec![
+            xyz(0.0, 0.0, 1.0),
+            xyz(1.0, 0.0, 1.0),
+            xyz(0.0, 1.0, 1.0),
+            xyz(0.0, 0.0, 1.0),
+        ],
+        Vec::new(),
+    );
+    let right = polygon(
+        vec![
+            xyz(0.0, 0.0, 9.0),
+            xyz(2.0, 0.0, 9.0),
+            xyz(0.0, 2.0, 9.0),
+            xyz(0.0, 0.0, 9.0),
+        ],
+        Vec::new(),
+    );
+    let source = Shape::MultiPolygon(
+        MultiPolygon::try_new(CoordinateAxes::XYZ, vec![
+            MultiMember::Value(left),
+            MultiMember::Value(right),
+        ])
+        .expect("homogeneous XYZ parts"),
+    );
+    let triangles = source.polygon_triangles().expect("parts triangulate");
+    let zs: Vec<f64> = triangles
+        .iter()
+        .flat_map(|triangle| triangle_corners(triangle).expect("triangle polygon"))
+        .filter(|corner| corner.x == 0.0 && corner.y == 0.0)
+        .map(|corner| corner.z().expect("origin keeps Z"))
+        .collect();
+    assert!(zs.contains(&1.0), "left part origin z=1: {zs:?}");
+    assert!(zs.contains(&9.0), "right part origin z=9: {zs:?}");
+}
+
+#[test]
+fn earcut_donut_bridge_keeps_source_ordinates() {
+    let source = Shape::Polygon(polygon(
+        vec![
+            xyz(0.0, 0.0, 1.0),
+            xyz(4.0, 0.0, 2.0),
+            xyz(4.0, 4.0, 3.0),
+            xyz(0.0, 4.0, 4.0),
+            xyz(0.0, 0.0, 1.0),
+        ],
+        vec![vec![
+            xyz(1.0, 1.0, 5.0),
+            xyz(2.0, 1.0, 6.0),
+            xyz(1.0, 2.0, 7.0),
+            xyz(1.0, 1.0, 5.0),
+        ]],
+    ));
+    let mut keys = std::collections::HashSet::new();
+    if let Shape::Polygon(polygon) = &source {
+        for ring in polygon.rings() {
+            for point in ring.iter_coords() {
+                keys.insert(vertex_key(point));
+            }
+        }
+    }
+    let triangles = source.polygon_triangles().expect("donut triangulates");
+    assert!(!triangles.is_empty());
+    for triangle in &triangles {
+        for corner in triangle_corners(triangle).expect("triangle polygon") {
+            assert!(
+                keys.contains(&vertex_key(corner)),
+                "corner {corner:?} was not a source vertex"
+            );
+        }
+    }
+}
+
+#[test]
+fn earcut_mixed_ring_succeeds_with_per_triangle_common_axes() {
+    let source = Shape::Polygon(polygon(
+        vec![
+            xyz(0.0, 0.0, 3.0),
+            xyz(4.0, 0.0, 3.0),
+            xyz(4.0, 4.0, 3.0),
+            xyz(0.0, 4.0, 3.0),
+            xyz(0.0, 0.0, 3.0),
+        ],
+        vec![vec![
+            xy(1.0, 1.0),
+            xy(1.0, 2.0),
+            xy(2.0, 2.0),
+            xy(2.0, 1.0),
+            xy(1.0, 1.0),
+        ]],
+    ));
+    let triangles = source
+        .polygon_triangles()
+        .expect("kernel mixed-ring polygon triangulates");
+    assert!(!triangles.is_empty());
+    for triangle in &triangles {
+        let corners = triangle_corners(triangle).expect("triangle polygon");
+        let all_z = corners.iter().all(|corner| corner.z().is_some());
+        if all_z {
+            assert_eq!(triangle.axes(), CoordinateAxes::XYZ);
+            assert!(corners.iter().all(|corner| corner.z() == Some(3.0)));
+        } else {
+            assert_eq!(triangle.axes(), CoordinateAxes::XY);
+            assert!(corners.iter().all(|corner| corner.z().is_none()));
+        }
+    }
+}
+
+#[test]
+fn earcut_packed_vertices_are_closed_earclip_tuples() {
+    let source = Shape::Polygon(polygon(
+        vec![
+            xyz(0.0, 0.0, 1.0),
+            xyz(1.0, 0.0, 2.0),
+            xyz(0.0, 1.0, 3.0),
+            xyz(0.0, 0.0, 1.0),
+        ],
+        Vec::new(),
+    ));
+    let vertices = source
+        .polygon_triangle_vertices()
+        .expect("packed earcut stream");
+    assert!(!vertices.is_empty());
+    assert_eq!(vertices.len() % 4, 0);
+    for ring in vertices.as_chunks::<4>().0 {
+        assert_eq!(ring[0], ring[3]);
+        assert!(ring.iter().all(|point| point.z().is_some()));
+    }
 }
 
 #[test]

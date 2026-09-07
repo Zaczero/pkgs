@@ -21,7 +21,7 @@ pub(crate) use delaunay::{
 };
 use delaunay::{CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay};
 pub(crate) use earcut::{
-    earcut_polygon_with, point_in_ccw_triangle, polygon_triangles, triangle_shape,
+    earcut_polygon_with, point_in_ccw_triangle, try_triangle_shape,
 };
 pub(crate) use polygonize::{
     build_area_lines, minimal_positive_face_rings, polygonize_full, polygonize_lines,
