@@ -18,9 +18,9 @@ use crate::py::cells::{
     Bound, GeometryError, GridKind, PyCellArray, PyResult, Python, py_i64_required,
 };
 use crate::{
-    I64Param, broadcast_coordinate_group, coordinate_input_with_expected,
+    I64Param, LonLatPointsError, broadcast_coordinate_group, coordinate_input_with_expected,
     coordinate_inputs_are_scalar, coordinate_sequence_len_hint, exact_geometry,
-    exact_geometry_array, finite_coordinate_required, lonlat_shape, point_xy,
+    exact_geometry_array, finite_coordinate_required, lonlat_points, lonlat_shape, point_xy,
 };
 
 pub(crate) trait CellArrayId {
@@ -287,7 +287,16 @@ where
                 "lat must not be provided when values is a geometry array",
             ));
         }
-        let points = super::grid_lonlat_points(array)?;
+        let points = match lonlat_points(array) {
+            Ok(points) => points,
+            Err(LonLatPointsError::Type) => {
+                return Err(crate::py::errors::geometry_type_err(
+                    "expected Point geometry",
+                ));
+            },
+            Err(LonLatPointsError::Setup(error)) => return Err(error.into()),
+            Err(LonLatPointsError::Row(_row, error)) => return Err(error.into()),
+        };
         let depth = I64Param::parse(depth, depth_kw, points.len())?;
         let mut ids = Vec::new();
         let mut missing = Vec::new();

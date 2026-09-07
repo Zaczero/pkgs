@@ -2,7 +2,6 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::PackedStorage;
 use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyTypeError;
 
@@ -12,7 +11,7 @@ use crate::py::cells::{
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::{
-    PointRows, PyGeometry, PyGeometryArray, Typed, exact_geometry, exact_geometry_array,
+    PyGeometry, Typed, exact_geometry, exact_geometry_array,
     expected_geometry_or_array, validate_lonlat_shape,
 };
 
@@ -160,149 +159,6 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
     Err(PyTypeError::new_err(
         "expected a Geometry, GeometryArray, or (minx, miny, maxx, maxy) bounds",
     ))
-}
-
-pub(crate) enum GridPointRows<'a> {
-    Source(PointRows<'a>),
-    Columns { xs: Vec<f64>, ys: Vec<f64> },
-}
-
-impl GridPointRows<'_> {
-    pub(crate) fn len(&self) -> usize {
-        match self {
-            Self::Source(points) => points.len(),
-            Self::Columns { xs, .. } => xs.len(),
-        }
-    }
-
-    pub(crate) fn get(&self, row: usize) -> Point {
-        match self {
-            Self::Source(points) => points.get(row),
-            Self::Columns { xs, ys } => Point::new_raw_xy(xs[row], ys[row]),
-        }
-    }
-}
-
-/// Resolve every row of `array` to a validated lon/lat `Point`. The frame is
-/// classified once; a non-lonlat frame reprojects all rows in ONE batched
-/// transform (instead of one PROJ round trip per row), and packed point
-/// arrays gather straight off their shared column.
-pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointRows<'_>> {
-    if array.is_compact_nullable() {
-        if !matches!(array.storage(), crate::GeometryArrayStorage::Packed(PackedStorage::Points { .. })) {
-            return Err(crate::py::errors::geometry_type_err(
-                "expected Point geometry",
-            ));
-        }
-        // A frame is lon/lat when it has no CRS or a WGS 84 one; any other CRS
-        // is the one to reproject from.
-        let projected_crs = array.crs_str().filter(|crs| !crate::crs::is_wgs84_lonlat(crs));
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        let mut present = Vec::new();
-        crate::try_reserve_pair(&mut xs, &mut ys, array.len()).map_err(PyErr::from)?;
-        crate::try_reserve_vec(&mut present, array.len()).map_err(PyErr::from)?;
-        for logical_row in array
-            .row_operation()
-            .rows_with_missing(|| (f64::NAN, f64::NAN))
-        {
-            match logical_row {
-                crate::array::ArrayRow::Missing { value, .. } => {
-                    crate::try_push_pair(&mut xs, &mut ys, value.0, value.1)
-                        .map_err(PyErr::from)?;
-                },
-                crate::array::ArrayRow::Present(row) => {
-                    let logical = row.logical();
-                    let crate::array::ShapeRow::Point(point) = row.row() else {
-                        unreachable!("compact point storage yields point rows")
-                    };
-                    crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)
-                        .map_err(PyErr::from)?;
-                    crate::try_push(&mut present, logical)?;
-                },
-            }
-        }
-        let Some(crs) = projected_crs else {
-            for &logical in &present {
-                crate::boundary::geographic::validate_lonlat_xy(xs[logical], ys[logical])?;
-            }
-            return Ok(GridPointRows::Columns { xs, ys });
-        };
-        let mut px = Vec::new();
-        let mut py = Vec::new();
-        crate::try_reserve_pair(&mut px, &mut py, present.len()).map_err(PyErr::from)?;
-        for &logical in &present {
-            crate::try_push_pair(&mut px, &mut py, xs[logical], ys[logical])
-                .map_err(PyErr::from)?;
-        }
-        crate::crs::TransformPlan::new(crs, "EPSG:4326")?.transform_coordinates(
-            &mut px,
-            &mut py,
-            crate::Zt::None,
-        )?;
-        for (index, &logical) in present.iter().enumerate() {
-            crate::boundary::geographic::validate_lonlat_xy(px[index], py[index])?;
-            xs[logical] = px[index];
-            ys[logical] = py[index];
-        }
-        return Ok(GridPointRows::Columns { xs, ys });
-    }
-    let points = array
-        .storage()
-        .point_rows()
-        .ok_or_else(|| crate::py::errors::geometry_type_err("expected Point geometry"))?;
-    let projected_crs = array.crs_str().filter(|crs| !crate::crs::is_wgs84_lonlat(crs));
-    let crs = match projected_crs {
-        Some(crs) if !points.is_empty() => crs,
-        _ => {
-            // Skip lon/lat validation on missing rows (NaN placeholders) —
-            // factories carry them as a missing mask instead of rejecting the
-            // whole batch.
-            for (row, point) in points.iter().enumerate() {
-                if array.is_row_missing(row) {
-                    continue;
-                }
-                crate::boundary::geographic::validate_lonlat_point(point)?;
-            }
-            return Ok(GridPointRows::Source(points));
-        },
-    };
-    // Grid cells are 2-D (lon/lat), so keep independent X/Y columns through
-    // the batched transform. This avoids the previous AoS -> CoordSeq -> Shape
-    // round-trip; only the final `PointRows` interchange materializes Points.
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    crate::try_reserve_pair(&mut xs, &mut ys, points.len()).map_err(PyErr::from)?;
-    for point in points.iter() {
-        crate::try_push_pair(&mut xs, &mut ys, point.x, point.y).map_err(PyErr::from)?;
-    }
-    // Transform present rows only: missing placeholders may be non-finite and
-    // must not trip domain validation on the identity/real path.
-    let mut present = crate::try_vec_with_capacity(points.len())?;
-    for row in 0..points.len() {
-        if !array.is_row_missing(row) {
-            crate::try_push(&mut present, row)?;
-        }
-    }
-    if !present.is_empty() {
-        let mut px = Vec::new();
-        let mut py = Vec::new();
-        crate::try_reserve_pair(&mut px, &mut py, present.len()).map_err(PyErr::from)?;
-        for &row in &present {
-            crate::try_push_pair(&mut px, &mut py, xs[row], ys[row]).map_err(PyErr::from)?;
-        }
-        crate::crs::TransformPlan::new(crs, "EPSG:4326")?.transform_coordinates(
-            &mut px,
-            &mut py,
-            crate::Zt::None,
-        )?;
-        for (i, &row) in present.iter().enumerate() {
-            crate::boundary::geographic::validate_lonlat_xy(px[i], py[i])?;
-            xs[row] = px[i];
-            ys[row] = py[i];
-        }
-    }
-    Ok(GridPointRows::Columns { xs, ys })
 }
 
 /// Scalar/array coverage dispatch shared by all four grid families.

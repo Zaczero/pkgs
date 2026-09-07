@@ -35,7 +35,8 @@ pub(crate) use arrays::{
 };
 pub(crate) use pair::{
     OptionalDensifyParam, binary_frame_crs, geodesic_point_columns_dwithin_shape_values,
-    geodesic_point_columns_to_shape_values, lonlat_shape, lonlat_shape_under,
+    geodesic_point_columns_to_shape_values, lonlat_points, lonlat_shape, lonlat_shape_under,
+    LonLatPointsError,
     metric_frechet_densified, metric_frechet_densified_with_scratch, metric_hausdorff_densified,
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
     metric_nearest_points, metric_shortest_line, pair_distance_geodesic, pair_distance_planar,

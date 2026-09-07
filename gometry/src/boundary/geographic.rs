@@ -136,15 +136,15 @@ pub(crate) fn validate_lonlat_polygon(polygon: &Polygon) -> PyResult<()> {
 }
 
 pub(crate) fn validate_lonlat_point(point: Point) -> PyResult<()> {
-    validate_lonlat_xy(point.x, point.y)
+    Ok(validate_lonlat_xy(point.x, point.y)?)
 }
 
-pub(crate) fn validate_lonlat_xy(lon: f64, lat: f64) -> PyResult<()> {
+pub(crate) fn validate_lonlat_xy(lon: f64, lat: f64) -> crate::error::Result<()> {
     const EPSILON: f64 = 1.0e-12;
     let lon_range = MIN_LONGITUDE - EPSILON..=MAX_LONGITUDE + EPSILON;
     let lat_range = MIN_LATITUDE - EPSILON..=MAX_LATITUDE + EPSILON;
     if !lon_range.contains(&lon) || !lat_range.contains(&lat) {
-        return Err(invalid_lonlat_error(lon, lat).into());
+        return Err(invalid_lonlat_error(lon, lat));
     }
     Ok(())
 }

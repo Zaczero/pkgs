@@ -37,7 +37,6 @@ pub(crate) use construct::{
     dispatch_grid_cell_array,
 };
 pub(super) use engine::grid_cover_dispatch;
-pub(crate) use engine::grid_lonlat_points;
 use engine::{
     bounding_query_bounds, bounding_query_region, cell_items, coverage_to_polygon,
     lonlat_point_geometry, rect_cells_to_polygon,

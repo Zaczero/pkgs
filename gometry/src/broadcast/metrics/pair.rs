@@ -2,7 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::PackedStorage;
+use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
 use pyo3::types::PyAny;
 
 use crate::NonNegative;
@@ -225,6 +225,158 @@ pub(crate) fn lonlat_shape_under<'a>(
 
 pub(crate) fn lonlat_shape(geometry: &PyGeometry) -> PyResult<Shape> {
     Ok(lonlat_shape_under(geometry.shape.shape(), geometry.crs_str())?.into_owned())
+}
+
+/// Array sibling of [`lonlat_shape`]: validated lon/lat points at logical rows.
+pub(crate) enum LonLatPointRows<'a> {
+    Source(PointRows<'a>),
+    Columns { xs: Vec<f64>, ys: Vec<f64> },
+}
+
+impl LonLatPointRows<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Source(points) => points.len(),
+            Self::Columns { xs, .. } => xs.len(),
+        }
+    }
+
+    pub(crate) fn get(&self, row: usize) -> Point {
+        match self {
+            Self::Source(points) => points.get(row),
+            Self::Columns { xs, ys } => Point::new_raw_xy(xs[row], ys[row]),
+        }
+    }
+}
+
+/// Gather error provenance. Callers format: grid without a row note, geocode
+/// with [`crate::note_array_row`] on [`Self::Row`].
+#[derive(Debug)]
+pub(crate) enum LonLatPointsError {
+    Type,
+    Setup(crate::error::Error),
+    Row(usize, crate::error::Error),
+}
+
+fn lonlat_setup<T>(result: crate::error::Result<T>) -> Result<T, LonLatPointsError> {
+    result.map_err(LonLatPointsError::Setup)
+}
+
+fn lonlat_domain(row: usize, x: f64, y: f64) -> Result<(), LonLatPointsError> {
+    crate::boundary::geographic::validate_lonlat_xy(x, y)
+        .map_err(|error| LonLatPointsError::Row(row, error))
+}
+
+fn transform_present(
+    crs: &str,
+    xs: &mut [f64],
+    ys: &mut [f64],
+    present: &[usize],
+) -> Result<(), LonLatPointsError> {
+    let mut px = Vec::new();
+    let mut py = Vec::new();
+    lonlat_setup(crate::try_reserve_pair(&mut px, &mut py, present.len()))?;
+    for &row in present {
+        lonlat_setup(crate::try_push_pair(&mut px, &mut py, xs[row], ys[row]))?;
+    }
+    let plan = lonlat_setup(crate::crs::TransformPlan::new(crs, "EPSG:4326"))?;
+    lonlat_setup(plan.transform_coordinates(&mut px, &mut py, crate::Zt::None))?;
+    for (index, &row) in present.iter().enumerate() {
+        lonlat_domain(row, px[index], py[index])?;
+        xs[row] = px[index];
+        ys[row] = py[index];
+    }
+    Ok(())
+}
+
+fn compact_lonlat_points(
+    array: &PyGeometryArray,
+) -> Result<LonLatPointRows<'_>, LonLatPointsError> {
+    let projected_crs = array
+        .crs_str()
+        .filter(|crs| !crs::is_wgs84_lonlat(crs));
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    let mut present = Vec::new();
+    lonlat_setup(crate::try_reserve_pair(&mut xs, &mut ys, array.len()))?;
+    lonlat_setup(crate::try_reserve_vec(&mut present, array.len()))?;
+    for logical_row in array
+        .row_operation()
+        .rows_with_missing(|| (f64::NAN, f64::NAN))
+    {
+        match logical_row {
+            ArrayRow::Missing { value, .. } => {
+                lonlat_setup(crate::try_push_pair(&mut xs, &mut ys, value.0, value.1))?;
+            },
+            ArrayRow::Present(row) => {
+                let logical = row.logical();
+                let crate::array::ShapeRow::Point(point) = row.row() else {
+                    unreachable!("compact point storage yields point rows")
+                };
+                lonlat_setup(crate::try_push_pair(&mut xs, &mut ys, point.x, point.y))?;
+                lonlat_setup(crate::try_push_vec(&mut present, logical))?;
+            },
+        }
+    }
+    let Some(crs) = projected_crs else {
+        for &logical in &present {
+            lonlat_domain(logical, xs[logical], ys[logical])?;
+        }
+        return Ok(LonLatPointRows::Columns { xs, ys });
+    };
+    if !present.is_empty() {
+        transform_present(crs, &mut xs, &mut ys, &present)?;
+    }
+    Ok(LonLatPointRows::Columns { xs, ys })
+}
+
+/// Resolve every logical row of `array` to a validated lon/lat point.
+pub(crate) fn lonlat_points(
+    array: &PyGeometryArray,
+) -> Result<LonLatPointRows<'_>, LonLatPointsError> {
+    if array.is_compact_nullable() {
+        if !matches!(
+            array.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+        ) {
+            return Err(LonLatPointsError::Type);
+        }
+        return compact_lonlat_points(array);
+    }
+    let points = array
+        .storage()
+        .point_rows()
+        .ok_or(LonLatPointsError::Type)?;
+    let projected_crs = array
+        .crs_str()
+        .filter(|crs| !crs::is_wgs84_lonlat(crs));
+    if projected_crs.is_none() || points.is_empty() {
+        for (row, point) in points.iter().enumerate() {
+            if array.is_row_missing(row) {
+                continue;
+            }
+            lonlat_domain(row, point.x, point.y)?;
+        }
+        return Ok(LonLatPointRows::Source(points));
+    }
+    let crs = projected_crs.expect("projected arm requires a CRS");
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    lonlat_setup(crate::try_reserve_pair(&mut xs, &mut ys, points.len()))?;
+    for point in points.iter() {
+        lonlat_setup(crate::try_push_pair(&mut xs, &mut ys, point.x, point.y))?;
+    }
+    let mut present = Vec::new();
+    lonlat_setup(crate::try_reserve_vec(&mut present, points.len()))?;
+    for row in 0..points.len() {
+        if !array.is_row_missing(row) {
+            lonlat_setup(crate::try_push_vec(&mut present, row))?;
+        }
+    }
+    if !present.is_empty() {
+        transform_present(crs, &mut xs, &mut ys, &present)?;
+    }
+    Ok(LonLatPointRows::Columns { xs, ys })
 }
 
 /// Extract the single point of a `Point` geometry, or error.
@@ -899,5 +1051,108 @@ mod dwithin_parity_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod lonlat_points_tests {
+    use super::{LonLatPointRows, LonLatPointsError, lonlat_points};
+    use crate::array::{PyGeometryArray, ValidityMask};
+    use crate::boundary::{Frame, crs_arc_static};
+    use crate::geometry::{CoordSeq, Point};
+    use crate::io::parse_wkt;
+
+    fn packed_xy(xs: Vec<f64>, ys: Vec<f64>, frame: Frame) -> PyGeometryArray {
+        PyGeometryArray::packed_points(CoordSeq::from_vecs(xs, ys, None, None), frame)
+    }
+
+    #[test]
+    fn dense_lonlat_borrows_source() {
+        let array = packed_xy(vec![1.0, 2.0], vec![3.0, 4.0], Frame::None);
+        let points = lonlat_points(&array).expect("in-domain packed points");
+        assert!(matches!(points, LonLatPointRows::Source(_)));
+        assert_eq!(points.len(), 2);
+        assert_eq!(points.get(0), Point::new_raw_xy(1.0, 3.0));
+        assert_eq!(points.get(1), Point::new_raw_xy(2.0, 4.0));
+    }
+
+    #[test]
+    fn missing_row_is_not_validated_and_keeps_logical_index() {
+        let present = packed_xy(vec![1.0], vec![2.0], Frame::None);
+        let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
+        let array = PyGeometryArray::scatter_present_rows(&present, mask);
+        assert!(array.is_compact_nullable());
+        let points = lonlat_points(&array).expect("present row is in domain");
+        assert!(matches!(points, LonLatPointRows::Columns { .. }));
+        assert_eq!(points.len(), 3);
+        assert_eq!(points.get(1), Point::new_raw_xy(1.0, 2.0));
+    }
+
+    #[test]
+    fn domain_error_carries_logical_row() {
+        let array = packed_xy(vec![0.0, 200.0], vec![0.0, 0.0], Frame::None);
+        match lonlat_points(&array) {
+            Err(LonLatPointsError::Row(row, error)) => {
+                assert_eq!(row, 1);
+                assert!(error.to_string().contains("invalid longitude/latitude"));
+            },
+            Err(LonLatPointsError::Type) => panic!("expected Row(1), got Type"),
+            Err(LonLatPointsError::Setup(error)) => {
+                panic!("expected Row(1), got Setup({error})")
+            },
+            Ok(_) => panic!("expected Row(1), got Ok"),
+        }
+    }
+
+    #[test]
+    fn compact_missing_domain_error_uses_logical_index() {
+        let present = packed_xy(vec![0.0, 200.0], vec![0.0, 0.0], Frame::None);
+        let mask = ValidityMask::from_vec(4, vec![true, false, true, false]).expect("mask");
+        let array = PyGeometryArray::scatter_present_rows(&present, mask);
+        match lonlat_points(&array) {
+            Err(LonLatPointsError::Row(row, _)) => assert_eq!(row, 3),
+            Err(LonLatPointsError::Type) => panic!("expected Row(3), got Type"),
+            Err(LonLatPointsError::Setup(error)) => {
+                panic!("expected Row(3), got Setup({error})")
+            },
+            Ok(_) => panic!("expected Row(3), got Ok"),
+        }
+    }
+
+    #[test]
+    fn empty_projected_array_borrows_source_without_transform() {
+        let array = packed_xy(
+            Vec::new(),
+            Vec::new(),
+            Frame::Crs(crs_arc_static("EPSG:3857")),
+        );
+        let points = lonlat_points(&array).expect("empty projected array skips transform");
+        assert!(matches!(points, LonLatPointRows::Source(_)));
+        assert_eq!(points.len(), 0);
+    }
+
+    #[test]
+    fn compact_projected_all_missing_skips_transform() {
+        let present = packed_xy(
+            Vec::new(),
+            Vec::new(),
+            Frame::Crs(crs_arc_static("EPSG:3857")),
+        );
+        let mask = ValidityMask::from_vec(2, vec![true, true]).expect("mask");
+        let array = PyGeometryArray::scatter_present_rows(&present, mask);
+        assert!(array.is_compact_nullable());
+        let points = lonlat_points(&array).expect("all-missing compact skips TransformPlan");
+        assert!(matches!(points, LonLatPointRows::Columns { .. }));
+        assert_eq!(points.len(), 2);
+    }
+
+    #[test]
+    fn non_point_array_is_type_error() {
+        let line = parse_wkt("LINESTRING (0 0, 1 1)").expect("line parses");
+        let array = PyGeometryArray::from_shapes(vec![line], Frame::None);
+        assert!(matches!(
+            lonlat_points(&array),
+            Err(LonLatPointsError::Type)
+        ));
     }
 }
