@@ -331,7 +331,7 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
 /// 'POLYGON ((0 0, 1 0, 2 0, 2 1, 1 1, 0 1, 0 0))'
 #[pyfunction]
 pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
-    let (shapes, metadata, _) = coverage_values(values)?;
+    let (metadata, shapes) = pooled_shapes(values)?;
     if shapes.is_empty() {
         // A coverage union requires an operand, consistent with `union_all`.
         return Err(
@@ -568,7 +568,7 @@ pub(crate) fn coverage_is_valid(
     values: &Bound<'_, PyAny>,
     gap_width: f64,
 ) -> PyResult<bool> {
-    let (shapes, ..) = coverage_values(values)?;
+    let (_, shapes) = pooled_shapes(values)?;
     Ok(py.detach(move || geometry::coverage_is_valid(&shapes, gap_width))?)
 }
 
@@ -781,8 +781,9 @@ pub(crate) fn coverage_clean(
     })
 }
 
-/// Resolve a coverage `values` argument: the rows' shapes plus their strict
-/// shared frame metadata.
+/// Resolve a coverage `values` argument for scatter-producing operations: the
+/// rows' shapes, strict shared frame metadata, and the admitted source array
+/// needed to restore missing logical rows after native work.
 fn coverage_values(
     values: &Bound<'_, PyAny>,
 ) -> PyResult<(Vec<Shape>, Frame, Option<PyGeometryArray>)> {
