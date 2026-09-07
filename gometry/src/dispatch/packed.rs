@@ -82,6 +82,7 @@ pub(crate) enum PackedUnary {
     },
     ClipByRect {
         rect: Bounds,
+        domain: TopologyDomain,
     },
     LineInterpolatePoint {
         distance: F64Param,
@@ -359,8 +360,8 @@ pub(crate) fn try_unary_packed_array(
         (Operation::Quantize, PackedUnary::Quantize { precision }) => {
             Some(array.quantize_unary_packed(py, *precision))
         },
-        (Operation::ClipByRect, PackedUnary::ClipByRect { rect }) => {
-            Some(array.clip_by_rect_unary_packed(py, *rect, false))
+        (Operation::ClipByRect, PackedUnary::ClipByRect { rect, domain }) => {
+            Some(array.clip_by_rect_unary_packed(py, *rect, false, *domain))
         },
         (
             Operation::Metric(MetricOp::LineInterpolate),

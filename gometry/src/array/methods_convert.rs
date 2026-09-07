@@ -6,7 +6,7 @@ use crate::array::{
     subdivide_polygon_columns, validate_densify_fraction, validate_max_segment_length,
 };
 use crate::geographic::GeographicFrame;
-use crate::geometry::ExpansionBudget;
+use crate::geometry::{ExpansionBudget, TopologyDomain};
 
 #[derive(Clone, Copy)]
 pub(crate) struct GridSize {
@@ -452,8 +452,8 @@ impl PyGeometryArray {
         py: Python<'_>,
         rect: Bounds,
         drop: bool,
+        domain: TopologyDomain,
     ) -> PyResult<Self> {
-        let domain = crate::geometry::topology_domain(&self.frame)?;
         if matches!(self.storage(), GeometryArrayStorage::Packed(PackedStorage::Lines { .. })) {
             let clipped =
                 self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {

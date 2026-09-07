@@ -653,7 +653,7 @@ impl PyGeometryArray {
             self,
             crate::dispatch::Operation::ClipByRect,
             None,
-            crate::dispatch::PackedUnary::ClipByRect { rect },
+            crate::dispatch::PackedUnary::ClipByRect { rect, domain },
             move |data, ctx| crate::dispatch::kernels::unary_clip_by_rect(data, ctx, rect, false)
         )
     }
