@@ -15,6 +15,49 @@ fn ring(coords: &[(f64, f64)]) -> Ring {
     Ring::closed(coords.iter().map(|&(x, y)| point(x, y)).collect()).expect("closed test ring")
 }
 
+fn xyz_ring(coords: &[(f64, f64)], z: f64) -> Ring {
+    Ring::closed(
+        coords
+            .iter()
+            .map(|&(x, y)| {
+                Point::new_axes(
+                    x,
+                    y,
+                    crate::geometry::ZOrdinate(Some(z)),
+                    crate::geometry::MOrdinate(None),
+                )
+                .expect("finite XYZ test coordinate")
+            })
+            .collect(),
+    )
+    .expect("closed XYZ test ring")
+}
+
+fn mixed_ring_axes_polygon() -> Polygon {
+    Polygon::new(
+        xyz_ring(
+            &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
+            3.0,
+        ),
+        vec![ring(&[
+            (1.0, 1.0),
+            (1.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 1.0),
+            (1.0, 1.0),
+        ])],
+    )
+}
+
+fn assert_mixed_ring_axes_error(shape: &Shape) {
+    let error = to_geojson_string::<true>(shape, crate::geometry::TopologyDomain::Cartesian)
+        .expect_err("mixed polygon ring axes must be rejected by the writer");
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))
+    ));
+}
+
 fn line(coords: &[(f64, f64)]) -> Shape {
     Shape::LineString(
         LineSeq::try_new(CoordSeq::from(
@@ -109,6 +152,82 @@ fn multipolygon_and_collection_rings_are_right_handed() {
         .expect("test collection is valid");
     let out = written(&collection, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["geometries"][0]["coordinates"][0]) > 0.0);
+}
+
+#[test]
+fn writer_rejects_mixed_polygon_ring_axes_at_the_serializer() {
+    let shape = Shape::Polygon(mixed_ring_axes_polygon());
+    assert_mixed_ring_axes_error(&shape);
+}
+
+#[test]
+fn writer_rejects_mixed_polygon_ring_axes_through_nested_shapes() {
+    let polygon = mixed_ring_axes_polygon();
+    let multipolygon = Shape::MultiPolygon(
+        crate::geometry::MultiPolygon::try_new(crate::geometry::CoordinateAxes::XYZ, vec![
+            crate::geometry::MultiMember::Value(polygon.clone()),
+        ])
+        .expect("mixed-ring polygon has a uniform aggregate axes union"),
+    );
+    assert_mixed_ring_axes_error(&multipolygon);
+
+    let collection =
+        Shape::geometry_collection(vec![Shape::Point(point(8.0, 8.0)), Shape::Polygon(polygon)])
+            .expect("test collection is valid");
+    assert_mixed_ring_axes_error(&collection);
+}
+
+#[test]
+fn writer_preserves_uniform_xyz_and_mixed_collection_axes() {
+    let polygon = Shape::Polygon(Polygon::new(
+        xyz_ring(
+            &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
+            3.0,
+        ),
+        vec![xyz_ring(
+            &[(1.0, 1.0), (1.0, 2.0), (2.0, 2.0), (2.0, 1.0), (1.0, 1.0)],
+            7.0,
+        )],
+    ));
+    let polygon_value: Value = serde_json::from_str(
+        &to_geojson_string::<true>(&polygon, crate::geometry::TopologyDomain::Cartesian)
+            .expect("uniform XYZ polygon serializes"),
+    )
+    .expect("uniform XYZ output is JSON");
+    assert_eq!(polygon_value["coordinates"][0][0], json!([0.0, 0.0, 3.0]));
+    assert_eq!(polygon_value["coordinates"][1][0], json!([1.0, 1.0, 7.0]));
+    assert_eq!(
+        parse_geojson(&polygon_value).expect("uniform XYZ output reads"),
+        polygon
+    );
+
+    let xyz_point = Point::new_axes(
+        3.0,
+        4.0,
+        crate::geometry::ZOrdinate(Some(7.0)),
+        crate::geometry::MOrdinate(None),
+    )
+    .expect("finite XYZ test point");
+    let collection =
+        Shape::geometry_collection(vec![Shape::Point(point(1.0, 2.0)), Shape::Point(xyz_point)])
+            .expect("mixed-axis collection is valid");
+    let collection_value: Value = serde_json::from_str(
+        &to_geojson_string::<true>(&collection, crate::geometry::TopologyDomain::Cartesian)
+            .expect("mixed-axis collection serializes"),
+    )
+    .expect("mixed-axis collection output is JSON");
+    assert_eq!(
+        collection_value["geometries"][0]["coordinates"],
+        json!([1.0, 2.0])
+    );
+    assert_eq!(
+        collection_value["geometries"][1]["coordinates"],
+        json!([3.0, 4.0, 7.0])
+    );
+    assert_eq!(
+        parse_geojson(&collection_value).expect("mixed-axis output reads"),
+        collection
+    );
 }
 
 #[test]

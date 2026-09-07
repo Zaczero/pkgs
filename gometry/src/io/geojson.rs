@@ -42,6 +42,7 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
     domain: TopologyDomain,
 ) -> Result<String> {
     validate_geojson_value::<INCLUDE_Z>(shape)?;
+    crate::io::require_serializable_axes(shape)?;
     let prepared = geojson_output_shape(shape, domain)?;
     // Three zmij-formatted ordinates and their delimiters fit within 80 bytes.
     let coordinate_bytes = prepared
