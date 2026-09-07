@@ -34,6 +34,19 @@ def test_line_interpolate_counts_distances_and_index_reuse() -> None:
         [0.0, 10.0],
         [0.0, 2.0, 4.0],
     ]
+    assert [(p.z, p.m) for p in per_row[0]] == [(0.0, 10.0), (10.0, 20.0)]
+    geodesic_rows = gm.GeometryArray([geodesic, geodesic])
+    geodesic_groups = geodesic_rows.line_interpolate(count=2)
+    assert isinstance(geodesic_groups, gm.Groups)
+    assert geodesic_groups[0][0].x == pytest.approx(0.0)
+    assert geodesic_groups[0][1].x == pytest.approx(1.0, abs=0.01)
+    mixed_missing = gm.GeometryArray([line, None, gm.LineString([(0, 0), (4, 0)])])
+    missing_groups = mixed_missing.line_interpolate(count=2)
+    assert [[p.x for p in part] for part in missing_groups] == [
+        [0.0, 10.0],
+        [],
+        [0.0, 4.0],
+    ]
     with pytest.raises(gm.GeometryError, match='exactly one'):
         line.line_interpolate()
     with pytest.raises(gm.GeometryError, match='exactly one'):

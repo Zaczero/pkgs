@@ -2,15 +2,14 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use crate::array::{
     Bound, CollectRows as _, DistanceUnit, GeometryArrayStorage, GeometryError, I64Param,
-    InterpolatePlan, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python, RowSelection, Shape,
-    ValidityMask, crs, line_interpolate_points_coordseq, line_interpolate_points_shape,
-    line_locate_coordseq, note_array_row, parse_interpolate_plan, positive_int,
-    resolve_line_metric, rows_err,
+    InterpolatePlan, PackedStorage, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python,
+    RowSelection, Shape, ValidityMask, crs, line_interpolate_points_coordseq,
+    line_interpolate_points_shape, line_locate_coordseq, note_array_row, parse_interpolate_plan,
+    positive_int, resolve_line_metric, rows_err,
 };
 use crate::broadcast::degrade_linref_float;
 use crate::geometry::{CoordSeq, CsrOffsetColumn};
@@ -151,42 +150,59 @@ pub(crate) fn line_interpolate_points_rows(
         let missing = array.missing().cloned();
         let logical_len = array.len();
         let frame = array.frame.clone();
-        let result = py.detach(move || -> crate::error::Result<_, (usize, crate::error::Error)> {
-            let map = row_map.as_deref();
-            let mut builder = crate::CsrBuilder::<Shape>::new();
-            for row in 0..logical_len {
-                let values = if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
-                    Vec::new()
-                } else {
+        let result = py.detach(
+            move || -> crate::error::Result<_, (usize, crate::error::Error)> {
+                let map = row_map.as_deref();
+                let mut builder = crate::CsrBuilder::<Shape>::new();
+                for row in 0..logical_len {
+                    if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                        builder
+                            .push_row(std::iter::empty::<Shape>())
+                            .map_err(|error| (row, error))?;
+                        continue;
+                    }
                     let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
-                    plan.with_row(row, |plan| {
-                        line_interpolate_points_coordseq(&model, &line, plan)
-                    })
-                    .map_err(|error| (row, error))?
-                    .into_iter()
-                    .map(Shape::Point)
-                    .collect()
-                };
-                builder
-                    .push_row(values)
-                    .map_err(|error| (row, error))?;
-            }
-            Ok(builder)
-        });
+                    let points = plan
+                        .with_row(row, |plan| {
+                            line_interpolate_points_coordseq(&model, &line, plan)
+                        })
+                        .map_err(|error| (row, error))?;
+                    builder
+                        .push_row(points.into_iter().map(Shape::Point))
+                        .map_err(|error| (row, error))?;
+                }
+                Ok(builder)
+            },
+        );
         let builder = match result {
             Ok(builder) => builder,
             Err((row, error)) => return Err(note_array_row(error.into(), row)),
         };
         return crate::py::vectors::Groups::from_geometry_builder(frame, builder);
     }
+    let array = array.clone();
+    let frame = array.frame.clone();
+    let result = py.detach(move || interpolate_mixed_row_groups(&array, &plan, &model));
+    let builder = match result {
+        Ok(builder) => builder,
+        Err((row, error)) => return Err(note_array_row(error.into(), row)),
+    };
+    crate::py::vectors::Groups::from_geometry_builder(frame, builder)
+}
+
+fn interpolate_mixed_row_groups(
+    array: &PyGeometryArray,
+    plan: &RowInterpolatePlan,
+    model: &crs::MetricModel,
+) -> std::result::Result<crate::CsrBuilder<Shape>, (usize, crate::error::Error)> {
     let mut builder = crate::CsrBuilder::<Shape>::new();
     let mut rows = array.row_operation();
     for logical_row in rows.rows_with_missing(|| ()) {
         match logical_row {
             crate::array::ArrayRow::Missing { logical, .. } => {
                 builder
-                    .push_row(Vec::new())
-                    .map_err(|error| note_array_row(error.into(), logical))?;
+                    .push_row(std::iter::empty::<Shape>())
+                    .map_err(|error| (logical, error))?;
             },
             crate::array::ArrayRow::Present(row) => {
                 let logical = row.logical();
@@ -200,12 +216,132 @@ pub(crate) fn line_interpolate_points_rows(
                             plan,
                         )
                     })
-                    .map_err(|error| note_array_row(error.into(), logical))?;
-                builder
-                    .push_row(values)
-                    .map_err(|error| note_array_row(error.into(), logical))?;
+                    .map_err(|error| (logical, error))?;
+                builder.push_row(values).map_err(|error| (logical, error))?;
             },
         }
     }
-    crate::py::vectors::Groups::from_geometry_builder(array.frame.clone(), builder)
+    Ok(builder)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RowInterpolatePlan, interpolate_mixed_row_groups};
+    use crate::InterpolatePlan;
+    use crate::array::{GeometryArrayStorage, PyGeometryArray, ValidityMask};
+    use crate::boundary::Frame;
+    use crate::crs::{DistanceMode, MetricModel};
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::{CoordSeq, LineSeq, Shape};
+    use crate::test_support::fail_allocations_after;
+
+    fn line_seq(xs: Vec<f64>, ys: Vec<f64>, zs: Option<Vec<f64>>, ms: Option<Vec<f64>>) -> LineSeq {
+        LineSeq::try_new(CoordSeq::from_vecs(xs, ys, zs, ms)).expect("test line")
+    }
+
+    fn mixed_zm_and_xy_lines() -> PyGeometryArray {
+        let zm = Shape::LineString(line_seq(
+            vec![0.0, 10.0],
+            vec![0.0, 0.0],
+            Some(vec![0.0, 10.0]),
+            Some(vec![10.0, 20.0]),
+        ));
+        let xy = Shape::LineString(line_seq(vec![0.0, 4.0], vec![0.0, 0.0], None, None));
+        let array = PyGeometryArray::from_shapes(vec![zm, xy], Frame::None);
+        assert!(
+            matches!(array.storage(), GeometryArrayStorage::Mixed(_)),
+            "unequal axes must take the mixed interpolate walk"
+        );
+        array
+    }
+
+    fn warm_row_products(array: &PyGeometryArray) {
+        let mut rows = array.row_operation();
+        for logical_row in rows.rows_with_missing(|| ()) {
+            if let crate::array::ArrayRow::Present(row) = logical_row {
+                let logical = row.logical();
+                let _prepared = rows.prepared(row);
+                let _cache = rows.frame_cache(logical);
+            }
+        }
+    }
+
+    fn point_xyzm(shape: &Shape) -> (f64, f64, Option<f64>, Option<f64>) {
+        match shape {
+            Shape::Point(point) => (point.x, point.y, point.z(), point.m()),
+            other => panic!("expected point, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mixed_count_keeps_source_ordinates() {
+        let array = mixed_zm_and_xy_lines();
+        let builder = interpolate_mixed_row_groups(
+            &array,
+            &RowInterpolatePlan::Counts(crate::I64Param::Scalar(2)),
+            &MetricModel::COORDINATE,
+        )
+        .expect("count samples");
+        let (shapes, offsets) = builder.finish().expect("csr");
+        assert_eq!(offsets, vec![0, 2, 4]);
+        assert_eq!(point_xyzm(&shapes[0]), (0.0, 0.0, Some(0.0), Some(10.0)));
+        assert_eq!(point_xyzm(&shapes[1]), (10.0, 0.0, Some(10.0), Some(20.0)));
+        assert_eq!(point_xyzm(&shapes[2]), (0.0, 0.0, None, None));
+        assert_eq!(point_xyzm(&shapes[3]), (4.0, 0.0, None, None));
+    }
+
+    #[test]
+    fn mixed_at_distances_keep_source_ordinates() {
+        let array = mixed_zm_and_xy_lines();
+        let builder = interpolate_mixed_row_groups(
+            &array,
+            &RowInterpolatePlan::Shared(InterpolatePlan::Distances(
+                vec![2.5],
+                DistanceMode::Absolute,
+            )),
+            &MetricModel::COORDINATE,
+        )
+        .expect("at samples");
+        let (shapes, offsets) = builder.finish().expect("csr");
+        assert_eq!(offsets, vec![0, 1, 2]);
+        assert_eq!(point_xyzm(&shapes[0]), (2.5, 0.0, Some(2.5), Some(12.5)));
+        assert_eq!(point_xyzm(&shapes[1]), (2.5, 0.0, None, None));
+    }
+
+    #[test]
+    fn mixed_missing_row_is_empty_group() {
+        let array = mixed_zm_and_xy_lines().with_missing_mask(ValidityMask::from_sparse(2, &[1]));
+        let builder = interpolate_mixed_row_groups(
+            &array,
+            &RowInterpolatePlan::Counts(crate::I64Param::Scalar(2)),
+            &MetricModel::COORDINATE,
+        )
+        .expect("missing empty group");
+        let (shapes, offsets) = builder.finish().expect("csr");
+        assert_eq!(offsets, vec![0, 2, 2]);
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(point_xyzm(&shapes[0]), (0.0, 0.0, Some(0.0), Some(10.0)));
+        assert_eq!(point_xyzm(&shapes[1]), (10.0, 0.0, Some(10.0), Some(20.0)));
+    }
+
+    #[test]
+    fn mixed_builder_allocation_fails_after_warm_cache() {
+        let array = mixed_zm_and_xy_lines().with_missing_mask(ValidityMask::from_sparse(2, &[0]));
+        warm_row_products(&array);
+        let error = fail_allocations_after(0, || {
+            match interpolate_mixed_row_groups(
+                &array,
+                &RowInterpolatePlan::Counts(crate::I64Param::Scalar(2)),
+                &MetricModel::COORDINATE,
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("builder alloc"),
+            }
+        });
+        assert_eq!(error.0, 0);
+        assert!(matches!(
+            error.1.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
 }
