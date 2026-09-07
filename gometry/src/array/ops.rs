@@ -684,39 +684,52 @@ impl PyGeometryArray {
                 budget.add(usize::try_from(count.get(row)).expect("validated non-negative"))?;
             }
         }
-        let mut builder = crate::CsrBuilder::<Shape>::with_capacity(budget.used(), len)
-            .map_err(pyo3::PyErr::from)?;
-        for logical_row in self.row_operation().rows_with_missing(|| ()) {
-            let (row, values) = match logical_row {
-                crate::array::ArrayRow::Missing { logical, .. } => (logical, None),
-                crate::array::ArrayRow::Present(row) => {
-                    let logical = row.logical();
-                    let count =
-                        usize::try_from(count.get(logical)).expect("validated non-negative");
-                    // One rule: a geometry seeded with `s` always draws
-                    // `row_sample_seed(s, 0)`. A single seed spreads across rows by
-                    // index; per-row seeds are each that row's OWN seed, so each
-                    // draws the stream a scalar with that seed draws. Both keep
-                    // rows independent AND agree with the scalar surface.
-                    let seed = match &seed {
-                        I64Param::Scalar(value) => row_sample_seed(*value as u64, logical),
-                        I64Param::PerElement(values) => row_sample_seed(values[logical] as u64, 0),
-                    };
-                    let values = row.row().with_shape(|shape| {
-                        (!shape.is_empty())
-                            .then(|| shape.sample_points(count, seed))
-                            .transpose()
-                    })?;
-                    (
-                        logical,
-                        values.map(|points| points.into_iter().map(Shape::Point)),
-                    )
-                },
-            };
-            builder
-                .push_row(values.into_iter().flatten())
-                .map_err(|error| note_array_row(error.into(), row))?;
-        }
+        let built = (|| -> Result<crate::CsrBuilder<Shape>, (Error, Option<usize>)> {
+            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(budget.used(), len)
+                .map_err(|error| (error, None))?;
+            for logical_row in self.row_operation().rows_with_missing(|| ()) {
+                let (row, values) = match logical_row {
+                    crate::array::ArrayRow::Missing { logical, .. } => (logical, None),
+                    crate::array::ArrayRow::Present(row) => {
+                        let logical = row.logical();
+                        let count =
+                            usize::try_from(count.get(logical)).expect("validated non-negative");
+                        // One rule: a geometry seeded with `s` always draws
+                        // `row_sample_seed(s, 0)`. A single seed spreads across rows by
+                        // index; per-row seeds are each that row's OWN seed, so each
+                        // draws the stream a scalar with that seed draws. Both keep
+                        // rows independent AND agree with the scalar surface.
+                        let seed = match &seed {
+                            I64Param::Scalar(value) => row_sample_seed(*value as u64, logical),
+                            I64Param::PerElement(values) => {
+                                row_sample_seed(values[logical] as u64, 0)
+                            },
+                        };
+                        let values = row
+                            .row()
+                            .with_shape(|shape| {
+                                (!shape.is_empty())
+                                    .then(|| shape.sample_points(count, seed))
+                                    .transpose()
+                            })
+                            .map_err(|error| (error, None))?;
+                        (
+                            logical,
+                            values.map(|points| points.into_iter().map(Shape::Point)),
+                        )
+                    },
+                };
+                builder
+                    .push_row(values.into_iter().flatten())
+                    .map_err(|error| (error, Some(row)))?;
+            }
+            Ok(builder)
+        })();
+        let builder = match built {
+            Ok(builder) => builder,
+            Err((error, None)) => return Err(error.into()),
+            Err((error, Some(row))) => return Err(note_array_row(error.into(), row)),
+        };
         crate::py::vectors::Groups::from_geometry_builder(self.frame.clone(), builder)
     }
 

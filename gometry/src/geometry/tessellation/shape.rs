@@ -1,6 +1,5 @@
 use ahash::HashSetExt as _;
 
-use crate::NonNegative;
 use crate::error::Result;
 use crate::geometry::derived::monotone_chain_hull;
 use crate::geometry::tessellation::{
@@ -10,10 +9,11 @@ use crate::geometry::tessellation::{
     triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
-    AxisFrame, CoordSeq, CsrOffsetColumn, Dimension, ExpansionBudget, GeometryErrorKind, GeometryKind, HashSet,
-    Point, PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape, TopologyGraph, VoronoiBoundary,
-    carry_each, empty_geometry, line_segments,
+    AxisFrame, CoordSeq, CsrOffsetColumn, Dimension, ExpansionBudget, GeometryErrorKind,
+    GeometryKind, HashSet, Point, PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape,
+    TopologyGraph, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
 };
+use crate::{NonNegative, try_push_vec};
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
 /// closed triangle ring is charged before its `Shape` is built.
@@ -286,8 +286,13 @@ impl Shape {
             // Every triangle uses one shared *per-axis* frame. Relative areas
             // retain the common `sx*sy` factor, while reciprocal spans remain
             // nonzero instead of collapsing to the lower-dimensional fallback.
-            let vertices: Vec<Point> = triangles.iter().flatten().copied().collect();
-            let frame = AxisFrame::from_points(&vertices);
+            let frame = triangles.first().and_then(|[origin, ..]| {
+                let extent_x =
+                    axis_extent(triangles.iter().flatten().map(|point| point.x), origin.x)?;
+                let extent_y =
+                    axis_extent(triangles.iter().flatten().map(|point| point.y), origin.y)?;
+                AxisFrame::from_origin_extents(*origin, extent_x, extent_y)
+            });
             let placed = sample_weighted(
                 count,
                 seed,
@@ -319,7 +324,12 @@ impl Shape {
         }
         if self.topological_dimension() >= Dimension::Curve {
             let mut segments: Vec<Segment> = Vec::new();
-            self.for_each_segment_chain(|chain| segments.extend(line_segments(chain)));
+            self.try_for_each_segment_chain(|chain| {
+                for segment in line_segments(chain) {
+                    try_push_vec(&mut segments, segment)?;
+                }
+                Ok::<(), crate::error::Error>(())
+            })?;
             let scale = weight_scale(
                 segments
                     .iter()
@@ -348,7 +358,7 @@ impl Shape {
             }
         }
         let mut atoms: Vec<Point> = Vec::new();
-        self.for_each_point(|point| atoms.push(point));
+        self.try_for_each_point(|point| try_push_vec(&mut atoms, point))?;
         sample_weighted(
             count,
             seed,
@@ -423,7 +433,8 @@ impl Shape {
         boundary: VoronoiBoundary<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<(CoordSeq, CsrOffsetColumn)> {
-        self.voronoi_edges_raw(tolerance, boundary, budget)?.into_line_column()
+        self.voronoi_edges_raw(tolerance, boundary, budget)?
+            .into_line_column()
     }
 
     fn voronoi_edges_raw(
@@ -452,10 +463,10 @@ impl Shape {
             // Dimensional empties keep their declared axes on the boundary
             // sentinel, matching `exterior` (a Z empty polygon's boundary is
             // MULTILINESTRING Z EMPTY, not an XY collapse).
-            Self::Empty(GeometryKind::Point | GeometryKind::GeometryCollection |
-GeometryKind::MultiPoint, axes) => {
-                Self::typed_empty(GeometryKind::GeometryCollection, *axes)
-            },
+            Self::Empty(
+                GeometryKind::Point | GeometryKind::GeometryCollection | GeometryKind::MultiPoint,
+                axes,
+            ) => Self::typed_empty(GeometryKind::GeometryCollection, *axes),
             Self::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, axes) => {
                 Self::typed_empty(GeometryKind::MultiPoint, *axes)
             },
@@ -552,7 +563,9 @@ GeometryKind::MultiPoint, axes) => {
             .collect();
         match polygons.len() {
             0 => Ok(Self::empty_polygon()),
-            1 => Ok(Self::Polygon(polygons.into_iter().next().expect("one polygon"))),
+            1 => Ok(Self::Polygon(
+                polygons.into_iter().next().expect("one polygon"),
+            )),
             _ => {
                 let axes = polygons[0].axes();
                 if polygons.iter().all(|polygon| polygon.axes() == axes) {
@@ -560,13 +573,11 @@ GeometryKind::MultiPoint, axes) => {
                         .into_iter()
                         .map(crate::geometry::MultiMember::Value)
                         .collect();
-                    Ok(Self::MultiPolygon(
-                        crate::geometry::MultiPolygon::try_new(axes, members)?,
-                    ))
+                    Ok(Self::MultiPolygon(crate::geometry::MultiPolygon::try_new(
+                        axes, members,
+                    )?))
                 } else {
-                    Self::geometry_collection(
-                        polygons.into_iter().map(Self::Polygon).collect(),
-                    )
+                    Self::geometry_collection(polygons.into_iter().map(Self::Polygon).collect())
                 }
             },
         }

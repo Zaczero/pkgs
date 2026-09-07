@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::geometry::tessellation::polygon_triangles;
 use crate::geometry::{Coordinates as _, Point, Shape};
+use crate::{try_push_vec, try_reserve_vec};
 
 /// A common power-of-two factor that keeps weight products finite for
 /// huge-but-valid coordinates (exact in binary floating point; weights
@@ -26,24 +27,25 @@ pub(crate) fn sample_weighted<T>(
     place: impl Fn(&T, &mut u64) -> Result<Point>,
 ) -> Result<Option<Vec<Point>>> {
     let mut total = 0.0;
-    let cumulative: Vec<f64> = pieces
-        .iter()
-        .map(|piece| {
-            total += weight(piece);
-            total
-        })
-        .collect();
+    let mut cumulative = Vec::new();
+    try_reserve_vec(&mut cumulative, pieces.len())?;
+    for piece in pieces {
+        total += weight(piece);
+        try_push_vec(&mut cumulative, total)?;
+    }
     if total <= 0.0 || !total.is_finite() {
         return Ok(None);
     }
+    let mut points = Vec::new();
+    try_reserve_vec(&mut points, count)?;
     let mut state = seed;
-    let mut points = Vec::with_capacity(count);
     for _ in 0..count {
         let pick = uniform_f64(&mut state) * total;
         let index = cumulative
             .partition_point(|&edge| edge <= pick)
             .min(pieces.len() - 1);
-        points.push(place(&pieces[index], &mut state)?);
+        let point = place(&pieces[index], &mut state)?;
+        try_push_vec(&mut points, point)?;
     }
     Ok(Some(points))
 }
@@ -108,4 +110,94 @@ pub(crate) fn uniform_f64(state: &mut u64) -> f64 {
 pub(crate) const fn row_sample_seed(seed: u64, row: usize) -> u64 {
     let mut state = seed ^ (row as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     splitmix64(&mut state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sample_weighted;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::{CoordSeq, LineSeq, Point, Segment, Shape, XY};
+    use crate::test_support::fail_allocations_after;
+
+    #[test]
+    fn seed1_unit_segment_two_draws_match_splitmix64() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(1.0, 0.0),
+        };
+        let points = sample_weighted(
+            2,
+            1,
+            &[segment],
+            |_| 1.0,
+            |segment, state| {
+                let along = super::uniform_f64(state);
+                Point::new(
+                    (1.0 - along) * segment.start.x + along * segment.end.x,
+                    (1.0 - along) * segment.start.y + along * segment.end.y,
+                )
+            },
+        )
+        .expect("positive weight")
+        .expect("samples");
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].x.to_bits(), 0.7457817572627011_f64.to_bits());
+        assert_eq!(points[0].y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(points[1].x.to_bits(), 0.4443592170557721_f64.to_bits());
+        assert_eq!(points[1].y.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn cumulative_reserve_fails_before_place() {
+        let error = fail_allocations_after(0, || {
+            sample_weighted(2, 1, &[()], |_| 1.0, |_, _| panic!("place")).expect_err("alloc 0")
+        });
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn points_reserve_fails_before_place() {
+        let error = fail_allocations_after(1, || {
+            sample_weighted(2, 1, &[()], |_| 1.0, |_, _| panic!("place")).expect_err("alloc 1")
+        });
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn line_discovery_allocation_fails() {
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(
+                vec![0.0, 1.0],
+                vec![0.0, 0.0],
+                None,
+                None,
+            ))
+            .unwrap(),
+        );
+        let error = fail_allocations_after(0, || {
+            line.sample_points(1, 1).expect_err("line staging alloc")
+        });
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn atom_discovery_allocation_fails() {
+        let points = Shape::Point(Point::new_raw_xy(7.0, 8.0));
+        let error = fail_allocations_after(0, || {
+            points.sample_points(1, 1).expect_err("atom staging alloc")
+        });
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
 }

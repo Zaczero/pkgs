@@ -250,28 +250,65 @@ impl Shape {
     /// collections — as borrowed columns. The chain enumeration behind
     /// segment-level prepared state (facet linework).
     pub(crate) fn for_each_segment_chain(&self, mut visit: impl FnMut(&CoordSeq)) {
-        self.for_each_segment_chain_inner(&mut visit);
+        let _: ControlFlow<()> = self.for_each_segment_chain_inner(&mut |chain| {
+            visit(chain);
+            ControlFlow::Continue(())
+        });
     }
 
-    fn for_each_segment_chain_inner<F: FnMut(&CoordSeq)>(&self, visit: &mut F) {
-        match self {
-            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => {},
-            Self::LineString(points) => visit(points),
-            Self::MultiLineString(lines) => lines.iter().for_each(|line| visit(line)),
-            Self::Polygon(polygon) => polygon.rings().for_each(|ring| visit(ring)),
-            Self::MultiPolygon(polygons) => polygons
-                .iter()
-                .flat_map(Polygon::rings)
-                .for_each(|ring| visit(ring)),
-            Self::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    geometry.for_each_segment_chain_inner(visit);
-                }
-            },
+    /// Visit every segment-bearing chain until `visit` returns `Err`.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
+    )]
+    pub(crate) fn try_for_each_segment_chain<E>(
+        &self,
+        mut visit: impl FnMut(&CoordSeq) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self.for_each_segment_chain_inner(&mut |chain| match visit(chain) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(error),
+        }) {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(error) => Err(error),
         }
     }
 
-    #[expect(clippy::match_same_arms, reason = "the arms bind different member types; they cannot share a pattern")]
+    fn for_each_segment_chain_inner<B, F: FnMut(&CoordSeq) -> ControlFlow<B>>(
+        &self,
+        visit: &mut F,
+    ) -> ControlFlow<B> {
+        match self {
+            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => {},
+            Self::LineString(points) => visit(points)?,
+            Self::MultiLineString(lines) => {
+                for line in lines {
+                    visit(line)?;
+                }
+            },
+            Self::Polygon(polygon) => {
+                for ring in polygon.rings() {
+                    visit(ring)?;
+                }
+            },
+            Self::MultiPolygon(polygons) => {
+                for ring in polygons.iter().flat_map(Polygon::rings) {
+                    visit(ring)?;
+                }
+            },
+            Self::GeometryCollection(geometries) => {
+                for geometry in geometries {
+                    geometry.for_each_segment_chain_inner(visit)?;
+                }
+            },
+        }
+        ControlFlow::Continue(())
+    }
+
+    #[expect(
+        clippy::match_same_arms,
+        reason = "the arms bind different member types; they cannot share a pattern"
+    )]
     pub fn parts(&self) -> ShapePartsIter<'_> {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => {
@@ -285,10 +322,10 @@ impl Shape {
             Self::GeometryCollection(geometries) => {
                 ShapePartsIter::GeometryCollection(geometries.iter())
             },
-            Self::Empty(GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon, _) =>
-            {
-                ShapePartsIter::Single(Some(self))
-            },
+            Self::Empty(
+                GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon,
+                _,
+            ) => ShapePartsIter::Single(Some(self)),
             Self::Empty(..) => ShapePartsIter::Empty,
         }
     }
@@ -311,7 +348,10 @@ impl Shape {
     /// Number of top-level parts, without materializing them — `1` for a single
     /// geometry, the member count for a multi/collection. The `O(1)`
     /// counterpart to `parts().count()`.
-    #[expect(clippy::match_same_arms, reason = "the arms bind different member types; they cannot share a pattern")]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "the arms bind different member types; they cannot share a pattern"
+    )]
     pub fn part_count(&self) -> usize {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => 1,
@@ -319,10 +359,10 @@ impl Shape {
             Self::MultiLineString(lines) => lines.len(),
             Self::MultiPolygon(polygons) => polygons.len(),
             Self::GeometryCollection(geometries) => geometries.len(),
-            Self::Empty(GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon, _) =>
-            {
-                1
-            },
+            Self::Empty(
+                GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon,
+                _,
+            ) => 1,
             Self::Empty(..) => 0,
         }
     }
@@ -360,10 +400,10 @@ impl Shape {
                 },
             }),
             Self::GeometryCollection(geometries) => geometries.get(index).cloned(),
-            Self::Empty(GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon, _) =>
-            {
-                (index == 0).then(|| self.clone())
-            },
+            Self::Empty(
+                GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon,
+                _,
+            ) => (index == 0).then(|| self.clone()),
             Self::Empty(..) => None,
         }
     }
