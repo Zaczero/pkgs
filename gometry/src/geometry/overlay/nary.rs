@@ -692,19 +692,11 @@ fn overlay_view_error(
         crate::geographic::GeographicViewError::Resource => {
             crate::error::ResourceError::Allocation.into()
         },
-        crate::geographic::GeographicViewError::Diagnostic(diagnostic) => match diagnostic.source {
-            crate::geographic::GeographicError::NonFinite { .. }
-            | crate::geographic::GeographicError::LatitudeOutOfRange { .. } => {
-                crate::boundary::geographic::invalid_lonlat_error(
-                    diagnostic.native.x,
-                    diagnostic.native.y,
-                )
-            },
-            crate::geographic::GeographicError::SeamTransitOverflow
-            | crate::geographic::GeographicError::InvalidAngularFactor { .. }
-            | crate::geographic::GeographicError::InvalidSweep { .. } => {
-                GeometryErrorKind::message(diagnostic.to_string())
-            },
+        crate::geographic::GeographicViewError::Diagnostic(diagnostic) => {
+            crate::boundary::geographic::invalid_lonlat_error(
+                diagnostic.native.x,
+                diagnostic.native.y,
+            )
         },
     }
 }

@@ -17,7 +17,7 @@ use crate::dispatch::binary::{
 use crate::dispatch::kernels;
 use crate::dispatch::metric::CachelessRowContext;
 use crate::dispatch::operation::{MetricOp, Operation};
-use crate::geometry::PreparedPlan;
+use crate::geometry::{GeometryKind, PreparedPlan};
 use crate::predicates::engine::Predicate;
 use crate::{DistanceUnit, NonNegative, OverlayOp};
 
@@ -95,6 +95,12 @@ pub(crate) fn dispatch_predicate(
         let domain = crate::geometry::topology_domain(&left.frame)?;
         let spec = predicate.spec();
         let value = py.detach(move || {
+            if let Some(verdict) = spec.predicate.kind_gate(
+                GeometryKind::of(left_plan.shape()),
+                GeometryKind::of(right_plan.shape()),
+            ) {
+                return Ok(verdict);
+            }
             crate::predicates::engine::PreparedTopologyPair::try_for_domain(
                 &left_plan,
                 &left_cache,

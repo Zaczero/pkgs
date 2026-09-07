@@ -6,9 +6,7 @@ use crate::boundary::geographic::invalid_lonlat_error;
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{CrsError, geographic_metric_frame_at};
 use crate::error::{ResourceError, Result};
-use crate::geographic::{
-    GeographicError, GeographicFrame, GeographicViewError, ScalarGeographicView,
-};
+use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
 use crate::geometry::{CoordSeq, REDUCE_LANES, ReduceSimd, Shape, simd_mask_any};
 
 /// Validate geometry coordinates in their CRS-native geographic frame. This
@@ -21,16 +19,9 @@ pub(crate) fn ensure_geographic_domain_in_frame(
     match ScalarGeographicView::try_new(frame, shape) {
         Ok(_) => Ok(()),
         Err(GeographicViewError::Resource) => Err(ResourceError::Allocation.into()),
-        Err(GeographicViewError::Diagnostic(diagnostic)) => match diagnostic.source {
-            GeographicError::NonFinite { .. } | GeographicError::LatitudeOutOfRange { .. } => Err(
-                geographic::invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y),
-            ),
-            GeographicError::SeamTransitOverflow
-            | GeographicError::InvalidAngularFactor { .. }
-            | GeographicError::InvalidSweep { .. } => Err(
-                crate::geometry::GeometryErrorKind::message(diagnostic.to_string()),
-            ),
-        },
+        Err(GeographicViewError::Diagnostic(diagnostic)) => Err(
+            geographic::invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y),
+        ),
     }
 }
 

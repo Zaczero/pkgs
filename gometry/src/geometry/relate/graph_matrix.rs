@@ -51,20 +51,10 @@ impl<'a> GeographicPrepared<'a> {
                 return Err(crate::error::ResourceError::Allocation.into());
             },
             Err(crate::geographic::GeographicViewError::Diagnostic(diagnostic)) => {
-                return Err(match diagnostic.source {
-                    crate::geographic::GeographicError::NonFinite { .. }
-                    | crate::geographic::GeographicError::LatitudeOutOfRange { .. } => {
-                        crate::boundary::geographic::invalid_lonlat_error(
-                            diagnostic.native.x,
-                            diagnostic.native.y,
-                        )
-                    },
-                    crate::geographic::GeographicError::SeamTransitOverflow
-                    | crate::geographic::GeographicError::InvalidAngularFactor { .. }
-                    | crate::geographic::GeographicError::InvalidSweep { .. } => {
-                        crate::geometry::GeometryErrorKind::message(diagnostic.to_string())
-                    },
-                });
+                return Err(crate::boundary::geographic::invalid_lonlat_error(
+                    diagnostic.native.x,
+                    diagnostic.native.y,
+                ));
             },
         };
         Ok(Self {
