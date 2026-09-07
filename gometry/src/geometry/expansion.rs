@@ -12,9 +12,11 @@ pub(crate) use crate::geometry::exact_arith::{
 
 /// Sum two increasing-magnitude expansions into caller-owned storage.
 ///
-/// `None` means only that the supplied storage is too small. Finite-domain
-/// admission remains a caller policy.
-pub(crate) fn expansion_sum_zeroelim(
+/// `NEGATE_RIGHT` subtracts by reading `-right[i]` without cloning. `None` if
+/// `output` cannot hold `left.len() + right.len()`, or if `require_finite` is
+/// set and a two-sum head is non-finite. Callers that admit infinities pass
+/// `require_finite = false`.
+pub(crate) fn expansion_sum_zeroelim<const NEGATE_RIGHT: bool>(
     left: &[f64],
     right: &[f64],
     output: &mut [f64],
@@ -23,17 +25,24 @@ pub(crate) fn expansion_sum_zeroelim(
     if left.len().checked_add(right.len())? > output.len() {
         return None;
     }
+    let sign_right = |value: f64| if NEGATE_RIGHT { -value } else { value };
     if right.is_empty() {
         output[..left.len()].copy_from_slice(left);
         return Some(left.len());
     }
     if left.is_empty() {
-        output[..right.len()].copy_from_slice(right);
+        if NEGATE_RIGHT {
+            for (slot, &value) in output[..right.len()].iter_mut().zip(right) {
+                *slot = -value;
+            }
+        } else {
+            output[..right.len()].copy_from_slice(right);
+        }
         return Some(right.len());
     }
 
     let mut left_now = left[0];
-    let mut right_now = right[0];
+    let mut right_now = sign_right(right[0]);
     let mut left_index = 0;
     let mut right_index = 0;
     let mut accumulator;
@@ -48,7 +57,7 @@ pub(crate) fn expansion_sum_zeroelim(
     let mut output_len = 0;
     if left_index < left.len() && right_index < right.len() {
         left_now = left[left_index];
-        right_now = right[right_index];
+        right_now = sign_right(right[right_index]);
         let (sum, tail) = if (right_now > left_now) == (right_now > -left_now) {
             left_index += 1;
             fast_two_sum(left_now, accumulator)
@@ -66,7 +75,7 @@ pub(crate) fn expansion_sum_zeroelim(
         }
         while left_index < left.len() && right_index < right.len() {
             left_now = left[left_index];
-            right_now = right[right_index];
+            right_now = sign_right(right[right_index]);
             let (sum, tail) = if (right_now > left_now) == (right_now > -left_now) {
                 left_index += 1;
                 two_sum(accumulator, left_now)
@@ -98,7 +107,7 @@ pub(crate) fn expansion_sum_zeroelim(
         }
     }
     while right_index < right.len() {
-        right_now = right[right_index];
+        right_now = sign_right(right[right_index]);
         let (sum, tail) = two_sum(accumulator, right_now);
         if require_finite && !sum.is_finite() {
             return None;
@@ -163,7 +172,7 @@ pub(crate) fn scale_expansion_zeroelim(
         if require_finite && (!head.is_finite() || !tail.is_finite()) {
             return None;
         }
-        let next_len = expansion_sum_zeroelim(
+        let next_len = expansion_sum_zeroelim::<false>(
             &output[..output_len],
             &term[..term_len],
             scratch,
@@ -382,7 +391,8 @@ mod tests {
             let mut legacy = [0.0; 4];
             let legacy_len = old_area_sum(left, right, &mut legacy);
             let mut shared = [0.0; 4];
-            let shared_len = expansion_sum_zeroelim(left, right, &mut shared, false).unwrap();
+            let shared_len =
+                expansion_sum_zeroelim::<false>(left, right, &mut shared, false).unwrap();
             assert_semantically_equal(&legacy[..legacy_len], &shared[..shared_len]);
 
             let mut legacy_scale = [0.0; 5];
@@ -407,7 +417,9 @@ mod tests {
         // The finite policy declines overflow before a partial expansion
         // escapes to a caller.
         let mut output = [0.0; 2];
-        assert!(expansion_sum_zeroelim(&[f64::MAX], &[f64::MAX], &mut output, true).is_none());
+        assert!(
+            expansion_sum_zeroelim::<false>(&[f64::MAX], &[f64::MAX], &mut output, true).is_none()
+        );
         let mut scaled = [0.0; 3];
         let mut scratch = [0.0; 3];
         assert!(
@@ -459,5 +471,41 @@ mod tests {
                 "value={value}, scale={scale}"
             );
         }
+    }
+
+    #[test]
+    fn negate_right_cancels_two_limb_unit_plus_half_ulp() {
+        // 1 - 2^-53 is a single binary64. 1 + 2^-53 is not: the sum of those
+        // two one-limb expansions needs two limbs.
+        let unit = [1.0];
+        let half_ulp = [2.0_f64.powi(-53)];
+        let mut sum = [0.0; 2];
+        let sum_len =
+            expansion_sum_zeroelim::<false>(&unit, &half_ulp, &mut sum, true).unwrap();
+        assert!(sum_len > 1);
+
+        let mut cancelled = [0.0; 3];
+        let cancelled_len =
+            expansion_sum_zeroelim::<true>(&sum[..sum_len], &unit, &mut cancelled, true).unwrap();
+        assert_semantically_equal(&cancelled[..cancelled_len], &half_ulp);
+
+        let mut empty_right = [0.0; 2];
+        let empty_len =
+            expansion_sum_zeroelim::<true>(&sum[..sum_len], &[], &mut empty_right, true).unwrap();
+        assert_semantically_equal(&empty_right[..empty_len], &sum[..sum_len]);
+
+        let mut empty_left = [0.0; 1];
+        let empty_left_len =
+            expansion_sum_zeroelim::<true>(&[], &half_ulp, &mut empty_left, true).unwrap();
+        assert_eq!(&empty_left[..empty_left_len], &[-half_ulp[0]]);
+
+        let mut too_small = [0.0; 1];
+        assert!(expansion_sum_zeroelim::<false>(&unit, &half_ulp, &mut too_small, true).is_none());
+
+        let mut overflow = [0.0; 2];
+        assert!(
+            expansion_sum_zeroelim::<true>(&[f64::MAX], &[-f64::MAX], &mut overflow, true)
+                .is_none()
+        );
     }
 }

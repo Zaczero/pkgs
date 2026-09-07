@@ -291,6 +291,21 @@ fn compact_exact_storage_canonicalizes_heap_zero_and_grows_from_spare_capacity()
 }
 
 #[test]
+fn expansion_sub_cancels_unit_plus_half_ulp_without_a_scratch_clone() {
+    // 1 - 2^-53 is one binary64. 1 + 2^-53 is not; add then sub must recover
+    // the half-ulp limb, including empty-right identity.
+    let unit = ExactExpansion::from_f64(1.0).unwrap();
+    let half_ulp = ExactExpansion::from_f64(2.0_f64.powi(-53)).unwrap();
+    let sum = unit.add(&half_ulp).unwrap();
+    assert!(sum.as_f64().is_none());
+    let recovered = sum.sub(&unit).unwrap();
+    assert_eq!(recovered.is_exact(2.0_f64.powi(-53)), Some(true));
+    let unchanged = sum.sub(&ExactExpansion::zero()).unwrap();
+    assert_eq!(unchanged.ordering(), sum.ordering());
+    assert_eq!(unchanged.is_exact(1.0), Some(false));
+}
+
+#[test]
 fn exact_ratio_equality_deduplicates_inline_and_heap_representations() {
     let inline = ExactRatio::from_i64(1, 3).unwrap();
     let heap = ExactRatio::from_parts(

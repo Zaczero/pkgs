@@ -119,7 +119,7 @@ fn estimate(e: &[f64]) -> f64 {
 /// its own partial-expansion representation.
 fn expansion_sum(left: &[f64], right: &[f64]) -> Vec<f64> {
     let mut output = vec![0.0; left.len() + right.len()];
-    let len = fast_expansion_sum_zeroelim(left, right, &mut output, false)
+    let len = fast_expansion_sum_zeroelim::<false>(left, right, &mut output, false)
         .expect("output holds both inputs");
     output.truncate(len);
     output

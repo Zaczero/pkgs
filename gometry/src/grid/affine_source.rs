@@ -45,7 +45,7 @@ use crate::boundary::geographic::{
     normalize_accepted_geographic_latitudes, normalized_geographic_pole,
 };
 use crate::geographic::{GeographicFrame, GeographicRing, RingDomain, RingSummary, RingTurn};
-use crate::geometry::expansion::{expansion_sign, fast_two_sum, two_product, two_sum};
+use crate::geometry::expansion::{expansion_sign, expansion_sum_zeroelim, two_product};
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates as _, EdgeId, EdgeYIndex, Shape,
     uses_linear_plan_for_len,
@@ -831,9 +831,9 @@ struct ExactExpansion {
     limbs: CompactLimbs,
 }
 
-/// Sum two increasing-magnitude expansions into caller-owned initialized
-/// storage. A const sign parameter keeps subtraction from cloning the right
-/// expansion while retaining the same Shewchuk ordering as addition.
+/// Sum two increasing-magnitude expansions into initialized `CompactLimbs`.
+/// Capacity, prepare, truncate, and canonicalize stay here; the Shewchuk
+/// merge is `expansion_sum_zeroelim`.
 fn sum_expansions<const NEGATE_RIGHT: bool>(
     left: &[f64],
     right: &[f64],
@@ -845,114 +845,8 @@ fn sum_expansions<const NEGATE_RIGHT: bool>(
     }
     output.clear();
     output.prepare(required)?;
-    if right.is_empty() {
-        {
-            let slots = output.as_mut_slice();
-            slots[..left.len()].copy_from_slice(left);
-        }
-        output.truncate(left.len())?;
-        output.canonicalize();
-        return Some(output.as_slice().len());
-    }
-    if left.is_empty() {
-        {
-            let slots = output.as_mut_slice();
-            for (slot, &value) in slots.iter_mut().zip(right) {
-                *slot = if NEGATE_RIGHT { -value } else { value };
-            }
-        }
-        output.truncate(right.len())?;
-        output.canonicalize();
-        return Some(output.as_slice().len());
-    }
-
-    let output_len = {
-        let output = output.as_mut_slice();
-        let signed_right = |value: f64| if NEGATE_RIGHT { -value } else { value };
-        let mut left_index = 0;
-        let mut right_index = 0;
-        let mut left_now = left[0];
-        let mut right_now = signed_right(right[0]);
-        let mut accumulator;
-        if (right_now > left_now) == (right_now > -left_now) {
-            accumulator = left_now;
-            left_index += 1;
-        } else {
-            accumulator = right_now;
-            right_index += 1;
-        }
-
-        let mut output_len = 0;
-        if left_index < left.len() && right_index < right.len() {
-            left_now = left[left_index];
-            right_now = signed_right(right[right_index]);
-            let (sum, tail) = if (right_now > left_now) == (right_now > -left_now) {
-                left_index += 1;
-                fast_two_sum(left_now, accumulator)
-            } else {
-                right_index += 1;
-                fast_two_sum(right_now, accumulator)
-            };
-            if !sum.is_finite() {
-                return None;
-            }
-            accumulator = sum;
-            if tail != 0.0 {
-                output[output_len] = tail;
-                output_len += 1;
-            }
-            while left_index < left.len() && right_index < right.len() {
-                left_now = left[left_index];
-                right_now = signed_right(right[right_index]);
-                let (sum, tail) = if (right_now > left_now) == (right_now > -left_now) {
-                    left_index += 1;
-                    two_sum(accumulator, left_now)
-                } else {
-                    right_index += 1;
-                    two_sum(accumulator, right_now)
-                };
-                if !sum.is_finite() {
-                    return None;
-                }
-                accumulator = sum;
-                if tail != 0.0 {
-                    output[output_len] = tail;
-                    output_len += 1;
-                }
-            }
-        }
-        while left_index < left.len() {
-            left_now = left[left_index];
-            let (sum, tail) = two_sum(accumulator, left_now);
-            if !sum.is_finite() {
-                return None;
-            }
-            accumulator = sum;
-            left_index += 1;
-            if tail != 0.0 {
-                output[output_len] = tail;
-                output_len += 1;
-            }
-        }
-        while right_index < right.len() {
-            right_now = signed_right(right[right_index]);
-            let (sum, tail) = two_sum(accumulator, right_now);
-            if !sum.is_finite() {
-                return None;
-            }
-            accumulator = sum;
-            right_index += 1;
-            if tail != 0.0 {
-                output[output_len] = tail;
-                output_len += 1;
-            }
-        }
-        if accumulator != 0.0 || output_len == 0 {
-            output[output_len] = accumulator;
-            output_len += 1;
-        }
-        output_len
-    };
+    let output_len =
+        expansion_sum_zeroelim::<NEGATE_RIGHT>(left, right, output.as_mut_slice(), true)?;
     output.truncate(output_len)?;
     output.canonicalize();
     Some(output.as_slice().len())
