@@ -14,13 +14,13 @@
 //! failures with domain meaning but no structured variant raise the right
 //! class directly (`GeometryError::new_err(...)`, `parse_error(...)`).
 
-use pyo3::create_exception;
-use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyTypeError, PyUserWarning, PyValueError};
+use pyo3::exceptions::{PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyDict, PyType};
+use pyo3::types::{PyDict, PyString, PyType};
+use pyo3::{create_exception, ffi};
 
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, ResourceError};
 use crate::{Crs, ValidationIssue};
 
 create_exception!(
@@ -263,6 +263,84 @@ fn with_attrs(err: PyErr, attrs: &[(&str, Attr<'_>)]) -> PyErr {
     err
 }
 
+enum NativeResource {
+    Allocation,
+    Overflow,
+    OverflowContext(&'static str),
+}
+
+impl NativeResource {
+    fn into_py_err(self) -> PyErr {
+        match self {
+            Self::Allocation => native_memory_error(),
+            Self::Overflow => native_size_overflow_error(),
+            Self::OverflowContext(message) => native_overflow_error(message),
+        }
+    }
+}
+
+/// Raise Python's native `MemoryError` without creating PyO3's lazy Rust error
+/// box. The C helper sets the interpreter error and returns NULL; adoption is
+/// deliberately delegated to PyO3's version-aware fetch path.
+pub(crate) fn native_memory_error() -> PyErr {
+    Python::attach(|py| {
+        // SAFETY: `Python::attach` supplies the active interpreter state.
+        let _ = unsafe { ffi::PyErr_NoMemory() };
+        debug_assert!(PyErr::occurred(py));
+        PyErr::fetch(py)
+    })
+}
+
+/// Raise the fixed native overflow exception without creating a Rust error
+/// object. The C setter takes the static message and PyO3 owns version-specific
+/// exception adoption.
+pub(crate) fn native_size_overflow_error() -> PyErr {
+    Python::attach(|py| {
+        // SAFETY: the active interpreter owns the public exception type and
+        // the C string has static storage for the duration of the call.
+        unsafe {
+            ffi::PyErr_SetString(
+                ffi::PyExc_OverflowError,
+                c"resource size arithmetic overflowed".as_ptr(),
+            );
+        }
+        debug_assert!(PyErr::occurred(py));
+        PyErr::fetch(py)
+    })
+}
+
+/// Materialize an overflow exception from a Python-owned string. The string
+/// conversion is fallible and uses Python's allocator; no Rust `String` or
+/// lazy PyO3 error state is introduced here.
+pub(crate) fn native_overflow_error(message: &str) -> PyErr {
+    Python::attach(|py| {
+        let message = match PyString::from_bytes(py, message.as_bytes()) {
+            Ok(message) => message,
+            Err(error) => return error,
+        };
+        // SAFETY: `message` is a live Python string in the attached
+        // interpreter, and the exception type is a public CPython singleton.
+        unsafe {
+            ffi::PyErr_SetObject(ffi::PyExc_OverflowError, message.as_ptr());
+        }
+        debug_assert!(PyErr::occurred(py));
+        PyErr::fetch(py)
+    })
+}
+
+fn native_resource(error: &Error) -> Option<NativeResource> {
+    match error.kind() {
+        ErrorKind::Resource(kind) => Some(match kind {
+            ResourceError::Allocation => NativeResource::Allocation,
+            ResourceError::SizeOverflow => NativeResource::Overflow,
+            ResourceError::SizeOverflowContext(message) => {
+                NativeResource::OverflowContext(message)
+            },
+        }),
+        _ => None,
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive Error→PyErr mapping; one arm per variant"
@@ -272,6 +350,10 @@ impl From<Error> for PyErr {
         use crate::FrameError as F;
         use crate::crs::CrsError as C;
         use crate::geometry::GeometryErrorKind as G;
+        if let Some(resource) = native_resource(&error) {
+            drop(error);
+            return resource.into_py_err();
+        }
         let message = match error.kind() {
             ErrorKind::Io(error) => error.display_message(),
             _ => error.to_string(),
@@ -452,13 +534,7 @@ impl From<Error> for PyErr {
                     CRSError::new_err(message)
                 },
             },
-            ErrorKind::Resource(kind) => match kind {
-                crate::error::ResourceError::Allocation => PyMemoryError::new_err(message),
-                crate::error::ResourceError::SizeOverflow => PyOverflowError::new_err(message),
-                crate::error::ResourceError::SizeOverflowContext(_) => {
-                    PyOverflowError::new_err(message)
-                },
-            },
+            ErrorKind::Resource(_) => unreachable!("resource errors are handled before formatting"),
         }
     }
 }
@@ -515,4 +591,86 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     mismatch.setattr("right", py.None())?;
     mismatch.setattr("index", py.None())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::exceptions::{PyMemoryError, PyOverflowError};
+    use pyo3::prelude::*;
+
+    use super::{native_memory_error, native_overflow_error};
+    use crate::error::{Error, ResourceError};
+    use crate::test_support::fail_allocations_after;
+
+    #[test]
+    fn native_memory_error_survives_persistent_rust_allocation_rejection() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = fail_allocations_after(0, || {
+                let error = Error::from(ResourceError::Allocation);
+                let error: PyErr = error.into();
+                error
+            });
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+            drop(error);
+        });
+    }
+
+    #[test]
+    fn native_memory_error_can_attach_before_the_inspection_scope() {
+        Python::initialize();
+        let error = fail_allocations_after(0, native_memory_error);
+        Python::attach(|py| {
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+            drop(error);
+        });
+    }
+
+    #[test]
+    fn contextual_overflow_keeps_its_message() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error: PyErr = Error::from(ResourceError::SizeOverflowContext(
+                "coordinate count overflow",
+            ))
+            .into();
+            assert!(error.is_instance_of::<PyOverflowError>(py));
+            assert_eq!(
+                error
+                    .value(py)
+                    .str()
+                    .expect("overflow str")
+                    .to_str()
+                    .unwrap(),
+                "coordinate count overflow"
+            );
+            drop(error);
+
+            let error: PyErr = Error::from(ResourceError::SizeOverflow).into();
+            assert!(error.is_instance_of::<PyOverflowError>(py));
+            assert_eq!(
+                error
+                    .value(py)
+                    .str()
+                    .expect("overflow str")
+                    .to_str()
+                    .unwrap(),
+                "resource size arithmetic overflowed"
+            );
+            drop(error);
+
+            let error = native_overflow_error("row count overflow");
+            assert!(error.is_instance_of::<PyOverflowError>(py));
+            assert_eq!(
+                error
+                    .value(py)
+                    .str()
+                    .expect("overflow str")
+                    .to_str()
+                    .unwrap(),
+                "row count overflow"
+            );
+            drop(error);
+        });
+    }
 }

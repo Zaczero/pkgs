@@ -1,5 +1,4 @@
 use h3o::CellIndex;
-use pyo3::exceptions::PyMemoryError;
 
 use super::tile::H3TileError;
 use crate::grid::h3_coverer::{H3CoverError, H3CoverPlan, H3TraversalRule, h3_cover_shape};
@@ -16,6 +15,7 @@ use crate::py::cells::{
     Bound, CellRule, GeometryError, H3_MAX_RESOLUTION, PyAny, PyErr, PyGeometry, PyModule,
     PyModuleMethods as _, PyResult, py_i64_required,
 };
+use crate::py::errors::native_memory_error;
 
 /// Register the H3 classes, flat functions, and pickle rebuilders.
 pub(in crate::py::cells) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -65,7 +65,7 @@ pub(super) fn build_coverage(
             )
             .map_err(|error| match error {
                 H3TileError::Budget(error) => cover_budget_err(error),
-                H3TileError::Allocation => PyMemoryError::new_err("H3 coverage allocation failed"),
+                H3TileError::Allocation => native_memory_error(),
             })?;
             let cells = crate::try_collect_results(
                 annotated.into_iter().map(|cell| Ok::<_, PyErr>(cell.cell)),
@@ -105,7 +105,7 @@ pub(super) fn build_coverage(
 pub(super) fn h3_cover_err(error: H3CoverError) -> PyErr {
     match error {
         H3CoverError::Budget(error) => cover_budget_err(error),
-        H3CoverError::Allocation => PyMemoryError::new_err("H3 coverage allocation failed"),
+        H3CoverError::Allocation => native_memory_error(),
         H3CoverError::CapacityOverflow => {
             GeometryError::new_err("H3 coverage traversal exceeded its representable capacity")
         },

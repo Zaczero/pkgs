@@ -4,7 +4,7 @@
 )]
 use crate::array::PackedStorage;
 use pyo3::IntoPyObjectExt as _;
-use pyo3::exceptions::{PyMemoryError, PyTypeError};
+use pyo3::exceptions::PyTypeError;
 
 use crate::geometry::LineSeq;
 use crate::py::cells::{
@@ -436,7 +436,9 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
         .as_slice()
         .len()
         .checked_mul(4)
-        .ok_or_else(|| PyMemoryError::new_err("coverage outline size overflows usize"))?;
+        .ok_or_else(|| {
+            crate::py::errors::native_overflow_error("coverage outline size overflows usize")
+        })?;
     let mut outline = crate::try_vec_with_capacity(capacity)?;
     for cell in cells.as_slice() {
         let bounds = cell.bounds();

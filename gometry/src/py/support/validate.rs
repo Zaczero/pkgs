@@ -8,6 +8,8 @@
 )]
 use std::num::NonZeroU32;
 
+use pyo3::types::PyString;
+
 use crate::io::WktDimension;
 use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
@@ -120,10 +122,45 @@ pub(crate) fn validate_equals_exact_tolerance(tolerance: f64) -> PyResult<NonNeg
 /// effort: a note that cannot attach never masks the original error.
 pub(crate) fn note_array_row(err: PyErr, row: usize) -> PyErr {
     Python::attach(|py| {
-        let _ = err.value(py).call_method1(
-            "add_note",
-            (format!("while processing array element {row}"),),
-        );
+        const PREFIX: &[u8] = b"while processing array element ";
+        // Three decimal digits per byte bound every supported usize width.
+        const MAX_DIGITS: usize = 3 * std::mem::size_of::<usize>();
+        const CAPACITY: usize = PREFIX.len() + MAX_DIGITS;
+
+        let method = match PyString::from_bytes(py, b"add_note") {
+            Ok(method) => method,
+            Err(secondary) => {
+                drop(secondary);
+                return;
+            },
+        };
+        let exception = err.value(py);
+        let mut bytes = [0_u8; CAPACITY];
+        bytes[..PREFIX.len()].copy_from_slice(PREFIX);
+        let mut digits = [0_u8; MAX_DIGITS];
+        let mut end = digits.len();
+        if row == 0 {
+            end -= 1;
+            digits[end] = b'0';
+        } else {
+            let mut value = row;
+            while value != 0 {
+                end -= 1;
+                digits[end] = b'0' + (value % 10) as u8;
+                value /= 10;
+            }
+        }
+        let digits = &digits[end..];
+        let start = PREFIX.len();
+        bytes[start..start + digits.len()].copy_from_slice(digits);
+        let note = match PyString::from_bytes(py, &bytes[..start + digits.len()]) {
+            Ok(note) => note,
+            Err(secondary) => {
+                drop(secondary);
+                return;
+            },
+        };
+        drop(exception.call_method1(method, (note,)));
     });
     err
 }
@@ -227,4 +264,65 @@ pub(crate) fn validate_densify_fraction(fraction: f64) -> PyResult<f64> {
         format!("fraction must be in (0, 1], got {fraction}"),
     )
     .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::exceptions::PyValueError;
+    use pyo3::prelude::*;
+    use pyo3::types::PyModule;
+
+    use super::note_array_row;
+
+    #[test]
+    fn row_note_formats_zero_and_maximum_rows() {
+        Python::initialize();
+        Python::attach(|py| {
+            for row in [0, usize::MAX] {
+                let error = note_array_row(PyValueError::new_err("row failure"), row);
+                let notes = error
+                    .value(py)
+                    .getattr("__notes__")
+                    .expect("row note list")
+                    .extract::<Vec<String>>()
+                    .expect("row notes are strings");
+                assert_eq!(notes, vec![format!("while processing array element {row}")]);
+                drop(error);
+            }
+        });
+    }
+
+    #[test]
+    fn failed_add_note_returns_the_original_exception() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                c"class RejectNote(ValueError):\n    def add_note(self, note):\n        raise RuntimeError('note rejected')\n",
+                c"<row-note-test>",
+                c"row_note_test",
+            )
+            .expect("row-note test module");
+            let value = module
+                .getattr("RejectNote")
+                .expect("row-note exception class")
+                .call1(("original",))
+                .expect("row-note exception instance");
+            let original = value.as_ptr();
+            let error = note_array_row(PyErr::from_value(value), 3);
+
+            assert_eq!(error.value(py).as_ptr(), original);
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert_eq!(
+                error
+                    .value(py)
+                    .str()
+                    .expect("exception str")
+                    .to_str()
+                    .unwrap(),
+                "original"
+            );
+            drop(error);
+        });
+    }
 }

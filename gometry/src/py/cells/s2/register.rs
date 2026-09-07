@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use pyo3::exceptions::PyMemoryError;
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::geometry::{Coordinates as _, Shape};
@@ -20,6 +19,7 @@ use crate::py::cells::s2::parse::{S2LevelBudget, bounds_query_shape};
 use crate::py::cells::{
     Bound, CellRule, PyErr, PyGeometry, PyModule, PyModuleMethods as _, PyResult,
 };
+use crate::py::errors::native_memory_error;
 
 /// Failure that can occur while building a union of atomic S2 covers.
 ///
@@ -444,7 +444,7 @@ pub(crate) fn build_coverage(
         // `covers` after the split can incorrectly discard distinct polar
         // pieces (and changes a one-member MultiPolygon's result).
         let source_components = canonical_s2_components(&cover_shape)
-            .map_err(|_| PyMemoryError::new_err("S2 coverage allocation failed"))?;
+            .map_err(|_| native_memory_error())?;
         let mut windows = Vec::new();
         for component in &source_components {
             for window in bbox_cover_windows(component)? {
@@ -463,9 +463,7 @@ pub(crate) fn build_coverage(
         .map_err(|error| match error {
             S2ComponentCoverError::Budget(error) => coverage_ops::cover_budget_err(error),
             S2ComponentCoverError::Preparation(error) => error.into(),
-            S2ComponentCoverError::Allocation => {
-                PyMemoryError::new_err("S2 coverage allocation failed")
-            },
+            S2ComponentCoverError::Allocation => native_memory_error(),
         })?
         .into_iter()
         .map(|(cell, _)| Ok::<_, PyErr>(cell));
@@ -490,9 +488,7 @@ pub(crate) fn build_coverage(
         .map_err(|error| match error {
             S2ComponentCoverError::Budget(error) => coverage_ops::cover_budget_err(error),
             S2ComponentCoverError::Preparation(error) => error.into(),
-            S2ComponentCoverError::Allocation => {
-                PyMemoryError::new_err("S2 coverage allocation failed")
-            },
+            S2ComponentCoverError::Allocation => native_memory_error(),
         })?;
         (tagged, None)
     };

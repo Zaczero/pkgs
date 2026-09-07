@@ -4,7 +4,6 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
-use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
 
 use crate::geographic::{GeographicFrame, ScalarGeographicView};
@@ -93,12 +92,15 @@ where
             )?;
             return multipolygon_from_cell_shapes(shapes);
         }
+        let Some(capacity) = prepared.as_slice().len().checked_mul(2) else {
+            drop(prepared);
+            // A failed capacity calculation is a size error, not an
+            // allocation failure; retain its public overflow class.
+            return Err(crate::py::errors::native_overflow_error(
+                "coverage outline size overflows usize",
+            ));
+        };
         let is_member = |neighbor: D::Cell| prepared.as_slice().binary_search(&neighbor).is_ok();
-        let capacity = prepared
-            .as_slice()
-            .len()
-            .checked_mul(2)
-            .ok_or_else(|| PyMemoryError::new_err("coverage outline size overflows usize"))?;
         let mut outline = crate::try_vec_with_capacity(capacity)?;
         let mut crosses_seam = false;
         'scan: for &cell in prepared.as_slice() {

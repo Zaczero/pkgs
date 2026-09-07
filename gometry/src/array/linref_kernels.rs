@@ -151,7 +151,7 @@ pub(crate) fn line_interpolate_points_rows(
         let missing = array.missing().cloned();
         let logical_len = array.len();
         let frame = array.frame.clone();
-        let builder = py.detach(move || -> PyResult<_> {
+        let result = py.detach(move || -> crate::error::Result<_, (usize, crate::error::Error)> {
             let map = row_map.as_deref();
             let mut builder = crate::CsrBuilder::<Shape>::new();
             for row in 0..logical_len {
@@ -162,17 +162,21 @@ pub(crate) fn line_interpolate_points_rows(
                     plan.with_row(row, |plan| {
                         line_interpolate_points_coordseq(&model, &line, plan)
                     })
-                    .map_err(|error| note_array_row(error.into(), row))?
+                    .map_err(|error| (row, error))?
                     .into_iter()
                     .map(Shape::Point)
                     .collect()
                 };
                 builder
                     .push_row(values)
-                    .map_err(|error| note_array_row(error.into(), row))?;
+                    .map_err(|error| (row, error))?;
             }
             Ok(builder)
-        })?;
+        });
+        let builder = match result {
+            Ok(builder) => builder,
+            Err((row, error)) => return Err(note_array_row(error.into(), row)),
+        };
         return crate::py::vectors::Groups::from_geometry_builder(frame, builder);
     }
     let mut builder = crate::CsrBuilder::<Shape>::new();

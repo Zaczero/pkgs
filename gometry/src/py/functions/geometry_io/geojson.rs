@@ -928,7 +928,14 @@ fn build_features(
             }
             Ok((shapes, missing_rows))
         });
-        (shapes, missing_rows) = result?;
+        (shapes, missing_rows) = match result {
+            Ok(state) => state,
+            Err(error) => {
+                drop(properties);
+                drop(ids);
+                return Err(PyErr::from(error));
+            },
+        };
 
         let property = match row_properties {
             FeatureSideData::Json(value) => feature_properties_raw_py(py, value.as_deref())?,
@@ -940,10 +947,18 @@ fn build_features(
         };
         crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
     }
-    let geometries = py.detach(move || -> crate::error::Result<PyGeometryArray> {
+    let result = py.detach(move || -> crate::error::Result<PyGeometryArray> {
         let array = shapes.finish(Frame::new(crs, epoch)?);
         Ok(array.with_missing_mask(crate::array::sparse_missing_mask(row_count, &missing_rows)))
-    })?;
+    });
+    let geometries = match result {
+        Ok(geometries) => geometries,
+        Err(error) => {
+            drop(properties);
+            drop(ids);
+            return Err(PyErr::from(error));
+        },
+    };
     let geometries = geometries.into_pyobject(py)?.into_any();
     let properties = pyo3::types::PyTuple::new(py, properties)?;
     let ids = pyo3::types::PyTuple::new(py, ids)?;

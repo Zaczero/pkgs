@@ -24,7 +24,7 @@ use str_tree::StaticStrTree;
 use crate::array::BoundsSeed;
 use crate::collections::sort_row_ids;
 use crate::geometry::{Bounds, Point, Shape, ShapeData};
-use crate::py::errors::{GeometryError, parameter_error};
+use crate::py::errors::{GeometryError, native_memory_error, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
 use crate::{
@@ -596,12 +596,12 @@ impl IndexRows {
     /// disposable-output helpers, a failed reserve must leave an existing
     /// index intact, so this deliberately preserves the current buffers.
     fn try_reserve(&mut self, additional: usize) -> PyResult<()> {
-        self.boxed.try_reserve(additional).map_err(|_| {
-            pyo3::exceptions::PyMemoryError::new_err("failed to grow spatial index rows")
-        })?;
-        self.live.try_reserve(additional).map_err(|_| {
-            pyo3::exceptions::PyMemoryError::new_err("failed to grow spatial index liveness")
-        })?;
+        if self.boxed.try_reserve(additional).is_err() {
+            return Err(native_memory_error());
+        }
+        if self.live.try_reserve(additional).is_err() {
+            return Err(native_memory_error());
+        }
         Ok(())
     }
 

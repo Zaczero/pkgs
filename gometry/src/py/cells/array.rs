@@ -13,7 +13,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::{PyResult, Python, pyclass};
 use pyo3::types::{
     PyAny, PyBytes, PyBytesMethods as _, PyList, PyListMethods as _, PyString, PyTuple, PyType,
@@ -397,9 +397,10 @@ impl PyCellArray {
     /// Unique ids + per-unique counts (value_counts pass).
     fn value_count_entries(&self) -> PyResult<(Vec<u64>, Vec<i64>)> {
         let mut slot_of: HashMap<u64, usize> = HashMap::new();
-        slot_of
-            .try_reserve(self.len())
-            .map_err(|_| PyMemoryError::new_err("failed to allocate cell value counts"))?;
+        if slot_of.try_reserve(self.len()).is_err() {
+            drop(slot_of);
+            return Err(crate::py::errors::native_memory_error());
+        }
         let mut uniques = Vec::new();
         let mut counts = Vec::new();
         for row in 0..self.len() {
@@ -427,9 +428,10 @@ impl PyCellArray {
     /// Unique ids + dense codes (factorize pass).
     fn factorize_entries(&self) -> PyResult<(Vec<u64>, Vec<i64>)> {
         let mut slot_of: HashMap<u64, usize> = HashMap::new();
-        slot_of
-            .try_reserve(self.len())
-            .map_err(|_| PyMemoryError::new_err("failed to allocate cell factorization"))?;
+        if slot_of.try_reserve(self.len()).is_err() {
+            drop(slot_of);
+            return Err(crate::py::errors::native_memory_error());
+        }
         let mut uniques = Vec::new();
         let mut codes = crate::try_vec_with_capacity(self.len())?;
         for row in 0..self.len() {

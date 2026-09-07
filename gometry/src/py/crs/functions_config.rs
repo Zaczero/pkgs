@@ -76,7 +76,7 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
     // Specialized fallible loop (not bare collect_py_iter + extract::<String>):
     // each path is an owned heap `String`. Outer `Vec` growth *and* per-item
     // string reservation must be fallible, and retained output must be dropped
-    // *before* boxing `PyMemoryError` — otherwise RLIMIT_AS aborts while the
+    // *before* raising `MemoryError` — otherwise RLIMIT_AS can abort while the
     // exception is constructed (`memory allocation of N bytes failed`).
     let mut paths = Vec::new();
     if let Some(hint) = crate::advisory_len(value)? {
@@ -138,7 +138,7 @@ enum PathTakeError {
 /// Copy a string/path-like Python value into an owned Rust path string.
 ///
 /// OOM is `PathTakeError::Oom` so the caller can drop retained buffers before
-/// boxing a `PyMemoryError`.
+/// raising the native `MemoryError`.
 fn take_path_string(value: &Bound<'_, PyAny>, name: &'static str) -> Result<String, PathTakeError> {
     if let Ok(py_str) = value.cast::<pyo3::types::PyString>() {
         let s = py_str.to_str().map_err(PathTakeError::Err)?;

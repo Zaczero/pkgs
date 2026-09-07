@@ -6,7 +6,7 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::PyAnyMethods as _;
 use pyo3::types::{PyAny, PyBool, PyInt, PyTuple};
 use pyo3::{
@@ -29,9 +29,10 @@ use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
 fn try_hex_token(id: u64) -> PyResult<String> {
     use std::fmt::Write as _;
     let mut token = String::new();
-    token
-        .try_reserve(16)
-        .map_err(|_| PyMemoryError::new_err("failed to allocate H3 token"))?;
+    if token.try_reserve(16).is_err() {
+        drop(token);
+        return Err(crate::py::errors::native_memory_error());
+    }
     write!(&mut token, "{id:x}").expect("writing into a reserved string cannot fail");
     Ok(token)
 }
@@ -236,9 +237,10 @@ macro_rules! h3_index_array_common {
 
             fn factorized_entries(&self) -> PyResult<(Vec<u64>, Vec<i64>, Vec<i64>)> {
                 let mut slot_of: HashMap<u64, usize> = HashMap::new();
-                slot_of
-                    .try_reserve(self.len())
-                    .map_err(|_| PyMemoryError::new_err("failed to allocate H3 factorization"))?;
+                if slot_of.try_reserve(self.len()).is_err() {
+                    drop(slot_of);
+                    return Err(crate::py::errors::native_memory_error());
+                }
                 let mut uniques = Vec::new();
                 let mut counts = Vec::new();
                 let mut codes = crate::try_vec_with_capacity(self.len())?;

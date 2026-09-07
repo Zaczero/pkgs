@@ -10,7 +10,7 @@
 
 use std::ptr;
 
-use pyo3::exceptions::{PyMemoryError, PyOSError, PyTypeError};
+use pyo3::exceptions::{PyOSError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyCapsule, PyTuple};
 
@@ -255,12 +255,12 @@ unsafe fn stream_callback_error(
     status: i32,
     fallback: &str,
 ) -> PyErr {
+    if status == 12 {
+        return crate::py::errors::native_memory_error();
+    }
     // SAFETY: the stream guard keeps this producer live until the error is
     // constructed; get_last_error is optional and checked.
     let detail = unsafe { stream_last_error_detail(stream) }.unwrap_or_else(|| fallback.to_owned());
-    if status == 12 {
-        return PyMemoryError::new_err(format!("Arrow C stream error: {detail}"));
-    }
     PyErr::from_type(py.get_type::<PyOSError>(), (status, detail))
 }
 

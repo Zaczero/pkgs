@@ -12,7 +12,6 @@
 //! WGS84 latitude/longitude by definition — and the format stores LAT
 //! first, while gometry is always `(x, y)` = `(lon, lat)`.
 
-use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -45,9 +44,8 @@ fn scale(value: f64, factor: f64) -> i64 {
 
 fn push_encoded_char(out: &mut String, value: char) -> PyResult<()> {
     if out.try_reserve(1).is_err() {
-        return Err(PyMemoryError::new_err(
-            "failed to allocate encoded polyline",
-        ));
+        *out = String::new();
+        return Err(crate::py::errors::native_memory_error());
     }
     out.push(value);
     Ok(())
@@ -197,12 +195,13 @@ fn python_str_repr(value: &str) -> PyResult<String> {
         .len()
         .checked_mul(4)
         .and_then(|length| length.checked_add(2))
-        .ok_or_else(|| PyMemoryError::new_err("polyline error text size overflows usize"))?;
+        .ok_or_else(|| {
+            crate::py::errors::native_overflow_error("polyline error text size overflows usize")
+        })?;
     let mut out = String::new();
     if out.try_reserve(capacity).is_err() {
-        return Err(PyMemoryError::new_err(
-            "failed to allocate polyline error text",
-        ));
+        drop(out);
+        return Err(crate::py::errors::native_memory_error());
     }
     out.push('"');
     for byte in value.bytes() {

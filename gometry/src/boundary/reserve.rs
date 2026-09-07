@@ -335,9 +335,7 @@ pub(crate) fn try_reserve_hint<T>(vec: &mut Vec<T>, additional: usize) -> PyResu
     }
     if vec.try_reserve(additional).is_err() {
         *vec = Vec::new();
-        return Err(PyMemoryError::new_err(format!(
-            "failed to reserve capacity for {additional} elements from untrusted length"
-        )));
+        return Err(crate::py::errors::native_memory_error());
     }
     Ok(())
 }
@@ -351,9 +349,7 @@ pub(crate) fn try_reserve_total<T>(vec: &mut Vec<T>, additional: usize) -> PyRes
     }
     if vec.try_reserve(additional).is_err() {
         *vec = Vec::new();
-        return Err(PyMemoryError::new_err(format!(
-            "failed to reserve capacity for {additional} elements"
-        )));
+        return Err(crate::py::errors::native_memory_error());
     }
     Ok(())
 }
@@ -374,18 +370,14 @@ pub(crate) fn try_vec_with_capacity_hint<T>(capacity: usize) -> PyResult<Vec<T>>
     Ok(vec)
 }
 
-/// Message for outer-vector growth failure on untrusted streams.
-pub(crate) const GROW_SEQUENCE_OOM: &str = "failed to grow sequence buffer from untrusted input";
-
-/// Message for fallible owned-string construction on untrusted streams.
-pub(crate) const STRING_ALLOC_OOM: &str = "failed to allocate string from untrusted input";
-
-/// Probe whether `vec` needs a growth reservation; fallible, no `PyErr` yet.
+/// Probe whether `vec` needs a growth reservation; fallible, no Python error
+/// yet.
 ///
 /// Returns `Err(())` on allocator failure. Callers that already hold retained
 /// untrusted output **must drop that output before** converting to
-/// [`PyMemoryError`] — boxing a `PyErr` while the heap is exhausted aborts
-/// with `memory allocation of N bytes failed` instead of a catchable error.
+/// a Python exception — materializing a Rust `PyErr` while the heap is
+/// exhausted aborts with `memory allocation of N bytes failed` instead of a
+/// catchable error.
 fn try_reserve_next_raw<T>(vec: &mut Vec<T>) -> Result<(), ()> {
     if vec.len() == vec.capacity() {
         // Double (or start at 8); fallible so capacity overflow is a clean error.
@@ -397,16 +389,16 @@ fn try_reserve_next_raw<T>(vec: &mut Vec<T>) -> Result<(), ()> {
 
 /// Fallibly push one element, growing capacity without trusting a bulk hint.
 ///
-/// On OOM the **item is dropped** with the vector contents before the
-/// `PyMemoryError` is constructed, so exception boxing has address-space
-/// headroom under `RLIMIT_AS`.
+/// On OOM the **item is dropped** with the vector contents before the native
+/// exception is raised, so Python error adoption has address-space headroom
+/// under `RLIMIT_AS`.
 pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
     if try_reserve_next_raw(vec).is_err() {
         drop(item);
-        // Drop the allocation before boxing `PyMemoryError`; assignment does
+        // Drop the allocation before raising the native error; assignment does
         // not request replacement storage when the heap is exhausted.
         *vec = Vec::new();
-        return Err(PyMemoryError::new_err(GROW_SEQUENCE_OOM));
+        return Err(crate::py::errors::native_memory_error());
     }
     vec.push(item);
     Ok(())
@@ -428,16 +420,16 @@ pub(crate) fn try_string_from_str(s: &str) -> Result<String, ()> {
     Ok(unsafe { String::from_utf8_unchecked(buf) })
 }
 
-/// [`PyMemoryError`] for [`try_string_from_str`] failure — call only after
+/// Native memory error for [`try_string_from_str`] failure — call only after
 /// releasing retained untrusted output that exhausted the heap.
 pub(crate) fn string_alloc_error() -> PyErr {
-    PyMemoryError::new_err(STRING_ALLOC_OOM)
+    crate::py::errors::native_memory_error()
 }
 
-/// [`PyMemoryError`] for outer-vector growth failure — call only after
+/// Native memory error for outer-vector growth failure — call only after
 /// releasing retained untrusted output.
 pub(crate) fn grow_sequence_error() -> PyErr {
-    PyMemoryError::new_err(GROW_SEQUENCE_OOM)
+    crate::py::errors::native_memory_error()
 }
 
 /// Collect a fixed-length bool mask without generic `Vec<bool>: FromPyObject`
@@ -818,12 +810,12 @@ fn try_i64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<i64> {
 /// - route every new owned allocation through a fallible path
 ///   ([`try_string_from_str`], nested `collect_py_iter` / `try_push`, etc.).
 ///
-/// ## Drop retained output before boxing `PyErr`
+/// ## Drop retained output before raising
 ///
 /// Under a tight address-space cap the retained `Vec` may be what exhausted
-/// the heap. Constructing `PyMemoryError` (a Rust `PyErr` box) while that
-/// `Vec` still holds every item aborts instead of raising. This collector
-/// drops `out` before any OOM `PyErr` is built; maps that build `PyErr` on
+/// the heap. Constructing a Rust `PyErr` while that `Vec` still holds every
+/// item aborts instead of raising. This collector drops `out` before any OOM
+/// error is built; maps that build a Python error on
 /// their own OOM path must use [`try_string_from_str`]'s `Err(())` form (or
 /// equivalent) so the collector can free first — see
 /// [`crate::py::crs::functions_config`] for the search-path loop.
@@ -862,7 +854,7 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
         check_python_signals(values.py(), index)?;
         index = index.saturating_add(1);
         // Reserve a slot for `T` before mapping so outer growth is fallible.
-        // Free retained items *before* boxing `PyMemoryError` (see invariant).
+        // Free retained items before raising the native error (see invariant).
         if try_reserve_next_raw(&mut out).is_err() {
             drop(out);
             return Err(grow_sequence_error());
@@ -976,7 +968,10 @@ pub(crate) fn collect_py_iter_at_most_from_iter<'py, T>(
 
 #[cfg(test)]
 mod tests {
+    use pyo3::exceptions::PyMemoryError;
+
     use super::*;
+    use crate::test_support::fail_allocations_after;
 
     #[test]
     fn reserve_hint_clamps_instead_of_rejecting() {
@@ -1017,6 +1012,21 @@ mod tests {
         }
         assert_eq!(v.len(), 64);
         assert!(v.capacity() >= 64);
+    }
+
+    #[test]
+    fn try_push_releases_retained_output_before_native_memory_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut values = Vec::with_capacity(1);
+            values.push(1_u8);
+            let result = fail_allocations_after(0, || try_push(&mut values, 2_u8));
+            let error = result.expect_err("the persistent allocator must reject growth");
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+            assert!(values.is_empty());
+            assert_eq!(values.capacity(), 0);
+            drop(error);
+        });
     }
 
     #[test]

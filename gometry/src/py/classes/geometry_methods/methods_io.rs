@@ -4,8 +4,6 @@
 )]
 use std::fmt::Write as _;
 
-use pyo3::exceptions::PyMemoryError;
-
 use crate::py::classes::geometry_methods::{Bound, Py, PyAny, PyErr, PyGeometry, PyResult, Python};
 use crate::{
     ArrowEncoding, HeapSize as _, OverlayOp, PyValueError, SpatialCurve, exact_geometry, io,
@@ -258,15 +256,17 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
             "x" | "X" => {
                 let shape = std::sync::Arc::clone(&self.shape);
                 let wkb = py.detach(move || io::to_wkb(shape.shape(), None, false))?;
-                let capacity = wkb.len().checked_mul(2).ok_or_else(|| {
-                    PyMemoryError::new_err("hexadecimal WKB output size overflows usize")
-                })?;
+                let Some(capacity) = wkb.len().checked_mul(2) else {
+                    drop(wkb);
+                    return Err(crate::py::errors::native_overflow_error(
+                        "hexadecimal WKB output size overflows usize",
+                    ));
+                };
                 let mut out = String::new();
                 if out.try_reserve(capacity).is_err() {
                     drop(wkb);
-                    return Err(PyMemoryError::new_err(
-                        "failed to allocate hexadecimal WKB output",
-                    ));
+                    drop(out);
+                    return Err(crate::py::errors::native_memory_error());
                 }
                 for byte in wkb {
                     let _ = if spec == "x" {

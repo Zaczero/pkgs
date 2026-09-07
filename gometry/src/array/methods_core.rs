@@ -362,8 +362,10 @@ impl PyGeometryArray {
             false,
             crate::io::LegacyGeoJsonCrsPolicy::Adopt(explicit_crs.as_deref()),
         )?;
+        drop(raw_items);
+        drop(present);
         let py = values.py();
-        let array = py.detach(move || -> Result<Self> {
+        let result = py.detach(move || -> Result<Self> {
             let CoercedCollectedGeometryItems::Items(mut items) = coerced;
             let frame = Frame::resolve_items(
                 &mut items,
@@ -374,7 +376,14 @@ impl PyGeometryArray {
                 "GeometryArray",
             )?;
             Self::pack_or_mixed(items, frame)
-        })?;
+        });
+        let array = match result {
+            Ok(array) => array,
+            Err(error) => {
+                drop(mask);
+                return Err(PyErr::from(error));
+            },
+        };
         Ok(if has_missing {
             Self::scatter_present_rows(
                 &array,
