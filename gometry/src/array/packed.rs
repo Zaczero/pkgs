@@ -1334,4 +1334,36 @@ mod packed_simplify_keep_tests {
         assert_eq!(out_coords.ms().unwrap()[2].to_bits(), (-0.0_f64).to_bits());
         assert_eq!(out_coords.len(), 3);
     }
+
+    #[test]
+    fn packed_dp_zero_keeps_l_bend_and_drops_collinear() {
+        let coords = CoordSeq::from_vecs(
+            vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0],
+            vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            None,
+            None,
+        );
+        let offsets = CsrOffsetColumn::try_new(vec![0, 3, 6], 6).unwrap();
+        let array = PyGeometryArray::packed_lines(coords, offsets, Frame::None);
+        let GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords, offsets, ..
+        }) = array.storage()
+        else {
+            panic!("packed lines");
+        };
+        let out = array
+            .simplify_dp_packed_lines(coords, offsets, 0.0)
+            .unwrap();
+        let GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords: out_coords,
+            offsets: out_offsets,
+            ..
+        }) = out.storage()
+        else {
+            panic!("packed lines remain packed");
+        };
+        assert_eq!(out_offsets.as_slice(), &[0, 3, 5]);
+        assert_eq!(out_coords.xs(), &[0.0, 1.0, 2.0, 0.0, 2.0]);
+        assert_eq!(out_coords.ys(), &[0.0, 1.0, 0.0, 0.0, 0.0]);
+    }
 }

@@ -12,8 +12,9 @@ use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind, LineSeq,
     MultiLineString, MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, REDUCE_LANES,
     ReduceSimd, Ring, Segment, Shape, TopologyGuard, XY, dedup_consecutive_points, line_segments,
-    open_point_cycle_winding, orientation, point_segment_distance, point_segment_distance_squared,
-    same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
+    open_point_cycle_winding, orientation, point_on_segment, point_segment_distance,
+    point_segment_distance_squared, same_point, simplified_polygon_delta_is_simple,
+    simplify_chain_guarded, triangle_area,
     vw_area_tolerance, wrap_index,
 };
 
@@ -116,6 +117,25 @@ pub(crate) fn rdp_split(
             tolerance_squared.sqrt()
         } else if tolerance_squared > 0.0 && tolerance_squared.is_finite() {
             tolerance_squared.sqrt().max(f64::MIN_POSITIVE)
+        } else if tolerance == 0.0 {
+            let chord = Segment {
+                start: XY::new(ax, ay),
+                end: XY::new(bx, by),
+            };
+            let mut split = None;
+            let mut best_d = f64::NAN;
+            for index in start + 1..end {
+                let point = XY::new(xs[index], ys[index]);
+                if point_on_segment(point, chord.start, chord.end) {
+                    continue;
+                }
+                let d = point_segment_distance(point, chord);
+                if split.is_none() || d > best_d {
+                    split = Some(index);
+                    best_d = d;
+                }
+            }
+            return split;
         } else {
             return None;
         };
@@ -1252,5 +1272,179 @@ mod keep_identity_tests {
         };
         assert_eq!(out.len(), 2);
         assert_eq!(out.as_slice().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod dp_zero_split_tests {
+    use std::sync::Arc;
+
+    use super::rdp_keep;
+    use crate::geometry::{CoordSeq, LineSeq, Shape, XY, point_on_segment};
+
+    fn kept_mask(xs: &[f64], ys: &[f64]) -> Vec<bool> {
+        let mut keep = Vec::new();
+        let mut stack = Vec::new();
+        rdp_keep(xs, ys, 0.0, &mut keep, &mut stack).expect("chain long enough to mask");
+        keep
+    }
+
+    fn line_xy(xs: &[f64], ys: &[f64]) -> Shape {
+        Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
+            Arc::from(xs),
+            Arc::from(ys),
+            None,
+            None,
+        )))
+    }
+
+    fn discarded_lie_on_surviving_chords(xs: &[f64], ys: &[f64], keep: &[bool]) {
+        let kept: Vec<usize> = keep
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &kept)| kept.then_some(index))
+            .collect();
+        for (index, &is_kept) in keep.iter().enumerate() {
+            if is_kept {
+                continue;
+            }
+            let Some(left) = kept.iter().rev().find(|&&k| k < index).copied() else {
+                panic!("dropped vertex {index} has no kept predecessor");
+            };
+            let Some(right) = kept.iter().find(|&&k| k > index).copied() else {
+                panic!("dropped vertex {index} has no kept successor");
+            };
+            assert!(
+                point_on_segment(
+                    XY::new(xs[index], ys[index]),
+                    XY::new(xs[left], ys[left]),
+                    XY::new(xs[right], ys[right]),
+                ),
+                "dropped {index} must lie on surviving chord {left}..{right}"
+            );
+        }
+    }
+
+    #[test]
+    fn l_bend_keeps_the_corner() {
+        let xs = [0.0, 1.0, 2.0];
+        let ys = [0.0, 1.0, 0.0];
+        let keep = kept_mask(&xs, &ys);
+        assert_eq!(keep, [true, true, true]);
+        let Shape::LineString(out) = line_xy(&xs, &ys).simplify_dp(0.0, true).unwrap() else {
+            panic!("line");
+        };
+        assert_eq!(out.xs(), &xs);
+        assert_eq!(out.ys(), &ys);
+    }
+
+    #[test]
+    fn collinear_interior_drops() {
+        let xs = [0.0, 1.0, 2.0];
+        let ys = [0.0, 0.0, 0.0];
+        let keep = kept_mask(&xs, &ys);
+        assert_eq!(keep, [true, false, true]);
+        discarded_lie_on_surviving_chords(&xs, &ys, &keep);
+    }
+
+    #[test]
+    fn backtrack_outside_endpoint_is_kept() {
+        let xs = [0.0, 2.0, 1.0];
+        let ys = [0.0, 0.0, 0.0];
+        let keep = kept_mask(&xs, &ys);
+        assert_eq!(keep, [true, true, true]);
+    }
+
+    #[test]
+    fn farthest_nonmember_drops_avoidable_collinear() {
+        let xs = [0.0, 1.0, 2.0, 2.0];
+        let ys = [0.0, 0.0, 0.0, 1.0];
+        let keep = kept_mask(&xs, &ys);
+        assert_eq!(keep, [true, false, true, true]);
+        discarded_lie_on_surviving_chords(&xs, &ys, &keep);
+        let Shape::LineString(out) = line_xy(&xs, &ys).simplify_dp(0.0, true).unwrap() else {
+            panic!("line");
+        };
+        assert_eq!(out.xs(), &[0.0, 2.0, 2.0]);
+        assert_eq!(out.ys(), &[0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn repeated_endpoint_keeps_the_off_chord_vertex() {
+        let xs = [0.0, 1.0, 0.0];
+        let ys = [0.0, 1.0, 0.0];
+        let keep = kept_mask(&xs, &ys);
+        assert_eq!(keep, [true, true, true]);
+    }
+
+    #[test]
+    fn signed_zero_on_axis_is_on_chord() {
+        let xs = [0.0, 1.0, 2.0];
+        let ys = [0.0, -0.0, 0.0];
+        let keep = kept_mask(&xs, &ys);
+        assert_eq!(keep, [true, false, true]);
+        discarded_lie_on_surviving_chords(&xs, &ys, &keep);
+    }
+
+    #[test]
+    fn subnormal_offset_is_a_nonmember() {
+        let xs = [0.0, 0.5, 1.0];
+        let ys = [0.0, f64::from_bits(1), 0.0];
+        let keep = kept_mask(&xs, &ys);
+        assert_eq!(keep, [true, true, true]);
+    }
+
+    #[test]
+    fn huge_finite_bend_is_kept() {
+        let xs = [0.0, 1e100, 2e100];
+        let ys = [0.0, 1e100, 0.0];
+        let keep = kept_mask(&xs, &ys);
+        assert_eq!(keep, [true, true, true]);
+    }
+
+    #[test]
+    fn xyzm_l_bend_keeps_corner_ordinates() {
+        let line = Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
+            Arc::from([0.0, 1.0, 2.0]),
+            Arc::from([0.0, 1.0, 0.0]),
+            Some(Arc::from([1.0, 7.0, 3.0])),
+            Some(Arc::from([10.0, 70.0, 30.0])),
+        )));
+        let Shape::LineString(out) = line.simplify_dp(0.0, true).unwrap() else {
+            panic!("line");
+        };
+        assert_eq!(out.zs(), Some(&[1.0, 7.0, 3.0][..]));
+        assert_eq!(out.ms(), Some(&[10.0, 70.0, 30.0][..]));
+    }
+
+    #[test]
+    fn collection_member_uses_the_same_mask() {
+        let bent = line_xy(&[0.0, 1.0, 2.0], &[0.0, 1.0, 0.0]);
+        let collinear = line_xy(&[0.0, 1.0, 2.0], &[0.0, 0.0, 0.0]);
+        let collection = Shape::geometry_collection(vec![bent, collinear]).unwrap();
+        let Shape::GeometryCollection(out) = collection.simplify_dp(0.0, true).unwrap() else {
+            panic!("collection");
+        };
+        let Shape::LineString(bent_out) = &out.as_slice()[0] else {
+            panic!("bent member");
+        };
+        let Shape::LineString(col_out) = &out.as_slice()[1] else {
+            panic!("collinear member");
+        };
+        assert_eq!(bent_out.xs(), &[0.0, 1.0, 2.0]);
+        assert_eq!(col_out.xs(), &[0.0, 2.0]);
+    }
+
+    #[test]
+    fn minus_zero_tolerance_matches_plus_zero() {
+        let xs = [0.0, 1.0, 2.0];
+        let ys = [0.0, 1.0, 0.0];
+        let mut keep_pos = Vec::new();
+        let mut keep_neg = Vec::new();
+        let mut stack = Vec::new();
+        rdp_keep(&xs, &ys, 0.0, &mut keep_pos, &mut stack).unwrap();
+        rdp_keep(&xs, &ys, -0.0, &mut keep_neg, &mut stack).unwrap();
+        assert_eq!(keep_pos, keep_neg);
+        assert_eq!(keep_pos, [true, true, true]);
     }
 }
