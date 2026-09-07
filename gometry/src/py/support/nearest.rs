@@ -2,8 +2,11 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::sync::Arc;
+
 use crate::array::{ArrayRow, ValidityMask};
 use crate::dispatch::MetricOp;
+use crate::geographic::GeographicFrame;
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, DistanceUnit, Frame, Point, PointRows, Py, PyAny, PyGeometry,
     PyGeometryArray, PyResult, PyTypeError, Python, Shape, Typed, geometry_type_err,
@@ -225,6 +228,91 @@ pub(crate) fn fixed_geometry_array_nearest_points(
         })
         .map_err(crate::broadcast::rows_err)?;
     nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned())
+}
+
+/// One fixed geometry against every array element, emitting geodesic shortest
+/// lines. `fixed_is_left` preserves public endpoint order. Callers admit the
+/// geographic model first so each public entry keeps its own frame/metric
+/// order.
+pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
+    py: Python<'_>,
+    fixed: &PyGeometry,
+    array: &PyGeometryArray,
+    fixed_is_left: bool,
+    crs: String,
+    frame: GeographicFrame,
+    state: Arc<crate::crs::RuntimeState>,
+) -> PyResult<PyGeometryArray> {
+    let output_frame = if fixed_is_left {
+        fixed.frame.clone()
+    } else {
+        array.frame.clone()
+    };
+    let fixed_plan = fixed.plan_or_transient();
+    let fixed_cache = fixed.frame_cache();
+    let array_owned = array.clone();
+    let rows = py.detach(move || {
+        let mut array_rows = array_owned.row_operation();
+        crate::crs::with_resolved_ellipsoid_metric_at(
+            &crs,
+            &[fixed_plan.shape()],
+            &state,
+            |crs, metric| {
+                let (semi_major, flattening) = metric.ellipsoid_parameters();
+                fixed_plan.prepare_geodesic_parts(
+                    &fixed_cache,
+                    crs,
+                    semi_major,
+                    flattening,
+                    metric,
+                )?;
+                let present = (|| -> Result<Vec<Shape>, (usize, crate::error::Error)> {
+                    let mut shapes = Vec::new();
+                    for row in array_rows.present_rows() {
+                        let logical = row.logical();
+                        let element = array_rows.prepared(row);
+                        let element_cache = array_rows.frame_cache(logical);
+                        let pair = if fixed_is_left {
+                            fixed_plan
+                                .geodesic_nearest_points_cached_split(
+                                    &fixed_cache,
+                                    &element,
+                                    &element_cache,
+                                    crs,
+                                    semi_major,
+                                    flattening,
+                                    metric,
+                                    frame,
+                                )
+                                .map_err(|error| (logical, error))?
+                        } else {
+                            element
+                                .geodesic_nearest_points_cached_split(
+                                    &element_cache,
+                                    &fixed_plan,
+                                    &fixed_cache,
+                                    crs,
+                                    semi_major,
+                                    flattening,
+                                    metric,
+                                    frame,
+                                )
+                                .map_err(|error| (logical, error))?
+                        };
+                        let line = crate::geometry::nearest_line(
+                            pair,
+                            crate::geometry::common_axes(fixed_plan.shape(), element.shape()),
+                        );
+                        crate::try_push_vec(&mut shapes, line).map_err(|error| (logical, error))?;
+                    }
+                    Ok(shapes)
+                })();
+                Ok(present)
+            },
+        )
+    })?;
+    let present = PyGeometryArray::from_shapes(rows.map_err(rows_err)?, output_frame);
+    Ok(array.scatter_present_result(present))
 }
 
 /// Extract the query `Point` for a linear-referencing locate, with the

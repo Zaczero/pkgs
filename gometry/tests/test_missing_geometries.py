@@ -1002,6 +1002,18 @@ def test_geographic_masked_nearest_and_shortest_line_skip_placeholders() -> None
     assert shortest[1] is None
 
 
+def test_geographic_shortest_line_error_note_uses_logical_row_after_missing() -> None:
+    rows = gm.GeometryArray([
+        gm.Point(0.0, 0.0, crs=4326),
+        None,
+        gm.from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', crs=4326),
+    ])
+    probe = gm.Point(1.0, 1.0, crs=4326)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported') as excinfo:
+        gm.shortest_line(rows, probe)
+    assert excinfo.value.__notes__ == ['while processing array element 2']
+
+
 def test_masked_string_and_xy_predicate_surfaces() -> None:
     rows = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(2, 2)])
     probe = gm.box(-1, -1, 1, 1)

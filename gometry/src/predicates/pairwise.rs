@@ -2,10 +2,11 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
 use crate::{
-    Bound, CollectRows as _, DistanceUnit, Frame, IntoPyObject as _, Py, PyGeometryArray, PyResult,
-    Python, crs, crs_metric_binary_geometry_broadcast, exact_geometry, exact_geometry_array,
-    expected_geometry_or_array, fixed_geometry_array_nearest_points, metric_shortest_line,
-    py_nearest_points, pyfunction, resolve_metric, rows_err, validate_distance_arg,
+    Bound, DistanceUnit, Frame, IntoPyObject as _, Py, PyResult, Python, crs,
+    crs_metric_binary_geometry_broadcast, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, fixed_geometry_array_nearest_points,
+    fixed_geometry_array_shortest_line_geodesic, metric_shortest_line, py_nearest_points,
+    pyfunction, resolve_metric, validate_distance_arg,
 };
 
 /// Return the shortest connecting line between two geometries (CRS-aware).
@@ -91,53 +92,9 @@ pub(crate) fn shortest_line(
                 && !crate::geometry::crosses_antimeridian_in_frame(geometry.shape.shape(), frame)
                 && !array.has_missing()
             {
-                let scalar = geometry.plan_or_transient();
-                let scalar_cache = geometry.frame_cache();
-                let array = array.clone();
-                let rows = py.detach(move || {
-                    let mut rows = array.row_operation();
-                    crs::with_resolved_ellipsoid_metric_at(
-                        &crs,
-                        &[scalar.shape()],
-                        &state,
-                        |crs, metric| {
-                            let (semi_major, flattening) = metric.ellipsoid_parameters();
-                            scalar.prepare_geodesic_parts(
-                                &scalar_cache,
-                                crs,
-                                semi_major,
-                                flattening,
-                                metric,
-                            )?;
-                            Ok(rows
-                                .present_rows()
-                                .map(|row| {
-                                    let row_index = row.logical();
-                                    let element = rows.prepared(row);
-                                    let element_cache = rows.frame_cache(row_index);
-                                    Ok(crate::geometry::nearest_line(
-                                        scalar.geodesic_nearest_points_cached_split(
-                                            &scalar_cache,
-                                            &element,
-                                            &element_cache,
-                                            crs,
-                                            semi_major,
-                                            flattening,
-                                            metric,
-                                            frame,
-                                        )?,
-                                        crate::geometry::common_axes(
-                                            scalar.shape(),
-                                            element.shape(),
-                                        ),
-                                    ))
-                                })
-                                .collect_rows())
-                        },
-                    )
-                })?;
-                let result =
-                    PyGeometryArray::from_shapes(rows.map_err(rows_err)?, geometry.frame.clone());
+                let result = fixed_geometry_array_shortest_line_geodesic(
+                    py, geometry, array, true, crs, frame, state,
+                )?;
                 return Ok(result.into_pyobject(py)?.unbind().into());
             }
         }

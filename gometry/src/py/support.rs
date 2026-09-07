@@ -104,9 +104,9 @@ pub(crate) use linref::{
     resolve_line_metric,
 };
 pub(crate) use nearest::{
-    fixed_geometry_array_nearest_points, geometry_array_line_locate_point_geometry,
-    nearest_point_columns_masked, py_geometry_array, py_nearest_points, require_locate_point,
-    require_locate_points,
+    fixed_geometry_array_nearest_points, fixed_geometry_array_shortest_line_geodesic,
+    geometry_array_line_locate_point_geometry, nearest_point_columns_masked, py_geometry_array,
+    py_nearest_points, require_locate_point, require_locate_points,
 };
 pub(crate) use tokens::{
     _token_vocabulary, LineReferenceBasis, NavigationPath, SpatialCurve, TriangulationMethod,

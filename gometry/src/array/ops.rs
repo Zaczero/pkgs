@@ -16,9 +16,10 @@ use crate::array::{
     PyResult, PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput,
     array_binary_geometry, bool_array, cdt_refinement_values, crs, curves, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, fixed_geometry_array_nearest_points,
-    geometry, io, metric_nearest_points, metric_shortest_line, non_negative_int, note_array_row,
-    owned_voronoi_boundary, pair_packed_equals_exact, paired_arrays, parse_precision,
-    parse_wkt_output_dimension, require_geojson_crs, resolve_metric, row_sample_seed, rows_err,
+    fixed_geometry_array_shortest_line_geodesic, geometry, io, metric_nearest_points,
+    metric_shortest_line, non_negative_int, note_array_row, owned_voronoi_boundary,
+    pair_packed_equals_exact, paired_arrays, parse_precision, parse_wkt_output_dimension,
+    require_geojson_crs, resolve_metric, row_sample_seed, rows_err,
     validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
 
@@ -383,7 +384,7 @@ impl PyGeometryArray {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "geodesic scalar/array and array/array lanes keep cache ownership explicit"
+        reason = "array/array geodesic lane keeps cache ownership explicit"
     )]
     pub(crate) fn shortest_line(
         &self,
@@ -404,61 +405,11 @@ impl PyGeometryArray {
                     geometry.epoch(),
                     "shortest_line",
                 )?;
-                let lefts = self.clone();
-                let right = geometry.plan_or_transient();
-                let right_cache = geometry.frame_cache();
-                let rows = Python::attach(|py| {
-                    py.detach(move || {
-                        let mut rows = lefts.row_operation();
-                        crs::with_resolved_ellipsoid_metric_at(
-                            &crs,
-                            &[right.shape()],
-                            &state,
-                            |crs, metric| {
-                                let (semi_major, flattening) = metric.ellipsoid_parameters();
-                                right.prepare_geodesic_parts(
-                                    &right_cache,
-                                    crs,
-                                    semi_major,
-                                    flattening,
-                                    metric,
-                                )?;
-                                Ok(rows
-                                    .rows_with_missing(|| None::<Shape>)
-                                    .map(|logical_row| {
-                                        let ArrayRow::Present(row) = logical_row else {
-                                            return Ok(None);
-                                        };
-                                        let row_index = row.logical();
-                                        let left = rows.prepared(row);
-                                        let left_cache = rows.frame_cache(row_index);
-                                        Ok(Some(crate::geometry::nearest_line(
-                                            left.geodesic_nearest_points_cached_split(
-                                                &left_cache,
-                                                &right,
-                                                &right_cache,
-                                                crs,
-                                                semi_major,
-                                                flattening,
-                                                metric,
-                                                frame,
-                                            )?,
-                                            crate::geometry::common_axes(
-                                                left.shape(),
-                                                right.shape(),
-                                            ),
-                                        )))
-                                    })
-                                    .collect_rows())
-                            },
-                        )
-                    })
-                })?;
-                let present = Self::from_shapes(
-                    rows.map_err(rows_err)?.into_iter().flatten().collect(),
-                    self.frame.clone(),
-                );
-                return Ok(self.scatter_present_result(present));
+                return Python::attach(|py| {
+                    fixed_geometry_array_shortest_line_geodesic(
+                        py, geometry, self, false, crs, frame, state,
+                    )
+                });
             }
             if let Some(array) = exact_geometry_array(other) {
                 paired_arrays(self, array, crate::dispatch::MetricOp::ShortestLine.name())?;
