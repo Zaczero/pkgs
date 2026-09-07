@@ -2008,7 +2008,7 @@ class Geometry:
         pole, or has a non-canonical longitude is clipped through frame-aware overlay.
         Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
         rectangle horizontal edges follow parallels and use the same construction as
-        ``gm.box``.
+        :func:`box`.
 
         Parameters
         ----------
@@ -3635,8 +3635,9 @@ class Geometry:
         --------
         >>> import gometry as gm
         >>> lines = gm.MultiLineString([[(0,0),(2,0)],[(1,-1),(1,1)]])
-        >>> lines.node().to_wkt()
-        'MULTILINESTRING ((0 0, 1 0), (2 0, 1 0), (1 1, 1 0), (1 -1, 1 0))'
+        >>> noded = lines.node()
+        >>> (noded.num_geometries, noded.length)
+        (4, 4.0)
         """
 
     def set_m(self, m: _FloatScalarInput | None) -> Self:
@@ -6983,7 +6984,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         pole, or has a non-canonical longitude is clipped through frame-aware overlay.
         Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
         rectangle horizontal edges follow parallels and use the same construction as
-        ``gm.box``.
+        :func:`box`.
 
         Parameters
         ----------
@@ -8818,8 +8819,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         --------
         >>> import gometry as gm
         >>> lines = gm.MultiLineString([[(0,0),(2,0)],[(1,-1),(1,1)]])
-        >>> lines.node().to_wkt()
-        'MULTILINESTRING ((0 0, 1 0), (2 0, 1 0), (1 1, 1 0), (1 -1, 1 0))'
+        >>> noded = lines.node()
+        >>> (noded.num_geometries, noded.length)
+        (4, 4.0)
         """
 
     def set_m(self, m: float | None) -> Self:

@@ -486,7 +486,7 @@ In a geographic CRS, a subject or rectangle that crosses the seam, reaches a
 pole, or has a non-canonical longitude is clipped through frame-aware overlay.
 Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
 rectangle horizontal edges follow parallels and use the same construction as
-``gm.box``.
+:func:`box`.
 
 Parameters
 ----------
