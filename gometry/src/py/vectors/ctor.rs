@@ -102,7 +102,12 @@ impl Groups {
             builder.finish()
         }
 
-        let crate::geometry::PolygonizeFull { polygons, cuts, dangles, invalid_rings } = full;
+        let crate::geometry::PolygonizeFull {
+            polygons,
+            cuts,
+            dangles,
+            invalid_rings,
+        } = full;
         let cuts = diagnostic_csr(cuts)?;
         let dangles = diagnostic_csr(dangles)?;
         let invalid_rings = diagnostic_csr(invalid_rings)?;
@@ -110,7 +115,8 @@ impl Groups {
             let rows = 0..offsets.len() - 1;
             Self {
                 values: GroupsValues::Geometry(Arc::new(PyGeometryArray::from_shapes(
-                    shapes, frame.clone(),
+                    shapes,
+                    frame.clone(),
                 ))),
                 offsets: offsets.into(),
                 rows,
@@ -183,10 +189,7 @@ impl Groups {
     }
 
     /// Element-wise self-intersection rows as one flat geometry column.
-    pub fn from_self_intersection_rows(
-        py: Python<'_>,
-        array: &PyGeometryArray,
-    ) -> PyResult<Self> {
+    pub fn from_self_intersection_rows(py: Python<'_>, array: &PyGeometryArray) -> PyResult<Self> {
         let domain = crate::geometry::topology_domain(&array.frame)?;
         let builder = match py.detach(|| self_intersection_csr(array, domain)) {
             Ok(builder) => builder,
@@ -266,14 +269,54 @@ fn self_intersection_csr(
 mod self_intersection_csr_tests {
     use pyo3::prelude::*;
 
-    use super::{self_intersection_csr, Groups, GroupsValues};
-    use crate::array::ValidityMask;
+    use super::{Groups, GroupsValues, self_intersection_csr};
+    use crate::array::{PyGeometryArray, ValidityMask};
+    use crate::boundary::{Frame, crs_arc_static};
     use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::Shape;
-    use crate::array::PyGeometryArray;
-    use crate::boundary::{Frame, crs_arc_static};
     use crate::io::parse_wkt;
     use crate::test_support::{allocation_count, fail_allocations_after};
+
+    #[test]
+    fn polygonize_assembly_failure_releases_all_output_categories() {
+        let shape = line("LINESTRING (0 0, 2 1)");
+        let Shape::LineString(coords) = &shape else {
+            panic!("line fixture")
+        };
+        let observer = std::sync::Arc::downgrade(&coords.column_arcs().xs);
+        let full = crate::geometry::PolygonizeFull {
+            polygons: vec![shape.clone()],
+            cuts: vec![vec![shape.clone()], vec![shape.clone()]],
+            dangles: vec![vec![shape.clone()]],
+            invalid_rings: vec![vec![shape]],
+        };
+        let result = fail_allocations_after(0, || Groups::polygonize_full_parts(full, Frame::None));
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("cuts allocation must fail"),
+        };
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert!(observer.upgrade().is_none());
+    }
+
+    #[test]
+    fn polygonize_assembly_preserves_empty_diagnostic_rows() {
+        let full = crate::geometry::PolygonizeFull {
+            polygons: Vec::new(),
+            cuts: vec![Vec::new(), vec![line("LINESTRING (2 3, 4 5)")], Vec::new()],
+            dangles: vec![Vec::new(), Vec::new(), Vec::new()],
+            invalid_rings: vec![Vec::new(), Vec::new(), Vec::new()],
+        };
+        let (polygons, cuts, dangles, invalid) =
+            Groups::polygonize_full_parts(full, Frame::None).unwrap();
+        assert_eq!(polygons.len(), 0);
+        assert_eq!(cuts.offsets.as_ref(), &[0, 0, 1, 1]);
+        assert_eq!(dangles.offsets.as_ref(), &[0, 0, 0, 0]);
+        assert_eq!(invalid.offsets.as_ref(), &[0, 0, 0, 0]);
+    }
 
     fn line(wkt: &str) -> Shape {
         parse_wkt(wkt).expect("test WKT")
@@ -341,12 +384,10 @@ mod self_intersection_csr_tests {
     fn groups_reuse_the_input_frame() {
         crate::test_support::initialize_python();
         let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("frame");
-        let array = PyGeometryArray::from_shapes(
-            vec![line("LINESTRING (0 0, 1 0)")],
-            frame.clone(),
-        );
-        let groups = Python::attach(|py| Groups::from_self_intersection_rows(py, &array))
-            .expect("groups");
+        let array =
+            PyGeometryArray::from_shapes(vec![line("LINESTRING (0 0, 1 0)")], frame.clone());
+        let groups =
+            Python::attach(|py| Groups::from_self_intersection_rows(py, &array)).expect("groups");
         let GroupsValues::Geometry(values) = &groups.values else {
             panic!("geometry groups");
         };
@@ -356,15 +397,10 @@ mod self_intersection_csr_tests {
 
     #[test]
     fn csr_allocation_failure_is_native_until_the_closure_exits() {
-        let array = PyGeometryArray::from_shapes(
-            vec![line("LINESTRING (0 0, 1 0)")],
-            Frame::None,
-        );
+        let array = PyGeometryArray::from_shapes(vec![line("LINESTRING (0 0, 1 0)")], Frame::None);
         let domain = domain(&array);
         let _ = kernel_allocations(&array);
-        drop(
-            self_intersection_csr(&array, domain).expect("warm walk before the fault window"),
-        );
+        drop(self_intersection_csr(&array, domain).expect("warm walk before the fault window"));
         let kernel = kernel_allocations(&array);
         let (_, walk) = allocation_count(|| {
             self_intersection_csr(&array, domain).expect("walk succeeds without a fault window")
@@ -388,9 +424,7 @@ mod self_intersection_csr_tests {
             if let Ok(notes) = value.getattr("__notes__") {
                 let notes: Vec<String> = notes.extract().unwrap_or_default();
                 assert!(
-                    notes
-                        .iter()
-                        .all(|note| !note.contains("array element")),
+                    notes.iter().all(|note| !note.contains("array element")),
                     "allocation failure must not grow a row note: {notes:?}"
                 );
             }

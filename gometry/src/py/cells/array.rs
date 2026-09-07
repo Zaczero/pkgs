@@ -1498,7 +1498,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                     }
                     let cell = G::from_validated_id(cells.id_at(row));
                     builder.push_row(
-                        GridCell::neighbors(cell)
+                        GridCell::neighbors(cell)?
                             .into_iter()
                             .map(GridCell::hash_key),
                     )?;
@@ -1542,13 +1542,13 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let cells = self.clone();
         let depth = dispatch_cell_grid!(self, G, {
             match cells.logical_cells::<G>().next() {
-                Some(first) => {
+                Some(_) => {
                     let depth = depth
                         .filter(|value| !value.is_none())
                         .map(G::parse_depth)
                         .transpose()?;
                     if let Some(target) = depth
-                        && target < first.depth()
+                        && cells.logical_cells::<G>().any(|cell| target < cell.depth())
                     {
                         return Err(GeometryError::new_err(format!(
                             "children {} must be >= cell {}",
@@ -1930,10 +1930,10 @@ mod tests {
     fn children_allocation_error_after_depth_parse_is_memory_error_without_row_notes() {
         Python::initialize();
         Python::attach(|py| {
-            let cells = PyCellArray::from_ids(
-                GridKind::H3Cell,
-                vec![h3_id(37.7749, -122.4194, 7), h3_id(37.78, -122.41, 7)],
-            );
+            let cells = PyCellArray::from_ids(GridKind::H3Cell, vec![
+                h3_id(37.7749, -122.4194, 7),
+                h3_id(37.78, -122.41, 7),
+            ]);
             let error = fail_allocations_after(0, || match cells.children(py, None) {
                 Ok(_) => panic!("first CSR reserve must fail"),
                 Err(error) => error,
@@ -1959,11 +1959,10 @@ mod tests {
             }
 
             let present = h3_id(37.7749, -122.4194, 7);
-            let missing = PyCellArray::from_ids_with_missing(
-                GridKind::H3Cell,
-                vec![present, 0],
-                vec![false, true],
-            );
+            let missing =
+                PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![present, 0], vec![
+                    false, true,
+                ]);
             match missing.neighbors(py) {
                 Ok(groups) => drop(groups),
                 Err(error) => panic!("{error}"),

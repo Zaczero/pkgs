@@ -6,8 +6,9 @@
 //! top-level `geohash_*`/`tile_*`/`s2_*` functions and the grid
 //! coverages; the Python surfaces live under `src/py/cells/`.
 
-use crate::boundary::geographic;
 use thiserror::Error;
+
+use crate::boundary::geographic;
 
 /// Default cell-output budget for covering factories when `max_cells` is
 /// omitted. Secure-by-default against runaway coverings of untrusted boxes;
@@ -111,8 +112,9 @@ pub(crate) fn ring_neighbors<C: Copy + PartialEq>(
     center: C,
     dy_order: [i64; 3],
     neighbor: impl Fn(C, i64, i64) -> Option<C>,
-) -> Vec<C> {
-    let mut cells = Vec::with_capacity(8);
+) -> crate::error::Result<Vec<C>> {
+    let mut cells = Vec::new();
+    crate::try_reserve_vec(&mut cells, 8)?;
     for dy in dy_order {
         for dx in [-1, 0, 1] {
             if dx == 0 && dy == 0 {
@@ -126,7 +128,7 @@ pub(crate) fn ring_neighbors<C: Copy + PartialEq>(
             }
         }
     }
-    cells
+    Ok(cells)
 }
 
 #[cfg(test)]

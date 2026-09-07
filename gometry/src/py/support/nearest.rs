@@ -13,10 +13,6 @@ use crate::py::support::{
     line_locate_shape, metric_nearest_points, resolve_line_metric, resolve_metric, rows_err,
 };
 
-pub(crate) fn py_geometry_array(shapes: Vec<Shape>, frame: &Frame) -> PyGeometryArray {
-    PyGeometryArray::from_shapes(shapes, frame.clone())
-}
-
 /// Build the `(left, right)` witness point columns from per-row nearest
 /// pairs. A `None` row is an empty operand → `(POINT EMPTY, POINT EMPTY)`
 /// (the output-type sentinel), so an empty row never aborts the batch; a

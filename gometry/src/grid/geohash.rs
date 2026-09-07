@@ -229,7 +229,7 @@ impl Geohash {
 
     /// The 8 surrounding cells (those that exist), row-major from
     /// north-west to south-east (lat grows north, so rows walk `[1, 0, -1]`).
-    pub(crate) fn neighbors(self) -> Vec<Self> {
+    pub(crate) fn neighbors(self) -> crate::error::Result<Vec<Self>> {
         super::ring_neighbors(self, [1, 0, -1], Self::neighbor)
     }
 
@@ -372,7 +372,7 @@ mod tests {
         assert!(children.windows(2).all(|pair| pair[0] < pair[1]));
         // Known neighbor table for "ww8p" (east = ww8r? verified via grid
         // math): the 8-neighborhood is distinct, same precision, adjacent.
-        let neighbors = Geohash::parse("u09t").unwrap().neighbors();
+        let neighbors = Geohash::parse("u09t").unwrap().neighbors().unwrap();
         assert_eq!(neighbors.len(), 8);
         assert!(neighbors.iter().any(|cell| cell.token() == "u09w"));
         // Antimeridian wrap: the east neighbor of the easternmost column

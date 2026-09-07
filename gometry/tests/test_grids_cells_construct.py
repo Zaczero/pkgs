@@ -364,6 +364,17 @@ def test_cell_array_children_mixed_depth_matches_scalar_when_target_covers_all()
     assert list(groups[1]) == list(fine.children(target))
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_cell_array_children_rejects_target_below_any_present_depth(reverse) -> None:
+    cells = [gm.H3Cell(13.4, 52.5, resolution=5),
+             gm.H3Cell(13.4, 52.5, resolution=7)]
+    if reverse:
+        cells.reverse()
+    array = _lib._unpickle_cell_array([cell.token for cell in cells], 'h3', bytes([1, 0, 0]))
+    with pytest.raises(gm.GeometryError, match='children resolution must be >= cell resolution'):
+        array.children(5)
+
+
 def test_h3_edge_vertex_arrays_do_not_expose_cell_hierarchy() -> None:
     """Edge/vertex arrays have no cell hierarchy, so those attributes do not exist."""
     cell = gm.H3Cell(13.4, 52.5, resolution=6)

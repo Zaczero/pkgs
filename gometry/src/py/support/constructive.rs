@@ -6,14 +6,13 @@ use std::sync::Arc;
 
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
-    GeodesicMetric as _, Point, PointKey,
-    VertexProvenance, emit_from_original, geometric_xy_cmp, shape_from_selected_hull,
-    smallest_enclosing_circle,
+    GeodesicMetric as _, Point, PointKey, VertexProvenance, emit_from_original, geometric_xy_cmp,
+    shape_from_selected_hull, smallest_enclosing_circle,
 };
 use crate::py::support::{
     Bound, Crs, Frame, FromPyObject, Polygon, PolygonizeFull, Py, PyAny, PyAnyMethods as _, PyErr,
     PyGeometryArray, PyResult, PyTypeError, Python, Result, Shape, VoronoiBoundary, exact_geometry,
-    polygonize_result_type, py_geometry_array,
+    polygonize_result_type,
 };
 use crate::py::vectors::Groups;
 
@@ -134,7 +133,12 @@ fn voronoi_outputs<T: Send>(
     tolerance: f64,
     clip: &VoronoiClipInput,
     operation: &'static str,
-    kernel: fn(&Shape, f64, VoronoiBoundary<'_>, &mut crate::geometry::ExpansionBudget) -> Result<T>,
+    kernel: fn(
+        &Shape,
+        f64,
+        VoronoiBoundary<'_>,
+        &mut crate::geometry::ExpansionBudget,
+    ) -> Result<T>,
 ) -> PyResult<Vec<T>> {
     let boundary = owned_voronoi_boundary(py, clip, frame, operation)?;
     let shapes = shapes.collect::<Vec<_>>();
@@ -162,7 +166,10 @@ pub(crate) fn voronoi_flatten(
     ) -> Result<Vec<Shape>>,
 ) -> PyResult<PyGeometryArray> {
     let cells = voronoi_outputs(py, shapes, &frame, tolerance, clip, operation, kernel)?;
-    Ok(PyGeometryArray::from_shapes(cells.into_iter().flatten().collect(), frame))
+    Ok(PyGeometryArray::from_shapes(
+        cells.into_iter().flatten().collect(),
+        frame,
+    ))
 }
 
 /// Voronoi edges straight into packed line storage: the kernel hands back one

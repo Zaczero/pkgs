@@ -64,7 +64,7 @@ pub(crate) trait GridCell: HierarchicalCell + Copy + Eq + Ord + Send + Sync {
     fn center_point(self) -> Point;
     fn boundary_shape(self) -> Shape;
     fn area_m2(self) -> f64;
-    fn neighbors(self) -> Vec<Self>;
+    fn neighbors(self) -> crate::error::Result<Vec<Self>>;
     fn parent_at(self, depth: u8) -> Option<Self>;
     fn children_to(self, depth: u8) -> crate::error::Result<Vec<Self>> {
         crate::grid::cell_set::uncompact(&[self], depth).map(|cells| cells.into_public_vec())
@@ -85,7 +85,7 @@ pub(crate) trait RectGridCell: RectCell + Send + Sync {
     fn range_min(self) -> u64;
     fn range_max(self) -> u64;
     fn grid_token(self) -> String;
-    fn grid_neighbors(self) -> Vec<Self>;
+    fn grid_neighbors(self) -> crate::error::Result<Vec<Self>>;
     fn grid_parent_at(self, depth: u8) -> Self;
     fn pickle_arg(self) -> CellPickleArg;
 }
@@ -151,7 +151,7 @@ impl<T: RectGridCell> GridCell for T {
         crate::boundary::geographic::lonlat_rect_area_m2(self.bounds())
     }
 
-    fn neighbors(self) -> Vec<Self> {
+    fn neighbors(self) -> crate::error::Result<Vec<Self>> {
         <Self as RectGridCell>::grid_neighbors(self)
     }
 
@@ -185,7 +185,7 @@ impl RectGridCell for crate::grid::geohash::Geohash {
         Self::token(self)
     }
 
-    fn grid_neighbors(self) -> Vec<Self> {
+    fn grid_neighbors(self) -> crate::error::Result<Vec<Self>> {
         Self::neighbors(self)
     }
 
@@ -219,7 +219,7 @@ impl RectGridCell for crate::grid::tile::Tile {
         self.quadkey()
     }
 
-    fn grid_neighbors(self) -> Vec<Self> {
+    fn grid_neighbors(self) -> crate::error::Result<Vec<Self>> {
         Self::neighbors(self)
     }
 

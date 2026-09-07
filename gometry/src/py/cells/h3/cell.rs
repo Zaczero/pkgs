@@ -659,20 +659,27 @@ fn try_h3_grid_disk_cells_with_budget(
 
 /// The six (five at a pentagon) immediate neighbors: the `k = 1` ring, which
 /// fits any budget and so needs none of the ring machinery's limits.
-pub(super) fn h3_immediate_neighbors(cell: CellIndex) -> Vec<CellIndex> {
-    let mut cells = Vec::with_capacity(6);
+pub(super) fn h3_immediate_neighbors(cell: CellIndex) -> crate::error::Result<Vec<CellIndex>> {
+    let mut cells = Vec::new();
+    crate::try_reserve_vec(&mut cells, 6)?;
     for value in cell.grid_ring_fast(1) {
         let Some(value) = value else {
             cells.clear();
-            cells.extend(
-                cell.grid_disk_distances_safe(1)
-                    .filter_map(|(cell, distance)| (distance == 1).then_some(cell)),
-            );
-            return cells;
+            let mut neighbors = [None; 6];
+            for edge in cell.edges() {
+                neighbors[usize::from(u8::from(edge.edge())) - 1] = Some(edge.destination());
+            }
+            // Match the safe disk's J, JK, K, IK, I, IJ traversal order.
+            for index in [1, 2, 0, 4, 3, 5] {
+                if let Some(neighbor) = neighbors[index] {
+                    cells.push(neighbor);
+                }
+            }
+            return Ok(cells);
         };
         cells.push(value);
     }
-    cells
+    Ok(cells)
 }
 
 fn try_h3_grid_ring_cells_with_budget(
@@ -696,4 +703,38 @@ fn try_h3_grid_ring_cells_with_budget(
         cells.push(value);
     }
     Ok(cells)
+}
+
+#[cfg(test)]
+mod immediate_neighbor_tests {
+    use super::*;
+
+    #[test]
+    fn immediate_neighbors_preserve_safe_pentagon_order() {
+        for resolution in [h3o::Resolution::Zero, h3o::Resolution::Seven] {
+            for cell in resolution.pentagons() {
+                let expected: Vec<_> = cell
+                    .grid_disk_distances_safe(1)
+                    .filter_map(|(neighbor, distance)| (distance == 1).then_some(neighbor))
+                    .collect();
+                assert_eq!(h3_immediate_neighbors(cell).unwrap(), expected);
+                let neighbors = crate::test_support::fail_allocations_after(1, || {
+                    h3_immediate_neighbors(cell).unwrap()
+                });
+                assert_eq!(neighbors, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn immediate_neighbors_return_allocation_failure() {
+        let cell = h3o::Resolution::Seven.pentagons().next().unwrap();
+        let error = crate::test_support::fail_allocations_after(0, || {
+            h3_immediate_neighbors(cell).unwrap_err()
+        });
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+        ));
+    }
 }
