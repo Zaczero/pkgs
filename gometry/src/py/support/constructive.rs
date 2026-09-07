@@ -197,13 +197,16 @@ pub(crate) fn py_polygonize_full(
     crs: Option<&Crs>,
     epoch: Option<f64>,
 ) -> PyResult<Py<PyAny>> {
-    let frame = Frame::new(crs.cloned(), epoch)?;
-    let result = polygonize_result_type(py)?.call1((
-        py_geometry_array(full.polygons, &frame),
-        Groups::from_geometry_rows(frame.clone(), full.cuts)?,
-        Groups::from_geometry_rows(frame.clone(), full.dangles)?,
-        Groups::from_geometry_rows(frame.clone(), full.invalid_rings)?,
-    ))?;
+    let frame = match Frame::new(crs.cloned(), epoch) {
+        Ok(frame) => frame,
+        Err(error) => {
+            drop(full);
+            return Err(error.into());
+        },
+    };
+    let result_type = polygonize_result_type(py)?;
+    let parts = Groups::polygonize_full_parts(full, frame)?;
+    let result = result_type.call1(parts)?;
     Ok(result.unbind())
 }
 

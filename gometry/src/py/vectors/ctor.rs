@@ -86,12 +86,38 @@ impl Groups {
         Self::from_geometry_csr(Arc::new(values), offsets.into(), 0..n)
     }
 
-    pub(crate) fn from_geometry_rows(frame: crate::Frame, rows: Vec<Vec<Shape>>) -> PyResult<Self> {
-        let mut builder = CsrBuilder::<Shape>::new();
-        for row in rows {
-            builder.push_row(row).map_err(pyo3::PyErr::from)?;
+    pub(crate) fn polygonize_full_parts(
+        full: crate::geometry::PolygonizeFull,
+        frame: crate::Frame,
+    ) -> crate::error::Result<(PyGeometryArray, Self, Self, Self)> {
+        fn diagnostic_csr(rows: Vec<Vec<Shape>>) -> crate::error::Result<(Vec<Shape>, Vec<i64>)> {
+            let mut builder = CsrBuilder::new();
+            for row in rows {
+                builder.push_row(row)?;
+            }
+            builder.finish()
         }
-        Self::from_geometry_builder(frame, builder)
+
+        let crate::geometry::PolygonizeFull { polygons, cuts, dangles, invalid_rings } = full;
+        let cuts = diagnostic_csr(cuts)?;
+        let dangles = diagnostic_csr(dangles)?;
+        let invalid_rings = diagnostic_csr(invalid_rings)?;
+        let adopt = |(shapes, offsets): (Vec<Shape>, Vec<i64>)| {
+            let rows = 0..offsets.len() - 1;
+            Self {
+                values: GroupsValues::Geometry(Arc::new(PyGeometryArray::from_shapes(
+                    shapes, frame.clone(),
+                ))),
+                offsets: offsets.into(),
+                rows,
+            }
+        };
+        Ok((
+            PyGeometryArray::from_shapes(polygons, frame.clone()),
+            adopt(cuts),
+            adopt(dangles),
+            adopt(invalid_rings),
+        ))
     }
 
     /// Adopt a point CSR builder whose logical rows contain groups of four
