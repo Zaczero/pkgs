@@ -98,9 +98,9 @@ pub(crate) fn paired_arrays(
     ))
 }
 
-/// `paired_arrays` for geometry-RETURNING lanes that resolve the OUTPUT frame
-/// separately via `Frame::compatible_parts` and must NOT also run the
-/// operand-equality frame check — length gate only.
+/// `paired_arrays` for callers that have already resolved the frame separately
+/// and must NOT repeat the operand-equality frame check. The length gate stays
+/// first so unequal arrays fail before any row pairing work.
 pub(crate) fn paired_arrays_len(
     left: &PyGeometryArray,
     right: &PyGeometryArray,

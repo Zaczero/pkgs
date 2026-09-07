@@ -87,15 +87,18 @@ where
     F: BinaryArrayFastPath<R>,
 {
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(frame, &mut metric_scratch).ok();
+    let metric = match resolver.resolve_ctx(frame, &mut metric_scratch) {
+        Ok(metric) => metric,
+        Err(error) => return Some(Err(error)),
+    };
     fast_path.try_dispatch(
         py,
         left,
         right,
         op_name,
         frame,
-        metric.and_then(MetricCtx::model),
-        metric.and_then(MetricCtx::resolved),
+        metric.model(),
+        metric.resolved(),
     )
 }
 
@@ -520,7 +523,7 @@ where
                 )
             },
             (Many(left), Many(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
-                if let Err(error) = paired_arrays(left, right, op_name) {
+                if let Err(error) = crate::broadcast::paired_arrays_len(left, right) {
                     drop(scratch);
                     return Err(error);
                 }
@@ -549,7 +552,7 @@ where
                 )
             },
             (Many(left), Many(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
-                if let Err(error) = paired_arrays(left, right, op_name) {
+                if let Err(error) = crate::broadcast::paired_arrays_len(left, right) {
                     drop(scratch);
                     return Err(error);
                 }
@@ -1068,4 +1071,59 @@ where
         PyGeometryArray::from_shapes(shapes, Frame::new(output_crs, output_epoch)?)
             .with_missing_mask(output_missing),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boundary::metadata::Frame;
+    use crate::dispatch::MetricResolver;
+    use crate::geometry::{Point, Shape};
+    use crate::py::errors::CRSError;
+
+    struct RejectingFastPath;
+
+    impl BinaryArrayFastPath<bool> for RejectingFastPath {
+        fn try_dispatch(
+            &self,
+            _py: Python<'_>,
+            _left: &PyGeometryArray,
+            _right: GeometryInput<'_>,
+            _op_name: &str,
+            _frame: &Frame,
+            _model: Option<&MetricModel>,
+            _metric: Option<&ResolvedMetric>,
+        ) -> Option<PyResult<Py<PyAny>>> {
+            panic!("fast path must not run after metric resolution fails");
+        }
+    }
+
+    #[test]
+    fn fast_path_returns_metric_resolution_error_before_dispatch() {
+        Python::initialize();
+        Python::attach(|py| {
+            let frame = Frame::Crs("EPSG:4326".into());
+            let array = PyGeometryArray::from_shapes(
+                vec![Shape::Point(Point::new_raw_xy(0.0, 0.0))],
+                frame.clone(),
+            );
+            let right = PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 0.0)), frame);
+            let result = run_fast_path::<bool, _>(
+                py,
+                &array,
+                GeometryInput::One(&right),
+                "distance_3d",
+                &array.frame,
+                MetricResolver::Metric3d {
+                    op: MetricOp::Distance3d,
+                    unit: None,
+                },
+                &RejectingFastPath,
+            );
+            let Some(Err(error)) = result else {
+                panic!("metric resolution failure must be returned by the fast-path gate");
+            };
+            assert!(error.is_instance_of::<CRSError>(py));
+        });
+    }
 }

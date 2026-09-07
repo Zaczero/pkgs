@@ -108,7 +108,15 @@ impl GeodesicMetric {
         };
         ensure_geodesic_lonlat_crs_at(crs, state)?;
         let crs = normalize(crs)?;
-        let geodesic = with_geodesic_cache_at(&crs, state, |error| error, |g| Ok(Box::new(*g)))?;
+        let geodesic = with_geodesic_cache_at(
+            &crs,
+            state,
+            |error| error,
+            |g| {
+                Box::try_new(*g)
+                    .map_err(|_| crate::error::Error::from(crate::error::ResourceError::Allocation))
+            },
+        )?;
         Ok(Self {
             crs,
             geodesic,

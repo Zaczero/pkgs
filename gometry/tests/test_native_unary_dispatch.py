@@ -43,6 +43,15 @@ def test_native_antimeridian_errors_match_for_scalar_and_array() -> None:
         _ = gm.GeometryArray([projected]).crosses_antimeridian
 
 
+def test_distance_3d_array_metric_resolution_error_stays_public() -> None:
+    values = gm.GeometryArray([gm.Point(0, 0, z=0, crs=4326)])
+    target = gm.Point(1, 0, z=0, crs=4326)
+
+    with pytest.raises(gm.CRSError) as raised:
+        gm.distance_3d(values, target)
+    assert type(raised.value) is gm.CRSError
+
+
 def test_native_line_reference_methods_keep_typed_results_and_frames() -> None:
     line = gm.LineString([(0, 0), (2, 0)], crs=3857)
     points = line.line_interpolate(count=3)
