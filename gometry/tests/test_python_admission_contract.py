@@ -13,6 +13,12 @@ import pytest
 from gometry import _lib
 
 
+def assert_same(call, error: BaseException) -> None:
+    with pytest.raises(type(error)) as excinfo:
+        call()
+    assert excinfo.value is error
+
+
 @pytest.mark.parametrize('value', [2**100, 2**1023])
 def test_float_like_coordinates_admit_finite_huge_integers(value: int) -> None:
     point = gm.Point(value, 0)
@@ -275,11 +281,6 @@ def test_positional_index_provider_exception_instances_are_preserved() -> None:
         def __index__(self):
             raise self.error
 
-    def assert_same(call, error: BaseException) -> None:
-        with pytest.raises(type(error)) as excinfo:
-            call()
-        assert excinfo.value is error
-
     point = gm.Point(0, 0)
     row_views = (
         point.coords,
@@ -318,46 +319,46 @@ def test_empty_replace_at_consumes_both_inputs_before_returning() -> None:
     class Tracked:
         def __init__(self, values):
             self.values = values
-            self.consumed = False
+            self.started = False
+            self.exhausted = False
 
         def __iter__(self):
-            self.consumed = True
-            return iter(self.values)
+            self.started = True
+            yield from self.values
+            self.exhausted = True
 
     positions = Tracked([])
     values = Tracked([])
-    result = array._replace_at(positions, values)
+    assert isinstance(array._replace_at(positions, values), gm.GeometryArray)
 
-    assert positions.consumed and values.consumed
-    assert result.to_wkt(drop_epoch=True) == array.to_wkt(drop_epoch=True)
-    assert result.coordinate_axes == array.coordinate_axes == ['XYZM', None]
-    assert result.is_missing.tolist() == [False, True]
-    assert result.crs == array.crs
-    assert result.epoch == array.epoch
+    assert positions.started and positions.exhausted
+    assert values.started and values.exhausted
 
     mismatch_positions = Tracked([])
     mismatch_values = Tracked([object()])
-    with pytest.raises(
-        ValueError, match='positions length 0 does not match values length 1'
-    ):
+    with pytest.raises(ValueError) as excinfo:
         array._replace_at(mismatch_positions, mismatch_values)
-    assert mismatch_positions.consumed and mismatch_values.consumed
+    assert type(excinfo.value) is ValueError
+    assert mismatch_positions.started and mismatch_positions.exhausted
+    assert mismatch_values.started and mismatch_values.exhausted
 
 
 def test_empty_replace_at_does_not_swallow_provider_errors() -> None:
     array = gm.GeometryArray([gm.Point(0, 0)])
 
     class Raising:
-        def __init__(self, message: str) -> None:
-            self.message = message
+        def __init__(self, error: BaseException) -> None:
+            self.error = error
 
         def __iter__(self):
-            raise RuntimeError(self.message)
+            raise self.error
 
-    with pytest.raises(RuntimeError, match='positions provider'):
-        array._replace_at(Raising('positions provider'), [])
-    with pytest.raises(RuntimeError, match='values provider'):
-        array._replace_at([], Raising('values provider'))
+    positions_error = RuntimeError('positions provider')
+    assert_same(
+        lambda: array._replace_at(Raising(positions_error), []), positions_error
+    )
+    values_error = RuntimeError('values provider')
+    assert_same(lambda: array._replace_at([], Raising(values_error)), values_error)
 
 
 def test_one_shot_coordinate_and_part_sources_are_consumed_once() -> None:

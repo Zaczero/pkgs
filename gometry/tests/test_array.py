@@ -563,22 +563,23 @@ def test_empty_replace_at_preserves_nullable_zm_values_and_frame() -> None:
     )
     result = array._replace_at([], [])
 
-    assert result.to_wkt(drop_epoch=True) == array.to_wkt(drop_epoch=True)
+    assert list(result.coords) == [(1.0, 2.0, 3.0, 4.0)]
+    assert list(array.coords) == [(1.0, 2.0, 3.0, 4.0)]
     assert result.coordinate_axes == array.coordinate_axes == ['XYZM', None]
     assert result.is_missing.tolist() == array.is_missing.tolist() == [False, True]
-    assert result.crs == array.crs
-    assert result.epoch == array.epoch
+    assert result.crs is not None and result.crs.to_epsg() == 4326
+    assert result.epoch == 2020.0
 
 
 def test_dense_geometry_replace_does_not_change_source() -> None:
     array = gm.points([0.0, 1.0, 2.0], [10.0, 11.0, 12.0], crs=4326)
-    before = array.to_wkt()
+    before = [(0.0, 10.0), (1.0, 11.0), (2.0, 12.0)]
 
     result = array._replace_at([1], [gm.Point(9.0, 19.0, crs=4326)])
 
-    assert result.to_wkt() == ['POINT (0 10)', 'POINT (9 19)', 'POINT (2 12)']
+    assert list(result.coords) == [(0.0, 10.0), (9.0, 19.0), (2.0, 12.0)]
     assert result.is_missing.tolist() == [False, False, False]
-    assert array.to_wkt() == before
+    assert list(array.coords) == before
     assert array.coordinate_axes == ['XY', 'XY', 'XY']
     assert result.crs == array.crs
 
@@ -589,12 +590,18 @@ def test_duplicate_replace_at_positions_apply_last_missing_state() -> None:
     present = array._replace_at([1, 1], [None, gm.Point(9.0, 19.0)])
     missing = array._replace_at([1, 1], [gm.Point(9.0, 19.0), None])
 
-    assert present.to_wkt() == ['POINT (0 10)', 'POINT (9 19)', 'POINT (2 12)']
+    assert [
+        None if row is None else row.coords[0] for row in present
+    ] == [(0.0, 10.0), (9.0, 19.0), (2.0, 12.0)]
     assert present.is_missing.tolist() == [False, False, False]
-    assert missing.to_wkt() == ['POINT (0 10)', None, 'POINT (2 12)']
+    assert [None if row is None else row.coords[0] for row in missing] == [
+        (0.0, 10.0),
+        None,
+        (2.0, 12.0),
+    ]
     assert missing.is_missing.tolist() == [False, True, False]
     assert missing.coordinate_axes == ['XY', None, 'XY']
-    assert array.to_wkt() == ['POINT (0 10)', 'POINT (1 11)', 'POINT (2 12)']
+    assert list(array.coords) == [(0.0, 10.0), (1.0, 11.0), (2.0, 12.0)]
 
 
 def test_strided_numpy_boolean_masks_cover_all_receivers() -> None:
