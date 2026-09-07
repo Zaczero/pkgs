@@ -943,9 +943,7 @@ mod tests {
 
     use super::*;
     use crate::boundary::Frame;
-    use crate::geometry::{
-        CoordSeq, GeometryKind, LineSeq, Point, Polygon, PreparedPlan, Ring, Shape,
-    };
+    use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, PreparedPlan, Ring, Shape};
 
     fn degrees() -> crate::geographic::GeographicFrame {
         crate::crs::info("EPSG:4326")
@@ -1449,67 +1447,5 @@ mod tests {
             message.contains("invalid longitude/latitude (10, 91)"),
             "{message}"
         );
-    }
-
-    #[test]
-    fn scalar_point_crosses_invalid_latitude_is_kind_false() {
-        let invalid = Shape::Point(Point::new_raw_xy(0.5, 91.0));
-        let other = Shape::Point(Point::new_raw_xy(0.0, 0.0));
-        assert_eq!(
-            Predicate::Crosses.kind_gate(GeometryKind::Point, GeometryKind::Point),
-            Some(false)
-        );
-        assert_eq!(
-            Predicate::Overlaps.kind_gate(GeometryKind::Point, GeometryKind::Point),
-            Some(false)
-        );
-        let scalar = PreparedPlan::new(invalid);
-        let cache = crate::geometry::FrameDependentCaches::default();
-        let actual = scalar_vs_shapes(
-            &Predicate::Crosses.spec(),
-            &scalar,
-            [(0, Some(ShapeRow::Shape(&other)))].into_iter(),
-            true,
-            None,
-            TopologyDomain::Geographic(degrees()),
-            &cache,
-        )
-        .expect("kind gate does not admit");
-        assert_eq!(actual, [false]);
-        let actual = scalar_vs_shapes(
-            &Predicate::Overlaps.spec(),
-            &scalar,
-            [(0, Some(ShapeRow::Shape(&other)))].into_iter(),
-            true,
-            None,
-            TopologyDomain::Geographic(degrees()),
-            &cache,
-        )
-        .expect("kind gate does not admit");
-        assert_eq!(actual, [false]);
-    }
-
-    #[test]
-    fn scalar_point_intersects_invalid_latitude_is_lonlat_error() {
-        let invalid = Shape::Point(Point::new_raw_xy(0.5, 91.0));
-        let other = Shape::Point(Point::new_raw_xy(0.0, 0.0));
-        let scalar = PreparedPlan::new(invalid);
-        let cache = crate::geometry::FrameDependentCaches::default();
-        let error = scalar_vs_shapes(
-            &Predicate::Intersects.spec(),
-            &scalar,
-            [(0, Some(ShapeRow::Shape(&other)))].into_iter(),
-            true,
-            None,
-            TopologyDomain::Geographic(degrees()),
-            &cache,
-        )
-        .unwrap_err();
-        let message = error.1.to_string();
-        assert!(
-            message.contains("invalid longitude/latitude (0.5, 91)"),
-            "{message}"
-        );
-        assert!(!message.contains("geographic shape"), "{message}");
     }
 }

@@ -544,3 +544,85 @@ where
         move |model, a, b| kernel(model, a, b, operation.densify()),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use pyo3::prelude::*;
+
+    use crate::PyGeometry;
+    use crate::boundary::{Frame, crs_arc_static};
+    use crate::geometry::{Point, Shape};
+    use crate::predicates::engine::Predicate;
+    use crate::py::errors::InvalidGeometryError;
+
+    #[test]
+    fn dispatch_predicate_point_crosses_invalid_latitude_is_false() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+                .expect("EPSG:4326 is a valid geographic frame");
+            let invalid = Bound::new(
+                py,
+                PyGeometry::with_frame(
+                    Shape::Point(Point::new_raw_xy(0.5, 91.0)),
+                    frame.clone(),
+                ),
+            )
+            .expect("invalid-latitude point binds")
+            .into_any();
+            let other = Bound::new(
+                py,
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame),
+            )
+            .expect("origin point binds")
+            .into_any();
+            for predicate in [Predicate::Crosses, Predicate::Overlaps] {
+                let value = super::dispatch_predicate(py, &invalid, &other, predicate)
+                    .unwrap_or_else(|error| {
+                        panic!("{predicate:?} must kind-gate before admission: {error}")
+                    });
+                let actual = value
+                    .bind(py)
+                    .extract::<bool>()
+                    .expect("named predicate returns a bool");
+                assert!(!actual, "{predicate:?} of two points is false");
+            }
+        });
+    }
+
+    #[test]
+    fn dispatch_predicate_point_intersects_invalid_latitude_is_lonlat_error() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+                .expect("EPSG:4326 is a valid geographic frame");
+            let invalid = Bound::new(
+                py,
+                PyGeometry::with_frame(
+                    Shape::Point(Point::new_raw_xy(0.5, 91.0)),
+                    frame.clone(),
+                ),
+            )
+            .expect("invalid-latitude point binds")
+            .into_any();
+            let other = Bound::new(
+                py,
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame),
+            )
+            .expect("origin point binds")
+            .into_any();
+            let error = super::dispatch_predicate(py, &invalid, &other, Predicate::Intersects)
+                .expect_err("intersects must admit and fail on invalid latitude");
+            assert!(
+                error.is_instance_of::<InvalidGeometryError>(py),
+                "{error}"
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains("invalid longitude/latitude (0.5, 91)"),
+                "{message}"
+            );
+            assert!(!message.contains("geographic shape"), "{message}");
+        });
+    }
+}
