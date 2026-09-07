@@ -207,6 +207,29 @@ fn rhumb_destination_point(
     )?))
 }
 
+fn rhumb_destination_scalar_coords(
+    metric: &crs::GeodesicMetric,
+    point: Point,
+    bearings: &[f64],
+    distances: &[f64],
+    axes: CoordinateAxes,
+) -> PyResult<CoordSeq> {
+    let mut builder = CoordSeqBuilder::with_capacity(axes, bearings.len());
+    for row in 0..bearings.len() {
+        let shape = rhumb_destination_point(
+            &metric.crs,
+            metric.frame,
+            point,
+            bearings[row],
+            distances[row],
+            &metric.state,
+        )
+        .map_err(|err| crate::note_array_row(err, row))?;
+        builder.push(point_from_point_nav_shape(&shape));
+    }
+    Ok(builder.finish_infallible())
+}
+
 fn interpolate_point_on_geodesic(
     geodesic: &geographiclib_rs::Geodesic,
     frame: GeographicFrame,
@@ -1972,20 +1995,7 @@ pub(crate) fn rhumb_destination_point_receiver(
     }
     let axes = CoordinateAxes::from_point(point);
     let coords = py.detach(move || {
-        let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-        for row in 0..len {
-            let shape = rhumb_destination_point(
-                &metric.crs,
-                metric.frame,
-                point,
-                bearing.values[row],
-                distance.values[row],
-                &metric.state,
-            )
-            .map_err(|err| crate::note_array_row(err, row))?;
-            builder.push(point_from_point_nav_shape(&shape));
-        }
-        Ok::<_, PyErr>(builder.finish_infallible())
+        rhumb_destination_scalar_coords(&metric, point, &bearing.values, &distance.values, axes)
     })?;
     Ok(
         PyGeometryArray::packed_points(coords, geometry.frame.clone())
@@ -2807,7 +2817,6 @@ fn rhumb_destination_point_array(
         [(&mut bearing, "bearing"), (&mut distance, "distance")],
         "bearing and distance",
     )?;
-    let len = point_len.unwrap_or(param_len);
     if let Some(point_len) = point_len
         && param_len != point_len
     {
@@ -2825,20 +2834,7 @@ fn rhumb_destination_point_array(
         let metric = crs::GeodesicMetric::from_model(&model)?;
         let axes = CoordinateAxes::from_point(point);
         let coords = py.detach(move || {
-            let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-            for row in 0..len {
-                let shape = rhumb_destination_point(
-                    &metric.crs,
-                    metric.frame,
-                    point,
-                    bearing.values[row],
-                    distance.values[row],
-                    &metric.state,
-                )
-                .map_err(|err| crate::note_array_row(err, row))?;
-                builder.push(point_from_point_nav_shape(&shape));
-            }
-            Ok::<_, PyErr>(builder.finish_infallible())
+            rhumb_destination_scalar_coords(&metric, point, &bearing.values, &distance.values, axes)
         })?;
         return Ok(
             PyGeometryArray::packed_points(coords, geometry.frame.clone())
