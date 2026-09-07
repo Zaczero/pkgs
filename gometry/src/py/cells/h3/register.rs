@@ -64,7 +64,7 @@ pub(super) fn build_coverage(
     cell_rule: CellRule,
     max_cells: Option<usize>,
 ) -> Result<Vec<CellIndex>, GridCoverError> {
-    let (membership_geometry, cells) = match cell_rule {
+    match cell_rule {
         // Center retains its specialized native tiler. The split shape is only
         // a traversal/seed working image; membership stays unsplit and normalized.
         CellRule::Center => {
@@ -87,7 +87,7 @@ pub(super) fn build_coverage(
             for cell in annotated {
                 crate::try_push_vec(&mut cells, cell.cell)?;
             }
-            (membership_geometry, cells)
+            Ok(cells)
         },
         CellRule::Within | CellRule::Overlap | CellRule::Bbox => {
             let membership_geometry = coverage_factory_geometry(geometry, "H3")?;
@@ -112,11 +112,9 @@ pub(super) fn build_coverage(
             for cell in annotated {
                 crate::try_push_vec(&mut cells, cell.cell)?;
             }
-            (membership_geometry, cells)
+            Ok(cells)
         },
-    };
-    let _ = (membership_geometry, cell_rule, max_cells);
-    Ok(cells)
+    }
 }
 
 pub(super) fn h3_resolution(value: u8) -> PyResult<Resolution> {

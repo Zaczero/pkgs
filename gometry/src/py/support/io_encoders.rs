@@ -2,22 +2,33 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::py::support::{Point, Polygon, PyResult, Ring, Shape};
+use crate::geometry::{CoordSeqBuilder, CoordinateAxes};
+use crate::py::support::{Point, Polygon, Ring, Shape};
 
-pub(crate) fn box_polygon(minx: f64, miny: f64, maxx: f64, maxy: f64) -> PyResult<Polygon> {
+pub(crate) fn box_polygon(
+    minx: f64,
+    miny: f64,
+    maxx: f64,
+    maxy: f64,
+) -> crate::error::Result<Polygon> {
+    let mut coords = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, 5)?;
+    coords.try_push(Point::new(minx, miny))?;
+    coords.try_push(Point::new(maxx, miny))?;
+    coords.try_push(Point::new(maxx, maxy))?;
+    coords.try_push(Point::new(minx, maxy))?;
+    coords.try_push(Point::new(minx, miny))?;
     Ok(Polygon::new(
-        Ring::from_closed(vec![
-            Point::new(minx, miny)?,
-            Point::new(maxx, miny)?,
-            Point::new(maxx, maxy)?,
-            Point::new(minx, maxy)?,
-            Point::new(minx, miny)?,
-        ]),
+        Ring::from_closed(coords.finish()?),
         Vec::new(),
     ))
 }
 
-pub(crate) fn wrapped_box(west: f64, south: f64, east: f64, north: f64) -> PyResult<Shape> {
+pub(crate) fn wrapped_box(
+    west: f64,
+    south: f64,
+    east: f64,
+    north: f64,
+) -> crate::error::Result<Shape> {
     // Bounds validated by caller (`box_` via `finite_coordinate_required`) — DbC.
     let mut width = east - west;
     if width < 0.0 {

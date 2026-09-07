@@ -528,14 +528,14 @@ fn push_bounds_windows(
         // Antimeridian wrap: cover [west, 180] and [-180, east] separately.
         crate::try_push_vec(
             out,
-            bounds_query_shape(crate::geometry::Bounds::new_raw(west, south, 180.0, north)),
+            bounds_query_shape(crate::geometry::Bounds::new_raw(west, south, 180.0, north))?,
         )?;
         crate::try_push_vec(
             out,
-            bounds_query_shape(crate::geometry::Bounds::new_raw(-180.0, south, east, north)),
+            bounds_query_shape(crate::geometry::Bounds::new_raw(-180.0, south, east, north))?,
         )?;
     } else {
-        crate::try_push_vec(out, bounds_query_shape(bounds))?;
+        crate::try_push_vec(out, bounds_query_shape(bounds)?)?;
     }
     Ok(())
 }

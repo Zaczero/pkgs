@@ -630,7 +630,7 @@ pub(super) fn build_box_shape(
                     .map_err(PyErr::from);
                 }
             }
-            wrapped_box(minx, miny, maxx, maxy)
+            Ok(wrapped_box(minx, miny, maxx, maxy)?)
         },
         Some(value) => Err(parameter_error(
             crate::tokens::unknown_token_message("box wrap", value, &["split"]),

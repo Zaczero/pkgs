@@ -34,9 +34,12 @@ def test_scalar_empty_errors_and_array_empty_is_a_group(cover, depth, label) -> 
     assert len(groups[0]) == 0
 
 
-@pytest.mark.parametrize('cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile'])
-def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth, label) -> None:
-    assert label
+@pytest.mark.parametrize(
+    'cover, depth',
+    [(cover, depth) for cover, depth, _label in COVER_CASES],
+    ids=['h3', 's2', 'geohash', 'tile'],
+)
+def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth) -> None:
     first = gm.box(-2, -2, 2, 2, crs=4326)
     later = gm.Point(0, 95, crs=4326)
     with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
@@ -45,9 +48,12 @@ def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth, label
     assert excinfo.value.value == 1
 
 
-@pytest.mark.parametrize('cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile'])
-def test_array_later_row_invalid_latitude_after_successful_row(cover, depth, label) -> None:
-    assert label
+@pytest.mark.parametrize(
+    'cover, depth',
+    [(cover, depth) for cover, depth, _label in COVER_CASES],
+    ids=['h3', 's2', 'geohash', 'tile'],
+)
+def test_array_later_row_invalid_latitude_after_successful_row(cover, depth) -> None:
     first = gm.box(-1, -1, 1, 1, crs=4326)
     later = gm.Point(0, 95, crs=4326)
     with pytest.raises(gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'):
