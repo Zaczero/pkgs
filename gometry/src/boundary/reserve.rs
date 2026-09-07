@@ -943,15 +943,33 @@ pub(crate) fn collect_py_iter_at_most_from_iter<'py, T>(
         let Some(item) = iter.next() else {
             return Ok(out);
         };
-        let item = item?;
-        let value = map(item)?;
+        let item = match item {
+            Ok(item) => item,
+            Err(err) => {
+                drop(out);
+                return Err(err);
+            },
+        };
+        let value = match map(item) {
+            Ok(value) => value,
+            Err(err) => {
+                drop(out);
+                return Err(err);
+            },
+        };
         try_push(&mut out, value)?;
     }
     check_python_signals(values.py(), maximum)?;
     match iter.next() {
         None => Ok(out),
-        Some(Err(err)) => Err(err),
-        Some(Ok(_)) => Err(on_excess(maximum.saturating_add(1))),
+        Some(Err(err)) => {
+            drop(out);
+            Err(err)
+        },
+        Some(Ok(_)) => {
+            drop(out);
+            Err(on_excess(maximum.saturating_add(1)))
+        },
     }
 }
 
@@ -1004,6 +1022,87 @@ mod tests {
         }
         assert_eq!(v.len(), 64);
         assert!(v.capacity() >= 64);
+    }
+
+    #[test]
+    fn at_most_collector_drops_retained_values_before_excess_error() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            struct DropProbe {
+                id: u8,
+                dropped: Rc<RefCell<Vec<u8>>>,
+            }
+
+            impl Drop for DropProbe {
+                fn drop(&mut self) {
+                    self.dropped.borrow_mut().push(self.id);
+                }
+            }
+
+            let dropped = Rc::new(RefCell::new(Vec::new()));
+            let values = pyo3::types::PyList::new(py, [0_u8, 1, 2, 3]).expect("fixture list");
+            let iter = values.try_iter().expect("list iterates");
+            let result = collect_py_iter_at_most_from_iter(
+                values.as_any(),
+                iter,
+                2,
+                |item| {
+                    Ok(DropProbe {
+                        id: item.extract()?,
+                        dropped: Rc::clone(&dropped),
+                    })
+                },
+                |observed| {
+                    assert_eq!(observed, 3);
+                    let mut ids = dropped.borrow().clone();
+                    ids.sort_unstable();
+                    assert_eq!(
+                        ids,
+                        [0, 1],
+                        "retained values must already be dropped when on_excess runs"
+                    );
+                    pyo3::exceptions::PyValueError::new_err("excess")
+                },
+            );
+            assert!(result.is_err(), "one extra item must raise");
+        });
+    }
+
+    #[test]
+    fn at_most_collector_preserves_provider_error_identity_after_cleanup() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let _signal_guard = crate::test_support::PythonSignalTestGuard::new(py);
+            let sentinel = pyo3::exceptions::PyRuntimeError::new_err("iterator sentinel")
+                .value(py)
+                .clone()
+                .into_any()
+                .unbind();
+            let item = pyo3::types::PyInt::new(py, 1);
+            let iterator = crate::test_support::native_boundary_iterator(
+                py,
+                item.as_any(),
+                4,
+                None,
+                Some((2, sentinel.clone_ref(py))),
+            )?;
+            let bound = iterator.bind(py);
+            let values = bound.as_any();
+            let result = collect_py_iter_at_most_from_iter(
+                values,
+                values.try_iter()?,
+                2,
+                |item| item.extract::<i64>(),
+                |_| pyo3::exceptions::PyValueError::new_err("excess"),
+            );
+            let error = result.expect_err("provider sentinel must be returned");
+            assert_eq!(error.value(py).as_ptr(), sentinel.as_ptr());
+            let state = iterator.bind(py).borrow();
+            assert_eq!(state.calls(), 3);
+            assert_eq!(state.remaining(), 2);
+            Ok(())
+        })
+        .expect("provider identity after cleanup");
     }
 
     #[test]
