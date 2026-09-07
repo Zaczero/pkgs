@@ -185,10 +185,10 @@ impl De9imInterval {
     }
 
     /// A disjunction of patterns.
-    pub(crate) fn any_pattern(&self, patterns: &[[u8; 9]]) -> Option<bool> {
+    pub(crate) fn any_pattern(&self, patterns: &[CompiledPattern]) -> Option<bool> {
         let mut open = false;
-        for pattern in patterns {
-            match self.pattern(named(pattern)) {
+        for &pattern in patterns {
+            match self.pattern(pattern) {
                 Some(true) => return Some(true),
                 Some(false) => {},
                 None => open = true,
@@ -198,9 +198,11 @@ impl De9imInterval {
     }
 }
 
-fn named(ascii: &[u8; 9]) -> CompiledPattern {
-    let pattern = std::str::from_utf8(ascii).expect("named DE-9IM pattern is ASCII");
-    CompiledPattern::new(pattern).expect("named DE-9IM pattern is valid")
+const fn named_pattern(pattern: &str) -> CompiledPattern {
+    match CompiledPattern::new(pattern) {
+        Some(compiled) => compiled,
+        None => panic!("named DE-9IM pattern is valid"),
+    }
 }
 
 /// The named predicates as pattern sets over `(left, right)`, with the two
@@ -215,37 +217,66 @@ pub(crate) fn predicate_verdict(
     right: Dimension,
 ) -> Option<bool> {
     use crate::predicates::Predicate;
-    const INTERSECTS: [[u8; 9]; 4] = [*b"T********", *b"*T*******", *b"***T*****", *b"****T****"];
-    const TOUCHES: [[u8; 9]; 3] = [*b"FT*******", *b"F**T*****", *b"F***T****"];
-    const COVERS: [[u8; 9]; 4] = [*b"T*****FF*", *b"*T****FF*", *b"***T**FF*", *b"****T*FF*"];
-    const COVERED_BY: [[u8; 9]; 4] = [*b"T*F**F***", *b"*TF**F***", *b"**FT*F***", *b"**F*TF***"];
+    const INTERSECTS: [CompiledPattern; 4] = [
+        named_pattern("T********"),
+        named_pattern("*T*******"),
+        named_pattern("***T*****"),
+        named_pattern("****T****"),
+    ];
+    const TOUCHES: [CompiledPattern; 3] = [
+        named_pattern("FT*******"),
+        named_pattern("F**T*****"),
+        named_pattern("F***T****"),
+    ];
+    const COVERS: [CompiledPattern; 4] = [
+        named_pattern("T*****FF*"),
+        named_pattern("*T****FF*"),
+        named_pattern("***T**FF*"),
+        named_pattern("****T*FF*"),
+    ];
+    const COVERED_BY: [CompiledPattern; 4] = [
+        named_pattern("T*F**F***"),
+        named_pattern("*TF**F***"),
+        named_pattern("**FT*F***"),
+        named_pattern("**F*TF***"),
+    ];
+    const CONTAINS: CompiledPattern = named_pattern("T*****FF*");
+    const WITHIN: CompiledPattern = named_pattern("T*F**F***");
+    const CONTAINS_PROPERLY: CompiledPattern = named_pattern("T**FF*FF*");
+    const EQUALS: CompiledPattern = named_pattern("T*F**FFF*");
+    const CROSSES_LESS: CompiledPattern = named_pattern("T*T******");
+    const CROSSES_GREATER: CompiledPattern = named_pattern("T*****T**");
+    const CROSSES_CURVE: CompiledPattern = named_pattern("0********");
+    const OVERLAPS_CURVE: CompiledPattern = named_pattern("1*T***T**");
+    const OVERLAPS: CompiledPattern = named_pattern("T*T***T**");
     match predicate {
         Predicate::Intersects => interval.any_pattern(&INTERSECTS),
         Predicate::Disjoint => interval.any_pattern(&INTERSECTS).map(|hit| !hit),
-        Predicate::Contains => interval.pattern(named(b"T*****FF*")),
-        Predicate::Within => interval.pattern(named(b"T*F**F***")),
+        Predicate::Contains => interval.pattern(CONTAINS),
+        Predicate::Within => interval.pattern(WITHIN),
         Predicate::Covers => interval.any_pattern(&COVERS),
         Predicate::CoveredBy => interval.any_pattern(&COVERED_BY),
-        Predicate::ContainsProperly => interval.pattern(named(b"T**FF*FF*")),
+        Predicate::ContainsProperly => interval.pattern(CONTAINS_PROPERLY),
         Predicate::Touches => interval.any_pattern(&TOUCHES),
-        Predicate::Equals => interval.pattern(named(b"T*F**FFF*")),
+        Predicate::Equals => interval.pattern(EQUALS),
         Predicate::Crosses => match left.cmp(&right) {
-            std::cmp::Ordering::Less => interval.pattern(named(b"T*T******")),
-            std::cmp::Ordering::Greater => interval.pattern(named(b"T*****T**")),
+            std::cmp::Ordering::Less => interval.pattern(CROSSES_LESS),
+            std::cmp::Ordering::Greater => interval.pattern(CROSSES_GREATER),
             std::cmp::Ordering::Equal if left == Dimension::Curve => {
-                interval.pattern(named(b"0********"))
+                interval.pattern(CROSSES_CURVE)
             },
             std::cmp::Ordering::Equal => Some(false),
         },
         Predicate::Overlaps if left != right => Some(false),
-        Predicate::Overlaps if left == Dimension::Curve => interval.pattern(named(b"1*T***T**")),
-        Predicate::Overlaps => interval.pattern(named(b"T*T***T**")),
+        Predicate::Overlaps if left == Dimension::Curve => interval.pattern(OVERLAPS_CURVE),
+        Predicate::Overlaps => interval.pattern(OVERLAPS),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::relate_pattern::compile;
     use crate::predicates::Predicate;
 
     const LINE: OperandShape = OperandShape {
@@ -495,18 +526,18 @@ mod tests {
     #[test]
     fn a_pattern_string_is_decided_literal_by_literal() {
         let mut interval = De9imInterval::open(AREA, AREA);
-        assert_eq!(interval.pattern(named(b"T********")), None);
-        assert_eq!(interval.pattern(named(b"*********")), Some(true));
+        assert_eq!(interval.pattern(compile("T********")), None);
+        assert_eq!(interval.pattern(compile("*********")), Some(true));
         interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
-        assert_eq!(interval.pattern(named(b"T********")), Some(true));
+        assert_eq!(interval.pattern(compile("T********")), Some(true));
         // Two areas can still meet at a surface, so the exact dimension waits.
-        assert_eq!(interval.pattern(named(b"1********")), None);
+        assert_eq!(interval.pattern(compile("1********")), None);
         interval.settle(Loc::Interior, Loc::Interior);
-        assert_eq!(interval.pattern(named(b"1********")), Some(true));
-        assert_eq!(interval.pattern(named(b"0********")), Some(false));
-        assert_eq!(interval.pattern(named(b"F********")), Some(false));
-        assert_eq!(interval.pattern(named(b"T*******F")), Some(false));
-        assert_eq!(interval.pattern(named(b"1*T******")), None);
+        assert_eq!(interval.pattern(compile("1********")), Some(true));
+        assert_eq!(interval.pattern(compile("0********")), Some(false));
+        assert_eq!(interval.pattern(compile("F********")), Some(false));
+        assert_eq!(interval.pattern(compile("T*******F")), Some(false));
+        assert_eq!(interval.pattern(compile("1*T******")), None);
     }
 
     #[test]
@@ -515,6 +546,6 @@ mod tests {
         // one collinear-overlap witness settles the cell without a phase end.
         let mut interval = De9imInterval::open(AREA, LINE);
         interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
-        assert_eq!(interval.pattern(named(b"1********")), Some(true));
+        assert_eq!(interval.pattern(compile("1********")), Some(true));
     }
 }

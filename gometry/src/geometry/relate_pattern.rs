@@ -8,16 +8,21 @@ pub(crate) struct CompiledPattern {
 }
 
 impl CompiledPattern {
-    pub(crate) fn new(pattern: &str) -> Option<Self> {
-        if pattern.len() != 9
-            || pattern
-                .bytes()
-                .any(|byte| !matches!(byte, b'T' | b'*' | b'F' | b'0' | b'1' | b'2'))
-        {
+    pub(crate) const fn new(pattern: &str) -> Option<Self> {
+        let bytes = pattern.as_bytes();
+        if bytes.len() != 9 {
             return None;
         }
         let mut cells = [0_u8; 9];
-        cells.copy_from_slice(pattern.as_bytes());
+        let mut index = 0;
+        while index < 9 {
+            let byte = bytes[index];
+            if !matches!(byte, b'T' | b'*' | b'F' | b'0' | b'1' | b'2') {
+                return None;
+            }
+            cells[index] = byte;
+            index += 1;
+        }
         Some(Self { cells })
     }
 
