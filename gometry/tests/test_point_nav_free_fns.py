@@ -454,32 +454,51 @@ def test_rhumb_destination_path_scalar() -> None:
 
 
 def test_rhumb_destination_mixed_axis_points_preserve_rows() -> None:
+    # GeographicLib RhumbSolve -p 10 destinations already pinned in
+    # test_rhumb_trio_matches_rhumbsolve_oracles: due east on the 45° parallel
+    # and due north from 45°S. The missing-row bearing/distance are unused.
     points = gm.GeometryArray([
-        gm.Point(-8.5, 41.2, crs=4326),
+        gm.Point(-10.0, 45.0, crs=4326, epoch=2020.0),
         None,
-        gm.Point(122.4, -33.9, z=18.0, crs=4326),
+        gm.Point(170.0, -45.0, z=12.0, m=4.0, crs=4326, epoch=2020.0),
     ])
-    out = points.destination(45.0, 2500.0, path='rhumb')
+    out = points.destination(
+        [90.0, 270.0, 0.0],
+        [1_000_000.0, 250_000.0, 1_000_000.0],
+        path='rhumb',
+    )
     assert out.is_missing.tolist() == [False, True, False]
     assert out[1] is None
+    assert out.crs.to_epsg() == 4326
+    assert out.epoch == 2020.0
     assert out[0].coordinate_axes == 'XY'
-    assert out[2].coordinate_axes == 'XYZ'
-    assert out[2].z == 18.0
-    assert out[0].to_wkb() == points[0].destination(45.0, 2500.0, path='rhumb').to_wkb()
-    assert out[2].to_wkb() == points[2].destination(45.0, 2500.0, path='rhumb').to_wkb()
+    assert (out[0].x, out[0].y) == (
+        pytest.approx(2.682817246984, abs=1e-08, rel=0.0),
+        pytest.approx(45.0, abs=1e-12, rel=0.0),
+    )
+    assert out[0].crs.to_epsg() == 4326
+    assert out[0].epoch == 2020.0
+    assert out[2].coordinate_axes == 'XYZM'
+    assert out[2].x == 170.0
+    assert out[2].y == pytest.approx(-35.994607984102956, abs=1e-08, rel=0.0)
+    assert (out[2].z, out[2].m) == (12.0, 4.0)
+    assert out[2].crs.to_epsg() == 4326
+    assert out[2].epoch == 2020.0
 
 
 def test_rhumb_destination_nonpoint_array_keeps_row_type_error() -> None:
     rows = gm.GeometryArray([
         gm.Point(-5.0, 10.0, crs=4326),
+        None,
         gm.LineString([(-5.0, 10.0), (0.0, 12.0)], crs=4326),
     ])
-    with pytest.raises(
-        gm.GeometryTypeError,
-        match=r"destination\(path='rhumb'\) requires a Point",
-    ) as err:
-        rows.destination(90.0, 1000.0, path='rhumb')
-    assert err.value.__notes__ == ['while processing array element 1']
+    with pytest.raises(gm.GeometryTypeError) as err:
+        rows.destination(
+            [90.0, 45.0, 0.0],
+            [1000.0, 250_000.0, 1000.0],
+            path='rhumb',
+        )
+    assert err.value.__notes__ == ['while processing array element 2']
 
 
 def test_point_between_rhumb_path_matches_inverse_direct_and_array_lanes() -> None:
