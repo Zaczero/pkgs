@@ -1755,98 +1755,67 @@ fn destination_many_array(
                 .into(),
         );
     }
-    let Some(points) = (!array.is_compact_nullable())
+    if let Some(points) = (!array.is_compact_nullable())
         .then(|| array.storage().point_rows())
         .flatten()
-    else {
-        let frame = array.frame.clone();
-        let shapes = py.detach(move || {
-            array
-                .row_operation()
-                .rows_with_missing(|| Option::<Shape>::None)
-                .map(|row| match row {
-                    crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                    crate::array::ArrayRow::Present(row) => {
-                        let logical = row.logical();
-                        row.row().with_shape(|shape| {
-                            let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
-                            point_destination(
-                                &geometry,
-                                bearing.values[logical],
-                                distance.values[logical],
-                                unit,
-                            )
-                            .map(Some)
-                            .map_err(|err| crate::note_array_row(err, logical))
-                        })
-                    },
-                })
-                .collect::<PyResult<Vec<_>>>()
-        })?;
-        let present = PyGeometryArray::from_shapes(
-            shapes.into_iter().flatten().collect(),
-            array.frame.clone(),
-        );
-        return Ok(array
-            .scatter_present_result(present)
-            .into_pyobject(py)?
-            .unbind()
-            .into());
-    };
-    let missing = array.missing().cloned();
-    let Some(axes) = uniform_point_axes_dispatch(&points, len, missing.as_ref()) else {
-        let frame = array.frame.clone();
-        let shapes = py.detach(move || {
-            array
-                .row_operation()
-                .rows_with_missing(|| Option::<Shape>::None)
-                .map(|row| match row {
-                    crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                    crate::array::ArrayRow::Present(row) => {
-                        let logical = row.logical();
-                        row.row().with_shape(|shape| {
-                            let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
-                            point_destination(
-                                &geometry,
-                                bearing.values[logical],
-                                distance.values[logical],
-                                unit,
-                            )
-                            .map(Some)
-                            .map_err(|err| crate::note_array_row(err, logical))
-                        })
-                    },
-                })
-                .collect::<PyResult<Vec<_>>>()
-        })?;
-        let present = PyGeometryArray::from_shapes(
-            shapes.into_iter().flatten().collect(),
-            array.frame.clone(),
-        );
-        return Ok(array
-            .scatter_present_result(present)
-            .into_pyobject(py)?
-            .unbind()
-            .into());
-    };
-    let model = resolve_metric(array.crs_str(), unit, MetricOp::Destination).map_err(row_zero)?;
-    let missing_for_rows = missing.clone();
-    let kernel = DestinationPointKernel {
-        bearing: &bearing.values,
-        distance: &distance.values,
-    };
-    let coords = py.detach(move || {
-        destination_many_coords_dispatch(
-            kernel,
-            &model,
-            &points,
-            len,
-            axes,
-            missing_for_rows.as_ref(),
-        )
+    {
+        let missing = array.missing().cloned();
+        if let Some(axes) = uniform_point_axes_dispatch(&points, len, missing.as_ref()) {
+            let model =
+                resolve_metric(array.crs_str(), unit, MetricOp::Destination).map_err(row_zero)?;
+            let missing_for_rows = missing.clone();
+            let kernel = DestinationPointKernel {
+                bearing: &bearing.values,
+                distance: &distance.values,
+            };
+            let coords = py.detach(move || {
+                destination_many_coords_dispatch(
+                    kernel,
+                    &model,
+                    &points,
+                    len,
+                    axes,
+                    missing_for_rows.as_ref(),
+                )
+            })?;
+            return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())
+                .with_missing_mask(missing)
+                .into_pyobject(py)?
+                .unbind()
+                .into());
+        }
+    }
+
+    let frame = array.frame.clone();
+    let shapes = py.detach(move || {
+        array
+            .row_operation()
+            .rows_with_missing(|| Option::<Shape>::None)
+            .map(|row| match row {
+                crate::array::ArrayRow::Missing { value, .. } => Ok(value),
+                crate::array::ArrayRow::Present(row) => {
+                    let logical = row.logical();
+                    row.row().with_shape(|shape| {
+                        let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
+                        point_destination(
+                            &geometry,
+                            bearing.values[logical],
+                            distance.values[logical],
+                            unit,
+                        )
+                        .map(Some)
+                        .map_err(|err| crate::note_array_row(err, logical))
+                    })
+                },
+            })
+            .collect::<PyResult<Vec<_>>>()
     })?;
-    Ok(PyGeometryArray::packed_points(coords, array.frame.clone())
-        .with_missing_mask(missing)
+    let present = PyGeometryArray::from_shapes(
+        shapes.into_iter().flatten().collect(),
+        array.frame.clone(),
+    );
+    Ok(array
+        .scatter_present_result(present)
         .into_pyobject(py)?
         .unbind()
         .into())
