@@ -137,6 +137,45 @@ def test_simplify_vw_packed_lines_matches_per_row() -> None:
     assert packed.to_arrow().type.extension_name == 'geoarrow.linestring'
 
 
+def _aba_zm_line() -> gm.LineString:
+    return gm.LineString(
+        [(0.0, 0.0), (1.0, 0.0), (0.0, 0.0)],
+        z=[1.0, 2.0, 9.0],
+        m=[10.0, 20.0, 90.0],
+    )
+
+
+def _assert_aba_endpoints(geom: gm.Geometry) -> None:
+    assert geom.coordinate_axes == 'XYZM'
+    assert list(geom.coords) == [
+        (0.0, 0.0, 1.0, 10.0),
+        (0.0, 0.0, 9.0, 90.0),
+    ]
+    assert list(geom.coords.z) == [1.0, 9.0]
+    assert list(geom.coords.m) == [10.0, 90.0]
+
+
+def test_simplify_vw_keeps_repeated_xy_endpoint_ordinates() -> None:
+    """Interior VW drop of A-B-A must keep each endpoint's original Z/M slot."""
+    line = _aba_zm_line()
+    raw = line.simplify(1.0, method='vw', preserve_topology=False)
+    _assert_aba_endpoints(raw)
+    _assert_aba_endpoints(line.simplify(1.0, method='vw'))
+
+    packed = gm.GeometryArray([line, line])
+    assert packed.to_arrow().type.extension_name == 'geoarrow.linestring'
+    packed_out = packed.simplify(1.0, method='vw', preserve_topology=False)
+    assert packed_out.to_arrow().type.extension_name == 'geoarrow.linestring'
+    for row in packed_out:
+        _assert_aba_endpoints(row)
+
+    nullable = gm.GeometryArray([None, line])
+    nullable_out = nullable.simplify(1.0, method='vw', preserve_topology=False)
+    assert nullable_out[0] is None
+    _assert_aba_endpoints(nullable_out[1])
+    assert nullable_out.is_missing.tolist() == [True, False]
+
+
 def test_buffer_side_builds_one_sided_strips() -> None:
     line = gm.LineString([(0, 0), (2, 0)])
     left = line.buffer(1.0, side='left')

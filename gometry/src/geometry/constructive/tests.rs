@@ -667,6 +667,26 @@ mod consecutive_dedup_tests {
             Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZ)
         );
     }
+
+    #[test]
+    fn simplify_vw_raw_keeps_repeated_xy_endpoint_ordinates() {
+        use std::sync::Arc;
+
+        let line = Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
+            Arc::from([0.0, 1.0, 0.0]),
+            Arc::from([0.0, 0.0, 0.0]),
+            Some(Arc::from([1.0, 2.0, 9.0])),
+            Some(Arc::from([10.0, 20.0, 90.0])),
+        )));
+        let Shape::LineString(out) = line.simplify_vw_raw(1.0).unwrap() else {
+            panic!("A-B-A VW keep-mask must remain a line");
+        };
+        assert_eq!(out.axes(), CoordinateAxes::XYZM);
+        assert_eq!(out.xs(), &[0.0, 0.0]);
+        assert_eq!(out.ys(), &[0.0, 0.0]);
+        assert_eq!(out.zs(), Some(&[1.0, 9.0][..]));
+        assert_eq!(out.ms(), Some(&[10.0, 90.0][..]));
+    }
 }
 
 #[cfg(test)]
