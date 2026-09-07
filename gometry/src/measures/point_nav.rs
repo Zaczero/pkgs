@@ -1856,14 +1856,12 @@ fn destination_point_array(
 
     match point_in {
         One(geometry) if len == 1 && bearing.scalar && distance.scalar => {
-            let point = require_point(geometry, MetricOp::Destination)?;
-            let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
-            let point = match model {
-                crs::MetricModel::Geodesic { .. } | crs::MetricModel::Planar { .. } => {
-                    destination_point(&model, point, bearing.values[0], distance.values[0])?
-                },
-            };
-            let shape = Shape::Point(point);
+            let shape = point_destination(
+                geometry,
+                bearing.values[0],
+                distance.values[0],
+                unit,
+            )?;
             Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind())
         },
         One(geometry) => {
@@ -1912,19 +1910,20 @@ pub(crate) fn destination_point_receiver(
         "bearing and distance",
     )?;
     validate_destination_distances(&distance.values)?;
-    let point = require_point(geometry, MetricOp::Destination)?;
-    let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
     if len == 1 && bearing.scalar && distance.scalar {
-        let point = match model {
-            crs::MetricModel::Geodesic { .. } | crs::MetricModel::Planar { .. } => {
-                destination_point(&model, point, bearing.values[0], distance.values[0])?
-            },
-        };
+        let shape = point_destination(
+            geometry,
+            bearing.values[0],
+            distance.values[0],
+            unit,
+        )?;
         return Ok(geometry
-            .typed_shape(Shape::Point(point))
+            .typed_shape(shape)
             .into_pyobject(py)?
             .unbind());
     }
+    let point = require_point(geometry, MetricOp::Destination)?;
+    let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
     let axes = CoordinateAxes::from_point(point);
     let coords = py.detach(move || {
         destination_scalar_coords_dispatch(
