@@ -265,6 +265,62 @@ def test_point_to_segment_geodesic_matches_pyproj() -> None:
     assert result == pytest.approx(expected)
 
 
+def _geodesic_point_collection_membership_cases() -> list[object]:
+    query = gm.Point(0.0, 0.0, crs=4326)
+    far = gm.Point(20.0, 0.0, crs=4326)
+    return [
+        pytest.param(
+            query,
+            gm.GeometryCollection([query, far]),
+            id='direct-point-siblings',
+        ),
+        pytest.param(
+            query,
+            gm.GeometryCollection([gm.GeometryCollection([query]), far]),
+            id='nested-point-collection',
+        ),
+        pytest.param(
+            query,
+            gm.GeometryCollection([query, gm.GeometryCollection([], crs=4326)]),
+            id='trailing-empty-collection',
+        ),
+        pytest.param(
+            query,
+            gm.GeometryCollection([
+                query,
+                gm.LineString([(20.0, 0.0), (21.0, 0.0)], crs=4326),
+            ]),
+            id='trailing-nonpoint-member',
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ('query', 'collection'), _geodesic_point_collection_membership_cases()
+)
+def test_geodesic_point_collections_keep_members_for_distance_and_dwithin(
+    query: gm.Point, collection: gm.GeometryCollection
+) -> None:
+    """Collection point sweeps retain nested and preceding members."""
+    assert gm.distance(query, collection) == 0.0
+    assert gm.distance(collection, query) == 0.0
+    assert gm.dwithin(query, collection, 0.0) is True
+    assert gm.dwithin(collection, query, 0.0) is True
+
+
+def test_geodesic_nearest_points_collection_tie_keeps_source_order() -> None:
+    """Equal-distance collection points use their original member order."""
+    query = gm.Point(0.0, 0.0, crs=4326)
+    ordered = gm.GeometryCollection([
+        gm.Point(-1.0, 0.0, crs=4326),
+        gm.Point(1.0, 0.0, crs=4326),
+    ])
+    _, right_nearest = gm.nearest_points(query, ordered)
+    left_nearest, _ = gm.nearest_points(ordered, query)
+    assert (right_nearest.x, right_nearest.y) == (-1.0, 0.0)
+    assert (left_nearest.x, left_nearest.y) == (-1.0, 0.0)
+
+
 def test_geodesic_lrs_is_metre_based_and_self_consistent() -> None:
     """Geographic LRS absolute distances are ellipsoidal meters, consistent with length()."""
     line = gm.LineString([(0, 0), (0, 10)], crs=4326)

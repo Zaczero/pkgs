@@ -98,12 +98,16 @@ pub(crate) fn collect_geodesic_segments_into(
 
 pub(crate) fn collect_point_only_into(shape: &Shape, out: &mut Vec<Point>) {
     out.clear();
+    append_point_only_into(shape, out);
+}
+
+fn append_point_only_into(shape: &Shape, out: &mut Vec<Point>) {
     match shape {
         Shape::Point(point) => out.push(*point),
         Shape::MultiPoint(points) => out.extend(points.iter()),
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                collect_point_only_into(geometry, out);
+                append_point_only_into(geometry, out);
             }
         },
         _ => {},

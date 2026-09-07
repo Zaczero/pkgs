@@ -17,9 +17,9 @@ use crate::geometry::distance::tests::{
     geodesic_nearest_oracle_cases, line, multipoint, p, polygon,
 };
 use crate::geometry::distance::{
-    GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_capped_dwithin_with_parts,
-    geodesic_capped_sweep_with_parts, geodesic_min_distance_to_target,
-    geodesic_witness_sweep_with_parts,
+    GeodesicSweepCaps, collect_geodesic_segments_into, collect_point_only_into,
+    geodesic_capped_dwithin_with_parts, geodesic_capped_sweep_with_parts,
+    geodesic_min_distance_to_target, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
     FrameDependentCaches, GeodesicMetric, GeodesicParts, MOrdinate, Point, PreparedPlan, Shape,
@@ -90,6 +90,33 @@ fn brute_geodesic_directed_hausdorff(
         }
     });
     cmax
+}
+
+#[test]
+fn geodesic_point_collection_preserves_nested_source_order() {
+    let nested = Shape::geometry_collection(vec![
+        multipoint(vec![p(2.0, 0.0), p(3.0, 0.0)]),
+        Shape::geometry_collection(vec![Shape::Point(p(4.0, 0.0))])
+            .expect("nested point collection is valid"),
+    ])
+    .expect("point collection is valid");
+    let shape = Shape::geometry_collection(vec![
+        Shape::Point(p(1.0, 0.0)),
+        nested,
+        Shape::geometry_collection(Vec::new()).expect("empty collection is valid"),
+        line(vec![p(10.0, 0.0), p(11.0, 0.0)]),
+    ])
+    .expect("mixed collection is valid");
+    let mut points = vec![p(-1.0, 0.0)];
+
+    collect_point_only_into(&shape, &mut points);
+
+    assert_eq!(points, vec![
+        p(1.0, 0.0),
+        p(2.0, 0.0),
+        p(3.0, 0.0),
+        p(4.0, 0.0)
+    ]);
 }
 
 #[test]
