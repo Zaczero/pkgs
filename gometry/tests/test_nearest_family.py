@@ -35,6 +35,48 @@ def _xy(point: gm.Geometry) -> tuple[float, float]:
     return (float(point.coords.x[0]), float(point.coords.y[0]))
 
 
+def _assert_shortest_line_matches_oracles(
+    line: gm.Geometry, left: gm.Geometry, right: gm.Geometry
+) -> None:
+    scalar = gm.shortest_line(left, right)
+    first, second = gm.nearest_points(left, right)
+    ends = _endpoints(line)
+    assert ends == pytest.approx(_endpoints(scalar))
+    assert ends[0] == pytest.approx(_xy(first))
+    assert ends[1] == pytest.approx(_xy(second))
+    assert line.crs == left.crs
+    assert line.epoch == left.epoch
+    assert line.coordinate_axes == 'XY'
+    assert not line.has_z
+    assert not line.has_m
+
+
+def _assert_fixed_array_shortest_line_layouts(
+    fixed: gm.Geometry, present: list[gm.Geometry]
+) -> None:
+    dense = gm.GeometryArray(present)
+    scalar_left = gm.shortest_line(fixed, dense)
+    array_left = gm.shortest_line(dense, fixed)
+    assert scalar_left.is_missing.tolist() == [False, False]
+    assert array_left.is_missing.tolist() == [False, False]
+    assert scalar_left.crs == fixed.crs
+    assert scalar_left.epoch == fixed.epoch
+    assert array_left.crs == dense.crs
+    assert array_left.epoch == dense.epoch
+    for index, value in enumerate(present):
+        _assert_shortest_line_matches_oracles(scalar_left[index], fixed, value)
+        _assert_shortest_line_matches_oracles(array_left[index], value, fixed)
+
+    nullable = gm.GeometryArray([present[0], None, present[1]])
+    nullable_left = gm.shortest_line(nullable, fixed)
+    assert nullable_left.is_missing.tolist() == [False, True, False]
+    assert nullable_left[1] is None
+    assert nullable_left.crs == nullable.crs
+    assert nullable_left.epoch == nullable.epoch
+    _assert_shortest_line_matches_oracles(nullable_left[0], present[0], fixed)
+    _assert_shortest_line_matches_oracles(nullable_left[2], present[1], fixed)
+
+
 _CROSS_TYPES = [
     ('point', gm.Point(-1, -1)),
     ('line', gm.from_wkt('LINESTRING (-3 -1, -3 1)')),
@@ -356,6 +398,20 @@ class TestGeodesic:
         assert (
             gm.shortest_line(point, line, unit='planar')
         ).to_wkt() == 'LINESTRING (0.5 0.5, 0.5 0)'
+
+    def test_seam_linework_witness_matches_scalar_and_nearest_points(self) -> None:
+        crossing = gm.LineString(
+            [(179.0, 0.0), (-179.0, 0.0)], crs=4326, epoch=2020.0
+        )
+        plain = gm.Point(170.0, 1.0, crs=4326, epoch=2020.0)
+        probe = gm.Point(180.0, 1.0, crs=4326, epoch=2020.0)
+        _assert_fixed_array_shortest_line_layouts(probe, [crossing, plain])
+
+    def test_pole_point_witness_matches_scalar_and_nearest_points(self) -> None:
+        pole = gm.Point(0.0, 90.0, crs=4326, epoch=2020.0)
+        high = gm.Point(180.0, 89.0, crs=4326, epoch=2020.0)
+        probe = gm.Point(0.0, 89.0, crs=4326, epoch=2020.0)
+        _assert_fixed_array_shortest_line_layouts(probe, [pole, high])
 
 
 class TestCrossingWitnessIsCertified:
