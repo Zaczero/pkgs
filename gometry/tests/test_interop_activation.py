@@ -5,10 +5,11 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
-import tomllib
-from pathlib import Path
+from importlib import metadata
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 
 def _run_isolated(script: str) -> subprocess.CompletedProcess[str]:
@@ -20,15 +21,19 @@ def _run_isolated(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_optional_extra_vocabulary_is_minimal_and_independent() -> None:
-    project = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))
-    extras = project['project']['optional-dependencies']
+@pytest.mark.parametrize('extra', ['pandas', 'polars'])
+def test_dataframe_extra_is_pyarrow_independent(extra: str) -> None:
+    distribution = metadata.distribution('gometry')
+    assert extra in (distribution.metadata.get_all('Provides-Extra') or [])
 
-    assert set(extras) == {'arrow', 'pandas', 'polars', 'geopandas', 'viz'}
+    requirements = [Requirement(value) for value in distribution.requires or ()]
     assert not any(
-        dependency.startswith('pyarrow')
-        for extra in ('pandas', 'polars')
-        for dependency in extras[extra]
+        canonicalize_name(requirement.name) == 'pyarrow'
+        and (
+            requirement.marker is None
+            or requirement.marker.evaluate(environment={'extra': extra})
+        )
+        for requirement in requirements
     )
 
 
