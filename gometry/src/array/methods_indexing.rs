@@ -130,36 +130,31 @@ pub(crate) fn numpy_integer_fancy_index<T>(
 where
     T: Copy + Element + TryInto<isize>,
 {
-    let values = owned_integer_indices_from_numpy::<T>(index, label)?;
+    let array = native_numpy_array::<T>(index)?;
+    let readonly = array.try_readonly()?;
+    let values = readonly.as_array();
     if ndim == 0 {
-        return Ok(NumpyFancyIndex::Scalar(
-            values
-                .into_iter()
-                .next()
-                .expect("zero-dimensional NumPy arrays have one element"),
-        ));
+        let value = values
+            .iter()
+            .copied()
+            .next()
+            .expect("zero-dimensional NumPy arrays have one element");
+        return Ok(NumpyFancyIndex::Scalar(numpy_index_value(value, label)?));
     }
-    Ok(NumpyFancyIndex::Indices(values))
+    let mut out = crate::try_vec_with_capacity(values.len())?;
+    for value in values.iter().copied() {
+        crate::try_push(&mut out, numpy_index_value(value, label)?)?;
+    }
+    Ok(NumpyFancyIndex::Indices(out))
 }
 
-fn owned_integer_indices_from_numpy<T>(
-    index: &Bound<'_, PyAny>,
-    label: &str,
-) -> PyResult<Vec<isize>>
+fn numpy_index_value<T>(value: T, label: &str) -> PyResult<isize>
 where
-    T: Copy + Element + TryInto<isize>,
+    T: TryInto<isize>,
 {
-    let values = owned_numpy_values::<T>(index)?;
-    let mut out = crate::try_vec_with_capacity(values.len())?;
-    for value in values {
-        crate::try_push(
-            &mut out,
-            value
-                .try_into()
-                .map_err(|_| PyIndexError::new_err(format!("{label} index is too large")))?,
-        )?;
-    }
-    Ok(out)
+    value
+        .try_into()
+        .map_err(|_| PyIndexError::new_err(format!("{label} index is too large")))
 }
 
 pub(crate) fn is_bool_scalar(index: &Bound<'_, PyAny>) -> bool {
@@ -173,12 +168,84 @@ pub(crate) enum CollectedFancyIndex {
     Invalid,
 }
 
-/// Classify and materialize a fancy-index sequence in **one pass**.
+struct FancyIndexCollector {
+    kind: FancyIndex,
+    indices: Vec<isize>,
+    mask: Vec<bool>,
+}
+
+impl FancyIndexCollector {
+    const fn new() -> Self {
+        Self {
+            kind: FancyIndex::Empty,
+            indices: Vec::new(),
+            mask: Vec::new(),
+        }
+    }
+
+    fn push<'py>(
+        &mut self,
+        py: Python<'py>,
+        bound: &Bound<'py, PyAny>,
+        item_count: usize,
+    ) -> PyResult<bool> {
+        if bound.cast_exact::<PyBool>().is_ok() {
+            self.kind = match self.kind {
+                FancyIndex::Empty | FancyIndex::Mask => FancyIndex::Mask,
+                _ => FancyIndex::Invalid,
+            };
+            if matches!(self.kind, FancyIndex::Invalid) {
+                return Ok(false);
+            }
+            if self.mask.is_empty() {
+                crate::try_reserve_vec(&mut self.mask, item_count)?;
+            }
+            self.mask.push(bound.extract::<bool>()?);
+            return Ok(true);
+        }
+
+        let integer = match crate::py_index_object("index", bound) {
+            Ok(integer) => integer,
+            Err(error)
+                if error.is_instance_of::<PyTypeError>(py)
+                    && bound.getattr_opt(pyo3::intern!(py, "__index__"))?.is_none() =>
+            {
+                return Ok(false);
+            },
+            Err(error) => return Err(error),
+        };
+        self.kind = match self.kind {
+            FancyIndex::Empty | FancyIndex::Indices => FancyIndex::Indices,
+            _ => FancyIndex::Invalid,
+        };
+        if matches!(self.kind, FancyIndex::Invalid) {
+            return Ok(false);
+        }
+        crate::try_push(
+            &mut self.indices,
+            integer
+                .extract::<isize>()
+                .map_err(|_| PyIndexError::new_err("index is too large"))?,
+        )?;
+        Ok(true)
+    }
+
+    fn finish(self) -> CollectedFancyIndex {
+        match self.kind {
+            FancyIndex::Empty => CollectedFancyIndex::Empty,
+            FancyIndex::Indices => CollectedFancyIndex::Indices(self.indices),
+            FancyIndex::Mask => CollectedFancyIndex::Mask(self.mask),
+            FancyIndex::Invalid => CollectedFancyIndex::Invalid,
+        }
+    }
+}
+
+/// Classify and materialize a fancy-index sequence without trusting its length.
 ///
-/// Exact `list` / `tuple` of bool or int extract directly into the mask /
-/// index vector (no intermediate `Vec<PyObject>`). Generic sequences and
-/// other executable providers still collect items once with fallible
-/// reservation so a lying `__len__` cannot allocator-abort.
+/// A list is first snapshotted into an immutable tuple, then its slots are
+/// scanned by the generic classifier. Other executable providers still collect
+/// items once with fallible reservation so a lying `__len__` cannot
+/// allocator-abort.
 pub(crate) fn classify_and_collect_fancy_index(
     py: Python<'_>,
     sequence: &Bound<'_, PySequence>,
@@ -187,8 +254,7 @@ pub(crate) fn classify_and_collect_fancy_index(
     let any = sequence.as_any();
     if let Ok(list) = any.cast::<PyList>() {
         let snapshot = list.to_tuple();
-        let snapshot = snapshot.cast::<PySequence>()?.clone();
-        return classify_and_collect_generic_sequence(py, &snapshot);
+        return classify_and_collect_stable_tuple(py, &snapshot);
     }
     if let Ok(tuple) = any.cast::<PyTuple>() {
         return classify_and_collect_exact_tuple(tuple);
@@ -202,61 +268,36 @@ fn classify_and_collect_generic_sequence(
     sequence: &Bound<'_, PySequence>,
 ) -> PyResult<CollectedFancyIndex> {
     let items = crate::collect_sequence_items(sequence)?;
-    if items.is_empty() {
-        return Ok(CollectedFancyIndex::Empty);
-    }
-    let mut kind = FancyIndex::Empty;
-    let mut indices = Vec::new();
-    let mut mask = Vec::new();
+    let item_count = items.len();
+    let mut collector = FancyIndexCollector::new();
     for item in &items {
         let bound = item.bind(py);
-        if bound.cast_exact::<PyBool>().is_ok() {
-            kind = match kind {
-                FancyIndex::Empty | FancyIndex::Mask => FancyIndex::Mask,
-                _ => FancyIndex::Invalid,
-            };
-            if matches!(kind, FancyIndex::Invalid) {
-                return Ok(CollectedFancyIndex::Invalid);
-            }
-            if mask.is_empty() {
-                crate::try_reserve_vec(&mut mask, items.len())?;
-            }
-            mask.push(bound.extract::<bool>()?);
-        } else {
-            let integer = match crate::py_index_object("index", bound) {
-                Ok(integer) => integer,
-                Err(error)
-                    if error.is_instance_of::<PyTypeError>(py)
-                        && bound.getattr_opt(pyo3::intern!(py, "__index__"))?.is_none() =>
-                {
-                    return Ok(CollectedFancyIndex::Invalid);
-                },
-                Err(error) => return Err(error),
-            };
-            kind = match kind {
-                FancyIndex::Empty | FancyIndex::Indices => FancyIndex::Indices,
-                _ => FancyIndex::Invalid,
-            };
-            if matches!(kind, FancyIndex::Invalid) {
-                return Ok(CollectedFancyIndex::Invalid);
-            }
-            crate::try_push(
-                &mut indices,
-                integer
-                    .extract::<isize>()
-                    .map_err(|_| PyIndexError::new_err("index is too large"))?,
-            )?;
+        if !collector.push(py, bound, item_count)? {
+            return Ok(CollectedFancyIndex::Invalid);
         }
     }
-    Ok(match kind {
-        FancyIndex::Empty => CollectedFancyIndex::Empty,
-        FancyIndex::Indices => CollectedFancyIndex::Indices(indices),
-        FancyIndex::Mask => CollectedFancyIndex::Mask(mask),
-        FancyIndex::Invalid => CollectedFancyIndex::Invalid,
-    })
+    Ok(collector.finish())
 }
 
-/// Exact `tuple`: same single-pass shape as the list lane (no PyObject staging).
+fn classify_and_collect_stable_tuple<'py>(
+    py: Python<'py>,
+    tuple: &Bound<'py, PyTuple>,
+) -> PyResult<CollectedFancyIndex> {
+    let item_count = tuple.len();
+    for (position, _) in tuple.as_slice().iter().enumerate() {
+        crate::check_python_signals(py, position)?;
+    }
+    let mut collector = FancyIndexCollector::new();
+    for item in tuple.as_slice() {
+        if !collector.push(py, item, item_count)? {
+            return Ok(CollectedFancyIndex::Invalid);
+        }
+    }
+    Ok(collector.finish())
+}
+
+/// Exact tuple fast path; its bool/int classification is intentionally distinct
+/// from the generic list-snapshot rules above.
 fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<CollectedFancyIndex> {
     let len = tuple.len();
     if len == 0 {

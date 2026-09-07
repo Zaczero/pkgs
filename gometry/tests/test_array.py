@@ -268,6 +268,35 @@ def test_packed_axes_survive_selection_and_missing_rows_for_every_storage_kind()
         assert not all_missing.any_has_z
 
 
+def test_fancy_index_preserves_nullable_axes_and_frame_metadata() -> None:
+    array = gm.GeometryArray(
+        [
+            gm.Point(1, 2, z=3, m=4, crs=4326, epoch=2020.0),
+            None,
+            gm.Point(5, 6, z=7, m=8, crs=4326, epoch=2020.0),
+        ],
+        crs=4326,
+        epoch=2020.0,
+    )
+
+    selected = array[[2, 1, 0]]
+    assert [
+        None if row is None else tuple(row.coords[0]) for row in selected
+    ] == [(5.0, 6.0, 7.0, 8.0), None, (1.0, 2.0, 3.0, 4.0)]
+    assert selected.coordinate_axes == ['XYZM', None, 'XYZM']
+    assert selected.is_missing.tolist() == [False, True, False]
+    assert selected.crs is not None and selected.crs.to_epsg() == 4326
+    assert selected.epoch == 2020.0
+
+    masked = array[[False, True, True]]
+    assert [None if row is None else tuple(row.coords[0]) for row in masked] == [
+        None,
+        (5.0, 6.0, 7.0, 8.0),
+    ]
+    assert masked.coordinate_axes == [None, 'XYZM']
+    assert masked.is_missing.tolist() == [True, False]
+
+
 def test_mixed_axes_delaunay_triangles_matches_rowwise() -> None:
     sites_xy = gm.MultiPoint([(0, 0), (4, 0), (4, 4), (0, 4), (2, 2)])
     sites_z = gm.from_wkt('MULTIPOINT Z (0 0 0, 4 0 0, 4 4 0, 0 4 0, 2 2 0)')
@@ -395,31 +424,32 @@ def test_geometry_array_fancy_getitem_routes_to_take_and_filter() -> None:
         gm.GeometryCollection([]),
         gm.Point(2, 2),
     ])
-    assert [(geom).to_wkt() for geom in array[[2, 0, -1]]] == [
-        'POINT (2 2)',
-        'POINT (0 0)',
-        'POINT (2 2)',
+    assert [tuple(geom.coords[0]) for geom in array[[2, 0, -1]]] == [
+        (2.0, 2.0),
+        (0.0, 0.0),
+        (2.0, 2.0),
     ]
-    assert [(geom).to_wkt() for geom in array[[True, False, True]]] == [
-        'POINT (0 0)',
-        'POINT (2 2)',
+    assert [tuple(geom.coords[0]) for geom in array[[True, False, True]]] == [
+        (0.0, 0.0),
+        (2.0, 2.0),
     ]
-    assert [(geom).to_wkt() for geom in array[array.is_empty]] == [
-        'GEOMETRYCOLLECTION EMPTY'
-    ]
-    assert [(geom).to_wkt() for geom in array[np.array([2, 0], dtype=np.int32)]] == [
-        'POINT (2 2)',
-        'POINT (0 0)',
+    empty = array[array.is_empty]
+    assert [geom.geometry_type for geom in empty] == ['GeometryCollection']
+    assert empty.is_empty.tolist() == [True]
+    assert [tuple(geom.coords[0]) for geom in array[np.array([2, 0], dtype=np.int32)]] == [
+        (2.0, 2.0),
+        (0.0, 0.0),
     ]
     assert [
-        (geom).to_wkt() for geom in array[np.array([0, 1, 2], dtype=np.uint64)[::2]]
-    ] == ['POINT (0 0)', 'POINT (2 2)']
-    assert (array[np.array(2, dtype=np.int64)]).to_wkt() == 'POINT (2 2)'
-    assert array[np.int64(2)].to_wkt() == 'POINT (2 2)'
+        tuple(geom.coords[0])
+        for geom in array[np.array([0, 1, 2], dtype=np.uint64)[::2]]
+    ] == [(0.0, 0.0), (2.0, 2.0)]
+    assert tuple(array[np.array(2, dtype=np.int64)].coords[0]) == (2.0, 2.0)
+    assert tuple(array[np.int64(2)].coords[0]) == (2.0, 2.0)
     strided_mask = np.array([True, False, False, True, True, False])[::2]
-    assert [(geom).to_wkt() for geom in array[strided_mask]] == [
-        'POINT (0 0)',
-        'POINT (2 2)',
+    assert [tuple(geom.coords[0]) for geom in array[strided_mask]] == [
+        (0.0, 0.0),
+        (2.0, 2.0),
     ]
     non_empty = gm.GeometryArray([gm.Point(0, 0), gm.Point(2, 2)])
     ids = gm.SpatialIndex(non_empty).query(gm.box(-1, -1, 0.5, 0.5))
@@ -450,7 +480,7 @@ def _indexing_receivers() -> list[tuple[object, object]]:
     return [
         (
             gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1), gm.Point(2, 2)]),
-            lambda value: value.to_wkt(),
+            lambda value: tuple(value.coords[0]),
         ),
         (cells, lambda value: value.id),
         (edges, lambda value: value.id),
@@ -474,10 +504,14 @@ def test_cell_array_slices_compose_logical_rows_with_physical_ids() -> None:
     assert [value.id for value in cells[4:5]] == [cells[4].id]
 
 
-@pytest.mark.parametrize('signed', [True, False], ids=['signed', 'unsigned'])
-def test_opposite_endian_numpy_integer_indices_cover_all_receivers(signed: bool) -> None:
+@pytest.mark.parametrize(
+    'dtype',
+    ['i1', 'i2', 'i4', 'i8', 'u1', 'u2', 'u4', 'u8'],
+    ids=['int8', 'int16', 'int32', 'int64', 'uint8', 'uint16', 'uint32', 'uint64'],
+)
+def test_opposite_endian_numpy_integer_indices_cover_all_receivers(dtype: str) -> None:
     byteorder = '>' if sys.byteorder == 'little' else '<'
-    dtype = f'{byteorder}{"i8" if signed else "u8"}'
+    dtype = f'{byteorder}{dtype}'
     receivers = _indexing_receivers()
 
     # The strided view is deliberately non-contiguous; its visible values are [2, 0].
@@ -504,10 +538,14 @@ def test_opposite_endian_numpy_scalar_and_negative_indices_cover_all_receivers()
 
 def test_numpy_integer_index_overflow_is_an_index_error_for_all_receivers() -> None:
     byteorder = '>' if sys.byteorder == 'little' else '<'
-    selector = np.array([np.iinfo(np.uint64).max], dtype=f'{byteorder}u8')
+    maximum = np.iinfo(np.uint64).max
+    selector = np.array([maximum], dtype=f'{byteorder}u8')
+    scalar = np.array(maximum, dtype=f'{byteorder}u8')
     for array, _identity in _indexing_receivers():
         with pytest.raises(IndexError, match='index is too large'):
             array[selector]
+        with pytest.raises(IndexError, match='index is too large'):
+            array[scalar]
 
 
 @pytest.mark.parametrize('index', [10**100, -(10**100)], ids=['positive', 'negative'])

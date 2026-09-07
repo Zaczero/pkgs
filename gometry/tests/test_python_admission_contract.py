@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 import itertools
 import math
 import subprocess
@@ -307,6 +308,94 @@ def test_positional_index_provider_exception_instances_are_preserved() -> None:
 
         error = error_type('provider error')
         assert_same(lambda error=error: array[(IntProvider(error),)], error)
+
+
+def test_list_and_tuple_keep_distinct_mixed_provider_admission_order() -> None:
+    array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+
+    class Provider:
+        def __init__(self, error: BaseException) -> None:
+            self.error = error
+            self.calls = 0
+
+        def __index__(self) -> int:
+            self.calls += 1
+            raise self.error
+
+    for error_type in (gm.GeometryError, TypeError, RuntimeError):
+        error = error_type('list provider error')
+        provider = Provider(error)
+        assert_same(lambda provider=provider: array[[True, provider]], error)
+        assert provider.calls == 1
+
+        tuple_provider = Provider(TypeError('tuple provider must not run'))
+        with pytest.raises(TypeError) as excinfo:
+            array[(True, tuple_provider)]
+        assert type(excinfo.value) is TypeError
+        assert tuple_provider.calls == 0
+
+
+def test_list_fancy_index_snapshots_before_ordered_provider_mutation() -> None:
+    array = gm.GeometryArray(
+        [gm.Point(0, 10), gm.Point(1, 11), gm.Point(2, 12)]
+    )
+    selectors: list[object] = []
+    order: list[str] = []
+
+    class MutatingIndex:
+        def __init__(self, name: str, value: int) -> None:
+            self.name = name
+            self.value = value
+
+        def __index__(self) -> int:
+            order.append(self.name)
+            if self.name == 'first':
+                selectors.clear()
+            return self.value
+
+    selectors.extend([
+        MutatingIndex('first', 2),
+        MutatingIndex('second', 0),
+    ])
+    selected = array[selectors]
+
+    assert order == ['first', 'second']
+    assert selectors == []
+    assert [tuple(row.coords[0]) for row in selected] == [
+        (2.0, 12.0),
+        (0.0, 10.0),
+    ]
+
+
+def test_generic_fancy_sequence_failure_precedes_item_provider() -> None:
+    array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+    calls: list[str] = []
+
+    class Provider:
+        def __index__(self) -> int:
+            calls.append('provider')
+            return 0
+
+    provider = Provider()
+    iteration_error = RuntimeError('sequence iterator error')
+
+    class FailingSequence(collections.abc.Sequence):
+        def __len__(self) -> int:
+            return 2
+
+        def __getitem__(self, index: int) -> object:
+            if index == 0:
+                return provider
+            if index == 1:
+                return 1
+            raise IndexError(index)
+
+        def __iter__(self):
+            yield provider
+            raise iteration_error
+
+    assert_same(lambda: array[FailingSequence()], iteration_error)
+    assert calls == []
 
 
 def test_empty_replace_at_consumes_both_inputs_before_returning() -> None:
