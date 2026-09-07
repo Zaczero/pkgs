@@ -1,8 +1,8 @@
 use std::ops::ControlFlow;
 
 use crate::geometry::segment_index::{
-    for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair, single_chain,
-    try_for_each_candidate_pair,
+    for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
+    for_each_overlapping_bounds_pair, single_chain, try_for_each_candidate_pair,
 };
 use crate::geometry::{Bounds, Segment, XY, segments_intersect};
 
@@ -409,5 +409,102 @@ mod run_collapse_dispatch {
                 pool.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sweep_entry_scratch {
+    use super::*;
+
+    fn overlapping_boxes(count: usize) -> Vec<Bounds> {
+        (0..count)
+            .map(|index| {
+                let x = index as f64 * 0.5;
+                Bounds::new_raw(x, 0.0, x + 1.0, 1.0)
+            })
+            .collect()
+    }
+
+    fn crossing_segments(count: usize) -> Vec<Segment> {
+        (0..count)
+            .map(|index| {
+                let x = index as f64;
+                Segment {
+                    start: XY::new(x, 0.0),
+                    end: XY::new(x + 1.0, 1.0),
+                }
+            })
+            .collect()
+    }
+
+    fn bounds_pairs(bounds: &[Bounds]) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        let _ = for_each_overlapping_bounds_pair(bounds, |left, right| {
+            pairs.push((left, right));
+            ControlFlow::Continue(())
+        });
+        pairs
+    }
+
+    #[test]
+    fn nested_candidate_sweep_does_not_drop_outer_bounds_pairs() {
+        let bounds = overlapping_boxes(8);
+        let segments = crossing_segments(8);
+        let expected = bounds_pairs(&bounds);
+        assert!(expected.len() > 1);
+
+        let mut nested = Vec::new();
+        let mut inner_visits = 0;
+        let _ = for_each_overlapping_bounds_pair(&bounds, |left, right| {
+            let _ = for_each_candidate_pair(&segments, single_chain, |_, _| {
+                inner_visits += 1;
+                ControlFlow::Continue(())
+            });
+            nested.push((left, right));
+            ControlFlow::Continue(())
+        });
+        assert_eq!(nested, expected);
+        assert!(inner_visits > 0);
+    }
+
+    #[test]
+    fn nested_early_break_releases_the_shared_lease() {
+        let bounds = overlapping_boxes(8);
+        let segments = crossing_segments(8);
+        let expected = bounds_pairs(&bounds);
+
+        let mut first = None;
+        let flow = for_each_overlapping_bounds_pair(&bounds, |left, right| {
+            let _ = for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Break(()));
+            first = Some((left, right));
+            ControlFlow::Break(())
+        });
+        assert!(matches!(flow, ControlFlow::Break(())));
+        assert_eq!(first, expected.first().copied());
+        assert_eq!(bounds_pairs(&bounds), expected);
+    }
+
+    #[test]
+    fn nested_resource_error_releases_the_shared_lease() {
+        let bounds = overlapping_boxes(8);
+        let segments = crossing_segments(8);
+        let expected = bounds_pairs(&bounds);
+
+        let _ =
+            try_for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()));
+
+        let mut inner_failed = false;
+        let flow = for_each_overlapping_bounds_pair(&bounds, |_, _| {
+            let result = crate::test_support::fail_allocations_after(0, || {
+                try_for_each_candidate_pair(&segments, single_chain, |_, _| {
+                    ControlFlow::Continue(())
+                })
+            });
+            inner_failed = result.is_err();
+            ControlFlow::Break(())
+        });
+        assert!(inner_failed);
+        assert!(matches!(flow, ControlFlow::Break(())));
+        assert_eq!(bounds_pairs(&bounds), expected);
     }
 }

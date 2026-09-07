@@ -110,6 +110,12 @@ struct SweepEntry {
     side: u8,
 }
 
+thread_local! {
+    static SWEEP_ENTRY_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
+        crate::scratch_pool::ScratchPool::new(Vec::new())
+    };
+}
+
 fn wider_axis_swapped(min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> bool {
     max_y - min_y > max_x - min_x
 }
@@ -179,12 +185,7 @@ fn try_overlapping_bounds_sweep(
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> Result<ControlFlow<()>> {
     let count = bounds.len();
-    thread_local! {
-        static BOUNDS_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
-            crate::scratch_pool::ScratchPool::new(Vec::new())
-        };
-    }
-    let mut entries = crate::scratch_pool::ScratchPool::checkout(&BOUNDS_SCRATCH);
+    let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
     try_reserve_vec(&mut entries, count)?;
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -332,12 +333,7 @@ fn try_candidate_pairs_over_runs(
 ) -> Result<ControlFlow<()>> {
     let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
     let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
-    thread_local! {
-        static SWEEP_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
-            crate::scratch_pool::ScratchPool::new(Vec::new())
-        };
-    }
-    let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_SCRATCH);
+    let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
     try_reserve_vec(&mut entries, runs.len())?;
     for (ordinal, run) in runs.iter().enumerate() {
         // Length-exact run window: first/last via slice pattern (elision).
@@ -495,12 +491,7 @@ fn try_candidate_pairs_between(
 ) -> Result<ControlFlow<()>> {
     let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
     let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
-    thread_local! {
-        static SWEEP_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
-            crate::scratch_pool::ScratchPool::new(Vec::new())
-        };
-    }
-    let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_SCRATCH);
+    let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
     let total =
         a.1.len()
             .checked_add(b.1.len())
