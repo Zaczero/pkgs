@@ -308,6 +308,58 @@ def test_positional_index_provider_exception_instances_are_preserved() -> None:
         assert_same(lambda error=error: array[(IntProvider(error),)], error)
 
 
+def test_empty_replace_at_consumes_both_inputs_before_returning() -> None:
+    array = gm.GeometryArray(
+        [gm.Point(0, 0, z=1, m=2, crs=4326, epoch=2020.0), None],
+        crs=4326,
+        epoch=2020.0,
+    )
+
+    class Tracked:
+        def __init__(self, values):
+            self.values = values
+            self.consumed = False
+
+        def __iter__(self):
+            self.consumed = True
+            return iter(self.values)
+
+    positions = Tracked([])
+    values = Tracked([])
+    result = array._replace_at(positions, values)
+
+    assert positions.consumed and values.consumed
+    assert result.to_wkt(drop_epoch=True) == array.to_wkt(drop_epoch=True)
+    assert result.coordinate_axes == array.coordinate_axes == ['XYZM', None]
+    assert result.is_missing.tolist() == [False, True]
+    assert result.crs == array.crs
+    assert result.epoch == array.epoch
+
+    mismatch_positions = Tracked([])
+    mismatch_values = Tracked([object()])
+    with pytest.raises(
+        ValueError, match='positions length 0 does not match values length 1'
+    ):
+        array._replace_at(mismatch_positions, mismatch_values)
+    assert mismatch_positions.consumed and mismatch_values.consumed
+
+
+def test_empty_replace_at_does_not_swallow_provider_errors() -> None:
+    array = gm.GeometryArray([gm.Point(0, 0)])
+
+    class Raising:
+        def __init__(self, message: str) -> None:
+            self.message = message
+
+        def __iter__(self):
+            raise RuntimeError(self.message)
+
+    with pytest.raises(RuntimeError, match='positions provider'):
+        array._replace_at(Raising('positions provider'), [])
+    with pytest.raises(RuntimeError, match='values provider'):
+        array._replace_at([], Raising('values provider'))
+
+
 def test_one_shot_coordinate_and_part_sources_are_consumed_once() -> None:
     class Once:
         def __init__(self, values):

@@ -552,6 +552,51 @@ def test_scalar_tuple_list_and_replace_at_index_boundaries() -> None:
         array._replace_at([1.5], [None])
 
 
+def test_empty_replace_at_preserves_nullable_zm_values_and_frame() -> None:
+    array = gm.GeometryArray(
+        [
+            gm.Point(1, 2, z=3, m=4, crs=4326, epoch=2020.0),
+            None,
+        ],
+        crs=4326,
+        epoch=2020.0,
+    )
+    result = array._replace_at([], [])
+
+    assert result.to_wkt(drop_epoch=True) == array.to_wkt(drop_epoch=True)
+    assert result.coordinate_axes == array.coordinate_axes == ['XYZM', None]
+    assert result.is_missing.tolist() == array.is_missing.tolist() == [False, True]
+    assert result.crs == array.crs
+    assert result.epoch == array.epoch
+
+
+def test_dense_geometry_replace_does_not_change_source() -> None:
+    array = gm.points([0.0, 1.0, 2.0], [10.0, 11.0, 12.0], crs=4326)
+    before = array.to_wkt()
+
+    result = array._replace_at([1], [gm.Point(9.0, 19.0, crs=4326)])
+
+    assert result.to_wkt() == ['POINT (0 10)', 'POINT (9 19)', 'POINT (2 12)']
+    assert result.is_missing.tolist() == [False, False, False]
+    assert array.to_wkt() == before
+    assert array.coordinate_axes == ['XY', 'XY', 'XY']
+    assert result.crs == array.crs
+
+
+def test_duplicate_replace_at_positions_apply_last_missing_state() -> None:
+    array = gm.points([0.0, 1.0, 2.0], [10.0, 11.0, 12.0])
+
+    present = array._replace_at([1, 1], [None, gm.Point(9.0, 19.0)])
+    missing = array._replace_at([1, 1], [gm.Point(9.0, 19.0), None])
+
+    assert present.to_wkt() == ['POINT (0 10)', 'POINT (9 19)', 'POINT (2 12)']
+    assert present.is_missing.tolist() == [False, False, False]
+    assert missing.to_wkt() == ['POINT (0 10)', None, 'POINT (2 12)']
+    assert missing.is_missing.tolist() == [False, True, False]
+    assert missing.coordinate_axes == ['XY', None, 'XY']
+    assert array.to_wkt() == ['POINT (0 10)', 'POINT (1 11)', 'POINT (2 12)']
+
+
 def test_strided_numpy_boolean_masks_cover_all_receivers() -> None:
     selector = np.array([True, False, True, False, False])[::2]
     for array, identity in _indexing_receivers():

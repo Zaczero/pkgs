@@ -752,6 +752,9 @@ impl PyGeometryArray {
                 values.len()
             )));
         }
+        if positions.is_empty() {
+            return Ok(self.clone());
+        }
         let n = self.len();
         let mut rows: Vec<(usize, Option<Shape>)> = crate::try_vec_with_capacity(positions.len())?;
         for (position, value) in positions.into_iter().zip(values) {
@@ -790,19 +793,28 @@ impl PyGeometryArray {
         {
             let mut xs = coords.xs().to_vec();
             let mut ys = coords.ys().to_vec();
-            let mut missing_flags: Vec<bool> =
-                (0..n).map(|row| self.is_row_missing(row)).collect();
+            let mut missing_flags = if rows.iter().any(|(_, shape)| shape.is_none()) {
+                let mut flags = crate::try_vec_with_capacity(n)?;
+                flags.resize(n, false);
+                Some(flags)
+            } else {
+                None
+            };
             for (row, shape) in rows {
                 match shape {
                     None => {
                         xs[row] = f64::NAN;
                         ys[row] = f64::NAN;
-                        missing_flags[row] = true;
+                        if let Some(flags) = &mut missing_flags {
+                            flags[row] = true;
+                        }
                     },
                     Some(Shape::Point(point)) => {
                         xs[row] = point.x;
                         ys[row] = point.y;
-                        missing_flags[row] = false;
+                        if let Some(flags) = &mut missing_flags {
+                            flags[row] = false;
+                        }
                     },
                     Some(_) => unreachable!("axes gate above"),
                 }
@@ -811,7 +823,9 @@ impl PyGeometryArray {
             // both retain the original checked row count.
             let seq = unsafe { CoordSeq::from_columns_unchecked(xs.into(), ys.into(), None, None) };
             return Ok(Self::packed_points(seq, self.frame.clone())
-                .with_missing_mask(ValidityMask::from_vec(n, missing_flags)));
+                .with_missing_mask(
+                    missing_flags.and_then(|flags| ValidityMask::from_vec(n, flags)),
+                ));
         }
 
         let mut shapes: Vec<Option<Shape>> = self

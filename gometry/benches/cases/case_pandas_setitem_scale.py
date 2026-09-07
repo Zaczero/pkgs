@@ -1,8 +1,8 @@
 """bench_ab case: pandas GeometryExtensionArray setitem selection scaling.
 
 Prints the 10k-selection / 1-selection median wall-clock ratio on a 100k-row
-column. Native batch scatter scales with selection size; a full-column rebuild
-is flat ~30 ms. Timing claims belong here, not in pytest.
+column. Each native replacement copies the full X/Y columns; validation and
+patching scale with the selected rows. Timing claims belong here, not in pytest.
 """
 
 from __future__ import annotations
