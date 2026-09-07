@@ -524,6 +524,57 @@ mod tests {
     }
 
     #[test]
+    fn a_decided_matrix_matches_every_cell_literal_independently() {
+        let mut interval = De9imInterval::open(AREA, AREA);
+        interval.witness(Loc::Interior, Loc::Boundary, Dimension::Point);
+        interval.witness(Loc::Interior, Loc::Exterior, Dimension::Curve);
+        interval.witness(Loc::Boundary, Loc::Interior, Dimension::Curve);
+        interval.witness(Loc::Boundary, Loc::Exterior, Dimension::Point);
+        interval.witness(Loc::Exterior, Loc::Interior, Dimension::Surface);
+        interval.witness(Loc::Exterior, Loc::Boundary, Dimension::Curve);
+        settle_all(&mut interval);
+        let matrix = interval.matrix().expect("every cell settled");
+        assert_eq!(matrix.text(), "F011F0212");
+
+        let expected = |entry: u8, literal: u8| -> bool {
+            match literal {
+                b'*' => true,
+                b'T' => entry != b'F',
+                b'F' => entry == b'F',
+                b'0' | b'1' | b'2' => entry == literal,
+                _ => unreachable!(),
+            }
+        };
+        let entries = matrix.text().into_bytes();
+        for cell in 0..9 {
+            for literal in [b'T', b'F', b'*', b'0', b'1', b'2'] {
+                let mut cells = *b"*********";
+                cells[cell] = literal;
+                let pattern = compile(std::str::from_utf8(&cells).unwrap());
+                let want = expected(entries[cell], literal);
+                assert_eq!(
+                    matrix.matches(pattern),
+                    want,
+                    "cell {cell} entry {} vs {}",
+                    entries[cell] as char,
+                    literal as char
+                );
+                assert_eq!(interval.pattern(pattern), Some(want));
+            }
+        }
+        assert!(!matrix.matches(compile("0********")));
+        assert!(!matrix.matches(compile("********F")));
+        assert!(!matrix.matches(compile("0*******F")));
+        assert!(matrix.matches(compile("F********")));
+        assert!(matrix.matches(compile("********2")));
+        assert!(matrix.matches(compile("F*******2")));
+        assert_eq!(interval.pattern(compile("0********")), Some(false));
+        assert_eq!(interval.pattern(compile("********F")), Some(false));
+        assert_eq!(interval.pattern(compile("0*******F")), Some(false));
+        assert_eq!(interval.pattern(compile("F*******2")), Some(true));
+    }
+
+    #[test]
     fn a_pattern_string_is_decided_literal_by_literal() {
         let mut interval = De9imInterval::open(AREA, AREA);
         assert_eq!(interval.pattern(compile("T********")), None);

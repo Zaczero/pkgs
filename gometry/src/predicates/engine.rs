@@ -1305,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn native_relate_pattern_shares_topology_scalar_pattern() {
+    fn native_relate_pattern_matches_disjoint_areal_literals() {
         let (a, b) = (rectangle(0.0, 0.0, 1.0, 1.0), rectangle(3.0, 3.0, 4.0, 4.0));
         for (literal, expected) in [
             (b'F', true),
