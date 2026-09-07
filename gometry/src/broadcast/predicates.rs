@@ -42,7 +42,7 @@ pub(crate) fn bool_array_mask_missing(
 /// Present prepared operands as their underlying geometries to a broadcast
 /// implementation. The owned Python values keep the temporary unwrapped
 /// operands alive for the duration of the callback.
-fn with_prepared_operands(
+pub(crate) fn with_prepared_operands(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,

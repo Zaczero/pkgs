@@ -51,7 +51,7 @@ mod predicates;
 pub(crate) use predicates::{
     bool_array_mask_missing, ensure_same_len, multipoint_splitter_from_array, predicate_broadcast,
     predicate_pairwise_arrays, predicate_scalar_vs_array, relate_pattern_broadcast,
-    relate_string_broadcast, xy_predicate,
+    relate_string_broadcast, with_prepared_operands, xy_predicate,
 };
 
 /// The single engine behind the binary value-returning broadcast families

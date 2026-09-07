@@ -158,42 +158,30 @@ pub(crate) fn equals_identical(
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
 
-    let left_geometry = match left.cast::<crate::PyPreparedGeometry>() {
-        Ok(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
-        Err(_) => None,
-    };
-    let right_geometry = match right.cast::<crate::PyPreparedGeometry>() {
-        Ok(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
-        Err(_) => None,
-    };
-    let left = left_geometry
-        .as_ref()
-        .map_or(left, |geometry| geometry.as_any());
-    let right = right_geometry
-        .as_ref()
-        .map_or(right, |geometry| geometry.as_any());
-    let left_frame = identity_frame(left);
-    let right_frame = identity_frame(right);
-    if let (Some(left_frame), Some(right_frame)) = (left_frame, right_frame)
-        && left_frame != right_frame
-    {
-        // Value semantics: differing frames compare unequal (scalar `==`
-        // parity) — but operand SHAPES still follow binary-op rules.
-        return match (
-            crate::broadcast::exact_geometry_array(left),
-            crate::broadcast::exact_geometry_array(right),
-        ) {
-            (Some(l), Some(r)) => {
-                crate::broadcast::ensure_same_len(l.len(), r.len())?;
-                crate::py::numpy::false_bool_array(py, l.len())
-            },
-            (Some(l), None) => crate::py::numpy::false_bool_array(py, l.len()),
-            (None, Some(r)) => crate::py::numpy::false_bool_array(py, r.len()),
-            (None, None) => crate::broadcast::py_bool(py, false).into_py_any(py),
-        };
-    }
-    broadcast2(py, left, right, "equals_identical", |a, b| {
-        Ok(a.shape() == b.shape())
+    crate::broadcast::with_prepared_operands(py, left, right, move |left, right| {
+        let left_frame = identity_frame(left);
+        let right_frame = identity_frame(right);
+        if let (Some(left_frame), Some(right_frame)) = (left_frame, right_frame)
+            && left_frame != right_frame
+        {
+            // Value semantics: differing frames compare unequal (scalar `==`
+            // parity) — but operand SHAPES still follow binary-op rules.
+            return match (
+                crate::broadcast::exact_geometry_array(left),
+                crate::broadcast::exact_geometry_array(right),
+            ) {
+                (Some(l), Some(r)) => {
+                    crate::broadcast::ensure_same_len(l.len(), r.len())?;
+                    crate::py::numpy::false_bool_array(py, l.len())
+                },
+                (Some(l), None) => crate::py::numpy::false_bool_array(py, l.len()),
+                (None, Some(r)) => crate::py::numpy::false_bool_array(py, r.len()),
+                (None, None) => crate::broadcast::py_bool(py, false).into_py_any(py),
+            };
+        }
+        broadcast2(py, left, right, "equals_identical", |a, b| {
+            Ok(a.shape() == b.shape())
+        })
     })
 }
 
@@ -262,50 +250,38 @@ pub(crate) fn equals_exact(
     include_m: bool,
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
-    // Prepared handles are predicate operands; exact equality does not use
-    // their cache, but must still compare the wrapped geometries.
-    let left_prepared = left.cast::<crate::PyPreparedGeometry>().ok();
-    let right_prepared = right.cast::<crate::PyPreparedGeometry>().ok();
-    let left_geometry = match left_prepared {
-        Some(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
-        None => None,
-    };
-    let right_geometry = match right_prepared {
-        Some(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
-        None => None,
-    };
-    let left = left_geometry
-        .as_ref()
-        .map_or(left, |geometry| geometry.as_any());
-    let right = right_geometry
-        .as_ref()
-        .map_or(right, |geometry| geometry.as_any());
-    // Delegate any array operand to the `GeometryArray::equals_exact` method —
-    // it owns the packed-polygon/line SIMD fast paths and the scalar-or-array
-    // tolerance lane. `equals_exact` is symmetric, so a scalar-left/array-right
-    // call routes the array as the primary operand. Two scalars are the single
-    // pair below.
-    if let Some(array) = crate::broadcast::exact_geometry_array(left) {
-        return array
-            .equals_exact(py, right, tolerance, include_z, include_m)?
-            .into_py_any(py);
-    }
-    if let Some(array) = crate::broadcast::exact_geometry_array(right) {
-        return array
-            .equals_exact(py, left, tolerance, include_z, include_m)?
-            .into_py_any(py);
-    }
-    let tolerance = match tolerance {
-        DefaultedF64Input::Default(value) => value,
-        DefaultedF64Input::Supplied(value) => finite_f64_required("tolerance", value.bind(py))?,
-    };
-    let tolerance = validate_equals_exact_tolerance(tolerance)?.get();
-    match (include_z, include_m) {
-        (false, false) => equals_exact_broadcast::<false, false>(py, left, right, tolerance),
-        (true, false) => equals_exact_broadcast::<true, false>(py, left, right, tolerance),
-        (false, true) => equals_exact_broadcast::<false, true>(py, left, right, tolerance),
-        (true, true) => equals_exact_broadcast::<true, true>(py, left, right, tolerance),
-    }
+    crate::broadcast::with_prepared_operands(py, left, right, move |left, right| {
+        // Prepared handles are predicate operands; exact equality does not use
+        // their cache, but must still compare the wrapped geometries.
+        // Delegate any array operand to the `GeometryArray::equals_exact` method —
+        // it owns the packed-polygon/line SIMD fast paths and the scalar-or-array
+        // tolerance lane. `equals_exact` is symmetric, so a scalar-left/array-right
+        // call routes the array as the primary operand. Two scalars are the single
+        // pair below.
+        if let Some(array) = crate::broadcast::exact_geometry_array(left) {
+            return array
+                .equals_exact(py, right, tolerance, include_z, include_m)?
+                .into_py_any(py);
+        }
+        if let Some(array) = crate::broadcast::exact_geometry_array(right) {
+            return array
+                .equals_exact(py, left, tolerance, include_z, include_m)?
+                .into_py_any(py);
+        }
+        let tolerance = match tolerance {
+            DefaultedF64Input::Default(value) => value,
+            DefaultedF64Input::Supplied(value) => {
+                finite_f64_required("tolerance", value.bind(py))?
+            },
+        };
+        let tolerance = validate_equals_exact_tolerance(tolerance)?.get();
+        match (include_z, include_m) {
+            (false, false) => equals_exact_broadcast::<false, false>(py, left, right, tolerance),
+            (true, false) => equals_exact_broadcast::<true, false>(py, left, right, tolerance),
+            (false, true) => equals_exact_broadcast::<false, true>(py, left, right, tolerance),
+            (true, true) => equals_exact_broadcast::<true, true>(py, left, right, tolerance),
+        }
+    })
 }
 
 fn equals_exact_broadcast<const Z: bool, const M: bool>(
