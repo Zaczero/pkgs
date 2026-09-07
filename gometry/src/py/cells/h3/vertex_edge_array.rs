@@ -155,6 +155,29 @@ fn collect_h3_edge_ids(ids: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
     collect_h3_index_ids::<DirectedEdgeIndex>(ids, h3_edge_index)
 }
 
+#[derive(Debug)]
+enum FactorizationError {
+    Native(crate::error::Error),
+    CountOverflow,
+    CodeOverflow,
+}
+
+impl From<crate::error::Error> for FactorizationError {
+    fn from(error: crate::error::Error) -> Self {
+        Self::Native(error)
+    }
+}
+
+impl FactorizationError {
+    fn into_py_err(self) -> PyErr {
+        match self {
+            Self::Native(error) => error.into(),
+            Self::CountOverflow => PyOverflowError::new_err("H3 count overflows int64"),
+            Self::CodeOverflow => PyOverflowError::new_err("H3 factor code overflows int64"),
+        }
+    }
+}
+
 macro_rules! h3_index_array_common {
     (
         impl $array:ident {
@@ -237,11 +260,12 @@ macro_rules! h3_index_array_common {
 
             fn factorized_entries(
                 &self,
-                overflowed: &mut bool,
-            ) -> crate::error::Result<(Vec<u64>, Vec<i64>, Vec<i64>)> {
+            ) -> std::result::Result<(Vec<u64>, Vec<i64>, Vec<i64>), FactorizationError> {
                 let mut slot_of: HashMap<u64, usize> = HashMap::new();
                 if slot_of.try_reserve(self.len()).is_err() {
-                    return Err(crate::error::ResourceError::Allocation.into());
+                    return Err(FactorizationError::Native(
+                        crate::error::ResourceError::Allocation.into(),
+                    ));
                 }
                 let mut uniques = Vec::new();
                 let mut counts = Vec::new();
@@ -260,16 +284,12 @@ macro_rules! h3_index_array_common {
                         },
                     };
                     let Some(count) = counts[slot].checked_add(1) else {
-                        *overflowed = true;
-                        break;
+                        return Err(FactorizationError::CountOverflow);
                     };
                     counts[slot] = count;
                     let code = match i64::try_from(slot) {
                         Ok(code) => code,
-                        Err(_) => {
-                            *overflowed = true;
-                            break;
-                        },
+                        Err(_) => return Err(FactorizationError::CodeOverflow),
                     };
                     crate::try_push_vec(&mut codes, code)?;
                 }
@@ -546,20 +566,15 @@ macro_rules! h3_index_array_common {
     /// >>> counts.tolist()
     /// [1, 1, 1, 1, 1, 1]
 fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-                let mut overflowed = false;
-                let result = (|| -> crate::error::Result<(Vec<u64>, Vec<i64>)> {
-                    let (uniques, counts, codes) = self.factorized_entries(&mut overflowed)?;
-                    if overflowed {
-                        drop(codes);
-                        return Ok((uniques, counts));
-                    }
+                let result = (|| -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+                    let (uniques, counts, codes) = self.factorized_entries()?;
                     drop(codes);
                     let mut order = Vec::new();
                     crate::try_reserve_vec(&mut order, uniques.len())?;
                     for slot in 0..uniques.len() {
                         crate::try_push_vec(&mut order, slot)?;
                     }
-                    order.sort_by(|&left, &right| {
+                    order.sort_unstable_by(|&left, &right| {
                         counts[right]
                             .cmp(&counts[left])
                             .then_with(|| left.cmp(&right))
@@ -577,12 +592,10 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                     }
                     Ok((sorted_uniques, sorted_counts))
                 })();
-                let (values, sorted_counts) = result.map_err(PyErr::from)?;
-                if overflowed {
-                    drop(values);
-                    drop(sorted_counts);
-                    return Err(PyOverflowError::new_err("H3 count overflows int64"));
-                }
+                let (values, sorted_counts) = match result {
+                    Ok(values) => values,
+                    Err(error) => return Err(error.into_py_err()),
+                };
                 let values = match Self::from_ids(values).into_pyobject(py) {
                     Ok(values) => values.into_any().unbind(),
                     Err(error) => {
@@ -617,16 +630,11 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     /// >>> len(codes) == len(edges)
     /// True
 fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-                let mut overflowed = false;
-                let (uniques, counts, codes) = self
-                    .factorized_entries(&mut overflowed)
-                    .map_err(PyErr::from)?;
+                let (uniques, counts, codes) = match self.factorized_entries() {
+                    Ok(values) => values,
+                    Err(error) => return Err(error.into_py_err()),
+                };
                 drop(counts);
-                if overflowed {
-                    drop(uniques);
-                    drop(codes);
-                    return Err(PyOverflowError::new_err("H3 factor code overflows int64"));
-                }
                 let codes = match crate::py::numpy::int64_array(py, codes) {
                     Ok(codes) => codes,
                     Err(error) => {
@@ -1004,60 +1012,52 @@ mod tests {
     use pyo3::exceptions::PyMemoryError;
     use pyo3::prelude::*;
 
-    use super::{PyH3EdgeArray, PyH3VertexArray};
+    use super::{FactorizationError, PyH3EdgeArray, PyH3VertexArray};
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
-    fn h3_factorized_entries_returns_native_error_for_rejected_output_allocation() {
+    fn h3_factorized_entries_allocation_error_converts_to_memory_error() {
         Python::initialize();
         Python::attach(|py| {
             let vertices = PyH3VertexArray::from_ids(vec![1, 2, 3]);
-            let mut warm_overflowed = false;
-            match vertices.factorized_entries(&mut warm_overflowed) {
-                Ok(_) => {},
-                Err(error) => panic!("warm H3 vertex factorize pass failed: {error}"),
-            }
+            vertices
+                .factorized_entries()
+                .expect("warm H3 vertex factorize pass must succeed");
             let ((), vertex_allocations) = allocation_count(|| {
-                let mut overflowed = false;
-                match vertices.factorized_entries(&mut overflowed) {
-                    Ok(_) => {},
-                    Err(error) => panic!("counting H3 vertex factorize pass failed: {error}"),
-                }
+                vertices
+                    .factorized_entries()
+                    .expect("counting H3 vertex factorize pass must succeed");
             });
             assert!(vertex_allocations > 0);
             let vertex_error = fail_allocations_after(vertex_allocations - 1, || {
-                let mut overflowed = false;
-                let error = match vertices.factorized_entries(&mut overflowed) {
-                    Ok(_) => panic!("the final H3 vertex output allocation must fail"),
+                let error = match vertices.factorized_entries() {
+                    Ok(_) => panic!("the measured H3 vertex allocation must fail"),
                     Err(error) => error,
                 };
-                let error: PyErr = error.into();
+                assert!(matches!(&error, FactorizationError::Native(_)));
+                let error = error.into_py_err();
                 error
             });
             assert!(vertex_error.is_instance_of::<PyMemoryError>(py));
             drop(vertex_error);
 
             let edges = PyH3EdgeArray::from_ids(vec![1, 2, 3]);
-            let mut warm_overflowed = false;
-            match edges.factorized_entries(&mut warm_overflowed) {
-                Ok(_) => {},
-                Err(error) => panic!("warm H3 edge factorize pass failed: {error}"),
-            }
+            edges
+                .factorized_entries()
+                .expect("warm H3 edge factorize pass must succeed");
             let ((), edge_allocations) = allocation_count(|| {
-                let mut overflowed = false;
-                match edges.factorized_entries(&mut overflowed) {
-                    Ok(_) => {},
-                    Err(error) => panic!("counting H3 edge factorize pass failed: {error}"),
-                }
+                edges
+                    .factorized_entries()
+                    .expect("counting H3 edge factorize pass must succeed");
             });
             assert!(edge_allocations > 0);
             let edge_error = fail_allocations_after(edge_allocations - 1, || {
-                let mut overflowed = false;
-                let error = match edges.factorized_entries(&mut overflowed) {
-                    Ok(_) => panic!("the final H3 edge output allocation must fail"),
+                let error = match edges.factorized_entries() {
+                    Ok(_) => panic!("the measured H3 edge allocation must fail"),
                     Err(error) => error,
                 };
-                let error: PyErr = error.into();
+                assert!(matches!(&error, FactorizationError::Native(_)));
+                let error = error.into_py_err();
                 error
             });
             assert!(edge_error.is_instance_of::<PyMemoryError>(py));
