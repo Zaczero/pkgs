@@ -736,6 +736,8 @@ impl PyGeometryArray {
 
 #[cfg(test)]
 mod frame_cache_row_tests {
+    use std::cell::Cell;
+
     use super::*;
     use crate::boundary::{Frame, crs_arc_static};
     use crate::geometry::{CoordSeq, LineSeq, PlanarMetric, Point};
@@ -1000,6 +1002,31 @@ mod frame_cache_row_tests {
     }
 
     #[test]
+    fn prepared_plan_factory_is_cold_once_and_lazy_when_warm() {
+        let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))));
+        let cold_products = RowProducts::fresh(0);
+        let cold_calls = Cell::new(0);
+        let cold_plan = cold_products.prepared_plan(0, || {
+            cold_calls.set(cold_calls.get() + 1);
+            Arc::clone(&shape)
+        });
+        assert_eq!(cold_calls.get(), 1);
+        assert!(Arc::ptr_eq(cold_plan.shape_arc(), &shape));
+
+        let warm_products = RowProducts::fresh(1);
+        let warm_calls = Cell::new(0);
+        let warm_plan = warm_products.prepared_plan(0, || {
+            warm_calls.set(warm_calls.get() + 1);
+            Arc::clone(&shape)
+        });
+        assert_eq!(warm_calls.get(), 1);
+        let reused =
+            warm_products.prepared_plan(0, || panic!("warm prepared-plan factory was invoked"));
+        assert!(Arc::ptr_eq(&warm_plan, &reused));
+        assert_eq!(warm_calls.get(), 1);
+    }
+
+    #[test]
     fn warm_mixed_geometry_at_avoids_rebuilding_shape_data() {
         let line = Shape::LineString(
             LineSeq::try_new(CoordSeq::from_vecs(
@@ -1011,7 +1038,11 @@ mod frame_cache_row_tests {
             .expect("fixture line has XYZM vertices"),
         );
         let array = PyGeometryArray::mixed_shapes(
-            vec![line.clone(), Shape::Point(Point::new_raw_xy(3.0, 4.0)), line],
+            vec![
+                line.clone(),
+                Shape::Point(Point::new_raw_xy(3.0, 4.0)),
+                line.clone(),
+            ],
             Frame::None,
         )
         .with_missing_mask(Some(
@@ -1019,10 +1050,11 @@ mod frame_cache_row_tests {
                 .expect("validity length"),
         ));
 
-        let (cold, cold_allocations) = allocation_count(|| array.geometry_at(0));
+        let cold = array.geometry_at(0);
+        let (_, eager_allocations) = allocation_count(|| Arc::new(ShapeData::new(line.clone())));
         let (warm, warm_allocations) = allocation_count(|| array.geometry_at(0));
         assert!(Arc::ptr_eq(&cold.shape, &warm.shape));
-        assert!(warm_allocations < cold_allocations);
+        assert!(warm_allocations < eager_allocations);
     }
 
     #[test]
