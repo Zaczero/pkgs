@@ -348,13 +348,13 @@ mod above_gate_parity_tests {
         },
         NamedProbe {
             name: "near-edge-inside",
-            x: 9.4990234375,
+            x: 9.499_023_437_5,
             y: 0.5,
             expected: true,
         },
         NamedProbe {
             name: "near-edge-outside",
-            x: 9.5009765625,
+            x: 9.500_976_562_5,
             y: 0.5,
             expected: false,
         },
