@@ -125,19 +125,6 @@ impl SimilarityFrame {
 }
 
 impl AxisFrame {
-    /// Frame a non-empty point set at its first stored point.  `None` means
-    /// every point is coincident (there is no meaningful rescue frame).
-    pub(crate) fn from_points(points: &[Point]) -> Option<Self> {
-        let origin = *points.first()?;
-        let extent_x = axis_extent(points.iter().map(|point| point.x), origin.x)?;
-        let extent_y = axis_extent(points.iter().map(|point| point.y), origin.y)?;
-        ((extent_x > 0.0) || (extent_y > 0.0)).then_some(Self {
-            origin,
-            scale_x: axis_pow2_scale(extent_x),
-            scale_y: axis_pow2_scale(extent_y),
-        })
-    }
-
     /// Construct directly from a caller-selected stable origin and axis
     /// drivers.  A zero driver deliberately keeps that axis unscaled.
     pub(crate) fn from_origin_extents(origin: Point, extent_x: f64, extent_y: f64) -> Option<Self> {

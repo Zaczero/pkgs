@@ -115,7 +115,7 @@ pub(crate) use bvh_code::{BvhCode, BvhNode};
 #[doc(hidden)]
 pub(crate) use constructive::vw_keep;
 use constructive::{
-    Arc, SnapReference, assemble_region_polygons, canonical_ring, canonical_ring_seq,
+    Arc, SnapReference, assemble_region_polygons, canonical_ring_seq,
     decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference, winding_region,
 };
 pub(crate) use constructive::{

@@ -22,7 +22,7 @@ pub(crate) use offset::{
 };
 pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{
-    canonical_ring, decimal_scale, normalized_line, orient_ring,
+    decimal_scale, normalized_line, orient_ring,
     quantize_column_simd, quantize_to_scale, snap_column_simd, stable_snap_ordinate, vw_keep,
 };
 pub(crate) use simplify::{raw_offset_loop, rdp_keep, split, strict_cycle, validate_buffer_style};

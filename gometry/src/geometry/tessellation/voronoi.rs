@@ -68,10 +68,6 @@ impl DelaunayComplex {
     pub(super) fn center(&self, component: usize) -> &exact::ExactPoint {
         &self.centers[component]
     }
-
-    pub(super) const fn component_count(&self) -> usize {
-        self.centers.len()
-    }
 }
 
 const fn complex_root(parents: &mut [usize], mut node: usize) -> usize {
