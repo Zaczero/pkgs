@@ -441,9 +441,43 @@ impl PySpatialIndex {
         {
             return Ok(result);
         }
+        if k == 1 {
+            return self.geodesic_full_scan_shared(
+                OneNearest::default(),
+                max_distance,
+                exclude,
+                visited,
+                query_cache,
+                resolved,
+                query,
+            );
+        }
+        let state = HeapNearest::new(k, self.__len__())?;
+        self.geodesic_full_scan_shared(
+            state,
+            max_distance,
+            exclude,
+            visited,
+            query_cache,
+            resolved,
+            query,
+        )
+    }
+
+    fn geodesic_full_scan_shared<S: NearestState>(
+        &self,
+        mut state: S,
+        max_distance: Option<NonNegative>,
+        exclude: Option<&Shape>,
+        visited: &mut NearestVisited,
+        query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
+        resolved: &crs::GeodesicMetric,
+        query: &PreparedPlan,
+    ) -> PyResult<Vec<NearestCandidate>> {
+        visited.reset(self.rows.len())?;
         let query_cache_owner = query_cache();
         let mut rows = self.rows.operation();
-        let exact = |idx| {
+        let mut exact = |idx| {
             let data = rows.prepared(idx);
             pair_distance_geodesic(
                 resolved,
@@ -454,28 +488,6 @@ impl PySpatialIndex {
             )
             .map_err(Into::into)
         };
-        if k == 1 {
-            return self.geodesic_full_scan_shared(
-                exact,
-                OneNearest::default(),
-                max_distance,
-                exclude,
-                visited,
-            );
-        }
-        let state = HeapNearest::new(k, self.__len__())?;
-        self.geodesic_full_scan_shared(exact, state, max_distance, exclude, visited)
-    }
-
-    fn geodesic_full_scan_shared<S: NearestState>(
-        &self,
-        mut exact: impl FnMut(usize) -> PyResult<f64>,
-        mut state: S,
-        max_distance: Option<NonNegative>,
-        exclude: Option<&Shape>,
-        visited: &mut NearestVisited,
-    ) -> PyResult<Vec<NearestCandidate>> {
-        visited.reset(self.rows.len())?;
         for entry in self.live_entries() {
             if !visited.visit(entry.idx)? {
                 continue;
@@ -631,11 +643,17 @@ impl PySpatialIndex {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use pyo3::Python;
     use pyo3::exceptions::PyMemoryError;
 
-    use super::{NearestState, OneNearest};
-    use crate::py::index::{NearestCandidate, parse_max_distance};
+    use super::{HeapNearest, NearestState, NearestVisited, OneNearest};
+    use crate::crs::{RUNTIME_STATE_TEST_LOCK, ResolvedMetric, metric_model};
+    use crate::geometry::{FrameDependentCaches, PreparedPlan, ShapeData};
+    use crate::py::index::{
+        Frame, NearestCandidate, Point, PyGeometry, Shape, parse_max_distance, spatial_index,
+    };
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
@@ -663,6 +681,49 @@ mod tests {
                 state.finish().expect_err("nonempty finish must allocate")
             });
             assert!(error.is_instance_of::<PyMemoryError>(py));
+        });
+    }
+
+    #[test]
+    fn geodesic_full_scan_skips_query_cache_when_visited_reset_fails() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        Python::initialize();
+        Python::attach(|py| {
+            let index = spatial_index(vec![PyGeometry::with_frame(
+                ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
+                Frame::None,
+            )])
+            .expect("fixture index");
+            let state = HeapNearest::new(2, index.__len__()).expect("state is chosen first");
+            let mut visited = NearestVisited::default();
+            let mut cache_calls = 0_usize;
+            let mut query_cache = || {
+                cache_calls += 1;
+                Arc::new(FrameDependentCaches::default())
+            };
+            let query =
+                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))));
+            let model = metric_model(Some("EPSG:4326")).expect("geodesic model");
+            let ResolvedMetric::Geodesic(resolved) =
+                ResolvedMetric::from_model(&model).expect("resolved geodesic")
+            else {
+                panic!("EPSG:4326 must resolve geodesic");
+            };
+            let error = fail_allocations_after(0, || {
+                index
+                    .geodesic_full_scan_shared(
+                        state,
+                        None,
+                        None,
+                        &mut visited,
+                        &mut query_cache,
+                        &resolved,
+                        &query,
+                    )
+                    .expect_err("visited reset must fail before query_cache")
+            });
+            assert!(error.is_instance_of::<PyMemoryError>(py));
+            assert_eq!(cache_calls, 0);
         });
     }
 }

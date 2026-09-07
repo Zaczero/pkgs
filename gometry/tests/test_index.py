@@ -1521,7 +1521,7 @@ def test_index_entries_at_domain_corners_stay_searchable() -> None:
     assert ids(idx.nearest(gm.Point(45.0, 89.0, crs=4326), k=1)) == [2]
 
 
-def test_geodesic_full_scan_arm_matches_brute_force_for_shapes() -> None:
+def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
     items = gm.GeometryArray(
         [
             gm.LineString([(179.0, 10.0), (-179.0, 10.0)], crs=4326),
