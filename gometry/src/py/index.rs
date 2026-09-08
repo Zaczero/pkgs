@@ -311,7 +311,7 @@ impl PreparedIndexQuery {
 
     /// Prepare one query row. `seeded_bounds` is the packed-array element
     /// bounds cache when available — avoids re-scanning shells that
-    /// [`cached_element_bounds`] already computed.
+    /// [`existing_element_bounds`] already computed.
     pub(crate) fn row(
         &self,
         _index: &PySpatialIndex,

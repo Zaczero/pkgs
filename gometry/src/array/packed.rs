@@ -166,25 +166,38 @@ impl PyGeometryArray {
         )
     }
 
-    pub(crate) fn cached_element_bounds(&self) -> Option<ElementBounds> {
-        self.bounds_cache
-            .get_or_init(|| {
-                if self.is_compact_nullable() {
-                    Some(
-                        self.row_operation()
-                            .rows_with_missing(|| ())
-                            .map(|row| match row {
-                                crate::array::ArrayRow::Missing { .. } => None,
-                                crate::array::ArrayRow::Present(row) => row.row().quick_bounds(),
-                            })
-                            .collect::<Vec<_>>()
-                            .into(),
-                    )
-                } else {
-                    self.storage().per_element_bounds().map(Arc::from)
+    /// Return the published per-element bounds without initializing the cache.
+    /// Cold callers must fall back to their row-local bounds computation.
+    pub(crate) fn existing_element_bounds(&self) -> Option<ElementBounds> {
+        self.bounds_cache.get().cloned().flatten()
+    }
+
+    /// Build and publish the full per-element bounds cache when a caller
+    /// explicitly requires it. Every owned allocation is fallible, and a
+    /// failed initialization leaves the cache unpublished for a later retry.
+    pub(crate) fn try_element_bounds(&self) -> crate::error::Result<Option<ElementBounds>> {
+        let bounds = self.bounds_cache.get_or_try_init(|| {
+            if self.is_compact_nullable() {
+                let mut values = Vec::new();
+                crate::boundary::try_reserve_vec(&mut values, self.len())?;
+                for row in self.row_operation().rows_with_missing(|| ()) {
+                    let value = match row {
+                        crate::array::ArrayRow::Missing { .. } => None,
+                        crate::array::ArrayRow::Present(row) => row.row().quick_bounds(),
+                    };
+                    crate::boundary::try_push_vec(&mut values, value)?;
                 }
-            })
-            .clone()
+                Ok(Some(
+                    Arc::try_new(values).map_err(crate::error::Error::from)?,
+                ))
+            } else {
+                self.storage()
+                    .per_element_bounds()?
+                    .map(|values| Arc::try_new(values).map_err(crate::error::Error::from))
+                    .transpose()
+            }
+        })?;
+        Ok(bounds.clone())
     }
 
     /// Whether a scalar geometry shares this array's frame (CRS + epoch) —
@@ -1275,6 +1288,105 @@ mod compact_nullable_tests {
             .unwrap()
             .unwrap();
         assert_compact_publication_returns_resource_on_allocation_failure(&present, mask);
+    }
+}
+
+#[cfg(test)]
+mod element_bounds_cache_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::array::BoundsSeed;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::Bounds;
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn lines() -> PyGeometryArray {
+        PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 10.0, 11.0],
+                vec![0.0, 0.0, 10.0, 10.0],
+                None,
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::try_new(vec![0, 2, 4], 4).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn single_line() -> PyGeometryArray {
+        PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 0.0], None, None).unwrap(),
+            CsrOffsetColumn::try_new(vec![0, 2], 2).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cold_row_seed_does_not_materialize_element_bounds() {
+        let array = lines();
+        let (seed, allocations) = allocation_count(|| array.row_bounds_seed(0));
+
+        assert!(matches!(seed, BoundsSeed::Unset));
+        assert_eq!(allocations, 0);
+        assert!(array.existing_element_bounds().is_none());
+    }
+
+    #[test]
+    fn warm_lookup_returns_the_published_element_bounds() {
+        let array = lines();
+        let published = array
+            .try_element_bounds()
+            .unwrap()
+            .expect("packed lines publish element bounds");
+        let (lookup, allocations) = allocation_count(|| {
+            array
+                .existing_element_bounds()
+                .expect("published bounds remain available")
+        });
+
+        assert_eq!(allocations, 0);
+        assert!(Arc::ptr_eq(&published, &lookup));
+        assert_eq!(lookup.len(), 2);
+        assert_eq!(lookup[0], Some(Bounds::new_raw(0.0, 0.0, 1.0, 0.0)));
+        assert_eq!(lookup[1], Some(Bounds::new_raw(10.0, 10.0, 11.0, 10.0)));
+    }
+
+    #[test]
+    fn required_bounds_keep_compact_nullable_rows_logically_aligned() {
+        let present = single_line();
+        let array = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(2, vec![false, true])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let bounds = array
+            .try_element_bounds()
+            .unwrap()
+            .expect("compact lines publish element bounds");
+
+        assert_eq!(bounds.len(), 2);
+        assert_eq!(bounds[0], Some(Bounds::new_raw(0.0, 0.0, 1.0, 0.0)));
+        assert_eq!(bounds[1], None);
+    }
+
+    #[test]
+    fn required_element_bounds_map_allocation_failure_to_resource_error() {
+        let array = lines();
+        let error = fail_allocations_after(0, || array.try_element_bounds())
+            .expect_err("required cache construction must report allocation failure");
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert!(array.existing_element_bounds().is_none());
+        assert_eq!(array.try_element_bounds().unwrap().unwrap().len(), 2);
     }
 }
 

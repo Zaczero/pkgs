@@ -1061,7 +1061,7 @@ impl PyGeometryArray {
                 );
             }
         }
-        if let Some(Some(bounds)) = self.bounds_cache.get() {
+        if let Some(bounds) = self.existing_element_bounds() {
             return Ok(bounds
                 .iter()
                 .flatten()

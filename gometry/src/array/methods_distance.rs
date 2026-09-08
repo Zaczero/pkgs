@@ -324,7 +324,7 @@ impl PyGeometryArray {
         // columns — no intermediate box `Shape`s and no `from_shapes` repack.
         // Matches `rect_polygon`'s vertex order exactly. The envelope of a box is
         // itself, so the per-element bounds carry over as the result's cache.
-        if let Some(bounds) = self.cached_element_bounds()
+        if let Some(bounds) = self.existing_element_bounds()
             && bounds.iter().all(|b| {
                 b.is_some_and(|bb| {
                     !crate::geometry::same_topological_coordinate(bb.minx(), bb.maxx())

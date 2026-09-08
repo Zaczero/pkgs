@@ -1015,7 +1015,7 @@ where
     // Prefer already-warm bounds caches, but do NOT force-initialize them:
     // a pure overlay of two packed point arrays must not retain multi-MiB
     // element-bounds sidecars on the inputs. Cold rows use `quick_bounds`.
-    let left_bounds = left.bounds_cache.get().cloned().flatten();
+    let left_bounds = left.existing_element_bounds();
     let result = {
         let metric = match resolver.resolve_ctx(&frame, &mut metric_scratch) {
             Ok(metric) => metric,
@@ -1061,7 +1061,7 @@ where
                         return Err(error);
                     },
                 };
-                let right_bounds = right.bounds_cache.get().cloned().flatten();
+                let right_bounds = right.existing_element_bounds();
                 run_paired_rows(
                     py,
                     left,

@@ -142,8 +142,8 @@ pub(crate) fn predicate_pairwise_arrays(
     let domain = crate::geometry::topology_domain(&left.frame)?;
     let spec = *spec;
     let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
-    let left_bounds = left.cached_element_bounds();
-    let right_bounds = right.cached_element_bounds();
+    let left_bounds = left.existing_element_bounds();
+    let right_bounds = right.existing_element_bounds();
     let left_array = left.clone();
     let right_array = right.clone();
     bool_array_mask_missing(

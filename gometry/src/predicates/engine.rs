@@ -529,7 +529,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
     scalar_cache: &crate::geometry::FrameDependentCaches,
 ) -> Result<Vec<bool>, (usize, crate::error::Error)> {
     let scalar_bounds = scalar.bounds();
-    let element_bounds = array.and_then(PyGeometryArray::cached_element_bounds);
+    let element_bounds = array.and_then(PyGeometryArray::existing_element_bounds);
     let row_is_missing = |index: usize| array.is_some_and(|array| array.is_row_missing(index));
     let scalar_cartesian_graph = OnceCell::new();
     let mut row_operation = array.map(PyGeometryArray::row_operation);

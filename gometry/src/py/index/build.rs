@@ -190,7 +190,7 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
         GeometryArrayStorage::Packed(
             PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
         ) => {
-            let Some(bounds) = array.cached_element_bounds() else {
+            let Some(bounds) = array.try_element_bounds()? else {
                 return Ok(None);
             };
             if bounds.is_empty() {

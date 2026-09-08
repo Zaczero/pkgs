@@ -609,7 +609,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn row_bounds_seed(&self, index: usize) -> BoundsSeed {
-        self.cached_element_bounds()
+        self.existing_element_bounds()
             .map_or(BoundsSeed::Unset, |bounds| {
                 BoundsSeed::Value(bounds.get(index).copied().flatten())
             })
@@ -640,7 +640,7 @@ impl PyGeometryArray {
                 let (chunk, offset) = products.cell(index)?;
                 let handle = chunk.cells[offset].prepared.get_or_try_init(|| {
                     let data = PreparedPlan::new(ShapeData::new(shape.clone()))?;
-                    if let Some(element_bounds) = self.cached_element_bounds() {
+                    if let Some(element_bounds) = self.existing_element_bounds() {
                         Arc::try_new(
                             data.with_seeded_bounds(element_bounds.get(index).copied().flatten()),
                         )

@@ -195,49 +195,19 @@ impl GeometryArrayStorage {
         }
     }
 
-    pub(crate) fn map_line_rows<'a, T>(
-        offsets: &[i32],
-        row_map: impl Into<RowSelectionRef<'a>>,
-        f: impl Fn(std::ops::Range<usize>) -> T,
-    ) -> Vec<T> {
-        let map = row_map.into();
-        (0..line_logical_len(offsets, map))
-            .map(|logical| f(map.csr_window(offsets, logical)))
-            .collect()
-    }
-
     pub(crate) fn try_map_line_rows<'a, T>(
         offsets: &[i32],
         row_map: impl Into<RowSelectionRef<'a>>,
         f: impl Fn(std::ops::Range<usize>) -> Result<T>,
     ) -> Result<Vec<T>> {
         let map = row_map.into();
-        (0..line_logical_len(offsets, map))
-            .map(|logical| f(map.csr_window(offsets, logical)))
-            .collect()
-    }
-
-    pub(crate) fn map_polygon_rows<'a, T>(
-        ring_offsets: &[i32],
-        polygon_offsets: &[i32],
-        row_map: impl Into<RowSelectionRef<'a>>,
-        all_rings: bool,
-        f: impl Fn(Option<std::ops::Range<usize>>) -> T,
-    ) -> Vec<T> {
-        let map = row_map.into();
-        (0..polygon_logical_len(polygon_offsets, map))
-            .map(|logical| {
-                let rings = polygon_rings_range(polygon_offsets, map, logical);
-                let window = if rings.is_empty() {
-                    None
-                } else if all_rings {
-                    Some(ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize)
-                } else {
-                    Some(ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize)
-                };
-                f(window)
-            })
-            .collect()
+        let len = line_logical_len(offsets, map);
+        let mut output = Vec::new();
+        crate::boundary::try_reserve_vec(&mut output, len)?;
+        for logical in 0..len {
+            crate::boundary::try_push_vec(&mut output, f(map.csr_window(offsets, logical))?)?;
+        }
+        Ok(output)
     }
 
     pub(crate) fn try_map_polygon_rows<'a, T>(
@@ -248,19 +218,21 @@ impl GeometryArrayStorage {
         f: impl Fn(Option<std::ops::Range<usize>>) -> Result<T>,
     ) -> Result<Vec<T>> {
         let map = row_map.into();
-        (0..polygon_logical_len(polygon_offsets, map))
-            .map(|logical| {
-                let rings = polygon_rings_range(polygon_offsets, map, logical);
-                let window = if rings.is_empty() {
-                    None
-                } else if all_rings {
-                    Some(ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize)
-                } else {
-                    Some(ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize)
-                };
-                f(window)
-            })
-            .collect()
+        let len = polygon_logical_len(polygon_offsets, map);
+        let mut output = Vec::new();
+        crate::boundary::try_reserve_vec(&mut output, len)?;
+        for logical in 0..len {
+            let rings = polygon_rings_range(polygon_offsets, map, logical);
+            let window = if rings.is_empty() {
+                None
+            } else if all_rings {
+                Some(ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize)
+            } else {
+                Some(ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize)
+            };
+            crate::boundary::try_push_vec(&mut output, f(window)?)?;
+        }
+        Ok(output)
     }
 
     pub fn len(&self) -> usize {
@@ -514,7 +486,7 @@ impl GeometryArrayStorage {
         }
     }
 
-    pub(crate) fn per_element_bounds(&self) -> Option<Vec<Option<Bounds>>> {
+    pub(crate) fn per_element_bounds(&self) -> Result<Option<Vec<Option<Bounds>>>> {
         let row_bounds =
             |xs: &[f64], ys: &[f64], range: std::ops::Range<usize>| -> Option<Bounds> {
                 if range.is_empty() {
@@ -532,13 +504,14 @@ impl GeometryArrayStorage {
                 row_map,
             }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
-                Some(Self::map_polygon_rows(
+                Self::try_map_polygon_rows(
                     ring_offsets,
                     polygon_offsets.as_slice(),
                     row_map.as_deref(),
                     true,
-                    |window| window.and_then(|vertices| row_bounds(xs, ys, vertices)),
-                ))
+                    |window| Ok(window.and_then(|vertices| row_bounds(xs, ys, vertices))),
+                )
+                .map(Some)
             },
             Self::Packed(PackedStorage::Lines {
                 coords,
@@ -546,11 +519,10 @@ impl GeometryArrayStorage {
                 row_map,
             }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
-                Some(Self::map_line_rows(
-                    offsets.as_slice(),
-                    row_map.as_deref(),
-                    |window| row_bounds(xs, ys, window),
-                ))
+                Self::try_map_line_rows(offsets.as_slice(), row_map.as_deref(), |window| {
+                    Ok(row_bounds(xs, ys, window))
+                })
+                .map(Some)
             },
             // A point's envelope is the degenerate box at its coordinate —
             // read straight off the packed columns (no per-row scan). This
@@ -560,20 +532,23 @@ impl GeometryArrayStorage {
             // defers it to the exact per-pair path.
             Self::Packed(PackedStorage::Points { coords, row_map }) => {
                 let map = row_map.as_deref();
-                Some(
-                    (0..point_logical_len(coords, map))
-                        .map(|logical| {
-                            let point = coords.point_at(physical_row(map, logical));
-                            (point.x.is_finite() && point.y.is_finite())
-                                .then_some(Bounds::from_point(point))
-                        })
-                        .collect(),
-                )
+                let len = point_logical_len(coords, map);
+                let mut output = Vec::new();
+                crate::boundary::try_reserve_vec(&mut output, len)?;
+                for logical in 0..len {
+                    let point = coords.point_at(physical_row(map, logical));
+                    crate::boundary::try_push_vec(
+                        &mut output,
+                        (point.x.is_finite() && point.y.is_finite())
+                            .then_some(Bounds::from_point(point)),
+                    )?;
+                }
+                Ok(Some(output))
             },
             // Mixed has no columnar fold; the unary bounds kernel walks
             // shapes (and the prepared-row cache must not seed `None` as
             // "known empty" when this returns None — see prepared_row).
-            Self::Mixed(_) => None,
+            Self::Mixed(_) => Ok(None),
         }
     }
 

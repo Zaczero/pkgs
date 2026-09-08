@@ -308,10 +308,11 @@ pub struct PyGeometryArray {
     /// `crs`/`epoch` Python getters and the `crs_ref`/`crs_str` internal
     /// accessors derive from it.
     pub(crate) frame: Frame,
-    /// Lazy per-element bounding boxes, shared across clones — built ONCE from
-    /// the packed columns and reused by every predicate refutation, mirroring
-    /// shapely's per-geometry envelope cache (the array is frozen, never
-    /// stale). `Arc<OnceLock>` so cloning the handle shares the cache.
+    /// Lazy per-element bounding boxes, shared across clones — built once from
+    /// the packed columns when explicitly required and reused by every
+    /// predicate refutation, mirroring shapely's per-geometry envelope cache
+    /// (the array is frozen, never stale). `Arc<OnceLock>` so cloning the handle
+    /// shares the cache.
     pub(crate) bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
     /// Lazy array-wide aggregate bounds (including the geographic antimeridian
     /// fold when the frame is geographic). Same lifecycle as `bounds_cache`:
@@ -326,12 +327,13 @@ pub struct PyGeometryArray {
 }
 
 /// Cached per-element bounding boxes (one entry per row, `None` for empty
-/// rows).
+/// rows). The vector is kept behind an `Arc` so required construction can
+/// publish one fallibly allocated owner and cache-only callers can reuse it.
 #[expect(
     clippy::redundant_pub_crate,
     reason = "crate-visible for the predicate broadcast dispatch"
 )]
-pub(crate) type ElementBounds = Arc<[Option<Bounds>]>;
+pub(crate) type ElementBounds = Arc<Vec<Option<Bounds>>>;
 
 /// Lazy array-wide aggregate bounds cache handle (`None` when every row is empty).
 type TotalBoundsCache = Arc<std::sync::OnceLock<Option<(f64, f64, f64, f64)>>>;

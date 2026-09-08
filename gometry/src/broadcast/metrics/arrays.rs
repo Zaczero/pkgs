@@ -354,8 +354,10 @@ where
     // Row pairs ride prepared handles; dwithin can settle far-apart boxes
     // before materializing both operands' prepared plans + distance parts.
     if let Some(refute) = bounds_refute
-        && let (Some(left_bounds), Some(right_bounds)) =
-            (array.cached_element_bounds(), right.cached_element_bounds())
+        && let (Some(left_bounds), Some(right_bounds)) = (
+            array.existing_element_bounds(),
+            right.existing_element_bounds(),
+        )
     {
         let left_array = array.clone();
         let right_array = right.clone();
@@ -920,7 +922,7 @@ pub(crate) fn array_crs_dwithin_per_element(
             let results: Vec<bool> = match &resolved {
                 crs::ResolvedMetric::Planar { to_metre } => {
                     let right_bounds = right_plan.bounds();
-                    let left_bounds = array.cached_element_bounds();
+                    let left_bounds = array.existing_element_bounds();
                     let mut rows = array.row_operation();
                     rows.rows_with_missing(|| false)
                         .map(|left| {
@@ -981,8 +983,8 @@ pub(crate) fn array_crs_dwithin_per_element(
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let results: Vec<bool> = match &resolved {
                 crs::ResolvedMetric::Planar { to_metre } => {
-                    let left_bounds = array.cached_element_bounds();
-                    let right_bounds = right.cached_element_bounds();
+                    let left_bounds = array.existing_element_bounds();
+                    let right_bounds = right.existing_element_bounds();
                     let mut left_rows = array.row_operation();
                     let mut right_rows = right.row_operation();
                     left_rows
@@ -1169,7 +1171,7 @@ pub(crate) fn array_crs_dwithin_scalar(
             // (squared) than the limit is settled false before materialization.
             let sq_limit = (limit * limit).is_finite().then_some(limit * limit);
             let other_bounds = other_shape.bounds();
-            let element_bounds = array.cached_element_bounds();
+            let element_bounds = array.existing_element_bounds();
             bool_array_mask_missing(
                 py,
                 py.detach(move || {
