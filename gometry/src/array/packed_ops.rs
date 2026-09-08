@@ -54,7 +54,6 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
-        let mut columns = crate::try_vec_with_capacity(arrays.len())?;
         let mut total_rows = 0_usize;
         for array in arrays {
             let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
@@ -65,15 +64,20 @@ impl PyGeometryArray {
             if coords.axes() != first_coords.axes() {
                 return Ok(None);
             }
-            let points = PointColumns::from_parts(coords, row_map.as_deref());
-            total_rows = total_rows.checked_add(points.len()).ok_or_else(|| {
-                pyo3::exceptions::PyOverflowError::new_err("row count overflows usize")
-            })?;
-            columns.push(points);
+            total_rows = total_rows
+                .checked_add(PointColumns::from_parts(coords, row_map.as_deref()).len())
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err("row count overflows usize")
+                })?;
         }
         let mut builder = PointColumnBuilder::try_with_capacity(first_coords.axes(), total_rows)?;
-        for points in &columns {
-            points.extend_selected(&mut builder)?;
+        for array in arrays {
+            let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
+                array.storage()
+            else {
+                unreachable!("storage kind checked in reservation pass");
+            };
+            PointColumns::from_parts(coords, row_map.as_deref()).extend_selected(&mut builder)?;
         }
         Ok(Some(Self::packed_points(
             builder.finish_with_missing_placeholders()?,
@@ -86,7 +90,6 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
-        let mut columns = crate::try_vec_with_capacity(arrays.len())?;
         let mut vertex_count = 0_usize;
         for array in arrays {
             let GeometryArrayStorage::Packed(PackedStorage::Lines {
@@ -100,17 +103,27 @@ impl PyGeometryArray {
             if coords.axes() != first_coords.axes() {
                 return Ok(None);
             }
-            let lines = LineColumns::from_parts(coords, offsets, row_map.as_deref());
             vertex_count = vertex_count
-                .checked_add(lines.selected_vertex_len())
+                .checked_add(
+                    LineColumns::from_parts(coords, offsets, row_map.as_deref())
+                        .selected_vertex_len(),
+                )
                 .ok_or_else(|| {
                     pyo3::exceptions::PyOverflowError::new_err("coordinate count overflows usize")
                 })?;
-            columns.push(lines);
         }
         let mut builder = PackedColumnBuilder::try_like(first_coords, vertex_count)?;
-        for lines in &columns {
-            lines.extend_selected(&mut builder)?;
+        for array in arrays {
+            let GeometryArrayStorage::Packed(PackedStorage::Lines {
+                coords,
+                offsets,
+                row_map,
+            }) = array.storage()
+            else {
+                unreachable!("storage kind checked in reservation pass");
+            };
+            LineColumns::from_parts(coords, offsets, row_map.as_deref())
+                .extend_selected(&mut builder)?;
         }
         let cap = builder.vertex_len();
         let (coords, offsets) = builder.finish(cap)?;
@@ -126,7 +139,6 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
-        let mut columns = crate::try_vec_with_capacity(arrays.len())?;
         let mut vertex_count = 0_usize;
         let mut ring_count = 0_usize;
         for array in arrays {
@@ -158,13 +170,22 @@ impl PyGeometryArray {
                 .ok_or_else(|| {
                     pyo3::exceptions::PyOverflowError::new_err("ring count overflows usize")
                 })?;
-            columns.push(polygons);
         }
         let mut builder = PackedColumnBuilder::try_like(first_coords, vertex_count)?;
         let mut polygon_builder = CsrOffsetBuilder::new();
         let mut ring_index = 0_usize;
-        for polygons in &columns {
-            polygons.extend_selected(&mut builder, &mut polygon_builder, &mut ring_index)?;
+        for array in arrays {
+            let GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                coords,
+                ring_offsets,
+                polygon_offsets,
+                row_map,
+            }) = array.storage()
+            else {
+                unreachable!("storage kind checked in reservation pass");
+            };
+            PolygonColumns::from_parts(coords, ring_offsets, polygon_offsets, row_map.as_deref())
+                .extend_selected(&mut builder, &mut polygon_builder, &mut ring_index)?;
         }
         let cap = builder.vertex_len();
         let (coords, ring_offsets) = builder.finish(cap)?;
