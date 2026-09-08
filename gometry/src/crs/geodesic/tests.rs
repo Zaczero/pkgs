@@ -15,9 +15,9 @@ fn p(x: f64, y: f64) -> Point {
     Point::new_raw_xy(x, y)
 }
 
-fn line(points: Vec<Point>) -> Shape {
+fn line(points: &[Point]) -> Shape {
     Shape::LineString(
-        LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).expect("test line is valid"),
+        LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).expect("test line is valid"),
     )
 }
 
@@ -47,7 +47,7 @@ fn append_point_only(shape: &Shape, out: &mut Vec<Point>) {
     match shape {
         Shape::Point(point) => out.push(*point),
         Shape::MultiPoint(points) => {
-            for point in points.iter() {
+            for point in points {
                 out.push(point);
             }
         },
@@ -441,7 +441,7 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
         ("north_outer", p(0.0, 1.875)),
         ("north_endpoint", p(0.0, 2.5)),
     ];
-    let right = line(right_table.into_iter().map(|(_, point)| point).collect());
+    let right = line(&right_table.map(|(_, point)| point));
 
     let (expected_distance, expected_nearest) =
         brute_geodesic_distance_and_nearest_points(&left, &right, &metric)

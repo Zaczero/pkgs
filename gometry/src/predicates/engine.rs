@@ -1410,8 +1410,8 @@ mod tests {
                 literal as char
             );
         }
-        assert_eq!(a.relate_pattern(&b, "FF2FF1212").unwrap(), true);
-        assert!(a.relate_pattern(&b, "bad").is_err());
+        assert!(a.relate_pattern(&b, "FF2FF1212").unwrap());
+        a.relate_pattern(&b, "bad").unwrap_err();
     }
 
     #[test]
@@ -1425,16 +1425,16 @@ mod tests {
         let other_cache = crate::geometry::FrameDependentCaches::default();
         let frame = degrees();
         let error = crate::test_support::fail_allocations_after(0, || {
-            match PreparedTopologyPair::try_for_domain(
+            let Err(error) = PreparedTopologyPair::try_for_domain(
                 &nested,
                 &nested_cache,
                 &other,
                 &other_cache,
                 TopologyDomain::Geographic(frame),
-            ) {
-                Ok(_) => panic!("nested path allocation must fail admission"),
-                Err(error) => error,
-            }
+            ) else {
+                panic!("nested path allocation must fail admission")
+            };
+            error
         });
         assert!(matches!(
             error.kind(),
@@ -1470,15 +1470,14 @@ mod tests {
         let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(10.0, 91.0))).unwrap();
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
-        let error = match PreparedTopologyPair::try_for_domain(
+        let Err(error) = PreparedTopologyPair::try_for_domain(
             &left,
             &left_cache,
             &right,
             &right_cache,
             TopologyDomain::Geographic(degrees()),
-        ) {
-            Ok(_) => panic!("invalid latitude must fail admission"),
-            Err(error) => error,
+        ) else {
+            panic!("invalid latitude must fail admission")
         };
         let message = error.to_string();
         assert!(

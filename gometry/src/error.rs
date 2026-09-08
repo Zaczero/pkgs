@@ -127,10 +127,8 @@ impl From<ErrorKind> for Error {
             ErrorKind::Resource(ResourceError::SizeOverflow) => {
                 ErrorStorage::Static(&SIZE_OVERFLOW_ERROR)
             },
-            kind => match Box::try_new(kind) {
-                Ok(kind) => ErrorStorage::Owned(kind),
-                Err(_) => ErrorStorage::Static(&ALLOCATION_ERROR),
-            },
+            kind => Box::try_new(kind)
+                .map_or(ErrorStorage::Static(&ALLOCATION_ERROR), ErrorStorage::Owned),
         })
     }
 }

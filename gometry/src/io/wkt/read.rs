@@ -446,7 +446,7 @@ fn parse_wkt_polygon_body(value: &str, axes: CoordinateAxes) -> Result<Polygon> 
     let Some(shell) = rings.next() else {
         return Err(IoError::wkt("POLYGON requires a shell"));
     };
-    Ok(Polygon::new(shell?, rings.collect::<Result<_>>()?)?)
+    Polygon::new(shell?, rings.collect::<Result<_>>()?)
 }
 
 /// Strict GeometryCollection member list: comma-separated full WKT geometries.

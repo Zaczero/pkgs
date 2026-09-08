@@ -359,11 +359,8 @@ fn xyz_geojson_extreme_values_parse_and_round_trip() {
         )
         .unwrap(),
     );
-    let text = crate::io::geojson::to_geojson_string::<true>(
-        &shape,
-        crate::geometry::TopologyDomain::Cartesian,
-    )
-    .expect("extreme XYZ GeoJSON writes");
+    let text = to_geojson_string::<true>(&shape, crate::geometry::TopologyDomain::Cartesian)
+        .expect("extreme XYZ GeoJSON writes");
     let value: Value = serde_json::from_str(&text).expect("extreme GeoJSON parses as JSON");
     assert_eq!(parse_geojson(&value).unwrap(), shape);
 }

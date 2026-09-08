@@ -432,19 +432,23 @@ mod above_gate_parity_tests {
         bools(&contains.call1((geometry, &points))?)
     }
 
-    fn assert_batch(label: &str, actual: Vec<bool>, expected: &[bool]) {
+    fn assert_batch(label: &str, actual: &[bool], expected: &[bool]) {
         assert_eq!(
             actual.len(),
             expected.len(),
             "{label} returned a different number of results"
         );
-        assert_eq!(actual.as_slice(), expected, "{label} results differed");
+        assert_eq!(actual, expected, "{label} results differed");
     }
 
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "assertions include the first mismatching coordinate in the failure"
+    )]
+    #[expect(
+        clippy::similar_names,
+        reason = "xs/ys are the two coordinate lanes of one probe batch"
     )]
     fn contains_xy_and_packed_points_match_named_indexed_cases() -> PyResult<()> {
         crate::test_support::initialize_python();
@@ -470,12 +474,12 @@ mod above_gate_parity_tests {
             let (small_xs, small_ys, small_expected) = repeated_probe_batch(1);
             assert_batch(
                 "small contains_xy batch",
-                xy_values(py, &contains_xy, &geometry, &small_xs, &small_ys)?,
+                &xy_values(py, &contains_xy, &geometry, &small_xs, &small_ys)?,
                 &small_expected,
             );
             assert_batch(
                 "small packed batch",
-                packed_values(&contains, &geometry, &from_wkt, &small_xs, &small_ys)?,
+                &packed_values(&contains, &geometry, &from_wkt, &small_xs, &small_ys)?,
                 &small_expected,
             );
 
@@ -484,12 +488,12 @@ mod above_gate_parity_tests {
             let (large_xs, large_ys, large_expected) = repeated_probe_batch(64);
             assert_batch(
                 "large contains_xy batch",
-                xy_values(py, &contains_xy, &geometry, &large_xs, &large_ys)?,
+                &xy_values(py, &contains_xy, &geometry, &large_xs, &large_ys)?,
                 &large_expected,
             );
             assert_batch(
                 "large packed batch",
-                packed_values(&contains, &geometry, &from_wkt, &large_xs, &large_ys)?,
+                &packed_values(&contains, &geometry, &from_wkt, &large_xs, &large_ys)?,
                 &large_expected,
             );
             Ok(())

@@ -20,12 +20,33 @@ use std::sync::{LazyLock, OnceLock};
 
 pub(crate) use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "exact-partition hashing owns this OnceLock; the partition is not yet wired into live overlay"
+    )
+)]
 static TOPOLOGY_HASH_STATE: OnceLock<ahash::RandomState> = OnceLock::new();
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "exact-partition hashing owns this OnceLock; the partition is not yet wired into live overlay"
+    )
+)]
 pub(crate) fn topology_hash_state() -> crate::error::Result<&'static ahash::RandomState> {
     topology_hash_state_with(&TOPOLOGY_HASH_STATE, getrandom::fill)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "exact-partition hashing owns this OnceLock; the partition is not yet wired into live overlay"
+    )
+)]
 fn topology_hash_state_with(
     state: &OnceLock<ahash::RandomState>,
     fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,

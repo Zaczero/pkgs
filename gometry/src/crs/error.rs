@@ -11,7 +11,7 @@ use crate::error::{Error as CrateError, ErrorKind};
 pub enum CrsError {
     #[error(
         "cannot create CRS {:?}: {message}",
-        .display_name.as_deref().unwrap_or(crs.as_ref())
+        .display_name.as_deref().unwrap_or_else(|| crs.as_ref())
     )]
     Create {
         crs: Box<str>,
@@ -28,8 +28,8 @@ pub enum CrsError {
     Identify { crs: Box<str>, message: Box<str> },
     #[error(
         "cannot create CRS transform {:?} -> {:?}: {message}",
-        .source_display.as_deref().unwrap_or(from.as_ref()),
-        .target_display.as_deref().unwrap_or(to.as_ref())
+        .source_display.as_deref().unwrap_or_else(|| from.as_ref()),
+        .target_display.as_deref().unwrap_or_else(|| to.as_ref())
     )]
     TransformCreate {
         from: Box<str>,
@@ -40,8 +40,8 @@ pub enum CrsError {
     },
     #[error(
         "CRS transform {:?} -> {:?} failed: {message}",
-        .source_display.as_deref().unwrap_or(from.as_ref()),
-        .target_display.as_deref().unwrap_or(to.as_ref())
+        .source_display.as_deref().unwrap_or_else(|| from.as_ref()),
+        .target_display.as_deref().unwrap_or_else(|| to.as_ref())
     )]
     Transform {
         from: Box<str>,
@@ -230,6 +230,19 @@ impl CrsError {
     }
 }
 
+/// Rewrap an ordinary CRS failure without losing a typed resource failure.
+/// Callers supply the operation-specific CRS envelope; this helper only
+/// preserves the resource variants and never passes ordinary errors through.
+pub(crate) fn preserve_resource_error(
+    error: CrateError,
+    rewrap: impl FnOnce(&CrateError) -> CrateError,
+) -> CrateError {
+    if matches!(error.kind(), ErrorKind::Resource(_)) {
+        return error;
+    }
+    rewrap(&error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::CrsError;
@@ -350,17 +363,4 @@ mod tests {
             ErrorKind::Resource(ResourceError::SizeOverflow)
         ));
     }
-}
-
-/// Rewrap an ordinary CRS failure without losing a typed resource failure.
-/// Callers supply the operation-specific CRS envelope; this helper only
-/// preserves the resource variants and never passes ordinary errors through.
-pub(crate) fn preserve_resource_error(
-    error: CrateError,
-    rewrap: impl FnOnce(&CrateError) -> CrateError,
-) -> CrateError {
-    if matches!(error.kind(), ErrorKind::Resource(_)) {
-        return error;
-    }
-    rewrap(&error)
 }

@@ -28,14 +28,14 @@ pub(crate) struct LocalCrsDefinition {
 }
 
 impl LocalCrsDefinition {
-    fn authority(definition: String) -> Self {
+    const fn authority(definition: String) -> Self {
         Self {
             definition,
             display_name: None,
         }
     }
 
-    fn custom(definition: String) -> Self {
+    const fn custom(definition: String) -> Self {
         Self {
             definition,
             display_name: Some(LOCAL_CRS_DISPLAY_NAME),
@@ -397,6 +397,10 @@ fn utm_survivor_rank(crs: &str) -> (u32, &str) {
     (parse_epsg(crs).unwrap_or(u32::MAX), crs)
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "metre axes are the conversion-factor identity 1, not an approximate linear unit"
+)]
 fn is_east_north_metre_axes(info: &CrsInfo) -> bool {
     let [east, north] = info.axes.as_slice() else {
         return false;
@@ -429,6 +433,11 @@ fn is_utm_operation(info: &CrsInfo, zone: UtmZone, pole: Pole) -> bool {
         && linear_or_unity_param_matches(operation, "8807", ParamUnit::Metre, expected_northing)
 }
 
+#[expect(
+    clippy::float_cmp,
+    clippy::float_cmp_const,
+    reason = "UTM origin identity is the stored degree spelling and the exact radian conversion factor, not a nearby angle"
+)]
 fn angular_param_matches_degrees(
     operation: &CrsCoordinateOperationInfo,
     code: &str,
@@ -557,6 +566,10 @@ mod metadata_tests {
         }
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "the fixture hunts bit-adjacent degree spellings whose radian products collide; a tolerance would hide the identity the matcher must reject"
+    )]
     #[test]
     fn stored_degree_equality_rejects_adjacent_floats_that_share_a_radian_product() {
         let factor = super::super::DEGREE_TO_RADIAN;

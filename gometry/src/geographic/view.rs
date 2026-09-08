@@ -122,14 +122,12 @@ pub(crate) enum GeographicViewError {
 
 impl GeographicViewError {
     fn diagnostic(location: GeographicLocation, native: XY, source: GeographicError) -> Self {
-        match Box::try_new(GeographicDiagnostic {
+        Box::try_new(GeographicDiagnostic {
             location,
             native,
             source,
-        }) {
-            Ok(diagnostic) => Self::Diagnostic(diagnostic),
-            Err(_) => Self::Resource,
-        }
+        })
+        .map_or(Self::Resource, Self::Diagnostic)
     }
 }
 
@@ -345,10 +343,6 @@ impl<'a> ScalarGeographicView<'a> {
         self.frame
     }
 
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
-    )]
     pub(crate) fn for_each_coordinate(self, mut visit: impl FnMut(GeographicCoordinate)) {
         self.shape.for_each_point(|point| {
             visit(admitted_coordinate(self.frame, point));

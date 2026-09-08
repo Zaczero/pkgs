@@ -245,8 +245,7 @@ mod tests {
     fn sparse_multipoint_wkt_members_are_reserved_and_round_trip() {
         let input = format!(
             "MULTIPOINT ({})",
-            std::iter::repeat("EMPTY")
-                .take(1024)
+            std::iter::repeat_n("EMPTY", 1024)
                 .chain(std::iter::once("(1 2)"))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -289,13 +288,13 @@ mod tests {
                 vec![Point::new(1.0, 2.0).unwrap(), Point::new(3.0, 4.0).unwrap()].into(),
             ),
             Shape::LineString(
-                LineSeq::try_new(CoordSeq::try_from_points(&vec![z0, z1]).unwrap())
+                LineSeq::try_new(CoordSeq::try_from_points(&[z0, z1]).unwrap())
                     .expect("test line has two vertices"),
             ),
             Shape::MultiLineString(
                 vec![
                     LineSeq::try_new(
-                        CoordSeq::try_from_points(&vec![
+                        CoordSeq::try_from_points(&[
                             Point::new(0.0, 0.0).unwrap(),
                             Point::new(1.0, 1.0).unwrap(),
                         ])
@@ -303,7 +302,7 @@ mod tests {
                     )
                     .expect("test line has two vertices"),
                     LineSeq::try_new(
-                        CoordSeq::try_from_points(&vec![
+                        CoordSeq::try_from_points(&[
                             Point::new(2.0, 2.0).unwrap(),
                             Point::new(3.0, 3.0).unwrap(),
                         ])

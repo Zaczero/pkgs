@@ -33,21 +33,17 @@ use crate::error::Result;
 const US_SURVEY_FOOT_IDENTIFIED_MAX_ULP: u64 = 3;
 
 fn cf_axis_is_horizontal(axis: &AxisInfo) -> bool {
-    match axis.direction.as_deref() {
-        Some(direction)
-            if direction.eq_ignore_ascii_case("up")
-                || direction.eq_ignore_ascii_case("down")
-                || direction.eq_ignore_ascii_case("future")
-                || direction.eq_ignore_ascii_case("past")
-                || direction.eq_ignore_ascii_case("geocentricz") =>
-        {
-            false
-        },
-        _ => true,
-    }
+    !matches!(
+        axis.direction.as_deref(),
+        Some(direction) if direction.eq_ignore_ascii_case("up")
+            || direction.eq_ignore_ascii_case("down")
+            || direction.eq_ignore_ascii_case("future")
+            || direction.eq_ignore_ascii_case("past")
+            || direction.eq_ignore_ascii_case("geocentricz")
+    )
 }
 
-fn us_survey_foot_identified_consistent(factor: f64) -> bool {
+const fn us_survey_foot_identified_consistent(factor: f64) -> bool {
     factor
         .to_bits()
         .abs_diff(CF_LINEAR_US_SURVEY_FOOT.to_bits())
@@ -57,6 +53,10 @@ fn us_survey_foot_identified_consistent(factor: f64) -> bool {
 /// Admit a CF/`+units=` token from axis identity and conversion factor.
 ///
 /// Names never participate. Invalid factors are rejected before ULP distance.
+#[expect(
+    clippy::float_cmp_const,
+    reason = "CF unit tokens are catalog identities: the factor either is the EPSG metre/foot constant or it is not"
+)]
 fn cf_proj_units_token(axis: &AxisInfo) -> Option<&'static str> {
     let factor = axis.unit_conversion_factor;
     if !factor.is_finite() || factor <= 0.0 {
@@ -523,6 +523,10 @@ mod unit_token_tests {
     const INTERNATIONAL_FOOT: f64 = 0.3048;
     const US_SURVEY_FOOT: f64 = 1200.0 / 3937.0;
     /// EPSG SQL REAL for 9003 (`unit_of_measure.sql`).
+    #[expect(
+        clippy::excessive_precision,
+        reason = "EPSG SQL REAL spelling for 9003; extra digits document that source rather than a different value"
+    )]
     const US_SURVEY_FOOT_SQL: f64 = 3.048_006_096_012_192_411_84e-1;
     /// 15-digit decimal used by WKT/PROJJSON round-trip of 9003.
     const US_SURVEY_FOOT_DECIMAL15: f64 = 0.304_800_609_601_219;

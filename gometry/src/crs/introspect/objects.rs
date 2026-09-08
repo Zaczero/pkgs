@@ -414,11 +414,17 @@ pub(crate) fn datum_admits_geometry_epoch(datum: &DatumInfo) -> bool {
 fn live_single_crs_admits_geometry_epoch(context: &ProjContext, crs: &OwnedPj) -> bool {
     // SAFETY: DOC-H. Typed SingleCRS; uniquely owned ensemble or null.
     let ensemble = unsafe { proj_sys::proj_crs_get_datum_ensemble(context.as_ptr(), crs.as_ptr()) };
+    // SAFETY: `ensemble` is the pointer just returned on this thread's context;
+    // null is None, and a non-null PJ is uniquely owned until `OwnedPj` drops
+    // on this same OS thread.
     if let Some(ensemble) = unsafe { OwnedPj::try_from_owned(ensemble) } {
         return identity_is_epsg_6326(&ensemble);
     }
     // SAFETY: DOC-H. Typed SingleCRS; uniquely owned datum or null.
     let datum = unsafe { proj_sys::proj_crs_get_datum(context.as_ptr(), crs.as_ptr()) };
+    // SAFETY: `datum` is the pointer just returned on this thread's context;
+    // null is None, and a non-null PJ is uniquely owned until `OwnedPj` drops
+    // on this same OS thread.
     let Some(datum) = (unsafe { OwnedPj::try_from_owned(datum) }) else {
         return false;
     };
@@ -449,6 +455,9 @@ pub(crate) fn live_crs_admits_geometry_epoch(
     if type_ == proj_sys::PJ_TYPE_PJ_TYPE_BOUND_CRS {
         // SAFETY: BoundCRS; uniquely owned base CRS or null.
         let source = unsafe { proj_sys::proj_get_source_crs(context.as_ptr(), crs.as_ptr()) };
+        // SAFETY: `source` is the pointer just returned on this thread's context;
+        // null is None, and a non-null PJ is uniquely owned until `OwnedPj` drops
+        // on this same OS thread.
         let Some(source) = (unsafe { OwnedPj::try_from_owned(source) }) else {
             return Err(CrsError::crs_create(
                 normalized,

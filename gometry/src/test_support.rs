@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
-use pyo3::sync::MutexExt;
+use pyo3::sync::MutexExt as _;
 
 pub(crate) struct CountingAllocator;
 
@@ -130,7 +130,12 @@ impl NativeBoundaryIterator {
         if self.interrupt_at == Some(call) {
             // Queue the interrupt while this native protocol method still owns
             // control; the consumer's explicit checkpoint observes it later.
-            unsafe { pyo3::ffi::PyErr_SetInterrupt() };
+            // SAFETY: `py` proves this thread holds a live interpreter; the
+            // CPython pending-interrupt flag is process-global and does not
+            // borrow this token beyond the call.
+            unsafe {
+                pyo3::ffi::PyErr_SetInterrupt();
+            }
         }
         Ok(Some(self.item.clone_ref(py)))
     }
@@ -191,7 +196,12 @@ impl PythonSignalTestGuard {
 
         // Positive control: verify this interpreter/thread observes the native
         // pending-interrupt API before any owner-specific exercise begins.
-        unsafe { pyo3::ffi::PyErr_SetInterrupt() };
+        // SAFETY: `py` proves this thread holds a live interpreter; the
+        // CPython pending-interrupt flag is process-global and does not
+        // borrow this token beyond the call.
+        unsafe {
+            pyo3::ffi::PyErr_SetInterrupt();
+        }
         let error = py
             .check_signals()
             .expect_err("PyErr_SetInterrupt must reach the handler");

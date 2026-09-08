@@ -107,6 +107,10 @@ pub(crate) enum CrsObjectKind {
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent CRS catalog flags, not a mode bitfield"
+)]
 pub(crate) struct CrsInfo {
     pub crs: String,
     pub name: Option<String>,
@@ -319,8 +323,7 @@ impl<'py> IntoPyObject<'py> for AxisInfo {
             direction,
             unit_name,
             unit_conversion_factor,
-            unit_authority: _,
-            unit_code: _,
+            ..
         } = self;
         let dict = PyDict::new(py);
         dict.set_item("name", name)?;

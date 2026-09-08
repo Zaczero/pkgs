@@ -486,6 +486,10 @@ fn frame_conversion_uses_one_greenwich_seam_for_points_and_lanes() {
     assert_eq!(xs, [0.0, -180.0]);
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "the rejected latitude is the stored 100.0 spelling, not a nearby out-of-range value"
+)]
 #[test]
 fn lane_conversion_leaves_the_failing_pair_and_later_pairs_unchanged() {
     let paris = GeographicFrame::try_new(

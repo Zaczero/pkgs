@@ -88,7 +88,7 @@ const fn set_lat_0(params: &mut TmercParams, value: f64) -> bool {
     set_finite(&mut params.lat_0_deg, value)
 }
 
-fn set_k0(params: &mut TmercParams, value: f64) -> bool {
+const fn set_k0(params: &mut TmercParams, value: f64) -> bool {
     set_positive_finite(&mut params.k0, value)
 }
 

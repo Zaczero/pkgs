@@ -166,19 +166,19 @@ pub(super) fn lcc_to_geographic_unframed(
     Ok((lam, phi))
 }
 
-fn set_lat_0(params: &mut LccParams, value: f64) -> bool {
+const fn set_lat_0(params: &mut LccParams, value: f64) -> bool {
     set_finite(&mut params.lat_0_deg, value)
 }
 
-fn set_lat_1(params: &mut LccParams, value: f64) -> bool {
+const fn set_lat_1(params: &mut LccParams, value: f64) -> bool {
     set_finite(&mut params.lat_1_deg, value)
 }
 
-fn set_lat_2(params: &mut LccParams, value: f64) -> bool {
+const fn set_lat_2(params: &mut LccParams, value: f64) -> bool {
     set_finite(&mut params.lat_2_deg, value)
 }
 
-fn set_k0(params: &mut LccParams, value: f64) -> bool {
+const fn set_k0(params: &mut LccParams, value: f64) -> bool {
     set_positive_finite(&mut params.k0, value)
 }
 

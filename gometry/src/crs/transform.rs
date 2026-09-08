@@ -1386,12 +1386,12 @@ impl TransformOutputPlan {
                 let window = CoordWindow::from_range(owner.range, xs.len());
                 let ms = owner.ms.map(|column| match column {
                     MColumn::Shared(owner) => MColumn::Local { owner, offset: 0 },
-                    local => local,
+                    local @ MColumn::Local { .. } => local,
                 });
                 CoordSeq::from_shared_columns_with_window(
                     xs.clone(),
                     ys.clone(),
-                    zs.map(Clone::clone),
+                    zs.cloned(),
                     ms,
                     window,
                 )
@@ -1646,10 +1646,6 @@ mod lane_tests {
         assert_eq!(calls, 1);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to"
-    )]
     #[test]
     fn mixed_sequences_share_final_lanes_and_reconstruct_exactly() {
         let xy = CoordSeq::try_from_vecs(vec![1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0], None, None)

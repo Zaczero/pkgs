@@ -41,7 +41,7 @@ fn set_lat_0(p: &mut StereaParams, v: f64) -> bool {
         false
     }
 }
-fn set_k0(p: &mut StereaParams, v: f64) -> bool {
+const fn set_k0(p: &mut StereaParams, v: f64) -> bool {
     set_positive_finite(&mut p.k0, v)
 }
 fn finalize(p: StereaParams) -> Option<StereaParams> {

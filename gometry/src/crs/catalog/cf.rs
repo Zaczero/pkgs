@@ -96,6 +96,10 @@ fn valid_factor(crs: &str, factor: f64, what: &str) -> Result<f64> {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "equal conversion factors are the same unit: skip scaling rather than approximating a no-op"
+)]
 fn cf_numeric_value(
     crs: &str,
     value: f64,
@@ -131,6 +135,10 @@ fn cf_numeric_value(
 /// Metres per unit of the first projected axis, or `None` for non-projected CRS.
 ///
 /// Errors when the first two axes disagree: CF has one linear `units` token.
+#[expect(
+    clippy::float_cmp,
+    reason = "CF has one linear units token: the two axes either declare the same conversion factor or they are anisotropic"
+)]
 pub(crate) fn cf_projected_axis_to_metre(crs: &str, info: &CrsInfo) -> Result<Option<f64>> {
     if info.kind != "projected" {
         return Ok(None);
@@ -429,6 +437,10 @@ fn is_lcc_1sp_natural_origin_latitude(parameter: &OperationParameterInfo) -> boo
     parameter_matches(parameter, "8801", "Latitude of natural origin")
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "stored unity scale is the exact 8805 identity (value 1 with conversion 1), not an approximate scale"
+)]
 fn cf_lcc_1sp_stored_unity_scale(parameters: &[OperationParameterInfo]) -> bool {
     unique_matching_parameter(parameters, "8805", "Scale factor at natural origin")
         .is_some_and(|parameter| parameter.value == 1.0 && parameter.unit_conversion_factor == 1.0)
