@@ -203,10 +203,6 @@ impl ArrayRows {
         }
     }
 
-    fn with_missing(&self, missing: Option<ValidityMask>) -> Self {
-        Self::new(Arc::clone(self.storage()), missing)
-    }
-
     fn len(&self) -> usize {
         match self {
             Self::Dense(storage) | Self::Masked { storage, .. } => storage.len(),
