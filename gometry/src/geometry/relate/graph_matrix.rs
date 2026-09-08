@@ -123,28 +123,15 @@ fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    // Contacts first: a crossing or a laminar placement settles the matrix
-    // from one sweep, cheaper than the convex classifier on the inputs both
-    // admit; the convex lane then catches touching convex pairs before the
-    // arrangement fold.
-    if let Some(matrix) = super::direct_areal_relate(left, right)?
-        .or_else(|| try_convex_relate(left.shape(), right.shape()))
-    {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = try_areal_relate(left.shape(), right.shape())? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = try_cartesian_polygon_line_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = super::direct_linework_relate(left, right)? {
-        return Ok(matrix);
-    }
-    graph_relate_data_fallback(left, right)
+    exact_cartesian_relate(left.shape(), right.shape())
+}
+
+fn exact_cartesian_relate(left: &Shape, right: &Shape) -> Result<De9im> {
+    let inputs = [left, right];
+    let inventory = crate::geometry::overlay::ExactSourceInventory::from_shapes(&inputs)?;
+    let mut budget = crate::geometry::ExpansionBudget::new("relate", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    inventory.relate(&partition)
 }
 
 /// The source-graph relation path, retained as the complete fallback and the
@@ -174,33 +161,10 @@ fn graph_relate_data_fallback(left: &PreparedPlan, right: &PreparedPlan) -> Resu
 /// graph. The right graph remains lazy so direct pairs do no graph work.
 pub(crate) fn graph_relate_data_with_left_graph(
     left: &PreparedPlan,
-    left_graph: &TopologyGraph,
+    _left_graph: &TopologyGraph,
     right: &PreparedPlan,
 ) -> Result<De9im> {
-    if let Some(matrix) = super::direct_areal_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape())? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) =
-        try_cartesian_polygon_line_relate_with_graphs(left, right, Some(left_graph), None)?
-    {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = super::direct_linework_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(point) = shape_point(right.shape()) {
-        return Ok(graph_relate_to_point(left_graph, point));
-    }
-    if let Some(point) = shape_point(left.shape()) {
-        return Ok(graph_relate_to_point(right.topology_graph()?, point).transpose());
-    }
-    graph_relate(left_graph, right.topology_graph()?)
+    exact_cartesian_relate(left.shape(), right.shape())
 }
 
 /// Compute a Cartesian relation while reusing the right operand's resolved
@@ -208,32 +172,9 @@ pub(crate) fn graph_relate_data_with_left_graph(
 pub(crate) fn graph_relate_data_with_right_graph(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    right_graph: &TopologyGraph,
+    _right_graph: &TopologyGraph,
 ) -> Result<De9im> {
-    if let Some(matrix) = super::direct_areal_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape())? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) =
-        try_cartesian_polygon_line_relate_with_graphs(left, right, None, Some(right_graph))?
-    {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = super::direct_linework_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(point) = shape_point(right.shape()) {
-        return Ok(graph_relate_to_point(left.topology_graph()?, point));
-    }
-    if let Some(point) = shape_point(left.shape()) {
-        return Ok(graph_relate_to_point(right_graph, point).transpose());
-    }
-    graph_relate(left.topology_graph()?, right_graph)
+    exact_cartesian_relate(left.shape(), right.shape())
 }
 
 #[expect(
@@ -383,8 +324,8 @@ pub(super) fn try_cartesian_polygon_line_relate(
 fn try_cartesian_polygon_line_relate_with_graphs(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    left_graph: Option<&TopologyGraph>,
-    right_graph: Option<&TopologyGraph>,
+    _left_graph: Option<&TopologyGraph>,
+    _right_graph: Option<&TopologyGraph>,
 ) -> Result<Option<De9im>> {
     Ok(match (left.shape(), right.shape()) {
         (Shape::Polygon(polygon), Shape::LineString(line)) => {
@@ -395,13 +336,7 @@ fn try_cartesian_polygon_line_relate_with_graphs(
             {
                 return Ok(None);
             }
-            Some(polygon_line_matrix(
-                match left_graph {
-                    Some(graph) => graph,
-                    None => left.topology_graph()?,
-                },
-                line,
-            )?)
+            Some(exact_cartesian_relate(left.shape(), right.shape())?)
         },
         (Shape::LineString(line), Shape::Polygon(polygon)) => {
             if !polygon_has_nondegenerate_area(polygon)
@@ -411,16 +346,7 @@ fn try_cartesian_polygon_line_relate_with_graphs(
             {
                 return Ok(None);
             }
-            Some(
-                polygon_line_matrix(
-                    match right_graph {
-                        Some(graph) => graph,
-                        None => right.topology_graph()?,
-                    },
-                    line,
-                )?
-                .transpose(),
-            )
+            Some(exact_cartesian_relate(left.shape(), right.shape())?)
         },
         _ => None,
     })
@@ -2403,7 +2329,11 @@ mod tests {
         let right = PreparedPlan::new(area).unwrap();
         graph_relate_data(&left, &right).unwrap();
         assert_eq!(left.topology_graph_accesses(), 0);
-        assert_eq!(right.topology_graph_accesses(), 1);
+        assert_eq!(
+            right.topology_graph_accesses(),
+            0,
+            "ExactPartition relation does not construct a rounded topology graph"
+        );
     }
 
     #[test]

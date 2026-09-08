@@ -6,9 +6,8 @@ use ahash::HashSetExt as _;
 use crate::boundary::geographic::invalid_lonlat_error;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicInputs, GeographicViewError};
-use crate::geometry::overlay::exact_partition::ExactSourceInventory;
 use crate::geometry::overlay::{
-    OverlayOp, Strictness, build_certified_overlay_shape, build_overlay_shape,
+    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape, build_overlay_shape,
     build_overlay_shape_from_chains, dedup_points, merge_chain_edges, overlay_declared_axes,
 };
 use crate::geometry::segments::compare_along_segment;

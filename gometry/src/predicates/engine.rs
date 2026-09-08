@@ -751,20 +751,12 @@ pub(crate) fn topology_scalar_pair(
     {
         return Ok(verdict);
     }
-    // The direct engines need the plans, not a graph: a pair that already
-    // carries the scalar's graph (the scalar-vs-array lane) is admitted the
-    // same way, and the graph stays for what they decline.
+    // Cartesian relation cells are owned by ExactPartition. Prepared/scalar
+    // and array lanes deliberately share the same matrix route rather than
+    // selecting a direct rounded-coordinate predicate kernel.
     if let Some((left, right)) = operands.cartesian_plans() {
-        if let Some(verdict) = crate::geometry::direct_linework_predicate(spec, left, right)? {
-            return Ok(verdict);
-        }
-        if let Some(verdict) = crate::geometry::direct_areal_predicate(spec, left, right)? {
-            return Ok(verdict);
-        }
-        if let Some(verdict) = crate::geometry::direct_areal_linework_predicate(spec, left, right)?
-        {
-            return Ok(verdict);
-        }
+        let _ = (left, right);
+        return Ok(predicate_matrix_value(spec, operands.relate()?));
     }
     Ok(predicate_matrix_value(spec, operands.relate()?))
 }
@@ -784,16 +776,8 @@ pub(crate) fn topology_scalar_pattern(
         return Ok(verdict);
     }
     if let Some((left, right)) = operands.cartesian_plans() {
-        if let Some(verdict) = crate::geometry::direct_linework_pattern(pattern, left, right)? {
-            return Ok(verdict);
-        }
-        if let Some(verdict) = crate::geometry::direct_areal_pattern(pattern, left, right)? {
-            return Ok(verdict);
-        }
-        if let Some(verdict) = crate::geometry::direct_areal_linework_pattern(pattern, left, right)?
-        {
-            return Ok(verdict);
-        }
+        let _ = (left, right);
+        return Ok(operands.relate()?.matches(pattern));
     }
     Ok(operands.relate()?.matches(pattern))
 }
