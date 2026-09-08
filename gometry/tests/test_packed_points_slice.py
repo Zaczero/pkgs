@@ -50,6 +50,17 @@ def test_packed_points_non_contiguous_slice_copies(selector: slice) -> None:
     assert canon(list(sliced)) == canon(list(packed)[selector])
 
 
+def test_packed_points_selected_concat_dense_matches_oracle() -> None:
+    packed = _packed_points()
+    selected = packed[[4, 0, 4]]
+    dense = gm.points([100.0, 101.0], [200.0, 201.0], crs=4326)
+    oracle = gm.GeometryArray([packed[4], packed[0], packed[4], dense[0], dense[1]])
+    assert canon(selected.concat(dense)) == canon(oracle)
+    assert canon(packed.concat(selected, dense)) == canon(
+        gm.GeometryArray(list(packed) + list(selected) + list(dense))
+    )
+
+
 def test_packed_points_scatter_take_exports_logical_x_buffer() -> None:
     packed = _packed_points()
     parent_x = np.asarray(packed.coords.x)

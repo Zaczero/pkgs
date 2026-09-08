@@ -160,6 +160,64 @@ def test_packed_row_map_concat_matches_oracle(kind: RowMapKind) -> None:
 
 
 @pytest.mark.parametrize('kind', ROW_MAP_KINDS, ids=lambda k: k.name)
+def test_packed_row_map_concat_selected_with_dense_matches_oracle(
+    kind: RowMapKind,
+) -> None:
+    permuted, oracle = kind.permuted_take_20()
+    dense, dense_oracle = kind.permuted_take_20()
+    dense = gm.GeometryArray(list(dense_oracle))
+    assert canon(permuted.concat(dense)) == canon(oracle.concat(dense))
+    assert canon(dense.concat(permuted)) == canon(dense.concat(oracle))
+    assert canon(permuted.concat(dense, permuted)) == canon(
+        oracle.concat(dense, oracle)
+    )
+
+
+def test_packed_duplicate_line_rows_concat_dense_and_missing() -> None:
+    lines = gm.GeometryArray([
+        gm.LineString([(0.0, 0.0), (1.0, 0.5), (2.0, 0.0)]),
+        gm.LineString([(10.0, 10.0), (11.0, 11.0)]),
+        None,
+    ])
+    repeated = lines[[0, 0, 2]]
+    dense = gm.GeometryArray([
+        gm.LineString([(20.0, 20.0), (21.0, 21.0)]),
+        gm.LineString([(30.0, 0.0), (31.0, 1.0)]),
+    ])
+    oracle = gm.GeometryArray([lines[0], lines[0], None, dense[0], dense[1]])
+    joined = repeated.concat(dense)
+    assert joined.to_wkt() == oracle.to_wkt()
+    assert joined.is_missing.tolist() == oracle.is_missing.tolist()
+
+
+def test_packed_zm_selected_concat_preserves_ordinates() -> None:
+    points = gm.points(
+        [0.0, 1.0, 2.0],
+        [3.0, 4.0, 5.0],
+        z=[6.0, 7.0, 8.0],
+        m=[9.0, 10.0, 11.0],
+    )
+    selected = points[[2, 0, 2]]
+    dense = gm.points([100.0], [200.0], z=[300.0], m=[400.0])
+    joined = selected.concat(dense)
+    assert joined.coords.x.tolist() == [2.0, 0.0, 2.0, 100.0]
+    assert joined.coords.y.tolist() == [5.0, 3.0, 5.0, 200.0]
+    assert joined.coords.z.tolist() == [8.0, 6.0, 8.0, 300.0]
+    assert joined.coords.m.tolist() == [11.0, 9.0, 11.0, 400.0]
+
+
+def test_packed_selected_reverse_matches_oracle() -> None:
+    lines = gm.GeometryArray([
+        gm.LineString([(0.0, 0.0), (1.0, 0.5), (2.0, 0.0)]),
+        gm.LineString([(10.0, 10.0), (11.0, 11.0)]),
+        gm.LineString([(20.0, 1.0), (21.0, 2.0), (22.0, 3.0)]),
+    ])
+    selected = lines[[2, 0, 2]]
+    oracle = gm.GeometryArray([lines[2], lines[0], lines[2]])
+    assert canon(selected.reverse()) == canon(oracle.reverse())
+
+
+@pytest.mark.parametrize('kind', ROW_MAP_KINDS, ids=lambda k: k.name)
 def test_packed_row_map_to_crs_matches_oracle(kind: RowMapKind) -> None:
     permuted, oracle = kind.permuted_take_20()
     target = 'EPSG:4326'

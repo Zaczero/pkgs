@@ -7,14 +7,14 @@ use pyo3::types::PyDict;
 
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
-    Bound, CsrOffsetColumn, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _,
-    PackedColumnError, PackedColumns, PackedStorage, Py, PyAny, PyAnyMethods as _,
-    PyDictMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTupleMethods as _,
-    PyTypeError, PyTypeMethods as _, Python, Shape, SpatialCurve, Typed, ValidityMask,
-    bounds_3d_values_from_columns, bounds_values_from_columns_masked, concat_coord_columns, crs,
-    crs_label, ensure_geographic_columns_present, geographic_bounds_values_from_columns,
-    line_measure_masked, polygon_measure_masked, pymethods, reduce_lines_or_polygons,
-    resolve_metric, segmented_planar_lengths, segmented_planar_lengths_3d,
+    Bound, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _, PackedColumnError,
+    PackedColumns, PackedStorage, Py, PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr,
+    PyGeometry, PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError, PyTypeMethods as _,
+    Python, Shape, SpatialCurve, Typed, ValidityMask, bounds_3d_values_from_columns,
+    bounds_values_from_columns_masked, crs, crs_label, ensure_geographic_columns_present,
+    geographic_bounds_values_from_columns, line_measure_masked, polygon_measure_masked, pymethods,
+    reduce_lines_or_polygons, resolve_metric, segmented_planar_lengths,
+    segmented_planar_lengths_3d,
 };
 use crate::dispatch::MetricOp;
 
@@ -907,73 +907,8 @@ impl PyGeometryArray {
             }
             return Ok(Self::from_shapes(shapes, self.frame.clone())?);
         }
-        if let Some(joined) = self.try_concat_packed_points(other)? {
+        if let Some(joined) = self.try_concat_packed(other)? {
             return Ok(joined);
-        }
-        if let (
-            GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords: left,
-                offsets: left_offsets,
-                row_map: left_row_map,
-            }),
-            GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords: right,
-                offsets: right_offsets,
-                row_map: right_row_map,
-            }),
-        ) = (self.storage(), other.storage())
-            && left.axes() == right.axes()
-        {
-            if left_row_map.reorders() {
-                return self.materialize_packed_lines()?.concat_pair(other);
-            }
-            if right_row_map.reorders() {
-                let right_array = other.materialize_packed_lines()?;
-                return self.concat_pair(&right_array);
-            }
-            let out_coords = concat_coord_columns(left, right)?;
-            let out_offsets = CsrOffsetColumn::rebase_concat_validated(
-                left_offsets,
-                right_offsets,
-                out_coords.len(),
-            )?;
-            return Ok(Self::packed_lines(
-                out_coords,
-                out_offsets,
-                self.frame.clone(),
-            )?);
-        }
-        if let (
-            GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                coords: left,
-                ring_offsets: left_rings,
-                polygon_offsets: left_polygons,
-                row_map: left_row_map,
-            }),
-            GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                coords: right,
-                ring_offsets: right_rings,
-                polygon_offsets: right_polygons,
-                row_map: right_row_map,
-            }),
-        ) = (self.storage(), other.storage())
-            && left.axes() == right.axes()
-        {
-            if left_row_map.reorders() {
-                return self.materialize_packed_polygons()?.concat_pair(other);
-            }
-            if right_row_map.reorders() {
-                let right_array = other.materialize_packed_polygons()?;
-                return self.concat_pair(&right_array);
-            }
-            return self.concat_packed_polygons(
-                left,
-                left_rings,
-                left_polygons,
-                right,
-                right_rings,
-                right_polygons,
-            );
         }
         let total_rows = self
             .len()

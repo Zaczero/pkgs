@@ -16,12 +16,13 @@ use crate::array::missing::ValidityCursor;
 use crate::array::packed_column_kernels;
 use crate::array::{
     CoordSeq, CoordinateAxes, CoordinateReplacement, CsrOffsetBuilder, CsrOffsetColumn, Frame,
-    GeometryArrayStorage, PackedStorage, Point, PointRowLayout, PolygonLevel, PyErr,
-    PyGeometryArray, PyResult, Python, ReplacementAxis, RingLevel, RowSelectionRef, ValidityMask,
-    map_masked_point_columns_to_crs, rows_err,
+    GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point, PointRowLayout, PolygonLevel,
+    PyErr, PyGeometryArray, PyResult, Python, ReplacementAxis, RingLevel, RowSelectionRef,
+    ValidityMask, concat_coord_columns, map_masked_point_columns_to_crs, packed_lines_coord_len,
+    packed_polygons_coord_len, packed_polygons_ring_len, rows_err,
 };
 use crate::crs::TransformFailure;
-use crate::geometry::{CoordSeqBuilder, CoordWindow, MOrdinate, ZOrdinate};
+use crate::geometry::{CoordSeqBuilder, CoordWindow, GeometryErrorKind, MOrdinate, ZOrdinate};
 
 pub(crate) enum PackedColumnError {
     Batch(crate::error::Error),
@@ -157,7 +158,7 @@ pub(crate) struct XyColumns<'a> {
     pub ys: &'a [f64],
 }
 
-impl PointColumns<'_> {
+impl<'a> PointColumns<'a> {
     pub(crate) const fn row_layout(&self) -> PointRowLayout {
         self.layout
     }
@@ -238,6 +239,51 @@ impl PointColumns<'_> {
             physical.map_or_else(|| missing_point(axes), |physical| coords.point_at(physical))
         })
     }
+
+    pub(crate) const fn from_parts(coords: &'a CoordSeq, row_map: RowSelectionRef<'a>) -> Self {
+        resolve_point_columns(coords, row_map, None, PointRowLayout::Dense)
+    }
+
+    /// Copy selected coordinates into `builder` in logical order.
+    ///
+    /// Identity and Window payloads memcpy one contiguous run. Gather walks
+    /// physical rows, including duplicates, without an intermediate sequence.
+    pub(crate) fn extend_selected(
+        &self,
+        builder: &mut CoordSeqBuilder,
+    ) -> crate::error::Result<()> {
+        if let Some(coords) = self.contiguous_coords() {
+            return builder.extend_window(&coords, 0..coords.len());
+        }
+        for (_, physical) in self.rows().cursor() {
+            let physical = physical.expect("dense packed concat walks every logical row");
+            builder.push_at(self.coords, physical)?;
+        }
+        Ok(())
+    }
+
+    /// Join two packed point selections into one final coordinate owner.
+    ///
+    /// Contiguous+contiguous uses [`concat_coord_columns`]: one reservation of
+    /// A+B and one copy of each source ordinate. A selected side copies its
+    /// windows into that same final reservation; a contiguous opposite side
+    /// still memcpy's. This is not materialize-A-then-concat (2A+B copies, a
+    /// dropped A owner) and not a `Vec<Point>` stage (2A+2B).
+    pub(crate) fn concat_pair(&self, other: &Self) -> crate::error::Result<CoordSeq> {
+        match (self.contiguous_coords(), other.contiguous_coords()) {
+            (Some(left), Some(right)) => concat_coord_columns(&left, &right),
+            _ => {
+                let total = self
+                    .len()
+                    .checked_add(other.len())
+                    .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+                let mut builder = CoordSeqBuilder::try_with_capacity(self.coords.axes(), total)?;
+                self.extend_selected(&mut builder)?;
+                other.extend_selected(&mut builder)?;
+                builder.finish_with_missing_placeholders()
+            },
+        }
+    }
 }
 
 pub(crate) struct LineColumns<'a> {
@@ -247,7 +293,7 @@ pub(crate) struct LineColumns<'a> {
     missing: Option<&'a ValidityMask>,
 }
 
-impl LineColumns<'_> {
+impl<'a> LineColumns<'a> {
     pub(crate) const fn selection(&self) -> RowSelectionRef<'_> {
         self.row_map
     }
@@ -281,6 +327,109 @@ impl LineColumns<'_> {
 
     pub(crate) fn row_window(&self, logical: usize) -> std::ops::Range<usize> {
         self.row_map.csr_window(self.offsets(), logical)
+    }
+
+    pub(crate) const fn from_parts(
+        coords: &'a CoordSeq,
+        offsets: &'a CsrOffsetColumn,
+        row_map: RowSelectionRef<'a>,
+    ) -> Self {
+        resolve_line_columns(coords, offsets, row_map, None)
+    }
+
+    pub(crate) fn selected_vertex_len(&self) -> usize {
+        packed_lines_coord_len(self.offsets(), self.row_map)
+    }
+
+    /// Identity and Window selections expose one contiguous vertex run and
+    /// 0-based CSR offsets. Gather is never contiguous.
+    pub(crate) fn contiguous_parts(
+        &self,
+    ) -> Option<crate::error::Result<(CoordSeq, CsrOffsetColumn)>> {
+        match self.row_map {
+            RowSelectionRef::Identity => Some(Ok((self.coords.clone(), self.offsets.clone()))),
+            RowSelectionRef::Window { start, len } => Some(self.window_parts(start, len)),
+            RowSelectionRef::Gather(_) => None,
+        }
+    }
+
+    fn window_parts(
+        &self,
+        start: usize,
+        len: usize,
+    ) -> crate::error::Result<(CoordSeq, CsrOffsetColumn)> {
+        let offsets = self.offsets();
+        let coords = if len == 0 {
+            empty_coords_like(self.coords)?
+        } else {
+            let vertex_start = offsets[start] as usize;
+            let vertex_end = offsets[start + len] as usize;
+            self.coords.view(CoordWindow::from_range(
+                vertex_start..vertex_end,
+                self.coords.len(),
+            ))
+        };
+        Ok((coords, rebased_csr_window(offsets, start, len)?))
+    }
+
+    pub(crate) fn extend_selected(
+        &self,
+        builder: &mut PackedColumnBuilder,
+    ) -> crate::error::Result<()> {
+        if let Some(parts) = self.contiguous_parts() {
+            let (coords, offsets) = parts?;
+            let slice = offsets.as_slice();
+            for row in 0..slice.len().saturating_sub(1) {
+                builder.push_window(&coords, slice[row] as usize..slice[row + 1] as usize)?;
+            }
+            return Ok(());
+        }
+        for logical in 0..self.rows() {
+            builder.push_window(self.coords, self.row_window(logical))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn concat_pair(
+        &self,
+        other: &Self,
+    ) -> crate::error::Result<(CoordSeq, CsrOffsetColumn)> {
+        match (self.contiguous_parts(), other.contiguous_parts()) {
+            (Some(left), Some(right)) => {
+                let (left_coords, left_offsets) = left?;
+                let (right_coords, right_offsets) = right?;
+                let coords = concat_coord_columns(&left_coords, &right_coords)?;
+                let offsets = CsrOffsetColumn::rebase_concat_validated(
+                    &left_offsets,
+                    &right_offsets,
+                    coords.len(),
+                )?;
+                Ok((coords, offsets))
+            },
+            _ => {
+                let vertices = self
+                    .selected_vertex_len()
+                    .checked_add(other.selected_vertex_len())
+                    .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+                let mut builder = PackedColumnBuilder::try_like(self.coords, vertices)?;
+                self.extend_selected(&mut builder)?;
+                other.extend_selected(&mut builder)?;
+                let cap = builder.vertex_len();
+                builder.finish(cap)
+            },
+        }
+    }
+
+    /// Reverse each selected CSR window into identity columns. Identity
+    /// reverse keeps sharing the source offset table via
+    /// [`crate::array::reverse_coord_windows`] instead.
+    pub(crate) fn reverse_selected(&self) -> crate::error::Result<(CoordSeq, CsrOffsetColumn)> {
+        let mut builder = PackedColumnBuilder::try_like(self.coords, self.selected_vertex_len())?;
+        for logical in 0..self.rows() {
+            builder.push_reversed_window(self.coords, self.row_window(logical))?;
+        }
+        let cap = builder.vertex_len();
+        builder.finish(cap)
     }
 }
 
@@ -380,7 +529,7 @@ impl PolygonColumns<'_> {
     }
 }
 
-impl PolygonColumns<'_> {
+impl<'a> PolygonColumns<'a> {
     pub(crate) const fn coords(&self) -> &CoordSeq {
         self.coords
     }
@@ -416,6 +565,174 @@ impl PolygonColumns<'_> {
 
     pub(crate) fn polygon_rings(&self, logical: usize) -> std::ops::Range<usize> {
         self.row_map.csr_window(self.polygon_offsets(), logical)
+    }
+
+    pub(crate) const fn from_parts(
+        coords: &'a CoordSeq,
+        ring_offsets: &'a CsrOffsetColumn<RingLevel>,
+        polygon_offsets: &'a CsrOffsetColumn<PolygonLevel>,
+        row_map: RowSelectionRef<'a>,
+    ) -> Self {
+        resolve_polygon_columns(coords, ring_offsets, polygon_offsets, row_map, None)
+    }
+
+    pub(crate) fn selected_vertex_len(&self) -> usize {
+        packed_polygons_coord_len(self.ring_offsets(), self.polygon_offsets(), self.row_map)
+    }
+
+    pub(crate) fn selected_ring_len(&self) -> usize {
+        packed_polygons_ring_len(self.polygon_offsets(), self.row_map)
+    }
+
+    pub(crate) fn contiguous_parts(
+        &self,
+    ) -> Option<
+        crate::error::Result<(
+            CoordSeq,
+            CsrOffsetColumn<RingLevel>,
+            CsrOffsetColumn<PolygonLevel>,
+        )>,
+    > {
+        match self.row_map {
+            RowSelectionRef::Identity => Some(Ok((
+                self.coords.clone(),
+                self.ring_offsets.clone(),
+                self.polygon_offsets.clone(),
+            ))),
+            RowSelectionRef::Window { start, len } => Some(self.window_parts(start, len)),
+            RowSelectionRef::Gather(_) => None,
+        }
+    }
+
+    fn window_parts(
+        &self,
+        start: usize,
+        len: usize,
+    ) -> crate::error::Result<(
+        CoordSeq,
+        CsrOffsetColumn<RingLevel>,
+        CsrOffsetColumn<PolygonLevel>,
+    )> {
+        let polygons = self.polygon_offsets();
+        let rings = self.ring_offsets();
+        let (coords, ring_start, ring_len) = if len == 0 {
+            (empty_coords_like(self.coords)?, 0, 0)
+        } else {
+            let ring_start = polygons[start] as usize;
+            let ring_end = polygons[start + len] as usize;
+            let vertex_start = rings[ring_start] as usize;
+            let vertex_end = rings[ring_end] as usize;
+            (
+                self.coords.view(CoordWindow::from_range(
+                    vertex_start..vertex_end,
+                    self.coords.len(),
+                )),
+                ring_start,
+                ring_end - ring_start,
+            )
+        };
+        Ok((
+            coords,
+            rebased_csr_window(rings, ring_start, ring_len)?,
+            rebased_csr_window(polygons, start, len)?,
+        ))
+    }
+
+    pub(crate) fn extend_selected(
+        &self,
+        builder: &mut PackedColumnBuilder,
+        polygons: &mut CsrOffsetBuilder,
+        ring_index: &mut usize,
+    ) -> crate::error::Result<()> {
+        for logical in 0..self.rows() {
+            for ring in self.polygon_rings(logical) {
+                let window =
+                    self.ring_offsets()[ring] as usize..self.ring_offsets()[ring + 1] as usize;
+                builder.push_window(self.coords, window)?;
+                *ring_index = ring_index
+                    .checked_add(1)
+                    .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+            }
+            polygons.push_end(*ring_index, *ring_index)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn concat_pair(
+        &self,
+        other: &Self,
+    ) -> crate::error::Result<(
+        CoordSeq,
+        CsrOffsetColumn<RingLevel>,
+        CsrOffsetColumn<PolygonLevel>,
+    )> {
+        match (self.contiguous_parts(), other.contiguous_parts()) {
+            (Some(left), Some(right)) => {
+                let (left_coords, left_rings, left_polygons) = left?;
+                let (right_coords, right_rings, right_polygons) = right?;
+                let coords = concat_coord_columns(&left_coords, &right_coords)?;
+                let ring_offsets = CsrOffsetColumn::<RingLevel>::rebase_concat_validated(
+                    &left_rings,
+                    &right_rings,
+                    coords.len(),
+                )?;
+                let ring_count = ring_offsets.len().saturating_sub(1);
+                let polygon_offsets = CsrOffsetColumn::<PolygonLevel>::rebase_concat_validated(
+                    &left_polygons,
+                    &right_polygons,
+                    ring_count,
+                )?;
+                Ok((coords, ring_offsets, polygon_offsets))
+            },
+            _ => {
+                let vertices = self
+                    .selected_vertex_len()
+                    .checked_add(other.selected_vertex_len())
+                    .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+                let mut builder = PackedColumnBuilder::try_like(self.coords, vertices)?;
+                let mut polygon_builder = CsrOffsetBuilder::new();
+                let mut ring_index = 0_usize;
+                self.extend_selected(&mut builder, &mut polygon_builder, &mut ring_index)?;
+                other.extend_selected(&mut builder, &mut polygon_builder, &mut ring_index)?;
+                let cap = builder.vertex_len();
+                let (out_coords, out_ring_offsets) = builder.finish(cap)?;
+                let out_ring_offsets = out_ring_offsets.cast_level::<RingLevel>();
+                let out_polygon_offsets = polygon_builder
+                    .finish(out_ring_offsets.len().saturating_sub(1))?
+                    .cast_level::<PolygonLevel>();
+                Ok((out_coords, out_ring_offsets, out_polygon_offsets))
+            },
+        }
+    }
+
+    pub(crate) fn reverse_selected(
+        &self,
+    ) -> crate::error::Result<(
+        CoordSeq,
+        CsrOffsetColumn<RingLevel>,
+        CsrOffsetColumn<PolygonLevel>,
+    )> {
+        let mut builder = PackedColumnBuilder::try_like(self.coords, self.selected_vertex_len())?;
+        let mut polygon_builder = CsrOffsetBuilder::new();
+        let mut ring_index = 0_usize;
+        for logical in 0..self.rows() {
+            for ring in self.polygon_rings(logical) {
+                let window =
+                    self.ring_offsets()[ring] as usize..self.ring_offsets()[ring + 1] as usize;
+                builder.push_reversed_window(self.coords, window)?;
+                ring_index = ring_index
+                    .checked_add(1)
+                    .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+            }
+            polygon_builder.push_end(ring_index, ring_index)?;
+        }
+        let cap = builder.vertex_len();
+        let (out_coords, out_ring_offsets) = builder.finish(cap)?;
+        let out_ring_offsets = out_ring_offsets.cast_level::<RingLevel>();
+        let out_polygon_offsets = polygon_builder
+            .finish(out_ring_offsets.len().saturating_sub(1))?
+            .cast_level::<PolygonLevel>();
+        Ok((out_coords, out_ring_offsets, out_polygon_offsets))
     }
 }
 
@@ -616,6 +933,42 @@ pub(super) const fn batch_err(error: crate::error::Error) -> PackedColumnError {
 
 pub(super) const fn row_err(row: usize, error: crate::error::Error) -> PackedColumnError {
     PackedColumnError::Row { row, error }
+}
+
+fn empty_coords_like(coords: &CoordSeq) -> crate::error::Result<CoordSeq> {
+    CoordSeq::try_from_vecs(
+        Vec::new(),
+        Vec::new(),
+        coords.zs().map(|_| Vec::new()),
+        coords.ms().map(|_| Vec::new()),
+    )
+}
+
+fn rebased_csr_window<Level>(
+    offsets: &[i32],
+    start: usize,
+    len: usize,
+) -> crate::error::Result<CsrOffsetColumn<Level>> {
+    let count = len
+        .checked_add(1)
+        .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+    let mut ends = Vec::new();
+    crate::boundary::try_reserve_vec(&mut ends, count)?;
+    if len == 0 {
+        crate::try_push_vec(&mut ends, 0)?;
+        return CsrOffsetColumn::try_new(ends, 0);
+    }
+    let base = offsets[start] as usize;
+    for &offset in &offsets[start..=start + len] {
+        crate::try_push_vec(
+            &mut ends,
+            (offset as usize)
+                .checked_sub(base)
+                .ok_or(GeometryErrorKind::MalformedCsrOffsets)?,
+        )?;
+    }
+    let cap = *ends.last().expect("window includes the closing offset");
+    CsrOffsetColumn::try_new(ends, cap)
 }
 
 const fn resolve_point_columns<'a>(
@@ -1802,5 +2155,207 @@ mod tests {
         let small = count(2);
         let large = count(128);
         assert_eq!(small, large);
+    }
+
+    fn gather_map(rows: Vec<usize>, physical_len: usize) -> RowSelection {
+        RowSelection::gather_checked_native(rows, physical_len)
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn selected_tiny_point_concat_avoids_materialize_then_concat_allocs() {
+        let selected = CoordSeq::try_from_vecs(
+            vec![10.0, 11.0, 12.0, 13.0],
+            vec![20.0, 21.0, 22.0, 23.0],
+            None,
+            None,
+        )
+        .unwrap();
+        let dense = CoordSeq::try_from_vecs(
+            (0..64).map(f64::from).collect(),
+            (0..64).map(|i| f64::from(i) + 0.5).collect(),
+            None,
+            None,
+        )
+        .unwrap();
+        let map = gather_map(vec![0, 2], 4);
+        let left = PointColumns::from_parts(&selected, map.as_deref());
+        let right = PointColumns::from_parts(&dense, RowSelectionRef::Identity);
+        let (joined, direct) = allocation_count(|| left.concat_pair(&right).unwrap());
+        let (staged, staged_allocs) = allocation_count(|| {
+            let materialized =
+                crate::array::packed_gather::gather_point_columns(&selected, &[0, 2]).unwrap();
+            concat_coord_columns(&materialized, &dense).unwrap()
+        });
+        assert_eq!(joined.xs(), staged.xs());
+        assert_eq!(joined.ys(), staged.ys());
+        assert!(
+            direct < staged_allocs,
+            "tiny selected A + dense B must copy into one A+B owner, not materialize A then concat: direct {direct} allocs, staged {staged_allocs}"
+        );
+        assert_eq!(
+            (direct, staged_allocs),
+            (4, 8),
+            "XY selected+dense is one A+B owner (2 column Vecs + 2 Arcs); materialize-then-concat allocates an extra A owner"
+        );
+    }
+
+    #[test]
+    fn dense_point_pair_concat_matches_column_join() {
+        let left = CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![2.0, 3.0], None, None).unwrap();
+        let right =
+            CoordSeq::try_from_vecs(vec![4.0, 5.0, 6.0], vec![7.0, 8.0, 9.0], None, None).unwrap();
+        let joined = PointColumns::from_parts(&left, RowSelectionRef::Identity)
+            .concat_pair(&PointColumns::from_parts(&right, RowSelectionRef::Identity))
+            .unwrap();
+        let direct = concat_coord_columns(&left, &right).unwrap();
+        assert_eq!(joined.xs(), direct.xs());
+        assert_eq!(joined.ys(), direct.ys());
+    }
+
+    #[test]
+    fn gathered_duplicate_zm_points_concat_dense() {
+        let selected = CoordSeq::try_from_vecs(
+            vec![1.0, 2.0, 3.0],
+            vec![4.0, 5.0, 6.0],
+            Some(vec![7.0, 8.0, 9.0]),
+            Some(vec![10.0, 11.0, 12.0]),
+        )
+        .unwrap();
+        let dense = CoordSeq::try_from_vecs(
+            vec![100.0],
+            vec![200.0],
+            Some(vec![300.0]),
+            Some(vec![400.0]),
+        )
+        .unwrap();
+        let map = gather_map(vec![2, 2, 0], 3);
+        let joined = PointColumns::from_parts(&selected, map.as_deref())
+            .concat_pair(&PointColumns::from_parts(&dense, RowSelectionRef::Identity))
+            .unwrap();
+        assert_eq!(joined.xs(), &[3.0, 3.0, 1.0, 100.0]);
+        assert_eq!(joined.ys(), &[6.0, 6.0, 4.0, 200.0]);
+        assert_eq!(joined.zs().unwrap(), &[9.0, 9.0, 7.0, 300.0]);
+        assert_eq!(joined.ms().unwrap(), &[12.0, 12.0, 10.0, 400.0]);
+    }
+
+    #[test]
+    fn window_point_concat_uses_contiguous_payload() {
+        let coords = CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 2.0, 3.0],
+            vec![4.0, 5.0, 6.0, 7.0],
+            None,
+            None,
+        )
+        .unwrap();
+        let tail = CoordSeq::try_from_vecs(vec![8.0, 9.0], vec![10.0, 11.0], None, None).unwrap();
+        let joined =
+            PointColumns::from_parts(&coords, RowSelectionRef::Window { start: 1, len: 2 })
+                .concat_pair(&PointColumns::from_parts(&tail, RowSelectionRef::Identity))
+                .unwrap();
+        assert_eq!(joined.xs(), &[1.0, 2.0, 8.0, 9.0]);
+        assert_eq!(joined.ys(), &[5.0, 6.0, 10.0, 11.0]);
+    }
+
+    #[test]
+    fn selected_line_concat_copies_duplicate_windows_then_dense() {
+        let selected = CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 2.0, 3.0],
+            vec![0.0, 1.0, 2.0, 3.0],
+            None,
+            None,
+        )
+        .unwrap();
+        let selected_offsets = CsrOffsetColumn::try_new(vec![0, 2, 4], 4).unwrap();
+        let dense = CoordSeq::try_from_vecs(
+            (0..16).map(f64::from).collect(),
+            (0..16).map(f64::from).collect(),
+            None,
+            None,
+        )
+        .unwrap();
+        let dense_offsets =
+            CsrOffsetColumn::try_new((0..=8).map(|row| row * 2).collect(), 16).unwrap();
+        let map = gather_map(vec![1, 1], 2);
+        let (coords, offsets) =
+            LineColumns::from_parts(&selected, &selected_offsets, map.as_deref())
+                .concat_pair(&LineColumns::from_parts(
+                    &dense,
+                    &dense_offsets,
+                    RowSelectionRef::Identity,
+                ))
+                .unwrap();
+        assert_eq!(coords.xs()[..4], [2.0, 3.0, 2.0, 3.0]);
+        assert_eq!(coords.len(), 4 + 16);
+        assert_eq!(offsets.as_slice()[..3], [0, 2, 4]);
+        assert_eq!(*offsets.as_slice().last().unwrap(), 20);
+    }
+
+    #[test]
+    fn selected_polygon_concat_matches_window_vertices() {
+        let selected = CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 1.0, 0.0, 10.0, 11.0, 11.0, 10.0],
+            vec![0.0, 0.0, 1.0, 1.0, 10.0, 10.0, 11.0, 11.0],
+            None,
+            None,
+        )
+        .unwrap();
+        let rings = CsrOffsetColumn::<RingLevel>::try_new(vec![0, 4, 8], 8).unwrap();
+        let polygons = CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1, 2], 2).unwrap();
+        let dense = CoordSeq::try_from_vecs(
+            vec![20.0, 21.0, 21.0, 20.0],
+            vec![20.0, 20.0, 21.0, 21.0],
+            None,
+            None,
+        )
+        .unwrap();
+        let dense_rings = CsrOffsetColumn::<RingLevel>::try_new(vec![0, 4], 4).unwrap();
+        let dense_polygons = CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap();
+        let map = gather_map(vec![1], 2);
+        let (coords, out_rings, out_polygons) =
+            PolygonColumns::from_parts(&selected, &rings, &polygons, map.as_deref())
+                .concat_pair(&PolygonColumns::from_parts(
+                    &dense,
+                    &dense_rings,
+                    &dense_polygons,
+                    RowSelectionRef::Identity,
+                ))
+                .unwrap();
+        assert_eq!(coords.xs(), &[
+            10.0, 11.0, 11.0, 10.0, 20.0, 21.0, 21.0, 20.0
+        ]);
+        assert_eq!(out_rings.as_slice(), &[0, 4, 8]);
+        assert_eq!(out_polygons.as_slice(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn reverse_selected_lines_copies_only_gathered_windows() {
+        let coords = CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            None,
+            None,
+        )
+        .unwrap();
+        let offsets = CsrOffsetColumn::try_new(vec![0, 3, 6], 6).unwrap();
+        let map = gather_map(vec![1, 1], 2);
+        let (reversed, out_offsets) = LineColumns::from_parts(&coords, &offsets, map.as_deref())
+            .reverse_selected()
+            .unwrap();
+        assert_eq!(reversed.xs(), &[5.0, 4.0, 3.0, 5.0, 4.0, 3.0]);
+        assert_eq!(out_offsets.as_slice(), &[0, 3, 6]);
+    }
+
+    #[test]
+    fn selected_point_concat_reports_allocation_failure() {
+        let left = CoordSeq::try_from_vecs(vec![0.0], vec![1.0], None, None).unwrap();
+        let right = CoordSeq::try_from_vecs(vec![2.0], vec![3.0], None, None).unwrap();
+        let map = gather_map(vec![0], 1);
+        let failed = crate::test_support::fail_allocations_after(0, || {
+            PointColumns::from_parts(&left, map.as_deref())
+                .concat_pair(&PointColumns::from_parts(&right, RowSelectionRef::Identity))
+        });
+        assert!(failed.is_err());
     }
 }

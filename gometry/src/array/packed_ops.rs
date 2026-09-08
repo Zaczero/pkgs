@@ -4,13 +4,12 @@
 )]
 use std::sync::Arc;
 
+use crate::array::packed_columns::{LineColumns, PointColumns, PolygonColumns};
 use crate::array::{
-    ArrayRow, Bound, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage,
-    PackedColumnBuilder, PackedStorage, Point, PointColumnBuilder, PolygonLevel, PyAny, PyGeometry,
-    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelectionRef, Shape, column_window,
-    concat_coord_columns, curves, line_logical_len, note_array_row, packed_lines_coord_len,
-    packed_polygons_coord_len, packed_polygons_ring_len, parse_curve_bounds, physical_row,
-    point_logical_len, polygon_logical_len, rows_err,
+    ArrayRow, Bound, CoordSeq, CsrOffsetBuilder, GeometryArrayStorage, PackedColumnBuilder,
+    PackedStorage, Point, PointColumnBuilder, PolygonLevel, PyAny, PyGeometry, PyGeometryArray,
+    PyResult, Python, Result, RingLevel, RowSelectionRef, Shape, column_window, curves,
+    line_logical_len, note_array_row, parse_curve_bounds, physical_row, rows_err,
 };
 
 #[repr(transparent)]
@@ -55,6 +54,7 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
+        let mut columns = crate::try_vec_with_capacity(arrays.len())?;
         let mut total_rows = 0_usize;
         for array in arrays {
             let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
@@ -65,26 +65,18 @@ impl PyGeometryArray {
             if coords.axes() != first_coords.axes() {
                 return Ok(None);
             }
-            total_rows = total_rows
-                .checked_add(point_logical_len(coords, row_map.as_deref()))
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err("row count overflows usize")
-                })?;
+            let points = PointColumns::from_parts(coords, row_map.as_deref());
+            total_rows = total_rows.checked_add(points.len()).ok_or_else(|| {
+                pyo3::exceptions::PyOverflowError::new_err("row count overflows usize")
+            })?;
+            columns.push(points);
         }
         let mut builder = PointColumnBuilder::try_with_capacity(first_coords.axes(), total_rows)?;
-        for array in arrays {
-            let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
-                array.storage()
-            else {
-                unreachable!("storage kind checked in reservation pass");
-            };
-            let map = row_map.as_deref();
-            for logical in 0..point_logical_len(coords, map) {
-                builder.push_at(coords, physical_row(map, logical))?;
-            }
+        for points in &columns {
+            points.extend_selected(&mut builder)?;
         }
         Ok(Some(Self::packed_points(
-            builder.finish()?,
+            builder.finish_with_missing_placeholders()?,
             first.frame.clone(),
         )?))
     }
@@ -94,6 +86,7 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
+        let mut columns = crate::try_vec_with_capacity(arrays.len())?;
         let mut vertex_count = 0_usize;
         for array in arrays {
             let GeometryArrayStorage::Packed(PackedStorage::Lines {
@@ -107,31 +100,20 @@ impl PyGeometryArray {
             if coords.axes() != first_coords.axes() {
                 return Ok(None);
             }
+            let lines = LineColumns::from_parts(coords, offsets, row_map.as_deref());
             vertex_count = vertex_count
-                .checked_add(packed_lines_coord_len(offsets, row_map.as_deref()))
+                .checked_add(lines.selected_vertex_len())
                 .ok_or_else(|| {
                     pyo3::exceptions::PyOverflowError::new_err("coordinate count overflows usize")
                 })?;
+            columns.push(lines);
         }
-        let mut builder = PointColumnBuilder::try_with_capacity(first_coords.axes(), vertex_count)?;
-        let mut offset_builder = CsrOffsetBuilder::new();
-        for array in arrays {
-            let GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) = array.storage()
-            else {
-                unreachable!("storage kind checked in reservation pass");
-            };
-            let map = row_map.as_deref();
-            for logical in 0..array.len() {
-                builder.extend_window(coords, map.csr_window(offsets, logical))?;
-                offset_builder.push_end(builder.len(), vertex_count)?;
-            }
+        let mut builder = PackedColumnBuilder::try_like(first_coords, vertex_count)?;
+        for lines in &columns {
+            lines.extend_selected(&mut builder)?;
         }
-        let coords = builder.finish()?;
-        let offsets = offset_builder.finish(vertex_count)?;
+        let cap = builder.vertex_len();
+        let (coords, offsets) = builder.finish(cap)?;
         Ok(Some(Self::packed_lines(
             coords,
             offsets,
@@ -144,6 +126,7 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
+        let mut columns = crate::try_vec_with_capacity(arrays.len())?;
         let mut vertex_count = 0_usize;
         let mut ring_count = 0_usize;
         for array in arrays {
@@ -159,57 +142,33 @@ impl PyGeometryArray {
             if coords.axes() != first_coords.axes() {
                 return Ok(None);
             }
+            let polygons = PolygonColumns::from_parts(
+                coords,
+                ring_offsets,
+                polygon_offsets,
+                row_map.as_deref(),
+            );
             vertex_count = vertex_count
-                .checked_add(packed_polygons_coord_len(
-                    ring_offsets,
-                    polygon_offsets,
-                    row_map.as_deref(),
-                ))
+                .checked_add(polygons.selected_vertex_len())
                 .ok_or_else(|| {
                     pyo3::exceptions::PyOverflowError::new_err("coordinate count overflows usize")
                 })?;
             ring_count = ring_count
-                .checked_add(packed_polygons_ring_len(
-                    polygon_offsets,
-                    row_map.as_deref(),
-                ))
+                .checked_add(polygons.selected_ring_len())
                 .ok_or_else(|| {
                     pyo3::exceptions::PyOverflowError::new_err("ring count overflows usize")
                 })?;
+            columns.push(polygons);
         }
-        let mut coord_builder =
-            PointColumnBuilder::try_with_capacity(first_coords.axes(), vertex_count)?;
-        let mut ring_builder = CsrOffsetBuilder::new();
+        let mut builder = PackedColumnBuilder::try_like(first_coords, vertex_count)?;
         let mut polygon_builder = CsrOffsetBuilder::new();
-        let mut output_rings = 0_usize;
-        for array in arrays {
-            let GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map,
-            }) = array.storage()
-            else {
-                unreachable!("storage kind checked in reservation pass");
-            };
-            let map = row_map.as_deref();
-            for logical in 0..array.len() {
-                let rings = map.csr_window(polygon_offsets, logical);
-                for ring in rings {
-                    coord_builder.extend_window(
-                        coords,
-                        ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize,
-                    )?;
-                    output_rings = output_rings.checked_add(1).ok_or_else(|| {
-                        pyo3::exceptions::PyOverflowError::new_err("ring count overflows usize")
-                    })?;
-                    ring_builder.push_end(coord_builder.len(), vertex_count)?;
-                }
-                polygon_builder.push_end(output_rings, ring_count)?;
-            }
+        let mut ring_index = 0_usize;
+        for polygons in &columns {
+            polygons.extend_selected(&mut builder, &mut polygon_builder, &mut ring_index)?;
         }
-        let coords = coord_builder.finish()?;
-        let ring_offsets = ring_builder.finish(vertex_count)?.cast_level::<RingLevel>();
+        let cap = builder.vertex_len();
+        let (coords, ring_offsets) = builder.finish(cap)?;
+        let ring_offsets = ring_offsets.cast_level::<RingLevel>();
         let polygon_offsets = polygon_builder
             .finish(ring_count)?
             .cast_level::<PolygonLevel>();
@@ -246,6 +205,80 @@ impl PyGeometryArray {
             }) => Self::concat_packed_polygons_many(arrays, first, first_coords),
             GeometryArrayStorage::Mixed(_) => Ok(None),
         }
+    }
+
+    /// Pair concat of homogeneous packed storage. Dense+dense reserves one
+    /// A+B owner and memcpy's each side. A selected operand copies its
+    /// windows into that same owner; it is not materialized and then
+    /// concatenated. Compact nullable and mixed kinds/axes return `None`.
+    pub(crate) fn try_concat_packed(&self, other: &Self) -> PyResult<Option<Self>> {
+        if self.is_compact_nullable() || other.is_compact_nullable() {
+            return Ok(None);
+        }
+        let joined = match (self.storage(), other.storage()) {
+            (
+                GeometryArrayStorage::Packed(PackedStorage::Points {
+                    coords: left,
+                    row_map: left_map,
+                }),
+                GeometryArrayStorage::Packed(PackedStorage::Points {
+                    coords: right,
+                    row_map: right_map,
+                }),
+            ) if left.axes() == right.axes() => Self::packed_points(
+                PointColumns::from_parts(left, left_map.as_deref())
+                    .concat_pair(&PointColumns::from_parts(right, right_map.as_deref()))?,
+                self.frame.clone(),
+            )?,
+            (
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
+                    coords: left,
+                    offsets: left_offsets,
+                    row_map: left_map,
+                }),
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
+                    coords: right,
+                    offsets: right_offsets,
+                    row_map: right_map,
+                }),
+            ) if left.axes() == right.axes() => {
+                let (coords, offsets) =
+                    LineColumns::from_parts(left, left_offsets, left_map.as_deref()).concat_pair(
+                        &LineColumns::from_parts(right, right_offsets, right_map.as_deref()),
+                    )?;
+                Self::packed_lines(coords, offsets, self.frame.clone())?
+            },
+            (
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                    coords: left,
+                    ring_offsets: left_rings,
+                    polygon_offsets: left_polygons,
+                    row_map: left_map,
+                }),
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                    coords: right,
+                    ring_offsets: right_rings,
+                    polygon_offsets: right_polygons,
+                    row_map: right_map,
+                }),
+            ) if left.axes() == right.axes() => {
+                let (coords, ring_offsets, polygon_offsets) = PolygonColumns::from_parts(
+                    left,
+                    left_rings,
+                    left_polygons,
+                    left_map.as_deref(),
+                )
+                .concat_pair(&PolygonColumns::from_parts(
+                    right,
+                    right_rings,
+                    right_polygons,
+                    right_map.as_deref(),
+                ))?;
+                Self::packed_polygons(coords, ring_offsets, polygon_offsets, self.frame.clone())?
+            },
+            _ => return Ok(None),
+        };
+        Ok(Some(joined))
     }
 
     /// Coordinate payload for a contiguous logical row range without building
@@ -326,31 +359,6 @@ impl PyGeometryArray {
         }
     }
 
-    pub(crate) fn materialize_packed_points_parts<'a>(
-        &self,
-        coords: &CoordSeq,
-        row_map: impl Into<RowSelectionRef<'a>>,
-    ) -> PyResult<Self> {
-        let row_map = row_map.into();
-        let len = point_logical_len(coords, row_map);
-        let mut builder = PointColumnBuilder::try_with_capacity(coords.axes(), len)?;
-        for logical in 0..len {
-            builder.push_at(coords, resolve_physical_row(row_map, LogicalRow(logical)).0)?;
-        }
-        Ok(Self::packed_points(builder.finish()?, self.frame.clone())?)
-    }
-
-    /// Materialize packed `Points` storage when `row_map` reorders rows.
-    pub(crate) fn materialize_packed_points(&self) -> PyResult<Self> {
-        if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
-            self.storage()
-            && row_map.reorders()
-        {
-            return self.materialize_packed_points_parts(coords, row_map.as_deref());
-        }
-        Ok(self.clone())
-    }
-
     /// Gather logical packed-line rows into fresh CSR columns in logical order,
     /// resolving each through `row_map` when present.
     pub(crate) fn materialize_packed_lines_parts<'a>(
@@ -367,55 +375,6 @@ impl PyGeometryArray {
                 resolve_physical_rows(line_logical_len(offsets, selection), selection),
             )
         }
-    }
-
-    /// Materialize packed `Lines` storage when `row_map` reorders rows.
-    pub(crate) fn materialize_packed_lines(&self) -> PyResult<Self> {
-        if let GeometryArrayStorage::Packed(PackedStorage::Lines {
-            coords,
-            offsets,
-            row_map,
-        }) = self.storage()
-            && row_map.reorders()
-        {
-            return self.materialize_packed_lines_parts(coords, offsets, row_map.as_deref());
-        }
-        Ok(self.clone())
-    }
-
-    /// Gather logical packed-polygon rows into fresh two-level CSR columns in
-    /// logical order, resolving each through `row_map` when present.
-    pub(crate) fn materialize_packed_polygons_parts<'a>(
-        &self,
-        coords: &CoordSeq,
-        ring_offsets: &[i32],
-        polygon_offsets: &[i32],
-        row_map: impl Into<RowSelectionRef<'a>>,
-    ) -> PyResult<Self> {
-        self.select_packed_polygons(coords, ring_offsets, polygon_offsets, {
-            let selection = row_map.into();
-            resolve_physical_rows(polygon_logical_len(polygon_offsets, selection), selection)
-        })
-    }
-
-    /// Materialize packed `Polygons` storage when `row_map` reorders rows.
-    pub(crate) fn materialize_packed_polygons(&self) -> PyResult<Self> {
-        if let GeometryArrayStorage::Packed(PackedStorage::Polygons {
-            coords,
-            ring_offsets,
-            polygon_offsets,
-            row_map,
-        }) = self.storage()
-            && row_map.reorders()
-        {
-            return self.materialize_packed_polygons_parts(
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map.as_deref(),
-            );
-        }
-        Ok(self.clone())
     }
 
     /// Gather selected packed-line rows into fresh CSR columns — physical
@@ -440,72 +399,6 @@ impl PyGeometryArray {
         Ok(Self::packed_lines(
             out_coords,
             out_offsets,
-            self.frame.clone(),
-        )?)
-    }
-
-    pub(crate) fn concat_packed_polygons(
-        &self,
-        left: &CoordSeq,
-        left_rings: &CsrOffsetColumn<RingLevel>,
-        left_polygons: &CsrOffsetColumn<PolygonLevel>,
-        right: &CoordSeq,
-        right_rings: &CsrOffsetColumn<RingLevel>,
-        right_polygons: &CsrOffsetColumn<PolygonLevel>,
-    ) -> PyResult<Self> {
-        let out_coords = concat_coord_columns(left, right)?;
-        let out_ring_offsets = CsrOffsetColumn::<RingLevel>::rebase_concat_validated(
-            left_rings,
-            right_rings,
-            out_coords.len(),
-        )?;
-        let ring_count = out_ring_offsets.len().saturating_sub(1);
-        let out_polygon_offsets = CsrOffsetColumn::<PolygonLevel>::rebase_concat_validated(
-            left_polygons,
-            right_polygons,
-            ring_count,
-        )?;
-        Ok(Self::packed_polygons(
-            out_coords,
-            out_ring_offsets,
-            out_polygon_offsets,
-            self.frame.clone(),
-        )?)
-    }
-
-    /// Gather selected packed-polygon rows into fresh two-level CSR columns —
-    /// the column-direct core of `take`/`filter` over `Polygons` storage.
-    pub(crate) fn select_packed_polygons(
-        &self,
-        coords: &CoordSeq,
-        ring_offsets: &[i32],
-        polygon_offsets: &[i32],
-        rows: impl Iterator<Item = PhysicalRow>,
-    ) -> PyResult<Self> {
-        let mut builder = PackedColumnBuilder::try_like(coords, 0)?;
-        let mut polygon_builder = CsrOffsetBuilder::new();
-        let mut ring_index = 0_usize;
-        for row in rows {
-            let row = row.0;
-            let ring_start = polygon_offsets[row] as usize;
-            let ring_end = polygon_offsets[row + 1] as usize;
-            for ring in ring_start..ring_end {
-                let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
-                builder.push_window(coords, window)?;
-                ring_index += 1;
-            }
-            polygon_builder.push_end(ring_index, ring_index)?;
-        }
-        let cap = builder.vertex_len();
-        let (out_coords, out_ring_offsets) = builder.finish(cap)?;
-        let out_ring_offsets = out_ring_offsets.cast_level::<RingLevel>();
-        let out_polygon_offsets = polygon_builder
-            .finish(out_ring_offsets.len().saturating_sub(1))?
-            .cast_level::<PolygonLevel>();
-        Ok(Self::packed_polygons(
-            out_coords,
-            out_ring_offsets,
-            out_polygon_offsets,
             self.frame.clone(),
         )?)
     }

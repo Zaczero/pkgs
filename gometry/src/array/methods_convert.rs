@@ -1,6 +1,7 @@
+use crate::array::packed_columns::{LineColumns, PolygonColumns};
 use crate::array::{
     Arc, Bounds, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec, PackedColumnError,
-    PackedColumns, PackedStorage, PyGeometryArray, PyResult, Python, Result, Shape,
+    PackedColumns, PackedStorage, PyGeometryArray, PyResult, Python, Result, RowSelection, Shape,
     clip_lines_packed_xy, geometry, reverse_coord_windows, subdivide_line_columns,
     subdivide_polygon_columns, validate_densify_fraction, validate_max_segment_length,
 };
@@ -269,38 +270,69 @@ impl PyGeometryArray {
                 coords,
                 offsets,
                 row_map,
-            }) => Ok(Self::from_result_storage(
-                Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Lines {
-                    coords: Arc::try_new(reverse_coord_windows(coords, offsets)?)
-                        .map_err(crate::error::Error::from)?,
-                    offsets: offsets.clone(),
-                    row_map: row_map.clone(),
-                }))
-                .map_err(crate::error::Error::from)?,
-                self.frame.clone(),
-                self.missing().cloned(),
-                Arc::clone(&self.bounds_cache),
-                Arc::clone(&self.total_bounds_cache),
-            )?),
+            }) => {
+                let (out_coords, out_offsets, out_map) = if row_map.is_identity() {
+                    (
+                        reverse_coord_windows(coords, offsets)?,
+                        offsets.clone(),
+                        row_map.clone(),
+                    )
+                } else {
+                    let (out_coords, out_offsets) =
+                        LineColumns::from_parts(coords, offsets, row_map.as_deref())
+                            .reverse_selected()?;
+                    (out_coords, out_offsets, RowSelection::Identity)
+                };
+                Ok(Self::from_result_storage(
+                    Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Lines {
+                        coords: Arc::try_new(out_coords).map_err(crate::error::Error::from)?,
+                        offsets: out_offsets,
+                        row_map: out_map,
+                    }))
+                    .map_err(crate::error::Error::from)?,
+                    self.frame.clone(),
+                    self.missing().cloned(),
+                    Arc::clone(&self.bounds_cache),
+                    Arc::clone(&self.total_bounds_cache),
+                )?)
+            },
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            }) => Ok(Self::from_result_storage(
-                Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                    coords: Arc::try_new(reverse_coord_windows(coords, ring_offsets)?)
-                        .map_err(crate::error::Error::from)?,
-                    ring_offsets: ring_offsets.clone(),
-                    polygon_offsets: polygon_offsets.clone(),
-                    row_map: row_map.clone(),
-                }))
-                .map_err(crate::error::Error::from)?,
-                self.frame.clone(),
-                self.missing().cloned(),
-                Arc::clone(&self.bounds_cache),
-                Arc::clone(&self.total_bounds_cache),
-            )?),
+            }) => {
+                let (out_coords, out_rings, out_polygons, out_map) = if row_map.is_identity() {
+                    (
+                        reverse_coord_windows(coords, ring_offsets)?,
+                        ring_offsets.clone(),
+                        polygon_offsets.clone(),
+                        row_map.clone(),
+                    )
+                } else {
+                    let (out_coords, out_rings, out_polygons) = PolygonColumns::from_parts(
+                        coords,
+                        ring_offsets,
+                        polygon_offsets,
+                        row_map.as_deref(),
+                    )
+                    .reverse_selected()?;
+                    (out_coords, out_rings, out_polygons, RowSelection::Identity)
+                };
+                Ok(Self::from_result_storage(
+                    Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                        coords: Arc::try_new(out_coords).map_err(crate::error::Error::from)?,
+                        ring_offsets: out_rings,
+                        polygon_offsets: out_polygons,
+                        row_map: out_map,
+                    }))
+                    .map_err(crate::error::Error::from)?,
+                    self.frame.clone(),
+                    self.missing().cloned(),
+                    Arc::clone(&self.bounds_cache),
+                    Arc::clone(&self.total_bounds_cache),
+                )?)
+            },
             _ => self.map_shapes(|shape| Ok(shape.reverse()?)),
         }
     }

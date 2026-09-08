@@ -274,9 +274,7 @@ impl StreamingLines {
     }
 
     fn try_push(&mut self, line: &LineSeq) -> crate::error::Result<()> {
-        for point in line {
-            self.coords.push(point)?;
-        }
+        self.coords.extend_window(line, 0..line.len())?;
         crate::try_push_vec(&mut self.offsets, self.coords.len())
     }
 
@@ -343,9 +341,7 @@ impl StreamingPolygons {
 
     fn try_push(&mut self, polygon: &Polygon) -> crate::error::Result<()> {
         for ring in polygon.rings() {
-            for point in ring {
-                self.coords.push(point)?;
-            }
+            self.coords.extend_window(ring, 0..ring.len())?;
             crate::try_push_vec(&mut self.ring_offsets, self.coords.len())?;
         }
         crate::try_push_vec(&mut self.polygon_offsets, self.ring_offsets.len() - 1)

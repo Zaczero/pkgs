@@ -952,38 +952,6 @@ impl PyGeometryArray {
             frame,
         )
     }
-
-    pub(crate) fn try_concat_packed_points(&self, other: &Self) -> PyResult<Option<Self>> {
-        if self.is_compact_nullable() || other.is_compact_nullable() {
-            return Ok(None);
-        }
-        let (
-            GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: left,
-                row_map: left_row_map,
-            }),
-            GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: right,
-                row_map: right_row_map,
-            }),
-        ) = (self.storage(), other.storage())
-        else {
-            return Ok(None);
-        };
-        if left.axes() != right.axes() {
-            return Ok(None);
-        }
-        if left_row_map.reorders() {
-            return Ok(Some(self.materialize_packed_points()?.concat_pair(other)?));
-        }
-        if right_row_map.reorders() {
-            return Ok(Some(self.concat_pair(&other.materialize_packed_points()?)?));
-        }
-        let Some(joined) = left.concat(right)? else {
-            return Ok(None);
-        };
-        Ok(Some(Self::packed_points(joined, self.frame.clone())?))
-    }
 }
 
 #[expect(

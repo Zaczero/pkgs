@@ -92,6 +92,29 @@ impl PackedColumnBuilder {
         Ok(())
     }
 
+    /// Copy one CSR vertex window in reverse, then close the row.
+    pub(crate) fn push_reversed_window(
+        &mut self,
+        coords: &CoordSeq,
+        window: Range<usize>,
+    ) -> CrateResult<()> {
+        self.try_reserve_columns(window.len())?;
+        let (xs, ys) = (coords.xs(), coords.ys());
+        let (zs, ms) = (coords.zs(), coords.ms());
+        self.xs
+            .extend(column_window(xs, &window).iter().rev().copied());
+        self.ys
+            .extend(column_window(ys, &window).iter().rev().copied());
+        if let (Some(out), Some(column)) = (self.zs.as_mut(), zs) {
+            out.extend(column_window(column, &window).iter().rev().copied());
+        }
+        if let (Some(out), Some(column)) = (self.ms.as_mut(), ms) {
+            out.extend(column_window(column, &window).iter().rev().copied());
+        }
+        self.offsets.push_end(self.xs.len(), i32::MAX as usize)?;
+        Ok(())
+    }
+
     /// Subdivide one CSR window through `subdivide`, then close the row.
     pub(crate) fn push_subdivided(
         &mut self,
