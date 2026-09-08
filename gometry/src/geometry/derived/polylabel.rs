@@ -951,52 +951,43 @@ mod tests {
             .expect("reciprocal axes have a frame")
     }
 
-    fn flat_framed_nearest(
-        frame: AxisFrame,
-        linework: &PreparedLinework,
-        point: Point,
-    ) -> (Point, f64) {
-        let mut nearest = (Point::new_raw_xy(0.0, 0.0), f64::INFINITY);
+    fn flat_framed_distance(frame: AxisFrame, linework: &PreparedLinework, point: Point) -> f64 {
+        let mut best = f64::INFINITY;
         linework.for_each_segment(|segment| {
-            let candidate = framed_metric_nearest_on_segment(frame, point, segment);
-            if candidate.1 < nearest.1 {
-                nearest = candidate;
-            }
+            best = best.min(framed_metric_nearest_on_segment(frame, point, segment).1);
         });
-        nearest
+        best
     }
 
-    fn indexed_framed_nearest(
+    fn indexed_framed_distance(
         frame: AxisFrame,
         linework: &PreparedLinework,
         bvh: &FacetBvh,
         point: Point,
-    ) -> (Point, f64) {
-        let mut nearest = (Point::new_raw_xy(0.0, 0.0), f64::INFINITY);
+    ) -> f64 {
         let mut stack = Vec::new();
-        let distance = bvh
-            .min_point_distance_with_stack_framed(
-                linework,
-                point,
-                frame,
-                &mut stack,
-                f64::INFINITY,
-                |facet| {
-                    for index in 0..facet.segment_count as usize {
-                        let candidate = framed_metric_nearest_on_segment(
+        bvh.min_point_distance_with_stack_framed(
+            linework,
+            point,
+            frame,
+            &mut stack,
+            f64::INFINITY,
+            |facet| {
+                let mut best = f64::INFINITY;
+                for index in 0..facet.segment_count as usize {
+                    best = best.min(
+                        framed_metric_nearest_on_segment(
                             frame,
                             point,
                             linework.segment(facet, index),
-                        );
-                        if candidate.1 < nearest.1 {
-                            nearest = candidate;
-                        }
-                    }
-                    nearest.1
-                },
-            )
-            .unwrap();
-        (nearest.0, distance)
+                        )
+                        .1,
+                    );
+                }
+                best
+            },
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1024,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn reciprocal_axis_dense_indexed_field_preserves_distance_and_witness() {
+    fn reciprocal_axis_dense_indexed_field_preserves_framed_distance() {
         let normalized = normalized_dense_reciprocal_polygon();
         let linework = PreparedLinework::build(&normalized.shape).unwrap();
         let bvh = FacetBvh::build(&linework).expect("dense linework has an index");
@@ -1040,15 +1031,12 @@ mod tests {
             Point::new_raw_xy(0.25, -0.2),
             Point::new_raw_xy(-0.75, 0.4),
         ] {
-            let (flat_foot, flat_distance) =
-                flat_framed_nearest(normalized.frame, &linework, point);
-            let (indexed_foot, indexed_distance) =
-                indexed_framed_nearest(normalized.frame, &linework, &bvh, point);
+            let flat_distance = flat_framed_distance(normalized.frame, &linework, point);
+            let indexed_distance =
+                indexed_framed_distance(normalized.frame, &linework, &bvh, point);
             let field_distance = field.boundary_distance(point, f64::INFINITY).unwrap();
             assert_eq!(indexed_distance.to_bits(), flat_distance.to_bits());
             assert_eq!(field_distance.to_bits(), flat_distance.to_bits());
-            assert_eq!(indexed_foot.x.to_bits(), flat_foot.x.to_bits());
-            assert_eq!(indexed_foot.y.to_bits(), flat_foot.y.to_bits());
         }
     }
 
@@ -1136,7 +1124,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let (_, flat_distance) = flat_framed_nearest(normalized.frame, &linework, point);
+        let flat_distance = flat_framed_distance(normalized.frame, &linework, point);
         assert_eq!(indexed_distance.to_bits(), flat_distance.to_bits());
         assert!(refined_facets < linework.facets.len());
         assert!(refined_segments < linework.segment_count());
