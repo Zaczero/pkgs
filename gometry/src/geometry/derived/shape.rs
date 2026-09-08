@@ -23,14 +23,14 @@ impl Shape {
         if self.is_empty() {
             return Ok(Self::empty_polygon());
         }
-        let points = self.points_vec();
+        let points = self.points_vec()?;
         let open: Vec<Point> = monotone_chain_hull(&points)
             .into_iter()
             .map(|index| points[index])
             .collect();
         if open.len() < 3 {
             return carry_ordinates(
-                shape_from_open_hull(&open, Self::empty_polygon),
+                shape_from_open_hull(&open, Self::empty_polygon)?,
                 &[self],
                 "minimum_rotated_rectangle",
                 false,
@@ -39,7 +39,7 @@ impl Shape {
         Ok(Self::Polygon(Polygon::new(
             Ring::from_closed(minimum_area_rectangle(&open)?),
             Vec::new(),
-        )))
+        )?))
     }
 
     pub fn centroid(&self) -> Result<Self> {
@@ -100,19 +100,19 @@ impl Shape {
             // the scanline could not find) fall to the JTS dimensional
             // cascade: highest dimension first, areal degeneracy down to its
             // boundary linework and vertices.
-            _ => collection_surface_point(std::slice::from_ref(self)),
+            _ => collection_surface_point(std::slice::from_ref(self))?,
         };
         native.map_or_else(|| Ok(Self::empty_point()), |point| Ok(Self::Point(point)))
     }
 
-    pub fn envelope(&self) -> Self {
+    pub fn envelope(&self) -> Result<Self> {
         // `envelope` produces bounding boxes, so its natural output type is
         // `Polygon` — an empty input yields `POLYGON EMPTY` (the output-type
         // convention), identical on the scalar and array surfaces. A
         // *non-empty* degenerate box still collapses to its lowest-dimensional
         // form (point/line) via `bounds_to_shape`.
         self.bounds()
-            .map_or_else(Self::empty_polygon, bounds_to_shape)
+            .map_or_else(|| Ok(Self::empty_polygon()), bounds_to_shape)
     }
 
     pub fn convex_hull(&self) -> Result<Self> {

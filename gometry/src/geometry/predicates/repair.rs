@@ -4,8 +4,8 @@ use crate::error::Result;
 use crate::geometry::overlay::outside_winding_seeds;
 use crate::geometry::predicates::{prune_dangles, validate_points};
 use crate::geometry::{
-    AreaSign, Arrangement, Coordinates, GeometryErrorKind, HashMap, HashMapExt as _, HashSet,
-    OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, Segment, Shape, XY,
+    AreaSign, Arrangement, CoordSeq, Coordinates, GeometryErrorKind, HashMap, HashMapExt as _,
+    HashSet, OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, Segment, Shape, XY,
     assemble_region_polygons, binary_areal_overlay, line_segments, ordered_edge,
     polygon_parts_to_shape, ring_decision_area, same_point, self_node_segments, winding_region,
     wrap_index,
@@ -34,7 +34,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
                 let windings = arrangement.face_windings(&[0]);
                 assemble_region_polygons(
                     arrangement.region_rings(&windings, |winding| winding % 2 != 0),
-                )
+                )?
             } else {
                 linework_area(polygons)?
             }
@@ -56,7 +56,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             } else {
                 // union(shells) − union(holes) in one overlay pass (empty
                 // holes degrade to the pure shell union).
-                binary_areal_overlay(&shells, &holes, OverlayOp::Difference)
+                binary_areal_overlay(&shells, &holes, OverlayOp::Difference)?
             }
         },
     };
@@ -67,7 +67,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
     // OGC-valid; an antenna encloses nothing, so the area is unchanged.
     let mut cleaned: Vec<Polygon> = Vec::with_capacity(parts.len());
     for polygon in parts {
-        let Some(shell) = ring_without_antennas(&polygon.shell) else {
+        let Some(shell) = ring_without_antennas(&polygon.shell)? else {
             continue;
         };
         // The boolean fold can also merge lobes that touch at one vertex
@@ -78,7 +78,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
         // boundary with the face consistently on one side, so loops winding
         // WITH the dominant loop are sibling lobes and loops winding
         // AGAINST it are holes touching the shell at the pinch.
-        let loops = split_pinched_ring(&shell);
+        let loops = split_pinched_ring(&shell)?;
         let dominant = loops
             .iter()
             .map(|ring| (ring, ring_decision_area(ring.coords())))
@@ -94,24 +94,22 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
         let (shells, mut holes): (Vec<Ring>, Vec<Ring>) = loops
             .into_iter()
             .partition(|ring| crate::geometry::area::ring_area_sign(ring.coords()) == dominant);
-        holes.extend(
-            polygon
-                .holes
-                .iter()
-                .filter_map(ring_without_antennas)
-                .flat_map(|hole| split_pinched_ring(&hole)),
-        );
+        for hole in polygon.holes.iter() {
+            if let Some(hole) = ring_without_antennas(hole)? {
+                holes.extend(split_pinched_ring(&hole)?);
+            }
+        }
         if shells.len() == 1 {
             cleaned.push(Polygon::new(
                 shells.into_iter().next().expect("one shell"),
                 holes,
-            ));
+            )?);
         } else {
             // Re-attach each hole to the lobe that contains it.
             let mut lobes: Vec<Polygon> = shells
                 .into_iter()
                 .map(|shell| Polygon::new(shell, Vec::new()))
-                .collect();
+                .collect::<Result<Vec<_>>>()?;
             let mut lobe_holes: Vec<Vec<Ring>> = vec![Vec::new(); lobes.len()];
             for hole in holes {
                 let anchor = hole.coords().first_coord().expect("non-empty ring");
@@ -121,13 +119,13 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             }
             for (lobe, holes) in lobes.iter_mut().zip(lobe_holes) {
                 if !holes.is_empty() {
-                    lobe.holes = holes.into();
+                    lobe.holes = crate::geometry::SharedSlice::try_from_vec(holes)?;
                 }
             }
             cleaned.extend(lobes);
         }
     }
-    Ok(polygon_parts_to_shape(cleaned))
+    Ok(polygon_parts_to_shape(cleaned)?)
 }
 
 /// Build the linework repair region from one joint arrangement.
@@ -263,15 +261,13 @@ fn linework_area(polygons: &[Polygon]) -> Result<Vec<Polygon>> {
         .collect::<Vec<_>>()
     };
     let windings = arrangement.face_windings(&seeds);
-    Ok(assemble_region_polygons(
-        arrangement.region_rings(&windings, |winding| winding % 2 != 0),
-    ))
+    assemble_region_polygons(arrangement.region_rings(&windings, |winding| winding % 2 != 0))
 }
 
 /// Split a ring that touches itself at single vertices (a pinch) into its
 /// constituent loops: each revisited vertex closes the loop opened at its
 /// first occurrence. A valid ring comes back unchanged as one loop.
-pub(crate) fn split_pinched_ring(ring: &Ring) -> Vec<Ring> {
+pub(crate) fn split_pinched_ring(ring: &Ring) -> Result<Vec<Ring>> {
     // CLEAN fast path (the overwhelmingly common case): no repeated
     // vertex besides the closure means the ring IS its own single loop —
     // detect with one presized pass and return it untouched, skipping the
@@ -288,7 +284,7 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Vec<Ring> {
         // splitter below, which then splits nothing — never the reverse.
         let mut seen: HashSet<PointKey> = HashSet::with_capacity(scan);
         if (0..scan).all(|index| seen.insert(PointKey::new(XY::new(xs[index], ys[index])))) {
-            return vec![ring.clone()];
+            return Ok(vec![ring.clone()]);
         }
     }
     let mut points: Vec<Point> = ring.coords().iter_coords().collect();
@@ -321,7 +317,7 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Vec<Ring> {
         .map(|mut points| {
             let first = points[0];
             points.push(first);
-            Ring::from_closed(points)
+            CoordSeq::try_from_points(&points).map(Ring::from_closed)
         })
         .collect()
 }
@@ -330,7 +326,7 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Vec<Ring> {
 /// neighbors coincide (`prev == next`) sits at the tip of a doubly-traversed
 /// spike — remove the tip and one duplicate, repeating until stable.
 /// Returns `None` when the ring collapses below a triangle.
-pub(crate) fn ring_without_antennas(ring: &Ring) -> Option<Ring> {
+pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
     // CLEAN fast path: a columnar circular `prev == next` sweep finds the
     // (rare) antenna tips without materializing a `Point` per vertex; an
     // antenna-free ring returns untouched.
@@ -342,7 +338,7 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Option<Ring> {
             len -= 1;
         }
         if len < 3 {
-            return None;
+            return Ok(None);
         }
         let clean = (0..len).all(|index| {
             let prev = wrap_index(index + len - 1, len);
@@ -350,7 +346,7 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Option<Ring> {
             !same_point(XY::new(xs[prev], ys[prev]), XY::new(xs[next], ys[next]))
         });
         if clean {
-            return Some(ring.clone());
+            return Ok(Some(ring.clone()));
         }
     }
     let mut points: Vec<Point> = ring.coords().iter_coords().collect();
@@ -359,14 +355,14 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Option<Ring> {
     }
     loop {
         if points.len() < 3 {
-            return None;
+            return Ok(None);
         }
         let mut removed = false;
         let mut index = 0;
         while index < points.len() {
             let len = points.len();
             if len < 3 {
-                return None;
+                return Ok(None);
             }
             let prev = points[wrap_index(index + len - 1, len)];
             let next = points[wrap_index(index + 1, len)];
@@ -389,11 +385,11 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Option<Ring> {
         }
     }
     if points.len() < 3 {
-        return None;
+        return Ok(None);
     }
     let first = points[0];
     points.push(first);
-    Some(Ring::from_closed(points))
+    Ok(Some(Ring::from_closed(CoordSeq::try_from_points(&points)?)))
 }
 
 /// The even-odd enclosed area of one closed ring, as geo polygons ready for
@@ -473,5 +469,5 @@ pub(crate) fn ring_structure_area<C: Coordinates + ?Sized>(ring: &C) -> Result<V
     if xs.len() < 3 {
         return Ok(Vec::new());
     }
-    Ok(winding_region(&[(xs, ys)], |winding| winding != 0))
+    winding_region(&[(xs, ys)], |winding| winding != 0)
 }

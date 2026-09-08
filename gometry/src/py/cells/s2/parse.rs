@@ -128,7 +128,7 @@ pub(crate) fn bounds_query_shape(bounds: crate::geometry::Bounds) -> crate::erro
         Ok(Shape::LineString(LineSeq::segment(
             Point::new_raw_xy(bounds.minx(), bounds.miny()),
             Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
-        )))
+        )?))
     } else {
         Ok(Shape::Polygon(crate::box_polygon(
             bounds.minx(),

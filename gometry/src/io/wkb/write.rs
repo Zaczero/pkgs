@@ -498,11 +498,15 @@ mod tests {
     }
 
     fn line(points: &[Point]) -> LineSeq {
-        LineSeq::try_new(CoordSeq::from_points(points)).expect("test line is valid")
+        LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).expect("test line is valid")
     }
 
     fn polygon(points: &[Point]) -> Polygon {
-        Polygon::new(Ring::from_closed(CoordSeq::from_points(points)), vec![])
+        Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(points).unwrap()),
+            vec![],
+        )
+        .expect("test polygon is valid")
     }
 
     fn ring(axes: CoordinateAxes) -> Ring {
@@ -515,12 +519,15 @@ mod tests {
             )
             .expect("finite test point")
         };
-        Ring::from_closed(CoordSeq::from_points(&[
-            point(0.0, 0.0),
-            point(2.0, 0.0),
-            point(0.0, 2.0),
-            point(0.0, 0.0),
-        ]))
+        Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                point(0.0, 0.0),
+                point(2.0, 0.0),
+                point(0.0, 2.0),
+                point(0.0, 0.0),
+            ])
+            .unwrap(),
+        )
     }
 
     #[cfg(target_pointer_width = "64")]
@@ -541,7 +548,8 @@ mod tests {
 
     #[test]
     fn mixed_ring_sizing_rejects_before_append_mutation() {
-        let polygon = Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]);
+        let polygon =
+            Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]).unwrap();
         let shape = Shape::MultiPolygon(
             MultiPolygon::try_new(CoordinateAxes::XYZ, vec![MultiMember::Value(polygon)])
                 .expect("polygon aggregate axes match"),

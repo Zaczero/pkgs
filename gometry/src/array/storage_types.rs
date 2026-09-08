@@ -675,27 +675,26 @@ impl<'a> ShapesIter<'a> {
 }
 
 impl<'a> Iterator for ShapesIter<'a> {
-    type Item = std::borrow::Cow<'a, Shape>;
+    type Item = crate::error::Result<std::borrow::Cow<'a, Shape>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.rows.next()? {
-            PhysicalRow::Mixed(shape) => Some(std::borrow::Cow::Borrowed(shape)),
-            PhysicalRow::Point(point) => Some(std::borrow::Cow::Owned(Shape::Point(point))),
+            PhysicalRow::Mixed(shape) => Some(Ok(std::borrow::Cow::Borrowed(shape))),
+            PhysicalRow::Point(point) => Some(Ok(std::borrow::Cow::Owned(Shape::Point(point)))),
             PhysicalRow::Line(coords, window) => {
-                Some(std::borrow::Cow::Owned(if window.is_empty() {
+                Some(Ok(std::borrow::Cow::Owned(if window.is_empty() {
                     Shape::typed_empty(GeometryKind::LineString, coords.axes())
                 } else {
                     Shape::LineString(LineSeq::row_view(
                         coords,
                         CoordWindow::from_range(window, coords.len()),
                     ))
-                }))
+                })))
             },
-            PhysicalRow::Polygon(coords, ring_offsets, rings) => {
-                Some(std::borrow::Cow::Owned(Shape::Polygon(
-                    GeometryArrayStorage::polygon_view(coords, ring_offsets, rings),
-                )))
-            },
+            PhysicalRow::Polygon(coords, ring_offsets, rings) => Some(
+                GeometryArrayStorage::polygon_view(coords, ring_offsets, rings)
+                    .map(|polygon| std::borrow::Cow::Owned(Shape::Polygon(polygon))),
+            ),
         }
     }
 
@@ -835,12 +834,15 @@ mod tests {
 
     #[test]
     fn shapes_iter_size_hint_exact_points_identity_window_gather() {
-        let coords = Arc::new(CoordSeq::from_vecs(
-            vec![0.0, 1.0, 2.0, 3.0],
-            vec![0.0, 1.0, 2.0, 3.0],
-            None,
-            None,
-        ));
+        let coords = Arc::new(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 2.0, 3.0],
+                vec![0.0, 1.0, 2.0, 3.0],
+                None,
+                None,
+            )
+            .unwrap(),
+        );
         let identity = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::clone(&coords),
             row_map: RowSelection::Identity,
@@ -862,12 +864,15 @@ mod tests {
 
     #[test]
     fn shapes_iter_size_hint_exact_lines_identity_window_gather() {
-        let coords = Arc::new(CoordSeq::from_vecs(
-            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-            None,
-            None,
-        ));
+        let coords = Arc::new(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                None,
+                None,
+            )
+            .unwrap(),
+        );
         // Three lines: verts [0,2), [2,4), [4,6)
         let offsets = crate::geometry::CsrOffsetColumn::try_new(vec![0, 2, 4, 6], 6).unwrap();
         let identity = GeometryArrayStorage::Packed(PackedStorage::Lines {
@@ -895,12 +900,15 @@ mod tests {
     #[test]
     fn shapes_iter_size_hint_exact_polygons_identity_window_gather() {
         // Two triangles: ring verts 0..4 and 4..8 (closed).
-        let coords = Arc::new(CoordSeq::from_vecs(
-            vec![0.0, 1.0, 1.0, 0.0, 10.0, 11.0, 11.0, 10.0],
-            vec![0.0, 0.0, 1.0, 0.0, 10.0, 10.0, 11.0, 10.0],
-            None,
-            None,
-        ));
+        let coords = Arc::new(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 1.0, 0.0, 10.0, 11.0, 11.0, 10.0],
+                vec![0.0, 0.0, 1.0, 0.0, 10.0, 10.0, 11.0, 10.0],
+                None,
+                None,
+            )
+            .unwrap(),
+        );
         let ring_offsets = crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_new(
             vec![0, 4, 8],
             8,
@@ -941,7 +949,7 @@ mod tests {
     fn shapes_iter_size_hint_exact_empty_storages() {
         assert_shapes_iter_exact(&GeometryArrayStorage::Mixed(Vec::new()));
         let empty_pts = GeometryArrayStorage::Packed(PackedStorage::Points {
-            coords: Arc::new(CoordSeq::from_vecs(vec![], vec![], None, None)),
+            coords: Arc::new(CoordSeq::try_from_vecs(vec![], vec![], None, None).unwrap()),
             row_map: RowSelection::Identity,
         });
         assert_shapes_iter_exact(&empty_pts);

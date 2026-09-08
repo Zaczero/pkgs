@@ -10,7 +10,6 @@
     reason = "C Data Interface child pointers require stable pointee addresses"
 )]
 
-use crate::py::errors;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::sync::Arc;
 
@@ -20,7 +19,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use serde_json::{Map, Number, Value};
 
-use crate::geometry::{CoordSeq, CoordinateAxes};
+use crate::geometry::{CoordSeq, CoordinateAxes, SharedSlice};
+use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::geoarrow::GeometryEncoding;
 use crate::{PyGeometry, PyGeometryArray};
@@ -71,16 +71,11 @@ impl NativeArrowExportError {
             Self::Core(error) => error.into(),
             Self::CoreRow { row, error } => crate::broadcast::rows_err((row, error)),
             Self::Overflow(message) => PyOverflowError::new_err(message.into_string()),
-            Self::GeoArrow(message) => errors::parse_error(
-                message.into_string(),
-                crate::error::ParseFormat::GeoArrow,
-            ),
-            Self::Geometry(message) => {
-                GeometryError::new_err(message.into_string())
+            Self::GeoArrow(message) => {
+                errors::parse_error(message.into_string(), crate::error::ParseFormat::GeoArrow)
             },
-            Self::InvalidGeometry(message) => {
-                InvalidGeometryError::new_err(message.into_string())
-            },
+            Self::Geometry(message) => GeometryError::new_err(message.into_string()),
+            Self::InvalidGeometry(message) => InvalidGeometryError::new_err(message.into_string()),
         }
     }
 }
@@ -130,7 +125,7 @@ struct SchemaPrivate {
 }
 
 struct ArrayPrivate {
-    _f64_buffers: Vec<Arc<[f64]>>,
+    _f64_buffers: Vec<SharedSlice<f64>>,
     _i32_buffers: Vec<Arc<[i32]>>,
     u8_buffers: Vec<Arc<[u8]>>,
     buffers: Vec<*const c_void>,

@@ -16,13 +16,13 @@ use crate::{
 
 fn pooled_shapes(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
     if let Some(array) = exact_geometry_array(values) {
-        return Ok((array.frame.clone(), array.present_shapes()));
+        return Ok((array.frame.clone(), array.present_shapes()?));
     }
     if let Some(geometry) = exact_geometry(values) {
         return Ok((geometry.frame.clone(), vec![geometry.shape.shape().clone()]));
     }
     let array = PyGeometryArray::new(values, None, None)?;
-    Ok((array.frame.clone(), array.present_shapes()))
+    Ok((array.frame.clone(), array.present_shapes()?))
 }
 
 fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
@@ -41,10 +41,10 @@ fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Sh
             Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
         })
         .map(|row| match row {
-            crate::array::ArrayRow::Missing { value, .. } => value,
+            crate::array::ArrayRow::Missing { value, .. } => Ok(value),
             crate::array::ArrayRow::Present(row) => row.row().with_shape(Clone::clone),
         })
-        .collect();
+        .collect::<crate::error::Result<Vec<_>>>()?;
     Ok((frame, shapes))
 }
 
@@ -394,7 +394,7 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
         }
         Shape::polygonize_all(&refs, false)
     })?;
-    Ok(PyGeometryArray::from_shapes(polygons, metadata))
+    Ok(PyGeometryArray::from_shapes(polygons, metadata)?)
 }
 
 /// Polygonize pooled linework and return full diagnostics.
@@ -619,10 +619,10 @@ pub(crate) fn coverage_invalid_edges(
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
     let edges = py.detach(move || geometry::coverage_invalid_edges(&shapes, gap_width))?;
-    let result = PyGeometryArray::from_shapes(edges, metadata);
+    let result = PyGeometryArray::from_shapes(edges, metadata)?;
     Ok(match source {
         None => result,
-        Some(array) => array.scatter_present_result(result),
+        Some(array) => array.scatter_present_result(result)?,
     })
 }
 
@@ -696,10 +696,10 @@ pub(crate) fn coverage_simplify(
     let rows = py.detach(move || {
         geometry::coverage_simplify(&shapes, tolerance, method, simplify_boundary)
     })?;
-    let result = PyGeometryArray::from_shapes(rows, metadata);
+    let result = PyGeometryArray::from_shapes(rows, metadata)?;
     Ok(match source {
         None => result,
-        Some(array) => array.scatter_present_result(result),
+        Some(array) => array.scatter_present_result(result)?,
     })
 }
 
@@ -774,10 +774,10 @@ pub(crate) fn coverage_clean(
     let (shapes, metadata, source) = coverage_values(values)?;
     let rows =
         py.detach(move || geometry::coverage_clean(&shapes, grid_size, gap_width, overlap_rule))?;
-    let result = PyGeometryArray::from_shapes(rows, metadata);
+    let result = PyGeometryArray::from_shapes(rows, metadata)?;
     Ok(match source {
         None => result,
-        Some(array) => array.scatter_present_result(result),
+        Some(array) => array.scatter_present_result(result)?,
     })
 }
 
@@ -789,7 +789,7 @@ fn coverage_values(
 ) -> PyResult<(Vec<Shape>, Frame, Option<PyGeometryArray>)> {
     if let Some(array) = exact_geometry_array(values) {
         return Ok((
-            array.present_shapes(),
+            array.present_shapes()?,
             array.frame.clone(),
             Some(array.clone()),
         ));
@@ -802,5 +802,5 @@ fn coverage_values(
         ));
     }
     let array = PyGeometryArray::new(values, None, None)?;
-    Ok((array.present_shapes(), array.frame.clone(), Some(array)))
+    Ok((array.present_shapes()?, array.frame.clone(), Some(array)))
 }

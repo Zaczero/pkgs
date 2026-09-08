@@ -128,19 +128,20 @@ mod tests {
             Point::new_axes(x, y, ZOrdinate(Some(5.0)), MOrdinate(None)).expect("finite XYZ point")
         };
         let xy = |x: f64, y: f64| Point::new(x, y).expect("finite XY point");
-        let shell = Ring::from_closed(CoordSeq::from_points(&[
-            xyz(0.0, 0.0),
-            xyz(2.0, 0.0),
-            xyz(0.0, 2.0),
-            xyz(0.0, 0.0),
-        ]));
-        let late_xy_hole = Ring::from_closed(CoordSeq::from_points(&[
-            xy(0.5, 0.5),
-            xy(1.0, 0.5),
-            xy(0.5, 1.0),
-            xy(0.5, 0.5),
-        ]));
-        let shape = Shape::Polygon(Polygon::new(shell, vec![late_xy_hole]));
+        let shell = Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                xyz(0.0, 0.0),
+                xyz(2.0, 0.0),
+                xyz(0.0, 2.0),
+                xyz(0.0, 0.0),
+            ])
+            .unwrap(),
+        );
+        let late_xy_hole = Ring::from_closed(
+            CoordSeq::try_from_points(&[xy(0.5, 0.5), xy(1.0, 0.5), xy(0.5, 1.0), xy(0.5, 0.5)])
+                .unwrap(),
+        );
+        let shape = Shape::Polygon(Polygon::new(shell, vec![late_xy_hole]).unwrap());
 
         let preview = to_wkt_preview(&shape, 1).expect("unvisited late ring is irrelevant");
         assert!(preview.starts_with("POLYGON Z"));
@@ -275,7 +276,8 @@ mod tests {
                 ])
                 .unwrap(),
             ],
-        );
+        )
+        .expect("test polygon is valid");
         let z0 = Point::new_axes(179.9, -16.2, ZOrdinate(Some(5.0)), MOrdinate(None)).unwrap();
         let z1 = Point::new_axes(-179.8, -16.1, ZOrdinate(Some(6.0)), MOrdinate(None)).unwrap();
         let cases = vec![
@@ -287,19 +289,26 @@ mod tests {
                 vec![Point::new(1.0, 2.0).unwrap(), Point::new(3.0, 4.0).unwrap()].into(),
             ),
             Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![z0, z1])).expect("test line has two vertices"),
+                LineSeq::try_new(CoordSeq::try_from_points(&vec![z0, z1]).unwrap())
+                    .expect("test line has two vertices"),
             ),
             Shape::MultiLineString(
                 vec![
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        Point::new(0.0, 0.0).unwrap(),
-                        Point::new(1.0, 1.0).unwrap(),
-                    ]))
+                    LineSeq::try_new(
+                        CoordSeq::try_from_points(&vec![
+                            Point::new(0.0, 0.0).unwrap(),
+                            Point::new(1.0, 1.0).unwrap(),
+                        ])
+                        .unwrap(),
+                    )
                     .expect("test line has two vertices"),
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        Point::new(2.0, 2.0).unwrap(),
-                        Point::new(3.0, 3.0).unwrap(),
-                    ]))
+                    LineSeq::try_new(
+                        CoordSeq::try_from_points(&vec![
+                            Point::new(2.0, 2.0).unwrap(),
+                            Point::new(3.0, 3.0).unwrap(),
+                        ])
+                        .unwrap(),
+                    )
                     .expect("test line has two vertices"),
                 ]
                 .into(),

@@ -69,7 +69,7 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
     };
     let ctx = RelateCoverContext {
         authority: GeographicCoverageSource::new(source, SphericalGridTarget::S2).unwrap(),
-        tester: PointBatchTester::new(source),
+        tester: PointBatchTester::new(source).unwrap(),
         source: source.clone(),
         point_leaves: point_leaves(source),
     };
@@ -195,13 +195,13 @@ fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
     // Independent of the production `NativeRectClassifier`: classify the
     // rect against the source with gometry's general DE-9IM relate engine.
     let rect_shape = box_shape(rect.lng_lo, rect.lat_lo, rect.lng_hi, rect.lat_hi);
-    if covered == 4 && ctx.source.covers(&rect_shape) {
+    if covered == 4 && ctx.source.covers(&rect_shape).unwrap() {
         return CellClass::Interior;
     }
     if covered > 0 || center_hit {
         return CellClass::Boundary;
     }
-    if !ctx.source.intersects(&rect_shape) {
+    if !ctx.source.intersects(&rect_shape).unwrap() {
         return CellClass::Outside;
     }
     // Match production: rect Outside is the only negative certificate;
@@ -216,21 +216,22 @@ fn relate_wrapped_rect_is_interior(
 ) -> bool {
     if rect.is_full_lng() {
         let full = box_shape(-180.0, rect.lat_lo, 180.0, rect.lat_hi);
-        return ctx.source.covers(&full);
+        return ctx.source.covers(&full).unwrap();
     }
     let ((lo0, hi0), second) = rect.lng_windows();
     if hi0 > lo0
         && !ctx
             .source
             .covers(&box_shape(lo0, rect.lat_lo, hi0, rect.lat_hi))
+            .unwrap()
     {
         return false;
     }
     match second {
-        Some((lo1, hi1)) if hi1 > lo1 => {
-            ctx.source
-                .covers(&box_shape(lo1, rect.lat_lo, hi1, rect.lat_hi))
-        },
+        Some((lo1, hi1)) if hi1 > lo1 => ctx
+            .source
+            .covers(&box_shape(lo1, rect.lat_lo, hi1, rect.lat_hi))
+            .unwrap(),
         _ => true,
     }
 }
@@ -243,7 +244,13 @@ fn box_shape(west: f64, south: f64, east: f64, north: f64) -> Shape {
         Point::new_raw_xy(west, north),
         Point::new_raw_xy(west, south),
     ];
-    Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()))
+    Shape::Polygon(
+        Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+            Vec::new(),
+        )
+        .unwrap(),
+    )
 }
 
 fn polygon_with_hole() -> Shape {
@@ -261,9 +268,13 @@ fn polygon_with_hole() -> Shape {
         Point::new_raw_xy(17.0, 13.0),
         Point::new_raw_xy(13.0, 13.0),
     ];
-    Shape::Polygon(Polygon::new(Ring::from_closed(shell), vec![
-        Ring::from_closed(hole),
-    ]))
+    Shape::Polygon(
+        Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+            vec![Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap())],
+        )
+        .unwrap(),
+    )
 }
 
 fn classify_with_native(source: &Shape, id: CellId) -> CellClass {
@@ -286,10 +297,13 @@ fn fixed(level: u8) -> Coverer {
 #[test]
 fn productive_cache_is_isolated_between_sources() {
     let line = Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_raw_xy(-50.0, -40.0),
-            Point::new_raw_xy(50.0, -40.0),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-50.0, -40.0),
+                Point::new_raw_xy(50.0, -40.0),
+            ])
+            .unwrap(),
+        )
         .expect("fixture line is valid"),
     );
     let adaptive = Coverer {
@@ -385,17 +399,21 @@ fn mixed_dimension_collection() -> Shape {
     Shape::geometry_collection(vec![
         box_shape(-2.0, -2.0, 2.0, 2.0),
         Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new_raw_xy(3.0, -1.0),
-                Point::new_raw_xy(6.0, 1.0),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&vec![
+                    Point::new_raw_xy(3.0, -1.0),
+                    Point::new_raw_xy(6.0, 1.0),
+                ])
+                .unwrap(),
+            )
             .expect("test line is valid"),
         ),
         Shape::MultiPoint(
-            CoordSeq::from(vec![
+            CoordSeq::try_from_points(&vec![
                 Point::new_raw_xy(-4.0, 0.0),
                 Point::new_raw_xy(0.0, 4.0),
             ])
+            .unwrap()
             .into(),
         ),
     ])
@@ -425,10 +443,13 @@ fn native_coverer_matches_relate_oracle_on_a_holed_polygon() {
 #[test]
 fn native_coverer_matches_relate_oracle_on_a_line() {
     let source = Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_raw_xy(-3.0, -2.0),
-            Point::new_raw_xy(4.0, 3.0),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-3.0, -2.0),
+                Point::new_raw_xy(4.0, 3.0),
+            ])
+            .unwrap(),
+        )
         .expect("test line is valid"),
     );
     assert_relate_oracle_parity("line", &source, &[5, 7, 9]);
@@ -506,10 +527,13 @@ fn split_working_window_cannot_prune_the_retained_seam_owner() {
     // meets the owner's certified rectangle. That disagreement is
     // precisely the hazard corroboration must keep open.
     let source = Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_raw_xy(170.0, 0.0),
-            Point::new_raw_xy(-160.0, 40.0),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(170.0, 0.0),
+                Point::new_raw_xy(-160.0, 40.0),
+            ])
+            .unwrap(),
+        )
         .expect("test line is valid"),
     );
     let working = source
@@ -736,7 +760,7 @@ fn fixed_level_box_covering_is_complete_and_exact() {
     for &id in &interior {
         assert!(has(&outer, id));
         let center = Cell::from_id(id).center_lonlat();
-        assert!(source.covers_point(center));
+        assert!(source.covers_point(center).unwrap());
     }
     // The exact covering is materially tighter than the bbox: cells
     // far outside the box never appear.
@@ -762,7 +786,13 @@ fn concave_source_excludes_notch() {
         Point::new_raw_xy(0.0, 4.0),
         Point::new_raw_xy(0.0, 0.0),
     ];
-    let source = Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()));
+    let source = Shape::Polygon(
+        Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+            Vec::new(),
+        )
+        .unwrap(),
+    );
     let covering = fixed(8)
         .cover_identity(&source)
         .expect("small fixed-level covering is within budget");
@@ -895,9 +925,15 @@ fn polar_kite_interior_certificates_are_sound() {
         .expect("small fixed-level covering is within budget");
     for id in covering.interior() {
         let cell = Cell::from_id(id);
-        assert!(source.covers_point(cell.center_lonlat()), "{id:?} center");
+        assert!(
+            source.covers_point(cell.center_lonlat()).unwrap(),
+            "{id:?} center"
+        );
         for vertex in cell.vertices_lonlat() {
-            assert!(source.covers_point(vertex), "{id:?} vertex {vertex:?}");
+            assert!(
+                source.covers_point(vertex).unwrap(),
+                "{id:?} vertex {vertex:?}"
+            );
         }
         // Edge midpoints are also exact cell points (children's shared
         // corners): sample via the four children's vertices.
@@ -905,7 +941,7 @@ fn polar_kite_interior_certificates_are_sound() {
             for child in children {
                 for vertex in Cell::from_id(child).vertices_lonlat() {
                     assert!(
-                        source.covers_point(vertex),
+                        source.covers_point(vertex).unwrap(),
                         "{id:?} child vertex {vertex:?}"
                     );
                 }
@@ -981,10 +1017,13 @@ fn cover_rejects_fine_min_level_before_flooding() {
 #[test]
 fn fixed_level_budget_matches_unlimited_threshold() {
     let source = Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_raw_xy(-75.0, 40.0),
-            Point::new_raw_xy(-74.99, 40.01),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-75.0, 40.0),
+                Point::new_raw_xy(-74.99, 40.01),
+            ])
+            .unwrap(),
+        )
         .expect("test line is valid"),
     );
     let unlimited = Coverer {
@@ -1015,10 +1054,13 @@ fn fixed_level_budget_matches_unlimited_threshold() {
     // K-1 must raise when K > 0 (here K=1 ⇒ no smaller positive budget to
     // probe; use a multi-cell line for the raise side).
     let longer = Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_raw_xy(-75.0, 40.0),
-            Point::new_raw_xy(-74.0, 41.0),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-75.0, 40.0),
+                Point::new_raw_xy(-74.0, 41.0),
+            ])
+            .unwrap(),
+        )
         .expect("longer line"),
     );
     let long_u = Coverer {

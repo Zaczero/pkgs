@@ -1,12 +1,10 @@
 use std::ops::ControlFlow;
 
-use ahash::HashSetExt as _;
-
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
 use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
 use crate::geometry::{
     Bounds, Bounds3D, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryKind, HasM, HasZ,
-    HashSet, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Ring, Shape,
+    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Ring, Shape,
     line_length_3d,
 };
 
@@ -202,18 +200,28 @@ impl Shape {
     /// Append every vertex to `out` without allocating a boxed iterator — the
     /// non-boxing counterpart to `points().collect()`. Reserve in the caller
     /// when the count is known.
-    pub fn collect_points_into(&self, out: &mut Vec<Point>) {
-        self.for_each_point(|point| out.push(point));
+    pub fn collect_points_into(&self, out: &mut Vec<Point>) -> Result<()> {
+        self.try_for_each_point(|point| {
+            if out.len() == out.capacity() {
+                let additional = out.capacity().max(8);
+                if out.try_reserve(additional).is_err() {
+                    return Err(ResourceError::Allocation.into());
+                }
+            }
+            out.push(point);
+            Ok(())
+        })
     }
 
     /// Materialize every vertex into a pre-sized `Vec`, avoiding the
     /// boxed-`dyn` iterator allocation of the historical `points()`. Prefer
     /// it for hot paths (distance worksets, geodesic/Hausdorff distance,
     /// min-clearance) that need an owned vertex buffer.
-    pub fn points_vec(&self) -> Vec<Point> {
-        let mut points = Vec::with_capacity(self.coord_count());
-        self.collect_points_into(&mut points);
-        points
+    pub fn points_vec(&self) -> Result<Vec<Point>> {
+        let mut points = Vec::new();
+        crate::boundary::try_reserve_vec(&mut points, self.coord_count())?;
+        self.collect_points_into(&mut points)?;
+        Ok(points)
     }
 
     /// Distinct vertices in first-occurrence order.
@@ -222,33 +230,65 @@ impl Shape {
     /// `remove_repeated_points`, which collapses only consecutive runs within
     /// a tolerance. Homogeneous survivors use a `MultiPoint`; heterogeneous
     /// survivors remain ordered `Point` members of a `GeometryCollection`.
-    pub fn unique_points(&self) -> Self {
+    pub fn unique_points(&self) -> Result<Self> {
         // A point atom is already its own unique set — no hashing.
         if let Self::Point(point) = self {
-            return Self::multi_point(point.axes, CoordSeq::from_points(&[*point]));
+            return Ok(Self::multi_point(
+                point.axes,
+                CoordSeq::try_from_points(&[*point])?,
+            ));
         }
         let capacity = self.coord_count();
-        let mut seen = HashSet::with_capacity(capacity);
-        let mut unique: Vec<Point> = Vec::with_capacity(capacity);
-        self.for_each_point(|point| {
+        let mut seen = std::collections::HashSet::<Point>::new();
+        if seen.try_reserve(capacity).is_err() {
+            return Err(ResourceError::Allocation.into());
+        }
+        let mut unique = Vec::new();
+        crate::boundary::try_reserve_vec(&mut unique, capacity)?;
+        self.try_for_each_point(|point| {
+            if seen.len() == seen.capacity() {
+                let additional = seen.capacity().max(8);
+                if seen.try_reserve(additional).is_err() {
+                    return Err(ResourceError::Allocation.into());
+                }
+            }
             if seen.insert(point) {
+                if unique.len() == unique.capacity() {
+                    let additional = unique.capacity().max(8);
+                    if unique.try_reserve(additional).is_err() {
+                        return Err(ResourceError::Allocation.into());
+                    }
+                }
                 unique.push(point);
             }
-        });
+            Ok::<_, crate::error::Error>(())
+        })?;
         let Some(first) = unique.first().copied() else {
-            return Self::multi_point(self.axes(), CoordSeq::from_points(&unique));
+            return Ok(Self::multi_point(
+                self.axes(),
+                CoordSeq::try_from_points(&unique)?,
+            ));
         };
         if unique.iter().all(|point| point.axes() == first.axes()) {
-            return Self::multi_point(first.axes(), CoordSeq::from_points(&unique));
+            return Ok(Self::multi_point(
+                first.axes(),
+                CoordSeq::try_from_points(&unique)?,
+            ));
         }
-        Self::geometry_collection(unique.into_iter().map(Self::Point).collect())
-            .expect("unique point collection is nonempty and shallow")
+        let mut members = Vec::new();
+        crate::try_reserve_vec(&mut members, unique.len())?;
+        members.extend(unique.into_iter().map(Self::Point));
+        Self::geometry_collection(members)
     }
 
     /// Visit every segment-bearing coordinate chain — linestrings,
     /// multi-linestring members, and polygon rings, recursively through
     /// collections — as borrowed columns. The chain enumeration behind
     /// segment-level prepared state (facet linework).
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
+    )]
     pub(crate) fn for_each_segment_chain(&self, mut visit: impl FnMut(&CoordSeq)) {
         let _: ControlFlow<()> = self.for_each_segment_chain_inner(&mut |chain| {
             visit(chain);

@@ -43,16 +43,16 @@ impl Shape {
                 if pieces.is_empty() {
                     Ok(self.clone())
                 } else {
-                    Ok(Self::multi_line_string(
+                    Self::multi_line_string(
                         CoordinateAxes::XY,
                         pieces
                             .into_iter()
-                            .map(CoordSeq::from)
+                            .map(|piece| CoordSeq::try_from_points(&piece))
                             // Splitting a line at meridian crossings yields
                             // pieces of at least two vertices each.
-                            .map(LineSeq::from_proven)
-                            .collect(),
-                    ))
+                            .map(|coords| coords.map(LineSeq::from_proven))
+                            .collect::<Result<Vec<_>>>()?,
+                    )
                 }
             },
             Self::MultiLineString(lines) => {
@@ -66,13 +66,13 @@ impl Shape {
                             if pieces.is_empty() {
                                 split.push(MultiMember::Value(line.clone()));
                             } else {
-                                split.extend(
-                                    pieces
-                                        .into_iter()
-                                        .map(CoordSeq::from)
-                                        .map(LineSeq::from_proven)
-                                        .map(MultiMember::Value),
-                                );
+                                let lines = pieces
+                                    .into_iter()
+                                    .map(|piece| CoordSeq::try_from_points(&piece))
+                                    .map(|coords| coords.map(LineSeq::from_proven))
+                                    .map(|line| line.map(MultiMember::Value))
+                                    .collect::<Result<Vec<_>>>()?;
+                                split.extend(lines);
                             }
                         },
                     }
@@ -84,7 +84,7 @@ impl Shape {
             },
             Self::Polygon(polygon) => {
                 let polygons = split_polygon(self, polygon, PoleClosure::Auto)?;
-                Ok(Self::narrow_polygons(polygon.axes(), polygons))
+                Ok(Self::narrow_polygons(polygon.axes(), polygons)?)
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.len());
@@ -137,7 +137,7 @@ impl Shape {
         match self {
             Self::Polygon(polygon) => {
                 let polygons = split_polygon(self, polygon, closure)?;
-                Ok(Self::narrow_polygons(polygon.axes(), polygons))
+                Ok(Self::narrow_polygons(polygon.axes(), polygons)?)
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.len());
@@ -187,10 +187,7 @@ fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
 pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
     let frame = view.frame();
     let canonical = source_longitudes_are_canonical(view);
-    if frame == GeographicFrame::crs84()
-        && canonical
-        && !view.shape().crosses_antimeridian()
-    {
+    if frame == GeographicFrame::crs84() && canonical && !view.shape().crosses_antimeridian() {
         return Ok(view.shape().clone());
     }
     let longitude_scale = frame.longitude().unit().radians_per_unit().to_degrees();
@@ -278,7 +275,7 @@ fn chart_ring(
             )?);
         }
     }
-    Ok(Ring::from_closed(CoordSeq::from(points)))
+    Ok(Ring::from_closed(CoordSeq::try_from_points(&points)?))
 }
 
 fn chart_polygon(
@@ -293,7 +290,7 @@ fn chart_polygon(
     for hole in polygon.holes.iter() {
         holes.push(chart_ring(hole, frame, longitude_scale, latitude_scale)?);
     }
-    Ok(Polygon::new(shell, holes))
+    Polygon::new(shell, holes)
 }
 
 fn chart_shape(
@@ -420,9 +417,9 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     }
     if !crossing_holes.is_empty() {
         let axes = polygon.shell.coords().axes();
-        let shell_only = Polygon::new(polygon.shell.clone(), stationary_holes);
+        let shell_only = Polygon::new(polygon.shell.clone(), stationary_holes)?;
         let shell_parts = split_polygon_inner(&shell_only, preferred)?;
-        let mut result = shape_from_polygons(shell_parts, axes);
+        let mut result = shape_from_polygons(shell_parts, axes)?;
         for hole in crossing_holes {
             let hole_axes = hole.coords().axes();
             let north = ring_encloses_pole(&hole, true);
@@ -432,11 +429,9 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
                 (false, true) => PoleClosure::South,
                 _ => PoleClosure::Auto,
             };
-            let hole_parts = split_polygon_inner(&Polygon::new(hole, Vec::new()), hole_closure)?;
-            result = result.difference(
-                &shape_from_polygons(hole_parts, hole_axes),
-                Strictness::Strict,
-            )?;
+            let hole_parts = split_polygon_inner(&Polygon::new(hole, Vec::new())?, hole_closure)?;
+            let hole_shape = shape_from_polygons(hole_parts, hole_axes)?;
+            result = result.difference(&hole_shape, Strictness::Strict)?;
         }
         return polygons_from_shape(result);
     }
@@ -510,7 +505,7 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     }
 }
 
-fn shape_from_polygons(polygons: Vec<Polygon>, axes: CoordinateAxes) -> Shape {
+fn shape_from_polygons(polygons: Vec<Polygon>, axes: CoordinateAxes) -> Result<Shape> {
     Shape::narrow_polygons(axes, polygons)
 }
 
@@ -554,19 +549,17 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
         ];
         let hole = close_ring(shells.remove(0));
         return Ok(vec![Polygon::new(
-            Ring::from_closed(CoordSeq::from(world)),
-            vec![Ring::from_closed(CoordSeq::from(hole))],
-        )]);
+            Ring::from_closed(CoordSeq::try_from_points(&world)?),
+            vec![Ring::from_closed(CoordSeq::try_from_points(&hole)?)],
+        )?]);
     }
-    let mut polygons: Vec<Polygon> = shells
-        .into_iter()
-        .map(|shell| {
-            Polygon::new(
-                Ring::from_closed(CoordSeq::from(close_ring(shell))),
-                Vec::new(),
-            )
-        })
-        .collect();
+    let mut polygons = Vec::with_capacity(shells.len());
+    for shell in shells {
+        polygons.push(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&close_ring(shell))?),
+            Vec::new(),
+        )?);
+    }
     // Assign each non-crossing hole to the part that contains it. (The
     // upstream loop accidentally overwrites earlier holes that land in the
     // same part — accumulating them all is the deliberate difference.)
@@ -578,9 +571,13 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
     let mut assigned_holes = vec![Vec::<Ring>::new(); polygons.len()];
     for hole in kept_holes {
         let hole_shape = Shape::LineString(hole.as_line());
-        let owner = candidate_shapes
-            .iter()
-            .position(|candidate| candidate.contains(&hole_shape));
+        let mut owner = None;
+        for (index, candidate) in candidate_shapes.iter().enumerate() {
+            if candidate.contains(&hole_shape)? {
+                owner = Some(index);
+                break;
+            }
+        }
         match owner {
             Some(index) => assigned_holes[index].push((*hole).clone()),
             None => {
@@ -594,13 +591,14 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
         if holes.is_empty() {
             continue;
         }
-        polygon.holes = if polygon.holes.is_empty() {
-            holes.into()
+        let combined = if polygon.holes.is_empty() {
+            holes
         } else {
             let mut combined = polygon.holes.to_vec();
             combined.append(&mut holes);
-            combined.into()
+            combined
         };
+        *polygon = Polygon::new(polygon.shell.clone(), combined)?;
     }
     Ok(polygons)
 }
@@ -790,19 +788,23 @@ fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
 #[cfg(test)]
 mod tests {
     use crate::geographic::{AngularFactor, GeographicFrame};
-    use crate::geometry::{
-        CoordSeq, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, ZOrdinate,
-    };
+    use crate::geometry::{CoordSeq, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, ZOrdinate};
     use crate::test_support::allocation_count;
 
     fn line(xs: &[f64], ys: &[f64]) -> Shape {
         Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_vecs(xs.to_vec(), ys.to_vec(), None, None)).unwrap(),
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(xs.to_vec(), ys.to_vec(), None, None).unwrap(),
+            )
+            .unwrap(),
         )
     }
 
     fn closed_ring(xs: &[f64], ys: &[f64]) -> Ring {
-        Ring::closed_coordseq(CoordSeq::from_vecs(xs.to_vec(), ys.to_vec(), None, None)).unwrap()
+        Ring::closed_coordseq(
+            CoordSeq::try_from_vecs(xs.to_vec(), ys.to_vec(), None, None).unwrap(),
+        )
+        .unwrap()
     }
 
     fn split_crs84(shape: &Shape) -> Shape {
@@ -813,8 +815,7 @@ mod tests {
 
     #[test]
     fn degree_try_new_frame_equals_crs84() {
-        let degrees =
-            AngularFactor::try_new("angular unit", std::f64::consts::PI / 180.0).unwrap();
+        let degrees = AngularFactor::try_new("angular unit", std::f64::consts::PI / 180.0).unwrap();
         let frame = GeographicFrame::try_new(degrees, degrees, 0.0).unwrap();
         assert_eq!(frame, GeographicFrame::crs84());
     }
@@ -845,37 +846,44 @@ mod tests {
 
     #[test]
     fn crs84_world_rectangle_is_identity() {
-        let shape = Shape::Polygon(Polygon::new(
-            closed_ring(
-                &[-180.0, 180.0, 180.0, -180.0, -180.0],
-                &[-90.0, -90.0, 90.0, 90.0, -90.0],
-            ),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                closed_ring(&[-180.0, 180.0, 180.0, -180.0, -180.0], &[
+                    -90.0, -90.0, 90.0, 90.0, -90.0,
+                ]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert_eq!(split_crs84(&shape), shape);
     }
 
     #[test]
     fn crs84_canonical_polygon_with_holes_is_identity() {
-        let shape = Shape::Polygon(Polygon::new(
-            closed_ring(&[0.0, 10.0, 10.0, 0.0, 0.0], &[0.0, 0.0, 10.0, 10.0, 0.0]),
-            vec![closed_ring(
-                &[2.0, 4.0, 4.0, 2.0, 2.0],
-                &[2.0, 2.0, 4.0, 4.0, 2.0],
-            )],
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                closed_ring(&[0.0, 10.0, 10.0, 0.0, 0.0], &[0.0, 0.0, 10.0, 10.0, 0.0]),
+                vec![closed_ring(&[2.0, 4.0, 4.0, 2.0, 2.0], &[
+                    2.0, 2.0, 4.0, 4.0, 2.0,
+                ])],
+            )
+            .unwrap(),
+        );
         assert_eq!(split_crs84(&shape), shape);
     }
 
     #[test]
     fn crs84_nested_xyzm_collection_is_identity() {
         let line = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_vecs(
-                vec![1.0, 2.0],
-                vec![3.0, 4.0],
-                Some(vec![10.0, 20.0]),
-                Some(vec![7.0, 8.0]),
-            ))
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(
+                    vec![1.0, 2.0],
+                    vec![3.0, 4.0],
+                    Some(vec![10.0, 20.0]),
+                    Some(vec![7.0, 8.0]),
+                )
+                .unwrap(),
+            )
             .unwrap(),
         );
         let point = Shape::Point(
@@ -888,22 +896,26 @@ mod tests {
 
     #[test]
     fn crs84_zero_to_full_turn_band_rewrites() {
-        let shape = Shape::Polygon(Polygon::new(
-            closed_ring(
-                &[0.0, 360.0, 360.0, 0.0, 0.0],
-                &[-30.0, -30.0, 30.0, 30.0, -30.0],
-            ),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                closed_ring(&[0.0, 360.0, 360.0, 0.0, 0.0], &[
+                    -30.0, -30.0, 30.0, 30.0, -30.0,
+                ]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         let split = split_crs84(&shape);
         assert_ne!(split, shape);
-        let expected = Shape::Polygon(Polygon::new(
-            closed_ring(
-                &[-180.0, 180.0, 180.0, -180.0, -180.0],
-                &[-30.0, -30.0, 30.0, 30.0, -30.0],
-            ),
-            Vec::new(),
-        ));
+        let expected = Shape::Polygon(
+            Polygon::new(
+                closed_ring(&[-180.0, 180.0, 180.0, -180.0, -180.0], &[
+                    -30.0, -30.0, 30.0, 30.0, -30.0,
+                ]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert_eq!(split, expected);
     }
 }

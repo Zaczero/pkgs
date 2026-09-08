@@ -84,7 +84,12 @@ impl HausdorffTargetLike for SmallLineTarget {
         for (slot, &(x, y)) in std::iter::zip(out.iter_mut(), probes) {
             let mut best = f64::INFINITY;
             let mut witness = u32::MAX;
-            for (index, &segment) in self.segments.iter().enumerate().take(self.n_segments as usize) {
+            for (index, &segment) in self
+                .segments
+                .iter()
+                .enumerate()
+                .take(self.n_segments as usize)
+            {
                 let distance_squared =
                     point_segment_distance_squared(Point::new_raw_xy(x, y), segment);
                 if distance_squared < best {
@@ -172,12 +177,17 @@ impl HausdorffTargetLike for HausdorffTarget {
     }
 }
 
-pub(crate) fn directed_hausdorff_distance_squared_shapes(source: &Shape, target: &Shape) -> f64 {
+pub(crate) fn directed_hausdorff_distance_squared_shapes(
+    source: &Shape,
+    target: &Shape,
+) -> crate::error::Result<f64> {
     if source.is_empty() || target.is_empty() {
-        return f64::INFINITY;
+        return Ok(f64::INFINITY);
     }
-    let target = HausdorffTarget::build(target);
-    directed_hausdorff_distance_squared_with_target_shape(source, &target)
+    let target = HausdorffTarget::build(target)?;
+    Ok(directed_hausdorff_distance_squared_with_target_shape(
+        source, &target,
+    ))
 }
 
 pub(crate) fn directed_hausdorff_distance_squared_with_target_shape<T: HausdorffTargetLike>(
@@ -317,7 +327,7 @@ pub(crate) fn hausdorff_distance_squared_line_columns(
     left_ys: &[f64],
     right_xs: &[f64],
     right_ys: &[f64],
-) -> f64 {
+) -> Result<f64> {
     let mut scratch = hausdorff_scratch();
     hausdorff_distance_squared_line_columns_with_scratch(
         left_xs,
@@ -334,24 +344,26 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
     right_xs: &[f64],
     right_ys: &[f64],
     scratch: &mut HausdorffScratch,
-) -> f64 {
+) -> Result<f64> {
     if left_xs.is_empty() || right_xs.is_empty() {
-        return f64::INFINITY;
+        return Ok(f64::INFINITY);
     }
     if left_xs.len() == 4 && right_xs.len() == 4 {
         let left = SmallLineTarget::from_xy_columns(left_xs, left_ys);
         let right = SmallLineTarget::from_xy_columns(right_xs, right_ys);
-        return directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
-            left_xs, left_ys, &right, 0.0, scratch,
-        )
-        .max(
+        return Ok(
             directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
-                right_xs, right_ys, &left, 0.0, scratch,
+                left_xs, left_ys, &right, 0.0, scratch,
+            )
+            .max(
+                directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
+                    right_xs, right_ys, &left, 0.0, scratch,
+                ),
             ),
         );
     }
-    let right_target = hausdorff_target_from_xy_columns(right_xs, right_ys);
-    let left_target = hausdorff_target_from_xy_columns(left_xs, left_ys);
+    let right_target = hausdorff_target_from_xy_columns(right_xs, right_ys)?;
+    let left_target = hausdorff_target_from_xy_columns(left_xs, left_ys)?;
     let lb_ab = directed_hausdorff_vertex_lower_bound_squared_with_scratch(
         left_xs,
         left_ys,
@@ -372,7 +384,7 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
             0.0,
             scratch,
         );
-        exact_ab.max(
+        Ok(exact_ab.max(
             directed_hausdorff_distance_squared_with_target_pruned_initial_with_scratch(
                 right_xs,
                 right_ys,
@@ -380,7 +392,7 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
                 exact_ab,
                 scratch,
             ),
-        )
+        ))
     } else {
         let exact_ba = directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
             right_xs,
@@ -389,7 +401,7 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
             0.0,
             scratch,
         );
-        exact_ba.max(
+        Ok(exact_ba.max(
             directed_hausdorff_distance_squared_with_target_pruned_initial_with_scratch(
                 left_xs,
                 left_ys,
@@ -397,15 +409,19 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
                 exact_ba,
                 scratch,
             ),
-        )
+        ))
     }
 }
 
-fn hausdorff_target_from_xy_columns(xs: &[f64], ys: &[f64]) -> HausdorffTargetBorrowed {
+fn hausdorff_target_from_xy_columns(xs: &[f64], ys: &[f64]) -> Result<HausdorffTargetBorrowed> {
     if xs.len() <= HAUSDORFF_SMALL_TARGET_MAX_VERTICES {
-        HausdorffTargetBorrowed::Small(SmallLineTarget::from_xy_columns(xs, ys))
+        Ok(HausdorffTargetBorrowed::Small(
+            SmallLineTarget::from_xy_columns(xs, ys),
+        ))
     } else {
-        HausdorffTargetBorrowed::Indexed(Box::new(HausdorffTarget::from_xy_columns(xs, ys)))
+        Ok(HausdorffTargetBorrowed::Indexed(Box::new(
+            HausdorffTarget::from_xy_columns(xs, ys)?,
+        )))
     }
 }
 
@@ -493,11 +509,11 @@ pub(crate) fn hausdorff_distance_line_columns(
             "hausdorff_distance requires non-empty geometries",
         ));
     }
-    let left = line_shape_from_columns(left_xs, left_ys);
-    let right = line_shape_from_columns(right_xs, right_ys);
-    let source_distance = left.hausdorff_distance(&right);
+    let left = line_shape_from_columns(left_xs, left_ys)?;
+    let right = line_shape_from_columns(right_xs, right_ys)?;
+    let source_distance = left.hausdorff_distance(&right)?;
     let squared_distance =
-        hausdorff_distance_squared_line_columns(left_xs, left_ys, right_xs, right_ys).sqrt();
+        hausdorff_distance_squared_line_columns(left_xs, left_ys, right_xs, right_ys)?.sqrt();
     Ok(
         if squared_distance.is_finite()
             && squared_distance
@@ -512,16 +528,15 @@ pub(crate) fn hausdorff_distance_line_columns(
     )
 }
 
-fn line_shape_from_columns(xs: &[f64], ys: &[f64]) -> Shape {
+fn line_shape_from_columns(xs: &[f64], ys: &[f64]) -> Result<Shape> {
     let points: Vec<Point> = xs
         .iter()
         .zip(ys)
         .map(|(&x, &y)| Point::new_raw_xy(x, y))
         .collect();
-    Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(points))
-            .expect("line coordinate sequence must contain at least two vertices"),
-    )
+    Ok(Shape::LineString(LineSeq::try_new(
+        CoordSeq::try_from_points(&points)?,
+    )?))
 }
 
 /// Element-wise planar Hausdorff over packed line CSR windows (one column
@@ -543,24 +558,26 @@ pub(crate) fn hausdorff_distance_line_columns_batch(
                 "hausdorff_distance requires non-empty geometries",
             ));
         }
-        *slot = crate::geometry::packed_line_metrics::packed_line_same_window_value(
-            left_xs,
-            left_ys,
-            right_xs,
-            right_ys,
-            f64::INFINITY,
-        )
-        .unwrap_or_else(|| {
-            let left = line_shape_from_columns(left_xs, left_ys);
-            let right = line_shape_from_columns(right_xs, right_ys);
-            let source_distance = left.hausdorff_distance(&right);
+        *slot = if let Some(value) =
+            crate::geometry::packed_line_metrics::packed_line_same_window_value(
+                left_xs,
+                left_ys,
+                right_xs,
+                right_ys,
+                f64::INFINITY,
+            ) {
+            value
+        } else {
+            let left = line_shape_from_columns(left_xs, left_ys)?;
+            let right = line_shape_from_columns(right_xs, right_ys)?;
+            let source_distance = left.hausdorff_distance(&right)?;
             let squared_distance = hausdorff_distance_squared_line_columns_with_scratch(
                 left_xs,
                 left_ys,
                 right_xs,
                 right_ys,
                 &mut scratch,
-            )
+            )?
             .sqrt();
             let source_distance = if squared_distance.is_finite()
                 && squared_distance
@@ -578,11 +595,14 @@ pub(crate) fn hausdorff_distance_line_columns_batch(
                 if closed_form.is_finite()
                     && closed_form.to_bits().abs_diff(source_distance.to_bits()) <= 1
                 {
-                    return closed_form;
+                    closed_form
+                } else {
+                    source_distance
                 }
+            } else {
+                source_distance
             }
-            source_distance
-        });
+        };
     }
     Ok(())
 }

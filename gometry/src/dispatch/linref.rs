@@ -1,11 +1,10 @@
-use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::array::missing::{is_missing_row, union_pair};
-use crate::array::{ArrayRow, line_locate_point_on_lines};
+use crate::array::{ArrayRow, PackedStorage, line_locate_point_on_lines};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     CollectRows as _, GeometryInput, classify_required, degrade_linref_float, detach_collect_f64,
@@ -15,8 +14,8 @@ use crate::dispatch::operation::{MetricOp, Operation};
 use crate::{
     DistanceUnit, GeometryArrayStorage, InterpolatePlan, PyGeometry, PyGeometryArray,
     crs_line_locate_point, geometry_array_line_locate_point_geometry,
-    line_interpolate_points_shape, line_locate_shape, line_locate_shape_m,
-    require_locate_point, require_locate_points,
+    line_interpolate_points_shape, line_locate_shape, line_locate_shape_m, require_locate_point,
+    require_locate_points,
 };
 
 fn line_locate_geometry_points(
@@ -45,7 +44,10 @@ fn line_locate_geometry_points(
         .clone();
     let line = geometry.plan_or_transient();
     if points.is_compact_nullable()
-        && matches!(points.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
+        && matches!(
+            points.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+        )
     {
         let points = points.clone();
         return detach_collect_f64(py, move || {
@@ -135,7 +137,7 @@ pub(crate) fn line_locate_point_input(
                             let crate::array::ShapeRow::Point(query) = point.row() else {
                                 return Ok(f64::NAN);
                             };
-                            let line = rows.prepared(line);
+                            let line = rows.prepared(line)?;
                             degrade_linref_float(line_locate_shape(
                                 &model,
                                 &line,
@@ -182,7 +184,7 @@ pub(crate) fn line_locate_point_input(
                         let crate::array::ShapeRow::Point(query) = point_row.row() else {
                             return Ok(f64::NAN);
                         };
-                        let line = rows.prepared(line_row);
+                        let line = rows.prepared(line_row)?;
                         degrade_linref_float(line_locate_shape(
                             &model,
                             &line,
@@ -234,7 +236,10 @@ pub(crate) fn line_locate_point_m_input(
                 crate::resolve_line_metric(geometry.crs_str(), None, false, MetricOp::LineLocate)?;
             let line = geometry.plan_or_transient();
             if points.is_compact_nullable()
-                && matches!(points.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
+                && matches!(
+                    points.storage(),
+                    GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+                )
             {
                 let points = points.clone();
                 return detach_collect_f64(py, move || {
@@ -286,7 +291,7 @@ pub(crate) fn line_locate_point_m_input(
                     .map(|row| match row {
                         ArrayRow::Missing { value, .. } => Ok(value),
                         ArrayRow::Present(row) => {
-                            let line = rows.prepared(row);
+                            let line = rows.prepared(row)?;
                             degrade_linref_float(line_locate_shape_m(&model, &line, query))
                         },
                     })
@@ -310,7 +315,7 @@ pub(crate) fn line_locate_point_m_input(
                             let crate::array::ShapeRow::Point(query) = point.row() else {
                                 return Ok(f64::NAN);
                             };
-                            let line = rows.prepared(line);
+                            let line = rows.prepared(line)?;
                             degrade_linref_float(line_locate_shape_m(&model, &line, query))
                         },
                         _ => Ok(f64::NAN),
@@ -336,5 +341,8 @@ pub(crate) fn line_interpolate_points_scalar(
         .clone();
     let line = geometry.plan_or_transient();
     let shapes = line_interpolate_points_shape(&model, &line, &geometry.frame_cache(), plan)?;
-    Ok(PyGeometryArray::from_shapes(shapes, geometry.frame.clone()))
+    Ok(PyGeometryArray::from_shapes(
+        shapes,
+        geometry.frame.clone(),
+    )?)
 }

@@ -179,11 +179,11 @@ impl Shape {
                 {
                     return Ok(None);
                 }
-                let parts = winding_region(&loops, |winding| winding >= 1);
+                let parts = winding_region(&loops, |winding| winding >= 1)?;
                 if parts.is_empty() {
                     return Ok(None);
                 }
-                Ok(Some(polygon_parts_to_shape(parts)))
+                Ok(Some(polygon_parts_to_shape(parts)?))
             },
             Self::LineString(chain) => winding_stroke_budgeted(
                 &[chain],
@@ -304,7 +304,7 @@ impl Shape {
         // the surfaces' synthesizing-op contract (`'auto'` yields 2D) holds on
         // every path.
         let shape = Self::narrow_polygons(crate::geometry::CoordinateAxes::XY, strips);
-        let shape = shape.force_2d()?;
+        let shape = shape?.force_2d()?;
         if strips_are_pairwise_strictly_disjoint(&shape) || shape.validate().is_none() {
             Ok(shape)
         } else {

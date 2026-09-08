@@ -4,7 +4,7 @@
 )]
 use std::num::NonZeroU32;
 
-use crate::geometry::constructive::{Arc, Result, WalkJoinRule, WalkPlan, materialize_walk};
+use crate::geometry::constructive::{Result, WalkJoinRule, WalkPlan, materialize_walk};
 use crate::geometry::{
     BufferJoinStyle, CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, GeometryKind,
     LineSeq, MOrdinate, MultiLineString, Point, Polygon, RepairMethod, Ring, Segment, Shape,
@@ -23,7 +23,7 @@ pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
     signed: f64,
 ) -> Result<Vec<Polygon>> {
     let source = offset_source(points);
-    let Some(strip) = sided_strip(points, signed) else {
+    let Some(strip) = sided_strip(points, signed)? else {
         let offset_failed = source.as_ref().is_some_and(|source| {
             offset_segments(&source.vertices, source.closed, signed).len() != source.segment_count()
         });
@@ -114,9 +114,9 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         let start = vertices[index];
         let end = vertices[wrap_index(index + 1, vertices.len())];
         parts.push(normalized(Shape::Polygon(Polygon::new(
-            xy_ring([start, end, offset_end(index), offset_start(index), start]),
+            xy_ring([start, end, offset_end(index), offset_start(index), start])?,
             Vec::new(),
-        )))?);
+        )?))?);
     }
     // A bevel join leaves a wedge between the two raw offset endpoints that
     // no per-segment quad covers; fill it so the union is the full sweep.
@@ -129,22 +129,22 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         }
         let vertex = vertices[if closed { join_index } else { join_index + 1 }];
         parts.push(normalized(Shape::Polygon(Polygon::new(
-            xy_ring([vertex, *incoming, *outgoing, vertex]),
+            xy_ring([vertex, *incoming, *outgoing, vertex])?,
             Vec::new(),
-        )))?);
+        )?))?);
     }
     Ok(parts)
 }
 
 /// A small X/Y ring assembled straight into ordinate columns — no
 /// intermediate `Vec<Point>` per part.
-pub(crate) fn xy_ring<const N: usize>(points: [Point; N]) -> Ring {
-    Ring::from_closed(CoordSeq::from_columns(
-        Arc::new(points.map(|point| point.x)),
-        Arc::new(points.map(|point| point.y)),
+pub(crate) fn xy_ring<const N: usize>(points: [Point; N]) -> Result<Ring> {
+    Ok(Ring::from_closed(CoordSeq::try_from_vecs(
+        points.iter().map(|point| point.x).collect(),
+        points.iter().map(|point| point.y).collect(),
         None,
         None,
-    ))
+    )?))
 }
 
 /// The deduplicated finite vertex run of a line plus its closure flag — the
@@ -184,20 +184,32 @@ pub(crate) fn offset_source<C: Coordinates + ?Sized>(points: &C) -> Option<Offse
 
 /// The closed strip polygon between a line and its offset at `signed`
 /// distance: forward along the line, back along the offset (flat ends).
-pub(crate) fn sided_strip<C: Coordinates + ?Sized>(points: &C, signed: f64) -> Option<Polygon> {
-    let offset = offset_line(points, signed)?;
+pub(crate) fn sided_strip<C: Coordinates + ?Sized>(
+    points: &C,
+    signed: f64,
+) -> Result<Option<Polygon>> {
+    let Some(offset) = offset_line(points, signed) else {
+        return Ok(None);
+    };
     let mut shell: Vec<Point> = points
         .iter_coords()
         .filter(|point| point.x.is_finite() && point.y.is_finite())
         .collect();
     if shell.len() < 2 {
-        return None;
+        return Ok(None);
     }
     shell.extend(offset.into_iter().rev());
     if let Some(first) = shell.first().copied() {
         shell.push(first);
     }
-    (shell.len() >= 4).then(|| Polygon::new(Ring::from_closed(shell), Vec::new()))
+    if shell.len() < 4 {
+        Ok(None)
+    } else {
+        Ok(Some(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&shell)?),
+            Vec::new(),
+        )?))
+    }
 }
 
 /// The planned offset curve with the buffer's join vocabulary: round
@@ -555,12 +567,12 @@ impl Shape {
             )
         };
         Ok(match self {
-            Self::LineString(points) => offset(points)?.map_or_else(
-                || Self::typed_empty(GeometryKind::LineString, points.axes()),
-                // An offset curve is emitted only when it has vertices to
-                // offset; `offset` returns `None` for a collapsed result.
-                |line| Self::LineString(LineSeq::from_proven(CoordSeq::from(line))),
-            ),
+            Self::LineString(points) => match offset(points)? {
+                None => Self::typed_empty(GeometryKind::LineString, points.axes()),
+                Some(line) => {
+                    Self::LineString(LineSeq::try_new(CoordSeq::try_from_points(&line)?)?)
+                },
+            },
             Self::MultiLineString(lines) => {
                 let members = lines
                     .members()
@@ -568,15 +580,14 @@ impl Shape {
                         crate::geometry::MultiMember::Empty => {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
-                        crate::geometry::MultiMember::Value(index) => {
-                            offset(lines.as_slice()[index].as_coords()).map(|line| {
-                                line.map_or(crate::geometry::MultiMember::Empty, |line| {
-                                    crate::geometry::MultiMember::Value(LineSeq::from_proven(
-                                        CoordSeq::from(line),
-                                    ))
-                                })
-                            })
-                        },
+                        crate::geometry::MultiMember::Value(index) => offset(
+                            lines.as_slice()[index].as_coords(),
+                        )?
+                        .map_or(Ok(crate::geometry::MultiMember::Empty), |line| {
+                            Ok(crate::geometry::MultiMember::Value(LineSeq::try_new(
+                                CoordSeq::try_from_points(&line)?,
+                            )?))
+                        }),
                     })
                     .collect::<Result<Vec<_>>>()?;
                 Self::MultiLineString(MultiLineString::try_new(lines.axes(), members)?)

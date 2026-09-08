@@ -214,10 +214,6 @@ impl<T> CsrBuilder<T> {
             builder.release();
             return Err(error);
         }
-        if let Err(error) = try_push_vec(&mut builder.offsets, 0) {
-            builder.release();
-            return Err(error);
-        }
         Ok(builder)
     }
 

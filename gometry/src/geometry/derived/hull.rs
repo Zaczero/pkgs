@@ -2,20 +2,26 @@ use std::cmp::Ordering;
 
 use crate::error::Result;
 use crate::geometry::{
-    CoordSeq, LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale,
-    orientation, same_topological_coordinate, scaled_residual,
+    CoordSeq, LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale, orientation,
+    same_topological_coordinate, scaled_residual,
 };
 /// Reduce an open monotone-chain hull (0–2 vertices degenerate to
 /// point/line; 3+ close into a polygon shell).
-pub(crate) fn shape_from_open_hull(hull: &[Point], empty: impl FnOnce() -> Shape) -> Shape {
+pub(crate) fn shape_from_open_hull(
+    hull: &[Point],
+    empty: impl FnOnce() -> Shape,
+) -> crate::error::Result<Shape> {
     match hull {
-        [] => empty(),
-        [point] => Shape::Point(*point),
-        [first, second] => Shape::LineString(LineSeq::segment(*first, *second)),
+        [] => Ok(empty()),
+        [point] => Ok(Shape::Point(*point)),
+        [first, second] => Ok(Shape::LineString(LineSeq::segment(*first, *second)?)),
         _ => {
             let mut ring = hull.to_vec();
             ring.push(ring[0]);
-            Shape::Polygon(Polygon::new(Ring::from_closed(ring), Vec::new()))
+            Ok(Shape::Polygon(Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&ring)?),
+                Vec::new(),
+            )?))
         },
     }
 }
@@ -39,7 +45,7 @@ pub(crate) fn shape_from_selected_hull(
             Ok(Shape::Polygon(Polygon::new(
                 Ring::from_closed(CoordSeq::try_from_points(&ring)?),
                 Vec::new(),
-            )))
+            )?))
         },
     }
 }

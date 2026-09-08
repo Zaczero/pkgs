@@ -35,7 +35,7 @@ pub(crate) fn clean_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     a: &[P],
     b: &[Q],
     op: OverlayOp,
-) -> Option<Shape> {
+) -> crate::error::Result<Option<Shape>> {
     // Every ring of every component of both operands, oriented interior-on-left
     // (shell CCW, hole CW), staged into one thin segment pool. Holes and extra
     // components are direct boundary contributors under the same policy.
@@ -50,16 +50,18 @@ pub(crate) fn clean_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     // Bail if any ring was degenerate (fewer staged than the component inventory)
     // — the exact engine owns degenerate input.
     if pool.rings.len() != topology::operand_ring_count(a) + topology::operand_ring_count(b) {
-        return None;
+        return Ok(None);
     }
 
     // Boundary contacts per pool edge (global index). Bails on any contact
     // outside the clean model; the exact arrangement owns those cases.
-    let mut contacts = collect_boundary_contacts(&pool, op)?;
+    let Some(mut contacts) = collect_boundary_contacts(&pool, op) else {
+        return Ok(None);
+    };
     // No crosses or shared runs ⟹ disjoint/nested/touch-only; upstream
     // shortcuts or the exact engine own those.
     if !contacts.has_cross && !contacts.has_shared {
-        return None;
+        return Ok(None);
     }
 
     // Pre-size the kept-arc upper bound (every pool edge plus the two extra
@@ -78,7 +80,7 @@ pub(crate) fn clean_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
         return symmetric_difference_shape(&pool, &mut contacts, arc_cap);
     }
     if op == OverlayOp::SymmetricDifference && contacts.has_cross {
-        return None;
+        return Ok(None);
     }
 
     // UNION / INTERSECTION / DIFFERENCE (no shared runs): chain in O(crossings)
@@ -91,17 +93,23 @@ pub(crate) fn clean_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
             op,
             OverlayOp::Union | OverlayOp::Intersection | OverlayOp::Difference
         )
-        && let Some(shape) = overlay_transverse_shape(&pool, &mut contacts, arc_cap, op)
+        && let Some(shape) = overlay_transverse_shape(&pool, &mut contacts, arc_cap, op)?
     {
-        return Some(shape);
+        return Ok(Some(shape));
     }
 
     // Directed result-boundary arcs from each ring, oriented per the op rule.
     let mut arcs: Vec<(XY, XY)> = Vec::with_capacity(arc_cap);
-    keep_operand_arcs(op, &pool, Operand::Left, true, &mut contacts, &mut arcs)?;
-    keep_operand_arcs(op, &pool, Operand::Right, false, &mut contacts, &mut arcs)?;
+    let Some(()) = keep_operand_arcs(op, &pool, Operand::Left, true, &mut contacts, &mut arcs)
+    else {
+        return Ok(None);
+    };
+    let Some(()) = keep_operand_arcs(op, &pool, Operand::Right, false, &mut contacts, &mut arcs)
+    else {
+        return Ok(None);
+    };
     if arcs.is_empty() {
-        return None;
+        return Ok(None);
     }
     reassemble(&arcs)
 }
@@ -303,13 +311,15 @@ pub(crate) fn overlay_transverse_shape(
     contacts: &mut BoundaryContacts,
     arc_cap: usize,
     op: OverlayOp,
-) -> Option<Shape> {
+) -> crate::error::Result<Option<Shape>> {
     let mut chain = RunChain::with_capacity(arc_cap);
     for (operand, is_a) in [(Operand::Left, true), (Operand::Right, false)] {
         let other = opposite(operand);
-        let mode = chained_arc_mode(op, is_a)?;
+        let Some(mode) = chained_arc_mode(op, is_a) else {
+            return Ok(None);
+        };
         for ring in pool.rings.iter().filter(|ring| ring.operand == operand) {
-            keep_transverse_ring_runs(
+            let Some(()) = keep_transverse_ring_runs(
                 ring,
                 contacts,
                 pool,
@@ -317,13 +327,18 @@ pub(crate) fn overlay_transverse_shape(
                 mode.keep_inside,
                 mode.reverse,
                 &mut chain,
-            )?;
+            ) else {
+                return Ok(None);
+            };
         }
     }
     if chain.is_empty() {
-        return None;
+        return Ok(None);
     }
-    assemble_rings(resolve_run_chain(chain)?)
+    let Some(rings) = resolve_run_chain(chain) else {
+        return Ok(None);
+    };
+    assemble_rings(rings)
 }
 
 /// Resolve a built chain's crossing successors (the only point-keyed lookups,

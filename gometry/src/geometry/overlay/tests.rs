@@ -86,23 +86,26 @@ mod binary_areal_overlay_tests {
             )
             .unwrap();
             assert!(
-                partitioned.equals(&single),
+                partitioned.equals(&single).unwrap(),
                 "{op:?}: partitioned overlay differs from the single arrangement"
             );
         }
     }
 
-
     fn polygon(points: &[(f64, f64)]) -> Polygon {
         Polygon::new(
             Ring::from_closed(
-                points
-                    .iter()
-                    .map(|&(x, y)| Point::new(x, y).unwrap())
-                    .collect::<Vec<_>>(),
+                CoordSeq::try_from_points(
+                    &points
+                        .iter()
+                        .map(|&(x, y)| Point::new(x, y).unwrap())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
             ),
             Vec::new(),
         )
+        .unwrap()
     }
 
     fn square(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
@@ -123,7 +126,13 @@ mod binary_areal_overlay_tests {
             })
             .collect();
         points.push(points[0]);
-        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     }
 
     fn zm_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
@@ -145,7 +154,13 @@ mod binary_areal_overlay_tests {
         })
         .collect::<Result<Vec<_>>>()
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     }
 
     fn m_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
@@ -160,7 +175,13 @@ mod binary_areal_overlay_tests {
         .map(|(x, y)| Point::new_axes(x, y, ZOrdinate(None), MOrdinate(Some(offset + x + y))))
         .collect::<Result<Vec<_>>>()
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     }
 
     fn zm_line(start: (f64, f64), end: (f64, f64)) -> Shape {
@@ -176,7 +197,10 @@ mod binary_areal_overlay_tests {
             })
             .collect::<Result<Vec<_>>>()
             .unwrap();
-        Shape::LineString(LineSeq::try_new(CoordSeq::from(points)).expect("test line is valid"))
+        Shape::LineString(
+            LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap())
+                .expect("test line is valid"),
+        )
     }
 
     fn invalid_zm_bowtie() -> Shape {
@@ -192,7 +216,13 @@ mod binary_areal_overlay_tests {
             })
             .collect::<Result<Vec<_>>>()
             .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     }
 
     fn z_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
@@ -207,16 +237,25 @@ mod binary_areal_overlay_tests {
         .map(|(x, y)| Point::new_axes(x, y, ZOrdinate(Some(offset + x + y)), MOrdinate(None)))
         .collect::<Result<Vec<_>>>()
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     }
 
     fn line_seq(points: &[(f64, f64)]) -> LineSeq {
-        LineSeq::try_new(CoordSeq::from(
-            points
-                .iter()
-                .map(|&(x, y)| Point::new(x, y).unwrap())
-                .collect::<Vec<_>>(),
-        ))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(
+                &points
+                    .iter()
+                    .map(|&(x, y)| Point::new(x, y).unwrap())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        )
         .expect("test line is valid")
     }
 
@@ -225,25 +264,31 @@ mod binary_areal_overlay_tests {
     }
 
     fn multiline(lines: &[&[(f64, f64)]]) -> Shape {
-        Shape::MultiLineString(MultiLineString::from_values(
-            CoordinateAxes::XY,
-            lines
-                .iter()
-                .map(|points| MultiMember::Value(line_seq(points)))
-                .collect(),
-        ))
+        Shape::MultiLineString(
+            MultiLineString::from_values(
+                CoordinateAxes::XY,
+                lines
+                    .iter()
+                    .map(|points| MultiMember::Value(line_seq(points)))
+                    .collect(),
+            )
+            .unwrap(),
+        )
     }
 
     fn disjoint_multiline(count: usize, offset: f64) -> Shape {
-        Shape::MultiLineString(MultiLineString::from_values(
-            CoordinateAxes::XY,
-            (0..count)
-                .map(|index| {
-                    let x = offset + index as f64 * 2.0;
-                    MultiMember::Value(line_seq(&[(x, 0.0), (x, 1.0)]))
-                })
-                .collect(),
-        ))
+        Shape::MultiLineString(
+            MultiLineString::from_values(
+                CoordinateAxes::XY,
+                (0..count)
+                    .map(|index| {
+                        let x = offset + index as f64 * 2.0;
+                        MultiMember::Value(line_seq(&[(x, 0.0), (x, 1.0)]))
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        )
     }
 
     fn point(x: f64, y: f64) -> Shape {
@@ -323,7 +368,8 @@ mod binary_areal_overlay_tests {
             std::slice::from_ref(&left),
             std::slice::from_ref(&right),
             OverlayOp::Union,
-        );
+        )
+        .unwrap();
         let output: Vec<Point> = union
             .iter()
             .flat_map(Polygon::rings)
@@ -400,9 +446,21 @@ mod binary_areal_overlay_tests {
     #[test]
     fn areal_intersection_lane_matches_joint_graph_on_contacts() {
         let cases = [
-            ("shared edge", square(0.0, 0.0, 2.0, 2.0), square(2.0, 0.0, 4.0, 2.0)),
-            ("corner touch", square(0.0, 0.0, 2.0, 2.0), square(2.0, 2.0, 4.0, 4.0)),
-            ("edge interior touch", square(0.0, 0.0, 2.0, 2.0), square(2.0, 1.0, 4.0, 3.0)),
+            (
+                "shared edge",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(2.0, 0.0, 4.0, 2.0),
+            ),
+            (
+                "corner touch",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(2.0, 2.0, 4.0, 4.0),
+            ),
+            (
+                "edge interior touch",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(2.0, 1.0, 4.0, 3.0),
+            ),
             (
                 "two separate shared boundary runs",
                 Shape::Polygon(polygon(&[
@@ -424,15 +482,34 @@ mod binary_areal_overlay_tests {
                     (2.0, 1.0),
                 ])),
             ),
-            ("nested sharing a side", square(0.0, 0.0, 4.0, 4.0), square(0.0, 1.0, 2.0, 3.0)),
-            ("identical", square(0.0, 0.0, 2.0, 2.0), square(0.0, 0.0, 2.0, 2.0)),
-            ("disjoint", square(0.0, 0.0, 2.0, 2.0), square(3.0, 3.0, 4.0, 4.0)),
+            (
+                "nested sharing a side",
+                square(0.0, 0.0, 4.0, 4.0),
+                square(0.0, 1.0, 2.0, 3.0),
+            ),
+            (
+                "identical",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(0.0, 0.0, 2.0, 2.0),
+            ),
+            (
+                "disjoint",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(3.0, 3.0, 4.0, 4.0),
+            ),
             (
                 "hole boundary touch",
-                Shape::Polygon(Polygon::new(
-                    polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
-                    vec![polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)]).shell],
-                )),
+                Shape::Polygon(
+                    Polygon::new(
+                        polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)])
+                            .shell,
+                        vec![
+                            polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)])
+                                .shell,
+                        ],
+                    )
+                    .unwrap(),
+                ),
                 square(2.0, 2.0, 3.0, 3.0),
             ),
         ];
@@ -445,28 +522,53 @@ mod binary_areal_overlay_tests {
 
     #[test]
     fn areal_intersection_preserves_region_and_isolated_point() {
-        let left = Shape::geometry_collection(
-            vec![square(0.0, 0.0, 2.0, 2.0), square(4.0, 4.0, 6.0, 6.0)],
-        ).unwrap();
+        let left = Shape::geometry_collection(vec![
+            square(0.0, 0.0, 2.0, 2.0),
+            square(4.0, 4.0, 6.0, 6.0),
+        ])
+        .unwrap();
         let right = square(1.0, 1.0, 4.0, 4.0);
-        let expected = Shape::geometry_collection(
-            vec![
-                square(1.0, 1.0, 2.0, 2.0),
-                Shape::Point(Point::new_raw_xy(4.0, 4.0)),
-            ],
-        ).unwrap();
+        let expected = Shape::geometry_collection(vec![
+            square(1.0, 1.0, 2.0, 2.0),
+            Shape::Point(Point::new_raw_xy(4.0, 4.0)),
+        ])
+        .unwrap();
         for (left, right) in [(&left, &right), (&right, &left)] {
-            let result = assert_intersection_matches_joint_graph("region and isolated point", left, right);
-            assert!(result.equals(&expected), "{result:?} != {expected:?}");
+            let result =
+                assert_intersection_matches_joint_graph("region and isolated point", left, right);
+            assert!(
+                result.equals(&expected).unwrap(),
+                "{result:?} != {expected:?}"
+            );
         }
     }
 
     #[test]
     fn areal_intersection_matches_graph_on_degenerate_boundaries() {
         let cases: &[(&str, &[(f64, f64)])] = &[
-            ("collapsed ring", &[(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (0.0, 0.0)]),
-            ("repeated vertex", &[(0.0, 0.0), (2.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
-            ("retraced exterior spur", &[(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+            ("collapsed ring", &[
+                (0.0, 0.0),
+                (2.0, 0.0),
+                (4.0, 0.0),
+                (0.0, 0.0),
+            ]),
+            ("repeated vertex", &[
+                (0.0, 0.0),
+                (2.0, 0.0),
+                (2.0, 0.0),
+                (2.0, 2.0),
+                (0.0, 2.0),
+                (0.0, 0.0),
+            ]),
+            ("retraced exterior spur", &[
+                (0.0, 0.0),
+                (2.0, 0.0),
+                (4.0, 0.0),
+                (2.0, 0.0),
+                (2.0, 2.0),
+                (0.0, 2.0),
+                (0.0, 0.0),
+            ]),
         ];
         for &(name, coordinates) in cases {
             let left = Shape::Polygon(polygon(coordinates));
@@ -485,10 +587,30 @@ mod binary_areal_overlay_tests {
     fn areal_intersection_matches_joint_graph_on_triangle_contacts() {
         let left = square(0.0, 0.0, 2.0, 2.0);
         let cases: &[(&str, &[(f64, f64)])] = &[
-            ("vertex on edge", &[(2.0, 1.0), (3.0, 0.0), (3.0, 2.0), (2.0, 1.0)]),
-            ("shared diagonal endpoints", &[(0.0, 0.0), (2.0, 2.0), (3.0, 0.0), (0.0, 0.0)]),
-            ("crossing edges", &[(-1.0, 1.0), (3.0, 1.0), (1.0, 3.0), (-1.0, 1.0)]),
-            ("shared edge reversed", &[(0.0, 0.0), (1.0, -2.0), (2.0, 0.0), (0.0, 0.0)]),
+            ("vertex on edge", &[
+                (2.0, 1.0),
+                (3.0, 0.0),
+                (3.0, 2.0),
+                (2.0, 1.0),
+            ]),
+            ("shared diagonal endpoints", &[
+                (0.0, 0.0),
+                (2.0, 2.0),
+                (3.0, 0.0),
+                (0.0, 0.0),
+            ]),
+            ("crossing edges", &[
+                (-1.0, 1.0),
+                (3.0, 1.0),
+                (1.0, 3.0),
+                (-1.0, 1.0),
+            ]),
+            ("shared edge reversed", &[
+                (0.0, 0.0),
+                (1.0, -2.0),
+                (2.0, 0.0),
+                (0.0, 0.0),
+            ]),
         ];
         for &(name, coordinates) in cases {
             let right = Shape::Polygon(polygon(coordinates));
@@ -518,7 +640,8 @@ mod binary_areal_overlay_tests {
                     OverlayOp::Intersection,
                     strictness,
                 );
-                let joint = super::super::nary::binary_intersection_joint_graph(&left, &right, strictness);
+                let joint =
+                    super::super::nary::binary_intersection_joint_graph(&left, &right, strictness);
                 match (fast, reverse, joint) {
                     (Ok(fast), Ok(reverse), Ok(joint)) => {
                         assert_eq!(wkb(&fast), wkb(&joint), "{fast:?} != {joint:?}");
@@ -546,12 +669,9 @@ mod binary_areal_overlay_tests {
             Strictness::Strict,
         )
         .unwrap();
-        let exact = super::super::nary::binary_intersection_joint_graph(
-            left,
-            right,
-            Strictness::Strict,
-        )
-        .unwrap();
+        let exact =
+            super::super::nary::binary_intersection_joint_graph(left, right, Strictness::Strict)
+                .unwrap();
         assert_eq!(wkb(&fast), wkb(&exact), "{name}: {fast:?} != {exact:?}");
         fast
     }
@@ -569,7 +689,8 @@ mod binary_areal_overlay_tests {
             std::slice::from_ref(&lower),
             std::slice::from_ref(&upper),
             OverlayOp::Union,
-        );
+        )
+        .unwrap();
         assert_eq!(union.len(), 2, "{union:?}");
         assert!(union.iter().all(|part| part.holes.is_empty()));
 
@@ -577,7 +698,8 @@ mod binary_areal_overlay_tests {
             std::slice::from_ref(&lower),
             std::slice::from_ref(&lower),
             OverlayOp::SymmetricDifference,
-        );
+        )
+        .unwrap();
         assert!(xor.is_empty(), "{xor:?}");
     }
 
@@ -765,11 +887,15 @@ mod binary_areal_overlay_tests {
         ]);
         // The area-only binary shortcut is not a valid mixed-dimension
         // intersection oracle: this concave pair also contributes a line.
-        let unrestricted = polygon_parts_to_shape(binary_areal_overlay(
-            std::slice::from_ref(&concave_left),
-            std::slice::from_ref(&concave_right),
-            OverlayOp::Intersection,
-        ));
+        let unrestricted = polygon_parts_to_shape(
+            binary_areal_overlay(
+                std::slice::from_ref(&concave_left),
+                std::slice::from_ref(&concave_right),
+                OverlayOp::Intersection,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let concave_left_shape = Shape::Polygon(concave_left);
         let concave_right_shape = Shape::Polygon(concave_right);
         let exact = assert_intersection_matches_joint_graph(
@@ -782,16 +908,22 @@ mod binary_areal_overlay_tests {
 
     #[test]
     fn convex_intersection_rejects_holes_multipolygons_and_invalid_shells() {
-        let holed = Shape::Polygon(Polygon::new(
-            polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
-            vec![Ring::from_closed(vec![
-                Point::new(2.0, 2.0).unwrap(),
-                Point::new(4.0, 2.0).unwrap(),
-                Point::new(4.0, 4.0).unwrap(),
-                Point::new(2.0, 4.0).unwrap(),
-                Point::new(2.0, 2.0).unwrap(),
-            ])],
-        ));
+        let holed = Shape::Polygon(
+            Polygon::new(
+                polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+                vec![Ring::from_closed(
+                    CoordSeq::try_from_points(&vec![
+                        Point::new(2.0, 2.0).unwrap(),
+                        Point::new(4.0, 2.0).unwrap(),
+                        Point::new(4.0, 4.0).unwrap(),
+                        Point::new(2.0, 4.0).unwrap(),
+                        Point::new(2.0, 2.0).unwrap(),
+                    ])
+                    .unwrap(),
+                )],
+            )
+            .unwrap(),
+        );
         let multipolygon = Shape::MultiPolygon(
             vec![
                 polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
@@ -816,26 +948,35 @@ mod binary_areal_overlay_tests {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to"
+    )]
     #[test]
     fn polygon_line_intersection_matches_generic_boundary_and_hole_cases() {
-        let holed = Shape::Polygon(Polygon::new(
-            polygon(&[
-                (0.0, 0.0),
-                (10.0, 0.0),
-                (10.0, 10.0),
-                (0.0, 10.0),
-                (0.0, 0.0),
-            ])
-            .shell,
-            vec![Ring::from_closed(vec![
-                Point::new(4.0, 4.0).unwrap(),
-                Point::new(6.0, 4.0).unwrap(),
-                Point::new(6.0, 6.0).unwrap(),
-                Point::new(4.0, 6.0).unwrap(),
-                Point::new(4.0, 4.0).unwrap(),
-            ])],
-        ));
+        let holed = Shape::Polygon(
+            Polygon::new(
+                polygon(&[
+                    (0.0, 0.0),
+                    (10.0, 0.0),
+                    (10.0, 10.0),
+                    (0.0, 10.0),
+                    (0.0, 0.0),
+                ])
+                .shell,
+                vec![Ring::from_closed(
+                    CoordSeq::try_from_points(&vec![
+                        Point::new(4.0, 4.0).unwrap(),
+                        Point::new(6.0, 4.0).unwrap(),
+                        Point::new(6.0, 6.0).unwrap(),
+                        Point::new(4.0, 6.0).unwrap(),
+                        Point::new(4.0, 4.0).unwrap(),
+                    ])
+                    .unwrap(),
+                )],
+            )
+            .unwrap(),
+        );
         let multipart = Shape::MultiPolygon(
             vec![
                 polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
@@ -959,11 +1100,13 @@ mod binary_areal_overlay_tests {
         let empty = Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY);
         let collection = Shape::geometry_collection(vec![live, point(8.0, 8.0)])
             .expect("test collection is valid");
-        let empty_member =
-            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
+        let empty_member = Shape::MultiLineString(
+            MultiLineString::from_values(CoordinateAxes::XY, vec![
                 MultiMember::Empty,
                 MultiMember::Value(line_seq(&[(-1.0, 2.0), (5.0, 2.0)])),
-            ]));
+            ])
+            .unwrap(),
+        );
 
         for (name, line) in [
             ("collapsed", collapsed),
@@ -1051,9 +1194,7 @@ mod binary_areal_overlay_tests {
             OverlayOp::Intersection,
             strictness,
         );
-        let generic = super::super::nary::binary_intersection_joint_graph(
-            left, right, strictness,
-        );
+        let generic = super::super::nary::binary_intersection_joint_graph(left, right, strictness);
         match (fast, generic) {
             (Ok(fast), Ok(generic)) => {
                 assert_eq!(wkb(&fast), wkb(&generic), "{name}: {fast:?} != {generic:?}");
@@ -1106,16 +1247,22 @@ mod binary_areal_overlay_tests {
             assert_point_intersection_matches_generic(name, &line, &point, Strictness::Strict);
         }
 
-        let holed = Shape::Polygon(Polygon::new(
-            polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
-            vec![Ring::from_closed(vec![
-                Point::new(2.0, 2.0).unwrap(),
-                Point::new(4.0, 2.0).unwrap(),
-                Point::new(4.0, 4.0).unwrap(),
-                Point::new(2.0, 4.0).unwrap(),
-                Point::new(2.0, 2.0).unwrap(),
-            ])],
-        ));
+        let holed = Shape::Polygon(
+            Polygon::new(
+                polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+                vec![Ring::from_closed(
+                    CoordSeq::try_from_points(&vec![
+                        Point::new(2.0, 2.0).unwrap(),
+                        Point::new(4.0, 2.0).unwrap(),
+                        Point::new(4.0, 4.0).unwrap(),
+                        Point::new(2.0, 4.0).unwrap(),
+                        Point::new(2.0, 2.0).unwrap(),
+                    ])
+                    .unwrap(),
+                )],
+            )
+            .unwrap(),
+        );
         let polygon_cases = [
             (
                 "polygon interior",
@@ -1228,7 +1375,7 @@ mod binary_areal_overlay_tests {
         )
         .expect("polygon boundary result");
         assert_eq!(boundary_result.coordinate_axes(), "XYZ");
-        let boundary_point = boundary_result.points_vec()[0];
+        let boundary_point = boundary_result.points_vec().unwrap()[0];
         assert_eq!(boundary_point.z(), Some(12.0));
 
         let interior_point = point(1.0, 1.0);
@@ -1275,6 +1422,7 @@ mod binary_areal_overlay_tests {
             assert_eq!(
                 result
                     .points_vec()
+                    .unwrap()
                     .into_iter()
                     .map(|point| (point.x, point.y))
                     .collect::<Vec<_>>(),
@@ -1290,16 +1438,20 @@ mod binary_areal_overlay_tests {
             Strictness::Strict,
         );
 
-        let collapsed =
-            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
+        let collapsed = Shape::MultiLineString(
+            MultiLineString::from_values(CoordinateAxes::XY, vec![
                 MultiMember::Value(line_seq(&[(1.0, 1.0), (1.0, 1.0)])),
                 MultiMember::Value(line_seq(&[(0.0, 0.0), (2.0, 2.0)])),
-            ]));
-        let empty_member =
-            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
+            ])
+            .unwrap(),
+        );
+        let empty_member = Shape::MultiLineString(
+            MultiLineString::from_values(CoordinateAxes::XY, vec![
                 MultiMember::Empty,
                 MultiMember::Value(line_seq(&[(0.0, 0.0), (2.0, 2.0)])),
-            ]));
+            ])
+            .unwrap(),
+        );
         for (name, carrier) in [
             ("collapsed member", collapsed),
             ("empty member", empty_member),
@@ -1353,6 +1505,7 @@ mod binary_areal_overlay_tests {
             assert_eq!(
                 result
                     .points_vec()
+                    .unwrap()
                     .into_iter()
                     .map(|point| (point.x, point.y))
                     .collect::<Vec<_>>(),
@@ -1360,18 +1513,24 @@ mod binary_areal_overlay_tests {
             );
         }
 
-        let hole = Shape::MultiPolygon(
-            vec![Polygon::new(
-                polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
-                vec![Ring::from_closed(vec![
+        let hole_polygon = Polygon::new(
+            polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+            vec![Ring::from_closed(
+                CoordSeq::try_from_points(&vec![
                     Point::new(2.0, 2.0).unwrap(),
                     Point::new(4.0, 2.0).unwrap(),
                     Point::new(4.0, 4.0).unwrap(),
                     Point::new(2.0, 4.0).unwrap(),
                     Point::new(2.0, 2.0).unwrap(),
-                ])],
-            )]
-            .into(),
+                ])
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        let hole = Shape::MultiPolygon(
+            MultiPolygon::from_dense(vec![hole_polygon])
+                .unwrap()
+                .unwrap(),
         );
         let hole_points = Shape::MultiPoint(
             vec![
@@ -1396,8 +1555,8 @@ mod binary_areal_overlay_tests {
         let points = Shape::MultiPoint(
             vec![Point::new(1.0, 1.0).unwrap(), Point::new(5.0, 5.0).unwrap()].into(),
         );
-        let empty_member =
-            Shape::MultiPolygon(MultiPolygon::from_values(CoordinateAxes::XY, vec![
+        let empty_member = Shape::MultiPolygon(
+            MultiPolygon::from_values(CoordinateAxes::XY, vec![
                 MultiMember::Empty,
                 MultiMember::Value(polygon(&[
                     (0.0, 0.0),
@@ -1406,7 +1565,9 @@ mod binary_areal_overlay_tests {
                     (0.0, 2.0),
                     (0.0, 0.0),
                 ])),
-            ]));
+            ])
+            .unwrap(),
+        );
         assert_point_intersection_matches_generic(
             "multipoint and multipolygon empty member",
             &points,
@@ -1464,7 +1625,7 @@ mod binary_areal_overlay_tests {
         )
         .expect("interpolated boundary");
         assert_eq!(result.coordinate_axes(), "XYZ");
-        assert_eq!(result.points_vec()[0].z(), Some(12.0));
+        assert_eq!(result.points_vec().unwrap()[0].z(), Some(12.0));
         let z_multipolygon = match &z_polygon {
             Shape::Polygon(polygon) => Shape::MultiPolygon(vec![polygon.clone()].into()),
             _ => unreachable!("z_square returns a polygon"),
@@ -1478,19 +1639,22 @@ mod binary_areal_overlay_tests {
         )
         .expect("scalar multipolygon boundary");
         assert_eq!(scalar_result.coordinate_axes(), "XYZ");
-        assert_eq!(scalar_result.points_vec()[0].z(), Some(12.0));
+        assert_eq!(scalar_result.points_vec().unwrap()[0].z(), Some(12.0));
 
-        let repeated_line =
-            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XYZ, vec![
-                MultiMember::Value(
-                    LineSeq::try_new(CoordSeq::from(vec![
+        let repeated_line = Shape::MultiLineString(
+            MultiLineString::from_values(CoordinateAxes::XYZ, vec![MultiMember::Value(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&vec![
                         Point::new_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(None)).unwrap(),
                         Point::new_axes(0.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(None)).unwrap(),
                         Point::new_axes(2.0, 0.0, ZOrdinate(Some(2.0)), MOrdinate(None)).unwrap(),
-                    ]))
-                    .expect("repeated line"),
-                ),
-            ]));
+                    ])
+                    .unwrap(),
+                )
+                .expect("repeated line"),
+            )])
+            .unwrap(),
+        );
         let repeated_point = Shape::MultiPoint(vec![Point::new(0.0, 0.0).unwrap()].into());
         let repeated_result = assert_point_intersection_matches_generic(
             "repeated zero-length source edge",
@@ -1499,7 +1663,7 @@ mod binary_areal_overlay_tests {
             Strictness::Strict,
         )
         .expect("repeated edge result");
-        assert_eq!(repeated_result.points_vec()[0].z(), Some(99.0));
+        assert_eq!(repeated_result.points_vec().unwrap()[0].z(), Some(99.0));
 
         let extreme = Shape::MultiPoint(vec![Point::new(0.0, 0.0).unwrap()].into());
         let extreme_line = line(&[(-1.0e150, -1.0e150), (1.0e150, 1.0e150)]);
@@ -1802,10 +1966,13 @@ mod binary_areal_overlay_tests {
             ),
             Shape::MultiLineString(
                 vec![
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        Point::new(2.0, 2.0).unwrap(),
-                        Point::new(3.0, 2.0).unwrap(),
-                    ]))
+                    LineSeq::try_new(
+                        CoordSeq::try_from_points(&vec![
+                            Point::new(2.0, 2.0).unwrap(),
+                            Point::new(3.0, 2.0).unwrap(),
+                        ])
+                        .unwrap(),
+                    )
                     .unwrap(),
                 ]
                 .into(),
@@ -1935,17 +2102,23 @@ mod binary_areal_overlay_tests {
         let point =
             |z, m| Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap();
         let left = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                point(1.0, 7.0),
-                Point::new_axes(2.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(9.0))).unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    point(1.0, 7.0),
+                    Point::new_axes(2.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(9.0))).unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         );
         let right = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                point(11.0, 7.0),
-                Point::new_axes(2.0, 0.0, ZOrdinate(Some(13.0)), MOrdinate(Some(9.0))).unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    point(11.0, 7.0),
+                    Point::new_axes(2.0, 0.0, ZOrdinate(Some(13.0)), MOrdinate(Some(9.0))).unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         );
 
@@ -1960,30 +2133,44 @@ mod binary_areal_overlay_tests {
     #[test]
     fn overlay_preserves_signed_zero_and_drops_absent_difference_axis() {
         let left = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new_axes(0.0, 0.0, ZOrdinate(Some(-0.0)), MOrdinate(None)).unwrap(),
-                Point::new_axes(4.0, 0.0, ZOrdinate(Some(4.0)), MOrdinate(None)).unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_axes(0.0, 0.0, ZOrdinate(Some(-0.0)), MOrdinate(None)).unwrap(),
+                    Point::new_axes(4.0, 0.0, ZOrdinate(Some(4.0)), MOrdinate(None)).unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         );
         let xy = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new(0.0, 0.0).unwrap(),
-                Point::new(4.0, 0.0).unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new(0.0, 0.0).unwrap(),
+                    Point::new(4.0, 0.0).unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         );
         let intersection = left.intersection(&xy, Strictness::Lenient).unwrap();
         assert_eq!(intersection.coordinate_axes(), "XYZ");
-        let first = intersection.points_vec().into_iter().next().unwrap();
+        let first = intersection
+            .points_vec()
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(first.z().unwrap().to_bits(), (-0.0_f64).to_bits());
         assert!(first.m().is_none());
 
         let measured = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new_axes(2.0, -1.0, ZOrdinate(None), MOrdinate(Some(2.0))).unwrap(),
-                Point::new_axes(2.0, 1.0, ZOrdinate(None), MOrdinate(Some(4.0))).unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_axes(2.0, -1.0, ZOrdinate(None), MOrdinate(Some(2.0))).unwrap(),
+                    Point::new_axes(2.0, 1.0, ZOrdinate(None), MOrdinate(Some(4.0))).unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         );
         let difference = left.difference(&measured, Strictness::Lenient).unwrap();
@@ -2009,6 +2196,7 @@ mod binary_areal_overlay_tests {
         let signature = |shape: &Shape| {
             let mut points = shape
                 .points_vec()
+                .unwrap()
                 .into_iter()
                 .map(|point| {
                     (
@@ -2037,25 +2225,32 @@ mod binary_areal_overlay_tests {
     #[test]
     fn line_merge_drops_only_conflicting_shared_node_axes() {
         let line = |z, m, end| {
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap(),
-                Point::new_axes(end, 0.0, ZOrdinate(Some(z + 1.0)), MOrdinate(Some(m + 1.0)))
-                    .unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap(),
+                    Point::new_axes(end, 0.0, ZOrdinate(Some(z + 1.0)), MOrdinate(Some(m + 1.0)))
+                        .unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices")
         };
         let lines = MultiLineString::from_values(CoordinateAxes::XYZM, vec![
             MultiMember::Value(line(1.0, 10.0, 1.0)),
             MultiMember::Value(
-                LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new_axes(1.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(11.0)))
-                        .unwrap(),
-                    Point::new_axes(2.0, 0.0, ZOrdinate(Some(100.0)), MOrdinate(Some(12.0)))
-                        .unwrap(),
-                ]))
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&vec![
+                        Point::new_axes(1.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(11.0)))
+                            .unwrap(),
+                        Point::new_axes(2.0, 0.0, ZOrdinate(Some(100.0)), MOrdinate(Some(12.0)))
+                            .unwrap(),
+                    ])
+                    .unwrap(),
+                )
                 .expect("fixture line has two vertices"),
             ),
-        ]);
+        ])
+        .unwrap();
         let merged = Shape::MultiLineString(lines).line_merge().unwrap();
         assert_eq!(merged.coordinate_axes(), "XYM");
         merged.for_each_point(|point| assert!(point.z().is_none()));
@@ -2097,7 +2292,10 @@ mod binary_areal_overlay_tests {
             // Same, with a repeated vertex the dissolve would drop and a part
             // that ends where the next begins.
             vec![
-                multiline(&[&[(0.0, 0.0), (1.0, 1.0), (1.0, 1.0), (2.0, 1.0)], &[(2.0, 1.0), (3.0, 3.0)]]),
+                multiline(&[&[(0.0, 0.0), (1.0, 1.0), (1.0, 1.0), (2.0, 1.0)], &[
+                    (2.0, 1.0),
+                    (3.0, 3.0),
+                ]]),
                 line(&[(0.0, 2.0), (3.0, 4.0)]),
             ],
             vec![
@@ -2134,9 +2332,8 @@ mod binary_areal_overlay_tests {
         }
 
         for scale in [2.0_f64.powi(-600), 2.0_f64.powi(600)] {
-            let cuts = [3.0, 1.0, 2.0].map(|multiple| {
-                line(&[(multiple * scale, -scale), (multiple * scale, scale)])
-            });
+            let cuts = [3.0, 1.0, 2.0]
+                .map(|multiple| line(&[(multiple * scale, -scale), (multiple * scale, scale)]));
             let source = line(&[(0.0, 0.0), (4.0 * scale, 0.0)]);
             let inputs = std::iter::once(&source)
                 .chain(cuts.iter())
@@ -2179,7 +2376,10 @@ mod binary_areal_overlay_tests {
             .take(rows)
             .collect();
             let inputs: Vec<&Shape> = shapes.iter().collect();
-            if !inputs.iter().all(|shape| super::super::nary::nondegenerate_line_only(shape)) {
+            if !inputs
+                .iter()
+                .all(|shape| super::super::nary::nondegenerate_line_only(shape))
+            {
                 continue;
             }
             for op in EVERY_OP {
@@ -2202,7 +2402,7 @@ mod binary_areal_overlay_tests {
         )
         .unwrap();
         assert!(matches!(result, Shape::LineString(_)), "{result:?}");
-        assert_eq!(result.points_vec().len(), 2, "{result:?}");
+        assert_eq!(result.points_vec().unwrap().len(), 2, "{result:?}");
         assert_line_overlay_matches_generic(&[&left, &right], OverlayOp::Intersection);
     }
 
@@ -2278,11 +2478,13 @@ mod binary_areal_overlay_tests {
         let polygon = square(4.0, 4.0, 6.0, 6.0);
         let mixed = Shape::geometry_collection(vec![line_shape.clone(), polygon.clone()])
             .expect("test collection is valid");
-        let empty_member =
-            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
+        let empty_member = Shape::MultiLineString(
+            MultiLineString::from_values(CoordinateAxes::XY, vec![
                 MultiMember::Empty,
                 MultiMember::Value(line_seq(&[(8.0, 0.0), (9.0, 0.0)])),
-            ]));
+            ])
+            .unwrap(),
+        );
 
         assert!(super::super::nary::nondegenerate_line_only(&line_shape));
         for input in [&collapsed, &empty, &polygon, &mixed, &empty_member] {
@@ -2434,8 +2636,14 @@ fn overlay_output_rings_carry_no_collinear_nodes() {
     let plain = shape("POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))");
     let partner = shape("POLYGON ((1 1, 3 1, 3 4, 1 4, 1 1))");
     let strict = Strictness::Strict;
-    assert_eq!(wkt(&plain.union(&partner, strict).unwrap()), "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))");
-    assert_eq!(wkt(&holed.union(&partner, strict).unwrap()), "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))");
+    assert_eq!(
+        wkt(&plain.union(&partner, strict).unwrap()),
+        "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))"
+    );
+    assert_eq!(
+        wkt(&holed.union(&partner, strict).unwrap()),
+        "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))"
+    );
     assert_eq!(
         wkt(&holed.difference(&partner, strict).unwrap()),
         "POLYGON ((0 0, 4 0, 4 4, 3 4, 3 1, 1 1, 1 4, 0 4, 0 0))"

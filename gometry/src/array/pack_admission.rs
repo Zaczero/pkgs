@@ -160,13 +160,13 @@ mod tests {
     use crate::geometry::{CoordSeq, CoordinateAxes};
 
     fn seq(rows: &[[f64; 4]], axes: CoordinateAxes) -> CoordSeq {
-        CoordSeq::try_from_columns(
-            rows.iter().map(|row| row[0]).collect::<Vec<_>>().into(),
-            rows.iter().map(|row| row[1]).collect::<Vec<_>>().into(),
+        CoordSeq::try_from_vecs(
+            rows.iter().map(|row| row[0]).collect::<Vec<_>>(),
+            rows.iter().map(|row| row[1]).collect::<Vec<_>>(),
             axes.has_z()
-                .then(|| rows.iter().map(|row| row[2]).collect::<Vec<_>>().into()),
+                .then(|| rows.iter().map(|row| row[2]).collect::<Vec<_>>()),
             axes.has_m()
-                .then(|| rows.iter().map(|row| row[3]).collect::<Vec<_>>().into()),
+                .then(|| rows.iter().map(|row| row[3]).collect::<Vec<_>>()),
         )
         .unwrap()
     }

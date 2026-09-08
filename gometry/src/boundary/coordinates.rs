@@ -10,12 +10,11 @@
 //! export, alternate owners (`array.coords` over packed storage), and a tuple
 //! layout selector — each added alongside the consumer that needs it.
 
-use crate::array::PackedStorage;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use crate::GeometryArrayStorage;
-use crate::array::ValidityMask;
+use crate::array::{PackedStorage, ValidityMask};
 use crate::geometry::{
     CoordSeq, CoordWindow, CoordinateAxes, MOrdinate, Point, Shape, ShapeData, ZOrdinate,
 };
@@ -403,8 +402,14 @@ impl CoordinateView {
                     // arrays materialize through `for_each`, so public buffers
                     // match logical row order and never expose excluded parent
                     // coordinates.
-                    GeometryArrayStorage::Packed(PackedStorage::Lines { coords, row_map, .. } |
-PackedStorage::Polygons { coords, row_map, .. }) => row_map.is_identity().then_some(coords),
+                    GeometryArrayStorage::Packed(
+                        PackedStorage::Lines {
+                            coords, row_map, ..
+                        }
+                        | PackedStorage::Polygons {
+                            coords, row_map, ..
+                        },
+                    ) => row_map.is_identity().then_some(coords),
                     GeometryArrayStorage::Mixed(_) => None,
                 }
             },
@@ -414,7 +419,8 @@ PackedStorage::Polygons { coords, row_map, .. }) => row_map.is_identity().then_s
     /// Resolve one axis to a borrowed or materialized column.
     pub fn column(&self, axis: CoordinateAxis) -> crate::error::Result<CoordinateColumnRef<'_>> {
         if let CoordinateOwner::Array { storage, missing } = &self.owner
-            && let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = storage.as_ref()
+            && let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
+                storage.as_ref()
             && missing.is_none()
         {
             if let Some(window) = row_map.as_deref().contiguous_window() {
@@ -585,7 +591,9 @@ PackedStorage::Polygons { coords, row_map, .. }) => row_map.is_identity().then_s
         } = &self.owner
         {
             match storage.as_ref() {
-                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) if row_map.is_identity() => {
+                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map })
+                    if row_map.is_identity() =>
+                {
                     let mut indexes = Vec::new();
                     crate::boundary::try_reserve_vec(&mut indexes, coords.len())?;
                     for row in 0..coords.len() {
@@ -878,10 +886,9 @@ PackedStorage::Polygons { coords, row_map, .. }) => row_map.is_identity().then_s
                 missing: None,
             } => match storage.as_ref() {
                 GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => true,
-                GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. } |
-PackedStorage::Polygons { row_map, .. }) => {
-                    !matches!(row_map.as_deref(), crate::array::RowSelectionRef::Gather(_))
-                },
+                GeometryArrayStorage::Packed(
+                    PackedStorage::Lines { row_map, .. } | PackedStorage::Polygons { row_map, .. },
+                ) => !matches!(row_map.as_deref(), crate::array::RowSelectionRef::Gather(_)),
                 GeometryArrayStorage::Mixed(_) => false,
             },
             CoordinateOwner::Array {
@@ -1202,13 +1209,16 @@ impl CoordinateView {
         let mut any = false;
         let mut all_present = true;
         let result = self.try_for_each_point(&mut |coord| {
-            let (value, is_present) = project(coord.point).map_or_else(|| {
+            let (value, is_present) = project(coord.point).map_or_else(
+                || {
                     all_present = false;
                     (0.0, false)
-                }, |value| {
+                },
+                |value| {
                     any = true;
                     (value, true)
-                });
+                },
+            );
             match crate::boundary::try_push_pair(&mut values, &mut present, value, is_present) {
                 Ok(()) => ControlFlow::Continue(()),
                 Err(error) => ControlFlow::Break(error),
@@ -1415,7 +1425,7 @@ mod tests {
     use super::*;
     use crate::array::{RowSelection, ValidityMask};
     use crate::geometry::{
-        CoordSeq, CsrOffsetColumn, LineSeq, Polygon, PolygonLevel, Ring, RingLevel,
+        CoordSeq, CsrOffsetColumn, LineSeq, Polygon, PolygonLevel, Ring, RingLevel, SharedSlice,
     };
     use crate::{Frame, PyGeometryArray};
 
@@ -1425,9 +1435,12 @@ mod tests {
 
     fn line(coords: &[(f64, f64)]) -> Arc<ShapeData> {
         Arc::new(ShapeData::new(Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(
-                coords.iter().map(|&(x, y)| pt(x, y)).collect::<Vec<_>>(),
-            ))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(
+                    &coords.iter().map(|&(x, y)| pt(x, y)).collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            )
             .expect("test line is valid"),
         )))
     }
@@ -1466,7 +1479,7 @@ mod tests {
             Ring::closed(vec![pt(1.0, 1.0), pt(2.0, 1.0), pt(2.0, 2.0), pt(1.0, 2.0)]).unwrap();
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(Shape::Polygon(Polygon {
             shell,
-            holes: vec![hole].into(),
+            holes: SharedSlice::try_from_vec(vec![hole]).unwrap(),
         }))));
         assert!(view.single_seq().is_none());
         let points = view.collect_points();
@@ -1482,7 +1495,7 @@ mod tests {
 
     #[test]
     fn packed_polygon_view_walks_csr_rows_and_rings_in_order() {
-        let coords = CoordSeq::from(Vec::<Point>::from([
+        let coords = CoordSeq::try_from_points(&Vec::<Point>::from([
             pt(0.0, 0.0),
             pt(4.0, 0.0),
             pt(4.0, 4.0),
@@ -1498,7 +1511,8 @@ mod tests {
             pt(11.0, 11.0),
             pt(10.0, 11.0),
             pt(10.0, 10.0),
-        ]));
+        ]))
+        .unwrap();
         let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5, 10, 15], 15).unwrap();
         let polygon_offsets = CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 2, 3], 3).unwrap();
         let array = PyGeometryArray::packed_polygons(
@@ -1533,7 +1547,9 @@ mod tests {
         assert_eq!(gathered_points[5].path.geometry, Some(1));
         assert_eq!(gathered_points[10].path.ring, Some(1));
 
-        let masked = gathered.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]));
+        let masked = gathered
+            .with_missing_mask(ValidityMask::from_vec(2, vec![true, false]))
+            .unwrap();
         let masked_view = masked.coordinate_view();
         let masked_points = masked_view.collect_points();
         assert_eq!(masked_view.len(), 10);
@@ -1549,13 +1565,14 @@ mod tests {
 
     #[test]
     fn identity_packed_lines_row_index_fills_from_csr_offsets() {
-        let coords = CoordSeq::from(vec![
+        let coords = CoordSeq::try_from_points(&[
             pt(0.0, 0.0),
             pt(1.0, 0.0),
             pt(2.0, 0.0),
             pt(3.0, 0.0),
             pt(4.0, 0.0),
-        ]);
+        ])
+        .unwrap();
         let offsets = CsrOffsetColumn::try_new(vec![0, 2, 5], 5).unwrap();
         let array = PyGeometryArray::packed_lines(coords, offsets, Frame::default());
         let view = array.coordinate_view();
@@ -1566,7 +1583,7 @@ mod tests {
 
     #[test]
     fn identity_packed_polygons_row_index_spans_all_rings() {
-        let coords = CoordSeq::from(Vec::<Point>::from([
+        let coords = CoordSeq::try_from_points(&Vec::<Point>::from([
             pt(0.0, 0.0),
             pt(4.0, 0.0),
             pt(4.0, 4.0),
@@ -1582,7 +1599,8 @@ mod tests {
             pt(11.0, 11.0),
             pt(10.0, 11.0),
             pt(10.0, 10.0),
-        ]));
+        ]))
+        .unwrap();
         let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5, 10, 15], 15).unwrap();
         let polygon_offsets = CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 2, 3], 3).unwrap();
         let array = PyGeometryArray::packed_polygons(
@@ -1600,14 +1618,15 @@ mod tests {
 
     #[test]
     fn gathered_packed_lines_row_index_uses_logical_rows() {
-        let coords = CoordSeq::from(Vec::<Point>::from([
+        let coords = CoordSeq::try_from_points(&Vec::<Point>::from([
             pt(0.0, 0.0),
             pt(1.0, 0.0),
             pt(2.0, 0.0),
             pt(3.0, 0.0),
             pt(4.0, 0.0),
             pt(5.0, 0.0),
-        ]));
+        ]))
+        .unwrap();
         let offsets = CsrOffsetColumn::try_new(vec![0, 2, 4, 6], 6).unwrap();
         let gathered = PyGeometryArray::packed_lines_mapped(
             coords,
@@ -1628,8 +1647,10 @@ mod tests {
         let collection = Shape::geometry_collection(vec![
             Shape::Point(pt(9.0, 9.0)),
             Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![pt(0.0, 0.0), pt(1.0, 1.0)]))
-                    .expect("test line is valid"),
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&vec![pt(0.0, 0.0), pt(1.0, 1.0)]).unwrap(),
+                )
+                .expect("test line is valid"),
             ),
         ])
         .expect("test collection is valid");

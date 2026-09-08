@@ -2,14 +2,14 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use crate::array::{
-    Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, LineRows, PointRows, Polygon, Ring,
-    RowSelectionRef, RowsIter, Shape, ShapeData, ShapeRow, ShapesIter, column_window,
-    line_logical_len, packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len,
-    physical_row, point_logical_len, polygon_logical_len, polygon_rings_range,
+    Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, LineRows, PackedStorage, PointRows,
+    Polygon, Ring, RowSelectionRef, RowsIter, Shape, ShapeData, ShapeRow, ShapesIter,
+    column_window, line_logical_len, packed_lines_coord_len, packed_polygons_coord_len,
+    packed_polygons_ring_len, physical_row, point_logical_len, polygon_logical_len,
+    polygon_rings_range,
 };
 use crate::error::Result;
 use crate::geometry::{CoordWindow, LineSeq};
@@ -44,6 +44,7 @@ impl GeometryArrayStorage {
             },
             _ => {
                 for shape in self.iter_shapes() {
+                    let shape = shape?;
                     crate::boundary::try_push_vec(&mut output, shape_pred(&shape))?;
                 }
             },
@@ -101,7 +102,7 @@ impl GeometryArrayStorage {
                                 coords,
                                 ring_offsets,
                                 polygon_rings_range(polygon_offsets.as_slice(), map, logical),
-                            )),
+                            )?),
                         )?;
                     }
                     Ok(output)
@@ -180,7 +181,7 @@ impl GeometryArrayStorage {
                                 coords,
                                 ring_offsets,
                                 polygon_rings_range(polygon_offsets.as_slice(), map, logical),
-                            ))
+                            )?)
                         };
                         crate::boundary::try_push_vec(&mut output, value)?;
                     }
@@ -196,6 +197,17 @@ impl GeometryArrayStorage {
         row_map: impl Into<RowSelectionRef<'a>>,
         f: impl Fn(std::ops::Range<usize>) -> T,
     ) -> Vec<T> {
+        let map = row_map.into();
+        (0..line_logical_len(offsets, map))
+            .map(|logical| f(map.csr_window(offsets, logical)))
+            .collect()
+    }
+
+    pub(crate) fn try_map_line_rows<'a, T>(
+        offsets: &[i32],
+        row_map: impl Into<RowSelectionRef<'a>>,
+        f: impl Fn(std::ops::Range<usize>) -> Result<T>,
+    ) -> Result<Vec<T>> {
         let map = row_map.into();
         (0..line_logical_len(offsets, map))
             .map(|logical| f(map.csr_window(offsets, logical)))
@@ -225,10 +237,35 @@ impl GeometryArrayStorage {
             .collect()
     }
 
+    pub(crate) fn try_map_polygon_rows<'a, T>(
+        ring_offsets: &[i32],
+        polygon_offsets: &[i32],
+        row_map: impl Into<RowSelectionRef<'a>>,
+        all_rings: bool,
+        f: impl Fn(Option<std::ops::Range<usize>>) -> Result<T>,
+    ) -> Result<Vec<T>> {
+        let map = row_map.into();
+        (0..polygon_logical_len(polygon_offsets, map))
+            .map(|logical| {
+                let rings = polygon_rings_range(polygon_offsets, map, logical);
+                let window = if rings.is_empty() {
+                    None
+                } else if all_rings {
+                    Some(ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize)
+                } else {
+                    Some(ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize)
+                };
+                f(window)
+            })
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Self::Mixed(items) => items.len(),
-            Self::Packed(PackedStorage::Points { coords, row_map }) => point_logical_len(coords, row_map.as_deref()),
+            Self::Packed(PackedStorage::Points { coords, row_map }) => {
+                point_logical_len(coords, row_map.as_deref())
+            },
             Self::Packed(PackedStorage::Lines {
                 offsets, row_map, ..
             }) => line_logical_len(offsets.as_slice(), row_map.as_deref()),
@@ -278,7 +315,9 @@ impl GeometryArrayStorage {
             Self::Mixed(shapes) => {
                 self.logical_coordinate_bytes() + shapes.len() * std::mem::size_of::<Shape>()
             },
-            Self::Packed(PackedStorage::Points { row_map, .. }) => self.logical_coordinate_bytes() + row_map.heap_bytes(),
+            Self::Packed(PackedStorage::Points { row_map, .. }) => {
+                self.logical_coordinate_bytes() + row_map.heap_bytes()
+            },
             Self::Packed(PackedStorage::Lines {
                 offsets, row_map, ..
             }) => {
@@ -317,7 +356,7 @@ impl GeometryArrayStorage {
         coords: &CoordSeq,
         ring_offsets: &[i32],
         rings: std::ops::Range<usize>,
-    ) -> Polygon {
+    ) -> crate::error::Result<Polygon> {
         let ring = |index: usize| {
             let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
             Ring::from_closed(coords.view(CoordWindow::from_range(window, coords.len())))
@@ -389,8 +428,7 @@ impl GeometryArrayStorage {
                 if rings.is_empty() {
                     continue;
                 }
-                let vertices =
-                    ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
+                let vertices = ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
                 let (minx, maxx) = crate::geometry::column_minmax(&coords.xs()[vertices.clone()])?;
                 let (miny, maxy) = crate::geometry::column_minmax(&coords.ys()[vertices])?;
                 let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
@@ -402,8 +440,12 @@ impl GeometryArrayStorage {
             return total;
         }
         let packed = match self {
-            Self::Packed(PackedStorage::Points { coords, row_map } |
-PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some(coords),
+            Self::Packed(
+                PackedStorage::Points { coords, row_map }
+                | PackedStorage::Lines {
+                    coords, row_map, ..
+                },
+            ) => row_map.is_identity().then_some(coords),
             Self::Packed(PackedStorage::Polygons { .. }) | Self::Mixed(_) => None,
         };
         if let Some(seq) = packed {
@@ -412,7 +454,9 @@ PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some
             return Some(Bounds::new_raw(minx, miny, maxx, maxy));
         }
         // Mixed rows fold their cached per-row bounds.
-        let mut values = self.iter_shapes().filter_map(|shape| shape.bounds());
+        let mut values = self
+            .iter_shapes()
+            .filter_map(|shape| shape.ok().and_then(|shape| shape.bounds()));
         let first = values.next()?;
         Some(values.fold(first, |mut acc, bounds| {
             acc.include_bounds(bounds);
@@ -420,12 +464,12 @@ PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some
         }))
     }
 
-    pub(crate) fn envelope_box_shapes(&self) -> Option<Vec<Shape>> {
-        let row_box = |xs: &[f64], ys: &[f64], range: std::ops::Range<usize>| -> Shape {
+    pub(crate) fn envelope_box_shapes(&self) -> Result<Option<Vec<Shape>>> {
+        let row_box = |xs: &[f64], ys: &[f64], range: std::ops::Range<usize>| -> Result<Shape> {
             if range.is_empty() {
                 // `envelope`'s output type is `Polygon` (boxes), so an empty row
                 // yields `POLYGON EMPTY` — identical to scalar `Shape::envelope`.
-                return Shape::empty_polygon();
+                return Ok(Shape::empty_polygon());
             }
             let [minx, miny, maxx, maxy] = crate::geometry::xy_bounds_columns(
                 column_window(xs, &range),
@@ -441,17 +485,18 @@ PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some
                 row_map,
             }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
-                Some(Self::map_polygon_rows(
+                Ok(Some(Self::try_map_polygon_rows(
                     ring_offsets,
                     polygon_offsets.as_slice(),
                     row_map.as_deref(),
                     true,
                     |window| {
-                        window.map_or_else(Shape::empty_polygon, |vertices| {
-                            row_box(xs, ys, vertices)
-                        })
+                        window.map_or_else(
+                            || Ok(Shape::empty_polygon()),
+                            |vertices| row_box(xs, ys, vertices),
+                        )
                     },
-                ))
+                )?))
             },
             Self::Packed(PackedStorage::Lines {
                 coords,
@@ -459,13 +504,13 @@ PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some
                 row_map,
             }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
-                Some(Self::map_line_rows(
-                    offsets.as_slice(),
-                    row_map.as_deref(),
-                    |window| row_box(xs, ys, window),
-                ))
+                let values =
+                    Self::try_map_line_rows(offsets.as_slice(), row_map.as_deref(), |window| {
+                        row_box(xs, ys, window)
+                    })?;
+                Ok(Some(values))
             },
-            Self::Packed(PackedStorage::Points { .. }) | Self::Mixed(_) => None,
+            Self::Packed(PackedStorage::Points { .. }) | Self::Mixed(_) => Ok(None),
         }
     }
 
@@ -576,70 +621,56 @@ PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some
     ///
     /// Mixed rows must go through [`PyGeometryArray::geometry_at`] so the
     /// array-side prepared cache owns the plan and its ShapeData.
-    pub(crate) fn shape_data_at(&self, index: usize) -> Arc<ShapeData> {
+    pub(crate) fn shape_data_at(&self, index: usize) -> Result<Arc<ShapeData>> {
         match self {
-            Self::Mixed(shapes) => Arc::new(ShapeData::new(shapes[index].clone())),
-            Self::Packed(PackedStorage::Points { coords, row_map }) => Arc::new(ShapeData::new(Shape::Point(
-                coords.point_at(physical_row(row_map.as_deref(), index)),
-            ))),
+            Self::Mixed(shapes) => Ok(Arc::new(ShapeData::new(shapes[index].clone()))),
+            Self::Packed(PackedStorage::Points { coords, row_map }) => {
+                Ok(Arc::new(ShapeData::new(Shape::Point(
+                    coords.point_at(physical_row(row_map.as_deref(), index)),
+                ))))
+            },
             Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            }) => Arc::new(ShapeData::new(Shape::Polygon(Self::polygon_view(
-                coords,
-                ring_offsets,
-                polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
+            }) => Ok(Arc::new(ShapeData::new(Shape::Polygon(
+                Self::polygon_view(
+                    coords,
+                    ring_offsets,
+                    polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
+                )?,
             )))),
             Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            }) => Arc::new(ShapeData::new(Shape::LineString(LineSeq::from_proven(
-                Self::line_view(coords, offsets, row_map.as_deref(), index),
+            }) => Ok(Arc::new(ShapeData::new(Shape::LineString(
+                LineSeq::from_proven(Self::line_view(coords, offsets, row_map.as_deref(), index)),
             )))),
         }
     }
 }
 
-pub(crate) fn reverse_coord_windows(coords: &CoordSeq, boundaries: &[i32]) -> CoordSeq {
-    // Exact-final-Arc reverse of each CSR window (no `Vec`/`Box` intermediate).
-    // Completeness is enforced by construction: windows must partition
-    // `0..len` contiguously before any `assume_init`. A malformed offset
-    // table falls back to a whole-column reverse (still memory-safe).
-    let reverse_column = |column: &[f64]| -> std::sync::Arc<[f64]> {
+pub(crate) fn reverse_coord_windows(coords: &CoordSeq, boundaries: &[i32]) -> Result<CoordSeq> {
+    let reverse_column = |column: &[f64]| -> Result<Vec<f64>> {
         let len = column.len();
+        let mut output = Vec::new();
+        crate::boundary::try_reserve_vec(&mut output, len)?;
         if !csr_windows_partition(boundaries, len) {
-            return crate::geometry::reverse_column_arc(column);
+            output.extend(column.iter().rev().copied());
+            return Ok(output);
         }
-        let mut buf = std::sync::Arc::<[f64]>::new_uninit_slice(len);
-        // SAFETY: unique Arc; the partition check above proves every index
-        // `0..len` is written exactly once by the window loop (no OOB, no
-        // gaps), so `assume_init` is sound.
-        unsafe {
-            let dst = std::sync::Arc::get_mut(&mut buf)
-                .unwrap_unchecked()
-                .as_mut_ptr()
-                .cast::<f64>();
-            let mut out = 0_usize;
-            for &[start, end] in boundaries.array_windows::<2>() {
-                let (start, end) = (start as usize, end as usize);
-                let n = end - start;
-                for i in 0..n {
-                    dst.add(out + i).write(column[end - 1 - i]);
-                }
-                out += n;
-            }
-            debug_assert_eq!(out, len);
-            buf.assume_init()
+        for &[start, end] in boundaries.array_windows::<2>() {
+            output.extend(column[start as usize..end as usize].iter().rev().copied());
         }
+        Ok(output)
     };
-    CoordSeq::from_columns(
-        reverse_column(coords.xs()),
-        reverse_column(coords.ys()),
-        coords.zs().map(reverse_column),
-        coords.ms().map(reverse_column),
+    CoordSeq::try_from_vecs(
+        reverse_column(coords.xs())?,
+        reverse_column(coords.ys())?,
+        coords.zs().map(reverse_column).transpose()?,
+        coords.ms().map(reverse_column).transpose()?,
     )
 }
 
@@ -674,7 +705,9 @@ fn csr_windows_partition(boundaries: &[i32], len: usize) -> bool {
 impl PackedStorage {
     pub(crate) fn axes(&self) -> CoordinateAxes {
         match self {
-            Self::Points { coords, .. } | Self::Lines { coords, .. } | Self::Polygons { coords, .. } => coords.axes(),
+            Self::Points { coords, .. }
+            | Self::Lines { coords, .. }
+            | Self::Polygons { coords, .. } => coords.axes(),
         }
     }
 }

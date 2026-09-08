@@ -31,7 +31,7 @@ impl PyGeometry {
         Ok(PyGeometryArray::from_shapes(
             crate::try_collect_results(shapes.into_iter().map(Ok::<_, PyErr>))?,
             self.frame.clone(),
-        ))
+        )?)
     }
 
     pub(crate) fn to_wkt_impl(
@@ -98,15 +98,14 @@ impl PyGeometry {
         })
     }
 
-    pub(crate) fn validate_impl(&self, py: Python<'_>) -> PyValidationReport {
+    pub(crate) fn validate_impl(&self, py: Python<'_>) -> PyResult<PyValidationReport> {
         let geometry = self.clone();
         let plan = self.plan_or_transient();
-        let domain = geometry::topology_domain(&self.frame)
-            .unwrap_or(crate::geometry::TopologyDomain::Cartesian);
-        PyValidationReport {
+        let domain = geometry::topology_domain(&self.frame)?;
+        Ok(PyValidationReport {
             geometry,
-            issue: py.detach(move || geometry::validate_data_in_frame(&plan, domain)),
-        }
+            issue: py.detach(move || geometry::validate_data_in_frame(&plan, domain))?,
+        })
     }
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Typed> {
@@ -135,7 +134,10 @@ impl PyGeometry {
         let shape = Arc::clone(&self.shape);
         let vertices = py.detach(move || shape.delaunay_triangle_vertices())?;
         if vertices.is_empty() {
-            return Ok(PyGeometryArray::from_shapes(Vec::new(), self.frame.clone()));
+            return Ok(PyGeometryArray::from_shapes(
+                Vec::new(),
+                self.frame.clone(),
+            )?);
         }
         let axes = vertices.first().map(|point| point.axes);
         if vertices.iter().any(|point| Some(point.axes) != axes) {
@@ -160,7 +162,10 @@ impl PyGeometry {
             let shape = Arc::clone(&self.shape);
             let vertices = py.detach(move || shape.constrained_delaunay_vertices(refinement))?;
             return if vertices.is_empty() {
-                Ok(PyGeometryArray::from_shapes(Vec::new(), self.frame.clone()))
+                Ok(PyGeometryArray::from_shapes(
+                    Vec::new(),
+                    self.frame.clone(),
+                )?)
             } else {
                 PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
             };
@@ -175,7 +180,10 @@ impl PyGeometry {
         if shape.earcut_packed_axes().is_some() {
             let vertices = py.detach(move || shape.polygon_triangle_vertices())?;
             return if vertices.is_empty() {
-                Ok(PyGeometryArray::from_shapes(Vec::new(), self.frame.clone()))
+                Ok(PyGeometryArray::from_shapes(
+                    Vec::new(),
+                    self.frame.clone(),
+                )?)
             } else {
                 PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
             };
@@ -242,7 +250,7 @@ impl PyGeometry {
         tolerance: f64,
     ) -> PyResult<PyGeometryArray> {
         let shapes = py.detach(move || shape.split(&splitter, tolerance))?;
-        Ok(PyGeometryArray::from_shapes(shapes, frame))
+        Ok(PyGeometryArray::from_shapes(shapes, frame)?)
     }
 
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {

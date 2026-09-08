@@ -47,6 +47,7 @@ fn mixed_ring_axes_polygon() -> Polygon {
             (1.0, 1.0),
         ])],
     )
+    .unwrap()
 }
 
 fn assert_mixed_ring_axes_error(shape: &Shape) {
@@ -60,9 +61,12 @@ fn assert_mixed_ring_axes_error(shape: &Shape) {
 
 fn line(coords: &[(f64, f64)]) -> Shape {
     Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(
-            coords.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>(),
-        ))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(
+                &coords.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        )
         .expect("test line has two vertices"),
     )
 }
@@ -101,10 +105,13 @@ fn ring_signed_area(ring: &Value) -> f64 {
 #[test]
 fn clockwise_shell_serializes_counterclockwise() {
     // A clockwise unit square exterior (negative signed area).
-    let cw_shell = Shape::Polygon(Polygon::new(
-        ring(&[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]),
-        vec![],
-    ));
+    let cw_shell = Shape::Polygon(
+        Polygon::new(
+            ring(&[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]),
+            vec![],
+        )
+        .unwrap(),
+    );
     let out = written(&cw_shell, crate::geometry::TopologyDomain::Cartesian);
     assert_eq!(out["type"], "Polygon");
     let shell = &out["coordinates"][0];
@@ -117,22 +124,25 @@ fn clockwise_shell_serializes_counterclockwise() {
 #[test]
 fn holes_serialize_clockwise() {
     // Both rings authored counterclockwise; the hole must flip to CW.
-    let poly = Shape::Polygon(Polygon::new(
-        ring(&[
-            (0.0, 0.0),
-            (10.0, 0.0),
-            (10.0, 10.0),
-            (0.0, 10.0),
-            (0.0, 0.0),
-        ]),
-        vec![ring(&[
-            (2.0, 2.0),
-            (4.0, 2.0),
-            (4.0, 4.0),
-            (2.0, 4.0),
-            (2.0, 2.0),
-        ])],
-    ));
+    let poly = Shape::Polygon(
+        Polygon::new(
+            ring(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ]),
+            vec![ring(&[
+                (2.0, 2.0),
+                (4.0, 2.0),
+                (4.0, 4.0),
+                (2.0, 4.0),
+                (2.0, 2.0),
+            ])],
+        )
+        .unwrap(),
+    );
     let out = written(&poly, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["coordinates"][0]) > 0.0, "shell CCW");
     assert!(
@@ -144,12 +154,13 @@ fn holes_serialize_clockwise() {
 #[test]
 fn multipolygon_and_collection_rings_are_right_handed() {
     let cw = ring(&[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]);
-    let multi = Shape::MultiPolygon(vec![Polygon::new(cw.clone(), vec![])].into());
+    let multi = Shape::MultiPolygon(vec![Polygon::new(cw.clone(), vec![]).unwrap()].into());
     let out = written(&multi, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["coordinates"][0][0]) > 0.0);
 
-    let collection = Shape::geometry_collection(vec![Shape::Polygon(Polygon::new(cw, vec![]))])
-        .expect("test collection is valid");
+    let collection =
+        Shape::geometry_collection(vec![Shape::Polygon(Polygon::new(cw, vec![]).unwrap())])
+            .expect("test collection is valid");
     let out = written(&collection, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["geometries"][0]["coordinates"][0]) > 0.0);
 }
@@ -179,16 +190,19 @@ fn writer_rejects_mixed_polygon_ring_axes_through_nested_shapes() {
 
 #[test]
 fn writer_preserves_uniform_xyz_and_mixed_collection_axes() {
-    let polygon = Shape::Polygon(Polygon::new(
-        xyz_ring(
-            &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
-            3.0,
-        ),
-        vec![xyz_ring(
-            &[(1.0, 1.0), (1.0, 2.0), (2.0, 2.0), (2.0, 1.0), (1.0, 1.0)],
-            7.0,
-        )],
-    ));
+    let polygon = Shape::Polygon(
+        Polygon::new(
+            xyz_ring(
+                &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
+                3.0,
+            ),
+            vec![xyz_ring(
+                &[(1.0, 1.0), (1.0, 2.0), (2.0, 2.0), (2.0, 1.0), (1.0, 1.0)],
+                7.0,
+            )],
+        )
+        .unwrap(),
+    );
     let polygon_value: Value = serde_json::from_str(
         &to_geojson_string::<true>(&polygon, crate::geometry::TopologyDomain::Cartesian)
             .expect("uniform XYZ polygon serializes"),

@@ -208,7 +208,7 @@ fn interpolate_mixed_row_groups(
                 let logical = row.logical();
                 let values = plan
                     .with_row(logical, |plan| {
-                        let line = rows.prepared(row);
+                        let line = rows.prepared(row)?;
                         line_interpolate_points_shape(
                             model,
                             &line,
@@ -236,7 +236,7 @@ mod tests {
     use crate::test_support::fail_allocations_after;
 
     fn line_seq(xs: Vec<f64>, ys: Vec<f64>, zs: Option<Vec<f64>>, ms: Option<Vec<f64>>) -> LineSeq {
-        LineSeq::try_new(CoordSeq::from_vecs(xs, ys, zs, ms)).expect("test line")
+        LineSeq::try_new(CoordSeq::try_from_vecs(xs, ys, zs, ms).unwrap()).expect("test line")
     }
 
     fn mixed_zm_and_xy_lines() -> PyGeometryArray {
@@ -247,7 +247,7 @@ mod tests {
             Some(vec![10.0, 20.0]),
         ));
         let xy = Shape::LineString(line_seq(vec![0.0, 4.0], vec![0.0, 0.0], None, None));
-        let array = PyGeometryArray::from_shapes(vec![zm, xy], Frame::None);
+        let array = PyGeometryArray::from_shapes(vec![zm, xy], Frame::None).unwrap();
         assert!(
             matches!(array.storage(), GeometryArrayStorage::Mixed(_)),
             "unequal axes must take the mixed interpolate walk"
@@ -310,7 +310,9 @@ mod tests {
 
     #[test]
     fn mixed_missing_row_is_empty_group() {
-        let array = mixed_zm_and_xy_lines().with_missing_mask(ValidityMask::from_sparse(2, &[1]));
+        let array = mixed_zm_and_xy_lines()
+            .with_missing_mask(ValidityMask::from_sparse(2, &[1]))
+            .unwrap();
         let builder = interpolate_mixed_row_groups(
             &array,
             &RowInterpolatePlan::Counts(crate::I64Param::Scalar(2)),
@@ -326,7 +328,9 @@ mod tests {
 
     #[test]
     fn mixed_builder_allocation_fails_after_warm_cache() {
-        let array = mixed_zm_and_xy_lines().with_missing_mask(ValidityMask::from_sparse(2, &[0]));
+        let array = mixed_zm_and_xy_lines()
+            .with_missing_mask(ValidityMask::from_sparse(2, &[0]))
+            .unwrap();
         warm_row_products(&array);
         let error = fail_allocations_after(0, || {
             match interpolate_mixed_row_groups(

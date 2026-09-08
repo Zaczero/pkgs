@@ -8,10 +8,10 @@ use crate::grid::s2::cellid::CellId;
 
 fn line(a: (f64, f64), b: (f64, f64)) -> Shape {
     Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_raw_xy(a.0, a.1),
-            Point::new_raw_xy(b.0, b.1),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[Point::new_raw_xy(a.0, a.1), Point::new_raw_xy(b.0, b.1)])
+                .unwrap(),
+        )
         .expect("test line"),
     )
 }
@@ -106,11 +106,9 @@ fn point_is_exact_l30_leaf() {
 #[test]
 fn multipoint_uses_bbox_path_same_as_box() {
     let shape = Shape::MultiPoint(
-        CoordSeq::from(vec![
-            Point::new_raw_xy(0.1, 0.1),
-            Point::new_raw_xy(0.2, 0.2),
-        ])
-        .into(),
+        CoordSeq::try_from_points(&[Point::new_raw_xy(0.1, 0.1), Point::new_raw_xy(0.2, 0.2)])
+            .unwrap()
+            .into(),
     );
     let cell = bounding_cell(&shape).expect("same face");
     let bbox = bounding_cell_bbox(Bounds::new_raw(0.1, 0.1, 0.2, 0.2)).expect("bbox");
@@ -122,10 +120,11 @@ fn multipoint_uses_bbox_path_same_as_box() {
 fn multipoint_oracle_repros_match_bbox() {
     // Leaf-LCA returned non-containing L7 'a8eb4'; bbox path is L6 'a8eb'.
     let a = Shape::MultiPoint(
-        CoordSeq::from(vec![
+        CoordSeq::try_from_points(&[
             Point::new_raw_xy(170.0, -60.0),
             Point::new_raw_xy(170.2, -59.8),
         ])
+        .unwrap()
         .into(),
     );
     let cell_a = bounding_cell(&a).expect("a");
@@ -137,10 +136,11 @@ fn multipoint_oracle_repros_match_bbox() {
     );
     // Leaf-LCA multi-face raise; face root '3' closed-contains the bbox.
     let b = Shape::MultiPoint(
-        CoordSeq::from(vec![
+        CoordSeq::try_from_points(&[
             Point::new_raw_xy(45.0, -20.0),
             Point::new_raw_xy(45.2, -19.8),
         ])
+        .unwrap()
         .into(),
     );
     let cell_b = bounding_cell(&b).expect("b");
@@ -155,10 +155,11 @@ fn multipoint_oracle_repros_match_bbox() {
 #[test]
 fn multipoint_multi_face_is_none() {
     let shape = Shape::MultiPoint(
-        CoordSeq::from(vec![
+        CoordSeq::try_from_points(&[
             Point::new_raw_xy(-100.0, 0.0),
             Point::new_raw_xy(100.0, 0.0),
         ])
+        .unwrap()
         .into(),
     );
     assert!(bounding_cell(&shape).is_none());
@@ -167,11 +168,9 @@ fn multipoint_multi_face_is_none() {
 #[test]
 fn multipoint_seam_straddle_matches_bbox() {
     let shape = Shape::MultiPoint(
-        CoordSeq::from(vec![
-            Point::new_raw_xy(45.0, 0.5),
-            Point::new_raw_xy(46.0, 0.5),
-        ])
-        .into(),
+        CoordSeq::try_from_points(&[Point::new_raw_xy(45.0, 0.5), Point::new_raw_xy(46.0, 0.5)])
+            .unwrap()
+            .into(),
     );
     assert_eq!(
         bounding_cell(&shape),
@@ -444,21 +443,27 @@ fn poles_and_empty() {
 
 #[test]
 fn polygon_with_hole_uses_bbox() {
-    let shell = Ring::from_closed(vec![
-        Point::new_raw_xy(-1.0, -1.0),
-        Point::new_raw_xy(1.0, -1.0),
-        Point::new_raw_xy(1.0, 1.0),
-        Point::new_raw_xy(-1.0, 1.0),
-        Point::new_raw_xy(-1.0, -1.0),
-    ]);
-    let hole = Ring::from_closed(vec![
-        Point::new_raw_xy(-0.2, -0.2),
-        Point::new_raw_xy(-0.2, 0.2),
-        Point::new_raw_xy(0.2, 0.2),
-        Point::new_raw_xy(0.2, -0.2),
-        Point::new_raw_xy(-0.2, -0.2),
-    ]);
-    let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
+    let shell = Ring::from_closed(
+        CoordSeq::try_from_points(&[
+            Point::new_raw_xy(-1.0, -1.0),
+            Point::new_raw_xy(1.0, -1.0),
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(-1.0, 1.0),
+            Point::new_raw_xy(-1.0, -1.0),
+        ])
+        .unwrap(),
+    );
+    let hole = Ring::from_closed(
+        CoordSeq::try_from_points(&[
+            Point::new_raw_xy(-0.2, -0.2),
+            Point::new_raw_xy(-0.2, 0.2),
+            Point::new_raw_xy(0.2, 0.2),
+            Point::new_raw_xy(0.2, -0.2),
+            Point::new_raw_xy(-0.2, -0.2),
+        ])
+        .unwrap(),
+    );
+    let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
     let cell = bounding_cell(&shape).expect("cell");
     dense_edge_hilbert_ok(cell, -1.0, -1.0, 1.0, 1.0);
 }
@@ -601,12 +606,8 @@ fn soundness_matrix_success_is_dense_geom_or_none() {
 #[test]
 fn admitted_bbox_latitudes_fold_outward_sliver_and_keep_inward() {
     const SLIVER: f64 = 1.0e-12;
-    let north_out = super::normalize_admitted_bbox_latitudes(Bounds::new_raw(
-        10.0,
-        80.0,
-        20.0,
-        90.0 + SLIVER,
-    ));
+    let north_out =
+        super::normalize_admitted_bbox_latitudes(Bounds::new_raw(10.0, 80.0, 20.0, 90.0 + SLIVER));
     assert_eq!(north_out.minx(), 10.0);
     assert_eq!(north_out.maxx(), 20.0);
     assert_eq!(north_out.miny(), 80.0);

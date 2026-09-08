@@ -83,33 +83,16 @@ pub(crate) fn collect_geodesic_segments_into(
     out: &mut Vec<GeodesicSegment>,
 ) -> Result<()> {
     out.clear();
-    out.reserve(shape.segment_count());
-    let mut error = None;
-    shape.for_each_vertex_pair(|start, end| {
-        if error.is_none() {
-            match metric.make_segment(start, end) {
-                Ok(segment) => out.push(segment),
-                Err(value) => error = Some(value),
-            }
-        }
-    });
-    error.map_or(Ok(()), Err)
+    crate::boundary::try_reserve_vec(out, shape.segment_count())?;
+    shape.try_for_each_vertex_pair(|start, end| {
+        crate::try_push_vec(out, metric.make_segment(start, end)?)
+    })
 }
 
-pub(crate) fn collect_point_only_into(shape: &Shape, out: &mut Vec<Point>) {
+pub(crate) fn collect_point_only_into(
+    shape: &Shape,
+    out: &mut Vec<Point>,
+) -> crate::error::Result<()> {
     out.clear();
-    append_point_only_into(shape, out);
-}
-
-fn append_point_only_into(shape: &Shape, out: &mut Vec<Point>) {
-    match shape {
-        Shape::Point(point) => out.push(*point),
-        Shape::MultiPoint(points) => out.extend(points.iter()),
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                append_point_only_into(geometry, out);
-            }
-        },
-        _ => {},
-    }
+    shape.append_point_only(out)
 }

@@ -26,7 +26,7 @@ impl PySpatialIndex {
     /// Public pymethods must return [`crate::Typed`] so `isinstance(..., Point)`
     /// (and the other leaves) holds — a bare [`crate::PyGeometry`] silently
     /// yields the base `Geometry` class.
-    pub(crate) fn geometry_at_handle(&self, handle: usize) -> crate::Typed {
+    pub(crate) fn geometry_at_handle(&self, handle: usize) -> PyResult<crate::Typed> {
         let frame = self.metadata.clone().unwrap_or_default();
         let packed_len = self
             .rows
@@ -40,18 +40,19 @@ impl PySpatialIndex {
                 .as_ref()
                 .expect("packed length implies packed storage")
                 .source
-                .geometry_at(handle);
-            let plan = self.rows.prepared_row(handle).into_owned_plan();
-            return crate::Typed(geometry.with_prepared_plan(plan));
+                .geometry_at(handle)
+                .map_err(crate::PyErr::from)?;
+            let plan = self.rows.prepared_row(handle)?.into_owned_plan();
+            return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
         }
         let geometry = &self.rows.boxed[handle - packed_len];
         if let Some(plan) = geometry.cached_prepared_plan() {
-            return crate::Typed(geometry.with_prepared_plan(plan));
+            return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
         }
-        crate::Typed(crate::PyGeometry::with_frame(
-            crate::ShapeData::new(self.rows.row(handle).with_shape(std::clone::Clone::clone)),
+        Ok(crate::Typed(crate::PyGeometry::with_frame(
+            crate::ShapeData::new(self.rows.row(handle).with_shape(std::clone::Clone::clone)?),
             frame,
-        ))
+        )))
     }
 
     pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> PyResult<usize> {
@@ -170,7 +171,7 @@ impl PySpatialIndex {
             let bounds = row
                 .quick_bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            let shape = row.with_shape(std::clone::Clone::clone);
+            let shape = row.with_shape(std::clone::Clone::clone)?;
             let cover = index_envelopes(&shape, bounds, domain)?;
             for &envelope in cover.entries() {
                 if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
@@ -181,7 +182,7 @@ impl PySpatialIndex {
                     return Err(pyo3::PyErr::from(error));
                 }
             }
-            let plan = array.prepared_row(offset, row).into_owned_plan();
+            let plan = array.prepared_row(offset, row)?.into_owned_plan();
             non_prunable_live += usize::from(!geodesic_prunable_point(plan.shape()));
             if let Err(error) = crate::try_push_vec(
                 &mut items,

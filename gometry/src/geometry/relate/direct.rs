@@ -35,7 +35,9 @@ use std::ops::ControlFlow;
 use super::interval::{De9imInterval, OperandShape, predicate_verdict};
 use super::{De9im, Loc, line_has_nonzero_segment};
 use crate::geometry::predicates::LineworkChains;
-use crate::geometry::segments::{Contact, segment_contact_with_orientations, segment_envelopes_disjoint};
+use crate::geometry::segments::{
+    Contact, segment_contact_with_orientations, segment_envelopes_disjoint,
+};
 use crate::geometry::{
     CompiledPattern, Dimension, PointKey, PreparedPlan, Segment, Shape, XY, same_point,
 };
@@ -252,7 +254,9 @@ fn relate_linework(
         return Some(Outcome::Verdict(verdict));
     }
     Some(Outcome::Matrix(
-        interval.matrix().expect("every cell of a linework relation is settled"),
+        interval
+            .matrix()
+            .expect("every cell of a linework relation is settled"),
     ))
 }
 
@@ -319,13 +323,16 @@ fn settle_after_sweep(
         (0, Loc::Interior, Loc::Exterior),
         (1, Loc::Exterior, Loc::Interior),
     ] {
-        spans[side].sort_unstable_by_key(|&(ordinal, _, _)| ordinal);
-        let reaches_exterior = chains[side].segments.iter().enumerate().any(|(ordinal, segment)| {
-            match touched[side][ordinal] {
-                Touched::None | Touched::Points => true,
-                Touched::Spans => !covered(*segment, &spans[side], ordinal),
-            }
-        });
+        spans[side].sort_unstable_by_key(|&(ordinal, ..)| ordinal);
+        let reaches_exterior =
+            chains[side]
+                .segments
+                .iter()
+                .enumerate()
+                .any(|(ordinal, segment)| match touched[side][ordinal] {
+                    Touched::None | Touched::Points => true,
+                    Touched::Spans => !covered(*segment, &spans[side], ordinal),
+                });
         if reaches_exterior {
             interval.witness(row, col, Dimension::Curve);
         }
@@ -357,10 +364,10 @@ fn covered(segment: Segment, spans: &[(usize, XY, XY)], ordinal: usize) -> bool 
         let (s, e) = (along(segment.start), along(segment.end));
         (s.min(e), s.max(e))
     };
-    let first = spans.partition_point(|&(other, _, _)| other < ordinal);
+    let first = spans.partition_point(|&(other, ..)| other < ordinal);
     let mut intervals: Vec<(f64, f64)> = spans[first..]
         .iter()
-        .take_while(|&&(other, _, _)| other == ordinal)
+        .take_while(|&&(other, ..)| other == ordinal)
         .map(|&(_, start, end)| {
             let (s, e) = (along(start), along(end));
             (s.min(e), s.max(e))
@@ -492,7 +499,8 @@ fn sweep_admits(plan: &PreparedPlan, polygons: &[&crate::geometry::Polygon]) -> 
     if !plan.areal_rings_have_area() {
         return false;
     }
-    let adjacency_possible = polygons.len() > 1 || polygons.iter().any(|polygon| !polygon.holes.is_empty());
+    let adjacency_possible =
+        polygons.len() > 1 || polygons.iter().any(|polygon| !polygon.holes.is_empty());
     !adjacency_possible || plan.validate_cached().is_none()
 }
 
@@ -524,7 +532,11 @@ fn locate_in_polygons(polygons: &[&crate::geometry::Polygon], point: XY) -> Loc 
         }
         interior |= inside;
     }
-    if interior { Loc::Interior } else { Loc::Exterior }
+    if interior {
+        Loc::Interior
+    } else {
+        Loc::Exterior
+    }
 }
 
 /// [`locate_in_polygons`] for a point the contact sweep has already shown to
@@ -658,7 +670,9 @@ fn relate_areal(left: &PreparedPlan, right: &PreparedPlan, mut ask: Ask<'_>) -> 
         return Some(Outcome::Verdict(verdict));
     }
     Some(Outcome::Matrix(
-        interval.matrix().expect("every cell of a laminar areal relation is settled"),
+        interval
+            .matrix()
+            .expect("every cell of a laminar areal relation is settled"),
     ))
 }
 
@@ -679,12 +693,23 @@ pub(crate) fn direct_areal_predicate(
     left: &PreparedPlan,
     right: &PreparedPlan,
 ) -> Option<bool> {
-    Some(match relate_areal(left, right, Ask::Predicate(&mut |interval| {
-        predicate_verdict(interval, spec.predicate, Dimension::Surface, Dimension::Surface)
-    }))? {
-        Outcome::Verdict(verdict) => verdict,
-        Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
-    })
+    Some(
+        match relate_areal(
+            left,
+            right,
+            Ask::Predicate(&mut |interval| {
+                predicate_verdict(
+                    interval,
+                    spec.predicate,
+                    Dimension::Surface,
+                    Dimension::Surface,
+                )
+            }),
+        )? {
+            Outcome::Verdict(verdict) => verdict,
+            Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
+        },
+    )
 }
 
 /// [`direct_areal_predicate`] for a pattern.
@@ -693,10 +718,16 @@ pub(crate) fn direct_areal_pattern(
     left: &PreparedPlan,
     right: &PreparedPlan,
 ) -> Option<bool> {
-    Some(match relate_areal(left, right, Ask::Predicate(&mut |interval| interval.pattern(pattern)))? {
-        Outcome::Verdict(verdict) => verdict,
-        Outcome::Matrix(matrix) => matrix.matches(pattern),
-    })
+    Some(
+        match relate_areal(
+            left,
+            right,
+            Ask::Predicate(&mut |interval| interval.pattern(pattern)),
+        )? {
+            Outcome::Verdict(verdict) => verdict,
+            Outcome::Matrix(matrix) => matrix.matches(pattern),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -727,7 +758,11 @@ struct Cut {
 /// piece it belongs to does. A bounded area leaves interior and exterior on
 /// both sides of any finite line, and its boundary reaches the line's
 /// exterior unless shared spans cover every ring segment end to end.
-fn relate_areal_linework(area: &PreparedPlan, line: &PreparedPlan, mut ask: Ask<'_>) -> Option<Outcome> {
+fn relate_areal_linework(
+    area: &PreparedPlan,
+    line: &PreparedPlan,
+    mut ask: Ask<'_>,
+) -> Option<Outcome> {
     let polygons = polygons_of(area)?;
     let linework = line.staged_linework()?;
     let mut interval = De9imInterval::open(StagedRings::shape(), linework.shape());
@@ -737,7 +772,11 @@ fn relate_areal_linework(area: &PreparedPlan, line: &PreparedPlan, mut ask: Ask<
     // decides `contains`, from one linear probe.
     if ask.probes() {
         let probe = linework.chains.segments[0].start;
-        interval.witness(locate_in_polygons(&polygons, probe), linework.class_of(probe), Dimension::Point);
+        interval.witness(
+            locate_in_polygons(&polygons, probe),
+            linework.class_of(probe),
+            Dimension::Point,
+        );
         if let Some(verdict) = ask.decide(&interval) {
             return Some(Outcome::Verdict(verdict));
         }
@@ -749,21 +788,29 @@ fn relate_areal_linework(area: &PreparedPlan, line: &PreparedPlan, mut ask: Ask<
 
     let mut cuts: Vec<Vec<Cut>> = vec![Vec::new(); linework.chains.segments.len()];
     let mut ring_spans: Vec<(usize, XY, XY)> = Vec::new();
-    let verdict = sweep_contacts(&rings.chains, &linework.chains, |ring_ordinal, line_ordinal, contact| {
-        let contact_point = cut_line_at_contact(
-            linework.chains.segments[line_ordinal],
-            contact,
-            &mut cuts[line_ordinal],
-        )?;
-        if let Contact::Collinear { span } = contact
-            && !same_point(span.start, span.end)
-        {
-            ring_spans.push((ring_ordinal, span.start, span.end));
-            interval.witness(Loc::Boundary, Loc::Interior, Dimension::Curve);
-        }
-        interval.witness(Loc::Boundary, linework.class_of(contact_point), Dimension::Point);
-        ask.decide(&interval)
-    });
+    let verdict = sweep_contacts(
+        &rings.chains,
+        &linework.chains,
+        |ring_ordinal, line_ordinal, contact| {
+            let contact_point = cut_line_at_contact(
+                linework.chains.segments[line_ordinal],
+                contact,
+                &mut cuts[line_ordinal],
+            )?;
+            if let Contact::Collinear { span } = contact
+                && !same_point(span.start, span.end)
+            {
+                ring_spans.push((ring_ordinal, span.start, span.end));
+                interval.witness(Loc::Boundary, Loc::Interior, Dimension::Curve);
+            }
+            interval.witness(
+                Loc::Boundary,
+                linework.class_of(contact_point),
+                Dimension::Point,
+            );
+            ask.decide(&interval)
+        },
+    );
     if let Some(verdict) = verdict {
         return Some(Outcome::Verdict(verdict));
     }
@@ -793,7 +840,7 @@ fn relate_areal_linework(area: &PreparedPlan, line: &PreparedPlan, mut ask: Ask<
         }
     }
 
-    ring_spans.sort_unstable_by_key(|&(ordinal, _, _)| ordinal);
+    ring_spans.sort_unstable_by_key(|&(ordinal, ..)| ordinal);
     let boundary_covered = rings
         .chains
         .segments
@@ -811,9 +858,9 @@ fn relate_areal_linework(area: &PreparedPlan, line: &PreparedPlan, mut ask: Ask<
     if let Some(verdict) = ask.decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
-    Some(Outcome::Matrix(
-        interval.matrix().expect("every cell of an areal/linework relation is settled"),
-    ))
+    Some(Outcome::Matrix(interval.matrix().expect(
+        "every cell of an areal/linework relation is settled",
+    )))
 }
 
 /// Record one boundary contact as cuts of the line segment it fell on, and
@@ -918,7 +965,14 @@ fn walk_line_pieces(
             if !same_point(cursor, point) && span_depth == 0 {
                 {
                     let location = *piece.get_or_insert_with(|| {
-                        locate_in_polygons(polygons, segment_midpoint(Segment { start: cursor, end: point }).xy())
+                        locate_in_polygons(
+                            polygons,
+                            segment_midpoint(Segment {
+                                start: cursor,
+                                end: point,
+                            })
+                            .xy(),
+                        )
                     });
                     interval.witness(location, Loc::Interior, Dimension::Curve);
                     walked.first_piece.get_or_insert(location);
@@ -938,7 +992,14 @@ fn walk_line_pieces(
         }
         if !same_point(cursor, segment.end) && span_depth == 0 {
             let location = *piece.get_or_insert_with(|| {
-                locate_in_polygons(polygons, segment_midpoint(Segment { start: cursor, end: segment.end }).xy())
+                locate_in_polygons(
+                    polygons,
+                    segment_midpoint(Segment {
+                        start: cursor,
+                        end: segment.end,
+                    })
+                    .xy(),
+                )
             });
             interval.witness(location, Loc::Interior, Dimension::Curve);
             walked.first_piece.get_or_insert(location);
@@ -950,7 +1011,10 @@ fn walk_line_pieces(
 
 /// The full matrix of an areal operand against a linework operand, in
 /// either order, or `None` when either is not admitted here.
-pub(crate) fn direct_areal_linework_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
+pub(crate) fn direct_areal_linework_relate(
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+) -> Option<De9im> {
     let unwrap = |outcome: Outcome| match outcome {
         Outcome::Matrix(matrix) => matrix,
         Outcome::Verdict(_) => unreachable!("no predicate was asked"),
@@ -972,16 +1036,34 @@ pub(crate) fn direct_areal_linework_predicate(
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
     };
-    if let Some(outcome) = relate_areal_linework(left, right, Ask::Predicate(&mut |interval| {
-        predicate_verdict(interval, spec.predicate, Dimension::Surface, Dimension::Curve)
-    })) {
+    if let Some(outcome) = relate_areal_linework(
+        left,
+        right,
+        Ask::Predicate(&mut |interval| {
+            predicate_verdict(
+                interval,
+                spec.predicate,
+                Dimension::Surface,
+                Dimension::Curve,
+            )
+        }),
+    ) {
         return Some(finish(outcome, spec));
     }
     // Swapped operands: the predicate on the (line, area) pair is the same
     // predicate on the transposed (area, line) interval.
-    relate_areal_linework(right, left, Ask::Predicate(&mut |interval| {
-        predicate_verdict(&interval.transpose(), spec.predicate, Dimension::Curve, Dimension::Surface)
-    }))
+    relate_areal_linework(
+        right,
+        left,
+        Ask::Predicate(&mut |interval| {
+            predicate_verdict(
+                &interval.transpose(),
+                spec.predicate,
+                Dimension::Curve,
+                Dimension::Surface,
+            )
+        }),
+    )
     .map(|outcome| match outcome {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix.transpose()),
@@ -998,17 +1080,23 @@ pub(crate) fn direct_areal_linework_pattern(
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => matrix.matches(pattern),
     };
-    if let Some(outcome) =
-        relate_areal_linework(left, right, Ask::Predicate(&mut |interval| interval.pattern(pattern)))
-    {
+    if let Some(outcome) = relate_areal_linework(
+        left,
+        right,
+        Ask::Predicate(&mut |interval| interval.pattern(pattern)),
+    ) {
         return Some(finish(outcome));
     }
     let transposed = pattern.transpose();
-    relate_areal_linework(right, left, Ask::Predicate(&mut |interval| interval.pattern(transposed)))
-        .map(|outcome| match outcome {
-            Outcome::Verdict(verdict) => verdict,
-            Outcome::Matrix(matrix) => matrix.transpose().matches(pattern),
-        })
+    relate_areal_linework(
+        right,
+        left,
+        Ask::Predicate(&mut |interval| interval.pattern(transposed)),
+    )
+    .map(|outcome| match outcome {
+        Outcome::Verdict(verdict) => verdict,
+        Outcome::Matrix(matrix) => matrix.transpose().matches(pattern),
+    })
 }
 
 #[cfg(test)]
@@ -1019,13 +1107,13 @@ mod tests {
     //! on partial evidence and could in principle disagree with the settled
     //! matrix.
     use super::*;
-    use crate::geometry::{CoordSeq, LineSeq, MultiLineString};
     use crate::geometry::relate::graph_matrix::graph_relate_data_oracle;
+    use crate::geometry::{CoordSeq, LineSeq, MultiLineString};
     use crate::predicates::{Predicate, predicate_matrix_value};
 
     fn line(points: &[(f64, f64)]) -> Shape {
         let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
-        Shape::LineString(LineSeq::try_new(CoordSeq::from_xy(&xy)).unwrap())
+        Shape::LineString(LineSeq::try_new(CoordSeq::try_from_xy(&xy).unwrap()).unwrap())
     }
 
     fn multi(parts: &[&[(f64, f64)]]) -> Shape {
@@ -1033,10 +1121,14 @@ mod tests {
             .iter()
             .map(|points| {
                 let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
-                LineSeq::try_new(CoordSeq::from_xy(&xy)).unwrap()
+                LineSeq::try_new(CoordSeq::try_from_xy(&xy).unwrap()).unwrap()
             })
             .collect();
-        Shape::MultiLineString(MultiLineString::from_dense(lines).unwrap())
+        Shape::MultiLineString(
+            MultiLineString::from_dense(lines)
+                .unwrap()
+                .expect("test multiline payload is nonempty"),
+        )
     }
 
     fn every_predicate() -> [Predicate; 11] {
@@ -1069,12 +1161,19 @@ mod tests {
     /// compared the engine with itself, which is how a wrong collinear
     /// end-to-end case first passed here.
     fn oracle(left: &Shape, right: &Shape) -> De9im {
-        graph_relate_data_oracle(&PreparedPlan::transient(left), &PreparedPlan::transient(right))
+        graph_relate_data_oracle(
+            &PreparedPlan::transient(left),
+            &PreparedPlan::transient(right),
+        )
+        .unwrap()
     }
 
     fn check(label: &str, left: &Shape, right: &Shape) {
         let expected = oracle(left, right);
-        let (left_plan, right_plan) = (PreparedPlan::transient(left), PreparedPlan::transient(right));
+        let (left_plan, right_plan) = (
+            PreparedPlan::transient(left),
+            PreparedPlan::transient(right),
+        );
         let direct = direct_linework_relate(&left_plan, &right_plan)
             .unwrap_or_else(|| panic!("{label}: the pair should be admitted"));
         assert_eq!(
@@ -1101,34 +1200,149 @@ mod tests {
     #[test]
     fn structured_corpus_matches_the_graph_oracle() {
         let cases: Vec<(&str, Shape, Shape)> = vec![
-            ("disjoint, overlapping boxes", line(&[(0.0, 0.0), (10.0, 3.0)]), line(&[(0.0, 1.0), (7.0, 9.0)])),
-            ("proper crossing", line(&[(0.0, 0.0), (2.0, 2.0)]), line(&[(0.0, 2.0), (2.0, 0.0)])),
-            ("shared endpoint", line(&[(0.0, 0.0), (1.0, 1.0)]), line(&[(1.0, 1.0), (2.0, 0.0)])),
-            ("T-junction: endpoint on interior", line(&[(0.0, 0.0), (2.0, 0.0)]), line(&[(1.0, 0.0), (1.0, 1.0)])),
-            ("T-junction from the other side", line(&[(1.0, 0.0), (1.0, 1.0)]), line(&[(0.0, 0.0), (2.0, 0.0)])),
-            ("collinear partial overlap", line(&[(0.0, 0.0), (2.0, 0.0)]), line(&[(1.0, 0.0), (3.0, 0.0)])),
-            ("collinear, meeting end to end", line(&[(0.0, 0.0), (1.0, 0.0)]), line(&[(1.0, 0.0), (2.0, 0.0)])),
-            ("collinear, one ends where the other's interior vertex is", line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]), line(&[(1.0, 0.0), (2.0, 0.0)])),
-            ("ring vs collinear line leaving a ring vertex", line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]), line(&[(1.0, 0.0), (2.0, 0.0)])),
-            ("collinear nested (within)", line(&[(0.0, 0.0), (3.0, 0.0)]), line(&[(1.0, 0.0), (2.0, 0.0)])),
-            ("collinear opposite direction", line(&[(0.0, 0.0), (2.0, 0.0)]), line(&[(3.0, 0.0), (1.0, 0.0)])),
-            ("identical lines", line(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)]), line(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)])),
-            ("equal point sets, different vertices", line(&[(0.0, 0.0), (2.0, 0.0)]), line(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])),
-            ("equal point sets, reversed", line(&[(0.0, 0.0), (2.0, 0.0)]), line(&[(2.0, 0.0), (1.0, 0.0), (0.0, 0.0)])),
-            ("covered by two spans across a vertex", line(&[(0.0, 0.0), (2.0, 0.0)]), line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (1.0, 0.0), (2.0, 0.0)])),
-            ("closed ring vs crossing line", line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]), line(&[(1.0, -1.0), (1.0, 3.0)])),
-            ("closed ring vs line ending on it", line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]), line(&[(1.0, -1.0), (1.0, 0.0)])),
-            ("closed ring vs line touching at ring start", line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]), line(&[(-1.0, -1.0), (0.0, 0.0)])),
-            ("two closed rings sharing an edge", line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]), line(&[(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 0.0)])),
-            ("multi: three parts at one point (boundary)", multi(&[&[(0.0, 0.0), (1.0, 1.0)], &[(0.0, 2.0), (1.0, 1.0)], &[(2.0, 1.0), (1.0, 1.0)]]), line(&[(1.0, 1.0), (1.0, 3.0)])),
-            ("multi: two parts at one point (interior)", multi(&[&[(0.0, 0.0), (1.0, 1.0)], &[(1.0, 1.0), (2.0, 0.0)]]), line(&[(1.0, 1.0), (1.0, 3.0)])),
-            ("multi: two parts, other line crosses one", multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(5.0, 5.0), (6.0, 5.0)]]), line(&[(0.5, -1.0), (0.5, 1.0)])),
-            ("multi vs multi with a shared part", multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(5.0, 5.0), (6.0, 5.0)]]), multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(9.0, 9.0), (8.0, 8.0)]])),
-            ("repeated vertices", line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (2.0, 0.0)]), line(&[(1.0, 0.0), (1.0, 0.0), (1.0, 2.0)])),
-            ("self-crossing bowtie vs line", line(&[(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)]), line(&[(1.0, 0.5), (1.0, 1.5)])),
-            ("self-overlapping line vs line", line(&[(0.0, 0.0), (2.0, 0.0), (1.0, 0.0)]), line(&[(1.5, -1.0), (1.5, 1.0)])),
-            ("endpoint touches a vertex interior", line(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)]), line(&[(1.0, 1.0), (1.0, 3.0)])),
-            ("line ends inside a collinear span", line(&[(0.0, 0.0), (4.0, 0.0)]), line(&[(1.0, 0.0), (3.0, 0.0), (3.0, 2.0)])),
+            (
+                "disjoint, overlapping boxes",
+                line(&[(0.0, 0.0), (10.0, 3.0)]),
+                line(&[(0.0, 1.0), (7.0, 9.0)]),
+            ),
+            (
+                "proper crossing",
+                line(&[(0.0, 0.0), (2.0, 2.0)]),
+                line(&[(0.0, 2.0), (2.0, 0.0)]),
+            ),
+            (
+                "shared endpoint",
+                line(&[(0.0, 0.0), (1.0, 1.0)]),
+                line(&[(1.0, 1.0), (2.0, 0.0)]),
+            ),
+            (
+                "T-junction: endpoint on interior",
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+                line(&[(1.0, 0.0), (1.0, 1.0)]),
+            ),
+            (
+                "T-junction from the other side",
+                line(&[(1.0, 0.0), (1.0, 1.0)]),
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "collinear partial overlap",
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+                line(&[(1.0, 0.0), (3.0, 0.0)]),
+            ),
+            (
+                "collinear, meeting end to end",
+                line(&[(0.0, 0.0), (1.0, 0.0)]),
+                line(&[(1.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "collinear, one ends where the other's interior vertex is",
+                line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]),
+                line(&[(1.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "ring vs collinear line leaving a ring vertex",
+                line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]),
+                line(&[(1.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "collinear nested (within)",
+                line(&[(0.0, 0.0), (3.0, 0.0)]),
+                line(&[(1.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "collinear opposite direction",
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+                line(&[(3.0, 0.0), (1.0, 0.0)]),
+            ),
+            (
+                "identical lines",
+                line(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)]),
+                line(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)]),
+            ),
+            (
+                "equal point sets, different vertices",
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+                line(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "equal point sets, reversed",
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+                line(&[(2.0, 0.0), (1.0, 0.0), (0.0, 0.0)]),
+            ),
+            (
+                "covered by two spans across a vertex",
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+                line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (1.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "closed ring vs crossing line",
+                line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+                line(&[(1.0, -1.0), (1.0, 3.0)]),
+            ),
+            (
+                "closed ring vs line ending on it",
+                line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+                line(&[(1.0, -1.0), (1.0, 0.0)]),
+            ),
+            (
+                "closed ring vs line touching at ring start",
+                line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+                line(&[(-1.0, -1.0), (0.0, 0.0)]),
+            ),
+            (
+                "two closed rings sharing an edge",
+                line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]),
+                line(&[(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 0.0)]),
+            ),
+            (
+                "multi: three parts at one point (boundary)",
+                multi(&[&[(0.0, 0.0), (1.0, 1.0)], &[(0.0, 2.0), (1.0, 1.0)], &[
+                    (2.0, 1.0),
+                    (1.0, 1.0),
+                ]]),
+                line(&[(1.0, 1.0), (1.0, 3.0)]),
+            ),
+            (
+                "multi: two parts at one point (interior)",
+                multi(&[&[(0.0, 0.0), (1.0, 1.0)], &[(1.0, 1.0), (2.0, 0.0)]]),
+                line(&[(1.0, 1.0), (1.0, 3.0)]),
+            ),
+            (
+                "multi: two parts, other line crosses one",
+                multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(5.0, 5.0), (6.0, 5.0)]]),
+                line(&[(0.5, -1.0), (0.5, 1.0)]),
+            ),
+            (
+                "multi vs multi with a shared part",
+                multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(5.0, 5.0), (6.0, 5.0)]]),
+                multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(9.0, 9.0), (8.0, 8.0)]]),
+            ),
+            (
+                "repeated vertices",
+                line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (2.0, 0.0)]),
+                line(&[(1.0, 0.0), (1.0, 0.0), (1.0, 2.0)]),
+            ),
+            (
+                "self-crossing bowtie vs line",
+                line(&[(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)]),
+                line(&[(1.0, 0.5), (1.0, 1.5)]),
+            ),
+            (
+                "self-overlapping line vs line",
+                line(&[(0.0, 0.0), (2.0, 0.0), (1.0, 0.0)]),
+                line(&[(1.5, -1.0), (1.5, 1.0)]),
+            ),
+            (
+                "endpoint touches a vertex interior",
+                line(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)]),
+                line(&[(1.0, 1.0), (1.0, 3.0)]),
+            ),
+            (
+                "line ends inside a collinear span",
+                line(&[(0.0, 0.0), (4.0, 0.0)]),
+                line(&[(1.0, 0.0), (3.0, 0.0), (3.0, 2.0)]),
+            ),
         ];
         for (label, left, right) in &cases {
             check(label, left, right);
@@ -1191,23 +1405,48 @@ mod tests {
     #[test]
     fn early_patterns_agree_with_the_oracle_matrix() {
         const PATTERNS: [&[u8; 9]; 14] = [
-            b"T********", b"FF*FF****", b"T*T***T**", b"T*****FF*", b"**T***T**",
-            b"0********", b"1********", b"*1*******", b"*********", b"FFFFFFFF*",
-            b"1*T***T**", b"F*T***T**", b"0F1FF0102", b"**2******",
+            b"T********",
+            b"FF*FF****",
+            b"T*T***T**",
+            b"T*****FF*",
+            b"**T***T**",
+            b"0********",
+            b"1********",
+            b"*1*******",
+            b"*********",
+            b"FFFFFFFF*",
+            b"1*T***T**",
+            b"F*T***T**",
+            b"0F1FF0102",
+            b"**2******",
         ];
         let corpus: [(Shape, Shape); 4] = [
-            (line(&[(0.0, 0.0), (2.0, 2.0)]), line(&[(0.0, 2.0), (2.0, 0.0)])),
-            (line(&[(0.0, 0.0), (2.0, 0.0)]), line(&[(1.0, 0.0), (3.0, 0.0)])),
-            (line(&[(0.0, 0.0), (1.0, 1.0)]), line(&[(5.0, 5.0), (6.0, 6.0)])),
-            (multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(1.0, 0.0), (1.0, 1.0)]]), line(&[(1.0, 0.0), (2.0, 0.0)])),
+            (
+                line(&[(0.0, 0.0), (2.0, 2.0)]),
+                line(&[(0.0, 2.0), (2.0, 0.0)]),
+            ),
+            (
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+                line(&[(1.0, 0.0), (3.0, 0.0)]),
+            ),
+            (
+                line(&[(0.0, 0.0), (1.0, 1.0)]),
+                line(&[(5.0, 5.0), (6.0, 6.0)]),
+            ),
+            (
+                multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(1.0, 0.0), (1.0, 1.0)]]),
+                line(&[(1.0, 0.0), (2.0, 0.0)]),
+            ),
         ];
         let mut decided_early = 0_usize;
         for (left, right) in &corpus {
             let expected = oracle(left, right);
-            let (l, r) = (PreparedPlan::transient(left), PreparedPlan::transient(right));
+            let (l, r) = (
+                PreparedPlan::transient(left),
+                PreparedPlan::transient(right),
+            );
             for pattern in PATTERNS {
-                let compiled = CompiledPattern::new(std::str::from_utf8(pattern).unwrap())
-                    .unwrap();
+                let compiled = CompiledPattern::new(std::str::from_utf8(pattern).unwrap()).unwrap();
                 let early = direct_linework_pattern(compiled, &l, &r)
                     .unwrap_or_else(|| panic!("pair should be admitted"));
                 assert_eq!(
@@ -1239,9 +1478,21 @@ mod tests {
         };
         // Half a period out of phase, so the sawtooths cross on every tooth;
         // in phase they are parallel offsets that never meet.
-        check("long jagged, crossing", &jagged(400, 0.0, 0.0), &jagged(400, 0.185, -0.4));
-        check("long jagged, disjoint", &jagged(300, 0.0, 0.0), &jagged(300, 0.0, 5.0));
-        check("long jagged, separated bands", &jagged(300, 0.0, 0.0), &jagged(300, 0.0, 2.0));
+        check(
+            "long jagged, crossing",
+            &jagged(400, 0.0, 0.0),
+            &jagged(400, 0.185, -0.4),
+        );
+        check(
+            "long jagged, disjoint",
+            &jagged(300, 0.0, 0.0),
+            &jagged(300, 0.0, 5.0),
+        );
+        check(
+            "long jagged, separated bands",
+            &jagged(300, 0.0, 0.0),
+            &jagged(300, 0.0, 2.0),
+        );
     }
 
     #[test]
@@ -1253,14 +1504,28 @@ mod tests {
         let cases: [(&str, Shape, Shape, &str); 4] = [
             (
                 "both non-simple, sharing a segment and a vertex",
-                line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 1.0), (2.0, 0.0), (0.0, 0.0), (0.0, 0.0)]),
+                line(&[
+                    (1.0, 1.0),
+                    (2.0, 0.0),
+                    (2.0, 1.0),
+                    (2.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                ]),
                 line(&[(2.0, 0.0), (0.0, 2.0), (1.0, 0.0), (2.0, 2.0), (0.0, 2.0)]),
                 "1010F0102",
             ),
             (
                 "shared first segment, right operand doubles back",
                 line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 0.0), (1.0, 0.0)]),
-                line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 1.0), (0.0, 0.0), (2.0, 1.0), (1.0, 2.0)]),
+                line(&[
+                    (1.0, 1.0),
+                    (2.0, 0.0),
+                    (2.0, 1.0),
+                    (0.0, 0.0),
+                    (2.0, 1.0),
+                    (1.0, 2.0),
+                ]),
                 "1F1F00102",
             ),
             (
@@ -1277,7 +1542,11 @@ mod tests {
             ),
         ];
         for (label, left, right, expected) in &cases {
-            let direct = direct_linework_relate(&PreparedPlan::transient(left), &PreparedPlan::transient(right)).unwrap();
+            let direct = direct_linework_relate(
+                &PreparedPlan::transient(left),
+                &PreparedPlan::transient(right),
+            )
+            .unwrap();
             assert_eq!(direct.text(), *expected, "{label}");
         }
     }
@@ -1285,17 +1554,18 @@ mod tests {
     mod areal {
         use super::*;
         use crate::geometry::relate::graph_matrix::try_areal_relate;
-        use crate::geometry::{MultiPolygon, Polygon, Ring};
+        use crate::geometry::{MultiPolygon, Polygon, Ring, SharedSlice};
 
         fn ring(points: &[(f64, f64)]) -> Ring {
             let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
-            Ring::closed_coordseq(CoordSeq::from_xy(&xy)).unwrap()
+            Ring::closed_coordseq(CoordSeq::try_from_xy(&xy).unwrap()).unwrap()
         }
 
         fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Shape {
             Shape::Polygon(Polygon {
                 shell: ring(shell),
-                holes: holes.iter().map(|hole| ring(hole)).collect::<Vec<_>>().into(),
+                holes: SharedSlice::try_from_vec(holes.iter().map(|hole| ring(hole)).collect())
+                    .unwrap(),
             })
         }
 
@@ -1304,14 +1574,24 @@ mod tests {
                 .iter()
                 .map(|shell| Polygon {
                     shell: ring(shell),
-                    holes: Vec::new().into(),
+                    holes: SharedSlice::empty(),
                 })
                 .collect();
-            Shape::MultiPolygon(MultiPolygon::from_dense(polygons).unwrap())
+            Shape::MultiPolygon(
+                MultiPolygon::from_dense(polygons)
+                    .unwrap()
+                    .expect("test multipolygon payload is nonempty"),
+            )
         }
 
         fn square(x: f64, y: f64, size: f64) -> Vec<(f64, f64)> {
-            vec![(x, y), (x + size, y), (x + size, y + size), (x, y + size), (x, y)]
+            vec![
+                (x, y),
+                (x + size, y),
+                (x + size, y + size),
+                (x, y + size),
+                (x, y),
+            ]
         }
 
         /// What the direct engine must manage on a case: a proper crossing
@@ -1331,8 +1611,15 @@ mod tests {
         fn check(label: &str, left: &Shape, right: &Shape, expect: Expect) {
             let fold = try_areal_relate(left, right).unwrap_or_else(|| panic!("{label}: fold"));
             let graph = oracle(left, right);
-            assert_eq!(fold.text(), graph.text(), "{label}: the two oracles disagree");
-            let (left, right) = (&PreparedPlan::transient(left), &PreparedPlan::transient(right));
+            assert_eq!(
+                fold.text(),
+                graph.text(),
+                "{label}: the two oracles disagree"
+            );
+            let (left, right) = (
+                &PreparedPlan::transient(left),
+                &PreparedPlan::transient(right),
+            );
             let direct = direct_areal_relate(left, right);
             assert_eq!(
                 direct.is_some(),
@@ -1347,7 +1634,9 @@ mod tests {
                 let early = direct_areal_predicate(&spec, left, right);
                 let must_decide = match expect {
                     Expect::Crossing | Expect::Laminar => true,
-                    Expect::Touching => matches!(predicate, Predicate::Intersects | Predicate::Disjoint),
+                    Expect::Touching => {
+                        matches!(predicate, Predicate::Intersects | Predicate::Disjoint)
+                    },
                 };
                 if must_decide {
                     assert!(early.is_some(), "{label}: {predicate:?} should be decided");
@@ -1367,21 +1656,96 @@ mod tests {
         fn structured_corpus_matches_both_oracles() {
             use Expect::{Crossing, Laminar, Touching};
             let cases: Vec<(&str, Shape, Shape, Expect)> = vec![
-                ("disjoint, overlapping bounds", polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)], &[]), polygon(&[(4.0, 4.0), (1.0, 4.0), (4.0, 1.0), (4.0, 4.0)], &[]), Laminar),
-                ("proper crossing", polygon(&square(0.0, 0.0, 2.0), &[]), polygon(&square(1.0, 1.0, 2.0), &[]), Crossing),
-                ("nested", polygon(&square(0.0, 0.0, 4.0), &[]), polygon(&square(1.0, 1.0, 1.0), &[]), Laminar),
-                ("nested, transposed", polygon(&square(1.0, 1.0, 1.0), &[]), polygon(&square(0.0, 0.0, 4.0), &[]), Laminar),
-                ("inside a hole", polygon(&square(0.0, 0.0, 6.0), &[&square(1.0, 1.0, 4.0)]), polygon(&square(2.0, 2.0, 1.0), &[]), Laminar),
-                ("containing the other's hole", polygon(&square(0.0, 0.0, 6.0), &[&square(2.0, 2.0, 1.0)]), polygon(&square(1.0, 1.0, 4.0), &[]), Laminar),
-                ("hole wraps the other entirely", polygon(&square(1.0, 1.0, 4.0), &[]), polygon(&square(0.0, 0.0, 6.0), &[&square(2.0, 2.0, 1.0)]), Laminar),
-                ("shared edge", polygon(&square(0.0, 0.0, 1.0), &[]), polygon(&square(1.0, 0.0, 1.0), &[]), Touching),
-                ("shared vertex", polygon(&square(0.0, 0.0, 1.0), &[]), polygon(&square(1.0, 1.0, 1.0), &[]), Touching),
-                ("edge partially shared, overlapping", polygon(&square(0.0, 0.0, 2.0), &[]), polygon(&square(1.0, 0.0, 2.0), &[]), Touching),
-                ("hole touching the other's shell", polygon(&square(0.0, 0.0, 6.0), &[&square(1.0, 1.0, 2.0)]), polygon(&square(1.0, 1.0, 1.0), &[]), Touching),
-                ("identical", polygon(&square(0.0, 0.0, 2.0), &[]), polygon(&square(0.0, 0.0, 2.0), &[]), Touching),
-                ("multipolygon: one part inside, one disjoint", multipolygon(&[&square(1.0, 1.0, 1.0), &square(10.0, 10.0, 1.0)]), polygon(&square(0.0, 0.0, 4.0), &[]), Laminar),
-                ("multipolygon: parts on both sides, crossing", multipolygon(&[&square(0.0, 0.0, 2.0), &square(5.0, 5.0, 2.0)]), polygon(&square(1.0, 1.0, 2.0), &[]), Crossing),
-                ("crossing a hole ring only", polygon(&square(0.0, 0.0, 8.0), &[&square(2.0, 2.0, 4.0)]), polygon(&square(1.0, 3.0, 2.0), &[]), Crossing),
+                (
+                    "disjoint, overlapping bounds",
+                    polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)], &[]),
+                    polygon(&[(4.0, 4.0), (1.0, 4.0), (4.0, 1.0), (4.0, 4.0)], &[]),
+                    Laminar,
+                ),
+                (
+                    "proper crossing",
+                    polygon(&square(0.0, 0.0, 2.0), &[]),
+                    polygon(&square(1.0, 1.0, 2.0), &[]),
+                    Crossing,
+                ),
+                (
+                    "nested",
+                    polygon(&square(0.0, 0.0, 4.0), &[]),
+                    polygon(&square(1.0, 1.0, 1.0), &[]),
+                    Laminar,
+                ),
+                (
+                    "nested, transposed",
+                    polygon(&square(1.0, 1.0, 1.0), &[]),
+                    polygon(&square(0.0, 0.0, 4.0), &[]),
+                    Laminar,
+                ),
+                (
+                    "inside a hole",
+                    polygon(&square(0.0, 0.0, 6.0), &[&square(1.0, 1.0, 4.0)]),
+                    polygon(&square(2.0, 2.0, 1.0), &[]),
+                    Laminar,
+                ),
+                (
+                    "containing the other's hole",
+                    polygon(&square(0.0, 0.0, 6.0), &[&square(2.0, 2.0, 1.0)]),
+                    polygon(&square(1.0, 1.0, 4.0), &[]),
+                    Laminar,
+                ),
+                (
+                    "hole wraps the other entirely",
+                    polygon(&square(1.0, 1.0, 4.0), &[]),
+                    polygon(&square(0.0, 0.0, 6.0), &[&square(2.0, 2.0, 1.0)]),
+                    Laminar,
+                ),
+                (
+                    "shared edge",
+                    polygon(&square(0.0, 0.0, 1.0), &[]),
+                    polygon(&square(1.0, 0.0, 1.0), &[]),
+                    Touching,
+                ),
+                (
+                    "shared vertex",
+                    polygon(&square(0.0, 0.0, 1.0), &[]),
+                    polygon(&square(1.0, 1.0, 1.0), &[]),
+                    Touching,
+                ),
+                (
+                    "edge partially shared, overlapping",
+                    polygon(&square(0.0, 0.0, 2.0), &[]),
+                    polygon(&square(1.0, 0.0, 2.0), &[]),
+                    Touching,
+                ),
+                (
+                    "hole touching the other's shell",
+                    polygon(&square(0.0, 0.0, 6.0), &[&square(1.0, 1.0, 2.0)]),
+                    polygon(&square(1.0, 1.0, 1.0), &[]),
+                    Touching,
+                ),
+                (
+                    "identical",
+                    polygon(&square(0.0, 0.0, 2.0), &[]),
+                    polygon(&square(0.0, 0.0, 2.0), &[]),
+                    Touching,
+                ),
+                (
+                    "multipolygon: one part inside, one disjoint",
+                    multipolygon(&[&square(1.0, 1.0, 1.0), &square(10.0, 10.0, 1.0)]),
+                    polygon(&square(0.0, 0.0, 4.0), &[]),
+                    Laminar,
+                ),
+                (
+                    "multipolygon: parts on both sides, crossing",
+                    multipolygon(&[&square(0.0, 0.0, 2.0), &square(5.0, 5.0, 2.0)]),
+                    polygon(&square(1.0, 1.0, 2.0), &[]),
+                    Crossing,
+                ),
+                (
+                    "crossing a hole ring only",
+                    polygon(&square(0.0, 0.0, 8.0), &[&square(2.0, 2.0, 4.0)]),
+                    polygon(&square(1.0, 3.0, 2.0), &[]),
+                    Crossing,
+                ),
             ];
             for (label, left, right, expect) in &cases {
                 check(label, left, right, *expect);
@@ -1432,7 +1796,10 @@ mod tests {
                 check("fuzz", &left, &right, expect);
                 decided += 1;
             }
-            assert!(decided > 400, "only {decided} pairs reached a direct decision");
+            assert!(
+                decided > 400,
+                "only {decided} pairs reached a direct decision"
+            );
         }
     }
 
@@ -1442,26 +1809,48 @@ mod tests {
         // validity gate. Its negative-winding lobe is interior under the
         // nonzero rule both the arrangement fold and this engine use, which is
         // the even-odd reading GEOS gives. Pinned to shapely's answers.
-        use crate::geometry::{Polygon, Ring};
+        use crate::geometry::{Polygon, Ring, SharedSlice};
         let ring = |points: &[(f64, f64)]| {
             let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
-            Ring::closed_coordseq(CoordSeq::from_xy(&xy)).unwrap()
+            Ring::closed_coordseq(CoordSeq::try_from_xy(&xy).unwrap()).unwrap()
         };
         let polygon = |points: &[(f64, f64)]| {
             Shape::Polygon(Polygon {
                 shell: ring(points),
-                holes: Vec::new().into(),
+                holes: SharedSlice::empty(),
             })
         };
         let bowtie = polygon(&[(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 3.0), (0.0, 0.0)]);
         let square = |x: f64, y: f64, size: f64| {
-            polygon(&[(x, y), (x + size, y), (x + size, y + size), (x, y + size), (x, y)])
+            polygon(&[
+                (x, y),
+                (x + size, y),
+                (x + size, y + size),
+                (x, y + size),
+                (x, y),
+            ])
         };
         for (label, other, geos) in [
-            ("crossing the negative lobe", square(1.5, -0.5, 1.0), "212101212"),
-            ("crossing the positive lobe", square(-0.5, 1.8, 1.0), "212101212"),
-            ("inside the negative lobe", square(1.6, 0.6, 0.2), "212FF1FF2"),
-            ("inside the positive lobe", square(0.2, 1.5, 0.2), "212FF1FF2"),
+            (
+                "crossing the negative lobe",
+                square(1.5, -0.5, 1.0),
+                "212101212",
+            ),
+            (
+                "crossing the positive lobe",
+                square(-0.5, 1.8, 1.0),
+                "212101212",
+            ),
+            (
+                "inside the negative lobe",
+                square(1.6, 0.6, 0.2),
+                "212FF1FF2",
+            ),
+            (
+                "inside the positive lobe",
+                square(0.2, 1.5, 0.2),
+                "212FF1FF2",
+            ),
         ] {
             let direct = direct_areal_relate(
                 &PreparedPlan::transient(&bowtie),
@@ -1471,27 +1860,38 @@ mod tests {
             assert_eq!(direct.text(), geos, "{label}");
             let fold = super::super::graph_matrix::try_areal_relate(&bowtie, &other)
                 .unwrap_or_else(|| panic!("{label}: fold admits the pair"));
-            assert_eq!(fold.text(), geos, "{label}: the fold fills nonzero like GEOS");
+            assert_eq!(
+                fold.text(),
+                geos,
+                "{label}: the fold fills nonzero like GEOS"
+            );
         }
     }
 
     mod areal_linework {
         use super::*;
         use crate::geometry::relate::graph_matrix::try_cartesian_polygon_line_relate;
-        use crate::geometry::{Polygon, Ring};
+        use crate::geometry::{Polygon, Ring, SharedSlice};
 
         fn ring(points: &[(f64, f64)]) -> Ring {
             let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
-            Ring::closed_coordseq(CoordSeq::from_xy(&xy)).unwrap()
+            Ring::closed_coordseq(CoordSeq::try_from_xy(&xy).unwrap()).unwrap()
         }
         fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Shape {
             Shape::Polygon(Polygon {
                 shell: ring(shell),
-                holes: holes.iter().map(|hole| ring(hole)).collect::<Vec<_>>().into(),
+                holes: SharedSlice::try_from_vec(holes.iter().map(|hole| ring(hole)).collect())
+                    .unwrap(),
             })
         }
         fn square(x: f64, y: f64, size: f64) -> Vec<(f64, f64)> {
-            vec![(x, y), (x + size, y), (x + size, y + size), (x, y + size), (x, y)]
+            vec![
+                (x, y),
+                (x + size, y),
+                (x + size, y + size),
+                (x, y + size),
+                (x, y),
+            ]
         }
 
         /// The polygon/line fold is the oracle wherever it admits the pair: it
@@ -1499,19 +1899,29 @@ mod tests {
         /// boundary crossing on the star below — see the ledger). Outside its
         /// admission the graph is what there is.
         fn check(label: &str, area: &Shape, line: &Shape) {
-            let (area_plan, line_plan) = (PreparedPlan::transient(area), PreparedPlan::transient(line));
+            let (area_plan, line_plan) =
+                (PreparedPlan::transient(area), PreparedPlan::transient(line));
             let graph = try_cartesian_polygon_line_relate(&area_plan, &line_plan)
+                .unwrap()
                 .unwrap_or_else(|| oracle(area, line));
             let direct = direct_areal_linework_relate(&area_plan, &line_plan)
                 .unwrap_or_else(|| panic!("{label}: admitted"));
             assert_eq!(direct.text(), graph.text(), "{label}: direct matrix");
             let swapped = direct_areal_linework_relate(&line_plan, &area_plan).unwrap();
-            assert_eq!(swapped.text(), graph.transpose().text(), "{label}: swapped matrix");
+            assert_eq!(
+                swapped.text(),
+                graph.transpose().text(),
+                "{label}: swapped matrix"
+            );
             for predicate in every_predicate() {
                 let spec = spec_of(predicate);
                 let early = direct_areal_linework_predicate(&spec, &area_plan, &line_plan)
                     .unwrap_or_else(|| panic!("{label}: {predicate:?} admitted"));
-                assert_eq!(early, predicate_matrix_value(&spec, graph), "{label}: {predicate:?}");
+                assert_eq!(
+                    early,
+                    predicate_matrix_value(&spec, graph),
+                    "{label}: {predicate:?}"
+                );
                 let early_swapped =
                     direct_areal_linework_predicate(&spec, &line_plan, &area_plan).unwrap();
                 assert_eq!(
@@ -1529,22 +1939,66 @@ mod tests {
             let cases: Vec<(&str, &Shape, Shape)> = vec![
                 ("crossing", &unit, line(&[(-1.0, 1.0), (5.0, 1.0)])),
                 ("inside", &unit, line(&[(1.0, 1.0), (2.0, 2.0)])),
-                ("outside, overlapping bounds", &unit, line(&[(-1.0, 5.0), (5.0, -1.0)])),
+                (
+                    "outside, overlapping bounds",
+                    &unit,
+                    line(&[(-1.0, 5.0), (5.0, -1.0)]),
+                ),
                 ("along an edge", &unit, line(&[(1.0, 0.0), (3.0, 0.0)])),
-                ("touching a vertex from outside", &unit, line(&[(4.0, 4.0), (6.0, 6.0)])),
+                (
+                    "touching a vertex from outside",
+                    &unit,
+                    line(&[(4.0, 4.0), (6.0, 6.0)]),
+                ),
                 ("through a vertex", &unit, line(&[(3.0, 5.0), (5.0, 3.0)])),
-                ("ending on the boundary from inside", &unit, line(&[(2.0, 2.0), (4.0, 2.0)])),
-                ("ending on the boundary from outside", &unit, line(&[(6.0, 2.0), (4.0, 2.0)])),
-                ("entering, leaving, re-entering", &unit, line(&[(2.0, 2.0), (6.0, 2.0), (6.0, 3.0), (2.0, 3.0)])),
-                ("covering the whole boundary", &unit, line(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)])),
-                ("covering the boundary and more", &unit, line(&[(-1.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)])),
+                (
+                    "ending on the boundary from inside",
+                    &unit,
+                    line(&[(2.0, 2.0), (4.0, 2.0)]),
+                ),
+                (
+                    "ending on the boundary from outside",
+                    &unit,
+                    line(&[(6.0, 2.0), (4.0, 2.0)]),
+                ),
+                (
+                    "entering, leaving, re-entering",
+                    &unit,
+                    line(&[(2.0, 2.0), (6.0, 2.0), (6.0, 3.0), (2.0, 3.0)]),
+                ),
+                (
+                    "covering the whole boundary",
+                    &unit,
+                    line(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
+                ),
+                (
+                    "covering the boundary and more",
+                    &unit,
+                    line(&[(-1.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
+                ),
                 ("inside a hole", &holed, line(&[(2.5, 2.5), (3.5, 3.5)])),
                 ("crossing a hole", &holed, line(&[(1.0, 3.0), (5.0, 3.0)])),
                 ("along a hole edge", &holed, line(&[(2.0, 2.0), (4.0, 2.0)])),
-                ("multi: one part inside, one outside", &unit, multi(&[&[(1.0, 1.0), (2.0, 2.0)], &[(10.0, 10.0), (11.0, 11.0)]])),
-                ("multi: parts meeting on the boundary", &unit, multi(&[&[(2.0, 2.0), (4.0, 2.0)], &[(4.0, 2.0), (6.0, 2.0)]])),
-                ("closed line inside", &unit, line(&[(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 1.0)])),
-                ("collinear touch at a segment end", &unit, line(&[(4.0, 1.0), (4.0, 0.0), (5.0, 0.0)])),
+                (
+                    "multi: one part inside, one outside",
+                    &unit,
+                    multi(&[&[(1.0, 1.0), (2.0, 2.0)], &[(10.0, 10.0), (11.0, 11.0)]]),
+                ),
+                (
+                    "multi: parts meeting on the boundary",
+                    &unit,
+                    multi(&[&[(2.0, 2.0), (4.0, 2.0)], &[(4.0, 2.0), (6.0, 2.0)]]),
+                ),
+                (
+                    "closed line inside",
+                    &unit,
+                    line(&[(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 1.0)]),
+                ),
+                (
+                    "collinear touch at a segment end",
+                    &unit,
+                    line(&[(4.0, 1.0), (4.0, 0.0), (5.0, 0.0)]),
+                ),
             ];
             for (label, area, probe) in &cases {
                 check(label, area, probe);
@@ -1566,7 +2020,10 @@ mod tests {
                     .map(|i| {
                         let angle = f64::from(i) / f64::from(n) * std::f64::consts::TAU;
                         let radius = if i % 2 == 0 { 3.0 } else { 1.5 };
-                        ((3.0 + radius * angle.cos()).round(), (3.0 + radius * angle.sin()).round())
+                        (
+                            (3.0 + radius * angle.cos()).round(),
+                            (3.0 + radius * angle.sin()).round(),
+                        )
                     })
                     .collect();
                 points.push(points[0]);
@@ -1586,7 +2043,11 @@ mod tests {
                 {
                     continue;
                 }
-                check(&format!("fuzz star={star:?} line={points:?}"), &area, &probe);
+                check(
+                    &format!("fuzz star={star:?} line={points:?}"),
+                    &area,
+                    &probe,
+                );
                 checked += 1;
             }
             assert!(checked > 1000, "only {checked} pairs checked");

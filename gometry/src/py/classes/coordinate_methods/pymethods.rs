@@ -2,9 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::PackedStorage;
+use pyo3::PyErr;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 
+use crate::array::PackedStorage;
 use crate::py::classes::coordinate_methods::{
     Bound, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError, Py, PyAny,
     PyAnyMethods as _, PyCoordinates, PyCoordinatesIter, PyDict, PyDictMethods as _, PyList, PyRef,
@@ -402,15 +403,18 @@ impl PyCoordinates {
                             })
                             .collect::<PyResult<Vec<_>>>()?
                     },
-                    GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
-PackedStorage::Polygons { .. }) => {
-                        storage
-                            .iter_shapes()
-                            .enumerate()
-                            .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
-                            .map(|(_, shape)| coordinates_object(py, &shape))
-                            .collect::<PyResult<Vec<_>>>()?
-                    },
+                    GeometryArrayStorage::Packed(
+                        PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
+                    ) => storage
+                        .iter_shapes()
+                        .enumerate()
+                        .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
+                        .map(|(_, shape)| {
+                            shape
+                                .map_err(PyErr::from)
+                                .and_then(|shape| coordinates_object(py, &shape))
+                        })
+                        .collect::<PyResult<Vec<_>>>()?,
                 };
                 Ok(PyList::new(py, nested)?.unbind().into())
             },

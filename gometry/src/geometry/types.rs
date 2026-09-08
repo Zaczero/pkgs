@@ -14,10 +14,11 @@ mod primitives;
 mod ring;
 mod shape;
 mod shape_data;
+mod shared_slice;
 
 pub(crate) use coordseq::{
-    CoordIter, CoordSeq, CoordSeqBuilder, CoordWindow, coerce_to_common_axes, concat_coord_columns,
-    reverse_column_arc,
+    CoordIter, CoordSeq, CoordSeqBuilder, CoordWindow, MColumn, coerce_to_common_axes,
+    concat_coord_columns, try_copy_slice,
 };
 pub(crate) use csr::{
     CsrOffsetBuilder, CsrOffsetColumn, GeometryKind, PolygonLevel, RingLevel,
@@ -40,6 +41,7 @@ pub(crate) use shape_data::{
     PolygonizeFull, PolylabelCell, PreparedPlan, ShapeData, ValidationIssue, canonical_f64_bits,
     ordered_edge,
 };
+pub(crate) use shared_slice::{SharedSlice, SharedSliceIter};
 
 #[cfg(test)]
 mod tests;

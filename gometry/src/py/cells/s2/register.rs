@@ -220,25 +220,34 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
                 candidate_bounds.maxx(),
                 candidate_bounds.maxy(),
             ]);
-        let subsumed = index
-            .locate_in_envelope_intersecting(candidate_envelope)
-            .any(|support| {
-                if support.index == candidate_index {
-                    return false;
-                }
-                let Some(support_bounds) = bounds[support.index] else {
-                    return false;
-                };
-                if !bounds_contain(support_bounds, candidate_bounds)
-                    || !components[support.index].1.covers(candidate)
-                {
-                    return false;
-                }
-                // Topologically equal supports cover each other; retain only
-                // the deterministically earlier raw key. A strict superset
-                // always wins regardless of its raw ordering.
-                support.index < candidate_index || !candidate.covers(&components[support.index].1)
-            });
+        let mut subsumed = false;
+        for support in index.locate_in_envelope_intersecting(candidate_envelope) {
+            if support.index == candidate_index {
+                continue;
+            }
+            let Some(support_bounds) = bounds[support.index] else {
+                continue;
+            };
+            if !bounds_contain(support_bounds, candidate_bounds)
+                || !components[support.index]
+                    .1
+                    .covers(candidate)
+                    .map_err(S2ComponentCoverError::Preparation)?
+            {
+                continue;
+            }
+            // Topologically equal supports cover each other; retain only
+            // the deterministically earlier raw key. A strict superset
+            // always wins regardless of its raw ordering.
+            if support.index < candidate_index
+                || !candidate
+                    .covers(&components[support.index].1)
+                    .map_err(S2ComponentCoverError::Preparation)?
+            {
+                subsumed = true;
+                break;
+            }
+        }
         if !subsumed {
             crate::try_push_vec(&mut canonical, candidate.clone())
                 .map_err(|_| S2ComponentCoverError::Allocation)?;

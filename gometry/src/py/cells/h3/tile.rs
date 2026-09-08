@@ -1,5 +1,5 @@
 use crate::collections::{HashSet, HashSetExt as _};
-use crate::geometry::{GeographicPrepared, Point, Polygon, PreparedPlan, Ring, Shape};
+use crate::geometry::{CoordSeq, GeographicPrepared, Point, Polygon, PreparedPlan, Ring, Shape};
 use crate::grid::affine_source::visit_grid_cover_components;
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
@@ -39,7 +39,7 @@ fn checked_predicate(
         right: GeographicPrepared::try_new(&probe, &probe_cache, authority.frame())
             .map_err(H3TileError::Preparation)?,
     };
-    Ok(topology_scalar_pair(&Predicate::Covers.spec(), operands))
+    topology_scalar_pair(&Predicate::Covers.spec(), operands).map_err(H3TileError::Preparation)
 }
 
 /// A native H3 polyfill: each polygon is flood-filled independently from the
@@ -466,7 +466,7 @@ pub(super) fn line_hex_estimate(start: Point, end: Point, resolution: Resolution
 /// boundary (H3 edges are geodesic arcs). Prefer cell-algebra methods
 /// (`contains`, `parent`, set ops, `grid_disk`) for exact hierarchical work;
 /// do not treat this polygon as a densified spherical boundary.
-pub(super) fn h3_cell_shape(cell: CellIndex) -> Shape {
+pub(super) fn h3_cell_shape(cell: CellIndex) -> crate::error::Result<Shape> {
     let mut shell: Vec<Point> = cell
         .boundary()
         .iter()
@@ -475,7 +475,10 @@ pub(super) fn h3_cell_shape(cell: CellIndex) -> Shape {
     if let Some(first) = shell.first().copied() {
         shell.push(first);
     }
-    Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()))
+    Ok(Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(&shell)?),
+        Vec::new(),
+    )?))
 }
 
 #[cfg(test)]
@@ -496,8 +499,7 @@ mod edge_trace_tests {
         let error = h3_tile(&shape, &authority, &cache, frame, Resolution::Six, None)
             .err()
             .expect("invalid latitude must fail before tiling");
-        let GridCoverError::Native(error) = GridCoverError::from(error)
-        else {
+        let GridCoverError::Native(error) = GridCoverError::from(error) else {
             panic!("admission must retain its native error");
         };
         assert!(
@@ -509,10 +511,11 @@ mod edge_trace_tests {
 
     #[test]
     fn streaming_edge_sink_stops_before_a_long_trace_is_materialized() {
-        let coordinates = CoordSeq::from(vec![
+        let coordinates = CoordSeq::try_from_points(&[
             Point::new_raw_xy(-170.0, 0.0),
             Point::new_raw_xy(170.0, 0.0),
-        ]);
+        ])
+        .expect("test edge coordinates are valid");
         assert!(
             line_hex_estimate(
                 coordinates.point_at(0),
@@ -535,16 +538,22 @@ mod edge_trace_tests {
 
     #[test]
     fn center_cover_is_sorted_and_unique() {
-        let shape = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(-1.0, -1.0),
-                Point::new_raw_xy(1.0, -1.0),
-                Point::new_raw_xy(1.0, 1.0),
-                Point::new_raw_xy(-1.0, 1.0),
-                Point::new_raw_xy(-1.0, -1.0),
-            ]),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(-1.0, -1.0),
+                        Point::new_raw_xy(1.0, -1.0),
+                        Point::new_raw_xy(1.0, 1.0),
+                        Point::new_raw_xy(-1.0, 1.0),
+                        Point::new_raw_xy(-1.0, -1.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .expect("test polygon is valid"),
+        );
         let ids = |cells: Vec<TiledCell>| {
             cells
                 .into_iter()

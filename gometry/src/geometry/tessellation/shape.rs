@@ -102,12 +102,12 @@ impl Shape {
             .iter()
             .map(|ring| {
                 let ring = ring.map(Point::to_xy);
-                Self::Polygon(Polygon::new(
-                    Ring::from_closed(CoordSeq::from_points(&ring)),
+                Ok(Self::Polygon(Polygon::new(
+                    Ring::from_closed(CoordSeq::try_from_points(&ring)?),
                     Vec::new(),
-                ))
+                )?))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         // Triangle vertices are input vertices: Z/M always resolve.
         carry_each(shapes, &[self], "delaunay_triangles", false)
     }
@@ -216,12 +216,12 @@ impl Shape {
             .iter()
             .map(|ring| {
                 let ring = ring.map(Point::to_xy);
-                Self::Polygon(Polygon::new(
-                    Ring::from_closed(CoordSeq::from_points(&ring)),
+                Ok(Self::Polygon(Polygon::new(
+                    Ring::from_closed(CoordSeq::try_from_points(&ring)?),
                     Vec::new(),
-                ))
+                )?))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         // Triangle vertices are input vertices when refinement is inactive;
         // resolve their Z/M only after the shared budget admitted the output.
         if refinement.active() {
@@ -549,14 +549,14 @@ impl Shape {
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, axes) => {
                 Self::typed_empty(GeometryKind::MultiLineString, *axes)
             },
-            Self::LineString(points) => line_boundary(points, points.axes()),
-            Self::MultiLineString(lines) => multiline_boundary(lines, lines.axes()),
+            Self::LineString(points) => line_boundary(points, points.axes())?,
+            Self::MultiLineString(lines) => multiline_boundary(lines, lines.axes())?,
             // A polygon's boundary IS its rings as linework: clone the ring
             // coordinate columns straight into the result (one `LineString`, or
             // a `MultiLineString` when there are holes / parts) — no per-vertex
             // `Point` round-trip through `to_vec` + column rebuild.
             Self::Polygon(polygon) => {
-                rings_to_boundary(polygon.rings().map(Ring::as_line).collect(), polygon.axes())
+                rings_to_boundary(polygon.rings().map(Ring::as_line).collect(), polygon.axes())?
             },
             Self::MultiPolygon(polygons) => rings_to_boundary(
                 polygons
@@ -565,7 +565,7 @@ impl Shape {
                     .map(Ring::as_line)
                     .collect(),
                 polygons.axes(),
-            ),
+            )?,
             Self::GeometryCollection(geometries) => {
                 let boundaries: Vec<_> = geometries
                     .iter()
@@ -598,8 +598,8 @@ impl Shape {
     /// carried by provenance; `strict` selects strict ordinate verification
     /// while the default uses the lenient degradation policy.
     pub fn polygonize_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
-        let graph = TopologyGraph::cartesian_many(shapes);
-        let polygons = polygonize_lines(&graph)
+        let graph = TopologyGraph::cartesian_many(shapes)?;
+        let polygons = polygonize_lines(&graph)?
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -615,8 +615,8 @@ impl Shape {
     ///
     /// [`polygonize_all`]: Self::polygonize_all
     pub fn build_area_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
-        let graph = TopologyGraph::cartesian_many(shapes);
-        let polygons = build_area_lines(&graph)
+        let graph = TopologyGraph::cartesian_many(shapes)?;
+        let polygons = build_area_lines(&graph)?
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -662,8 +662,8 @@ impl Shape {
     /// [`Shape::polygonize_all`] with diagnostics: one combined universe for
     /// polygons, cut edges, dangles, and invalid rings alike.
     pub fn polygonize_full_all(shapes: &[&Self], strict: bool) -> Result<PolygonizeFull> {
-        let graph = TopologyGraph::cartesian_many(shapes);
-        let full = polygonize_full(&graph, shapes.len());
+        let graph = TopologyGraph::cartesian_many(shapes)?;
+        let full = polygonize_full(&graph, shapes.len())?;
         let carry_diagnostic_rows = |rows: Vec<Vec<Shape>>| {
             rows.into_iter()
                 .enumerate()

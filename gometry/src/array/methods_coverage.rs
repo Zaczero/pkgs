@@ -39,7 +39,7 @@ impl PyGeometryArray {
     /// False
     #[pyo3(signature = (*, gap_width = 0.0))]
     pub fn coverage_is_valid(&self, py: Python<'_>, gap_width: f64) -> PyResult<bool> {
-        let shapes = self.present_shapes();
+        let shapes = self.present_shapes()?;
         Ok(py.detach(move || geometry::coverage_is_valid(&shapes, gap_width))?)
     }
 
@@ -76,9 +76,9 @@ impl PyGeometryArray {
     /// ... ).coverage_invalid_edges())
     /// 2
     pub fn coverage_invalid_edges(&self, py: Python<'_>, gap_width: f64) -> PyResult<Self> {
-        let shapes = self.present_shapes();
+        let shapes = self.present_shapes()?;
         let edges = py.detach(move || geometry::coverage_invalid_edges(&shapes, gap_width))?;
-        Ok(self.scatter_present_result(Self::from_shapes(edges, self.frame.clone())))
+        Ok(self.scatter_present_result(Self::from_shapes(edges, self.frame.clone())?)?)
     }
 
     /// Simplify this valid polygonal coverage's boundaries (see `coverage_simplify`).
@@ -135,11 +135,11 @@ impl PyGeometryArray {
         method: SimplifyMethod,
         simplify_boundary: bool,
     ) -> PyResult<Self> {
-        let shapes = self.present_shapes();
+        let shapes = self.present_shapes()?;
         let rows = py.detach(move || {
             geometry::coverage_simplify(&shapes, tolerance, method, simplify_boundary)
         })?;
-        Ok(self.scatter_present_result(Self::from_shapes(rows, self.frame.clone())))
+        Ok(self.scatter_present_result(Self::from_shapes(rows, self.frame.clone())?)?)
     }
 
     /// Union this polygonal coverage into one geometry (see `coverage_union`).
@@ -167,7 +167,7 @@ impl PyGeometryArray {
     /// >>> (merged.geometry_type, round(merged.area, 6))
     /// ('Polygon', 2.0)
     pub fn coverage_union(&self, py: Python<'_>) -> PyResult<Typed> {
-        let shapes = self.present_shapes();
+        let shapes = self.present_shapes()?;
         if shapes.is_empty() {
             return Err(crate::error::Error::from(
                 crate::geometry::GeometryErrorKind::EmptyGeometrySequence {
@@ -235,10 +235,10 @@ impl PyGeometryArray {
         gap_width: f64,
         overlap_rule: geometry::CoverageOverlapRule,
     ) -> PyResult<Self> {
-        let shapes = self.present_shapes();
+        let shapes = self.present_shapes()?;
         let rows = py.detach(move || {
             geometry::coverage_clean(&shapes, grid_size, gap_width, overlap_rule)
         })?;
-        Ok(self.scatter_present_result(Self::from_shapes(rows, self.frame.clone())))
+        Ok(self.scatter_present_result(Self::from_shapes(rows, self.frame.clone())?)?)
     }
 }

@@ -34,7 +34,8 @@ where
         },
         Err(error) => Err((row, error)),
     };
-    for (row, shape) in array.present_shape_rows() {
+    for result in array.present_shape_rows() {
+        let (row, shape) = result.map_err(|error| (0, E::from(error)))?;
         apply(&shape, row)?;
     }
     Ok(output)
@@ -72,7 +73,7 @@ fn rebuild_shared_mixed(
     let exhausted = changed.next().is_none();
     debug_assert!(exhausted);
     let mut result = PyGeometryArray::mixed_shapes(mapped, source.frame.clone())
-        .with_missing_mask(source.missing().cloned());
+        .with_missing_mask(source.missing().cloned())?;
     result.row_products = if unchanged_rows.len() == shapes.len() {
         source.row_products.clone()
     } else {
@@ -112,9 +113,9 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         let shapes = try_map_shape_rows(self, transform)
             .map_err(|(row, error)| note_array_row(error, row))?;
-        let result = Self::from_shapes(shapes, self.frame.clone());
+        let result = Self::from_shapes(shapes, self.frame.clone())?;
         Ok(if self.has_missing() {
-            self.scatter_present_result(result)
+            self.scatter_present_result(result)?
         } else {
             result
         })
@@ -150,9 +151,9 @@ impl PyGeometryArray {
         let shapes = py
             .detach(move || try_map_shape_rows(&array, transform))
             .map_err(rows_err)?;
-        let result = Self::from_shapes(shapes, self.frame.clone());
+        let result = Self::from_shapes(shapes, self.frame.clone())?;
         Ok(if self.has_missing() {
-            self.scatter_present_result(result)
+            self.scatter_present_result(result)?
         } else {
             result
         })
@@ -177,22 +178,12 @@ impl PyGeometryArray {
                 try_map_shape_rows(&array, |shape, row| transform(shape, row, &mut budget))
             })
             .map_err(rows_err)?;
-        let result = Self::from_shapes(shapes, self.frame.clone());
+        let result = Self::from_shapes(shapes, self.frame.clone())?;
         Ok(if self.has_missing() {
-            self.scatter_present_result(result)
+            self.scatter_present_result(result)?
         } else {
             result
         })
-    }
-
-    /// [`map_shapes`](Self::map_shapes) for transforms that cannot fail.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the one-shot callback is deliberately existential; a named generic adds no API meaning"
-    )]
-    pub fn map_shapes_infallible(&self, transform: impl Fn(&Shape) -> Shape) -> Self {
-        self.map_shapes(|shape| Ok(transform(shape)))
-            .expect("infallible shape map")
     }
 
     /// [`map_shapes`](Self::map_shapes) for transforms that often return
@@ -220,10 +211,11 @@ impl PyGeometryArray {
             // Packed rows re-pack either way — the plain map already
             // never materializes wrappers there (and packed-row clones are
             // Arc bumps since the CoordSeq view conversion).
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
-PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => {
-                self.map_shapes(|shape| Ok(transform(shape)?.unwrap_or_else(|| shape.clone())))
-            },
+            GeometryArrayStorage::Packed(
+                PackedStorage::Points { .. }
+                | PackedStorage::Lines { .. }
+                | PackedStorage::Polygons { .. },
+            ) => self.map_shapes(|shape| Ok(transform(shape)?.unwrap_or_else(|| shape.clone()))),
         }
     }
 
@@ -262,11 +254,13 @@ PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => {
                     .map_err(rows_err)?;
                 Ok(rebuild_shared_mixed(self, shapes, changed)?)
             },
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
-PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => self
-                .map_shapes_detached_indexed(py, |shape, row| {
-                    Ok(transform(shape, row)?.unwrap_or_else(|| shape.clone()))
-                }),
+            GeometryArrayStorage::Packed(
+                PackedStorage::Points { .. }
+                | PackedStorage::Lines { .. }
+                | PackedStorage::Polygons { .. },
+            ) => self.map_shapes_detached_indexed(py, |shape, row| {
+                Ok(transform(shape, row)?.unwrap_or_else(|| shape.clone()))
+            }),
         }
     }
 }
@@ -286,14 +280,15 @@ mod tests {
             .collect();
         PyGeometryArray::mixed_shapes(shapes, Frame::None)
             .with_missing_mask(ValidityMask::from_sparse(3, &[1]))
+            .unwrap()
     }
 
     #[test]
     fn shared_mixed_map_preserves_unchanged_handles_and_row_caches_with_missing() {
         let source = mixed_with_missing();
         // Warm prepared slots so the shared map can transfer them.
-        let warmed0 = source.geometry_at(0);
-        let warmed1 = source.geometry_at(1);
+        let warmed0 = source.geometry_at(0).unwrap();
+        let warmed1 = source.geometry_at(1).unwrap();
         let before_cache = source.row_products.frame_cache(0);
         let result = source
             .map_shapes_shared(|shape| {
@@ -301,11 +296,17 @@ mod tests {
                     .then(|| Shape::Point(Point::new_raw_xy(20.0, 0.0))))
             })
             .expect("shared map");
-        assert!(Arc::ptr_eq(&warmed0.shape, &result.geometry_at(0).shape));
-        assert!(Arc::ptr_eq(&warmed1.shape, &result.geometry_at(1).shape));
+        assert!(Arc::ptr_eq(
+            &warmed0.shape,
+            &result.geometry_at(0).unwrap().shape
+        ));
+        assert!(Arc::ptr_eq(
+            &warmed1.shape,
+            &result.geometry_at(1).unwrap().shape
+        ));
         assert!(!Arc::ptr_eq(
-            &source.geometry_at(2).shape,
-            &result.geometry_at(2).shape
+            &source.geometry_at(2).unwrap().shape,
+            &result.geometry_at(2).unwrap().shape
         ));
         assert!(Arc::ptr_eq(
             &before_cache,
@@ -335,7 +336,9 @@ mod tests {
 
     #[test]
     fn partial_shared_map_aliases_selected_source_rows_only() {
-        let source = mixed_with_missing().gather_logical_rows(&[2, 0, 2]);
+        let source = mixed_with_missing()
+            .gather_logical_rows(&[2, 0, 2])
+            .unwrap();
         let source_unchanged = source.row_products.frame_cache(0);
         let source_changed = source.row_products.frame_cache(1);
         let result = source

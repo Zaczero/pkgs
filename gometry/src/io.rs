@@ -365,12 +365,13 @@ mod tests {
             point(0.0, 2.0, axes.has_z().then_some(1.0)),
             point(0.0, 0.0, axes.has_z().then_some(1.0)),
         ];
-        Ring::from_closed(CoordSeq::from_points(&points))
+        Ring::from_closed(CoordSeq::try_from_points(&points).unwrap())
     }
 
     #[test]
     fn serializable_axes_reject_mixed_multipolygon_rings() {
-        let polygon = Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]);
+        let polygon =
+            Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]).unwrap();
         let shape = Shape::MultiPolygon(
             MultiPolygon::try_new(CoordinateAxes::XYZ, vec![MultiMember::Value(polygon)])
                 .expect("polygon aggregate axes match"),

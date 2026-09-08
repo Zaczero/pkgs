@@ -274,7 +274,7 @@ fn overlay_admitted(
         && originals.len() == 2
         && op == OverlayOp::Intersection
     {
-        convex_polygon_intersection(&refs)
+        convex_polygon_intersection(&refs)?
     } else {
         None
     };
@@ -465,7 +465,7 @@ fn direct_multipoint_intersection(
             OverlayOp::Intersection,
         )));
     }
-    let mut candidates = direct_multipoint_candidates(points, carrier);
+    let mut candidates = direct_multipoint_candidates(points, carrier)?;
     if candidates.is_empty() {
         return Ok(Some(empty_nary_overlay_shape(
             source_refs,
@@ -479,7 +479,7 @@ fn direct_multipoint_intersection(
         .map_or(CoordinateAxes::XY, |point| point.axes);
     let output = Shape::narrow_points(axes, candidates);
     Ok(Some(carry_direct_points_ordinates(
-        output,
+        output?,
         source_refs,
         strictness.is_strict(),
     )?))
@@ -488,8 +488,8 @@ fn direct_multipoint_intersection(
 fn direct_multipoint_candidates(
     points: &crate::geometry::MultiPoint,
     carrier: DirectPointCarrier<'_>,
-) -> Vec<Point> {
-    match carrier {
+) -> Result<Vec<Point>> {
+    Ok(match carrier {
         DirectPointCarrier::Line(line) => {
             let index =
                 SegmentIndex::build_from_iter(line.segment_pairs().map(|[start, end]| Segment {
@@ -517,20 +517,20 @@ fn direct_multipoint_candidates(
                 .collect()
         },
         DirectPointCarrier::Polygon(polygon) => {
-            let tester = PointBatchTester::from_polygon(polygon);
+            let tester = PointBatchTester::from_polygon(polygon)?;
             points
                 .points()
                 .filter(|point| tester.covers_point(*point))
                 .collect()
         },
         DirectPointCarrier::MultiPolygon(polygons) => {
-            let tester = PointBatchTester::from_multipolygon(polygons);
+            let tester = PointBatchTester::from_multipolygon(polygons)?;
             points
                 .points()
                 .filter(|point| tester.covers_point(*point))
                 .collect()
         },
-    }
+    })
 }
 
 /// Assemble a binary Cartesian polygon/line intersection from one joint graph.
@@ -565,7 +565,7 @@ fn assemble_polygon_line_intersection(inputs: &[&Shape]) -> Result<Option<(Shape
         return Ok(None);
     };
 
-    let graph = TopologyGraph::cartesian_many(inputs);
+    let graph = TopologyGraph::cartesian_many(inputs)?;
     if graph.source_points.is_empty()
         && !graph.edges.is_empty()
         && !graph.area_support.is_empty()
@@ -585,7 +585,7 @@ fn assemble_polygon_line_intersection(inputs: &[&Shape]) -> Result<Option<(Shape
             source.source_row == line_row && matches!(source.support, SourceSupport::Line)
         })
     {
-        let (points, lines) = polygon_line_overlay(&graph, polygon_row, line_row);
+        let (points, lines) = polygon_line_overlay(&graph, polygon_row, line_row)?;
         return Ok(Some((build_overlay_shape(points, &lines, &[])?, graph)));
     }
     Ok(None)
@@ -595,7 +595,7 @@ fn polygon_line_overlay(
     graph: &TopologyGraph,
     polygon_row: u32,
     line_row: u32,
-) -> (Vec<Point>, Vec<CoordSeq>) {
+) -> Result<(Vec<Point>, Vec<CoordSeq>)> {
     let mut lines = Vec::with_capacity(graph.edges.len());
     for edge in &graph.edges {
         if !graph.edge_has_line_source_for_row(edge, line_row) {
@@ -612,7 +612,10 @@ fn polygon_line_overlay(
             TopologyLocation::Exterior
         };
         if location != TopologyLocation::Exterior {
-            lines.push(CoordSeq::from(vec![edge.segment.start, edge.segment.end]));
+            lines.push(CoordSeq::try_from_xy(&[
+                edge.segment.start,
+                edge.segment.end,
+            ])?);
         }
     }
 
@@ -625,7 +628,7 @@ fn polygon_line_overlay(
         })
         .map(|node| node.point.point())
         .collect();
-    (points, lines)
+    Ok((points, lines))
 }
 
 /// The polygon-only intersection lane is valid only when the result cannot
@@ -633,15 +636,15 @@ fn polygon_line_overlay(
 /// transverse boundary crossing have a positive-area, connected intersection;
 /// touch-only, nested, disjoint, and degenerate cases deliberately defer to
 /// the mixed-dimension arrangement.
-fn convex_polygon_intersection(inputs: &[&Shape]) -> Option<Shape> {
+fn convex_polygon_intersection(inputs: &[&Shape]) -> Result<Option<Shape>> {
     let [left, right] = inputs else {
-        return None;
+        return Ok(None);
     };
     let (Shape::Polygon(left), Shape::Polygon(right)) = (*left, *right) else {
-        return None;
+        return Ok(None);
     };
     if !left.holes.is_empty() || !right.holes.is_empty() {
-        return None;
+        return Ok(None);
     }
     let left_shell = left.shell.coords();
     let right_shell = right.shell.coords();
@@ -661,14 +664,17 @@ fn convex_polygon_intersection(inputs: &[&Shape]) -> Option<Shape> {
         || !crate::geometry::polygon_is_valid(left)
         || !crate::geometry::polygon_is_valid(right)
     {
-        return None;
+        return Ok(None);
     }
-    let output = clean_union::clean_overlay(
+    let Some(output) = clean_union::clean_overlay(
         std::slice::from_ref(left),
         std::slice::from_ref(right),
         OverlayOp::Intersection,
-    )?;
-    matches!(&output, Shape::Polygon(_)).then_some(output)
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(matches!(&output, Shape::Polygon(_)).then_some(output))
 }
 
 struct OverlayBoundsFacts {
@@ -893,7 +899,7 @@ fn assemble_overlay(
             return build_overlay_shape(
                 Vec::new(),
                 &[],
-                &crate::geometry::binary_areal_overlay(&left_polygons, &right_polygons, op),
+                &crate::geometry::binary_areal_overlay(&left_polygons, &right_polygons, op)?,
             );
         }
         // Intersection of two areal operands is mixed-dimension: boundaries
@@ -909,17 +915,17 @@ fn assemble_overlay(
         {
             let (points, lines, polygons) =
                 super::build_areal_arrangement(&left_polygons, &right_polygons)
-                    .intersection_parts();
+                    .intersection_parts()?;
             return build_overlay_shape(points, &lines, &polygons);
         }
     }
     if raw_polygon_loops_eligible {
         let loops = shape_polygon_loops(inputs);
         if !loops.is_empty() {
-            let polygons: Vec<_> = crate::geometry::winding_region(&loops, |winding| winding != 0)
+            let polygons = crate::geometry::winding_region(&loops, |winding| winding != 0)?
                 .into_iter()
                 .map(|polygon| canonicalize_polygon(polygon, inputs.domain()))
-                .collect();
+                .collect::<Result<Vec<_>>>()?;
             return build_overlay_shape(Vec::new(), &[], &polygons);
         }
     }
@@ -935,28 +941,29 @@ fn assemble_joint_graph_overlay(
     let graph = match inputs {
         OverlayInputs::Cartesian(shapes) => TopologyGraph::cartesian_many(shapes),
         OverlayInputs::Geographic(batch) => TopologyGraph::geographic_many(batch),
-    };
+    }?;
     let source_graphs: Vec<TopologyGraph> = match inputs {
         OverlayInputs::Cartesian(shapes) => shapes
             .iter()
             .map(|shape| TopologyGraph::cartesian(shape))
-            .collect(),
+            .collect::<Result<_>>()?,
         OverlayInputs::Geographic(batch) => batch
             .views()
             .iter()
             .map(|view| TopologyGraph::geographic(*view))
-            .collect(),
+            .collect::<Result<_>>()?,
     };
-    let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible);
+    let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible)?;
     // Overlay edges and candidate points are numerous for high-resolution
     // boundaries; prepare the retained polygons once instead of rescanning
     // every output ring for each candidate.
-    let polygon_indexes: Vec<crate::geometry::PolygonPointIndex> = polygons
-        .iter()
-        .map(crate::geometry::PolygonPointIndex::build)
-        .collect();
+    let mut polygon_indexes = Vec::new();
+    crate::try_reserve_vec(&mut polygon_indexes, polygons.len())?;
+    for polygon in &polygons {
+        polygon_indexes.push(crate::geometry::PolygonPointIndex::build(polygon)?);
+    }
     let polygon_edges = output_polygon_edges(&polygons);
-    let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, &polygon_edges, op);
+    let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, &polygon_edges, op)?;
     let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op);
     build_overlay_shape(points, &lines, &polygons)
 }
@@ -1113,7 +1120,7 @@ fn assemble_line_only_overlay(inputs: &[&Shape], op: OverlayOp) -> Result<Shape>
     } else {
         Vec::new()
     };
-    build_overlay_shape_from_chains(points, merge_chain_edges(&kept), &[])
+    build_overlay_shape_from_chains(points, merge_chain_edges(&kept)?, &[])
 }
 
 /// One event point of the few-events lane: the distinct segments cut there,
@@ -1284,7 +1291,8 @@ fn cut_lines_overlay(inputs: &[&Shape], pool: &[Segment], op: OverlayOp) -> Resu
                 && points.len() >= 2
                 && split_vertices.contains(&(line_index, vertex_index))
             {
-                chains.push(std::mem::take(&mut points).into());
+                let chain = std::mem::take(&mut points);
+                chains.push(CoordSeq::try_from_points(&chain)?);
             }
             cuts.clear();
             while cursor < events.len() && events[cursor].0 as usize == ordinal {
@@ -1317,14 +1325,16 @@ fn cut_lines_overlay(inputs: &[&Shape], pool: &[Segment], op: OverlayOp) -> Resu
                 }
                 points.push(cut.point());
                 if crossings[&PointKey::new(cut)].splits {
-                    chains.push(std::mem::take(&mut points).into());
+                    let chain = std::mem::take(&mut points);
+                    chains.push(CoordSeq::try_from_points(&chain)?);
                     points.push(cut.point());
                 }
             }
             points.push(end.point());
         }
         if points.len() >= 2 {
-            chains.push(std::mem::take(&mut points).into());
+            let chain = std::mem::take(&mut points);
+            chains.push(CoordSeq::try_from_points(&chain)?);
         }
     }
     let mut shared_points: Vec<Point> = if op == OverlayOp::Intersection {
@@ -1431,11 +1441,11 @@ fn overlay_polygons(
     sources: &[TopologyGraph],
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
-) -> Vec<crate::geometry::Polygon> {
+) -> Result<Vec<crate::geometry::Polygon>> {
     if raw_polygon_loops_eligible {
         let loops = source_polygon_loops(sources);
         if !loops.is_empty() {
-            return crate::geometry::winding_region(&loops, |winding| winding != 0)
+            return crate::geometry::winding_region(&loops, |winding| winding != 0)?
                 .into_iter()
                 .map(|polygon| canonicalize_polygon(polygon, graph.domain))
                 .collect();
@@ -1449,7 +1459,7 @@ fn overlay_polygons(
         .map(|(index, edge)| (index, edge.segment))
         .collect();
     if area_edges.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let arranged_edges = match graph.domain {
         TopologyDomain::Geographic(frame)
@@ -1496,7 +1506,10 @@ fn overlay_polygons(
             i32::from(keep_area_face(&area_membership, op))
         })
         .collect();
-    crate::geometry::assemble_region_polygons(arrangement.region_rings(&selected, |keep| keep != 0))
+    let regions = crate::geometry::assemble_region_polygons(
+        arrangement.region_rings(&selected, |keep| keep != 0),
+    )?;
+    regions
         .into_iter()
         .map(|polygon| canonicalize_polygon(polygon, graph.domain))
         .collect()
@@ -1691,30 +1704,34 @@ fn face_area_side(
 fn canonicalize_polygon(
     polygon: crate::geometry::Polygon,
     domain: TopologyDomain,
-) -> crate::geometry::Polygon {
+) -> Result<crate::geometry::Polygon> {
     let TopologyDomain::Geographic(frame) = domain else {
-        return polygon;
+        return Ok(polygon);
     };
     let canonicalize = |ring: &crate::geometry::Ring| {
-        crate::geometry::Ring::from_closed(CoordSeq::from(
-            ring.coords()
-                .iter_coords()
-                .map(|point| {
-                    Point::new_raw_xy(
-                        frame
-                            .longitude()
-                            .canonicalize(point.x)
-                            .expect("derived geographic longitude is finite")
-                            .get(),
-                        point.y,
-                    )
-                })
-                .collect::<Vec<Point>>(),
-        ))
+        let points = ring
+            .coords()
+            .iter_coords()
+            .map(|point| {
+                Point::new_raw_xy(
+                    frame
+                        .longitude()
+                        .canonicalize(point.x)
+                        .expect("derived geographic longitude is finite")
+                        .get(),
+                    point.y,
+                )
+            })
+            .collect::<Vec<Point>>();
+        CoordSeq::try_from_points(&points).map(crate::geometry::Ring::from_closed)
     };
-    let shell = canonicalize(&polygon.shell);
-    let holes = polygon.holes.iter().map(canonicalize).collect();
-    crate::geometry::Polygon::new(shell, holes)
+    let shell = canonicalize(&polygon.shell)?;
+    let holes = polygon
+        .holes
+        .iter()
+        .map(canonicalize)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(crate::geometry::Polygon::new(shell, holes)?)
 }
 
 fn face_probe(ring: &[XY], sign: AreaSign) -> Option<XY> {
@@ -1799,7 +1816,7 @@ fn overlay_lines(
     polygon_indexes: &[crate::geometry::PolygonPointIndex],
     polygon_edges: &HashSet<(PointKey, PointKey)>,
     op: OverlayOp,
-) -> Vec<CoordSeq> {
+) -> Result<Vec<CoordSeq>> {
     let mut lines = Vec::new();
     for edge in &graph.edges {
         let edge_key = ordered_edge(
@@ -1847,10 +1864,13 @@ fn overlay_lines(
             },
         };
         if keep {
-            lines.push(CoordSeq::from(vec![edge.segment.start, edge.segment.end]));
+            lines.push(CoordSeq::try_from_xy(&[
+                edge.segment.start,
+                edge.segment.end,
+            ])?);
         }
     }
-    lines
+    Ok(lines)
 }
 
 fn overlay_points(

@@ -649,19 +649,19 @@ impl RowContainer for PyCellArray {
 }
 
 impl RowGetItemContainer for PyCellArray {
-    fn gather_rows(&self, rows: &[usize]) -> Self {
-        self.select_logical_rows(rows.iter().copied())
+    fn gather_rows(&self, rows: &[usize]) -> PyResult<Self> {
+        Ok(self.select_logical_rows(rows.iter().copied()))
     }
 
-    fn slice_rows(&self, start: isize, stop: isize, step: isize) -> Self {
-        self.slice(start, stop, step)
+    fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self> {
+        Ok(self.slice(start, stop, step))
     }
 
-    fn empty(&self) -> Self {
-        Self {
+    fn empty(&self) -> PyResult<Self> {
+        Ok(Self {
             storage: CellStorage::from_ids(self.kind(), Vec::new()),
             selection: RowSelection::Identity,
-        }
+        })
     }
 
     fn container_to_py(py: Python<'_>, value: Self) -> PyResult<Py<PyAny>> {
@@ -1280,7 +1280,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let points = py.detach(move || map_grid_cells!(&cells, |cell| cell.center_point()))?;
         let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, points.len())?;
         for point in points {
-            builder.push(point);
+            builder.push(point)?;
         }
         let coords = builder.finish()?;
         let result = crate::PyGeometryArray::packed_points(
@@ -1289,7 +1289,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         );
         Ok(match self.missing_mask()? {
             None => result,
-            Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask),
+            Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
     }
 
@@ -1342,16 +1342,19 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let cells = self.clone();
         let shapes = py.detach(move || {
             dispatch_cell_grid!(&cells, G, {
-                cells.map_logical_cells::<G, _>(crate::grid::cell::GridCell::boundary_shape)
+                cells.map_logical_cells::<G, _>(|cell| {
+                    crate::grid::cell::GridCell::boundary_shape(cell).map_err(PyErr::from)
+                })
             })
         })?;
+        let shapes = shapes.into_iter().collect::<PyResult<Vec<_>>>()?;
         let result = crate::PyGeometryArray::from_shapes(
             shapes,
             crate::Frame::Crs(crate::wgs84_crs()),
-        );
+        )?;
         Ok(match self.missing_mask()? {
             None => result,
-            Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask),
+            Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
     }
 

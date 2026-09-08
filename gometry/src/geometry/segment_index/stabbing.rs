@@ -12,6 +12,7 @@
 //! Y-overlapping candidates.
 
 use crate::HeapSize;
+use crate::error::Result;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
@@ -75,12 +76,12 @@ enum YPlan {
         min_y: f64,
         inv_band_height: f64,
         band_count: std::num::NonZeroUsize,
-        band_offsets: Box<[u32]>,
+        band_offsets: Vec<u32>,
         /// Indices into [`YStabbingIndex::items`].
-        band_items: Box<[u32]>,
+        band_items: Vec<u32>,
     },
     IntervalTree {
-        nodes: Box<[ITreeNode]>,
+        nodes: Vec<ITreeNode>,
         root: u32,
     },
 }
@@ -93,13 +94,13 @@ enum YPlan {
 pub(crate) struct YStabbingIndex<T> {
     items: Vec<T>,
     /// Closed Y-span per item — kept for Linear filtering and build bookkeeping.
-    spans: Box<[(f64, f64)]>,
+    spans: Vec<(f64, f64)>,
     /// Closed X-span per item, stored beside the Y-span so a point query can
     /// reject a candidate without touching the item. Overlapping Y-bands are
     /// the common case, not the exception — a row of boxes, a country's
     /// islands, a coverage — so the Y-tree alone hands back everything and the
     /// X-envelope is what makes the query sublinear.
-    x_spans: Box<[(f64, f64)]>,
+    x_spans: Vec<(f64, f64)>,
     plan: YPlan,
     /// A 2-D envelope tree, built when the Y-plan fell through to an interval
     /// tree — meaning the Y-spans overlap enough that a stabbing walk hands
@@ -121,24 +122,25 @@ impl<T> YStabbingIndex<T> {
     pub(crate) fn build(
         items: Vec<T>,
         mut envelope: impl FnMut(&T) -> (f64, f64, f64, f64),
-    ) -> Self {
-        let mut spans = Vec::with_capacity(items.len());
-        let mut x_spans = Vec::with_capacity(items.len());
+    ) -> Result<Self> {
+        let mut spans = Vec::new();
+        let mut x_spans = Vec::new();
+        crate::try_reserve_vec(&mut spans, items.len())?;
+        crate::try_reserve_vec(&mut x_spans, items.len())?;
         for item in &items {
             let (min_x, max_x, min_y, max_y) = envelope(item);
             spans.push((min_y, max_y));
             x_spans.push((min_x, max_x));
         }
-        let spans: Box<[(f64, f64)]> = spans.into();
-        let plan = choose_plan(&spans);
-        let envelopes = build_envelope_tree(&plan, &spans, &x_spans);
-        Self {
+        let plan = choose_plan(&spans)?;
+        let envelopes = build_envelope_tree(&plan, &spans, &x_spans)?;
+        Ok(Self {
             items,
             spans,
-            x_spans: x_spans.into(),
+            x_spans,
             plan,
             envelopes,
-        }
+        })
     }
 
     /// Visit every item whose Y-interval contains `y` (closed).
@@ -306,37 +308,37 @@ impl EdgeYIndex {
     }
     /// Build from parallel ring Y columns (`edge i` spans `ys[i]..ys[i+1]`).
     /// Items in the shared plan are edge ids (`0..edge_count`).
-    pub(crate) fn build(ys: &[f64]) -> Self {
+    pub(crate) fn build(ys: &[f64]) -> Result<Self> {
         let edge_count = ys.len().saturating_sub(1);
-        let spans: Box<[(f64, f64)]> = (0..edge_count)
-            .map(|e| {
-                let (a, b) = (ys[e], ys[e + 1]);
-                (a.min(b), a.max(b))
-            })
-            .collect();
+        let mut spans = Vec::new();
+        crate::try_reserve_vec(&mut spans, edge_count)?;
+        spans.extend((0..edge_count).map(|e| {
+            let (a, b) = (ys[e], ys[e + 1]);
+            (a.min(b), a.max(b))
+        }));
         // Dense band_items are item indices; with items[i]=i they are edge ids.
-        Self {
+        Ok(Self {
             edge_count,
-            plan: choose_plan(&spans),
-        }
+            plan: choose_plan(&spans)?,
+        })
     }
 
     /// Build over an open ring, including its closing edge from the last point
     /// back to the first. Chart rings use this representation so seam lifting
     /// does not need to repeat the first coordinate.
-    pub(crate) fn build_closed(ys: &[f64]) -> Self {
+    pub(crate) fn build_closed(ys: &[f64]) -> Result<Self> {
         let edge_count = ys.len();
-        let spans: Box<[(f64, f64)]> = (0..edge_count)
-            .map(|edge| {
-                let next = if edge + 1 < edge_count { edge + 1 } else { 0 };
-                let (a, b) = (ys[edge], ys[next]);
-                (a.min(b), a.max(b))
-            })
-            .collect();
-        Self {
+        let mut spans = Vec::new();
+        crate::try_reserve_vec(&mut spans, edge_count)?;
+        spans.extend((0..edge_count).map(|edge| {
+            let next = if edge + 1 < edge_count { edge + 1 } else { 0 };
+            let (a, b) = (ys[edge], ys[next]);
+            (a.min(b), a.max(b))
+        }));
+        Ok(Self {
             edge_count,
-            plan: choose_plan(&spans),
-        }
+            plan: choose_plan(&spans)?,
+        })
     }
 
     /// Borrow the dense CSR candidates for probe `y` without exposing the
@@ -508,11 +510,12 @@ fn build_envelope_tree(
     plan: &YPlan,
     spans: &[(f64, f64)],
     x_spans: &[(f64, f64)],
-) -> Option<crate::geometry::BulkRTree<EnvelopeEntry>> {
+) -> Result<Option<crate::geometry::BulkRTree<EnvelopeEntry>>> {
     if !matches!(plan, YPlan::IntervalTree { .. }) {
-        return None;
+        return Ok(None);
     }
-    let mut entries = Vec::with_capacity(spans.len());
+    let mut entries = Vec::new();
+    crate::try_reserve_vec(&mut entries, spans.len())?;
     for (index, (&(min_y, max_y), &(min_x, max_x))) in std::iter::zip(spans, x_spans).enumerate() {
         if min_y > max_y {
             // The empty-item sentinel. It matches no probe, so leaving it out
@@ -520,20 +523,25 @@ fn build_envelope_tree(
             continue;
         }
         if !min_x.is_finite() || !max_x.is_finite() {
-            return None;
+            return Ok(None);
         }
         entries.push(EnvelopeEntry {
             index: index as u32,
             envelope: rstar::AABB::from_corners([min_x, min_y], [max_x, max_y]),
         });
     }
-    Some(crate::geometry::BulkRTree::bulk_load_with_params(entries))
+    Ok(Some(crate::geometry::BulkRTree::bulk_load_with_params(
+        entries,
+    )))
 }
 
-fn choose_plan(spans: &[(f64, f64)]) -> YPlan {
+fn choose_plan(spans: &[(f64, f64)]) -> Result<YPlan> {
     let n = spans.len();
+    if n > u32::MAX as usize {
+        return Err(crate::error::ResourceError::SizeOverflow.into());
+    }
     if n <= LINEAR_MAX {
-        return YPlan::Linear;
+        return Ok(YPlan::Linear);
     }
     if let Some((min_y, inv_band_height, band_count, total_refs)) = try_dense_sizing(spans) {
         return build_dense(spans, min_y, inv_band_height, band_count, total_refs);
@@ -547,11 +555,13 @@ fn build_dense(
     inv_band_height: f64,
     band_count: std::num::NonZeroUsize,
     total_refs: usize,
-) -> YPlan {
+) -> Result<YPlan> {
     let n = spans.len();
     let band_count_value = band_count.get();
     // Two-pass CSR with checked counts (sizing already proved fit).
-    let mut band_offsets = vec![0_u32; band_count_value + 1];
+    let mut band_offsets = Vec::new();
+    crate::try_reserve_vec(&mut band_offsets, band_count_value + 1)?;
+    band_offsets.resize(band_count_value + 1, 0_u32);
     for &(lo, hi) in spans {
         let b0 = band_of(lo, min_y, inv_band_height, band_count_value);
         let b1 = band_of(hi, min_y, inv_band_height, band_count_value);
@@ -567,8 +577,12 @@ fn build_dense(
             .expect("dense band offsets checked at sizing");
     }
     debug_assert_eq!(band_offsets[band_count_value] as usize, total_refs);
-    let mut cursor = band_offsets.clone();
-    let mut band_items = vec![0_u32; total_refs];
+    let mut cursor = Vec::new();
+    crate::try_reserve_vec(&mut cursor, band_offsets.len())?;
+    cursor.extend_from_slice(&band_offsets);
+    let mut band_items = Vec::new();
+    crate::try_reserve_vec(&mut band_items, total_refs)?;
+    band_items.resize(total_refs, 0_u32);
     for (idx, &(lo, hi)) in spans.iter().enumerate() {
         let b0 = band_of(lo, min_y, inv_band_height, band_count_value);
         let b1 = band_of(hi, min_y, inv_band_height, band_count_value);
@@ -580,38 +594,38 @@ fn build_dense(
         }
     }
     let _ = n;
-    YPlan::DenseBands {
+    Ok(YPlan::DenseBands {
         min_y,
         inv_band_height,
         band_count,
-        band_offsets: band_offsets.into_boxed_slice(),
-        band_items: band_items.into_boxed_slice(),
-    }
+        band_offsets,
+        band_items,
+    })
 }
 
-fn build_itree(spans: &[(f64, f64)]) -> YPlan {
+fn build_itree(spans: &[(f64, f64)]) -> Result<YPlan> {
     let n = spans.len();
     if n == 0 {
-        return YPlan::IntervalTree {
-            nodes: Box::new([]),
+        return Ok(YPlan::IntervalTree {
+            nodes: Vec::new(),
             root: NIL,
-        };
+        });
     }
     // Indices sorted by lo (then hi, then id for stability).
-    let mut order: Vec<u32> = (0..n as u32).collect();
-    order.sort_by(|&a, &b| {
+    let mut order = Vec::new();
+    crate::try_reserve_vec(&mut order, n)?;
+    order.extend(0..n as u32);
+    order.sort_unstable_by(|&a, &b| {
         let (alo, ahi) = spans[a as usize];
         let (blo, bhi) = spans[b as usize];
         alo.total_cmp(&blo)
             .then_with(|| ahi.total_cmp(&bhi))
             .then_with(|| a.cmp(&b))
     });
-    let mut nodes = Vec::with_capacity(n);
+    let mut nodes = Vec::new();
+    crate::try_reserve_vec(&mut nodes, n)?;
     let root = build_itree_node(&mut order, spans, &mut nodes);
-    YPlan::IntervalTree {
-        nodes: nodes.into_boxed_slice(),
-        root,
-    }
+    Ok(YPlan::IntervalTree { nodes, root })
 }
 
 /// Median-of-sorted-lo recursive build. Returns node index (`NIL` if empty).
@@ -715,7 +729,8 @@ mod tests {
         let index = YStabbingIndex::build(items, |&i| {
             let y = f64::from(i);
             (f64::NEG_INFINITY, f64::INFINITY, y, y + 0.5)
-        });
+        })
+        .unwrap();
         assert_eq!(index.plan_kind(), "linear");
         assert_eq!(collect_at(&index, 3.25), vec![3]);
         assert!(collect_at(&index, 100.0).is_empty());
@@ -729,7 +744,8 @@ mod tests {
         let index = YStabbingIndex::build(items, |&i| {
             let y = f64::from(i);
             (f64::NEG_INFINITY, f64::INFINITY, y, y + 0.5)
-        });
+        })
+        .unwrap();
         assert_eq!(index.plan_kind(), "dense");
         assert_eq!(collect_at(&index, 40.25), vec![40]);
         // Endpoint-closed.
@@ -744,7 +760,8 @@ mod tests {
         let n = 64_u32;
         let items: Vec<u32> = (0..n).collect();
         let index =
-            YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1000.0));
+            YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1000.0))
+                .unwrap();
         assert_eq!(index.plan_kind(), "tree");
         let mut visits = 0_u32;
         let broken = index.for_each_at_y(500.0, |&item| {
@@ -768,7 +785,8 @@ mod tests {
         let n = 64_u32;
         let items: Vec<u32> = (0..n).collect();
         let index =
-            YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1000.0));
+            YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1000.0))
+                .unwrap();
         assert_eq!(index.plan_kind(), "tree");
         let hit = collect_at(&index, 500.0);
         assert_eq!(hit.len(), n as usize);
@@ -791,7 +809,8 @@ mod tests {
             // Item i covers [i, i+10]
             let y = f64::from(i);
             (f64::NEG_INFINITY, f64::INFINITY, y, y + 10.0)
-        });
+        })
+        .unwrap();
         let hit = collect_at(&index, 20.0);
         // Items with lo <= 20 <= hi → i in [10, 20]
         let expected: Vec<u32> = (10..=20).collect();
@@ -803,7 +822,8 @@ mod tests {
         // Simulate many bands with full-span items: sizing must not admit dense.
         let n = 1000_u32;
         let items: Vec<u32> = (0..n).collect();
-        let index = YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1.0));
+        let index =
+            YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1.0)).unwrap();
         assert_eq!(index.plan_kind(), "tree");
         // Construction stays O(n).
         let bytes = index.heap_bytes();
@@ -822,7 +842,7 @@ mod tests {
     #[test]
     fn edge_y_dense_for_each_edge_matches_band_slice_and_stops_on_break() {
         let ys: Vec<f64> = (0..=128).map(f64::from).collect();
-        let index = EdgeYIndex::build(&ys);
+        let index = EdgeYIndex::build(&ys).unwrap();
         assert!(index.uses_indexed_plan());
         let y = 40.25;
         let slice = index
@@ -851,7 +871,7 @@ mod tests {
     #[test]
     fn edge_y_dense_for_each_edge_matches_slice_below_above_and_on_band_edge() {
         let ys: Vec<f64> = (0..=128).map(f64::from).collect();
-        let index = EdgeYIndex::build(&ys);
+        let index = EdgeYIndex::build(&ys).unwrap();
         let slice = index
             .dense_band_edges(40.0)
             .expect("short unit-span edges use dense bands");
@@ -873,14 +893,13 @@ mod tests {
         let index = YStabbingIndex::build(items, |&i| {
             let y = f64::from(i);
             (0.0, 1.0, y, y + 0.5)
-        });
+        })
+        .unwrap();
         assert_eq!(index.plan_kind(), "linear");
         assert!(index.envelopes.is_none());
         assert_eq!(
             index.heap_bytes(),
-            index.items.heap_bytes()
-                + index.spans.heap_bytes()
-                + index.x_spans.heap_bytes()
+            index.items.heap_bytes() + index.spans.heap_bytes() + index.x_spans.heap_bytes()
         );
         assert_eq!(
             index.x_spans.heap_bytes(),
@@ -894,10 +913,12 @@ mod tests {
         let finite = YStabbingIndex::build((0..n).collect(), |&i| {
             let x = f64::from(i);
             (x, x + 1.0, 0.0, 1000.0)
-        });
+        })
+        .unwrap();
         let infinite = YStabbingIndex::build((0..n).collect(), |_| {
             (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1000.0)
-        });
+        })
+        .unwrap();
         assert_eq!(finite.plan_kind(), "tree");
         assert_eq!(infinite.plan_kind(), "tree");
         assert!(infinite.envelopes.is_none());
@@ -911,9 +932,6 @@ mod tests {
         );
         let envelope_bytes = super::super::bulk_rtree_heap_bytes(tree);
         assert!(envelope_bytes > 0, "nonempty tree must report used slots");
-        assert_eq!(
-            finite.heap_bytes() - infinite.heap_bytes(),
-            envelope_bytes
-        );
+        assert_eq!(finite.heap_bytes() - infinite.heap_bytes(), envelope_bytes);
     }
 }

@@ -84,12 +84,16 @@ fn try_is_simple_packed(
         Ok(domain) => domain,
         Err(error) => return Some(Err(error.into())),
     };
-    if let crate::geometry::TopologyDomain::Geographic(frame) = domain
-        && array
-            .present_shape_rows()
-            .any(|(_, shape)| crate::geometry::crosses_antimeridian_in_frame(&shape, frame))
-    {
-        return None;
+    if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
+        for result in array.present_shape_rows() {
+            let (_, shape) = match result {
+                Ok(row) => row,
+                Err(error) => return Some(Err(error.into())),
+            };
+            if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
+                return None;
+            }
+        }
     }
     array
         .is_simple_unary_packed()

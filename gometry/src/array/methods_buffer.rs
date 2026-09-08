@@ -1,7 +1,8 @@
-use crate::array::PackedStorage;
 use std::num::NonZeroU32;
 
-use crate::array::{GeometryArrayStorage, PackedColumns, PyGeometryArray, PyResult, Python};
+use crate::array::{
+    GeometryArrayStorage, PackedColumns, PackedStorage, PyGeometryArray, PyResult, Python,
+};
 use crate::crs::MetricModel;
 use crate::geometry::BufferSide;
 use crate::{DistanceUnit, F64Param};
@@ -25,7 +26,10 @@ impl PyGeometryArray {
             return Ok(None);
         }
         if side != BufferSide::Both
-            || !matches!(self.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
+            || !matches!(
+                self.storage(),
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+            )
         {
             return Ok(None);
         }
@@ -58,6 +62,8 @@ impl PyGeometryArray {
                     PackedColumns::Lines(_) | PackedColumns::Polygons(_) => Ok(None),
                 }
             })?;
-        Ok(output.map(|array| array.with_missing_mask(missing)))
+        Ok(output
+            .map(|array| array.with_missing_mask(missing))
+            .transpose()?)
     }
 }

@@ -20,7 +20,7 @@ pub(crate) fn box_polygon(
     Ok(Polygon::new(
         Ring::from_closed(coords.finish()?),
         Vec::new(),
-    ))
+    )?)
 }
 
 pub(crate) fn wrapped_box(
@@ -46,5 +46,5 @@ pub(crate) fn wrapped_box(
             box_polygon(west, south, 180.0, north)?,
             box_polygon(-180.0, south, east, north)?,
         ],
-    ))
+    )?)
 }

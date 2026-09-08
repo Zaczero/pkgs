@@ -179,11 +179,11 @@ pub(crate) fn predicate_pairwise_arrays(
                                         .as_ref()
                                         .and_then(|bounds| bounds.get(index).copied().flatten()),
                                 ),
-                            ) {
+                            )? {
                                 return Ok(verdict);
                             }
-                            let left = left_rows.prepared_at(index, left);
-                            let right = right_rows.prepared_at(index, right);
+                            let left = left_rows.prepared_at(index, left)?;
+                            let right = right_rows.prepared_at(index, right)?;
                             let left_cache = left_rows.frame_cache(index);
                             let right_cache = right_rows.frame_cache(index);
                             Ok(topology_scalar_pair(
@@ -195,17 +195,16 @@ pub(crate) fn predicate_pairwise_arrays(
                                     &right_cache,
                                     domain,
                                 )?,
-                            ))
+                            )?)
                         },
                         TopologyDomain::Geographic(_) => {
                             let (left_kind, _) = row_kind_empty(left);
                             let (right_kind, _) = row_kind_empty(right);
-                            if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind)
-                            {
+                            if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind) {
                                 return Ok(verdict);
                             }
-                            let left = left_rows.prepared_at(index, left);
-                            let right = right_rows.prepared_at(index, right);
+                            let left = left_rows.prepared_at(index, left)?;
+                            let right = right_rows.prepared_at(index, right)?;
                             let left_cache = left_rows.frame_cache(index);
                             let right_cache = right_rows.frame_cache(index);
                             Ok(topology_scalar_pair(
@@ -217,7 +216,7 @@ pub(crate) fn predicate_pairwise_arrays(
                                     &right_cache,
                                     domain,
                                 )?,
-                            ))
+                            )?)
                         },
                     }
                 })
@@ -246,7 +245,7 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
                 .collect::<Vec<_>>();
             return Ok(Shape::multi_point(
                 coords.axes(),
-                CoordSeq::from_points(&points),
+                CoordSeq::try_from_points(&points)?,
             ));
         }
         if row_map.is_identity() && !splitters.has_missing() {
@@ -259,31 +258,30 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
             .collect();
         return Ok(Shape::multi_point(
             coords.axes(),
-            CoordSeq::from_points(&points),
+            CoordSeq::try_from_points(&points)?,
         ));
     }
     let mut points = Vec::new();
     for row in splitters.row_operation().present_rows() {
-        row.row()
-            .with_shape(|shape| -> Result<(), crate::error::Error> {
-                match shape {
-                    Shape::Point(point) => {
-                        points.push(point.to_xy());
-                        Ok(())
-                    },
-                    Shape::MultiPoint(items) => {
-                        points.extend(items.iter().map(Point::to_xy));
-                        Ok(())
-                    },
-                    // `POINT EMPTY` is point-like but contributes no split locations.
-                    Shape::Empty(GeometryKind::Point, _) => Ok(()),
-                    _ => Err(GeometryErrorKind::PointSplitterRequired.into()),
-                }
-            })?;
+        row.row().try_with_shape(|shape| {
+            match shape {
+                Shape::Point(point) => {
+                    points.push(point.to_xy());
+                    Ok::<_, crate::error::Error>(())
+                },
+                Shape::MultiPoint(items) => {
+                    points.extend(items.iter().map(Point::to_xy));
+                    Ok(())
+                },
+                // `POINT EMPTY` is point-like but contributes no split locations.
+                Shape::Empty(GeometryKind::Point, _) => Ok(()),
+                _ => Err(GeometryErrorKind::PointSplitterRequired.into()),
+            }
+        })?;
     }
     Ok(Shape::multi_point(
         CoordinateAxes::XY,
-        CoordSeq::from_points(&points),
+        CoordSeq::try_from_points(&points)?,
     ))
 }
 
@@ -301,8 +299,8 @@ pub(crate) fn ensure_same_len(left: usize, right: usize) -> PyResult<()> {
     clippy::large_types_passed_by_value,
     reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
 )]
-fn relate_plan_pair(operands: PreparedTopologyPair<'_>) -> String {
-    operands.relate().text()
+fn relate_plan_pair(operands: PreparedTopologyPair<'_>) -> crate::error::Result<String> {
+    Ok(operands.relate()?.text())
 }
 
 fn topology_scalar_array<R, F>(
@@ -316,7 +314,7 @@ fn topology_scalar_array<R, F>(
 ) -> PyResult<Py<PyAny>>
 where
     R: crate::broadcast::BulkElement,
-    F: for<'a> Fn(PreparedTopologyPair<'a>) -> R + Copy + Send + Sync,
+    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
     let output_missing = array.missing().cloned();
     let scalar_plan = scalar.plan_or_transient();
@@ -335,7 +333,7 @@ where
                     };
                     let row = present.logical();
                     let shape = present.row();
-                    let element_plan = rows.prepared_at(row, shape);
+                    let element_plan = rows.prepared_at(row, shape)?;
                     let element_cache = rows.frame_cache(row);
                     let operands = if scalar_is_left {
                         PreparedTopologyPair::try_for_domain(
@@ -354,7 +352,7 @@ where
                             domain,
                         )
                     }?;
-                    Ok(evaluate(operands))
+                    evaluate(operands)
                 })
                 .collect_rows()
         })
@@ -373,7 +371,7 @@ fn topology_array_pair<R, F>(
 ) -> PyResult<Py<PyAny>>
 where
     R: crate::broadcast::BulkElement,
-    F: for<'a> Fn(PreparedTopologyPair<'a>) -> R + Copy + Send + Sync,
+    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
     paired_arrays(left, right, operation)?;
     let missing = crate::array::missing::union_pair(left.missing(), right.missing());
@@ -396,17 +394,17 @@ where
                     let right_index = right.logical();
                     let left_shape = left.row();
                     let right_shape = right.row();
-                    let left_plan = left_rows.prepared_at(left_index, left_shape);
-                    let right_plan = right_rows.prepared_at(right_index, right_shape);
+                    let left_plan = left_rows.prepared_at(left_index, left_shape)?;
+                    let right_plan = right_rows.prepared_at(right_index, right_shape)?;
                     let left_cache = left_rows.frame_cache(left_index);
                     let right_cache = right_rows.frame_cache(right_index);
-                    Ok(evaluate(PreparedTopologyPair::try_for_domain(
+                    evaluate(PreparedTopologyPair::try_for_domain(
                         &left_plan,
                         &left_cache,
                         &right_plan,
                         &right_cache,
                         domain,
-                    )?))
+                    )?)
                 })
                 .collect_rows()
         })
@@ -423,7 +421,7 @@ fn topology_broadcast<R, F>(
 ) -> PyResult<Py<PyAny>>
 where
     R: crate::broadcast::BulkElement,
-    F: for<'a> Fn(PreparedTopologyPair<'a>) -> R + Copy + Send + Sync,
+    F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
     let (left, right) = (classify_required(left)?, classify_required(right)?);
     let (left_crs, left_epoch) = match left {
@@ -450,7 +448,7 @@ where
                     &right_cache,
                     domain,
                 )
-                .map(evaluate)
+                .and_then(evaluate)
             })?;
             R::into_py(value, py, &frame)
         },
@@ -613,7 +611,7 @@ fn xy_predicate_array_values(
                         let logical = row.logical();
                         let row = row.row();
                         let point = Point::new_raw_xy(x, y);
-                        let row = rows.prepared_at(logical, row);
+                        let row = rows.prepared_at(logical, row)?;
                         let row_cache = rows.frame_cache(logical);
                         let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
                         let point_cache = crate::geometry::FrameDependentCaches::default();
@@ -626,7 +624,7 @@ fn xy_predicate_array_values(
                                 &point_cache,
                                 domain,
                             )?,
-                        ))
+                        )?)
                     },
                 })
                 .collect_rows()
@@ -657,7 +655,7 @@ fn xy_array_values(
                     &point_cache,
                     domain,
                 )?,
-            ))
+            )?)
         })
         .collect_rows()
 }
@@ -690,7 +688,7 @@ pub(crate) fn xy_predicate_values(
                 &point_cache,
                 domain,
             )
-            .map(|operands| topology_scalar_pair(&spec, operands))
+            .and_then(|operands| topology_scalar_pair(&spec, operands))
         })?;
         return Ok(py_bool(py, value));
     }
@@ -712,15 +710,21 @@ mod geographic_tests {
     #[test]
     fn geographic_crossing_xy_agrees_with_scalar_oracle_at_seam_and_pole() {
         crate::test_support::initialize_python();
-        let shape = Shape::Polygon(Polygon::new(
-            Ring::from_closed(CoordSeq::from(vec![
-                Point::new_raw_xy(170.0, 80.0),
-                Point::new_raw_xy(-170.0, 80.0),
-                Point::new_raw_xy(-170.0, 90.0),
-                Point::new_raw_xy(170.0, 90.0),
-            ])),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(170.0, 80.0),
+                        Point::new_raw_xy(-170.0, 80.0),
+                        Point::new_raw_xy(-170.0, 90.0),
+                        Point::new_raw_xy(170.0, 90.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
             .expect("EPSG:4326 is a valid geographic frame");
         let geometry = PyGeometry::with_frame(shape, frame);
@@ -754,6 +758,7 @@ mod geographic_tests {
                 )
                 .expect("fixture admits")
                 .relate()
+                .unwrap()
                 .is_intersects()
             })
             .collect();

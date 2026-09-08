@@ -171,7 +171,8 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
             "a coverage needs at least one cell to dissolve into a polygon",
         ));
     }
-    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
+    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons)
+        .map_err(PyErr::from)?;
     Ok(PyGeometry::typed_wgs84(shape))
 }
 
@@ -179,28 +180,28 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
     if outline.is_empty() {
         return Ok(None);
     }
+    let outline = Shape::multi_line_string(
+        crate::geometry::CoordinateAxes::XY,
+        crate::try_collect_results(
+            outline
+                .into_iter()
+                .map(|line| Ok::<_, PyErr>(LineSeq::from_proven(line))),
+        )?,
+    )
+    .map_err(PyErr::from)?;
     let polygons = crate::try_collect_results(
-        Shape::build_area_all(
-            &[&Shape::multi_line_string(
-                crate::geometry::CoordinateAxes::XY,
-                crate::try_collect_results(
-                    outline
-                        .into_iter()
-                        .map(|line| Ok::<_, PyErr>(LineSeq::from_proven(line))),
-                )?,
-            )],
-            true,
-        )?
-        .into_iter()
-        .filter_map(|shape| match shape {
-            Shape::Polygon(polygon) => Some(Ok(polygon)),
-            _ => None,
-        }),
+        Shape::build_area_all(&[&outline], true)?
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Polygon(polygon) => Some(Ok(polygon)),
+                _ => None,
+            }),
     )?;
     if polygons.is_empty() {
         return Ok(None);
     }
-    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
+    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons)
+        .map_err(PyErr::from)?;
     Ok(Some(PyGeometry::typed_wgs84(shape)))
 }
 

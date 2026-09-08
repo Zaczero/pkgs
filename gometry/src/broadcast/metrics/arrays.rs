@@ -78,7 +78,7 @@ where
                             .map(|row| match row {
                                 crate::array::ArrayRow::Missing { value, .. } => Ok(value),
                                 crate::array::ArrayRow::Present(row) => {
-                                    row.row().with_shape(|shape| {
+                                    row.row().try_with_shape(|shape| {
                                         M::eval(
                                             &model,
                                             shape,
@@ -112,7 +112,7 @@ where
                             {
                                 return Ok(f64::NAN);
                             }
-                            row.with_shape(|left| {
+                            row.try_with_shape(|left| {
                                 M::eval(
                                     &model,
                                     left,
@@ -146,8 +146,8 @@ where
                                 (
                                     crate::array::ArrayRow::Present(left),
                                     crate::array::ArrayRow::Present(right),
-                                ) => left.row().with_shape(|left| {
-                                    right.row().with_shape(|right| {
+                                ) => left.row().try_with_shape(|left| {
+                                    right.row().try_with_shape(|right| {
                                         M::eval(
                                             &model,
                                             left,
@@ -248,6 +248,8 @@ where
                             if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                                 return Ok(f64::NAN);
                             }
+                            let left = left?;
+                            let right = right?;
                             M::eval(
                                 &model,
                                 &left,
@@ -384,8 +386,8 @@ where
                         {
                             return Ok(verdict);
                         }
-                        let left = left_rows.prepared_at(index, left_row);
-                        let right = right_rows.prepared_at(index, right_row);
+                        let left = left_rows.prepared_at(index, left_row)?;
+                        let right = right_rows.prepared_at(index, right_row)?;
                         pair(index, &left, &right, &mut left_rows, &mut right_rows)
                     })
                     .collect_rows()
@@ -412,8 +414,8 @@ where
                     });
                 };
                 let index = left_row.logical();
-                let left = left_rows.prepared(left_row);
-                let right = right_rows.prepared(right_row);
+                let left = left_rows.prepared(left_row)?;
+                let right = right_rows.prepared(right_row)?;
                 pair(index, &left, &right, &mut left_rows, &mut right_rows)
             })
             .collect_rows()
@@ -456,7 +458,7 @@ pub(crate) fn array_crs_distances(
                         let right_shape = Arc::clone(&right_shape);
                         move |points| {
                             let mut values = right_shape
-                                .distance_points(points.iter().map(|point| (point.x, point.y)));
+                                .distance_points(points.iter().map(|point| (point.x, point.y)))?;
                             for value in &mut values {
                                 *value *= to_metre.get();
                             }
@@ -475,12 +477,12 @@ pub(crate) fn array_crs_distances(
                         py,
                         py.detach(move || {
                             let mut values = right_shape
-                                .distance_points(points.iter().map(|point| (point.x, point.y)));
+                                .distance_points(points.iter().map(|point| (point.x, point.y)))?;
                             for value in &mut values {
                                 *value *= to_metre.get();
                             }
-                            values
-                        }),
+                            Ok::<_, crate::error::Error>(values)
+                        })?,
                         array.missing(),
                     );
                 }
@@ -502,8 +504,8 @@ pub(crate) fn array_crs_distances(
                                     }
                                     unreachable!();
                                 };
-                                let left = rows.prepared(row);
-                                Ok(left.distance(&right_shape) * to_metre.get())
+                                let left = rows.prepared(row)?;
+                                Ok(left.distance(&right_shape)? * to_metre.get())
                             })
                             .collect_rows()
                     })
@@ -591,7 +593,7 @@ pub(crate) fn array_crs_distances(
                                         unreachable!();
                                     };
                                     let row_index = row.logical();
-                                    let left = rows.prepared(row);
+                                    let left = rows.prepared(row)?;
                                     let left_cache = rows.frame_cache(row_index);
                                     crs::finite(
                                         left.geodesic_distance_cached(
@@ -673,7 +675,7 @@ pub(crate) fn array_crs_distances(
                             None::<fn(Bounds, Bounds) -> Option<f64>>,
                             f64::NAN,
                             |_row, left, right_data, _left_products, _right_products| {
-                                Ok(pair_distance_planar(to_metre.get(), left, right_data))
+                                pair_distance_planar(to_metre.get(), left, right_data)
                             },
                         )?,
                     )
@@ -937,7 +939,7 @@ pub(crate) fn array_crs_dwithin_per_element(
                             ) {
                                 return Ok(false);
                             }
-                            let left = rows.prepared_at(row, left);
+                            let left = rows.prepared_at(row, left)?;
                             pair_dwithin_planar(
                                 to_metre.get(),
                                 &left,
@@ -956,7 +958,7 @@ pub(crate) fn array_crs_dwithin_per_element(
                                 return Ok(false);
                             };
                             let row = left.logical();
-                            let left = rows.prepared(left);
+                            let left = rows.prepared(left)?;
                             let left_cache = rows.frame_cache(row);
                             pair_dwithin_geodesic(
                                 metric,
@@ -1008,8 +1010,8 @@ pub(crate) fn array_crs_dwithin_per_element(
                             ) {
                                 return Ok(false);
                             }
-                            let left = left_rows.prepared_at(row, left);
-                            let right_data = right_rows.prepared_at(row, right_row);
+                            let left = left_rows.prepared_at(row, left)?;
+                            let right_data = right_rows.prepared_at(row, right_row)?;
                             pair_dwithin_planar(
                                 to_metre.get(),
                                 &left,
@@ -1035,8 +1037,8 @@ pub(crate) fn array_crs_dwithin_per_element(
                             let row = left.logical();
                             let left = left.row();
                             let right_row = right_row.row();
-                            let left = left_rows.prepared_at(row, left);
-                            let right_data = right_rows.prepared_at(row, right_row);
+                            let left = left_rows.prepared_at(row, left)?;
+                            let right_data = right_rows.prepared_at(row, right_row)?;
                             let left_cache = left_rows.frame_cache(row);
                             let right_cache = right_rows.frame_cache(row);
                             pair_dwithin_geodesic(
@@ -1098,7 +1100,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                         let ArrayRow::Present(row) = row else {
                             return Ok(false);
                         };
-                        let left = rows.prepared(row);
+                        let left = rows.prepared(row)?;
                         pair_dwithin_planar(to_metre.get(), &left, &other_shape, distance)
                             .map_err(Into::into)
                     })
@@ -1112,7 +1114,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                             return Ok(false);
                         };
                         let row_index = row.logical();
-                        let left = rows.prepared(row);
+                        let left = rows.prepared(row)?;
                         let left_cache = rows.frame_cache(row_index);
                         pair_dwithin_geodesic(
                             metric,
@@ -1136,7 +1138,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                 let other_shape = other.plan_or_transient();
                 move |points| {
                     Ok(other_shape
-                        .dwithin_points(points.iter().map(|point| (point.x, point.y)), limit))
+                        .dwithin_points(points.iter().map(|point| (point.x, point.y)), limit)?)
                 }
             })?
         {
@@ -1151,7 +1153,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                 py,
                 py.detach(move || {
                     other_shape.dwithin_points(points.iter().map(|point| (point.x, point.y)), limit)
-                }),
+                })?,
                 array.missing(),
             );
         }
@@ -1175,7 +1177,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                     rows.rows_with_missing(|| false)
                         .map(|row| {
                             let ArrayRow::Present(row) = row else {
-                                return false;
+                                return Ok(false);
                             };
                             let index = row.logical();
                             let row = row.row();
@@ -1184,13 +1186,13 @@ pub(crate) fn array_crs_dwithin_scalar(
                                 && let Some(element) = element_bounds[index]
                                 && bounds_distance_squared(element, other_bounds) > sq_limit
                             {
-                                return false;
+                                return Ok(false);
                             }
-                            let left = rows.prepared_at(index, row);
+                            let left = rows.prepared_at(index, row)?;
                             left.dwithin(&other_shape, limit)
                         })
-                        .collect::<Vec<bool>>()
-                }),
+                        .collect::<crate::error::Result<Vec<bool>>>()
+                })?,
                 missing.as_ref(),
             )
         },
@@ -1272,7 +1274,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                                     return Ok(false);
                                 };
                                 let row_index = row.logical();
-                                let left = rows.prepared(row);
+                                let left = rows.prepared(row)?;
                                 let left_cache = rows.frame_cache(row_index);
                                 left.geodesic_dwithin_cached(
                                     &left_cache,

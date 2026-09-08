@@ -470,10 +470,10 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
         })
         .collect();
 
-    Ok(prepared
+    prepared
         .iter()
         .map(|row| rebuild_row(row.shape, &chain_of, &simplified))
-        .collect())
+        .collect()
 }
 
 /// Rebuild one row's polygons by splicing simplified chains into each ring.
@@ -481,7 +481,7 @@ fn rebuild_row(
     shape: &Shape,
     chain_of: &HashMap<(PointKey, PointKey), usize>,
     simplified: &[Cow<'_, [XY]>],
-) -> Shape {
+) -> Result<Shape> {
     let rebuild_ring = |ring: &CoordSeq| -> Vec<Point> {
         let original: Vec<Point> = ring.iter_coords().collect();
         if original.len() < 4 {
@@ -553,25 +553,32 @@ fn rebuild_row(
         out
     };
     match shape {
-        Shape::Polygon(polygon) => Shape::Polygon(rebuild_polygon(polygon, &rebuild_ring)),
+        Shape::Polygon(polygon) => Ok(Shape::Polygon(rebuild_polygon(polygon, &rebuild_ring)?)),
         Shape::MultiPolygon(polygons) => Shape::multi_polygon(
             polygons.axes(),
             polygons
                 .iter()
                 .map(|polygon| rebuild_polygon(polygon, &rebuild_ring))
-                .collect(),
+                .collect::<Result<Vec<_>>>()?,
         ),
-        other => other.clone(),
+        other => Ok(other.clone()),
     }
 }
 
-fn rebuild_polygon(polygon: &Polygon, rebuild_ring: &impl Fn(&CoordSeq) -> Vec<Point>) -> Polygon {
+fn rebuild_polygon(
+    polygon: &Polygon,
+    rebuild_ring: &impl Fn(&CoordSeq) -> Vec<Point>,
+) -> Result<Polygon> {
     Polygon::new(
-        Ring::from_closed(rebuild_ring(polygon.shell.coords())),
+        Ring::from_closed(CoordSeq::try_from_points(&rebuild_ring(
+            polygon.shell.coords(),
+        ))?),
         polygon
             .holes
             .iter()
-            .map(|hole| Ring::from_closed(rebuild_ring(hole.coords())))
-            .collect(),
+            .map(|hole| {
+                CoordSeq::try_from_points(&rebuild_ring(hole.coords())).map(Ring::from_closed)
+            })
+            .collect::<Result<Vec<_>>>()?,
     )
 }

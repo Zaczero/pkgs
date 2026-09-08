@@ -108,9 +108,7 @@ pub(crate) fn dispatch_predicate(
                 &right_cache,
                 domain,
             )
-            .map(|operands| {
-                crate::predicates::engine::topology_scalar_pair(&spec, operands)
-            })
+            .and_then(|operands| crate::predicates::engine::topology_scalar_pair(&spec, operands))
         })?;
         return Ok(crate::broadcast::py_bool(py, value));
     }
@@ -238,7 +236,7 @@ pub(crate) fn dispatch_distance(
         right,
         MetricOp::Distance,
         unit,
-        |to_metre, left, right| Ok(crate::broadcast::pair_distance_planar(to_metre, left, right)),
+        |to_metre, left, right| crate::broadcast::pair_distance_planar(to_metre, left, right),
         kernels::binary_distance,
         array_crs_distances,
     )
@@ -563,10 +561,7 @@ mod tests {
                 .expect("EPSG:4326 is a valid geographic frame");
             let invalid = Bound::new(
                 py,
-                PyGeometry::with_frame(
-                    Shape::Point(Point::new_raw_xy(0.5, 91.0)),
-                    frame.clone(),
-                ),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone()),
             )
             .expect("invalid-latitude point binds")
             .into_any();
@@ -598,10 +593,7 @@ mod tests {
                 .expect("EPSG:4326 is a valid geographic frame");
             let invalid = Bound::new(
                 py,
-                PyGeometry::with_frame(
-                    Shape::Point(Point::new_raw_xy(0.5, 91.0)),
-                    frame.clone(),
-                ),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone()),
             )
             .expect("invalid-latitude point binds")
             .into_any();
@@ -613,10 +605,7 @@ mod tests {
             .into_any();
             let error = super::dispatch_predicate(py, &invalid, &other, Predicate::Intersects)
                 .expect_err("intersects must admit and fail on invalid latitude");
-            assert!(
-                error.is_instance_of::<InvalidGeometryError>(py),
-                "{error}"
-            );
+            assert!(error.is_instance_of::<InvalidGeometryError>(py), "{error}");
             let message = error.to_string();
             assert!(
                 message.contains("invalid longitude/latitude (0.5, 91)"),

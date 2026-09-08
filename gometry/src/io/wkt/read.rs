@@ -446,7 +446,7 @@ fn parse_wkt_polygon_body(value: &str, axes: CoordinateAxes) -> Result<Polygon> 
     let Some(shell) = rings.next() else {
         return Err(IoError::wkt("POLYGON requires a shell"));
     };
-    Ok(Polygon::new(shell?, rings.collect::<Result<_>>()?))
+    Ok(Polygon::new(shell?, rings.collect::<Result<_>>()?)?)
 }
 
 /// Strict GeometryCollection member list: comma-separated full WKT geometries.
@@ -662,8 +662,10 @@ fn parse_wkt_points_impl<const Z: bool, const M: bool>(value: &str) -> Result<Co
         Ok(sequence) => Ok(sequence),
         Err(error) if bytes.is_ascii() => Err(error),
         Err(_) => {
-            let mut builder =
-                CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
+            let mut builder = CoordSeqBuilder::try_with_capacity(
+                CoordinateAxes::new(HasZ(Z), HasM(M)),
+                capacity,
+            )?;
             for coordinate in value.split(',') {
                 parse_wkt_coordinate_into::<Z, M>(coordinate, &mut builder)?;
             }
@@ -681,7 +683,7 @@ fn parse_wkt_ascii_points_impl<const Z: bool, const M: bool>(
     capacity: usize,
 ) -> Result<CoordSeq> {
     let mut builder =
-        CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
+        CoordSeqBuilder::try_with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity)?;
     let mut index = 0;
     loop {
         let x = parse_wkt_ascii_float_at(bytes, &mut index, "x", true)?;
@@ -696,7 +698,7 @@ fn parse_wkt_ascii_points_impl<const Z: bool, const M: bool>(
         if index < bytes.len() && bytes[index] != b',' {
             return Err(IoError::wkt("coordinate has too many ordinates"));
         }
-        builder.push_xyzm(x, y, z, m);
+        builder.push_xyzm(x, y, z, m)?;
         if index == bytes.len() {
             break;
         }
@@ -731,7 +733,7 @@ fn parse_wkt_coordinate_into<const Z: bool, const M: bool>(
     if values.next().is_some() {
         return Err(IoError::wkt("coordinate has too many ordinates"));
     }
-    builder.push_xyzm(x, y, z, m);
+    builder.push_xyzm(x, y, z, m)?;
     Ok(())
 }
 
@@ -756,13 +758,13 @@ fn parse_wkt_point_impl<const Z: bool, const M: bool>(value: &str) -> Result<Poi
         Err(error) if bytes.is_ascii() => return Err(error),
         Err(_) => {},
     }
-    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1);
+    let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1)?;
     parse_wkt_coordinate_into::<Z, M>(value, &mut builder)?;
     finish_wkt_point(builder)
 }
 
 fn parse_wkt_ascii_point_impl<const Z: bool, const M: bool>(bytes: &[u8]) -> Result<Point> {
-    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1);
+    let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1)?;
     let mut index = 0;
     let x = parse_wkt_ascii_float_at(bytes, &mut index, "x", false)?;
     let y = parse_wkt_ascii_float_at(bytes, &mut index, "y", false)?;
@@ -776,7 +778,7 @@ fn parse_wkt_ascii_point_impl<const Z: bool, const M: bool>(bytes: &[u8]) -> Res
     if index != bytes.len() {
         return Err(IoError::wkt("coordinate has too many ordinates"));
     }
-    builder.push_xyzm(x, y, z, m);
+    builder.push_xyzm(x, y, z, m)?;
     finish_wkt_point(builder)
 }
 

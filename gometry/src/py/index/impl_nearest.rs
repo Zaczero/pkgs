@@ -292,8 +292,8 @@ impl PySpatialIndex {
                 * to_metre
         };
         let exact = |idx| {
-            let data = rows.prepared(idx);
-            Ok(pair_distance_planar(to_metre, &data, query))
+            let data = rows.prepared(idx)?;
+            Ok(pair_distance_planar(to_metre, &data, query)?)
         };
         if k == 1 {
             return self.bound_ordered_nearest_shared(
@@ -400,7 +400,7 @@ impl PySpatialIndex {
             // sound lower bound instead of Karney-evaluating every entry.
             let bound = |envelope: &AABB<[f64; 2]>| pruner.envelope_lower_bound(envelope);
             let exact = |idx| {
-                let data = rows.prepared(idx);
+                let data = rows.prepared(idx)?;
                 pair_distance_geodesic(
                     resolved,
                     &data,
@@ -478,7 +478,7 @@ impl PySpatialIndex {
         let query_cache_owner = query_cache();
         let mut rows = self.rows.operation();
         let mut exact = |idx| {
-            let data = rows.prepared(idx);
+            let data = rows.prepared(idx)?;
             pair_distance_geodesic(
                 resolved,
                 &data,
@@ -625,11 +625,12 @@ impl PySpatialIndex {
         exclude: Option<&Shape>,
         state: &mut S,
     ) -> PyResult<()> {
-        if exclude.is_some_and(|shape| {
-            self.rows
+        if let Some(shape) = exclude
+            && self
+                .rows
                 .row(entry_idx)
-                .with_shape(|other| *other == *shape)
-        }) {
+                .with_shape(|other| *other == *shape)?
+        {
             return Ok(());
         }
         let distance = exact(entry_idx)?;

@@ -27,11 +27,14 @@ impl CoordSeq {
         clippy::impl_trait_in_params,
         reason = "the one-pass coordinate callback is deliberately existential"
     )]
-    pub fn map_xy(&self, mut op: impl FnMut(f64, f64) -> (f64, f64)) -> Self {
+    pub fn map_xy(&self, mut op: impl FnMut(f64, f64) -> (f64, f64)) -> Result<Self> {
         // Pre-sized output columns written by index (no push branch), so the
         // per-pair arithmetic vectorizes.
-        let mut xs = vec![0.0; self.len()].into_boxed_slice();
-        let mut ys = vec![0.0; self.len()].into_boxed_slice();
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        crate::boundary::try_reserve_pair(&mut xs, &mut ys, self.len())?;
+        xs.resize(self.len(), 0.0);
+        ys.resize(self.len(), 0.0);
         for (((out_x, out_y), &x), &y) in xs
             .iter_mut()
             .zip(ys.iter_mut())
@@ -40,7 +43,12 @@ impl CoordSeq {
         {
             (*out_x, *out_y) = op(x, y);
         }
-        Self::from_columns(xs.into(), ys.into(), self.carried_zs(), self.carried_ms())
+        Self::from_shared_columns(
+            crate::geometry::SharedSlice::try_from_vec(xs)?,
+            crate::geometry::SharedSlice::try_from_vec(ys)?,
+            self.carried_zs()?,
+            self.carried_ms()?,
+        )
     }
 
     /// Fallible [`map_xy`](Self::map_xy) for transforms that can overflow:
@@ -51,7 +59,7 @@ impl CoordSeq {
         reason = "the one-pass coordinate callback is deliberately existential"
     )]
     pub fn try_map_xy(&self, op: impl FnMut(f64, f64) -> (f64, f64)) -> Result<Self> {
-        let mapped = self.map_xy(op);
+        let mapped = self.map_xy(op)?;
         if column_all_finite(mapped.xs()) && column_all_finite(mapped.ys()) {
             Ok(mapped)
         } else {
@@ -79,8 +87,14 @@ impl CoordSeq {
         }
         let n = self.len();
         let (xs, ys) = (self.xs(), self.ys());
-        let mut out_x = (!x_identity).then(|| vec![0.0; n].into_boxed_slice());
-        let mut out_y = (!y_identity).then(|| vec![0.0; n].into_boxed_slice());
+        let allocate = || -> Result<Vec<f64>> {
+            let mut values = Vec::new();
+            crate::try_reserve_vec(&mut values, n)?;
+            values.resize(n, 0.0);
+            Ok(values)
+        };
+        let mut out_x = (!x_identity).then(allocate).transpose()?;
+        let mut out_y = (!y_identity).then(allocate).transpose()?;
         if let (Some(out_x), Some(out_y)) = (out_x.as_mut(), out_y.as_mut()) {
             let (va, vb, vd, ve, vxo, vyo) = (
                 ReduceSimd::splat(a),
@@ -146,12 +160,18 @@ impl CoordSeq {
         if !x_finite || !y_finite {
             Err(GeometryErrorKind::NonFiniteCoordinate.into())
         } else {
-            Ok(Self::from_columns(
-                out_x.map_or_else(|| self.carried_xs(), Into::into),
-                out_y.map_or_else(|| self.carried_ys(), Into::into),
-                self.carried_zs(),
-                self.carried_ms(),
-            ))
+            Self::from_shared_columns(
+                out_x
+                    .map(crate::geometry::SharedSlice::try_from_vec)
+                    .transpose()?
+                    .map_or_else(|| self.carried_xs(), Ok)?,
+                out_y
+                    .map(crate::geometry::SharedSlice::try_from_vec)
+                    .transpose()?
+                    .map_or_else(|| self.carried_ys(), Ok)?,
+                self.carried_zs()?,
+                self.carried_ms()?,
+            )
         }
     }
 
@@ -177,8 +197,14 @@ impl CoordSeq {
         }
         let n = self.len();
         let (xs, ys) = (self.xs(), self.ys());
-        let mut out_x = (!x_identity).then(|| vec![0.0; n].into_boxed_slice());
-        let mut out_y = (!y_identity).then(|| vec![0.0; n].into_boxed_slice());
+        let allocate = || -> Result<Vec<f64>> {
+            let mut values = Vec::new();
+            crate::try_reserve_vec(&mut values, n)?;
+            values.resize(n, 0.0);
+            Ok(values)
+        };
+        let mut out_x = (!x_identity).then(allocate).transpose()?;
+        let mut out_y = (!y_identity).then(allocate).transpose()?;
         for index in 0..n {
             if let Some(out_x) = out_x.as_mut() {
                 out_x[index] = affine_about_origin_ordinate(
@@ -191,12 +217,18 @@ impl CoordSeq {
                 )?;
             }
         }
-        Ok(Self::from_columns(
-            out_x.map_or_else(|| self.carried_xs(), Into::into),
-            out_y.map_or_else(|| self.carried_ys(), Into::into),
-            self.carried_zs(),
-            self.carried_ms(),
-        ))
+        Self::from_shared_columns(
+            out_x.map_or_else(
+                || self.carried_xs(),
+                crate::geometry::SharedSlice::try_from_vec,
+            )?,
+            out_y.map_or_else(
+                || self.carried_ys(),
+                crate::geometry::SharedSlice::try_from_vec,
+            )?,
+            self.carried_zs()?,
+            self.carried_ms()?,
+        )
     }
 
     /// Snap the X/Y columns onto the grid `origin + k * size` (per-axis), Z/M
@@ -208,12 +240,16 @@ impl CoordSeq {
         size: (f64, f64),
         origin: (f64, f64),
     ) -> Result<Self, crate::error::Error> {
-        Ok(Self::from_columns(
-            snap_column_simd(self.xs(), origin.0, size.0)?.into(),
-            snap_column_simd(self.ys(), origin.1, size.1)?.into(),
-            self.carried_zs(),
-            self.carried_ms(),
-        ))
+        Self::from_shared_columns(
+            crate::geometry::SharedSlice::try_from_vec(
+                snap_column_simd(self.xs(), origin.0, size.0)?.into_vec(),
+            )?,
+            crate::geometry::SharedSlice::try_from_vec(
+                snap_column_simd(self.ys(), origin.1, size.1)?.into_vec(),
+            )?,
+            self.carried_zs()?,
+            self.carried_ms()?,
+        )
     }
 
     /// Fallible [`map_xy`](Self::map_xy) generic over the error: per-pair
@@ -226,51 +262,56 @@ impl CoordSeq {
     pub fn try_map_xy_with<E>(
         &self,
         mut op: impl FnMut(f64, f64) -> Result<(f64, f64), E>,
-    ) -> Result<Self, E> {
-        let mut xs = Vec::with_capacity(self.len());
-        let mut ys = Vec::with_capacity(self.len());
+    ) -> Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+    {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        crate::boundary::try_reserve_pair(&mut xs, &mut ys, self.len()).map_err(E::from)?;
         for (&x, &y) in std::iter::zip(self.xs(), self.ys()) {
             let (x, y) = op(x, y)?;
             xs.push(x);
             ys.push(y);
         }
-        Ok(Self::from_columns(
-            xs.into(),
-            ys.into(),
-            self.carried_zs(),
-            self.carried_ms(),
-        ))
+        Self::from_shared_columns(
+            crate::geometry::SharedSlice::try_from_vec(xs).map_err(E::from)?,
+            crate::geometry::SharedSlice::try_from_vec(ys).map_err(E::from)?,
+            self.carried_zs()?,
+            self.carried_ms()?,
+        )
+        .map_err(E::from)
     }
 
     /// Every ordinate column quantized to `precision` decimal places.
-    pub fn quantize(&self, precision: i32) -> Self {
+    pub fn quantize(&self, precision: i32) -> Result<Self> {
         let scale = decimal_scale(precision);
-        let map = |column: &[f64]| -> Box<[f64]> { quantize_column_simd(column, scale) };
-        Self::from_columns(
-            map(self.xs()).into(),
-            map(self.ys()).into(),
-            self.zs().map(map).map(Into::into),
-            self.ms().map(map).map(Into::into),
+        let map = |column: &[f64]| -> Vec<f64> { quantize_column_simd(column, scale).into_vec() };
+        Self::try_from_vecs(
+            map(self.xs()),
+            map(self.ys()),
+            self.zs().map(map),
+            self.ms().map(map),
         )
     }
 
     /// The XY columns alone, dropping Z/M. Shares the backing `Arc`s with zero
     /// copy when this sequence spans its whole columns (the common case).
-    pub fn force_2d(&self) -> Self {
-        Self::from_columns(self.carried_xs(), self.carried_ys(), None, None)
+    pub fn force_2d(&self) -> Result<Self> {
+        Self::from_shared_columns(self.carried_xs()?, self.carried_ys()?, None, None)
     }
 
     /// Set or clear the Z ordinate column. `value=None` removes Z (M is
     /// preserved); `Some(z)` with `overwrite` writes `z` at every vertex,
     /// otherwise fills only when the column is absent (existing Z is kept).
-    pub fn set_z(&self, value: Option<f64>, overwrite: bool) -> Self {
+    pub fn set_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::Z, value, overwrite)
     }
 
     /// Set or clear the M ordinate column. `value=None` removes M (Z is
     /// preserved); `Some(m)` with `overwrite` writes `m` at every vertex,
     /// otherwise fills only when the column is absent (existing M is kept).
-    pub fn set_m(&self, value: Option<f64>, overwrite: bool) -> Self {
+    pub fn set_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::M, value, overwrite)
     }
 
@@ -279,7 +320,12 @@ impl CoordSeq {
     /// through. Homogeneous packed storage shares uniform axes per column,
     /// so fill-only (`overwrite=False` on an existing column) is an
     /// identity without a per-vertex scan.
-    fn set_ordinate(&self, axis: OrdinateAxis, value: Option<f64>, overwrite: bool) -> Self {
+    fn set_ordinate(
+        &self,
+        axis: OrdinateAxis,
+        value: Option<f64>,
+        overwrite: bool,
+    ) -> Result<Self> {
         let len = self.len();
         let (zs, ms) = (self.zs(), self.ms());
         let column = match axis {
@@ -288,21 +334,28 @@ impl CoordSeq {
         };
         if value.is_none() && column.is_none() || value.is_some() && !overwrite && column.is_some()
         {
-            return self.clone();
+            return Ok(self.clone());
         }
-        let fill = |value: f64| -> Box<[f64]> { vec![value; len].into_boxed_slice() };
+        let fill = |value: f64| -> Vec<f64> { vec![value; len] };
         // The set axis allocates exactly one fresh column; every untouched
         // column (X, Y, and the OTHER optional ordinate) is Arc-carried, not
         // re-copied — zero allocation on the full-window common case.
         // An empty sequence gets a zero-length column: axes are real state
         // on empties, so `set_z`/`force_3d` flip has_z/has_m even with no
         // vertices (`MULTIPOINT EMPTY` → `MULTIPOINT Z EMPTY`).
-        let ordinate_column = |value: Option<f64>| value.map(|value| fill(value).into());
-        let (out_zs, out_ms) = match axis {
-            OrdinateAxis::Z => (ordinate_column(value), self.carried_ms()),
-            OrdinateAxis::M => (self.carried_zs(), ordinate_column(value)),
+        let ordinate_column = |value: Option<f64>| {
+            value
+                .map(|value| crate::geometry::SharedSlice::try_from_vec(fill(value)))
+                .transpose()
         };
-        Self::from_columns(self.carried_xs(), self.carried_ys(), out_zs, out_ms)
+        let (out_zs, out_ms) = match axis {
+            OrdinateAxis::Z => (ordinate_column(value)?, self.carried_ms()?),
+            OrdinateAxis::M => (
+                self.carried_zs()?,
+                ordinate_column(value)?.map(crate::geometry::MColumn::Shared),
+            ),
+        };
+        Self::from_shared_columns(self.carried_xs()?, self.carried_ys()?, out_zs, out_ms)
     }
 }
 
@@ -315,34 +368,41 @@ impl LineSeq {
     pub(crate) fn try_map_xy_with<E>(
         &self,
         op: impl FnMut(f64, f64) -> Result<(f64, f64), E>,
-    ) -> Result<Self, E> {
+    ) -> Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+    {
         self.as_coords().try_map_xy_with(op).map(Self::from_proven)
     }
 
-    pub(crate) fn quantize(&self, precision: i32) -> Self {
-        Self::from_proven(self.as_coords().quantize(precision))
+    pub(crate) fn quantize(&self, precision: i32) -> Result<Self> {
+        Ok(Self::from_proven(self.as_coords().quantize(precision)?))
     }
 
-    pub(crate) fn force_2d(&self) -> Self {
-        Self::from_proven(self.as_coords().force_2d())
+    pub(crate) fn force_2d(&self) -> Result<Self> {
+        Ok(Self::from_proven(self.as_coords().force_2d()?))
     }
 
-    pub(crate) fn reversed(&self) -> Self {
-        Self::from_proven(self.as_coords().reversed())
+    pub(crate) fn reversed(&self) -> Result<Self> {
+        Ok(Self::from_proven(self.as_coords().reversed()?))
     }
 
     /// The canonical presentation of this line (see
     /// [`crate::geometry::constructive::ring::normalized_line`]) — a rotation
     /// and/or reversal, so the vertex count is unchanged.
-    pub(crate) fn normalized(&self) -> Self {
-        Self::from_proven(CoordSeq::from(normalized_line(self)))
+    pub(crate) fn normalized(&self) -> Result<Self> {
+        Ok(Self::from_proven(CoordSeq::try_from_points(
+            &normalized_line(self),
+        )?))
     }
 
     /// Repeated-vertex removal. The underlying pass keeps the first and last
     /// vertex when a line would otherwise collapse to a point, so a line stays
     /// a line.
-    pub(crate) fn remove_repeated_points(&self, tolerance: f64) -> Self {
-        Self::from_proven(remove_repeated_line_points(self, tolerance))
+    pub(crate) fn remove_repeated_points(&self, tolerance: f64) -> Result<Self> {
+        Ok(Self::from_proven(remove_repeated_line_points(
+            self, tolerance,
+        )?))
     }
 
     /// Densification and segmentization only insert vertices between existing
@@ -518,14 +578,14 @@ impl Shape {
     pub fn quantize(&self, precision: i32) -> Result<Self> {
         Ok(match self {
             Self::Point(point) => Self::Point(point.quantize(precision)),
-            Self::MultiPoint(points) => Self::MultiPoint(points.quantize(precision)),
-            Self::LineString(points) => Self::LineString(points.quantize(precision)),
+            Self::MultiPoint(points) => Self::MultiPoint(points.quantize(precision)?),
+            Self::LineString(points) => Self::LineString(points.quantize(precision)?),
             Self::MultiLineString(lines) => Self::MultiLineString(
-                lines.map_values(lines.axes(), |line| line.quantize(precision)),
+                lines.try_map_values(lines.axes(), |line| line.quantize(precision))?,
             ),
-            Self::Polygon(polygon) => Self::Polygon(polygon.quantize(precision)),
+            Self::Polygon(polygon) => Self::Polygon(polygon.quantize(precision)?),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
-                polygons.map_values(polygons.axes(), |polygon| polygon.quantize(precision)),
+                polygons.try_map_values(polygons.axes(), |polygon| polygon.quantize(precision))?,
             ),
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries.try_map_members(|geometry| geometry.quantize(precision))?,
@@ -606,7 +666,7 @@ impl Shape {
             )?));
         }
         self.try_map_coordseqs(
-            |seq| Ok(seq.set_ordinate(axis, value, overwrite)),
+            |seq| seq.set_ordinate(axis, value, overwrite),
             |point| Ok(set_point_ordinate(*point, axis, value, overwrite)),
         )
     }
@@ -619,15 +679,15 @@ impl Shape {
         }
         Ok(match self {
             Self::Point(point) => Self::Point(point.force_2d()),
-            Self::MultiPoint(points) => Self::MultiPoint(points.force_2d()),
-            Self::LineString(points) => Self::LineString(points.force_2d()),
-            Self::MultiLineString(lines) => {
-                Self::MultiLineString(lines.map_values(CoordinateAxes::XY, LineSeq::force_2d))
-            },
-            Self::Polygon(polygon) => Self::Polygon(polygon.force_2d()),
-            Self::MultiPolygon(polygons) => {
-                Self::MultiPolygon(polygons.map_values(CoordinateAxes::XY, Polygon::force_2d))
-            },
+            Self::MultiPoint(points) => Self::MultiPoint(points.force_2d()?),
+            Self::LineString(points) => Self::LineString(points.force_2d()?),
+            Self::MultiLineString(lines) => Self::MultiLineString(
+                lines.try_map_values(CoordinateAxes::XY, |line| line.force_2d())?,
+            ),
+            Self::Polygon(polygon) => Self::Polygon(polygon.force_2d()?),
+            Self::MultiPolygon(polygons) => Self::MultiPolygon(
+                polygons.try_map_values(CoordinateAxes::XY, |polygon| polygon.force_2d())?,
+            ),
             Self::GeometryCollection(geometries) => {
                 Self::GeometryCollection(geometries.try_map_members(Self::force_2d)?)
             },
@@ -747,13 +807,12 @@ impl Shape {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
                         crate::geometry::MultiMember::Value(index) => {
+                            let points = lines.as_slice()[index]
+                                .iter()
+                                .map(transform)
+                                .collect::<Result<Vec<_>, _>>()?;
                             Ok(crate::geometry::MultiMember::Value(LineSeq::from_proven(
-                                CoordSeq::from(
-                                    lines.as_slice()[index]
-                                        .iter()
-                                        .map(transform)
-                                        .collect::<Result<Vec<_>, _>>()?,
-                                ),
+                                CoordSeq::try_from_points(&points)?,
                             )))
                         },
                     })
@@ -909,7 +968,7 @@ impl Shape {
         let clipped = match self {
             Self::Point(point) if rect.contains_point(*point) => self.clone(),
             Self::MultiPoint(points) => {
-                Self::multi_point(points.axes(), clip_multipoint_columns(points, rect))
+                Self::multi_point(points.axes(), clip_multipoint_columns(points, rect)?)
             },
             Self::Point(_) => empty_clip_shape(self),
             Self::LineString(_)
@@ -935,16 +994,16 @@ impl Shape {
                 for line in lines {
                     clipped.extend(clipped_line_parts(line, rect)?);
                 }
-                carry_ordinates(line_parts_to_shape(clipped), &[self], "clip_by_rect", drop)?
+                carry_ordinates(line_parts_to_shape(clipped)?, &[self], "clip_by_rect", drop)?
             },
             Self::Polygon(polygon) => carry_ordinates(
-                clip_polygonal(std::slice::from_ref(polygon), rect),
+                clip_polygonal(std::slice::from_ref(polygon), rect)?,
                 &[self],
                 "clip_by_rect",
                 drop,
             )?,
             Self::MultiPolygon(polygons) => carry_ordinates(
-                clip_polygonal(polygons, rect),
+                clip_polygonal(polygons, rect)?,
                 &[self],
                 "clip_by_rect",
                 drop,
@@ -996,27 +1055,33 @@ impl Shape {
     ) -> Result<Self> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
-            Self::LineString(points) => Self::LineString(transform(points).map_or_else(
-                || points.clone(),
-                |line| LineSeq::from_proven(CoordSeq::from(line)),
-            )),
+            Self::LineString(points) => Self::LineString(match transform(points) {
+                Some(line) => LineSeq::from_proven(CoordSeq::try_from_points(&line)?),
+                None => points.clone(),
+            }),
             Self::MultiLineString(lines) => {
-                Self::MultiLineString(lines.map_values(lines.axes(), |line| {
-                    transform(line).map_or_else(
-                        || line.clone(),
-                        |line| LineSeq::from_proven(CoordSeq::from(line)),
-                    )
-                }))
+                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
+                    Ok::<LineSeq, crate::error::Error>(match transform(line) {
+                        Some(line) => LineSeq::from_proven(CoordSeq::try_from_points(&line)?),
+                        None => line.clone(),
+                    })
+                })?)
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.map_ring_seqs(|ring| {
-                transform(ring).map_or_else(|| ring.clone(), CoordSeq::from)
-            })),
+                Ok(match transform(ring) {
+                    Some(line) => CoordSeq::try_from_points(&line)?,
+                    None => ring.clone(),
+                })
+            })?),
             Self::MultiPolygon(polygons) => {
-                Self::MultiPolygon(polygons.map_values(polygons.axes(), |polygon| {
+                Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
                     polygon.map_ring_seqs(|ring| {
-                        transform(ring).map_or_else(|| ring.clone(), CoordSeq::from)
+                        Ok(match transform(ring) {
+                            Some(line) => CoordSeq::try_from_points(&line)?,
+                            None => ring.clone(),
+                        })
                     })
-                }))
+                })?)
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries.try_map_members(|geometry| geometry.map_chains(transform))?,
@@ -1026,22 +1091,25 @@ impl Shape {
 
     pub fn remove_repeated_points(&self, tolerance: f64) -> Result<Self> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let remove_repeated_polygon = |polygon: &Polygon| -> Option<Polygon> {
-            let shell = remove_repeated_points(polygon.shell.coords(), tolerance);
-            (shell.len() >= Ring::MIN_VERTICES_CLOSED).then(|| {
-                Polygon::new(
-                    Ring::from_closed(shell),
-                    polygon
-                        .holes
-                        .iter()
-                        .filter_map(|hole| {
-                            let hole = remove_repeated_points(hole.coords(), tolerance);
-                            (hole.len() >= Ring::MIN_VERTICES_CLOSED)
-                                .then(|| Ring::from_closed(hole))
-                        })
-                        .collect(),
-                )
-            })
+        let remove_repeated_polygon = |polygon: &Polygon| -> Result<Option<Polygon>> {
+            let shell = remove_repeated_points(polygon.shell.coords(), tolerance)?;
+            if shell.len() < Ring::MIN_VERTICES_CLOSED {
+                return Ok(None);
+            }
+            let holes =
+                polygon
+                    .holes
+                    .iter()
+                    .map(|hole| {
+                        let hole = remove_repeated_points(hole.coords(), tolerance)?;
+                        Ok((hole.len() >= Ring::MIN_VERTICES_CLOSED)
+                            .then_some(Ring::from_closed(hole)))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            Ok(Some(Polygon::new(Ring::from_closed(shell), holes)?))
         };
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
@@ -1053,7 +1121,8 @@ impl Shape {
                         crate::geometry::MultiMember::Value(index) => Some(points.point_at(index)),
                     })
                     .collect::<Vec<_>>();
-                let cleaned = remove_repeated_points(&CoordSeq::from_points(&values), tolerance);
+                let cleaned =
+                    remove_repeated_points(&CoordSeq::try_from_points(&values)?, tolerance)?;
                 let mut cleaned = cleaned.iter();
                 let members = points
                     .members()
@@ -1069,31 +1138,35 @@ impl Shape {
                 if members.is_empty() {
                     Self::typed_empty(GeometryKind::MultiPoint, points.axes())
                 } else {
-                    Self::MultiPoint(MultiPoint::from_values(points.axes(), members))
+                    Self::MultiPoint(MultiPoint::from_values(points.axes(), members)?)
                 }
             },
-            Self::LineString(points) => Self::LineString(points.remove_repeated_points(tolerance)),
+            Self::LineString(points) => Self::LineString(points.remove_repeated_points(tolerance)?),
             Self::MultiLineString(lines) => Self::MultiLineString(
-                lines.map_values(lines.axes(), |line| line.remove_repeated_points(tolerance)),
+                lines
+                    .try_map_values(lines.axes(), |line| line.remove_repeated_points(tolerance))?,
             ),
-            Self::Polygon(polygon) => remove_repeated_polygon(polygon).map_or_else(
-                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
-                Self::Polygon,
-            ),
+            Self::Polygon(polygon) => match remove_repeated_polygon(polygon)? {
+                Some(polygon) => Self::Polygon(polygon),
+                None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+            },
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
                     .map(|member| match member {
-                        crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
-                        crate::geometry::MultiMember::Value(index) => {
-                            remove_repeated_polygon(&polygons.as_slice()[index]).map_or(
-                                crate::geometry::MultiMember::Empty,
-                                crate::geometry::MultiMember::Value,
-                            )
+                        crate::geometry::MultiMember::Empty => {
+                            Ok(crate::geometry::MultiMember::Empty)
                         },
+                        crate::geometry::MultiMember::Value(index) => Ok(remove_repeated_polygon(
+                            &polygons.as_slice()[index],
+                        )?
+                        .map_or(
+                            crate::geometry::MultiMember::Empty,
+                            crate::geometry::MultiMember::Value,
+                        )),
                     })
-                    .collect();
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
+                    .collect::<Result<Vec<_>>>()?;
+                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries
@@ -1208,13 +1281,13 @@ impl Shape {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
             // Columnar reverse-copies — no AoS `Vec<Point>` round-trip.
-            Self::LineString(points) => Self::LineString(points.reversed()),
+            Self::LineString(points) => Self::LineString(points.reversed()?),
             Self::MultiLineString(lines) => {
-                Self::MultiLineString(lines.map_values(lines.axes(), LineSeq::reversed))
+                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| line.reversed())?)
             },
-            Self::Polygon(polygon) => Self::Polygon(polygon.reverse()),
+            Self::Polygon(polygon) => Self::Polygon(polygon.reverse()?),
             Self::MultiPolygon(polygons) => {
-                Self::MultiPolygon(polygons.map_values(polygons.axes(), Polygon::reverse))
+                Self::MultiPolygon(polygons.try_map_values(polygons.axes(), Polygon::reverse)?)
             },
             Self::GeometryCollection(geometries) => {
                 Self::GeometryCollection(geometries.try_map_members(Self::reverse)?)
@@ -1225,9 +1298,9 @@ impl Shape {
 
     pub fn orient_polygons(&self, exterior_cw: bool) -> Result<Self> {
         Ok(match self {
-            Self::Polygon(polygon) => Self::Polygon(polygon.orient(exterior_cw)),
+            Self::Polygon(polygon) => Self::Polygon(polygon.orient(exterior_cw)?),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
-                polygons.map_values(polygons.axes(), |polygon| polygon.orient(exterior_cw)),
+                polygons.try_map_values(polygons.axes(), |polygon| polygon.orient(exterior_cw))?,
             ),
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries.try_map_members(|geometry| geometry.orient_polygons(exterior_cw))?,
@@ -1244,25 +1317,32 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => {
-                let mut values = points.to_vec();
+                let mut values = points.try_to_vec()?;
                 values.sort_by(compare_points);
                 let mut values = values.into_iter();
-                let members = points
-                    .members()
-                    .filter_map(|member| match member {
-                        crate::geometry::MultiMember::Empty => {
-                            Some(crate::geometry::MultiMember::Empty)
-                        },
+                let mut members = Vec::new();
+                crate::boundary::try_reserve_vec(&mut members, points.len())?;
+                for member in points.members() {
+                    let mapped = match member {
+                        crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
                         crate::geometry::MultiMember::Value(_) => {
-                            values.next().map(crate::geometry::MultiMember::Value)
+                            crate::geometry::MultiMember::Value(values.next().ok_or_else(|| {
+                                GeometryErrorKind::message(
+                                    "present MultiPoint member missing a sorted value",
+                                )
+                            })?)
                         },
-                    })
-                    .collect();
-                Self::MultiPoint(MultiPoint::from_values(points.axes(), members))
+                    };
+                    crate::try_push_vec(&mut members, mapped)?;
+                }
+                Self::MultiPoint(MultiPoint::from_values(points.axes(), members)?)
             },
-            Self::LineString(points) => Self::LineString(points.normalized()),
+            Self::LineString(points) => Self::LineString(points.normalized()?),
             Self::MultiLineString(lines) => {
-                let mut values = lines.iter().map(LineSeq::normalized).collect::<Vec<_>>();
+                let mut values = lines
+                    .iter()
+                    .map(LineSeq::normalized)
+                    .collect::<Result<Vec<_>>>()?;
                 values.sort_by(compare_point_slices);
                 let mut values = values.into_iter();
                 let members = lines
@@ -1276,11 +1356,14 @@ impl Shape {
                         },
                     })
                     .collect();
-                Self::MultiLineString(MultiLineString::from_values(lines.axes(), members))
+                Self::MultiLineString(MultiLineString::from_values(lines.axes(), members)?)
             },
-            Self::Polygon(polygon) => Self::Polygon(polygon.normalize()),
+            Self::Polygon(polygon) => Self::Polygon(polygon.normalize()?),
             Self::MultiPolygon(polygons) => {
-                let mut values = polygons.iter().map(Polygon::normalize).collect::<Vec<_>>();
+                let mut values = polygons
+                    .iter()
+                    .map(Polygon::normalize)
+                    .collect::<Result<Vec<_>>>()?;
                 values.sort_by(compare_polygons);
                 let mut values = values.into_iter();
                 let members = polygons
@@ -1294,7 +1377,7 @@ impl Shape {
                         },
                     })
                     .collect();
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
+                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => {
                 let mut members = geometries

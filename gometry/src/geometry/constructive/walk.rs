@@ -7,7 +7,7 @@ use rstar::primitives::{GeomWithData, Rectangle};
 
 use crate::geometry::constructive::{Result, emit_arc, line_intersection, unit_right_normal};
 use crate::geometry::{
-    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, Contact,
+    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, Contact, CoordSeq,
     ExpansionBudget, Ordering, Orientation, Point, Polygon, PolygonPointIndex, Ring, Segment,
     SegmentIndex, SegmentProjection, XY, line_segments, open_xy_cycle_decision, orientation,
     same_point, segment_cross_point, segment_projection, segments_intersect, wrap_index,
@@ -598,20 +598,28 @@ pub(crate) fn emit_cap<S: WalkSink>(
 /// arrives as a CCW shell from the polygonizer; `reverse` keeps the
 /// subtracting orientation the final pass expects). Under erosion the
 /// pieces ARE the shrunk-shell lobes and stay in the same CW form.
-pub(crate) fn extend_cleaned(loops: &mut Vec<(Vec<f64>, Vec<f64>)>, raw: &(Vec<f64>, Vec<f64>)) {
-    for piece in winding_region(std::slice::from_ref(raw), |winding| winding <= -1) {
+pub(crate) fn extend_cleaned(
+    loops: &mut Vec<(Vec<f64>, Vec<f64>)>,
+    raw: &(Vec<f64>, Vec<f64>),
+) -> Result<()> {
+    for piece in winding_region(std::slice::from_ref(raw), |winding| winding <= -1)? {
         // Shrinking a simply-connected region cannot create nested
         // structure — each surviving piece is a bare shell.
         debug_assert!(piece.holes.is_empty());
-        let mut xs: Vec<f64> = piece.shell.coords().xs().to_vec();
-        let mut ys: Vec<f64> = piece.shell.coords().ys().to_vec();
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        crate::try_reserve_vec(&mut xs, piece.shell.coords().len())?;
+        crate::try_reserve_vec(&mut ys, piece.shell.coords().len())?;
+        xs.extend_from_slice(piece.shell.coords().xs());
+        ys.extend_from_slice(piece.shell.coords().ys());
         // Drop the closing duplicate and orient CW.
         xs.pop();
         ys.pop();
         xs.reverse();
         ys.reverse();
-        loops.push((xs, ys));
+        crate::try_push_vec(loops, (xs, ys))?;
     }
+    Ok(())
 }
 
 /// Faces of the noded arrangement of the directed column `loops` whose
@@ -624,7 +632,7 @@ pub(crate) fn extend_cleaned(loops: &mut Vec<(Vec<f64>, Vec<f64>)>, raw: &(Vec<f
 pub(in crate::geometry) fn winding_region(
     loops: &[(Vec<f64>, Vec<f64>)],
     keep: impl Fn(i32) -> bool,
-) -> Vec<Polygon> {
+) -> Result<Vec<Polygon>> {
     let mut segments = Vec::new();
     let mut segment_loop: Vec<u32> = Vec::new();
     let mut loop_anchor: Vec<XY> = Vec::new();
@@ -710,11 +718,11 @@ struct ShellCoverageIndex {
 }
 
 impl ShellCoverageIndex {
-    fn new(shell: &Ring) -> Self {
-        Self {
-            point_index: PolygonPointIndex::build_shell(shell),
+    fn new(shell: &Ring) -> Result<Self> {
+        Ok(Self {
+            point_index: PolygonPointIndex::build_shell(shell)?,
             boundary: SegmentIndex::build_from_iter(line_segments(shell)),
-        }
+        })
     }
 
     fn covers_xy(&self, x: f64, y: f64) -> bool {
@@ -780,7 +788,7 @@ impl ShellCoverageIndex {
 /// Nest boundary rings (shells CCW, holes CW — the
 /// [`Arrangement::region_rings`] convention) into polygons: each hole goes
 /// to the SMALLEST containing shell.
-pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<Polygon> {
+pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Result<Vec<Polygon>> {
     let mut shells: Vec<(Ring, f64, Bounds)> = Vec::new();
     let mut holes: Vec<Vec<XY>> = Vec::new();
     for ring in rings {
@@ -789,7 +797,11 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
         match sign {
             AreaSign::Positive => {
                 let bounds = Bounds::from_xy_iter(ring.iter().copied());
-                shells.push((Ring::from_closed(ring), magnitude.get(), bounds));
+                shells.push((
+                    Ring::from_closed(CoordSeq::try_from_xy(&ring)?),
+                    magnitude.get(),
+                    bounds,
+                ));
             },
             AreaSign::Negative => holes.push(ring),
             AreaSign::Zero => {},
@@ -840,17 +852,23 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
         // Coverage is boundary-inclusive, so a pinch vertex may lie on the
         // shell. Exact boundary contacts split every hole edge into intervals,
         // which also rejects an edge that leaves and re-enters a concave shell.
-        let owner = if candidates.is_empty() {
-            None
-        } else {
-            candidates.into_iter().find(|&shell_index| {
-                shell_indexes[shell_index]
-                    .get_or_insert_with(|| ShellCoverageIndex::new(&shells[shell_index].0))
-                    .covers_line(&hole)
-            })
-        };
+        let mut owner = None;
+        for shell_index in candidates {
+            let index = &mut shell_indexes[shell_index];
+            if index.is_none() {
+                *index = Some(ShellCoverageIndex::new(&shells[shell_index].0)?);
+            }
+            if index
+                .as_ref()
+                .expect("shell index was initialized")
+                .covers_line(&hole)
+            {
+                owner = Some(shell_index);
+                break;
+            }
+        }
         if let Some(owner) = owner {
-            assigned[owner].push(Ring::from_closed(hole));
+            assigned[owner].push(Ring::from_closed(CoordSeq::try_from_xy(&hole)?));
         }
     }
     drop(shell_indexes);
@@ -932,7 +950,8 @@ mod tests {
             l_shell,
             rectangle(120.0, 0.0, 160.0, 40.0, false),
             pinch_hole,
-        ]);
+        ])
+        .unwrap();
 
         let assignments: Vec<((f64, f64), usize)> = polygons
             .iter()
@@ -967,13 +986,19 @@ mod tests {
             XY::new(5.5, 1.0),
             XY::new(5.0, 1.0),
         ];
-        let shell_shape =
-            Shape::Polygon(Polygon::new(Ring::from_closed(shell.clone()), Vec::new()));
-        assert!(
-            hole.iter()
-                .all(|point| { shell_shape.covers_point(Point::new_raw_xy(point.x, point.y)) })
+        let shell_shape = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
         );
-        let polygon = assemble_region_polygons(vec![shell, hole]);
+        assert!(hole.iter().all(|point| {
+            shell_shape
+                .covers_point(Point::new_raw_xy(point.x, point.y))
+                .unwrap()
+        }));
+        let polygon = assemble_region_polygons(vec![shell, hole]).unwrap();
 
         assert_eq!(polygon.len(), 1);
         assert!(polygon[0].holes.is_empty());
@@ -990,8 +1015,8 @@ mod tests {
             XY::new(0.0, 6.0),
             XY::new(0.0, 0.0),
         ];
-        let ring = Ring::from_closed(shell);
-        let index = ShellCoverageIndex::new(&ring);
+        let ring = Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap());
+        let index = ShellCoverageIndex::new(&ring).unwrap();
         assert!(index.covers_line(&[
             XY::new(0.0, 0.0),
             XY::new(6.0, 0.0),
@@ -1006,19 +1031,25 @@ mod tests {
         let shell = rectangle(0.0, 0.0, 10.0, 10.0, false);
         let outer_hole = rectangle(2.0, 2.0, 8.0, 8.0, true);
         let inner_hole = rectangle(3.0, 3.0, 7.0, 7.0, true);
-        let holed_shell = Shape::Polygon(Polygon::new(Ring::from_closed(shell.clone()), vec![
-            Ring::from_closed(outer_hole.clone()),
-        ]));
+        let holed_shell = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()),
+                vec![Ring::from_closed(
+                    CoordSeq::try_from_xy(&outer_hole).unwrap(),
+                )],
+            )
+            .unwrap(),
+        );
         // The second negative ring is inside the first. A completed polygon
         // would exclude it, but assembly owns each negative ring against the
         // shell before those holes become polygon state.
-        assert!(
-            inner_hole
-                .iter()
-                .all(|point| !holed_shell.covers_point(Point::new_raw_xy(point.x, point.y)))
-        );
+        assert!(inner_hole.iter().all(|point| {
+            !holed_shell
+                .covers_point(Point::new_raw_xy(point.x, point.y))
+                .unwrap()
+        }));
 
-        let polygons = assemble_region_polygons(vec![shell, outer_hole, inner_hole]);
+        let polygons = assemble_region_polygons(vec![shell, outer_hole, inner_hole]).unwrap();
 
         assert_eq!(polygons.len(), 1);
         assert_eq!(polygons[0].holes.len(), 2);

@@ -49,7 +49,8 @@ mod scratch_tests {
         assert_eq!(allocations, 0);
 
         let held = ScratchPool::checkout(&QUERY_SCRATCH);
-        let query = HausdorffLineworkQuery::from_open_xy_columns(&[0.0, 1.0], &[0.0, 0.0], false);
+        let query =
+            HausdorffLineworkQuery::from_open_xy_columns(&[0.0, 1.0], &[0.0, 0.0], false).unwrap();
         assert_eq!(query.distance_squared(XY::new(0.5, 1.0)), 1.0);
         drop(held);
 
@@ -73,7 +74,7 @@ mod scratch_tests {
         let probe = [(segment_count as f64 - 0.5, 1.0)];
 
         for force_bvh in [false, true] {
-            let query = HausdorffLineworkQuery::from_open_xy_columns(&xs, &ys, force_bvh);
+            let query = HausdorffLineworkQuery::from_open_xy_columns(&xs, &ys, force_bvh).unwrap();
             let mut result = [HausdorffProbeResult::default()];
             query.batch_probe(&probe, &mut result, &mut Vec::new());
             assert_eq!(result[0].distance_squared, 1.0, "force_bvh={force_bvh}");
@@ -92,7 +93,7 @@ mod scratch_tests {
         px: f64,
         py: f64,
     ) -> (HausdorffLineworkQuery, HausdorffProbeResult) {
-        let query = HausdorffLineworkQuery::from_open_xy_columns(xs, ys, force_bvh);
+        let query = HausdorffLineworkQuery::from_open_xy_columns(xs, ys, force_bvh).unwrap();
         let mut result = [HausdorffProbeResult::default()];
         query.batch_probe(&[(px, py)], &mut result, &mut Vec::new());
         (query, result[0])
@@ -117,15 +118,13 @@ mod scratch_tests {
                 "force_bvh={force_bvh}: non-witness hypot stays hypot"
             );
         }
-        let source = Shape::LineString(LineSeq::segment(
-            Point::new_raw_xy(2e150, 2.0),
-            Point::new_raw_xy(3e150, 2.0),
-        ));
-        let target = Shape::LineString(LineSeq::segment(
-            Point::new_raw_xy(2e150, 0.0),
-            Point::new_raw_xy(3e150, 0.0),
-        ));
-        assert_eq!(source.hausdorff_distance(&target), 2.0);
+        let source = Shape::LineString(
+            LineSeq::segment(Point::new_raw_xy(2e150, 2.0), Point::new_raw_xy(3e150, 2.0)).unwrap(),
+        );
+        let target = Shape::LineString(
+            LineSeq::segment(Point::new_raw_xy(2e150, 0.0), Point::new_raw_xy(3e150, 0.0)).unwrap(),
+        );
+        assert_eq!(source.hausdorff_distance(&target).unwrap(), 2.0);
     }
 
     #[test]
@@ -181,6 +180,68 @@ pub(crate) mod stats {
     pub(crate) const fn inc_point_envelope_samples(_: usize) {}
 }
 
+#[cfg(test)]
+pub(crate) mod stats {
+    use std::cell::Cell;
+
+    #[derive(Debug)]
+    pub(crate) struct HausdorffStats {
+        pub vertex_probes: usize,
+        pub segment_bound_skips: usize,
+        pub coverage_certificate_skips: usize,
+        pub exact_segment_evals: usize,
+        pub point_envelope_candidates: usize,
+        pub point_envelope_breakpoints: usize,
+        pub point_envelope_samples: usize,
+    }
+
+    thread_local! {
+        static COUNTERS: [Cell<usize>; 7] = Default::default();
+    }
+
+    pub(crate) fn reset() {
+        COUNTERS.with(|counters| counters.iter().for_each(|counter| counter.set(0)));
+    }
+
+    pub(crate) fn snapshot() -> HausdorffStats {
+        COUNTERS.with(|c| HausdorffStats {
+            vertex_probes: c[0].get(),
+            segment_bound_skips: c[1].get(),
+            coverage_certificate_skips: c[2].get(),
+            exact_segment_evals: c[3].get(),
+            point_envelope_candidates: c[4].get(),
+            point_envelope_breakpoints: c[5].get(),
+            point_envelope_samples: c[6].get(),
+        })
+    }
+
+    fn add(index: usize, count: usize) {
+        COUNTERS.with(|counters| counters[index].set(counters[index].get() + count));
+    }
+
+    pub(crate) fn inc_vertex_probes(count: usize) {
+        add(0, count);
+    }
+    pub(crate) fn inc_segment_bound_skips() {
+        add(1, 1);
+    }
+    pub(crate) fn inc_coverage_certificate_skips() {
+        add(2, 1);
+    }
+    pub(crate) fn inc_exact_segment_evals() {
+        add(3, 1);
+    }
+    pub(crate) fn inc_point_envelope_candidates(count: usize) {
+        add(4, count);
+    }
+    pub(crate) fn inc_point_envelope_breakpoints(count: usize) {
+        add(5, count);
+    }
+    pub(crate) fn inc_point_envelope_samples(count: usize) {
+        add(6, count);
+    }
+}
+
 pub(crate) fn linework_squared_safe(linework: &PreparedLinework) -> bool {
     let safe_column = |column: &[f64]| {
         column
@@ -215,12 +276,22 @@ impl HausdorffLineworkQuery {
         }
     }
 
-    pub(crate) fn from_open_xy_columns(xs: &[f64], ys: &[f64], force_bvh: bool) -> Self {
-        Self::from_linework(PreparedLinework::from_open_xy_columns(xs, ys), force_bvh)
+    pub(crate) fn from_open_xy_columns(
+        xs: &[f64],
+        ys: &[f64],
+        force_bvh: bool,
+    ) -> crate::error::Result<Self> {
+        Ok(Self::from_linework(
+            PreparedLinework::from_open_xy_columns(xs, ys)?,
+            force_bvh,
+        ))
     }
 
-    pub(crate) fn from_shape(shape: &Shape, force_bvh: bool) -> Self {
-        Self::from_linework(PreparedLinework::build(shape), force_bvh)
+    pub(crate) fn from_shape(shape: &Shape, force_bvh: bool) -> crate::error::Result<Self> {
+        Ok(Self::from_linework(
+            PreparedLinework::build(shape)?,
+            force_bvh,
+        ))
     }
 
     pub(crate) fn batch_probe(
@@ -340,66 +411,4 @@ pub(crate) fn hausdorff_segment_tight_upper_bound_squared(
         ub
     };
     rounded * rounded
-}
-
-#[cfg(test)]
-pub(crate) mod stats {
-    use std::cell::Cell;
-
-    #[derive(Debug)]
-    pub(crate) struct HausdorffStats {
-        pub vertex_probes: usize,
-        pub segment_bound_skips: usize,
-        pub coverage_certificate_skips: usize,
-        pub exact_segment_evals: usize,
-        pub point_envelope_candidates: usize,
-        pub point_envelope_breakpoints: usize,
-        pub point_envelope_samples: usize,
-    }
-
-    thread_local! {
-        static COUNTERS: [Cell<usize>; 7] = Default::default();
-    }
-
-    pub(crate) fn reset() {
-        COUNTERS.with(|counters| counters.iter().for_each(|counter| counter.set(0)));
-    }
-
-    pub(crate) fn snapshot() -> HausdorffStats {
-        COUNTERS.with(|c| HausdorffStats {
-            vertex_probes: c[0].get(),
-            segment_bound_skips: c[1].get(),
-            coverage_certificate_skips: c[2].get(),
-            exact_segment_evals: c[3].get(),
-            point_envelope_candidates: c[4].get(),
-            point_envelope_breakpoints: c[5].get(),
-            point_envelope_samples: c[6].get(),
-        })
-    }
-
-    fn add(index: usize, count: usize) {
-        COUNTERS.with(|counters| counters[index].set(counters[index].get() + count));
-    }
-
-    pub(crate) fn inc_vertex_probes(count: usize) {
-        add(0, count);
-    }
-    pub(crate) fn inc_segment_bound_skips() {
-        add(1, 1);
-    }
-    pub(crate) fn inc_coverage_certificate_skips() {
-        add(2, 1);
-    }
-    pub(crate) fn inc_exact_segment_evals() {
-        add(3, 1);
-    }
-    pub(crate) fn inc_point_envelope_candidates(count: usize) {
-        add(4, count);
-    }
-    pub(crate) fn inc_point_envelope_breakpoints(count: usize) {
-        add(5, count);
-    }
-    pub(crate) fn inc_point_envelope_samples(count: usize) {
-        add(6, count);
-    }
 }

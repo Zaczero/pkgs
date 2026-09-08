@@ -2,14 +2,13 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::PackedStorage;
 use numpy::PyArrayMethods as _;
 use pyo3::IntoPyObjectExt as _;
 
 use crate::array::{
-    ArrayRow, ArrowEncoding, Bound, F64Param, GeometryArrayStorage, GeometryError, Py, PyAny,
-    PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PyValueError, Python, SimplifyMethod,
-    Typed, pymethods,
+    ArrayRow, ArrowEncoding, Bound, F64Param, GeometryArrayStorage, GeometryError, PackedStorage,
+    Py, PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PyValueError, Python,
+    SimplifyMethod, Typed, pymethods,
 };
 
 impl PyGeometryArray {
@@ -21,7 +20,7 @@ impl PyGeometryArray {
                 ArrayRow::Missing { .. } => Ok(py.None()),
                 ArrayRow::Present(row) => {
                     let geometry = PyGeometry::with_frame(
-                        row.row().with_shape(Clone::clone),
+                        row.row().with_shape(Clone::clone)?,
                         self.frame.clone(),
                     );
                     Typed(geometry).into_py_any(py)
@@ -52,7 +51,7 @@ impl PyGeometryArray {
             if self.is_row_missing(index) {
                 values.push(py.None());
             } else {
-                let geometry = Typed(self.geometry_at(index));
+                let geometry = Typed(self.geometry_at(index).map_err(crate::PyErr::from)?);
                 values.push(geometry.into_py_any(py)?);
             }
         }

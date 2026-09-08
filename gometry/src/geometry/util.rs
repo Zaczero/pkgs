@@ -18,21 +18,26 @@ pub(crate) const fn empty_geometry() -> Shape {
     Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
 }
 
-pub(crate) fn bounds_to_shape(bounds: Bounds) -> Shape {
+pub(crate) fn bounds_to_shape(bounds: Bounds) -> crate::error::Result<Shape> {
     if same_topological_coordinate(bounds.minx(), bounds.maxx())
         && same_topological_coordinate(bounds.miny(), bounds.maxy())
     {
-        return Shape::Point(Point::new_raw_xy(bounds.minx(), bounds.miny()));
+        return Ok(Shape::Point(Point::new_raw_xy(
+            bounds.minx(),
+            bounds.miny(),
+        )));
     }
     if same_topological_coordinate(bounds.minx(), bounds.maxx())
         || same_topological_coordinate(bounds.miny(), bounds.maxy())
     {
-        return Shape::LineString(LineSeq::from_proven(CoordSeq::from(vec![
-            Point::new_raw_xy(bounds.minx(), bounds.miny()),
-            Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
-        ])));
+        return Ok(Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(bounds.minx(), bounds.miny()),
+                Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
+            ])?,
+        )));
     }
-    Shape::Polygon(rect_polygon(bounds))
+    Ok(Shape::Polygon(rect_polygon(bounds)?))
 }
 
 /// Build a geographic rectangle whose horizontal sides follow parallels.
@@ -42,7 +47,7 @@ pub(crate) fn geographic_bounds_to_shape(
 ) -> crate::error::Result<Shape> {
     const MAX_CHORD_RADIANS: f64 = 0.247;
     if same_topological_coordinate(bounds.minx(), bounds.maxx()) {
-        return Ok(bounds_to_shape(bounds));
+        return bounds_to_shape(bounds);
     }
     let segments = ((bounds.maxx() - bounds.minx()) * frame.longitude().unit().radians_per_unit()
         / MAX_CHORD_RADIANS)
@@ -68,9 +73,9 @@ pub(crate) fn geographic_bounds_to_shape(
     }
     points.push(Point::new_raw_xy(bounds.maxx(), bounds.miny()));
     if same_topological_coordinate(bounds.miny(), bounds.maxy()) {
-        return Ok(Shape::LineString(LineSeq::from_proven(CoordSeq::from(
-            points,
-        ))));
+        return Ok(Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_points(&points)?,
+        )));
     }
     points.push(Point::new_raw_xy(bounds.maxx(), bounds.maxy()));
     for index in (1..segments).rev() {
@@ -82,9 +87,9 @@ pub(crate) fn geographic_bounds_to_shape(
     points.push(Point::new_raw_xy(bounds.minx(), bounds.maxy()));
     points.push(Point::new_raw_xy(bounds.minx(), bounds.miny()));
     Ok(Shape::Polygon(Polygon::new(
-        Ring::from_closed(CoordSeq::from(points)),
+        Ring::from_closed(CoordSeq::try_from_points(&points)?),
         Vec::new(),
-    )))
+    )?))
 }
 
 impl Shape {

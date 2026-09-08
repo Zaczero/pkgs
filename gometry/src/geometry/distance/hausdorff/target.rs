@@ -39,14 +39,14 @@ pub(crate) const fn should_build_index(segment_count: usize, point_count: usize)
 }
 
 impl HausdorffTarget {
-    pub(crate) fn build(shape: &Shape) -> Self {
-        let points = shape.point_only_points();
-        Self::from_query(HausdorffLineworkQuery::from_shape(shape, false), points)
+    pub(crate) fn build(shape: &Shape) -> crate::error::Result<Self> {
+        let points = shape.point_only_points()?;
+        Self::from_query(HausdorffLineworkQuery::from_shape(shape, false)?, points)
     }
 
-    pub(crate) fn from_xy_columns(xs: &[f64], ys: &[f64]) -> Self {
+    pub(crate) fn from_xy_columns(xs: &[f64], ys: &[f64]) -> crate::error::Result<Self> {
         Self::from_query(
-            HausdorffLineworkQuery::from_open_xy_columns(xs, ys, false),
+            HausdorffLineworkQuery::from_open_xy_columns(xs, ys, false)?,
             Vec::new(),
         )
     }
@@ -73,26 +73,40 @@ impl HausdorffTarget {
         let force_bvh =
             force_bvh.unwrap_or_else(|| should_build_index(segments.len(), points.len()));
         Self::from_query(
-            HausdorffLineworkQuery::from_open_xy_columns(&xs, &ys, force_bvh),
+            HausdorffLineworkQuery::from_open_xy_columns(&xs, &ys, force_bvh).unwrap(),
             points,
         )
+        .expect("test linework query is valid")
     }
 
-    fn from_query(query: HausdorffLineworkQuery, points: Vec<Point>) -> Self {
-        let mut features = Vec::with_capacity(query.linework.segment_count() + points.len());
-        query.linework.for_each_segment(|segment| {
-            features.push(HausdorffFeature::Segment(segment));
+    fn from_query(query: HausdorffLineworkQuery, points: Vec<Point>) -> crate::error::Result<Self> {
+        let mut features = Vec::new();
+        let count = crate::geometry::facet_bvh::packed_index_count(
+            query.linework.segment_count(),
+            points.len(),
+        )?;
+        crate::boundary::try_reserve_vec(&mut features, count)?;
+        let mut error = None;
+        query.linework.any_segment(|segment| {
+            match crate::try_push_vec(&mut features, HausdorffFeature::Segment(segment)) {
+                Ok(()) => false,
+                Err(value) => {
+                    error = Some(value);
+                    true
+                },
+            }
         });
-        features.extend(
-            points
-                .iter()
-                .map(|point| HausdorffFeature::Point(point.xy())),
-        );
-        Self {
+        if let Some(error) = error {
+            return Err(error);
+        }
+        for point in &points {
+            crate::try_push_vec(&mut features, HausdorffFeature::Point(point.xy()))?;
+        }
+        Ok(Self {
             query,
             points,
             features,
-        }
+        })
     }
 
     fn linework_distance_squared(&self, point: XY) -> f64 {

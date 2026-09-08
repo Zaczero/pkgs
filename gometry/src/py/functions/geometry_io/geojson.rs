@@ -55,7 +55,8 @@ fn decode_geojson_value(
         io::reconcile_legacy_geojson_crs(&declarations, fixed)?;
         let (shapes, mask) = feature_value_shapes_and_missing(features)?;
         return Ok(DecodedGeoJson::Array(
-            PyGeometryArray::from_shapes(shapes, Frame::new(crs, epoch)?).with_missing_mask(mask),
+            PyGeometryArray::from_shapes(shapes, Frame::new(crs, epoch)?)?
+                .with_missing_mask(mask)?,
         ));
     }
     let Some((shape, frame)) = coerce_geojson_geometry_value(
@@ -533,8 +534,8 @@ fn decode_features_text(
     }
     let row_count = side_rows.len();
     let geometries = shapes
-        .finish(Frame::new(crs, epoch)?)
-        .with_missing_mask(crate::array::sparse_missing_mask(row_count, &missing_rows));
+        .finish(Frame::new(crs, epoch)?)?
+        .with_missing_mask(crate::array::sparse_missing_mask(row_count, &missing_rows))?;
     Ok(TextFeatureOutput {
         geometries,
         side_rows,
@@ -947,10 +948,12 @@ fn build_features(
         };
         crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
     }
-    let result = py.detach(move || -> crate::error::Result<PyGeometryArray> {
-        let array = shapes.finish(Frame::new(crs, epoch)?);
-        Ok(array.with_missing_mask(crate::array::sparse_missing_mask(row_count, &missing_rows)))
-    });
+    let result =
+        py.detach(move || -> crate::error::Result<PyGeometryArray> {
+            let array = shapes.finish(Frame::new(crs, epoch)?);
+            Ok(array?
+                .with_missing_mask(crate::array::sparse_missing_mask(row_count, &missing_rows))?)
+        });
     let geometries = match result {
         Ok(geometries) => geometries,
         Err(error) => {

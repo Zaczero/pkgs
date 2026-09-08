@@ -6,7 +6,16 @@ use crate::array::{
     CoordSeq, CoordinateAxes, CsrOffsetBuilder, CsrOffsetColumn, PolygonLevel, PyGeometryArray,
     RingLevel, Shape,
 };
+use crate::error::{ErrorKind, Result};
 use crate::geometry::CoordSeqBuilder;
+
+fn finish_packed_coords(builder: CoordSeqBuilder) -> Result<Option<CoordSeq>> {
+    match builder.finish() {
+        Ok(coords) => Ok(Some(coords)),
+        Err(error) if matches!(error.kind(), ErrorKind::Resource(_)) => Err(error),
+        Err(_) => Ok(None),
+    }
+}
 
 impl PyGeometryArray {
     /// `Some((coords, offsets))` when every row is a non-empty `LineString`
@@ -14,9 +23,9 @@ impl PyGeometryArray {
     /// on any other row kind, mixed axes, or an empty input.
     pub(crate) fn uniform_line_column<'a>(
         shapes: impl ExactSizeIterator<Item = &'a Shape> + Clone,
-    ) -> Option<(CoordSeq, CsrOffsetColumn)> {
+    ) -> Result<Option<(CoordSeq, CsrOffsetColumn)>> {
         if shapes.len() == 0 {
-            return None;
+            return Ok(None);
         }
         let mut offset_builder = CsrOffsetBuilder::new();
         let mut axes: Option<CoordinateAxes> = None;
@@ -27,34 +36,45 @@ impl PyGeometryArray {
         let vertex_cap = i32::MAX as usize;
         for shape in shapes {
             let Shape::LineString(seq) = shape else {
-                return None;
+                return Ok(None);
             };
             if seq.len() < 2 {
-                return None;
+                return Ok(None);
             }
             let row_axes = seq.axes();
             match axes {
                 None => axes = Some(row_axes),
-                Some(existing) if existing != row_axes => return None,
+                Some(existing) if existing != row_axes => return Ok(None),
                 Some(_) => {},
             }
-            total = total.checked_add(seq.len())?;
+            let Some(next) = total.checked_add(seq.len()) else {
+                return Ok(None);
+            };
+            total = next;
             if total > vertex_cap {
-                return None;
+                return Ok(None);
             }
-            offset_builder.push_end(total, vertex_cap).ok()?;
+            if offset_builder.push_end(total, vertex_cap).is_err() {
+                return Ok(None);
+            }
         }
-        let axes = axes?;
-        let mut builder = CoordSeqBuilder::with_capacity(axes, total);
+        let Some(axes) = axes else {
+            return Ok(None);
+        };
+        let mut builder = CoordSeqBuilder::try_with_capacity(axes, total)?;
         for shape in replay {
             let Shape::LineString(seq) = shape else {
                 unreachable!("validated in the first pass");
             };
-            builder.extend_window(seq, 0..seq.len());
+            builder.extend_window(seq, 0..seq.len())?;
         }
-        let coords = builder.finish().ok()?;
-        let offsets = offset_builder.finish(total).ok()?;
-        Some((coords, offsets))
+        let Some(coords) = finish_packed_coords(builder)? else {
+            return Ok(None);
+        };
+        let Ok(offsets) = offset_builder.finish(total) else {
+            return Ok(None);
+        };
+        Ok(Some((coords, offsets)))
     }
 
     /// The polygon sibling of [`uniform_line_column`]: every shape must be
@@ -68,13 +88,15 @@ impl PyGeometryArray {
     /// `Mixed` so packed kernels never panic on empty/short/unclosed spans.
     pub(crate) fn uniform_polygon_column<'a>(
         shapes: impl ExactSizeIterator<Item = &'a Shape> + Clone,
-    ) -> Option<(
-        CoordSeq,
-        CsrOffsetColumn<RingLevel>,
-        CsrOffsetColumn<PolygonLevel>,
-    )> {
+    ) -> Result<
+        Option<(
+            CoordSeq,
+            CsrOffsetColumn<RingLevel>,
+            CsrOffsetColumn<PolygonLevel>,
+        )>,
+    > {
         if shapes.len() == 0 {
-            return None;
+            return Ok(None);
         }
         let mut ring_builder = CsrOffsetBuilder::new();
         let mut polygon_builder = CsrOffsetBuilder::new();
@@ -86,54 +108,73 @@ impl PyGeometryArray {
         let vertex_cap = i32::MAX as usize;
         for shape in shapes {
             let Shape::Polygon(polygon) = shape else {
-                return None;
+                return Ok(None);
             };
             // Shared structural pack-admission (shell, ≥4 XY-closed rings,
             // uniform axes) — same predicate as streaming + packed GeoArrow.
-            let row_axes = super::polygon_pack_axes(polygon)?;
+            let Some(row_axes) = super::polygon_pack_axes(polygon) else {
+                return Ok(None);
+            };
             match axes {
                 None => axes = Some(row_axes),
-                Some(existing) if existing != row_axes => return None,
+                Some(existing) if existing != row_axes => return Ok(None),
                 Some(_) => {},
             }
             let mut poly_rings = 0_usize;
             for seq in polygon.rings() {
                 debug_assert!(super::CheckedRingWindow::checked(seq, 0..seq.len()).is_ok());
-                total_vertices = total_vertices.checked_add(seq.len())?;
+                let Some(next) = total_vertices.checked_add(seq.len()) else {
+                    return Ok(None);
+                };
+                total_vertices = next;
                 if total_vertices > vertex_cap {
-                    return None;
+                    return Ok(None);
                 }
-                ring_builder.push_end(total_vertices, vertex_cap).ok()?;
-                ring_index = ring_index.checked_add(1)?;
+                if ring_builder.push_end(total_vertices, vertex_cap).is_err() {
+                    return Ok(None);
+                }
+                let Some(next_ring) = ring_index.checked_add(1) else {
+                    return Ok(None);
+                };
+                ring_index = next_ring;
                 if ring_index > vertex_cap {
-                    return None;
+                    return Ok(None);
                 }
-                poly_rings = poly_rings.checked_add(1)?;
+                let Some(next_poly_rings) = poly_rings.checked_add(1) else {
+                    return Ok(None);
+                };
+                poly_rings = next_poly_rings;
             }
             // polygon_pack_axes already requires a nonempty ring set.
             debug_assert!(poly_rings > 0);
-            polygon_builder.push_end(ring_index, vertex_cap).ok()?;
+            if polygon_builder.push_end(ring_index, vertex_cap).is_err() {
+                return Ok(None);
+            }
         }
-        let axes = axes?;
-        let mut builder = CoordSeqBuilder::with_capacity(axes, total_vertices);
+        let Some(axes) = axes else {
+            return Ok(None);
+        };
+        let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
         for shape in replay {
             let Shape::Polygon(polygon) = shape else {
                 unreachable!("validated in the first pass");
             };
             for seq in polygon.rings() {
-                builder.extend_window(seq, 0..seq.len());
+                builder.extend_window(seq, 0..seq.len())?;
             }
         }
-        let coords = builder.finish().ok()?;
-        let ring_offsets = ring_builder
-            .finish(total_vertices)
-            .ok()?
-            .cast_level::<RingLevel>();
-        let polygon_offsets = polygon_builder
-            .finish(ring_index)
-            .ok()?
-            .cast_level::<PolygonLevel>();
-        Some((coords, ring_offsets, polygon_offsets))
+        let Some(coords) = finish_packed_coords(builder)? else {
+            return Ok(None);
+        };
+        let Ok(ring_offsets) = ring_builder.finish(total_vertices) else {
+            return Ok(None);
+        };
+        let ring_offsets = ring_offsets.cast_level::<RingLevel>();
+        let Ok(polygon_offsets) = polygon_builder.finish(ring_index) else {
+            return Ok(None);
+        };
+        let polygon_offsets = polygon_offsets.cast_level::<PolygonLevel>();
+        Ok(Some((coords, ring_offsets, polygon_offsets)))
     }
 
     /// The shared point column when every shape is a `Point` of uniform axes,
@@ -143,32 +184,34 @@ impl PyGeometryArray {
     /// [`pack_or_mixed`](Self::pack_or_mixed).
     pub(crate) fn uniform_point_column<'a>(
         shapes: impl ExactSizeIterator<Item = &'a Shape> + Clone,
-    ) -> Option<CoordSeq> {
+    ) -> Result<Option<CoordSeq>> {
         if shapes.len() == 0 {
-            return None;
+            return Ok(None);
         }
         let mut axes: Option<CoordinateAxes> = None;
         for shape in shapes.clone() {
             let Shape::Point(point) = shape else {
-                return None;
+                return Ok(None);
             };
             let point_axes = CoordinateAxes::from_point(*point);
             match axes {
                 None => {
                     axes = Some(point_axes);
                 },
-                Some(existing) if existing != point_axes => return None,
+                Some(existing) if existing != point_axes => return Ok(None),
                 Some(_) => {},
             }
         }
-        let axes = axes?;
-        let mut builder = CoordSeqBuilder::with_capacity(axes, shapes.len());
+        let Some(axes) = axes else {
+            return Ok(None);
+        };
+        let mut builder = CoordSeqBuilder::try_with_capacity(axes, shapes.len())?;
         for shape in shapes {
             let Shape::Point(point) = shape else {
                 unreachable!("validated in the first pass");
             };
-            builder.push(*point);
+            builder.push(*point)?;
         }
-        builder.finish().ok()
+        finish_packed_coords(builder)
     }
 }

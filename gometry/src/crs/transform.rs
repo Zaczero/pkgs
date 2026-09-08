@@ -9,9 +9,7 @@
 //! raw-pointer helpers (which stay private in the parent `crs` module) via
 //! `use super::*`; re-exported at `crs` so `crs::transform` callers resolve.
 
-use crate::geometry::types;
 use std::ops::Range;
-use std::sync::Arc;
 
 use crate::crs::{
     CoordSeq, CrsError, GeometryErrorKind, Point, ProjDirection, ProjPipeline, RuntimeState, Shape,
@@ -21,7 +19,9 @@ use crate::crs::{
 };
 use crate::error::Result;
 use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
-use crate::geometry::{CoordWindow, LineSeq, MOrdinate, TopologyDomain, ZOrdinate};
+use crate::geometry::{
+    CoordWindow, LineSeq, MColumn, MOrdinate, SharedSlice, TopologyDomain, ZOrdinate, types,
+};
 
 pub(crate) type TransformedBounds = (f64, f64, f64, f64);
 /// One transformed 3D bounds row: (minx, miny, minz, maxx, maxy, maxz).
@@ -1120,9 +1120,15 @@ impl OutputCoordSource<'_> {
         }
     }
 
-    fn carried_ms(self) -> Option<Arc<[f64]>> {
+    fn carried_ms(self) -> Result<Option<MColumn>> {
         match self {
-            Self::Point(point) => point.m().map(|m| Arc::from([m])),
+            Self::Point(point) => point
+                .m()
+                .map(|m| {
+                    SharedSlice::try_from_vec(vec![m])
+                        .map(|owner| MColumn::Local { owner, offset: 0 })
+                })
+                .transpose(),
             Self::Sequence(seq) => seq.carried_ms(),
         }
     }
@@ -1248,7 +1254,7 @@ struct OutputCoordSeq {
     batch: OutputBatch,
     range: Range<usize>,
     shape: usize,
-    ms: Option<Arc<[f64]>>,
+    ms: Option<MColumn>,
 }
 
 pub(crate) struct TransformOutputPlan {
@@ -1287,7 +1293,7 @@ impl TransformOutputPlan {
             batch,
             range,
             shape,
-            ms: source.carried_ms(),
+            ms: source.carried_ms()?,
         })
     }
 
@@ -1365,11 +1371,11 @@ impl TransformOutputPlan {
 
     pub(crate) fn finish(self, shapes: &[&Shape]) -> Result<Vec<Shape>> {
         let Self { xy, xyz, sequences } = self;
-        let xy_xs: Arc<[f64]> = xy.xs.into();
-        let xy_ys: Arc<[f64]> = xy.ys.into();
-        let xyz_xs: Arc<[f64]> = xyz.xs.into();
-        let xyz_ys: Arc<[f64]> = xyz.ys.into();
-        let xyz_zs: Arc<[f64]> = xyz.zs.expect("XYZ output columns carry Z").into();
+        let xy_xs = SharedSlice::try_from_vec(xy.xs)?;
+        let xy_ys = SharedSlice::try_from_vec(xy.ys)?;
+        let xyz_xs = SharedSlice::try_from_vec(xyz.xs)?;
+        let xyz_ys = SharedSlice::try_from_vec(xyz.ys)?;
+        let xyz_zs = SharedSlice::try_from_vec(xyz.zs.expect("XYZ output columns carry Z"))?;
         let sequences = sequences
             .into_iter()
             .map(|owner| {
@@ -1378,15 +1384,19 @@ impl TransformOutputPlan {
                     OutputBatch::Xyz => (&xyz_xs, &xyz_ys, Some(&xyz_zs)),
                 };
                 let window = CoordWindow::from_range(owner.range, xs.len());
-                CoordSeq::from_columns_with_window(
-                    Arc::clone(xs),
-                    Arc::clone(ys),
-                    zs.map(Arc::clone),
-                    owner.ms,
+                let ms = owner.ms.map(|column| match column {
+                    MColumn::Shared(owner) => MColumn::Local { owner, offset: 0 },
+                    local => local,
+                });
+                CoordSeq::from_shared_columns_with_window(
+                    xs.clone(),
+                    ys.clone(),
+                    zs.map(Clone::clone),
+                    ms,
                     window,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         let mut cursor = TransformCursor {
             sequences,
             offset: 0,
@@ -1466,15 +1476,19 @@ fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor) -> Result<
             Shape::LineString(LineSeq::from_proven(rebuild_seq_columns(points, cursor)))
         },
         Shape::MultiLineString(lines) => {
-            Shape::MultiLineString(lines.map_values(lines.axes(), |line| {
-                LineSeq::from_proven(rebuild_seq_columns(line, cursor))
-            }))
+            let mapped = lines.try_map_values(lines.axes(), |line| {
+                Ok::<_, crate::error::Error>(LineSeq::from_proven(rebuild_seq_columns(
+                    line, cursor,
+                )))
+            })?;
+            Shape::MultiLineString(mapped)
         },
-        Shape::Polygon(polygon) => Shape::Polygon(rebuild_polygon_columns(polygon, cursor)),
+        Shape::Polygon(polygon) => Shape::Polygon(rebuild_polygon_columns(polygon, cursor)?),
         Shape::MultiPolygon(polygons) => {
-            Shape::MultiPolygon(polygons.map_values(polygons.axes(), |polygon| {
+            let mapped = polygons.try_map_values(polygons.axes(), |polygon| {
                 rebuild_polygon_columns(polygon, cursor)
-            }))
+            })?;
+            Shape::MultiPolygon(mapped)
         },
         Shape::GeometryCollection(geometries) => Shape::GeometryCollection(
             geometries.try_map_members(|geometry| rebuild_shape_columns(geometry, cursor))?,
@@ -1486,9 +1500,9 @@ fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor) -> Result<
 fn rebuild_polygon_columns(
     polygon: &crate::geometry::Polygon,
     cursor: &mut TransformCursor,
-) -> crate::geometry::Polygon {
+) -> Result<crate::geometry::Polygon> {
     // CRS rebuild only rewrites coordinates, preserving ring structure.
-    polygon.map_ring_seqs(|ring| rebuild_seq_columns(ring, cursor))
+    polygon.map_ring_seqs(|ring| Ok(rebuild_seq_columns(ring, cursor)))
 }
 
 fn rebuild_seq_columns(seq: &CoordSeq, cursor: &mut TransformCursor) -> CoordSeq {
@@ -1613,7 +1627,7 @@ mod lane_tests {
     #[test]
     fn indexed_execution_rejects_a_backend_ordinal_outside_the_current_chunk() {
         let sequence =
-            CoordSeq::from_columns([0.0, 1.0, 2.0].into(), [0.0, 1.0, 2.0].into(), None, None);
+            CoordSeq::try_from_vecs(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 2.0], None, None).unwrap();
         let shape = Shape::MultiPoint(MultiPoint::from_coordseq(sequence).unwrap());
         let refs = [&shape];
         let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
@@ -1632,40 +1646,35 @@ mod lane_tests {
         assert_eq!(calls, 1);
     }
 
-    #[expect(clippy::too_many_lines, reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to"
+    )]
     #[test]
     fn mixed_sequences_share_final_lanes_and_reconstruct_exactly() {
-        let xy = CoordSeq::from_columns(
-            [1.0, 2.0, 3.0].into(),
-            [10.0, 20.0, 30.0].into(),
+        let xy = CoordSeq::try_from_vecs(vec![1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0], None, None)
+            .unwrap();
+        let xyz = CoordSeq::try_from_vecs(
+            vec![4.0, 5.0, 6.0],
+            vec![40.0, 50.0, 60.0],
+            Some(vec![400.0, 500.0, 600.0]),
             None,
-            None,
-        );
-        let xyz = CoordSeq::from_columns(
-            [4.0, 5.0, 6.0].into(),
-            [40.0, 50.0, 60.0].into(),
-            Some([400.0, 500.0, 600.0].into()),
-            None,
-        );
+        )
+        .unwrap();
         let shapes = [
             Shape::MultiPoint(MultiPoint::from_coordseq(xy).unwrap()),
             Shape::MultiPoint(
-                MultiPoint::from_coordseq(CoordSeq::from_columns(
-                    [7.0].into(),
-                    [70.0].into(),
-                    None,
-                    None,
-                ))
+                MultiPoint::from_coordseq(
+                    CoordSeq::try_from_vecs(vec![7.0], vec![70.0], None, None).unwrap(),
+                )
                 .unwrap(),
             ),
             Shape::LineString(LineSeq::try_new(xyz).unwrap()),
             Shape::MultiPoint(
-                MultiPoint::from_coordseq(CoordSeq::from_columns(
-                    [8.0].into(),
-                    [80.0].into(),
-                    Some([800.0].into()),
-                    None,
-                ))
+                MultiPoint::from_coordseq(
+                    CoordSeq::try_from_vecs(vec![8.0], vec![80.0], Some(vec![800.0]), None)
+                        .unwrap(),
+                )
                 .unwrap(),
             ),
         ];
@@ -1735,36 +1744,24 @@ mod lane_tests {
         assert_eq!(output_xyz_point.xs(), [108.0]);
         assert_eq!(output_xyz_point.ys(), [1080.0]);
         assert_eq!(output_xyz_point.zs(), Some([10_800.0].as_slice()));
-
-        let xy_columns = output_xy.column_arcs();
-        let xy_point_columns = output_xy_point.column_arcs();
-        assert!(Arc::ptr_eq(&xy_columns.xs, &xy_point_columns.xs));
-        let xyz_columns = output_xyz.column_arcs();
-        let xyz_point_columns = output_xyz_point.column_arcs();
-        assert!(Arc::ptr_eq(&xyz_columns.xs, &xyz_point_columns.xs));
     }
 
     #[test]
     fn mixed_m_sequences_keep_local_windows_on_shared_coordinates() {
-        let first_ms: Arc<[f64]> = [50.0, 60.0].into();
-        let second_ms: Arc<[f64]> = [70.0].into();
+        let first_ms = vec![50.0, 60.0];
+        let second_ms = vec![70.0];
         let shapes = [
             Shape::MultiPoint(
-                MultiPoint::from_coordseq(CoordSeq::from_columns(
-                    [1.0, 2.0].into(),
-                    [10.0, 20.0].into(),
-                    None,
-                    Some(Arc::clone(&first_ms)),
-                ))
+                MultiPoint::from_coordseq(
+                    CoordSeq::try_from_vecs(vec![1.0, 2.0], vec![10.0, 20.0], None, Some(first_ms))
+                        .unwrap(),
+                )
                 .unwrap(),
             ),
             Shape::MultiPoint(
-                MultiPoint::from_coordseq(CoordSeq::from_columns(
-                    [3.0].into(),
-                    [30.0].into(),
-                    None,
-                    Some(Arc::clone(&second_ms)),
-                ))
+                MultiPoint::from_coordseq(
+                    CoordSeq::try_from_vecs(vec![3.0], vec![30.0], None, Some(second_ms)).unwrap(),
+                )
                 .unwrap(),
             ),
         ];
@@ -1786,14 +1783,6 @@ mod lane_tests {
         };
         assert_eq!(first.ms(), Some([50.0, 60.0].as_slice()));
         assert_eq!(second.ms(), Some([70.0].as_slice()));
-        assert!(Arc::ptr_eq(
-            &first.column_arcs().m_parts().unwrap().0,
-            &first_ms
-        ));
-        assert!(Arc::ptr_eq(
-            &second.column_arcs().m_parts().unwrap().0,
-            &second_ms
-        ));
         assert_eq!(first.column_arcs().window, 0..2);
         assert_eq!(first.column_arcs().m_parts().unwrap().1, 0..2);
         assert_eq!(second.column_arcs().window, 2..3);
@@ -1802,19 +1791,14 @@ mod lane_tests {
 
     #[test]
     fn full_window_m_remains_shared() {
-        let ms: std::sync::Arc<[f64]> = [5.0, 6.0].into();
-        let seq = CoordSeq::from_columns(
-            [1.0, 2.0].into(),
-            [3.0, 4.0].into(),
-            None,
-            Some(std::sync::Arc::clone(&ms)),
-        );
+        let seq =
+            CoordSeq::try_from_vecs(vec![1.0, 2.0], vec![3.0, 4.0], None, Some(vec![5.0, 6.0]))
+                .unwrap();
         let shape = Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(seq).unwrap());
         let refs = [&shape];
         let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
         plan.execute_with_capacities_indexed(1, 1, &mut |_, _, _| Ok(()))
             .unwrap();
-        assert!(Arc::ptr_eq(plan.sequences[0].ms.as_ref().unwrap(), &ms));
         let Shape::MultiPoint(output) = plan.finish(&refs).unwrap().pop().unwrap() else {
             unreachable!()
         };
@@ -1823,20 +1807,25 @@ mod lane_tests {
 
     #[test]
     fn windowed_m_copies_only_visible_values() {
-        let ms: std::sync::Arc<[f64]> = [4.0, 5.0, 6.0, 7.0].into();
-        let seq = CoordSeq::from_columns(
-            [0.0, 1.0, 2.0, 3.0].into(),
-            [10.0, 11.0, 12.0, 13.0].into(),
+        let seq = CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 2.0, 3.0],
+            vec![10.0, 11.0, 12.0, 13.0],
             None,
-            Some(std::sync::Arc::clone(&ms)),
+            Some(vec![4.0, 5.0, 6.0, 7.0]),
         )
+        .unwrap()
         .view(crate::geometry::CoordWindow::from_range(1..3, 4));
         let shape = Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(seq).unwrap());
         let refs = [&shape];
         let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
         plan.execute_with_capacities_indexed(1, 1, &mut |_, _, _| Ok(()))
             .unwrap();
-        assert_eq!(plan.sequences[0].ms.as_deref().unwrap(), [5.0, 6.0]);
-        assert!(!Arc::ptr_eq(plan.sequences[0].ms.as_ref().unwrap(), &ms));
+        assert_eq!(
+            plan.sequences[0]
+                .ms
+                .as_ref()
+                .map(|column| column.values(0..2)),
+            Some(&[5.0, 6.0][..])
+        );
     }
 }

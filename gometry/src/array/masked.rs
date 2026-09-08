@@ -28,12 +28,13 @@ impl PyGeometryArray {
     /// Dense arrays reuse the raw storage iterator; masked arrays skip the
     /// placeholder rows and keep the original logical row index for diagnostics
     /// and row-seeded kernels.
-    pub(crate) fn present_shape_rows(&self) -> impl Iterator<Item = (usize, Cow<'_, Shape>)> + '_ {
+    pub(crate) fn present_shape_rows(
+        &self,
+    ) -> impl Iterator<Item = crate::error::Result<(usize, Cow<'_, Shape>)>> + '_ {
         self.row_operation().present_rows().map(|row| {
-            (
-                row.logical(),
-                Cow::Owned(row.row().with_shape(Clone::clone)),
-            )
+            row.row()
+                .with_shape(Clone::clone)
+                .map(|shape| (row.logical(), Cow::Owned(shape)))
         })
     }
 
@@ -41,20 +42,20 @@ impl PyGeometryArray {
     /// therefore become the same ``NaN`` row as an empty/no-Z geometry.
     pub(crate) fn bounds_3d_rows(
         &self,
-    ) -> impl Iterator<Item = Option<crate::geometry::Bounds3D>> + '_ {
+    ) -> impl Iterator<Item = crate::error::Result<Option<crate::geometry::Bounds3D>>> + '_ {
         self.row_operation()
             .rows_with_missing(|| ())
             .map(|row| match row {
-                ArrayRow::Missing { .. } => None,
+                ArrayRow::Missing { .. } => Ok(None),
                 ArrayRow::Present(row) => row.row().with_shape(Shape::bounds_3d),
             })
     }
 
     /// Present row shapes as owned values for n-ary kernels that stage a
     /// coverage or noding universe.
-    pub(crate) fn present_shapes(&self) -> Vec<Shape> {
+    pub(crate) fn present_shapes(&self) -> crate::error::Result<Vec<Shape>> {
         self.present_shape_rows()
-            .map(|(_, shape)| shape.into_owned())
+            .map(|result| result.map(|(_, shape)| shape.into_owned()))
             .collect()
     }
 
@@ -68,9 +69,9 @@ impl PyGeometryArray {
 
     /// Reattach this array's missing mask to a row-aligned geometry result that
     /// was computed from only the present rows.
-    pub(crate) fn scatter_present_result(&self, present: Self) -> Self {
+    pub(crate) fn scatter_present_result(&self, present: Self) -> crate::error::Result<Self> {
         match self.missing() {
-            None => present,
+            None => Ok(present),
             Some(mask) => Self::scatter_present_rows(&present, mask.clone()),
         }
     }

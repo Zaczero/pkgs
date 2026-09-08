@@ -31,15 +31,17 @@ pub(crate) struct GeodesicSweepCapsAccum {
 }
 
 impl GeodesicSweepCapsAccum {
-    pub(crate) fn new(segment_count: usize) -> Self {
-        Self {
+    pub(crate) fn try_new(segment_count: usize) -> Result<Self> {
+        let mut groups = Vec::new();
+        crate::boundary::try_reserve_vec(&mut groups, segment_count.div_ceil(GEODESIC_CAP_GROUP))?;
+        Ok(Self {
             anchor: None,
             global_reach: 0.0,
-            groups: Vec::with_capacity(segment_count.div_ceil(GEODESIC_CAP_GROUP)),
+            groups,
             group_anchor: None,
             group_reach: 0.0,
             group_len: 0,
-        }
+        })
     }
 
     #[expect(

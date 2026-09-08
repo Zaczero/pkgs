@@ -22,7 +22,7 @@ fn geographic_keep(
     if let Some(verdict) = spec.pre_topology(
         GateOperand::from_prepared(&query),
         GateOperand::from_prepared(&candidate),
-    ) {
+    )? {
         return Ok(verdict);
     }
     Ok(topology_scalar_pair(
@@ -31,7 +31,7 @@ fn geographic_keep(
             left: query,
             right: candidate,
         },
-    ))
+    )?)
 }
 
 fn admitted_query<'a>(
@@ -137,11 +137,11 @@ impl PySpatialIndex {
             // Symmetric relation: keep only j > i *before* the exact refine,
             // so each unordered pair is refined exactly once.
             let row = products.row(i);
-            let prepared = plan.row(self, row, crate::array::BoundsSeed::Unset);
+            let prepared = plan.row(self, row, crate::array::BoundsSeed::Unset)?;
             let (predicate, distance, metric) = plan.candidate_parts();
             candidates.clear();
             if let Some(spec) = spec {
-                let query = products.prepared(i);
+                let query = products.prepared(i)?;
                 if let Some(bounds) = query.bounds() {
                     self.collect_cover_candidates(
                         query.shape(),
@@ -164,7 +164,7 @@ impl PySpatialIndex {
             candidates.retain(|&j| j > i);
             match (spec, resolved) {
                 (Some(spec), _) => {
-                    let query = products.prepared(i);
+                    let query = products.prepared(i)?;
                     let query_cache = products.frame_cache(i);
                     let mut query_prepared = None;
                     retain_row(&mut candidates, 0, |idx| match domain {
@@ -172,17 +172,17 @@ impl PySpatialIndex {
                             if let Some(verdict) = spec.pre_topology(
                                 GateOperand::cartesian(products.row(i), None),
                                 GateOperand::cartesian(products.row(idx), None),
-                            ) {
+                            )? {
                                 return Ok(verdict);
                             }
-                            let data = products.prepared(idx);
+                            let data = products.prepared(idx)?;
                             Ok(topology_scalar_pair(
                                 &spec,
                                 PreparedTopologyPair::Cartesian {
                                     left: &query,
                                     right: &data,
                                 },
-                            ))
+                            )?)
                         },
                         TopologyDomain::Geographic(frame) => {
                             if let Some(verdict) = spec.predicate.kind_gate(
@@ -193,7 +193,7 @@ impl PySpatialIndex {
                             }
                             let query =
                                 admitted_query(&mut query_prepared, &query, &query_cache, frame)?;
-                            let data = products.prepared(idx);
+                            let data = products.prepared(idx)?;
                             geographic_keep(
                                 &spec,
                                 query,
@@ -207,11 +207,11 @@ impl PySpatialIndex {
                     })?;
                 },
                 (None, Some(resolved)) => {
-                    let query = products.prepared(i);
+                    let query = products.prepared(i)?;
                     match resolved {
                         crs::ResolvedMetric::Planar { to_metre } => {
                             retain_row(&mut candidates, 0, |idx| {
-                                let data = products.prepared(idx);
+                                let data = products.prepared(idx)?;
                                 pair_dwithin_planar(to_metre.get(), &data, &query, radius)
                                     .map_err(Into::into)
                             })?;
@@ -219,7 +219,7 @@ impl PySpatialIndex {
                         crs::ResolvedMetric::Geodesic(metric) => {
                             let query_cache = products.frame_cache(i);
                             retain_row(&mut candidates, 0, |idx| {
-                                let data = products.prepared(idx);
+                                let data = products.prepared(idx)?;
                                 pair_dwithin_geodesic(
                                     metric,
                                     &data,
@@ -373,16 +373,22 @@ impl PySpatialIndex {
             return Ok(None);
         };
         let mut products = self.rows.operation();
+        let mut live = Vec::new();
+        for entry in self.live_entries() {
+            let data = products.prepared(entry.idx)?;
+            let cache = products.frame_cache(entry.idx);
+            live.push((entry.idx, data, cache));
+        }
         let built = match crs::with_ellipsoid_metric_at(crs, &[], runtime_state, |ellipsoid| {
             Ok(GeodesicRowCaps::from_live_handles(
                 shape,
                 self.rows.len(),
-                self.live_entries().map(|entry| {
+                live.iter().map(|(idx, data, cache)| {
                     let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
-                    (entry.idx, {
-                        let data = products.prepared(entry.idx);
+                    (
+                        *idx,
                         data.geodesic_cap_cached(
-                            &products.frame_cache(entry.idx),
+                            cache,
                             crs,
                             semi_major,
                             flattening,
@@ -390,8 +396,8 @@ impl PySpatialIndex {
                             runtime_state,
                         )
                         .ok()
-                        .flatten()
-                    })
+                        .flatten(),
+                    )
                 }),
             ))
         }) {
@@ -464,7 +470,7 @@ impl PySpatialIndex {
         let order = BinaryHeap::from(order);
         let mut products = self.rows.operation();
         let exact = |idx| {
-            let data = products.prepared(idx);
+            let data = products.prepared(idx)?;
             pair_distance_geodesic(
                 metric,
                 &data,
@@ -684,7 +690,7 @@ impl PySpatialIndex {
             self,
             ShapeRow::Handle(&query_plan),
             crate::array::BoundsSeed::Unset,
-        );
+        )?;
         let mut ids = Vec::new();
         if distance.is_none() {
             if let Some(bounds) = query_plan.bounds() {
@@ -731,7 +737,7 @@ impl PySpatialIndex {
         seeded_bounds: crate::array::BoundsSeed,
     ) -> PyResult<()> {
         let row_start = matches.len();
-        let prepared = plan.row(self, row, seeded_bounds);
+        let prepared = plan.row(self, row, seeded_bounds)?;
         let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
         self.candidate_ids_core_append(
             prepared.bounds,
@@ -748,13 +754,13 @@ impl PySpatialIndex {
         else {
             unreachable!("dwithin matcher is called only with a dwithin plan")
         };
-        let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds);
+        let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds)?;
         let crs::ResolvedMetric::Planar { to_metre } = resolved else {
             unreachable!("planar dwithin runner receives a planar query")
         };
         let mut products = self.rows.operation();
         retain_row(matches, row_start, |idx| {
-            let data = products.prepared(idx);
+            let data = products.prepared(idx)?;
             pair_dwithin_planar(to_metre.get(), &data, &query, distance.get()).map_err(Into::into)
         })?;
         sort_row_ids(&mut matches[row_start..], self.rows.len());
@@ -771,7 +777,7 @@ impl PySpatialIndex {
         seeded_bounds: crate::array::BoundsSeed,
     ) -> PyResult<()> {
         let row_start = matches.len();
-        let prepared = plan.row(self, row, seeded_bounds);
+        let prepared = plan.row(self, row, seeded_bounds)?;
         let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
         self.candidate_ids_core_append(
             prepared.bounds,
@@ -785,11 +791,11 @@ impl PySpatialIndex {
         let PreparedIndexQuery::Dwithin { distance, .. } = plan else {
             unreachable!("dwithin matcher is called only with a dwithin plan")
         };
-        let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds);
+        let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds)?;
         let query_cache = query_cache();
         let mut products = self.rows.operation();
         retain_row(matches, row_start, |idx| {
-            let data = products.prepared(idx);
+            let data = products.prepared(idx)?;
             pair_dwithin_geodesic(
                 metric,
                 &data,
@@ -868,7 +874,7 @@ impl PySpatialIndex {
         let mut start = 0;
         while start < candidates.len() {
             let idx = candidates[start].0;
-            let data = index_products.prepared(idx);
+            let data = index_products.prepared(idx)?;
             let candidate_cache = index_products.frame_cache(idx);
             let mut candidate_proof = None;
             let mut end = start;
@@ -887,7 +893,7 @@ impl PySpatialIndex {
                             &index_products.frame_cache(idx),
                             domain,
                         )?,
-                    ),
+                    )?,
                     TopologyDomain::Geographic(frame) => {
                         if let Some(verdict) = spec.predicate.kind_gate(
                             crate::geometry::GeometryKind::Point,
@@ -1014,17 +1020,17 @@ impl PySpatialIndex {
                                 query_plan.bounds(),
                             ),
                             GateOperand::cartesian(products.row(idx), None),
-                        ) {
+                        )? {
                             return Ok(verdict);
                         }
-                        let data = products.prepared(idx);
+                        let data = products.prepared(idx)?;
                         Ok(topology_scalar_pair(
                             &spec,
                             PreparedTopologyPair::Cartesian {
                                 left: &query_plan,
                                 right: &data,
                             },
-                        ))
+                        )?)
                     },
                     TopologyDomain::Geographic(frame) => {
                         if let Some(verdict) = spec.predicate.kind_gate(
@@ -1035,7 +1041,7 @@ impl PySpatialIndex {
                         }
                         let query =
                             admitted_query(&mut query_prepared, &query_plan, &query_cache, frame)?;
-                        let data = products.prepared(idx);
+                        let data = products.prepared(idx)?;
                         geographic_keep(
                             &spec,
                             query,
@@ -1055,13 +1061,13 @@ impl PySpatialIndex {
                 match resolved {
                     crs::ResolvedMetric::Planar { to_metre } => {
                         retain_row(&mut matches, 0, |idx| {
-                            let data = products.prepared(idx);
+                            let data = products.prepared(idx)?;
                             pair_dwithin_planar(to_metre.get(), &data, &query_plan, distance)
                                 .map_err(Into::into)
                         })?;
                     },
                     crs::ResolvedMetric::Geodesic(metric) => retain_row(&mut matches, 0, |idx| {
-                        let data = products.prepared(idx);
+                        let data = products.prepared(idx)?;
                         pair_dwithin_geodesic(
                             metric,
                             &data,
@@ -1103,7 +1109,7 @@ impl PySpatialIndex {
             self,
             ShapeRow::Handle(&query_plan),
             crate::array::BoundsSeed::Unset,
-        );
+        )?;
         let mut candidates = Vec::new();
         let (candidate_predicate, candidate_distance, metric) = plan.candidate_parts();
         self.candidate_ids_core(
@@ -1161,17 +1167,17 @@ impl PySpatialIndex {
                 if let Some(verdict) = spec.pre_topology(
                     GateOperand::cartesian(ShapeRow::Shape(shape.shape()), Some(query_bounds)),
                     GateOperand::cartesian(products.row(idx), None),
-                ) {
+                )? {
                     return Ok(verdict);
                 }
-                let data = products.prepared(idx);
+                let data = products.prepared(idx)?;
                 Ok(topology_scalar_pair(
                     &spec,
                     PreparedTopologyPair::Cartesian {
                         left: shape,
                         right: &data,
                     },
-                ))
+                )?)
             },
             TopologyDomain::Geographic(frame) => {
                 if let Some(verdict) = spec.predicate.kind_gate(
@@ -1181,7 +1187,7 @@ impl PySpatialIndex {
                     return Ok(verdict);
                 }
                 let query = admitted_query(&mut query_prepared, shape, query_cache, frame)?;
-                let data = products.prepared(idx);
+                let data = products.prepared(idx)?;
                 geographic_keep(
                     &spec,
                     query,
@@ -1230,7 +1236,7 @@ impl PySpatialIndex {
                     metric,
                     |_, query, ids, row_start, products| {
                         retain_row(ids, row_start, |idx| {
-                            let data = products.prepared(idx);
+                            let data = products.prepared(idx)?;
                             pair_dwithin_planar(to_metre.get(), query, &data, distance.get())
                                 .map_err(Into::into)
                         })
@@ -1244,7 +1250,7 @@ impl PySpatialIndex {
                     |row, query, ids, row_start, products| {
                         let query_cache = query_rows.frame_cache(row);
                         retain_row(ids, row_start, |idx| {
-                            let data = products.prepared(idx);
+                            let data = products.prepared(idx)?;
                             pair_dwithin_geodesic(
                                 geodesic,
                                 query,
@@ -1350,17 +1356,17 @@ impl PySpatialIndex {
                                     query.bounds(),
                                 ),
                                 GateOperand::cartesian(index_products.row(idx), None),
-                            ) {
+                            )? {
                                 return Ok(verdict);
                             }
-                            let data = index_products.prepared(idx);
+                            let data = index_products.prepared(idx)?;
                             Ok(topology_scalar_pair(
                                 spec,
                                 PreparedTopologyPair::Cartesian {
                                     left: &query,
                                     right: &data,
                                 },
-                            ))
+                            )?)
                         },
                         TopologyDomain::Geographic(frame) => {
                             if let Some(verdict) = spec.predicate.kind_gate(
@@ -1371,7 +1377,7 @@ impl PySpatialIndex {
                             }
                             let query =
                                 admitted_query(&mut query_prepared, &query, &query_cache, frame)?;
-                            let data = index_products.prepared(idx);
+                            let data = index_products.prepared(idx)?;
                             geographic_keep(
                                 spec,
                                 query,
@@ -1497,14 +1503,18 @@ mod tests {
         let index = spatial_index(vec![PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
             frame.clone(),
-        )]).unwrap();
+        )])
+        .unwrap();
         let query = PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 91.0))),
             frame,
         );
         for predicate in [Predicate::Crosses, Predicate::Overlaps] {
             let plan = PreparedIndexQuery::Topological { predicate };
-            assert_eq!(index.refine_prepared(&query, vec![0], &plan).unwrap(), Vec::<usize>::new());
+            assert_eq!(
+                index.refine_prepared(&query, vec![0], &plan).unwrap(),
+                Vec::<usize>::new()
+            );
         }
     }
 
@@ -1517,12 +1527,9 @@ mod tests {
         .unwrap();
         let array = PyGeometryArray::mixed_shapes(
             vec![Shape::LineString(
-                LineSeq::try_new(CoordSeq::from_vecs(
-                    vec![0.0, 1.0],
-                    vec![0.0, 1.0],
-                    None,
-                    None,
-                ))
+                LineSeq::try_new(
+                    CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 1.0], None, None).unwrap(),
+                )
                 .expect("fixture line has two vertices"),
             )],
             Frame::None,

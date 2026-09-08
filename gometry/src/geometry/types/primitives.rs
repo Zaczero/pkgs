@@ -2,9 +2,7 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::sync::Arc;
-
-use crate::geometry::types::{CoordSeq, Ring};
+use crate::geometry::types::{CoordSeq, Ring, SharedSlice};
 use crate::geometry::{
     FacetBvh, GeodesicFacetBvh, GeodesicSweepCaps, PointSetIndex, PreparedLinework,
     xy_bounds_columns,
@@ -13,7 +11,7 @@ use crate::geometry::{
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Polygon {
     pub shell: Ring,
-    pub holes: Arc<[Ring]>,
+    pub(crate) holes: SharedSlice<Ring>,
 }
 
 impl AsRef<Self> for Polygon {
@@ -24,23 +22,7 @@ impl AsRef<Self> for Polygon {
 
 impl crate::HeapSize for Polygon {
     fn heap_bytes(&self) -> usize {
-        // Shell + hole coordinate columns, plus the retained `Arc<[Ring]>`
-        // allocation (header + each `Ring`/`CoordSeq` control block).
-        //
-        // Hole-free polygons all share one empty `Arc` (see
-        // `Polygon::empty_holes`) and are STILL charged its control block: the
-        // crate-wide rule is that a shared Arc is charged in full to every
-        // holder (`ARC_CONTROL_BYTES`). The sharing is a real allocation win;
-        // it is deliberately not claimed here.
-        let ring_control = std::mem::size_of::<Ring>();
-        let holes_arc = 2 * std::mem::size_of::<usize>() + self.holes.len() * ring_control;
-        self.shell.coords().coordinate_bytes()
-            + self
-                .holes
-                .iter()
-                .map(|hole| hole.coords().coordinate_bytes())
-                .sum::<usize>()
-            + holes_arc
+        self.shell.coords().heap_bytes() + self.holes.heap_bytes()
     }
 }
 
@@ -396,10 +378,10 @@ impl crate::HeapSize for GeodesicPartsKey {
 /// Reusable geodesic distance/dwithin/nearest working set for one shape and
 /// one ellipsoid.
 pub(crate) struct GeodesicParts {
-    pub(in crate::geometry) points: Box<[Point]>,
+    pub(in crate::geometry) points: Vec<Point>,
     /// Full-ordinate segments, so nearest witnesses preserve Z/M exactly.
-    pub(in crate::geometry) segments: Box<[GeodesicSegment]>,
-    pub(in crate::geometry) point_only: Box<[Point]>,
+    pub(in crate::geometry) segments: Vec<GeodesicSegment>,
+    pub(in crate::geometry) point_only: Vec<Point>,
     pub(in crate::geometry) caps: Option<GeodesicSweepCaps>,
     pub(in crate::geometry) facet_bvh: std::sync::OnceLock<Option<GeodesicFacetBvh>>,
 }

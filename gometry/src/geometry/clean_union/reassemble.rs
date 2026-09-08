@@ -5,8 +5,11 @@ use crate::geometry::{
 
 /// Endpoint-chain the directed result-boundary arcs into rings, then classify
 /// CCW shells / CW holes and assemble a `Polygon`/`MultiPolygon`.
-pub(crate) fn reassemble(arcs: &[(XY, XY)]) -> Option<Shape> {
-    assemble_rings(reassemble_to_rings(arcs)?)
+pub(crate) fn reassemble(arcs: &[(XY, XY)]) -> crate::error::Result<Option<Shape>> {
+    let Some(rings) = reassemble_to_rings(arcs) else {
+        return Ok(None);
+    };
+    assemble_rings(rings)
 }
 
 /// Endpoint-chain directed arcs into closed (open-cycle) rings, requiring
@@ -65,7 +68,7 @@ pub(crate) fn reassemble_to_rings(arcs: &[(XY, XY)]) -> Option<Vec<Vec<XY>>> {
 /// Classify rings into CCW shells / CW holes and assemble. Single shell takes
 /// all holes (no nesting decision); multiple shells without holes form a
 /// `MultiPolygon`; multi-shell WITH holes (a rare nesting) defers.
-pub(crate) fn assemble_rings(rings: Vec<Vec<XY>>) -> Option<Shape> {
+pub(crate) fn assemble_rings(rings: Vec<Vec<XY>>) -> crate::error::Result<Option<Shape>> {
     let mut shells: Vec<Vec<XY>> = Vec::new();
     let mut holes: Vec<Vec<XY>> = Vec::new();
     for ring in rings {
@@ -76,7 +79,7 @@ pub(crate) fn assemble_rings(rings: Vec<Vec<XY>>) -> Option<Shape> {
         }
     }
     let parts: Vec<Polygon> = match shells.len() {
-        0 => return None,
+        0 => return Ok(None),
         1 => {
             let shell = shells.pop().expect("one shell");
             // Single-shell assembly assigns every hole to that shell; verify each
@@ -86,36 +89,41 @@ pub(crate) fn assemble_rings(rings: Vec<Vec<XY>>) -> Option<Shape> {
                 .iter()
                 .any(|hole| !topology::ring_contains_interior_open(&shell, hole[0]))
             {
-                return None;
+                return Ok(None);
             }
             vec![Polygon::new(
-                Ring::from_closed(closed_coordseq(shell)),
+                Ring::from_closed(closed_coordseq(shell)?),
                 holes
                     .into_iter()
-                    .map(|h| Ring::from_closed(closed_coordseq(h)))
-                    .collect(),
-            )]
+                    .map(|h| closed_coordseq(h).map(Ring::from_closed))
+                    .collect::<crate::error::Result<Vec<_>>>()?,
+            )?]
         },
         _ => {
             // Several shells with holes would need point-in-shell nesting; the
             // common multi-piece result (symdiff crescents, a split difference)
             // has none, so defer the rare nested case.
             if !holes.is_empty() {
-                return None;
+                return Ok(None);
             }
             shells
                 .into_iter()
-                .map(|shell| Polygon::new(Ring::from_closed(closed_coordseq(shell)), Vec::new()))
-                .collect()
+                .map(|shell| {
+                    Ok(Polygon::new(
+                        Ring::from_closed(closed_coordseq(shell)?),
+                        Vec::new(),
+                    )?)
+                })
+                .collect::<crate::error::Result<Vec<_>>>()?
         },
     };
-    Some(polygon_parts_to_shape(parts))
+    Ok(Some(polygon_parts_to_shape(parts)?))
 }
 
 /// Close an open XY ring into a `CoordSeq` (append the first vertex). Builds
 /// the columns straight from the `XY` vec (`From<Vec<XY>>`) — no per-vertex
 /// `Point` round-trip and re-gather.
-pub(crate) fn closed_coordseq(mut ring: Vec<XY>) -> CoordSeq {
+pub(crate) fn closed_coordseq(mut ring: Vec<XY>) -> crate::error::Result<CoordSeq> {
     ring.push(ring[0]);
-    CoordSeq::from(ring)
+    CoordSeq::try_from_xy(&ring)
 }

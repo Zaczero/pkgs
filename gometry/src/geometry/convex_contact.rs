@@ -342,7 +342,7 @@ mod tests {
     use super::super::segment_index::for_each_candidate_pair;
     use super::*;
     use crate::geometry::topology::build_operand_pool;
-    use crate::{Point, Polygon, Ring};
+    use crate::{CoordSeq, Point, Polygon, Ring};
 
     fn regular_ngon(cx: f64, cy: f64, radius: f64, n: usize) -> Polygon {
         let mut points: Vec<Point> = (0..n)
@@ -352,20 +352,28 @@ mod tests {
             })
             .collect();
         points.push(points[0]);
-        Polygon::new(Ring::from_closed(points), Vec::new())
+        Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+            Vec::new(),
+        )
+        .unwrap()
     }
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(minx, miny),
-                Point::new_raw_xy(maxx, miny),
-                Point::new_raw_xy(maxx, maxy),
-                Point::new_raw_xy(minx, maxy),
-                Point::new_raw_xy(minx, miny),
-            ]),
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(minx, miny),
+                    Point::new_raw_xy(maxx, miny),
+                    Point::new_raw_xy(maxx, maxy),
+                    Point::new_raw_xy(minx, maxy),
+                    Point::new_raw_xy(minx, miny),
+                ])
+                .unwrap(),
+            ),
             Vec::new(),
         )
+        .unwrap()
     }
 
     #[test]
@@ -411,10 +419,12 @@ mod tests {
             OverlayOp::Intersection,
             OverlayOp::Difference,
         ] {
-            let fast = clean_overlay(&a, &b, op).expect("convex transverse overlay");
-            let exact = polygon_parts_to_shape(binary_areal_overlay(&a, &b, op));
+            let fast = clean_overlay(&a, &b, op)
+                .unwrap()
+                .expect("convex transverse overlay");
+            let exact = polygon_parts_to_shape(binary_areal_overlay(&a, &b, op).unwrap()).unwrap();
             assert!(
-                fast.equals(&exact),
+                fast.equals(&exact).unwrap(),
                 "convex circle/box {op:?} disagrees with oracle"
             );
         }
@@ -437,29 +447,36 @@ mod tests {
 
     fn collinear_bottom(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(minx, miny),
-                Point::new_raw_xy(f64::midpoint(minx, maxx), miny),
-                Point::new_raw_xy(maxx, miny),
-                Point::new_raw_xy(maxx, maxy),
-                Point::new_raw_xy(minx, maxy),
-                Point::new_raw_xy(minx, miny),
-            ]),
+            Ring::from_closed(
+                crate::geometry::CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(minx, miny),
+                    Point::new_raw_xy(f64::midpoint(minx, maxx), miny),
+                    Point::new_raw_xy(maxx, miny),
+                    Point::new_raw_xy(maxx, maxy),
+                    Point::new_raw_xy(minx, maxy),
+                    Point::new_raw_xy(minx, miny),
+                ])
+                .unwrap(),
+            ),
             Vec::new(),
         )
+        .unwrap()
     }
 
     #[test]
     fn holes_decline_classify_and_overlay_fast_paths() {
         let shell = rectangle(0.0, 0.0, 4.0, 4.0);
-        let hole = Ring::from_closed(vec![
-            Point::new_raw_xy(1.0, 1.0),
-            Point::new_raw_xy(2.0, 1.0),
-            Point::new_raw_xy(2.0, 2.0),
-            Point::new_raw_xy(1.0, 2.0),
-            Point::new_raw_xy(1.0, 1.0),
-        ]);
-        let holed = Polygon::new(shell.shell.clone(), vec![hole]);
+        let hole = Ring::from_closed(
+            crate::geometry::CoordSeq::try_from_points(&[
+                Point::new_raw_xy(1.0, 1.0),
+                Point::new_raw_xy(2.0, 1.0),
+                Point::new_raw_xy(2.0, 2.0),
+                Point::new_raw_xy(1.0, 2.0),
+                Point::new_raw_xy(1.0, 1.0),
+            ])
+            .unwrap(),
+        );
+        let holed = Polygon::new(shell.shell, vec![hole]).unwrap();
         let other = rectangle(3.0, 3.0, 6.0, 6.0);
         assert!(
             try_classify(&holed, &other).is_none(),
@@ -605,14 +622,18 @@ mod tests {
             }
         }
         let triangle = Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(3.0, 0.0),
-                Point::new_raw_xy(1.0, 2.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ]),
+            Ring::from_closed(
+                crate::geometry::CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(3.0, 0.0),
+                    Point::new_raw_xy(1.0, 2.0),
+                    Point::new_raw_xy(0.0, 0.0),
+                ])
+                .unwrap(),
+            ),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let tri_pool = build_operand_pool(
             std::slice::from_ref(&triangle),
             std::slice::from_ref(&right),

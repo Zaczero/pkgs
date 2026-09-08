@@ -233,7 +233,8 @@ pub(crate) fn lonlat_shape(geometry: &PyGeometry) -> PyResult<Shape> {
 pub(crate) fn lonlat_nonempty_shapes(array: &PyGeometryArray) -> crate::error::Result<Vec<Shape>> {
     let crs = array.crs_str();
     let mut out = Vec::new();
-    for (_, input) in array.present_shape_rows() {
+    for row in array.present_shape_rows() {
+        let (_, input) = row?;
         let resolved = lonlat_shape_under(&input, crs)?;
         if resolved.is_empty() {
             continue;
@@ -475,8 +476,12 @@ fn contains_filled_area(shape: &Shape) -> bool {
     }
 }
 
-pub(crate) fn pair_distance_planar(to_metre: f64, a: &PreparedPlan, b: &PreparedPlan) -> f64 {
-    a.distance(b) * to_metre
+pub(crate) fn pair_distance_planar(
+    to_metre: f64,
+    a: &PreparedPlan,
+    b: &PreparedPlan,
+) -> crate::error::Result<f64> {
+    Ok(a.distance(b)? * to_metre)
 }
 
 pub(crate) fn pair_distance_geodesic(
@@ -526,7 +531,7 @@ pub(crate) fn pair_dwithin_planar(
     distance: f64,
 ) -> crate::error::Result<bool> {
     let distance = NonNegative::try_new("distance", distance)?;
-    Ok(a.dwithin(b, distance.get() / to_metre))
+    Ok(a.dwithin(b, distance.get() / to_metre)?)
 }
 
 pub(crate) fn pair_dwithin_geodesic(
@@ -641,7 +646,7 @@ pub(crate) fn metric_hausdorff(
     }
     dispatch_metric_model(
         model,
-        |to_metre| Ok(a.hausdorff_distance(b) * to_metre),
+        |to_metre| Ok(a.hausdorff_distance(b)? * to_metre),
         |crs, _, state| crs::geodesic_hausdorff_at(crs, a, b, state),
     )
 }
@@ -869,7 +874,7 @@ pub(crate) fn metric_nearest_points_resolved(
     }
     dispatch_resolved_metric(
         metric,
-        |_| Ok(a.nearest_points(b)),
+        |_| a.nearest_points(b),
         |metric| {
             let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
                 &metric.geodesic,
@@ -899,10 +904,10 @@ pub(crate) fn metric_shortest_line(
     a: &PreparedPlan,
     b: &PreparedPlan,
 ) -> crate::error::Result<Shape> {
-    Ok(crate::geometry::nearest_line(
+    crate::geometry::nearest_line(
         metric_nearest_points(model, a, b)?,
         crate::geometry::common_axes(a.shape(), b.shape()),
-    ))
+    )
 }
 
 /// CRS-aware minimum-clearance witness line: the realizing two-point
@@ -918,7 +923,7 @@ pub(crate) fn metric_minimum_clearance_line(
 ) -> crate::error::Result<Shape> {
     dispatch_metric_model(
         model,
-        |_| Ok(shape.minimum_clearance_line()),
+        |_| shape.minimum_clearance_line(),
         |_, _, state| {
             crate::py::support::geodesic_by_identity(
                 shape,
@@ -926,18 +931,21 @@ pub(crate) fn metric_minimum_clearance_line(
                 state,
                 |projected| {
                     Ok(projected
-                        .minimum_clearance_plan()
+                        .minimum_clearance_plan()?
                         .map_or_else(Vec::new, |witness| witness.plan.to_vec()))
                 },
                 |points| {
-                    Ok(if points.is_empty() {
-                        Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY)
+                    if points.is_empty() {
+                        Ok(Shape::typed_empty(
+                            GeometryKind::LineString,
+                            CoordinateAxes::XY,
+                        ))
                     } else {
                         let [a, b] = points.as_slice() else {
                             unreachable!("minimum_clearance witness plan has two vertices");
                         };
-                        Shape::LineString(LineSeq::segment(*a, *b))
-                    })
+                        Ok(Shape::LineString(LineSeq::segment(*a, *b)?))
+                    }
                 },
             )
         },
@@ -954,7 +962,7 @@ pub(crate) fn metric_minimum_clearance(
 ) -> crate::error::Result<f64> {
     dispatch_metric_model(
         model,
-        |to_metre| Ok(shape.minimum_clearance() * to_metre),
+        |to_metre| Ok(shape.minimum_clearance()? * to_metre),
         |geodesic_crs, _, state| {
             let line = metric_minimum_clearance_line(model, crs, shape)?;
             crs::geodesic_length_at(geodesic_crs, &line, state)
@@ -1019,7 +1027,7 @@ mod dwithin_parity_tests {
     }
 
     fn scalar_point_dwithin(a: Point, b: Point, limit: f64) -> bool {
-        Shape::Point(a).dwithin(&Shape::Point(b), limit)
+        Shape::Point(a).dwithin(&Shape::Point(b), limit).unwrap()
     }
 
     fn packed_planar_dwithin(a: Point, b: Point, limit: f64) -> bool {
@@ -1029,6 +1037,7 @@ mod dwithin_parity_tests {
     fn shape_data_dwithin(a: Point, b: Point, limit: f64) -> bool {
         PreparedPlan::new(ShapeData::new(Shape::Point(a)))
             .dwithin(&PreparedPlan::new(ShapeData::new(Shape::Point(b))), limit)
+            .unwrap()
     }
 
     #[test]
@@ -1079,7 +1088,7 @@ mod lonlat_points_tests {
     use crate::io::parse_wkt;
 
     fn packed_xy(xs: Vec<f64>, ys: Vec<f64>, frame: Frame) -> PyGeometryArray {
-        PyGeometryArray::packed_points(CoordSeq::from_vecs(xs, ys, None, None), frame)
+        PyGeometryArray::packed_points(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap(), frame)
     }
 
     #[test]
@@ -1096,7 +1105,7 @@ mod lonlat_points_tests {
     fn missing_row_is_not_validated_and_keeps_logical_index() {
         let present = packed_xy(vec![1.0], vec![2.0], Frame::None);
         let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
-        let array = PyGeometryArray::scatter_present_rows(&present, mask);
+        let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         assert!(array.is_compact_nullable());
         let points = lonlat_points(&array).expect("present row is in domain");
         assert!(matches!(points, LonLatPointRows::Columns { .. }));
@@ -1124,7 +1133,7 @@ mod lonlat_points_tests {
     fn compact_missing_domain_error_uses_logical_index() {
         let present = packed_xy(vec![0.0, 200.0], vec![0.0, 0.0], Frame::None);
         let mask = ValidityMask::from_vec(4, vec![true, false, true, false]).expect("mask");
-        let array = PyGeometryArray::scatter_present_rows(&present, mask);
+        let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         match lonlat_points(&array) {
             Err(LonLatPointsError::Row(row, _)) => assert_eq!(row, 3),
             Err(LonLatPointsError::Type) => panic!("expected Row(3), got Type"),
@@ -1159,7 +1168,7 @@ mod lonlat_points_tests {
             Frame::Crs(crs_arc_static(unavailable)),
         );
         let mask = ValidityMask::from_vec(2, vec![true, true]).expect("mask");
-        let array = PyGeometryArray::scatter_present_rows(&present, mask);
+        let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         assert!(array.is_compact_nullable());
         assert!(
             crate::crs::TransformPlan::new(unavailable, "EPSG:4326").is_err(),
@@ -1174,7 +1183,7 @@ mod lonlat_points_tests {
     #[test]
     fn non_point_array_is_type_error() {
         let line = parse_wkt("LINESTRING (0 0, 1 1)").expect("line parses");
-        let array = PyGeometryArray::from_shapes(vec![line], Frame::None);
+        let array = PyGeometryArray::from_shapes(vec![line], Frame::None).unwrap();
         assert!(matches!(
             lonlat_points(&array),
             Err(LonLatPointsError::Type)
@@ -1235,20 +1244,26 @@ mod lonlat_nonempty_shapes_tests {
     use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Polygon, Ring, Shape};
 
     fn packed_xy(xs: Vec<f64>, ys: Vec<f64>, frame: Frame) -> PyGeometryArray {
-        PyGeometryArray::packed_points(CoordSeq::from_vecs(xs, ys, None, None), frame)
+        PyGeometryArray::packed_points(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap(), frame)
     }
 
     fn square() -> Shape {
-        Shape::Polygon(Polygon::new(
-            Ring::closed_coordseq(CoordSeq::from_vecs(
-                vec![0.0, 1.0, 1.0, 0.0, 0.0],
-                vec![0.0, 0.0, 1.0, 1.0, 0.0],
-                None,
-                None,
-            ))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::closed_coordseq(
+                    CoordSeq::try_from_vecs(
+                        vec![0.0, 1.0, 1.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 1.0, 1.0, 0.0],
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+                vec![],
+            )
             .unwrap(),
-            vec![],
-        ))
+        )
     }
 
     fn domain_error(array: &PyGeometryArray) -> crate::error::Error {
@@ -1282,9 +1297,10 @@ mod lonlat_nonempty_shapes_tests {
                 Shape::Point(Point::new_raw_xy(1.0, 2.0)),
             ],
             Frame::None,
-        );
+        )
+        .unwrap();
         let mask = ValidityMask::from_vec(3, vec![false, true, false]).expect("mask");
-        let array = PyGeometryArray::scatter_present_rows(&present, mask);
+        let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         let shapes = lonlat_nonempty_shapes(&array).expect("empty and missing skip");
         assert_eq!(shapes.len(), 1);
         assert_eq!(shapes[0], Shape::Point(Point::new_raw_xy(1.0, 2.0)));
@@ -1295,19 +1311,26 @@ mod lonlat_nonempty_shapes_tests {
         let array = PyGeometryArray::from_shapes(
             vec![
                 square(),
-                Shape::Polygon(Polygon::new(
-                    Ring::closed_coordseq(CoordSeq::from_vecs(
-                        vec![0.0, 1.0, 1.0, 0.0, 0.0],
-                        vec![95.0, 0.0, 1.0, 1.0, 95.0],
-                        None,
-                        None,
-                    ))
+                Shape::Polygon(
+                    Polygon::new(
+                        Ring::closed_coordseq(
+                            CoordSeq::try_from_vecs(
+                                vec![0.0, 1.0, 1.0, 0.0, 0.0],
+                                vec![95.0, 0.0, 1.0, 1.0, 95.0],
+                                None,
+                                None,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap(),
+                        vec![],
+                    )
                     .unwrap(),
-                    vec![],
-                )),
+                ),
             ],
             Frame::None,
-        );
+        )
+        .unwrap();
         let message = domain_error(&array).to_string();
         assert!(
             message.contains("invalid longitude/latitude (0, 95)"),
@@ -1317,7 +1340,8 @@ mod lonlat_nonempty_shapes_tests {
 
     #[test]
     fn all_empty_is_ok_empty_vec() {
-        let array = PyGeometryArray::from_shapes(vec![Shape::empty_polygon()], Frame::None);
+        let array =
+            PyGeometryArray::from_shapes(vec![Shape::empty_polygon()], Frame::None).unwrap();
         let shapes = lonlat_nonempty_shapes(&array).expect("empty filter is Ok");
         assert!(shapes.is_empty());
     }

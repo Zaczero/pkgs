@@ -105,7 +105,7 @@ pub(crate) fn geometry_array_svg_grid_html_masked<'a>(
     for row in rows.take(preview) {
         let svg = match row {
             crate::array::ArrayRow::Missing { .. } => missing_svg()?,
-            crate::array::ArrayRow::Present(row) => row.row().with_shape(render_shape_svg)?,
+            crate::array::ArrayRow::Present(row) => row.row().with_shape(render_shape_svg)??,
         };
         cells.write_fmt(format_args!(
             "<div style=\"display:inline-block;margin:2px\">{svg}</div>"

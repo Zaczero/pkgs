@@ -7,13 +7,12 @@
     reason = "each GeoArrow layout has one explicit planning arm"
 )]
 
-use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use pyo3::prelude::PyResult;
 
 use crate::PyGeometryArray;
-use crate::array::{ArrayRow, GeometryArrayStorage, RowSelectionRef};
+use crate::array::{ArrayRow, GeometryArrayStorage, PackedStorage, RowSelectionRef};
 use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Polygon, Shape};
 use crate::py::arrow::{ArrowEncoding, accumulate_geometry_axes};
 use crate::py::arrow_c::{
@@ -137,7 +136,7 @@ fn plan_geometry_array_auto(
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    if let Some(coords) = array.materialized_compact_point_coords() {
+    if let Some(coords) = array.materialized_compact_point_coords()? {
         return Ok(ArrowExportPlan {
             encoding: GeometryEncoding::Point,
             storage: StoragePlan::Coordinates(coords),
@@ -172,7 +171,7 @@ fn plan_geometry_array_wkb(
         if let ArrayRow::Present(row) = row {
             let size = row
                 .row()
-                .with_shape(|shape| crate::io::wkb_len(shape, false))?;
+                .try_with_shape(|shape| crate::io::wkb_len(shape, false))?;
             total = total
                 .checked_add(size)
                 .ok_or_else(|| NativeArrowExportError::overflow("WKB size overflows usize"))?;
@@ -184,7 +183,7 @@ fn plan_geometry_array_wkb(
     for row in array.row_operation().rows_with_missing(|| ()) {
         if let ArrayRow::Present(row) = row {
             row.row()
-                .with_shape(|shape| crate::io::write_wkb_to_srid(&mut data, shape, None))?;
+                .try_with_shape(|shape| crate::io::write_wkb_to_srid(&mut data, shape, None))?;
         }
         crate::boundary::try_push_vec(
             &mut offsets,
@@ -320,7 +319,7 @@ fn plan_shape_refs(
     let Some(first) = shapes.first() else {
         return Ok(ArrowExportPlan {
             encoding: GeometryEncoding::Point,
-            storage: StoragePlan::Coordinates(CoordSeq::from_points(&[])),
+            storage: StoragePlan::Coordinates(CoordSeq::try_from_points(&[])?),
             crs,
             epoch,
             validity: None,
@@ -340,7 +339,7 @@ fn plan_shape_refs(
             }
             ArrowExportPlan {
                 encoding: GeometryEncoding::Point,
-                storage: StoragePlan::Coordinates(CoordSeq::from_points(&points)),
+                storage: StoragePlan::Coordinates(CoordSeq::try_from_points(&points)?),
                 crs,
                 epoch,
                 validity: None,
@@ -651,12 +650,7 @@ fn gather_coordseqs<'a>(
             values.extend_from_slice(seq.ms().ok_or_else(mixed_axes_error)?);
         }
     }
-    Ok(CoordSeq::from_columns(
-        xs.into(),
-        ys.into(),
-        zs.map(Into::into),
-        ms.map(Into::into),
-    ))
+    Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
 }
 
 fn plan_wkb_refs(
@@ -753,12 +747,7 @@ fn validate_list_offsets(
 }
 
 fn validate_binary_offsets(offsets: &[i32], child_len: usize) -> NativeArrowExportResult<()> {
-    validate_list_offsets(
-        offsets,
-        0,
-        offsets.len().saturating_sub(1),
-        child_len,
-    )
+    validate_list_offsets(offsets, 0, offsets.len().saturating_sub(1), child_len)
 }
 
 fn plan_validity(

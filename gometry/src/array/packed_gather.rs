@@ -1,16 +1,16 @@
 //! Contiguous gather materialization owned by separated-data export boundaries.
 
-use crate::array::PackedStorage;
 use crate::array::packed_columns::{PackedColumnResult, batch_err};
 use crate::array::{
     Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage, PackedColumnBuilder,
-    PointColumnBuilder, PolygonLevel, Result, RingLevel, RowSelection, RowSelectionRef,
+    PackedStorage, PointColumnBuilder, PolygonLevel, Result, RingLevel, RowSelection,
+    RowSelectionRef,
 };
 
 pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> Result<CoordSeq> {
-    let mut builder = PointColumnBuilder::with_capacity(coords.axes(), map.len());
+    let mut builder = PointColumnBuilder::try_with_capacity(coords.axes(), map.len())?;
     for &physical in map {
-        builder.push_at(coords, physical);
+        builder.push_at(coords, physical)?;
     }
     builder.finish()
 }
@@ -75,9 +75,7 @@ pub(crate) fn materialized_gather(
     }
 }
 
-fn materialize_gather(
-    storage: &PackedStorage,
-) -> PackedColumnResult<Option<PackedStorage>> {
+fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<PackedStorage>> {
     Ok(match storage {
         PackedStorage::Points { coords, row_map } => match row_map.as_deref() {
             RowSelectionRef::Gather(map) => Some(PackedStorage::Points {

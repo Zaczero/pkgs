@@ -27,7 +27,7 @@ pub(crate) use aabb::{
     aabb_distance, aabb_distance_squared, aabb_max_distance_squared, aabbs_overlap, point_aabb,
     segment_aabb, union_aabb,
 };
-pub(crate) use engine::{Facet, FacetBvh, NearestCandidate, PreparedLinework};
+pub(crate) use engine::{Facet, FacetBvh, NearestCandidate, PreparedLinework, packed_index_count};
 pub(crate) use simd::simd_point_facet_distance_squared;
 
 /// Segments per facet — one SIMD register of point-to-segment distances.

@@ -11,27 +11,29 @@
 //! Crossing arithmetic reuses [`ray_crossing_is_right`] / [`orientation_xy`].
 
 use std::ops::ControlFlow;
+#[cfg(test)]
 use std::sync::Arc;
 
 use crate::HeapSize;
+use crate::error::Result;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    Bounds, CoordSeq, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape,
+    Bounds, CoordSeq, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape, SharedSlice,
     ring_edge_membership, xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
 pub(crate) struct RingPointIndex {
     bounds: Bounds,
-    xs: Arc<[f64]>,
-    ys: Arc<[f64]>,
+    xs: SharedSlice<f64>,
+    ys: SharedSlice<f64>,
     /// Edge start indices (`0..n-1`) stabbed by Y — dense CSR stores edge
     /// ids directly (no items-vector indirection).
     edges: EdgeYIndex,
 }
 
 impl RingPointIndex {
-    fn build(coords: &CoordSeq) -> Self {
+    fn build(coords: &CoordSeq) -> Result<Self> {
         let xs = coords.xs();
         let ys = coords.ys();
         let n = xs.len();
@@ -47,12 +49,12 @@ impl RingPointIndex {
             let [minx, miny, maxx, maxy] = xy_bounds_columns(xs, ys);
             Bounds::new_raw(minx, miny, maxx, maxy)
         };
-        Self {
+        Ok(Self {
             bounds,
-            xs: coords.carried_xs(),
-            ys: coords.carried_ys(),
-            edges: EdgeYIndex::build(ys),
-        }
+            xs: coords.carried_xs()?,
+            ys: coords.carried_ys()?,
+            edges: EdgeYIndex::build(ys)?,
+        })
     }
 
     fn bounds_contains(&self, x: f64, y: f64) -> bool {
@@ -134,13 +136,13 @@ pub(crate) struct PolygonPointIndex {
 }
 
 impl PolygonPointIndex {
-    pub(crate) fn build(polygon: &Polygon) -> Self {
-        let mut index = Self::build_shell(&polygon.shell);
-        let hole_rings: Vec<RingPointIndex> = polygon
-            .holes
-            .iter()
-            .map(|hole| RingPointIndex::build(hole.coords()))
-            .collect();
+    pub(crate) fn build(polygon: &Polygon) -> Result<Self> {
+        let mut index = Self::build_shell(&polygon.shell)?;
+        let mut hole_rings = Vec::new();
+        crate::try_reserve_vec(&mut hole_rings, polygon.holes.len())?;
+        for hole in polygon.holes.iter() {
+            hole_rings.push(RingPointIndex::build(hole.coords())?);
+        }
         index.holes = YStabbingIndex::build(hole_rings, |ring| {
             (
                 ring.bounds.minx(),
@@ -148,13 +150,13 @@ impl PolygonPointIndex {
                 ring.bounds.miny(),
                 ring.bounds.maxy(),
             )
-        });
-        index
+        })?;
+        Ok(index)
     }
 
-    pub(in crate::geometry) fn build_shell(shell: &Ring) -> Self {
-        let shell_index = RingPointIndex::build(shell.coords());
-        Self {
+    pub(in crate::geometry) fn build_shell(shell: &Ring) -> Result<Self> {
+        let shell_index = RingPointIndex::build(shell.coords())?;
+        Ok(Self {
             bounds: Some(shell_index.bounds),
             shell: shell_index,
             holes: YStabbingIndex::build(Vec::new(), |_| {
@@ -164,8 +166,8 @@ impl PolygonPointIndex {
                     f64::INFINITY,
                     f64::NEG_INFINITY,
                 )
-            }),
-        }
+            })?,
+        })
     }
 
     fn in_bounds_xy(&self, x: f64, y: f64) -> bool {
@@ -315,7 +317,7 @@ pub(crate) enum PointBatchTester {
     MultiPolygon {
         parts: YStabbingIndex<PolygonPointIndex>,
     },
-    Generic(Shape),
+    Generic(crate::geometry::TopologyGraph),
 }
 
 impl PointBatchTester {
@@ -330,27 +332,31 @@ impl PointBatchTester {
         }
     }
 
-    pub(crate) fn new(shape: &Shape) -> Self {
+    pub(crate) fn new(shape: &Shape) -> Result<Self> {
         match shape {
             Shape::Polygon(polygon) => Self::from_polygon(polygon),
             Shape::MultiPolygon(polygons) => Self::from_multipolygon(polygons),
-            _ => Self::Generic(shape.clone()),
+            _ => Ok(Self::Generic(crate::geometry::TopologyGraph::cartesian(
+                shape,
+            )?)),
         }
     }
 
-    pub(crate) fn from_polygon(polygon: &Polygon) -> Self {
-        Self::Polygon {
-            index: PolygonPointIndex::build(polygon),
-        }
+    pub(crate) fn from_polygon(polygon: &Polygon) -> Result<Self> {
+        Ok(Self::Polygon {
+            index: PolygonPointIndex::build(polygon)?,
+        })
     }
 
-    pub(crate) fn from_multipolygon(polygons: &crate::geometry::MultiPolygon) -> Self {
-        if polygons.len() == 1 && !polygons.is_empty() {
-            return Self::Polygon {
-                index: PolygonPointIndex::build(&polygons[0]),
-            };
+    pub(crate) fn from_multipolygon(polygons: &crate::geometry::MultiPolygon) -> Result<Self> {
+        if polygons.len() == 1 {
+            return Self::from_polygon(&polygons[0]);
         }
-        let built: Vec<PolygonPointIndex> = polygons.iter().map(PolygonPointIndex::build).collect();
+        let mut built = Vec::new();
+        crate::try_reserve_vec(&mut built, polygons.len())?;
+        for polygon in polygons.iter() {
+            built.push(PolygonPointIndex::build(polygon)?);
+        }
         let parts = YStabbingIndex::build(built, |part| {
             part.bounds.map_or(
                 (
@@ -361,8 +367,8 @@ impl PointBatchTester {
                 ),
                 |bounds| (bounds.minx(), bounds.maxx(), bounds.miny(), bounds.maxy()),
             )
-        });
-        Self::MultiPolygon { parts }
+        })?;
+        Ok(Self::MultiPolygon { parts })
     }
 
     /// Strict membership — [`Shape::contains_point`] semantics.
@@ -382,7 +388,10 @@ impl PointBatchTester {
                 });
                 hit
             },
-            Self::Generic(shape) => shape.contains_point(point),
+            Self::Generic(graph) => {
+                graph.locate_point(point.xy())
+                    == crate::geometry::topology::TopologyLocation::Interior
+            },
         }
     }
 
@@ -402,7 +411,7 @@ impl PointBatchTester {
                 });
                 hit
             },
-            Self::Generic(shape) => shape.covers_point(point),
+            Self::Generic(graph) => graph.covers_point(point.xy()),
         }
     }
 
@@ -450,42 +459,41 @@ impl HeapSize for PointBatchTester {
         match self {
             Self::Polygon { index: polygon } => polygon.heap_bytes(),
             Self::MultiPolygon { parts } => parts.heap_bytes(),
-            Self::Generic(shape) => shape.coordinate_bytes(),
+            Self::Generic(graph) => graph.heap_bytes(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::geometry::{CoordWindow, XY, ring_classify_point};
+    use crate::geometry::{CoordWindow, MultiPolygon, SharedSlice, XY, ring_classify_point};
     use crate::{CoordSeq, Ring};
 
     fn closed_ring(pts: &[(f64, f64)]) -> Ring {
         let xy: Vec<XY> = pts.iter().map(|&(x, y)| XY::new(x, y)).collect();
-        Ring::from_closed(CoordSeq::from_xy(&xy))
+        Ring::from_closed(CoordSeq::try_from_xy(&xy).unwrap())
     }
 
     fn unit_square() -> Polygon {
         Polygon {
             shell: closed_ring(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]),
-            holes: Arc::from([]),
+            holes: SharedSlice::empty(),
         }
     }
 
     #[test]
     fn point_probe_policy_indexes_polygon_hierarchy() {
         let mut polygon = unit_square();
-        polygon.holes = Arc::from(
+        polygon.holes = SharedSlice::try_from_vec(
             std::iter::repeat_with(|| {
                 closed_ring(&[(2.0, 2.0), (3.0, 2.0), (3.0, 3.0), (2.0, 3.0), (2.0, 2.0)])
             })
             .take(33)
             .collect::<Vec<_>>(),
-        );
-        let tester = PointBatchTester::new(&Shape::Polygon(polygon));
+        )
+        .unwrap();
+        let tester = PointBatchTester::new(&Shape::Polygon(polygon)).unwrap();
         assert!(tester.uses_indexed_plan());
     }
 
@@ -502,11 +510,14 @@ mod tests {
                         (x, 1.0),
                         (x, 0.0),
                     ]),
-                    holes: Arc::from([]),
+                    holes: SharedSlice::empty(),
                 }
             })
             .collect::<Vec<_>>();
-        let tester = PointBatchTester::new(&Shape::MultiPolygon(parts.into()));
+        let tester = PointBatchTester::new(&Shape::MultiPolygon(
+            MultiPolygon::from_dense(parts).unwrap().unwrap(),
+        ))
+        .unwrap();
         assert!(tester.uses_indexed_plan());
     }
 
@@ -518,9 +529,9 @@ mod tests {
         points.extend((0..=8).rev().map(|x| XY::new(f64::from(x), 10.0)));
         points.extend((1..=8).rev().map(|y| XY::new(0.0, f64::from(y))));
         points.push(XY::new(0.0, 0.0));
-        let coords = CoordSeq::from(points);
+        let coords = CoordSeq::try_from_xy(&points).unwrap();
         assert_eq!(coords.xs().len() - 1, 36);
-        let ring = RingPointIndex::build(&coords);
+        let ring = RingPointIndex::build(&coords).unwrap();
         assert!(ring.edges.dense_band_edges(5.0).is_some());
 
         for (x, y) in [(5.0, 0.0), (5.0, 5.0), (9.0, 5.0), (-1.0, 5.0)] {
@@ -534,19 +545,20 @@ mod tests {
 
     #[test]
     fn full_window_ring_index_shares_xy_and_survives_source_drop() {
-        let coords = CoordSeq::from_columns(
+        let coords = CoordSeq::try_from_vecs(
             [0.0, 2.0, 2.0, 0.0, 0.0].into(),
             [0.0, 0.0, 2.0, 2.0, 0.0].into(),
             None,
             None,
-        );
+        )
+        .unwrap();
         let columns = coords.column_arcs();
-        let source_xs = Arc::clone(&columns.xs);
-        let source_ys = Arc::clone(&columns.ys);
-        let ring = RingPointIndex::build(&coords);
+        let source_xs = columns.xs.owner().unwrap();
+        let source_ys = columns.ys.owner().unwrap();
+        let ring = RingPointIndex::build(&coords).unwrap();
 
-        assert!(Arc::ptr_eq(&ring.xs, &source_xs));
-        assert!(Arc::ptr_eq(&ring.ys, &source_ys));
+        assert!(Arc::ptr_eq(&ring.xs.owner().unwrap(), &source_xs));
+        assert!(Arc::ptr_eq(&ring.ys.owner().unwrap(), &source_ys));
 
         drop(columns);
         drop(coords);
@@ -560,14 +572,17 @@ mod tests {
 
     #[test]
     fn windowed_ring_index_classifies_visible_coordinates() {
-        let source_xs: Arc<[f64]> = [1000.0, 0.0, 2.0, 2.0, 0.0, 0.0, -1000.0].into();
-        let source_ys: Arc<[f64]> = [1000.0, 0.0, 0.0, 2.0, 2.0, 0.0, -1000.0].into();
-        let source_xs_weak = Arc::downgrade(&source_xs);
-        let source_ys_weak = Arc::downgrade(&source_ys);
+        let source_xs =
+            SharedSlice::try_from_vec(vec![1000.0, 0.0, 2.0, 2.0, 0.0, 0.0, -1000.0]).unwrap();
+        let source_ys =
+            SharedSlice::try_from_vec(vec![1000.0, 0.0, 0.0, 2.0, 2.0, 0.0, -1000.0]).unwrap();
+        let source_xs_weak = Arc::downgrade(&source_xs.owner().unwrap());
+        let source_ys_weak = Arc::downgrade(&source_ys.owner().unwrap());
         let coords =
-            CoordSeq::from_columns(Arc::clone(&source_xs), Arc::clone(&source_ys), None, None);
+            CoordSeq::from_shared_columns(source_xs.clone(), source_ys.clone(), None, None)
+                .unwrap();
         let visible = coords.view(CoordWindow::from_range(1..6, coords.len()));
-        let ring = RingPointIndex::build(&visible);
+        let ring = RingPointIndex::build(&visible).unwrap();
 
         drop(visible);
         drop(coords);
@@ -583,20 +598,27 @@ mod tests {
 
     #[test]
     fn xyzm_ring_index_classifies_from_xy_columns() {
-        let coords = CoordSeq::from_columns(
+        let coords = CoordSeq::try_from_vecs(
             [0.0, 2.0, 2.0, 0.0, 0.0].into(),
             [0.0, 0.0, 2.0, 2.0, 0.0].into(),
             Some([10.0, 11.0, 12.0, 13.0, 10.0].into()),
             Some([20.0, 21.0, 22.0, 23.0, 20.0].into()),
-        );
+        )
+        .unwrap();
         let columns = coords.column_arcs();
-        let z_weak = Arc::downgrade(columns.zs.as_ref().expect("Z column"));
+        let z_weak = Arc::downgrade(&columns.zs.as_ref().expect("Z column").owner().unwrap());
         let m = columns.m_parts().expect("M column").0;
-        let m_weak = Arc::downgrade(&m);
-        let ring = RingPointIndex::build(&coords);
+        let m_weak = Arc::downgrade(&m.owner().unwrap());
+        let ring = RingPointIndex::build(&coords).unwrap();
 
-        assert!(Arc::ptr_eq(&ring.xs, &columns.xs));
-        assert!(Arc::ptr_eq(&ring.ys, &columns.ys));
+        assert!(Arc::ptr_eq(
+            &ring.xs.owner().unwrap(),
+            &columns.xs.owner().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &ring.ys.owner().unwrap(),
+            &columns.ys.owner().unwrap()
+        ));
         drop(m);
         drop(columns);
         drop(coords);
@@ -616,13 +638,14 @@ mod tests {
                 (0.0, 10.0),
                 (0.0, 0.0),
             ]),
-            holes: Arc::from([closed_ring(&[
+            holes: SharedSlice::try_from_vec(vec![closed_ring(&[
                 (3.0, 3.0),
                 (7.0, 3.0),
                 (7.0, 7.0),
                 (3.0, 7.0),
                 (3.0, 3.0),
-            ])]),
+            ])])
+            .unwrap(),
         }
     }
 
@@ -630,7 +653,7 @@ mod tests {
     fn contains_covers_and_classify_match_shape_kernels() {
         let poly = square_with_hole();
         let shape = Shape::Polygon(poly);
-        let tester = PointBatchTester::new(&shape);
+        let tester = PointBatchTester::new(&shape).unwrap();
         let probes = [
             (5.0, 5.0),
             (1.0, 1.0),
@@ -643,18 +666,18 @@ mod tests {
             let p = Point::new_raw_xy(x, y);
             assert_eq!(
                 tester.contains_point(p),
-                shape.contains_point(p),
+                shape.contains_point(p).unwrap(),
                 "contains at ({x},{y})"
             );
             assert_eq!(
                 tester.covers_point(p),
-                shape.covers_point(p),
+                shape.covers_point(p).unwrap(),
                 "covers at ({x},{y})"
             );
             let class = tester.classify_area_point(p).unwrap();
-            let expect = if shape.contains_point(p) {
+            let expect = if shape.contains_point(p).unwrap() {
                 RingClass::Interior
-            } else if shape.covers_point(p) {
+            } else if shape.covers_point(p).unwrap() {
                 RingClass::Boundary
             } else {
                 RingClass::Exterior
@@ -668,10 +691,10 @@ mod tests {
         let a = unit_square();
         let b = Polygon {
             shell: closed_ring(&[(0.5, 0.5), (1.5, 0.5), (1.5, 1.5), (0.5, 1.5), (0.5, 0.5)]),
-            holes: Arc::from([]),
+            holes: SharedSlice::empty(),
         };
         let shape = Shape::MultiPolygon(vec![a, b].into());
-        let tester = PointBatchTester::new(&shape);
+        let tester = PointBatchTester::new(&shape).unwrap();
         let overlap = Point::new_raw_xy(0.75, 0.75);
         assert!(tester.contains_point(overlap));
         assert_eq!(
@@ -686,7 +709,7 @@ mod tests {
     #[test]
     fn hole_envelope_skips_non_covering_holes() {
         let poly = square_with_hole();
-        let tester = PointBatchTester::new(&Shape::Polygon(poly));
+        let tester = PointBatchTester::new(&Shape::Polygon(poly)).unwrap();
         let p = Point::new_raw_xy(1.0, 9.0);
         assert!(tester.contains_point(p));
         assert_eq!(tester.classify_area_point(p), Some(RingClass::Interior));
@@ -705,11 +728,11 @@ mod tests {
         }
         pts.push(XY::new(0.0, 0.0));
         let poly = Polygon {
-            shell: Ring::from_closed(CoordSeq::from_xy(&pts)),
-            holes: Arc::from([]),
+            shell: Ring::from_closed(CoordSeq::try_from_xy(&pts).unwrap()),
+            holes: SharedSlice::empty(),
         };
         let shape = Shape::Polygon(poly);
-        let tester = PointBatchTester::new(&shape);
+        let tester = PointBatchTester::new(&shape).unwrap();
         assert!(tester.contains_point(Point::new_raw_xy(0.5, n_side as f64 * 0.5)));
         assert!(!tester.contains_point(Point::new_raw_xy(-1.0, n_side as f64 * 0.5)));
         let bytes = tester.heap_bytes();
@@ -744,22 +767,22 @@ mod tests {
         }
         let poly = Polygon {
             shell,
-            holes: Arc::from(holes),
+            holes: SharedSlice::try_from_vec(holes).unwrap(),
         };
         let shape = Shape::Polygon(poly);
-        let tester = PointBatchTester::new(&shape);
+        let tester = PointBatchTester::new(&shape).unwrap();
         for i in 0..200_i32 {
             let x = f64::from(i * 37 + 13) % 1000.0;
             let y = f64::from(i * 53 + 7) % 1000.0;
             let p = Point::new_raw_xy(x, y);
             assert_eq!(
                 tester.contains_point(p),
-                shape.contains_point(p),
+                shape.contains_point(p).unwrap(),
                 "mismatch at ({x},{y})"
             );
             assert_eq!(
                 tester.covers_point(p),
-                shape.covers_point(p),
+                shape.covers_point(p).unwrap(),
                 "covers mismatch at ({x},{y})"
             );
         }
@@ -769,16 +792,22 @@ mod tests {
     fn degenerate_and_zero_length_edges_fail_open_without_grid() {
         let shape = Shape::Polygon(Polygon {
             shell: closed_ring(&[(0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]),
-            holes: Arc::from([]),
+            holes: SharedSlice::empty(),
         });
-        let tester = PointBatchTester::new(&shape);
+        let tester = PointBatchTester::new(&shape).unwrap();
         for point in [
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 1.0),
             Point::new_raw_xy(-1.0, 0.0),
         ] {
-            assert_eq!(tester.contains_point(point), shape.contains_point(point));
-            assert_eq!(tester.covers_point(point), shape.covers_point(point));
+            assert_eq!(
+                tester.contains_point(point),
+                shape.contains_point(point).unwrap()
+            );
+            assert_eq!(
+                tester.covers_point(point),
+                shape.covers_point(point).unwrap()
+            );
         }
     }
 }

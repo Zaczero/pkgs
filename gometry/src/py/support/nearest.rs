@@ -41,8 +41,8 @@ pub(crate) fn nearest_point_columns_masked(
         right.push(right_shape);
     }
     Ok((
-        PyGeometryArray::from_shapes(left, frame.clone()).with_missing_mask(missing.clone()),
-        PyGeometryArray::from_shapes(right, frame).with_missing_mask(missing),
+        PyGeometryArray::from_shapes(left, frame.clone())?.with_missing_mask(missing.clone())?,
+        PyGeometryArray::from_shapes(right, frame)?.with_missing_mask(missing)?,
     ))
 }
 
@@ -99,7 +99,7 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
                         return Ok(f64::NAN);
                     };
                     let index = row.logical();
-                    let line = rows.prepared(row);
+                    let line = rows.prepared(row)?;
                     crate::broadcast::degrade_linref_float(line_locate_shape(
                         &model,
                         &line,
@@ -167,7 +167,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                                 return Ok((None, CoordinateAxes::XY));
                             };
                             let row_index = row.logical();
-                            let element = rows.prepared(row);
+                            let element = rows.prepared(row)?;
                             let element_cache = rows.frame_cache(row_index);
                             let common =
                                 crate::geometry::common_axes(fixed_plan.shape(), element.shape());
@@ -211,7 +211,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                     let ArrayRow::Present(row) = logical_row else {
                         return Ok((None, CoordinateAxes::XY));
                     };
-                    let element = rows.prepared(row);
+                    let element = rows.prepared(row)?;
                     let common = crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                     if fixed_is_left {
                         metric_nearest_points(&model, &fixed_plan, &element)
@@ -266,7 +266,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                     let mut shapes = Vec::new();
                     for row in array_rows.present_rows() {
                         let logical = row.logical();
-                        let element = array_rows.prepared(row);
+                        let element = array_rows.prepared(row).map_err(|error| (logical, error))?;
                         let element_cache = array_rows.frame_cache(logical);
                         let pair = if fixed_is_left {
                             fixed_plan
@@ -298,7 +298,8 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                         let line = crate::geometry::nearest_line(
                             pair,
                             crate::geometry::common_axes(fixed_plan.shape(), element.shape()),
-                        );
+                        )
+                        .map_err(|error| (logical, error))?;
                         crate::try_push_vec(&mut shapes, line).map_err(|error| (logical, error))?;
                     }
                     Ok(shapes)
@@ -307,8 +308,8 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
             },
         )
     })?;
-    let present = PyGeometryArray::from_shapes(rows.map_err(rows_err)?, output_frame);
-    Ok(array.scatter_present_result(present))
+    let present = PyGeometryArray::from_shapes(rows.map_err(rows_err)?, output_frame)?;
+    Ok(array.scatter_present_result(present)?)
 }
 
 /// Extract the query `Point` for a linear-referencing locate, with the

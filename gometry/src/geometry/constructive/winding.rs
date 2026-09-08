@@ -30,7 +30,7 @@ pub(crate) fn polygon_encloses_no_area(polygon: &Polygon) -> bool {
 /// collapses to a thinner, wrong region). Rings are stored closed, so the
 /// final vertex repeats the first; a coincident-point ring collapses to a
 /// disk all the same.
-pub(crate) fn ring_as_open_line(ring: &CoordSeq) -> CoordSeq {
+pub(crate) fn ring_as_open_line(ring: &CoordSeq) -> Result<CoordSeq> {
     let n = ring.len();
     let take = if n >= 2 && ring.first() == ring.last() {
         n - 1
@@ -38,18 +38,18 @@ pub(crate) fn ring_as_open_line(ring: &CoordSeq) -> CoordSeq {
         n
     };
     let points: Vec<Point> = (0..take).map(|index| ring.point_at(index)).collect();
-    CoordSeq::from_points(&points)
+    CoordSeq::try_from_points(&points)
 }
 
-fn ring_as_open_linework(ring: &CoordSeq) -> Option<LineSeq> {
-    let line = ring_as_open_line(ring);
+fn ring_as_open_linework(ring: &CoordSeq) -> Result<Option<LineSeq>> {
+    let line = ring_as_open_line(ring)?;
     match line.len() {
-        0 => None,
+        0 => Ok(None),
         1 => {
             let point = line.point_at(0);
-            Some(LineSeq::segment(point, point))
+            Ok(Some(LineSeq::segment(point, point)?))
         },
-        _ => Some(LineSeq::from_proven(line)),
+        _ => Ok(Some(LineSeq::from_proven(line))),
     }
 }
 
@@ -61,9 +61,12 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
         Shape::Polygon(polygon) if polygon_encloses_no_area(polygon) => {
             let lines = polygon
                 .rings()
-                .filter_map(|ring| ring_as_open_linework(ring))
+                .map(|ring| ring_as_open_linework(ring.coords()))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
                 .collect::<Vec<_>>();
-            Shape::multi_line_string(polygon.shell.coords().axes(), lines)
+            Shape::multi_line_string(polygon.shell.coords().axes(), lines)?
         },
         Shape::MultiPolygon(polygons) => Shape::geometry_collection(
             polygons
@@ -131,7 +134,7 @@ pub(crate) fn convex_buffer_budgeted(
         return Ok(Some(Shape::Polygon(Polygon::new(
             Ring::from_closed(seq),
             Vec::new(),
-        ))));
+        )?)));
     }
     // Negative distance: inward offset + validity certificate.
     convex_erosion_certified(polygon, -distance, rule, quadrant_segments, budget)
@@ -194,7 +197,7 @@ fn simple_erosion_polygon(
     if !line_is_simple(&ring) {
         return Ok(None);
     }
-    Ok(Some(Polygon::new(Ring::from_closed(ring), Vec::new())))
+    Ok(Some(Polygon::new(Ring::from_closed(ring), Vec::new())?))
 }
 
 /// General positive round-join polygonal buffer — the own winding-number
@@ -233,11 +236,11 @@ pub(in crate::geometry) fn winding_buffer_budgeted(
             return Ok(None);
         }
     }
-    let parts = winding_region(&loops, |winding| winding >= 1);
+    let parts = winding_region(&loops, |winding| winding >= 1)?;
     if parts.is_empty() {
         return Ok(None);
     }
-    Ok(Some(polygon_parts_to_shape(parts)))
+    Ok(Some(polygon_parts_to_shape(parts)?))
 }
 
 /// Erosion (negative buffer) of polygonal input — the mirrored
@@ -269,8 +272,8 @@ pub(in crate::geometry) fn winding_erosion_budgeted(
             return Ok(None);
         }
     }
-    let parts = winding_region(&loops, |winding| winding <= -1);
-    Ok(Some(polygon_parts_to_shape(parts)))
+    let parts = winding_region(&loops, |winding| winding <= -1)?;
+    Ok(Some(polygon_parts_to_shape(parts)?))
 }
 
 /// Stroke buffer of lineal input through the winding engine: every chain
@@ -323,11 +326,11 @@ pub(in crate::geometry) fn winding_stroke_budgeted(
     {
         return Ok(Some(Shape::Polygon(polygon)));
     }
-    let parts = winding_region(&loops, |winding| winding >= 1);
+    let parts = winding_region(&loops, |winding| winding >= 1)?;
     if parts.is_empty() {
         return Ok(None);
     }
-    Ok(Some(polygon_parts_to_shape(parts)))
+    Ok(Some(polygon_parts_to_shape(parts)?))
 }
 
 /// One stroke loop as a directly valid polygon: close the columns into a
@@ -351,10 +354,14 @@ fn simple_stroke_polygon(
     ring_ys.extend_from_slice(ys);
     ring_xs.push(xs[0]);
     ring_ys.push(ys[0]);
-    let ring = CoordSeq::from_columns(ring_xs.into(), ring_ys.into(), None, None);
-    Ok((ring_winding(&ring).is_ccw()
-        && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple())
-    .then(|| Polygon::new(Ring::from_closed(ring), Vec::new())))
+    let ring = CoordSeq::try_from_vecs(ring_xs, ring_ys, None, None)?;
+    if ring_winding(&ring).is_ccw()
+        && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple()
+    {
+        Ok(Some(Polygon::new(Ring::from_closed(ring), Vec::new())?))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Buffer of a whole `GeometryCollection` in ONE winding pass: every part
@@ -388,8 +395,8 @@ pub(in crate::geometry) fn winding_collection_budgeted(
         {
             return Ok(None);
         }
-        let pieces = winding_region(&loops, |winding| winding <= -1);
-        return Ok(Some(polygon_parts_to_shape(pieces)));
+        let pieces = winding_region(&loops, |winding| winding <= -1)?;
+        return Ok(Some(polygon_parts_to_shape(pieces)?));
     }
     if collection_loops(
         &mut loops,
@@ -407,11 +414,11 @@ pub(in crate::geometry) fn winding_collection_budgeted(
     if loops.is_empty() {
         return Ok(Some(Shape::empty_polygon()));
     }
-    let pieces = winding_region(&loops, |winding| winding >= 1);
+    let pieces = winding_region(&loops, |winding| winding >= 1)?;
     if pieces.is_empty() {
         return Ok(None);
     }
-    Ok(Some(polygon_parts_to_shape(pieces)))
+    Ok(Some(polygon_parts_to_shape(pieces)?))
 }
 
 // Direct constructive tests characterize these algorithms without an FFI
@@ -504,7 +511,7 @@ pub(crate) fn expansion_loops(
         let Some(raw) = raw_offset_loop(&ring, distance, rule, quadrant_segments, budget)? else {
             return Ok(None);
         };
-        extend_cleaned(loops, &raw);
+        extend_cleaned(loops, &raw)?;
     }
     Ok(Some(()))
 }
@@ -528,7 +535,7 @@ pub(crate) fn erosion_loops(
     };
     // Surviving eroded lobes are CW pieces; keep them CW (they ARE the
     // negative-winding region's boundary in the final pass).
-    extend_cleaned(loops, &raw);
+    extend_cleaned(loops, &raw)?;
     for hole in polygon.holes.iter() {
         let Some(ring) = strict_cycle(hole.coords(), false) else {
             continue;
@@ -567,7 +574,7 @@ pub(crate) fn stroke_loops(
     let mut points = crate::scratch_pool::ScratchPool::checkout(&GATHER);
     points.extend(chain.iter_coords());
     dedup_consecutive_points(&mut points);
-    
+
     match points.as_slice() {
         [] => Ok(Some(true)),
         [point] => {
@@ -691,7 +698,7 @@ pub(crate) fn point_buffer(
     Ok(Some(Shape::Polygon(Polygon::new(
         Ring::from_closed(seq),
         Vec::new(),
-    ))))
+    )?)))
 }
 
 /// Collect expansion loops across a collection's parts, recursively.

@@ -4349,10 +4349,13 @@ mod tests {
 
         let source = GeographicCoverageSource::new(
             &Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new(170.0, -10.0).unwrap(),
-                    Point::new(-170.0, 10.0).unwrap(),
-                ]))
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        Point::new(170.0, -10.0).unwrap(),
+                        Point::new(-170.0, 10.0).unwrap(),
+                    ])
+                    .unwrap(),
+                )
                 .expect("line coordinate sequence must contain at least two vertices"),
             ),
             SphericalGridTarget::H3(Resolution::Seven),

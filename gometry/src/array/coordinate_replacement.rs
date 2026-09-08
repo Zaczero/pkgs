@@ -5,22 +5,20 @@
 //! Coordinate replacement payload shared by array packed/mixed paths and the
 //! `Coordinates` setter surface.
 
-use std::sync::Arc;
-
 use pyo3::prelude::*;
 
-use crate::geometry::{CoordSeq, CoordinateAxes, Point};
+use crate::geometry::{CoordSeq, CoordinateAxes, MColumn, Point, SharedSlice};
 
 #[derive(Clone)]
 pub(crate) enum ReplacementAxis {
-    Replace(Arc<[f64]>),
+    Replace(SharedSlice<f64>),
     Carry,
 }
 
 #[derive(Clone)]
 pub(crate) struct CoordinateReplacement {
-    pub(crate) xs: Arc<[f64]>,
-    pub(crate) ys: Arc<[f64]>,
+    pub(crate) xs: SharedSlice<f64>,
+    pub(crate) ys: SharedSlice<f64>,
     pub(crate) zs: ReplacementAxis,
     pub(crate) ms: ReplacementAxis,
     pub(crate) len: usize,
@@ -40,9 +38,9 @@ impl CoordinateReplacement {
         &self,
         axis: &ReplacementAxis,
         member_has_axis: bool,
-        carried: Option<Arc<[f64]>>,
+        carried: PyResult<Option<SharedSlice<f64>>>,
         range: std::ops::Range<usize>,
-    ) -> PyResult<Option<Arc<[f64]>>> {
+    ) -> PyResult<Option<SharedSlice<f64>>> {
         match axis {
             ReplacementAxis::Replace(values) => {
                 if self.ignore_union_padding_for_missing_axis(member_has_axis) {
@@ -53,9 +51,11 @@ impl CoordinateReplacement {
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
-                Ok(Some(Arc::from(&values[range])))
+                Ok(Some(
+                    SharedSlice::try_from_vec(values[range].to_vec()).map_err(PyErr::from)?,
+                ))
             },
-            ReplacementAxis::Carry => Ok(carried),
+            ReplacementAxis::Carry => carried,
         }
     }
 
@@ -63,16 +63,29 @@ impl CoordinateReplacement {
         &self,
         seq: &CoordSeq,
         range: std::ops::Range<usize>,
-    ) -> PyResult<Option<Arc<[f64]>>> {
-        self.axis_column_for_seq(&self.zs, seq.axes().has_z(), seq.carried_zs(), range)
+    ) -> PyResult<Option<SharedSlice<f64>>> {
+        self.axis_column_for_seq(
+            &self.zs,
+            seq.axes().has_z(),
+            seq.carried_zs().map_err(PyErr::from),
+            range,
+        )
     }
 
     pub(crate) fn m_column_for_seq(
         &self,
         seq: &CoordSeq,
         range: std::ops::Range<usize>,
-    ) -> PyResult<Option<Arc<[f64]>>> {
-        self.axis_column_for_seq(&self.ms, seq.axes().has_m(), seq.carried_ms(), range)
+    ) -> PyResult<Option<SharedSlice<f64>>> {
+        self.axis_column_for_seq(
+            &self.ms,
+            seq.axes().has_m(),
+            Ok(seq
+                .ms()
+                .map(|values| SharedSlice::try_from_vec(values.to_vec()).map_err(PyErr::from))
+                .transpose()?),
+            range,
+        )
     }
 
     fn axis_at(
@@ -120,9 +133,9 @@ impl CoordinateReplacement {
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
-                Some(Arc::clone(values))
+                Some(values.clone())
             },
-            ReplacementAxis::Carry => old.carried_zs(),
+            ReplacementAxis::Carry => old.carried_zs().map_err(PyErr::from)?,
         };
         let ms = match &self.ms {
             ReplacementAxis::Replace(values) => {
@@ -131,11 +144,10 @@ impl CoordinateReplacement {
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
-                Some(Arc::clone(values))
+                Some(MColumn::Shared(values.clone()))
             },
-            ReplacementAxis::Carry => old.carried_ms(),
+            ReplacementAxis::Carry => old.carried_ms().map_err(PyErr::from)?,
         };
-        CoordSeq::from_arc_columns(Arc::clone(&self.xs), Arc::clone(&self.ys), zs, ms)
-            .map_err(PyErr::from)
+        CoordSeq::from_shared_columns(self.xs.clone(), self.ys.clone(), zs, ms).map_err(PyErr::from)
     }
 }

@@ -139,10 +139,11 @@ fn serialize_array_feature_shapes(
         for row in array.row_operation().rows_with_missing(|| ()) {
             let text = match row {
                 crate::array::ArrayRow::Missing { .. } => None,
-                crate::array::ArrayRow::Present(row) => Some(
-                    row.row()
-                        .with_shape(|shape| crate::io::to_geojson_string::<true>(shape, domain))?,
-                ),
+                crate::array::ArrayRow::Present(row) => {
+                    Some(row.row().try_with_shape(|shape| {
+                        crate::io::to_geojson_string::<true>(shape, domain)
+                    })?)
+                },
             };
             crate::boundary::try_push_vec(&mut output, text)?;
         }

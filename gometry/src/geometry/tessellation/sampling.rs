@@ -123,9 +123,9 @@ mod tests {
         .expect("positive weight")
         .expect("samples");
         assert_eq!(points.len(), 2);
-        assert_eq!(points[0].x.to_bits(), 0.7457817572627011_f64.to_bits());
+        assert_eq!(points[0].x.to_bits(), 0.745_781_757_262_701_1_f64.to_bits());
         assert_eq!(points[0].y.to_bits(), 0.0_f64.to_bits());
-        assert_eq!(points[1].x.to_bits(), 0.4443592170557721_f64.to_bits());
+        assert_eq!(points[1].x.to_bits(), 0.444_359_217_055_772_1_f64.to_bits());
         assert_eq!(points[1].y.to_bits(), 0.0_f64.to_bits());
     }
 
@@ -154,12 +154,9 @@ mod tests {
     #[test]
     fn line_discovery_allocation_fails() {
         let line = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_vecs(
-                vec![0.0, 1.0],
-                vec![0.0, 0.0],
-                None,
-                None,
-            ))
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 0.0], None, None).unwrap(),
+            )
             .unwrap(),
         );
         let error = fail_allocations_after(0, || {

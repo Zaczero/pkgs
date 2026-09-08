@@ -7,13 +7,12 @@
     reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
 )]
 
-use crate::array::PackedStorage;
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
     Arc, Bounds, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
-    PackedColumnError, PackedColumnOutput, PackedColumns, Point, PointColumnBuilder, PolygonLevel,
-    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape, column_window,
-    packed_centroid_xy, packed_surface_point, row_bounds_values,
+    PackedColumnError, PackedColumnOutput, PackedColumns, PackedStorage, Point, PointColumnBuilder,
+    PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape,
+    column_window, packed_centroid_xy, packed_surface_point, row_bounds_values,
 };
 use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 
@@ -27,14 +26,14 @@ fn point_from_unary_shape(shape: Shape) -> Point {
 
 fn packed_point_row(
     crosses_antimeridian: bool,
-    shape: impl FnOnce() -> Shape,
+    shape: impl FnOnce() -> Result<Shape>,
     domain: crate::geometry::TopologyDomain,
     strategy: DerivedPointStrategy,
     op: fn(&Shape) -> Result<Shape>,
     column_point: impl FnOnce() -> Result<Point>,
 ) -> Result<Point> {
     if crosses_antimeridian {
-        let shape = shape();
+        let shape = shape()?;
         Ok(point_from_unary_shape(
             crate::geometry::unary_antimeridian_derived(&shape, domain, strategy, op)?,
         ))
@@ -116,7 +115,7 @@ where
                 })
             });
             let mut builder =
-                PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
+                PointColumnBuilder::try_with_capacity(CoordinateAxes::XY, columns.row_count())?;
             for result in columns.map_rows(|row| {
                 let row_index = row.index();
                 if row.is_missing() {
@@ -130,10 +129,10 @@ where
                 packed_point_row(
                     crosses,
                     move || {
-                        Shape::LineString(LineSeq::row_view(
+                        Ok(Shape::LineString(LineSeq::row_view(
                             coords,
                             CoordWindow::from_range(shape_window, coords.len()),
-                        ))
+                        )))
                     },
                     domain,
                     strategy,
@@ -145,10 +144,12 @@ where
                     error,
                 })
             }) {
-                builder.push(result?);
+                builder.push(result?)?;
             }
             Ok(PackedColumnOutput::Points(if has_missing {
-                builder.finish_with_missing_placeholders()
+                builder
+                    .finish_with_missing_placeholders()
+                    .map_err(PackedColumnError::Batch)?
             } else {
                 builder.finish().map_err(PackedColumnError::Batch)?
             }))
@@ -173,7 +174,7 @@ where
                 })
             });
             let mut builder =
-                PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
+                PointColumnBuilder::try_with_capacity(CoordinateAxes::XY, columns.row_count())?;
             let mut crossings = Vec::new();
             for result in columns.map_rows(|row| {
                 let row_index = row.index();
@@ -189,11 +190,11 @@ where
                 packed_point_row(
                     crosses,
                     move || {
-                        Shape::Polygon(GeometryArrayStorage::polygon_view(
+                        Ok(Shape::Polygon(GeometryArrayStorage::polygon_view(
                             coords,
                             ring_offsets,
                             shape_rings,
-                        ))
+                        )?))
                     },
                     domain,
                     strategy,
@@ -205,10 +206,12 @@ where
                     error,
                 })
             }) {
-                builder.push(result?);
+                builder.push(result?)?;
             }
             Ok(PackedColumnOutput::Points(if has_missing {
-                builder.finish_with_missing_placeholders()
+                builder
+                    .finish_with_missing_placeholders()
+                    .map_err(PackedColumnError::Batch)?
             } else {
                 builder.finish().map_err(PackedColumnError::Batch)?
             }))
@@ -220,7 +223,7 @@ where
 impl PyGeometryArray {
     pub(crate) fn centroid_unary_packed(&self) -> PyResult<Self> {
         // A point is its own centroid; packed rows skip the per-row map.
-        if let Some(points) = self.packed_points_xy() {
+        if let Some(points) = self.packed_points_xy()? {
             return Ok(points);
         }
         let frame = self.frame.clone();
@@ -262,7 +265,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn point_on_surface_unary_packed(&self) -> PyResult<Self> {
-        if let Some(points) = self.packed_points_xy() {
+        if let Some(points) = self.packed_points_xy()? {
             return Ok(points);
         }
         let frame = self.frame.clone();
@@ -283,8 +286,8 @@ impl PyGeometryArray {
                 },
                 |_, xs, ys, ring_offsets, rings, _, crossings| {
                     let row_bounds = (!rings.is_empty()).then(|| {
-                        let vertices = ring_offsets[rings.start] as usize
-                            ..ring_offsets[rings.end] as usize;
+                        let vertices =
+                            ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
                         let [minx, miny, maxx, maxy] = row_bounds_values(xs, ys, vertices);
                         Bounds::new_raw(minx, miny, maxx, maxy)
                     });
@@ -312,7 +315,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn envelope_unary_packed(&self) -> PyResult<Self> {
-        if let Some(points) = self.packed_points_xy() {
+        if let Some(points) = self.packed_points_xy()? {
             return Ok(points);
         }
         // All-rectangular fast path: when every row's box is NON-degenerate
@@ -367,14 +370,14 @@ impl PyGeometryArray {
                 // handles must NOT alias the input's lazily-filled slots.
                 Arc::clone(&self.bounds_cache),
                 Arc::clone(&self.total_bounds_cache),
-            ));
+            )?);
         }
         // Packed polygons/lines: build each box from its coordinate window
         // directly — no per-row Shape view (which clones the ring coords).
-        if let Some(boxes) = self.storage().envelope_box_shapes() {
-            return Ok(Self::from_shapes(boxes, self.frame.clone()));
+        if let Some(boxes) = self.storage().envelope_box_shapes()? {
+            return Ok(Self::from_shapes(boxes, self.frame.clone())?);
         }
-        self.map_shapes(|shape| Ok(shape.envelope()))
+        self.map_shapes(|shape| Ok(shape.envelope()?))
     }
 
     pub(crate) fn convex_hull_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {

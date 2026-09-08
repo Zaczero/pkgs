@@ -5,9 +5,7 @@
 use ahash::{HashMapExt as _, HashSetExt as _};
 
 use crate::error::Result;
-use crate::geometry::overlay::{
-    OverlayOp, Strictness, merge_chains, overlay_all,
-};
+use crate::geometry::overlay::{OverlayOp, Strictness, merge_chains, overlay_all};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, PointKey,
     Segment, Shape, TopologyDomain, TopologyGraph, carry_ordinates, segment_projection,
@@ -133,13 +131,13 @@ impl Shape {
     /// `MultiLineString` (GEOS/PostGIS `ST_Node`). Polygon boundaries are
     /// included; point-only input yields `MULTILINESTRING EMPTY`. Z/M is
     pub(crate) fn node(&self, strictness: Strictness) -> Result<Self> {
-        let graph = TopologyGraph::cartesian(self);
+        let graph = TopologyGraph::cartesian(self)?;
         let noded = graph
             .edges
             .iter()
             .map(|edge| LineSeq::segment(edge.segment.start.point(), edge.segment.end.point()))
-            .collect::<Vec<_>>();
-        let noded = Self::multi_line_string(self.axes(), noded);
+            .collect::<Result<Vec<_>>>()?;
+        let noded = Self::multi_line_string(self.axes(), noded)?;
         carry_ordinates(noded, &[self], "node", strictness.is_strict())
     }
 
@@ -151,8 +149,12 @@ impl Shape {
                 // nodes, splitting every Y/T/X junction (degree `>= 3`) — the
                 // JTS LineMerger contract, shared verbatim with the overlay line
                 // sink via [`merge_chains`].
-                let chains =
-                    merge_chains(&lines.iter().map(|line| line.as_coords().clone()).collect::<Vec<_>>());
+                let chains = merge_chains(
+                    &lines
+                        .iter()
+                        .map(|line| line.as_coords().clone())
+                        .collect::<Vec<_>>(),
+                )?;
                 // A merge that produced nothing keeps the lineal type
                 // (`MULTILINESTRING EMPTY`), unlike the general narrowing.
                 if chains.is_empty() {
@@ -161,7 +163,7 @@ impl Shape {
                     Self::narrow_lines(
                         lines.axes(),
                         chains.into_iter().map(LineSeq::from_proven).collect(),
-                    )
+                    )?
                 }
             },
             _ => return Err(GeometryErrorKind::LinealRequired.into()),
@@ -175,8 +177,8 @@ impl Shape {
         other
             .linework()
             .map_err(|_| GeometryErrorKind::LinealRequired)?;
-        let graph = TopologyGraph::cartesian_many(&[self, other]);
-        let (same, opposite) = shared_paths_from_graph(&graph);
+        let graph = TopologyGraph::cartesian_many(&[self, other])?;
+        let (same, opposite) = shared_paths_from_graph(&graph)?;
         let same = same
             .into_iter()
             .map(LineSeq::from_proven)
@@ -186,14 +188,14 @@ impl Shape {
             .map(LineSeq::from_proven)
             .collect::<Vec<_>>();
         let result = Self::geometry_collection(vec![
-            Self::multi_line_string(CoordinateAxes::XY, same),
-            Self::multi_line_string(CoordinateAxes::XY, opposite),
+            Self::multi_line_string(CoordinateAxes::XY, same)?,
+            Self::multi_line_string(CoordinateAxes::XY, opposite)?,
         ])?;
         carry_ordinates(result, &[self, other], "shared_paths", false)
     }
 }
 
-fn shared_paths_from_graph(graph: &TopologyGraph) -> (Vec<CoordSeq>, Vec<CoordSeq>) {
+fn shared_paths_from_graph(graph: &TopologyGraph) -> Result<(Vec<CoordSeq>, Vec<CoordSeq>)> {
     let mut same = Vec::new();
     let mut opposite = Vec::new();
     let mut same_path_direction = HashMap::new();
@@ -237,7 +239,7 @@ fn shared_paths_from_graph(graph: &TopologyGraph) -> (Vec<CoordSeq>, Vec<CoordSe
                 end: edge.segment.start,
             }
         };
-        let line = CoordSeq::from(vec![segment.start.point(), segment.end.point()]);
+        let line = CoordSeq::try_from_points(&[segment.start.point(), segment.end.point()])?;
         if has_opposite_direction {
             opposite_keys.insert(key);
             opposite_path_direction.insert(key, segment);
@@ -260,10 +262,10 @@ fn shared_paths_from_graph(graph: &TopologyGraph) -> (Vec<CoordSeq>, Vec<CoordSe
     same_keys.retain(|key| !opposite_keys.contains(key));
     same_path_direction.retain(|key, _| same_keys.contains(key));
 
-    (
-        orient_shared_paths(merge_chains(&same), &same_path_direction),
-        orient_shared_paths(merge_chains(&opposite), &opposite_path_direction),
-    )
+    Ok((
+        orient_shared_paths(merge_chains(&same)?, &same_path_direction)?,
+        orient_shared_paths(merge_chains(&opposite)?, &opposite_path_direction)?,
+    ))
 }
 
 fn source_direction(piece: Segment, source: Segment) -> bool {
@@ -275,7 +277,7 @@ fn source_direction(piece: Segment, source: Segment) -> bool {
 fn orient_shared_paths(
     paths: Vec<CoordSeq>,
     directions: &HashMap<(PointKey, PointKey), Segment>,
-) -> Vec<CoordSeq> {
+) -> Result<Vec<CoordSeq>> {
     paths
         .into_iter()
         .map(|path| {
@@ -283,13 +285,15 @@ fn orient_shared_paths(
             let end = path.point_at(1).xy();
             let key = undirected_segment_edge_key(Segment { start, end });
             let Some(expected) = directions.get(&key) else {
-                return path;
+                return Ok(path);
             };
             if start == expected.start && end == expected.end {
-                path
+                Ok(path)
             } else {
-                path.iter().rev().collect()
+                Ok(CoordSeq::try_from_points(
+                    &path.iter().rev().collect::<Vec<_>>(),
+                )?)
             }
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()
 }

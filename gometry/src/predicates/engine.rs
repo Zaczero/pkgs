@@ -108,7 +108,7 @@ impl<'a> PreparedTopologyPair<'a> {
         }
     }
 
-    pub(crate) fn relate(self) -> crate::geometry::De9im {
+    pub(crate) fn relate(self) -> crate::error::Result<crate::geometry::De9im> {
         match self {
             Self::Cartesian { left, right } => graph_relate_data(left, right),
             Self::CartesianLeftGraph {
@@ -401,18 +401,18 @@ impl PredicateSpec {
         &self,
         left: GateOperand<'_>,
         right: GateOperand<'_>,
-    ) -> Option<bool> {
+    ) -> crate::error::Result<Option<bool>> {
         if let Some(verdict) = self.predicate.kind_gate(left.kind, right.kind) {
-            return Some(verdict);
+            return Ok(Some(verdict));
         }
         if !left.bounds_sound || !right.bounds_sound {
-            return None;
+            return Ok(None);
         }
         let (Some(left_bounds), Some(right_bounds)) = (left.bounds, right.bounds) else {
-            return None;
+            return Ok(None);
         };
         if let Some(verdict) = self.bounds_gate(left_bounds, right_bounds) {
-            return Some(verdict);
+            return Ok(Some(verdict));
         }
         self.rectangles_meet(left, left_bounds, right, right_bounds)
     }
@@ -436,18 +436,18 @@ impl PredicateSpec {
         left_bounds: Bounds,
         right: GateOperand<'_>,
         right_bounds: Bounds,
-    ) -> Option<bool> {
+    ) -> crate::error::Result<Option<bool>> {
         let meeting = match self.predicate {
             Predicate::Intersects => true,
             Predicate::Disjoint => false,
-            _ => return None,
+            _ => return Ok(None),
         };
         let rectangle = |operand: GateOperand<'_>, bounds: Bounds| {
             operand
                 .row
                 .with_shape(|shape| crate::geometry::is_axis_aligned_rectangle(shape, bounds))
         };
-        (rectangle(left, left_bounds) && rectangle(right, right_bounds)).then_some(meeting)
+        Ok((rectangle(left, left_bounds)? && rectangle(right, right_bounds)?).then_some(meeting))
     }
 }
 
@@ -537,7 +537,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
         TopologyDomain::Cartesian => {
             let scalar_operand =
                 GateOperand::cartesian(ShapeRow::Shape(scalar.shape()), scalar_bounds);
-            let gate = |index: usize, row: ShapeRow<'_>| -> Option<bool> {
+            let gate = |index: usize, row: ShapeRow<'_>| -> crate::error::Result<Option<bool>> {
                 let row_operand = GateOperand::cartesian(
                     row,
                     element_bounds
@@ -549,74 +549,78 @@ pub(crate) fn scalar_vs_shapes<'a>(
                 } else {
                     (row_operand, scalar_operand)
                 };
-                spec.pre_topology(left, right).or_else(|| {
-                    if spec.predicate != Predicate::Intersects
-                        || !left.bounds_are_sound()
-                        || !right.bounds_are_sound()
-                    {
-                        return None;
+                if let Some(verdict) = spec.pre_topology(left, right)? {
+                    return Ok(Some(verdict));
+                }
+                if spec.predicate != Predicate::Intersects
+                    || !left.bounds_are_sound()
+                    || !right.bounds_are_sound()
+                {
+                    return Ok(None);
+                }
+                if row.with_shape(|shape| {
+                    line_scalar_prefers_direct_polygon_relate(scalar.shape(), shape)
+                })? {
+                    return Ok(None);
+                }
+                row.try_with_shape(|shape| {
+                    let Some(bounds) = shape.bounds() else {
+                        return Ok(None);
+                    };
+                    if !crate::geometry::is_axis_aligned_rectangle(shape, bounds) {
+                        return Ok(None);
                     }
-                    if row.with_shape(|shape| {
-                        line_scalar_prefers_direct_polygon_relate(scalar.shape(), shape)
-                    }) {
-                        return None;
-                    }
-                    row.with_shape(|shape| {
-                        let bounds = shape.bounds()?;
-                        if !crate::geometry::is_axis_aligned_rectangle(shape, bounds) {
-                            return None;
-                        }
-                        let scalar_graph =
-                            scalar_cartesian_graph.get_or_init(|| scalar.topology_graph());
-                        Some(crate::geometry::graph_intersects_bounds(
-                            scalar_graph,
-                            bounds,
-                        ))
-                    })
+                    let scalar_graph =
+                        scalar_cartesian_graph.get_or_try_init(|| scalar.topology_graph())?;
+                    Ok(Some(crate::geometry::graph_intersects_bounds(
+                        scalar_graph,
+                        bounds,
+                    )))
                 })
             };
             elements
                 .map(|(index, row)| {
-                    let verdict = if row_is_missing(index) {
-                        false
-                    } else if let Some(row) = row {
-                        gate(index, row).unwrap_or_else(|| {
-                            let element = row_operation.as_mut().map_or_else(
-                                || crate::array::PreparedRow::transient(row),
-                                |operation| operation.prepared_at(index, row),
-                            );
-                            if line_scalar_prefers_direct_polygon_relate(
-                                scalar.shape(),
-                                element.shape(),
-                            ) {
-                                let matrix = if scalar_is_left {
-                                    graph_relate_data(scalar, &element)
-                                } else {
-                                    graph_relate_data(&element, scalar)
-                                };
-                                return predicate_matrix_value(spec, matrix);
-                            }
-                            let scalar_graph =
-                                scalar_cartesian_graph.get_or_init(|| scalar.topology_graph());
-                            let operands = if scalar_is_left {
-                                PreparedTopologyPair::CartesianLeftGraph {
-                                    left: scalar,
-                                    right: &element,
-                                    left_graph: scalar_graph,
-                                }
+                    let mut evaluate = || -> crate::error::Result<bool> {
+                        if row_is_missing(index) {
+                            return Ok(false);
+                        }
+                        let Some(row) = row else { return Ok(false) };
+                        if let Some(verdict) = gate(index, row)? {
+                            return Ok(verdict);
+                        }
+                        let element = row_operation.as_mut().map_or_else(
+                            || crate::array::PreparedRow::transient(row),
+                            |operation| operation.prepared_at(index, row),
+                        )?;
+                        if line_scalar_prefers_direct_polygon_relate(
+                            scalar.shape(),
+                            element.shape(),
+                        ) {
+                            let matrix = if scalar_is_left {
+                                graph_relate_data(scalar, &element)
                             } else {
-                                PreparedTopologyPair::CartesianRightGraph {
-                                    left: &element,
-                                    right: scalar,
-                                    right_graph: scalar_graph,
-                                }
-                            };
-                            topology_scalar_pair(spec, operands)
-                        })
-                    } else {
-                        false
+                                graph_relate_data(&element, scalar)
+                            }?;
+                            return Ok(predicate_matrix_value(spec, matrix));
+                        }
+                        let scalar_graph =
+                            scalar_cartesian_graph.get_or_try_init(|| scalar.topology_graph())?;
+                        let operands = if scalar_is_left {
+                            PreparedTopologyPair::CartesianLeftGraph {
+                                left: scalar,
+                                right: &element,
+                                left_graph: scalar_graph,
+                            }
+                        } else {
+                            PreparedTopologyPair::CartesianRightGraph {
+                                left: &element,
+                                right: scalar,
+                                right_graph: scalar_graph,
+                            }
+                        };
+                        topology_scalar_pair(spec, operands)
                     };
-                    Ok(verdict)
+                    evaluate().map_err(|error| (index, error))
                 })
                 .collect()
         },
@@ -641,19 +645,25 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind) {
                         return Ok(verdict);
                     }
-                    let element = row_operation.as_mut().map_or_else(
-                        || crate::array::PreparedRow::transient(row),
-                        |operation| operation.prepared_at(index, row),
-                    );
+                    let element = row_operation
+                        .as_mut()
+                        .map_or_else(
+                            || crate::array::PreparedRow::transient(row),
+                            |operation| operation.prepared_at(index, row),
+                        )
+                        .map_err(|error| (index, error))?;
                     let transient_cache = crate::geometry::FrameDependentCaches::default();
                     let row_cache = row_operation
                         .as_mut()
                         .map(|operation| operation.frame_cache(index));
                     let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
-                    let element_prepared = GeographicPrepared::try_new(&element, element_cache, frame)
-                        .map_err(|error| (index, error))?;
+                    let element_prepared =
+                        GeographicPrepared::try_new(&element, element_cache, frame)
+                            .map_err(|error| (index, error))?;
                     let prepared = *scalar_prepared
-                        .get_or_try_init(|| GeographicPrepared::try_new(scalar, scalar_cache, frame))
+                        .get_or_try_init(|| {
+                            GeographicPrepared::try_new(scalar, scalar_cache, frame)
+                        })
                         .map_err(|error| (index, error))?;
                     let scalar_operand = GateOperand::from_prepared(&prepared);
                     let row_operand = GateOperand::from_prepared(&element_prepared);
@@ -662,7 +672,10 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     } else {
                         (row_operand, scalar_operand)
                     };
-                    if let Some(verdict) = spec.pre_topology(left, right) {
+                    if let Some(verdict) = spec
+                        .pre_topology(left, right)
+                        .map_err(|error| (index, error))?
+                    {
                         return Ok(verdict);
                     }
                     if spec.predicate == Predicate::Intersects
@@ -674,7 +687,8 @@ pub(crate) fn scalar_vs_shapes<'a>(
                             && crate::geometry::is_axis_aligned_rectangle(rectangle, bounds)
                         {
                             let scalar_graph = scalar_geographic_graph
-                                .get_or_init(|| prepared.graph())
+                                .get_or_try_init(|| prepared.graph())
+                                .map_err(|error| (index, error))?
                                 .as_ref();
                             return Ok(crate::geometry::graph_intersects_bounds(
                                 scalar_graph,
@@ -683,7 +697,8 @@ pub(crate) fn scalar_vs_shapes<'a>(
                         }
                     }
                     let scalar_graph = scalar_geographic_graph
-                        .get_or_init(|| prepared.graph())
+                        .get_or_try_init(|| prepared.graph())
+                        .map_err(|error| (index, error))?
                         .as_ref();
                     let operands = if scalar_is_left {
                         PreparedTopologyPair::GeographicLeftGraph {
@@ -698,7 +713,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                             right_graph: scalar_graph,
                         }
                     };
-                    Ok(topology_scalar_pair(spec, operands))
+                    topology_scalar_pair(spec, operands).map_err(|error| (index, error))
                 })
                 .collect()
         },
@@ -723,16 +738,16 @@ pub(crate) fn row_kind_empty(row: ShapeRow<'_>) -> (GeometryKind, bool) {
 pub(crate) fn topology_scalar_pair(
     spec: &PredicateSpec,
     operands: PreparedTopologyPair<'_>,
-) -> bool {
+) -> crate::error::Result<bool> {
     // The array, index and coverer paths all run the pre-topology gates before
     // admitting a pair to the relation; the scalar pair was the one lane that
     // did not, so `gm.intersects(a, b)` on two operands a hundred units apart
     // still built both topology graphs and paired their edges to discover
     // they share no point.
     if let Some((left, right)) = operands.gate_operands()
-        && let Some(verdict) = spec.pre_topology(left, right)
+        && let Some(verdict) = spec.pre_topology(left, right)?
     {
-        return verdict;
+        return Ok(verdict);
     }
     // The direct engines need the plans, not a graph: a pair that already
     // carries the scalar's graph (the scalar-vs-array lane) is admitted the
@@ -742,9 +757,9 @@ pub(crate) fn topology_scalar_pair(
             .or_else(|| crate::geometry::direct_areal_predicate(spec, left, right))
             .or_else(|| crate::geometry::direct_areal_linework_predicate(spec, left, right))
     {
-        return verdict;
+        return Ok(verdict);
     }
-    predicate_matrix_value(spec, operands.relate())
+    Ok(predicate_matrix_value(spec, operands.relate()?))
 }
 
 /// A DE-9IM pattern over a scalar pair, decided as early as the evidence
@@ -755,20 +770,20 @@ pub(crate) fn topology_scalar_pair(
 pub(crate) fn topology_scalar_pattern(
     pattern: CompiledPattern,
     operands: &PreparedTopologyPair<'_>,
-) -> bool {
+) -> crate::error::Result<bool> {
     if let Some((left, right)) = operands.gate_operands()
-        && let Some(verdict) = pattern_bounds_gate(pattern, &left, &right)
+        && let Some(verdict) = pattern_bounds_gate(pattern, &left, &right)?
     {
-        return verdict;
+        return Ok(verdict);
     }
     if let Some((left, right)) = operands.cartesian_plans()
         && let Some(verdict) = crate::geometry::direct_linework_pattern(pattern, left, right)
             .or_else(|| crate::geometry::direct_areal_pattern(pattern, left, right))
             .or_else(|| crate::geometry::direct_areal_linework_pattern(pattern, left, right))
     {
-        return verdict;
+        return Ok(verdict);
     }
-    operands.relate().matches(pattern)
+    Ok(operands.relate()?.matches(pattern))
 }
 
 /// What sound, disjoint bounds prove about a pattern: the four inner cells
@@ -779,20 +794,22 @@ fn pattern_bounds_gate(
     pattern: CompiledPattern,
     left: &GateOperand<'_>,
     right: &GateOperand<'_>,
-) -> Option<bool> {
+) -> crate::error::Result<Option<bool>> {
     use crate::geometry::{De9imInterval, Dimension, Loc, OperandShape, dimension};
     if !left.bounds_sound || !right.bounds_sound {
-        return None;
+        return Ok(None);
     }
     let (Some(left_bounds), Some(right_bounds)) = (left.bounds, right.bounds) else {
-        return None;
+        return Ok(None);
     };
     if left_bounds.intersects(right_bounds) {
-        return None;
+        return Ok(None);
     }
-    let shape_of = |operand: GateOperand<'_>| -> Option<OperandShape> {
-        let interior = operand.row.with_shape(dimension)?;
-        Some(OperandShape {
+    let shape_of = |operand: GateOperand<'_>| -> crate::error::Result<Option<OperandShape>> {
+        let Some(interior) = operand.row.with_shape(dimension)? else {
+            return Ok(None);
+        };
+        Ok(Some(OperandShape {
             interior,
             boundary: match interior {
                 Dimension::Surface => Some(Dimension::Curve),
@@ -800,9 +817,11 @@ fn pattern_bounds_gate(
                 Dimension::Curve => Some(Dimension::Point),
                 Dimension::Point => None,
             },
-        })
+        }))
     };
-    let (a, b) = (shape_of(*left)?, shape_of(*right)?);
+    let (Some(a), Some(b)) = (shape_of(*left)?, shape_of(*right)?) else {
+        return Ok(None);
+    };
     let mut interval = De9imInterval::open(a, b);
     for (row, col) in [
         (Loc::Interior, Loc::Interior),
@@ -824,7 +843,7 @@ fn pattern_bounds_gate(
         interval.witness(Loc::Exterior, Loc::Boundary, Dimension::Curve);
         interval.settle(Loc::Exterior, Loc::Boundary);
     }
-    interval.pattern(pattern)
+    Ok(interval.pattern(pattern))
 }
 
 /// A named predicate read off a fully decided matrix.
@@ -866,6 +885,7 @@ mod tests {
                     &lo,
                     &ro,
                 )
+                .unwrap()
             };
         let (a, b) = (rectangle(0.0, 0.0, 1.0, 1.0), rectangle(3.0, 3.0, 4.0, 4.0));
         assert_eq!(
@@ -953,26 +973,30 @@ mod tests {
     }
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
-        Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(minx, miny),
-                Point::new_raw_xy(maxx, miny),
-                Point::new_raw_xy(maxx, maxy),
-                Point::new_raw_xy(minx, maxy),
-                Point::new_raw_xy(minx, miny),
-            ]),
-            Vec::new(),
-        ))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(minx, miny),
+                        Point::new_raw_xy(maxx, miny),
+                        Point::new_raw_xy(maxx, maxy),
+                        Point::new_raw_xy(minx, maxy),
+                        Point::new_raw_xy(minx, miny),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .expect("test polygon is valid"),
+        )
     }
 
     fn line(start: (f64, f64), end: (f64, f64)) -> Shape {
         Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_vecs(
-                vec![start.0, end.0],
-                vec![start.1, end.1],
-                None,
-                None,
-            ))
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(vec![start.0, end.0], vec![start.1, end.1], None, None)
+                    .unwrap(),
+            )
             .expect("fixture line has two vertices"),
         )
     }
@@ -1108,16 +1132,22 @@ mod tests {
     #[test]
     fn geographic_line_scalar_does_not_enter_cartesian_direct_relation() {
         let scalar = PreparedPlan::new(line((175.0, 0.0), (-175.0, 0.0)));
-        let polygon = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(170.0, -10.0),
-                Point::new_raw_xy(-170.0, -10.0),
-                Point::new_raw_xy(-170.0, 10.0),
-                Point::new_raw_xy(170.0, 10.0),
-                Point::new_raw_xy(170.0, -10.0),
-            ]),
-            Vec::new(),
-        ));
+        let polygon = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(170.0, -10.0),
+                        Point::new_raw_xy(-170.0, -10.0),
+                        Point::new_raw_xy(-170.0, 10.0),
+                        Point::new_raw_xy(170.0, 10.0),
+                        Point::new_raw_xy(170.0, -10.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .expect("test polygon is valid"),
+        );
         assert_eq!(
             scalar_vs_shapes(
                 &Predicate::Within.spec(),
@@ -1169,7 +1199,10 @@ mod tests {
     #[test]
     fn the_scalar_lane_gate_never_changes_an_answer() {
         let line = |points: Vec<Point>| {
-            Shape::LineString(LineSeq::try_new(CoordSeq::from(points)).expect("two vertices"))
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap())
+                    .expect("two vertices"),
+            )
         };
         let corpus = [
             // Strictly disjoint envelopes — every spelling is gated.
@@ -1244,13 +1277,13 @@ mod tests {
                     left: &left_plan,
                     right: &right_plan,
                 };
-                let relation = predicate_matrix_value(&spec, pair.relate());
+                let relation = predicate_matrix_value(&spec, pair.relate().unwrap());
                 let pair = PreparedTopologyPair::Cartesian {
                     left: &left_plan,
                     right: &right_plan,
                 };
                 assert_eq!(
-                    topology_scalar_pair(&spec, pair),
+                    topology_scalar_pair(&spec, pair).unwrap(),
                     relation,
                     "{predicate:?} disagreed with its own relation",
                 );
@@ -1279,13 +1312,14 @@ mod tests {
     #[test]
     fn geographic_crossing_packed_rows_fail_open_the_bounds_gate() {
         let query = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
-        let coords = CoordSeq::from(vec![
+        let coords = CoordSeq::try_from_points(&[
             Point::new_raw_xy(170.0, 40.0),
             Point::new_raw_xy(-170.0, 40.0),
             Point::new_raw_xy(-170.0, 50.0),
             Point::new_raw_xy(170.0, 50.0),
             Point::new_raw_xy(170.0, 40.0),
-        ]);
+        ])
+        .expect("test ring coordinates are valid");
         let offsets = [0, 5];
         let cache = crate::geometry::FrameDependentCaches::default();
         let actual = scalar_vs_shapes(

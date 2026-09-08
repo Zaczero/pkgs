@@ -3,7 +3,7 @@
 //! no heap, no wrapper types.
 
 use crate::boundary::geographic::EARTH_AUTHALIC_RADIUS_M;
-use crate::geometry::{Point, Polygon, Ring, Shape};
+use crate::geometry::{CoordSeq, Point, Polygon, Ring, Shape};
 use crate::grid::s2::cellid::{CellId, Face};
 use crate::grid::s2::projection::{
     Point3, face_uv_to_xyz, point_to_lonlat, siti_to_st, st_to_uv, valid_face_uv,
@@ -195,11 +195,14 @@ impl Cell {
     /// cell boundary (great-circle edges on the sphere). Use cell-algebra
     /// methods (`contains`, `parent`, set ops) for exact hierarchical work;
     /// do not treat this polygon as a geodesic densification of the cell.
-    pub(crate) fn boundary_shape(self) -> Shape {
+    pub(crate) fn boundary_shape(self) -> crate::error::Result<Shape> {
         let vertices = self.vertices_lonlat();
         let mut shell = vertices.to_vec();
         shell.push(vertices[0]);
-        Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()))
+        Ok(Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&shell)?),
+            Vec::new(),
+        )?))
     }
 
     /// The cell's exact latitude/longitude bound (canonical S2
@@ -441,7 +444,7 @@ mod tests {
     #[test]
     fn boundary_is_closed_quad() {
         let cell = Cell::from_id(CellId::from_lonlat(13.4, 52.5).parent(12).expect("coarser"));
-        let Shape::Polygon(polygon) = cell.boundary_shape() else {
+        let Ok(Shape::Polygon(polygon)) = cell.boundary_shape() else {
             panic!("expected a polygon");
         };
         assert_eq!(polygon.shell.len(), 5);

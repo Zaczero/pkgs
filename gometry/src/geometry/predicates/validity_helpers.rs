@@ -135,17 +135,21 @@ pub(crate) struct MinimumClearanceWitness {
     pub(crate) distance_squared: f64,
 }
 
-pub(crate) fn minimum_clearance_witness(shape: &Shape) -> Option<MinimumClearanceWitness> {
-    let points = shape.points_vec();
+pub(crate) fn minimum_clearance_witness(
+    shape: &Shape,
+) -> crate::error::Result<Option<MinimumClearanceWitness>> {
+    let points = shape.points_vec()?;
     if points.len() < 2 {
-        return None;
+        return Ok(None);
     }
     let segments = indexed_segments(shape);
-    if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
-        minimum_clearance_witness_indexed(&points, &segments)
-    } else {
-        minimum_clearance_witness_brute(&points, &segments)
-    }
+    Ok(
+        if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
+            minimum_clearance_witness_indexed(&points, &segments)
+        } else {
+            minimum_clearance_witness_brute(&points, &segments)
+        },
+    )
 }
 
 /// Indexed nearest-query path (large multipoints / dense linework).

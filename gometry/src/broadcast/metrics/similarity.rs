@@ -1,10 +1,12 @@
 //! Similarity metric parameter broadcasts and scalar CRS-aware thresholds.
 
-#![allow(clippy::similar_names, reason = "coordinate lanes are named by side and axis")]
-use crate::array::PackedStorage;
+#![allow(
+    clippy::similar_names,
+    reason = "coordinate lanes are named by side and axis"
+)]
 use pyo3::types::PyAny;
 
-use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, ValidityMask};
+use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
 use crate::broadcast::metrics::{
     Arc, Bound, CollectRows as _, DistanceUnit, Frame, GeometryInput, Py, PyGeometryArray,
     PyResult, Python, Shape, classify_required, crs, float64_array, paired_arrays, resolve_metric,
@@ -106,9 +108,13 @@ impl SimilarityMode for HausdorffMode {
         missing: Option<&ValidityMask>,
     ) -> crate::error::Result<Option<Vec<f64>>> {
         let identity = match storage {
-            GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. }) => row_map.is_identity(),
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
-PackedStorage::Polygons { .. }) | GeometryArrayStorage::Mixed(_) => true,
+            GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. }) => {
+                row_map.is_identity()
+            },
+            GeometryArrayStorage::Packed(
+                PackedStorage::Points { .. } | PackedStorage::Polygons { .. },
+            )
+            | GeometryArrayStorage::Mixed(_) => true,
         };
         if !identity {
             return Ok(None);
@@ -117,9 +123,9 @@ PackedStorage::Polygons { .. }) | GeometryArrayStorage::Mixed(_) => true,
             if missing.is_some_and(|mask| mask.is_missing(row_index)) {
                 continue;
             }
-            row.with_shape(crate::broadcast::metrics::require_nonempty_hausdorff)?;
+            row.try_with_shape(crate::broadcast::metrics::require_nonempty_hausdorff)?;
             if let crs::MetricModel::Geodesic { frame, .. } = model {
-                row.with_shape(|shape| crs::ensure_geographic_domain_in_frame(*frame, shape))?;
+                row.try_with_shape(|shape| crs::ensure_geographic_domain_in_frame(*frame, shape))?;
             }
         }
         Ok(Some(same_storage_similarity_metric_zeros(storage)))
@@ -249,7 +255,7 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
                         ArrayRow::Missing { value, .. } => Ok(value),
                         ArrayRow::Present(left) => {
                             let logical = left.logical();
-                            left.row().with_shape(|left| {
+                            left.row().try_with_shape(|left| {
                                 kernel(&model, left, right.shape(), densify.at(logical))
                             })
                         },
@@ -270,8 +276,8 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
                     .map(|(left, right)| match (left, right) {
                         (ArrayRow::Present(left), ArrayRow::Present(right)) => {
                             let logical = left.logical();
-                            left.row().with_shape(|left| {
-                                right.row().with_shape(|right| {
+                            left.row().try_with_shape(|left| {
+                                right.row().try_with_shape(|right| {
                                     kernel(&model, left, right, densify.at(logical))
                                 })
                             })

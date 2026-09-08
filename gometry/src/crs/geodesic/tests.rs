@@ -16,7 +16,9 @@ fn p(x: f64, y: f64) -> Point {
 }
 
 fn line(points: Vec<Point>) -> Shape {
-    Shape::LineString(LineSeq::try_new(CoordSeq::from(points)).expect("test line is valid"))
+    Shape::LineString(
+        LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).expect("test line is valid"),
+    )
 }
 
 fn multipoint(points: Vec<Point>) -> Shape {
@@ -36,13 +38,25 @@ fn full_edges(shape: &Shape, metric: &impl GeodesicMetric) -> Vec<GeodesicSegmen
 }
 
 fn point_only_points(shape: &Shape) -> Vec<Point> {
+    let mut points = Vec::new();
+    append_point_only(shape, &mut points);
+    points
+}
+
+fn append_point_only(shape: &Shape, out: &mut Vec<Point>) {
     match shape {
-        Shape::Point(point) => vec![*point],
-        Shape::MultiPoint(points) => points.to_vec(),
-        Shape::GeometryCollection(geometries) => {
-            geometries.iter().flat_map(point_only_points).collect()
+        Shape::Point(point) => out.push(*point),
+        Shape::MultiPoint(points) => {
+            for point in points.iter() {
+                out.push(point);
+            }
         },
-        _ => Vec::new(),
+        Shape::GeometryCollection(geometries) => {
+            for geometry in geometries {
+                append_point_only(geometry, out);
+            }
+        },
+        _ => {},
     }
 }
 
@@ -204,28 +218,36 @@ fn geodesic_segment_intersection_accepts_flattening_boundaries() {
         let geodesic = Geodesic::new(6_378_137.0, flattening);
         let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
         metric
-                .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0)).unwrap();
+            .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
+            .unwrap();
     }
     let outside = Geodesic::new(6_378_137.0, 0.200_000_000_1);
     let metric = EllipsoidMetric::for_crs84_geometry_test(&outside);
     metric
-            .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0)).unwrap_err();
+        .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
+        .unwrap_err();
 }
 
 #[test]
 fn geodesic_segment_rejects_nonunique_shortest_endpoints() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    metric.make_segment(p(0.0, 10.0), p(180.0, -10.0)).unwrap_err();
-    metric.make_segment(p(0.0, 90.0), p(180.0, -90.0)).unwrap_err();
+    metric
+        .make_segment(p(0.0, 10.0), p(180.0, -10.0))
+        .unwrap_err();
+    metric
+        .make_segment(p(0.0, 90.0), p(180.0, -90.0))
+        .unwrap_err();
     let sphere = Geodesic::new(6_378_137.0, 0.0);
     let sphere_metric = EllipsoidMetric::for_crs84_geometry_test(&sphere);
     sphere_metric
-            .make_segment(p(0.0, 0.0), p(180.0, 0.0)).unwrap_err();
+        .make_segment(p(0.0, 0.0), p(180.0, 0.0))
+        .unwrap_err();
     let prolate = Geodesic::new(6_378_137.0, -0.01);
     let prolate_metric = EllipsoidMetric::for_crs84_geometry_test(&prolate);
     prolate_metric
-            .make_segment(p(0.0, 10.0), p(180.0, -10.0)).unwrap_err();
+        .make_segment(p(0.0, 10.0), p(180.0, -10.0))
+        .unwrap_err();
 }
 
 #[test]
@@ -320,14 +342,15 @@ fn brute_geodesic_distance_and_nearest_points(
     right: &Shape,
     metric: &impl GeodesicMetric,
 ) -> Option<(f64, (Point, Point))> {
-    let left_points = left.points_vec();
-    let right_points = right.points_vec();
+    let left_points = left.points_vec().unwrap();
+    let right_points = right.points_vec().unwrap();
     if left_points.is_empty() || right_points.is_empty() {
         return None;
     }
-    if left.intersects(right) {
+    if left.intersects(right).unwrap() {
         return left
             .nearest_points(right)
+            .unwrap()
             .map(|pair| (metric.segment_length(pair.0, pair.1), pair));
     }
     let left_edges = full_edges(left, metric);

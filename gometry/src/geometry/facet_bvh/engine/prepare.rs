@@ -1,6 +1,5 @@
-use std::sync::Arc;
-
 use crate::HeapSize;
+use crate::error::{ResourceError, Result};
 use crate::geometry::facet_bvh::engine::bvh::refine_facet_nearest;
 use crate::geometry::facet_bvh::{
     FACET_SEGMENTS, NearestCandidate, aabb_distance, aabb_distance_squared, point_aabb,
@@ -8,7 +7,7 @@ use crate::geometry::facet_bvh::{
 };
 use crate::geometry::{
     Bounds, CoordSeq, Point, Segment, Shape, XY, point_on_segment, point_segment_distance,
-    point_segment_distance_squared, segments_intersect, xy_bounds_columns,
+    point_segment_distance_squared, segments_intersect, try_copy_slice, xy_bounds_columns,
 };
 
 /// One run of up to [`FACET_SEGMENTS`] consecutive segments inside a single
@@ -32,19 +31,57 @@ pub(crate) struct Facet {
 /// Facets never span a chain boundary, so every facet's vertex run is one
 /// contiguous slice inside its chain's columns.
 pub(crate) struct PreparedLinework {
-    chains: Box<[CoordSeq]>,
+    chains: Vec<CoordSeq>,
     /// Global vertex index where each chain starts (`offsets[i]` is chain
     /// `i`'s first vertex in the packed probe API).
-    chain_vertex_offsets: Box<[usize]>,
+    chain_vertex_offsets: Vec<usize>,
     /// Whether every chain agrees on axis presence (Z/M). Mixed axes make
     /// `nearest_points` fall back to the brute shape path.
     uniform_ordinates: bool,
-    pub(crate) facets: Box<[Facet]>,
+    pub(crate) facets: Vec<Facet>,
     segment_count: usize,
     /// Total bounds over every linework vertex (`None` when empty) — the
     /// O(1) probe gate for the flat scans (the tree root carries the same
     /// bound for traversals).
     aabb: Option<[f64; 4]>,
+}
+
+/// Packed `u32` index count: `base + additional` must fit in `u32`, so the last
+/// real index is `<= u32::MAX - 1` and `u32::MAX` stays the absent-witness
+/// sentinel.
+pub(crate) fn packed_index_count(base: usize, additional: usize) -> Result<usize> {
+    let total = base
+        .checked_add(additional)
+        .ok_or(ResourceError::SizeOverflow)?;
+    u32::try_from(total).map_err(|_| ResourceError::SizeOverflow)?;
+    Ok(total)
+}
+
+fn push_chain_facets(
+    facets: &mut Vec<Facet>,
+    chain: u32,
+    vertices: usize,
+    global_segments: usize,
+) -> Result<usize> {
+    if vertices < 2 {
+        return Ok(0);
+    }
+    let segments = vertices - 1;
+    packed_index_count(global_segments, segments)?;
+    crate::boundary::try_reserve_vec(facets, segments.div_ceil(FACET_SEGMENTS))?;
+    let mut offset = 0;
+    while offset < segments {
+        let count = (segments - offset).min(FACET_SEGMENTS);
+        debug_assert!(u32::try_from(offset).is_ok(), "CoordSeq window is u32");
+        crate::try_push_vec(facets, Facet {
+            chain,
+            first_vertex: offset as u32,
+            segment_count: count as u8,
+            first_segment: (global_segments + offset) as u32,
+        })?;
+        offset += count;
+    }
+    Ok(segments)
 }
 
 impl PreparedLinework {
@@ -56,94 +93,77 @@ impl PreparedLinework {
         HeapSize::heap_bytes(self)
     }
 
-    /// One open chain from a column window — the Hausdorff column-target fast
-    /// path (no `Shape` staging, single-chain facet partition).
-    pub(crate) fn from_open_xy_columns(xs: &[f64], ys: &[f64]) -> Self {
-        debug_assert_eq!(xs.len(), ys.len());
-        if xs.len() < 2 {
-            return Self {
-                chains: Box::default(),
-                chain_vertex_offsets: Box::default(),
-                uniform_ordinates: true,
-                facets: Box::default(),
-                segment_count: 0,
-                aabb: None,
-            };
-        }
-        let chain = CoordSeq::from_columns(Arc::from(xs), Arc::from(ys), None, None);
-        let segments = xs.len() - 1;
-        let mut facets = Vec::with_capacity(segments.div_ceil(FACET_SEGMENTS));
-        let mut offset = 0;
-        while offset < segments {
-            let count = (segments - offset).min(FACET_SEGMENTS);
-            facets.push(Facet {
-                chain: 0,
-                first_vertex: offset as u32,
-                segment_count: count as u8,
-                first_segment: offset as u32,
-            });
-            offset += count;
-        }
-        let aabb = Bounds::from_coords(&chain).map(Bounds::into_array);
+    fn empty() -> Self {
         Self {
-            chains: Box::new([chain]),
-            chain_vertex_offsets: Box::new([0]),
+            chains: Vec::new(),
+            chain_vertex_offsets: Vec::new(),
             uniform_ordinates: true,
-            facets: facets.into_boxed_slice(),
-            segment_count: segments,
-            aabb,
+            facets: Vec::new(),
+            segment_count: 0,
+            aabb: None,
         }
     }
 
-    pub(crate) fn build(shape: &Shape) -> Self {
-        let segment_count = shape.segment_count();
-        if segment_count == 0 {
-            // Point-only / empty shapes carry no linework: no chain staging.
-            return Self {
-                chains: Box::default(),
-                chain_vertex_offsets: Box::default(),
-                uniform_ordinates: true,
-                facets: Box::default(),
-                segment_count: 0,
-                aabb: None,
-            };
+    /// One open chain from a column window — the Hausdorff column-target fast
+    /// path (no `Shape` staging, single-chain facet partition).
+    pub(crate) fn from_open_xy_columns(xs: &[f64], ys: &[f64]) -> Result<Self> {
+        debug_assert_eq!(xs.len(), ys.len());
+        if xs.len() < 2 {
+            return Ok(Self::empty());
         }
+        let chain = CoordSeq::try_from_vecs(try_copy_slice(xs)?, try_copy_slice(ys)?, None, None)?;
+        let aabb = Bounds::from_coords(&chain).map(Bounds::into_array);
+        let mut facets = Vec::new();
+        let segments = push_chain_facets(&mut facets, 0, chain.len(), 0)?;
+        let mut chains = Vec::new();
+        crate::try_push_vec(&mut chains, chain)?;
+        let mut chain_vertex_offsets = Vec::new();
+        crate::try_push_vec(&mut chain_vertex_offsets, 0)?;
+        Ok(Self {
+            chains,
+            chain_vertex_offsets,
+            uniform_ordinates: true,
+            facets,
+            segment_count: segments,
+            aabb,
+        })
+    }
+
+    pub(crate) fn build(shape: &Shape) -> Result<Self> {
         let mut chains = Vec::new();
         let mut chain_vertex_offsets = Vec::new();
+        let mut facets = Vec::new();
         let mut reference_axes = None;
         let mut uniform_ordinates = true;
-        let mut facets = Vec::with_capacity(segment_count.div_ceil(FACET_SEGMENTS));
-        let mut global_vertices = 0;
-        let mut global_segments = 0;
-        shape.for_each_segment_chain(|chain| {
+        let mut global_vertices = 0usize;
+        let mut global_segments = 0usize;
+        shape.try_for_each_segment_chain(|chain| {
             let vertices = chain.len();
             if vertices < 2 {
-                return;
+                return Ok::<(), crate::error::Error>(());
             }
+            let chain_index =
+                u32::try_from(chains.len()).map_err(|_| ResourceError::SizeOverflow)?;
+            let segments = push_chain_facets(&mut facets, chain_index, vertices, global_segments)?;
             let chain_axes = chain.axes();
             match reference_axes {
                 None => reference_axes = Some(chain_axes),
                 Some(axes) if axes != chain_axes => uniform_ordinates = false,
                 _ => {},
             }
-            let chain_index = chains.len();
-            chain_vertex_offsets.push(global_vertices);
-            chains.push(chain.clone());
-            global_vertices += vertices;
-            let segments = vertices - 1;
-            let mut offset = 0;
-            while offset < segments {
-                let count = (segments - offset).min(FACET_SEGMENTS);
-                facets.push(Facet {
-                    chain: chain_index as u32,
-                    first_vertex: offset as u32,
-                    segment_count: count as u8,
-                    first_segment: (global_segments + offset) as u32,
-                });
-                offset += count;
-            }
-            global_segments += segments;
-        });
+            crate::try_push_vec(&mut chain_vertex_offsets, global_vertices)?;
+            crate::try_push_vec(&mut chains, chain.clone())?;
+            global_vertices = global_vertices
+                .checked_add(vertices)
+                .ok_or(ResourceError::SizeOverflow)?;
+            global_segments = global_segments
+                .checked_add(segments)
+                .ok_or(ResourceError::SizeOverflow)?;
+            Ok(())
+        })?;
+        if chains.is_empty() {
+            return Ok(Self::empty());
+        }
         let aabb = chains
             .iter()
             .filter_map(Bounds::from_coords)
@@ -152,14 +172,14 @@ impl PreparedLinework {
                 bounds
             })
             .map(Bounds::into_array);
-        Self {
-            chains: chains.into_boxed_slice(),
-            chain_vertex_offsets: chain_vertex_offsets.into_boxed_slice(),
+        Ok(Self {
+            chains,
+            chain_vertex_offsets,
             uniform_ordinates,
-            facets: facets.into_boxed_slice(),
-            segment_count,
+            facets,
+            segment_count: global_segments,
             aabb,
-        }
+        })
     }
 
     fn facet_chain(&self, facet: Facet) -> (&CoordSeq, Facet) {
@@ -219,7 +239,7 @@ impl PreparedLinework {
     /// Single-chain fast path: direct column refs when the shape has exactly
     /// one linework chain (avoids iterator overhead in hot squared-safe scans).
     pub(crate) fn vertex_columns(&self) -> Option<(&[f64], &[f64])> {
-        match self.chains.as_ref() {
+        match self.chains.as_slice() {
             [chain] => Some((chain.xs(), chain.ys())),
             _ => None,
         }
@@ -529,5 +549,149 @@ crate::heapless!(Facet);
 impl HeapSize for PreparedLinework {
     fn heap_bytes(&self) -> usize {
         self.chains.heap_bytes() + self.chain_vertex_offsets.heap_bytes() + self.facets.heap_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::{
+        CoordinateAxes, LineSeq, MOrdinate, MultiLineString, MultiMember, Point, Shape, ZOrdinate,
+    };
+    use crate::test_support::fail_allocations_after;
+
+    fn line_xy(points: &[(f64, f64)]) -> LineSeq {
+        let points: Vec<Point> = points
+            .iter()
+            .map(|&(x, y)| Point::new_raw_xy(x, y))
+            .collect();
+        LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn columns_shorter_than_two_vertices_are_empty() {
+        let linework = PreparedLinework::from_open_xy_columns(&[0.0], &[0.0]).unwrap();
+        assert_eq!(linework.segment_count(), 0);
+        assert!(linework.facets.is_empty());
+        assert!(linework.chains.is_empty());
+    }
+
+    #[test]
+    fn columns_two_vertices_are_one_facet() {
+        let linework = PreparedLinework::from_open_xy_columns(&[0.0, 1.0], &[0.0, 0.0]).unwrap();
+        assert_eq!(linework.segment_count(), 1);
+        assert_eq!(linework.facets.len(), 1);
+        assert_eq!(linework.facets[0].first_vertex, 0);
+        assert_eq!(linework.facets[0].first_segment, 0);
+        assert_eq!(linework.facets[0].segment_count, 1);
+        assert_eq!(linework.facets[0].chain, 0);
+    }
+
+    #[test]
+    fn columns_nine_segments_split_into_two_facets() {
+        let xs: Vec<f64> = (0..10).map(|value| value as f64).collect();
+        let ys = vec![0.0; 10];
+        let linework = PreparedLinework::from_open_xy_columns(&xs, &ys).unwrap();
+        assert_eq!(linework.segment_count(), 9);
+        assert_eq!(linework.facets.len(), 2);
+        assert_eq!(linework.facets[0].segment_count, 8);
+        assert_eq!(linework.facets[1].segment_count, 1);
+        assert_eq!(linework.facets[1].first_vertex, 8);
+        assert_eq!(linework.facets[1].first_segment, 8);
+    }
+
+    #[test]
+    fn columns_return_resource_on_allocation_failure() {
+        let xs = [0.0, 1.0];
+        let ys = [0.0, 0.0];
+        match fail_allocations_after(0, || PreparedLinework::from_open_xy_columns(&xs, &ys)) {
+            Err(error) => assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            )),
+            Ok(_) => panic!("expected allocation failure"),
+        }
+    }
+
+    #[test]
+    fn point_shape_is_empty_linework() {
+        let linework = PreparedLinework::build(&Shape::empty_point()).unwrap();
+        assert_eq!(linework.segment_count(), 0);
+        assert!(linework.facets.is_empty());
+    }
+
+    #[test]
+    fn three_one_segment_chains_are_three_facets() {
+        let shape = Shape::MultiLineString(
+            MultiLineString::try_new(CoordinateAxes::XY, vec![
+                MultiMember::Value(line_xy(&[(0.0, 0.0), (1.0, 0.0)])),
+                MultiMember::Value(line_xy(&[(2.0, 0.0), (3.0, 0.0)])),
+                MultiMember::Value(line_xy(&[(4.0, 0.0), (5.0, 0.0)])),
+            ])
+            .unwrap(),
+        );
+        let linework = PreparedLinework::build(&shape).unwrap();
+        assert_eq!(linework.segment_count(), 3);
+        assert_eq!(linework.facets.len(), 3);
+        assert_eq!(linework.facets[0].first_segment, 0);
+        assert_eq!(linework.facets[1].first_segment, 1);
+        assert_eq!(linework.facets[2].first_segment, 2);
+        assert_eq!(linework.facets[0].chain, 0);
+        assert_eq!(linework.facets[1].chain, 1);
+        assert_eq!(linework.facets[2].chain, 2);
+        assert!(linework.uniform_ordinates());
+    }
+
+    #[test]
+    fn mixed_axes_are_not_uniform() {
+        let xy = Shape::LineString(line_xy(&[(0.0, 0.0), (1.0, 0.0)]));
+        let xyz = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_axes(0.0, 1.0, ZOrdinate(Some(1.0)), MOrdinate(None)),
+                    Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(2.0)), MOrdinate(None)),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let shape = Shape::geometry_collection(vec![xy, xyz]).unwrap();
+        let linework = PreparedLinework::build(&shape).unwrap();
+        assert_eq!(linework.segment_count(), 2);
+        assert_eq!(linework.facets.len(), 2);
+        assert!(!linework.uniform_ordinates());
+    }
+
+    #[test]
+    fn build_returns_resource_on_allocation_failure() {
+        let shape = Shape::LineString(line_xy(&[(0.0, 0.0), (1.0, 0.0)]));
+        match fail_allocations_after(0, || PreparedLinework::build(&shape)) {
+            Err(error) => assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            )),
+            Ok(_) => panic!("expected allocation failure"),
+        }
+    }
+
+    #[test]
+    fn push_chain_facets_rejects_count_that_would_claim_the_absent_sentinel() {
+        let mut facets = Vec::new();
+        let error = push_chain_facets(&mut facets, 0, 2, u32::MAX as usize).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
+        assert!(facets.is_empty());
+    }
+
+    #[test]
+    fn push_chain_facets_last_real_index_is_below_the_absent_sentinel() {
+        let mut facets = Vec::new();
+        let segments = push_chain_facets(&mut facets, 0, 2, u32::MAX as usize - 1).unwrap();
+        assert_eq!(segments, 1);
+        assert_eq!(facets.len(), 1);
+        assert_eq!(facets[0].first_segment, u32::MAX - 1);
     }
 }

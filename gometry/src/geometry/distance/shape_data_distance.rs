@@ -1,4 +1,3 @@
-use crate::geometry::distance;
 use super::RequiredPointTester;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
@@ -9,18 +8,18 @@ use crate::geometry::distance::{
 };
 use crate::geometry::{
     DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point,
-    PointBatchTester, PreparedPlan, Shape, finish_planar_squared_min, point_distance,
+    PointBatchTester, PreparedPlan, Shape, distance, finish_planar_squared_min, point_distance,
     points_dwithin,
 };
 impl PreparedPlan {
     /// Planar distance with both sides' prepared state cached on the handle —
     /// shadowing [`Shape::distance`] (which builds throwaway parts) so any
     /// caller holding the handle gets amortized indexes automatically.
-    pub fn distance(&self, other: &Self) -> f64 {
+    pub fn distance(&self, other: &Self) -> Result<f64> {
         // Same point-pair shortcut as `Shape::distance`: a pair of points
         // needs no parts machinery at all.
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
-            return point_distance(*a, *b);
+            return Ok(point_distance(*a, *b));
         }
         // Disjoint boxes cannot intersect: the zero-distance oracles only
         // run when the bounds overlap (they answer `false` for everything
@@ -28,7 +27,7 @@ impl PreparedPlan {
         let bounds = self.bounds().zip(other.bounds());
         let overlapping = bounds.is_some_and(|(left, right)| left.intersects(right));
         if overlapping && quick_area_overlap(self.shape(), other.shape()).is_some() {
-            return 0.0;
+            return Ok(0.0);
         }
         // Puntal-vs-(few-segment lineal/areal): the disjoint distance is the min
         // point-to-edge distance, walked in place. Below the BVH crossover the
@@ -45,26 +44,27 @@ impl PreparedPlan {
         {
             // Always finish through the shared rescue — bare sqrt false-zeros
             // at 1e-200 point×line / multipoint×poly separations.
-            return finish_planar_squared_min(squared, || {
+            return Ok(finish_planar_squared_min(squared, || {
                 puntal_brute_distance(self.shape(), other.shape()).unwrap_or(0.0)
-            });
+            }));
         }
-        let self_parts = self.distance_parts();
-        let other_parts = other.distance_parts();
+        let self_parts = self.distance_parts()?;
+        let other_parts = other.distance_parts()?;
         if overlapping
             && parts_boundary_contact(self.shape(), self_parts, other.shape(), other_parts)
         {
-            return 0.0;
+            return Ok(0.0);
         }
-        self.shape()
-            .distance_disjoint_with_parts(self_parts, other_parts)
+        Ok(self
+            .shape()
+            .distance_disjoint_with_parts(self_parts, other_parts))
     }
 
     /// Planar `dwithin` on cached prepared state — see [`Self::distance`].
-    pub fn dwithin(&self, other: &Self, distance: f64) -> bool {
+    pub fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {
         // Point pairs answer directly (mirrors `Shape::dwithin`).
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
-            return points_dwithin(*a, *b, distance);
+            return Ok(points_dwithin(*a, *b, distance));
         }
         let bounds = self.bounds().zip(other.bounds());
         let limit = distance * distance;
@@ -74,12 +74,12 @@ impl PreparedPlan {
             && let Some((left, right)) = bounds
             && bounds_distance_squared(left, right) > limit
         {
-            return false;
+            return Ok(false);
         }
         // Disjoint boxes cannot intersect — see `distance`.
         let overlapping = bounds.is_some_and(|(left, right)| left.intersects(right));
         if overlapping && quick_area_overlap(self.shape(), other.shape()).is_some() {
-            return true;
+            return Ok(true);
         }
         // Puntal brute finished through the same helper as distance.
         let use_sq = limit.is_normal() && distance > 0.0;
@@ -92,23 +92,24 @@ impl PreparedPlan {
             let d = finish_planar_squared_min(squared, || {
                 puntal_brute_distance(self.shape(), other.shape()).unwrap_or(0.0)
             });
-            return d <= distance;
+            return Ok(d <= distance);
         }
-        let self_parts = self.distance_parts();
-        let other_parts = other.distance_parts();
+        let self_parts = self.distance_parts()?;
+        let other_parts = other.distance_parts()?;
         if overlapping
             && parts_boundary_contact(self.shape(), self_parts, other.shape(), other_parts)
         {
-            return true;
+            return Ok(true);
         }
         if !limit.is_finite() || !use_sq {
-            return self
+            return Ok(self
                 .shape()
                 .distance_disjoint_with_parts(self_parts, other_parts)
-                <= distance;
+                <= distance);
         }
-        self.shape()
-            .dwithin_disjoint_with_parts(self_parts, other_parts, distance)
+        Ok(self
+            .shape()
+            .dwithin_disjoint_with_parts(self_parts, other_parts, distance))
     }
 
     /// Geodesic distance with both sides' geodesic working state cached on the
@@ -189,25 +190,26 @@ impl PreparedPlan {
         clippy::impl_trait_in_params,
         reason = "the probe stream is consumed once and its concrete iterator type is not part of the API"
     )]
-    pub fn distance_points(&self, probes: impl Iterator<Item = (f64, f64)>) -> Vec<f64> {
-        let tester = self.point_tester_required(RequiredPointTester(()));
-        let parts = self.distance_parts();
+    pub fn distance_points(&self, probes: impl Iterator<Item = (f64, f64)>) -> Result<Vec<f64>> {
+        let tester = self.point_tester_required(RequiredPointTester(()))?;
+        let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);
         let bvh = parts.bvh();
         let mut stack = Vec::new();
-        probes
-            .map(|(x, y)| {
-                Self::distance_point_with_resolved(
-                    self.shape(),
-                    Point::new_raw_xy(x, y),
-                    tester,
-                    parts,
-                    parts_squared_safe,
-                    bvh,
-                    &mut stack,
-                )
-            })
-            .collect()
+        let mut distances = Vec::new();
+        for (x, y) in probes {
+            let distance = Self::distance_point_with_resolved(
+                self.shape(),
+                Point::new_raw_xy(x, y),
+                tester,
+                parts,
+                parts_squared_safe,
+                bvh,
+                &mut stack,
+            );
+            crate::try_push_vec(&mut distances, distance)?;
+        }
+        Ok(distances)
     }
 
     fn distance_point_with_resolved(
@@ -281,7 +283,7 @@ impl PreparedPlan {
     /// boundary-inclusive, area-interior aware (a point inside a polygon is
     /// at distance 0 even though every ring edge is farther). See
     /// [`Self::dwithin_points`] for the batch lane.
-    pub fn dwithin_point(&self, point: Point, distance: f64) -> bool {
+    pub fn dwithin_point(&self, point: Point, distance: f64) -> Result<bool> {
         self.dwithin_point_with(point, distance, &mut Vec::new())
     }
 
@@ -295,33 +297,39 @@ impl PreparedPlan {
         &self,
         probes: impl Iterator<Item = (f64, f64)>,
         distance: f64,
-    ) -> Vec<bool> {
-        let tester = self.point_tester_required(RequiredPointTester(()));
-        let parts = self.distance_parts();
+    ) -> Result<Vec<bool>> {
+        let tester = self.point_tester_required(RequiredPointTester(()))?;
+        let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);
         let bvh = parts.bvh();
         let mut stack = Vec::new();
-        probes
-            .map(|(x, y)| {
-                Self::dwithin_point_with_resolved(
-                    self.shape(),
-                    Point::new_raw_xy(x, y),
-                    distance,
-                    tester,
-                    parts,
-                    parts_squared_safe,
-                    bvh,
-                    &mut stack,
-                )
-            })
-            .collect()
+        let mut matches = Vec::new();
+        for (x, y) in probes {
+            let matched = Self::dwithin_point_with_resolved(
+                self.shape(),
+                Point::new_raw_xy(x, y),
+                distance,
+                tester,
+                parts,
+                parts_squared_safe,
+                bvh,
+                &mut stack,
+            );
+            crate::try_push_vec(&mut matches, matched)?;
+        }
+        Ok(matches)
     }
 
     /// One probe's `dwithin` over a caller-provided (reused) traversal stack.
-    fn dwithin_point_with(&self, point: Point, distance: f64, stack: &mut Vec<u32>) -> bool {
-        let tester = self.point_tester_required(RequiredPointTester(()));
-        let parts = self.distance_parts();
-        Self::dwithin_point_with_resolved(
+    fn dwithin_point_with(
+        &self,
+        point: Point,
+        distance: f64,
+        stack: &mut Vec<u32>,
+    ) -> Result<bool> {
+        let tester = self.point_tester_required(RequiredPointTester(()))?;
+        let parts = self.distance_parts()?;
+        Ok(Self::dwithin_point_with_resolved(
             self.shape(),
             point,
             distance,
@@ -330,7 +338,7 @@ impl PreparedPlan {
             squared_space_safe(parts),
             parts.bvh(),
             stack,
-        )
+        ))
     }
 
     fn dwithin_point_with_resolved(
@@ -468,12 +476,12 @@ impl PreparedPlan {
     /// Planar `intersects` on cached prepared state — the facet trees built
     /// by any earlier distance/dwithin call drive the crossing test, so
     /// repeated predicates on the same operands never rebuild an index.
-    pub fn intersects(&self, other: &Self) -> bool {
+    pub fn intersects(&self, other: &Self) -> Result<bool> {
         let (Some(left_bounds), Some(right_bounds)) = (self.bounds(), other.bounds()) else {
-            return false;
+            return Ok(false);
         };
         if !left_bounds.intersects(right_bounds) {
-            return false;
+            return Ok(false);
         }
         let (left, right) = (self.shape(), other.shape());
         // Two axis-aligned rectangles each equal their bounding box, so
@@ -482,13 +490,20 @@ impl PreparedPlan {
         if crate::geometry::is_axis_aligned_rectangle(left, left_bounds)
             && crate::geometry::is_axis_aligned_rectangle(right, right_bounds)
         {
-            return true;
+            return Ok(true);
         }
         // Containment first (raycast over the rings, no prepared linework) so
-        // the common area-overlap case never builds `distance_parts`. `||`
-        // short-circuits: the boundary-crossing test — and ONLY it — pays to
-        // build the prepared linework, and only when containment is negative.
-        area_overlap_probe(left, right)
-            || parts_boundary_contact(left, self.distance_parts(), right, other.distance_parts())
+        // the common area-overlap case never builds `distance_parts`. The
+        // boundary-crossing test — and ONLY it — pays to build the prepared
+        // linework, and only when containment is negative.
+        if area_overlap_probe(left, right) {
+            return Ok(true);
+        }
+        Ok(parts_boundary_contact(
+            left,
+            self.distance_parts()?,
+            right,
+            other.distance_parts()?,
+        ))
     }
 }

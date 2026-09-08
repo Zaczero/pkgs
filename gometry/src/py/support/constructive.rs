@@ -169,7 +169,7 @@ pub(crate) fn voronoi_flatten(
     Ok(PyGeometryArray::from_shapes(
         cells.into_iter().flatten().collect(),
         frame,
-    ))
+    )?)
 }
 
 /// Voronoi edges straight into packed line storage: the kernel hands back one
@@ -192,7 +192,7 @@ pub(crate) fn voronoi_edges_flatten(
     )?;
     let (coords, offsets) = crate::array::concat_packed_line_columns(columns)?;
     Ok(if coords.is_empty() {
-        PyGeometryArray::from_shapes(Vec::new(), frame)
+        PyGeometryArray::from_shapes(Vec::new(), frame)?
     } else {
         PyGeometryArray::packed_lines(coords, offsets, frame)
     })
@@ -389,7 +389,7 @@ pub(crate) fn geodesic_by_identity(
     if shape.is_empty() {
         return rebuild(Vec::new());
     }
-    let original = shape.points_vec();
+    let original = shape.points_vec()?;
     let source = crs.unwrap_or("EPSG:4326");
     let local = crate::crs::estimate_local_crs_at(shape, source, state)?;
     let projected = crate::crs::transform_at(shape, source, &local.definition, state)

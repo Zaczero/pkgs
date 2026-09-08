@@ -98,7 +98,7 @@ impl FrameDependentCaches {
     pub(crate) fn geographic_topology_graph(
         &self,
         view: crate::geographic::ScalarGeographicView<'_>,
-    ) -> Arc<crate::geometry::topology::TopologyGraph> {
+    ) -> Result<Arc<crate::geometry::topology::TopologyGraph>> {
         #[cfg(test)]
         self.geographic_topology_accesses
             .fetch_add(1, Ordering::Relaxed);
@@ -110,7 +110,7 @@ impl FrameDependentCaches {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if slot.key == Some(key) {
                 if let Some(graph) = &slot.graph {
-                    return Arc::clone(graph);
+                    return Ok(Arc::clone(graph));
                 }
                 slot.generation
             } else {
@@ -124,18 +124,19 @@ impl FrameDependentCaches {
         #[cfg(test)]
         self.geographic_topology_builds
             .fetch_add(1, Ordering::Relaxed);
-        let built = Arc::new(crate::geometry::topology::TopologyGraph::geographic(view));
+        let built = Arc::try_new(crate::geometry::topology::TopologyGraph::geographic(view)?)
+            .map_err(|_| crate::error::ResourceError::Allocation)?;
         let mut slot = self
             .geographic_topology
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if slot.key == Some(key) && slot.generation == generation {
             if let Some(graph) = &slot.graph {
-                return Arc::clone(graph);
+                return Ok(Arc::clone(graph));
             }
             slot.graph = Some(Arc::clone(&built));
         }
-        built
+        Ok(built)
     }
 
     #[cfg(test)]
@@ -280,12 +281,12 @@ impl ShapeData {
     /// shadows the `Deref`→[`Shape::envelope`], which would otherwise rescan
     /// every coordinate on each call. Mirrors GEOS, which caches the
     /// geometry envelope rather than recomputing it.
-    pub fn envelope(&self) -> Shape {
+    pub fn envelope(&self) -> crate::error::Result<Shape> {
         // `envelope` produces boxes → `POLYGON EMPTY` for empty input (the
         // output-type convention), matching `Shape::envelope`. A non-empty
         // degenerate box still collapses via `bounds_to_shape`.
         self.bounds()
-            .map_or_else(Shape::empty_polygon, bounds_to_shape)
+            .map_or_else(|| Ok(Shape::empty_polygon()), bounds_to_shape)
     }
 }
 
@@ -319,16 +320,20 @@ impl PreparedPlan {
         self.metric.get_or_init(|| Box::new(MetricPlan::default()))
     }
 
-    pub(crate) fn topology_graph(&self) -> &crate::geometry::TopologyGraph {
+    pub(crate) fn topology_graph(&self) -> Result<&crate::geometry::TopologyGraph> {
         #[cfg(test)]
         self.topology()
             .cartesian_graph_accesses
             .fetch_add(1, Ordering::Relaxed);
-        self.topology().cartesian_graph.get_or_init(|| {
-            Box::new(crate::geometry::topology::TopologyGraph::cartesian(
-                self.shape(),
-            ))
-        })
+        self.topology()
+            .cartesian_graph
+            .get_or_try_init(|| {
+                Box::try_new(crate::geometry::topology::TopologyGraph::cartesian(
+                    self.shape(),
+                )?)
+                .map_err(|_| crate::error::Error::from(crate::error::ResourceError::Allocation))
+            })
+            .map(Box::as_ref)
     }
 
     #[cfg(test)]
@@ -389,16 +394,20 @@ impl PreparedPlan {
             .get_or_init(|| self.shape().crosses_antimeridian())
     }
 
-    pub(crate) fn distance_parts(&self) -> &DistanceParts {
-        self.metric()
-            .distance
-            .get_or_init(|| Box::new(self.shape().distance_parts()))
+    pub(crate) fn distance_parts(&self) -> Result<&DistanceParts> {
+        if let Some(parts) = self.metric().distance.get() {
+            return Ok(parts.as_ref());
+        }
+        let parts = Box::new(self.shape().distance_parts()?);
+        Ok(self.metric().distance.get_or_init(|| parts).as_ref())
     }
 
-    pub(crate) fn distance_3d_parts(&self) -> &crate::geometry::Distance3dParts {
-        self.metric()
-            .distance_3d
-            .get_or_init(|| Box::new(crate::geometry::Distance3dParts::build(self.shape())))
+    pub(crate) fn distance_3d_parts(&self) -> Result<&crate::geometry::Distance3dParts> {
+        if let Some(parts) = self.metric().distance_3d.get() {
+            return Ok(parts.as_ref());
+        }
+        let parts = Box::new(crate::geometry::Distance3dParts::build(self.shape())?);
+        Ok(self.metric().distance_3d.get_or_init(|| parts).as_ref())
     }
 
     pub(crate) fn line_index(&self) -> Result<&LineIndex> {
@@ -482,14 +491,22 @@ impl PreparedPlan {
     pub(in crate::geometry) fn point_tester_required(
         &self,
         _required: crate::geometry::distance::RequiredPointTester,
-    ) -> Option<&PointBatchTester> {
-        self.topology()
+    ) -> Result<Option<&PointBatchTester>> {
+        Ok(self
+            .topology()
             .point_tester
-            .get_or_init(|| {
-                matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_))
-                    .then(|| Box::new(PointBatchTester::new(self.shape())))
-            })
-            .as_deref()
+            .get_or_try_init(|| -> Result<_> {
+                if matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_)) {
+                    let tester = PointBatchTester::new(self.shape())?;
+                    Ok(Some(
+                        Box::try_new(tester)
+                            .map_err(|_| crate::error::ResourceError::Allocation)?,
+                    ))
+                } else {
+                    Ok(None)
+                }
+            })?
+            .as_deref())
     }
 
     pub(crate) fn with_seeded_bounds(self, bounds: Option<Bounds>) -> Self {
@@ -621,7 +638,7 @@ mod footprint_tests {
         assert!(data.metric.get().is_none());
         assert!(data.topology.get().is_none());
         assert_eq!(data.retained_heap_bytes(), cold);
-        let _ = data.distance_parts();
+        let _ = data.distance_parts().unwrap();
         assert!(data.metric.get().is_some());
         assert!(data.retained_heap_bytes() > cold);
     }
@@ -632,8 +649,8 @@ mod frame_cache_tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
-    use crate::geometry::{CoordSeq, LineSeq};
     use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::{CoordSeq, LineSeq};
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
@@ -687,12 +704,10 @@ mod frame_cache_tests {
     #[test]
     fn repeated_lrs_reuses_the_same_line_index_arc() {
         let shape = PreparedPlan::new(Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_vecs(
-                vec![0.0, 1.0, 2.0],
-                vec![0.0, 1.0, 0.0],
-                None,
-                None,
-            ))
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 0.0], None, None)
+                    .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         ));
         let cache = FrameDependentCaches::default();
@@ -708,17 +723,18 @@ mod frame_cache_tests {
     #[test]
     fn repeated_measured_lrs_reuses_one_column_product() {
         let shape = PreparedPlan::new(Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_vecs(
-                vec![0.0, 1.0, 2.0],
-                vec![0.0, 1.0, 0.0],
-                None,
-                Some(vec![0.0, 1.0, 2.0]),
-            ))
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(
+                    vec![0.0, 1.0, 2.0],
+                    vec![0.0, 1.0, 0.0],
+                    None,
+                    Some(vec![0.0, 1.0, 2.0]),
+                )
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         ));
-        let first = shape
-            .measured_line_index()
-            .expect("measured line index") as *const _;
+        let first = shape.measured_line_index().expect("measured line index") as *const _;
         let second = shape
             .measured_line_index()
             .expect("cached measured line index") as *const _;
@@ -742,12 +758,15 @@ mod frame_cache_tests {
     fn exact_measured_fraction_propagates_each_allocation_failure() {
         let max = f64::MAX;
         let shape = PreparedPlan::new(Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_vecs(
-                vec![0.0, 2.0],
-                vec![0.0, 0.0],
-                Some(vec![10.0, 20.0]),
-                Some(vec![-max, max]),
-            ))
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(
+                    vec![0.0, 2.0],
+                    vec![0.0, 0.0],
+                    Some(vec![10.0, 20.0]),
+                    Some(vec![-max, max]),
+                )
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         ));
         shape.measured_line_index().expect("measured line index");
@@ -773,12 +792,10 @@ mod frame_cache_tests {
     #[test]
     fn frame_entry_heap_bytes_survive_poison() {
         let shape = PreparedPlan::new(Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_vecs(
-                vec![0.0, 1.0, 2.0],
-                vec![0.0, 1.0, 0.0],
-                None,
-                None,
-            ))
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 0.0], None, None)
+                    .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         ));
         let cache = FrameDependentCaches::default();
@@ -800,9 +817,10 @@ mod frame_cache_tests {
     #[test]
     fn geographic_graph_heap_bytes_survive_poison() {
         let cache = FrameDependentCaches::default();
-        let graph = Arc::new(crate::geometry::TopologyGraph::cartesian(&Shape::Point(
-            Point::new_raw_xy(1.0, 2.0),
-        )));
+        let graph = Arc::new(
+            crate::geometry::TopologyGraph::cartesian(&Shape::Point(Point::new_raw_xy(1.0, 2.0)))
+                .unwrap(),
+        );
         let expected = std::mem::size_of_val(graph.as_ref()) + graph.heap_bytes();
         assert!(expected > 0);
         cache.geographic_topology.lock().unwrap().graph = Some(Arc::clone(&graph));

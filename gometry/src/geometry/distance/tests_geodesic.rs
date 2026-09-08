@@ -28,9 +28,9 @@ use crate::geometry::{
 
 fn fresh_bvh_parts(template: &GeodesicParts) -> GeodesicParts {
     GeodesicParts {
-        points: Box::default(),
+        points: Vec::new(),
         segments: template.segments.clone(),
-        point_only: Box::default(),
+        point_only: Vec::new(),
         caps: None,
         facet_bvh: std::sync::OnceLock::new(),
     }
@@ -68,7 +68,7 @@ fn brute_geodesic_directed_hausdorff(
     collect_geodesic_segments_into(target, metric, &mut target_edges)
         .expect("unique test segments");
     let mut target_points = Vec::new();
-    target.collect_points_into(&mut target_points);
+    target.collect_points_into(&mut target_points).unwrap();
     let mut cmax = 0.0_f64;
     source.for_each_point(|point| {
         let cmin =
@@ -109,7 +109,7 @@ fn geodesic_point_collection_preserves_nested_source_order() {
     .expect("mixed collection is valid");
     let mut points = vec![p(-1.0, 0.0)];
 
-    collect_point_only_into(&shape, &mut points);
+    collect_point_only_into(&shape, &mut points).unwrap();
 
     assert_eq!(points, vec![
         p(1.0, 0.0),
@@ -124,16 +124,38 @@ fn geodesic_point_collection_preserves_nested_source_order() {
     clippy::panic_in_result_fn,
     reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
 )]
+fn geodesic_parts_returns_resource_on_allocation_failure() -> Result<()> {
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::fail_allocations_after;
+
+    let shape = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&shape], |metric| {
+        match fail_allocations_after(0, || shape.geodesic_parts(metric)) {
+            Err(error) => assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            )),
+            Ok(_) => panic!("expected allocation failure"),
+        }
+        Ok(())
+    })
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
+)]
 fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
     let source = line(vec![p(0.0, 0.0), p(0.5, 0.0)]);
     let target = line(vec![p(0.0, 0.05), p(0.25, 0.4), p(0.5, 0.05)]);
     with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
         let mut source_edges = Vec::new();
         collect_geodesic_segments_into(&source, metric, &mut source_edges)?;
-        let source_points = source.points_vec();
+        let source_points = source.points_vec().unwrap();
         let mut target_edges = Vec::new();
         collect_geodesic_segments_into(&target, metric, &mut target_edges)?;
-        let target_points = target.points_vec();
+        let target_points = target.points_vec().unwrap();
 
         let source_to_target = super::shape_impl::geodesic_directed_hausdorff_distance(
             &source_points,
@@ -185,7 +207,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                 expect_bvh,
                 "{name} bvh presence"
             );
-            let vertices = probes.points_vec();
+            let vertices = probes.points_vec().unwrap();
             let mut rows = Vec::new();
             let expected_distance = geodesic_capped_sweep_with_parts(
                 &vertices,

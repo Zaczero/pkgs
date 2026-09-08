@@ -1,19 +1,18 @@
 use crate::error::Result;
 use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
 use crate::geometry::{
-    CompiledPattern, Coordinates as _, GeometryErrorKind, Point,
-    PreparedPlan, Shape, graph_relate_shapes, point_equals_exact, point_on_segment,
-    points_equal_exact, same_point,
+    CompiledPattern, Coordinates as _, GeometryErrorKind, Point, PreparedPlan, Shape,
+    graph_relate_shapes, point_equals_exact, point_on_segment, points_equal_exact, same_point,
 };
 
 impl Shape {
     /// Strict point membership used by coordinate operations and geometry
     /// algorithms. Topological predicates use the complete relation matrix.
-    pub fn contains_point(&self, point: Point) -> bool {
+    pub fn contains_point(&self, point: Point) -> Result<bool> {
         self.point_membership::<false>(point)
     }
 
-    pub fn covers_point(&self, point: Point) -> bool {
+    pub fn covers_point(&self, point: Point) -> Result<bool> {
         self.point_membership::<true>(point)
     }
 
@@ -22,8 +21,8 @@ impl Shape {
     /// `contains` in the three arms where they differ — the const flag
     /// keeps a single exhaustive match, so a new `Shape` variant cannot
     /// update one predicate and silently miss its twin.
-    fn point_membership<const BOUNDARY: bool>(&self, point: Point) -> bool {
-        match self {
+    fn point_membership<const BOUNDARY: bool>(&self, point: Point) -> Result<bool> {
+        Ok(match self {
             Self::Point(value) => same_point(*value, point),
             Self::MultiPoint(points) => points.iter().any(|value| same_point(value, point)),
             Self::LineString(points) => {
@@ -60,7 +59,7 @@ impl Shape {
                 }
             }),
             Self::GeometryCollection(_) => {
-                let matrix = graph_relate_shapes(self, &Self::Point(point.to_xy()));
+                let matrix = graph_relate_shapes(self, &Self::Point(point.to_xy()))?;
                 if BOUNDARY {
                     matrix.is_covers()
                 } else {
@@ -68,33 +67,33 @@ impl Shape {
                 }
             },
             Self::Empty(..) => false,
-        }
+        })
     }
 
-    pub fn contains(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_contains()
+    pub fn contains(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_contains())
     }
 
     /// `contains` with no boundary contact: *other* lies in the interior of
     /// *self* and never touches its boundary (DE-9IM `T**FF*FF*`).
-    pub fn contains_properly(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_contains_properly()
+    pub fn contains_properly(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_contains_properly())
     }
 
-    pub fn within(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).transpose().is_contains()
+    pub fn within(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.transpose().is_contains())
     }
 
-    pub fn covers(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_covers()
+    pub fn covers(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_covers())
     }
 
-    pub fn covered_by(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).transpose().is_covers()
+    pub fn covered_by(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.transpose().is_covers())
     }
 
-    pub fn intersects(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_intersects()
+    pub fn intersects(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_intersects())
     }
 
     /// Visit one representative vertex per connected 1D/2D component (first
@@ -149,24 +148,24 @@ impl Shape {
         }
     }
 
-    pub fn disjoint(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_disjoint()
+    pub fn disjoint(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_disjoint())
     }
 
-    pub fn touches(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_touches()
+    pub fn touches(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_touches())
     }
 
-    pub fn crosses(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_crosses_by_dimension()
+    pub fn crosses(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_crosses_by_dimension())
     }
 
-    pub fn overlaps(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_overlaps_by_dimension()
+    pub fn overlaps(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_overlaps_by_dimension())
     }
 
-    pub fn relate(&self, other: &Self) -> String {
-        graph_relate_shapes(self, other).text()
+    pub fn relate(&self, other: &Self) -> Result<String> {
+        Ok(graph_relate_shapes(self, other)?.text())
     }
 }
 
@@ -180,9 +179,7 @@ impl Shape {
             left: &left,
             right: &right,
         };
-        Ok(crate::predicates::engine::topology_scalar_pattern(
-            compiled, &pair,
-        ))
+        crate::predicates::engine::topology_scalar_pattern(compiled, &pair)
     }
 
     fn invalid_de9im_pattern(pattern: &str) -> crate::error::Error {
@@ -192,8 +189,8 @@ impl Shape {
         ))
     }
 
-    pub fn equals(&self, other: &Self) -> bool {
-        graph_relate_shapes(self, other).is_equal_topo()
+    pub fn equals(&self, other: &Self) -> Result<bool> {
+        Ok(graph_relate_shapes(self, other)?.is_equal_topo())
     }
 
     /// Coordinate equality within `tolerance` (per-ordinate `|Δ| ≤ tolerance`,

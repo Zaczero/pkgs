@@ -59,9 +59,9 @@ pub(crate) trait RowContainer: HeapSize + Sized {
 /// Row containers whose Python indexing returns the same container for
 /// slice/fancy-index results.
 pub(crate) trait RowGetItemContainer: RowContainer {
-    fn gather_rows(&self, rows: &[usize]) -> Self;
-    fn slice_rows(&self, start: isize, stop: isize, step: isize) -> Self;
-    fn empty(&self) -> Self;
+    fn gather_rows(&self, rows: &[usize]) -> PyResult<Self>;
+    fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self>;
+    fn empty(&self) -> PyResult<Self>;
     fn container_to_py(py: Python<'_>, value: Self) -> PyResult<Py<PyAny>>;
 
     fn mask_length_error(mask_len: usize, len: usize, _numpy: bool) -> PyErr {
@@ -173,7 +173,7 @@ pub(crate) fn array_getitem<C: RowGetItemContainer>(
         let indices = slice.indices(len as isize)?;
         return C::container_to_py(
             py,
-            container.slice_rows(indices.start, indices.stop, indices.step),
+            container.slice_rows(indices.start, indices.stop, indices.step)?,
         );
     }
     if let Some(index) = numpy_fancy_index(index, C::INDEX_LABEL, C::LABEL)? {
@@ -181,12 +181,13 @@ pub(crate) fn array_getitem<C: RowGetItemContainer>(
             NumpyFancyIndex::Scalar(index) => {
                 container.scalar_row(py, normalize_row(index, len, C::INDEX_LABEL)?)
             },
-            NumpyFancyIndex::Mask(mask) => {
-                C::container_to_py(py, container.gather_rows(&mask_rows::<C>(mask, len, true)?))
-            },
+            NumpyFancyIndex::Mask(mask) => C::container_to_py(
+                py,
+                container.gather_rows(&mask_rows::<C>(mask, len, true)?)?,
+            ),
             NumpyFancyIndex::Indices(indices) => C::container_to_py(
                 py,
-                container.gather_rows(&rows_from_indices(indices, len, C::INDEX_LABEL)?),
+                container.gather_rows(&rows_from_indices(indices, len, C::INDEX_LABEL)?)?,
             ),
         };
     }
@@ -195,17 +196,17 @@ pub(crate) fn array_getitem<C: RowGetItemContainer>(
         // then `Vec<T>: FromPyObject` with another (lying sequences can report
         // len 1 at classify and sys.maxsize at extract → allocator abort).
         match classify_and_collect_fancy_index(py, sequence)? {
-            CollectedFancyIndex::Empty => return C::container_to_py(py, container.empty()),
+            CollectedFancyIndex::Empty => return C::container_to_py(py, container.empty()?),
             CollectedFancyIndex::Indices(indices) => {
                 return C::container_to_py(
                     py,
-                    container.gather_rows(&rows_from_indices(indices, len, C::INDEX_LABEL)?),
+                    container.gather_rows(&rows_from_indices(indices, len, C::INDEX_LABEL)?)?,
                 );
             },
             CollectedFancyIndex::Mask(mask) => {
                 return C::container_to_py(
                     py,
-                    container.gather_rows(&mask_rows::<C>(mask, len, false)?),
+                    container.gather_rows(&mask_rows::<C>(mask, len, false)?)?,
                 );
             },
             CollectedFancyIndex::Invalid => {},

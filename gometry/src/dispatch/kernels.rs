@@ -15,11 +15,10 @@ use crate::numeric::Positive;
 use crate::{
     F64Param, I64Param, line_interpolate_shape, line_interpolate_shape_m, line_substring_shape,
     line_substring_shape_m, metric_concave_hull, metric_constructive_shape,
-    metric_maximum_inscribed_circle,
     metric_constructive_shape_budgeted, metric_frechet_densified, metric_hausdorff_densified,
-    metric_interpolate_m, metric_maximum_inscribed_radius, metric_minimum_bounding_circle,
-    metric_minimum_bounding_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_optional_constructive_shape,
+    metric_interpolate_m, metric_maximum_inscribed_circle, metric_maximum_inscribed_radius,
+    metric_minimum_bounding_circle, metric_minimum_bounding_radius, metric_minimum_clearance,
+    metric_minimum_clearance_line, metric_optional_constructive_shape,
 };
 
 fn scale_length(value: f64, to_metre: f64) -> f64 {
@@ -46,7 +45,7 @@ pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
     reason = "uniform dispatch kernels return Result<Shape>"
 )]
 pub(crate) fn unary_envelope(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    Ok(data.shape().envelope())
+    data.shape().envelope()
 }
 
 /// Convex-hull kernel shared by the spine-routed free function.
@@ -384,7 +383,7 @@ pub(crate) fn unary_is_simple(data: &PreparedPlan, ctx: &CachelessRowContext<'_>
     reason = "dispatch spine requires Result<bool>"
 )]
 pub(crate) fn unary_is_valid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
-    Ok(crate::geometry::validate_data_in_frame(data, ctx.domain).is_none())
+    Ok(crate::geometry::validate_data_in_frame(data, ctx.domain)?.is_none())
 }
 
 /// ``is_convex`` kernel shared by the spine-routed free function.
@@ -673,7 +672,7 @@ pub(crate) fn unary_unique_points(
     data: &PreparedPlan,
     _ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    Ok(data.shape().unique_points())
+    Ok(data.shape().unique_points()?)
 }
 
 /// Remove-repeated-points kernel shared by the spine-routed free function.
@@ -846,8 +845,8 @@ pub(crate) fn binary_distance_3d(
     if left.axes_all_z() && right.axes_all_z() {
         return Ok(scale_length(
             crate::geometry::distance_3d_with_parts(
-                left.distance_3d_parts(),
-                right.distance_3d_parts(),
+                left.distance_3d_parts()?,
+                right.distance_3d_parts()?,
             )?,
             to_metre,
         ));

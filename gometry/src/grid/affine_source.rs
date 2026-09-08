@@ -1399,36 +1399,51 @@ impl LiftedRingFill {
         component: usize,
         ring: usize,
         chain: &LiftedChain,
-    ) -> Option<Self> {
-        let degree = chain.degree?;
+    ) -> crate::error::Result<Option<Self>> {
+        let Some(degree) = chain.degree else {
+            return Ok(None);
+        };
         // An ambiguous full-turn ring cannot certify a pole closure; returning
         // `None` makes the owning source explicitly fail open.
         let pole = if degree == 0 {
             None
         } else {
-            Some(physical_pole_for_chain(chain)?)
+            let Some(pole) = physical_pole_for_chain(chain) else {
+                return Ok(None);
+            };
+            Some(pole)
         };
         let roof = match pole {
-            Some(pole) => Some(PeriodicPoleRoof {
-                pole,
-                turns: degree,
-                span: ExactExpansion::exact_degree_turns(degree)?,
-            }),
+            Some(pole) => {
+                let Some(span) = ExactExpansion::exact_degree_turns(degree) else {
+                    return Ok(None);
+                };
+                Some(PeriodicPoleRoof {
+                    pole,
+                    turns: degree,
+                    span,
+                })
+            },
             None => None,
         };
-        let longitude_envelope = chain.longitude_envelope()?;
-        let periodic_exact = chain.periodic_exact(degree, &longitude_envelope)?;
+        let Some(longitude_envelope) = chain.longitude_envelope() else {
+            return Ok(None);
+        };
+        let Some(periodic_exact) = chain.periodic_exact(degree, &longitude_envelope) else {
+            return Ok(None);
+        };
         let y_index = if uses_linear_plan_for_len(chain.edges.len()) {
             None
         } else {
-            let mut latitudes = Vec::with_capacity(chain.vertices.len());
+            let mut latitudes = Vec::new();
+            crate::try_reserve_vec(&mut latitudes, chain.vertices.len())?;
             latitudes.extend(chain.vertices.iter().map(|vertex| vertex.latitude));
             // Closed chains retain their repeated first vertex, so adjacent
             // spans include the represented closing edge without a synthetic
             // extra id.
-            Some(EdgeYIndex::build(&latitudes))
+            Some(EdgeYIndex::build(&latitudes)?)
         };
-        Some(Self {
+        Ok(Some(Self {
             chain_index,
             component,
             ring,
@@ -1437,7 +1452,7 @@ impl LiftedRingFill {
             roof,
             longitude_envelope,
             periodic_exact,
-        })
+        }))
     }
 
     /// Copies whose lifted longitude can lie on this finite ring fill.  The
@@ -3657,15 +3672,12 @@ impl GeographicCoverageSource {
     pub(crate) fn from_validated(
         source: &Shape,
         target: SphericalGridTarget,
-    ) -> Result<Self, TryReserveError> {
+    ) -> crate::error::Result<Self> {
         Self::build(source, target)
     }
 
     #[cfg(test)]
-    pub(crate) fn new(
-        source: &Shape,
-        target: SphericalGridTarget,
-    ) -> Result<Self, TryReserveError> {
+    pub(crate) fn new(source: &Shape, target: SphericalGridTarget) -> crate::error::Result<Self> {
         // Geographic admission accepts a minute exterior rounding sliver at
         // either pole.  Canonicalize the complete shape before any carrier
         // state is derived: bounds, rectangle recognition, chains, and point
@@ -3674,7 +3686,7 @@ impl GeographicCoverageSource {
         Self::build(&normalized_source, target)
     }
 
-    fn build(source: &Shape, target: SphericalGridTarget) -> Result<Self, TryReserveError> {
+    fn build(source: &Shape, target: SphericalGridTarget) -> crate::error::Result<Self> {
         let exact_axis_rect = exact_world_band(source).or_else(|| {
             source.bounds().filter(|bounds| {
                 exact_axis_rectangle(source, *bounds)
@@ -3691,7 +3703,8 @@ impl GeographicCoverageSource {
         let mut chains = Vec::new();
         let mut points = Vec::new();
         let mut component = 0;
-        collect_shape_chains(source, &mut chains, &mut points, &mut component)?;
+        collect_shape_chains(source, &mut chains, &mut points, &mut component)
+            .map_err(|_| crate::error::ResourceError::Allocation)?;
         let mut unknown = false;
         let mut lifted = Vec::new();
         let mut ring_fills = Vec::new();
@@ -3714,7 +3727,7 @@ impl GeographicCoverageSource {
                 &mut authority_pieces,
                 &mut selection_edges,
                 &mut unknown,
-            );
+            )?;
         }
         for input in points {
             let (Some(longitude), Some(latitude)) = (
@@ -4378,10 +4391,10 @@ fn append_lifted_chain(
     authority_pieces: &mut Vec<AuthorityAffinePiece>,
     selection_edges: &mut Vec<SelectionAffinePiece>,
     unknown: &mut bool,
-) {
+) -> crate::error::Result<()> {
     let Some(chain) = LiftedChain::from_points(&input.points, input.closed) else {
         *unknown = true;
-        return;
+        return Ok(());
     };
     let chain_index = lifted.len();
     for (ordinal, edge_kind) in chain.edges.iter().copied().enumerate() {
@@ -4429,7 +4442,7 @@ fn append_lifted_chain(
     debug_assert_eq!(chain_index, lifted.len());
     if input.closed {
         if let Some(fill) =
-            LiftedRingFill::from_chain(chain_index, input.component, input.ring, &chain)
+            LiftedRingFill::from_chain(chain_index, input.component, input.ring, &chain)?
         {
             ring_fills.push(fill);
         } else {
@@ -4437,6 +4450,7 @@ fn append_lifted_chain(
         }
     }
     lifted.push(chain);
+    Ok(())
 }
 
 /// Retain the raw authority point even when its selection transform cannot be

@@ -16,7 +16,7 @@ fn radial_ring(cx: f64, cy: f64, radii: &[f64], rot: f64, clockwise: bool) -> Co
         points.reverse();
     }
     points.push(points[0]);
-    CoordSeq::from(points)
+    CoordSeq::try_from_points(&points).unwrap()
 }
 
 /// Holeless radial polygon.
@@ -25,6 +25,7 @@ fn radial(cx: f64, cy: f64, radii: &[f64], rot: f64) -> Polygon {
         Ring::from_closed(radial_ring(cx, cy, radii, rot, false)),
         Vec::new(),
     )
+    .unwrap()
 }
 
 /// Radial polygon with a concentric (smaller, CW) radial hole — the
@@ -41,19 +42,24 @@ fn radial_holed(cx: f64, cy: f64, radii: &[f64], rot: f64, hole_scale: f64) -> P
             true,
         ))],
     )
+    .unwrap()
 }
 
 fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
     Polygon::new(
-        Ring::from_closed(vec![
-            Point::new_raw_xy(minx, miny),
-            Point::new_raw_xy(maxx, miny),
-            Point::new_raw_xy(maxx, maxy),
-            Point::new_raw_xy(minx, maxy),
-            Point::new_raw_xy(minx, miny),
-        ]),
+        Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(minx, miny),
+                Point::new_raw_xy(maxx, miny),
+                Point::new_raw_xy(maxx, maxy),
+                Point::new_raw_xy(minx, maxy),
+                Point::new_raw_xy(minx, miny),
+            ])
+            .unwrap(),
+        ),
         Vec::new(),
     )
+    .unwrap()
 }
 
 fn holed_rectangle(
@@ -65,23 +71,28 @@ fn holed_rectangle(
 ) -> Polygon {
     let (hx0, hy0, hx1, hy1) = hole;
     Polygon::new(rectangle(minx, miny, maxx, maxy).shell, vec![
-        Ring::from_closed(vec![
-            Point::new_raw_xy(hx0, hy0),
-            Point::new_raw_xy(hx1, hy0),
-            Point::new_raw_xy(hx1, hy1),
-            Point::new_raw_xy(hx0, hy1),
-            Point::new_raw_xy(hx0, hy0),
-        ]),
+        Ring::from_closed(
+            CoordSeq::try_from_points(&vec![
+                Point::new_raw_xy(hx0, hy0),
+                Point::new_raw_xy(hx1, hy0),
+                Point::new_raw_xy(hx1, hy1),
+                Point::new_raw_xy(hx0, hy1),
+                Point::new_raw_xy(hx0, hy0),
+            ])
+            .unwrap(),
+        ),
     ])
+    .unwrap()
 }
 
 fn assert_fast_matches(name: &str, a: &[Polygon], b: &[Polygon], op: OverlayOp) {
     let fast = clean_overlay(a, b, op)
+        .unwrap()
         .unwrap_or_else(|| panic!("clean_overlay deferred {name} for {op:?}"));
-    let exact = polygon_parts_to_shape(binary_areal_overlay(a, b, op));
+    let exact = polygon_parts_to_shape(binary_areal_overlay(a, b, op).unwrap()).unwrap();
     let area_ok = (fast.area() - exact.area()).abs() <= 1e-6 * exact.area().max(1.0);
     assert!(
-        area_ok && fast.equals(&exact),
+        area_ok && fast.equals(&exact).unwrap(),
         "clean_overlay {name} {op:?} disagrees with exact engine:\n  fast  area={}\n  exact area={}",
         fast.area(),
         exact.area(),
@@ -90,7 +101,7 @@ fn assert_fast_matches(name: &str, a: &[Polygon], b: &[Polygon], op: OverlayOp) 
 
 fn assert_deferred(name: &str, a: &[Polygon], b: &[Polygon], op: OverlayOp) {
     assert!(
-        clean_overlay(a, b, op).is_none(),
+        clean_overlay(a, b, op).unwrap().is_none(),
         "clean_overlay unexpectedly handled {name} for {op:?}"
     );
 }

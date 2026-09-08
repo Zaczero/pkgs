@@ -148,7 +148,9 @@ fn exact_snap_does_not_use_a_rounded_axis_rejection() {
 #[test]
 fn public_delaunay_keeps_collinear_empty_contract() {
     let source = Shape::MultiPoint(
-        crate::geometry::CoordSeq::from(vec![xy(0.0, 0.0), xy(1.0, 0.0), xy(2.0, 0.0)]).into(),
+        crate::geometry::CoordSeq::try_from_points(&vec![xy(0.0, 0.0), xy(1.0, 0.0), xy(2.0, 0.0)])
+            .unwrap()
+            .into(),
     );
     assert!(source.delaunay_triangles().unwrap().is_empty());
 }
@@ -161,6 +163,7 @@ fn polygon(shell: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
             .map(|hole| Ring::closed(hole).expect("valid test hole"))
             .collect(),
     )
+    .expect("valid test polygon")
 }
 
 fn assert_triangulation_error(polygon: Polygon) {
@@ -532,7 +535,9 @@ fn delaunay_triangles_accept_mixed_axis_collection_without_panicking() {
 #[test]
 fn build_area_strict_rejects_mixed_output_axes() {
     let square = |points: Vec<Point>| {
-        Shape::LineString(LineSeq::from_proven(CoordSeq::from_points(&points)))
+        Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_points(&points).unwrap(),
+        ))
     };
     let source = Shape::geometry_collection(vec![
         square(vec![
@@ -564,16 +569,18 @@ fn build_area_strict_rejects_mixed_output_axes() {
 
 #[test]
 fn polygonize_full_strict_scopes_diagnostic_axes_to_source_rows() {
-    let z_line = Shape::LineString(LineSeq::from_proven(CoordSeq::from(vec![
-        xyz(0.0, 0.0, 1.0),
-        xyz(1.0, 0.0, 2.0),
-    ])));
-    let m_line = Shape::LineString(LineSeq::from_proven(CoordSeq::from(vec![
-        Point::new_axes(0.0, 0.0, ZOrdinate(None), MOrdinate(Some(10.0)))
-            .expect("finite test coordinate"),
-        Point::new_axes(-1.0, 0.0, ZOrdinate(None), MOrdinate(Some(20.0)))
-            .expect("finite test coordinate"),
-    ])));
+    let z_line = Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_points(&[xyz(0.0, 0.0, 1.0), xyz(1.0, 0.0, 2.0)]).unwrap(),
+    ));
+    let m_line = Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_points(&[
+            Point::new_axes(0.0, 0.0, ZOrdinate(None), MOrdinate(Some(10.0)))
+                .expect("finite test coordinate"),
+            Point::new_axes(-1.0, 0.0, ZOrdinate(None), MOrdinate(Some(20.0)))
+                .expect("finite test coordinate"),
+        ])
+        .unwrap(),
+    ));
     let sources = [&z_line, &m_line];
 
     let full = Shape::polygonize_full_all(&sources, true)
@@ -852,6 +859,7 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
                 &source_plan,
                 &crate::geometry::PreparedPlan::transient(&centroid),
             )
+            .unwrap()
             .is_contains(),
             "triangle centroid outside source"
         );
@@ -901,7 +909,7 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
                 "triangles {left} and {right} overlap with area {overlap_area}"
             );
             assert!(
-                !triangles[left].overlaps(&triangles[right]),
+                !triangles[left].overlaps(&triangles[right]).unwrap(),
                 "triangles {left} and {right} overlap"
             );
         }

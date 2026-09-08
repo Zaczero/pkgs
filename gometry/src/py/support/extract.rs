@@ -277,7 +277,7 @@ pub(crate) fn parts(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<P
         crate::GeometryValues::One(geometry) => PyGeometryArray::from_shapes(
             part_shapes(geometry.shape.shape()).map_err(pyo3::PyErr::from)?,
             geometry.frame.clone(),
-        )
+        )?
         .into_py_any(py),
         crate::GeometryValues::Array(array) => array
             .flat_map_shapes_groups(py, part_shapes)
@@ -294,12 +294,13 @@ pub(crate) fn parts(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<P
             )?;
             let array = PyGeometryArray::pack_or_mixed(items, frame)?;
             let mut parts = Vec::new();
-            for (_, shape) in array.present_shape_rows() {
+            for row in array.present_shape_rows() {
+                let (_, shape) = row.map_err(PyErr::from)?;
                 for part in part_shapes(&shape).map_err(pyo3::PyErr::from)? {
                     crate::try_push_vec(&mut parts, part).map_err(pyo3::PyErr::from)?;
                 }
             }
-            PyGeometryArray::from_shapes(parts, array.frame).into_py_any(py)
+            PyGeometryArray::from_shapes(parts, array.frame)?.into_py_any(py)
         },
     }
 }
@@ -339,7 +340,7 @@ pub(crate) fn rings(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<P
         crate::GeometryValues::One(geometry) => {
             let mut rings = Vec::new();
             push_ring_shapes(geometry.shape.shape(), &mut rings)?;
-            PyGeometryArray::from_shapes(rings, geometry.frame.clone()).into_py_any(py)
+            PyGeometryArray::from_shapes(rings, geometry.frame.clone())?.into_py_any(py)
         },
         crate::GeometryValues::Array(array) => {
             validate_ring_shapes(array)?;
@@ -359,16 +360,18 @@ pub(crate) fn rings(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<P
             )?;
             let array = PyGeometryArray::pack_or_mixed(items, frame)?;
             let mut rings = Vec::new();
-            for (_, shape) in array.present_shape_rows() {
+            for row in array.present_shape_rows() {
+                let (_, shape) = row.map_err(PyErr::from)?;
                 push_ring_shapes(&shape, &mut rings)?;
             }
-            PyGeometryArray::from_shapes(rings, array.frame.clone()).into_py_any(py)
+            PyGeometryArray::from_shapes(rings, array.frame.clone())?.into_py_any(py)
         },
     }
 }
 
 fn validate_ring_shapes(array: &PyGeometryArray) -> PyResult<()> {
-    for (_, shape) in array.present_shape_rows() {
+    for row in array.present_shape_rows() {
+        let (_, shape) = row.map_err(PyErr::from)?;
         if !matches!(
             *shape,
             Shape::Polygon(_)
@@ -392,9 +395,10 @@ fn ring_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
     let mut failure = None;
     shape.for_each_ring(|ring| {
         if failure.is_none()
-            && let Err(error) = crate::try_push_vec(&mut rings, Shape::LineString(ring.as_line())) {
-                failure = Some(error);
-            }
+            && let Err(error) = crate::try_push_vec(&mut rings, Shape::LineString(ring.as_line()))
+        {
+            failure = Some(error);
+        }
     });
     if let Some(error) = failure {
         return Err(error);
@@ -535,7 +539,7 @@ pub(crate) fn extract_polygons(value: &Bound<'_, PyAny>) -> PyResult<Vec<Polygon
         Ok(Polygon::new(
             Ring::closed(extract_points(shell, None, None)?)?,
             holes,
-        ))
+        )?)
     })
 }
 

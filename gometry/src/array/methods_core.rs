@@ -8,23 +8,22 @@
     reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
 )]
 
-use crate::array::PackedStorage;
 use pyo3::PyErr;
 use pyo3::types::PyList;
 
 use crate::array::{
     ArrayRow, Bound, Bounds, CRSError, CoercedCollectedGeometryItems, CoordSeq,
     CoordinateReplacement, Crs, CsrOffsetColumn, Frame, FrameAdoption, GeometryArrayStorage,
-    GeometryKind, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict,
-    PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple,
-    PyTypeError, PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape,
-    ValidityMask, bool_array, coerce_collected_geometry_items, coordinate_epoch_option, crs,
-    crs_arc, exact_geometry, geometry, geometry_array_svg_grid_html_masked,
-    line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
-    line_logical_len, map_coordinates_callback, parse_coordinate_replacement, parse_crs,
-    physical_row, polygon_is_valid, polygon_logical_len, polygon_rings_range, pymethods,
-    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
-    total_bounds_from_columns,
+    GeometryKind, InvalidGeometryError, PackedStorage, Py, PyAny, PyAnyMethods as _, PyCoordinates,
+    PyCrs, PyDict, PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef,
+    PyResult, PyTuple, PyTypeError, PyTypeMethods as _, Python, Result, RingLevel,
+    SVG_ARRAY_PREVIEW, Shape, ValidityMask, bool_array, coerce_collected_geometry_items,
+    coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
+    geometry_array_svg_grid_html_masked, line_crosses_antimeridian, line_is_ccw, line_is_closed,
+    line_is_simple, line_is_valid, line_logical_len, map_coordinates_callback,
+    parse_coordinate_replacement, parse_crs, physical_row, polygon_is_valid, polygon_logical_len,
+    polygon_rings_range, pymethods, replace_shape_coordinates, require_geojson_crs,
+    slice_replacement_for_shape, total_bounds_from_columns,
 };
 use crate::py::functions::bulk_rows::{StreamedRow, StreamedShape, stream_bulk_owned};
 use crate::py::support::{own_geometry_item, parse_owned_geometry_item};
@@ -154,7 +153,9 @@ fn replace_dense_packed_coordinates(
         return Ok(Err(replacement));
     }
     match array.storage() {
-        GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) if row_map.is_identity() => {
+        GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map })
+            if row_map.is_identity() =>
+        {
             debug_assert_eq!(coords.len(), replacement.len);
             let coords = replacement.apply_to_seq(coords)?;
             Ok(Ok(PyGeometryArray::packed_points(
@@ -191,9 +192,12 @@ fn replace_dense_packed_coordinates(
                 array.frame.clone(),
             )))
         },
-        GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
-PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) |
-GeometryArrayStorage::Mixed(_) => Ok(Err(replacement)),
+        GeometryArrayStorage::Packed(
+            PackedStorage::Points { .. }
+            | PackedStorage::Lines { .. }
+            | PackedStorage::Polygons { .. },
+        )
+        | GeometryArrayStorage::Mixed(_) => Ok(Err(replacement)),
     }
 }
 
@@ -214,20 +218,23 @@ fn replace_array_coordinates(
     let mut present_cursor = 0;
     let mut shapes = crate::try_vec_with_capacity(array.len())?;
     for row in array.row_operation().present_rows() {
-        let count = row.row().with_shape(|shape| shape.coord_count());
-        let sub = slice_replacement_for_shape(&replacement, present_cursor, count);
+        let count = row.row().with_shape(|shape| shape.coord_count())?;
+        let sub = slice_replacement_for_shape(&replacement, present_cursor, count)?;
         present_cursor += count;
         crate::try_push(
             &mut shapes,
             row.row()
-                .with_shape(|shape| replace_shape_coordinates(shape, &sub))?,
+                .try_with_shape(|shape| replace_shape_coordinates(shape, &sub))?,
         )?;
     }
     debug_assert_eq!(present_cursor, replacement.len);
-    Ok(array.scatter_present_result(PyGeometryArray::from_shapes(shapes, array.frame.clone())))
+    Ok(array.scatter_present_result(PyGeometryArray::from_shapes(shapes, array.frame.clone())?)?)
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 #[pymethods]
 impl PyGeometryArray {
     /// Estimate one conformal metric CRS for all present rows.
@@ -250,11 +257,14 @@ impl PyGeometryArray {
         let source = self.crs_str().ok_or_else(|| {
             CRSError::new_err("estimate_local_crs requires a CRS-tagged geometry array")
         })?;
-        let shapes = try_collect_values(
+        let shapes = crate::try_collect_results(
             self.present_shape_rows()
-                .map(|(_, shape)| shape.into_owned())
-                .filter(|shape| !shape.is_empty()),
-            self.len(),
+                .map(|result| {
+                    result
+                        .map(|(_, shape)| shape.into_owned())
+                        .map_err(PyErr::from)
+                })
+                .filter(|result| result.as_ref().is_ok_and(|shape| !shape.is_empty())),
         )?;
         if shapes.is_empty() {
             return Err(CRSError::new_err(
@@ -389,7 +399,7 @@ impl PyGeometryArray {
                 &array,
                 ValidityMask::from_vec(mask.len(), mask)
                     .expect("has_missing guarantees a present missing mask"),
-            )
+            )?
         } else {
             array
         })
@@ -453,7 +463,7 @@ impl PyGeometryArray {
                 for row in array.row_operation().rows_with_missing(|| ()) {
                     let text = match row {
                         ArrayRow::Missing { .. } => None,
-                        ArrayRow::Present(row) => Some(row.row().with_shape(|shape| {
+                        ArrayRow::Present(row) => Some(row.row().try_with_shape(|shape| {
                             crate::io::to_geojson_string::<true>(shape, domain)
                         })?),
                     };
@@ -494,15 +504,16 @@ impl PyGeometryArray {
     ///     One ``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'`` token per row.
     #[getter("coordinate_axes")]
     pub fn coordinate_axes_rows(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let rows = try_collect_values(
-            self.row_operation()
-                .rows_with_missing(|| "")
-                .map(|row| match row {
-                    ArrayRow::Missing { value, .. } => value,
-                    ArrayRow::Present(row) => row.row().with_shape(|shape| shape.axes().as_str()),
-                }),
-            self.len(),
-        )?;
+        let rows =
+            crate::try_collect_results(self.row_operation().rows_with_missing(|| "").map(|row| {
+                match row {
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(row) => row
+                        .row()
+                        .with_shape(|shape| shape.axes().as_str())
+                        .map_err(PyErr::from),
+                }
+            }))?;
         self.masked_row_list(py, rows)
     }
     /// Ordinate layout shared by every present row, or ``None`` when rows
@@ -524,15 +535,14 @@ impl PyGeometryArray {
     pub fn has_z_rows(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         bool_array(
             py,
-            try_collect_values(
-                self.row_operation()
-                    .rows_with_missing(|| false)
-                    .map(|row| match row {
-                        ArrayRow::Missing { value, .. } => value,
-                        ArrayRow::Present(row) => row.row().with_shape(Shape::has_z),
-                    }),
-                self.len(),
-            )?,
+            crate::try_collect_results(self.row_operation().rows_with_missing(|| false).map(
+                |row| match row {
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(row) => {
+                        row.row().with_shape(Shape::has_z).map_err(PyErr::from)
+                    },
+                },
+            ))?,
         )
     }
     /// Whether any present geometry carries a Z ordinate.
@@ -553,10 +563,18 @@ impl PyGeometryArray {
         // whole-array answer is a single O(1) axes read — not a per-row Shape
         // materialization + probe.
         match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. } |
-PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) => coords.axes().has_z(),
+            GeometryArrayStorage::Packed(
+                PackedStorage::Points { coords, .. }
+                | PackedStorage::Lines { coords, .. }
+                | PackedStorage::Polygons { coords, .. },
+            ) => coords.axes().has_z(),
             GeometryArrayStorage::Mixed(_) => {
-                self.present_shape_rows().any(|(_, shape)| shape.has_z())
+                self.storage()
+                    .iter_shapes()
+                    .enumerate()
+                    .any(|(row, shape)| {
+                        !self.is_row_missing(row) && shape.is_ok_and(|shape| shape.has_z())
+                    })
             },
         }
     }
@@ -569,15 +587,14 @@ PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) =>
     pub fn has_m_rows(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         bool_array(
             py,
-            try_collect_values(
-                self.row_operation()
-                    .rows_with_missing(|| false)
-                    .map(|row| match row {
-                        ArrayRow::Missing { value, .. } => value,
-                        ArrayRow::Present(row) => row.row().with_shape(Shape::has_m),
-                    }),
-                self.len(),
-            )?,
+            crate::try_collect_results(self.row_operation().rows_with_missing(|| false).map(
+                |row| match row {
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(row) => {
+                        row.row().with_shape(Shape::has_m).map_err(PyErr::from)
+                    },
+                },
+            ))?,
         )
     }
     /// Whether any present geometry carries an M ordinate.
@@ -595,10 +612,18 @@ PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) =>
             return false;
         }
         match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. } |
-PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) => coords.axes().has_m(),
+            GeometryArrayStorage::Packed(
+                PackedStorage::Points { coords, .. }
+                | PackedStorage::Lines { coords, .. }
+                | PackedStorage::Polygons { coords, .. },
+            ) => coords.axes().has_m(),
             GeometryArrayStorage::Mixed(_) => {
-                self.present_shape_rows().any(|(_, shape)| shape.has_m())
+                self.storage()
+                    .iter_shapes()
+                    .enumerate()
+                    .any(|(row, shape)| {
+                        !self.is_row_missing(row) && shape.is_ok_and(|shape| shape.has_m())
+                    })
             },
         }
     }
@@ -623,10 +648,13 @@ PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) =>
     /// -------
     /// tuple or None
     #[getter]
-    pub fn total_bounds(&self) -> Option<(f64, f64, f64, f64)> {
-        *self
-            .total_bounds_cache
-            .get_or_init(|| self.compute_total_bounds())
+    pub fn total_bounds(&self) -> PyResult<Option<(f64, f64, f64, f64)>> {
+        if let Some(bounds) = self.total_bounds_cache.get() {
+            return Ok(*bounds);
+        }
+        let bounds = self.compute_total_bounds()?;
+        let _ = self.total_bounds_cache.set(bounds);
+        Ok(bounds)
     }
     /// Per-geometry OGC type name (see `Geometry.geometry_type`), with
     /// ``None`` at missing rows.
@@ -649,12 +677,13 @@ PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) =>
             GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
                 try_collect_values(std::iter::repeat_n("Polygon", self.len()), self.len())?
             },
-            GeometryArrayStorage::Mixed(_) => try_collect_values(
-                self.storage()
-                    .iter_shapes()
-                    .map(|shape| shape.geometry_type()),
-                self.len(),
-            )?,
+            GeometryArrayStorage::Mixed(_) => {
+                crate::try_collect_results(self.storage().iter_shapes().map(|shape| {
+                    shape
+                        .map(|shape| shape.geometry_type())
+                        .map_err(PyErr::from)
+                }))?
+            },
         };
         self.masked_row_list(py, rows)
     }
@@ -693,6 +722,7 @@ PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) =>
                     },
                     GeometryArrayStorage::Mixed(_) => {
                         for (row, shape) in self.storage().iter_shapes().enumerate() {
+                            let shape = shape.map_err(PyErr::from)?;
                             if present(row) {
                                 labels.insert(format!("{}{tag}", shape.geometry_type()));
                             }
@@ -702,6 +732,7 @@ PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) =>
             },
             None => {
                 for (row, shape) in self.storage().iter_shapes().enumerate() {
+                    let shape = shape.map_err(PyErr::from)?;
                     if present(row) {
                         labels.insert(format!(
                             "{}{}",
@@ -755,21 +786,24 @@ PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) =>
         // ``1`` from CSR row counts without per-row ``Shape`` materialization.
         // Mixed rows delegate to ``Shape::part_count`` on materialized shapes.
         let values = match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
-PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => try_collect_values(
+            GeometryArrayStorage::Packed(
+                PackedStorage::Points { .. }
+                | PackedStorage::Lines { .. }
+                | PackedStorage::Polygons { .. },
+            ) => try_collect_values(
                 (0..self.len()).map(|row| i64::from(!self.is_row_missing(row))),
                 self.len(),
             )?,
-            GeometryArrayStorage::Mixed(_) => try_collect_values(
+            GeometryArrayStorage::Mixed(_) => crate::try_collect_results(
                 self.row_operation()
                     .rows_with_missing(|| 0_i64)
                     .map(|row| match row {
-                        ArrayRow::Missing { value, .. } => value,
-                        ArrayRow::Present(row) => {
-                            row.row().with_shape(|shape| shape.part_count() as i64)
-                        },
+                        ArrayRow::Missing { value, .. } => Ok(value),
+                        ArrayRow::Present(row) => row
+                            .row()
+                            .with_shape(|shape| shape.part_count() as i64)
+                            .map_err(PyErr::from),
                     }),
-                self.len(),
             )?,
         };
         crate::py::numpy::int64_array(py, values)
@@ -784,17 +818,17 @@ PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => try_collect_val
     pub fn num_coordinates(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         crate::py::numpy::int64_array(
             py,
-            try_collect_values(
-                self.row_operation()
-                    .rows_with_missing(|| 0_i64)
-                    .map(|row| match row {
-                        ArrayRow::Missing { value, .. } => value,
-                        ArrayRow::Present(row) => {
-                            row.row().with_shape(|shape| shape.coord_count() as i64)
-                        },
-                    }),
-                self.len(),
-            )?,
+            crate::try_collect_results(self.row_operation().rows_with_missing(|| 0_i64).map(
+                |row| {
+                    match row {
+                        ArrayRow::Missing { value, .. } => Ok(value),
+                        ArrayRow::Present(row) => row
+                            .row()
+                            .with_shape(|shape| shape.coord_count() as i64)
+                            .map_err(PyErr::from),
+                    }
+                },
+            ))?,
         )
     }
     /// Return an array with the same topology and replacement coordinates.
@@ -916,16 +950,16 @@ PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => try_collect_val
                 }),
                 self.len(),
             )?,
-            GeometryArrayStorage::Mixed(_) => try_collect_values(
+            GeometryArrayStorage::Mixed(_) => crate::try_collect_results(
                 self.row_operation()
                     .rows_with_missing(|| -1_i64)
                     .map(|row| match row {
-                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Missing { value, .. } => Ok(value),
                         ArrayRow::Present(row) => row
                             .row()
-                            .with_shape(|shape| i64::from(shape.topological_dimension().code())),
+                            .with_shape(|shape| i64::from(shape.topological_dimension().code()))
+                            .map_err(PyErr::from),
                     }),
-                self.len(),
             )?,
         };
         crate::py::numpy::int64_array(py, values)
@@ -1013,27 +1047,34 @@ PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => try_collect_val
 
 impl PyGeometryArray {
     /// Uncached array-wide bounds fold (geographic antimeridian when needed).
-    pub(crate) fn compute_total_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+    pub(crate) fn compute_total_bounds(
+        &self,
+    ) -> crate::error::Result<Option<(f64, f64, f64, f64)>> {
         if self.has_missing() {
             // Aggregates skip missing rows; the placeholder is a NaN point
             // that would poison the column min/max fold.
-            return self.drop_missing().total_bounds();
+            return self.try_drop_missing()?.compute_total_bounds();
         }
         let domain = crate::geometry::topology_domain(&self.frame).ok();
         if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain {
-            let mut shapes = self.present_shape_rows();
+            let shapes = self
+                .present_shape_rows()
+                .collect::<crate::error::Result<Vec<_>>>()?;
             if shapes
-                .any(|(_, shape)| crate::geometry::crosses_antimeridian_in_frame(&shape, frame))
+                .iter()
+                .any(|(_, shape)| crate::geometry::crosses_antimeridian_in_frame(shape, frame))
             {
-                return crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
-                    self.present_shape_rows().map(|(_, shape)| shape),
-                    frame,
-                )
-                .map(Bounds::into_tuple);
+                return Ok(
+                    crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
+                        shapes.into_iter().map(|(_, shape)| shape),
+                        frame,
+                    )
+                    .map(Bounds::into_tuple),
+                );
             }
         }
         if let Some(Some(bounds)) = self.bounds_cache.get() {
-            return bounds
+            return Ok(bounds
                 .iter()
                 .flatten()
                 .copied()
@@ -1041,16 +1082,16 @@ impl PyGeometryArray {
                     total.include_bounds(bounds);
                     total
                 })
-                .map(Bounds::into_tuple);
+                .map(Bounds::into_tuple));
         }
         if let Ok(Some(Some(bounds))) = Python::attach(|py| {
             self.reduce_packed_columns_detached(py, |columns| {
                 Ok(total_bounds_from_columns(&columns))
             })
         }) {
-            return Some(bounds.into_tuple());
+            return Ok(Some(bounds.into_tuple()));
         }
-        self.storage().total_bounds().map(Bounds::into_tuple)
+        Ok(self.storage().total_bounds().map(Bounds::into_tuple))
     }
 
     pub(crate) fn is_empty_unary_packed(&self) -> PyResult<Vec<bool>> {
@@ -1060,7 +1101,9 @@ impl PyGeometryArray {
                 .rows_with_missing(|| false)
                 .map(|row| match row {
                     ArrayRow::Missing { value, .. } => Ok(value),
-                    ArrayRow::Present(row) => Ok(row.row().with_shape(Shape::is_empty)),
+                    ArrayRow::Present(row) => {
+                        row.row().with_shape(Shape::is_empty).map_err(PyErr::from)
+                    },
                 })
                 .collect();
         }
@@ -1095,7 +1138,7 @@ impl PyGeometryArray {
             },
             GeometryArrayStorage::Mixed(_) => {
                 for shape in self.storage().iter_shapes() {
-                    output.push(shape.is_empty());
+                    output.push(shape.map_err(PyErr::from)?.is_empty());
                 }
             },
         }
@@ -1175,7 +1218,9 @@ impl PyGeometryArray {
 
     pub(crate) fn is_valid_unary_packed(&self) -> Option<PyResult<Vec<bool>>> {
         let missing = self.missing();
-        if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = self.storage() {
+        if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
+            self.storage()
+        {
             let map = row_map.as_deref();
             let len = self.len();
             // Skip masked rows (NaN placeholders); write false for missing so
@@ -1223,12 +1268,15 @@ impl PyGeometryArray {
     pub(crate) fn is_convex_unary_packed(&self) -> PyResult<Vec<bool>> {
         let mut output = crate::try_vec_with_capacity(self.len())?;
         match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
-PackedStorage::Lines { .. }) => {
+            GeometryArrayStorage::Packed(
+                PackedStorage::Points { .. } | PackedStorage::Lines { .. },
+            ) => {
                 output.extend(std::iter::repeat_n(false, self.len()));
             },
-            GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) | GeometryArrayStorage::Mixed(_) => {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
+            | GeometryArrayStorage::Mixed(_) => {
                 for (row, shape) in self.storage().iter_shapes().enumerate() {
+                    let shape = shape.map_err(PyErr::from)?;
                     let value = if self.is_row_missing(row) {
                         false
                     } else {

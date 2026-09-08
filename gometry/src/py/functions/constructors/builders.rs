@@ -2,7 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::py::numpy;
 use crate::geometry::{
     Bounds, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
     ZOrdinate, geographic_bounds_to_shape,
@@ -18,6 +17,7 @@ use crate::py::functions::constructors::{
     finite_coordinate_required, optional_coordinate_arc_values, optional_coordinates, parse_crs,
     parse_crs_epoch, wrapped_box,
 };
+use crate::py::numpy;
 
 pub(super) fn geometry_with_crs_epoch(
     shape: impl Into<std::sync::Arc<ShapeData>>,
@@ -77,9 +77,7 @@ fn multipart_members(
 }
 
 fn homogeneous_multipart_axes(members: &[Shape], kind: &str) -> PyResult<CoordinateAxes> {
-    let axes = members
-        .first()
-        .map_or(CoordinateAxes::XY, Shape::axes);
+    let axes = members.first().map_or(CoordinateAxes::XY, Shape::axes);
     if members.iter().any(|member| member.axes() != axes) {
         return Err(InvalidGeometryError::new_err(format!(
             "{kind} members must share one coordinate axes layout (XY, XYZ, XYM, or XYZM)"
@@ -214,7 +212,7 @@ pub(super) fn coordinate_vertices(
                 };
                 return Ok(CoordSeq::empty(axes));
             }
-            Ok(points.into())
+            Ok(CoordSeq::try_from_points(&points)?)
         },
         // Column input is already SoA — build the `CoordSeq` straight from the
         // `x`/`y`/`z`/`m` columns, with no `Vec<Point>` bounce.
@@ -264,7 +262,12 @@ pub(super) fn coordinate_vertices(
             let expected = xs.len();
             let z = optional_coordinate_arc_values(x.py(), z, expected, "z")?;
             let m = optional_coordinate_arc_values(x.py(), m, expected, "m")?;
-            Ok(CoordSeq::from_arc_columns(xs, ys, z, m)?)
+            Ok(CoordSeq::try_from_vecs(
+                xs.to_vec(),
+                ys.to_vec(),
+                z.map(|values| values.to_vec()),
+                m.map(|values| values.to_vec()),
+            )?)
         },
         (None, None, None) => Err(InvalidGeometryError::new_err(
             "provide a coordinate sequence or both x= and y= columns",
@@ -350,7 +353,7 @@ pub(crate) fn build_polygon(
         })?,
         None => Vec::new(),
     };
-    let shape = Shape::Polygon(Polygon::new(shell, holes));
+    let shape = Shape::Polygon(Polygon::new(shell, holes).map_err(PyErr::from)?);
     crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
     geometry_with_crs_epoch(shape, crs, epoch)
 }
@@ -393,7 +396,10 @@ pub(crate) fn build_multi_point(
             _ => None,
         },
         |item| {
-            Ok(extract_coordinate_or_empty(item)?.map_or_else(|| Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XY), Shape::Point))
+            Ok(extract_coordinate_or_empty(item)?.map_or_else(
+                || Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XY),
+                Shape::Point,
+            ))
         },
     )?;
     if members.is_empty() {
@@ -409,7 +415,10 @@ pub(crate) fn build_multi_point(
             crate::try_push(&mut points, point)?;
         }
         return Ok(PyGeometry::with_frame(
-            Shape::multi_point(axes, CoordSeq::from_points(&points)),
+            Shape::multi_point(
+                axes,
+                CoordSeq::try_from_points(&points).map_err(PyErr::from)?,
+            ),
             frame,
         ));
     }
@@ -455,7 +464,8 @@ pub(crate) fn build_multi_line_string(
             let seq = if let Some(seq) = crate::try_coordseq_from_nd_buffer(item, None, None)? {
                 seq
             } else {
-                CoordSeq::from(extract_points(item, None, None)?)
+                CoordSeq::try_from_points(&extract_points(item, None, None)?)
+                    .map_err(PyErr::from)?
             };
             if seq.is_empty() {
                 Ok(Shape::typed_empty(GeometryKind::LineString, seq.axes()))
@@ -481,7 +491,7 @@ pub(crate) fn build_multi_line_string(
             };
             crate::try_push(&mut lines, line)?;
         }
-        let shape = Shape::multi_line_string(axes, lines);
+        let shape = Shape::multi_line_string(axes, lines).map_err(PyErr::from)?;
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         return Ok(PyGeometry::with_frame(shape, frame));
     }
@@ -546,7 +556,7 @@ pub(crate) fn build_multi_polygon(
             };
             crate::try_push(&mut polygons, polygon)?;
         }
-        let shape = Shape::multi_polygon(axes, polygons);
+        let shape = Shape::multi_polygon(axes, polygons).map_err(PyErr::from)?;
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         return Ok(PyGeometry::with_frame(shape, frame));
     }
@@ -600,10 +610,12 @@ pub(super) fn build_box_shape(
                 && (-90.0..=90.0).contains(&miny)
                 && (-90.0..=90.0).contains(&maxy)
                 && let Some(frame) = crs::info(crs).map_err(PyErr::from)?.geographic_frame()
-                && minx < maxx && miny < maxy {
-                    return geographic_bounds_to_shape(Bounds::new(minx, miny, maxx, maxy)?, frame)
-                        .map_err(PyErr::from);
-                }
+                && minx < maxx
+                && miny < maxy
+            {
+                return geographic_bounds_to_shape(Bounds::new(minx, miny, maxx, maxy)?, frame)
+                    .map_err(PyErr::from);
+            }
             Ok(Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?))
         },
         Some("split") => {
@@ -678,7 +690,7 @@ pub(super) fn multi_line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyRes
         let members = lines
             .into_iter()
             .map(|line| {
-                let line = CoordSeq::from(line);
+                let line = CoordSeq::try_from_points(&line).map_err(PyErr::from)?;
                 if line.is_empty() {
                     Ok(MultiMember::Empty)
                 } else {
@@ -716,11 +728,16 @@ pub(super) fn multi_polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<
         }
         let axes = polygons.first().map_or(CoordinateAxes::XY, Polygon::axes);
         let members = polygons.into_iter().map(MultiMember::Value).collect();
-        let shape = Shape::MultiPolygon(MultiPolygon::try_new(axes, members).map_err(|_| {
-            InvalidGeometryError::new_err(
-                "MultiPolygon members must share one coordinate axes layout \
-                 (XY, XYZ, XYM, or XYZM)",
-            )
+        let shape = Shape::MultiPolygon(MultiPolygon::try_new(axes, members).map_err(|error| {
+            if matches!(error.kind(), crate::error::ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::CoordinateAxesMismatch { .. }
+            )) {
+                InvalidGeometryError::new_err(
+                    "MultiPolygon members must share one coordinate axes layout (XY, XYZ, XYM, or XYZM)",
+                )
+            } else {
+                PyErr::from(error)
+            }
         })?);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         Ok(shape)
@@ -839,7 +856,7 @@ fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Sha
             Ok(Shape::Polygon(Polygon::new(
                 Ring::closed(points)?,
                 Vec::new(),
-            )))
+            )?))
         },
         PolygonMember::Nested(first) => {
             // Ring list: each ring source is materialized once before the
@@ -857,7 +874,7 @@ fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Sha
                     Ring::closed(points_from_coordinate_members(&ring)?)?,
                 )?;
             }
-            Ok(Shape::Polygon(Polygon::new(shell, holes)))
+            Ok(Shape::Polygon(Polygon::new(shell, holes)?))
         },
     }
 }
@@ -889,7 +906,7 @@ pub(super) fn build_geometry_array(
         crate::check_python_signals(item_value.py(), row)?;
         rows.try_push(item(&item_value)?)?;
     }
-    Ok(rows.finish(frame))
+    Ok(rows.finish(frame)?)
 }
 
 /// Build a ``GeometryCollection`` from a sequence of geometries.

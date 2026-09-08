@@ -226,10 +226,13 @@ fn release_callbacks_are_idempotent_for_native_exports() {
 
     let line = PyGeometry::from_shape_crs(
         Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_points(&[
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(1.0, 1.0),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(1.0, 1.0),
+                ])
+                .unwrap(),
+            )
             .expect("test line is valid"),
         ),
         None,
@@ -243,7 +246,10 @@ fn release_callbacks_are_idempotent_for_native_exports() {
         Point::new_raw_xy(0.0, 0.0),
     ])
     .unwrap();
-    let polygon = PyGeometry::from_shape_crs(Shape::Polygon(Polygon::new(ring, Vec::new())), None);
+    let polygon = PyGeometry::from_shape_crs(
+        Shape::Polygon(Polygon::new(ring, Vec::new()).unwrap()),
+        None,
+    );
     release_twice(exported(&polygon));
 }
 

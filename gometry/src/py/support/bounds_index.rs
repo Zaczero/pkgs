@@ -405,7 +405,8 @@ mod periodic_tests {
                     .collect(),
             )
             .unwrap(),
-            holes: holes.into(),
+            holes: crate::geometry::SharedSlice::try_from_vec(holes)
+                .expect("test polygon holes are allocatable"),
         })
     }
 

@@ -2,7 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-#![allow(clippy::similar_names, reason = "left and right operands carry the same set of derived names")]
+#![allow(
+    clippy::similar_names,
+    reason = "left and right operands carry the same set of derived names"
+)]
 use std::sync::Arc;
 
 use pyo3::prelude::*;
@@ -250,7 +253,7 @@ where
             domain,
             metric,
             move |row, array_row, ctx, products| {
-                let array_data = products.prepared_at(row, array_row);
+                let array_data = products.prepared_at(row, array_row)?;
                 match side {
                     ArrayOperandSide::Left => kernel(&array_data, &fixed_plan, ctx),
                     ArrayOperandSide::Right => kernel(&fixed_plan, &array_data, ctx),
@@ -303,8 +306,8 @@ where
             domain,
             metric,
             move |row, left_row, right_row, ctx, left_products, right_products| {
-                let left_data = left_products.prepared_at(row, left_row);
-                let right_data = right_products.prepared_at(row, right_row);
+                let left_data = left_products.prepared_at(row, left_row)?;
+                let right_data = right_products.prepared_at(row, right_row)?;
                 kernel(&left_data, &right_data, ctx)
             },
         )
@@ -465,7 +468,7 @@ where
                                     }
                                     unreachable!();
                                 };
-                                let data = rows.prepared(row);
+                                let data = rows.prepared(row)?;
                                 if scalar_left {
                                     planar(to_metre.get(), &fixed, &data)
                                 } else {
@@ -496,7 +499,7 @@ where
                                     unreachable!();
                                 };
                                 let row_index = row.logical();
-                                let data = rows.prepared(row);
+                                let data = rows.prepared(row)?;
                                 let row_cache = rows.frame_cache(row_index);
                                 let row = if scalar_left {
                                     GeodesicBinaryRow {
@@ -539,8 +542,8 @@ where
                             .zip(right_rows.rows_with_missing(R::missing_value))
                             .map(|(left_row, right_row)| match (left_row, right_row) {
                                 (ArrayRow::Present(a), ArrayRow::Present(b)) => {
-                                    let a = left_rows.prepared(a);
-                                    let b = right_rows.prepared(b);
+                                    let a = left_rows.prepared(a)?;
+                                    let b = right_rows.prepared(b)?;
                                     planar(to_metre.get(), &a, &b)
                                 },
                                 (ArrayRow::Missing { value, .. }, _)
@@ -569,8 +572,8 @@ where
                             .map(|(left_row, right_row)| match (left_row, right_row) {
                                 (ArrayRow::Present(a), ArrayRow::Present(b)) => {
                                     let row_index = a.logical();
-                                    let a = left_rows.prepared(a);
-                                    let b = right_rows.prepared(b);
+                                    let a = left_rows.prepared(a)?;
+                                    let b = right_rows.prepared(b)?;
                                     let left_cache = left_rows.frame_cache(row_index);
                                     let right_cache = right_rows.frame_cache(row_index);
                                     let row = GeodesicBinaryRow {
@@ -907,10 +910,13 @@ where
                     metric,
                     move |row, right_row, ctx, products| {
                         let known_bounds = right_row.quick_bounds();
-                        let right_data = products.warm_prepared_at(row, right_row, known_bounds);
-                        invoke_topology_geometry_kernel(domain, &left_fixed, &right_data, &|l, r| {
-                            kernel(l, r, ctx)
-                        })
+                        let right_data = products.warm_prepared_at(row, right_row, known_bounds)?;
+                        invoke_topology_geometry_kernel(
+                            domain,
+                            &left_fixed,
+                            &right_data,
+                            &|l, r| kernel(l, r, ctx),
+                        )
                     },
                 )
             };
@@ -1019,11 +1025,15 @@ where
                     domain,
                     metric,
                     move |row, left_row, ctx, products| {
-                        let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
-                        let left_data = products.warm_prepared_at(row, left_row, left_box);
-                        invoke_topology_geometry_kernel(domain, &left_data, &right_shape, &|l, r| {
-                            kernel(l, r, ctx)
-                        })
+                        let left_box =
+                            row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
+                        let left_data = products.warm_prepared_at(row, left_row, left_box)?;
+                        invoke_topology_geometry_kernel(
+                            domain,
+                            &left_data,
+                            &right_shape,
+                            &|l, r| kernel(l, r, ctx),
+                        )
                     },
                 )
                 .map(|shapes| (shapes, left.missing().cloned()))
@@ -1046,11 +1056,13 @@ where
                     domain,
                     metric,
                     move |row, left_row, right_row, ctx, left_products, right_products| {
-                        let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
+                        let left_box =
+                            row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                         let right_box =
                             row_box(&right_bounds, row).or_else(|| right_row.quick_bounds());
-                        let left_data = left_products.warm_prepared_at(row, left_row, left_box);
-                        let right_data = right_products.warm_prepared_at(row, right_row, right_box);
+                        let left_data = left_products.warm_prepared_at(row, left_row, left_box)?;
+                        let right_data =
+                            right_products.warm_prepared_at(row, right_row, right_box)?;
                         invoke_topology_geometry_kernel(domain, &left_data, &right_data, &|l, r| {
                             kernel(l, r, ctx)
                         })
@@ -1068,8 +1080,8 @@ where
     drop(metric_scratch);
     let (shapes, output_missing) = result.map_err(rows_err)?;
     Ok(
-        PyGeometryArray::from_shapes(shapes, Frame::new(output_crs, output_epoch)?)
-            .with_missing_mask(output_missing),
+        PyGeometryArray::from_shapes(shapes, Frame::new(output_crs, output_epoch)?)?
+            .with_missing_mask(output_missing)?,
     )
 }
 
@@ -1106,7 +1118,8 @@ mod tests {
             let array = PyGeometryArray::from_shapes(
                 vec![Shape::Point(Point::new_raw_xy(0.0, 0.0))],
                 frame.clone(),
-            );
+            )
+            .unwrap();
             let right = PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 0.0)), frame);
             let result = run_fast_path::<bool, _>(
                 py,

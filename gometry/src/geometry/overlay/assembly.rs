@@ -13,10 +13,19 @@ pub(crate) fn dedup_points(points: &mut Vec<Point>) {
 /// An overlay nodes rings wherever operands meet, and a node on a straight
 /// run says nothing about the region: every ring leaves with each vertex
 /// that lies on the segment between its neighbours removed.
-fn drop_collinear_ring_vertices(polygon: &Polygon) -> Polygon {
-    let simplify = |ring: &Ring| Ring::from_closed(drop_collinear_vertices(ring.coords().iter_coords().collect()));
-    let shell = simplify(&polygon.shell);
-    let holes = polygon.holes.iter().map(simplify).collect();
+fn drop_collinear_ring_vertices(polygon: &Polygon) -> crate::error::Result<Polygon> {
+    let simplify = |ring: &Ring| {
+        CoordSeq::try_from_points(&drop_collinear_vertices(
+            ring.coords().iter_coords().collect(),
+        ))
+        .map(Ring::from_closed)
+    };
+    let shell = simplify(&polygon.shell)?;
+    let holes = polygon
+        .holes
+        .iter()
+        .map(simplify)
+        .collect::<crate::error::Result<Vec<_>>>()?;
     Polygon::new(shell, holes)
 }
 
@@ -31,7 +40,9 @@ pub(crate) fn drop_collinear_vertices(mut vertices: Vec<Point>) -> Vec<Point> {
     vertices.pop();
     let mut kept: Vec<Point> = Vec::with_capacity(vertices.len());
     for vertex in vertices {
-        while kept.len() >= 2 && point_on_segment(kept[kept.len() - 1], kept[kept.len() - 2], vertex) {
+        while kept.len() >= 2
+            && point_on_segment(kept[kept.len() - 1], kept[kept.len() - 2], vertex)
+        {
             kept.pop();
         }
         kept.push(vertex);
@@ -112,11 +123,11 @@ impl ChainEdge for Segment {
 /// hash iteration. Node incidence is a CSR over the distinct end keys: one
 /// map lookup per edge end and no per-node allocation, which is what an
 /// overlay of thousands of atomic segments spends its time on otherwise.
-pub(crate) fn merge_chains(edges: &[CoordSeq]) -> Vec<CoordSeq> {
+pub(crate) fn merge_chains(edges: &[CoordSeq]) -> crate::error::Result<Vec<CoordSeq>> {
     merge_chain_edges(edges)
 }
 
-pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
+pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> crate::error::Result<Vec<CoordSeq>> {
     let mut ends: Vec<[PointKey; 2]> = Vec::with_capacity(edges.len());
     let mut live: Vec<usize> = Vec::with_capacity(edges.len());
     for (index, edge) in edges.iter().enumerate() {
@@ -131,7 +142,7 @@ pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
             .map(|index| {
                 let mut coords = Vec::new();
                 edges[index].extend_from(ends[0][0], 0, &mut coords);
-                coords.into()
+                CoordSeq::try_from_points(&coords)
             })
             .collect();
     }
@@ -164,11 +175,15 @@ pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
             cursor[id as usize] += 1;
         }
     }
-    let incident = |node: u32| &slots[offsets[node as usize] as usize..offsets[node as usize + 1] as usize];
+    let incident =
+        |node: u32| &slots[offsets[node as usize] as usize..offsets[node as usize + 1] as usize];
 
     let mut used = vec![false; ends.len()];
     let mut chains: Vec<CoordSeq> = Vec::new();
-    let walk = |seed: usize, start_slot: usize, used: &mut [bool]| -> CoordSeq {
+    let walk = |seed: usize,
+                start_slot: usize,
+                used: &mut [bool]|
+     -> crate::error::Result<CoordSeq> {
         let mut coords: Vec<Point> = Vec::new();
         let mut edge = seed;
         let mut from = node_ends[seed][start_slot];
@@ -181,7 +196,11 @@ pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
             if degree[far as usize] != 2 {
                 break;
             }
-            match incident(far).iter().copied().find(|&next| next as usize != edge && !used[next as usize]) {
+            match incident(far)
+                .iter()
+                .copied()
+                .find(|&next| next as usize != edge && !used[next as usize])
+            {
                 Some(next) => {
                     edge = next as usize;
                     from = far;
@@ -189,7 +208,7 @@ pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
                 None => break,
             }
         }
-        coords.into()
+        CoordSeq::try_from_points(&coords)
     };
     // Open chains first: every edge with a barrier end (degree != 2) starts
     // a chain that runs until the next barrier; edges interior to such a
@@ -199,17 +218,17 @@ pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
             continue;
         }
         if let Some(slot) = (0..2).find(|&slot| degree[node_ends[seed][slot] as usize] != 2) {
-            chains.push(walk(seed, slot, &mut used));
+            chains.push(walk(seed, slot, &mut used)?);
         }
     }
     // Whatever remains is an all-degree-2 cycle; walk each from its lowest
     // unused edge.
     for seed in 0..ends.len() {
         if !used[seed] {
-            chains.push(walk(seed, 0, &mut used));
+            chains.push(walk(seed, 0, &mut used)?);
         }
     }
-    chains
+    Ok(chains)
 }
 
 pub(crate) fn build_overlay_shape(
@@ -221,7 +240,7 @@ pub(crate) fn build_overlay_shape(
     // into maximal chains (split only at genuine degree-`>= 3` junctions), so a
     // result reads as the cleanest lines representing its point set rather than
     // a `MultiLineString` of one segment per span.
-    build_overlay_shape_from_chains(points, merge_chains(lines), polygons)
+    build_overlay_shape_from_chains(points, merge_chains(lines)?, polygons)
 }
 
 /// Canonicalize overlay buckets into the narrowest representable `Shape`.
@@ -243,7 +262,10 @@ pub(crate) fn build_overlay_shape_from_chains(
     lines: Vec<CoordSeq>,
     polygons: &[Polygon],
 ) -> crate::error::Result<Shape> {
-    let polygons: Vec<Polygon> = polygons.iter().map(drop_collinear_ring_vertices).collect();
+    let polygons = polygons
+        .iter()
+        .map(drop_collinear_ring_vertices)
+        .collect::<crate::error::Result<Vec<_>>>()?;
     let polygon_bounds: Vec<Option<Bounds>> =
         polygons.iter().map(|polygon| polygon.bounds()).collect();
     let mut surviving: Vec<Point> = points
@@ -264,17 +286,21 @@ pub(crate) fn build_overlay_shape_from_chains(
         .collect();
     dedup_points(&mut surviving);
 
-    let line_part = (!lines.is_empty()).then(|| {
-        Shape::narrow_lines(
-            CoordinateAxes::XY,
-            lines.into_iter().map(LineSeq::from_proven).collect(),
-        )
-    });
+    let line_part = (!lines.is_empty())
+        .then(|| {
+            Shape::narrow_lines(
+                CoordinateAxes::XY,
+                lines.into_iter().map(LineSeq::from_proven).collect(),
+            )
+        })
+        .transpose()?;
 
-    let point_part =
-        (!surviving.is_empty()).then(|| Shape::narrow_points(CoordinateAxes::XY, surviving));
-    let polygon_part =
-        (!polygons.is_empty()).then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons));
+    let point_part = (!surviving.is_empty())
+        .then(|| Shape::narrow_points(CoordinateAxes::XY, surviving))
+        .transpose()?;
+    let polygon_part = (!polygons.is_empty())
+        .then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons))
+        .transpose()?;
 
     let parts: Vec<Shape> = [point_part, line_part, polygon_part]
         .into_iter()

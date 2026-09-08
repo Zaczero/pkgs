@@ -1,5 +1,5 @@
-use crate::grid::cell_set;
 use crate::geometry::CoordSeq;
+use crate::grid::cell_set;
 use crate::py::cells::coverage_ops::{
     GridDissolver, SortedCells, coordseq_crosses_lon_seam, dissolve_grid_cells,
 };
@@ -77,7 +77,7 @@ impl GridDissolver for H3Dissolver {
     }
 
     fn fallback_shape(cell: Self::Cell) -> crate::error::Result<Shape> {
-        let boundary = h3_cell_shape(cell);
+        let boundary = h3_cell_shape(cell)?;
         boundary.split_antimeridian()
     }
 }

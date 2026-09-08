@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::array::{GeometryArrayStorage, polygon_row_point_membership, row_bounds};
+use crate::error::Result;
 use crate::geometry::{
     Bounds, CoordSeq, CoordWindow, Dimension, LineSeq, Point, PreparedPlan, Shape,
 };
@@ -33,16 +34,30 @@ impl ShapeRow<'_> {
         clippy::impl_trait_in_params,
         reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
     )]
-    pub fn with_shape<R>(self, f: impl FnOnce(&Shape) -> R) -> R {
+    pub fn with_shape<R>(self, f: impl FnOnce(&Shape) -> R) -> crate::error::Result<R> {
         match self {
-            Self::Handle(handle) => f(handle.shape()),
-            Self::Shape(shape) => f(shape),
-            Self::Point(point) => f(&Shape::Point(point)),
-            Self::Line(coords, start, end) => f(&Self::line_shape(coords, start, end)),
-            Self::Rings(coords, ring_offsets, start, end) => f(&Shape::Polygon(
-                GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end),
-            )),
+            Self::Handle(handle) => Ok(f(handle.shape())),
+            Self::Shape(shape) => Ok(f(shape)),
+            Self::Point(point) => Ok(f(&Shape::Point(point))),
+            Self::Line(coords, start, end) => Ok(f(&Self::line_shape(coords, start, end))),
+            Self::Rings(coords, ring_offsets, start, end) => {
+                let polygon = GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end)?;
+                Ok(f(&Shape::Polygon(polygon)))
+            },
         }
+    }
+
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
+    )]
+    pub fn try_with_shape<R, E>(self, f: impl FnOnce(&Shape) -> Result<R, E>) -> Result<R, E>
+    where
+        E: From<crate::error::Error>,
+    {
+        self.with_shape(f)
+            .map_err(E::from)
+            .and_then(|result| result)
     }
 
     pub fn quick_bounds(self) -> Option<Bounds> {
@@ -78,20 +93,25 @@ impl ShapeRow<'_> {
         }
     }
 
-    pub fn contains_point(self, point: Point) -> bool {
+    pub fn contains_point(self, point: Point) -> crate::error::Result<bool> {
         self.point_membership::<false>(point)
     }
 
-    pub fn covers_point(self, point: Point) -> bool {
+    pub fn covers_point(self, point: Point) -> crate::error::Result<bool> {
         self.point_membership::<true>(point)
     }
 
-    fn point_membership<const BOUNDARY: bool>(self, point: Point) -> bool {
+    fn point_membership<const BOUNDARY: bool>(self, point: Point) -> crate::error::Result<bool> {
         match self {
             Self::Rings(coords, ring_offsets, start, end) => {
-                polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, start..end, point)
+                Ok(polygon_row_point_membership::<BOUNDARY>(
+                    coords,
+                    ring_offsets,
+                    start..end,
+                    point,
+                ))
             },
-            _ => self.with_shape(|shape| {
+            _ => self.try_with_shape(|shape| {
                 if BOUNDARY {
                     shape.covers_point(point)
                 } else {

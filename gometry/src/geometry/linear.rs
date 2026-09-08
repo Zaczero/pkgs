@@ -10,9 +10,10 @@ use super::linear_3d;
 use crate::error::Result;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
-    HasZ, LineIndex, LineSeq, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan,
-    Segment, SegmentMetric, SegmentProjection, Shape, distance_3d_with_parts, interpolate_fraction,
-    point_distance, same_point, segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
+    HasZ, LineIndex, LineSeq, MColumn, MultiLineString, Ordering, PlanarMetric, Point,
+    PreparedPlan, Segment, SegmentMetric, SegmentProjection, Shape, SharedSlice,
+    distance_3d_with_parts, interpolate_fraction, point_distance, same_point, segment_projection,
+    shape_axes_all_z, squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
 
@@ -99,18 +100,20 @@ impl Shape {
         let mut pieces = Vec::new();
         match self {
             Self::LineString(line) => {
-                pieces.extend(
-                    split_line_by_points(line, splitters.as_slice(), tolerance)
-                        .into_iter()
-                        .map(|part| Self::LineString(LineSeq::from_proven(CoordSeq::from(part)))),
-                );
+                for part in split_line_by_points(line, splitters.as_slice(), tolerance) {
+                    pieces.push(Self::LineString(LineSeq::from_proven(
+                        CoordSeq::try_from_points(&part)?,
+                    )));
+                }
             },
             Self::MultiLineString(lines) => {
-                pieces.extend(lines.iter().flat_map(|line| {
-                    split_line_by_points(line, splitters.as_slice(), tolerance)
-                        .into_iter()
-                        .map(|part| Self::LineString(LineSeq::from_proven(CoordSeq::from(part))))
-                }));
+                for line in lines.iter() {
+                    for part in split_line_by_points(line, splitters.as_slice(), tolerance) {
+                        pieces.push(Self::LineString(LineSeq::from_proven(
+                            CoordSeq::try_from_points(&part)?,
+                        )));
+                    }
+                }
             },
             _ => return Err(GeometryErrorKind::LineStringRequired.into()),
         }
@@ -178,8 +181,8 @@ impl Shape {
                 },
             );
         }
-        let left = Distance3dParts::build(self);
-        let right = Distance3dParts::build(other);
+        let left = Distance3dParts::build(self)?;
+        let right = Distance3dParts::build(other)?;
         distance_3d_with_parts(&left, &right)
     }
 
@@ -212,23 +215,26 @@ impl Shape {
         // prefix buffer (was twice — total pass then assign pass — which
         // doubled every geodesic inverse on a geographic CRS).
         let mut segment_lengths: Vec<f64> = Vec::new();
-        let mut part_seg_ends: Vec<usize> = Vec::with_capacity(parts.len());
+        let mut part_seg_ends: Vec<usize> = Vec::new();
+        crate::boundary::try_reserve_vec(&mut part_seg_ends, parts.len())?;
         let mut total = 0.0_f64;
         for part in &parts {
             for [start, end] in part.segment_pairs() {
                 let length = segment_length(start, end);
                 total += length;
-                segment_lengths.push(length);
+                crate::try_push_vec(&mut segment_lengths, length)?;
             }
             part_seg_ends.push(segment_lengths.len());
         }
         let span = end_m - start_m;
         let mut traveled = 0.0;
-        let mut measured = Vec::with_capacity(parts.len());
+        let mut measured = Vec::new();
+        crate::boundary::try_reserve_vec(&mut measured, parts.len())?;
         let mut seg_cursor = 0_usize;
         for (part_index, part) in parts.iter().enumerate() {
             let part_end = part_seg_ends[part_index];
-            let mut measures = Vec::with_capacity(part.len());
+            let mut measures = Vec::new();
+            crate::boundary::try_reserve_vec(&mut measures, part.len())?;
             for index in 0..part.len() {
                 if index > 0 {
                     traveled += segment_lengths[seg_cursor];
@@ -248,28 +254,21 @@ impl Shape {
             debug_assert_eq!(seg_cursor, part_end);
             let _ = part_end;
             let columns = part.column_arcs();
-            let full_window = columns.window.start == 0 && columns.window.end == columns.xs.len();
-            let xs = if full_window {
-                columns.xs
-            } else {
-                part.xs().into()
-            };
-            let ys = if full_window {
-                columns.ys
-            } else {
-                part.ys().into()
-            };
-            let zs = if full_window {
-                columns.zs
-            } else {
-                part.zs().map(Into::into)
-            };
-            measured.push(LineSeq::from_proven(CoordSeq::from_columns(
-                xs,
-                ys,
-                zs,
-                Some(measures.into()),
-            )));
+            let physical_len = columns.xs.len();
+            let window = crate::geometry::CoordWindow::from_range(columns.window, physical_len);
+            let m = SharedSlice::try_from_vec(measures)?;
+            measured.push(LineSeq::from_proven(
+                CoordSeq::from_shared_columns_with_window(
+                    columns.xs,
+                    columns.ys,
+                    columns.zs,
+                    Some(MColumn::Local {
+                        owner: m,
+                        offset: 0,
+                    }),
+                    window,
+                )?,
+            ));
         }
         if measured.is_empty() {
             return Ok(Self::typed_empty(GeometryKind::of(self), self.axes()));
@@ -279,18 +278,22 @@ impl Shape {
             Self::LineString(_) => Self::LineString(measured.into_iter().next().expect("one part")),
             Self::MultiLineString(lines) => {
                 let mut measured = measured.into_iter();
-                let members = lines
-                    .members()
-                    .filter_map(|member| match member {
+                let mut members = Vec::new();
+                crate::boundary::try_reserve_vec(&mut members, lines.len())?;
+                for member in lines.members() {
+                    let member = match member {
                         crate::geometry::MultiMember::Empty => {
                             Some(crate::geometry::MultiMember::Empty)
                         },
                         crate::geometry::MultiMember::Value(_) => {
                             measured.next().map(crate::geometry::MultiMember::Value)
                         },
-                    })
-                    .collect();
-                Self::MultiLineString(MultiLineString::from_values(output_axes, members))
+                    };
+                    if let Some(member) = member {
+                        members.push(member);
+                    }
+                }
+                Self::MultiLineString(MultiLineString::from_values(output_axes, members)?)
             },
             _ => unreachable!("linework returns only line strings"),
         })
@@ -548,7 +551,7 @@ impl MeasuredLineIndex {
         Ok(match result.len() {
             0 => Shape::Point(self.interpolate_finite(start, metric)?),
             1 => Shape::Point(result[0]),
-            _ => Shape::LineString(LineSeq::from_proven(CoordSeq::from(result))),
+            _ => Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&result)?)),
         })
     }
 }
@@ -717,5 +720,72 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
 pub(super) fn push_distinct_point(points: &mut Vec<Point>, point: Point) {
     if points.last().is_none_or(|last| !same_point(*last, point)) {
         points.push(point);
+    }
+}
+
+#[cfg(test)]
+mod measured_window_tests {
+    use super::*;
+
+    #[test]
+    fn interpolate_m_propagates_each_allocation_failure() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::geometry::MultiMember;
+        use crate::test_support::{allocation_count, fail_allocations_after};
+
+        let source =
+            crate::io::parse_wkt("MULTILINESTRING (EMPTY, (0 0, 3 0), (8 0, 11 0), EMPTY)")
+                .unwrap();
+        let range = MeasureRange::interpolate_m(10.0, 40.0).unwrap();
+        let (output, allocations) =
+            allocation_count(|| source.interpolate_m(range, false, point_distance));
+        let Shape::MultiLineString(lines) = output.unwrap() else {
+            panic!("multipart output");
+        };
+        assert_eq!(lines.len(), 4);
+        assert!(matches!(lines.members().next(), Some(MultiMember::Empty)));
+        assert_eq!(lines.as_slice()[0].ms(), Some(&[10.0, 25.0][..]));
+        assert_eq!(lines.as_slice()[1].ms(), Some(&[25.0, 40.0][..]));
+        assert!(allocations > 0);
+        for successful in 0..allocations {
+            let error = fail_allocations_after(successful, || {
+                source.interpolate_m(range, false, point_distance)
+            })
+            .expect_err("every allocation must propagate failure");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
+    }
+
+    #[test]
+    fn interpolate_m_retains_partial_xyz_window_and_local_measures() {
+        let coords = CoordSeq::try_from_vecs(
+            vec![-10.0, 0.0, 3.0, 6.0, 20.0],
+            vec![9.0, 0.0, 0.0, 0.0, 9.0],
+            Some(vec![100.0, 11.0, 12.0, 13.0, 200.0]),
+            None,
+        )
+        .unwrap();
+        let window = coords.view(crate::geometry::CoordWindow::from_range(1..4, coords.len()));
+        let source = Shape::LineString(LineSeq::from_proven(window));
+        let output = source
+            .interpolate_m(
+                MeasureRange::interpolate_m(10.0, 40.0).unwrap(),
+                false,
+                point_distance,
+            )
+            .unwrap();
+        let Shape::LineString(line) = &output else {
+            panic!("line output");
+        };
+        assert_eq!(line.xs(), &[0.0, 3.0, 6.0]);
+        assert_eq!(line.zs(), Some(&[11.0, 12.0, 13.0][..]));
+        assert_eq!(line.ms(), Some(&[10.0, 25.0, 40.0][..]));
+        assert_eq!(line.xs().as_ptr(), coords.xs()[1..].as_ptr());
+        drop(source);
+        drop(coords);
+        assert_eq!(line.ms(), Some(&[10.0, 25.0, 40.0][..]));
     }
 }

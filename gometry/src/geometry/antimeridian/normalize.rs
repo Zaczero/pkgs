@@ -6,8 +6,8 @@ use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, GeometryErrorKind, Point, Polygon, PreparedPlan,
-    RepairMethod, Ring, Segment, Shape, TopologyDomain, ValidationIssue,
-    shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame, shared_segment_part,
+    RepairMethod, Segment, Shape, TopologyDomain, ValidationIssue, shape_encloses_pole_in_frame,
+    shape_has_polar_ring_in_frame, shared_segment_part,
 };
 
 fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
@@ -70,24 +70,20 @@ fn crossing_hole_relationship_issue(
     shape: &Shape,
     path: &str,
     domain: TopologyDomain,
-) -> Option<ValidationIssue> {
+) -> Result<Option<ValidationIssue>> {
     let TopologyDomain::Geographic(frame) = domain else {
-        return None;
+        return Ok(None);
     };
-    let polygon_issue = |polygon: &Polygon, path: &str| {
-        let crossing: Vec<(usize, &Ring)> = polygon
-            .holes
-            .iter()
-            .enumerate()
-            .filter(|(_, hole)| {
-                crate::geometry::crosses_antimeridian_in_frame(
-                    &Shape::Polygon(Polygon::new((*hole).clone(), Vec::new())),
-                    frame,
-                )
-            })
-            .collect();
+    let polygon_issue = |polygon: &Polygon, path: &str| -> Result<Option<ValidationIssue>> {
+        let mut crossing = Vec::new();
+        for (index, hole) in polygon.holes.iter().enumerate() {
+            let candidate = Shape::Polygon(Polygon::new((*hole).clone(), Vec::new())?);
+            if crate::geometry::crosses_antimeridian_in_frame(&candidate, frame) {
+                crossing.push((index, hole));
+            }
+        }
         if crossing.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let crossing_indices: Vec<usize> = crossing.iter().map(|(index, _)| *index).collect();
@@ -98,16 +94,19 @@ fn crossing_hole_relationship_issue(
             .filter(|(index, _)| !crossing_indices.contains(index))
             .map(|(_, hole)| hole.clone())
             .collect();
-        let container = Shape::Polygon(Polygon::new(polygon.shell.clone(), stationary));
+        let container = Shape::Polygon(Polygon::new(polygon.shell.clone(), stationary)?);
         let container = match try_topology_split(&container, domain) {
             Ok(container) => container,
             Err(error) => {
-                return Some(ValidationIssue::new(
+                if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) {
+                    return Err(error);
+                }
+                return Ok(Some(ValidationIssue::new(
                     "topology_normalization_failed",
                     format!("geographic topology normalization failed: {error}"),
                     None,
                     path,
-                ));
+                )));
             },
         };
         let mut normalized_holes: Vec<(usize, Shape)> = Vec::with_capacity(crossing.len());
@@ -123,39 +122,42 @@ fn crossing_hole_relationship_issue(
                             && rings_share_source_linework(other.coords(), hole.coords())
                     })
             {
-                return Some(ValidationIssue::new(
+                return Ok(Some(ValidationIssue::new(
                     "shared_linework",
                     format!("interior ring at index {index} intersects another ring on a line"),
                     witness,
                     path,
-                ));
+                )));
             }
-            let hole = Shape::Polygon(Polygon::new(hole.clone(), Vec::new()));
+            let hole = Shape::Polygon(Polygon::new(hole.clone(), Vec::new())?);
             let hole = match try_topology_split(&hole, domain) {
                 Ok(hole) => hole,
                 Err(error) => {
-                    return Some(ValidationIssue::new(
+                    if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) {
+                        return Err(error);
+                    }
+                    return Ok(Some(ValidationIssue::new(
                         "topology_normalization_failed",
                         format!("geographic topology normalization failed: {error}"),
                         witness,
                         format!("{path}.holes[{index}]"),
-                    ));
+                    )));
                 },
             };
-            if !container.contains(&hole) {
-                return Some(ValidationIssue::new(
+            if !container.contains(&hole)? {
+                return Ok(Some(ValidationIssue::new(
                     "hole_outside_shell",
                     format!(
                         "interior ring at index {index} is not contained within the polygon's exterior"
                     ),
                     witness,
                     path,
-                ));
+                )));
             }
             for (other_index, other) in &normalized_holes {
-                let relation = other.relate(&hole);
+                let relation = other.relate(&hole)?;
                 if relation.as_bytes()[0] != b'F' {
-                    return Some(ValidationIssue::new(
+                    return Ok(Some(ValidationIssue::new(
                         "hole_overlap",
                         format!(
                             "interior ring at index {} and interior ring at index {} intersect on an area",
@@ -164,25 +166,38 @@ fn crossing_hole_relationship_issue(
                         ),
                         witness,
                         path,
-                    ));
+                    )));
                 }
             }
             normalized_holes.push((index, hole));
         }
-        None
+        Ok(None)
     };
 
     match shape {
         Shape::Polygon(polygon) => polygon_issue(polygon, path),
         Shape::MultiPolygon(polygons) => {
-            polygons.iter().enumerate().find_map(|(index, polygon)| {
-                polygon_issue(polygon, &format!("{path}.geometries[{index}]"))
-            })
+            for (index, polygon) in polygons.iter().enumerate() {
+                if let Some(issue) = polygon_issue(polygon, &format!("{path}.geometries[{index}]"))?
+                {
+                    return Ok(Some(issue));
+                }
+            }
+            Ok(None)
         },
-        Shape::GeometryCollection(parts) => parts.iter().enumerate().find_map(|(index, part)| {
-            crossing_hole_relationship_issue(part, &format!("{path}.geometries[{index}]"), domain)
-        }),
-        _ => None,
+        Shape::GeometryCollection(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                if let Some(issue) = crossing_hole_relationship_issue(
+                    part,
+                    &format!("{path}.geometries[{index}]"),
+                    domain,
+                )? {
+                    return Ok(Some(issue));
+                }
+            }
+            Ok(None)
+        },
+        _ => Ok(None),
     }
 }
 
@@ -192,25 +207,28 @@ fn crossing_hole_relationship_issue(
 pub(crate) fn validate_shape_in_frame(
     shape: &Shape,
     domain: TopologyDomain,
-) -> Option<ValidationIssue> {
+) -> Result<Option<ValidationIssue>> {
     if needs_topology_split(shape, domain) {
-        let planar = shape.force_2d().ok()?;
-        if let Some(issue) = crossing_hole_relationship_issue(&planar, "$", domain) {
-            return Some(issue);
+        let planar = shape.force_2d()?;
+        if let Some(issue) = crossing_hole_relationship_issue(&planar, "$", domain)? {
+            return Ok(Some(issue));
         }
         try_topology_split(shape, domain).map_or_else(
             |error| {
-                Some(ValidationIssue::new(
+                if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) {
+                    return Err(error);
+                }
+                Ok(Some(ValidationIssue::new(
                     "topology_normalization_failed",
                     format!("geographic topology normalization failed: {error}"),
                     None,
                     "$",
-                ))
+                )))
             },
-            |normalized| normalized.validate(),
+            |normalized| Ok(normalized.validate()),
         )
     } else {
-        shape.validate()
+        Ok(shape.validate())
     }
 }
 
@@ -218,11 +236,11 @@ pub(crate) fn validate_shape_in_frame(
 pub(crate) fn validate_data_in_frame(
     data: &PreparedPlan,
     domain: TopologyDomain,
-) -> Option<ValidationIssue> {
+) -> Result<Option<ValidationIssue>> {
     if data_needs_topology_split(data, domain) {
         validate_shape_in_frame(data.shape(), domain)
     } else {
-        data.validate_cached().cloned()
+        Ok(data.validate_cached().cloned())
     }
 }
 
@@ -274,7 +292,7 @@ fn repair_invalid_shape(
     } else {
         shape.repair(method, false)
     }?;
-    if let Some(issue) = validate_shape_in_frame(&repaired, domain) {
+    if let Some(issue) = validate_shape_in_frame(&repaired, domain)? {
         return Err(GeometryErrorKind::repair_failed(format!(
             "repair did not produce valid geometry: {}",
             issue.detail,
@@ -290,7 +308,7 @@ pub(crate) fn repair_shape_in_frame(
     domain: TopologyDomain,
     method: RepairMethod,
 ) -> Result<Option<Shape>> {
-    validate_shape_in_frame(shape, domain)
+    validate_shape_in_frame(shape, domain)?
         .map(|_| repair_invalid_shape(shape, domain, method))
         .transpose()
 }
@@ -301,7 +319,7 @@ pub(crate) fn repair_data_in_frame(
     domain: TopologyDomain,
     method: RepairMethod,
 ) -> Result<Option<Shape>> {
-    validate_data_in_frame(data, domain)
+    validate_data_in_frame(data, domain)?
         .map(|_| repair_invalid_shape(data.shape(), domain, method))
         .transpose()
 }

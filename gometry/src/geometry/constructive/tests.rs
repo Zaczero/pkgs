@@ -5,8 +5,8 @@ use crate::geometry::constructive::{
     WalkJoinRule, winding_buffer, winding_erosion, winding_stroke,
 };
 use crate::geometry::{
-    BufferCapStyle, CoordSeq, LineSeq, MAX_NESTING, Point, Polygon, Ring, Segment, Shape, XY,
-    affine_about_origin_ordinate,
+    BufferCapStyle, CoordSeq, LineSeq, MAX_NESTING, MultiPolygon, Point, Polygon, Ring, Segment,
+    Shape, XY, affine_about_origin_ordinate,
 };
 
 #[test]
@@ -55,21 +55,28 @@ mod winding_buffer_tests {
 
     fn ring(points: &[(f64, f64)]) -> Ring {
         Ring::from_closed(
-            points
-                .iter()
-                .map(|&(x, y)| Point::new(x, y).unwrap())
-                .collect::<Vec<_>>(),
+            CoordSeq::try_from_points(
+                &points
+                    .iter()
+                    .map(|&(x, y)| Point::new(x, y).unwrap())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
         )
     }
 
     #[test]
     fn degenerate_buffer_at_collection_limit_returns_an_error() {
         let degenerate = Shape::MultiPolygon(
-            vec![Polygon::new(
-                ring(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)]),
-                Vec::new(),
-            )]
-            .into(),
+            MultiPolygon::from_dense(vec![
+                Polygon::new(
+                    ring(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)]),
+                    Vec::new(),
+                )
+                .unwrap(),
+            ])
+            .unwrap()
+            .unwrap(),
         );
         let mut nested = degenerate;
         for _ in 0..MAX_NESTING {
@@ -99,7 +106,7 @@ mod winding_buffer_tests {
             (-0.514_876_326_055_279_8, 54.615_665_698_471_18),
             (-0.514_876_326_055_279_8, 48.442_629_193_004_55),
         ]);
-        let polygon = Polygon::new(shell, Vec::new());
+        let polygon = Polygon::new(shell, Vec::new()).unwrap();
         let eroded = winding_erosion(
             std::slice::from_ref(&polygon),
             3.938_095_265_107_087_5,
@@ -131,7 +138,8 @@ mod winding_buffer_tests {
                 (4.0, 6.0),
                 (4.0, 4.0),
             ])],
-        );
+        )
+        .unwrap();
         let buffered = winding_buffer(
             std::slice::from_ref(&with_hole),
             0.5,
@@ -165,7 +173,8 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let solid_buffered = winding_buffer(
             std::slice::from_ref(&solid),
             1.5,
@@ -188,7 +197,8 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let sealed = winding_buffer(
             std::slice::from_ref(&notched),
             0.3,
@@ -196,7 +206,7 @@ mod winding_buffer_tests {
             NonZeroU32::new(2).unwrap(),
         )
         .unwrap();
-        assert!(sealed.covers(&Shape::Polygon(notched)));
+        assert!(sealed.covers(&Shape::Polygon(notched)).unwrap());
     }
 
     /// Miter and bevel join rules: a square's 90-degree corners are well
@@ -210,7 +220,8 @@ mod winding_buffer_tests {
         let square = Polygon::new(
             ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let parts = std::slice::from_ref(&square);
         let miter = WalkJoinRule::Miter { limit: 5.0 };
         let mitered = winding_buffer(parts, 1.0, miter, NonZeroU32::new(8).unwrap()).unwrap();
@@ -238,7 +249,8 @@ mod winding_buffer_tests {
         let spike = Polygon::new(
             ring(&[(0.0, 0.0), (12.0, 1.0), (0.0, 2.0), (0.0, 0.0)]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let parts = std::slice::from_ref(&spike);
         let distance = 0.5;
         let limit = 2.0;
@@ -302,7 +314,8 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let q = NonZeroU32::new(8).unwrap();
         // Accept: distance 1 < inradius 5 → simple eroded square area 64.
         let accepted = convex_buffer(&box_poly, -1.0, WalkJoinRule::Arc, q).unwrap();
@@ -333,7 +346,8 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         assert!(
             convex_buffer(&l_shape, -1.2, WalkJoinRule::Bevel, q).is_none(),
             "concave input must not enter the certificate path"
@@ -362,7 +376,8 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let parts = std::slice::from_ref(&l_shape);
         let kept =
             winding_erosion(parts, 1.2, WalkJoinRule::Bevel, NonZeroU32::new(8).unwrap()).unwrap();
@@ -382,12 +397,12 @@ mod winding_buffer_tests {
     /// areas.
     #[test]
     fn stroke_join_rules_are_exact_on_right_angles() {
-        let chain: CoordSeq = vec![
+        let chain = CoordSeq::try_from_points(&[
             Point::new(0.0, 0.0).unwrap(),
             Point::new(2.0, 0.0).unwrap(),
             Point::new(2.0, 2.0).unwrap(),
-        ]
-        .into();
+        ])
+        .unwrap();
         let chains = [&chain];
         let miter = WalkJoinRule::Miter { limit: 5.0 };
         let mitered = winding_stroke(
@@ -428,8 +443,11 @@ mod winding_buffer_tests {
         let expected = 16.0 * 4.0 * (std::f64::consts::TAU / 32.0).sin();
         assert!((disc.area() - expected).abs() < 1e-12, "{}", disc.area());
 
-        let zero_chain: CoordSeq =
-            vec![Point::new(1.0, 1.0).unwrap(), Point::new(1.0, 1.0).unwrap()].into();
+        let zero_chain = CoordSeq::try_from_points(&[
+            Point::new(1.0, 1.0).unwrap(),
+            Point::new(1.0, 1.0).unwrap(),
+        ])
+        .unwrap();
         let stroked = Shape::LineString(LineSeq::try_new(zero_chain).expect("test line is valid"))
             .buffer(2.0)
             .unwrap();
@@ -438,10 +456,13 @@ mod winding_buffer_tests {
         for shape in [
             Shape::Point(Point::new(0.0, 0.0).unwrap()),
             Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new(0.0, 0.0).unwrap(),
-                    Point::new(5.0, 0.0).unwrap(),
-                ]))
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        Point::new(0.0, 0.0).unwrap(),
+                        Point::new(5.0, 0.0).unwrap(),
+                    ])
+                    .unwrap(),
+                )
                 .expect("test line is valid"),
             ),
         ] {
@@ -452,16 +473,22 @@ mod winding_buffer_tests {
         let collection = Shape::geometry_collection(vec![
             Shape::Point(Point::new(12.0, 3.0).unwrap()),
             Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new(0.0, 0.0).unwrap(),
-                    Point::new(4.0, 0.0).unwrap(),
-                ]))
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&vec![
+                        Point::new(0.0, 0.0).unwrap(),
+                        Point::new(4.0, 0.0).unwrap(),
+                    ])
+                    .unwrap(),
+                )
                 .expect("test line is valid"),
             ),
-            Shape::Polygon(Polygon::new(
-                ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
-                Vec::new(),
-            )),
+            Shape::Polygon(
+                Polygon::new(
+                    ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
+                    Vec::new(),
+                )
+                .unwrap(),
+            ),
         ])
         .expect("test collection is valid");
         let buffered = collection.buffer(0.5).unwrap();
@@ -470,7 +497,7 @@ mod winding_buffer_tests {
             Shape::GeometryCollection(parts) => parts,
             _ => unreachable!(),
         } {
-            assert!(buffered.covers(part), "missing {part:?}");
+            assert!(buffered.covers(part).unwrap(), "missing {part:?}");
         }
         // Negative distance keeps only the eroded polygon: the exact
         // inner square.
@@ -484,37 +511,46 @@ mod winding_buffer_tests {
     /// answer), and puntal/lineal input annihilates exactly.
     #[test]
     fn zero_distance_buffer_is_the_winding_limit() {
-        let holed = Shape::Polygon(Polygon::new(
-            ring(&[
-                (0.0, 0.0),
-                (10.0, 0.0),
-                (10.0, 10.0),
-                (0.0, 10.0),
-                (0.0, 0.0),
-            ]),
-            vec![ring(&[
-                (4.0, 4.0),
-                (6.0, 4.0),
-                (6.0, 6.0),
-                (4.0, 6.0),
-                (4.0, 4.0),
-            ])],
-        ));
+        let holed = Shape::Polygon(
+            Polygon::new(
+                ring(&[
+                    (0.0, 0.0),
+                    (10.0, 0.0),
+                    (10.0, 10.0),
+                    (0.0, 10.0),
+                    (0.0, 0.0),
+                ]),
+                vec![ring(&[
+                    (4.0, 4.0),
+                    (6.0, 4.0),
+                    (6.0, 6.0),
+                    (4.0, 6.0),
+                    (4.0, 4.0),
+                ])],
+            )
+            .unwrap(),
+        );
         let same = holed.buffer(0.0).unwrap();
         assert!((same.area() - 96.0).abs() < 1e-12, "{}", same.area());
 
-        let bowtie = Shape::Polygon(Polygon::new(
-            ring(&[(0.0, 0.0), (4.0, 4.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
-            Vec::new(),
-        ));
+        let bowtie = Shape::Polygon(
+            Polygon::new(
+                ring(&[(0.0, 0.0), (4.0, 4.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         let lobe = bowtie.buffer(0.0).unwrap();
         assert!((lobe.area() - 4.0).abs() < 1e-12, "{}", lobe.area());
 
         let line = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new(0.0, 0.0).unwrap(),
-                Point::new(1.0, 1.0).unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new(0.0, 0.0).unwrap(),
+                    Point::new(1.0, 1.0).unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("test line is valid"),
         );
         assert!(line.buffer(0.0).unwrap().is_empty());
@@ -527,12 +563,15 @@ mod winding_buffer_tests {
         // buffer is the segment stadium, NOT a thin self-retracing region.
         let line = |points: &[(f64, f64)]| {
             Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(
-                    points
-                        .iter()
-                        .map(|&(x, y)| Point::new(x, y).unwrap())
-                        .collect::<Vec<_>>(),
-                ))
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(
+                        &points
+                            .iter()
+                            .map(|&(x, y)| Point::new(x, y).unwrap())
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                )
                 .expect("test line is valid"),
             )
         };
@@ -583,7 +622,7 @@ mod consecutive_dedup_tests {
     fn closed_ring(points: &[(f64, f64)]) -> CoordSeq {
         let mut coords: Vec<Point> = points.iter().map(|&(x, y)| point(x, y)).collect();
         coords.push(coords[0]);
-        coords.into()
+        CoordSeq::try_from_points(&coords).unwrap()
     }
 
     #[test]
@@ -601,16 +640,16 @@ mod consecutive_dedup_tests {
 
     #[test]
     fn offset_source_dedups_before_close_handling() {
-        let line: CoordSeq = vec![
+        let line = CoordSeq::try_from_points(&[
             point(0.0, 0.0),
             point(0.0, 0.0),
             point(1.0, 0.0),
             point(1.0, 0.0),
-        ]
-        .into();
+        ])
+        .unwrap();
         assert!(offset_source(&line).is_some());
         assert!(offset_line(&line, 1.0).is_some());
-        let collapsed: CoordSeq = vec![point(0.0, 0.0), point(0.0, 0.0)].into();
+        let collapsed = CoordSeq::try_from_points(&[point(0.0, 0.0), point(0.0, 0.0)]).unwrap();
         assert!(offset_source(&collapsed).is_none());
     }
 
@@ -624,7 +663,7 @@ mod consecutive_dedup_tests {
             (0.0, 2.0),
             (0.0, 0.0),
         ]));
-        let polygon = Shape::Polygon(Polygon::new(ring, Vec::new()));
+        let polygon = Shape::Polygon(Polygon::new(ring, Vec::new()).unwrap());
         let cleaned = polygon.snap_to_grid((1.0, 1.0), (0.0, 0.0)).unwrap();
         let Shape::Polygon(polygon) = cleaned else {
             panic!("expected polygon");
@@ -639,17 +678,18 @@ mod consecutive_dedup_tests {
 
     #[test]
     fn empty_results_keep_source_axes() {
-        use std::sync::Arc;
+        let collapsed_ring = Ring::from_closed(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 0.0, 0.0, 0.0],
+                vec![0.0, 0.0, 0.0, 0.0],
+                Some(vec![1.0, 1.0, 1.0, 1.0]),
+                None,
+            )
+            .unwrap(),
+        );
+        let polygon = Shape::Polygon(Polygon::new(collapsed_ring, Vec::new()).unwrap());
 
-        let collapsed_ring = Ring::from_closed(CoordSeq::from_columns(
-            Arc::from([0.0, 0.0, 0.0, 0.0]),
-            Arc::from([0.0, 0.0, 0.0, 0.0]),
-            Some(Arc::from([1.0, 1.0, 1.0, 1.0])),
-            None,
-        ));
-        let polygon = Shape::Polygon(Polygon::new(collapsed_ring, Vec::new()));
-
-        assert_eq!(polygon.unique_points().axes(), CoordinateAxes::XYZ);
+        assert_eq!(polygon.unique_points().unwrap().axes(), CoordinateAxes::XYZ);
         assert_eq!(
             polygon.snap_to_grid((1.0, 1.0), (0.0, 0.0)).unwrap(),
             Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZ)
@@ -670,14 +710,15 @@ mod consecutive_dedup_tests {
 
     #[test]
     fn simplify_vw_raw_keeps_repeated_xy_endpoint_ordinates() {
-        use std::sync::Arc;
-
-        let line = Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
-            Arc::from([0.0, 1.0, 0.0]),
-            Arc::from([0.0, 0.0, 0.0]),
-            Some(Arc::from([1.0, 2.0, 9.0])),
-            Some(Arc::from([10.0, 20.0, 90.0])),
-        )));
+        let line = Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_vecs(
+                [0.0, 1.0, 0.0].into(),
+                [0.0, 0.0, 0.0].into(),
+                Some([1.0, 2.0, 9.0].into()),
+                Some([10.0, 20.0, 90.0].into()),
+            )
+            .unwrap(),
+        ));
         let Shape::LineString(out) = line.simplify_vw_raw(1.0).unwrap() else {
             panic!("A-B-A VW keep-mask must remain a line");
         };
@@ -690,15 +731,16 @@ mod consecutive_dedup_tests {
 
     #[test]
     fn dropping_collapsed_shell_keeps_xyzm_empty() {
-        use std::sync::Arc;
-
-        let collapsed = Ring::from_closed(CoordSeq::from_columns(
-            Arc::from([0.0, 0.0, 0.0, 0.0]),
-            Arc::from([0.0, 0.0, 0.0, 0.0]),
-            Some(Arc::from([1.0, 2.0, 3.0, 1.0])),
-            Some(Arc::from([10.0, 20.0, 30.0, 10.0])),
-        ));
-        let polygon = Shape::Polygon(Polygon::new(collapsed, Vec::new()));
+        let collapsed = Ring::from_closed(
+            CoordSeq::try_from_vecs(
+                [0.0, 0.0, 0.0, 0.0].into(),
+                [0.0, 0.0, 0.0, 0.0].into(),
+                Some([1.0, 2.0, 3.0, 1.0].into()),
+                Some([10.0, 20.0, 30.0, 10.0].into()),
+            )
+            .unwrap(),
+        );
+        let polygon = Shape::Polygon(Polygon::new(collapsed, Vec::new()).unwrap());
         assert_eq!(
             polygon.simplify_vw(0.0, false).unwrap(),
             Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZM)
@@ -707,21 +749,25 @@ mod consecutive_dedup_tests {
 
     #[test]
     fn dropping_collapsed_hole_keeps_the_shell() {
-        use std::sync::Arc;
-
-        let shell = Ring::from_closed(CoordSeq::from_columns(
-            Arc::from([0.0, 4.0, 0.0, 0.0]),
-            Arc::from([0.0, 0.0, 4.0, 0.0]),
-            None,
-            None,
-        ));
-        let hole = Ring::from_closed(CoordSeq::from_columns(
-            Arc::from([1.0, 1.0, 1.0, 1.0]),
-            Arc::from([1.0, 1.0, 1.0, 1.0]),
-            None,
-            None,
-        ));
-        let polygon = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let shell = Ring::from_closed(
+            CoordSeq::try_from_vecs(
+                [0.0, 4.0, 0.0, 0.0].into(),
+                [0.0, 0.0, 4.0, 0.0].into(),
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+        let hole = Ring::from_closed(
+            CoordSeq::try_from_vecs(
+                [1.0, 1.0, 1.0, 1.0].into(),
+                [1.0, 1.0, 1.0, 1.0].into(),
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+        let polygon = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
         let Shape::Polygon(out) = polygon.simplify_vw(0.0, false).unwrap() else {
             panic!("three-corner shell must remain a polygon");
         };
@@ -733,7 +779,6 @@ mod consecutive_dedup_tests {
 
 #[cfg(test)]
 mod subdivide_columns_tests {
-    use std::sync::Arc;
 
     use geographiclib_rs::Geodesic;
 
@@ -744,12 +789,13 @@ mod subdivide_columns_tests {
 
     #[test]
     fn densify_xyzm_interpolates_every_ordinate_lane() {
-        let line = CoordSeq::from_columns(
-            Arc::from([0.0, 4.0]),
-            Arc::from([0.0, 0.0]),
-            Some(Arc::from([10.0, 30.0])),
-            Some(Arc::from([100.0, 300.0])),
-        );
+        let line = CoordSeq::try_from_vecs(
+            vec![0.0, 4.0],
+            vec![0.0, 0.0],
+            Some(vec![10.0, 30.0]),
+            Some(vec![100.0, 300.0]),
+        )
+        .unwrap();
         let mut budget = ExpansionBudget::new("densify", "fraction");
         let densified = densify_points_budgeted(&line, 0.25, &mut budget).unwrap();
         assert_eq!(densified.len(), 5);
@@ -763,8 +809,11 @@ mod subdivide_columns_tests {
 
     #[test]
     fn segmentize_matches_fraction_dedup_reference() {
-        let line: CoordSeq =
-            vec![Point::new(0.0, 0.0).unwrap(), Point::new(3.0, 0.0).unwrap()].into();
+        let line = CoordSeq::try_from_points(&[
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(3.0, 0.0).unwrap(),
+        ])
+        .unwrap();
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let segmented = segmentize_points_budgeted(
             &line,
@@ -779,12 +828,13 @@ mod subdivide_columns_tests {
 
     #[test]
     fn geographic_segmentize_preserves_curved_xy_and_interpolated_zm() {
-        let line = CoordSeq::from_columns(
-            Arc::from([0.0, 10.0]),
-            Arc::from([0.0, 10.0]),
-            Some(Arc::from([10.0, 30.0])),
-            Some(Arc::from([100.0, 300.0])),
-        );
+        let line = CoordSeq::try_from_vecs(
+            [0.0, 10.0].into(),
+            [0.0, 10.0].into(),
+            Some([10.0, 30.0].into()),
+            Some([100.0, 300.0].into()),
+        )
+        .unwrap();
         let geodesic = Geodesic::wgs84();
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let segmented = segmentize_points_budgeted(
@@ -800,20 +850,20 @@ mod subdivide_columns_tests {
         assert_eq!(segmented.ys()[0].to_bits(), 0.0_f64.to_bits());
         assert_eq!(segmented.xs()[2].to_bits(), 10.0_f64.to_bits());
         assert_eq!(segmented.ys()[2].to_bits(), 10.0_f64.to_bits());
-        assert!((segmented.xs()[1] - 4.961882922527124).abs() <= 1e-12);
-        assert!((segmented.ys()[1] - 5.01950880089445).abs() <= 1e-12);
+        assert!((segmented.xs()[1] - 4.961_882_922_527_124).abs() <= 1e-12);
+        assert!((segmented.ys()[1] - 5.019_508_800_894_45).abs() <= 1e-12);
         assert_eq!(segmented.zs().unwrap(), &[10.0, 20.0, 30.0]);
         assert_eq!(segmented.ms().unwrap(), &[100.0, 200.0, 300.0]);
     }
 
     #[test]
     fn geographic_segmentize_selects_equatorial_interpolation_per_segment() {
-        let line: CoordSeq = vec![
+        let line = CoordSeq::try_from_points(&[
             Point::new(-10.0, 0.0).unwrap(),
             Point::new(0.0, 0.0).unwrap(),
             Point::new(10.0, 10.0).unwrap(),
-        ]
-        .into();
+        ])
+        .unwrap();
         let geodesic = Geodesic::wgs84();
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let segmented = segmentize_points_budgeted(
@@ -827,18 +877,19 @@ mod subdivide_columns_tests {
         assert_eq!(segmented.len(), 5);
         assert_eq!(segmented.xs()[1], -5.0);
         assert_eq!(segmented.ys()[1].to_bits(), 0.0_f64.to_bits());
-        assert!((segmented.xs()[3] - 4.961882922527124).abs() <= 1e-12);
-        assert!((segmented.ys()[3] - 5.01950880089445).abs() <= 1e-12);
+        assert!((segmented.xs()[3] - 4.961_882_922_527_124).abs() <= 1e-12);
+        assert!((segmented.ys()[3] - 5.019_508_800_894_45).abs() <= 1e-12);
     }
 
     #[test]
     fn geographic_segmentize_consumes_sparse_plans_in_source_order() {
-        let line = CoordSeq::from_columns(
-            Arc::from([-0.0001, 0.0, 10.0, 10.0001, 20.0001, 20.0002]),
-            Arc::from([-0.0001, 0.0, 10.0, 10.0001, 20.0001, 20.0002]),
-            Some(Arc::from([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])),
-            Some(Arc::from([100.0, 200.0, 300.0, 400.0, 500.0, 600.0])),
-        );
+        let line = CoordSeq::try_from_vecs(
+            [-0.0001, 0.0, 10.0, 10.0001, 20.0001, 20.0002].into(),
+            [-0.0001, 0.0, 10.0, 10.0001, 20.0001, 20.0002].into(),
+            Some([10.0, 20.0, 30.0, 40.0, 50.0, 60.0].into()),
+            Some([100.0, 200.0, 300.0, 400.0, 500.0, 600.0].into()),
+        )
+        .unwrap();
         let geodesic = Geodesic::wgs84();
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let segmented = segmentize_points_budgeted(
@@ -857,14 +908,14 @@ mod subdivide_columns_tests {
         assert_eq!(segmented.ys()[0].to_bits(), (-0.0001_f64).to_bits());
         assert_eq!(segmented.xs()[1].to_bits(), 0.0_f64.to_bits());
         assert_eq!(segmented.ys()[1].to_bits(), 0.0_f64.to_bits());
-        assert!((segmented.xs()[2] - 4.961882922527124).abs() <= 1e-12);
-        assert!((segmented.ys()[2] - 5.01950880089445).abs() <= 1e-12);
+        assert!((segmented.xs()[2] - 4.961_882_922_527_124).abs() <= 1e-12);
+        assert!((segmented.ys()[2] - 5.019_508_800_894_45).abs() <= 1e-12);
         assert_eq!(segmented.xs()[3].to_bits(), 10.0_f64.to_bits());
         assert_eq!(segmented.ys()[3].to_bits(), 10.0_f64.to_bits());
         assert_eq!(segmented.xs()[4].to_bits(), 10.0001_f64.to_bits());
         assert_eq!(segmented.ys()[4].to_bits(), 10.0001_f64.to_bits());
-        assert!((segmented.xs()[5] - 14.883313082425628).abs() <= 1e-12);
-        assert!((segmented.ys()[5] - 15.056212173359553).abs() <= 1e-12);
+        assert!((segmented.xs()[5] - 14.883_313_082_425_628).abs() <= 1e-12);
+        assert!((segmented.ys()[5] - 15.056_212_173_359_553).abs() <= 1e-12);
         assert_eq!(segmented.xs()[6].to_bits(), 20.0001_f64.to_bits());
         assert_eq!(segmented.ys()[6].to_bits(), 20.0001_f64.to_bits());
         assert_eq!(segmented.xs()[7].to_bits(), 20.0002_f64.to_bits());
@@ -879,11 +930,11 @@ mod subdivide_columns_tests {
 
     #[test]
     fn geographic_segmentize_keeps_antipodal_equator_on_geodesic_path() {
-        let line: CoordSeq = vec![
+        let line = CoordSeq::try_from_points(&[
             Point::new(0.0, 0.0).unwrap(),
             Point::new(180.0, 0.0).unwrap(),
-        ]
-        .into();
+        ])
+        .unwrap();
         let geodesic = Geodesic::wgs84();
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let segmented = segmentize_points_budgeted(
@@ -900,8 +951,11 @@ mod subdivide_columns_tests {
 
     #[test]
     fn geographic_segmentize_preserves_coordinates_without_charging() {
-        let line: CoordSeq =
-            vec![Point::new(0.0, 0.0).unwrap(), Point::new(1.0, 0.0).unwrap()].into();
+        let line = CoordSeq::try_from_points(&[
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(1.0, 0.0).unwrap(),
+        ])
+        .unwrap();
         let geodesic = Geodesic::wgs84();
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let segmented = segmentize_points_budgeted(
@@ -919,8 +973,11 @@ mod subdivide_columns_tests {
 
     #[test]
     fn pathological_subdivision_counts_fail_before_allocation() {
-        let line: CoordSeq =
-            vec![Point::new(0.0, 0.0).unwrap(), Point::new(1.0, 0.0).unwrap()].into();
+        let line = CoordSeq::try_from_points(&[
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(1.0, 0.0).unwrap(),
+        ])
+        .unwrap();
         let mut segmentize_budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let segmentize = segmentize_points_budgeted(
             &line,
@@ -954,20 +1011,26 @@ mod expansion_budget_threading_tests {
     fn bent_line() -> Shape {
         Shape::LineString(
             LineSeq::try_new(
-                vec![
+                CoordSeq::try_from_points(&[
                     Point::new(0.0, 0.0).unwrap(),
                     Point::new(1.0, 0.0).unwrap(),
                     Point::new(1.0, 1.0).unwrap(),
-                ]
-                .into(),
+                ])
+                .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
         )
     }
 
     fn straight_line() -> LineSeq {
-        LineSeq::try_new(vec![Point::new(0.0, 0.0).unwrap(), Point::new(1.0, 0.0).unwrap()].into())
-            .expect("line coordinate sequence must contain at least two vertices")
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new(0.0, 0.0).unwrap(),
+                Point::new(1.0, 0.0).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .expect("line coordinate sequence must contain at least two vertices")
     }
 
     #[test]
@@ -1009,13 +1072,14 @@ mod expansion_budget_threading_tests {
             .unwrap_err();
 
         let mut triangle_budget = exhausted("triangulate", "method");
-        Shape::MultiPoint(
-            vec![
+        Shape::multi_point(
+            crate::geometry::CoordinateAxes::XY,
+            CoordSeq::try_from_points(&[
                 Point::new(0.0, 0.0).unwrap(),
                 Point::new(1.0, 0.0).unwrap(),
                 Point::new(0.0, 1.0).unwrap(),
-            ]
-            .into(),
+            ])
+            .unwrap(),
         )
         .delaunay_triangles_budgeted(&mut triangle_budget)
         .unwrap_err();
@@ -1027,13 +1091,17 @@ mod expansion_budget_threading_tests {
         // on the cap and the second must observe that same exhausted owner.
         let mut parts_budget = ExpansionBudget::new("segmentize", "max_segment_length");
         parts_budget.add(GENERATED_ITEM_LIMIT - 1).unwrap();
-        Shape::MultiLineString(vec![straight_line(), straight_line()].into())
-            .segmentize_budgeted(
-                0.5,
-                crate::geometry::SegmentPlacement::Planar,
-                &mut parts_budget,
-            )
-            .unwrap_err();
+        Shape::multi_line_string(crate::geometry::CoordinateAxes::XY, vec![
+            straight_line(),
+            straight_line(),
+        ])
+        .unwrap()
+        .segmentize_budgeted(
+            0.5,
+            crate::geometry::SegmentPlacement::Planar,
+            &mut parts_budget,
+        )
+        .unwrap_err();
         assert_eq!(parts_budget.used(), GENERATED_ITEM_LIMIT);
 
         // A unit square contributes twelve inserted vertices at this step. The
@@ -1050,7 +1118,7 @@ mod expansion_budget_threading_tests {
         };
         let mut rings_budget = ExpansionBudget::new("segmentize", "max_segment_length");
         rings_budget.add(GENERATED_ITEM_LIMIT - 12).unwrap();
-        Shape::Polygon(Polygon::new(square(0.0, 1.0), vec![square(0.25, 0.75)]))
+        Shape::Polygon(Polygon::new(square(0.0, 1.0), vec![square(0.25, 0.75)]).unwrap())
             .segmentize_budgeted(
                 0.25,
                 crate::geometry::SegmentPlacement::Planar,

@@ -220,8 +220,10 @@ impl PyGeometryArray {
                     let present: Vec<_> = storage
                         .iter_shapes()
                         .zip(mask.iter())
-                        .filter_map(|(shape, missing)| (!missing).then(|| shape.into_owned()))
-                        .collect();
+                        .filter_map(|(shape, missing)| {
+                            (!missing).then_some(shape.map(|shape| shape.into_owned()))
+                        })
+                        .collect::<crate::error::Result<Vec<_>>>()?;
                     let borrowed: Vec<_> = present.iter().collect();
                     let converted =
                         transformer
@@ -247,8 +249,8 @@ impl PyGeometryArray {
                 })
                 .map_err(transform_failure_pyerr)?;
             crate::py::crs::drain_accuracy_warning(py, &execution)?;
-            return Ok(Self::from_shapes(converted_rows.0, output)
-                .with_missing_mask(Some(converted_rows.1)));
+            return Ok(Self::from_shapes(converted_rows.0, output)?
+                .with_missing_mask(Some(converted_rows.1))?);
         }
         let target =
             parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;

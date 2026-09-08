@@ -113,7 +113,7 @@ mod validate_lonlat_shape_tests {
     };
 
     fn xy_seq(xs: Vec<f64>, ys: Vec<f64>) -> CoordSeq {
-        CoordSeq::from_vecs(xs, ys, None, None)
+        CoordSeq::try_from_vecs(xs, ys, None, None).unwrap()
     }
 
     fn domain_error(shape: &Shape) -> crate::error::Error {
@@ -150,7 +150,7 @@ mod validate_lonlat_shape_tests {
         let hole =
             Ring::closed_coordseq(xy_seq(vec![0.2, 0.3, 0.3, 0.2], vec![95.0, 0.2, 0.3, 95.0]))
                 .unwrap();
-        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
         assert_first_xy(domain_error(&shape), 0.2, 95.0);
     }
 

@@ -62,7 +62,7 @@ pub(crate) trait GridCell: HierarchicalCell + Copy + Eq + Ord + Send + Sync {
     fn hash_key(self) -> u64;
     fn token(self) -> String;
     fn center_point(self) -> Point;
-    fn boundary_shape(self) -> Shape;
+    fn boundary_shape(self) -> crate::error::Result<Shape>;
     fn area_m2(self) -> f64;
     fn neighbors(self) -> crate::error::Result<Vec<Self>>;
     fn parent_at(self, depth: u8) -> Option<Self>;
@@ -140,11 +140,9 @@ impl<T: RectGridCell> GridCell for T {
         Point::new(lon, lat).expect("rect cell centers are finite")
     }
 
-    fn boundary_shape(self) -> Shape {
+    fn boundary_shape(self) -> crate::error::Result<Shape> {
         let bounds = self.bounds();
-        crate::box_polygon(bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy())
-            .map(Shape::Polygon)
-            .expect("rect cell bounds are finite")
+        crate::geometry::rect_polygon(bounds).map(Shape::Polygon)
     }
 
     fn area_m2(self) -> f64 {

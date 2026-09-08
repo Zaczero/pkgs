@@ -127,7 +127,10 @@ impl PyH3Vertex {
 }
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled `H3Vertex` from its 64-bit index (internal; see
 /// ``H3Vertex.__reduce__``).
 #[pyfunction]
@@ -253,16 +256,16 @@ fn reverse(&self) -> Self {
     /// LineString
     ///     Longitude/latitude line tagged ``OGC:CRS84``.
     #[getter]
-    fn line(&self) -> Typed {
+    fn line(&self) -> PyResult<Typed> {
         let points: Vec<Point> = self
             .edge
             .boundary()
             .iter()
             .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
             .collect();
-        PyGeometry::typed_wgs84(Shape::LineString(
-            LineSeq::from_proven(CoordSeq::from(points)),
-        ))
+        Ok(PyGeometry::typed_wgs84(Shape::LineString(
+            LineSeq::from_proven(CoordSeq::try_from_points(&points)?),
+        )))
     }
 
     /// Length of the edge in meters (spherical, like `H3Cell.area`).
@@ -348,7 +351,10 @@ pub(super) fn h3_edge_index(value: &Bound<'_, PyAny>) -> PyResult<DirectedEdgeIn
     })
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled `H3Edge` from its 64-bit index (internal; see
 /// ``H3Edge.__reduce__``).
 #[pyfunction]

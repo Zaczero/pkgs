@@ -20,7 +20,7 @@ impl GridCell for CellId {
         S2GeomCell::from_id(self).center_lonlat()
     }
 
-    fn boundary_shape(self) -> Shape {
+    fn boundary_shape(self) -> crate::error::Result<Shape> {
         S2GeomCell::from_id(self).boundary_shape()
     }
 

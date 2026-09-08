@@ -24,6 +24,12 @@ use crate::geometry::{same_active_position, same_point};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Ring(CoordSeq);
 
+impl crate::HeapSize for Ring {
+    fn heap_bytes(&self) -> usize {
+        self.0.heap_bytes()
+    }
+}
+
 impl Ring {
     /// Minimum distinct vertices for an open ring (before closing).
     pub const MIN_VERTICES_OPEN: usize = 3;
@@ -33,7 +39,7 @@ impl Ring {
     /// Validate and close `points` under the shared ring-admission policy.
     /// The boundary constructor for parsed / constructed input.
     pub fn closed(points: Vec<Point>) -> Result<Self> {
-        Self::closed_coordseq(CoordSeq::from(points))
+        Self::closed_coordseq(CoordSeq::try_from_points(&points)?)
     }
 
     /// Validate and close a columnar coordinate sequence without staging it
@@ -61,12 +67,17 @@ impl Ring {
             ));
         }
         // XY-open: silent-close (WKT/WKB/shapely/constructor convention).
-        let mut closed = CoordSeqBuilder::like_coords(&coords, 0);
-        closed.reserve_exact(coords.len() + 1);
+        let mut closed = CoordSeqBuilder::try_with_capacity(
+            coords.axes(),
+            coords
+                .len()
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+        )?;
         for index in 0..coords.len() {
-            closed.push_at(&coords, index);
+            closed.push_at(&coords, index)?;
         }
-        closed.push(first);
+        closed.push(first)?;
         Ok(Self(closed.finish()?))
     }
 
@@ -78,8 +89,7 @@ impl Ring {
     /// append an endpoint. External and mutable-coordinate input must use
     /// [`Self::closed_coordseq`], which owns closure validation and its typed
     /// error.
-    pub(crate) fn from_closed(coords: impl Into<CoordSeq>) -> Self {
-        let coords = coords.into();
+    pub(crate) fn from_closed(coords: CoordSeq) -> Self {
         assert!(
             coords.len() >= Self::MIN_VERTICES_CLOSED,
             "closed Ring construction requires at least four coordinates"
@@ -96,10 +106,6 @@ impl Ring {
     /// [`Self::MIN_VERTICES_CLOSED`] vertices, so this cannot fail.
     pub(crate) fn as_line(&self) -> LineSeq {
         LineSeq::from_proven(self.0.clone())
-    }
-
-    pub fn into_vec(self) -> Vec<Point> {
-        self.0.to_vec()
     }
 }
 

@@ -4,15 +4,13 @@
 //! CRS); `repair` fixes invalid geometries. Both delegate to the crate-root and
 //! `geometry` validation kernels via `use super::*`.
 
-use crate::py::errors;
-use crate::py::support;
-use crate::py::vectors;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::py::errors::crs_mismatch_error;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
 use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};
+use crate::py::{errors, support, vectors};
 use crate::{
     CoordinateAxes, Crs, FrameEdit, GeoJsonDecodeContext, HeapSize, PyGeometry, PyGeometryArray,
     ScalarOrIterator, Typed, ValidationIssue, classify_scalar_or_iterator,
@@ -95,11 +93,11 @@ pub(crate) fn require(
         let array = require_array_contract(array.clone(), expected.as_ref(), axes, Some(py))?;
         return Ok(array.into_pyobject(py)?.into_any().unbind());
     }
-    if let Ok(groups) = value.cast::<vectors::Groups>()
-        && let Some(array) = groups.get().geometry_values_view()
-    {
-        let array = require_array_contract(array, expected.as_ref(), axes, Some(py))?;
-        return Ok(array.into_pyobject(py)?.into_any().unbind());
+    if let Ok(groups) = value.cast::<vectors::Groups>() {
+        if let Some(array) = groups.get().geometry_values_view()? {
+            let array = require_array_contract(array, expected.as_ref(), axes, Some(py))?;
+            return Ok(array.into_pyobject(py)?.into_any().unbind());
+        }
     }
     match classify_scalar_or_iterator(value)? {
         ScalarOrIterator::Scalar => {
@@ -207,7 +205,7 @@ fn require_geometry_contract(
     let issue = match py {
         Some(py) => py.detach(move || geometry::validate_data_in_frame(&plan, domain)),
         None => geometry::validate_data_in_frame(&plan, domain),
-    };
+    }?;
     if let Some(issue) = issue {
         return Err(errors::invalid_geometry_issue(&issue, row));
     }
@@ -245,7 +243,10 @@ fn require_array_contract(
             let mut seen: Vec<CoordinateAxes> = Vec::new();
             let mut first_mismatch = None;
             for row in array.row_operation().present_rows() {
-                let row_axes = row.row().with_shape(|shape| shape.axes());
+                let row_axes = row
+                    .row()
+                    .with_shape(|shape| shape.axes())
+                    .map_err(PyErr::from)?;
                 if !seen.contains(&row_axes) {
                     seen.push(row_axes);
                 }
@@ -253,8 +254,8 @@ fn require_array_contract(
                     first_mismatch = Some(row.logical());
                 }
             }
-            let mismatch = first_mismatch.is_some()
-                || (seen.is_empty() && axes != CoordinateAxes::XY);
+            let mismatch =
+                first_mismatch.is_some() || (seen.is_empty() && axes != CoordinateAxes::XY);
             mismatch.then(|| {
                 let got = match seen.as_slice() {
                     [] => format!("{:?}", CoordinateAxes::XY.as_str()),
@@ -281,21 +282,26 @@ fn require_array_contract(
         }
     }
     let domain = geometry::topology_domain(&array.frame)?;
+    let first_issue = |array: &PyGeometryArray| -> crate::error::Result<_> {
+        for row in array.present_shape_rows() {
+            let (row, shape) = row?;
+            if let Some(issue) = geometry::validate_shape_in_frame(&shape, domain)? {
+                return Ok(Some((row, issue)));
+            }
+        }
+        Ok(None)
+    };
     if let Some(py) = py {
         let (array, issue) = py.detach(move || {
-            let issue = array.present_shape_rows().find_map(|(row, shape)| {
-                geometry::validate_shape_in_frame(&shape, domain).map(|issue| (row, issue))
-            });
-            (array, issue)
-        });
+            let issue = first_issue(&array)?;
+            Ok::<_, crate::error::Error>((array, issue))
+        })?;
         if let Some((row, issue)) = issue {
             return Err(errors::invalid_geometry_issue(&issue, Some(row)));
         }
         return Ok(array);
     }
-    if let Some((row, issue)) = array.present_shape_rows().find_map(|(row, shape)| {
-        geometry::validate_shape_in_frame(&shape, domain).map(|issue| (row, issue))
-    }) {
+    if let Some((row, issue)) = first_issue(&array)? {
         return Err(errors::invalid_geometry_issue(&issue, Some(row)));
     }
     Ok(array)
@@ -390,7 +396,10 @@ pub struct PyValidationReport {
 
 type ValidationReportPickleArgs = (Typed,);
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled `ValidationReport` from its geometry only (internal;
 /// see ``ValidationReport.__reduce__``).
 ///
@@ -405,7 +414,7 @@ pub(crate) fn _unpickle_validation_report(
     let geometry = exact_geometry(geometry)
         .ok_or_else(expected_geometry_or_array)?
         .clone();
-    Ok(geometry.validate_impl(py))
+    geometry.validate_impl(py)
 }
 
 // --- ValidationReport #[pymethods] (moved from crate root) ---

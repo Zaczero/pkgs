@@ -131,11 +131,7 @@ impl DefaultedF64Input {
 
     /// Resolve a scalar coordinate ordinate, preserving the structural
     /// `InvalidGeometryError` used by coordinate admission.
-    pub(crate) fn resolve_coordinate_scalar(
-        self,
-        py: Python<'_>,
-        name: &str,
-    ) -> PyResult<f64> {
+    pub(crate) fn resolve_coordinate_scalar(self, py: Python<'_>, name: &str) -> PyResult<f64> {
         match self {
             Self::Default(value) => Ok(value),
             Self::Supplied(value) => finite_coordinate_required(name, value.bind(py)),
@@ -502,7 +498,9 @@ fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult
             crate::try_reserve_vec(&mut values, len).map_err(pyo3::PyErr::from)?;
             // SAFETY: the reservation above guarantees `capacity >= len`, and
             // `MaybeUninit<f64>` is valid uninitialized.
-            unsafe { values.set_len(len); }
+            unsafe {
+                values.set_len(len);
+            }
             // ReadOnlyCell is transparent over T; treating each strided slot as
             // a cell matches PyBuffer::as_slice for the contiguous case.
             let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
@@ -594,7 +592,12 @@ fn coordseq_from_indirect_nd_buffer(
             },
         )?);
     }
-    Ok(CoordSeq::from_arc_columns(xs.into(), ys.into(), zs, ms)?)
+    Ok(CoordSeq::try_from_vecs(
+        xs.to_vec(),
+        ys.to_vec(),
+        zs.map(|values| values.to_vec()),
+        ms.map(|values| values.to_vec()),
+    )?)
 }
 
 /// Try to build a final SoA [`CoordSeq`] from a contiguous (or regularly
@@ -657,7 +660,9 @@ pub(crate) fn try_coordseq_from_nd_buffer(
         crate::try_reserve_vec(&mut values, n)?;
         // SAFETY: the reservation above guarantees `capacity >= n`, and
         // `MaybeUninit<f64>` is valid uninitialized.
-        unsafe { values.set_len(n); }
+        unsafe {
+            values.set_len(n);
+        }
         // Never form `&[f64]` over a buffer another free-threaded mutator may
         // write — load each element through ReadOnlyCell (non-atomic; producer
         // must stay quiescent for this finite capture).
@@ -726,7 +731,12 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     }
 
     // Finite check + axes from column presence.
-    Ok(Some(CoordSeq::from_arc_columns(xs, ys, zs, ms)?))
+    Ok(Some(CoordSeq::try_from_vecs(
+        xs.to_vec(),
+        ys.to_vec(),
+        zs.map(|values| values.to_vec()),
+        ms.map(|values| values.to_vec()),
+    )?))
 }
 
 /// Like [`coordinate_arc_values`], but stop after `expected + 1` items when

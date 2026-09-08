@@ -12,7 +12,7 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
     let left = line(vec![p(0.0, 0.0), p(2.0 * separation, 0.0)]);
     let right = line(vec![p(0.0, separation), p(2.0 * separation, separation)]);
     assert_eq!(
-        left.hausdorff_distance(&right).to_bits(),
+        left.hausdorff_distance(&right).unwrap().to_bits(),
         separation.to_bits()
     );
 
@@ -24,7 +24,7 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
         p(1.0, base + huge_separation),
     ]);
     assert_eq!(
-        left.hausdorff_distance(&right).to_bits(),
+        left.hausdorff_distance(&right).unwrap().to_bits(),
         huge_separation.to_bits()
     );
 
@@ -41,7 +41,7 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
         p(1.0, base + huge_separation),
     ]);
     assert_eq!(
-        left.hausdorff_distance(&right).to_bits(),
+        left.hausdorff_distance(&right).unwrap().to_bits(),
         huge_separation.to_bits()
     );
 }
@@ -75,11 +75,11 @@ fn continuous_hausdorff_preserves_underflowed_local_determinant() {
         p(length, height + offset),
     ]);
     assert_eq!(
-        baseline.hausdorff_distance(&graph).to_bits(),
+        baseline.hausdorff_distance(&graph).unwrap().to_bits(),
         offset.to_bits()
     );
     assert_eq!(
-        graph.hausdorff_distance(&baseline).to_bits(),
+        graph.hausdorff_distance(&baseline).unwrap().to_bits(),
         offset.to_bits()
     );
 }
@@ -97,12 +97,12 @@ fn continuous_hausdorff_keeps_reciprocal_axis_bend_at_square_overflow_transition
         ]);
         let expected = 2.0 * height;
         assert_eq!(
-            baseline.hausdorff_distance(&bent).to_bits(),
+            baseline.hausdorff_distance(&bent).unwrap().to_bits(),
             expected.to_bits(),
             "reciprocal-axis Hausdorff failed at e={exponent}"
         );
         assert_eq!(
-            bent.hausdorff_distance(&baseline).to_bits(),
+            bent.hausdorff_distance(&baseline).unwrap().to_bits(),
             expected.to_bits()
         );
     }
@@ -127,11 +127,13 @@ fn continuous_hausdorff_finds_reciprocal_axis_gap_between_target_parts() {
             half_gap.to_bits(),
         );
         assert_eq!(
-            shape_impl::robust_directed_hausdorff(&source, &target).to_bits(),
+            shape_impl::robust_directed_hausdorff(&source, &target)
+                .unwrap()
+                .to_bits(),
             half_gap.to_bits(),
         );
         assert_eq!(
-            source.hausdorff_distance(&target).to_bits(),
+            source.hausdorff_distance(&target).unwrap().to_bits(),
             half_gap.to_bits(),
             "reciprocal-axis target gap failed at e={exponent}"
         );
@@ -157,6 +159,7 @@ fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
             assert!(
                 source
                     .hausdorff_distance(&target)
+                    .unwrap()
                     .to_bits()
                     .abs_diff(expected.to_bits())
                     <= 4,
@@ -165,6 +168,7 @@ fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
             assert!(
                 target
                     .hausdorff_distance(&source)
+                    .unwrap()
                     .to_bits()
                     .abs_diff(expected.to_bits())
                     <= 4
@@ -186,25 +190,36 @@ fn pzm(x: f64, y: f64, z: f64, m: f64) -> Point {
 }
 
 pub(super) fn line(points: Vec<Point>) -> Shape {
-    Shape::LineString(LineSeq::try_new(CoordSeq::from(points)).expect("test line is valid"))
+    Shape::LineString(
+        LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).expect("test line is valid"),
+    )
 }
 
 fn multiline(lines: Vec<Vec<Point>>) -> Shape {
     Shape::MultiLineString(
         lines
             .into_iter()
-            .map(CoordSeq::from)
+            .map(|points| CoordSeq::try_from_points(&points).unwrap())
             .map(|line| LineSeq::try_new(line).expect("test line is valid"))
             .collect(),
     )
 }
 
 pub(super) fn multipoint(points: Vec<Point>) -> Shape {
-    Shape::MultiPoint(points.into())
+    Shape::multi_point(
+        crate::geometry::CoordinateAxes::XY,
+        CoordSeq::try_from_points(&points).unwrap(),
+    )
 }
 
 pub(super) fn polygon(points: Vec<Point>) -> Shape {
-    Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+    Shape::Polygon(
+        Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+            Vec::new(),
+        )
+        .unwrap(),
+    )
 }
 
 pub(super) fn dense_line(start_lon: f64, start_lat: f64, count: usize) -> Shape {
@@ -251,12 +266,12 @@ pub(super) fn brute_geodesic_distance(
     right: &Shape,
     metric: &impl GeodesicMetric,
 ) -> f64 {
-    let left_points = left.points_vec();
-    let right_points = right.points_vec();
+    let left_points = left.points_vec().unwrap();
+    let right_points = right.points_vec().unwrap();
     if left_points.is_empty() || right_points.is_empty() {
         return f64::INFINITY;
     }
-    if left.intersects(right) {
+    if left.intersects(right).unwrap() {
         return 0.0;
     }
     let left_edges = full_edges(left, metric);
@@ -270,8 +285,8 @@ pub(super) fn brute_geodesic_distance(
     }) {
         return 0.0;
     }
-    let left_point_only = left.point_only_points();
-    let right_point_only = right.point_only_points();
+    let left_point_only = left.point_only_points().unwrap();
+    let right_point_only = right.point_only_points().unwrap();
     let mut best = f64::INFINITY;
     best = brute_directed_geodesic_distance(
         &left_points,
@@ -326,13 +341,13 @@ pub(super) fn brute_geodesic_nearest_points(
     right: &Shape,
     metric: &impl GeodesicMetric,
 ) -> Option<(Point, Point)> {
-    let left_points = left.points_vec();
-    let right_points = right.points_vec();
+    let left_points = left.points_vec().unwrap();
+    let right_points = right.points_vec().unwrap();
     if left_points.is_empty() || right_points.is_empty() {
         return None;
     }
-    if left.intersects(right) {
-        return left.nearest_points(right);
+    if left.intersects(right).unwrap() {
+        return left.nearest_points(right).unwrap();
     }
     let left_edges = full_edges(left, metric);
     let right_edges = full_edges(right, metric);
@@ -351,8 +366,8 @@ pub(super) fn brute_geodesic_nearest_points(
             }
         }
     }
-    let left_point_only = left.point_only_points();
-    let right_point_only = right.point_only_points();
+    let left_point_only = left.point_only_points().unwrap();
+    let right_point_only = right.point_only_points().unwrap();
     let mut best = f64::INFINITY;
     let mut pair: Option<(Point, Point)> = None;
     for &probe in &left_points {
@@ -578,7 +593,7 @@ pub(super) fn geodesic_bvh_oracle_cases() -> Vec<(&'static str, Shape, Shape, bo
 }
 
 fn brute_directed_hausdorff_squared(source: &Shape, target: &Shape) -> f64 {
-    let target = HausdorffTarget::build(target);
+    let target = HausdorffTarget::build(target).unwrap();
     let mut best = 0.0_f64;
     source.for_each_point(|point| {
         best = best.max(target.distance_squared(point.xy()));
@@ -641,11 +656,12 @@ fn the_framed_kernel_agrees_with_the_guarded_sweep_on_dense_linework() {
     for count in [9, 17, 33] {
         let left = densified((0.0, 0.0), (10.0, 3.0), count);
         let right = densified((0.0, 1.0), (7.0, 9.0), count);
-        let framed = left.hausdorff_distance(&right);
+        let framed = left.hausdorff_distance(&right).unwrap();
         let guarded = shape_impl::robust_directed_hausdorff(&left, &right)
-            .max(shape_impl::robust_directed_hausdorff(&right, &left));
+            .unwrap()
+            .max(shape_impl::robust_directed_hausdorff(&right, &left).unwrap());
         assert_hausdorff_close(framed, guarded);
-        assert_hausdorff_close(right.hausdorff_distance(&left), guarded);
+        assert_hausdorff_close(right.hausdorff_distance(&left).unwrap(), guarded);
     }
 }
 
@@ -681,7 +697,7 @@ fn segment_aware_hausdorff_matches_brute_oracle_on_fixtures() {
         let expected = brute_directed_hausdorff_squared(&left, &right)
             .max(brute_directed_hausdorff_squared(&right, &left))
             .sqrt();
-        let actual = left.hausdorff_distance(&right);
+        let actual = left.hausdorff_distance(&right).unwrap();
         assert_hausdorff_close(actual, expected);
     }
 }
@@ -691,31 +707,34 @@ fn segment_aware_hausdorff_empty_and_point_semantics() {
     assert!(
         line(vec![p(0.0, 0.0), p(1.0, 0.0)])
             .hausdorff_distance(&Shape::empty_point())
+            .unwrap()
             .is_infinite()
     );
     assert!(
         Shape::empty_point()
             .hausdorff_distance(&Shape::Point(p(0.0, 0.0)))
+            .unwrap()
             .is_infinite()
     );
     assert_hausdorff_close(
-        Shape::Point(p(0.0, 0.0)).hausdorff_distance(&Shape::Point(p(3.0, 4.0))),
+        Shape::Point(p(0.0, 0.0))
+            .hausdorff_distance(&Shape::Point(p(3.0, 4.0)))
+            .unwrap(),
         5.0,
     );
     let subnormal = 1.5e-162;
     assert_eq!(
         Shape::Point(p(0.0, 0.0))
             .hausdorff_distance(&Shape::Point(p(subnormal, 0.0)))
+            .unwrap()
             .to_bits(),
         subnormal.to_bits(),
         "a point pair is a complete continuous Hausdorff problem; its squared distance may underflow"
     );
     assert_hausdorff_close(
-        line(vec![p(0.0, 0.0), p(10.0, 0.0)]).hausdorff_distance(&line(vec![
-            p(0.0, 1.0),
-            p(5.0, 8.0),
-            p(10.0, 1.0),
-        ])),
+        line(vec![p(0.0, 0.0), p(10.0, 0.0)])
+            .hausdorff_distance(&line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]))
+            .unwrap(),
         8.0,
     );
 }
@@ -725,8 +744,8 @@ fn backtracking_collinear_line_is_not_a_single_endpoint_segment() {
     let left = line(vec![p(0.0, 0.0), p(10.0, 0.0), p(-5.0, 0.0)]);
     let right = line(vec![p(-5.0, 1.0), p(0.0, 1.0)]);
     let expected = 101.0_f64.sqrt();
-    assert_hausdorff_close(left.hausdorff_distance(&right), expected);
-    assert_hausdorff_close(right.hausdorff_distance(&left), expected);
+    assert_hausdorff_close(left.hausdorff_distance(&right).unwrap(), expected);
+    assert_hausdorff_close(right.hausdorff_distance(&left).unwrap(), expected);
 }
 
 fn wiggly_line_columns(vertex_count: usize, y_offset: f64) -> (Vec<f64>, Vec<f64>) {
@@ -939,10 +958,12 @@ fn distance_3d_with_parts_matches_brute_oracle() {
         ),
     ];
     for (left_z, right_z) in cases {
-        let left_parts = Distance3dParts::build(&left_z);
-        let right_parts = Distance3dParts::build(&right_z);
-        let brute = distance_3d_brute_parts(&left_parts, &right_parts).expect("exact brute distance");
-        let pruned = distance_3d_with_parts(&left_parts, &right_parts).expect("exact pruned distance");
+        let left_parts = Distance3dParts::build(&left_z).unwrap();
+        let right_parts = Distance3dParts::build(&right_z).unwrap();
+        let brute =
+            distance_3d_brute_parts(&left_parts, &right_parts).expect("exact brute distance");
+        let pruned =
+            distance_3d_with_parts(&left_parts, &right_parts).expect("exact pruned distance");
         assert_eq!(
             pruned.to_bits(),
             brute.to_bits(),
@@ -960,6 +981,21 @@ fn distance_3d_rejects_mixed_z_collection() {
     .expect("test collection is valid");
     let target = with_z(Shape::Point(p(1.0, 1.0)), 1.0);
     mixed.distance_3d(&target).unwrap_err();
+}
+
+#[test]
+fn distance_3d_parts_build_returns_resource_on_allocation_failure() {
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::fail_allocations_after;
+
+    let shape = with_z(line(vec![p(0.0, 0.0), p(1.0, 0.0)]), 1.0);
+    match fail_allocations_after(0, || Distance3dParts::build(&shape)) {
+        Err(error) => assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        )),
+        Ok(_) => panic!("expected allocation failure"),
+    }
 }
 
 fn extreme_coord_line(segment_count: usize) -> Shape {
@@ -992,7 +1028,7 @@ fn facet_simd_extreme_coords_matches_scalar_oracle() {
     for segment_count in [BVH_MIN_INDEXED_SEGMENTS, BVH_MIN_INDEXED_SEGMENTS + 1] {
         let line = extreme_coord_line(segment_count);
         let expected = brute_point_line_distance(probe, &line);
-        let actual = line.distance(&Shape::Point(probe));
+        let actual = line.distance(&Shape::Point(probe)).unwrap();
         assert_eq!(
             actual.to_bits(),
             expected.to_bits(),
@@ -1016,7 +1052,7 @@ fn facet_simd_extreme_hausdorff_matches_scalar_oracle() {
         let expected = brute_directed_hausdorff_squared(&left, &right)
             .max(brute_directed_hausdorff_squared(&right, &left))
             .sqrt();
-        let actual = left.hausdorff_distance(&right);
+        let actual = left.hausdorff_distance(&right).unwrap();
         assert!(
             actual.is_finite() && expected.is_finite(),
             "segment_count={segment_count} actual={actual} expected={expected}"

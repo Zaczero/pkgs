@@ -102,7 +102,6 @@ impl Covering {
             .filter_map(|(id, interior)| interior.then_some(*id))
             .collect()
     }
-
 }
 
 /// The prepared classification context: built once per covering, reused by
@@ -418,10 +417,7 @@ impl Coverer {
             }
             // Emit at this level (interior, max-level boundary, or unaffordable split).
             if visible {
-                let projected = cells
-                    .len()
-                    .saturating_add(queue.len())
-                    .saturating_add(1);
+                let projected = cells.len().saturating_add(queue.len()).saturating_add(1);
                 ensure_cover_budget(projected, self.hard_budget())?;
                 cells.push((id, class == CellClass::Interior));
             }
@@ -528,7 +524,8 @@ impl<'a> CoverContext<'a> {
         affine: &'a GeographicCoverageSource,
         relation: WorkingShapeRelation,
     ) -> Result<Self, crate::error::Error> {
-        let tester = Arc::new(PointBatchTester::new(source));
+        let tester = Arc::try_new(PointBatchTester::new(source)?)
+            .map_err(|_| crate::error::ResourceError::Allocation)?;
         let shared_area_tester = matches!(source, Shape::Polygon(_) | Shape::MultiPolygon(_))
             .then(|| Arc::clone(&tester));
         Ok(Self {

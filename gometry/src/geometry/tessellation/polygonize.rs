@@ -2,6 +2,7 @@ use ahash::HashSetExt as _;
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
+use crate::error::Result;
 use crate::geometry::{
     Arrangement, Bounds, BulkRTree, CoordSeq, HashMap, HashMapExt as _, HashSet, LineSeq, PointKey,
     Polygon, PolygonizeFull, Ring, Segment, Shape, TopologyGraph, XY, compare_point_slices,
@@ -138,17 +139,23 @@ pub(crate) fn polygonize_faces(graph: &TopologyGraph) -> (Vec<Face>, Vec<Option<
 /// so a nested ring is BOTH a hole of its container and a shell in its own
 /// right — exactly like GEOS (a donut yields the holed annulus AND the inner
 /// disk).
-pub(crate) fn polygonize_lines(graph: &TopologyGraph) -> Vec<Polygon> {
+pub(crate) fn polygonize_lines(graph: &TopologyGraph) -> Result<Vec<Polygon>> {
     let (faces, parents) = polygonize_faces(graph);
     let children = children_of(&parents);
     (0..faces.len())
         .map(|index| {
-            let shell = Ring::from_closed(orient_ring(&faces[index].0, false));
+            let shell = Ring::from_closed(CoordSeq::try_from_points(&orient_ring(
+                &faces[index].0,
+                false,
+            ))?);
             let holes = children[index]
                 .iter()
-                .map(|&child| Ring::from_closed(orient_ring(&faces[child].0, true)))
-                .collect();
-            Polygon::new(shell, holes)
+                .map(|&child| {
+                    CoordSeq::try_from_points(&orient_ring(&faces[child].0, true))
+                        .map(Ring::from_closed)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Polygon::new(shell, holes)?)
         })
         .collect()
 }
@@ -172,7 +179,7 @@ pub(crate) fn children_of(parents: &[Option<usize>]) -> Vec<Vec<usize>> {
 /// produces. Only even-depth faces are shells; their holes are the odd-depth
 /// faces immediately nested within. The right model for dissolving a cell-grid
 /// coverage into its outline.
-pub(crate) fn build_area_lines(graph: &TopologyGraph) -> Vec<Polygon> {
+pub(crate) fn build_area_lines(graph: &TopologyGraph) -> Result<Vec<Polygon>> {
     let (faces, parents) = polygonize_faces(graph);
     let children = children_of(&parents);
     // Parents point to earlier (larger-area) positions, so depth folds forward.
@@ -188,30 +195,45 @@ pub(crate) fn build_area_lines(graph: &TopologyGraph) -> Vec<Polygon> {
     (0..faces.len())
         .filter(|&index| depths[index].is_multiple_of(2))
         .map(|index| {
-            let shell = Ring::from_closed(orient_ring(&faces[index].0, false));
+            let shell = Ring::from_closed(CoordSeq::try_from_points(&orient_ring(
+                &faces[index].0,
+                false,
+            ))?);
             let holes = children[index]
                 .iter()
-                .map(|&hole| Ring::from_closed(orient_ring(&faces[hole].0, true)))
-                .collect();
-            Polygon::new(shell, holes)
+                .map(|&hole| {
+                    CoordSeq::try_from_points(&orient_ring(&faces[hole].0, true))
+                        .map(Ring::from_closed)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Polygon::new(shell, holes)?)
         })
         .collect()
 }
 
-pub(crate) fn polygonize_full(graph: &TopologyGraph, source_row_count: usize) -> PolygonizeFull {
+pub(crate) fn polygonize_full(
+    graph: &TopologyGraph,
+    source_row_count: usize,
+) -> Result<PolygonizeFull> {
     let mut arrangement = arrangement_from_graph(graph);
     let (faces, parents) = polygonize_faces_from_arrangement(&mut arrangement);
     let children = children_of(&parents);
     let polygons: Vec<Polygon> = (0..faces.len())
         .map(|index| {
-            let shell = Ring::from_closed(orient_ring(&faces[index].0, false));
+            let shell = Ring::from_closed(CoordSeq::try_from_points(&orient_ring(
+                &faces[index].0,
+                false,
+            ))?);
             let holes = children[index]
                 .iter()
-                .map(|&child| Ring::from_closed(orient_ring(&faces[child].0, true)))
-                .collect();
-            Polygon::new(shell, holes)
+                .map(|&child| {
+                    CoordSeq::try_from_points(&orient_ring(&faces[child].0, true))
+                        .map(Ring::from_closed)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Polygon::new(shell, holes)?)
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let used_segments = polygon_segment_keys(&polygons);
     let mut cuts = vec![Vec::new(); source_row_count];
     let mut dangles = vec![Vec::new(); source_row_count];
@@ -243,7 +265,7 @@ pub(crate) fn polygonize_full(graph: &TopologyGraph, source_row_count: usize) ->
                 continue;
             }
             if edge.sources.len() > 1 {
-                invalid_rings[row].push(diagnostic_line(edge.segment, true));
+                invalid_rings[row].push(diagnostic_line(edge.segment, true)?);
                 continue;
             }
             if used_segments.contains(&key) {
@@ -260,19 +282,19 @@ pub(crate) fn polygonize_full(graph: &TopologyGraph, source_row_count: usize) ->
                     .unwrap_or(0)
                     <= 1
             {
-                dangles[row].push(diagnostic_line(edge.segment, false));
+                dangles[row].push(diagnostic_line(edge.segment, false)?);
             } else {
-                cuts[row].push(diagnostic_line(edge.segment, false));
+                cuts[row].push(diagnostic_line(edge.segment, false)?);
             }
         }
     }
 
-    PolygonizeFull {
+    Ok(PolygonizeFull {
         polygons: polygons.into_iter().map(Shape::Polygon).collect(),
         cuts,
         dangles,
         invalid_rings,
-    }
+    })
 }
 
 fn arrangement_from_graph(graph: &TopologyGraph) -> Arrangement {
@@ -314,12 +336,14 @@ fn undirected_edge_key(
     }
 }
 
-fn diagnostic_line(segment: crate::geometry::Segment, closed: bool) -> Shape {
+fn diagnostic_line(segment: crate::geometry::Segment, closed: bool) -> Result<Shape> {
     let mut points = vec![segment.start, segment.end];
     if closed {
         points.push(segment.start);
     }
-    Shape::LineString(LineSeq::from_proven(CoordSeq::from(points)))
+    Ok(Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_xy(&points)?,
+    )))
 }
 
 pub(crate) fn polygon_segment_keys(

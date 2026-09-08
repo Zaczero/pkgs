@@ -191,15 +191,20 @@ pub(crate) fn try_unary_packed_bool(
         op,
         Operation::IsRing | Operation::IsSimple | Operation::IsValid
     ) && let TopologyDomain::Geographic(frame) = domain
-        && array
-            .storage()
-            .iter_shapes()
-            .any(|shape| crate::geometry::crosses_antimeridian_in_frame(&shape, frame))
     {
-        // Packed validity/simplicity kernels intentionally know nothing about
-        // frames. A crossing geographic column takes the shared per-row lane;
-        // ordinary geographic columns keep the packed fast path.
-        return None;
+        for shape in array.storage().iter_shapes() {
+            let shape = match shape {
+                Ok(shape) => shape,
+                Err(error) => return Some(Err(error.into())),
+            };
+            if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
+                // Packed validity/simplicity kernels intentionally know nothing
+                // about frames. A crossing geographic column takes the shared
+                // per-row lane; ordinary geographic columns keep the packed
+                // fast path.
+                return None;
+            }
+        }
     }
     match op {
         Operation::IsEmpty => packed_bool_lane(py, array, Some(array.is_empty_unary_packed())),
@@ -403,7 +408,9 @@ pub(crate) fn try_packed_linear_reference(
                 distance.clone(),
                 *normalized,
             )
-            .map(|shapes| PyGeometryArray::from_shapes(shapes, array.frame.clone())),
+            .and_then(|shapes| {
+                PyGeometryArray::from_shapes(shapes, array.frame.clone()).map_err(Into::into)
+            }),
         ),
         PackedLinearReference::Substring {
             start_distance,
@@ -422,7 +429,9 @@ pub(crate) fn try_packed_linear_reference(
                 end_distance.clone(),
                 *normalized,
             )
-            .map(|shapes| PyGeometryArray::from_shapes(shapes, array.frame.clone())),
+            .and_then(|shapes| {
+                PyGeometryArray::from_shapes(shapes, array.frame.clone()).map_err(Into::into)
+            }),
         ),
     }
 }

@@ -361,7 +361,7 @@ fn polygon_shape(
     for ring in rings {
         push(&mut holes, ring)?;
     }
-    Ok(Shape::Polygon(Polygon::new(shell, holes)))
+    Ok(Shape::Polygon(Polygon::new(shell, holes)?))
 }
 
 fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
@@ -700,11 +700,11 @@ impl NativeCoordinates {
         }
         self.ensure_range_finite(start, end)?;
         if self.full.get().is_none() {
-            let full = CoordSeq::try_from_columns(
-                Arc::clone(&self.x),
-                Arc::clone(&self.y),
-                self.z.as_ref().map(Arc::clone),
-                self.m.as_ref().map(Arc::clone),
+            let full = CoordSeq::try_from_vecs(
+                self.x.to_vec(),
+                self.y.to_vec(),
+                self.z.as_ref().map(|values| values.to_vec()),
+                self.m.as_ref().map(|values| values.to_vec()),
             )
             .map_err(NativeArrowDecodeError::from)?;
             let _ = self.full.set(full);

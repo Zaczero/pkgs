@@ -18,7 +18,7 @@ pub(crate) struct Segment3d {
 }
 
 pub(crate) struct Distance3dParts {
-    pub(crate) segments: Box<[Segment3d]>,
+    pub(crate) segments: Vec<Segment3d>,
     bvh: OnceLock<Option<SegmentBvh3d>>,
 }
 
@@ -72,92 +72,98 @@ pub(crate) fn aabb3_distance_lower_bound(a: Aabb3d, b: Aabb3d) -> f64 {
     distance.next_down().max(0.0)
 }
 
-fn push_segments_3d(coords: &CoordSeq, out: &mut Vec<Segment3d>) {
+fn push_segments_3d(coords: &CoordSeq, out: &mut Vec<Segment3d>) -> crate::error::Result<()> {
     let p3 = |index: usize| {
         let point = coords.point_at(index);
         [point.x, point.y, point.z().expect("Z column present")]
     };
     match coords.len() {
-        0 => {},
+        0 => Ok(()),
         1 => {
             let point = p3(0);
-            out.push(Segment3d {
+            crate::try_push_vec(out, Segment3d {
                 start: point,
                 end: point,
                 aabb: segment_aabb3(point, point),
-            });
+            })
         },
         n => {
             for index in 0..n - 1 {
                 let (start, end) = (p3(index), p3(index + 1));
-                out.push(Segment3d {
+                crate::try_push_vec(out, Segment3d {
                     start,
                     end,
                     aabb: segment_aabb3(start, end),
-                });
+                })?;
             }
+            Ok(())
         },
     }
 }
 
-fn collect_segments_3d(shape: &Shape, out: &mut Vec<Segment3d>) {
+fn collect_segments_3d(shape: &Shape, out: &mut Vec<Segment3d>) -> crate::error::Result<()> {
     match shape {
         Shape::Point(point) => {
             let p = [point.x, point.y, point.z().expect("Z present")];
-            out.push(Segment3d {
+            crate::try_push_vec(out, Segment3d {
                 start: p,
                 end: p,
                 aabb: segment_aabb3(p, p),
-            });
+            })
         },
         Shape::MultiPoint(coords) => {
             for index in 0..coords.len() {
                 let point = coords.point_at(index);
                 let p = [point.x, point.y, point.z().expect("Z present")];
-                out.push(Segment3d {
+                crate::try_push_vec(out, Segment3d {
                     start: p,
                     end: p,
                     aabb: segment_aabb3(p, p),
-                });
+                })?;
             }
+            Ok(())
         },
         Shape::LineString(coords) => push_segments_3d(coords, out),
         Shape::MultiLineString(lines) => {
             for line in lines {
-                push_segments_3d(line, out);
+                push_segments_3d(line, out)?;
             }
+            Ok(())
         },
         Shape::Polygon(polygon) => {
-            push_segments_3d(polygon.shell.coords(), out);
+            push_segments_3d(polygon.shell.coords(), out)?;
             for hole in polygon.holes.iter() {
-                push_segments_3d(hole.coords(), out);
+                push_segments_3d(hole.coords(), out)?;
             }
+            Ok(())
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
-                push_segments_3d(polygon.shell.coords(), out);
+                push_segments_3d(polygon.shell.coords(), out)?;
                 for hole in polygon.holes.iter() {
-                    push_segments_3d(hole.coords(), out);
+                    push_segments_3d(hole.coords(), out)?;
                 }
             }
+            Ok(())
         },
         Shape::GeometryCollection(parts) => {
             for part in parts {
-                collect_segments_3d(part, out);
+                collect_segments_3d(part, out)?;
             }
+            Ok(())
         },
-        Shape::Empty(..) => {},
+        Shape::Empty(..) => Ok(()),
     }
 }
 
 impl Distance3dParts {
-    pub(crate) fn build(shape: &Shape) -> Self {
+    pub(crate) fn build(shape: &Shape) -> crate::error::Result<Self> {
         let mut segments = Vec::new();
-        collect_segments_3d(shape, &mut segments);
-        Self {
-            segments: segments.into_boxed_slice(),
+        collect_segments_3d(shape, &mut segments)?;
+        Ok(Self {
+            segments,
             bvh: OnceLock::new(),
-        }
+        })
     }
 
     fn bvh(&self) -> Option<&SegmentBvh3d> {

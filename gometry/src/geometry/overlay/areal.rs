@@ -6,10 +6,11 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::error::Result;
 use crate::geometry::overlay::{OverlayOp, self_node_segments_sourced};
 use crate::geometry::{
-    Arrangement, Bounds, CoordSeq, Point, Polygon, RingWinding, Segment, SegmentIndex, Shape,
-    XY, assemble_region_polygons, ray_crossing_is_right, ring_winding, same_point, wrap_index,
+    Arrangement, Bounds, CoordSeq, Point, Polygon, RingWinding, Segment, SegmentIndex, Shape, XY,
+    assemble_region_polygons, ray_crossing_is_right, ring_winding, same_point, wrap_index,
 };
 use crate::scratch_pool::{RetainScratch, ScratchPool, flat_vec_retained_bytes};
 
@@ -17,7 +18,7 @@ pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Poly
     left: &[P],
     right: &[Q],
     op: OverlayOp,
-) -> Vec<Polygon> {
+) -> Result<Vec<Polygon>> {
     // Two-operand overlay: mirror `Shape::union`'s clean fast lane so a pair of
     // simple blobs reassembles from result-boundary arcs instead of paying a
     // full DCEL/winding arrangement. Bails to the arrangement oracle (below) on
@@ -25,13 +26,13 @@ pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Poly
     if matches!(
         op,
         OverlayOp::Union | OverlayOp::Difference | OverlayOp::SymmetricDifference
-    ) && let Some(shape) = crate::geometry::clean_union::clean_overlay(left, right, op)
+    ) && let Some(shape) = crate::geometry::clean_union::clean_overlay(left, right, op)?
     {
-        return match shape {
+        return Ok(match shape {
             Shape::Polygon(polygon) => vec![polygon],
             Shape::MultiPolygon(polygons) => polygons.iter().cloned().collect(),
             _ => Vec::new(),
-        };
+        });
     }
     build_areal_arrangement(left, right).overlay_polygons(op)
 }
@@ -40,7 +41,7 @@ impl ArealArrangement {
     /// The `op` region of this joint arrangement, assembled into polygons —
     /// [`binary_areal_overlay`] minus the build (the overlay entry reuses ONE
     /// arrangement for both the region and the boundary contact).
-    pub(in crate::geometry) fn overlay_polygons(&self, op: OverlayOp) -> Vec<Polygon> {
+    pub(in crate::geometry) fn overlay_polygons(&self, op: OverlayOp) -> Result<Vec<Polygon>> {
         let interior = |winding: [i32; 2]| -> bool {
             let (a, b) = (winding[0] != 0, winding[1] != 0);
             match op {
@@ -59,8 +60,10 @@ impl ArealArrangement {
     /// line), and every isolated meeting of the two boundaries (a point).
     /// A vertex with a kept face around it, or on an emitted line, is
     /// already represented.
-    pub(in crate::geometry) fn intersection_parts(&self) -> (Vec<Point>, Vec<CoordSeq>, Vec<Polygon>) {
-        let polygons = self.overlay_polygons(OverlayOp::Intersection);
+    pub(in crate::geometry) fn intersection_parts(
+        &self,
+    ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
+        let polygons = self.overlay_polygons(OverlayOp::Intersection)?;
         let winding = |face: u32| self.windings[face as usize];
         let kept = |face: u32| {
             let [left, right] = winding(face);
@@ -76,7 +79,7 @@ impl ArealArrangement {
             let (left, right) = (winding(left_face), winding(right_face));
             let shared = (left[0] != 0) != (right[0] != 0) && (left[1] != 0) != (right[1] != 0);
             if shared {
-                lines.push(CoordSeq::from_xy(&[
+                lines.push(CoordSeq::try_from_xy(&[
                     arrangement.points[from as usize],
                     arrangement.points[to as usize],
                 ]));
@@ -89,7 +92,8 @@ impl ArealArrangement {
             if on_line[vertex] {
                 continue;
             }
-            let slots = arrangement.starts[vertex] as usize..arrangement.starts[vertex + 1] as usize;
+            let slots =
+                arrangement.starts[vertex] as usize..arrangement.starts[vertex + 1] as usize;
             let (mut any_kept, mut left_any, mut left_all, mut right_any, mut right_all) =
                 (false, false, true, false, true);
             for slot in slots {
@@ -106,7 +110,11 @@ impl ArealArrangement {
                 points.push(Point::new_raw_xy(point.x, point.y));
             }
         }
-        (points, lines, polygons)
+        Ok((
+            points,
+            lines.into_iter().collect::<Result<Vec<_>>>()?,
+            polygons,
+        ))
     }
 }
 

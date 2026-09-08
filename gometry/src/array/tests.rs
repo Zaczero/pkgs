@@ -34,12 +34,13 @@ mod linref_array_degrade_tests {
     use crate::{line_interpolate_coordseq, line_locate_coordseq, line_substring_coordseq};
 
     fn line_coordseq(points: &[(f64, f64)]) -> CoordSeq {
-        CoordSeq::from_points(
+        CoordSeq::try_from_points(
             &points
                 .iter()
                 .map(|&(x, y)| Point::new_raw_xy(x, y))
                 .collect::<Vec<_>>(),
         )
+        .unwrap()
     }
 
     fn line_xy(points: &[(f64, f64)]) -> Shape {
@@ -47,25 +48,14 @@ mod linref_array_degrade_tests {
     }
 
     fn line_with_m(vertices: &[(f64, f64, f64)]) -> Shape {
-        Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_columns(
-                vertices.iter().map(|&(x, ..)| x).collect::<Vec<_>>().into(),
-                vertices
-                    .iter()
-                    .map(|&(_, y, _)| y)
-                    .collect::<Vec<_>>()
-                    .into(),
-                None,
-                Some(
-                    vertices
-                        .iter()
-                        .map(|&(_, _, m)| m)
-                        .collect::<Vec<_>>()
-                        .into(),
-                ),
-            ))
-            .expect("test line is valid"),
+        let coords = CoordSeq::try_from_vecs(
+            vertices.iter().map(|&(x, ..)| x).collect(),
+            vertices.iter().map(|&(_, y, _)| y).collect(),
+            None,
+            Some(vertices.iter().map(|&(_, _, m)| m).collect()),
         )
+        .expect("test line coordinates are valid");
+        Shape::LineString(LineSeq::try_new(coords).expect("test line is valid"))
     }
 
     fn empty_line() -> Shape {
@@ -221,15 +211,18 @@ mod linref_array_degrade_tests {
 
     #[test]
     fn linref_array_non_degradable_failures_still_abort() {
-        let polygon = Shape::Polygon(Polygon::new(
-            Ring::from_closed(line_coordseq(&[
-                (0.0, 0.0),
-                (1.0, 0.0),
-                (1.0, 1.0),
-                (0.0, 0.0),
-            ])),
-            vec![],
-        ));
+        let polygon = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(line_coordseq(&[
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 1.0),
+                    (0.0, 0.0),
+                ])),
+                vec![],
+            )
+            .unwrap(),
+        );
         let query = query_point();
         let wrong_kind = polygon
             .line_locate_point(query, false)
@@ -262,11 +255,12 @@ mod multipart_storage_tests {
         let multi =
             parse_wkt("MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))").expect("multipart WKT parses");
         let other = parse_wkt("POINT (5 5)").expect("point WKT parses");
-        let array = PyGeometryArray::from_shapes(vec![multi.clone(), other], Frame::None);
+        let array = PyGeometryArray::from_shapes(vec![multi.clone(), other], Frame::None).unwrap();
         assert!(matches!(array.storage(), GeometryArrayStorage::Mixed(_)));
 
         let sliced = array.gather_logical_row_range(0..1);
-        let sliced_shape = sliced.storage().iter_shapes().next().unwrap();
+        let sliced = sliced.unwrap();
+        let sliced_shape = sliced.storage().iter_shapes().next().unwrap().unwrap();
         assert_eq!(sliced_shape.as_ref(), &multi);
         assert_eq!(sliced_shape.part_count(), 2);
         assert_eq!(
@@ -275,10 +269,10 @@ mod multipart_storage_tests {
         );
 
         let masked = array.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]));
-        let selected = masked.gather_logical_rows(&[1, 0]);
+        let selected = masked.unwrap().gather_logical_rows(&[1, 0]).unwrap();
         assert!(!selected.is_row_missing(0));
         assert!(selected.is_row_missing(1));
-        let selected_shape = selected.storage().iter_shapes().next().unwrap();
+        let selected_shape = selected.storage().iter_shapes().next().unwrap().unwrap();
         assert_eq!(selected_shape.part_count(), 1);
         assert_eq!(to_wkt(selected_shape.as_ref()).unwrap(), "POINT (5 5)");
     }

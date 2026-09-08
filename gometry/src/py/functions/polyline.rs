@@ -128,7 +128,7 @@ fn decode_line(data: &str, factor: f64) -> PyResult<CoordSeq> {
     // length (~5 chars/ordinate worst-case) keeps growth rare without
     // over-reading.
     // Each vertex needs at least one byte for each of latitude and longitude,
-    // so this bound prevents the builder's infallible push path from growing.
+    // so later growth stays rare; growth is still fallible.
     let capacity = (data.len() / 2).max(2);
     let mut builder =
         CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, capacity).map_err(PyErr::from)?;
@@ -161,7 +161,7 @@ fn decode_line(data: &str, factor: f64) -> PyResult<CoordSeq> {
         // Point::new validates finiteness; polyline domain gates above keep
         // values finite, so the builder path matches the prior error surface.
         Point::new(x, y).map_err(|error| ParseError::new_err(error.to_string()))?;
-        builder.push_xyzm(x, y, None, None);
+        builder.push_xyzm(x, y, None, None)?;
     }
     builder.finish().map_err(PyErr::from)
 }
@@ -280,7 +280,8 @@ pub(crate) fn present_polylines_of(
     factor: f64,
 ) -> PyResult<Vec<(usize, String)>> {
     require_polyline_crs(array.crs_str())?;
-    crate::try_collect_results(array.present_shape_rows().map(|(row, shape)| {
+    crate::try_collect_results(array.present_shape_rows().map(|result| {
+        let (row, shape) = result.map_err(PyErr::from)?;
         let encode = || -> PyResult<String> {
             if shape.has_z() || shape.has_m() {
                 return Err(

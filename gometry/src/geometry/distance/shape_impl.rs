@@ -19,55 +19,48 @@ impl Shape {
     /// Build this shape's [`DistanceParts`] (vertices, packed linework,
     /// isolated points) for reuse across a scalar-vs-array distance/dwithin
     /// sweep.
-    pub(crate) fn distance_parts(&self) -> DistanceParts {
-        DistanceParts {
-            point_only: self.point_only_points(),
-            linework: PreparedLinework::build(self),
+    pub(crate) fn distance_parts(&self) -> Result<DistanceParts> {
+        Ok(DistanceParts {
+            point_only: self.point_only_points()?,
+            linework: PreparedLinework::build(self)?,
             // Deferred: the two column scans are paid on first DISTANCE use, not
             // at build — the CONTACT path (overlaps/touches/…) never reads it.
             squared_safe: std::sync::OnceLock::new(),
             facet_bvh: std::sync::OnceLock::new(),
             point_index: std::sync::OnceLock::new(),
-        }
+        })
     }
 
     /// Build this shape's geodesic working set for one ellipsoid. Domain
     /// validation happens before any allocation is cached by `ShapeData`.
     pub(crate) fn geodesic_parts(&self, metric: &impl GeodesicMetric) -> Result<GeodesicParts> {
         ensure_geodesic_linework(self, metric)?;
-        let mut points = Vec::with_capacity(self.coord_count());
-        self.for_each_point(|point| points.push(point));
+        let mut points = Vec::new();
+        crate::boundary::try_reserve_vec(&mut points, self.coord_count())?;
+        self.collect_points_into(&mut points)?;
         let mut point_only = Vec::new();
-        collect_point_only_into(self, &mut point_only);
+        collect_point_only_into(self, &mut point_only)?;
         let segment_count = self.segment_count();
-        let mut segments = Vec::with_capacity(segment_count);
-        let mut caps_accum = GeodesicSweepCapsAccum::new(segment_count);
-        let mut error = None;
-        self.for_each_vertex_pair(|start, end| {
-            let segment = match metric.make_segment(start, end) {
-                Ok(segment) => segment,
-                Err(value) => {
-                    error = Some(value);
-                    return;
-                },
-            };
+        let mut segments = Vec::new();
+        crate::boundary::try_reserve_vec(&mut segments, segment_count)?;
+        let mut caps_accum = GeodesicSweepCapsAccum::try_new(segment_count)?;
+        self.try_for_each_vertex_pair(|start, end| {
+            let segment = metric.make_segment(start, end)?;
             caps_accum.push_segment(segment, metric);
             segments.push(segment);
-        });
-        if let Some(error) = error {
-            return Err(error);
-        }
+            Ok::<_, crate::error::Error>(())
+        })?;
         let caps = caps_accum.finish(&point_only, metric);
         Ok(GeodesicParts {
-            points: points.into_boxed_slice(),
-            segments: segments.into_boxed_slice(),
-            point_only: point_only.into_boxed_slice(),
+            points,
+            segments,
+            point_only,
             caps,
             facet_bvh: std::sync::OnceLock::new(),
         })
     }
 
-    pub fn distance(&self, other: &Self) -> f64 {
+    pub fn distance(&self, other: &Self) -> Result<f64> {
         crate::geometry::PreparedPlan::new(ShapeData::new(self.clone())).distance(
             &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone())),
         )
@@ -148,15 +141,15 @@ impl Shape {
         let mut scratch = geodesic_scratch();
         let scratch = &mut *scratch;
         scratch.left_points.clear();
-        scratch.left_points.reserve(self.coord_count());
-        self.collect_points_into(&mut scratch.left_points);
+        crate::boundary::try_reserve_vec(&mut scratch.left_points, self.coord_count())?;
+        self.collect_points_into(&mut scratch.left_points)?;
         scratch.right_points.clear();
-        scratch.right_points.reserve(other.coord_count());
-        other.collect_points_into(&mut scratch.right_points);
+        crate::boundary::try_reserve_vec(&mut scratch.right_points, other.coord_count())?;
+        other.collect_points_into(&mut scratch.right_points)?;
         collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
         collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
-        collect_point_only_into(self, &mut scratch.left_point_only);
-        collect_point_only_into(other, &mut scratch.right_point_only);
+        collect_point_only_into(self, &mut scratch.left_point_only)?;
+        collect_point_only_into(other, &mut scratch.right_point_only)?;
         // Cap-bounded best-first sweeps: ONE inverse per target segment
         // turns every vertex x target pair into a no-Karney lower bound
         // (auxiliary-sphere cap separation); pairs evaluate in ascending
@@ -206,9 +199,9 @@ impl Shape {
         let mut scratch = geodesic_scratch();
         let scratch = &mut *scratch;
         collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
-        other.collect_points_into(&mut scratch.right_points);
+        other.collect_points_into(&mut scratch.right_points)?;
         collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
-        self.collect_points_into(&mut scratch.left_points);
+        self.collect_points_into(&mut scratch.left_points)?;
         Ok(geodesic_directed_hausdorff_distance(
             &scratch.left_points,
             &scratch.left_edges,
@@ -245,11 +238,11 @@ impl Shape {
         let mut scratch = geodesic_scratch();
         let scratch = &mut *scratch;
         scratch.left_points.clear();
-        scratch.left_points.reserve(self.coord_count());
-        self.collect_points_into(&mut scratch.left_points);
+        crate::boundary::try_reserve_vec(&mut scratch.left_points, self.coord_count())?;
+        self.collect_points_into(&mut scratch.left_points)?;
         scratch.right_points.clear();
-        scratch.right_points.reserve(other.coord_count());
-        other.collect_points_into(&mut scratch.right_points);
+        crate::boundary::try_reserve_vec(&mut scratch.right_points, other.coord_count())?;
+        other.collect_points_into(&mut scratch.right_points)?;
         if scratch.left_points.is_empty() || scratch.right_points.is_empty() {
             return Ok(None);
         }
@@ -267,8 +260,8 @@ impl Shape {
                 }
             }
         }
-        collect_point_only_into(self, &mut scratch.left_point_only);
-        collect_point_only_into(other, &mut scratch.right_point_only);
+        collect_point_only_into(self, &mut scratch.left_point_only)?;
+        collect_point_only_into(other, &mut scratch.right_point_only)?;
         let reverse_order_offset = scratch.left_points.len()
             * (scratch.right_edges.len() + scratch.right_point_only.len());
         let best = geodesic_capped_witness_sweep(
@@ -306,7 +299,7 @@ impl Shape {
         geodesic_segments_cross_streaming(self, other, metric)
     }
 
-    pub fn dwithin(&self, other: &Self, distance: f64) -> bool {
+    pub fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {
         crate::geometry::PreparedPlan::new(ShapeData::new(self.clone())).dwithin(
             &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone())),
             distance,
@@ -334,21 +327,21 @@ impl Shape {
 
     /// The closest pair of points, one on each geometry; `None` only when an
     /// operand is empty (the surfaces map it to `(POINT EMPTY, POINT EMPTY)`).
-    pub fn nearest_points(&self, other: &Self) -> Option<(Point, Point)> {
+    pub fn nearest_points(&self, other: &Self) -> Result<Option<(Point, Point)>> {
         nearest_points(self, other)
     }
 
     /// The shortest connecting line between two geometries — `nearest_points`
     /// as a `LineString` (degenerate when the geometries touch), or
     /// `LINESTRING EMPTY` when an operand is empty.
-    pub fn shortest_line(&self, other: &Self) -> Self {
+    pub fn shortest_line(&self, other: &Self) -> Result<Self> {
         crate::geometry::nearest_line(
-            self.nearest_points(other),
+            self.nearest_points(other)?,
             crate::geometry::common_axes(self, other),
         )
     }
 
-    pub fn hausdorff_distance(&self, other: &Self) -> f64 {
+    pub fn hausdorff_distance(&self, other: &Self) -> Result<f64> {
         if let Some(part) = singleton_support(self) {
             return part.hausdorff_distance(other);
         }
@@ -356,22 +349,22 @@ impl Shape {
             return self.hausdorff_distance(&part);
         }
         if self.is_empty() || other.is_empty() {
-            return f64::INFINITY;
+            return Ok(f64::INFINITY);
         }
         // A point pair is already the complete continuous Hausdorff problem.
         // Resolve it in source metric space before the squared kernel: a
         // subnormal squared separation underflows to zero, but the stored
         // separation itself remains an exact finite distance.
         if let (Self::Point(left), Self::Point(right)) = (self, other) {
-            return point_distance(left.xy(), right.xy());
+            return Ok(point_distance(left.xy(), right.xy()));
         }
         // A point-only carrier has no continuous interior.  Resolve the
         // finite directed nearest-neighbour maxima directly with the one
         // overflow-safe distance kernel, rather than sending MultiPoint or a
         // point-only collection through squared space.  This is exact for
         // arbitrary finite point sets, not merely translations.
-        if let Some(distance) = point_only_hausdorff_distance(self, other) {
-            return distance;
+        if let Some(distance) = point_only_hausdorff_distance(self, other)? {
+            return Ok(distance);
         }
         // A singleton target is another complete source-metric reduction for
         // every public shape kind.  Along every linear edge the distance to a
@@ -380,10 +373,10 @@ impl Shape {
         // This covers reciprocal-scale lines, polygons, and collections
         // without letting the squared continuous kernel manufacture `inf`.
         if let Self::Point(point) = other {
-            return maximum_distance_to_point(self, point.xy());
+            return Ok(maximum_distance_to_point(self, point.xy()));
         }
         if let Self::Point(point) = self {
-            return maximum_distance_to_point(other, point.xy());
+            return Ok(maximum_distance_to_point(other, point.xy()));
         }
         // A segment against points on one parallel axis has a complete
         // source-metric reduction: endpoint gaps are taken whole, interior
@@ -392,7 +385,7 @@ impl Shape {
         // directly so the cold similarity finisher cannot double-round the
         // Voronoi switch reconstructed from a normalized parameter.
         if let Some(distance) = hausdorff_axis_segment_parallel_points(self, other) {
-            return distance;
+            return Ok(distance);
         }
         // A straight baseline and a line sharing its stored endpoints have a
         // second complete reduction. Orthogonal projection of the continuous
@@ -401,27 +394,27 @@ impl Shape {
         // that baseline. This keeps a reciprocal-scale bend in source metric
         // space instead of erasing its live minor ordinate in a similarity.
         if let Some(distance) = hausdorff_shared_baseline(self, other) {
-            return distance;
+            return Ok(distance);
         }
         // Every public shape kind reaches this one exact translation
         // finisher. It is deliberately before the squared continuous kernel:
         // a finite stored offset can have an infinite square, and Multi*/area
         // carriers must not fall through merely because they are not a line.
         if let Some(translation) = matching_shape_translation(self, other) {
-            return point_distance(XY::new(0.0, 0.0), translation);
+            return Ok(point_distance(XY::new(0.0, 0.0), translation));
         }
         // This complete convex reduction belongs before the squared-space
         // fast path: a reciprocal-axis polyline can leave a *normal* but
         // unrelated squared witness there.  It is exact in source distance
         // space and therefore cannot be pre-empted by that witness.
         if let (Some(left), Some(right)) = (linework_as_segment(self), linework_as_segment(other)) {
-            return hausdorff_between_segments(left, right);
+            return Ok(hausdorff_between_segments(left, right));
         }
         if let Some(distance) = hausdorff_segment_graph(self, other) {
-            return distance;
+            return Ok(distance);
         }
         if let Some(distance) = hausdorff_segment_graph(other, self) {
-            return distance;
+            return Ok(distance);
         }
         // The power-of-two similarity is an exact coordinate change for
         // Euclidean distance, so the indexed kernel's answer in that frame is
@@ -513,14 +506,14 @@ fn singleton_support(shape: &Shape) -> Option<Shape> {
 /// Continuous Hausdorff in a cold origin-shifted power-of-two frame, then
 /// unscale the distance. The continuous breakpoint kernel runs unchanged on
 /// the framed shapes.
-fn hausdorff_continuous_framed(left: &Shape, right: &Shape) -> f64 {
+fn hausdorff_continuous_framed(left: &Shape, right: &Shape) -> Result<f64> {
     // Equal-vertex line strings separated by one stored translation have an
     // analytic Hausdorff distance: the translation norm.  Detect it before
     // framing so a large shared ordinate cannot make the small translated
     // axis look like one local unit (the packed four-vertex exit shares this
     // shape finisher).
     if let Some(translation) = matching_line_translation(left, right) {
-        return point_distance(XY::new(0.0, 0.0), translation);
+        return Ok(point_distance(XY::new(0.0, 0.0), translation));
     }
     // A pair of individual segments is a complete convex case: the maximum
     // distance from one segment to the other occurs at an endpoint.  Resolve
@@ -529,7 +522,7 @@ fn hausdorff_continuous_framed(left: &Shape, right: &Shape) -> f64 {
     if let (Some(left_segment), Some(right_segment)) =
         (linework_as_segment(left), linework_as_segment(right))
     {
-        return hausdorff_between_segments(left_segment, right_segment);
+        return Ok(hausdorff_between_segments(left_segment, right_segment));
     }
     // Likewise, the maximum nearest-endpoint distance of a segment whose two
     // endpoints are the target is its true midpoint radius. This is a closed
@@ -537,12 +530,12 @@ fn hausdorff_continuous_framed(left: &Shape, right: &Shape) -> f64 {
     if let Some(segment) = single_line_segment(left)
         && is_its_endpoint_pair(right, segment)
     {
-        return point_distance(segment.start, segment.end) / 2.0;
+        return Ok(point_distance(segment.start, segment.end) / 2.0);
     }
     if let Some(segment) = single_line_segment(right)
         && is_its_endpoint_pair(left, segment)
     {
-        return point_distance(segment.start, segment.end) / 2.0;
+        return Ok(point_distance(segment.start, segment.end) / 2.0);
     }
     // A uniform power-of-two similarity preserves the Euclidean diagram
     // exactly while making its squared arithmetic finite.  It covers every
@@ -550,33 +543,40 @@ fn hausdorff_continuous_framed(left: &Shape, right: &Shape) -> f64 {
     // normal huge-coordinate case); the reciprocal-axis cases above keep
     // their source-metric analytic reductions because no similarity can keep
     // both live axes representable.
-    similarity_framed_hausdorff(left, right)
-        .unwrap_or_else(|| robust_continuous_hausdorff(left, right))
+    if let Some(distance) = similarity_framed_hausdorff(left, right)? {
+        return Ok(distance);
+    }
+    robust_continuous_hausdorff(left, right)
 }
 
 /// Retry the complete continuous kernel in one origin-shifted power-of-two
 /// *similarity* frame.  Unlike the shared anisotropic frame, this is an exact
 /// coordinate change for Euclidean distance: a finite framed result may be
 /// unscaled without choosing an axis or changing a Voronoi/Hausdorff witness.
-fn similarity_framed_hausdorff(left: &Shape, right: &Shape) -> Option<f64> {
-    let mut points = Vec::with_capacity(left.coord_count().checked_add(right.coord_count())?);
-    left.for_each_point(|point| points.push(point));
-    right.for_each_point(|point| points.push(point));
-    let frame = SimilarityFrame::from_points(&points)?;
+fn similarity_framed_hausdorff(left: &Shape, right: &Shape) -> Result<Option<f64>> {
+    let mut points = Vec::new();
+    if let Some(len) = left.coord_count().checked_add(right.coord_count()) {
+        crate::boundary::try_reserve_vec(&mut points, len)?;
+    }
+    left.try_for_each_point(|point| crate::try_push_vec(&mut points, point))?;
+    right.try_for_each_point(|point| crate::try_push_vec(&mut points, point))?;
+    let Some(frame) = SimilarityFrame::from_points(&points) else {
+        return Ok(None);
+    };
     let map = |point: Point| {
         Ok(point.with_xy_raw(
             frame.frame_xy(point.x, point.y).x,
             frame.frame_xy(point.x, point.y).y,
         ))
     };
-    let framed_left = left.map_points(&map).ok()?;
-    let framed_right = right.map_points(&map).ok()?;
-    let answer2 = directed_hausdorff_distance_squared_shapes(&framed_left, &framed_right).max(
-        directed_hausdorff_distance_squared_shapes(&framed_right, &framed_left),
+    let framed_left = left.map_points(&map)?;
+    let framed_right = right.map_points(&map)?;
+    let answer2 = directed_hausdorff_distance_squared_shapes(&framed_left, &framed_right)?.max(
+        directed_hausdorff_distance_squared_shapes(&framed_right, &framed_left)?,
     );
-    answer2
+    Ok(answer2
         .is_normal()
-        .then(|| scale_by_power_of_two(answer2.sqrt(), -power_of_two_exponent(frame.scale())))
+        .then(|| scale_by_power_of_two(answer2.sqrt(), -power_of_two_exponent(frame.scale()))))
 }
 
 /// Continuous Hausdorff finisher in source Euclidean distance space.
@@ -586,12 +586,12 @@ fn similarity_framed_hausdorff(left: &Shape, right: &Shape) -> Option<f64> {
 /// witnesses with the distance family's guarded hypot kernels, so finite
 /// coordinates have a finite result without changing the metric by an
 /// anisotropic coordinate transform.
-fn robust_continuous_hausdorff(left: &Shape, right: &Shape) -> f64 {
-    robust_directed_hausdorff(left, right).max(robust_directed_hausdorff(right, left))
+fn robust_continuous_hausdorff(left: &Shape, right: &Shape) -> Result<f64> {
+    Ok(robust_directed_hausdorff(left, right)?.max(robust_directed_hausdorff(right, left)?))
 }
 
-pub(super) fn robust_directed_hausdorff(source: &Shape, target: &Shape) -> f64 {
-    let target = HausdorffTarget::build(target);
+pub(super) fn robust_directed_hausdorff(source: &Shape, target: &Shape) -> Result<f64> {
+    let target = HausdorffTarget::build(target)?;
     let distance = |point: XY| {
         target
             .features
@@ -611,7 +611,7 @@ pub(super) fn robust_directed_hausdorff(source: &Shape, target: &Shape) -> f64 {
             best = best.max(distance(robust_segment_point(segment, t)));
         }
     });
-    best
+    Ok(best)
 }
 
 pub(super) fn robust_point_segment_distance(point: XY, segment: Segment) -> f64 {
@@ -1029,14 +1029,14 @@ fn matching_shape_translation(left: &Shape, right: &Shape) -> Option<XY> {
 /// no segment interior that could contain a larger nearest-target distance.
 /// `point_distance` deliberately owns overflow/underflow recovery, so a
 /// finite 1e159-scale MultiPoint result cannot become infinity by squaring.
-fn point_only_hausdorff_distance(left: &Shape, right: &Shape) -> Option<f64> {
+fn point_only_hausdorff_distance(left: &Shape, right: &Shape) -> Result<Option<f64>> {
     if left.segment_count() != 0 || right.segment_count() != 0 {
-        return None;
+        return Ok(None);
     }
-    let left_points = left.point_only_points();
-    let right_points = right.point_only_points();
+    let left_points = left.point_only_points()?;
+    let right_points = right.point_only_points()?;
     if left_points.is_empty() || right_points.is_empty() {
-        return None;
+        return Ok(None);
     }
     let directed = |source: &[Point], target: &[Point]| {
         source
@@ -1049,7 +1049,9 @@ fn point_only_hausdorff_distance(left: &Shape, right: &Shape) -> Option<f64> {
             })
             .fold(0.0, f64::max)
     };
-    Some(directed(&left_points, &right_points).max(directed(&right_points, &left_points)))
+    Ok(Some(
+        directed(&left_points, &right_points).max(directed(&right_points, &left_points)),
+    ))
 }
 
 /// Exact continuous Hausdorff distance where one support is a singleton.

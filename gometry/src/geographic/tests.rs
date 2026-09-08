@@ -17,7 +17,7 @@ fn assert_bits(value: f64, expected: f64) {
 }
 
 fn xy_seq(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::CoordSeq {
-    crate::geometry::CoordSeq::from_vecs(xs, ys, None, None)
+    crate::geometry::CoordSeq::try_from_vecs(xs, ys, None, None).unwrap()
 }
 
 fn ring(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::Ring {
@@ -209,9 +209,7 @@ fn unwrapped_axis_boxes_are_exact_and_wide_diagonals_are_not_bands() {
 
 #[test]
 fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
-    use std::sync::Arc;
-
-    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape};
+    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape, SharedSlice};
 
     let shell = ring(vec![0.0, 2.0, 2.0, 0.0, 0.0], vec![0.0, 0.0, 2.0, 2.0, 0.0]);
     let bad_hole = ring(vec![0.5, 1.5, 1.5, 0.5, 0.5], vec![
@@ -219,12 +217,13 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
     ]);
     let polygon = Polygon {
         shell,
-        holes: Arc::from([bad_hole]),
+        holes: SharedSlice::try_from_vec(vec![bad_hole]).unwrap(),
     };
     let multipart = MultiPolygon::from_values(CoordinateAxes::XY, vec![
         MultiMember::Empty,
         MultiMember::Value(polygon),
-    ]);
+    ])
+    .unwrap();
     let nested = Shape::geometry_collection(vec![
         Shape::geometry_collection(vec![Shape::MultiPolygon(multipart)])
             .expect("test collection is valid"),
@@ -294,9 +293,8 @@ fn admitted_walk_keeps_nested_empty_order_axes_wrap_and_ulp() {
         MultiMember::Empty,
     ])
     .unwrap();
-    let line = Shape::LineString(
-        LineSeq::try_new(xy_seq(vec![10.0, 20.0], vec![1.0, 2.0])).unwrap(),
-    );
+    let line =
+        Shape::LineString(LineSeq::try_new(xy_seq(vec![10.0, 20.0], vec![1.0, 2.0])).unwrap());
     let shape = Shape::geometry_collection(vec![
         Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
         Shape::MultiPoint(points),
@@ -322,9 +320,7 @@ fn admitted_walk_keeps_nested_empty_order_axes_wrap_and_ulp() {
 
 #[test]
 fn nested_invalid_coordinate_reports_longitude_before_latitude() {
-    use std::sync::Arc;
-
-    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape};
+    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape, SharedSlice};
 
     let shell = ring(vec![0.0, 2.0, 2.0, 0.0, 0.0], vec![0.0, 0.0, 2.0, 2.0, 0.0]);
     let bad_hole = ring(vec![0.5, 1.5, f64::NAN, 0.5, 0.5], vec![
@@ -332,12 +328,13 @@ fn nested_invalid_coordinate_reports_longitude_before_latitude() {
     ]);
     let polygon = Polygon {
         shell,
-        holes: Arc::from([bad_hole]),
+        holes: SharedSlice::try_from_vec(vec![bad_hole]).unwrap(),
     };
     let multipart = MultiPolygon::from_values(CoordinateAxes::XY, vec![
         MultiMember::Empty,
         MultiMember::Value(polygon),
-    ]);
+    ])
+    .unwrap();
     let nested = Shape::geometry_collection(vec![
         Shape::geometry_collection(vec![Shape::MultiPolygon(multipart)])
             .expect("test collection is valid"),
@@ -440,7 +437,8 @@ fn frames_derive_degree_grad_and_radian_axes() {
     AngularFactor::try_new("unit", 0.0).unwrap_err();
     AngularFactor::try_new("unit", f64::INFINITY).unwrap_err();
     PeriodicAxis::try_new("subnormal axis", factor(f64::MAX)).unwrap_err();
-    GeographicFrame::try_new(degree.longitude().unit(), factor(f64::from_bits(1)), 0.0,).unwrap_err();
+    GeographicFrame::try_new(degree.longitude().unit(), factor(f64::from_bits(1)), 0.0)
+        .unwrap_err();
 }
 
 #[test]
@@ -499,7 +497,9 @@ fn lane_conversion_leaves_the_failing_pair_and_later_pairs_unchanged() {
 
     let mut xs = [0.0, 1.0, 10.0, 99.0];
     let mut ys = [45.0, 100.0, 20.0];
-    let error = paris.to_geodesic_lanes_indexed(&mut xs, &mut ys).unwrap_err();
+    let error = paris
+        .to_geodesic_lanes_indexed(&mut xs, &mut ys)
+        .unwrap_err();
     assert_eq!(error.0, 1);
     assert!(matches!(
         error.1,
@@ -514,13 +514,10 @@ fn lane_conversion_leaves_the_failing_pair_and_later_pairs_unchanged() {
         .lanes_indexed_from_geodesic(&mut xs, &mut ys)
         .unwrap_err();
     assert_eq!(error.0, 1);
-    assert!(matches!(
-        error.1,
-        GeographicError::NonFinite {
-            name: "geodesic coordinate",
-            ..
-        }
-    ));
+    assert!(matches!(error.1, GeographicError::NonFinite {
+        name: "geodesic coordinate",
+        ..
+    }));
     assert_eq!(xs[0], 0.0);
     assert_eq!(xs[1].to_bits(), f64::NAN.to_bits());
     assert_eq!(xs[2], 5.0);

@@ -317,7 +317,7 @@ impl PreparedIndexQuery {
         _index: &PySpatialIndex,
         row: ShapeRow<'_>,
         seeded_bounds: BoundsSeed,
-    ) -> PreparedIndexRow {
+    ) -> crate::error::Result<PreparedIndexRow> {
         let pruner_point = match row {
             ShapeRow::Point(point) => Some(point),
             _ => None,
@@ -340,27 +340,31 @@ impl PreparedIndexQuery {
         let need_geodesic_cap = pruner_point.is_none() && geodesic_metric.is_some();
         let cap = match pruner_point {
             Some(point) => Some((point, 0.0)),
-            None if need_geodesic_cap => row.with_shape(|shape| {
-                geodesic_metric.and_then(|(crs, state)| {
-                    crs::with_ellipsoid_metric_at(crs, &[shape], state, |ellipsoid| {
-                        shape.geodesic_cap(ellipsoid)
-                    })
-                    .ok()
-                    .flatten()
-                })
-            }),
+            None if need_geodesic_cap => row.try_with_shape(|shape| {
+                Ok::<Option<(Point, f64)>, crate::error::Error>(geodesic_metric.and_then(
+                    |(crs, state)| {
+                        crs::with_ellipsoid_metric_at(crs, &[shape], state, |ellipsoid| {
+                            shape.geodesic_cap(ellipsoid)
+                        })
+                        .ok()
+                        .flatten()
+                    },
+                ))
+            })?,
             None => None,
         };
         let bounds = match seeded_bounds {
             BoundsSeed::Unset => row.quick_bounds(),
             BoundsSeed::Value(bounds) => bounds,
         };
-        let bounds = bounds.map(|bounds| row.with_shape(|_| bounds));
-        PreparedIndexRow {
+        let bounds = bounds
+            .map(|bounds| row.with_shape(|_| bounds))
+            .transpose()?;
+        Ok(PreparedIndexRow {
             bounds,
             pruner_point,
             cap,
-        }
+        })
     }
 }
 // ---- SpatialIndex pyclass + RTree entry + builders ----
@@ -497,7 +501,10 @@ impl<'a> IndexRowOperation<'a> {
         self.rows.row(handle)
     }
 
-    pub(crate) fn prepared(&mut self, handle: usize) -> crate::array::PreparedRow<'a> {
+    pub(crate) fn prepared(
+        &mut self,
+        handle: usize,
+    ) -> crate::error::Result<crate::array::PreparedRow<'a>> {
         let packed_len = self
             .rows
             .packed
@@ -516,7 +523,7 @@ impl<'a> IndexRowOperation<'a> {
             );
         }
         let geometry = &self.rows.boxed[handle - packed_len];
-        crate::array::PreparedRow::Owned(geometry.prepared_plan())
+        Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()))
     }
 
     pub(crate) fn frame_cache(
@@ -579,7 +586,7 @@ impl IndexRows {
         ShapeRow::Shape(item.shape.shape())
     }
 
-    fn prepared_row(&self, handle: usize) -> crate::array::PreparedRow<'_> {
+    fn prepared_row(&self, handle: usize) -> crate::error::Result<crate::array::PreparedRow<'_>> {
         let mut operation = self.operation();
         operation.prepared(handle)
     }

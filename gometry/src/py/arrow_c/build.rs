@@ -6,6 +6,7 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::Arc;
 
+use crate::geometry::SharedSlice;
 use crate::py::arrow_c::{
     ArrayPrivate, ArrowArray, ArrowSchema, CString, CoordSeq, CoordinateAxes, GeometryEncoding,
     GeometryError, Map, NativeArrowExportError, NativeArrowExportResult, Number, PyResult,
@@ -97,7 +98,7 @@ pub(crate) fn encode_schema_metadata(pairs: Vec<(String, String)>) -> PyResult<V
 pub(crate) enum OwnedBufferSlot {
     /// Null validity / empty slot (Arrow null buffer pointer).
     Null,
-    F64(Arc<[f64]>),
+    F64(SharedSlice<f64>),
     I32(Arc<[i32]>),
     U8(Arc<[u8]>),
 }
@@ -420,7 +421,7 @@ pub(crate) fn empty_array() -> ArrowArray {
 ///
 /// Range is checked in release builds so an out-of-range window cannot export.
 pub(crate) fn primitive_f64_array_windowed(
-    values: Arc<[f64]>,
+    values: SharedSlice<f64>,
     start: usize,
     len: usize,
 ) -> PyResult<GometryArrowArray> {
@@ -672,8 +673,8 @@ mod owner_export_tests {
     #[test]
     fn primitive_window_rejects_out_of_range() {
         ensure_python();
-        let values: Arc<[f64]> = Arc::from([1.0_f64, 2.0, 3.0]);
-        primitive_f64_array_windowed(Arc::clone(&values), 0, 3).unwrap();
+        let values = SharedSlice::try_from_vec(vec![1.0_f64, 2.0, 3.0]).unwrap();
+        primitive_f64_array_windowed(values.clone(), 0, 3).unwrap();
         assert!(primitive_f64_array_windowed(values, 2, 2).is_err());
     }
 
@@ -737,7 +738,7 @@ mod owner_export_tests {
     fn make_array_rejects_length_past_owned_f64_column() {
         ensure_python();
         // Same residual the skeptic named: free length over a short Arc.
-        let short: Arc<[f64]> = Arc::from([1.0_f64]);
+        let short = SharedSlice::try_from_vec(vec![1.0_f64]).unwrap();
         assert!(
             make_array_with_offset(
                 1000,

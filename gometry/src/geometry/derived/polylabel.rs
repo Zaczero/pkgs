@@ -235,11 +235,10 @@ fn normalized_polylabel_frame(
     let xy = shape.force_2d()?;
     let normalized = xy.try_map_coordseqs(
         |seq| {
-            let mut builder = CoordSeqBuilder::like_coords(seq, 0);
-            builder.reserve_exact(seq.len());
+            let mut builder = CoordSeqBuilder::try_with_capacity(seq.axes(), seq.len())?;
             for point in seq.iter_coords() {
                 let xy = frame.frame_xy(point.x, point.y);
-                builder.push(point.with_xy(xy.x, xy.y)?);
+                builder.push(point.with_xy(xy.x, xy.y)?)?;
             }
             builder.finish()
         },
@@ -283,7 +282,7 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
         .shape
         .bounds()
         .expect("non-empty normalized polygon retains bounds");
-    let mut field = PolylabelField::new(&frame.shape, frame.max_inradius, Some(frame.frame));
+    let mut field = PolylabelField::new(&frame.shape, frame.max_inradius, Some(frame.frame))?;
     if field.is_empty() {
         return Ok(representative_point(shape, bounds));
     }
@@ -297,9 +296,9 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
         representative_point(&frame.shape, normalized_bounds),
         0.0,
         None,
-    );
+    )?;
     let bbox_center = Point::new_raw_xy(0.0, 0.0);
-    let bbox_cell = field.cell(bbox_center, 0.0, None);
+    let bbox_cell = field.cell(bbox_center, 0.0, None)?;
     if bbox_cell.distance > best.distance {
         best = bbox_cell;
     }
@@ -307,7 +306,7 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
     let mut budget = ExpansionBudget::new("polylabel", "tolerance");
     budget.add(1)?;
     let mut cells = BinaryHeap::with_capacity(1);
-    cells.push(field.cell(bbox_center, 1.0, None));
+    cells.push(field.cell(bbox_center, 1.0, None)?);
 
     while let Some(cell) = cells.pop() {
         if cell.distance > best.distance {
@@ -328,7 +327,7 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
                     Point::new_raw_xy(cell.center.x + dx, cell.center.y + dy),
                     half_size,
                     Some(&cell),
-                ));
+                )?);
             }
         }
     }
@@ -588,7 +587,7 @@ pub(crate) fn polylabel_center_radius(
 pub(crate) fn emit_zero_radius_point(shape: &Shape, center: Point) -> Result<Shape> {
     // A positive subnormal clearance may round to zero; closed membership, not
     // the rounded radius, decides whether the emitted point belongs to source.
-    if center.x.is_finite() && center.y.is_finite() && shape.covers_point(center) {
+    if center.x.is_finite() && center.y.is_finite() && shape.covers_point(center)? {
         Ok(Shape::Point(center))
     } else {
         Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
@@ -658,7 +657,7 @@ pub(crate) fn build_inscribed_circle(
         candidate_center_is_strictly_inside(&points, center, counter_clockwise);
     if !center_in_candidate
         || (certify_source
-            && (!shape.contains_point(center)
+            && (!shape.contains_point(center)?
                 || source_boundary_enters_candidate(shape, &points, counter_clockwise)?))
     {
         return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
@@ -668,7 +667,7 @@ pub(crate) fn build_inscribed_circle(
     Ok(Shape::Polygon(Polygon::new(
         Ring::from_closed(seq),
         Vec::new(),
-    )))
+    )?))
 }
 
 pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
@@ -702,21 +701,25 @@ struct PolylabelField<'a> {
 }
 
 impl<'a> PolylabelField<'a> {
-    fn new(shape: &'a Shape, max_inradius: f64, frame: Option<AxisFrame>) -> Self {
-        let linework = PreparedLinework::build(shape);
+    fn new(
+        shape: &'a Shape,
+        max_inradius: f64,
+        frame: Option<AxisFrame>,
+    ) -> crate::error::Result<Self> {
+        let linework = PreparedLinework::build(shape)?;
         // Below the indexing crossover the flat SIMD facet scan beats a tree
         // descent (its stack churn does not pay for a handful of facets).
         let bvh = (frame.is_none() && linework.segment_count() >= BVH_MIN_INDEXED_SEGMENTS)
             .then(|| FacetBvh::build(&linework))
             .flatten();
-        Self {
+        Ok(Self {
             shape,
             linework,
             bvh,
             stack: Vec::new(),
             max_inradius,
             frame,
-        }
+        })
     }
 
     const fn is_empty(&self) -> bool {
@@ -771,7 +774,7 @@ impl<'a> PolylabelField<'a> {
         center: Point,
         half_size: f64,
         parent: Option<&PolylabelCell>,
-    ) -> PolylabelCell {
+    ) -> Result<PolylabelCell> {
         // The child center lies within `parent.half_size·(1/√2)` of the parent
         // center (the diagonal quadrant offset), so by the triangle inequality
         // its boundary distance is at most `|parent.distance| + that gap`. Seed
@@ -793,19 +796,22 @@ impl<'a> PolylabelField<'a> {
         // direct even-odd ray cast beats building a hierarchical
         // `PointBatchTester` whose O(segments·log) sort never amortizes over
         // so few probes.
-        let inside = inherited_sign.unwrap_or_else(|| self.shape.contains_point(center));
+        let inside = match inherited_sign {
+            Some(inside) => inside,
+            None => self.shape.contains_point(center)?,
+        };
         let signed = if inside { distance } else { -distance };
         let cell_radius = self
             .frame
             .map_or(half_size * std::f64::consts::SQRT_2, |frame| {
                 framed_metric_cell_radius(frame, half_size)
             });
-        PolylabelCell {
+        Ok(PolylabelCell {
             center,
             half_size,
             distance: signed,
             max_distance: (cell_radius + signed).min(self.max_inradius),
-        }
+        })
     }
 }
 
@@ -813,7 +819,7 @@ impl<'a> PolylabelField<'a> {
 mod tests {
     use super::*;
     use crate::error::{ErrorKind, ResourceError};
-    use crate::{Polygon, Ring};
+    use crate::{CoordSeq, Polygon, Ring};
 
     fn circle_points(center: Point, radius: f64) -> Vec<Point> {
         let mut points = Vec::with_capacity(64);
@@ -838,31 +844,43 @@ mod tests {
     }
 
     fn degenerate_line_shape() -> Shape {
-        Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(2.0, 0.0),
-                Point::new_raw_xy(1.0, 0.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ]),
-            Vec::new(),
-        ))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(2.0, 0.0),
+                        Point::new_raw_xy(1.0, 0.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
     fn reciprocal_ribbon_keeps_the_physical_nearest_edge() {
         let extent = 1.0e162;
         let half_height = 1.0 / extent;
-        let shape = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(-extent, -half_height),
-                Point::new_raw_xy(extent, -half_height),
-                Point::new_raw_xy(extent, half_height),
-                Point::new_raw_xy(-extent, half_height),
-                Point::new_raw_xy(-extent, -half_height),
-            ]),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(-extent, -half_height),
+                        Point::new_raw_xy(extent, -half_height),
+                        Point::new_raw_xy(extent, half_height),
+                        Point::new_raw_xy(-extent, half_height),
+                        Point::new_raw_xy(-extent, -half_height),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         let center = polylabel_point(&shape, None).expect("finite ribbon");
         assert_eq!(center, Point::new_raw_xy(0.0, 0.0));
     }
@@ -874,8 +892,8 @@ mod tests {
         let Shape::Point(point) = result else {
             panic!("degenerate maximum circle must emit its point center");
         };
-        assert!(shape.covers_point(point));
-        assert!(!shape.contains_point(point));
+        assert!(shape.covers_point(point).unwrap());
+        assert!(!shape.contains_point(point).unwrap());
     }
 
     #[test]
@@ -927,36 +945,48 @@ mod tests {
         }
         let mut closed = points.clone();
         closed.push(points[0]);
-        let seq = CoordSeq::from_points(&closed);
+        let seq = CoordSeq::try_from_points(&closed).unwrap();
         assert!(!crate::geometry::ring_winding(&seq).is_degenerate());
         assert!(crate::geometry::shell_is_convex(&seq));
         assert!(candidate_center_is_strictly_inside(&points, center, true));
-        let source = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(2.0, 0.0),
-                Point::new_raw_xy(2.0, 2.0),
-                Point::new_raw_xy(0.0, 2.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ]),
-            Vec::new(),
-        ));
-        assert!(source.contains_point(center));
+        let source = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(2.0, 0.0),
+                        Point::new_raw_xy(2.0, 2.0),
+                        Point::new_raw_xy(0.0, 2.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        assert!(source.contains_point(center).unwrap());
         assert!(!source_boundary_enters_candidate(&source, &points, true).unwrap());
     }
 
     #[test]
     fn exact_boundary_radius_uses_the_smallest_stored_distance() {
-        let shape = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(0.1, 0.1),
-                Point::new_raw_xy(0.3, 0.1),
-                Point::new_raw_xy(0.3, 0.3),
-                Point::new_raw_xy(0.1, 0.3),
-                Point::new_raw_xy(0.1, 0.1),
-            ]),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.1, 0.1),
+                        Point::new_raw_xy(0.3, 0.1),
+                        Point::new_raw_xy(0.3, 0.3),
+                        Point::new_raw_xy(0.1, 0.3),
+                        Point::new_raw_xy(0.1, 0.1),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert_eq!(
             exact_boundary_radius(&shape, Point::new_raw_xy(0.2, 0.2))
                 .unwrap()
@@ -969,16 +999,22 @@ mod tests {
     fn exact_boundary_radius_handles_reciprocal_source_axes() {
         let extent = 1.0e150;
         let half_height = 1.0e-150;
-        let shape = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(-extent, -half_height),
-                Point::new_raw_xy(extent, -half_height),
-                Point::new_raw_xy(extent, half_height),
-                Point::new_raw_xy(-extent, half_height),
-                Point::new_raw_xy(-extent, -half_height),
-            ]),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(-extent, -half_height),
+                        Point::new_raw_xy(extent, -half_height),
+                        Point::new_raw_xy(extent, half_height),
+                        Point::new_raw_xy(-extent, half_height),
+                        Point::new_raw_xy(-extent, -half_height),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert_eq!(
             exact_boundary_radius(&shape, Point::new_raw_xy(0.0, 0.0))
                 .unwrap()
@@ -989,24 +1025,33 @@ mod tests {
 
     #[test]
     fn source_hole_inside_candidate_is_rejected_without_boundary_contact() {
-        let source = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(10.0, 0.0),
-                Point::new_raw_xy(10.0, 10.0),
-                Point::new_raw_xy(0.0, 10.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ]),
-            vec![Ring::from_closed(vec![
-                Point::new_raw_xy(4.5, 4.5),
-                Point::new_raw_xy(5.5, 4.5),
-                Point::new_raw_xy(5.5, 5.5),
-                Point::new_raw_xy(4.5, 5.5),
-                Point::new_raw_xy(4.5, 4.5),
-            ])],
-        ));
+        let source = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(10.0, 0.0),
+                        Point::new_raw_xy(10.0, 10.0),
+                        Point::new_raw_xy(0.0, 10.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                vec![Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(4.5, 4.5),
+                        Point::new_raw_xy(5.5, 4.5),
+                        Point::new_raw_xy(5.5, 5.5),
+                        Point::new_raw_xy(4.5, 5.5),
+                        Point::new_raw_xy(4.5, 4.5),
+                    ])
+                    .unwrap(),
+                )],
+            )
+            .unwrap(),
+        );
         let candidate = circle_points(Point::new_raw_xy(5.0, 3.0), 3.0);
-        assert!(source.contains_point(Point::new_raw_xy(5.0, 3.0)));
+        assert!(source.contains_point(Point::new_raw_xy(5.0, 3.0)).unwrap());
         assert!(source_boundary_enters_candidate(&source, &candidate, true).unwrap());
     }
 
@@ -1027,16 +1072,22 @@ mod tests {
 
     #[test]
     fn exact_boundary_radius_propagates_allocation_failure() {
-        let shape = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(2.0, 0.0),
-                Point::new_raw_xy(2.0, 2.0),
-                Point::new_raw_xy(0.0, 2.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ]),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(2.0, 0.0),
+                        Point::new_raw_xy(2.0, 2.0),
+                        Point::new_raw_xy(0.0, 2.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         let result = crate::test_support::fail_allocations_after(0, || {
             exact_boundary_radius(&shape, Point::new_raw_xy(1.0, 1.0))
         });

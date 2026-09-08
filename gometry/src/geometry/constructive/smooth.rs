@@ -90,12 +90,8 @@ fn part_output_len<const CLOSED: bool>(
 
 /// Exact-capacity SoA builder for one smoothed part. The budget check already
 /// caps `cap` at [`SMOOTH_MAX_COORDS`], then grows each live column once.
-fn reserve_builder(coords: &CoordSeq, cap: usize) -> CoordSeqBuilder {
-    let mut builder = CoordSeqBuilder::like_coords(coords, 0);
-    // Grow each live column once — same OOM contract as the prior `Vec<Point>`
-    // path, without the AoS staging buffer or the SoA transpose.
-    builder.reserve_exact(cap);
-    builder
+fn reserve_builder(coords: &CoordSeq, cap: usize) -> Result<CoordSeqBuilder> {
+    CoordSeqBuilder::try_with_capacity(coords.axes(), cap)
 }
 
 /// Corner-cutting Chaikin smoothing and centripetal Catmull-Rom subdivision
@@ -118,65 +114,65 @@ pub(crate) fn smooth_coord_seq<const CLOSED: bool>(
     }
     let output_len = part_output_len::<CLOSED>(points.len(), iterations, method)?;
     budget.add(output_len.saturating_sub(points.len()))?;
-    Ok(match method {
+    match method {
         SmoothMethod::Chaikin => {
             let mut current = points.clone();
             for _ in 0..iterations {
                 current = if CLOSED {
-                    chaikin_closed(&current)
+                    chaikin_closed(&current)?
                 } else {
-                    chaikin_open(&current, keep_endpoints)
+                    chaikin_open(&current, keep_endpoints)?
                 };
             }
-            current
+            Ok(current)
         },
         SmoothMethod::CatmullRom => {
             let samples = catmull_rom_samples_per_segment(iterations);
             catmull_rom_subdivide::<CLOSED>(points, samples)
         },
-    })
+    }
 }
 
-fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> CoordSeq {
+fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> Result<CoordSeq> {
     let count = points.len();
     if count < 2 {
-        return points.clone();
+        return Ok(points.clone());
     }
     if !keep_endpoints {
-        let mut out = reserve_builder(points, 2 * (count - 1));
+        let mut out = reserve_builder(points, 2 * (count - 1))?;
         for index in 0..count - 1 {
             let start = points.point_at(index);
             let end = points.point_at(index + 1);
-            out.push(lerp_point(start, end, 0.25));
-            out.push(lerp_point(start, end, 0.75));
+            out.push(lerp_point(start, end, 0.25))?;
+            out.push(lerp_point(start, end, 0.75))?;
         }
-        return out.finish_infallible();
+        return out.finish();
     }
-    let mut out = reserve_builder(points, 2 * count - 2);
-    out.push_at(points, 0);
+    let mut out = reserve_builder(points, 2 * count - 2)?;
+    out.push_at(points, 0)?;
     for index in 0..count - 1 {
         let start = points.point_at(index);
         let end = points.point_at(index + 1);
         if index == 0 {
-            out.push(lerp_point(start, end, 0.75));
+            out.push(lerp_point(start, end, 0.75))?;
         } else if index == count - 2 {
-            out.push(lerp_point(start, end, 0.25));
+            out.push(lerp_point(start, end, 0.25))?;
         } else {
-            out.push(lerp_point(start, end, 0.25));
-            out.push(lerp_point(start, end, 0.75));
+            out.push(lerp_point(start, end, 0.25))?;
+            out.push(lerp_point(start, end, 0.75))?;
         }
     }
-    out.push_at(points, count - 1);
-    out.finish_infallible()
+    out.push_at(points, count - 1)?;
+    out.finish()
 }
 
-fn chaikin_closed(points: &CoordSeq) -> CoordSeq {
+fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
     let count = points.len();
     if count < 4 {
-        return points.clone();
+        return Ok(points.clone());
     }
     let edge_count = count - 1;
-    let mut out = reserve_builder(points, 2 * edge_count + 1);
+    let mut out = reserve_builder(points, 2 * edge_count + 1)?;
     // Capture the first emitted corner so the ring can close bit-identically
     // without reading back from the SoA builder.
     let mut first_corner = None;
@@ -188,11 +184,11 @@ fn chaikin_closed(points: &CoordSeq) -> CoordSeq {
         if index == 0 {
             first_corner = Some(q);
         }
-        out.push(q);
-        out.push(r);
+        out.push(q)?;
+        out.push(r)?;
     }
-    out.push(first_corner.expect("closed Chaikin has at least one edge"));
-    out.finish_infallible()
+    out.push(first_corner.expect("closed Chaikin has at least one edge"))?;
+    out.finish()
 }
 
 /// Subdivide every segment into ``samples`` equal parametric pieces (keeping
@@ -200,15 +196,15 @@ fn chaikin_closed(points: &CoordSeq) -> CoordSeq {
 pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
     points: &CoordSeq,
     samples: usize,
-) -> CoordSeq {
+) -> Result<CoordSeq> {
     let count = points.len();
     if count < 2 || samples <= 1 {
-        return points.clone();
+        return Ok(points.clone());
     }
     let edge_count = count - 1;
     let total = edge_count * samples + 1;
-    let mut out = reserve_builder(points, total);
-    out.push_at(points, 0);
+    let mut out = reserve_builder(points, total)?;
+    out.push_at(points, 0)?;
     let first = points.point_at(0);
     for edge in 0..edge_count {
         let p0 = catmull_control::<CLOSED>(points, edge as isize - 1);
@@ -238,16 +234,16 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
                     _ => None,
                 }),
             );
-            out.push(point);
+            out.push(point)?;
         }
         if !CLOSED || edge < edge_count - 1 {
-            out.push_at(points, edge + 1);
+            out.push_at(points, edge + 1)?;
         }
     }
     if CLOSED {
-        out.push(first);
+        out.push(first)?;
     }
-    out.finish_infallible()
+    out.finish()
 }
 
 fn catmull_control<const CLOSED: bool>(points: &CoordSeq, index: isize) -> Point {
@@ -465,7 +461,9 @@ mod tests {
         let points: Vec<Point> = (0..n)
             .map(|index| Point::new_raw_xy(index as f64, 0.0))
             .collect();
-        Shape::LineString(LineSeq::try_new(CoordSeq::from(points)).expect("valid test line"))
+        Shape::LineString(
+            LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).expect("valid test line"),
+        )
     }
 
     #[test]

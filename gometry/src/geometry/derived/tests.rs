@@ -49,7 +49,10 @@ fn minimum_rotated_rectangle_multipoint_matches_hull_rectangle() {
         point(1.0, 2.0),
         point(4.0, 1.0),
     ];
-    let multipoint = Shape::MultiPoint(CoordSeq::from_points(&points).into());
+    let multipoint = Shape::multi_point(
+        crate::geometry::CoordinateAxes::XY,
+        CoordSeq::try_from_points(&points).unwrap(),
+    );
     let rectangle = multipoint
         .minimum_rotated_rectangle()
         .expect("minimum rotated rectangle");
@@ -69,6 +72,7 @@ fn point_z(x: f64, y: f64, z: f64) -> Point {
 
 fn origin_on(hull: &Shape) -> Point {
     hull.points_vec()
+        .unwrap()
         .into_iter()
         .find(|point| point.x == 0.0 && point.y == 0.0)
         .expect("hull contains the origin")
@@ -88,14 +92,17 @@ fn hull_points() -> Vec<Point> {
 }
 
 fn multipoint(points: &[Point]) -> Shape {
-    Shape::MultiPoint(CoordSeq::from_points(points).into())
+    Shape::multi_point(
+        crate::geometry::CoordinateAxes::XY,
+        CoordSeq::try_from_points(points).unwrap(),
+    )
 }
 
 #[test]
 fn convex_hull_dedups_signed_zero_duplicates() {
     let points = vec![point(0.0, 0.0), point(-0.0, 0.0), point(0.0, -0.0)];
     let hull = multipoint(&points).convex_hull().expect("convex hull");
-    assert!(hull.equals(&Shape::Point(point(0.0, 0.0))));
+    assert!(hull.equals(&Shape::Point(point(0.0, 0.0))).unwrap());
     assert!(!matches!(hull, Shape::LineString(_)));
 }
 
@@ -134,7 +141,7 @@ fn mixed_signed_zero_rectangle() -> Vec<Point> {
 }
 
 fn assert_open_hull_is_mixed_zero_rectangle(hull: &Shape) {
-    let verts = hull.points_vec();
+    let verts = hull.points_vec().unwrap();
     let open = &verts[..verts.len() - 1];
     assert_eq!(open.len(), 4);
     assert!(
@@ -162,7 +169,7 @@ fn convex_hull_mixed_signed_zero_rectangle_drops_collinear_midpoint() {
 }
 
 fn open_hull_contains(hull: &Shape, expected: Point) -> bool {
-    let verts = hull.points_vec();
+    let verts = hull.points_vec().unwrap();
     let open = &verts[..verts.len() - 1];
     open.iter().any(|point| {
         point.x.to_bits() == expected.x.to_bits()
@@ -191,8 +198,7 @@ fn concave_hull_uniform_zero_rectangle_keeps_collinear_edge_site() {
 
 #[test]
 fn concave_hull_mixed_signed_zero_rectangle_keeps_collinear_edge_site() {
-    let midpoint =
-        Point::new_axes(-0.0, 1.0, ZOrdinate(Some(50.0)), MOrdinate(Some(5.0))).unwrap();
+    let midpoint = Point::new_axes(-0.0, 1.0, ZOrdinate(Some(50.0)), MOrdinate(Some(5.0))).unwrap();
     let points = vec![
         midpoint,
         Point::new_axes(0.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(1.0))).unwrap(),
@@ -218,7 +224,7 @@ fn convex_hull_transposed_signed_zero_collinear_drops_midpoint() {
         point(1.0, -0.0),
     ];
     let hull = multipoint(&points).convex_hull().expect("convex hull");
-    let verts = hull.points_vec();
+    let verts = hull.points_vec().unwrap();
     let open = &verts[..verts.len() - 1];
     assert_eq!(open.len(), 4);
     assert!(open.iter().all(|point| !(point.x == 1.0 && point.y == 0.0)));
@@ -284,7 +290,7 @@ fn concave_hull_copies_first_seen_vertex_at_duplicate_xy() {
 
 fn assert_covers_points(hull: &Shape, points: &[Point]) {
     for &point in points {
-        assert!(hull.covers(&Shape::Point(point)));
+        assert!(hull.covers(&Shape::Point(point)).unwrap());
     }
 }
 
@@ -296,7 +302,7 @@ fn native_concave_hull_contract_invariants_and_reference_envelope() {
     let convex = source.convex_hull().expect("convex hull").area();
     let shape_from_indices = |indices: Vec<usize>| {
         let hull: Vec<Point> = indices.into_iter().map(|index| points[index]).collect();
-        super::shape_from_open_hull(&hull, empty_geometry)
+        super::shape_from_open_hull(&hull, empty_geometry).unwrap()
     };
     let native = shape_from_indices(native_concave_hull(&points, 1.0, 0.0));
     let native_lo = shape_from_indices(native_concave_hull(&points, 0.75, 0.0));
@@ -343,9 +349,12 @@ fn concave_hull_is_invariant_to_input_point_order() {
 #[test]
 fn lineal_centroid_keeps_world_metric_weights_in_an_axis_frame() {
     let line = |points: &[(f64, f64)]| {
-        LineSeq::try_new(CoordSeq::from_points(
-            &points.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>(),
-        ))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(
+                &points.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        )
         .expect("two-point test line")
     };
     let unequal = Shape::MultiLineString(

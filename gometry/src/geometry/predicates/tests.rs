@@ -5,13 +5,21 @@ use crate::geometry::*;
 fn ogc_mod2_multiline_point_relations_have_known_answers() {
     let point = Point::new_raw_xy;
     let multiline = Shape::MultiLineString(
-        vec![
-            LineSeq::try_new(CoordSeq::from(vec![point(0.0, 0.0), point(4.0, 0.0)]))
+        MultiLineString::from_values(CoordinateAxes::XY, vec![
+            MultiMember::Value(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&vec![point(0.0, 0.0), point(4.0, 0.0)]).unwrap(),
+                )
                 .expect("test line is valid"),
-            LineSeq::try_new(CoordSeq::from(vec![point(4.0, 0.0), point(4.0, 4.0)]))
+            ),
+            MultiMember::Value(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&vec![point(4.0, 0.0), point(4.0, 4.0)]).unwrap(),
+                )
                 .expect("test line is valid"),
-        ]
-        .into(),
+            ),
+        ])
+        .unwrap(),
     );
     let cases = [
         (
@@ -48,26 +56,30 @@ fn ogc_mod2_multiline_point_relations_have_known_answers() {
 
     for (name, point, point_first, multiline_first, contains, covers, touches, disjoint) in cases {
         let point = Shape::Point(point);
-        assert_eq!(point.relate(&multiline), point_first, "{name}");
-        assert_eq!(multiline.relate(&point), multiline_first, "{name}");
+        assert_eq!(point.relate(&multiline).unwrap(), point_first, "{name}");
+        assert_eq!(multiline.relate(&point).unwrap(), multiline_first, "{name}");
 
-        assert!(!point.contains(&multiline), "{name}");
-        assert!(!point.contains_properly(&multiline), "{name}");
-        assert!(!point.covers(&multiline), "{name}");
-        assert_eq!(point.within(&multiline), contains, "{name}");
-        assert_eq!(point.covered_by(&multiline), covers, "{name}");
-        assert_eq!(point.touches(&multiline), touches, "{name}");
-        assert_eq!(point.intersects(&multiline), !disjoint, "{name}");
-        assert_eq!(point.disjoint(&multiline), disjoint, "{name}");
+        assert!(!point.contains(&multiline).unwrap(), "{name}");
+        assert!(!point.contains_properly(&multiline).unwrap(), "{name}");
+        assert!(!point.covers(&multiline).unwrap(), "{name}");
+        assert_eq!(point.within(&multiline).unwrap(), contains, "{name}");
+        assert_eq!(point.covered_by(&multiline).unwrap(), covers, "{name}");
+        assert_eq!(point.touches(&multiline).unwrap(), touches, "{name}");
+        assert_eq!(point.intersects(&multiline).unwrap(), !disjoint, "{name}");
+        assert_eq!(point.disjoint(&multiline).unwrap(), disjoint, "{name}");
 
-        assert_eq!(multiline.contains(&point), contains, "{name}");
-        assert_eq!(multiline.contains_properly(&point), contains, "{name}");
-        assert_eq!(multiline.covers(&point), covers, "{name}");
-        assert!(!multiline.within(&point), "{name}");
-        assert!(!multiline.covered_by(&point), "{name}");
-        assert_eq!(multiline.touches(&point), touches, "{name}");
-        assert_eq!(multiline.intersects(&point), !disjoint, "{name}");
-        assert_eq!(multiline.disjoint(&point), disjoint, "{name}");
+        assert_eq!(multiline.contains(&point).unwrap(), contains, "{name}");
+        assert_eq!(
+            multiline.contains_properly(&point).unwrap(),
+            contains,
+            "{name}"
+        );
+        assert_eq!(multiline.covers(&point).unwrap(), covers, "{name}");
+        assert!(!multiline.within(&point).unwrap(), "{name}");
+        assert!(!multiline.covered_by(&point).unwrap(), "{name}");
+        assert_eq!(multiline.touches(&point).unwrap(), touches, "{name}");
+        assert_eq!(multiline.intersects(&point).unwrap(), !disjoint, "{name}");
+        assert_eq!(multiline.disjoint(&point).unwrap(), disjoint, "{name}");
     }
 }
 
@@ -75,22 +87,28 @@ fn ogc_mod2_multiline_point_relations_have_known_answers() {
 fn touching_diagonal_polygons_keep_their_de9im_matrix() {
     let high = f64::from_bits(1.0_f64.to_bits() + 1);
     let polygon = |points: &[(f64, f64)]| {
-        Shape::Polygon(Polygon::new(
-            Ring::from_closed(
-                points
-                    .iter()
-                    .map(|&(x, y)| Point::new(x, y).unwrap())
-                    .collect::<Vec<_>>(),
-            ),
-            Vec::new(),
-        ))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(
+                        &points
+                            .iter()
+                            .map(|&(x, y)| Point::new(x, y).unwrap())
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     };
     // The upper polygon is encountered first, so its ray gets the lower
     // target id despite being geometrically second around the shared vertex.
     let upper = polygon(&[(0.0, 0.0), (1.0, high), (2.0, 3.0), (0.0, 0.0)]);
     let lower = polygon(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (0.0, 0.0)]);
 
-    assert_eq!(upper.relate(&lower), "FF2F01212");
+    assert_eq!(upper.relate(&lower).unwrap(), "FF2F01212");
 }
 
 mod convex_tests {
@@ -249,16 +267,22 @@ mod convex_tests {
     fn axis_rectangle_detection_and_intersects_fast_path() {
         let p = |x: f64, y: f64| Point::new_raw_xy(x, y);
         let rect = |minx, miny, maxx, maxy| {
-            Shape::Polygon(Polygon::new(
-                Ring::from_closed(vec![
-                    p(minx, miny),
-                    p(maxx, miny),
-                    p(maxx, maxy),
-                    p(minx, maxy),
-                    p(minx, miny),
-                ]),
-                Vec::new(),
-            ))
+            Shape::Polygon(
+                Polygon::new(
+                    Ring::from_closed(
+                        CoordSeq::try_from_points(&[
+                            p(minx, miny),
+                            p(maxx, miny),
+                            p(maxx, maxy),
+                            p(minx, maxy),
+                            p(minx, miny),
+                        ])
+                        .unwrap(),
+                    ),
+                    Vec::new(),
+                )
+                .unwrap(),
+            )
         };
         let bounds = |shape: &Shape| shape.bounds().expect("bounded");
 
@@ -268,38 +292,63 @@ mod convex_tests {
         assert!(is_axis_aligned_rectangle(&r, bounds(&r)));
         let line_box = rect(0.0, 0.0, 10.0, 0.0); // zero height → not a rectangle
         assert!(!is_axis_aligned_rectangle(&line_box, bounds(&line_box)));
-        let triangle = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![p(0.0, 0.0), p(10.0, 0.0), p(5.0, 10.0), p(0.0, 0.0)]),
-            Vec::new(),
-        ));
+        let triangle = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        p(0.0, 0.0),
+                        p(10.0, 0.0),
+                        p(5.0, 10.0),
+                        p(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert!(!is_axis_aligned_rectangle(&triangle, bounds(&triangle)));
-        let diamond = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                p(5.0, 0.0),
-                p(10.0, 5.0),
-                p(5.0, 10.0),
-                p(0.0, 5.0),
-                p(5.0, 0.0),
-            ]),
-            Vec::new(),
-        ));
+        let diamond = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        p(5.0, 0.0),
+                        p(10.0, 5.0),
+                        p(5.0, 10.0),
+                        p(0.0, 5.0),
+                        p(5.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert!(!is_axis_aligned_rectangle(&diamond, bounds(&diamond)));
 
-        let densified = Shape::Polygon(Polygon::new(
-            Ring::from_closed(vec![
-                p(0.0, 0.0),
-                p(5.0, 0.0),
-                p(10.0, 0.0),
-                p(10.0, 10.0),
-                p(5.0, 10.0),
-                p(0.0, 10.0),
-                p(0.0, 0.0),
-            ]),
-            Vec::new(),
-        ));
+        let densified = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        p(0.0, 0.0),
+                        p(5.0, 0.0),
+                        p(10.0, 0.0),
+                        p(10.0, 10.0),
+                        p(5.0, 10.0),
+                        p(0.0, 10.0),
+                        p(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert!(is_axis_aligned_rectangle(&densified, bounds(&densified)));
         assert!(
-            PreparedPlan::transient(&densified).intersects(&PreparedPlan::transient(&r)),
+            PreparedPlan::transient(&densified)
+                .intersects(&PreparedPlan::transient(&r))
+                .unwrap(),
             "cached planar intersects recognizes a densified rectangle"
         );
 
@@ -317,12 +366,12 @@ mod convex_tests {
         ];
         for (other, expected) in cases {
             assert_eq!(
-                base.intersects(&other),
+                base.intersects(&other).unwrap(),
                 expected,
                 "rect intersects mismatch for {other:?}"
             );
             // symmetric
-            assert_eq!(other.intersects(&base), expected);
+            assert_eq!(other.intersects(&base).unwrap(), expected);
         }
     }
 }

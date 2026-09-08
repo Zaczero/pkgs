@@ -45,11 +45,11 @@ pub(crate) fn orient_ring<C: Coordinates + ?Sized>(points: &C, clockwise: bool) 
 
 /// Orient an admitted ring without copying its coordinate columns when the
 /// requested winding already matches.
-pub(in crate::geometry) fn oriented_ring(ring: &Ring, clockwise: bool) -> Ring {
+pub(in crate::geometry) fn oriented_ring(ring: &Ring, clockwise: bool) -> Result<Ring> {
     if ring_winding(ring).reverse_for_clockwise(clockwise) {
-        Ring::from_closed(ring.coords().reversed())
+        Ok(Ring::from_closed(ring.coords().reversed()?))
     } else {
-        ring.clone()
+        Ok(ring.clone())
     }
 }
 
@@ -85,7 +85,7 @@ mod tests {
             (0.0, 1.0, 4.0, 44.0),
             (0.0, 0.0, 1.0, 11.0),
         ]);
-        let (oriented, allocations) = allocation_count(|| oriented_ring(&ring, false));
+        let (oriented, allocations) = allocation_count(|| oriented_ring(&ring, false).unwrap());
 
         assert_eq!(oriented, ring);
         assert_eq!(allocations, 0);
@@ -107,25 +107,28 @@ mod tests {
             (2.0, 1.0, 8.0, 88.0),
             (1.0, 1.0, 5.0, 55.0),
         ]);
-        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
         let oriented = shape.orient_polygons(false).expect("orientation succeeds");
 
-        let expected = Shape::Polygon(Polygon::new(
-            xyzm_ring(&[
-                (0.0, 0.0, 1.0, 11.0),
-                (4.0, 0.0, 4.0, 44.0),
-                (4.0, 4.0, 3.0, 33.0),
-                (0.0, 4.0, 2.0, 22.0),
-                (0.0, 0.0, 1.0, 11.0),
-            ]),
-            vec![xyzm_ring(&[
-                (1.0, 1.0, 5.0, 55.0),
-                (1.0, 2.0, 6.0, 66.0),
-                (2.0, 2.0, 7.0, 77.0),
-                (2.0, 1.0, 8.0, 88.0),
-                (1.0, 1.0, 5.0, 55.0),
-            ])],
-        ));
+        let expected = Shape::Polygon(
+            Polygon::new(
+                xyzm_ring(&[
+                    (0.0, 0.0, 1.0, 11.0),
+                    (4.0, 0.0, 4.0, 44.0),
+                    (4.0, 4.0, 3.0, 33.0),
+                    (0.0, 4.0, 2.0, 22.0),
+                    (0.0, 0.0, 1.0, 11.0),
+                ]),
+                vec![xyzm_ring(&[
+                    (1.0, 1.0, 5.0, 55.0),
+                    (1.0, 2.0, 6.0, 66.0),
+                    (2.0, 2.0, 7.0, 77.0),
+                    (2.0, 1.0, 8.0, 88.0),
+                    (1.0, 1.0, 5.0, 55.0),
+                ])],
+            )
+            .unwrap(),
+        );
         assert_eq!(oriented, expected);
     }
 
@@ -145,25 +148,28 @@ mod tests {
             (1.0, 2.0, 8.0, 88.0),
             (1.0, 1.0, 5.0, 55.0),
         ]);
-        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
         let oriented = shape.orient_polygons(false).expect("orientation succeeds");
 
-        let expected = Shape::Polygon(Polygon::new(
-            xyzm_ring(&[
-                (0.0, 0.0, 1.0, 11.0),
-                (4.0, 0.0, 2.0, 22.0),
-                (4.0, 4.0, 3.0, 33.0),
-                (0.0, 4.0, 4.0, 44.0),
-                (0.0, 0.0, 1.0, 11.0),
-            ]),
-            vec![xyzm_ring(&[
-                (1.0, 1.0, 5.0, 55.0),
-                (1.0, 2.0, 8.0, 88.0),
-                (2.0, 2.0, 7.0, 77.0),
-                (2.0, 1.0, 6.0, 66.0),
-                (1.0, 1.0, 5.0, 55.0),
-            ])],
-        ));
+        let expected = Shape::Polygon(
+            Polygon::new(
+                xyzm_ring(&[
+                    (0.0, 0.0, 1.0, 11.0),
+                    (4.0, 0.0, 2.0, 22.0),
+                    (4.0, 4.0, 3.0, 33.0),
+                    (0.0, 4.0, 4.0, 44.0),
+                    (0.0, 0.0, 1.0, 11.0),
+                ]),
+                vec![xyzm_ring(&[
+                    (1.0, 1.0, 5.0, 55.0),
+                    (1.0, 2.0, 8.0, 88.0),
+                    (2.0, 2.0, 7.0, 77.0),
+                    (2.0, 1.0, 6.0, 66.0),
+                    (1.0, 1.0, 5.0, 55.0),
+                ])],
+            )
+            .unwrap(),
+        );
         assert_eq!(oriented, expected);
     }
 
@@ -175,7 +181,7 @@ mod tests {
             (2.0, 0.0, 3.0, 33.0),
             (0.0, 0.0, 1.0, 11.0),
         ]);
-        let (oriented, allocations) = allocation_count(|| oriented_ring(&ring, true));
+        let (oriented, allocations) = allocation_count(|| oriented_ring(&ring, true).unwrap());
 
         assert_eq!(oriented, ring);
         assert_eq!(allocations, 0);
@@ -188,12 +194,15 @@ mod tests {
 /// path), and the output written as two slice copies per ordinate
 /// column — no per-vertex `Vec<Point>` round-trips. Equality with the
 /// `Vec<Point>` form is preserved bit-for-bit.
-pub(in crate::geometry) fn canonical_ring_seq(ring: &CoordSeq, clockwise: bool) -> CoordSeq {
+pub(in crate::geometry) fn canonical_ring_seq(
+    ring: &CoordSeq,
+    clockwise: bool,
+) -> Result<CoordSeq> {
     let count = ring.coord_count();
     let closed = count > 1 && same_point(ring.point_at(0), ring.point_at(count - 1));
     let unique = if closed { count - 1 } else { count };
     if unique <= 1 {
-        return ring.clone();
+        return Ok(ring.clone());
     }
     let reverse = ring_winding(ring).reverse_for_clockwise(clockwise);
     let mut start = 0_usize;
@@ -226,11 +235,11 @@ pub(in crate::geometry) fn canonical_ring_seq(ring: &CoordSeq, clockwise: bool) 
         }
     }
     if duplicate_min {
-        return CoordSeq::from(canonical_ring(ring, clockwise));
+        return CoordSeq::try_from_points(&canonical_ring(ring, clockwise));
     }
     // After reversal the ring still starts at the min vertex; the walk
     // direction flips. Emit per ordinate column in two contiguous chunks.
-    let rotate = |column: &[f64]| -> Box<[f64]> {
+    let rotate = |column: &[f64]| -> Vec<f64> {
         let mut output = Vec::with_capacity(count);
         if reverse {
             output.extend(column[..=start].iter().rev());
@@ -242,13 +251,13 @@ pub(in crate::geometry) fn canonical_ring_seq(ring: &CoordSeq, clockwise: bool) 
         if closed {
             output.push(output[0]);
         }
-        output.into_boxed_slice()
+        output
     };
-    CoordSeq::from_columns(
-        rotate(ring.xs()).into(),
-        rotate(ring.ys()).into(),
-        ring.zs().map(rotate).map(Into::into),
-        ring.ms().map(rotate).map(Into::into),
+    CoordSeq::try_from_vecs(
+        rotate(ring.xs()),
+        rotate(ring.ys()),
+        ring.zs().map(rotate),
+        ring.ms().map(rotate),
     )
 }
 
@@ -408,7 +417,10 @@ pub(crate) fn snap_column_simd(
     Ok(out)
 }
 
-#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
+#[expect(
+    clippy::float_cmp,
+    reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact"
+)]
 /// `((v - origin) / size).round() * size + origin` with power-of-two
 /// pre-scale so `v=1e308, origin=-1e308, size=1e308` stays finite.
 ///

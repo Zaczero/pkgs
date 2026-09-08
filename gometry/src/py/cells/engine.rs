@@ -201,7 +201,7 @@ fn cover_array_rows(
     for row in array.row_operation().rows_with_missing(Vec::<u64>::new) {
         let ids = match row {
             crate::array::ArrayRow::Missing { .. } => Vec::new(),
-            crate::array::ArrayRow::Present(row) => row.row().with_shape(|shape| {
+            crate::array::ArrayRow::Present(row) => row.row().try_with_shape(|shape| {
                 let shape = crate::lonlat_shape_under(shape, crs)?.into_owned();
                 // Scalar factories reject empty sources, but an array must retain row
                 // alignment. Represent a present empty exactly like a missing row in
@@ -342,7 +342,7 @@ pub(super) fn rect_cells_to_polygon<C: crate::grid::coverer::RectCell>(
         return Ok(typed);
     }
     let shapes = crate::try_collect_results(cells.as_slice().iter().map(|cell| {
-        let shape = crate::geometry::bounds_to_shape(cell.bounds());
+        let shape = crate::geometry::bounds_to_shape(cell.bounds()).map_err(PyErr::from)?;
         shape.split_antimeridian().map_err(PyErr::from)
     }))?;
     coverage_to_polygon(&shapes)
@@ -380,12 +380,13 @@ mod tests {
 
     fn point_array(points: Vec<(f64, f64)>) -> crate::PyGeometryArray {
         crate::PyGeometryArray::packed_points(
-            crate::geometry::CoordSeq::from_vecs(
+            crate::geometry::CoordSeq::try_from_vecs(
                 points.iter().map(|point| point.0).collect(),
                 points.iter().map(|point| point.1).collect(),
                 None,
                 None,
-            ),
+            )
+            .unwrap(),
             crate::boundary::Frame::None,
         )
     }
@@ -424,9 +425,10 @@ mod tests {
                 crate::geometry::Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0)),
             ],
             crate::boundary::Frame::None,
-        );
+        )
+        .unwrap();
         let mask = crate::array::ValidityMask::from_vec(3, vec![false, true, false]).expect("mask");
-        let array = crate::PyGeometryArray::scatter_present_rows(&present, mask);
+        let array = crate::PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         let rows = cover_array_rows(&array, None, |_, _| Ok(vec![7]))
             .expect("empty and missing are groups");
         assert_eq!(rows, vec![Vec::new(), Vec::new(), vec![7]]);
@@ -440,7 +442,8 @@ mod tests {
                 crate::geometry::Shape::empty_polygon(),
             ],
             crate::boundary::Frame::None,
-        );
+        )
+        .unwrap();
         let error = crate::test_support::fail_allocations_after(0, || {
             cover_array_rows(&array, None, |_, _| unreachable!("empty rows skip build"))
                 .expect_err("collector allocation must fail")

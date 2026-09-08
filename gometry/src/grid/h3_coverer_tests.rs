@@ -20,17 +20,20 @@ const CENTER_LONGITUDE: f64 = 0.534_167_862_982_367_2;
 const CENTER_LATITUDE: f64 = -0.459_695_642_341_289_07;
 
 fn ring(west: f64, south: f64, east: f64, north: f64) -> Ring {
-    Ring::from_closed(CoordSeq::from(vec![
-        Point::new(west, south).unwrap(),
-        Point::new(east, south).unwrap(),
-        Point::new(east, north).unwrap(),
-        Point::new(west, north).unwrap(),
-        Point::new(west, south).unwrap(),
-    ]))
+    Ring::from_closed(
+        CoordSeq::try_from_points(&[
+            Point::new(west, south).unwrap(),
+            Point::new(east, south).unwrap(),
+            Point::new(east, north).unwrap(),
+            Point::new(west, north).unwrap(),
+            Point::new(west, south).unwrap(),
+        ])
+        .unwrap(),
+    )
 }
 
 fn polygon(west: f64, south: f64, east: f64, north: f64) -> Polygon {
-    Polygon::new(ring(west, south, east, north), Vec::new())
+    Polygon::new(ring(west, south, east, north), Vec::new()).expect("test polygon is valid")
 }
 
 fn latitude_ring(latitude: f64, reverse: bool) -> Ring {
@@ -45,7 +48,7 @@ fn latitude_ring(latitude: f64, reverse: bool) -> Ring {
         }
     }
     points.push(points[0]);
-    Ring::from_closed(CoordSeq::from(points))
+    Ring::from_closed(CoordSeq::try_from_points(&points).unwrap())
 }
 
 fn classify(shape: &Shape) -> H3LeafClass {
@@ -109,12 +112,16 @@ fn area_mixed_and_lower_dimensional_witnesses_obey_leaf_ordering() {
     let small = polygon(0.52, -0.47, 0.55, -0.44);
     let holed = Polygon::new(ring(-3.0, -3.0, 3.0, 3.0), vec![ring(
         0.52, -0.47, 0.55, -0.44,
-    )]);
+    )])
+    .expect("test polygon is valid");
     let line = Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new(0.52, -0.47).unwrap(),
-            Point::new(0.55, -0.44).unwrap(),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new(0.52, -0.47).unwrap(),
+                Point::new(0.55, -0.44).unwrap(),
+            ])
+            .unwrap(),
+        )
         .expect("line coordinate sequence must contain at least two vertices"),
     );
     let point = Shape::Point(Point::new(CENTER_LONGITUDE, CENTER_LATITUDE).unwrap());
@@ -145,9 +152,12 @@ fn area_mixed_and_lower_dimensional_witnesses_obey_leaf_ordering() {
 
 #[test]
 fn hole_witness_vetoes_the_otherwise_certified_outside() {
-    let holed = Shape::Polygon(Polygon::new(ring(-3.0, -3.0, 3.0, 3.0), vec![ring(
-        0.52, -0.47, 0.55, -0.44,
-    )]));
+    let holed = Shape::Polygon(
+        Polygon::new(ring(-3.0, -3.0, 3.0, 3.0), vec![ring(
+            0.52, -0.47, 0.55, -0.44,
+        )])
+        .unwrap(),
+    );
     assert_eq!(classify(&holed), H3LeafClass::Boundary);
 }
 
@@ -160,10 +170,13 @@ fn authority_pip_is_the_only_path_that_certifies_big_interior() {
 #[test]
 fn wrapped_selection_image_does_not_turn_an_unrelated_leaf_into_contact() {
     let line = Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new(170.0, -10.0).unwrap(),
-            Point::new(-170.0, 10.0).unwrap(),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new(170.0, -10.0).unwrap(),
+                Point::new(-170.0, 10.0).unwrap(),
+            ])
+            .unwrap(),
+        )
         .expect("line coordinate sequence must contain at least two vertices"),
     );
     let source =
@@ -265,10 +278,13 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
     for longitude in [-180.0, 180.0] {
         let source = GeographicCoverageSource::new(
             &Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new(longitude, 80.0).unwrap(),
-                    Point::new(longitude, 100.0).unwrap(),
-                ]))
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        Point::new(longitude, 80.0).unwrap(),
+                        Point::new(longitude, 100.0).unwrap(),
+                    ])
+                    .unwrap(),
+                )
                 .expect("line coordinate sequence must contain at least two vertices"),
             ),
             SphericalGridTarget::H3(Resolution::Two),
@@ -315,10 +331,13 @@ fn root_descent_nominates_the_two_ring_logical_bbox_owner() {
 fn certified_bbox_descent_selects_the_polar_nine() {
     let source = GeographicCoverageSource::new(
         &Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new(-90.0, 85.0).unwrap(),
-                Point::new(90.0, 85.0).unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new(-90.0, 85.0).unwrap(),
+                    Point::new(90.0, 85.0).unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         ),
         SphericalGridTarget::H3(Resolution::Two),
@@ -342,10 +361,13 @@ fn certified_bbox_descent_selects_the_polar_nine() {
 fn ordered_overlap_relation_retains_the_polar_arc_extremum_owner() {
     let source = GeographicCoverageSource::new(
         &Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new(-90.0, 85.0).unwrap(),
-                Point::new(90.0, 85.0).unwrap(),
-            ]))
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new(-90.0, 85.0).unwrap(),
+                    Point::new(90.0, 85.0).unwrap(),
+                ])
+                .unwrap(),
+            )
             .expect("line coordinate sequence must contain at least two vertices"),
         ),
         SphericalGridTarget::H3(Resolution::Two),
@@ -372,16 +394,22 @@ fn ordered_overlap_relation_retains_the_polar_arc_extremum_owner() {
 
 #[test]
 fn physical_vertical_signs_exclude_the_raw_seam_bbox_only_cell() {
-    let source = Shape::Polygon(Polygon::new(
-        Ring::from_closed(CoordSeq::from(vec![
-            Point::new(179.0, -5.0).unwrap(),
-            Point::new(-179.0, -5.0).unwrap(),
-            Point::new(-179.0, 5.0).unwrap(),
-            Point::new(179.0, 5.0).unwrap(),
-            Point::new(179.0, -5.0).unwrap(),
-        ])),
-        Vec::new(),
-    ));
+    let source = Shape::Polygon(
+        Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new(179.0, -5.0).unwrap(),
+                    Point::new(-179.0, -5.0).unwrap(),
+                    Point::new(-179.0, 5.0).unwrap(),
+                    Point::new(179.0, 5.0).unwrap(),
+                    Point::new(179.0, -5.0).unwrap(),
+                ])
+                .unwrap(),
+            ),
+            Vec::new(),
+        )
+        .unwrap(),
+    );
     let source =
         GeographicCoverageSource::new(&source, SphericalGridTarget::H3(Resolution::Two)).unwrap();
     let plan = H3CoverPlan::new(Resolution::Two);
@@ -397,9 +425,9 @@ fn physical_vertical_signs_exclude_the_raw_seam_bbox_only_cell() {
 #[test]
 fn periodic_polar_annulus_cap_never_prunes_an_intersecting_leaf() {
     let source = GeographicCoverageSource::new(
-        &Shape::Polygon(Polygon::new(latitude_ring(60.0, false), vec![
-            latitude_ring(80.0, false),
-        ])),
+        &Shape::Polygon(
+            Polygon::new(latitude_ring(60.0, false), vec![latitude_ring(80.0, false)]).unwrap(),
+        ),
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
@@ -426,10 +454,9 @@ fn periodic_polar_winding_caps_retain_each_analytic_owner() {
     // directions.
     for (reverse, latitude) in [(false, 87.0), (true, 87.0), (false, -87.0), (true, -87.0)] {
         let ring_latitude = if latitude > 0.0 { 85.0 } else { -85.0 };
-        let shape = Shape::Polygon(Polygon::new(
-            latitude_ring(ring_latitude, reverse),
-            Vec::new(),
-        ));
+        let shape = Shape::Polygon(
+            Polygon::new(latitude_ring(ring_latitude, reverse), Vec::new()).unwrap(),
+        );
         let source =
             GeographicCoverageSource::new(&shape, SphericalGridTarget::H3(Resolution::Two))
                 .unwrap();
@@ -765,10 +792,13 @@ fn within_keeps_complete_target_bbox_certificates() {
 #[test]
 fn within_discards_non_areal_members_before_traversal() {
     let line = Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(vec![
-            Point::new(-90.0, 0.0).unwrap(),
-            Point::new(90.0, 0.0).unwrap(),
-        ]))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new(-90.0, 0.0).unwrap(),
+                Point::new(90.0, 0.0).unwrap(),
+            ])
+            .unwrap(),
+        )
         .expect("line coordinate sequence must contain at least two vertices"),
     );
     for resolution in [

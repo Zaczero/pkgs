@@ -152,11 +152,11 @@ fn execute_unary_rows<T: BulkElement>(
                     match mode {
                         UnaryRowMode::ShapeOnly => {
                             // Transient handle — never write prepared slots.
-                            let data = crate::array::PreparedRow::transient(shape_row);
+                            let data = crate::array::PreparedRow::transient(shape_row)?;
                             kernel(&data, &ctx, &mut rows)
                         },
                         UnaryRowMode::Prepared => {
-                            let data = rows.prepared_at(row_index, shape_row);
+                            let data = rows.prepared_at(row_index, shape_row)?;
                             kernel(&data, &ctx, &mut rows)
                         },
                     }
@@ -247,8 +247,8 @@ pub(crate) fn unary_array_shapes(
             move |data, ctx, _rows| kernel(data, ctx),
         )
         .map_err(rows_err)?;
-        return Ok(PyGeometryArray::from_shapes(shapes, array.frame.clone())
-            .with_missing_mask(array.missing().cloned()));
+        return Ok(PyGeometryArray::from_shapes(shapes, array.frame.clone())?
+            .with_missing_mask(array.missing().cloned())?);
     }
     let (shapes, frame) = run_unary_rows(
         py,
@@ -257,7 +257,7 @@ pub(crate) fn unary_array_shapes(
         unary_row_mode(op),
         move |data, ctx, _rows| kernel(data, ctx),
     )?;
-    Ok(PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(array.missing().cloned()))
+    Ok(PyGeometryArray::from_shapes(shapes, frame)?.with_missing_mask(array.missing().cloned())?)
 }
 
 pub(crate) fn unary_scalar_linref_shape(
@@ -334,7 +334,7 @@ pub(crate) fn unary_array_linref_shapes(
                 };
                 let row_index = present.logical();
                 let shape = present.row();
-                let data = crate::array::PreparedRow::transient(shape);
+                let data = crate::array::PreparedRow::transient(shape)?;
                 let cache = rows.frame_cache(row_index);
                 let row = LinearReferenceRow {
                     op: CachelessRowContext {
@@ -357,7 +357,7 @@ pub(crate) fn unary_array_linref_shapes(
             return Err(rows_err(error));
         },
     };
-    Ok(PyGeometryArray::from_shapes(shapes, output_frame).with_missing_mask(output_missing))
+    Ok(PyGeometryArray::from_shapes(shapes, output_frame)?.with_missing_mask(output_missing)?)
 }
 
 /// Geometry-returning array lane for constructive operations whose generated
@@ -408,7 +408,7 @@ pub(crate) fn unary_array_shapes_budgeted(
                         metric,
                         lane: Lane::Array(row),
                     };
-                    let data = rows.prepared_at(row, shape_row);
+                    let data = rows.prepared_at(row, shape_row)?;
                     kernel(&data, &ctx, &mut budget)
                 })
                 .collect_rows()
@@ -422,7 +422,7 @@ pub(crate) fn unary_array_shapes_budgeted(
             return Err(rows_err(error));
         },
     };
-    Ok(PyGeometryArray::from_shapes(shapes, output_frame).with_missing_mask(missing))
+    Ok(PyGeometryArray::from_shapes(shapes, output_frame)?.with_missing_mask(missing)?)
 }
 
 /// Unified unary scalar/array dispatch: classify once, resolve metric once,

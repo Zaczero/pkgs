@@ -5,11 +5,10 @@
 use std::ops::Range;
 use std::simd::cmp::SimdPartialEq as _;
 use std::simd::num::SimdFloat as _;
-use std::sync::Arc;
 
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
 use crate::geometry::types::{
-    CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, XY, ZOrdinate,
+    CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, SharedSlice, XY, ZOrdinate,
     ensure_coordseq_vertex_capacity,
 };
 use crate::geometry::{REDUCE_LANES, ReduceSimd, column_all_finite, simd_mask_all};
@@ -17,9 +16,9 @@ use crate::geometry::{REDUCE_LANES, ReduceSimd, column_all_finite, simd_mask_all
 /// One sequence's shared column storage and coordinate row window (see
 /// [`CoordSeq::column_arcs`]).
 pub(crate) struct SharedColumns {
-    pub xs: Arc<[f64]>,
-    pub ys: Arc<[f64]>,
-    pub zs: Option<Arc<[f64]>>,
+    pub xs: SharedSlice<f64>,
+    pub ys: SharedSlice<f64>,
+    pub zs: Option<SharedSlice<f64>>,
     pub ms: Option<MColumn>,
     pub window: Range<usize>,
 }
@@ -27,62 +26,139 @@ pub(crate) struct SharedColumns {
 impl SharedColumns {
     /// Return the M owner and its visible window in the same shape consumed by
     /// Arrow primitive-array builders.
-    pub(crate) fn m_parts(&self) -> Option<(Arc<[f64]>, Range<usize>)> {
+    pub(crate) fn m_parts(&self) -> Option<(SharedSlice<f64>, Range<usize>)> {
         self.ms
             .as_ref()
-            .map(|column| (column.arc(), column.window(self.window.clone())))
+            .map(|column| (column.owner(), column.window(self.window.clone())))
     }
 }
 
-/// M storage is either aligned with the shared X/Y/Z columns or already copied
-/// to the sequence's visible window. The distinction is established when a
-/// sequence is built and is never inferred from lengths later.
-#[derive(Clone, Debug)]
+/// M storage is either aligned with the shared X/Y/Z columns or has an
+/// independent offset into a local owner. The offset advances when a nested
+/// coordinate view is made; local views never copy their M payload.
+#[derive(Debug)]
 pub(crate) enum MColumn {
-    Shared(Arc<[f64]>),
-    Local(Arc<[f64]>),
+    Shared(SharedSlice<f64>),
+    Local {
+        owner: SharedSlice<f64>,
+        offset: usize,
+    },
+}
+
+impl Clone for MColumn {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Shared(owner) => Self::Shared(owner.clone()),
+            Self::Local { owner, offset } => Self::Local {
+                owner: owner.clone(),
+                offset: *offset,
+            },
+        }
+    }
 }
 
 impl MColumn {
-    fn arc(&self) -> Arc<[f64]> {
+    fn owner(&self) -> SharedSlice<f64> {
         match self {
-            Self::Shared(column) | Self::Local(column) => Arc::clone(column),
+            Self::Shared(owner) => owner.clone(),
+            Self::Local { owner, .. } => owner.clone(),
         }
     }
 
-    fn values(&self, range: Range<usize>) -> &[f64] {
+    pub(crate) fn values(&self, range: Range<usize>) -> &[f64] {
+        let window = self.window(range);
         match self {
-            Self::Shared(column) => &column[range],
-            Self::Local(column) => &column[..range.end - range.start],
+            Self::Shared(owner) | Self::Local { owner, .. } => &owner[window],
         }
     }
 
     const fn window(&self, range: Range<usize>) -> Range<usize> {
         match self {
             Self::Shared(_) => range,
-            Self::Local(_) => 0..range.end - range.start,
+            Self::Local { offset, .. } => *offset..*offset + (range.end - range.start),
         }
     }
 
-    fn view(&self, window: Range<usize>, source_len: usize) -> Self {
+    fn view(&self, window: Range<usize>) -> Self {
         match self {
-            Self::Shared(column) => Self::Shared(Arc::clone(column)),
-            Self::Local(column) if window.start == 0 && window.end == source_len => {
-                Self::Local(Arc::clone(column))
+            Self::Shared(owner) => Self::Shared(owner.clone()),
+            Self::Local { owner, offset } => Self::Local {
+                owner: owner.clone(),
+                offset: *offset + window.start,
             },
-            Self::Local(column) => Self::Local(Arc::from(&column[window])),
         }
     }
 
-    fn carried(&self, range: Range<usize>, physical_len: usize) -> Arc<[f64]> {
+    fn carried(&self, xy_range: Range<usize>, xy_physical: usize) -> Result<Self> {
+        let visible = xy_range.end.saturating_sub(xy_range.start);
         match self {
-            Self::Shared(column) if range.start == 0 && range.end == physical_len => {
-                Arc::clone(column)
+            Self::Shared(owner) if xy_range.start == 0 && xy_range.end == xy_physical => {
+                Ok(Self::Shared(owner.clone()))
             },
-            Self::Shared(column) => Arc::from(&column[range]),
-            Self::Local(column) => Arc::clone(column),
+            Self::Shared(owner) => {
+                local_m_covers(owner, xy_range.start, visible)?;
+                Ok(Self::Local {
+                    owner: owner.clone(),
+                    offset: xy_range.start,
+                })
+            },
+            Self::Local { owner, offset } => {
+                local_m_covers(owner, *offset, visible)?;
+                Ok(Self::Local {
+                    owner: owner.clone(),
+                    offset: *offset,
+                })
+            },
         }
     }
+}
+
+fn local_m_covers(owner: &SharedSlice<f64>, offset: usize, visible: usize) -> Result<()> {
+    let Some(remaining) = owner.len().checked_sub(offset) else {
+        return Err(GeometryErrorKind::CoordinateRange {
+            start: offset,
+            end: offset,
+            length: owner.len(),
+        }
+        .into());
+    };
+    if visible > remaining {
+        return Err(GeometryErrorKind::CoordinateRange {
+            start: offset,
+            end: offset + visible,
+            length: owner.len(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn admit_m_column(ms: Option<&MColumn>, xy_physical: usize, visible: usize) -> Result<()> {
+    match ms {
+        None => Ok(()),
+        Some(MColumn::Shared(owner)) => {
+            if owner.len() != xy_physical {
+                Err(GeometryErrorKind::CoordinateLength(xy_physical, owner.len()).into())
+            } else {
+                Ok(())
+            }
+        },
+        Some(MColumn::Local { owner, offset }) => local_m_covers(owner, *offset, visible),
+    }
+}
+
+pub(crate) fn try_copy_slice(values: &[f64]) -> Result<Vec<f64>> {
+    let mut out = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, values.len())?;
+    out.extend_from_slice(values);
+    Ok(out)
+}
+
+fn try_rev_copy_slice(values: &[f64]) -> Result<Vec<f64>> {
+    let mut out = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, values.len())?;
+    out.extend(values.iter().rev().copied());
+    Ok(out)
 }
 
 /// Checked coordinate-row window into a [`CoordSeq`]'s physical columns.
@@ -122,6 +198,10 @@ impl CoordWindow {
     pub(crate) const fn end(self) -> usize {
         self.start + self.len
     }
+
+    pub(crate) const fn len(self) -> usize {
+        self.len
+    }
 }
 
 /// Struct-of-arrays coordinate storage: parallel ordinate columns in place of a
@@ -141,9 +221,9 @@ pub struct CoordSeq {
     // `Arc`-shared columns + a row window: cloning a sequence (and any
     // `Shape` holding one) is O(parts), and `view` hands out zero-copy
     // sub-sequences — the enabler for packed lineal array storage.
-    xs: Arc<[f64]>,
-    ys: Arc<[f64]>,
-    zs: Option<Arc<[f64]>>,
+    xs: SharedSlice<f64>,
+    ys: SharedSlice<f64>,
+    zs: Option<SharedSlice<f64>>,
     ms: Option<MColumn>,
     range: Range<u32>,
 }
@@ -159,7 +239,19 @@ impl AsRef<Self> for CoordSeq {
     }
 }
 
-crate::heapless!(CoordSeq);
+impl crate::HeapSize for MColumn {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Shared(owner) | Self::Local { owner, .. } => owner.heap_bytes(),
+        }
+    }
+}
+
+impl crate::HeapSize for CoordSeq {
+    fn heap_bytes(&self) -> usize {
+        self.xs.heap_bytes() + self.ys.heap_bytes() + self.zs.heap_bytes() + self.ms.heap_bytes()
+    }
+}
 
 fn columns_all_finite(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f64]>) -> bool {
     column_all_finite(xs)
@@ -171,50 +263,18 @@ fn columns_all_finite(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f
 impl CoordSeq {
     /// Empty sequence with the given axes.
     pub fn empty(axes: CoordinateAxes) -> Self {
-        // SAFETY: every present column is empty, so lengths match and fit the
-        // coordinate-storage capacity.
-        unsafe {
-            Self::from_columns_unchecked(
-                Arc::from([]),
-                Arc::from([]),
-                axes.has_z().then(|| Arc::from([])),
-                axes.has_m().then(|| Arc::from([])),
-            )
+        // Empty owners use the null representation, while the outer options
+        // preserve present-empty Z/M axes.
+        Self {
+            xs: SharedSlice::empty(),
+            ys: SharedSlice::empty(),
+            zs: axes.has_z().then(SharedSlice::empty),
+            ms: axes.has_m().then(|| MColumn::Shared(SharedSlice::empty())),
+            range: 0..0,
         }
     }
 
-    /// Gather an array of `Point`s into columns in one pass. Trusted caller
-    /// contract: all points carry the same axes. Use
-    /// [`try_from_points`](Self::try_from_points) at untrusted ingestion
-    /// boundaries; this fast path keeps internally-proven homogeneous callers
-    /// on the straight gather.
-    pub fn from_points(points: &[Point]) -> Self {
-        let axes = points
-            .first()
-            .map_or(CoordinateAxes::XY, |point| point.axes);
-        // Axis-homogeneity is a sequence invariant (DbC boundary rule); the
-        // column gather below reads z/m only for the declared axes.
-        debug_assert!(
-            points.iter().all(|point| point.axes == axes),
-            "from_points requires an axis-homogeneous sequence",
-        );
-        // Column-wise gather: `slice::Iter` is `TrustedLen`, so each `collect`
-        // reserves once and fills via unchecked, vectorizable stores — the
-        // strided AoS->SoA read auto-vectorizes (movups + blend), which a
-        // per-element `Vec::push` loop cannot, since `push`'s grow path blocks
-        // the optimizer. Confirmed in compiled output.
-        let xs: Vec<f64> = points.iter().map(|point| point.x).collect();
-        let ys: Vec<f64> = points.iter().map(|point| point.y).collect();
-        let zs = axes
-            .has_z()
-            .then(|| points.iter().map(|point| point.z).collect::<Vec<f64>>());
-        let ms = axes
-            .has_m()
-            .then(|| points.iter().map(|point| point.m).collect::<Vec<f64>>());
-        Self::from_vecs(xs, ys, zs, ms)
-    }
-
-    /// Fallible [`from_points`](Self::from_points) for untrusted ingestion.
+    /// Fallible point gather for untrusted and resource-covered ingestion.
     pub fn try_from_points(points: &[Point]) -> Result<Self> {
         let Some(first) = points.first() else {
             return Ok(Self::empty(CoordinateAxes::XY));
@@ -228,109 +288,82 @@ impl CoordSeq {
         }
         let mut builder = CoordSeqBuilder::try_with_capacity(first.axes, points.len())?;
         for &point in points {
-            builder.push(point);
+            builder.push(point)?;
         }
         builder.finish()
     }
 
-    /// Gather a slice of `XY` (planar, Z/M-less) coordinates into columns — the
-    /// XY-slice sibling of [`from_points`](Self::from_points). The planar
-    /// engine's boundary lift; building a sequence needs only a borrow.
-    pub fn from_xy(points: &[XY]) -> Self {
-        Self::from_vecs(
-            points.iter().map(|point| point.x).collect(),
-            points.iter().map(|point| point.y).collect(),
-            None,
-            None,
-        )
+    /// Gather a slice of `XY` (planar, Z/M-less) coordinates into columns.
+    pub fn try_from_xy(points: &[XY]) -> Result<Self> {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        crate::boundary::try_reserve_pair(&mut xs, &mut ys, points.len())?;
+        for point in points {
+            crate::boundary::try_push_pair(&mut xs, &mut ys, point.x, point.y)?;
+        }
+        Self::try_from_vecs(xs, ys, None, None)
     }
 
     /// Assemble from owned ordinate vectors. `zs`/`ms` presence sets the axes;
-    /// in debug builds all present columns must match `xs` in length.
-    pub fn from_vecs(
-        xs: Vec<f64>,
-        ys: Vec<f64>,
-        zs: Option<Vec<f64>>,
-        ms: Option<Vec<f64>>,
-    ) -> Self {
-        Self::from_columns(xs.into(), ys.into(), zs.map(Into::into), ms.map(Into::into))
-    }
-
-    /// Release-checked assembly for packed mutators that propagate overflow.
+    /// all present columns must match `xs` in length.
     pub fn try_from_vecs(
         xs: Vec<f64>,
         ys: Vec<f64>,
         zs: Option<Vec<f64>>,
         ms: Option<Vec<f64>>,
     ) -> Result<Self> {
-        Self::try_from_columns(xs.into(), ys.into(), zs.map(Into::into), ms.map(Into::into))
+        let xs = SharedSlice::try_from_vec(xs)?;
+        let ys = SharedSlice::try_from_vec(ys)?;
+        let zs = zs.map(SharedSlice::try_from_vec).transpose()?;
+        let ms = ms
+            .map(|values| SharedSlice::try_from_vec(values).map(MColumn::Shared))
+            .transpose()?;
+        Self::from_shared_columns(xs, ys, zs, ms)
     }
 
-    /// Assemble directly from ordinate columns (anything that moves into an
-    /// `Arc<[f64]>`: `Vec`, `Box<[f64]>`, `Arc`). `zs`/`ms` presence sets the
-    /// axes; in debug builds all present columns must match `xs` in length.
-    ///
-    /// Carry invariant: when an op rewrites only some ordinates, pass the
-    /// untouched ones through [`carried_xs`](Self::carried_xs) and friends
-    /// (Arc-share, zero copy) rather than `Arc::from(self.xs())` (a needless
-    /// reallocation). Public pointer/storage identity tests cover this contract.
-    pub fn from_columns(
-        xs: Arc<[f64]>,
-        ys: Arc<[f64]>,
-        zs: Option<Arc<[f64]>>,
-        ms: Option<Arc<[f64]>>,
-    ) -> Self {
-        Self::try_from_columns(xs, ys, zs, ms)
-            .expect("vertex column exceeds i32 CSR offset capacity")
-    }
-
-    /// Release-checked assembly for packed mutators that propagate overflow.
-    pub fn try_from_columns(
-        xs: Arc<[f64]>,
-        ys: Arc<[f64]>,
-        zs: Option<Arc<[f64]>>,
-        ms: Option<Arc<[f64]>>,
+    pub(crate) fn from_shared_columns(
+        xs: SharedSlice<f64>,
+        ys: SharedSlice<f64>,
+        zs: Option<SharedSlice<f64>>,
+        ms: Option<MColumn>,
     ) -> Result<Self> {
         ensure_coordseq_vertex_capacity(xs.len())?;
-        if let Some(other) = [
-            Some(ys.len()),
-            zs.as_ref().map(|column| column.len()),
-            ms.as_ref().map(|column| column.len()),
-        ]
-        .into_iter()
-        .flatten()
-        .find(|&len| len != xs.len())
-        {
-            return Err(GeometryErrorKind::CoordinateLength(xs.len(), other).into());
+        if ys.len() != xs.len() {
+            return Err(GeometryErrorKind::CoordinateLength(xs.len(), ys.len()).into());
         }
-        // SAFETY: the preceding capacity and equal-length checks establish the
-        // parallel-column invariant.
-        Ok(unsafe { Self::from_columns_unchecked(xs, ys, zs, ms) })
+        if let Some(zs) = &zs
+            && zs.len() != xs.len()
+        {
+            return Err(GeometryErrorKind::CoordinateLength(xs.len(), zs.len()).into());
+        }
+        admit_m_column(ms.as_ref(), xs.len(), xs.len())?;
+        // SAFETY: capacity and every column's required length were admitted above.
+        Ok(unsafe { Self::from_shared_columns_unchecked(xs, ys, zs, ms) })
     }
 
-    /// Infallible assembly from already-validated parallel columns.
+    /// Infallible assembly from already-frozen, validated owners.
     ///
     /// # Safety
     ///
-    /// `xs`, `ys`, and every present Z/M column must have the same length, and
-    /// that length must satisfy [`ensure_coordseq_vertex_capacity`]. Downstream
-    /// hot geometry kernels rely on this to index column lanes unchecked.
-    pub(crate) unsafe fn from_columns_unchecked(
-        xs: Arc<[f64]>,
-        ys: Arc<[f64]>,
-        zs: Option<Arc<[f64]>>,
-        ms: Option<Arc<[f64]>>,
+    /// XY/Z lengths are parallel. Shared M length equals XY. Local M covers
+    /// `offset + XY length` without using remaining suffix as a logical length.
+    /// Vertex capacity fits `i32`. Visible length is `0..xs.len()`.
+    pub(crate) unsafe fn from_shared_columns_unchecked(
+        xs: SharedSlice<f64>,
+        ys: SharedSlice<f64>,
+        zs: Option<SharedSlice<f64>>,
+        ms: Option<MColumn>,
     ) -> Self {
         debug_assert_eq!(xs.len(), ys.len());
         debug_assert!(zs.as_ref().is_none_or(|column| column.len() == xs.len()));
-        debug_assert!(ms.as_ref().is_none_or(|column| column.len() == xs.len()));
+        debug_assert!(admit_m_column(ms.as_ref(), xs.len(), xs.len()).is_ok());
         debug_assert!(ensure_coordseq_vertex_capacity(xs.len()).is_ok());
         let range = 0..xs.len() as u32;
         Self {
             xs,
             ys,
             zs,
-            ms: ms.map(MColumn::Shared),
+            ms,
             range,
         }
     }
@@ -339,43 +372,40 @@ impl CoordSeq {
     ///
     /// The window is a checked coordinate boundary, and all inputs are
     /// validated before the resulting sequence can expose them.
-    pub(crate) fn from_columns_with_window(
-        xs: Arc<[f64]>,
-        ys: Arc<[f64]>,
-        zs: Option<Arc<[f64]>>,
-        ms: Option<Arc<[f64]>>,
+    pub(crate) fn from_shared_columns_with_window(
+        xs: SharedSlice<f64>,
+        ys: SharedSlice<f64>,
+        zs: Option<SharedSlice<f64>>,
+        ms: Option<MColumn>,
         window: CoordWindow,
-    ) -> Self {
+    ) -> Result<Self> {
         debug_assert_eq!(xs.len(), ys.len());
         debug_assert!(zs.as_ref().is_none_or(|column| column.len() == xs.len()));
         debug_assert!(window.end() <= xs.len());
-        debug_assert!(
-            ms.as_ref()
-                .is_none_or(|column| column.len() == window.end() - window.start())
-        );
         debug_assert!(ensure_coordseq_vertex_capacity(xs.len()).is_ok());
-        Self {
+        admit_m_column(ms.as_ref(), xs.len(), window.len())?;
+        Ok(Self {
             xs,
             ys,
             zs,
-            ms: ms.map(MColumn::Local),
+            ms,
             range: window.start() as u32..window.end() as u32,
-        }
+        })
     }
 
     /// Zero-copy coordinate sub-sequence: the same shared columns, a narrowed
-    /// window — what packed array storage hands out as row geometry. Transform
-    /// output's local M column copies only the visible M window.
+    /// XY window. Local M advances `offset` by `window.start` once; Shared M
+    /// stays aligned to the XY owner. Visible length is `CoordSeq::range`.
     pub fn view(&self, window: CoordWindow) -> Self {
         let start = self.range.start + window.start() as u32;
         let end = self.range.start + window.end() as u32;
         let ms = self
             .ms
             .as_ref()
-            .map(|column| column.view(window.start()..window.end(), self.len()));
+            .map(|column| column.view(window.start()..window.end()));
         Self {
-            xs: Arc::clone(&self.xs),
-            ys: Arc::clone(&self.ys),
+            xs: self.xs.clone(),
+            ys: self.ys.clone(),
             zs: self.zs.clone(),
             ms,
             range: start..end,
@@ -414,10 +444,10 @@ impl CoordSeq {
 
     /// Gather selected rows — zero-copy `view` when `rows` is contiguous,
     /// column-wise `select` otherwise (scatter / reversed stride).
-    pub fn select_rows(&self, rows: &[usize]) -> Self {
+    pub fn select_rows(&self, rows: &[usize]) -> Result<Self> {
         Self::contiguous_row_window(rows, self.len()).map_or_else(
             || self.select(rows.iter().copied()),
-            |window| self.view(window),
+            |window| Ok(self.view(window)),
         )
     }
 
@@ -427,8 +457,8 @@ impl CoordSeq {
     /// coordinates, swapped — bit-identical to that map.
     pub fn swap_xy(&self) -> Self {
         Self {
-            xs: Arc::clone(&self.ys),
-            ys: Arc::clone(&self.xs),
+            xs: self.ys.clone(),
+            ys: self.xs.clone(),
             zs: self.zs.clone(),
             ms: self.ms.clone(),
             range: self.range.clone(),
@@ -444,8 +474,8 @@ impl CoordSeq {
     /// hand-off for buffer-protocol exports (Arrow coordinate buffers).
     pub(crate) fn column_arcs(&self) -> SharedColumns {
         SharedColumns {
-            xs: Arc::clone(&self.xs),
-            ys: Arc::clone(&self.ys),
+            xs: self.xs.clone(),
+            ys: self.ys.clone(),
             zs: self.zs.clone(),
             ms: self.ms.clone(),
             window: self.range.start as usize..self.range.end as usize,
@@ -468,88 +498,36 @@ impl CoordSeq {
         if !columns_all_finite(&xs, &ys, zs.as_deref(), ms.as_deref()) {
             return Err(GeometryErrorKind::NonFiniteCoordinate.into());
         }
-        Self::try_from_columns(xs.into(), ys.into(), zs.map(Into::into), ms.map(Into::into))
-    }
-
-    /// Assemble from `Arc` ordinate columns with finiteness validation — the
-    /// columnar constructor fast path when numpy buffers were read directly
-    /// into `Arc<[f64]>` (no `Vec`→`Arc` realloc). `zs`/`ms` presence sets
-    /// the axes; the caller guarantees equal column lengths (checked in debug).
-    pub fn from_arc_columns(
-        xs: Arc<[f64]>,
-        ys: Arc<[f64]>,
-        zs: Option<Arc<[f64]>>,
-        ms: Option<Arc<[f64]>>,
-    ) -> Result<Self> {
-        debug_assert_eq!(xs.len(), ys.len());
-        if !columns_all_finite(&xs, &ys, zs.as_deref(), ms.as_deref()) {
-            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
-        }
-        Self::try_from_columns(xs, ys, zs, ms)
+        Self::try_from_vecs(xs, ys, zs, ms)
     }
 
     /// Gather selected rows into a new sequence (column-wise, no `Point`
     /// staging) — the packed-array `take`/`filter`/slice engine. Rows must
     /// be in range (callers bounds-check at the boundary).
     ///
-    /// When the iterator reports an exact length, columns fill an exact
-    /// final `Arc` (no `Vec`/`Box` intermediate). The fill is *checked*:
-    /// every write is bounds-gated against the allocation, and
-    /// `assume_init` runs only when the actual yield count matches the
-    /// hint. Under- or over-yielding producers (lying `size_hint`) fall
-    /// back to a growable path that returns the true yield — never UB.
+    /// `size_hint` is advisory capacity only. Under- or over-yielding
+    /// producers still return the true yield; a lying hint never writes
+    /// past the allocation or assumes unwritten slots.
     #[expect(
         clippy::impl_trait_in_params,
         reason = "the row stream is consumed once and its concrete iterator type is not part of the API"
     )]
-    pub fn select(&self, rows: impl Iterator<Item = usize>) -> Self {
+    pub fn select(&self, rows: impl Iterator<Item = usize>) -> Result<Self> {
         let xs_src = self.xs();
         let ys_src = self.ys();
         let zs_src = self.zs();
         let ms_src = self.ms();
         let (lower, upper) = rows.size_hint();
-        if upper == Some(lower) {
-            return select_exact_or_grow(xs_src, ys_src, zs_src, ms_src, rows, lower);
-        }
         select_growable(xs_src, ys_src, zs_src, ms_src, rows, upper.unwrap_or(lower))
     }
 
-    /// Concatenate two sequences of identical axes (column-wise); `None` on
-    /// an axes mismatch (callers fall back to row storage).
-    pub fn concat(&self, other: &Self) -> Option<Self> {
+    /// Concatenate two sequences of identical axes. `Ok(None)` means only an
+    /// axes mismatch; allocation failure is returned as `Err`.
+    pub fn concat(&self, other: &Self) -> Result<Option<Self>> {
         if self.axes() != other.axes() {
-            return None;
+            return Ok(None);
         }
-        concat_coord_columns(self, other).ok()
-    }
-
-    /// Unchecked column copy with NO finite
-    /// validation — for already-validated flows only (PROJ output is checked
-    /// by the pipeline itself, and revalidating would misreport projection
-    /// failures as coordinate errors).
-    ///
-    /// # Safety
-    ///
-    /// Every present column must have the same length as `xs`, and that length
-    /// must satisfy [`ensure_coordseq_vertex_capacity`].
-    pub unsafe fn copy_from_columns_unchecked(
-        xs: &[f64],
-        ys: &[f64],
-        zs: Option<&[f64]>,
-        ms: Option<&[f64]>,
-    ) -> Self {
-        debug_assert_eq!(xs.len(), ys.len());
-        debug_assert!(zs.is_none_or(|column| column.len() == xs.len()));
-        debug_assert!(ms.is_none_or(|column| column.len() == xs.len()));
-        // SAFETY: forwarded from this function's safety contract.
-        unsafe {
-            Self::from_columns_unchecked(
-                xs.into(),
-                ys.into(),
-                zs.map(Into::into),
-                ms.map(Into::into),
-            )
-        }
+        concat_coord_columns(self, other).map(Some)
     }
 
     pub fn len(&self) -> usize {
@@ -589,48 +567,53 @@ impl CoordSeq {
     }
 
     /// Whether this sequence's row window spans the whole backing column.
-    fn is_full_window(&self, column: &Arc<[f64]>) -> bool {
+    fn is_full_window(&self, column: &SharedSlice<f64>) -> bool {
         self.range.start == 0 && self.range.end as usize == column.len()
     }
 
-    /// Carry one shared column through an op that leaves it untouched: zero
-    /// copy (`Arc::clone`) when this sequence spans the column's whole backing
-    /// `Arc` (the common case), falling back to copying just the windowed
-    /// sub-range otherwise. The single source of truth for the carry rule that
-    /// `carried_xs/ys/zs/ms` and every column-preserving constructor rely on.
-    fn carried(&self, column: &Arc<[f64]>) -> Arc<[f64]> {
+    /// Carry one shared XY/Z column through an op that leaves it untouched:
+    /// zero copy when this sequence spans the column's whole backing owner,
+    /// otherwise a fallible copy of the visible window.
+    fn carried(&self, column: &SharedSlice<f64>) -> Result<SharedSlice<f64>> {
         if self.is_full_window(column) {
-            Arc::clone(column)
+            Ok(column.clone())
         } else {
-            Arc::from(self.window(column))
+            SharedSlice::try_from_vec(try_copy_slice(self.window(column))?)
         }
     }
 
     /// The X column carried with zero copy on the full-window common case.
-    pub(crate) fn carried_xs(&self) -> Arc<[f64]> {
+    pub(crate) fn carried_xs(&self) -> Result<SharedSlice<f64>> {
         self.carried(&self.xs)
     }
 
     /// The Y column carried with zero copy on the full-window common case.
-    pub(crate) fn carried_ys(&self) -> Arc<[f64]> {
+    pub(crate) fn carried_ys(&self) -> Result<SharedSlice<f64>> {
         self.carried(&self.ys)
     }
 
     /// The Z column (if present) carried with zero copy on the full-window
     /// common case — for ops that rewrite XY but leave Z untouched.
-    pub(crate) fn carried_zs(&self) -> Option<Arc<[f64]>> {
-        self.zs.as_ref().map(|column| self.carried(column))
+    pub(crate) fn carried_zs(&self) -> Result<Option<SharedSlice<f64>>> {
+        self.zs
+            .as_ref()
+            .map(|column| self.carried(column))
+            .transpose()
     }
 
-    /// The M column (if present) carried with zero copy on the full-window
-    /// common case — for ops that rewrite XY but leave M untouched.
-    pub(crate) fn carried_ms(&self) -> Option<Arc<[f64]>> {
-        self.ms.as_ref().map(|column| {
-            column.carried(
-                self.range.start as usize..self.range.end as usize,
-                self.xs.len(),
-            )
-        })
+    /// The M column carried without copying the payload: full Shared stays
+    /// Shared; a Shared subrange becomes Local at `range.start`; Local keeps
+    /// its existing offset. Visible length stays on `CoordSeq::range`.
+    pub(crate) fn carried_ms(&self) -> Result<Option<MColumn>> {
+        self.ms
+            .as_ref()
+            .map(|column| {
+                column.carried(
+                    self.range.start as usize..self.range.end as usize,
+                    self.xs.len(),
+                )
+            })
+            .transpose()
     }
 
     /// Reconstruct the `Point` at `index` (panics out of bounds, like slice
@@ -680,206 +663,17 @@ impl CoordSeq {
         self.iter()
     }
 
-    /// Materialize the coordinates into a `Vec<Point>` for the `AoS`
-    /// interchange boundaries (geo-rs conversion, sorting, arbitrary slice
-    /// algorithms).
-    pub fn to_vec(&self) -> Vec<Point> {
-        self.iter().collect()
-    }
-
     /// Reverse the vertex order (orientation flips, ring normalization).
     ///
-    /// Exact-final-Arc fill (no `Vec`/`Box` intermediate): allocate the
-    /// column Arcs at the known length, write reversed values, `assume_init`.
-    pub fn reversed(&self) -> Self {
-        // SAFETY: every output column is a one-for-one reversal of one valid
-        // input column, preserving lengths and the storage cap.
-        unsafe {
-            Self::from_columns_unchecked(
-                reverse_column_arc(self.xs()),
-                reverse_column_arc(self.ys()),
-                self.zs().map(reverse_column_arc),
-                self.ms().map(reverse_column_arc),
-            )
-        }
-    }
-}
-
-/// Exact-hint gather into final `Arc` columns, with a checked fill.
-///
-/// Allocates `expected` slots and writes only while `written < expected`.
-/// `assume_init` runs only when the iterator yields *exactly* `expected`
-/// items. Under-yield copies the initialized prefix into a correctly sized
-/// sequence; over-yield spills the prefix plus remaining items through the
-/// growable path. A lying `size_hint` therefore cannot leave uninit memory
-/// readable or write past the allocation.
-fn select_exact_or_grow(
-    xs_src: &[f64],
-    ys_src: &[f64],
-    zs_src: Option<&[f64]>,
-    ms_src: Option<&[f64]>,
-    mut rows: impl Iterator<Item = usize>,
-    expected: usize,
-) -> CoordSeq {
-    if expected == 0 {
-        // Empty hint: any yield is an over-yield → growable.
-        return rows.next().map_or_else(
-            || CoordSeq::empty(axes_from_optional_columns(zs_src, ms_src)),
-            |first| {
-                select_growable(
-                    xs_src,
-                    ys_src,
-                    zs_src,
-                    ms_src,
-                    std::iter::once(first).chain(rows),
-                    1,
-                )
-            },
-        );
-    }
-
-    let mut xs = Arc::<[f64]>::new_uninit_slice(expected);
-    let mut ys = Arc::<[f64]>::new_uninit_slice(expected);
-    let mut zs = zs_src.map(|_| Arc::<[f64]>::new_uninit_slice(expected));
-    let mut ms = ms_src.map(|_| Arc::<[f64]>::new_uninit_slice(expected));
-    let mut written = 0_usize;
-
-    // SAFETY: unique Arc slices. Every write is gated by `written < expected`,
-    // so no OOB store. `assume_init` is reached only when `written == expected`
-    // and the iterator is exhausted (no over-yield).
-    unsafe {
-        let xs_dst = Arc::get_mut(&mut xs)
-            .unwrap_unchecked()
-            .as_mut_ptr()
-            .cast::<f64>();
-        let ys_dst = Arc::get_mut(&mut ys)
-            .unwrap_unchecked()
-            .as_mut_ptr()
-            .cast::<f64>();
-        let mut zs_dst = zs.as_mut().map(|column| {
-            Arc::get_mut(column)
-                .unwrap_unchecked()
-                .as_mut_ptr()
-                .cast::<f64>()
-        });
-        let mut ms_dst = ms.as_mut().map(|column| {
-            Arc::get_mut(column)
-                .unwrap_unchecked()
-                .as_mut_ptr()
-                .cast::<f64>()
-        });
-
-        while written < expected {
-            let Some(row) = rows.next() else {
-                // Under-yield: only `0..written` is initialized.
-                return columns_from_partial_ptrs(
-                    xs_dst,
-                    ys_dst,
-                    zs_dst.as_mut().copied(),
-                    ms_dst.as_mut().copied(),
-                    written,
-                    zs_src.is_some(),
-                    ms_src.is_some(),
-                );
-            };
-            xs_dst.add(written).write(xs_src[row]);
-            ys_dst.add(written).write(ys_src[row]);
-            if let (Some(dst), Some(src)) = (zs_dst.as_mut(), zs_src) {
-                dst.add(written).write(src[row]);
-            }
-            if let (Some(dst), Some(src)) = (ms_dst.as_mut(), ms_src) {
-                dst.add(written).write(src[row]);
-            }
-            written += 1;
-        }
-
-        if let Some(extra) = rows.next() {
-            // Over-yield: prefix is fully initialized at `expected`; spill.
-            let mut xs_v = ptr_prefix_to_vec(xs_dst, expected);
-            let mut ys_v = ptr_prefix_to_vec(ys_dst, expected);
-            let mut zs_v = zs_dst.as_mut().map(|dst| ptr_prefix_to_vec(*dst, expected));
-            let mut ms_v = ms_dst.as_mut().map(|dst| ptr_prefix_to_vec(*dst, expected));
-            // Forget the uninit Arcs — their storage is abandoned; values
-            // already live in the Vecs. Dropping MaybeUninit Arcs is safe
-            // (no Drop glue for f64), but avoid double-free by mem::forget
-            // only if we assume_init… we did NOT assume_init. Dropping
-            // Arc<[MaybeUninit<f64>]> frees the allocation without dropping
-            // elements — correct for both init and uninit slots.
-            drop((xs, ys, zs, ms));
-            push_row(
-                &mut xs_v, &mut ys_v, &mut zs_v, &mut ms_v, xs_src, ys_src, zs_src, ms_src, extra,
-            );
-            for row in rows {
-                push_row(
-                    &mut xs_v, &mut ys_v, &mut zs_v, &mut ms_v, xs_src, ys_src, zs_src, ms_src, row,
-                );
-            }
-            // SAFETY: each row is copied into every present column in the same
-            // lockstep loop, preserving the source sequence's capacity bound.
-            return CoordSeq::from_columns_unchecked(
-                xs_v.into(),
-                ys_v.into(),
-                zs_v.map(Into::into),
-                ms_v.map(Into::into),
-            );
-        }
-
-        // SAFETY: every initialized column has exactly `expected` elements,
-        // and `expected` came from an allocation that fits usize.
-        CoordSeq::from_columns_unchecked(
-            xs.assume_init(),
-            ys.assume_init(),
-            zs.map(|column| column.assume_init()),
-            ms.map(|column| column.assume_init()),
+    /// Reverse the vertex order into newly frozen ordinate owners.
+    pub fn reversed(&self) -> Result<Self> {
+        Self::try_from_vecs(
+            try_rev_copy_slice(self.xs())?,
+            try_rev_copy_slice(self.ys())?,
+            self.zs().map(try_rev_copy_slice).transpose()?,
+            self.ms().map(try_rev_copy_slice).transpose()?,
         )
     }
-}
-
-const fn axes_from_optional_columns(zs: Option<&[f64]>, ms: Option<&[f64]>) -> CoordinateAxes {
-    match (zs.is_some(), ms.is_some()) {
-        (false, false) => CoordinateAxes::XY,
-        (true, false) => CoordinateAxes::XYZ,
-        (false, true) => CoordinateAxes::XYM,
-        (true, true) => CoordinateAxes::XYZM,
-    }
-}
-
-/// Copy `0..len` from initialized raw column pointers into a `CoordSeq`.
-///
-/// # Safety
-/// `xs`/`ys` (and optional z/m) must each point at least `len` initialized `f64`s.
-unsafe fn columns_from_partial_ptrs(
-    xs: *mut f64,
-    ys: *mut f64,
-    zs: Option<*mut f64>,
-    ms: Option<*mut f64>,
-    len: usize,
-    has_z: bool,
-    has_m: bool,
-) -> CoordSeq {
-    // SAFETY: caller guarantees `0..len` is initialized on each present column.
-    unsafe {
-        // SAFETY: the caller guarantees each present pointer has the same
-        // initialized prefix length; copying preserves the storage cap.
-        CoordSeq::from_columns_unchecked(
-            ptr_prefix_to_vec(xs, len).into(),
-            ptr_prefix_to_vec(ys, len).into(),
-            has_z
-                .then(|| zs.expect("z column present when has_z"))
-                .map(|ptr| ptr_prefix_to_vec(ptr, len).into()),
-            has_m
-                .then(|| ms.expect("m column present when has_m"))
-                .map(|ptr| ptr_prefix_to_vec(ptr, len).into()),
-        )
-    }
-}
-
-/// # Safety
-/// `src` must point at least `len` initialized `f64` values.
-unsafe fn ptr_prefix_to_vec(src: *mut f64, len: usize) -> Vec<f64> {
-    // SAFETY: caller guarantees `src` has `len` initialized elements; the
-    // slice is therefore a valid `&[f64]` of that length.
-    unsafe { std::slice::from_raw_parts(src, len).to_vec() }
 }
 
 fn push_row(
@@ -892,15 +686,15 @@ fn push_row(
     zs_src: Option<&[f64]>,
     ms_src: Option<&[f64]>,
     row: usize,
-) {
-    xs.push(xs_src[row]);
-    ys.push(ys_src[row]);
+) -> Result<()> {
+    crate::boundary::try_push_pair(&mut *xs, &mut *ys, xs_src[row], ys_src[row])?;
     if let (Some(out), Some(src)) = (zs.as_mut(), zs_src) {
-        out.push(src[row]);
+        crate::boundary::try_push_vec(out, src[row])?;
     }
     if let (Some(out), Some(src)) = (ms.as_mut(), ms_src) {
-        out.push(src[row]);
+        crate::boundary::try_push_vec(out, src[row])?;
     }
+    Ok(())
 }
 
 fn select_growable(
@@ -910,43 +704,25 @@ fn select_growable(
     ms_src: Option<&[f64]>,
     rows: impl Iterator<Item = usize>,
     capacity: usize,
-) -> CoordSeq {
-    let mut xs = Vec::with_capacity(capacity);
-    let mut ys = Vec::with_capacity(capacity);
-    let mut zs = zs_src.map(|_| Vec::with_capacity(capacity));
-    let mut ms = ms_src.map(|_| Vec::with_capacity(capacity));
+) -> Result<CoordSeq> {
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    let mut zs = zs_src.map(|_| Vec::new());
+    let mut ms = ms_src.map(|_| Vec::new());
+    crate::boundary::try_reserve_vec(&mut xs, capacity)?;
+    crate::boundary::try_reserve_vec(&mut ys, capacity)?;
+    if let Some(zs) = &mut zs {
+        crate::boundary::try_reserve_vec(zs, capacity)?;
+    }
+    if let Some(ms) = &mut ms {
+        crate::boundary::try_reserve_vec(ms, capacity)?;
+    }
     for row in rows {
         push_row(
             &mut xs, &mut ys, &mut zs, &mut ms, xs_src, ys_src, zs_src, ms_src, row,
-        );
+        )?;
     }
-    // SAFETY: `push_row` writes every present column in lockstep.
-    unsafe {
-        CoordSeq::from_columns_unchecked(
-            xs.into(),
-            ys.into(),
-            zs.map(Into::into),
-            ms.map(Into::into),
-        )
-    }
-}
-
-/// Exact-size reverse into a fresh shared ordinate column.
-pub(crate) fn reverse_column_arc(src: &[f64]) -> Arc<[f64]> {
-    let len = src.len();
-    let mut buf = Arc::<[f64]>::new_uninit_slice(len);
-    // SAFETY: unique Arc; every slot `i` is written from `src[len - 1 - i]`.
-    // Fresh allocation is non-overlapping with `src`.
-    unsafe {
-        let dst = Arc::get_mut(&mut buf)
-            .unwrap_unchecked()
-            .as_mut_ptr()
-            .cast::<f64>();
-        for i in 0..len {
-            dst.add(i).write(src[len - 1 - i]);
-        }
-        buf.assume_init()
-    }
+    CoordSeq::try_from_vecs(xs, ys, zs, ms)
 }
 
 #[doc(hidden)]
@@ -1067,18 +843,6 @@ impl<'a> IntoIterator for &'a CoordSeq {
     }
 }
 
-impl From<Vec<Point>> for CoordSeq {
-    fn from(points: Vec<Point>) -> Self {
-        Self::from_points(&points)
-    }
-}
-
-impl From<Vec<XY>> for CoordSeq {
-    fn from(points: Vec<XY>) -> Self {
-        Self::from_xy(&points)
-    }
-}
-
 /// Concatenate two axis-homogeneous coordinate columns in one exact allocation
 /// per ordinate lane — the trusted packed-storage concat fast path.
 ///
@@ -1089,10 +853,10 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
     debug_assert_eq!(left.axes(), right.axes());
     let len = left.len() + right.len();
     ensure_coordseq_vertex_capacity(len)?;
-    let xs = concat_f64_slices(left.xs(), right.xs());
-    let ys = concat_f64_slices(left.ys(), right.ys());
+    let xs = concat_f64_slices(left.xs(), right.xs())?;
+    let ys = concat_f64_slices(left.ys(), right.ys())?;
     let zs = match (left.zs(), right.zs()) {
-        (Some(left_zs), Some(right_zs)) => Some(concat_f64_slices(left_zs, right_zs)),
+        (Some(left_zs), Some(right_zs)) => Some(concat_f64_slices(left_zs, right_zs)?),
         (None, None) => None,
         _ => {
             debug_assert!(false, "concat_coord_columns requires matching axes");
@@ -1104,7 +868,7 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
         },
     };
     let ms = match (left.ms(), right.ms()) {
-        (Some(left_ms), Some(right_ms)) => Some(concat_f64_slices(left_ms, right_ms)),
+        (Some(left_ms), Some(right_ms)) => Some(concat_f64_slices(left_ms, right_ms)?),
         (None, None) => None,
         _ => {
             debug_assert!(false, "concat_coord_columns requires matching axes");
@@ -1115,28 +879,17 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
             .into());
         },
     };
-    // SAFETY: each output column is assembled from matching valid input
-    // columns, and concatenation retains the checked allocation limit.
-    Ok(unsafe { CoordSeq::from_columns_unchecked(xs, ys, zs, ms) })
+    CoordSeq::try_from_vecs(xs, ys, zs, ms)
 }
 
-/// Exact-capacity two-slice join into a shared ordinate column (one Arc
-/// allocation, two `copy_nonoverlapping` fills — no Vec/Box intermediate).
-fn concat_f64_slices(left: &[f64], right: &[f64]) -> Arc<[f64]> {
-    let len = left.len() + right.len();
-    let mut buf = Arc::<[f64]>::new_uninit_slice(len);
-    // SAFETY: both ranges are fully initialized by the copies below; the two
-    // source slices are non-overlapping with `buf` (fresh allocation).
-    // `get_mut` succeeds because we hold the only Arc reference.
-    unsafe {
-        let dst = Arc::get_mut(&mut buf)
-            .unwrap_unchecked()
-            .as_mut_ptr()
-            .cast::<f64>();
-        core::ptr::copy_nonoverlapping(left.as_ptr(), dst, left.len());
-        core::ptr::copy_nonoverlapping(right.as_ptr(), dst.add(left.len()), right.len());
-        buf.assume_init()
-    }
+/// Two-slice join into mutable storage whose original capacity is retained by
+/// the final shared owner.
+fn concat_f64_slices(left: &[f64], right: &[f64]) -> Result<Vec<f64>> {
+    let mut values = Vec::new();
+    crate::boundary::try_reserve_vec(&mut values, left.len() + right.len())?;
+    values.extend_from_slice(left);
+    values.extend_from_slice(right);
+    Ok(values)
 }
 
 /// The two-point sequence of a witness line, keeping the ordinate columns
@@ -1144,12 +897,12 @@ fn concat_f64_slices(left: &[f64], right: &[f64]) -> Arc<[f64]> {
 ///
 /// A two-vertex sequence on the axes both endpoints carry. Reached through
 /// [`crate::geometry::LineSeq::segment`], which is where the rule is documented.
-pub(crate) fn coerced_pair(start: Point, end: Point) -> CoordSeq {
+pub(crate) fn coerced_pair(start: Point, end: Point) -> Result<CoordSeq> {
     let (start, end) = coerce_to_common_axes(start, end);
-    let mut builder = CoordSeqBuilder::with_capacity(start.axes, 2);
-    builder.push(start);
-    builder.push(end);
-    builder.finish_infallible()
+    let mut builder = CoordSeqBuilder::try_with_capacity(start.axes, 2)?;
+    builder.push(start)?;
+    builder.push(end)?;
+    builder.finish()
 }
 
 /// Coerce a witness pair to the ordinate columns BOTH endpoints carry (the axes
@@ -1172,22 +925,6 @@ pub(crate) fn coerce_to_common_axes(start: Point, end: Point) -> (Point, Point) 
     (coerce(start), coerce(end))
 }
 
-impl FromIterator<Point> for CoordSeq {
-    /// One-pass gather: axes come from the first point (a valid sequence is
-    /// axis-homogeneous), capacity from the size hint — no `Vec<Point>` stage.
-    fn from_iter<I: IntoIterator<Item = Point>>(iter: I) -> Self {
-        let mut points = iter.into_iter();
-        let Some(first) = points.next() else {
-            return Self::empty(CoordinateAxes::XY);
-        };
-        let mut builder =
-            CoordSeqBuilder::with_capacity(first.axes, points.size_hint().0.saturating_add(1));
-        builder.push(first);
-        points.for_each(|point| builder.push(point));
-        builder.finish().expect("axis-homogeneous Point iterator")
-    }
-}
-
 /// Incremental column builder for [`CoordSeq`] — the one-pass replacement
 /// for `Vec<Point>` staging.
 ///
@@ -1205,16 +942,7 @@ pub(crate) struct CoordSeqBuilder {
 
 impl CoordSeqBuilder {
     /// A builder for `capacity` coordinates carrying `axes` ordinates.
-    pub(crate) fn with_capacity(axes: CoordinateAxes, capacity: usize) -> Self {
-        Self {
-            xs: Vec::with_capacity(capacity),
-            ys: Vec::with_capacity(capacity),
-            zs: axes.has_z().then(|| Vec::with_capacity(capacity)),
-            ms: axes.has_m().then(|| Vec::with_capacity(capacity)),
-            mismatch_axes: None,
-        }
-    }
-
+    /// `capacity` is a reservation hint; later growth is still fallible.
     pub(crate) fn try_with_capacity(
         axes: CoordinateAxes,
         capacity: usize,
@@ -1255,41 +983,35 @@ impl CoordSeqBuilder {
         })
     }
 
-    /// Like [`Self::with_capacity`], using a source sequence's axes.
-    pub(crate) fn like_coords(coords: &CoordSeq, capacity: usize) -> Self {
-        Self::with_capacity(coords.axes(), capacity)
+    fn drop_scratch(&mut self) {
+        let has_z = self.zs.is_some();
+        let has_m = self.ms.is_some();
+        self.xs = Vec::new();
+        self.ys = Vec::new();
+        self.zs = has_z.then(Vec::new);
+        self.ms = has_m.then(Vec::new);
+        self.mismatch_axes = None;
     }
 
-    /// Fallibly reserve exact capacity on every live column. Used by
-    /// constructive paths that have already enforced a coordinate budget and
-    /// want an OOM error instead of an abort at the final allocation.
-    /// Reserve exactly `additional` more coordinates on every column. The
-    /// kernels reserve plainly; only the Python ingress keeps the fallible
-    /// twin below, where a length came from `__len__` or an iterator.
-    pub(crate) fn reserve_exact(&mut self, additional: usize) {
-        self.xs.reserve_exact(additional);
-        self.ys.reserve_exact(additional);
-        if let Some(zs) = &mut self.zs {
-            zs.reserve_exact(additional);
+    fn try_grow(&mut self, additional: usize) -> Result<()> {
+        if additional == 0 {
+            return Ok(());
         }
-        if let Some(ms) = &mut self.ms {
-            ms.reserve_exact(additional);
+        let ok = self.xs.try_reserve(additional).is_ok()
+            && self.ys.try_reserve(additional).is_ok()
+            && self
+                .zs
+                .as_mut()
+                .is_none_or(|column| column.try_reserve(additional).is_ok())
+            && self
+                .ms
+                .as_mut()
+                .is_none_or(|column| column.try_reserve(additional).is_ok());
+        if ok {
+            return Ok(());
         }
-    }
-
-    pub(crate) fn try_reserve_exact(
-        &mut self,
-        additional: usize,
-    ) -> std::result::Result<(), std::collections::TryReserveError> {
-        self.xs.try_reserve_exact(additional)?;
-        self.ys.try_reserve_exact(additional)?;
-        if let Some(zs) = &mut self.zs {
-            zs.try_reserve_exact(additional)?;
-        }
-        if let Some(ms) = &mut self.ms {
-            ms.try_reserve_exact(additional)?;
-        }
-        Ok(())
+        self.drop_scratch();
+        Err(ResourceError::Allocation.into())
     }
 
     /// The axes this builder was declared with.
@@ -1302,14 +1024,11 @@ impl CoordSeqBuilder {
         self.xs.len()
     }
 
-    /// Current allocated capacity of the X column (all columns stay in lockstep).
-    pub(crate) const fn capacity_slots(&self) -> usize {
-        self.xs.capacity()
-    }
-
-    /// Append one point (axes and finiteness are validated on
-    /// [`finish`](Self::finish)).
-    pub(crate) fn push(&mut self, point: Point) {
+    /// Append one point. Every live builder column is written (`Point` always
+    /// carries z/m fields). Axes and finiteness are validated on
+    /// [`finish`](Self::finish).
+    pub(crate) fn push(&mut self, point: Point) -> Result<()> {
+        self.try_grow(1)?;
         if point.axes != self.axes() {
             self.mismatch_axes.get_or_insert(point.axes);
         }
@@ -1321,19 +1040,27 @@ impl CoordSeqBuilder {
         if let Some(ms) = &mut self.ms {
             ms.push(point.m);
         }
-    }
-
-    /// Fallible [`push`](Self::push) — propagates the caller's error type.
-    pub(crate) fn try_push<E>(
-        &mut self,
-        result: std::result::Result<Point, E>,
-    ) -> std::result::Result<(), E> {
-        self.push(result?);
         Ok(())
     }
 
+    /// Propagate a callback error or a growth failure.
+    pub(crate) fn try_push<E>(
+        &mut self,
+        result: std::result::Result<Point, E>,
+    ) -> std::result::Result<(), E>
+    where
+        E: From<crate::error::Error>,
+    {
+        self.push(result?).map_err(E::from)
+    }
+
     /// Append one coordinate from a [`CoordSeq`] by vertex index (gather paths).
-    pub(crate) fn push_at(&mut self, coords: &CoordSeq, index: usize) {
+    /// Axes and finiteness are validated on [`finish`](Self::finish).
+    pub(crate) fn push_at(&mut self, coords: &CoordSeq, index: usize) -> Result<()> {
+        self.try_grow(1)?;
+        if coords.axes() != self.axes() {
+            self.mismatch_axes.get_or_insert_with(|| coords.axes());
+        }
         self.xs.push(coords.xs()[index]);
         self.ys.push(coords.ys()[index]);
         if let (Some(zs), Some(column)) = (self.zs.as_mut(), coords.zs()) {
@@ -1342,12 +1069,14 @@ impl CoordSeqBuilder {
         if let (Some(ms), Some(column)) = (self.ms.as_mut(), coords.ms()) {
             ms.push(column[index]);
         }
+        Ok(())
     }
 
     /// Append one contiguous coordinate window column-wise. The caller owns
     /// row/CSR validation; axes and finiteness are checked when the builder is
     /// finished.
-    pub(crate) fn extend_window(&mut self, coords: &CoordSeq, window: Range<usize>) {
+    pub(crate) fn extend_window(&mut self, coords: &CoordSeq, window: Range<usize>) -> Result<()> {
+        self.try_grow(window.len())?;
         if coords.axes() != self.axes() {
             self.mismatch_axes.get_or_insert_with(|| coords.axes());
         }
@@ -1359,12 +1088,20 @@ impl CoordSeqBuilder {
         if let (Some(output), Some(column)) = (self.ms.as_mut(), coords.ms()) {
             output.extend_from_slice(&column[window]);
         }
+        Ok(())
     }
 
     /// Append one coordinate from raw ordinates. `z`/`m` must be `Some`
     /// exactly when the declared axes carry them; axes and finiteness are
     /// validated on [`finish`](Self::finish).
-    pub(crate) fn push_xyzm(&mut self, x: f64, y: f64, z: Option<f64>, m: Option<f64>) {
+    pub(crate) fn push_xyzm(
+        &mut self,
+        x: f64,
+        y: f64,
+        z: Option<f64>,
+        m: Option<f64>,
+    ) -> Result<()> {
+        self.try_grow(1)?;
         if z.is_some() != self.zs.is_some() || m.is_some() != self.ms.is_some() {
             self.mismatch_axes
                 .get_or_insert_with(|| CoordinateAxes::new(HasZ(z.is_some()), HasM(m.is_some())));
@@ -1377,6 +1114,7 @@ impl CoordSeqBuilder {
         if let (Some(ms), Some(m)) = (&mut self.ms, m) {
             ms.push(m);
         }
+        Ok(())
     }
 
     /// Seal finite, axis-homogeneous columns into a [`CoordSeq`].
@@ -1398,27 +1136,15 @@ impl CoordSeqBuilder {
     /// Callers must have validated all present-user coordinates before pushing
     /// and use non-finite values only for rows guarded by an external missing
     /// mask.
-    pub(crate) fn finish_with_missing_placeholders(self) -> CoordSeq {
+    pub(crate) fn finish_with_missing_placeholders(self) -> Result<CoordSeq> {
         assert!(
             self.mismatch_axes.is_none(),
             "missing-coordinate placeholders must preserve the builder axes"
         );
-        // The builder always pushes every physical column in lockstep. Route
-        // through the checked boundary so a pathological length cannot truncate
-        // the stored u32 window.
-        CoordSeq::from_columns(
-            self.xs.into(),
-            self.ys.into(),
-            self.zs.map(Into::into),
-            self.ms.map(Into::into),
-        )
-    }
-
-    /// [`finish`](Self::finish) for infallible gather paths (same contract as
-    /// [`CoordSeq::from_points`](CoordSeq::from_points)).
-    pub(crate) fn finish_infallible(self) -> CoordSeq {
-        self.finish()
-            .expect("axis-homogeneous point column within vertex capacity")
+        // Same-axes appends keep live columns the same length. Route through
+        // the checked boundary so a pathological length cannot truncate the
+        // stored u32 window.
+        CoordSeq::try_from_vecs(self.xs, self.ys, self.zs, self.ms)
     }
 
     #[cfg(test)]
@@ -1541,24 +1267,24 @@ mod select_soundness_tests {
     }
 
     fn sample_seq() -> CoordSeq {
-        // SAFETY: the fixture supplies two equal-length columns below the cap.
-        unsafe {
-            CoordSeq::from_columns_unchecked(
-                Arc::from([0.0, 1.0, 2.0, 3.0]),
-                Arc::from([10.0, 11.0, 12.0, 13.0]),
-                None,
-                None,
-            )
-        }
+        CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 2.0, 3.0],
+            vec![10.0, 11.0, 12.0, 13.0],
+            None,
+            None,
+        )
+        .expect("sample columns")
     }
 
-    /// Under-yielding with an inflated `size_hint` must not `assume_init`
-    /// unwritten slots — the result length is the true yield count.
+    /// Under-yielding with an inflated `size_hint` still returns the true
+    /// yield count. The hint only sizes the initial reservation.
     #[test]
     fn select_lying_under_yield_returns_true_length() {
         let seq = sample_seq();
         // Claims 3, yields only [0, 2].
-        let out = seq.select(LyingIter::under(vec![0, 2], 3));
+        let out = seq
+            .select(LyingIter::under(vec![0, 2], 3))
+            .expect("selection");
         assert_eq!(out.len(), 2);
         assert_eq!(out.xs(), &[0.0, 2.0]);
         assert_eq!(out.ys(), &[10.0, 12.0]);
@@ -1570,18 +1296,20 @@ mod select_soundness_tests {
     fn select_lying_over_yield_returns_all_items() {
         let seq = sample_seq();
         // Claims 2, yields [0, 1, 3].
-        let out = seq.select(LyingIter::over(vec![0, 1, 3], 2));
+        let out = seq
+            .select(LyingIter::over(vec![0, 1, 3], 2))
+            .expect("selection");
         assert_eq!(out.len(), 3);
         assert_eq!(out.xs(), &[0.0, 1.0, 3.0]);
         assert_eq!(out.ys(), &[10.0, 11.0, 13.0]);
     }
 
-    /// Honest exact-size iterators still take the exact-Arc path correctly.
+    /// Honest exact-size iterators still size the reservation from the hint.
     #[test]
     fn select_honest_exact_size_matches_source() {
         let seq = sample_seq();
         let rows = [3_usize, 1, 0];
-        let out = seq.select(rows.iter().copied());
+        let out = seq.select(rows.iter().copied()).expect("selection");
         assert_eq!(out.len(), 3);
         assert_eq!(out.xs(), &[3.0, 1.0, 0.0]);
         assert_eq!(out.ys(), &[13.0, 11.0, 10.0]);
@@ -1625,28 +1353,18 @@ mod coerce_tests {
 mod coord_iter_tests {
     use super::*;
 
-    fn sequence(zs: Option<Arc<[f64]>>, ms: Option<Arc<[f64]>>) -> CoordSeq {
-        // SAFETY: each test passes optional three-element ordinate columns.
-        unsafe {
-            CoordSeq::from_columns_unchecked(
-                Arc::from([1.0, 2.0, 3.0]),
-                Arc::from([4.0, 5.0, 6.0]),
-                zs,
-                ms,
-            )
-        }
+    fn sequence(zs: Option<Vec<f64>>, ms: Option<Vec<f64>>) -> CoordSeq {
+        CoordSeq::try_from_vecs(vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0], zs, ms)
+            .expect("test coordinate sequence")
     }
 
     #[test]
     fn specialized_iterators_exhaust_exactly_for_every_axis_variant() {
         for seq in [
             sequence(None, None),
-            sequence(Some(Arc::from([7.0, 8.0, 9.0])), None),
-            sequence(None, Some(Arc::from([10.0, 11.0, 12.0]))),
-            sequence(
-                Some(Arc::from([7.0, 8.0, 9.0])),
-                Some(Arc::from([10.0, 11.0, 12.0])),
-            ),
+            sequence(Some(vec![7.0, 8.0, 9.0]), None),
+            sequence(None, Some(vec![10.0, 11.0, 12.0])),
+            sequence(Some(vec![7.0, 8.0, 9.0]), Some(vec![10.0, 11.0, 12.0])),
         ] {
             let expected = (0..seq.len())
                 .map(|index| seq.point_at(index))
@@ -1661,7 +1379,7 @@ mod coord_iter_tests {
             assert_eq!(iter.len(), 0);
             assert_eq!(iter.next(), None);
             assert_eq!(iter.next_back(), None);
-            assert_eq!(seq.to_vec(), expected);
+            assert_eq!(seq.iter().collect::<Vec<_>>(), expected);
         }
     }
 }

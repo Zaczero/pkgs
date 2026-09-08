@@ -20,9 +20,7 @@ pub(crate) use graph::{AreaSupport, TopologyDomain, TopologyGraph, TopologyKey};
 pub(super) use graph::{
     SourceSupport, TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace,
 };
-pub(super) use sections::{
-    operand_covers_boundary, other_contains, sort_dedup_cuts,
-};
+pub(super) use sections::{operand_covers_boundary, other_contains, sort_dedup_cuts};
 use staging::oriented_open_ring;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -589,7 +587,7 @@ mod tests {
     fn division_reference(ring: &[XY], point: XY) -> bool {
         let mut closed = ring.to_vec();
         closed.push(ring[0]);
-        ring_contains_interior(&CoordSeq::from(closed), point)
+        ring_contains_interior(&CoordSeq::try_from_xy(&closed).unwrap(), point)
     }
 
     fn assert_vector_matches_division_reference(ring: &[XY], probes: &[XY]) {

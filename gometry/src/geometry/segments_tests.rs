@@ -724,7 +724,8 @@ fn ordinary_public_nearest_rows_use_no_exact_fallback() {
             })
             .collect::<Vec<_>>();
         let line = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(points)).expect("ordinary test line is valid"),
+            LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap())
+                .expect("ordinary test line is valid"),
         );
         line.nearest_points(&probe)
             .expect("non-empty inputs have a witness");

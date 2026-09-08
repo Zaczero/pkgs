@@ -12,7 +12,6 @@
 //! / `_Int32Buffer` pyclasses move `Arc` column storage into pyarrow without a
 //! second byte copy on little-endian hosts.
 
-use std::borrow::Cow;
 use std::ffi::c_int;
 use std::ops::Range;
 use std::sync::Arc;
@@ -20,7 +19,7 @@ use std::sync::Arc;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PySequence};
-use pyo3::{IntoPyObjectExt as _, ffi};
+use pyo3::{IntoPyObjectExt as _, PyErr, ffi};
 
 use crate::array::PyGeometryArray;
 use crate::geometry::Shape;
@@ -70,28 +69,32 @@ fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> PyResult<()> {
     Ok(())
 }
 
-fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> bool {
-    left.frame == right.frame
-        && left.missing() == right.missing()
-        && left.len() == right.len()
-        && (Arc::ptr_eq(left.storage_arc(), right.storage_arc())
-            || left
-                .row_operation()
-                .rows_with_missing(|| ())
-                .zip(right.row_operation().rows_with_missing(|| ()))
-                .all(|(left, right)| match (left, right) {
-                    (
-                        crate::array::ArrayRow::Missing { .. },
-                        crate::array::ArrayRow::Missing { .. },
-                    ) => true,
-                    (
-                        crate::array::ArrayRow::Present(left),
-                        crate::array::ArrayRow::Present(right),
-                    ) => left
-                        .row()
-                        .with_shape(|left| right.row().with_shape(|right| left == right)),
-                    _ => false,
-                }))
+fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> PyResult<bool> {
+    if left.frame != right.frame || left.missing() != right.missing() || left.len() != right.len() {
+        return Ok(false);
+    }
+    if Arc::ptr_eq(left.storage_arc(), right.storage_arc()) {
+        return Ok(true);
+    }
+    for (left, right) in left
+        .row_operation()
+        .rows_with_missing(|| ())
+        .zip(right.row_operation().rows_with_missing(|| ()))
+    {
+        let equal = match (left, right) {
+            (crate::array::ArrayRow::Missing { .. }, crate::array::ArrayRow::Missing { .. }) => {
+                true
+            },
+            (crate::array::ArrayRow::Present(left), crate::array::ArrayRow::Present(right)) => left
+                .row()
+                .try_with_shape(|left| right.row().with_shape(|right| left == right))?,
+            _ => false,
+        };
+        if !equal {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[expect(
@@ -188,11 +191,13 @@ impl Groups {
         self.int64_window(row)
     }
 
-    fn geometry_row_view(&self, row: usize) -> PyGeometryArray {
+    fn geometry_row_view(&self, row: usize) -> PyResult<PyGeometryArray> {
         let GroupsValues::Geometry(values) = &self.values else {
             unreachable!("geometry_row_view requires Geometry backing");
         };
-        values.gather_logical_row_range(self.geometry_indices_window(row))
+        values
+            .gather_logical_row_range(self.geometry_indices_window(row))
+            .map_err(PyErr::from)
     }
 
     fn cell_row_view(&self, row: usize) -> PyCellArray {
@@ -243,11 +248,15 @@ impl Groups {
         (self.rows.len() + 1) * std::mem::size_of::<i64>()
     }
 
-    pub(crate) fn geometry_values_view(&self) -> Option<PyGeometryArray> {
+    pub(crate) fn geometry_values_view(&self) -> PyResult<Option<PyGeometryArray>> {
         let GroupsValues::Geometry(values) = &self.values else {
-            return None;
+            return Ok(None);
         };
-        Some(values.gather_logical_row_range(self.values_window()))
+        Ok(Some(
+            values
+                .gather_logical_row_range(self.values_window())
+                .map_err(PyErr::from)?,
+        ))
     }
 
     fn logical_payload_bytes(&self) -> usize {
@@ -288,34 +297,35 @@ impl Groups {
     ) -> PyResult<Py<PyAny>> {
         match &self.values {
             GroupsValues::Int64(_) => frozen_i64_view(slf, |this| this.int64_row_slice(row)),
-            GroupsValues::Geometry(_) => self.geometry_row_view(row).into_py_any(py),
+            GroupsValues::Geometry(_) => self.geometry_row_view(row)?.into_py_any(py),
             GroupsValues::Cells(_) => self.cell_row_view(row).into_py_any(py),
             GroupsValues::Coordinates { .. } => self.coordinate_row_array(py, slf, row),
         }
     }
 
-    fn groups_equal(&self, other: &Self) -> bool {
+    fn groups_equal(&self, other: &Self) -> PyResult<bool> {
         if self.rows.len() != other.rows.len()
             || (0..self.rows.len())
                 .any(|row| self.int64_window(row).len() != other.int64_window(row).len())
         {
-            return false;
+            return Ok(false);
         }
         match (&self.values, &other.values) {
             (GroupsValues::Int64(left), GroupsValues::Int64(right)) => {
-                left[self.values_window()] == right[other.values_window()]
+                Ok(left[self.values_window()] == right[other.values_window()])
             },
             (GroupsValues::Geometry(_), GroupsValues::Geometry(_)) => geometry_arrays_equal(
-                &self
-                    .geometry_values_view()
+                self.geometry_values_view()?
+                    .as_ref()
                     .expect("geometry backing is known from the match"),
-                &other
-                    .geometry_values_view()
+                other
+                    .geometry_values_view()?
+                    .as_ref()
                     .expect("geometry backing is known from the match"),
             ),
-            (GroupsValues::Cells(left), GroupsValues::Cells(right)) => left
+            (GroupsValues::Cells(left), GroupsValues::Cells(right)) => Ok(left
                 .logical_row_range(self.values_window())
-                .logical_eq(&right.logical_row_range(other.values_window())),
+                .logical_eq(&right.logical_row_range(other.values_window()))),
             (
                 GroupsValues::Coordinates {
                     values: left,
@@ -327,16 +337,16 @@ impl Groups {
                 },
             ) => {
                 if left_dimensions != right_dimensions {
-                    return false;
+                    return Ok(false);
                 }
                 let left_rows = self.values_window();
                 let right_rows = other.values_window();
-                coordinate_values_equal(
+                Ok(coordinate_values_equal(
                     &left[left_rows.start * left_dimensions..left_rows.end * left_dimensions],
                     &right[right_rows.start * right_dimensions..right_rows.end * right_dimensions],
-                )
+                ))
             },
-            _ => false,
+            _ => Ok(false),
         }
     }
 
@@ -397,9 +407,12 @@ impl Groups {
         match &self.values {
             GroupsValues::Int64(_) => Ok(Self::parse_int64_row_item(item)?
                 .is_some_and(|expected| self.int64_row_matches(row, &expected))),
-            GroupsValues::Geometry(_) => Ok(item.cast::<PyGeometryArray>().is_ok_and(|other| {
-                geometry_arrays_equal(&self.geometry_row_view(row), other.get())
-            })),
+            GroupsValues::Geometry(_) => {
+                let Ok(other) = item.cast::<PyGeometryArray>() else {
+                    return Ok(false);
+                };
+                geometry_arrays_equal(&self.geometry_row_view(row)?, other.get())
+            },
             GroupsValues::Cells(_) => Ok(item
                 .cast::<PyCellArray>()
                 .is_ok_and(|other| self.cell_row_view(row).logical_eq(other.get()))),
@@ -449,16 +462,22 @@ impl Groups {
         }
     }
 
-    fn contains_needle(&self, needle: GroupsContainsNeedle) -> bool {
+    fn contains_needle(&self, needle: GroupsContainsNeedle) -> PyResult<bool> {
         match needle {
-            GroupsContainsNeedle::NoMatch => false,
+            GroupsContainsNeedle::NoMatch => Ok(false),
             GroupsContainsNeedle::Int64(expected) => {
-                (0..self.rows.len()).any(|row| self.int64_row_matches(row, &expected))
+                Ok((0..self.rows.len()).any(|row| self.int64_row_matches(row, &expected)))
             },
-            GroupsContainsNeedle::Geometry(expected) => (0..self.rows.len())
-                .any(|row| geometry_arrays_equal(&self.geometry_row_view(row), &expected)),
+            GroupsContainsNeedle::Geometry(expected) => {
+                for row in 0..self.rows.len() {
+                    if geometry_arrays_equal(&self.geometry_row_view(row)?, &expected)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            },
             GroupsContainsNeedle::Cells(expected) => {
-                (0..self.rows.len()).any(|row| self.cell_row_view(row).logical_eq(&expected))
+                Ok((0..self.rows.len()).any(|row| self.cell_row_view(row).logical_eq(&expected)))
             },
             GroupsContainsNeedle::Coordinates(values) => {
                 let GroupsValues::Coordinates {
@@ -468,10 +487,10 @@ impl Groups {
                 else {
                     unreachable!("coordinate needle requires Coordinates backing");
                 };
-                (0..self.rows.len()).any(|row| {
+                Ok((0..self.rows.len()).any(|row| {
                     let actual = &actual_values[self.coordinate_values_window(row)];
                     actual.len() == values.len() && coordinate_values_equal(actual, &values)
-                })
+                }))
             },
         }
     }
@@ -574,7 +593,7 @@ impl Groups {
                 if start == 0 && end == values.len() {
                     values.as_ref().clone().into_py_any(py)
                 } else {
-                    values.gather_logical_row_range(start..end).into_py_any(py)
+                    values.gather_logical_row_range(start..end)?.into_py_any(py)
                 }
             },
             GroupsValues::Cells(values) => {
@@ -800,9 +819,9 @@ impl Groups {
                                     .map_err(PyErr::from)?;
                             for row in rows {
                                 let row_values = values
-                                    .gather_logical_row_range(this.geometry_indices_window(row));
-                                for shape in row_values.storage().iter_shapes().map(Cow::into_owned)
-                                {
+                                    .gather_logical_row_range(this.geometry_indices_window(row))?;
+                                for shape in row_values.storage().iter_shapes() {
+                                    let shape = shape.map_err(PyErr::from)?.into_owned();
                                     builder.push(shape).map_err(PyErr::from)?;
                                 }
                                 let end = builder.len();
@@ -812,7 +831,7 @@ impl Groups {
                             let flat = Arc::new(PyGeometryArray::from_shapes(
                                 shapes,
                                 values.frame.clone(),
-                            ));
+                            )?);
                             let rows = offsets.len() - 1;
                             Self::from_geometry_csr(flat, offsets.into(), 0..rows)?
                         },
@@ -867,7 +886,7 @@ impl Groups {
     fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
         let needle = self.admit_contains_needle(item)?;
         let groups = self.clone();
-        Ok(py.detach(move || groups.contains_needle(needle)))
+        Ok(py.detach(move || groups.contains_needle(needle))?)
     }
 
     /// First index of an equal row in ``[start, stop)``.
@@ -961,7 +980,7 @@ impl Groups {
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(groups) = other.cast::<Self>() {
             let groups = groups.get();
-            return self.groups_equal(groups).into_py_any(py);
+            return self.groups_equal(groups)?.into_py_any(py);
         }
         let Ok(sequence) = other.cast::<PySequence>() else {
             return Ok(py.NotImplemented());
@@ -989,15 +1008,18 @@ impl Groups {
         true.into_py_any(py)
     }
 
-    fn __repr__(&self) -> String {
-        match &self.values {
+    fn __repr__(&self) -> PyResult<String> {
+        let rendered = match &self.values {
             GroupsValues::Int64(_) => preview(
                 (0..self.rows.len()).map(|row| format!("{:?}", self.int64_row_slice(row))),
                 self.rows.len(),
                 "Groups",
             ),
             GroupsValues::Geometry(_) => preview(
-                (0..self.rows.len()).map(|row| self.geometry_row_view(row).__repr__()),
+                crate::try_collect_results(
+                    (0..self.rows.len()).map(|row| self.geometry_row_view(row)?.__repr__()),
+                )?
+                .into_iter(),
                 self.rows.len(),
                 "Groups",
             ),
@@ -1017,7 +1039,8 @@ impl Groups {
                 self.rows.len(),
                 "Groups",
             ),
-        }
+        };
+        Ok(rendered)
     }
 
     /// Copy into a plain nested Python list.
@@ -1046,7 +1069,7 @@ impl Groups {
                     values.into_py_any(py)?
                 },
                 GroupsValues::Geometry(_) => {
-                    let items = self.geometry_row_view(row).materialized_objects(py)?;
+                    let items = self.geometry_row_view(row)?.materialized_objects(py)?;
                     PyList::new(py, items)?.into_py_any(py)?
                 },
                 GroupsValues::Cells(_) => {
@@ -1103,7 +1126,7 @@ impl Groups {
                 let windowed = if start == 0 && end == values.len() {
                     values.as_ref().clone()
                 } else {
-                    values.gather_logical_row_range(start..end)
+                    values.gather_logical_row_range(start..end)?
                 };
                 let args = (Py::new(py, windowed)?, rebased).into_py_any(py)?;
                 Ok((

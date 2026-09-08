@@ -283,14 +283,13 @@ impl GridDissolver for S2Dissolver {
     }
 
     fn crosses_seam(segment: &CoordSeq) -> bool {
-        let points = segment.to_vec();
-        (points[0].x - points[1].x).abs() > 180.0
+        (segment.point_at(0).x - segment.point_at(1).x).abs() > 180.0
     }
 
     fn fallback_shape(cell: Self::Cell) -> crate::error::Result<Shape> {
         // S2 cells can straddle the antimeridian; polar cells need forced pole
         // closure so the seam split cannot choose the opposite cap.
-        let boundary = s2_boundary_geometry(cell).shape.shape().clone();
+        let boundary = s2_boundary_geometry(cell)?.shape.shape().clone();
         cell_pole_side(&boundary).map_or_else(
             || boundary.split_antimeridian(),
             |north| boundary.split_antimeridian_over_pole(north),

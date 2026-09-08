@@ -462,7 +462,7 @@ impl LineIndex {
         Ok(match result.len() {
             0 => Shape::Point(self.interpolate(start, false, metric)),
             1 => Shape::Point(result[0]),
-            _ => Shape::LineString(LineSeq::from_proven(CoordSeq::from(result))),
+            _ => Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&result)?)),
         })
     }
 

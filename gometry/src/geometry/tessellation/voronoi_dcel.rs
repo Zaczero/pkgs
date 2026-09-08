@@ -25,14 +25,17 @@ use std::collections::VecDeque;
 use rstar::AABB;
 
 use crate::error::Result;
-use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::tessellation::{CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, certified_delaunay, delaunay_complex, exact};
-use crate::geometry::{
-    BulkRTree, CoordSeq, CoordWindow, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _, LineSeq,
-    Point, PointKey, Polygon, RTreeObject as _, Ring, Shape, Strictness, VoronoiBoundary, XY,
-    coverage_is_valid, polygon_is_valid,
-};
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
+use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::tessellation::{
+    CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, certified_delaunay,
+    delaunay_complex, exact,
+};
+use crate::geometry::{
+    BulkRTree, CoordSeq, CoordWindow, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, HashMap,
+    HashMapExt as _, LineSeq, Point, PointKey, Polygon, RTreeObject as _, Ring, Shape, Strictness,
+    VoronoiBoundary, XY, coverage_is_valid, polygon_is_valid,
+};
 #[cfg(test)]
 use crate::geometry::{GENERATED_ITEM_LIMIT, tessellation::shape};
 
@@ -860,10 +863,14 @@ fn bisector_frame_intersections(
                 exact::FrameHit::Parallel => {},
                 exact::FrameHit::Point(hit) => {
                     let within = |low: &exact::ExactPoint, high: &exact::ExactPoint| {
-                        let x = (hit.compare_x(low) != Ordering::Less && hit.compare_x(high) != Ordering::Greater)
-                            || (hit.compare_x(high) != Ordering::Less && hit.compare_x(low) != Ordering::Greater);
-                        let y = (hit.compare_y(low) != Ordering::Less && hit.compare_y(high) != Ordering::Greater)
-                            || (hit.compare_y(high) != Ordering::Less && hit.compare_y(low) != Ordering::Greater);
+                        let x = (hit.compare_x(low) != Ordering::Less
+                            && hit.compare_x(high) != Ordering::Greater)
+                            || (hit.compare_x(high) != Ordering::Less
+                                && hit.compare_x(low) != Ordering::Greater);
+                        let y = (hit.compare_y(low) != Ordering::Less
+                            && hit.compare_y(high) != Ordering::Greater)
+                            || (hit.compare_y(high) != Ordering::Less
+                                && hit.compare_y(low) != Ordering::Greater);
                         x && y
                     };
                     if within(&frame[side], &frame[(side + 1) % 4]) {
@@ -877,13 +884,22 @@ fn bisector_frame_intersections(
             // nothing, since a bisector meets a convex frame at most twice and
             // the caller keeps the one on its side. Rounded keys keep this off
             // the exact comparator.
-            let key = |point: &exact::ExactPoint| point.round_nearest_even().unwrap_or(XY::new(f64::NAN, f64::NAN));
-            hits.sort_by(|left, right| lex_xy(key(&left.1), key(&right.1)).then(left.0.cmp(&right.0)));
+            let key = |point: &exact::ExactPoint| {
+                point
+                    .round_nearest_even()
+                    .unwrap_or(XY::new(f64::NAN, f64::NAN))
+            };
+            hits.sort_by(|left, right| {
+                lex_xy(key(&left.1), key(&right.1)).then(left.0.cmp(&right.0))
+            });
             hits.dedup_by(|left, right| left.1.same_position(&right.1));
             return Ok(hits);
         }
     }
-    frame_intersections(&exact::ExactLine::perpendicular_bisector(sites[0], sites[1]), frame)
+    frame_intersections(
+        &exact::ExactLine::perpendicular_bisector(sites[0], sites[1]),
+        frame,
+    )
 }
 
 fn frame_intersections(
@@ -1336,9 +1352,7 @@ fn emit_atom_windows(
     if !events
         .first()
         .is_some_and(|point| point.same_position(start))
-        || !events
-            .last()
-            .is_some_and(|point| point.same_position(end))
+        || !events.last().is_some_and(|point| point.same_position(end))
     {
         return Err(voronoi_error(
             "exact primitive event order lost an endpoint",
@@ -1597,7 +1611,8 @@ fn node_scaffold_and_separators(
             };
             let stored_start = &vertices[mapped[start].endpoints[0].0 as usize].point;
             let stored_end = &vertices[mapped[start].endpoints[1].0 as usize].point;
-            if exact::compare_along(ccw_start, ccw_end, stored_start, stored_end) == Ordering::Greater
+            if exact::compare_along(ccw_start, ccw_end, stored_start, stored_end)
+                == Ordering::Greater
             {
                 coincident = Transition {
                     frame_delta: 0,
@@ -1630,13 +1645,8 @@ fn node_scaffold_and_separators(
                         let midpoint = vertices[seed.endpoints[0].0 as usize]
                             .point
                             .midpoint(&vertices[seed.endpoints[1].0 as usize].point);
-                        frame_owner = nearest_site_walk(
-                            &midpoint,
-                            sites,
-                            adjacency,
-                            frame_owner,
-                            budget,
-                        )?;
+                        frame_owner =
+                            nearest_site_walk(&midpoint, sites, adjacency, frame_owner, budget)?;
                         let owner = OwnerTransition::Boundary {
                             left: Some(frame_owner),
                             right: None,
@@ -1691,21 +1701,108 @@ fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
     node
 }
 
-fn build_exact_subdivision(atoms: NodedAtoms, budget: &mut ExpansionBudget) -> Result<ExactSubdivision> {
-    let vertices = atoms.vertices.len(); let edges = atoms.edges.len(); let slots = edges.saturating_mul(2);
-    budget.add(slots)?; budget.add(slots)?;
-    let mut topology = IndexedTopology::default(); let mut scratch = IndexedTopologyScratch::default();
-    let mut edge_of_slot = Vec::new(); let mut cursors = Vec::new(); let mut exact_vertices = Vec::new();
-    for reserve in [topology.starts.try_reserve(vertices + 1), topology.targets.try_reserve(slots), topology.owners.try_reserve(slots), topology.twins.try_reserve(slots), topology.component_of.try_reserve(vertices), topology.face_of.try_reserve(slots), topology.face_starts.try_reserve(slots + 1), topology.face_slots.try_reserve(slots), scratch.component_stack.try_reserve(vertices), scratch.face_cursor.try_reserve(vertices), scratch.successor.try_reserve(slots), scratch.edge_slots.try_reserve(edges), edge_of_slot.try_reserve(slots), cursors.try_reserve(vertices), exact_vertices.try_reserve(vertices)] { reserve.map_err(|_| voronoi_error("could not allocate exact Voronoi topology"))?; }
+fn build_exact_subdivision(
+    atoms: NodedAtoms,
+    budget: &mut ExpansionBudget,
+) -> Result<ExactSubdivision> {
+    let vertices = atoms.vertices.len();
+    let edges = atoms.edges.len();
+    let slots = edges.saturating_mul(2);
+    budget.add(slots)?;
+    budget.add(slots)?;
+    let mut topology = IndexedTopology::default();
+    let mut scratch = IndexedTopologyScratch::default();
+    let mut edge_of_slot = Vec::new();
+    let mut cursors = Vec::new();
+    let mut exact_vertices = Vec::new();
+    for reserve in [
+        topology.starts.try_reserve(vertices + 1),
+        topology.targets.try_reserve(slots),
+        topology.owners.try_reserve(slots),
+        topology.twins.try_reserve(slots),
+        topology.component_of.try_reserve(vertices),
+        topology.face_of.try_reserve(slots),
+        topology.face_starts.try_reserve(slots + 1),
+        topology.face_slots.try_reserve(slots),
+        scratch.component_stack.try_reserve(vertices),
+        scratch.face_cursor.try_reserve(vertices),
+        scratch.successor.try_reserve(slots),
+        scratch.edge_slots.try_reserve(edges),
+        edge_of_slot.try_reserve(slots),
+        cursors.try_reserve(vertices),
+        exact_vertices.try_reserve(vertices),
+    ] {
+        reserve.map_err(|_| voronoi_error("could not allocate exact Voronoi topology"))?;
+    }
     topology.starts.resize(vertices + 1, 0);
-    for edge in &atoms.edges { topology.starts[edge.endpoints[0].0 as usize + 1] += 1; topology.starts[edge.endpoints[1].0 as usize + 1] += 1; }
-    for index in 1..topology.starts.len() { topology.starts[index] += topology.starts[index - 1]; }
-    cursors.extend_from_slice(&topology.starts[..vertices]); topology.targets.resize(slots, 0); edge_of_slot.resize(slots, 0);
-    for (edge, atom) in atoms.edges.iter().enumerate() { let edge = u32::try_from(edge).map_err(|_| voronoi_error("too many exact edges"))?; for (origin, target) in [(atom.endpoints[0], atom.endpoints[1]), (atom.endpoints[1], atom.endpoints[0])] { let slot = cursors[origin.0 as usize] as usize; topology.targets[slot] = target.0; edge_of_slot[slot] = edge; cursors[origin.0 as usize] += 1; } }
-    for vertex in 0..vertices { let row = topology.starts[vertex] as usize..topology.starts[vertex + 1] as usize; if row.len() < 2 { return Err(voronoi_error("exact Voronoi subdivision contains a dangle")); } let origin = &atoms.vertices[vertex].point; for index in row.start + 1..row.end { let mut cursor = index; while cursor > row.start && exact::angle_ccw_cmp(origin, &atoms.vertices[topology.targets[cursor] as usize].point, &atoms.vertices[topology.targets[cursor - 1] as usize].point)? == Ordering::Less { topology.targets.swap(cursor, cursor - 1); edge_of_slot.swap(cursor, cursor - 1); cursor -= 1; } } for slot in row.start + 1..row.end { exact::angle_ccw_cmp(origin, &atoms.vertices[topology.targets[slot - 1] as usize].point, &atoms.vertices[topology.targets[slot] as usize].point).map_err(|_| voronoi_error("exact angular tie"))?; } }
-    exact_vertices.extend(atoms.vertices.into_iter().map(|vertex| ExactVertex { point: vertex.point, fixed_xy: vertex.fixed_xy })); topology.finish(&edge_of_slot, &mut scratch);
-    for slot in 0..slots { if topology.face_of[slot] == topology.face_of[topology.twins[slot] as usize] { return Err(voronoi_error("exact Voronoi subdivision contains a bridge")); } }
-    Ok(ExactSubdivision { vertices: exact_vertices, edges: atoms.edges, topology, edge_of_slot, labels: Vec::new() })
+    for edge in &atoms.edges {
+        topology.starts[edge.endpoints[0].0 as usize + 1] += 1;
+        topology.starts[edge.endpoints[1].0 as usize + 1] += 1;
+    }
+    for index in 1..topology.starts.len() {
+        topology.starts[index] += topology.starts[index - 1];
+    }
+    cursors.extend_from_slice(&topology.starts[..vertices]);
+    topology.targets.resize(slots, 0);
+    edge_of_slot.resize(slots, 0);
+    for (edge, atom) in atoms.edges.iter().enumerate() {
+        let edge = u32::try_from(edge).map_err(|_| voronoi_error("too many exact edges"))?;
+        for (origin, target) in [
+            (atom.endpoints[0], atom.endpoints[1]),
+            (atom.endpoints[1], atom.endpoints[0]),
+        ] {
+            let slot = cursors[origin.0 as usize] as usize;
+            topology.targets[slot] = target.0;
+            edge_of_slot[slot] = edge;
+            cursors[origin.0 as usize] += 1;
+        }
+    }
+    for vertex in 0..vertices {
+        let row = topology.starts[vertex] as usize..topology.starts[vertex + 1] as usize;
+        if row.len() < 2 {
+            return Err(voronoi_error("exact Voronoi subdivision contains a dangle"));
+        }
+        let origin = &atoms.vertices[vertex].point;
+        for index in row.start + 1..row.end {
+            let mut cursor = index;
+            while cursor > row.start
+                && exact::angle_ccw_cmp(
+                    origin,
+                    &atoms.vertices[topology.targets[cursor] as usize].point,
+                    &atoms.vertices[topology.targets[cursor - 1] as usize].point,
+                )? == Ordering::Less
+            {
+                topology.targets.swap(cursor, cursor - 1);
+                edge_of_slot.swap(cursor, cursor - 1);
+                cursor -= 1;
+            }
+        }
+        for slot in row.start + 1..row.end {
+            exact::angle_ccw_cmp(
+                origin,
+                &atoms.vertices[topology.targets[slot - 1] as usize].point,
+                &atoms.vertices[topology.targets[slot] as usize].point,
+            )
+            .map_err(|_| voronoi_error("exact angular tie"))?;
+        }
+    }
+    exact_vertices.extend(atoms.vertices.into_iter().map(|vertex| ExactVertex {
+        point: vertex.point,
+        fixed_xy: vertex.fixed_xy,
+    }));
+    topology.finish(&edge_of_slot, &mut scratch);
+    for slot in 0..slots {
+        if topology.face_of[slot] == topology.face_of[topology.twins[slot] as usize] {
+            return Err(voronoi_error("exact Voronoi subdivision contains a bridge"));
+        }
+    }
+    Ok(ExactSubdivision {
+        vertices: exact_vertices,
+        edges: atoms.edges,
+        topology,
+        edge_of_slot,
+        labels: Vec::new(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1750,7 +1847,9 @@ fn validate_exact_subdivision(subdivision: &ExactSubdivision) -> Result<()> {
         if edge.clip_sources.windows(2).any(|pair| pair[0] >= pair[1])
             || (edge.forward.clip_delta != 0 && edge.clip_sources.is_empty())
         {
-            return Err(voronoi_error("exact atomic edge has incoherent clip provenance"));
+            return Err(voronoi_error(
+                "exact atomic edge has incoherent clip provenance",
+            ));
         }
     }
     for slot in 0..topology.targets.len() {
@@ -1781,7 +1880,9 @@ fn validate_exact_subdivision(subdivision: &ExactSubdivision) -> Result<()> {
             || !matches!(label.clip_winding, 0 | 1)
             || (label.frame_winding == 1 && label.owner.is_none())
         {
-            return Err(voronoi_error("exact boundary walk has an incoherent checked label"));
+            return Err(voronoi_error(
+                "exact boundary walk has an incoherent checked label",
+            ));
         }
     }
     Ok(())
@@ -1834,8 +1935,8 @@ fn propagate_walk_labels(
     let topology = &subdivision.topology;
     while let Some(left) = queue.pop_front() {
         let label = labels[left.0 as usize].expect("queued walk is labelled");
-        let walk = &topology.face_slots
-            [topology.face_starts[left.0 as usize] as usize..topology.face_starts[left.0 as usize + 1] as usize];
+        let walk = &topology.face_slots[topology.face_starts[left.0 as usize] as usize
+            ..topology.face_starts[left.0 as usize + 1] as usize];
         for &slot in walk {
             let transition = slot_transition(subdivision, slot as usize);
             let right = BoundaryFaceId(topology.face_of[topology.twins[slot as usize] as usize]);
@@ -1849,39 +1950,85 @@ fn propagate_walk_labels(
     Ok(())
 }
 
-fn graft_components(subdivision: &mut ExactSubdivision, sites: &[Site], adjacency: &SiteAdjacency, budget: &mut ExpansionBudget) -> Result<()> {
+fn graft_components(
+    subdivision: &mut ExactSubdivision,
+    sites: &[Site],
+    adjacency: &SiteAdjacency,
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
     let topology = &subdivision.topology;
     let boundary_faces = topology.face_starts.len() - 1;
-    let components = topology.component_of.iter().copied().max().map_or(0, |id| id as usize + 1);
-    subdivision.labels.try_reserve(boundary_faces).map_err(|_| voronoi_error("could not allocate exact region graft"))?;
+    let components = topology
+        .component_of
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |id| id as usize + 1);
+    subdivision
+        .labels
+        .try_reserve(boundary_faces)
+        .map_err(|_| voronoi_error("could not allocate exact region graft"))?;
     let mut exterior = Vec::new();
-    exterior.try_reserve(components).map_err(|_| voronoi_error("could not allocate exact region graft"))?;
+    exterior
+        .try_reserve(components)
+        .map_err(|_| voronoi_error("could not allocate exact region graft"))?;
     exterior.resize(components, None);
     let mut points = Vec::new();
     for face in 0..boundary_faces {
-        let walk = &topology.face_slots[topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize];
+        let walk = &topology.face_slots
+            [topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize];
         budget.add(walk.len())?;
         points.clear();
         reserve_exact(&mut points, walk.len())?;
-        points.extend(walk.iter().map(|&slot| subdivision.vertices[topology.owners[slot as usize] as usize].point.clone()));
+        points.extend(walk.iter().map(|&slot| {
+            subdivision.vertices[topology.owners[slot as usize] as usize]
+                .point
+                .clone()
+        }));
         let sign = exact::cycle_orientation(&points)?;
         let component = topology.component_of[topology.owners[walk[0] as usize] as usize] as usize;
-        if sign == ExactSign::Negative && exterior[component].replace(BoundaryFaceId(face as u32)).is_some() {
-            return Err(voronoi_error("edge component has more than one negative boundary face"));
+        if sign == ExactSign::Negative
+            && exterior[component]
+                .replace(BoundaryFaceId(face as u32))
+                .is_some()
+        {
+            return Err(voronoi_error(
+                "edge component has more than one negative boundary face",
+            ));
         }
     }
     if exterior.iter().any(Option::is_none) {
-        return Err(voronoi_error("edge component has no negative boundary face"));
+        return Err(voronoi_error(
+            "edge component has no negative boundary face",
+        ));
     }
-    let frame_edge = subdivision.edges.iter().position(|edge| edge.frame_side.is_some()).ok_or_else(|| voronoi_error("private frame is absent"))?;
-    let frame_component = topology.component_of[subdivision.edges[frame_edge].endpoints[0].0 as usize] as usize;
+    let frame_edge = subdivision
+        .edges
+        .iter()
+        .position(|edge| edge.frame_side.is_some())
+        .ok_or_else(|| voronoi_error("private frame is absent"))?;
+    let frame_component =
+        topology.component_of[subdivision.edges[frame_edge].endpoints[0].0 as usize] as usize;
     let mut labels = Vec::new();
-    labels.try_reserve(boundary_faces).map_err(|_| voronoi_error("could not allocate exact region graft"))?;
+    labels
+        .try_reserve(boundary_faces)
+        .map_err(|_| voronoi_error("could not allocate exact region graft"))?;
     labels.resize(boundary_faces, None);
     let mut queue = VecDeque::new();
-    queue.try_reserve(boundary_faces).map_err(|_| voronoi_error("could not allocate exact region graft"))?;
-    let outside_frame = RegionLabel { frame_winding: 0, clip_winding: 0, owner: None };
-    assign_walk_label(&mut labels, &mut queue, exterior[frame_component].expect("component exterior was checked"), outside_frame)?;
+    queue
+        .try_reserve(boundary_faces)
+        .map_err(|_| voronoi_error("could not allocate exact region graft"))?;
+    let outside_frame = RegionLabel {
+        frame_winding: 0,
+        clip_winding: 0,
+        owner: None,
+    };
+    assign_walk_label(
+        &mut labels,
+        &mut queue,
+        exterior[frame_component].expect("component exterior was checked"),
+        outside_frame,
+    )?;
     propagate_walk_labels(subdivision, &mut labels, &mut queue)?;
     for outside in exterior.iter().copied().map(Option::unwrap) {
         if labels[outside.0 as usize].is_some() {
@@ -1894,7 +2041,9 @@ fn graft_components(subdivision: &mut ExactSubdivision, sites: &[Site], adjacenc
         }
         let transition = slot_transition(subdivision, slot);
         if transition.frame_delta != 0 || transition.clip_delta.unsigned_abs() != 1 {
-            return Err(voronoi_error("unvisited exact component has no simple clip seed"));
+            return Err(voronoi_error(
+                "unvisited exact component has no simple clip seed",
+            ));
         }
         let start = &subdivision.vertices[topology.owners[slot] as usize].point;
         let end = &subdivision.vertices[topology.targets[slot] as usize].point;
@@ -1909,7 +2058,11 @@ fn graft_components(subdivision: &mut ExactSubdivision, sites: &[Site], adjacenc
     }
     subdivision.labels.clear();
     for label in labels {
-        subdivision.labels.push(label.ok_or_else(|| voronoi_error("exact subdivision left an unlabelled boundary face"))?);
+        subdivision.labels.push(
+            label.ok_or_else(|| {
+                voronoi_error("exact subdivision left an unlabelled boundary face")
+            })?,
+        );
     }
     validate_exact_subdivision(subdivision)
 }
@@ -1952,20 +2105,92 @@ fn canonicalize_ring(vertices: &mut Vec<VertexId>, edges: &mut Vec<EdgeId>) {
     vertices.push(vertices[0]);
 }
 
-fn split_boundary_face(subdivision: &ExactSubdivision, boundary_face: BoundaryFaceId) -> Result<Vec<ExactSimpleRing>> {
+fn split_boundary_face(
+    subdivision: &ExactSubdivision,
+    boundary_face: BoundaryFaceId,
+) -> Result<Vec<ExactSimpleRing>> {
     let topology = &subdivision.topology;
-    let walk = &topology.face_slots[topology.face_starts[boundary_face.0 as usize] as usize..topology.face_starts[boundary_face.0 as usize + 1] as usize];
-    let direct_vertices: Vec<_> = walk.iter().map(|&slot| VertexId(topology.owners[slot as usize])).collect();
-    let direct_edges: Vec<_> = walk.iter().map(|&slot| EdgeId(subdivision.edge_of_slot[slot as usize])).collect();
-    if direct_vertices.iter().copied().collect::<std::collections::BTreeSet<_>>().len() == direct_vertices.len() {
-        let mut vertices = direct_vertices; let mut edges = direct_edges; vertices.push(vertices[0]);
-        let points: Vec<_> = vertices[..vertices.len()-1].iter().map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()).collect();
-        let orientation = exact::cycle_orientation(&points)?; canonicalize_ring(&mut vertices, &mut edges);
-        return Ok(vec![ExactSimpleRing { face: boundary_face, vertices: vertices.into_boxed_slice(), edges: edges.into_boxed_slice(), orientation }]);
+    let walk = &topology.face_slots[topology.face_starts[boundary_face.0 as usize] as usize
+        ..topology.face_starts[boundary_face.0 as usize + 1] as usize];
+    let direct_vertices: Vec<_> = walk
+        .iter()
+        .map(|&slot| VertexId(topology.owners[slot as usize]))
+        .collect();
+    let direct_edges: Vec<_> = walk
+        .iter()
+        .map(|&slot| EdgeId(subdivision.edge_of_slot[slot as usize]))
+        .collect();
+    if direct_vertices
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        == direct_vertices.len()
+    {
+        let mut vertices = direct_vertices;
+        let mut edges = direct_edges;
+        vertices.push(vertices[0]);
+        let points: Vec<_> = vertices[..vertices.len() - 1]
+            .iter()
+            .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone())
+            .collect();
+        let orientation = exact::cycle_orientation(&points)?;
+        canonicalize_ring(&mut vertices, &mut edges);
+        return Ok(vec![ExactSimpleRing {
+            face: boundary_face,
+            vertices: vertices.into_boxed_slice(),
+            edges: edges.into_boxed_slice(),
+            orientation,
+        }]);
     }
-    let mut path = Vec::<VertexId>::new(); let mut path_edges = Vec::<EdgeId>::new(); let mut positions = vec![None; subdivision.vertices.len()]; let mut result = Vec::new();
-    for step in 0..=walk.len() { let slot = walk[step % walk.len()] as usize; let vertex = VertexId(topology.owners[slot]); let incoming = (step > 0).then(|| EdgeId(subdivision.edge_of_slot[walk[(step - 1) % walk.len()] as usize])); if let Some(position) = positions[vertex.0 as usize] { let mut vertices = path[position..].to_vec(); vertices.push(vertex); let mut edges = path_edges[position..].to_vec(); edges.push(incoming.expect("repeated boundary vertex has an incoming edge")); if vertices.len() < 4 { return Err(voronoi_error("pinch split produced a short exact ring")); } for removed in &path[position + 1..] { positions[removed.0 as usize] = None; } path.truncate(position + 1); path_edges.truncate(position); let points: Vec<_> = vertices[..vertices.len()-1].iter().map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()).collect(); let orientation = exact::cycle_orientation(&points)?; canonicalize_ring(&mut vertices, &mut edges); result.push(ExactSimpleRing { face: boundary_face, vertices: vertices.into_boxed_slice(), edges: edges.into_boxed_slice(), orientation }); } else { positions[vertex.0 as usize] = Some(path.len()); path.push(vertex); if let Some(edge) = incoming { path_edges.push(edge); } } }
-    if path.len() != 1 || !path_edges.is_empty() { return Err(voronoi_error("pinch split left a residual exact boundary path")); } Ok(result)
+    let mut path = Vec::<VertexId>::new();
+    let mut path_edges = Vec::<EdgeId>::new();
+    let mut positions = vec![None; subdivision.vertices.len()];
+    let mut result = Vec::new();
+    for step in 0..=walk.len() {
+        let slot = walk[step % walk.len()] as usize;
+        let vertex = VertexId(topology.owners[slot]);
+        let incoming = (step > 0)
+            .then(|| EdgeId(subdivision.edge_of_slot[walk[(step - 1) % walk.len()] as usize]));
+        if let Some(position) = positions[vertex.0 as usize] {
+            let mut vertices = path[position..].to_vec();
+            vertices.push(vertex);
+            let mut edges = path_edges[position..].to_vec();
+            edges.push(incoming.expect("repeated boundary vertex has an incoming edge"));
+            if vertices.len() < 4 {
+                return Err(voronoi_error("pinch split produced a short exact ring"));
+            }
+            for removed in &path[position + 1..] {
+                positions[removed.0 as usize] = None;
+            }
+            path.truncate(position + 1);
+            path_edges.truncate(position);
+            let points: Vec<_> = vertices[..vertices.len() - 1]
+                .iter()
+                .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone())
+                .collect();
+            let orientation = exact::cycle_orientation(&points)?;
+            canonicalize_ring(&mut vertices, &mut edges);
+            result.push(ExactSimpleRing {
+                face: boundary_face,
+                vertices: vertices.into_boxed_slice(),
+                edges: edges.into_boxed_slice(),
+                orientation,
+            });
+        } else {
+            positions[vertex.0 as usize] = Some(path.len());
+            path.push(vertex);
+            if let Some(edge) = incoming {
+                path_edges.push(edge);
+            }
+        }
+    }
+    if path.len() != 1 || !path_edges.is_empty() {
+        return Err(voronoi_error(
+            "pinch split left a residual exact boundary path",
+        ));
+    }
+    Ok(result)
 }
 
 fn assemble_owner_parts(
@@ -1975,186 +2200,188 @@ fn assemble_owner_parts(
     budget: &mut ExpansionBudget,
     parts: &mut Vec<ExactCellPart>,
 ) -> Result<()> {
-        let mut rings = Vec::new();
-        for orbit in walks {
-            rings.extend(split_boundary_face(subdivision, orbit)?);
+    let mut rings = Vec::new();
+    for orbit in walks {
+        rings.extend(split_boundary_face(subdivision, orbit)?);
+    }
+    if rings.is_empty() {
+        return Ok(());
+    }
+    let positives: Vec<_> = rings
+        .iter()
+        .enumerate()
+        .filter(|(_, ring)| ring.orientation == ExactSign::Positive)
+        .map(|(index, _)| index)
+        .collect();
+    let negatives: Vec<_> = rings
+        .iter()
+        .enumerate()
+        .filter(|(_, ring)| ring.orientation == ExactSign::Negative)
+        .map(|(index, _)| index)
+        .collect();
+    let mut ring_points = Vec::new();
+    reserve_exact(&mut ring_points, rings.len())?;
+    for ring in &rings {
+        let count = ring.vertices.len().saturating_sub(1);
+        budget.add(count)?;
+        let mut points = Vec::new();
+        reserve_exact(&mut points, count)?;
+        points.extend(
+            ring.vertices[..count]
+                .iter()
+                .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()),
+        );
+        ring_points.push(points);
+    }
+    let mut indexed_rings = Vec::new();
+    let mut unindexed_rings = Vec::new();
+    for (index, points) in ring_points.iter().enumerate() {
+        if let Some(envelope) = exact_envelope(points) {
+            indexed_rings.push(IndexedExactEnvelope { index, envelope });
+        } else {
+            unindexed_rings.push(index);
         }
-        if rings.is_empty() {
-            return Ok(());
-        }
-        let positives: Vec<_> = rings
-            .iter()
-            .enumerate()
-            .filter(|(_, ring)| ring.orientation == ExactSign::Positive)
-            .map(|(index, _)| index)
-            .collect();
-        let negatives: Vec<_> = rings
-            .iter()
-            .enumerate()
-            .filter(|(_, ring)| ring.orientation == ExactSign::Negative)
-            .map(|(index, _)| index)
-            .collect();
-        let mut ring_points = Vec::new();
-        reserve_exact(&mut ring_points, rings.len())?;
-        for ring in &rings {
-            let count = ring.vertices.len().saturating_sub(1);
-            budget.add(count)?;
-            let mut points = Vec::new();
-            reserve_exact(&mut points, count)?;
-            points.extend(
-                ring.vertices[..count]
-                    .iter()
-                    .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()),
-            );
-            ring_points.push(points);
-        }
-        let mut indexed_rings = Vec::new();
-        let mut unindexed_rings = Vec::new();
-        for (index, points) in ring_points.iter().enumerate() {
-            if let Some(envelope) = exact_envelope(points) {
-                indexed_rings.push(IndexedExactEnvelope { index, envelope });
-            } else {
-                unindexed_rings.push(index);
+    }
+    let ring_tree = BulkRTree::bulk_load_with_params(indexed_rings);
+    for &positive in &positives {
+        let candidates = exact_envelope_candidates(
+            &ring_tree,
+            &unindexed_rings,
+            exact_envelope(std::slice::from_ref(&ring_points[positive][0])),
+            rings.len(),
+        );
+        for other in 0..rings.len() {
+            if other == positive || !candidates[other] {
+                continue;
+            }
+            budget.add(
+                ring_points[positive]
+                    .len()
+                    .saturating_mul(ring_points[other].len()),
+            )?;
+            let classifications: Vec<_> = ring_points[positive]
+                .iter()
+                .map(|point| exact::point_in_cycle(&ring_points[other], point))
+                .collect();
+            if !classifications.contains(&exact::PointInCycle::Outside)
+                && classifications.contains(&exact::PointInCycle::Inside)
+            {
+                return Err(voronoi_error(
+                    "exact same-face ring forest has depth greater than one",
+                ));
             }
         }
-        let ring_tree = BulkRTree::bulk_load_with_params(indexed_rings);
-        for &positive in &positives {
-            let candidates = exact_envelope_candidates(
-                &ring_tree,
-                &unindexed_rings,
-                exact_envelope(std::slice::from_ref(&ring_points[positive][0])),
-                rings.len(),
-            );
-            for other in 0..rings.len() {
-                if other == positive || !candidates[other] {
-                    continue;
-                }
-                budget.add(
-                    ring_points[positive]
+    }
+    let mut holes_by_shell = vec![Vec::new(); positives.len()];
+    for negative in negatives {
+        let candidate_rings = exact_envelope_candidates(
+            &ring_tree,
+            &unindexed_rings,
+            exact_envelope(std::slice::from_ref(&ring_points[negative][0])),
+            rings.len(),
+        );
+        budget.add(
+            positives
+                .iter()
+                .filter(|positive| candidate_rings[**positive])
+                .map(|positive| {
+                    ring_points[negative]
                         .len()
-                        .saturating_mul(ring_points[other].len()),
-                )?;
-                let classifications: Vec<_> = ring_points[positive]
+                        .saturating_mul(ring_points[*positive].len())
+                })
+                .sum(),
+        )?;
+        let candidates: Vec<_> = positives
+            .iter()
+            .enumerate()
+            .filter(|(_, positive)| candidate_rings[**positive])
+            .filter(|(_, positive)| {
+                let classifications: Vec<_> = ring_points[negative]
                     .iter()
-                    .map(|point| exact::point_in_cycle(&ring_points[other], point))
+                    .map(|point| exact::point_in_cycle(&ring_points[**positive], point))
                     .collect();
-                if !classifications.contains(&exact::PointInCycle::Outside)
+                !classifications.contains(&exact::PointInCycle::Outside)
                     && classifications.contains(&exact::PointInCycle::Inside)
-                {
-                    return Err(voronoi_error(
-                        "exact same-face ring forest has depth greater than one",
-                    ));
-                }
-            }
+            })
+            .map(|(slot, _)| slot)
+            .collect();
+        if candidates.is_empty() {
+            return Err(voronoi_error(
+                "negative exact face ring has no same-face shell",
+            ));
         }
-        let mut holes_by_shell = vec![Vec::new(); positives.len()];
-        for negative in negatives {
-            let candidate_rings = exact_envelope_candidates(
-                &ring_tree,
-                &unindexed_rings,
-                exact_envelope(std::slice::from_ref(&ring_points[negative][0])),
-                rings.len(),
-            );
-            budget.add(
-                positives
-                    .iter()
-                    .filter(|positive| candidate_rings[**positive])
-                    .map(|positive| {
-                        ring_points[negative]
-                            .len()
-                            .saturating_mul(ring_points[*positive].len())
-                    })
-                    .sum(),
-            )?;
-            let candidates: Vec<_> = positives
+        budget.add(
+            candidates
                 .iter()
-                .enumerate()
-                .filter(|(_, positive)| candidate_rings[**positive])
-                .filter(|(_, positive)| {
-                    let classifications: Vec<_> = ring_points[negative]
-                        .iter()
-                        .map(|point| exact::point_in_cycle(&ring_points[**positive], point))
-                        .collect();
-                    !classifications.contains(&exact::PointInCycle::Outside)
-                        && classifications.contains(&exact::PointInCycle::Inside)
-                })
-                .map(|(slot, _)| slot)
-                .collect();
-            if candidates.is_empty() {
-                return Err(voronoi_error(
-                    "negative exact face ring has no same-face shell",
-                ));
-            }
-            budget.add(
-                candidates
-                    .iter()
-                    .map(|slot| ring_points[positives[*slot]].len())
-                    .sum::<usize>()
-                    .saturating_mul(2),
-            )?;
-            let mut candidates = candidates.into_iter();
-            let mut parent = candidates.next().expect("nonempty ring candidates");
-            for candidate in candidates {
-                let parent_point =
-                    &subdivision.vertices[rings[positives[parent]].vertices[0].0 as usize].point;
-                if exact::point_in_cycle(&ring_points[positives[candidate]], parent_point)
-                    == exact::PointInCycle::Inside
-                {
-                    continue;
-                }
-                let candidate_point =
-                    &subdivision.vertices[rings[positives[candidate]].vertices[0].0 as usize].point;
-                if exact::point_in_cycle(&ring_points[positives[parent]], candidate_point)
-                    != exact::PointInCycle::Inside
-                {
-                    return Err(voronoi_error("exact face ring forest is non-laminar"));
-                }
-                parent = candidate;
-            }
-            holes_by_shell[parent].push(negative);
-        }
-        let mut rings: Vec<Option<ExactSimpleRing>> = rings.into_iter().map(Some).collect();
-        for (slot, positive) in positives.into_iter().enumerate() {
-            let shell = rings[positive].take().unwrap();
-            let holes: Vec<_> = holes_by_shell[slot]
-                .iter()
-                .map(|&hole| rings[hole].take().unwrap())
-                .collect();
-            if walk_label(subdivision, shell.face).owner != Some(owner)
-                || holes.iter().any(|hole| walk_label(subdivision, hole.face).owner != Some(owner))
+                .map(|slot| ring_points[positives[*slot]].len())
+                .sum::<usize>()
+                .saturating_mul(2),
+        )?;
+        let mut candidates = candidates.into_iter();
+        let mut parent = candidates.next().expect("nonempty ring candidates");
+        for candidate in candidates {
+            let parent_point =
+                &subdivision.vertices[rings[positives[parent]].vertices[0].0 as usize].point;
+            if exact::point_in_cycle(&ring_points[positives[candidate]], parent_point)
+                == exact::PointInCycle::Inside
             {
-                return Err(voronoi_error("exact ring escaped its owner group"));
+                continue;
             }
-            let mut edge_ids = std::collections::BTreeSet::new();
-            if shell
-                .edges
-                .iter()
-                .chain(holes.iter().flat_map(|hole| hole.edges.iter()))
-                .any(|edge| !edge_ids.insert(*edge))
+            let candidate_point =
+                &subdivision.vertices[rings[positives[candidate]].vertices[0].0 as usize].point;
+            if exact::point_in_cycle(&ring_points[positives[parent]], candidate_point)
+                != exact::PointInCycle::Inside
             {
-                return Err(voronoi_error(
-                    "exact face shell and holes share an atomic edge",
-                ));
+                return Err(voronoi_error("exact face ring forest is non-laminar"));
             }
-            let exact_rings: Vec<Vec<_>> = std::iter::once(&shell)
-                .chain(holes.iter())
-                .map(|ring| {
-                    ring.vertices[..ring.vertices.len() - 1]
-                        .iter()
-                        .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone())
-                        .collect()
-                })
-                .collect();
-            let exact_ring_refs: Vec<_> = exact_rings.iter().map(Vec::as_slice).collect();
-            validate_exact_cycles(&exact_ring_refs, 0, budget)?;
-            budget.add(1)?;
-            parts.push(ExactCellPart {
-                owner,
-                face: shell.face,
-                shell,
-                holes,
-            });
+            parent = candidate;
         }
+        holes_by_shell[parent].push(negative);
+    }
+    let mut rings: Vec<Option<ExactSimpleRing>> = rings.into_iter().map(Some).collect();
+    for (slot, positive) in positives.into_iter().enumerate() {
+        let shell = rings[positive].take().unwrap();
+        let holes: Vec<_> = holes_by_shell[slot]
+            .iter()
+            .map(|&hole| rings[hole].take().unwrap())
+            .collect();
+        if walk_label(subdivision, shell.face).owner != Some(owner)
+            || holes
+                .iter()
+                .any(|hole| walk_label(subdivision, hole.face).owner != Some(owner))
+        {
+            return Err(voronoi_error("exact ring escaped its owner group"));
+        }
+        let mut edge_ids = std::collections::BTreeSet::new();
+        if shell
+            .edges
+            .iter()
+            .chain(holes.iter().flat_map(|hole| hole.edges.iter()))
+            .any(|edge| !edge_ids.insert(*edge))
+        {
+            return Err(voronoi_error(
+                "exact face shell and holes share an atomic edge",
+            ));
+        }
+        let exact_rings: Vec<Vec<_>> = std::iter::once(&shell)
+            .chain(holes.iter())
+            .map(|ring| {
+                ring.vertices[..ring.vertices.len() - 1]
+                    .iter()
+                    .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone())
+                    .collect()
+            })
+            .collect();
+        let exact_ring_refs: Vec<_> = exact_rings.iter().map(Vec::as_slice).collect();
+        validate_exact_cycles(&exact_ring_refs, 0, budget)?;
+        budget.add(1)?;
+        parts.push(ExactCellPart {
+            owner,
+            face: shell.face,
+            shell,
+            holes,
+        });
+    }
     Ok(())
 }
 
@@ -2168,7 +2395,9 @@ fn assemble_cells(
         if !selected_cell_label(*label) {
             continue;
         }
-        let owner = label.owner.ok_or_else(|| voronoi_error("selected exact walk has no owner"))?;
+        let owner = label
+            .owner
+            .ok_or_else(|| voronoi_error("selected exact walk has no owner"))?;
         selected.push((owner, BoundaryFaceId(index as u32)));
     }
     selected.sort_unstable();
@@ -2281,13 +2510,7 @@ fn assemble_separator_group(
             continue;
         };
         walk_separator_from(
-            separator,
-            group,
-            &incident,
-            &mut used,
-            start,
-            budget,
-            result,
+            separator, group, &incident, &mut used, start, budget, result,
         )?;
     }
     for (slot, (_, edge_id)) in group.iter().enumerate() {
@@ -2296,13 +2519,7 @@ fn assemble_separator_group(
         }
         let start = subdivision.edges[edge_id.0 as usize].endpoints[0];
         walk_separator_from(
-            separator,
-            group,
-            &incident,
-            &mut used,
-            start,
-            budget,
-            result,
+            separator, group, &incident, &mut used, start, budget, result,
         )?;
     }
     Ok(())
@@ -2313,20 +2530,37 @@ fn assemble_edges(
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<ExactEdgeChain>> {
     let mut forward_slot = Vec::new();
-    forward_slot.try_reserve(subdivision.edges.len()).map_err(|_| voronoi_error("could not allocate exact edge slots"))?;
+    forward_slot
+        .try_reserve(subdivision.edges.len())
+        .map_err(|_| voronoi_error("could not allocate exact edge slots"))?;
     forward_slot.resize(subdivision.edges.len(), u32::MAX);
     for (slot, &edge) in subdivision.edge_of_slot.iter().enumerate() {
         let atomic = &subdivision.edges[edge as usize];
-        if subdivision.topology.owners[slot] == atomic.endpoints[0].0 { forward_slot[edge as usize] = slot as u32; }
+        if subdivision.topology.owners[slot] == atomic.endpoints[0].0 {
+            forward_slot[edge as usize] = slot as u32;
+        }
     }
-    let mut selected: Vec<_> = subdivision.edges.iter().enumerate().filter_map(|(index, edge)| {
-        let separator = edge.separator?; let slot = forward_slot[index] as usize;
-        debug_assert_ne!(slot, u32::MAX as usize);
-        let left = walk_label(subdivision, BoundaryFaceId(subdivision.topology.face_of[slot]));
-        let twin = subdivision.topology.twins[slot] as usize;
-        let right = walk_label(subdivision, BoundaryFaceId(subdivision.topology.face_of[twin]));
-        (selected_cell_label(left) || selected_cell_label(right)).then_some((separator, EdgeId(index as u32)))
-    }).collect();
+    let mut selected: Vec<_> = subdivision
+        .edges
+        .iter()
+        .enumerate()
+        .filter_map(|(index, edge)| {
+            let separator = edge.separator?;
+            let slot = forward_slot[index] as usize;
+            debug_assert_ne!(slot, u32::MAX as usize);
+            let left = walk_label(
+                subdivision,
+                BoundaryFaceId(subdivision.topology.face_of[slot]),
+            );
+            let twin = subdivision.topology.twins[slot] as usize;
+            let right = walk_label(
+                subdivision,
+                BoundaryFaceId(subdivision.topology.face_of[twin]),
+            );
+            (selected_cell_label(left) || selected_cell_label(right))
+                .then_some((separator, EdgeId(index as u32)))
+        })
+        .collect();
     selected.sort_unstable();
     let mut result = Vec::new();
     let mut start = 0;
@@ -2336,7 +2570,13 @@ fn assemble_edges(
         while end < selected.len() && selected[end].0 == separator {
             end += 1;
         }
-        assemble_separator_group(subdivision, separator, &selected[start..end], budget, &mut result)?;
+        assemble_separator_group(
+            subdivision,
+            separator,
+            &selected[start..end],
+            budget,
+            &mut result,
+        )?;
         start = end;
     }
     result.sort_by(|left, right| {
@@ -2367,7 +2607,7 @@ pub(super) enum EmbeddedEdges {
 
 pub(super) fn empty_packed_edges() -> Result<EmbeddedEdges> {
     Ok(EmbeddedEdges::Packed {
-        coords: CoordSeq::from_vecs(Vec::new(), Vec::new(), None, None),
+        coords: CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None)?,
         offsets: CsrOffsetColumn::try_new(vec![0], 0)?,
     })
 }
@@ -2393,7 +2633,7 @@ fn pack_separator_chains(
         ends.push(xs.len());
     }
     Ok(EmbeddedEdges::Packed {
-        coords: CoordSeq::from_vecs(xs, ys, None, None),
+        coords: CoordSeq::try_from_vecs(xs, ys, None, None)?,
         offsets: CsrOffsetColumn::try_new(ends, vertices)?,
     })
 }
@@ -2432,13 +2672,20 @@ impl EmbeddedEdges {
                         let end = ends[line + 1] as usize;
                         let xs = coords.xs()[start..end].to_vec();
                         let ys = coords.ys()[start..end].to_vec();
-                        LineSeq::try_new(CoordSeq::from_vecs(xs, ys, None, None))
+                        LineSeq::try_new(CoordSeq::try_from_vecs(xs, ys, None, None)?)
                     })
                     .collect()
             },
             Self::Segments(segments) => segments
                 .into_iter()
-                .map(|[a, b]| LineSeq::try_new(CoordSeq::from_vecs(vec![a.x, b.x], vec![a.y, b.y], None, None)))
+                .map(|[a, b]| {
+                    LineSeq::try_new(CoordSeq::try_from_vecs(
+                        vec![a.x, b.x],
+                        vec![a.y, b.y],
+                        None,
+                        None,
+                    )?)
+                })
                 .collect(),
         }
     }
@@ -2457,7 +2704,10 @@ impl EmbeddedEdges {
                     ys.extend([a.y, b.y]);
                 }
                 let ends = (0..=segments.len()).map(|edge| edge * 2).collect();
-                Ok((CoordSeq::from_vecs(xs, ys, None, None), CsrOffsetColumn::try_new(ends, vertices)?))
+                Ok((
+                    CoordSeq::try_from_vecs(xs, ys, None, None)?,
+                    CsrOffsetColumn::try_new(ends, vertices)?,
+                ))
             },
         }
     }
@@ -2650,7 +2900,8 @@ fn embed(
                 return Err(voronoi_error("live separator has incomplete ownership"));
             },
         }
-        while marked_start < marked_candidates.len() && marked_candidates[marked_start].0 < edge_id {
+        while marked_start < marked_candidates.len() && marked_candidates[marked_start].0 < edge_id
+        {
             marked_start += 1;
         }
         let mut candidate = marked_start;
@@ -2881,7 +3132,7 @@ fn embed(
                 Ring::closed(coordinates)
             })
             .collect::<Result<Vec<_>>>()?;
-        let polygon = Polygon::new(shell, holes);
+        let polygon = Polygon::new(shell, holes)?;
         if !polygon_is_valid(&polygon) {
             return Err(embedding_failure());
         }
@@ -2912,7 +3163,7 @@ fn embed(
         .iter()
         .map(|ring| embedded_ring(ring))
         .collect::<Result<Vec<_>>>()?;
-    let comparison_clip = Shape::Polygon(Polygon::new(shell, holes));
+    let comparison_clip = Shape::Polygon(Polygon::new(shell, holes)?);
     if let Shape::Polygon(polygon) = &comparison_clip {
         admit_embedded_clip(polygon)?;
     }
@@ -2966,7 +3217,7 @@ fn embed(
         )?;
         for (site_index, site) in sites.iter().enumerate() {
             let point = Shape::Point(site.point.clone());
-            if !comparison_clip.covers(&point) {
+            if !comparison_clip.covers(&point)? {
                 continue;
             }
             let mut own = false;
@@ -2987,7 +3238,7 @@ fn embed(
                         .saturating_add(polygon.shell.len())
                         .saturating_add(polygon.holes.iter().map(|hole| hole.len()).sum::<usize>()),
                 )?;
-                if Shape::Polygon(polygon.clone()).covers(&point) {
+                if Shape::Polygon(polygon.clone()).covers(&point)? {
                     if owner.0 as usize != site_index {
                         return Err(embedding_failure());
                     }
@@ -3054,13 +3305,7 @@ pub(super) fn build(
     let scaffold = build_scaffold(&rect, &clip, budget)?;
     let separators = emit_clipped_separators(sites, &primal_edges, &complex, &rect, budget)?;
     let atoms = node_scaffold_and_separators(
-        scaffold,
-        separators,
-        sites,
-        &adjacency,
-        &clip,
-        &rect,
-        budget,
+        scaffold, separators, sites, &adjacency, &clip, &rect, budget,
     )?;
     let mut subdivision = build_exact_subdivision(atoms, budget)?;
     graft_components(&mut subdivision, sites, &adjacency, budget)?;
@@ -3350,7 +3595,10 @@ mod tests {
             let sites: Vec<_> = [(0.0, 0.0), (step, 0.0), (0.0, step)]
                 .into_iter()
                 .enumerate()
-                .map(|(id, (x, y))| Site { id, point: Point::new_raw_xy(x, y) })
+                .map(|(id, (x, y))| Site {
+                    id,
+                    point: Point::new_raw_xy(x, y),
+                })
                 .collect();
             let mut dual_budget = ExpansionBudget::new("test", "subnormal dual");
             let dual = dual_build(&sites, VoronoiBoundary::Envelope, &mut dual_budget);
@@ -3359,20 +3607,42 @@ mod tests {
 
             match (admitted, dual, legacy) {
                 (false, Err(dual), Err(legacy)) => {
-                    assert!(matches!(dual.kind(), crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))));
-                    assert!(matches!(legacy.kind(), crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))));
-                }
+                    assert!(matches!(
+                        dual.kind(),
+                        crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))
+                    ));
+                    assert!(matches!(
+                        legacy.kind(),
+                        crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))
+                    ));
+                },
                 (true, Ok(dual), Ok(legacy)) => {
                     for diagram in [dual, legacy] {
                         assert_eq!(diagram.polygons.len(), 3, "units={units}");
-                        let cells: Vec<_> = diagram.polygons.iter().cloned().map(Shape::Polygon).collect();
+                        let cells: Vec<_> = diagram
+                            .polygons
+                            .iter()
+                            .cloned()
+                            .map(Shape::Polygon)
+                            .collect();
                         assert!(cells.iter().all(|cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon))));
                         assert!(coverage_is_valid(&cells, 0.0).unwrap(), "units={units}");
                         let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
-                        assert!(diagram.clip.difference(&union, Strictness::Lenient).unwrap().is_empty());
-                        assert!(union.difference(&diagram.clip, Strictness::Lenient).unwrap().is_empty());
+                        assert!(
+                            diagram
+                                .clip
+                                .difference(&union, Strictness::Lenient)
+                                .unwrap()
+                                .is_empty()
+                        );
+                        assert!(
+                            union
+                                .difference(&diagram.clip, Strictness::Lenient)
+                                .unwrap()
+                                .is_empty()
+                        );
                     }
-                }
+                },
                 (expected, dual, legacy) => panic!(
                     "units={units} expected admitted={expected}, dual admitted={}, legacy admitted={}",
                     dual.is_ok(),
@@ -3417,7 +3687,7 @@ mod tests {
             Point::new_raw_xy(0.0, 0.0),
         ])
         .unwrap();
-        assert!(admit_embedded_clip(&Polygon::new(ring, Vec::new())).is_err());
+        assert!(admit_embedded_clip(&Polygon::new(ring, Vec::new()).unwrap()).is_err());
     }
 
     fn reversed_cycles(cycles: &[Vec<exact::ExactPoint>]) -> Vec<Vec<exact::ExactPoint>> {
@@ -3428,9 +3698,18 @@ mod tests {
     }
 
     fn assert_boundary_walk_euler(subdivision: &ExactSubdivision) {
-        let components = subdivision.topology.component_of.iter().copied().collect::<std::collections::BTreeSet<_>>().len();
+        let components = subdivision
+            .topology
+            .component_of
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
         let faces = subdivision.topology.face_starts.len() - 1;
-        assert_eq!(subdivision.vertices.len() as isize - subdivision.edges.len() as isize + faces as isize, 2 * components as isize);
+        assert_eq!(
+            subdivision.vertices.len() as isize - subdivision.edges.len() as isize + faces as isize,
+            2 * components as isize
+        );
         if !subdivision.labels.is_empty() {
             assert_eq!(subdivision.labels.len(), faces);
         }
@@ -3668,10 +3947,13 @@ mod tests {
         // certificate and rejects this one-ULP boundary case. The independent
         // union/difference oracle still observes the same rectangular result.
         assert!(!coverage_is_valid(&cells, 0.0).unwrap());
-        let clip = Shape::Polygon(Polygon::new(
-            rectangle(bounds[0], bounds[2], bounds[1], bounds[3]),
-            Vec::new(),
-        ));
+        let clip = Shape::Polygon(
+            Polygon::new(
+                rectangle(bounds[0], bounds[2], bounds[1], bounds[3]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
         assert!(
             clip.difference(&union, Strictness::Lenient)
@@ -3718,7 +4000,8 @@ mod tests {
 
     fn grafted_clip_subdivision(sites: &[Site], clip_polygon: &Polygon) -> ExactSubdivision {
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
-        let clip = normalize_clip(sites, VoronoiBoundary::Polygon(clip_polygon), &mut budget).unwrap();
+        let clip =
+            normalize_clip(sites, VoronoiBoundary::Polygon(clip_polygon), &mut budget).unwrap();
         let mesh = certified_delaunay(sites);
         let complex = delaunay_complex(&mesh, sites).unwrap();
         let primal_edges = mesh.primal_edges();
@@ -3744,8 +4027,15 @@ mod tests {
 
     fn walk_points(subdivision: &ExactSubdivision, face: BoundaryFaceId) -> Vec<exact::ExactPoint> {
         let topology = &subdivision.topology;
-        let walk = &topology.face_slots[topology.face_starts[face.0 as usize] as usize..topology.face_starts[face.0 as usize + 1] as usize];
-        walk.iter().map(|&slot| subdivision.vertices[topology.owners[slot as usize] as usize].point.clone()).collect()
+        let walk = &topology.face_slots[topology.face_starts[face.0 as usize] as usize
+            ..topology.face_starts[face.0 as usize + 1] as usize];
+        walk.iter()
+            .map(|&slot| {
+                subdivision.vertices[topology.owners[slot as usize] as usize]
+                    .point
+                    .clone()
+            })
+            .collect()
     }
 
     fn first_equal_label_misattaches_a_hole(subdivision: &ExactSubdivision) -> bool {
@@ -3770,7 +4060,8 @@ mod tests {
                 .expect("negative walk has a same-label positive")
                 .0;
             let probe = &walk_points(subdivision, negative)[0];
-            exact::point_in_cycle(&walk_points(subdivision, parent), probe) != exact::PointInCycle::Inside
+            exact::point_in_cycle(&walk_points(subdivision, parent), probe)
+                != exact::PointInCycle::Inside
         })
     }
 
@@ -3803,15 +4094,21 @@ mod tests {
 
     fn separator_fixture() -> (Vec<Site>, Polygon) {
         (
-            sites_xy(&[(-4.0, -3.0), (4.0, -2.0), (3.0, 4.0), (-3.0, 3.0), (0.0, 0.0)]),
-            Polygon::new(rectangle(-6.0, -6.0, 6.0, 6.0), Vec::new()),
+            sites_xy(&[
+                (-4.0, -3.0),
+                (4.0, -2.0),
+                (3.0, 4.0),
+                (-3.0, 3.0),
+                (0.0, 0.0),
+            ]),
+            Polygon::new(rectangle(-6.0, -6.0, 6.0, 6.0), Vec::new()).unwrap(),
         )
     }
 
     fn coincident_frame_fixture() -> (Vec<Site>, Polygon) {
         (
             sites_xy(&[(0.0, -1.0), (0.0, 1.0), (2.0, 0.5)]),
-            Polygon::new(rectangle(-1.0, 0.0, 0.5, 2.0), Vec::new()),
+            Polygon::new(rectangle(-1.0, 0.0, 0.5, 2.0), Vec::new()).unwrap(),
         )
     }
 
@@ -3826,13 +4123,7 @@ mod tests {
         let separators =
             emit_clipped_separators(sites, &primal_edges, &complex, &rect, budget).unwrap();
         node_scaffold_and_separators(
-            scaffold,
-            separators,
-            sites,
-            &adjacency,
-            &clip,
-            &rect,
-            budget,
+            scaffold, separators, sites, &adjacency, &clip, &rect, budget,
         )
         .unwrap()
     }
@@ -3948,7 +4239,9 @@ mod tests {
         let coincident: Vec<_> = atoms
             .edges
             .iter()
-            .filter(|edge| edge.separator == Some([SiteId(0), SiteId(1)]) && edge.frame_side.is_some())
+            .filter(|edge| {
+                edge.separator == Some([SiteId(0), SiteId(1)]) && edge.frame_side.is_some()
+            })
             .collect();
         assert!(!coincident.is_empty());
         for edge in &coincident {
@@ -4013,7 +4306,10 @@ mod tests {
             let end = end as usize;
             assert_eq!(end - cursor, line.len());
             for index in 0..line.len() {
-                assert_eq!(coords.point_at(cursor + index).xy(), line.point_at(index).xy());
+                assert_eq!(
+                    coords.point_at(cursor + index).xy(),
+                    line.point_at(index).xy()
+                );
             }
             cursor = end;
         }
@@ -4048,7 +4344,9 @@ mod tests {
             (0..line.len()).all(|index| {
                 let xy = line.point_at(index).xy();
                 (xy.x == -1.0 || xy.x == 0.5 || xy.y == 0.0 || xy.y == 2.0)
-                    && !(xy == bottom[0] || xy == bottom[1] || (xy.y == 0.0 && xy.x > -1.0 && xy.x < 0.5))
+                    && !(xy == bottom[0]
+                        || xy == bottom[1]
+                        || (xy.y == 0.0 && xy.x > -1.0 && xy.x < 0.5))
             }) && (0..line.len().saturating_sub(1)).all(|index| {
                 let a = line.point_at(index).xy();
                 let b = line.point_at(index + 1).xy();
@@ -4071,7 +4369,8 @@ mod tests {
                 (-1.0, 2.0),
             ]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let mut budget = ExpansionBudget::new("test", "interior-first chain");
         let atoms = node_polygon(&sites, &polygon, &mut budget);
         let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
@@ -4100,7 +4399,8 @@ mod tests {
                 .map_or_else(|| vertex.point.round_nearest_even(), Ok)
                 .unwrap()
         };
-        let assembled_coordinates: Vec<_> = matching[0].vertices.iter().copied().map(round).collect();
+        let assembled_coordinates: Vec<_> =
+            matching[0].vertices.iter().copied().map(round).collect();
         assert_eq!(assembled_coordinates.as_slice(), known.as_slice());
         let mut group: Vec<_> = matching[0]
             .edges
@@ -4118,7 +4418,8 @@ mod tests {
         assert_eq!(degree[&left], 2);
         assert_eq!(degree[&right], 2);
         let mut chains = Vec::new();
-        assemble_separator_group(&subdivision, separator, &group, &mut budget, &mut chains).unwrap();
+        assemble_separator_group(&subdivision, separator, &group, &mut budget, &mut chains)
+            .unwrap();
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].edges.len(), 3);
         assert_eq!(chains[0].vertices.len(), 4);
@@ -4144,10 +4445,16 @@ mod tests {
             point: Point::new_raw_xy(offset + x, offset + y),
         })
         .collect();
-        let clip = Polygon::new(rectangle(offset - 1.0, offset - 1.0, offset + 11.0, offset + 11.0), Vec::new());
+        let clip = Polygon::new(
+            rectangle(offset - 1.0, offset - 1.0, offset + 11.0, offset + 11.0),
+            Vec::new(),
+        )
+        .unwrap();
         let mut budget = ExpansionBudget::new("test", "edges-only collision");
         let error = match build_edges(&sites, VoronoiBoundary::Polygon(&clip), &mut budget, true) {
-            Ok(_) => panic!("colliding exact vertices unexpectedly embedded on the edges-only path"),
+            Ok(_) => {
+                panic!("colliding exact vertices unexpectedly embedded on the edges-only path")
+            },
             Err(error) => error,
         };
         assert!(
@@ -4237,7 +4544,8 @@ mod tests {
         let diamond = Polygon::new(
             closed_ring(&[(0.0, 1.0), (1.0, 0.0), (2.0, 1.0), (1.0, 2.0)]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let sites = [(10.0, 0.0), (12.0, 0.0), (11.0, 1.0)];
         let cells = site_shape(&sites)
             .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&diamond))
@@ -4250,7 +4558,8 @@ mod tests {
         let clip = Polygon::new(
             closed_ring(&[(1.0, 0.0), (3.0, 0.0), (3.0, 2.0), (0.0, 2.0)]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let sites = [(2.0, 1.0), (1.2, 1.4), (2.4, 1.5)];
         let cells = site_shape(&sites)
             .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
@@ -4263,7 +4572,8 @@ mod tests {
         let clip = Polygon::new(
             closed_ring(&[(2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let sites = [(0.5, 0.5), (1.5, 0.5), (1.0, 1.5)];
         let cells = site_shape(&sites)
             .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
@@ -4275,8 +4585,14 @@ mod tests {
     fn holed_diamond_clip_covers_shell_minus_hole() {
         let clip = Polygon::new(
             closed_ring(&[(0.0, 1.0), (1.0, 0.0), (2.0, 1.0), (1.0, 2.0)]),
-            vec![closed_ring(&[(0.75, 0.75), (1.25, 0.75), (1.25, 1.25), (0.75, 1.25)])],
-        );
+            vec![closed_ring(&[
+                (0.75, 0.75),
+                (1.25, 0.75),
+                (1.25, 1.25),
+                (0.75, 1.25),
+            ])],
+        )
+        .unwrap();
         let sites = [(10.0, 0.0), (12.0, 0.0), (11.0, 1.0)];
         let cells = site_shape(&sites)
             .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
@@ -4291,7 +4607,7 @@ mod tests {
     #[test]
     fn public_polygon_admits_sites_on_and_outside_clip_aabb() {
         let sites = sites_xy(&[(0.0, 0.0), (1.0, 0.0), (3.0, 1.0), (1.0, 1.0)]);
-        let polygon = Polygon::new(rectangle(0.0, 0.0, 2.0, 2.0), Vec::new());
+        let polygon = Polygon::new(rectangle(0.0, 0.0, 2.0, 2.0), Vec::new()).unwrap();
         let mut budget = ExpansionBudget::new("test", "sites on and outside R");
         let atoms = node_polygon(&sites, &polygon, &mut budget);
         assert!(
@@ -4302,7 +4618,13 @@ mod tests {
             }),
             "old frame halfplane still holds on every frame-only atom"
         );
-        build(&sites, VoronoiBoundary::Polygon(&polygon), &mut budget, true).unwrap();
+        build(
+            &sites,
+            VoronoiBoundary::Polygon(&polygon),
+            &mut budget,
+            true,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -4317,9 +4639,15 @@ mod tests {
             false,
         )
         .unwrap();
-        let polygon = Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new());
+        let polygon = Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new()).unwrap();
         let mut polygon_budget = ExpansionBudget::new("test", "units4 polygon");
-        build(&sites, VoronoiBoundary::Polygon(&polygon), &mut polygon_budget, true).unwrap();
+        build(
+            &sites,
+            VoronoiBoundary::Polygon(&polygon),
+            &mut polygon_budget,
+            true,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -4349,7 +4677,8 @@ mod tests {
             .collect();
         let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
             -12.0, -1.0, 12.0, 1.0,
-        )]);
+        )])
+        .unwrap();
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
         let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
         let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
@@ -4388,7 +4717,8 @@ mod tests {
             .collect();
         let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
             -1.0, -1.0, 1.0, 1.0,
-        )]);
+        )])
+        .unwrap();
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
         let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
         let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
@@ -4403,7 +4733,11 @@ mod tests {
             .enumerate()
             .filter(|(index, label)| {
                 selected_cell_label(**label)
-                    && exact::cycle_orientation(&walk_points(&subdivision, BoundaryFaceId(*index as u32))).unwrap()
+                    && exact::cycle_orientation(&walk_points(
+                        &subdivision,
+                        BoundaryFaceId(*index as u32),
+                    ))
+                    .unwrap()
                         == ExactSign::Negative
             })
             .map(|(_, label)| *label)
@@ -4426,14 +4760,12 @@ mod tests {
                 point: Point::new_raw_xy(x, y),
             })
             .collect();
-        let clip_polygon = Polygon::new(
-            rectangle(-20.0, -20.0, 20.0, 20.0),
-            vec![
-                rectangle(-12.0, -1.0, 12.0, 1.0),
-                rectangle(-8.0, 6.0, -6.0, 8.0),
-                rectangle(-1.2, -1.7, -0.6, -1.2),
-            ],
-        );
+        let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![
+            rectangle(-12.0, -1.0, 12.0, 1.0),
+            rectangle(-8.0, 6.0, -6.0, 8.0),
+            rectangle(-1.2, -1.7, -0.6, -1.2),
+        ])
+        .unwrap();
         let subdivision = grafted_clip_subdivision(&sites, &clip_polygon);
         assert_boundary_walk_euler(&subdivision);
         assert!(
@@ -4442,7 +4774,10 @@ mod tests {
         );
         let mut budget = ExpansionBudget::new("test", "owner-grouped assembly");
         let restored = assemble_cells(&subdivision, &mut budget).unwrap();
-        let top: Vec<_> = restored.iter().filter(|part| part.owner == SiteId(1)).collect();
+        let top: Vec<_> = restored
+            .iter()
+            .filter(|part| part.owner == SiteId(1))
+            .collect();
         assert_eq!(top.len(), 2);
         assert_eq!(top.iter().map(|part| part.holes.len()).sum::<usize>(), 2);
         assert!(top.iter().all(|part| part.holes.len() == 1));
@@ -4460,12 +4795,16 @@ mod tests {
             .collect();
         let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
             -1.0, -1.0, 1.0, 1.0,
-        )]);
+        )])
+        .unwrap();
         let mut subdivision = grafted_clip_subdivision(&sites, &clip_polygon);
         validate_exact_subdivision(&subdivision).unwrap();
         let slot = (0..subdivision.topology.targets.len())
             .find(|&slot| {
-                let left = walk_label(&subdivision, BoundaryFaceId(subdivision.topology.face_of[slot]));
+                let left = walk_label(
+                    &subdivision,
+                    BoundaryFaceId(subdivision.topology.face_of[slot]),
+                );
                 selected_cell_label(left)
             })
             .expect("selected walk has a slot");
@@ -4490,13 +4829,13 @@ mod tests {
             .collect();
         let clip = Polygon::new(rectangle(-3.0, -3.0, 3.0, 3.0), vec![rectangle(
             -1.5, -1.0, 1.5, 1.0,
-        )]);
+        )])
+        .unwrap();
         let mut budget = ExpansionBudget::new("test", "collinear Voronoi topology");
-        let edges =
-            build_collinear_edges(&sites, VoronoiBoundary::Polygon(&clip), &mut budget)
-                .unwrap()
-                .into_line_seqs()
-                .unwrap();
+        let edges = build_collinear_edges(&sites, VoronoiBoundary::Polygon(&clip), &mut budget)
+            .unwrap()
+            .into_line_seqs()
+            .unwrap();
         assert_eq!(edges.len(), 4);
         let mut endpoints: Vec<_> = edges
             .iter()
@@ -4585,7 +4924,7 @@ mod tests {
                 .collect(),
             0.1,
         );
-        let clip = Polygon::new(rectangle(-1.0, -1.0, 2.0, 2.0), Vec::new());
+        let clip = Polygon::new(rectangle(-1.0, -1.0, 2.0, 2.0), Vec::new()).unwrap();
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
         let diagram = build(&sites, VoronoiBoundary::Polygon(&clip), &mut budget, true).unwrap();
         assert!(!diagram.into_edges().into_line_seqs().unwrap().is_empty());
@@ -4594,10 +4933,7 @@ mod tests {
     #[test]
     fn semantic_admission_mutants_change_validity_overlap_gap_and_spill() {
         let shape = |min_x, min_y, max_x, max_y| {
-            Shape::Polygon(Polygon::new(
-                rectangle(min_x, min_y, max_x, max_y),
-                Vec::new(),
-            ))
+            Shape::Polygon(Polygon::new(rectangle(min_x, min_y, max_x, max_y), Vec::new()).unwrap())
         };
         let clip = shape(0.0, 0.0, 4.0, 4.0);
         let restored_rows = vec![shape(0.0, 0.0, 2.0, 4.0), shape(2.0, 0.0, 4.0, 4.0)];
@@ -4647,7 +4983,7 @@ mod tests {
             "mutated spill={mutated_spill}, restored spill={restored_spill}"
         );
 
-        let restored_polygon = Polygon::new(rectangle(0.0, 0.0, 4.0, 4.0), Vec::new());
+        let restored_polygon = Polygon::new(rectangle(0.0, 0.0, 4.0, 4.0), Vec::new()).unwrap();
         let mutated_polygon = Polygon::new(
             Ring::closed(
                 [(0.0, 0.0), (4.0, 4.0), (0.0, 4.0), (4.0, 0.0), (0.0, 0.0)]
@@ -4657,7 +4993,8 @@ mod tests {
             )
             .unwrap(),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let restored_valid = polygon_is_valid(&restored_polygon);
         let mutated_valid = polygon_is_valid(&mutated_polygon);
         assert_ne!(
@@ -4872,8 +5209,9 @@ mod tests {
         let (shared_ring, shared_vertex, shared_point) = shared_dual_vertex(&restored);
         let mut moved_shared_vertex = restored.clone();
         let moved = shared_point.round_nearest_even().unwrap();
-        moved_shared_vertex.rings[shared_ring][shared_vertex] =
-            DualVertex::Generated(Box::new(exact::ExactPoint::from_xy(XY::new(moved.x + 0.125, moved.y))));
+        moved_shared_vertex.rings[shared_ring][shared_vertex] = DualVertex::Generated(Box::new(
+            exact::ExactPoint::from_xy(XY::new(moved.x + 0.125, moved.y)),
+        ));
         mutations.push(("moved shared vertex", moved_shared_vertex));
 
         let mut duplicate_key = restored.clone();
@@ -4883,7 +5221,8 @@ mod tests {
             PointKey::new(shared_point.round_nearest_even().unwrap())
         );
         assert!(!duplicate.same_position(&shared_point));
-        duplicate_key.rings[shared_ring][shared_vertex] = DualVertex::Generated(Box::new(duplicate));
+        duplicate_key.rings[shared_ring][shared_vertex] =
+            DualVertex::Generated(Box::new(duplicate));
         mutations.push(("duplicate rounded key", duplicate_key));
 
         let bounds = clip.frame_bounds();
@@ -5020,7 +5359,10 @@ fn dedup_tagged(ring: &mut Vec<Tagged>, centers: &[exact::ExactPoint]) {
     });
     while ring.len() > 1
         && dual_vertex_point(&ring[0].vertex, centers)
-            .zip(dual_vertex_point(&ring.last().expect("non-empty").vertex, centers))
+            .zip(dual_vertex_point(
+                &ring.last().expect("non-empty").vertex,
+                centers,
+            ))
             .is_some_and(|(left, right)| left.same_position(right))
     {
         ring.pop();
@@ -5064,7 +5406,10 @@ mod convex_cell_certificate {
                 .unwrap_or_else(|error| panic!("scale {scale:e}: {error:?}"))
                 .into_polygons();
             assert_eq!(cells.len(), 5);
-            let area: f64 = cells.iter().map(|cell| cell.shell.iter().count() as f64).sum();
+            let area: f64 = cells
+                .iter()
+                .map(|cell| cell.shell.iter().count() as f64)
+                .sum();
             assert!(area > 0.0);
         }
     }
@@ -5084,10 +5429,20 @@ mod convex_cell_certificate {
         reverse_tagged(&mut ring);
         // v2 -(b)-> v1 -(a)-> v0 -(c)-> v2
         let leaving: Vec<EdgeTag> = ring.iter().map(|tagged| tagged.leaving).collect();
-        assert_eq!(leaving, [EdgeTag::Bisector(1), EdgeTag::Bisector(0), EdgeTag::Axis]);
+        assert_eq!(leaving, [
+            EdgeTag::Bisector(1),
+            EdgeTag::Bisector(0),
+            EdgeTag::Axis
+        ]);
         let xs: Vec<f64> = ring
             .iter()
-            .map(|tagged| dual_vertex_point(&tagged.vertex, &[]).unwrap().round_nearest_even().unwrap().x)
+            .map(|tagged| {
+                dual_vertex_point(&tagged.vertex, &[])
+                    .unwrap()
+                    .round_nearest_even()
+                    .unwrap()
+                    .x
+            })
             .collect();
         assert_eq!(xs, [2.0, 1.0, 0.0]);
     }
@@ -5097,7 +5452,9 @@ mod convex_cell_certificate {
         let (a, b) = (XY::new(0.0, 0.0), XY::new(4.0, 2.0));
         let side = [XY::new(-10.0, 7.0), XY::new(10.0, 7.0)];
         let other_side = [XY::new(-10.0, -7.0), XY::new(10.0, -7.0)];
-        let hit = |sites: [XY; 2], side: [XY; 2]| match exact::ExactPoint::certified_bisector_hit(sites, side) {
+        let hit = |sites: [XY; 2], side: [XY; 2]| match exact::ExactPoint::certified_bisector_hit(
+            sites, side,
+        ) {
             exact::FrameHit::Point(point) => point,
             other => panic!("expected a certified hit, got {other:?}"),
         };
@@ -5117,7 +5474,14 @@ mod convex_cell_certificate {
         assert!(certify_convex_cell(&square, XY::new(1.0, 2.0)));
         assert!(certify_convex_cell(&square, XY::new(4.0, 2.0)));
         assert!(certify_convex_cell(&square, XY::new(0.0, 0.0)));
-        let hexagon = xy(&[(2.0, 0.0), (4.0, 1.0), (4.0, 3.0), (2.0, 4.0), (0.0, 3.0), (0.0, 1.0)]);
+        let hexagon = xy(&[
+            (2.0, 0.0),
+            (4.0, 1.0),
+            (4.0, 3.0),
+            (2.0, 4.0),
+            (0.0, 3.0),
+            (0.0, 1.0),
+        ]);
         assert!(certify_convex_cell(&hexagon, XY::new(2.0, 2.0)));
     }
 
@@ -5143,7 +5507,14 @@ mod convex_cell_certificate {
         collinear.insert(1, XY::new(2.0, 0.0));
         assert!(certify_convex_cell(&collinear, XY::new(1.0, 2.0)));
         // A collinear reversal (a spike) is not.
-        let spike = xy(&[(0.0, 0.0), (4.0, 0.0), (6.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+        let spike = xy(&[
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (6.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (0.0, 4.0),
+        ]);
         assert!(!certify_convex_cell(&spike, XY::new(1.0, 2.0)));
         let backtrack = xy(&[(0.0, 0.0), (4.0, 0.0), (3.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
         assert!(!certify_convex_cell(&backtrack, XY::new(1.0, 2.0)));
@@ -5158,7 +5529,11 @@ mod convex_cell_certificate {
             })
             .collect();
         for index in 0..5 {
-            let (a, b, c) = (pentagram[index], pentagram[(index + 1) % 5], pentagram[(index + 2) % 5]);
+            let (a, b, c) = (
+                pentagram[index],
+                pentagram[(index + 1) % 5],
+                pentagram[(index + 2) % 5],
+            );
             assert_eq!(exact::orient2d(a, b, c), ExactSign::Positive);
         }
         assert!(!certify_convex_cell(&pentagram, XY::new(0.0, 0.0)));
@@ -5195,7 +5570,11 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
         incident_faces_for_site(
             start,
             halfedges,
-            Some(IncidenceOutput { faces: &mut faces[range.clone()], neighbors: &mut neighbors[range], flat: &flat }),
+            Some(IncidenceOutput {
+                faces: &mut faces[range.clone()],
+                neighbors: &mut neighbors[range],
+                flat: &flat,
+            }),
         );
     }
     IncidentFaces {
@@ -5293,10 +5672,15 @@ fn dual_close_hull_chain(
         vertex: DualVertex::Generated(Box::new(entry_ray.1.clone())),
         leaving: EdgeTag::Bisector(entry_site),
     });
-    ring.extend(faces.iter().zip(neighbors).map(|(&face, &neighbor)| Tagged {
-        vertex: DualVertex::Center(complex.component_of_face(face) as u32),
-        leaving: EdgeTag::Bisector(neighbor),
-    }));
+    ring.extend(
+        faces
+            .iter()
+            .zip(neighbors)
+            .map(|(&face, &neighbor)| Tagged {
+                vertex: DualVertex::Center(complex.component_of_face(face) as u32),
+                leaving: EdgeTag::Bisector(neighbor),
+            }),
+    );
     ring.push(Tagged {
         vertex: DualVertex::Generated(Box::new(exit_ray.1.clone())),
         leaving: EdgeTag::Axis,
@@ -5343,10 +5727,7 @@ fn dual_vertex_point<'a>(
     }
 }
 
-fn dual_cycle_orientation(
-    ring: &[DualVertex],
-    centers: &[exact::ExactPoint],
-) -> Result<ExactSign> {
+fn dual_cycle_orientation(ring: &[DualVertex], centers: &[exact::ExactPoint]) -> Result<ExactSign> {
     if ring.len() < 3 {
         return Err(voronoi_error("exact cycle has fewer than three vertices"));
     }
@@ -5432,7 +5813,11 @@ fn dual_clip_convex(
 ) -> Result<Vec<Tagged>> {
     // Certified crossings need the clip sides as doubles.
     let corners: Option<[XY; 4]> = axis_aligned
-        .then(|| rect.iter().map(exact::ExactPoint::as_double).collect::<Option<Vec<_>>>())
+        .then(|| {
+            rect.iter()
+                .map(exact::ExactPoint::as_double)
+                .collect::<Option<Vec<_>>>()
+        })
         .flatten()
         .and_then(|corners| corners.try_into().ok());
     let mut current = ring;
@@ -5456,13 +5841,18 @@ fn dual_clip_convex(
         // edge meets the side at a certified rounding; an axis-aligned edge
         // meets it at an exact double; anything the certificate declines is
         // the exact intersection of the two support lines, as before.
-        let crossing = |from: &exact::ExactPoint, tag: EdgeTag, to: &exact::ExactPoint| -> Result<Option<exact::ExactPoint>> {
+        let crossing = |from: &exact::ExactPoint,
+                        tag: EdgeTag,
+                        to: &exact::ExactPoint|
+         -> Result<Option<exact::ExactPoint>> {
             if let Some(corners) = corners {
                 let ends = [corners[side], corners[(side + 1) % 4]];
                 match tag {
                     EdgeTag::Bisector(neighbor) => {
                         let pair = [site, sites[neighbor as usize].point.xy()];
-                        if let exact::FrameHit::Point(hit) = exact::ExactPoint::certified_bisector_hit(pair, ends) {
+                        if let exact::FrameHit::Point(hit) =
+                            exact::ExactPoint::certified_bisector_hit(pair, ends)
+                        {
                             return Ok(Some(hit));
                         }
                     },
@@ -5473,7 +5863,8 @@ fn dual_clip_convex(
                         // a perpendicular side is then an exact double.
                         let shared = |axis: usize| {
                             let (from, to) = (from.bounds()[axis], to.bounds()[axis]);
-                            (from.lo == from.hi && to.lo == to.hi && from.lo == to.lo).then_some(from.lo)
+                            (from.lo == from.hi && to.lo == to.hi && from.lo == to.lo)
+                                .then_some(from.lo)
                         };
                         let hit = match side {
                             0 | 2 => shared(0).map(|x| XY::new(x, ends[0].y)),
@@ -5495,10 +5886,12 @@ fn dual_clip_convex(
         };
         let mut next = Vec::with_capacity(current.len() + 1);
         for index in 0..current.len() {
-            let this_point = dual_vertex_point(&current[index].vertex, centers).expect("valid center id");
+            let this_point =
+                dual_vertex_point(&current[index].vertex, centers).expect("valid center id");
             let this_in = inside(this_point);
             let previous = (index + current.len() - 1) % current.len();
-            let previous_point = dual_vertex_point(&current[previous].vertex, centers).expect("valid center id");
+            let previous_point =
+                dual_vertex_point(&current[previous].vertex, centers).expect("valid center id");
             let prev_in = inside(previous_point);
             if this_in != prev_in {
                 let tag = current[previous].leaving;
@@ -5581,7 +5974,11 @@ fn dual_build_rings(
         let boundary = incidence.boundaries[site];
         budget.add(faces.len().saturating_add(1))?;
         let neighbors = &incidence.neighbors[incidence.offsets[site]..incidence.offsets[site + 1]];
-        let untag = |ring: &[Tagged]| ring.iter().map(|tagged| tagged.vertex.clone()).collect::<Vec<_>>();
+        let untag = |ring: &[Tagged]| {
+            ring.iter()
+                .map(|tagged| tagged.vertex.clone())
+                .collect::<Vec<_>>()
+        };
         let ring = if let Some((first_hull, last_hull)) = boundary {
             // (q -> site) and (site -> r): the two hull edges bounding the cell.
             let entry = [flat(first_hull), flat(dual_next_halfedge(first_hull))];
@@ -5599,14 +5996,31 @@ fn dual_build_rings(
             // isolated-ring case. Ring handedness is normalization, not a
             // second candidate.
             let interior = dual_close_hull_chain(
-                faces, neighbors, entry[0] as u32, &complex, centers, &entry_ray, &exit_ray, &frame, false,
+                faces,
+                neighbors,
+                entry[0] as u32,
+                &complex,
+                centers,
+                &entry_ray,
+                &exit_ray,
+                &frame,
+                false,
             )?;
-            if dual_point_in_cycle(&untag(&interior), centers, &site_point) == exact::PointInCycle::Inside
+            if dual_point_in_cycle(&untag(&interior), centers, &site_point)
+                == exact::PointInCycle::Inside
             {
                 interior
             } else {
                 let exterior = dual_close_hull_chain(
-                    faces, neighbors, entry[0] as u32, &complex, centers, &entry_ray, &exit_ray, &frame, true,
+                    faces,
+                    neighbors,
+                    entry[0] as u32,
+                    &complex,
+                    centers,
+                    &entry_ray,
+                    &exit_ray,
+                    &frame,
+                    true,
                 )?;
                 if dual_point_in_cycle(&untag(&exterior), centers, &site_point)
                     != exact::PointInCycle::Inside
@@ -5632,7 +6046,8 @@ fn dual_build_rings(
                 match ring.last_mut() {
                     // Cocircular faces share the vertex; the edge leaving it
                     // is the last face's.
-                    Some(last) if matches!(last.vertex, DualVertex::Center(id) if id as usize == component) => {
+                    Some(last) if matches!(last.vertex, DualVertex::Center(id) if id as usize == component) =>
+                    {
                         last.leaving = EdgeTag::Bisector(neighbor);
                     },
                     _ => ring.push(Tagged {
@@ -5641,7 +6056,8 @@ fn dual_build_rings(
                     }),
                 }
                 interior = interior
-                    && interior_bounds.is_some_and(|bounds| centers[component].strictly_inside(bounds));
+                    && interior_bounds
+                        .is_some_and(|bounds| centers[component].strictly_inside(bounds));
             }
             if ring.len() > 1
                 && let (DualVertex::Center(first), DualVertex::Center(last)) =
@@ -5677,7 +6093,14 @@ fn dual_build_rings(
             }
             ring
         };
-        let clipped = dual_clip_convex(ring, sites[site].point.xy(), sites, &rect, axis_aligned, centers)?;
+        let clipped = dual_clip_convex(
+            ring,
+            sites[site].point.xy(),
+            sites,
+            &rect,
+            axis_aligned,
+            centers,
+        )?;
         if clipped.len() < 3 {
             return Err(voronoi_error(
                 "dual Voronoi cell degenerated under the clip",
@@ -5686,7 +6109,10 @@ fn dual_build_rings(
         budget.add(clipped.len())?;
         rings.push(untag(&clipped));
     }
-    Ok(DualRings { rings, centers: complex.centers })
+    Ok(DualRings {
+        rings,
+        centers: complex.centers,
+    })
 }
 
 fn lex_xy(left: XY, right: XY) -> Ordering {
@@ -5830,7 +6256,13 @@ fn dual_embed(
     let mut ids_all: Vec<u32> = Vec::with_capacity(total);
     for ring in &rings.rings {
         for vertex in ring {
-            let (xy, id) = resolve(vertex, &rings.centers, &mut center_rounded, &mut interned, &mut vertex_xy)?;
+            let (xy, id) = resolve(
+                vertex,
+                &rings.centers,
+                &mut center_rounded,
+                &mut interned,
+                &mut vertex_xy,
+            )?;
             rounded_all.push(xy);
             ids_all.push(id);
         }
@@ -5851,7 +6283,10 @@ fn dual_embed(
         rounded.rotate_left(start);
         let site_xy = sites[site_index].point.xy();
         if !certify_convex_cell(rounded, site_xy) {
-            let rounded_ring: Vec<_> = rounded.iter().map(|&xy| exact::ExactPoint::from_xy(xy)).collect();
+            let rounded_ring: Vec<_> = rounded
+                .iter()
+                .map(|&xy| exact::ExactPoint::from_xy(xy))
+                .collect();
             if exact::cycle_orientation(&rounded_ring)? != ExactSign::Positive {
                 return Err(embedding_failure());
             }
@@ -5860,7 +6295,7 @@ fn dual_embed(
                 .chain(std::iter::once(&rounded[0]))
                 .map(|xy| Point::new_raw_xy(xy.x, xy.y))
                 .collect();
-            if !polygon_is_valid(&Polygon::new(Ring::closed(closed)?, Vec::new())) {
+            if !polygon_is_valid(&Polygon::new(Ring::closed(closed)?, Vec::new())?) {
                 return Err(embedding_failure());
             }
             let site = exact::ExactPoint::from_xy(site_xy);
@@ -5872,8 +6307,8 @@ fn dual_embed(
         let closed = rounded.iter().chain(std::iter::once(&rounded[0]));
         let xs: Vec<f64> = closed.clone().map(|xy| xy.x).collect();
         let ys: Vec<f64> = closed.map(|xy| xy.y).collect();
-        let ring = Ring::closed_coordseq(CoordSeq::from_vecs(xs, ys, None, None))?;
-        polygons.push(Polygon::new(ring, Vec::new()));
+        let ring = Ring::closed_coordseq(CoordSeq::try_from_vecs(xs, ys, None, None)?)?;
+        polygons.push(Polygon::new(ring, Vec::new())?);
     }
     // Completeness by EDGE CANCELLATION rather than by a full overlay union.
     //
@@ -5897,7 +6332,11 @@ fn dual_embed(
         let ids = &ids_all[offsets[site_index]..offsets[site_index + 1]];
         for index in 0..ids.len() {
             let (from, to) = (ids[index], ids[(index + 1) % ids.len()]);
-            let (low, high, forward) = if from <= to { (from, to, 1) } else { (to, from, 0) };
+            let (low, high, forward) = if from <= to {
+                (from, to, 1)
+            } else {
+                (to, from, 0)
+            };
             directed.push((u64::from(low) << 33) | (u64::from(high) << 1) | forward);
         }
     }
@@ -5914,7 +6353,7 @@ fn dual_embed(
         while run < directed.len() && directed[run] >> 1 == key {
             run += 1;
         }
-        let (low, high) = ((key >> 32) as usize, (key & 0xffff_ffff) as usize);
+        let (low, high) = ((key >> 32) as usize, (key & 0xFFFF_FFFF) as usize);
         let (a, b) = (vertex_xy[low], vertex_xy[high]);
         let count = run - cursor;
         if count == 2 {
@@ -5985,7 +6424,8 @@ fn dual_embed(
             clip.fixed[0][0].y,
         )))
         .collect();
-    let comparison_clip = Shape::Polygon(Polygon::new(Ring::closed(clip_coordinates)?, Vec::new()));
+    let comparison_clip =
+        Shape::Polygon(Polygon::new(Ring::closed(clip_coordinates)?, Vec::new())?);
     Ok(EmbeddedVoronoi {
         polygons,
         edges,

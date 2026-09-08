@@ -249,10 +249,10 @@ pub(crate) fn snap_ring_to_reference<C: Coordinates + ?Sized>(
 /// columns; survivors gather every present lane by index, so Z/M ride
 /// along untouched — and an input with nothing to drop is returned as a
 /// zero-copy share.
-pub(crate) fn remove_repeated_points(points: &CoordSeq, tolerance: f64) -> CoordSeq {
+pub(crate) fn remove_repeated_points(points: &CoordSeq, tolerance: f64) -> Result<CoordSeq> {
     let (xs, ys) = (points.xs(), points.ys());
     if xs.is_empty() {
-        return points.clone();
+        return Ok(points.clone());
     }
     let mut keep: Vec<usize> = Vec::with_capacity(xs.len());
     keep.push(0);
@@ -268,17 +268,17 @@ pub(crate) fn remove_repeated_points(points: &CoordSeq, tolerance: f64) -> Coord
         }
     }
     if keep.len() == xs.len() {
-        return points.clone();
+        return Ok(points.clone());
     }
     points.select(keep.iter().copied())
 }
 
-pub(crate) fn remove_repeated_line_points(points: &CoordSeq, tolerance: f64) -> CoordSeq {
-    let cleaned = remove_repeated_points(points, tolerance);
+pub(crate) fn remove_repeated_line_points(points: &CoordSeq, tolerance: f64) -> Result<CoordSeq> {
+    let cleaned = remove_repeated_points(points, tolerance)?;
     if points.len() >= 2 && cleaned.len() == 1 {
         return points.select([0, points.len() - 1].into_iter());
     }
-    cleaned
+    Ok(cleaned)
 }
 
 pub(crate) fn segmentize_points_budgeted(
@@ -582,13 +582,8 @@ impl<'a> SubdivisionColumns<'a> {
         }
     }
 
-    fn finish(self) -> CoordSeq {
-        CoordSeq::from_columns(
-            self.xs.into_boxed_slice().into(),
-            self.ys.into_boxed_slice().into(),
-            self.zs.map(|column| column.into_boxed_slice().into()),
-            self.ms.map(|column| column.into_boxed_slice().into()),
-        )
+    fn finish(self) -> Result<CoordSeq> {
+        CoordSeq::try_from_vecs(self.xs, self.ys, self.zs, self.ms)
     }
 
     fn push_interpolated(
@@ -751,7 +746,7 @@ fn subdivide_columns_from_steps<'a>(
     let mut output = SubdivisionColumns::new(points, emission, total);
     emit_subdivision(&steps, &mut output)?;
     output.emission.assert_exhausted();
-    Ok(output.finish())
+    output.finish()
 }
 
 impl Shape {
@@ -777,23 +772,23 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(engine.snap_point(*point)),
             Self::MultiPoint(points) => {
-                Self::MultiPoint(points.map_values(|point| engine.snap_point(point)))
+                Self::MultiPoint(points.map_values(|point| engine.snap_point(point))?)
             },
-            Self::LineString(points) => Self::LineString(
-                LineSeq::try_new(CoordSeq::from(snap_line_to_reference(points, &engine)))
-                    .expect("line coordinate sequence must contain at least two vertices"),
-            ),
+            Self::LineString(points) => Self::LineString(LineSeq::try_new(
+                CoordSeq::try_from_points(&snap_line_to_reference(points, &engine))?,
+            )?),
             Self::MultiLineString(lines) => {
-                Self::MultiLineString(lines.map_values(lines.axes(), |line| {
-                    LineSeq::try_new(CoordSeq::from(snap_line_to_reference(line, &engine)))
-                        .expect("line coordinate sequence must contain at least two vertices")
-                }))
+                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
+                    LineSeq::try_new(CoordSeq::try_from_points(&snap_line_to_reference(
+                        line, &engine,
+                    ))?)
+                })?)
             },
-            Self::Polygon(polygon) => Self::Polygon(polygon.snap_to_reference(&engine)),
+            Self::Polygon(polygon) => Self::Polygon(polygon.snap_to_reference(&engine)?),
             Self::MultiPolygon(polygons) => {
-                Self::MultiPolygon(polygons.map_values(polygons.axes(), |polygon| {
+                Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
                     polygon.snap_to_reference(&engine)
-                }))
+                })?)
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries.try_map_members(|geometry| geometry.snap(reference, tolerance))?,
@@ -839,20 +834,16 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(point_fn(point)?),
             Self::MultiPoint(points) => Self::MultiPoint(points.with_coords(seq_fn(points)?)),
-            Self::LineString(points) => Self::LineString(
-                LineSeq::try_new(seq_fn(points)?)
-                    .expect("line coordinate sequence must contain at least two vertices"),
-            ),
+            Self::LineString(points) => {
+                Self::LineString(LineSeq::try_new(seq_fn(points)?).map_err(E::from)?)
+            },
             Self::MultiLineString(lines) => {
                 let members = lines
                     .members()
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
                         MultiMember::Value(index) => seq_fn(&lines.as_slice()[index])
-                            .map(|coords| {
-                                LineSeq::try_new(coords)
-                                    .expect("coordinate transform preserves line cardinality")
-                            })
+                            .and_then(|coords| LineSeq::try_new(coords).map_err(E::from))
                             .map(MultiMember::Value),
                     })
                     .collect::<Result<Vec<_>, E>>()?;
@@ -863,7 +854,7 @@ impl Shape {
                         MultiMember::Empty => None,
                     })
                     .unwrap_or_else(|| lines.axes());
-                Self::MultiLineString(MultiLineString::from_values(axes, members))
+                Self::MultiLineString(MultiLineString::from_values(axes, members).map_err(E::from)?)
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
             Self::MultiPolygon(polygons) => {
@@ -883,7 +874,7 @@ impl Shape {
                         MultiMember::Empty => None,
                     })
                     .unwrap_or_else(|| polygons.axes());
-                Self::MultiPolygon(MultiPolygon::from_values(axes, members))
+                Self::MultiPolygon(MultiPolygon::from_values(axes, members).map_err(E::from)?)
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries
@@ -955,7 +946,7 @@ impl Shape {
         const MAX_PASSES: usize = 8;
         let mut shape = self.snap_to_grid(size, origin)?;
         for _ in 0..MAX_PASSES {
-            if validate_shape_in_frame(&shape, domain).is_none() {
+            if validate_shape_in_frame(&shape, domain)?.is_none() {
                 return Ok(shape);
             }
             shape = repair_shape_in_frame(&shape, domain, RepairMethod::Linework)?
@@ -976,7 +967,7 @@ impl Shape {
             dedup_consecutive_points(&mut vertices);
             vertices
         }
-        fn dedup_ring(ring: &Ring) -> Option<Ring> {
+        fn dedup_ring(ring: &Ring) -> Result<Option<Ring>> {
             let mut vertices = dedup_line(ring);
             // Re-close: the closure duplicate just got deduped away.
             if let Some(first) = vertices.first().copied()
@@ -985,16 +976,19 @@ impl Shape {
                 vertices.push(first);
             }
             // A ring needs three distinct vertices plus the closure.
-            (vertices.len() >= 4).then(|| Ring::from_closed(vertices))
+            if vertices.len() < 4 {
+                Ok(None)
+            } else {
+                Ok(Some(Ring::from_closed(CoordSeq::try_from_points(
+                    &vertices,
+                )?)))
+            }
         }
         Ok(match self {
             Self::LineString(points) => {
                 let vertices = dedup_line(&points);
                 if vertices.len() >= 2 {
-                    Self::LineString(
-                        LineSeq::try_new(CoordSeq::from(vertices))
-                            .expect("deduplicated line keeps at least two vertices"),
-                    )
+                    Self::LineString(LineSeq::try_new(CoordSeq::try_from_points(&vertices)?)?)
                 } else {
                     Self::typed_empty(GeometryKind::LineString, points.axes())
                 }
@@ -1003,43 +997,60 @@ impl Shape {
                 let members = lines
                     .members()
                     .map(|member| match member {
-                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Empty => Ok(MultiMember::Empty),
                         MultiMember::Value(index) => {
                             let vertices = dedup_line(&lines.as_slice()[index]);
                             if vertices.len() >= 2 {
-                                MultiMember::Value(LineSeq::try_new(CoordSeq::from(vertices)).expect("line coordinate sequence must contain at least two vertices"))
+                                Ok(MultiMember::Value(LineSeq::try_new(
+                                    CoordSeq::try_from_points(&vertices)?,
+                                )?))
                             } else {
-                                MultiMember::Empty
+                                Ok(MultiMember::Empty)
                             }
                         },
                     })
-                    .collect();
-                Self::MultiLineString(MultiLineString::from_values(lines.axes(), members))
+                    .collect::<Result<Vec<_>>>()?;
+                Self::MultiLineString(MultiLineString::from_values(lines.axes(), members)?)
             },
-            Self::Polygon(polygon) => match dedup_ring(&polygon.shell) {
+            Self::Polygon(polygon) => match dedup_ring(&polygon.shell)? {
                 Some(shell) => Self::Polygon(Polygon::new(
                     shell,
-                    polygon.holes.iter().filter_map(dedup_ring).collect(),
-                )),
+                    polygon
+                        .holes
+                        .iter()
+                        .map(dedup_ring)
+                        .collect::<Result<Vec<_>>>()?
+                        .into_iter()
+                        .flatten()
+                        .collect(),
+                )?),
                 None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
             },
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
                     .map(|member| match member {
-                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Empty => Ok(MultiMember::Empty),
                         MultiMember::Value(index) => {
                             let polygon = &polygons.as_slice()[index];
-                            dedup_ring(&polygon.shell).map_or(MultiMember::Empty, |shell| {
-                                MultiMember::Value(Polygon::new(
+                            Ok(match dedup_ring(&polygon.shell)? {
+                                Some(shell) => MultiMember::Value(Polygon::new(
                                     shell,
-                                    polygon.holes.iter().filter_map(dedup_ring).collect(),
-                                ))
+                                    polygon
+                                        .holes
+                                        .iter()
+                                        .map(dedup_ring)
+                                        .collect::<Result<Vec<_>>>()?
+                                        .into_iter()
+                                        .flatten()
+                                        .collect(),
+                                )?),
+                                None => MultiMember::Empty,
                             })
                         },
                     })
-                    .collect();
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
+                    .collect::<Result<Vec<_>>>()?;
+                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => {
                 return geometries.try_filter_map_owned_members(|geometry| {

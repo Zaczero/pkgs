@@ -1,4 +1,3 @@
-use crate::geometry::types::coordseq;
 use std::num::NonZeroU8;
 use std::ops::Deref;
 
@@ -7,7 +6,7 @@ use crate::error::Result;
 use crate::geometry::GeometryKind;
 use crate::geometry::types::{
     CoordIter, CoordSeq, CoordWindow, CoordinateAxes, Coordinates, GeometryErrorKind, Point,
-    Polygon,
+    Polygon, SharedSlice, coordseq,
 };
 
 /// Maximum number of nested `GeometryCollection` containers in one shape.
@@ -134,26 +133,36 @@ impl Shape {
 // 88-byte payloads, producing a 96-byte enum. Boxing either would trade the hot
 // structural access for a per-row allocation and indirection.
 impl HeapSize for Shape {
-    /// Retained native heap: coordinate columns **plus** container allocations
-    /// (`Vec` of parts, sparse member maps, `Arc<[Ring]>` hole storage) and
-    /// nested shapes.
-    /// Leaf points and sequences contribute only their ordinate payload so
-    /// scalar `Point`/`LineString` sizes stay in the coordinate-class band;
-    /// multipart and collection containers scale with part/member count.
+    /// Retained native heap. Multipart, polygon, line, and collection payloads
+    /// delegate to their owners, which include `SharedSlice` Arc/Vec capacity.
+    /// Empty and Point have no shared owner and report only coordinate bytes.
     fn heap_bytes(&self) -> usize {
         match self {
             Self::MultiLineString(lines) => lines.heap_bytes(),
             Self::Polygon(polygon) => polygon.heap_bytes(),
             Self::MultiPolygon(polygons) => polygons.heap_bytes(),
-            Self::GeometryCollection(geometries) => {
-                geometries.capacity() * std::mem::size_of::<Self>()
-                    + geometries.iter().map(HeapSize::heap_bytes).sum::<usize>()
-            },
+            Self::GeometryCollection(geometries) => geometries.heap_bytes(),
             Self::MultiPoint(points) => points.heap_bytes(),
-            // Empty / Point / LineString: ordinate payload only.
+            Self::LineString(line) => line.heap_bytes(),
+            // Empty / Point: no shared coordinate owner.
             leaf => leaf.coordinate_bytes(),
         }
     }
+}
+
+fn try_mapped_vec<T, E>(
+    capacity: usize,
+    items: impl IntoIterator<Item = std::result::Result<T, E>>,
+) -> std::result::Result<Vec<T>, E>
+where
+    E: From<crate::error::Error>,
+{
+    let mut out = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, capacity).map_err(E::from)?;
+    for item in items {
+        crate::try_push_vec(&mut out, item?).map_err(E::from)?;
+    }
+    Ok(out)
 }
 
 /// Coordinate sequence carried by lineal shapes. A `LineSeq` always has at
@@ -192,8 +201,8 @@ impl LineSeq {
     /// the ordinate columns both carry, so a 2D endpoint never gains fabricated
     /// Z/M; this is the one owner of that rule for `shortest_line`,
     /// `minimum_clearance_line`, and the circle-radius lines.
-    pub(crate) fn segment(start: Point, end: Point) -> Self {
-        Self(coordseq::coerced_pair(start, end))
+    pub(crate) fn segment(start: Point, end: Point) -> Result<Self> {
+        Ok(Self(coordseq::coerced_pair(start, end)?))
     }
 
     /// A stored line row addressed by `window` into packed columns. Line
@@ -212,9 +221,12 @@ impl LineSeq {
     pub(crate) fn try_map_points<E>(
         &self,
         map: impl FnMut(Point) -> Result<Point, E>,
-    ) -> Result<Self, E> {
-        let points = self.iter().map(map).collect::<Result<Vec<_>, E>>()?;
-        Ok(Self(CoordSeq::from_points(&points)))
+    ) -> Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+    {
+        let points = try_mapped_vec(self.len(), self.iter().map(map))?;
+        Ok(Self(CoordSeq::try_from_points(&points).map_err(E::from)?))
     }
 }
 
@@ -265,14 +277,14 @@ impl Coordinates for LineSeq {
 
 impl crate::HeapSize for LineSeq {
     fn heap_bytes(&self) -> usize {
-        self.coordinate_bytes()
+        self.as_coords().heap_bytes()
     }
 }
 
 /// A checked nonempty vector used by shape payloads. Empty top-level values
 /// have a typed [`Shape::Empty`] variant instead.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct NonEmptyVec<T>(Vec<T>);
+pub struct NonEmptyVec<T>(SharedSlice<T>);
 
 impl<T> NonEmptyVec<T> {
     pub(crate) fn try_from_vec(items: Vec<T>) -> Result<Self> {
@@ -282,15 +294,11 @@ impl<T> NonEmptyVec<T> {
             }
             .into());
         }
-        Ok(Self(items))
+        Ok(Self(SharedSlice::try_from_vec(items)?))
     }
 
-    pub(crate) const fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.0.len()
-    }
-
-    pub(crate) const fn capacity(&self) -> usize {
-        self.0.capacity()
     }
 }
 
@@ -311,12 +319,18 @@ impl<'a, T> IntoIterator for &'a NonEmptyVec<T> {
     }
 }
 
-impl<T> IntoIterator for NonEmptyVec<T> {
+impl<T: Clone> IntoIterator for NonEmptyVec<T> {
     type Item = T;
-    type IntoIter = std::vec::IntoIter<T>;
+    type IntoIter = crate::geometry::types::SharedSliceIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
+        self.0.iter_owned()
+    }
+}
+
+impl<T: crate::HeapSize> crate::HeapSize for NonEmptyVec<T> {
+    fn heap_bytes(&self) -> usize {
+        self.0.heap_bytes()
     }
 }
 
@@ -359,11 +373,7 @@ impl GeometryCollection {
         E: From<crate::error::Error>,
         F: FnMut(&Shape) -> std::result::Result<Shape, E>,
     {
-        let members = self
-            .members
-            .iter()
-            .map(&mut map)
-            .collect::<std::result::Result<Vec<_>, E>>()?;
+        let members = try_mapped_vec(self.members.len(), self.members.iter().map(&mut map))?;
         Self::from_members(
             NonEmptyVec::try_from_vec(members).map_err(E::from)?,
             self.depth.get() as usize,
@@ -376,16 +386,10 @@ impl GeometryCollection {
         E: From<crate::error::Error>,
         F: FnMut(Shape) -> std::result::Result<Shape, E>,
     {
-        let members = self
-            .members
-            .into_iter()
-            .map(&mut map)
-            .collect::<std::result::Result<Vec<_>, E>>()?;
-        Self::from_members(
-            NonEmptyVec::try_from_vec(members).map_err(E::from)?,
-            self.depth.get() as usize,
-        )
-        .map_err(E::from)
+        let limit = self.depth.get() as usize;
+        let members = try_mapped_vec(self.members.len(), self.members.into_iter().map(&mut map))?;
+        Self::from_members(NonEmptyVec::try_from_vec(members).map_err(E::from)?, limit)
+            .map_err(E::from)
     }
 
     pub(crate) fn try_rebuild_members(&self, members: Vec<Shape>) -> Result<Self> {
@@ -397,14 +401,13 @@ impl GeometryCollection {
         F: FnMut(Shape) -> Result<Option<Shape>>,
     {
         let limit = self.depth();
-        let members = self
-            .members
-            .into_iter()
-            .map(&mut map)
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
+        let mut members = Vec::new();
+        crate::boundary::try_reserve_vec(&mut members, self.members.len())?;
+        for shape in self.members {
+            if let Some(mapped) = map(shape)? {
+                crate::try_push_vec(&mut members, mapped)?;
+            }
+        }
         if members.is_empty() {
             return Ok(Shape::typed_empty(
                 GeometryKind::GeometryCollection,
@@ -429,12 +432,8 @@ impl GeometryCollection {
         self.members.iter()
     }
 
-    pub(crate) const fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.members.len()
-    }
-
-    pub(crate) const fn capacity(&self) -> usize {
-        self.members.capacity()
     }
 }
 
@@ -457,7 +456,7 @@ impl<'a> IntoIterator for &'a GeometryCollection {
 
 impl IntoIterator for GeometryCollection {
     type Item = Shape;
-    type IntoIter = std::vec::IntoIter<Shape>;
+    type IntoIter = crate::geometry::types::SharedSliceIter<Shape>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.members.into_iter()
@@ -476,11 +475,20 @@ pub(crate) enum MultiMember<T> {
     Value(T),
 }
 
+impl<T: crate::HeapSize> crate::HeapSize for MultiMember<T> {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Value(value) => value.heap_bytes(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum MultipartMembers {
     Dense,
     // Contains at least one Empty; Value indices are consecutive encounter order.
-    Sparse(Box<[MultiMember<usize>]>),
+    Sparse(SharedSlice<MultiMember<usize>>),
 }
 
 impl MultipartMembers {
@@ -504,7 +512,7 @@ impl MultipartMembers {
             }
         }
         Ok(if has_empty {
-            Self::Sparse(indices.into_boxed_slice())
+            Self::Sparse(SharedSlice::try_from_vec(indices)?)
         } else {
             Self::Dense
         })
@@ -538,7 +546,7 @@ impl MultipartMembers {
     fn heap_bytes(&self) -> usize {
         match self {
             Self::Dense => 0,
-            Self::Sparse(members) => std::mem::size_of_val(&**members),
+            Self::Sparse(members) => members.heap_bytes(),
         }
     }
 }
@@ -634,14 +642,14 @@ impl ExactSizeIterator for MultiPointIter<'_> {}
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MultiLineString {
     axes: CoordinateAxes,
-    values: Vec<LineSeq>,
+    values: SharedSlice<LineSeq>,
     members: MultipartMembers,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MultiPolygon {
     axes: CoordinateAxes,
-    values: Vec<Polygon>,
+    values: SharedSlice<Polygon>,
     members: MultipartMembers,
 }
 
@@ -654,17 +662,20 @@ macro_rules! impl_multipart {
             ) -> Result<Self> {
                 let member_len = members.len();
                 let mut values = Vec::new();
+                crate::boundary::try_reserve_vec(&mut values, member_len)?;
                 let mut indices = Vec::new();
                 let mut sparse = false;
                 for member in members {
                     match member {
                         MultiMember::Empty => {
                             if !sparse {
-                                indices = Vec::with_capacity(member_len);
-                                indices.extend((0..values.len()).map(MultiMember::Value));
+                                crate::boundary::try_reserve_vec(&mut indices, member_len)?;
+                                for index in 0..values.len() {
+                                    crate::try_push_vec(&mut indices, MultiMember::Value(index))?;
+                                }
                                 sparse = true;
                             }
-                            indices.push(MultiMember::Empty);
+                            crate::try_push_vec(&mut indices, MultiMember::Empty)?;
                         },
                         MultiMember::Value(value) => {
                             let got = shape_member_axes(&value);
@@ -676,9 +687,12 @@ macro_rules! impl_multipart {
                                 .into());
                             }
                             if sparse {
-                                indices.push(MultiMember::Value(values.len()));
+                                crate::try_push_vec(
+                                    &mut indices,
+                                    MultiMember::Value(values.len()),
+                                )?;
                             }
-                            values.push(value);
+                            crate::try_push_vec(&mut values, value)?;
                         },
                     }
                 }
@@ -692,6 +706,7 @@ macro_rules! impl_multipart {
                 } else {
                     MultipartMembers::Dense
                 };
+                let values = SharedSlice::try_from_vec(values)?;
                 Ok(Self {
                     axes,
                     values,
@@ -702,27 +717,30 @@ macro_rules! impl_multipart {
             pub(crate) fn from_values(
                 axes: CoordinateAxes,
                 members: Vec<MultiMember<$member>>,
-            ) -> Self {
-                Self::try_new(axes, members).expect("homogeneous nonempty multipart payload")
+            ) -> Result<Self> {
+                Self::try_new(axes, members)
             }
 
             /// A dense multipart from members that are all present, declaring
             /// the axes of the first. Axis-homogeneity is a payload invariant
-            /// (the DbC boundary rule [`CoordSeq::from_points`] follows);
+            /// (the DbC boundary rule [`CoordSeq::try_from_points`] follows);
             /// external members are admitted through [`Self::try_new`], which
             /// checks. Returns `None` for an empty payload — that is
             /// `Shape::Empty`, not a multipart with no members.
-            pub(crate) fn from_dense(values: Vec<$member>) -> Option<Self> {
-                let axes = shape_member_axes(values.first()?);
+            pub(crate) fn from_dense(values: Vec<$member>) -> Result<Option<Self>> {
+                let Some(first) = values.first() else {
+                    return Ok(None);
+                };
+                let axes = shape_member_axes(first);
                 debug_assert!(
                     values.iter().all(|value| shape_member_axes(value) == axes),
                     "from_dense requires an axis-homogeneous payload",
                 );
-                Some(Self {
+                Ok(Some(Self {
                     axes,
-                    values,
+                    values: SharedSlice::try_from_vec(values)?,
                     members: MultipartMembers::Dense,
-                })
+                }))
             }
 
             pub(crate) const fn axes(&self) -> CoordinateAxes {
@@ -741,50 +759,37 @@ macro_rules! impl_multipart {
                 self.members.has_empty_members()
             }
 
-            /// [`Self::try_map_values`] for a map that cannot fail. The
-            /// members and their order are preserved, so the result is a
-            /// multipart of the same shape.
-            pub(crate) fn map_values(
-                &self,
-                axes: CoordinateAxes,
-                mut map: impl FnMut(&$member) -> $member,
-            ) -> Self {
-                let Ok(mapped) = self
-                    .try_map_values(axes, |value| Ok::<_, std::convert::Infallible>(map(value)));
-                mapped
-            }
-
             pub(crate) fn try_map_values<E>(
                 &self,
                 axes: CoordinateAxes,
                 mut map: impl FnMut(&$member) -> Result<$member, E>,
-            ) -> Result<Self, E> {
+            ) -> Result<Self, E>
+            where
+                E: From<crate::error::Error>,
+            {
                 if matches!(self.members, MultipartMembers::Dense) {
-                    let values = self
-                        .values
-                        .iter()
-                        .map(&mut map)
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let values =
+                        try_mapped_vec(self.values.len(), self.values.iter().map(&mut map))?;
                     assert!(
                         values.iter().all(|value| shape_member_axes(value) == axes),
                         "homogeneous nonempty multipart payload"
                     );
                     return Ok(Self {
                         axes,
-                        values,
+                        values: SharedSlice::try_from_vec(values).map_err(E::from)?,
                         members: MultipartMembers::Dense,
                     });
                 }
-                let members = self
-                    .members()
-                    .map(|member| match member {
+                let members = try_mapped_vec(
+                    self.len(),
+                    self.members().map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
                         MultiMember::Value(index) => {
                             map(&self.values[index]).map(MultiMember::Value)
                         },
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Self::from_values(axes, members))
+                    }),
+                )?;
+                Self::from_values(axes, members).map_err(E::from)
             }
 
             pub(crate) fn with_axes(&self, axes: CoordinateAxes) -> Self {
@@ -798,13 +803,7 @@ macro_rules! impl_multipart {
 
         impl crate::HeapSize for $name {
             fn heap_bytes(&self) -> usize {
-                self.values.capacity() * std::mem::size_of::<$member>()
-                    + self.members.heap_bytes()
-                    + self
-                        .values
-                        .iter()
-                        .map(crate::HeapSize::heap_bytes)
-                        .sum::<usize>()
+                self.values.heap_bytes() + self.members.heap_bytes()
             }
         }
     };
@@ -817,17 +816,20 @@ impl MultiPoint {
     pub(crate) fn try_new(axes: CoordinateAxes, members: Vec<MultiMember<Point>>) -> Result<Self> {
         let member_len = members.len();
         let mut points = Vec::new();
+        crate::boundary::try_reserve_vec(&mut points, member_len)?;
         let mut indices = Vec::new();
         let mut sparse = false;
         for member in members {
             match member {
                 MultiMember::Empty => {
                     if !sparse {
-                        indices = Vec::with_capacity(member_len);
-                        indices.extend((0..points.len()).map(MultiMember::Value));
+                        crate::boundary::try_reserve_vec(&mut indices, member_len)?;
+                        for index in 0..points.len() {
+                            crate::try_push_vec(&mut indices, MultiMember::Value(index))?;
+                        }
                         sparse = true;
                     }
-                    indices.push(MultiMember::Empty);
+                    crate::try_push_vec(&mut indices, MultiMember::Empty)?;
                 },
                 MultiMember::Value(point) => {
                     if point.axes() != axes {
@@ -838,9 +840,9 @@ impl MultiPoint {
                         .into());
                     }
                     if sparse {
-                        indices.push(MultiMember::Value(points.len()));
+                        crate::try_push_vec(&mut indices, MultiMember::Value(points.len()))?;
                     }
-                    points.push(point);
+                    crate::try_push_vec(&mut points, point)?;
                 },
             }
         }
@@ -858,14 +860,17 @@ impl MultiPoint {
             coords: if points.is_empty() {
                 CoordSeq::empty(axes)
             } else {
-                CoordSeq::from_points(&points)
+                CoordSeq::try_from_points(&points)?
             },
             members,
         })
     }
 
-    pub(crate) fn from_values(axes: CoordinateAxes, members: Vec<MultiMember<Point>>) -> Self {
-        Self::try_new(axes, members).expect("homogeneous nonempty multipart payload")
+    pub(crate) fn from_values(
+        axes: CoordinateAxes,
+        members: Vec<MultiMember<Point>>,
+    ) -> Result<Self> {
+        Self::try_new(axes, members)
     }
 
     pub(crate) fn from_coordseq(coords: CoordSeq) -> Result<Self> {
@@ -921,8 +926,13 @@ impl MultiPoint {
         self.coords.point_at(index)
     }
 
-    pub(crate) fn to_vec(&self) -> Vec<Point> {
-        self.points().collect()
+    pub(crate) fn try_to_vec(&self) -> Result<Vec<Point>> {
+        let mut points = Vec::new();
+        crate::boundary::try_reserve_vec(&mut points, self.coord_count())?;
+        for point in self.points() {
+            crate::try_push_vec(&mut points, point)?;
+        }
+        Ok(points)
     }
 
     pub(crate) fn xs(&self) -> &[f64] {
@@ -948,7 +958,10 @@ impl MultiPoint {
     pub(crate) fn try_map_xy_with<E>(
         &self,
         op: impl FnMut(f64, f64) -> Result<(f64, f64), E>,
-    ) -> Result<Self, E> {
+    ) -> Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+    {
         let coords = self.coords.try_map_xy_with(op)?;
         Ok(Self {
             coords,
@@ -956,32 +969,34 @@ impl MultiPoint {
         })
     }
 
-    /// [`Self::try_map_values`] for a map that cannot fail.
-    pub(crate) fn map_values(&self, mut map: impl FnMut(Point) -> Point) -> Self {
-        let Ok(mapped) = self.try_map_values(|point| Ok::<_, std::convert::Infallible>(map(point)));
-        mapped
+    /// [`Self::try_map_values`] for a map whose callback cannot fail.
+    pub(crate) fn map_values(&self, mut map: impl FnMut(Point) -> Point) -> Result<Self> {
+        self.try_map_values(|point| Ok::<_, crate::error::Error>(map(point)))
     }
 
     pub(crate) fn try_map_values<E>(
         &self,
         mut map: impl FnMut(Point) -> Result<Point, E>,
-    ) -> Result<Self, E> {
+    ) -> Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+    {
         if matches!(self.members, MultipartMembers::Dense) {
-            let points = self.points().map(&mut map).collect::<Result<Vec<_>, _>>()?;
+            let points = try_mapped_vec(self.coords.len(), self.points().map(&mut map))?;
             return Ok(Self {
-                coords: CoordSeq::from_points(&points),
+                coords: CoordSeq::try_from_points(&points).map_err(E::from)?,
                 members: MultipartMembers::Dense,
             });
         }
-        let members = self
-            .members()
-            .map(|member| match member {
+        let members = try_mapped_vec(
+            self.len(),
+            self.members().map(|member| match member {
                 MultiMember::Empty => Ok(MultiMember::Empty),
                 MultiMember::Value(index) => {
                     map(self.coords.point_at(index)).map(MultiMember::Value)
                 },
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            }),
+        )?;
         let axes = members
             .iter()
             .find_map(|member| match member {
@@ -989,23 +1004,23 @@ impl MultiPoint {
                 MultiMember::Empty => None,
             })
             .unwrap_or_else(|| self.axes());
-        Ok(Self::from_values(axes, members))
+        Self::from_values(axes, members).map_err(E::from)
     }
 
-    pub(crate) fn quantize(&self, precision: i32) -> Self {
-        let coords = self.coords.quantize(precision);
-        Self {
+    pub(crate) fn quantize(&self, precision: i32) -> Result<Self> {
+        let coords = self.coords.quantize(precision)?;
+        Ok(Self {
             coords,
             members: self.members.clone(),
-        }
+        })
     }
 
-    pub(crate) fn force_2d(&self) -> Self {
-        let coords = self.coords.force_2d();
-        Self {
+    pub(crate) fn force_2d(&self) -> Result<Self> {
+        let coords = self.coords.force_2d()?;
+        Ok(Self {
             coords,
             members: self.members.clone(),
-        }
+        })
     }
 
     pub(crate) fn with_axes(&self, axes: CoordinateAxes) -> Self {
@@ -1037,18 +1052,9 @@ impl<'a> IntoIterator for &'a MultiPoint {
     }
 }
 
-impl IntoIterator for MultiPoint {
-    type Item = Point;
-    type IntoIter = std::vec::IntoIter<Point>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.to_vec().into_iter()
-    }
-}
-
 impl crate::HeapSize for MultiPoint {
     fn heap_bytes(&self) -> usize {
-        self.coords.coordinate_bytes() + self.members.heap_bytes()
+        self.coords.heap_bytes() + self.members.heap_bytes()
     }
 }
 
@@ -1079,10 +1085,10 @@ macro_rules! impl_multipart_iteration {
 
         impl IntoIterator for $name {
             type Item = $member;
-            type IntoIter = std::vec::IntoIter<$member>;
+            type IntoIter = crate::geometry::types::SharedSliceIter<$member>;
 
             fn into_iter(self) -> Self::IntoIter {
-                self.values.into_iter()
+                self.values.iter_owned()
             }
         }
     };
@@ -1159,8 +1165,7 @@ impl Coordinates for MultiPoint {
 
 impl crate::HeapSize for GeometryCollection {
     fn heap_bytes(&self) -> usize {
-        self.capacity() * std::mem::size_of::<Shape>()
-            + self.iter().map(HeapSize::heap_bytes).sum::<usize>()
+        self.members.heap_bytes()
     }
 }
 
@@ -1259,10 +1264,7 @@ mod multipart_layout_tests {
         let MultipartMembers::Sparse(members) = &sparse.members else {
             unreachable!("sparse fixture must retain member metadata");
         };
-        assert_eq!(
-            sparse.members.heap_bytes(),
-            std::mem::size_of_val(&**members)
-        );
+        assert!(sparse.members.heap_bytes() >= std::mem::size_of_val(&**members));
     }
 
     #[test]
@@ -1299,6 +1301,114 @@ mod multipart_layout_tests {
             unreachable!("collection fixture")
         };
         collection
-                .try_map_members(|_| Ok::<_, crate::error::Error>(raw_nested(2))).unwrap_err();
+            .try_map_members(|_| Ok::<_, crate::error::Error>(raw_nested(2)))
+            .unwrap_err();
+    }
+}
+
+#[cfg(test)]
+mod mapping_fault_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::fail_allocations_after;
+
+    fn two_point_line() -> LineSeq {
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 1.0)])
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn two_point_collection() -> GeometryCollection {
+        let Shape::GeometryCollection(collection) = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            Shape::Point(Point::new_raw_xy(1.0, 0.0)),
+        ])
+        .unwrap() else {
+            unreachable!("collection fixture")
+        };
+        collection
+    }
+
+    #[test]
+    fn try_map_points_returns_resource_on_allocation_failure() {
+        let line = two_point_line();
+        let error = fail_allocations_after(0, || {
+            line.try_map_points(|point| Ok::<_, crate::error::Error>(point))
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn try_map_members_reports_callback_error_in_member_order() {
+        let collection = two_point_collection();
+        let mut seen = 0;
+        let error = collection
+            .try_map_members(|shape| {
+                seen += 1;
+                match shape {
+                    Shape::Point(point) if point.x == 1.0 => {
+                        Err(GeometryErrorKind::message("second member"))
+                    },
+                    _ => Ok(shape.clone()),
+                }
+            })
+            .unwrap_err();
+        assert_eq!(seen, 2);
+        assert!(error.to_string().contains("second member"));
+    }
+
+    #[test]
+    fn try_filter_map_owned_members_empty_is_typed_empty_collection() {
+        let collection = two_point_collection();
+        let filtered = collection
+            .try_filter_map_owned_members(|_| Ok(None))
+            .unwrap();
+        assert!(matches!(
+            filtered,
+            Shape::Empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
+        ));
+    }
+
+    #[test]
+    fn try_filter_map_owned_members_preserves_kept_order() {
+        let collection = two_point_collection();
+        let filtered = collection
+            .try_filter_map_owned_members(|shape| {
+                Ok(match shape {
+                    Shape::Point(point) if point.x == 1.0 => Some(Shape::Point(point)),
+                    _ => None,
+                })
+            })
+            .unwrap();
+        let Shape::GeometryCollection(collection) = filtered else {
+            unreachable!("kept one member")
+        };
+        assert_eq!(collection.len(), 1);
+        assert_eq!(collection.as_slice(), &[Shape::Point(Point::new_raw_xy(
+            1.0, 0.0
+        ))]);
+    }
+
+    #[test]
+    fn try_map_values_returns_resource_on_allocation_failure() {
+        let points = MultiPoint::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Value(Point::new_raw_xy(0.0, 0.0)),
+            MultiMember::Value(Point::new_raw_xy(1.0, 1.0)),
+        ])
+        .unwrap();
+        let error = fail_allocations_after(0, || {
+            points.try_map_values(|point| Ok::<_, crate::error::Error>(point))
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
     }
 }

@@ -1,7 +1,6 @@
-use crate::array::PackedStorage;
 use crate::array::{
     Arc, Bounds, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec, PackedColumnError,
-    PackedColumns, PyGeometryArray, PyResult, Python, Result, Shape,
+    PackedColumns, PackedStorage, PyGeometryArray, PyResult, Python, Result, Shape,
     clip_lines_packed_xy, geometry, reverse_coord_windows, subdivide_line_columns,
     subdivide_polygon_columns, validate_densify_fraction, validate_max_segment_length,
 };
@@ -244,10 +243,8 @@ impl PyGeometryArray {
         yfact: f64,
     ) -> Option<PyResult<Self>> {
         Python::attach(|py| {
-            self.packed_self_origin_affine(py, spec, || {
-                [xfact, 0.0, 0.0, yfact]
-            })
-            .transpose()
+            self.packed_self_origin_affine(py, spec, || [xfact, 0.0, 0.0, yfact])
+                .transpose()
         })
     }
 
@@ -258,10 +255,8 @@ impl PyGeometryArray {
         tan_y: f64,
     ) -> Option<PyResult<Self>> {
         Python::attach(|py| {
-            self.packed_self_origin_affine(py, spec, || {
-                [1.0, tan_x, tan_y, 1.0]
-            })
-            .transpose()
+            self.packed_self_origin_affine(py, spec, || [1.0, tan_x, tan_y, 1.0])
+                .transpose()
         })
     }
 
@@ -276,7 +271,7 @@ impl PyGeometryArray {
                 row_map,
             }) => Ok(Self::from_result_storage(
                 Arc::new(GeometryArrayStorage::Packed(PackedStorage::Lines {
-                    coords: Arc::new(reverse_coord_windows(coords, offsets)),
+                    coords: Arc::new(reverse_coord_windows(coords, offsets)?),
                     offsets: offsets.clone(),
                     row_map: row_map.clone(),
                 })),
@@ -284,7 +279,7 @@ impl PyGeometryArray {
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
                 Arc::clone(&self.total_bounds_cache),
-            )),
+            )?),
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
@@ -292,7 +287,7 @@ impl PyGeometryArray {
                 row_map,
             }) => Ok(Self::from_result_storage(
                 Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                    coords: Arc::new(reverse_coord_windows(coords, ring_offsets)),
+                    coords: Arc::new(reverse_coord_windows(coords, ring_offsets)?),
                     ring_offsets: ring_offsets.clone(),
                     polygon_offsets: polygon_offsets.clone(),
                     row_map: row_map.clone(),
@@ -301,19 +296,20 @@ impl PyGeometryArray {
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
                 Arc::clone(&self.total_bounds_cache),
-            )),
+            )?),
             _ => self.map_shapes(|shape| Ok(shape.reverse()?)),
         }
     }
 
     pub(crate) fn swap_xy_unary_packed(&self) -> PyResult<Self> {
-        self.swap_xy_packed_storage().map_or_else(|| self.map_shapes(|shape| Ok(shape.swap_xy()?)), Ok)
+        self.swap_xy_packed_storage()
+            .map_or_else(|| self.map_shapes(|shape| Ok(shape.swap_xy()?)), Ok)
     }
 
     pub(crate) fn unique_points_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         // A packed array can still contain a million-vertex row; walk the
         // pure-Rust deduplication detached just like the packed linref lanes.
-        self.map_shapes_detached(py, |shape| Ok(shape.unique_points()))
+        self.map_shapes_detached(py, |shape| Ok(shape.unique_points()?))
     }
 
     pub(crate) fn orient_polygons_unary_packed(&self, ccw: bool) -> PyResult<Self> {
@@ -436,9 +432,10 @@ impl PyGeometryArray {
                 self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
                     Ok(point.quantize(precision))
                 })
-            })? {
-                return Ok(mapped);
-            }
+            })?
+        {
+            return Ok(mapped);
+        }
         Python::attach(|py| {
             self.map_shapes_shared_detached(py, move |shape| {
                 let quantized = shape.quantize(precision)?;
@@ -454,7 +451,10 @@ impl PyGeometryArray {
         drop: bool,
         domain: TopologyDomain,
     ) -> PyResult<Self> {
-        if matches!(self.storage(), GeometryArrayStorage::Packed(PackedStorage::Lines { .. })) {
+        if matches!(
+            self.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
+        ) {
             let clipped =
                 self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {

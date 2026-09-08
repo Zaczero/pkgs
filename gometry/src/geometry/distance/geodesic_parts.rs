@@ -40,23 +40,14 @@ pub(crate) fn geodesic_cap_streaming(
         return Ok(None);
     };
     let mut reach = 0.0_f64;
-    let mut error = None;
-    shape.for_each_vertex_pair(|start, end| {
-        let length = match metric.make_segment(start, end) {
-            Ok(segment) => segment.length,
-            Err(value) => {
-                error = Some(value);
-                return;
-            },
-        };
+    shape.try_for_each_vertex_pair(|start, end| {
+        let length = metric.make_segment(start, end)?.length;
         let from_anchor = metric.segment_length(anchor, start);
         reach = reach.max(from_anchor + length);
-    });
-    if let Some(error) = error {
-        return Err(error);
-    }
+        Ok::<_, crate::error::Error>(())
+    })?;
     let mut point_only = Vec::new();
-    collect_point_only_into(shape, &mut point_only);
+    collect_point_only_into(shape, &mut point_only)?;
     for point in point_only {
         reach = reach.max(metric.segment_length(anchor, point));
     }

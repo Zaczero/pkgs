@@ -239,7 +239,7 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
             let shapes = py.detach(move || {
                 crate::try_collect_results(codes.iter().map(|code| polygon_shape(code)))
             })?;
-            Ok(PyGeometryArray::from_shapes(shapes, frame)
+            Ok(PyGeometryArray::from_shapes(shapes, frame)?
                 .into_pyobject(py)?
                 .unbind()
                 .into())

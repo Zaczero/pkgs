@@ -261,11 +261,11 @@ impl RankedCandidate {
 pub(crate) fn minimum_area_rectangle(hull: &[Point]) -> Result<CoordSeq> {
     debug_assert!(hull.len() >= 3);
     if let Some(bounds) = axis_aligned_hull_rectangle(hull) {
-        return Ok(CoordSeq::from_points(&bounds));
+        return CoordSeq::try_from_points(&bounds);
     }
     let best = select_minimum_candidate(hull);
     let corners = best.emit(hull)?;
-    Ok(CoordSeq::from_points(&corners))
+    CoordSeq::try_from_points(&corners)
 }
 
 fn select_minimum_candidate(hull: &[Point]) -> Candidate {

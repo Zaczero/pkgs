@@ -228,7 +228,7 @@ pub(crate) fn concat_packed_line_columns(
             builder.finish(vertices)
         },
         None => Ok((
-            CoordSeq::from_vecs(Vec::new(), Vec::new(), None, None),
+            CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None)?,
             CsrOffsetColumn::try_new(vec![0], 0)?,
         )),
     }
@@ -240,11 +240,17 @@ mod tests {
 
     #[test]
     fn concat_packed_line_columns_appends_coordinates_in_input_order() {
-        let first = CoordSeq::from_vecs(vec![0.0, 1.0], vec![0.0, 0.0], None, None);
+        let first = CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 0.0], None, None).unwrap();
         let first_offsets = CsrOffsetColumn::try_new(vec![0, 2], 2).unwrap();
-        let second = CoordSeq::from_vecs(vec![2.0, 3.0, 3.0, 4.0], vec![2.0, 2.0, 2.0, 3.0], None, None);
+        let second = CoordSeq::try_from_vecs(
+            vec![2.0, 3.0, 3.0, 4.0],
+            vec![2.0, 2.0, 2.0, 3.0],
+            None,
+            None,
+        )
+        .unwrap();
         let second_offsets = CsrOffsetColumn::try_new(vec![0, 2, 4], 4).unwrap();
-        let empty = CoordSeq::from_vecs(Vec::new(), Vec::new(), None, None);
+        let empty = CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None).unwrap();
         let empty_offsets = CsrOffsetColumn::try_new(vec![0], 0).unwrap();
         let (coords, offsets) = concat_packed_line_columns([
             (first, first_offsets),

@@ -2,9 +2,9 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::{PyKeyError, PyTypeError};
 use pyo3::types::PyBool;
+use pyo3::{IntoPyObjectExt as _, PyErr};
 
 use super::impl_nearest::NearestVisited;
 use crate::collections::RowIdSortScratch;
@@ -160,10 +160,13 @@ impl PySpatialIndex {
     /// preserve tombstones instead of compactly renumbering live rows.
     pub(crate) fn __reduce__(&self, py: Python<'_>) -> PyResult<SpatialIndexReduce> {
         let shapes = crate::try_collect_results((0..self.rows.len()).map(|handle| {
-            Ok::<_, pyo3::PyErr>(self.rows.row(handle).with_shape(std::clone::Clone::clone))
+            self.rows
+                .row(handle)
+                .with_shape(std::clone::Clone::clone)
+                .map_err(PyErr::from)
         }))?;
         let frame = self.metadata.clone().unwrap_or_default();
-        let array = crate::PyGeometryArray::from_shapes(shapes, frame);
+        let array = crate::PyGeometryArray::from_shapes(shapes, frame)?;
         let callable = crate::gometry_lib_module(py)?
             .getattr(pyo3::intern!(py, "_unpickle_spatial_index"))?
             .unbind();
@@ -198,7 +201,7 @@ impl PySpatialIndex {
         if !self.is_live_handle(handle) {
             return Err(PyKeyError::new_err(handle));
         }
-        Ok(self.geometry_at_handle(handle))
+        self.geometry_at_handle(handle)
     }
 
     /// Whether ``handle`` is a live geometry handle.
@@ -312,7 +315,7 @@ impl PySpatialIndex {
     ) -> PyResult<Py<PyAny>> {
         let handle = parse_handle_like(handle)?;
         if self.is_live_handle(handle) {
-            return Ok(self.geometry_at_handle(handle).into_pyobject(py)?.unbind());
+            return Ok(self.geometry_at_handle(handle)?.into_pyobject(py)?.unbind());
         }
         Ok(default.unwrap_or_else(|| py.None()))
     }
@@ -434,7 +437,7 @@ impl PySpatialIndex {
                     for logical_row in rows.rows_with_missing(|| ()) {
                         if let crate::array::ArrayRow::Present(row) = logical_row {
                             let row_index = row.logical();
-                            let shape = rows.prepared(row);
+                            let shape = rows.prepared(row)?;
                             self.topological_matches_append(
                                 &shape,
                                 &rows.frame_cache(row_index),
@@ -729,12 +732,12 @@ impl PySpatialIndex {
                             crate::array::BoundsSeed::Unset => row.quick_bounds(),
                             crate::array::BoundsSeed::Value(bounds) => bounds,
                         } {
-                            row.with_shape(|shape| {
+                            row.try_with_shape(|shape| {
                                 self.collect_shape_candidates(shape, bounds, ids)
                             })?;
                         }
                     } else {
-                        let prepared = plan.row(self, row, seeded);
+                        let prepared = plan.row(self, row, seeded)?;
                         self.candidate_ids_core_append(
                             prepared.bounds,
                             prepared.pruner_point,
@@ -880,7 +883,7 @@ impl PySpatialIndex {
                         let mut rows = array.row_operation();
                         for logical_row in rows.rows_with_missing(|| ()) {
                             if let crate::array::ArrayRow::Present(row) = logical_row {
-                                let query = rows.prepared(row);
+                                let query = rows.prepared(row)?;
                                 let candidates = self.planar_nearest_core_ties(
                                     to_metre.get(),
                                     &query,
@@ -907,7 +910,7 @@ impl PySpatialIndex {
                         for logical_row in rows.rows_with_missing(|| ()) {
                             if let crate::array::ArrayRow::Present(row) = logical_row {
                                 let row_index = row.logical();
-                                let query = rows.prepared(row);
+                                let query = rows.prepared(row)?;
                                 let mut query_cache = || rows.frame_cache(row_index);
                                 let candidates = self.geodesic_nearest_core_ties(
                                     &metric,
@@ -1022,14 +1025,14 @@ impl PySpatialIndex {
         let Some(row) = self.rows.get(handle) else {
             return Ok(false);
         };
-        let non_prunable = row.with_shape(|shape| !geodesic_prunable_point(shape));
+        let non_prunable = row.with_shape(|shape| !geodesic_prunable_point(shape))?;
         let removed = if handle < self.bulk.initial_len() {
             self.rows.mark_removed(handle)
         } else {
-            let Some(bounds) = row.with_shape(Shape::bounds) else {
+            let Some(bounds) = row.with_shape(Shape::bounds)? else {
                 return Ok(false);
             };
-            let shape = row.with_shape(std::clone::Clone::clone);
+            let shape = row.with_shape(std::clone::Clone::clone)?;
             let frame = self.metadata.as_ref().expect("live index has a frame");
             // Removal has to name the entries insertion made, so this reads
             // the same cover the same way.

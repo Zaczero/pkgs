@@ -113,7 +113,7 @@ impl GridCell for CellIndex {
         Point::new_raw_xy(latlng.lng(), latlng.lat())
     }
 
-    fn boundary_shape(self) -> Shape {
+    fn boundary_shape(self) -> crate::error::Result<Shape> {
         h3_cell_shape(self)
     }
 

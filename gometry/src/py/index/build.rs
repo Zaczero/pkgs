@@ -2,8 +2,8 @@ use crate::array::PackedStorage;
 use crate::geometry::TopologyDomain;
 use crate::py::index::{
     AABB, Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore,
-    PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python, RTree,
-    ShapeData, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
+    PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python,
+    RTree, ShapeData, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
     geodesic_prunable_point, index_envelopes,
 };
 pub(crate) fn spatial_index(items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
@@ -114,6 +114,7 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
         let mut entries = Vec::new();
         let mut non_prunable_live = 0;
         for (idx, shape) in array.storage().iter_shapes().enumerate() {
+            let shape = shape.map_err(PyErr::from)?;
             let Some(bounds) = shape.bounds() else {
                 return Ok(None);
             };
@@ -188,8 +189,9 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
                 non_prunable_live,
             }))
         },
-        GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
-PackedStorage::Polygons { .. }) => {
+        GeometryArrayStorage::Packed(
+            PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
+        ) => {
             let Some(bounds) = array.cached_element_bounds() else {
                 return Ok(None);
             };
@@ -248,7 +250,7 @@ pub(crate) fn build_spatial_index(
             |logical_row| match logical_row {
                 crate::array::ArrayRow::Missing { .. } => Ok(None),
                 crate::array::ArrayRow::Present(row) => {
-                    let plan = row_operation.prepared(row).into_owned_plan();
+                    let plan = row_operation.prepared(row)?.into_owned_plan();
                     Ok(Some(PyGeometry::from_prepared_plan(
                         plan,
                         array.frame.clone(),
@@ -320,7 +322,7 @@ pub(crate) fn restore_spatial_index(
     let mut rows = crate::try_vec_with_capacity_hint(values.len())?;
     for row in values.storage().iter_rows() {
         let plan = std::sync::Arc::new(crate::PreparedPlan::new(ShapeData::new(
-            row.with_shape(std::clone::Clone::clone),
+            row.with_shape(std::clone::Clone::clone)?,
         )));
         crate::try_push(
             &mut rows,
@@ -397,14 +399,15 @@ mod ownership_tests {
 
     fn points() -> PyGeometryArray {
         PyGeometryArray::packed_points(
-            CoordSeq::from_vecs(vec![0.0, 10.0], vec![0.0, 10.0], None, None),
+            CoordSeq::try_from_vecs(vec![0.0, 10.0], vec![0.0, 10.0], None, None).unwrap(),
             Frame::None,
         )
     }
 
     fn long_lines() -> PyGeometryArray {
         PyGeometryArray::packed_lines(
-            CoordSeq::from_vecs((0..34).map(f64::from).collect(), vec![0.0; 34], None, None),
+            CoordSeq::try_from_vecs((0..34).map(f64::from).collect(), vec![0.0; 34], None, None)
+                .unwrap(),
             CsrOffsetColumn::try_new(vec![0, 34], 34).unwrap(),
             Frame::None,
         )
@@ -412,12 +415,13 @@ mod ownership_tests {
 
     fn polygons() -> PyGeometryArray {
         PyGeometryArray::packed_polygons(
-            CoordSeq::from_vecs(
+            CoordSeq::try_from_vecs(
                 vec![0.0, 1.0, 1.0, 0.0, 0.0],
                 vec![0.0, 0.0, 1.0, 1.0, 0.0],
                 None,
                 None,
-            ),
+            )
+            .unwrap(),
             CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5], 5).unwrap(),
             CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap(),
             Frame::None,
@@ -450,18 +454,19 @@ mod ownership_tests {
     fn packed_index_and_source_share_the_persistent_row_arc() {
         let source = long_lines();
         let index = packed_spatial_index(&source).unwrap().unwrap();
-        let source_arc = match source.prepared_row(0, source.storage().row(0)) {
+        let source_arc = match source.prepared_row(0, source.storage().row(0)).unwrap() {
             crate::array::PreparedRow::Shared(data) => Arc::clone(data),
             crate::array::PreparedRow::Owned(data) => data,
             crate::array::PreparedRow::Transient(_) => panic!("long packed row must persist"),
         };
-        let indexed_arc = index.rows.prepared_row(0).into_owned_plan();
+        let indexed_arc = index.rows.prepared_row(0).unwrap().into_owned_plan();
         assert!(Arc::ptr_eq(&source_arc, &indexed_arc));
 
         let inverse = packed_spatial_index(&source).unwrap().unwrap();
-        let indexed_first = inverse.rows.prepared_row(0).into_owned_plan();
+        let indexed_first = inverse.rows.prepared_row(0).unwrap().into_owned_plan();
         let source_second = source
             .prepared_row(0, source.storage().row(0))
+            .unwrap()
             .into_owned_plan();
         assert!(Arc::ptr_eq(&indexed_first, &source_second));
         assert!(crate::HeapSize::heap_bytes(&source) > source.nbytes());

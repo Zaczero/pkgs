@@ -10,12 +10,11 @@ use crate::error::Result;
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind, LineSeq,
-    MultiLineString, MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, REDUCE_LANES,
-    ReduceSimd, Ring, Segment, Shape, TopologyGuard, XY, dedup_consecutive_points, line_segments,
-    open_point_cycle_winding, orientation, point_on_segment, point_segment_distance,
+    MultiLineString, MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon,
+    REDUCE_LANES, ReduceSimd, Ring, Segment, Shape, TopologyGuard, XY, dedup_consecutive_points,
+    line_segments, open_point_cycle_winding, orientation, point_on_segment, point_segment_distance,
     point_segment_distance_squared, same_point, simplified_polygon_delta_is_simple,
-    simplify_chain_guarded, triangle_area,
-    vw_area_tolerance, wrap_index,
+    simplify_chain_guarded, triangle_area, vw_area_tolerance, wrap_index,
 };
 
 /// The Douglas-Peucker keep mask over raw columns: `keep` and `stack` are
@@ -467,17 +466,21 @@ fn kept_coords(
     points: &CoordSeq,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
-) -> Option<CoordSeq> {
-    let kept = keep_mask(points.xs(), points.ys(), scratch)?;
-    (kept != points.len()).then(|| {
-        points.select(
-            scratch
-                .keep
-                .iter()
-                .enumerate()
-                .filter_map(|(index, &kept)| kept.then_some(index)),
-        )
-    })
+) -> Result<Option<CoordSeq>> {
+    let Some(kept) = keep_mask(points.xs(), points.ys(), scratch) else {
+        return Ok(None);
+    };
+    (kept != points.len())
+        .then(|| {
+            points.select(
+                scratch
+                    .keep
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, &kept)| kept.then_some(index)),
+            )
+        })
+        .transpose()
 }
 
 enum RingKeep {
@@ -490,12 +493,12 @@ fn keep_ring(
     ring: &Ring,
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
-) -> RingKeep {
-    match kept_coords(ring.coords(), scratch, keep_mask) {
+) -> Result<RingKeep> {
+    Ok(match kept_coords(ring.coords(), scratch, keep_mask)? {
         None => RingKeep::Same,
         Some(coords) if coords.len() < Ring::MIN_VERTICES_CLOSED => RingKeep::Drop,
         Some(coords) => RingKeep::New(Ring::from_closed(coords)),
-    }
+    })
 }
 
 enum PolygonKeep {
@@ -518,7 +521,7 @@ fn keep_polygon(
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
 ) -> Result<PolygonKeep> {
-    let new_shell = match keep_ring(&polygon.shell, scratch, keep_mask) {
+    let new_shell = match keep_ring(&polygon.shell, scratch, keep_mask)? {
         RingKeep::Drop => return Ok(PolygonKeep::Empty),
         RingKeep::Same => None,
         RingKeep::New(shell) => Some(shell),
@@ -531,7 +534,7 @@ fn keep_polygon(
         None
     };
     for (index, hole) in polygon.holes.iter().enumerate() {
-        match keep_ring(hole, scratch, keep_mask) {
+        match keep_ring(hole, scratch, keep_mask)? {
             RingKeep::Same => {
                 if let Some(holes) = holes_out.as_mut() {
                     crate::try_push_vec(holes, hole.clone())?;
@@ -558,7 +561,7 @@ fn keep_polygon(
         Some(holes) => PolygonKeep::New(Polygon::new(
             new_shell.unwrap_or_else(|| polygon.shell.clone()),
             holes,
-        )),
+        )?),
     })
 }
 
@@ -593,7 +596,7 @@ fn keep_multi_lines(
             },
             MultiMember::Value(value) => {
                 let line = &lines.as_slice()[value];
-                match kept_coords(line, scratch, keep_mask) {
+                match kept_coords(line, scratch, keep_mask)? {
                     None => {
                         if let Some(members) = out.as_mut() {
                             crate::try_push_vec(members, MultiMember::Value(line.clone()))?;
@@ -620,10 +623,9 @@ fn keep_multi_lines(
     }
     Ok(match out {
         None => RawSimplify::Unchanged,
-        Some(members) => RawSimplify::Changed(Shape::MultiLineString(MultiLineString::from_values(
-            lines.axes(),
-            members,
-        ))),
+        Some(members) => RawSimplify::Changed(Shape::MultiLineString(
+            MultiLineString::from_values(lines.axes(), members)?,
+        )),
     })
 }
 
@@ -691,7 +693,7 @@ fn keep_multi_polygons(
         Some(members) => RawSimplify::Changed(Shape::MultiPolygon(MultiPolygon::from_values(
             polygons.axes(),
             members,
-        ))),
+        )?)),
     })
 }
 
@@ -742,11 +744,11 @@ impl Shape {
     /// untouched. Keeps `simplify`/`simplify_vw` with `preserve_topology=False`
     /// from leaking a degenerate invalid polygon.
     fn dropping_collapsed_rings(self) -> Result<Self> {
-        fn clean(polygon: &Polygon) -> Option<Polygon> {
+        fn clean(polygon: &Polygon) -> Result<Option<Polygon>> {
             if !has_three_distinct_xy(polygon.shell.coords()) {
-                return None;
+                return Ok(None);
             }
-            Some(Polygon::new(
+            Ok(Some(Polygon::new(
                 polygon.shell.clone(),
                 polygon
                     .holes
@@ -754,31 +756,32 @@ impl Shape {
                     .filter(|hole| has_three_distinct_xy(hole.coords()))
                     .cloned()
                     .collect(),
-            ))
+            )?))
         }
         Ok(match self {
-            Self::Polygon(polygon) => clean(&polygon).map_or_else(
-                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
-                Self::Polygon,
-            ),
+            Self::Polygon(polygon) => match clean(&polygon)? {
+                Some(polygon) => Self::Polygon(polygon),
+                None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+            },
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
-                    .filter_map(|member| match member {
+                    .map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
-                            Some(crate::geometry::MultiMember::Empty)
+                            Ok(crate::geometry::MultiMember::Empty)
                         },
                         crate::geometry::MultiMember::Value(index) => {
-                            clean(&polygons.as_slice()[index])
-                                .map(crate::geometry::MultiMember::Value)
-                                .or(Some(crate::geometry::MultiMember::Empty))
+                            Ok(clean(&polygons.as_slice()[index])?.map_or(
+                                crate::geometry::MultiMember::Empty,
+                                crate::geometry::MultiMember::Value,
+                            ))
                         },
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>>>()?;
                 if members.is_empty() {
                     Self::empty_polygon()
                 } else {
-                    Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
+                    Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
                 }
             },
             Self::GeometryCollection(parts) => Self::GeometryCollection(
@@ -839,8 +842,15 @@ impl Shape {
         candidate: impl Fn(Point, Point, Point) -> Option<f64>,
     ) -> Result<Self> {
         let mut segments = Vec::new();
-        self.for_each_segment_chain(|chain| segments.extend(line_segments(chain)));
-        let guard = TopologyGuard::new(&segments, self.points_vec().iter().map(Point::xy));
+        self.try_for_each_segment_chain(|chain| {
+            for segment in line_segments(chain) {
+                crate::try_push_vec(&mut segments, segment)?;
+            }
+            Ok::<_, crate::error::Error>(())
+        })?;
+        let mut vertices = Vec::new();
+        self.try_for_each_point(|point| crate::try_push_vec(&mut vertices, point.xy()))?;
+        let guard = TopologyGuard::new(&segments, vertices.iter().copied());
         self.map_chains(&|points: &CoordSeq| {
             let alive: Vec<Point> = points.iter_coords().collect();
             let closed = alive.len() >= 2
@@ -916,7 +926,7 @@ impl Shape {
     ) -> Result<RawSimplify> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => RawSimplify::Unchanged,
-            Self::LineString(points) => match kept_coords(points, scratch, keep_mask) {
+            Self::LineString(points) => match kept_coords(points, scratch, keep_mask)? {
                 None => RawSimplify::Unchanged,
                 Some(coords) => {
                     RawSimplify::Changed(Self::LineString(LineSeq::from_proven(coords)))
@@ -925,10 +935,9 @@ impl Shape {
             Self::MultiLineString(lines) => keep_multi_lines(lines, scratch, keep_mask)?,
             Self::Polygon(polygon) => match keep_polygon(polygon, scratch, keep_mask)? {
                 PolygonKeep::Same => RawSimplify::Unchanged,
-                PolygonKeep::Empty => RawSimplify::Changed(Self::typed_empty(
-                    GeometryKind::Polygon,
-                    polygon.axes(),
-                )),
+                PolygonKeep::Empty => {
+                    RawSimplify::Changed(Self::typed_empty(GeometryKind::Polygon, polygon.axes()))
+                },
                 PolygonKeep::New(polygon) => RawSimplify::Changed(Self::Polygon(polygon)),
             },
             Self::MultiPolygon(polygons) => keep_multi_polygons(polygons, scratch, keep_mask)?,
@@ -969,14 +978,13 @@ impl Shape {
 
 #[cfg(test)]
 mod collapsed_ring_distinct_tests {
-    use std::sync::Arc;
 
     use super::has_three_distinct_xy;
     use crate::geometry::CoordSeq;
     use crate::test_support::fail_allocations_after;
 
     fn columns(xs: &[f64], ys: &[f64]) -> CoordSeq {
-        CoordSeq::from_columns(Arc::from(xs), Arc::from(ys), None, None)
+        CoordSeq::try_from_vecs(xs.into(), ys.into(), None, None).unwrap()
     }
 
     #[test]
@@ -1019,7 +1027,6 @@ mod collapsed_ring_distinct_tests {
 
 #[cfg(test)]
 mod keep_identity_tests {
-    use std::sync::Arc;
 
     use super::RawSimplify;
     use crate::error::{ErrorKind, ResourceError};
@@ -1030,28 +1037,21 @@ mod keep_identity_tests {
     use crate::test_support::fail_allocations_after;
 
     fn line_xy(xs: &[f64], ys: &[f64]) -> LineSeq {
-        LineSeq::from_proven(CoordSeq::from_columns(
-            Arc::from(xs),
-            Arc::from(ys),
-            None,
-            None,
-        ))
+        LineSeq::from_proven(CoordSeq::try_from_vecs(xs.into(), ys.into(), None, None).unwrap())
     }
 
     fn closed_ring(xs: &[f64], ys: &[f64]) -> Ring {
-        Ring::from_closed(CoordSeq::from_columns(
-            Arc::from(xs),
-            Arc::from(ys),
-            None,
-            None,
-        ))
+        Ring::from_closed(CoordSeq::try_from_vecs(xs.into(), ys.into(), None, None).unwrap())
     }
 
     fn square() -> Shape {
-        Shape::Polygon(Polygon::new(
-            closed_ring(&[0.0, 4.0, 4.0, 0.0, 0.0], &[0.0, 0.0, 4.0, 4.0, 0.0]),
-            Vec::new(),
-        ))
+        Shape::Polygon(
+            Polygon::new(
+                closed_ring(&[0.0, 4.0, 4.0, 0.0, 0.0], &[0.0, 0.0, 4.0, 4.0, 0.0]),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -1096,12 +1096,15 @@ mod keep_identity_tests {
     #[test]
     fn vw_zero_preserves_nan_and_signed_zero_bits() {
         let nan = f64::NAN;
-        let line = Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
-            Arc::from([-0.0, 1.0, 2.0]),
-            Arc::from([0.0, -0.0, 0.0]),
-            Some(Arc::from([nan, 1.0, nan])),
-            Some(Arc::from([0.0, nan, -0.0])),
-        )));
+        let line = Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_vecs(
+                [-0.0, 1.0, 2.0].into(),
+                [0.0, -0.0, 0.0].into(),
+                Some([nan, 1.0, nan].into()),
+                Some([0.0, nan, -0.0].into()),
+            )
+            .unwrap(),
+        ));
         let out = line.simplify_vw(0.0, true).unwrap();
         assert_eq!(out, line);
         let Shape::LineString(src) = &line else {
@@ -1118,18 +1121,21 @@ mod keep_identity_tests {
 
     #[test]
     fn dp_zero_keeps_repeated_xy_with_distinct_zm() {
-        let line = Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
-            Arc::from([0.0, 1.0, 0.0]),
-            Arc::from([0.0, 0.0, 0.0]),
-            Some(Arc::from([1.0, 2.0, 9.0])),
-            Some(Arc::from([10.0, 20.0, 90.0])),
-        )));
+        let line = Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_vecs(
+                [0.0, 1.0, 0.0].into(),
+                [0.0, 0.0, 0.0].into(),
+                Some([1.0, 2.0, 9.0].into()),
+                Some([10.0, 20.0, 90.0].into()),
+            )
+            .unwrap(),
+        ));
         let Shape::LineString(out) = line.simplify_dp(0.0, true).unwrap() else {
             panic!("A-B-A DP remains a line");
         };
-        assert_eq!(out.xs(), &[0.0, 0.0]);
-        assert_eq!(out.zs(), Some(&[1.0, 9.0][..]));
-        assert_eq!(out.ms(), Some(&[10.0, 90.0][..]));
+        assert_eq!(out.xs(), &[0.0, 1.0, 0.0]);
+        assert_eq!(out.zs(), Some(&[1.0, 2.0, 9.0][..]));
+        assert_eq!(out.ms(), Some(&[10.0, 20.0, 90.0][..]));
     }
 
     #[test]
@@ -1140,7 +1146,7 @@ mod keep_identity_tests {
         let keep_b = closed_ring(&[1.0, 2.0, 2.0, 1.0, 1.0], &[5.0, 5.0, 6.0, 6.0, 5.0]);
         let a_ptr = keep_a.xs().as_ptr();
         let b_ptr = keep_b.xs().as_ptr();
-        let polygon = Shape::Polygon(Polygon::new(shell, vec![keep_a, drop, keep_b]));
+        let polygon = Shape::Polygon(Polygon::new(shell, vec![keep_a, drop, keep_b]).unwrap());
         // 0.5 keeps the 1×1 holes (diagonal offset ≈ 0.707) and drops the
         // 0.01-high spike below four closed vertices.
         let Shape::Polygon(out) = polygon.simplify_dp_raw(0.5).unwrap() else {
@@ -1153,10 +1159,13 @@ mod keep_identity_tests {
 
     #[test]
     fn shell_drop_is_typed_empty() {
-        let sliver = Shape::Polygon(Polygon::new(
-            closed_ring(&[0.0, 1.0, 0.5, 0.0], &[0.0, 0.0, 0.1, 0.0]),
-            Vec::new(),
-        ));
+        let sliver = Shape::Polygon(
+            Polygon::new(
+                closed_ring(&[0.0, 1.0, 0.5, 0.0], &[0.0, 0.0, 0.1, 0.0]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert_eq!(
             sliver.simplify_dp_raw(1.0).unwrap(),
             Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XY)
@@ -1165,10 +1174,13 @@ mod keep_identity_tests {
 
     #[test]
     fn collapsed_keep_all_drops_only_when_topology_is_off() {
-        let collapsed = Shape::Polygon(Polygon::new(
-            closed_ring(&[0.0, 0.0, 0.0, 0.0], &[0.0, 0.0, 0.0, 0.0]),
-            Vec::new(),
-        ));
+        let collapsed = Shape::Polygon(
+            Polygon::new(
+                closed_ring(&[0.0, 0.0, 0.0, 0.0], &[0.0, 0.0, 0.0, 0.0]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
         assert_eq!(collapsed.simplify_vw(0.0, true).unwrap(), collapsed);
         assert_eq!(
             collapsed.simplify_vw(0.0, false).unwrap(),
@@ -1184,7 +1196,9 @@ mod keep_identity_tests {
         let first_ptr = first.xs().as_ptr();
         let last_ptr = last.xs().as_ptr();
         let shape = Shape::MultiLineString(
-            MultiLineString::from_dense(vec![first, middle, last]).unwrap(),
+            MultiLineString::from_dense(vec![first, middle, last])
+                .unwrap()
+                .unwrap(),
         );
         let Shape::MultiLineString(out) = shape.simplify_dp(0.0, true).unwrap() else {
             panic!("multilinestring remains");
@@ -1199,7 +1213,9 @@ mod keep_identity_tests {
         let first = line_xy(&[0.0, 0.0], &[0.0, 1.0]);
         let middle = line_xy(&[0.0, 1.0, 2.0], &[0.0, 0.0, 0.0]);
         let last = line_xy(&[3.0, 3.0], &[0.0, 1.0]);
-        let lines = MultiLineString::from_dense(vec![first, middle, last]).unwrap();
+        let lines = MultiLineString::from_dense(vec![first, middle, last])
+            .unwrap()
+            .unwrap();
         let result = fail_allocations_after(0, || super::try_prefix_line_members(&lines, 1));
         assert!(matches!(
             result,
@@ -1261,12 +1277,18 @@ mod keep_identity_tests {
         let kept = Polygon::new(
             closed_ring(&[0.0, 4.0, 4.0, 0.0, 0.0], &[0.0, 0.0, 4.0, 4.0, 0.0]),
             Vec::new(),
-        );
+        )
+        .unwrap();
         let sliver = Polygon::new(
             closed_ring(&[10.0, 11.0, 10.5, 10.0], &[0.0, 0.0, 0.1, 0.0]),
             Vec::new(),
+        )
+        .unwrap();
+        let shape = Shape::MultiPolygon(
+            MultiPolygon::from_dense(vec![kept, sliver])
+                .unwrap()
+                .unwrap(),
         );
-        let shape = Shape::MultiPolygon(MultiPolygon::from_dense(vec![kept, sliver]).unwrap());
         let Shape::MultiPolygon(out) = shape.simplify_dp_raw(1.0).unwrap() else {
             panic!("multipolygon remains");
         };
@@ -1277,7 +1299,6 @@ mod keep_identity_tests {
 
 #[cfg(test)]
 mod dp_zero_split_tests {
-    use std::sync::Arc;
 
     use super::rdp_keep;
     use crate::geometry::{CoordSeq, LineSeq, Shape, XY, point_on_segment};
@@ -1290,12 +1311,9 @@ mod dp_zero_split_tests {
     }
 
     fn line_xy(xs: &[f64], ys: &[f64]) -> Shape {
-        Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
-            Arc::from(xs),
-            Arc::from(ys),
-            None,
-            None,
-        )))
+        Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_vecs(xs.into(), ys.into(), None, None).unwrap(),
+        ))
     }
 
     fn discarded_lie_on_surviving_chords(xs: &[f64], ys: &[f64], keep: &[bool]) {
@@ -1404,12 +1422,15 @@ mod dp_zero_split_tests {
 
     #[test]
     fn xyzm_l_bend_keeps_corner_ordinates() {
-        let line = Shape::LineString(LineSeq::from_proven(CoordSeq::from_columns(
-            Arc::from([0.0, 1.0, 2.0]),
-            Arc::from([0.0, 1.0, 0.0]),
-            Some(Arc::from([1.0, 7.0, 3.0])),
-            Some(Arc::from([10.0, 70.0, 30.0])),
-        )));
+        let line = Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_vecs(
+                [0.0, 1.0, 2.0].into(),
+                [0.0, 1.0, 0.0].into(),
+                Some([1.0, 7.0, 3.0].into()),
+                Some([10.0, 70.0, 30.0].into()),
+            )
+            .unwrap(),
+        ));
         let Shape::LineString(out) = line.simplify_dp(0.0, true).unwrap() else {
             panic!("line");
         };

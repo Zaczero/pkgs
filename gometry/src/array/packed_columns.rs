@@ -9,16 +9,15 @@
 //! payload here. Output-producing kernels write logical rows once into their
 //! final coordinate and offset columns.
 
-#[cfg(test)]
-use crate::array::packed_column_kernels;
-use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use crate::array::missing::ValidityCursor;
+#[cfg(test)]
+use crate::array::packed_column_kernels;
 use crate::array::{
     CoordSeq, CoordinateAxes, CoordinateReplacement, CsrOffsetBuilder, CsrOffsetColumn, Frame,
-    GeometryArrayStorage, Point, PointRowLayout, PolygonLevel, PyErr, PyGeometryArray, PyResult,
-    Python, ReplacementAxis, RingLevel, RowSelectionRef, ValidityMask,
+    GeometryArrayStorage, PackedStorage, Point, PointRowLayout, PolygonLevel, PyErr,
+    PyGeometryArray, PyResult, Python, ReplacementAxis, RingLevel, RowSelectionRef, ValidityMask,
     map_masked_point_columns_to_crs, rows_err,
 };
 use crate::crs::TransformFailure;
@@ -30,6 +29,12 @@ pub(crate) enum PackedColumnError {
         row: usize,
         error: crate::error::Error,
     },
+}
+
+impl From<crate::error::Error> for PackedColumnError {
+    fn from(error: crate::error::Error) -> Self {
+        Self::Batch(error)
+    }
 }
 
 pub(crate) type PackedColumnResult<T> = std::result::Result<T, PackedColumnError>;
@@ -663,7 +668,9 @@ fn resolve_packed_columns<'a>(
     point_layout: PointRowLayout,
 ) -> Option<PackedColumns<'a>> {
     match storage {
-        GeometryArrayStorage::Packed(packed) => Some(resolve_columns(packed, missing, point_layout)),
+        GeometryArrayStorage::Packed(packed) => {
+            Some(resolve_columns(packed, missing, point_layout))
+        },
         GeometryArrayStorage::Mixed(_) => None,
     }
 }
@@ -674,9 +681,12 @@ fn resolve_columns<'a>(
     point_layout: PointRowLayout,
 ) -> PackedColumns<'a> {
     match storage {
-        PackedStorage::Points { coords, row_map } => PackedColumns::Points(
-            resolve_point_columns(coords, row_map.as_deref(), missing, point_layout),
-        ),
+        PackedStorage::Points { coords, row_map } => PackedColumns::Points(resolve_point_columns(
+            coords,
+            row_map.as_deref(),
+            missing,
+            point_layout,
+        )),
         PackedStorage::Lines {
             coords,
             offsets,
@@ -734,13 +744,14 @@ fn push_replacement_vertex(
     old_index: usize,
     replacement: &CoordinateReplacement,
     replacement_index: usize,
-) {
+) -> PackedColumnResult<()> {
     builder.push_xyzm(
         replacement.xs[replacement_index],
         replacement.ys[replacement_index],
         replacement_axis_value(&replacement.zs, replacement_index, old.zs(), old_index),
         replacement_axis_value(&replacement.ms, replacement_index, old.ms(), old_index),
-    );
+    )?;
+    Ok(())
 }
 
 fn validate_replacement_ring(
@@ -768,7 +779,9 @@ fn finish_replacement_builder(
     allow_mask_placeholders: bool,
 ) -> PackedColumnResult<CoordSeq> {
     if allow_mask_placeholders {
-        Ok(builder.finish_with_missing_placeholders())
+        builder
+            .finish_with_missing_placeholders()
+            .map_err(batch_err)
     } else {
         builder.finish().map_err(batch_err)
     }
@@ -791,21 +804,21 @@ fn replace_point_columns<const HAS_MISSING: bool>(
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = point_columns.coords();
     let rows = point_columns.rows();
-    let mut builder = CoordSeqBuilder::with_capacity(
+    let mut builder = CoordSeqBuilder::try_with_capacity(
         old.axes(),
         if rows.is_compact() {
             rows.present_count()
         } else {
             rows.len()
         },
-    );
+    )?;
     for (_row, physical) in rows.cursor() {
         if let Some(physical) = physical {
-            push_replacement_vertex(&mut builder, old, physical, replacement, *replacement_index);
+            push_replacement_vertex(&mut builder, old, physical, replacement, *replacement_index)?;
             *replacement_index += 1;
         } else if !rows.is_compact() {
             debug_assert!(HAS_MISSING);
-            builder.push(missing_point(old.axes()));
+            builder.push(missing_point(old.axes()))?;
         }
     }
     let coords = if rows.is_compact() {
@@ -823,7 +836,7 @@ fn replace_line_columns<const HAS_MISSING: bool>(
     missing: Option<&ValidityMask>,
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = line_columns.coords();
-    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), 0);
+    let mut builder = CoordSeqBuilder::try_with_capacity(old.axes(), 0)?;
     let mut offsets = crate::array::CsrOffsetBuilder::new();
     for row in 0..line_columns.rows() {
         if packed_row_missing::<HAS_MISSING>(missing, row) {
@@ -838,7 +851,7 @@ fn replace_line_columns<const HAS_MISSING: bool>(
                         old_index,
                         replacement,
                         *replacement_index,
-                    );
+                    )?;
                     *replacement_index += 1;
                 }
             }
@@ -863,7 +876,7 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = polygon_columns.coords();
     let ring_offsets = polygon_columns.ring_offsets();
-    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), 0);
+    let mut builder = CoordSeqBuilder::try_with_capacity(old.axes(), 0)?;
     let mut ring_builder = crate::array::CsrOffsetBuilder::new();
     let mut polygon_builder = crate::array::CsrOffsetBuilder::new();
     let mut ring_count = 0;
@@ -886,7 +899,7 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
                     old_index,
                     replacement,
                     *replacement_index,
-                );
+                )?;
                 *replacement_index += 1;
             }
             validate_windows.push(output_start..builder.len());
@@ -966,7 +979,9 @@ fn finish_pointwise_coords(
     has_missing: bool,
 ) -> PackedColumnResult<CoordSeq> {
     if has_missing {
-        Ok(builder.finish_with_missing_placeholders())
+        builder
+            .finish_with_missing_placeholders()
+            .map_err(batch_err)
     } else {
         builder.finish().map_err(batch_err)
     }
@@ -989,14 +1004,14 @@ fn map_selected_points(
     match columns {
         PackedColumns::Points(points) => {
             let rows = points.rows();
-            let mut builder = CoordSeqBuilder::with_capacity(
+            let mut builder = CoordSeqBuilder::try_with_capacity(
                 output_axes,
                 if rows.is_compact() {
                     rows.present_count()
                 } else {
                     rows.len()
                 },
-            );
+            )?;
             let mut has_missing = false;
             for (logical, physical) in rows.cursor() {
                 let Some(physical) = physical else {
@@ -1004,13 +1019,13 @@ fn map_selected_points(
                         continue;
                     }
                     has_missing = true;
-                    builder.push(missing_point(output_axes));
+                    builder.push(missing_point(output_axes))?;
                     continue;
                 };
                 builder.push(
                     map(points.coords().point_at(physical))
                         .map_err(|error| row_err(logical, error))?,
-                );
+                )?;
             }
             let coords = if rows.is_compact() {
                 builder.finish().map_err(batch_err)?
@@ -1025,7 +1040,7 @@ fn map_selected_points(
                 .map(|logical| lines.row_window(logical).len())
                 .filter(|&len| len >= 2)
                 .sum();
-            let mut builder = CoordSeqBuilder::with_capacity(output_axes, capacity);
+            let mut builder = CoordSeqBuilder::try_with_capacity(output_axes, capacity)?;
             let mut offsets = CsrOffsetBuilder::with_capacity(lines.rows()).map_err(batch_err)?;
             for logical in 0..lines.rows() {
                 if !lines.is_missing(logical) {
@@ -1035,7 +1050,7 @@ fn map_selected_points(
                             builder.push(
                                 map(lines.coords().point_at(physical))
                                     .map_err(|error| row_err(logical, error))?,
-                            );
+                            )?;
                         }
                     }
                 }
@@ -1061,7 +1076,7 @@ fn map_selected_points(
                     source[ring + 1] as usize - source[ring] as usize
                 })
                 .sum();
-            let mut builder = CoordSeqBuilder::with_capacity(output_axes, capacity);
+            let mut builder = CoordSeqBuilder::try_with_capacity(output_axes, capacity)?;
             let mut rings = CsrOffsetBuilder::with_capacity(ring_count).map_err(batch_err)?;
             let mut polygon_offsets =
                 CsrOffsetBuilder::with_capacity(polygons.rows()).map_err(batch_err)?;
@@ -1074,7 +1089,7 @@ fn map_selected_points(
                             builder.push(
                                 map(polygons.coords().point_at(physical))
                                     .map_err(|error| row_err(logical, error))?,
-                            );
+                            )?;
                         }
                         ring_count += 1;
                         rings
@@ -1334,7 +1349,9 @@ impl PyGeometryArray {
             .map(|output| {
                 assemble_packed_output(output, output_frame)
                     .with_missing_mask(self.missing().cloned())
-            });
+                    .map_err(crate::PyErr::from)
+            })
+            .transpose()?;
         Ok(output)
     }
 
@@ -1355,7 +1372,9 @@ impl PyGeometryArray {
             return Ok(None);
         };
         Ok(Some(
-            assemble_packed_output(output, output_frame).with_missing_mask(self.missing().cloned()),
+            assemble_packed_output(output, output_frame)
+                .with_missing_mask(self.missing().cloned())
+                .map_err(crate::PyErr::from)?,
         ))
     }
 
@@ -1381,7 +1400,9 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame).with_missing_mask(self.missing().cloned()),
+            assemble_packed_output(output, output_frame)
+                .with_missing_mask(self.missing().cloned())
+                .map_err(crate::PyErr::from)?,
         ))
     }
 
@@ -1406,7 +1427,9 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame).with_missing_mask(self.missing().cloned()),
+            assemble_packed_output(output, output_frame)
+                .with_missing_mask(self.missing().cloned())
+                .map_err(crate::PyErr::from)?,
         ))
     }
 
@@ -1446,7 +1469,9 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame).with_missing_mask(self.missing().cloned()),
+            assemble_packed_output(output, output_frame)
+                .with_missing_mask(self.missing().cloned())
+                .map_err(crate::PyErr::from)?,
         ))
     }
 
@@ -1529,8 +1554,10 @@ impl PyGeometryArray {
     where
         T: Send,
     {
-        let (GeometryArrayStorage::Packed(PackedStorage::Points { .. }), GeometryArrayStorage::Packed(PackedStorage::Points { .. })) =
-            (self.storage(), right.storage())
+        let (
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. }),
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. }),
+        ) = (self.storage(), right.storage())
         else {
             return Ok(None);
         };
@@ -1575,11 +1602,9 @@ impl PyGeometryArray {
     /// O(1) packed-storage X/Y swap — narrow escape hatch, not a general scan.
     pub(crate) fn swap_xy_packed_storage(&self) -> Option<Self> {
         match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => Some(Self::packed_points_mapped(
-                coords.swap_xy(),
-                self.frame.clone(),
-                row_map.clone(),
-            )),
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => Some(
+                Self::packed_points_mapped(coords.swap_xy(), self.frame.clone(), row_map.clone()),
+            ),
             GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
@@ -1646,14 +1671,12 @@ mod tests {
         });
 
         for storage in [&point_storage, &line_storage, &polygon_storage] {
-            let Some(columns) = resolve_packed_columns(storage, None, PointRowLayout::Dense)
-            else {
+            let Some(columns) = resolve_packed_columns(storage, None, PointRowLayout::Dense) else {
                 panic!("packed view resolution failed");
             };
             assert_eq!(columns.row_count(), 3);
             assert_eq!(columns.map_rows(|row| row.index()), vec![0, 1, 2]);
-            let _ = packed_column_kernels::bounds_values_from_columns(&columns)
-                .expect("bounds");
+            let _ = packed_column_kernels::bounds_values_from_columns(&columns).expect("bounds");
         }
     }
 
@@ -1729,11 +1752,10 @@ mod tests {
     #[test]
     fn selected_reduction_allocates_only_its_result() {
         let storage = gathered_lines(32);
-        let columns = resolve_packed_columns(&storage, None, PointRowLayout::Dense)
-            .expect("packed columns");
+        let columns =
+            resolve_packed_columns(&storage, None, PointRowLayout::Dense).expect("packed columns");
         let (values, allocations) = allocation_count(|| {
-            packed_column_kernels::bounds_values_from_columns(&columns)
-                .expect("bounds")
+            packed_column_kernels::bounds_values_from_columns(&columns).expect("bounds")
         });
         assert_eq!(values.len(), 32 * 4);
         assert_eq!(allocations, 1);

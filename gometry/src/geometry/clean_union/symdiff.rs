@@ -16,7 +16,7 @@ pub(crate) fn symmetric_difference_shape(
     pool: &OperandPool,
     contacts: &mut BoundaryContacts,
     arc_cap: usize,
-) -> Option<Shape> {
+) -> crate::error::Result<Option<Shape>> {
     // Fast path: each direction is a clean DIFFERENCE, so chain both in
     // O(crossings) (no endpoint hashing) and assemble the COMBINED rings. A bail
     // falls through to the hash path below — itself the oracle-equivalent.
@@ -31,7 +31,7 @@ pub(crate) fn symmetric_difference_shape(
     {
         rings.extend(more);
         if rings.is_empty() {
-            return None;
+            return Ok(None);
         }
         return assemble_rings(rings);
     }
@@ -50,7 +50,7 @@ pub(crate) fn symmetric_difference_shape(
         .iter()
         .filter(|ring| ring.operand == Operand::Left)
     {
-        keep_arcs_symdiff(
+        let Some(()) = keep_arcs_symdiff(
             ring,
             true,
             contacts,
@@ -58,14 +58,16 @@ pub(crate) fn symmetric_difference_shape(
             Operand::Right,
             &mut arcs_ab,
             &mut arcs_ba,
-        )?;
+        ) else {
+            return Ok(None);
+        };
     }
     for ring in pool
         .rings
         .iter()
         .filter(|ring| ring.operand == Operand::Right)
     {
-        keep_arcs_symdiff(
+        let Some(()) = keep_arcs_symdiff(
             ring,
             false,
             contacts,
@@ -73,12 +75,19 @@ pub(crate) fn symmetric_difference_shape(
             Operand::Left,
             &mut arcs_ab,
             &mut arcs_ba,
-        )?;
+        ) else {
+            return Ok(None);
+        };
     }
-    let mut rings = reassemble_to_rings(&arcs_ab)?;
-    rings.extend(reassemble_to_rings(&arcs_ba)?);
+    let Some(mut rings) = reassemble_to_rings(&arcs_ab) else {
+        return Ok(None);
+    };
+    let Some(more) = reassemble_to_rings(&arcs_ba) else {
+        return Ok(None);
+    };
+    rings.extend(more);
     if rings.is_empty() {
-        return None;
+        return Ok(None);
     }
     assemble_rings(rings)
 }

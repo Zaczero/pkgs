@@ -121,7 +121,7 @@ pub(crate) fn coverage_invalid_segments<S: std::borrow::Borrow<Shape>>(
     gap_width: f64,
 ) -> Result<Vec<Vec<Segment>>> {
     let rows = coverage_rows(rows, gap_width)?;
-    Ok(coverage_invalid_segments_prepared(&rows, gap_width))
+    coverage_invalid_segments_prepared(&rows, gap_width)
 }
 
 /// Validate already-prepared coverage rows, allowing check-and-do operations
@@ -129,7 +129,7 @@ pub(crate) fn coverage_invalid_segments<S: std::borrow::Borrow<Shape>>(
 pub(crate) fn coverage_invalid_segments_prepared(
     rows: &[CoverageRow<'_>],
     gap_width: f64,
-) -> Vec<Vec<Segment>> {
+) -> Result<Vec<Vec<Segment>>> {
     let occurrences = edge_row_occurrences(rows);
     let mut invalid = vec![Vec::new(); rows.len()];
     coverage_invalid_with_count(
@@ -140,8 +140,8 @@ pub(crate) fn coverage_invalid_segments_prepared(
             invalid[index].push(segment);
             true
         },
-    );
-    invalid
+    )?;
+    Ok(invalid)
 }
 
 /// Core validator given a count lookup: matched interface when count==2.
@@ -158,7 +158,7 @@ fn coverage_invalid_with_count(
     mut count_of: impl FnMut((PointKey, PointKey)) -> u32,
     gap_width: f64,
     mut report_invalid: impl FnMut(usize, Segment) -> bool,
-) -> bool {
+) -> Result<bool> {
     let envelope_tree = BulkRTree::bulk_load_with_params(
         rows.iter()
             .enumerate()
@@ -240,7 +240,7 @@ fn coverage_invalid_with_count(
             for &segment in &row.segments {
                 any_invalid = true;
                 if !report_invalid(index, segment) {
-                    return true;
+                    return Ok(true);
                 }
             }
             continue;
@@ -259,21 +259,24 @@ fn coverage_invalid_with_count(
                     segment.start.y.max(segment.end.y) + gap_width,
                 ],
             );
-            let offending = envelope_tree
-                .locate_in_envelope_intersecting(query)
-                .any(|candidate| {
-                    candidate.row != index
-                        && segment_offends_row(segment, &rows[candidate.row], gap_width)
-                });
+            let mut offending = false;
+            for candidate in envelope_tree.locate_in_envelope_intersecting(query) {
+                if candidate.row != index
+                    && segment_offends_row(segment, &rows[candidate.row], gap_width)?
+                {
+                    offending = true;
+                    break;
+                }
+            }
             if offending {
                 any_invalid = true;
                 if !report_invalid(index, segment) {
-                    return true;
+                    return Ok(true);
                 }
             }
         }
     }
-    any_invalid
+    Ok(any_invalid)
 }
 
 /// Prepare and require a valid coverage for a public check-and-do operation.
@@ -303,7 +306,7 @@ pub(crate) fn valid_coverage_rows<'a, S: std::borrow::Borrow<Shape>>(
                 .or_insert((segment, 1));
         }
     }
-    if coverage_invalid_with_count(&prepared, |key| incidences[&key].1, 0.0, |_, _| false) {
+    if coverage_invalid_with_count(&prepared, |key| incidences[&key].1, 0.0, |_, _| false)? {
         return Err(GeometryErrorKind::InvalidCoverage { operation }.into());
     }
     Ok(ValidCoverage {
@@ -323,7 +326,7 @@ pub(crate) fn segment_offends_row(
     segment: Segment,
     other: &CoverageRow<'_>,
     gap_width: f64,
-) -> bool {
+) -> Result<bool> {
     let midpoint = Point::new_raw_xy(
         f64::midpoint(segment.start.x, segment.end.x),
         f64::midpoint(segment.start.y, segment.end.y),
@@ -331,8 +334,8 @@ pub(crate) fn segment_offends_row(
     // Overlap or inexact contact: the midpoint of a matched interface would
     // coincide with the neighbor's own segment — an unmatched one touching
     // (or entering) the neighbor is a T-join, sliver, or true overlap.
-    if other.shape.covers_point(midpoint) {
-        return true;
+    if other.shape.covers_point(midpoint)? {
+        return Ok(true);
     }
     // Proper crossing without containment (the bowtie-style overlap whose
     // midpoint happens to fall outside). The contact must be interior to
@@ -353,7 +356,7 @@ pub(crate) fn segment_offends_row(
         })
     };
     if crossing {
-        return true;
+        return Ok(true);
     }
     // Narrow gap: the segment faces another row's unmatched boundary closer
     // than gap_width without touching it. Nearest-segment needs the index
@@ -368,10 +371,10 @@ pub(crate) fn segment_offends_row(
                 .is_some()
         };
         if near(midpoint.into()) || near(segment.start) || near(segment.end) {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Whether the rows form a valid polygonal coverage under `gap_width`.
@@ -386,7 +389,7 @@ pub(crate) fn coverage_is_valid<S: std::borrow::Borrow<Shape>>(
         |key| occurrences[&key],
         gap_width,
         |_, _| false,
-    ))
+    )?)
 }
 
 /// Per-row invalid boundary linework: the row's offending segments merged
@@ -404,11 +407,11 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
                     CoordinateAxes::XY,
                 ));
             }
-            let lines: Vec<LineSeq> = segments
+            let lines = segments
                 .into_iter()
                 .map(|segment| LineSeq::segment(segment.start.point(), segment.end.point()))
-                .collect();
-            Shape::multi_line_string(CoordinateAxes::XY, lines).line_merge()
+                .collect::<Result<Vec<_>>>()?;
+            Shape::multi_line_string(CoordinateAxes::XY, lines)?.line_merge()
         })
         .collect()
 }

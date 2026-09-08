@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::geometry::{
     CoordinateAxes, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
     ZOrdinate, column_all_finite,
@@ -204,41 +202,29 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
     }
     // Count proven by byte length ÷ stride (no separate trusted count).
     let count = bytes.len() / stride;
-    let mut xs = Arc::<[f64]>::new_uninit_slice(count);
-    let mut ys = Arc::<[f64]>::new_uninit_slice(count);
-    let mut zs = Z.then(|| Arc::<[f64]>::new_uninit_slice(count));
-    let mut ms = M.then(|| Arc::<[f64]>::new_uninit_slice(count));
-    {
-        let xs_out = Arc::get_mut(&mut xs).expect("new Arc is unique");
-        let ys_out = Arc::get_mut(&mut ys).expect("new Arc is unique");
-        let mut zs_out = zs
-            .as_mut()
-            .map(|column| Arc::get_mut(column).expect("new Arc is unique"));
-        let mut ms_out = ms
-            .as_mut()
-            .map(|column| Arc::get_mut(column).expect("new Arc is unique"));
-        for (index, vertex) in bytes.chunks_exact(stride).enumerate() {
-            let (ordinates, _) = vertex.as_chunks::<{ size_of::<f64>() }>();
-            xs_out[index].write(decode(ordinates[0]));
-            ys_out[index].write(decode(ordinates[1]));
-            if let Some(column) = &mut zs_out {
-                column[index].write(decode(ordinates[2]));
-            }
-            if let Some(column) = &mut ms_out {
-                column[index].write(decode(ordinates[2 + usize::from(Z)]));
-            }
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    let mut zs = Z.then(Vec::new);
+    let mut ms = M.then(Vec::new);
+    crate::boundary::try_reserve_vec(&mut xs, count)?;
+    crate::boundary::try_reserve_vec(&mut ys, count)?;
+    if let Some(column) = &mut zs {
+        crate::boundary::try_reserve_vec(column, count)?;
+    }
+    if let Some(column) = &mut ms {
+        crate::boundary::try_reserve_vec(column, count)?;
+    }
+    for vertex in bytes.chunks_exact(stride) {
+        let (ordinates, _) = vertex.as_chunks::<{ size_of::<f64>() }>();
+        crate::boundary::try_push_vec(&mut xs, decode(ordinates[0]))?;
+        crate::boundary::try_push_vec(&mut ys, decode(ordinates[1]))?;
+        if let Some(column) = &mut zs {
+            crate::boundary::try_push_vec(column, decode(ordinates[2]))?;
+        }
+        if let Some(column) = &mut ms {
+            crate::boundary::try_push_vec(column, decode(ordinates[2 + usize::from(Z)]))?;
         }
     }
-    // SAFETY: `count == bytes.len() / stride` and the loop enumerates every
-    // `chunks_exact` vertex, writing each selected ordinate for indices
-    // `0..count`. `assume_init` runs only after every slot is written.
-    let xs = unsafe { xs.assume_init() };
-    // SAFETY: same as `xs` — full column written above.
-    let ys = unsafe { ys.assume_init() };
-    // SAFETY: Z column allocated only when Z; then fully written above.
-    let zs = zs.map(|column| unsafe { column.assume_init() });
-    // SAFETY: M column allocated only when M; then fully written above.
-    let ms = ms.map(|column| unsafe { column.assume_init() });
     if !column_all_finite(&xs)
         || !column_all_finite(&ys)
         || zs
@@ -250,7 +236,7 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
     {
         return Err(GeometryErrorKind::NonFiniteCoordinate.into());
     }
-    CoordSeq::try_from_columns(xs, ys, zs, ms)
+    CoordSeq::try_from_vecs(xs, ys, zs, ms)
 }
 
 /// A member's position inside a nested WKB container. Threaded only so a
@@ -376,9 +362,7 @@ impl WkbReader<'_> {
                 if count == 0 {
                     Shape::typed_empty(GeometryKind::MultiPoint, axes)
                 } else {
-                    Shape::MultiPoint(MultiPoint::try_new(axes, members).map_err(|_| {
-                        IoError::wkb("MULTIPOINT members must have matching coordinate axes")
-                    })?)
+                    Shape::MultiPoint(MultiPoint::try_new(axes, members)?)
                 }
             },
             WKB_LINESTRING => {
@@ -423,13 +407,7 @@ impl WkbReader<'_> {
                 if members.is_empty() {
                     Shape::typed_empty(GeometryKind::MultiLineString, axes)
                 } else {
-                    Shape::MultiLineString(MultiLineString::try_new(axes, members).map_err(
-                        |_| {
-                            IoError::wkb(
-                                "MULTILINESTRING members must have matching coordinate axes",
-                            )
-                        },
-                    )?)
+                    Shape::MultiLineString(MultiLineString::try_new(axes, members)?)
                 }
             },
             WKB_POLYGON => self.read_polygon_shape(byte_order, axes)?,
@@ -469,9 +447,7 @@ impl WkbReader<'_> {
                 if members.is_empty() {
                     Shape::typed_empty(GeometryKind::MultiPolygon, axes)
                 } else {
-                    Shape::MultiPolygon(MultiPolygon::try_new(axes, members).map_err(|_| {
-                        IoError::wkb("MULTIPOLYGON members must have matching coordinate axes")
-                    })?)
+                    Shape::MultiPolygon(MultiPolygon::try_new(axes, members)?)
                 }
             },
             WKB_GEOMETRYCOLLECTION => {
@@ -632,7 +608,7 @@ impl WkbReader<'_> {
                 self.read_ring(byte_order, axes)?,
             )?);
         }
-        Ok(Shape::Polygon(Polygon::new(shell, holes)))
+        Ok(Shape::Polygon(Polygon::new(shell, holes)?))
     }
 
     /// Read a container's members, threading the effective SRID across

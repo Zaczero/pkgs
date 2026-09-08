@@ -102,7 +102,10 @@ pub(crate) struct SourcePoint {
 
 /// Source support attached to a quotient node. These flags intentionally keep
 /// point support separate from line vertices and polygon ring vertices.
-#[expect(clippy::struct_excessive_bools, reason = "a support set is four independent flags; a bitset would only rename them")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a support set is four independent flags; a bitset would only rename them"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct NodeSupport {
     pub(crate) point: bool,
@@ -230,33 +233,37 @@ impl TopologyGraph {
     /// Build one graph from one complete source geometry. The domain changes
     /// only point equivalence and source-edge charting; the noder remains the
     /// existing planar XY noder in both spaces.
-    fn build(shape: &Shape, domain: TopologyDomain) -> Self {
+    fn build(shape: &Shape, domain: TopologyDomain) -> crate::error::Result<Self> {
         let mut builder = GraphBuilder::new(domain);
-        builder.collect(shape, 0);
+        builder.collect(shape, 0)?;
         builder.finish(shape)
     }
 
-    pub(crate) fn cartesian_many(shapes: &[&Shape]) -> Self {
+    pub(crate) fn cartesian_many(shapes: &[&Shape]) -> crate::error::Result<Self> {
         let mut builder = GraphBuilder::new_many(TopologyDomain::Cartesian);
         for (source_row, shape) in shapes.iter().enumerate() {
-            builder.collect(shape, source_row as u32);
+            builder.collect(shape, source_row as u32)?;
         }
         builder.finish_many(shapes.iter().copied())
     }
 
-    pub(crate) fn geographic_many(inputs: &crate::geographic::GeographicInputs<'_>) -> Self {
+    pub(crate) fn geographic_many(
+        inputs: &crate::geographic::GeographicInputs<'_>,
+    ) -> crate::error::Result<Self> {
         let mut builder = GraphBuilder::new_many(TopologyDomain::Geographic(inputs.frame()));
         for (source_row, view) in inputs.views().iter().enumerate() {
-            builder.collect(view.shape(), source_row as u32);
+            builder.collect(view.shape(), source_row as u32)?;
         }
         builder.finish_many(inputs.views().iter().map(|view| view.shape()))
     }
 
-    pub(crate) fn cartesian(shape: &Shape) -> Self {
+    pub(crate) fn cartesian(shape: &Shape) -> crate::error::Result<Self> {
         Self::build(shape, TopologyDomain::Cartesian)
     }
 
-    pub(crate) fn geographic(view: crate::geographic::ScalarGeographicView<'_>) -> Self {
+    pub(crate) fn geographic(
+        view: crate::geographic::ScalarGeographicView<'_>,
+    ) -> crate::error::Result<Self> {
         Self::build(view.shape(), TopologyDomain::Geographic(view.frame()))
     }
 
@@ -364,7 +371,6 @@ impl TopologyGraph {
     pub(crate) const fn edge_has_line_source(&self, edge: &TopologyEdge) -> bool {
         edge.line_support
     }
-
 
     pub(crate) fn edge_has_line_source_for_row(
         &self,
@@ -579,7 +585,10 @@ pub(crate) enum TopologyKey {
     Pole(bool),
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn quotient_key(domain: TopologyDomain, point: XY) -> TopologyKey {
     if let TopologyDomain::Geographic(frame) = domain {
         if point.y == frame.pole() {
@@ -601,7 +610,10 @@ fn quotient_key(domain: TopologyDomain, point: XY) -> TopologyKey {
     TopologyKey::Coordinate(PointKey::new(point))
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn point_on_graph_segment(domain: TopologyDomain, point: XY, segment: Segment) -> bool {
     if let TopologyDomain::Geographic(frame) = domain {
         if point.y.abs() == frame.pole() && (segment.start.y == point.y || segment.end.y == point.y)
@@ -667,7 +679,10 @@ impl AsRef<Polygon> for AreaSupport {
     }
 }
 
-#[expect(clippy::struct_excessive_bools, reason = "pole and boundary contacts are four independent facts about a ring")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pole and boundary contacts are four independent facts about a ring"
+)]
 #[derive(Clone, Debug)]
 pub(crate) struct ChartRing {
     pub(crate) points: Box<[XY]>,
@@ -734,8 +749,8 @@ enum AreaMembership {
 }
 
 impl AreaMembership {
-    fn build(domain: TopologyDomain, areas: &[AreaSupport]) -> Self {
-        match domain {
+    fn build(domain: TopologyDomain, areas: &[AreaSupport]) -> crate::error::Result<Self> {
+        Ok(match domain {
             TopologyDomain::Cartesian => {
                 let candidates = areas
                     .iter()
@@ -743,11 +758,13 @@ impl AreaMembership {
                     .filter(|(_, support)| {
                         crate::geometry::relate::polygon_has_nondegenerate_area(support.source())
                     })
-                    .map(|(polygon, support)| CartesianAreaCandidate {
-                        polygon: polygon as u32,
-                        index: PolygonPointIndex::build(support.source()),
+                    .map(|(polygon, support)| {
+                        Ok(CartesianAreaCandidate {
+                            polygon: polygon as u32,
+                            index: PolygonPointIndex::build(support.source())?,
+                        })
                     })
-                    .collect();
+                    .collect::<crate::error::Result<Vec<_>>>()?;
                 Self::Cartesian {
                     polygons: YStabbingIndex::build(candidates, |candidate| {
                         candidate.index.envelope().unwrap_or((
@@ -756,7 +773,7 @@ impl AreaMembership {
                             f64::INFINITY,
                             f64::NEG_INFINITY,
                         ))
-                    }),
+                    })?,
                 }
             },
             TopologyDomain::Geographic(frame) => {
@@ -807,10 +824,10 @@ impl AreaMembership {
                             candidate.y_min,
                             candidate.y_max,
                         )
-                    }),
+                    })?,
                 }
             },
-        }
+        })
     }
 
     const fn has_area(&self) -> bool {
@@ -866,7 +883,10 @@ impl AreaMembership {
 }
 
 impl GeographicAreaCandidate {
-    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+    )]
     fn may_contain(&self, y: f64, copies: &[f64; 3], pole: f64, period: f64) -> bool {
         if self.full_band
             || (self.north_pole && y > self.chart_north)
@@ -930,7 +950,10 @@ impl TopologySupport {
         }
     }
 
-    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+    )]
     fn for_each_edge_at<B>(
         &self,
         domain: TopologyDomain,
@@ -1046,7 +1069,10 @@ impl TopologySupport {
         // A line component can mark a point Interior while it lies in an
         // areal hole; covering a two-dimensional rectangle needs area
         // support, not merely generic point location.
-        Some(graph.locate_point(center) != TopologyLocation::Exterior && graph.contains_area_interior(center))
+        Some(
+            graph.locate_point(center) != TopologyLocation::Exterior
+                && graph.contains_area_interior(center),
+        )
     }
 }
 
@@ -1139,7 +1165,7 @@ impl GraphBuilder {
         }
     }
 
-    fn collect(&mut self, shape: &Shape, source_row: u32) {
+    fn collect(&mut self, shape: &Shape, source_row: u32) -> crate::error::Result<()> {
         match shape {
             Shape::Empty(..) => {},
             Shape::Point(point) => {
@@ -1156,18 +1182,19 @@ impl GraphBuilder {
                     self.collect_line(line, source_row);
                 }
             },
-            Shape::Polygon(polygon) => self.collect_polygon(polygon, source_row),
+            Shape::Polygon(polygon) => self.collect_polygon(polygon, source_row)?,
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons {
-                    self.collect_polygon(polygon, source_row);
+                    self.collect_polygon(polygon, source_row)?;
                 }
             },
             Shape::GeometryCollection(parts) => {
                 for part in parts {
-                    self.collect(part, source_row);
+                    self.collect(part, source_row)?;
                 }
             },
         }
+        Ok(())
     }
 
     const fn component(&mut self) -> u32 {
@@ -1208,7 +1235,7 @@ impl GraphBuilder {
         }
     }
 
-    fn collect_polygon(&mut self, polygon: &Polygon, source_row: u32) {
+    fn collect_polygon(&mut self, polygon: &Polygon, source_row: u32) -> crate::error::Result<()> {
         // A polygon whose every ring is collinear encloses nothing, so it IS
         // its linework: staging it as area support would give it an interior
         // it does not have, and a boundary its rings do not bound. Routing it
@@ -1224,18 +1251,18 @@ impl GraphBuilder {
             for ring in polygon.rings() {
                 self.collect_line(ring.coords(), source_row);
             }
-            return;
+            return Ok(());
         }
         let mut staged_rings = Vec::new();
         let support = if self.domain.space().is_geographic() {
             let StagedChartRing {
                 ring: shell,
                 segments: shell_segments,
-            } = self.chart_ring(polygon.shell.coords());
+            } = self.chart_ring(polygon.shell.coords())?;
             staged_rings.push(shell_segments);
             let mut holes = Vec::with_capacity(polygon.holes.len());
             for hole in polygon.holes.iter() {
-                let StagedChartRing { ring, segments } = self.chart_ring(hole.coords());
+                let StagedChartRing { ring, segments } = self.chart_ring(hole.coords())?;
                 holes.push(ring);
                 staged_rings.push(segments);
             }
@@ -1288,6 +1315,7 @@ impl GraphBuilder {
                 );
             }
         }
+        Ok(())
     }
 
     fn push_source_point(&mut self, point: Point) {
@@ -1327,7 +1355,10 @@ impl GraphBuilder {
         );
     }
 
-    #[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     fn push_source_edge_charted(
         &mut self,
         support: SourceSupport,
@@ -1370,8 +1401,11 @@ impl GraphBuilder {
         }
     }
 
-    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
-    fn chart_ring(&self, ring: &CoordSeq) -> StagedChartRing {
+    #[expect(
+        clippy::float_cmp,
+        reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+    )]
+    fn chart_ring(&self, ring: &CoordSeq) -> crate::error::Result<StagedChartRing> {
         let mut points: Vec<XY> = Vec::with_capacity(ring.len());
         let mut segments = Vec::with_capacity(ring.len().saturating_sub(1));
         for [start, end] in ring.segment_pairs() {
@@ -1438,7 +1472,7 @@ impl GraphBuilder {
             matches!(summary.turn, crate::geographic::RingTurn::Full(_))
                 && summary.north.get() < 0.0
         });
-        StagedChartRing {
+        Ok(StagedChartRing {
             ring: ChartRing {
                 points: points.into_boxed_slice(),
                 north_pole,
@@ -1462,10 +1496,10 @@ impl GraphBuilder {
                 max_x,
                 min_y,
                 max_y,
-                edges: EdgeYIndex::build_closed(&ys),
+                edges: EdgeYIndex::build_closed(&ys)?,
             },
             segments,
-        }
+        })
     }
 
     fn key(&self, point: XY) -> TopologyKey {
@@ -1496,7 +1530,7 @@ impl GraphBuilder {
         }
     }
 
-    fn finish(self, shape: &Shape) -> TopologyGraph {
+    fn finish(self, shape: &Shape) -> crate::error::Result<TopologyGraph> {
         self.finish_dimensions(
             dimension(shape),
             matches!(shape, Shape::GeometryCollection(_)),
@@ -1504,7 +1538,10 @@ impl GraphBuilder {
         )
     }
 
-    fn finish_many<'s>(self, shapes: impl IntoIterator<Item = &'s Shape>) -> TopologyGraph {
+    fn finish_many<'s>(
+        self,
+        shapes: impl IntoIterator<Item = &'s Shape>,
+    ) -> crate::error::Result<TopologyGraph> {
         let mut effective_dimension = None;
         let mut has_polygonal_members = false;
         for shape in shapes {
@@ -1523,7 +1560,7 @@ impl GraphBuilder {
         declared_dimension: Option<Dimension>,
         is_collection: bool,
         has_polygonal_members: bool,
-    ) -> TopologyGraph {
+    ) -> crate::error::Result<TopologyGraph> {
         // A shape declares surface dimension for holding a polygon at all, but
         // a polygon that encloses nothing was staged as linework and left no
         // area support behind. Reading the dimension back off what was staged
@@ -1610,7 +1647,7 @@ impl GraphBuilder {
             bundle_endpoints.push((key.start.0, key.end.0));
             area_transitions.push(bundle.area_transitions);
         }
-        let area_membership = AreaMembership::build(self.domain, &self.area_support);
+        let area_membership = AreaMembership::build(self.domain, &self.area_support)?;
         if matches!(self.domain, TopologyDomain::Cartesian) {
             let arrangement_points: Vec<_> = self.nodes.iter().map(|node| node.point).collect();
             let arrangement = crate::geometry::Arrangement::from_indexed_edges(
@@ -1716,7 +1753,7 @@ impl GraphBuilder {
         for (node, location) in graph.nodes.iter_mut().zip(node_locations) {
             node.location = location;
         }
-        graph
+        Ok(graph)
     }
 }
 
@@ -1817,7 +1854,10 @@ impl EdgeBundle {
     }
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn ray_germ_key(domain: TopologyDomain, origin: XY, target: XY) -> RayGermKey {
     let longitude = match domain {
         TopologyDomain::Geographic(frame) if origin.y.abs() == frame.pole() => {
@@ -1897,7 +1937,10 @@ struct QuotientDart {
     segment: Segment,
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn compare_quotient_rays(
     frame: crate::geographic::GeographicFrame,
     origin: XY,
@@ -2078,7 +2121,8 @@ impl QuotientArrangement {
                     break;
                 }
                 assert_eq!(
-                    self.face_of[dart], usize::MAX,
+                    self.face_of[dart],
+                    usize::MAX,
                     "quotient face walk must close"
                 );
             }
@@ -2308,11 +2352,10 @@ fn propagate_face_interior(
             f64::midpoint(seed.segment.start.y, seed.segment.end.y),
         );
         let mut membership = ActivePolygons::default();
-        let _: Option<()> =
-            area_membership.for_each_area_interior(polygons, midpoint, |polygon| {
-                membership.insert(polygon);
-                std::ops::ControlFlow::Continue(())
-            });
+        let _: Option<()> = area_membership.for_each_area_interior(polygons, midpoint, |polygon| {
+            membership.insert(polygon);
+            std::ops::ControlFlow::Continue(())
+        });
         for &(polygon, net) in &transitions[seed.edge] {
             if net != 0 {
                 membership.set(polygon, (net > 0) == seed.forward);
@@ -2338,7 +2381,11 @@ fn propagate_face_interior(
             if visited[neighbor] {
                 continue;
             }
-            toggle_membership(&mut membership, &mut aggregate, transitions[edge].as_slice());
+            toggle_membership(
+                &mut membership,
+                &mut aggregate,
+                transitions[edge].as_slice(),
+            );
             visited[neighbor] = true;
             face_interior[neighbor] = aggregate != 0;
             stack.push((neighbor, 0, Some(edge)));
@@ -2517,7 +2564,10 @@ fn polygon_contains_interior(space: TopologySpace, polygon: &AreaSupport, point:
         .all(|hole| geographic_ring_location(hole, point) == RingLocation::Outside)
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn geographic_ring_location(ring: &ChartRing, point: XY) -> RingLocation {
     if point.y == ring.pole || point.y == -ring.pole {
         let north = point.y == ring.pole;
@@ -2671,6 +2721,7 @@ mod tests {
             crate::geographic::ScalarGeographicView::try_new(degrees(), shape)
                 .expect("fixture admits"),
         )
+        .unwrap()
     }
 
     fn geographic_graph_in(
@@ -2680,6 +2731,7 @@ mod tests {
         TopologyGraph::geographic(
             crate::geographic::ScalarGeographicView::try_new(frame, shape).expect("fixture admits"),
         )
+        .unwrap()
     }
 
     fn point(x: f64, y: f64) -> Point {
@@ -2687,20 +2739,27 @@ mod tests {
     }
 
     fn line(points: &[(f64, f64)]) -> LineSeq {
-        LineSeq::try_new(CoordSeq::from(
-            points.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>(),
-        ))
+        LineSeq::try_new(
+            CoordSeq::try_from_points(
+                &points.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        )
         .expect("line coordinate sequence must contain at least two vertices")
     }
 
     fn ring(points: &[(f64, f64)]) -> Ring {
-        Ring::from_closed(CoordSeq::from(
-            points.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>(),
-        ))
+        Ring::from_closed(
+            CoordSeq::try_from_points(
+                &points.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        )
     }
 
     fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon {
         Polygon::new(ring(shell), holes.iter().map(|hole| ring(hole)).collect())
+            .expect("test polygon is valid")
     }
 
     fn collection(shapes: Vec<Shape>) -> Shape {
@@ -2786,13 +2845,16 @@ mod tests {
             ],
             &[&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]],
         ));
-        let graph = TopologyGraph::cartesian(&shape);
+        let graph = TopologyGraph::cartesian(&shape).unwrap();
         assert!(graph.contains_area_interior(XY::new(1.0, 1.0)));
         assert!(!graph.contains_area_interior(XY::new(5.0, 5.0)));
         assert!(graph.has_area_boundary(XY::new(5.0, 3.0)));
     }
 
-    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+    )]
     #[test]
     fn geographic_donut_hole_stays_outside_across_the_seam() {
         let shape = Shape::Polygon(polygon(
@@ -2994,8 +3056,7 @@ mod tests {
             &[],
         ));
         for count in [2, 3] {
-            let graph =
-                geographic_graph(&collection(vec![member.clone(); count]));
+            let graph = geographic_graph(&collection(vec![member.clone(); count]));
             assert_eq!(
                 graph.locate_point(XY::new(2.0, 2.0)),
                 TopologyLocation::Interior
@@ -3059,7 +3120,7 @@ mod tests {
             MultiMember::Value(line(&[(1.0, 0.0), (2.0, 0.0)])),
         ])
         .expect("homogeneous lines");
-        let graph = TopologyGraph::cartesian(&Shape::MultiLineString(lines));
+        let graph = TopologyGraph::cartesian(&Shape::MultiLineString(lines)).unwrap();
         assert_eq!(graph.line_boundary.len(), 2);
         assert!(!graph.has_line_boundary(XY::new(1.0, 0.0)));
         assert!(graph.has_line_boundary(XY::new(0.0, 0.0)));
@@ -3198,7 +3259,7 @@ mod tests {
             Shape::LineString(line(&[(175.0, 6.0), (180.0, 6.0), (-175.0, 6.0)])),
         ]);
         for graph in [
-            TopologyGraph::cartesian(&cartesian),
+            TopologyGraph::cartesian(&cartesian).unwrap(),
             geographic_graph(&geographic),
         ] {
             let mut points = Vec::new();
@@ -3246,7 +3307,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&shape);
+        let graph = TopologyGraph::cartesian(&shape).unwrap();
         let mut ids = Vec::new();
         let _: Option<()> = graph.for_each_area_interior(XY::new(3.0, 3.0), |polygon| {
             ids.push(polygon);
@@ -3301,7 +3362,7 @@ mod tests {
             Shape::LineString(line(&[(175.0, 5.0), (180.0, 5.0), (-175.0, 5.0)])),
         ]);
         for graph in [
-            TopologyGraph::cartesian(&cartesian),
+            TopologyGraph::cartesian(&cartesian).unwrap(),
             geographic_graph(&geographic),
         ] {
             for node in &graph.nodes {
@@ -3317,7 +3378,7 @@ mod tests {
             Shape::LineString(line(&[(0.0, 0.0), (2.0, 0.0)])),
             Shape::Point(point(4.0, 4.0)),
         ]);
-        let graph = TopologyGraph::cartesian(&collection);
+        let graph = TopologyGraph::cartesian(&collection).unwrap();
         assert_eq!(graph.effective_dimension, Some(Dimension::Curve));
         assert!(graph.line_boundary.is_empty());
         assert_eq!(graph.edges.len(), 1);
@@ -3331,7 +3392,7 @@ mod tests {
             Shape::LineString(line(&[(0.0, 0.0), (2.0, 2.0)])),
             Shape::LineString(line(&[(0.0, 2.0), (2.0, 0.0)])),
         ]);
-        let graph = TopologyGraph::cartesian(&collection);
+        let graph = TopologyGraph::cartesian(&collection).unwrap();
         assert_eq!(graph.edges.len(), 4);
         assert!(graph.edges.iter().all(|edge| edge.sources.len() == 1));
         assert!(!graph.has_line_boundary(XY::new(1.0, 1.0)));
@@ -3363,7 +3424,7 @@ mod tests {
             Shape::LineString(line(&[(0.0, 0.0), (2.0, 2.0)])),
             Shape::LineString(line(&[(0.0, 2.0), (2.0, 0.0)])),
         ]);
-        let graph = TopologyGraph::cartesian(&shape);
+        let graph = TopologyGraph::cartesian(&shape).unwrap();
         assert_eq!(graph.edges.len(), 4);
         assert_edge_endpoints_and_provenance(&graph);
     }
@@ -3459,7 +3520,7 @@ mod tests {
     #[test]
     fn typed_empty_has_no_effective_dimension() {
         let shape = Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZM);
-        let graph = TopologyGraph::cartesian(&shape);
+        let graph = TopologyGraph::cartesian(&shape).unwrap();
         assert_eq!(graph.effective_dimension, None);
         assert!(graph.nodes.is_empty());
         assert!(graph.edges.is_empty());
@@ -3475,7 +3536,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&collection);
+        let graph = TopologyGraph::cartesian(&collection).unwrap();
         assert_eq!(graph.effective_dimension, Some(Dimension::Surface));
     }
 
@@ -3503,7 +3564,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&shape);
+        let graph = TopologyGraph::cartesian(&shape).unwrap();
         assert_eq!(
             graph.locate_point(XY::new(0.0, 0.0)),
             TopologyLocation::Exterior
@@ -3522,7 +3583,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&adjacent);
+        let graph = TopologyGraph::cartesian(&adjacent).unwrap();
         assert_eq!(
             graph.locate_point(XY::new(1.0, 0.5)),
             TopologyLocation::Interior
@@ -3543,7 +3604,9 @@ mod tests {
         let duplicates = Shape::geometry_collection(vec![left.clone(), left.clone(), left, right])
             .expect("test collection is valid");
         assert_eq!(
-            TopologyGraph::cartesian(&duplicates).locate_point(XY::new(1.0, 0.5)),
+            TopologyGraph::cartesian(&duplicates)
+                .unwrap()
+                .locate_point(XY::new(1.0, 0.5)),
             TopologyLocation::Interior
         );
 
@@ -3557,7 +3620,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&pinch);
+        let graph = TopologyGraph::cartesian(&pinch).unwrap();
         assert_eq!(
             graph.locate_point(XY::new(0.0, 0.0)),
             TopologyLocation::Boundary

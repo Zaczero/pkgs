@@ -150,7 +150,7 @@ impl BulkElement for Shape {
     }
 
     fn bulk_into_py(values: Vec<Self>, py: Python<'_>, frame: &Frame) -> PyResult<Py<PyAny>> {
-        Ok(PyGeometryArray::from_shapes(values, frame.clone())
+        Ok(PyGeometryArray::from_shapes(values, frame.clone())?
             .into_pyobject(py)?
             .unbind()
             .into())
@@ -166,8 +166,8 @@ impl BulkElement for Shape {
         frame: &Frame,
         missing: Option<&ValidityMask>,
     ) -> PyResult<Py<PyAny>> {
-        Ok(PyGeometryArray::from_shapes(values, frame.clone())
-            .with_missing_mask(missing.cloned())
+        Ok(PyGeometryArray::from_shapes(values, frame.clone())?
+            .with_missing_mask(missing.cloned())?
             .into_pyobject(py)?
             .unbind()
             .into())

@@ -215,7 +215,7 @@ pub(crate) fn join_pair_columns(
                 };
                 let logical = row.logical();
                 let left = logical as i64;
-                let shape = rows.prepared(row);
+                let shape = rows.prepared(row)?;
                 for right_idx in
                     index.topological_matches(&shape, &rows.frame_cache(logical), topological)?
                 {

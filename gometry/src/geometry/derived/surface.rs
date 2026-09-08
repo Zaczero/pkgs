@@ -229,14 +229,14 @@ fn gather_surface_components<'a>(
 /// wins, areal degeneracy falls through to its boundary linework, then to its
 /// vertices. Reused for bare degenerate polygons too (via `from_ref`), which
 /// the scanline kernel leaves to this boundary path.
-pub(crate) fn collection_surface_point(parts: &[Shape]) -> Option<Point> {
+pub(crate) fn collection_surface_point(parts: &[Shape]) -> crate::error::Result<Option<Point>> {
     let mut polygons: Vec<&Polygon> = Vec::new();
     let mut lines: Vec<&CoordSeq> = Vec::new();
     let mut points: Vec<Point> = Vec::new();
     gather_surface_components(parts, &mut polygons, &mut lines, &mut points);
     if !polygons.is_empty() {
         if let Some(point) = polygonal_surface_point(polygons.iter().copied()) {
-            return Some(point);
+            return Ok(Some(point));
         }
         // Degenerate areal: its boundary rings carry the representative point.
         if let Some(point) = lineal_surface_point(
@@ -244,18 +244,22 @@ pub(crate) fn collection_surface_point(parts: &[Shape]) -> Option<Point> {
                 .iter()
                 .flat_map(|polygon| polygon.rings().map(Ring::coords)),
         ) {
-            return Some(point);
+            return Ok(Some(point));
         }
     }
     if !lines.is_empty()
         && let Some(point) = lineal_surface_point(lines.iter().copied())
     {
-        return Some(point);
+        return Ok(Some(point));
     }
     if points.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let xs = points.iter().map(|point| point.x).collect::<Vec<_>>();
-    let ys = points.iter().map(|point| point.y).collect::<Vec<_>>();
-    multipoint_surface_point(&xs, &ys)
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    crate::try_reserve_vec(&mut xs, points.len())?;
+    crate::try_reserve_vec(&mut ys, points.len())?;
+    xs.extend(points.iter().map(|point| point.x));
+    ys.extend(points.iter().map(|point| point.y));
+    Ok(multipoint_surface_point(&xs, &ys))
 }

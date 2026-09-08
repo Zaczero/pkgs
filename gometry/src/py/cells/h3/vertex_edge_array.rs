@@ -319,19 +319,19 @@ macro_rules! h3_index_array_common {
         }
 
         impl RowGetItemContainer for $array {
-            fn gather_rows(&self, rows: &[usize]) -> Self {
-                self.select_logical_rows(rows.iter().copied())
+            fn gather_rows(&self, rows: &[usize]) -> PyResult<Self> {
+                Ok(self.select_logical_rows(rows.iter().copied()))
             }
 
-            fn slice_rows(&self, start: isize, stop: isize, step: isize) -> Self {
-                self.slice(start, stop, step)
+            fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self> {
+                Ok(self.slice(start, stop, step))
             }
 
-            fn empty(&self) -> Self {
-                Self {
+            fn empty(&self) -> PyResult<Self> {
+                Ok(Self {
                     ids: Arc::from([]),
                     selection: RowSelection::Identity,
-                }
+                })
             }
 
             fn container_to_py(py: Python<'_>, value: Self) -> PyResult<Py<PyAny>> {
@@ -880,7 +880,7 @@ impl PyH3VertexArray {
         })?;
         let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, points.len())?;
         for point in points {
-            builder.push(crate::geometry::Point::new_raw_xy(point.x, point.y));
+            builder.push(crate::geometry::Point::new_raw_xy(point.x, point.y))?;
         }
         let coords = builder.finish()?;
         Ok(crate::PyGeometryArray::packed_points(
@@ -987,7 +987,7 @@ impl PyH3EdgeArray {
         Ok(crate::PyGeometryArray::from_shapes(
             shapes,
             crate::Frame::Crs(crate::wgs84_crs()),
-        ))
+        )?)
     }
 
     /// Length of every edge in meters (spherical, like `H3Cell.area`).

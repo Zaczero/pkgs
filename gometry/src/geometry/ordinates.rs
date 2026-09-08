@@ -2,7 +2,6 @@
 //! the operation's input vertices and segments (`carry_ordinates`/`carry_each`
 //! and the `OrdinateSource` lookup), shared by overlay and decomposition.
 
-use crate::geometry::overlay;
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::collections::{HashMap, HashMapExt as _};
@@ -10,8 +9,8 @@ use crate::error::Result;
 use crate::geometry::topology::TopologyGraph;
 use crate::geometry::{
     CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
-    OverlayOp, Point, PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, point_distance,
-    same_point, scaled_residual, segment_projection,
+    OverlayOp, Point, PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay,
+    point_distance, same_point, scaled_residual, segment_projection,
 };
 
 /// Z/M lookup table built from an operation's input vertices and segments,
@@ -79,13 +78,13 @@ impl OrdinateSource {
         }
     }
 
-    fn build(inputs: &[&Shape]) -> Self {
+    fn build(inputs: &[&Shape]) -> Result<Self> {
         let mut result = Self::new(inputs);
         for shape in inputs {
             if !(shape.has_z() || shape.has_m()) {
                 continue;
             }
-            let graph = TopologyGraph::cartesian(shape);
+            let graph = TopologyGraph::cartesian(shape)?;
             for source in &graph.source_points {
                 add_vertex(&mut result.vertices, source.point);
             }
@@ -93,7 +92,7 @@ impl OrdinateSource {
                 result.add_source_edge(source.start, source.end);
             }
         }
-        result
+        Ok(result)
     }
 
     fn build_direct(inputs: &[&Shape]) -> Self {
@@ -323,8 +322,7 @@ pub(crate) fn carry_direct_point_ordinates(
     inputs: &[&Shape],
     strict: bool,
 ) -> Result<Shape> {
-    let declared_axes =
-        overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
+    let declared_axes = overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(Shape::Point(point));
     }
@@ -480,7 +478,7 @@ pub(super) fn carry_ordinates(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
     }
-    let source = OrdinateSource::build(inputs);
+    let source = OrdinateSource::build(inputs)?;
     carry_or_degrade(
         &output,
         &source,
@@ -503,7 +501,7 @@ pub(crate) fn carry_overlay_ordinates(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
     }
-    let source = OrdinateSource::build(inputs);
+    let source = OrdinateSource::build(inputs)?;
     let declared_axes = overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }
@@ -534,7 +532,7 @@ pub(super) fn carry_each(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(outputs);
     }
-    let source = OrdinateSource::build(inputs);
+    let source = OrdinateSource::build(inputs)?;
     let declared_axes = inputs
         .iter()
         .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));

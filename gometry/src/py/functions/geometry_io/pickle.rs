@@ -1,4 +1,3 @@
-use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use pyo3::IntoPyObjectExt as _;
@@ -6,7 +5,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use crate::array::{
-    GeometryArrayStorage, PointRowLayout, RowSelection, RowSelectionRef, ValidityMask,
+    GeometryArrayStorage, PackedStorage, PointRowLayout, RowSelection, RowSelectionRef,
+    ValidityMask,
 };
 use crate::py::wire_crs::{SridFrameAdmission, guard_embedded_crs_conflict};
 use crate::{CoordSeq, Crs, Frame, PyGeometry, PyGeometryArray, ShapeData, Typed};
@@ -132,7 +132,10 @@ fn snapshot_optional_bytes(bytes: Option<&[u8]>) -> PyResult<Option<Vec<u8>>> {
     bytes.map(snapshot_bytes).transpose()
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled `Geometry` (internal; see ``Geometry.__reduce__``).
 ///
 /// Frame strings are canonicalized through PROJ. Embedded EWKB SRIDs reuse the
@@ -152,7 +155,10 @@ pub(crate) fn _unpickle_geometry(
     Ok(Typed(geometry))
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled mixed-storage `GeometryArray` (internal; see
 /// ``GeometryArray.__reduce__``).
 ///
@@ -177,7 +183,10 @@ pub(crate) fn _unpickle_geometry_array(
         .map_err(PyErr::from)
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled packed-point `GeometryArray` from raw f64 columns
 /// (internal; see ``GeometryArray.__reduce__``).
 ///
@@ -206,7 +215,10 @@ pub(crate) fn _unpickle_point_array(
         .map_err(PyErr::from)
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled packed-line `GeometryArray` from raw f64 columns plus
 /// little-endian `i32` CSR offsets (internal; see
 /// ``GeometryArray.__reduce__``).
@@ -236,7 +248,10 @@ pub(crate) fn _unpickle_line_array(
     .map_err(PyErr::from)
 }
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled packed-polygon `GeometryArray` from raw f64 columns plus
 /// little-endian `i32` two-level CSR offsets (internal; see
 /// ``GeometryArray.__reduce__``).
@@ -328,14 +343,14 @@ fn admit_pickled_polygon_rings(
             .ok_or_else(|| pickle_error("polygon-array pickle ring size overflows usize"))?;
         let mut ring_builder = CoordSeqBuilder::try_with_capacity(seq.axes(), ring_capacity)?;
         for index in start..end {
-            ring_builder.push_at(&seq, index);
+            ring_builder.push_at(&seq, index)?;
         }
         let ring_seq = ring_builder.finish()?;
         let admitted = crate::io::admit_closed_ring(ring_seq)
             .map_err(|error| pickle_error(error.to_string()))?;
         let coords = admitted.coords();
         for index in 0..coords.len() {
-            builder.push_at(coords, index);
+            builder.push_at(coords, index)?;
         }
         let next = i32::try_from(builder.len())
             .map_err(|_| pickle_error("polygon-array pickle exceeds the offset domain"))?;
@@ -504,7 +519,12 @@ fn pickled_coordseq(
     {
         return Err(pickle_error("packed-array pickle columns differ in length"));
     }
-    CoordSeq::from_arc_columns(xs, ys, zs, ms)
+    CoordSeq::from_owned_columns(
+        xs.to_vec(),
+        ys.to_vec(),
+        zs.map(|values| values.to_vec()),
+        ms.map(|values| values.to_vec()),
+    )
 }
 
 struct GeometryPicklePayload {
@@ -940,10 +960,9 @@ fn wkb_rows_for_mask(
     let row_count = missing.map_or(storage.len(), ValidityMask::len);
     let compact = missing.is_some_and(|mask| match storage {
         GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => point_layout.is_compact(),
-        GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
-PackedStorage::Polygons { .. }) => {
-            storage.len() != mask.len()
-        },
+        GeometryArrayStorage::Packed(
+            PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
+        ) => storage.len() != mask.len(),
         GeometryArrayStorage::Mixed(_) => false,
     });
     let mut rows = Vec::new();
@@ -958,7 +977,7 @@ PackedStorage::Polygons { .. }) => {
         present += 1;
         let wkb = storage
             .row(payload_row)
-            .with_shape(|shape| crate::io::to_wkb(shape, None, false))?;
+            .try_with_shape(|shape| crate::io::to_wkb(shape, None, false))?;
         crate::boundary::try_push_vec(&mut rows, wkb)?;
     }
     Ok(rows)
@@ -1122,7 +1141,7 @@ fn unpickle_geometry_array_detached(
             parsed.unwrap_or_else(PyGeometryArray::missing_placeholder),
         )?;
     }
-    Ok(PyGeometryArray::mixed_shapes(shapes, frame).with_missing_mask(mask))
+    Ok(PyGeometryArray::mixed_shapes(shapes, frame).with_missing_mask(mask)?)
 }
 
 fn unpickle_point_array_detached(
@@ -1150,7 +1169,7 @@ fn unpickle_point_array_detached(
         "point-array",
         Some(present_count),
     )? {
-        Ok(PyGeometryArray::scatter_present_rows(&present, mask))
+        Ok(PyGeometryArray::scatter_present_rows(&present, mask)?)
     } else {
         Ok(present)
     }
@@ -1198,7 +1217,7 @@ fn unpickle_line_array_detached(
         "line-array",
         Some(present_count),
     )? {
-        Ok(PyGeometryArray::scatter_present_rows(&present, mask))
+        Ok(PyGeometryArray::scatter_present_rows(&present, mask)?)
     } else {
         Ok(present)
     }
@@ -1265,7 +1284,7 @@ fn unpickle_polygon_array_detached(
         "polygon-array",
         Some(present_count),
     )? {
-        Ok(PyGeometryArray::scatter_present_rows(&present, mask))
+        Ok(PyGeometryArray::scatter_present_rows(&present, mask)?)
     } else {
         Ok(present)
     }

@@ -1,9 +1,12 @@
 //! Streaming row accumulator for parse-time bulk imports.
 
 use crate::array::{
-    CoordSeq, CoordinateAxes, Frame, GeometryKind, Polygon, PyGeometryArray, Ring, Shape,
+    CoordSeq, CoordinateAxes, Frame, GeometryKind, Polygon, PolygonLevel, PyGeometryArray, Ring,
+    RingLevel, Shape,
 };
-use crate::geometry::LineSeq;
+use crate::error::ErrorKind;
+use crate::geometry::types::ensure_coordseq_vertex_capacity;
+use crate::geometry::{CoordWindow, CsrOffsetColumn, GeometryErrorKind, LineSeq};
 
 /// Streaming row accumulator for parse-time bulk imports.
 ///
@@ -42,21 +45,22 @@ pub(crate) struct StreamingPolygons {
     polygon_offsets: Vec<usize>,
 }
 
-fn grow_err() -> crate::error::Error {
-    crate::error::ResourceError::Allocation.into()
+fn implicit_zero_offsets() -> crate::error::Result<Vec<usize>> {
+    let mut offsets = Vec::new();
+    crate::try_push_vec(&mut offsets, 0)?;
+    Ok(offsets)
 }
 
-/// Fallibly grow a `CoordSeqBuilder` column set by one slot when full.
-fn try_grow_coord_builder(
-    builder: &mut crate::geometry::CoordSeqBuilder,
-) -> crate::error::Result<()> {
-    if builder.len() < builder.capacity_slots() {
-        return Ok(());
+/// Packed CSR columns are `i32`. Overflow is a structural packed-format limit
+/// and demotes to mixed shapes; any other error (including Resource) propagates.
+fn packed_i32_capacity(len: usize) -> crate::error::Result<bool> {
+    match ensure_coordseq_vertex_capacity(len) {
+        Ok(()) => Ok(true),
+        Err(error) => match error.kind() {
+            ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded) => Ok(false),
+            _ => Err(error),
+        },
     }
-    let additional = builder.capacity_slots().max(8);
-    builder
-        .try_reserve_exact(additional)
-        .map_err(|_| grow_err())
 }
 
 impl StreamingShapes {
@@ -76,20 +80,18 @@ impl StreamingShapes {
             // Hot demoted lane: fallible Vec growth, no enum surgery.
             (Self::Shapes { shapes, .. }, shape) => crate::try_push_vec(shapes, shape),
             (Self::Empty, Shape::Point(point)) => {
-                let mut builder = crate::geometry::CoordSeqBuilder::with_capacity(
+                let mut builder = crate::geometry::CoordSeqBuilder::try_with_capacity(
                     CoordinateAxes::from_point(point),
                     0,
-                );
-                try_grow_coord_builder(&mut builder)?;
-                builder.push(point);
+                )?;
+                builder.push(point)?;
                 *self = Self::Points(builder);
                 Ok(())
             },
             (Self::Points(builder), Shape::Point(point))
                 if builder.axes() == CoordinateAxes::from_point(point) =>
             {
-                try_grow_coord_builder(builder)?;
-                builder.push(point);
+                builder.push(point)?;
                 Ok(())
             },
             (Self::Empty, Shape::LineString(line)) => {
@@ -151,14 +153,14 @@ impl StreamingShapes {
         match shape {
             Shape::Point(point) => {
                 let axes = CoordinateAxes::from_point(*point);
-                let builder = crate::geometry::CoordSeqBuilder::with_capacity(axes, 0);
+                let builder = crate::geometry::CoordSeqBuilder::try_with_capacity(axes, 0)?;
                 *self = Self::Points(builder);
             },
             Shape::LineString(line) => {
                 let axes = line.axes();
                 let mut out = StreamingLines {
-                    coords: crate::geometry::CoordSeqBuilder::with_capacity(axes, 0),
-                    offsets: vec![0],
+                    coords: crate::geometry::CoordSeqBuilder::try_with_capacity(axes, 0)?,
+                    offsets: implicit_zero_offsets()?,
                 };
                 for _ in 0..n {
                     out.try_push_missing()?;
@@ -168,9 +170,9 @@ impl StreamingShapes {
             Shape::Polygon(polygon) if polygon_stream_axes(polygon).is_some() => {
                 let axes = polygon_stream_axes(polygon).expect("checked");
                 let mut out = StreamingPolygons {
-                    coords: crate::geometry::CoordSeqBuilder::with_capacity(axes, 0),
-                    ring_offsets: vec![0],
-                    polygon_offsets: vec![0],
+                    coords: crate::geometry::CoordSeqBuilder::try_with_capacity(axes, 0)?,
+                    ring_offsets: implicit_zero_offsets()?,
+                    polygon_offsets: implicit_zero_offsets()?,
                 };
                 for _ in 0..n {
                     out.try_push_missing()?;
@@ -196,7 +198,7 @@ impl StreamingShapes {
     pub(crate) fn try_demote(&mut self) -> crate::error::Result<&mut Vec<Shape>> {
         match std::mem::replace(self, Self::Empty) {
             Self::Points(builder) => {
-                let seq = builder.finish_infallible();
+                let seq = builder.finish()?;
                 let mut shapes = Vec::new();
                 crate::boundary::try_reserve_vec(&mut shapes, seq.len())?;
                 for row in 0..seq.len() {
@@ -209,13 +211,13 @@ impl StreamingShapes {
             },
             Self::Lines(builder) => {
                 *self = Self::Shapes {
-                    shapes: builder.into_shapes(),
+                    shapes: builder.into_shapes()?,
                     row_aligned: true,
                 }
             },
             Self::Polygons(builder) => {
                 *self = Self::Shapes {
-                    shapes: builder.into_shapes(),
+                    shapes: builder.into_shapes()?,
                     row_aligned: true,
                 }
             },
@@ -241,20 +243,22 @@ impl StreamingShapes {
         }
     }
 
-    pub(crate) fn finish(self, frame: Frame) -> PyGeometryArray {
+    pub(crate) fn finish(self, frame: Frame) -> crate::error::Result<PyGeometryArray> {
         match self {
-            Self::Empty => PyGeometryArray::from_shapes(Vec::new(), frame),
+            Self::Empty => Ok(PyGeometryArray::from_shapes(Vec::new(), frame)?),
             // All-null stream: generic placeholders (no present kind to pack).
             Self::LeadingMissing(n) => {
-                let shapes = vec![PyGeometryArray::missing_placeholder(); n];
-                PyGeometryArray::from_shapes(shapes, frame)
+                let mut shapes = Vec::new();
+                crate::boundary::try_reserve_vec(&mut shapes, n)?;
+                for _ in 0..n {
+                    crate::try_push_vec(&mut shapes, PyGeometryArray::missing_placeholder())?;
+                }
+                Ok(PyGeometryArray::from_shapes(shapes, frame)?)
             },
-            Self::Points(builder) => {
-                PyGeometryArray::packed_points(builder.finish_infallible(), frame)
-            },
+            Self::Points(builder) => Ok(PyGeometryArray::packed_points(builder.finish()?, frame)),
             Self::Lines(builder) => builder.finish(frame),
             Self::Polygons(builder) => builder.finish(frame),
-            Self::Shapes { shapes, .. } => PyGeometryArray::from_shapes(shapes, frame),
+            Self::Shapes { shapes, .. } => Ok(PyGeometryArray::from_shapes(shapes, frame)?),
         }
     }
 }
@@ -262,21 +266,16 @@ impl StreamingShapes {
 impl StreamingLines {
     fn try_from_first(line: &LineSeq) -> crate::error::Result<Self> {
         let mut out = Self {
-            coords: crate::geometry::CoordSeqBuilder::with_capacity(line.axes(), 0),
-            offsets: vec![0],
+            coords: crate::geometry::CoordSeqBuilder::try_with_capacity(line.axes(), line.len())?,
+            offsets: implicit_zero_offsets()?,
         };
-        // Fallible exact reserve for the first line's known vertex count.
-        out.coords
-            .try_reserve_exact(line.len())
-            .map_err(|_| grow_err())?;
         out.try_push(line)?;
         Ok(out)
     }
 
     fn try_push(&mut self, line: &LineSeq) -> crate::error::Result<()> {
         for point in line {
-            try_grow_coord_builder(&mut self.coords)?;
-            self.coords.push(point);
+            self.coords.push(point)?;
         }
         crate::try_push_vec(&mut self.offsets, self.coords.len())
     }
@@ -285,54 +284,45 @@ impl StreamingLines {
         crate::try_push_vec(&mut self.offsets, self.coords.len())
     }
 
-    fn into_parts(self) -> (CoordSeq, Vec<usize>) {
-        (self.coords.finish_infallible(), self.offsets)
+    fn into_parts(self) -> crate::error::Result<(CoordSeq, Vec<usize>)> {
+        Ok((self.coords.finish()?, self.offsets))
     }
 
-    fn into_shapes(self) -> Vec<Shape> {
-        let (coords, offsets) = self.into_parts();
-        offsets
-            .windows(2)
-            .map(|ends| {
-                let row = coords.view(crate::geometry::CoordWindow::from_range(
-                    ends[0]..ends[1],
-                    coords.len(),
-                ));
-                if row.is_empty() {
-                    Shape::typed_empty(GeometryKind::LineString, coords.axes())
-                } else {
-                    Shape::LineString(LineSeq::from_proven(row))
-                }
-            })
-            .collect()
+    fn into_shapes(self) -> crate::error::Result<Vec<Shape>> {
+        let (coords, offsets) = self.into_parts()?;
+        line_shapes_from_parts(&coords, &offsets)
     }
 
-    fn finish(self, frame: Frame) -> PyGeometryArray {
-        let (coords, offsets) = self.into_parts();
-        match crate::geometry::CsrOffsetColumn::try_new(offsets.clone(), coords.len()) {
-            Ok(offsets) => PyGeometryArray::packed_lines(coords, offsets, frame),
-            Err(_) => {
-                PyGeometryArray::from_shapes(line_shapes_from_parts(&coords, &offsets), frame)
-            },
+    fn finish(self, frame: Frame) -> crate::error::Result<PyGeometryArray> {
+        let (coords, offsets) = self.into_parts()?;
+        if packed_i32_capacity(coords.len())? {
+            let offsets = CsrOffsetColumn::try_new(offsets, coords.len())?;
+            Ok(PyGeometryArray::packed_lines(coords, offsets, frame))
+        } else {
+            Ok(PyGeometryArray::from_shapes(
+                line_shapes_from_parts(&coords, &offsets)?,
+                frame,
+            )?)
         }
     }
 }
 
-fn line_shapes_from_parts(coords: &CoordSeq, offsets: &[usize]) -> Vec<Shape> {
-    offsets
-        .windows(2)
-        .map(|ends| {
-            let row = coords.view(crate::geometry::CoordWindow::from_range(
-                ends[0]..ends[1],
-                coords.len(),
-            ));
-            if row.is_empty() {
-                Shape::typed_empty(GeometryKind::LineString, coords.axes())
-            } else {
-                Shape::LineString(LineSeq::from_proven(row))
-            }
-        })
-        .collect()
+fn line_shapes_from_parts(
+    coords: &CoordSeq,
+    offsets: &[usize],
+) -> crate::error::Result<Vec<Shape>> {
+    let mut shapes = Vec::new();
+    crate::boundary::try_reserve_vec(&mut shapes, offsets.len().saturating_sub(1))?;
+    for ends in offsets.windows(2) {
+        let row = coords.view(CoordWindow::from_range(ends[0]..ends[1], coords.len()));
+        let shape = if row.is_empty() {
+            Shape::typed_empty(GeometryKind::LineString, coords.axes())
+        } else {
+            Shape::LineString(LineSeq::from_proven(row))
+        };
+        crate::try_push_vec(&mut shapes, shape)?;
+    }
+    Ok(shapes)
 }
 
 impl StreamingPolygons {
@@ -340,13 +330,13 @@ impl StreamingPolygons {
         let axes = polygon_stream_axes(polygon)
             .expect("StreamingPolygons requires one axes layout across every ring");
         let mut out = Self {
-            coords: crate::geometry::CoordSeqBuilder::with_capacity(axes, 0),
-            ring_offsets: vec![0],
-            polygon_offsets: vec![0],
+            coords: crate::geometry::CoordSeqBuilder::try_with_capacity(
+                axes,
+                polygon.coord_count(),
+            )?,
+            ring_offsets: implicit_zero_offsets()?,
+            polygon_offsets: implicit_zero_offsets()?,
         };
-        out.coords
-            .try_reserve_exact(polygon.coord_count())
-            .map_err(|_| grow_err())?;
         out.try_push(polygon)?;
         Ok(out)
     }
@@ -354,8 +344,7 @@ impl StreamingPolygons {
     fn try_push(&mut self, polygon: &Polygon) -> crate::error::Result<()> {
         for ring in polygon.rings() {
             for point in ring {
-                try_grow_coord_builder(&mut self.coords)?;
-                self.coords.push(point);
+                self.coords.push(point)?;
             }
             crate::try_push_vec(&mut self.ring_offsets, self.coords.len())?;
         }
@@ -366,38 +355,37 @@ impl StreamingPolygons {
         crate::try_push_vec(&mut self.polygon_offsets, self.ring_offsets.len() - 1)
     }
 
-    fn into_parts(self) -> (CoordSeq, Vec<usize>, Vec<usize>) {
-        (
-            self.coords.finish_infallible(),
+    fn into_parts(self) -> crate::error::Result<(CoordSeq, Vec<usize>, Vec<usize>)> {
+        Ok((
+            self.coords.finish()?,
             self.ring_offsets,
             self.polygon_offsets,
-        )
+        ))
     }
 
-    fn into_shapes(self) -> Vec<Shape> {
-        let (coords, ring_offsets, polygon_offsets) = self.into_parts();
+    fn into_shapes(self) -> crate::error::Result<Vec<Shape>> {
+        let (coords, ring_offsets, polygon_offsets) = self.into_parts()?;
         polygon_shapes_from_parts(&coords, &ring_offsets, &polygon_offsets)
     }
 
-    fn finish(self, frame: Frame) -> PyGeometryArray {
-        let (coords, ring_ends, polygon_ends) = self.into_parts();
-        let ring_offsets = crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_new(
-            ring_ends.clone(),
-            coords.len(),
-        );
-        let polygon_offsets =
-            crate::geometry::CsrOffsetColumn::<crate::geometry::PolygonLevel>::try_new(
-                polygon_ends.clone(),
-                ring_ends.len() - 1,
-            );
-        match (ring_offsets, polygon_offsets) {
-            (Ok(ring_offsets), Ok(polygon_offsets)) => {
-                PyGeometryArray::packed_polygons(coords, ring_offsets, polygon_offsets, frame)
-            },
-            _ => PyGeometryArray::from_shapes(
-                polygon_shapes_from_parts(&coords, &ring_ends, &polygon_ends),
+    fn finish(self, frame: Frame) -> crate::error::Result<PyGeometryArray> {
+        let (coords, ring_ends, polygon_ends) = self.into_parts()?;
+        let ring_count = ring_ends.len().saturating_sub(1);
+        if packed_i32_capacity(coords.len())? && packed_i32_capacity(ring_count)? {
+            let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(ring_ends, coords.len())?;
+            let polygon_offsets =
+                CsrOffsetColumn::<PolygonLevel>::try_new(polygon_ends, ring_count)?;
+            Ok(PyGeometryArray::packed_polygons(
+                coords,
+                ring_offsets,
+                polygon_offsets,
                 frame,
-            ),
+            ))
+        } else {
+            Ok(PyGeometryArray::from_shapes(
+                polygon_shapes_from_parts(&coords, &ring_ends, &polygon_ends)?,
+                frame,
+            )?)
         }
     }
 }
@@ -413,24 +401,123 @@ fn polygon_shapes_from_parts(
     coords: &CoordSeq,
     ring_offsets: &[usize],
     polygon_offsets: &[usize],
-) -> Vec<Shape> {
-    polygon_offsets
-        .windows(2)
-        .map(|polygon_ends| {
-            if polygon_ends[0] == polygon_ends[1] {
-                return Shape::typed_empty(GeometryKind::Polygon, coords.axes());
-            }
-            let mut rings = (polygon_ends[0]..polygon_ends[1]).map(|ring| {
-                let row = coords.view(crate::geometry::CoordWindow::from_range(
-                    ring_offsets[ring]..ring_offsets[ring + 1],
-                    coords.len(),
-                ));
-                Ring::from_closed(row)
-            });
-            let shell = rings
-                .next()
-                .expect("streamed Polygon always contains a shell");
-            Shape::Polygon(Polygon::new(shell, rings.collect()))
-        })
-        .collect()
+) -> crate::error::Result<Vec<Shape>> {
+    let mut shapes = Vec::new();
+    crate::boundary::try_reserve_vec(&mut shapes, polygon_offsets.len().saturating_sub(1))?;
+    for polygon_ends in polygon_offsets.windows(2) {
+        if polygon_ends[0] == polygon_ends[1] {
+            crate::try_push_vec(
+                &mut shapes,
+                Shape::typed_empty(GeometryKind::Polygon, coords.axes()),
+            )?;
+            continue;
+        }
+        let mut rings = (polygon_ends[0]..polygon_ends[1]).map(|ring| {
+            let row = coords.view(CoordWindow::from_range(
+                ring_offsets[ring]..ring_offsets[ring + 1],
+                coords.len(),
+            ));
+            Ring::from_closed(row)
+        });
+        let shell = rings
+            .next()
+            .expect("streamed Polygon always contains a shell");
+        let mut holes = Vec::new();
+        for ring in rings {
+            crate::try_push_vec(&mut holes, ring)?;
+        }
+        crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)?))?;
+    }
+    Ok(shapes)
+}
+
+#[cfg(test)]
+mod demotion_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::{CoordSeq, LineSeq, Point, Ring};
+    use crate::test_support::fail_allocations_after;
+
+    fn xy_line(points: &[(f64, f64)]) -> Shape {
+        let coords = CoordSeq::try_from_points(
+            &points
+                .iter()
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        Shape::LineString(LineSeq::try_new(coords).unwrap())
+    }
+
+    fn xy_square() -> Shape {
+        let coords = CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 1.0, 0.0],
+            None,
+            None,
+        )
+        .unwrap();
+        Shape::Polygon(Polygon::new(Ring::from_closed(coords), Vec::new()).unwrap())
+    }
+
+    fn assert_demote_returns_resource_then_reuses(mut stream: StreamingShapes, reuse: Shape) {
+        let error = fail_allocations_after(0, || stream.try_demote()).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        stream.try_push(reuse.clone()).unwrap();
+        let array = stream.finish(Frame::None).unwrap();
+        assert_eq!(array.len(), 1);
+        assert!(!array.is_row_missing(0));
+        assert_eq!(array.geometry_at(0).unwrap().shape.shape(), &reuse);
+    }
+
+    #[test]
+    fn line_try_demote_returns_resource_on_allocation_failure() {
+        let line = xy_line(&[(0.0, 0.0), (1.0, 1.0)]);
+        let mut stream = StreamingShapes::new();
+        stream.try_push(line).unwrap();
+        assert_demote_returns_resource_then_reuses(stream, xy_line(&[(2.0, 3.0), (4.0, 5.0)]));
+    }
+
+    #[test]
+    fn polygon_try_demote_returns_resource_on_allocation_failure() {
+        let mut stream = StreamingShapes::new();
+        stream.try_push(xy_square()).unwrap();
+        assert_demote_returns_resource_then_reuses(stream, xy_square());
+    }
+
+    #[test]
+    fn mixed_kind_demotion_preserves_rows_axes_and_missing_order() {
+        let first = xy_line(&[(0.0, 0.0), (1.0, 0.0)]);
+        let second = xy_line(&[(2.0, 2.0), (3.0, 3.0)]);
+        let point = Shape::Point(Point::new_raw_xy(9.0, 8.0));
+        let mut stream = StreamingShapes::new();
+        stream.try_push(first.clone()).unwrap();
+        stream.try_push_missing().unwrap();
+        stream.try_push(second.clone()).unwrap();
+        stream.try_push(point.clone()).unwrap();
+        let array = stream.finish(Frame::None).unwrap();
+        assert_eq!(array.len(), 4);
+        assert!(!array.is_row_missing(0));
+        assert!(!array.is_row_missing(1));
+        assert!(!array.is_row_missing(2));
+        assert!(!array.is_row_missing(3));
+        assert_eq!(array.geometry_at(0).unwrap().shape.shape(), &first);
+        assert_eq!(
+            array.geometry_at(1).unwrap().shape.shape(),
+            &Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY)
+        );
+        assert_eq!(array.geometry_at(2).unwrap().shape.shape(), &second);
+        assert_eq!(array.geometry_at(3).unwrap().shape.shape(), &point);
+        assert_eq!(
+            array.geometry_at(0).unwrap().shape.shape().axes(),
+            CoordinateAxes::XY
+        );
+        assert_eq!(
+            array.geometry_at(3).unwrap().shape.shape().axes(),
+            CoordinateAxes::XY
+        );
+    }
 }

@@ -12,7 +12,7 @@ use crate::geometry::predicates::{
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
     MultiLineString, Point, PointKey, RepairMethod, Shape, ValidationIssue, carry_ordinates,
-    emit_from_original, finish_planar_squared_min, point_distance, unique_xy_points,
+    emit_from_original, point_distance, unique_xy_points,
 };
 
 impl Shape {
@@ -98,41 +98,51 @@ impl Shape {
 }
 
 impl Shape {
-    pub fn minimum_clearance(&self) -> f64 {
-        minimum_clearance_witness(self).map_or(f64::INFINITY, |witness| {
-            // Shared squared-norm trust: normal → sqrt; zero/subnormal →
-            // recompute the witness pair in distance space so tiny positive
-            // clearances are not quantized (or dropped as false-zero).
-            finish_planar_squared_min(witness.distance_squared, || {
-                let points = self.points_vec();
-                let emitted = emit_from_original(&points, &witness.plan);
-                let [a, b] = emitted.as_slice() else {
-                    return 0.0;
-                };
-                point_distance(*a, *b)
-            })
+    pub fn minimum_clearance(&self) -> Result<f64> {
+        Ok(match minimum_clearance_witness(self)? {
+            None => f64::INFINITY,
+            Some(witness) => {
+                // Shared squared-norm trust: normal → sqrt; zero/subnormal →
+                // recompute the witness pair in distance space so tiny positive
+                // clearances are not quantized (or dropped as false-zero).
+                if witness.distance_squared.is_normal() {
+                    witness.distance_squared.sqrt()
+                } else if witness.distance_squared >= 0.0 && witness.distance_squared.is_finite() {
+                    let points = self.points_vec()?;
+                    let emitted = emit_from_original(&points, &witness.plan);
+                    let [a, b] = emitted.as_slice() else {
+                        return Ok(0.0);
+                    };
+                    point_distance(*a, *b)
+                } else {
+                    witness.distance_squared
+                }
+            },
         })
     }
 
-    pub(crate) fn minimum_clearance_plan(&self) -> Option<MinimumClearanceWitness> {
+    pub(crate) fn minimum_clearance_plan(&self) -> Result<Option<MinimumClearanceWitness>> {
         minimum_clearance_witness(self)
     }
 
     /// The two-point `LineString` realizing `minimum_clearance` —
     /// `LINESTRING EMPTY` when the clearance
     /// is infinite (fewer than two distinct vertices).
-    pub fn minimum_clearance_line(&self) -> Self {
-        minimum_clearance_witness(self).map_or_else(
-            || Self::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
-            |witness| {
-                let points = self.points_vec();
+    pub fn minimum_clearance_line(&self) -> Result<Self> {
+        match minimum_clearance_witness(self)? {
+            None => Ok(Self::typed_empty(
+                GeometryKind::LineString,
+                CoordinateAxes::XY,
+            )),
+            Some(witness) => {
+                let points = self.points_vec()?;
                 let emitted = emit_from_original(&points, &witness.plan);
                 let [a, b] = emitted.as_slice() else {
                     unreachable!("minimum_clearance witness plan has two vertices");
                 };
-                Self::LineString(LineSeq::segment(*a, *b))
+                Ok(Self::LineString(LineSeq::segment(*a, *b)?))
             },
-        )
+        }
     }
 
     pub fn validate(&self) -> Option<ValidationIssue> {
@@ -215,7 +225,7 @@ impl Shape {
                     Ok(Self::MultiLineString(MultiLineString::from_values(
                         lines.axes(),
                         repaired,
-                    )))
+                    )?))
                 }
             },
             Self::Polygon(polygon) => {

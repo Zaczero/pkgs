@@ -2,7 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::py::numpy;
 use crate::py::functions::constructors::{
     Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
     PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
@@ -13,6 +12,7 @@ use crate::py::functions::constructors::{
     optional_coordinate_arc_values_from_buffer, parse_crs, parse_crs_epoch, polygon_from_data_item,
     pyfunction,
 };
+use crate::py::numpy;
 
 /// Create a rectangular ``Polygon`` from bounds ``(minx, miny, maxx, maxy)``.
 ///
@@ -204,11 +204,11 @@ pub(super) fn points(
     }
     broadcast_crs_coordinate_inputs(&mut x, &mut y, &mut z, &mut m)?;
     let frame = parse_crs_epoch(crs, epoch)?;
-    let seq = CoordSeq::try_from_columns(
-        x.values.into(),
-        y.values.into(),
-        z.map(|value| value.values.into()),
-        m.map(|value| value.values.into()),
+    let seq = CoordSeq::from_owned_columns(
+        x.values,
+        y.values,
+        z.map(|value| value.values),
+        m.map(|value| value.values),
     )?;
     Ok(PyGeometryArray::packed_points(seq, frame))
 }
@@ -273,8 +273,12 @@ fn try_points_from_arc_columns(
     let ys = coordinate_arc_values_from_buffer(py, &y_buffer)?;
     let zs = optional_coordinate_arc_values_from_buffer(py, z_buffer.as_ref(), x_len, "z")?;
     let ms = optional_coordinate_arc_values_from_buffer(py, m_buffer.as_ref(), x_len, "m")?;
-    // Finite check lives in from_arc_columns (same as column-form LineString).
-    Ok(Some(CoordSeq::from_arc_columns(xs, ys, zs, ms)?))
+    Ok(Some(CoordSeq::from_owned_columns(
+        xs.to_vec(),
+        ys.to_vec(),
+        zs.map(|values| values.to_vec()),
+        ms.map(|values| values.to_vec()),
+    )?))
 }
 
 /// Create a ``GeometryArray`` of rectangular polygons from bound columns.
@@ -388,7 +392,7 @@ pub(super) fn boxes(
             .orient_polygons(!ccw)?;
         rows.try_push(shape)?;
     }
-    Ok(rows.finish(frame))
+    Ok(rows.finish(frame)?)
 }
 
 /// Create a ``GeometryArray`` of linestrings from per-line coordinate inputs.

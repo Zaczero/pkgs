@@ -68,7 +68,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     // Cleaning an already-valid coverage is an identity operation. Besides
     // avoiding needless arrangement work, this preserves coordinate bits,
     // ring presentation, and makes repeated cleaning exactly idempotent.
-    if coverage_invalid_segments_prepared(&prepared, gap_width)
+    if coverage_invalid_segments_prepared(&prepared, gap_width)?
         .iter()
         .all(Vec::is_empty)
     {
@@ -83,10 +83,10 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
         .collect();
     let atomic = self_node_segments(&all_segments);
     let faces = minimal_positive_face_rings(&atomic);
-    let regions = arrangement_regions(&faces);
+    let regions = arrangement_regions(&faces)?;
 
     let per_row = assign_regions(&prepared, regions, gap_width, overlaps)?;
-    Ok(per_row.into_iter().map(dissolve_regions).collect())
+    per_row.into_iter().map(dissolve_regions).collect()
 }
 
 /// Assign every arrangement region to one row (see [`coverage_clean`]): the
@@ -183,9 +183,12 @@ fn assign_regions_with_gap_neighbor(
         };
         // Candidate rows from the grid cell (a superset), then the exact bbox +
         // point-in-polygon test — same result set as scanning every row.
-        let mut parents: Vec<usize> = boxes_at_point(&row_tree, probe.x, probe.y)
-            .filter(|&row| prepared[row].shape.contains_point(probe))
-            .collect();
+        let mut parents = Vec::new();
+        for row in boxes_at_point(&row_tree, probe.x, probe.y) {
+            if prepared[row].shape.contains_point(probe)? {
+                crate::try_push_vec(&mut parents, row)?;
+            }
+        }
         // The grid yields candidates in bucket order; restore ascending row
         // index so `MinIndex` (and the overlap tie-breaks) match the old scan.
         sort_row_ids(&mut parents, prepared.len());
@@ -355,7 +358,7 @@ fn boxes_at_point(
 /// arrangement into disjoint regions: each face becomes a polygon whose
 /// holes are its DIRECT child faces. Components never partially overlap
 /// (all crossings were noded), so containment is strict nesting.
-fn arrangement_regions(faces: &[Vec<XY>]) -> Vec<Polygon> {
+fn arrangement_regions(faces: &[Vec<XY>]) -> Result<Vec<Polygon>> {
     // Sort by |area| descending so a child's direct parent is the smallest
     // containing face seen after it.
     let areas: Vec<f64> = faces
@@ -388,8 +391,8 @@ fn arrangement_regions(faces: &[Vec<XY>]) -> Vec<Polygon> {
             // Smallest container wins; on an exact area tie keep the larger
             // index.
             let better =
-                best.is_none_or(
-                    |current| match crate::geometry::cmp_area_keys_then_closed(
+                best.is_none_or(|current| {
+                    match crate::geometry::cmp_area_keys_then_closed(
                         areas[candidate],
                         areas[current],
                         &faces[candidate][..],
@@ -398,8 +401,8 @@ fn arrangement_regions(faces: &[Vec<XY>]) -> Vec<Polygon> {
                         std::cmp::Ordering::Less => true,
                         std::cmp::Ordering::Equal => candidate > current,
                         std::cmp::Ordering::Greater => false,
-                    },
-                );
+                    }
+                });
             if better {
                 best = Some(candidate);
             }
@@ -416,11 +419,14 @@ fn arrangement_regions(faces: &[Vec<XY>]) -> Vec<Polygon> {
         .iter()
         .enumerate()
         .map(|(index, face)| {
-            let holes: Vec<Ring> = holes_of[index]
+            let holes = holes_of[index]
                 .iter()
-                .map(|&hole| Ring::from_closed(CoordSeq::from_xy(&faces[hole])))
-                .collect();
-            Polygon::new(Ring::from_closed(CoordSeq::from_xy(face)), holes)
+                .map(|&hole| CoordSeq::try_from_xy(&faces[hole]).map(Ring::from_closed))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_xy(face)?),
+                holes,
+            )?)
         })
         .collect()
 }
@@ -430,12 +436,14 @@ fn arrangement_regions(faces: &[Vec<XY>]) -> Vec<Polygon> {
 /// cancel; the survivors re-polygonize into the row's outline with the
 /// arrangement's exact coordinates (no boolean-engine jitter, so neighbors
 /// keep vector-identical interfaces).
-fn dissolve_regions(regions: Vec<Polygon>) -> Shape {
+fn dissolve_regions(regions: Vec<Polygon>) -> Result<Shape> {
     if regions.is_empty() {
-        return Shape::empty_polygon();
+        return Ok(Shape::empty_polygon());
     }
     if regions.len() == 1 {
-        return Shape::Polygon(regions.into_iter().next().expect("one region"));
+        return Ok(Shape::Polygon(
+            regions.into_iter().next().expect("one region"),
+        ));
     }
     let mut counts: HashMap<(PointKey, PointKey), (Segment, u32)> = HashMap::new();
     for region in &regions {
@@ -455,18 +463,20 @@ fn dissolve_regions(regions: Vec<Polygon>) -> Shape {
 /// segments are exterior survivors; reassemble via the shared face pipeline.
 /// Used by `coverage_union_inner` on the validation product (no second polygon walk)
 /// and by `dissolve_regions` after building counts from assigned regions.
-fn dissolve_edge_incidences(incidences: HashMap<(PointKey, PointKey), (Segment, u32)>) -> Shape {
+fn dissolve_edge_incidences(
+    incidences: HashMap<(PointKey, PointKey), (Segment, u32)>,
+) -> Result<Shape> {
     let mut survivors: Vec<Segment> = incidences
         .into_values()
         .filter(|&(_, count)| count == 1)
         .map(|(segment, _)| segment)
         .collect();
     if survivors.is_empty() {
-        return Shape::empty_polygon();
+        return Ok(Shape::empty_polygon());
     }
     survivors.sort_by_key(|segment| undirected_segment_edge_key(*segment));
     let faces = minimal_positive_face_rings(&survivors);
-    let parts = top_level_regions(arrangement_regions(&faces));
+    let parts = top_level_regions(arrangement_regions(&faces)?);
     polygon_parts_to_shape(parts)
 }
 
@@ -577,19 +587,19 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
             parts
                 .into_iter()
                 .map(|polygon| polygon.map_ring_seqs(CoordSeq::force_2d))
-                .collect()
+                .collect::<Result<Vec<_>>>()?
         } else {
             parts
         };
         return carry_overlay_ordinates(
-            polygon_parts_to_shape(parts),
+            polygon_parts_to_shape(parts)?,
             &source_refs,
             OverlayOp::Union,
             false,
         );
     }
     carry_overlay_ordinates(
-        dissolve_edge_incidences(prepared.edge_incidences),
+        dissolve_edge_incidences(prepared.edge_incidences)?,
         &source_refs,
         OverlayOp::Union,
         false,
@@ -668,16 +678,22 @@ mod tests {
     use super::*;
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
-        Shape::Polygon(Polygon::new(
-            Ring::from_closed(CoordSeq::from_xy(&[
-                XY::new(minx, miny),
-                XY::new(maxx, miny),
-                XY::new(maxx, maxy),
-                XY::new(minx, maxy),
-                XY::new(minx, miny),
-            ])),
-            Vec::new(),
-        ))
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_xy(&[
+                        XY::new(minx, miny),
+                        XY::new(maxx, miny),
+                        XY::new(maxx, maxy),
+                        XY::new(minx, maxy),
+                        XY::new(minx, miny),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -698,7 +714,8 @@ mod tests {
             .collect();
         let regions = arrangement_regions(&minimal_positive_face_rings(&self_node_segments(
             &all_segments,
-        )));
+        )))
+        .unwrap();
         let expected: Vec<Shape> = assign_regions_linear(
             &prepared,
             regions,
@@ -708,7 +725,8 @@ mod tests {
         .expect("linear assignment succeeds")
         .into_iter()
         .map(dissolve_regions)
-        .collect();
+        .collect::<Result<Vec<_>>>()
+        .expect("linear dissolve succeeds");
 
         let actual = coverage_clean(&rows, 0.0, gap_width, CoverageOverlapRule::LongestBorder)
             .expect("indexed cleanup succeeds");
@@ -734,10 +752,13 @@ mod tests {
             XY::new(inset, 7.0),
             XY::new(inset, 1.0),
         ];
-        let regions = arrangement_regions(&[outer, inner]);
+        let regions = arrangement_regions(&[outer, inner]).unwrap();
         assert_eq!(regions.len(), 2);
         assert_eq!(
-            regions.iter().filter(|region| !region.holes.is_empty()).count(),
+            regions
+                .iter()
+                .filter(|region| !region.holes.is_empty())
+                .count(),
             1,
             "the overflowing inner face must remain a hole of the outer"
         );

@@ -247,7 +247,8 @@ mod coordinate_groups_tests {
                 Shape::empty_polygon(),
             ],
             Frame::None,
-        );
+        )
+        .unwrap();
         let (values, offsets) = coordinate_groups(&array, &[CoordinateAxis::X, CoordinateAxis::Y])
             .unwrap()
             .finish()
@@ -259,7 +260,7 @@ mod coordinate_groups_tests {
     #[test]
     fn csr_reserve_failure_after_array_setup_is_native() {
         let array = PyGeometryArray::packed_points(
-            CoordSeq::from_vecs(vec![1.0, 3.0], vec![2.0, 4.0], None, None),
+            CoordSeq::try_from_vecs(vec![1.0, 3.0], vec![2.0, 4.0], None, None).unwrap(),
             Frame::None,
         );
         let error = crate::test_support::fail_allocations_after(0, || {

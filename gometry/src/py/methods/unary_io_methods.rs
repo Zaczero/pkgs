@@ -304,7 +304,7 @@ impl PyGeometry {
     }
 
     #[doc = doc_validate!(scalar)]
-    pub fn validate(&self, py: Python<'_>) -> PyValidationReport {
+    pub fn validate(&self, py: Python<'_>) -> PyResult<PyValidationReport> {
         self.validate_impl(py)
     }
 

@@ -327,31 +327,35 @@ impl SegmentProjection {
     }
 }
 
-pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Option<(Point, Point)> {
+pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Result<Option<(Point, Point)>> {
     let mut nearest = NearestPoints::default();
     // Vertex-pair lists are hoisted once per side; this lane carries FULL
     // ordinates so witness feet interpolate Z/M like the vertices they
     // sit between (the planar `Segment` is XY-only by design).
-    let mut left_pairs: Vec<(Point, Point)> = Vec::with_capacity(left.segment_count());
+    let mut left_pairs = Vec::new();
+    crate::try_reserve_vec(&mut left_pairs, left.segment_count())?;
     left.for_each_vertex_pair(|start, end| left_pairs.push((start, end)));
-    let mut right_pairs: Vec<(Point, Point)> = Vec::with_capacity(right.segment_count());
+    let mut right_pairs = Vec::new();
+    crate::try_reserve_vec(&mut right_pairs, right.segment_count())?;
     right.for_each_vertex_pair(|start, end| right_pairs.push((start, end)));
 
     let mut missing = false;
-    left.for_each_point(
-        |point| match nearest_point_with_segments(point, right, &right_pairs) {
+    left.try_for_each_point(|point| {
+        match nearest_point_with_segments(point, right, &right_pairs)? {
             Some(candidate) => nearest.add(point, candidate.point, &candidate.distance_key),
             None => missing = true,
-        },
-    );
-    right.for_each_point(
-        |point| match nearest_point_with_segments(point, left, &left_pairs) {
+        }
+        Ok::<_, crate::error::Error>(())
+    })?;
+    right.try_for_each_point(|point| {
+        match nearest_point_with_segments(point, left, &left_pairs)? {
             Some(candidate) => nearest.add(candidate.point, point, &candidate.distance_key),
             None => missing = true,
-        },
-    );
+        }
+        Ok::<_, crate::error::Error>(())
+    })?;
     if missing {
-        return None;
+        return Ok(None);
     }
     for left_pair in &left_pairs {
         for right_pair in &right_pairs {
@@ -360,7 +364,7 @@ pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Option<(Point, Poin
         }
     }
 
-    nearest.points
+    Ok(nearest.points)
 }
 
 /// [`segment_nearest_points`] over full-ordinate vertex pairs: the planar
@@ -460,12 +464,12 @@ fn nearest_point_with_segments(
     point: Point,
     geometry: &Shape,
     pairs: &[(Point, Point)],
-) -> Option<NearestPointResult> {
-    if geometry.contains_point(point) {
-        return Some(NearestPointResult {
+) -> Result<Option<NearestPointResult>> {
+    if geometry.contains_point(point)? {
+        return Ok(Some(NearestPointResult {
             point,
             distance_key: point_pair_distance_key(point.xy(), point.xy()),
-        });
+        }));
     }
 
     let mut nearest = None;
@@ -492,12 +496,12 @@ fn nearest_point_with_segments(
             best_key = Some(distance_key);
         }
     });
-    nearest
+    Ok(nearest
         .zip(best_key)
         .map(|(point, distance_key)| NearestPointResult {
             point,
             distance_key,
-        })
+        }))
 }
 
 pub(crate) fn clip_segment(

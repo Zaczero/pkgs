@@ -81,7 +81,7 @@ impl Groups {
         builder: CsrBuilder<Shape>,
     ) -> PyResult<Self> {
         let (shapes, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
-        let values = PyGeometryArray::from_shapes(shapes, frame);
+        let values = PyGeometryArray::from_shapes(shapes, frame)?;
         validate_csr_offsets(&offsets, values.len())?;
         let n = offsets
             .len()
@@ -111,22 +111,22 @@ impl Groups {
         let cuts = diagnostic_csr(cuts)?;
         let dangles = diagnostic_csr(dangles)?;
         let invalid_rings = diagnostic_csr(invalid_rings)?;
-        let adopt = |(shapes, offsets): (Vec<Shape>, Vec<i64>)| {
+        let adopt = |(shapes, offsets): (Vec<Shape>, Vec<i64>)| -> crate::error::Result<Self> {
             let rows = 0..offsets.len() - 1;
-            Self {
+            Ok(Self {
                 values: GroupsValues::Geometry(Arc::new(PyGeometryArray::from_shapes(
                     shapes,
                     frame.clone(),
-                ))),
+                )?)),
                 offsets: offsets.into(),
                 rows,
-            }
+            })
         };
         Ok((
-            PyGeometryArray::from_shapes(polygons, frame.clone()),
-            adopt(cuts),
-            adopt(dangles),
-            adopt(invalid_rings),
+            PyGeometryArray::from_shapes(polygons, frame.clone())?,
+            adopt(cuts)?,
+            adopt(dangles)?,
+            adopt(invalid_rings)?,
         ))
     }
 
@@ -139,7 +139,7 @@ impl Groups {
     ) -> PyResult<Self> {
         let (vertices, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         let values = if vertices.is_empty() {
-            PyGeometryArray::from_shapes(Vec::new(), frame)
+            PyGeometryArray::from_shapes(Vec::new(), frame)?
         } else {
             PyGeometryArray::packed_triangles(&vertices, frame)?
         };
@@ -253,7 +253,7 @@ fn self_intersection_csr(
     for row in array.row_operation().rows_with_missing(|| ()) {
         match row {
             crate::array::ArrayRow::Missing { .. } => builder.push_row(std::iter::empty())?,
-            crate::array::ArrayRow::Present(row) => row.row().with_shape(|shape| {
+            crate::array::ArrayRow::Present(row) => row.row().try_with_shape(|shape| {
                 builder.push_row(
                     crate::geometry::self_intersections_in_frame(shape, domain)
                         .into_iter()
@@ -283,7 +283,7 @@ mod self_intersection_csr_tests {
         let Shape::LineString(coords) = &shape else {
             panic!("line fixture")
         };
-        let observer = std::sync::Arc::downgrade(&coords.column_arcs().xs);
+        let observer = std::sync::Arc::downgrade(&coords.column_arcs().xs.owner().unwrap());
         let full = crate::geometry::PolygonizeFull {
             polygons: vec![shape.clone()],
             cuts: vec![vec![shape.clone()], vec![shape.clone()]],
@@ -331,9 +331,11 @@ mod self_intersection_csr_tests {
         allocation_count(|| {
             for row in array.row_operation().rows_with_missing(|| ()) {
                 if let crate::array::ArrayRow::Present(row) = row {
-                    row.row().with_shape(|shape| {
-                        let _ = crate::geometry::self_intersections_in_frame(shape, domain);
-                    });
+                    row.row()
+                        .with_shape(|shape| {
+                            crate::geometry::self_intersections_in_frame(shape, domain)
+                        })
+                        .unwrap();
                 }
             }
         })
@@ -345,7 +347,8 @@ mod self_intersection_csr_tests {
         let array = PyGeometryArray::from_shapes(
             vec![line("LINESTRING (0 0, 2 0, 1 1, 1 -1)")],
             Frame::None,
-        );
+        )
+        .unwrap();
         let (shapes, offsets) = self_intersection_csr(&array, domain(&array))
             .expect("CSR walk")
             .finish()
@@ -367,7 +370,9 @@ mod self_intersection_csr_tests {
             ],
             Frame::None,
         )
-        .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]));
+        .unwrap()
+        .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]))
+        .unwrap();
         let (shapes, offsets) = self_intersection_csr(&array, domain(&array))
             .expect("CSR walk")
             .finish()
@@ -385,7 +390,8 @@ mod self_intersection_csr_tests {
         crate::test_support::initialize_python();
         let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("frame");
         let array =
-            PyGeometryArray::from_shapes(vec![line("LINESTRING (0 0, 1 0)")], frame.clone());
+            PyGeometryArray::from_shapes(vec![line("LINESTRING (0 0, 1 0)")], frame.clone())
+                .unwrap();
         let groups =
             Python::attach(|py| Groups::from_self_intersection_rows(py, &array)).expect("groups");
         let GroupsValues::Geometry(values) = &groups.values else {
@@ -397,7 +403,8 @@ mod self_intersection_csr_tests {
 
     #[test]
     fn csr_allocation_failure_is_native_until_the_closure_exits() {
-        let array = PyGeometryArray::from_shapes(vec![line("LINESTRING (0 0, 1 0)")], Frame::None);
+        let array =
+            PyGeometryArray::from_shapes(vec![line("LINESTRING (0 0, 1 0)")], Frame::None).unwrap();
         let domain = domain(&array);
         let _ = kernel_allocations(&array);
         drop(self_intersection_csr(&array, domain).expect("warm walk before the fault window"));

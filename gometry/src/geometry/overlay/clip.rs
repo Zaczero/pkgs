@@ -13,8 +13,8 @@ use crate::geometry::{
     REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring, Shape, XY, clip_segment,
     held_axis_interpolate, line_segments, same_point, simd_select_indices,
 };
-pub(crate) fn clip_polygonal(polygons: &[Polygon], rect: Bounds) -> Shape {
-    polygon_parts_to_shape(clip_polygonal_parts(polygons, rect))
+pub(crate) fn clip_polygonal(polygons: &[Polygon], rect: Bounds) -> crate::error::Result<Shape> {
+    polygon_parts_to_shape(clip_polygonal_parts(polygons, rect)?)
 }
 
 /// LINEAR Sutherland–Hodgman first (GEOS's clip is the same shape, but
@@ -29,7 +29,7 @@ pub(crate) fn clip_polygonal(polygons: &[Polygon], rect: Bounds) -> Shape {
 pub(in crate::geometry) fn clip_polygonal_parts<P: AsRef<Polygon>>(
     polygons: &[P],
     rect: Bounds,
-) -> Vec<Polygon> {
+) -> Result<Vec<Polygon>> {
     let holes_strictly_inside = polygons.iter().all(|polygon| {
         let polygon = polygon.as_ref();
         polygon.holes.iter().all(|hole| {
@@ -42,14 +42,14 @@ pub(in crate::geometry) fn clip_polygonal_parts<P: AsRef<Polygon>>(
         })
     });
     if holes_strictly_inside
-        && let Some(parts) = window_clipped_parts(polygons, rect)
+        && let Some(parts) = window_clipped_parts(polygons, rect)?
         && !window_clip_artifacts(&parts, rect)
     {
-        return parts;
+        return Ok(parts);
     }
     binary_areal_overlay(
         polygons,
-        std::slice::from_ref(&rect_polygon(rect)),
+        std::slice::from_ref(&rect_polygon(rect)?),
         OverlayOp::Intersection,
     )
 }
@@ -58,7 +58,7 @@ pub(crate) fn clipped_linestring<C: Coordinates + ?Sized>(
     points: &C,
     rect: Bounds,
 ) -> Result<Shape> {
-    Ok(line_parts_to_shape(clipped_line_parts(points, rect)?))
+    line_parts_to_shape(clipped_line_parts(points, rect)?)
 }
 
 pub(crate) fn clipped_line_parts<C: Coordinates + ?Sized>(
@@ -83,29 +83,33 @@ pub(crate) fn clipped_line_parts<C: Coordinates + ?Sized>(
     Ok(parts)
 }
 
-pub(crate) fn line_parts_to_shape(mut parts: Vec<Vec<Point>>) -> Shape {
+pub(crate) fn line_parts_to_shape(mut parts: Vec<Vec<Point>>) -> crate::error::Result<Shape> {
     parts.retain(|part| part.len() != 1);
     let axes = parts
         .first()
         .and_then(|part| part.first())
         .map_or(CoordinateAxes::XY, |point| point.axes);
     match parts.len() {
-        0 => Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY),
-        1 => Shape::LineString(LineSeq::from_proven(CoordSeq::from(parts.remove(0)))),
+        0 => Ok(Shape::typed_empty(
+            GeometryKind::GeometryCollection,
+            CoordinateAxes::XY,
+        )),
+        1 => Ok(Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_points(&parts.remove(0))?,
+        ))),
         _ => Shape::multi_line_string(
             axes,
             parts
                 .into_iter()
-                .map(CoordSeq::from)
-                .filter_map(|part| LineSeq::try_new(part).ok())
-                .collect(),
+                .map(|part| CoordSeq::try_from_points(&part).and_then(LineSeq::try_new))
+                .collect::<crate::error::Result<Vec<_>>>()?,
         ),
     }
 }
 
 /// Collapse a polygonal decomposition to its narrowest shape: `POLYGON EMPTY`
 /// for none, the bare polygon for one, a multipolygon otherwise.
-pub(crate) fn polygon_parts_to_shape(parts: Vec<Polygon>) -> Shape {
+pub(crate) fn polygon_parts_to_shape(parts: Vec<Polygon>) -> crate::error::Result<Shape> {
     Shape::narrow_polygons(CoordinateAxes::XY, parts)
 }
 
@@ -113,16 +117,19 @@ pub(crate) fn polygon_parts_to_shape(parts: Vec<Polygon>) -> Shape {
 /// stay a multi-line (the historical output shapes).
 /// Keep multipoint rows whose XY lies inside `rect` (inclusive bounds), Z/M
 /// columns carried via [`CoordSeq::select`].
-pub(crate) fn clip_multipoint_columns(points: &CoordSeq, rect: Bounds) -> CoordSeq {
+pub(crate) fn clip_multipoint_columns(
+    points: &CoordSeq,
+    rect: Bounds,
+) -> crate::error::Result<CoordSeq> {
     let xs = points.xs();
     let ys = points.ys();
     let len = xs.len();
     if len < REDUCE_SIMD_MIN {
-        return points
+        let kept = points
             .iter()
             .filter(|point| rect.contains_point(*point))
-            .collect::<Vec<_>>()
-            .into();
+            .collect::<Vec<_>>();
+        return CoordSeq::try_from_points(&kept);
     }
     let (minx, miny, maxx, maxy) = (rect.minx(), rect.miny(), rect.maxx(), rect.maxy());
     let (x_chunks, _) = xs.as_chunks::<REDUCE_LANES>();
@@ -150,25 +157,28 @@ pub(crate) fn clip_multipoint_columns(points: &CoordSeq, rect: Bounds) -> CoordS
 pub(crate) fn window_clipped_parts<P: AsRef<Polygon>>(
     polygons: &[P],
     rect: Bounds,
-) -> Option<Vec<Polygon>> {
+) -> crate::error::Result<Option<Vec<Polygon>>> {
     let mut clipped = Vec::with_capacity(polygons.len());
     for polygon in polygons {
         let polygon = polygon.as_ref();
-        let shell = window_clip_ring(polygon.shell.coords(), rect)?;
+        let Some(shell) = window_clip_ring(polygon.shell.coords(), rect)? else {
+            return Ok(None);
+        };
         if shell.coord_count() < Ring::MIN_VERTICES_CLOSED {
-            continue;
+            return Ok(None);
         }
-        let holes = polygon
-            .holes
-            .iter()
-            .map(|hole| {
-                let ring = window_clip_ring(hole.coords(), rect)?;
-                (ring.coord_count() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_closed(ring))
-            })
-            .collect::<Option<Vec<_>>>()?;
-        clipped.push(Polygon::new(Ring::from_closed(shell), holes));
+        let mut holes = Vec::new();
+        for hole in polygon.holes.iter() {
+            let Some(ring) = window_clip_ring(hole.coords(), rect)? else {
+                return Ok(None);
+            };
+            if ring.coord_count() >= Ring::MIN_VERTICES_CLOSED {
+                holes.push(Ring::from_closed(ring));
+            }
+        }
+        clipped.push(Polygon::new(Ring::from_closed(shell), holes)?);
     }
-    Some(clipped)
+    Ok(Some(clipped))
 }
 
 /// Sutherland–Hodgman artifact scan gating the public clip's DIRECT lane:
@@ -234,7 +244,10 @@ pub(crate) fn window_clip_artifacts(parts: &[Polygon], rect: Bounds) -> bool {
     clippy::too_many_lines,
     reason = "the four ordered clipping passes share one local state machine; splitting it duplicates the hot traversal"
 )]
-pub(crate) fn window_clip_ring(ring: &CoordSeq, rect: Bounds) -> Option<CoordSeq> {
+pub(crate) fn window_clip_ring(
+    ring: &CoordSeq,
+    rect: Bounds,
+) -> crate::error::Result<Option<CoordSeq>> {
     // Four MONOMORPHIZED half-plane passes straight over the coordinate
     // columns: the previous fn-pointer plane table cost two indirect
     // calls per vertex per pass, and the `point_at` input walk
@@ -277,7 +290,7 @@ pub(crate) fn window_clip_ring(ring: &CoordSeq, rect: Bounds) -> Option<CoordSeq
     }
     let count = ring.coord_count();
     if count < Ring::MIN_VERTICES_CLOSED {
-        return Some(CoordSeq::empty(CoordinateAxes::XY));
+        return Ok(Some(CoordSeq::empty(CoordinateAxes::XY)));
     }
     // Open form (cyclic processing re-closes at the end); the FIRST pass
     // reads the ring's own columns — no upfront copy.
@@ -295,7 +308,7 @@ pub(crate) fn window_clip_ring(ring: &CoordSeq, rect: Bounds) -> Option<CoordSeq
             held_axis_interpolate(x0, y0, x1, y1, rect.minx()).map(|y| (rect.minx(), y))
         },
     ) {
-        return None;
+        return Ok(None);
     }
     if xs.len() >= Ring::MIN_VERTICES_OPEN {
         if !pass(
@@ -308,7 +321,7 @@ pub(crate) fn window_clip_ring(ring: &CoordSeq, rect: Bounds) -> Option<CoordSeq
                 held_axis_interpolate(x0, y0, x1, y1, rect.maxx()).map(|y| (rect.maxx(), y))
             },
         ) {
-            return None;
+            return Ok(None);
         }
         std::mem::swap(&mut xs, &mut scratch_x);
         std::mem::swap(&mut ys, &mut scratch_y);
@@ -324,7 +337,7 @@ pub(crate) fn window_clip_ring(ring: &CoordSeq, rect: Bounds) -> Option<CoordSeq
                 held_axis_interpolate(y0, x0, y1, x1, rect.miny()).map(|x| (x, rect.miny()))
             },
         ) {
-            return None;
+            return Ok(None);
         }
         std::mem::swap(&mut xs, &mut scratch_x);
         std::mem::swap(&mut ys, &mut scratch_y);
@@ -340,17 +353,17 @@ pub(crate) fn window_clip_ring(ring: &CoordSeq, rect: Bounds) -> Option<CoordSeq
                 held_axis_interpolate(y0, x0, y1, x1, rect.maxy()).map(|x| (x, rect.maxy()))
             },
         ) {
-            return None;
+            return Ok(None);
         }
         std::mem::swap(&mut xs, &mut scratch_x);
         std::mem::swap(&mut ys, &mut scratch_y);
     }
     if xs.len() < Ring::MIN_VERTICES_OPEN {
-        return Some(CoordSeq::empty(CoordinateAxes::XY));
+        return Ok(Some(CoordSeq::empty(CoordinateAxes::XY)));
     }
     // Close positionally and hand the columns over as-is — no `Point`
     // staging, no re-packing in `Ring::from_closed`.
     xs.push(xs[0]);
     ys.push(ys[0]);
-    Some(CoordSeq::from_columns(xs.into(), ys.into(), None, None))
+    Ok(Some(CoordSeq::try_from_vecs(xs, ys, None, None)?))
 }

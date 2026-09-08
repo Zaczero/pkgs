@@ -76,7 +76,7 @@ macro_rules! grid_cell_common_pymethods {
             /// -------
             /// Polygon
             #[getter]
-            fn polygon(&self) -> Typed {
+            fn polygon(&self) -> PyResult<Typed> {
                 cell_boundary(self.cell)
             }
 
