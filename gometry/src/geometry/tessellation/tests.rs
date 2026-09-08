@@ -196,7 +196,11 @@ fn triangle_sink_rejects_allocation_after_budget() {
         error.kind(),
         ErrorKind::Resource(ResourceError::Allocation)
     ));
-    assert!(sink.into_shapes().is_empty());
+    sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0))
+        .expect("a rejected output allocation must be retryable");
+    let shapes = sink.into_shapes();
+    assert_eq!(budget.used(), 4);
+    assert_eq!(shapes.len(), 1);
 }
 
 #[test]
@@ -216,7 +220,11 @@ fn packed_triangle_sink_rejects_before_and_on_allocation() {
         error.kind(),
         ErrorKind::Resource(ResourceError::Allocation)
     ));
-    assert!(sink.into_vertices().is_empty());
+    sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0))
+        .expect("a rejected packed allocation must be retryable");
+    let vertices = sink.into_vertices();
+    assert_eq!(budget.used(), 4);
+    assert_eq!(vertices.len(), 4);
 }
 
 #[test]

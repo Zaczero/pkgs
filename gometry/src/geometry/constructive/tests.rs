@@ -1422,11 +1422,21 @@ mod subdivide_columns_tests {
             &mut segmentize_budget,
         )
         .unwrap_err();
-        assert!(segmentize.to_string().contains("max_segment_length"));
+        assert!(matches!(
+            segmentize.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge {
+                operation: "segmentize",
+                parameter: "max_segment_length",
+                ..
+            })
+        ));
         let mut densify_budget = ExpansionBudget::new("densify", "fraction");
         let densify =
             densify_points_budgeted(&line, f64::MIN_POSITIVE, &mut densify_budget).unwrap_err();
-        assert!(densify.to_string().contains("fraction"));
+        assert!(matches!(
+            densify.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
     }
 }
 

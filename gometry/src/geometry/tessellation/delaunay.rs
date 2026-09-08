@@ -463,8 +463,9 @@ pub(crate) fn constrained_triangle_vertices<'a>(
             ring.nth_coord(3),
         );
         if same_point(a.xy(), close.xy()) {
-            budget.add(4)?;
-            return Ok(vec![a, b, c, a]);
+            let output = vec![a, b, c, a];
+            budget.add(output.len())?;
+            return Ok(output);
         }
     }
     let mut lines: Vec<[XY; 2]> = Vec::new();
@@ -494,7 +495,10 @@ pub(crate) fn constrained_triangle_vertices<'a>(
         max_area,
     } = refinement
     {
-        let limit = GENERATED_ITEM_LIMIT.saturating_sub(vertices.len());
+        // The refinement admission is for vertices inserted by refinement;
+        // input constraint vertices are not generated output and must not
+        // consume this operation's cap.
+        let limit = GENERATED_ITEM_LIMIT;
         let complete = cdt.refine(
             &mut vertices,
             min_angle.map(crate::Positive::get),
@@ -516,13 +520,16 @@ pub(crate) fn constrained_triangle_vertices<'a>(
         .len()
         .checked_mul(4)
         .ok_or_else(|| GeometryErrorKind::triangulation("triangle output size overflow"))?;
-    budget.add(capacity)?;
+    for [a, b, c] in &faces {
+        validate_refined_triangle(vertices[*a], vertices[*b], vertices[*c], refinement)?;
+    }
+    budget.check_additional(capacity)?;
     #[cfg(test)]
     note_constrained_output_reserve();
-    let mut output = Vec::with_capacity(capacity);
+    let mut output = Vec::new();
+    crate::try_reserve_vec(&mut output, capacity)?;
     for [a, b, c] in faces {
         let (a, b, c) = (vertices[a], vertices[b], vertices[c]);
-        validate_refined_triangle(a, b, c, refinement)?;
         match orientation(a.xy(), b.xy(), c.xy()) {
             Orientation::CounterClockwise => output.extend_from_slice(&[a, b, c, a]),
             Orientation::Clockwise => output.extend_from_slice(&[a, c, b, a]),
@@ -533,6 +540,7 @@ pub(crate) fn constrained_triangle_vertices<'a>(
             },
         }
     }
+    budget.add(capacity)?;
     Ok(output)
 }
 

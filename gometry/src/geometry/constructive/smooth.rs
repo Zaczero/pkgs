@@ -69,7 +69,7 @@ fn part_output_len<const CLOSED: bool>(
                 current = match chaikin_next_len::<CLOSED>(current) {
                     Some(len) if len <= SMOOTH_MAX_COORDS => len,
                     Some(len) => return Err(smooth_budget_error(len)),
-                    None => return Err(smooth_budget_error(usize::MAX)),
+                    None => return Err(crate::error::ResourceError::SizeOverflow.into()),
                 };
             }
             Ok(current)
@@ -82,7 +82,7 @@ fn part_output_len<const CLOSED: bool>(
             {
                 Some(len) if len <= SMOOTH_MAX_COORDS => Ok(len),
                 Some(len) => Err(smooth_budget_error(len)),
-                None => Err(smooth_budget_error(usize::MAX)),
+                None => Err(crate::error::ResourceError::SizeOverflow.into()),
             }
         },
     }
@@ -113,8 +113,11 @@ pub(crate) fn smooth_coord_seq<const CLOSED: bool>(
         return Ok(points.clone());
     }
     let output_len = part_output_len::<CLOSED>(points.len(), iterations, method)?;
-    budget.add(output_len.saturating_sub(points.len()))?;
-    match method {
+    let generated = output_len
+        .checked_sub(points.len())
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    budget.check_additional(generated)?;
+    let output = match method {
         SmoothMethod::Chaikin => {
             let mut current = points.clone();
             for _ in 0..iterations {
@@ -130,7 +133,9 @@ pub(crate) fn smooth_coord_seq<const CLOSED: bool>(
             let samples = catmull_rom_samples_per_segment(iterations);
             catmull_rom_subdivide::<CLOSED>(points, samples)
         },
-    }
+    }?;
+    budget.add(generated)?;
+    Ok(output)
 }
 
 fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> Result<CoordSeq> {

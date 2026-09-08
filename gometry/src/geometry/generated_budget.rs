@@ -43,7 +43,9 @@ impl ExpansionBudget {
         left: usize,
         right: usize,
     ) -> Result<()> {
-        let produced = left.saturating_mul(right);
+        let produced = left
+            .checked_mul(right)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         if produced > PAIRWISE_WORK_LIMIT {
             return Err(GeometryErrorKind::GeneratedOutputTooLarge {
                 operation,
@@ -79,7 +81,9 @@ impl ExpansionBudget {
         left: usize,
         right: usize,
     ) -> Result<usize> {
-        let produced = left.saturating_mul(right);
+        let produced = left
+            .checked_mul(right)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         Self::check(operation, parameter, produced)
     }
 
@@ -95,7 +99,9 @@ impl ExpansionBudget {
         Self::check(
             self.operation,
             self.parameter,
-            self.used.saturating_add(amount),
+            self.used
+                .checked_add(amount)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
         )
     }
 
@@ -119,7 +125,30 @@ mod tests {
     }
 
     #[test]
-    fn multiplication_overflow_is_an_ordinary_budget_error() {
-        ExpansionBudget::product("test", "count", usize::MAX, 2).unwrap_err();
+    fn multiplication_overflow_is_structural() {
+        let error = ExpansionBudget::product("test", "count", usize::MAX, 2).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+    }
+
+    #[test]
+    fn cumulative_addition_overflow_is_structural_not_generated_work() {
+        let mut budget = ExpansionBudget::new("test", "count");
+        budget.add(GENERATED_ITEM_LIMIT).unwrap();
+        let error = budget.check_additional(usize::MAX).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+    }
+
+    #[test]
+    fn pairwise_limit_is_independent_of_generated_output_limit() {
+        assert!(ExpansionBudget::pairwise("frechet_distance", "densify", 1_000_000, 1_000).is_ok());
+        assert!(
+            ExpansionBudget::pairwise("frechet_distance", "densify", 1_000_000, 1_001).is_err()
+        );
     }
 }

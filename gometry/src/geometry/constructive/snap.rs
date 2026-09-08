@@ -335,10 +335,10 @@ fn segmentize_steps(length: f64, max_segment_length: f64) -> usize {
     // A huge quotient must not wrap to a small step count, which would admit
     // output beyond the shared 16M generated-work budget.
     let pieces = (length / max_segment_length).ceil();
-    if !pieces.is_finite() || pieces > GENERATED_ITEM_LIMIT as f64 {
+    if !pieces.is_finite() || pieces > (GENERATED_ITEM_LIMIT + 1) as f64 {
         // The sink charges inserted vertices (`pieces - 1`), so its sentinel
         // must remain one past that limit rather than merely one past pieces.
-        GENERATED_ITEM_LIMIT.saturating_add(2)
+        GENERATED_ITEM_LIMIT + 2
     } else {
         pieces as usize
     }
@@ -377,10 +377,10 @@ fn planar_segmentize_steps(segment: Segment, max_segment_length: f64) -> usize {
     let pieces = ratio.ceil();
     // A huge quotient must not wrap to a small step count, which would admit
     // output beyond the shared 16M generated-work budget.
-    if !pieces.is_finite() || pieces > GENERATED_ITEM_LIMIT as f64 {
+    if !pieces.is_finite() || pieces > (GENERATED_ITEM_LIMIT + 1) as f64 {
         // The sink charges inserted vertices (`pieces - 1`), so its sentinel
         // must remain one past that limit rather than merely one past pieces.
-        GENERATED_ITEM_LIMIT.saturating_add(2)
+        GENERATED_ITEM_LIMIT + 2
     } else {
         pieces.max(1.0) as usize
     }
@@ -589,19 +589,31 @@ struct SubdivisionCount {
 }
 
 impl SubdivisionCount {
-    const fn generated(&self, input_len: usize) -> usize {
-        self.emitted.saturating_sub(input_len)
+    fn generated(&self, input_len: usize) -> Result<usize> {
+        self.emitted
+            .checked_sub(input_len)
+            .ok_or(crate::error::ResourceError::SizeOverflow.into())
     }
 }
 
 impl SubdivisionSink for SubdivisionCount {
     fn source(&mut self, _: usize) -> Result<()> {
-        self.emitted = self.emitted.saturating_add(1);
+        self.emitted = self
+            .emitted
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         Ok(())
     }
 
     fn interior(&mut self, _: usize, steps: usize) -> Result<()> {
-        self.emitted = self.emitted.saturating_add(steps.saturating_sub(1));
+        self.emitted = self
+            .emitted
+            .checked_add(
+                steps
+                    .checked_sub(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
+            )
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         Ok(())
     }
 }
@@ -630,15 +642,27 @@ struct SubdivisionColumns<'a> {
 }
 
 impl<'a> SubdivisionColumns<'a> {
-    fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Self {
-        Self {
+    fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Result<Self> {
+        let mut xs = Vec::new();
+        crate::try_reserve_vec(&mut xs, total)?;
+        let mut ys = Vec::new();
+        crate::try_reserve_vec(&mut ys, total)?;
+        let mut zs = points.zs().map(|_| Vec::new());
+        if let Some(column) = &mut zs {
+            crate::try_reserve_vec(column, total)?;
+        }
+        let mut ms = points.ms().map(|_| Vec::new());
+        if let Some(column) = &mut ms {
+            crate::try_reserve_vec(column, total)?;
+        }
+        Ok(Self {
             points,
             emission,
-            xs: Vec::with_capacity(total),
-            ys: Vec::with_capacity(total),
-            zs: points.zs().map(|_| Vec::with_capacity(total)),
-            ms: points.ms().map(|_| Vec::with_capacity(total)),
-        }
+            xs,
+            ys,
+            zs,
+            ms,
+        })
     }
 
     fn finish(self) -> Result<CoordSeq> {
@@ -795,17 +819,20 @@ fn subdivide_columns_from_steps<'a>(
     let total = count_sink.emitted;
     // Existing source vertices are input-sized work. Charge only the vertices
     // this operation creates, once for the whole caller-owned budget.
-    budget.add(count_sink.generated(count))?;
-    if count_sink.generated(count) == 0 {
+    let generated = count_sink.generated(count)?;
+    budget.check_additional(generated)?;
+    if generated == 0 {
         // Nothing subdivides (every segment already satisfies the bound —
         // the common case once data is denser than the requested length):
         // the input IS the output, share it.
         return Ok(points.clone());
     }
-    let mut output = SubdivisionColumns::new(points, emission, total);
+    let mut output = SubdivisionColumns::new(points, emission, total)?;
     emit_subdivision(steps, &mut output)?;
     output.emission.assert_exhausted();
-    output.finish()
+    let output = output.finish()?;
+    budget.add(generated)?;
+    Ok(output)
 }
 
 impl Shape {
@@ -1119,5 +1146,41 @@ impl Shape {
             },
             other => other,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subdivision_admits_exact_generated_limit_without_charging_input_vertices() {
+        let steps = [GENERATED_ITEM_LIMIT + 1];
+        let mut count = SubdivisionCount { emitted: 0 };
+        emit_subdivision(&steps, &mut count).unwrap();
+        let generated = count.generated(2).unwrap();
+        assert_eq!(generated, GENERATED_ITEM_LIMIT);
+
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        budget.check_additional(generated).unwrap();
+        budget.add(generated).unwrap();
+        assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
+
+        let mut count = SubdivisionCount { emitted: 0 };
+        emit_subdivision(&[GENERATED_ITEM_LIMIT + 2], &mut count).unwrap();
+        let generated = count.generated(2).unwrap();
+        assert!(budget.check_additional(generated).is_err());
+    }
+
+    #[test]
+    fn segmentize_planning_sentinel_is_reserved_for_more_than_the_limit() {
+        assert_eq!(
+            segmentize_steps((GENERATED_ITEM_LIMIT + 1) as f64, 1.0),
+            GENERATED_ITEM_LIMIT + 1
+        );
+        assert_eq!(
+            segmentize_steps((GENERATED_ITEM_LIMIT + 2) as f64, 1.0),
+            GENERATED_ITEM_LIMIT + 2
+        );
     }
 }

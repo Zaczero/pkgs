@@ -49,9 +49,10 @@ impl<'budget> BudgetedTriangleSink<'budget> {
     }
 
     pub(super) fn emit(&mut self, a: Point, b: Point, c: Point) -> Result<()> {
-        self.budget.add(4)?;
+        self.budget.check_additional(4)?;
         let shape = try_triangle_shape(a, b, c)?;
-        try_push_vec(&mut self.shapes, shape)
+        try_push_vec(&mut self.shapes, shape)?;
+        self.budget.add(4).map(|_| ())
     }
 
     pub(super) fn into_shapes(self) -> Vec<Shape> {
@@ -74,10 +75,10 @@ impl<'budget> BudgetedPackedTriangleSink<'budget> {
     }
 
     pub(super) fn emit(&mut self, a: Point, b: Point, c: Point) -> Result<()> {
-        self.budget.add(4)?;
+        self.budget.check_additional(4)?;
         try_reserve_vec(&mut self.vertices, 4)?;
         self.vertices.extend_from_slice(&[a, b, c, a]);
-        Ok(())
+        self.budget.add(4).map(|_| ())
     }
 
     pub(super) fn into_vertices(self) -> Vec<Point> {
@@ -169,11 +170,11 @@ impl Shape {
             .len()
             .checked_mul(4)
             .ok_or_else(|| GeometryErrorKind::triangulation("triangle output size overflow"))?;
-        budget.add(capacity)?;
+        budget.check_additional(capacity)?;
         let mut vertices = Vec::new();
         #[cfg(test)]
         note_delaunay_output_reserve();
-        vertices.reserve_exact(capacity);
+        crate::try_reserve_vec(&mut vertices, capacity)?;
         let mut triangles = triangulation.triangles().to_vec();
         triangles.sort_unstable_by_key(|triangle| {
             let mut key = *triangle;
@@ -188,6 +189,7 @@ impl Shape {
                 points[triangle[0]],
             ]);
         }
+        budget.add(capacity)?;
         Ok(vertices)
     }
 
