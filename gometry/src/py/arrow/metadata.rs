@@ -56,12 +56,7 @@ pub(crate) fn arrow_classification(
             WkbOffsetWidth::Int32
         };
         let (crs, epoch) = parse_geoarrow_extension_metadata_for(&metadata, Some(encoding))?;
-        return Ok(NativeArrowClassification {
-            encoding,
-            wkb_offset_width,
-            crs,
-            epoch,
-        });
+        return NativeArrowClassification::new(encoding, wkb_offset_width, crs, epoch);
     }
 
     let types = pa.getattr("types")?;
@@ -71,12 +66,12 @@ pub(crate) fn arrow_classification(
     let is_large_binary = arrow_type_is_large_binary(pa, &value_type)?;
     let is_binary_view = arrow_type_is_binary_view(pa, &value_type)?;
     if is_binary || is_large_binary || is_binary_view {
-        return Ok(NativeArrowClassification {
-            encoding: GeometryEncoding::Wkb,
-            wkb_offset_width: wkb_offset_width(is_large_binary, is_binary_view),
-            crs: None,
-            epoch: None,
-        });
+        return NativeArrowClassification::new(
+            GeometryEncoding::Wkb,
+            wkb_offset_width(is_large_binary, is_binary_view),
+            None,
+            None,
+        );
     }
     Err(PyTypeError::new_err(
         "expected a geoarrow point, multipoint, linestring, multilinestring, polygon, multipolygon, WKB, binary, or large_binary Arrow array",

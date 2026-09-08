@@ -472,11 +472,11 @@ fn list_range(node: &NativeNode, index: usize) -> DecodeResult<std::ops::Range<u
 }
 
 struct NativeCoordinates {
-    x: Arc<[f64]>,
-    y: Arc<[f64]>,
-    z: Option<Arc<[f64]>>,
-    m: Option<Arc<[f64]>>,
-    validity: Option<Arc<[bool]>>,
+    x: Arc<Vec<f64>>,
+    y: Arc<Vec<f64>>,
+    z: Option<Arc<Vec<f64>>>,
+    m: Option<Arc<Vec<f64>>>,
+    validity: Option<Arc<Vec<bool>>>,
     axes: CoordinateAxes,
     full: OnceCell<CoordSeq>,
 }
@@ -589,7 +589,7 @@ impl NativeCoordinates {
                 "Arrow interleaved coordinate buffer is shorter than declared",
             ));
         }
-        let name = values_node.schema_name.as_ref();
+        let name = values_node.schema_name.as_str();
         let (has_z, has_m) = match (size, name) {
             (2, _) => (false, false),
             (3, "xym") => (false, true),
@@ -625,10 +625,14 @@ impl NativeCoordinates {
                 || (0..size).any(|offset| values_node.missing_at(row * size + offset))
         })?;
         Ok(Self {
-            x: Arc::from(xs),
-            y: Arc::from(ys),
-            z: zs.map(Arc::from),
-            m: ms.map(Arc::from),
+            x: crate::py::arrow_c::try_arc_from_vec_native(xs)?,
+            y: crate::py::arrow_c::try_arc_from_vec_native(ys)?,
+            z: zs
+                .map(crate::py::arrow_c::try_arc_from_vec_native)
+                .transpose()?,
+            m: ms
+                .map(crate::py::arrow_c::try_arc_from_vec_native)
+                .transpose()?,
             validity,
             axes: CoordinateAxes::new(HasZ(has_z), HasM(has_m)),
             full: OnceCell::new(),
@@ -700,13 +704,19 @@ impl NativeCoordinates {
         }
         self.ensure_range_finite(start, end)?;
         if self.full.get().is_none() {
-            let full = CoordSeq::try_from_vecs(
-                self.x.to_vec(),
-                self.y.to_vec(),
-                self.z.as_ref().map(|values| values.to_vec()),
-                self.m.as_ref().map(|values| values.to_vec()),
-            )
-            .map_err(NativeArrowDecodeError::from)?;
+            let x = crate::geometry::try_copy_slice(&self.x)?;
+            let y = crate::geometry::try_copy_slice(&self.y)?;
+            let z = self
+                .z
+                .as_ref()
+                .map(|values| crate::geometry::try_copy_slice(values))
+                .transpose()?;
+            let m = self
+                .m
+                .as_ref()
+                .map(|values| crate::geometry::try_copy_slice(values))
+                .transpose()?;
+            let full = CoordSeq::try_from_vecs(x, y, z, m).map_err(NativeArrowDecodeError::from)?;
             let _ = self.full.set(full);
         }
         let full = self.full.get().expect("coordinate sequence initialized");
@@ -737,7 +747,7 @@ impl NativeCoordinates {
 fn combined_validity(
     length: usize,
     missing: impl Fn(usize) -> bool,
-) -> DecodeResult<Option<Arc<[bool]>>> {
+) -> DecodeResult<Option<Arc<Vec<bool>>>> {
     let any = (0..length).any(&missing);
     if !any {
         return Ok(None);
@@ -747,7 +757,7 @@ fn combined_validity(
     for row in 0..length {
         push(&mut values, !missing(row))?;
     }
-    Ok(Some(Arc::from(values)))
+    Ok(Some(crate::py::arrow_c::try_arc_from_vec_native(values)?))
 }
 
 fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> DecodeResult<()> {
@@ -756,4 +766,57 @@ fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> DecodeResult<()> {
 
 fn push<T>(values: &mut Vec<T>, value: T) -> DecodeResult<()> {
     crate::boundary::try_push_vec(values, value).map_err(NativeArrowDecodeError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use pyo3::exceptions::PyMemoryError;
+    use pyo3::prelude::Python;
+
+    use super::super::{OwnedBuffer, OwnedBufferSlots};
+    use super::{ArrowFormat, NativeCoordinates, NativeNode};
+
+    #[test]
+    fn coordinate_materialization_allocation_failure_maps_to_memory_error() {
+        crate::test_support::initialize_python();
+        let leaf = |values| NativeNode {
+            length: 2,
+            validity_offset: 0,
+            n_buffers: 2,
+            format: ArrowFormat::Float64,
+            buffers: OwnedBufferSlots::Dense(Arc::new(vec![
+                Some(OwnedBuffer::Bytes(Arc::new(Vec::new()))),
+                Some(OwnedBuffer::F64(Arc::new(values))),
+            ])),
+            children: Arc::new(Vec::new()),
+            schema_name: Arc::new(String::new()),
+            field_names: Arc::new(Vec::new()),
+            effective_missing: None,
+        };
+        let node = NativeNode {
+            length: 2,
+            validity_offset: 0,
+            n_buffers: 1,
+            format: ArrowFormat::Struct,
+            buffers: OwnedBufferSlots::Dense(Arc::new(vec![Some(OwnedBuffer::Bytes(Arc::new(
+                Vec::new(),
+            )))])),
+            children: Arc::new(vec![leaf(vec![1.0, 2.0]), leaf(vec![3.0, 4.0])]),
+            schema_name: Arc::new(String::new()),
+            field_names: Arc::new(vec![String::from("x"), String::from("y")]),
+            effective_missing: None,
+        };
+        let coordinates = NativeCoordinates::new(&node).expect("struct coordinates");
+
+        let result =
+            crate::test_support::fail_allocations_after(0, || coordinates.coordseq(0, 2, 0));
+        let error = match result {
+            Ok(_) => panic!("coordinate copy allocation should fail"),
+            Err(error) => error,
+        };
+        let error = error.into_py_err();
+        Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
+    }
 }

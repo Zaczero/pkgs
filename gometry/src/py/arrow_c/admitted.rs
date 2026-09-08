@@ -26,7 +26,9 @@ use pyo3::prelude::*;
 
 use crate::py::arrow_c::import::schema_metadata_pairs_owned;
 use crate::py::arrow_c::native::{drop_moved_arrow, move_arrow_shell};
-use crate::py::arrow_c::{ArrowReleaseSlot, ArrowSchema};
+use crate::py::arrow_c::{
+    ArrowReleaseSlot, ArrowSchema, try_arc_from_str, try_arc_from_string, try_arc_from_vec,
+};
 
 /// Geometry decoding selected from an owned Arrow schema tree.
 #[derive(Clone, Debug)]
@@ -74,7 +76,7 @@ impl<T: ArrowReleaseSlot> MovedArrowShell<T> {
             ));
         }
         // SAFETY: caller guarantees a live base structure for the move.
-        let moved = unsafe { move_arrow_shell(source) };
+        let moved = unsafe { move_arrow_shell(source) }?;
         if moved.is_null() {
             return Err(PyTypeError::new_err("Arrow move produced a null shell"));
         }
@@ -101,11 +103,11 @@ impl<T: ArrowReleaseSlot> Drop for MovedArrowShell<T> {
 /// Owned schema tree — no producer pointers after capture.
 #[derive(Clone, Debug)]
 pub(crate) struct AdmittedArrowSchema {
-    pub(crate) format: Arc<str>,
-    pub(crate) name: Arc<str>,
-    pub(crate) metadata: Arc<[(Box<[u8]>, Box<[u8]>)]>,
+    pub(crate) format: Arc<String>,
+    pub(crate) name: Arc<String>,
+    pub(crate) metadata: Arc<OwnedMetadataPairs>,
     pub(crate) dictionary_present: bool,
-    pub(crate) children: Arc<[AdmittedArrowSchema]>,
+    pub(crate) children: Arc<Vec<AdmittedArrowSchema>>,
 }
 
 impl AdmittedArrowSchema {
@@ -216,7 +218,7 @@ impl AdmittedArrowSchema {
             }
         }
         let name = if raw.name.is_null() {
-            Arc::from("")
+            try_arc_from_str("")?
         } else {
             owned_c_str(raw.name, "Arrow field name")?
         };
@@ -225,9 +227,9 @@ impl AdmittedArrowSchema {
         Ok(Self {
             format,
             name,
-            metadata: Arc::from(metadata),
+            metadata: try_arc_from_vec(metadata)?,
             dictionary_present: !raw.dictionary.is_null(),
-            children: Arc::from(children),
+            children: try_arc_from_vec(children)?,
         })
     }
 
@@ -262,7 +264,7 @@ impl AdmittedArrowSchema {
         // checked i64 offsets remain available to selected-geometry admission.
         let format = owned_c_str(schema.format, "Arrow schema format")?;
         let name = if schema.name.is_null() {
-            Arc::from("")
+            try_arc_from_str("")?
         } else {
             owned_c_str(schema.name, "Arrow field name")?
         };
@@ -310,18 +312,18 @@ impl AdmittedArrowSchema {
         Ok(Self {
             format,
             name,
-            metadata: Arc::from(metadata),
+            metadata: try_arc_from_vec(metadata)?,
             dictionary_present,
-            children: Arc::from(children),
+            children: try_arc_from_vec(children)?,
         })
     }
 
     pub(crate) fn format(&self) -> &str {
-        self.format.as_ref()
+        self.format.as_str()
     }
 
     pub(crate) fn name(&self) -> &str {
-        self.name.as_ref()
+        self.name.as_str()
     }
 
     pub(crate) fn metadata_value(&self, key: &[u8]) -> Option<&[u8]> {
@@ -410,7 +412,7 @@ fn shallow_child_looks_like_geometry(child: &AdmittedArrowSchema) -> PyResult<bo
     Ok(matches!(child.format(), "z" | "Z" | "vz"))
 }
 
-fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<str>> {
+fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<String>> {
     if ptr.is_null() {
         return Err(PyTypeError::new_err(format!("{what} is null")));
     }
@@ -420,7 +422,7 @@ fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<str>> {
         .map_err(|_| PyTypeError::new_err(format!("{what} is not valid UTF-8")))?;
     let owned = crate::boundary::try_string_from_str(s)
         .map_err(|()| crate::py::errors::native_memory_error())?;
-    Ok(Arc::from(owned))
+    try_arc_from_string(owned)
 }
 
 type OwnedMetadataPairs = Vec<(Box<[u8]>, Box<[u8]>)>;

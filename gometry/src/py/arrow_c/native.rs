@@ -38,7 +38,7 @@ use crate::py::arrow_c::admitted::{
 use crate::py::arrow_c::foreign_buffer::ForeignArrowBuffer;
 use crate::py::arrow_c::{
     ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, array_capsule_name,
-    capsule_pointer, schema_capsule_name,
+    capsule_pointer, schema_capsule_name, try_arc_from_str, try_arc_from_vec, try_arc_new,
 };
 
 #[path = "native_decode.rs"]
@@ -491,14 +491,18 @@ fn with_owned_content_layout<R>(
 ///
 /// `source` must be a live producer-owned base structure. The caller takes
 /// ownership of the returned shell and must pass it to `drop_moved_arrow`.
-pub(crate) unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> *mut T {
+pub(crate) unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> PyResult<*mut T> {
     // SAFETY: the caller guarantees a live base structure. A bytewise copy is
     // the Arrow-specified move operation; nulling source release leaves its
     // capsule-owned shell inert.
     unsafe {
-        let moved = Box::into_raw(Box::new(ptr::read(source)));
+        // Keep the producer release slot intact until the consumer shell has
+        // been allocated. If the allocation is refused, the caller can still
+        // release the original producer-owned shell exactly once.
+        let moved = Box::try_new(ptr::read(source))
+            .map_err(|_| crate::py::errors::native_memory_error())?;
         *T::release_slot(source) = None;
-        moved
+        Ok(Box::into_raw(moved))
     }
 }
 
@@ -627,7 +631,7 @@ pub(crate) fn native_arrow_batch_from_capsules(
     let admitted_schema = unsafe { AdmittedArrowSchema::capture(&schema_shell) }?;
     drop(schema_shell);
     let classified = classify_admitted_geometry_schema(&admitted_schema)?;
-    let (classification, struct_child) = NativeArrowClassification::from_schema(&classified);
+    let (classification, struct_child) = NativeArrowClassification::from_schema(&classified)?;
     // SAFETY: capsule points at a live producer array shell.
     let array_shell = unsafe { MovedArrowShell::take(array) }?;
     // SAFETY: only the owned node escapes.
@@ -660,7 +664,7 @@ fn validate_direct_physical_schema(
             Some(classification.encoding),
         )?;
         if !crate::boundary::metadata::optional_crs_labels_operationally_equal(
-            classification.crs.as_deref(),
+            classification.crs.as_deref().map(String::as_str),
             crs.as_deref(),
         )? || !crate::boundary::metadata::optional_epochs_equal(classification.epoch, epoch)
         {
@@ -802,13 +806,13 @@ struct NativeNode {
     n_buffers: usize,
     format: ArrowFormat,
     buffers: OwnedBufferSlots,
-    children: Arc<[NativeNode]>,
+    children: Arc<Vec<NativeNode>>,
     /// This node's own schema field name (used by fixed-size-list dimensions).
-    schema_name: Arc<str>,
+    schema_name: Arc<String>,
     /// Field names for struct children (empty otherwise).
-    field_names: Arc<[String]>,
+    field_names: Arc<Vec<String>>,
     /// Combined ancestor + self missing mask (`true` = null).
-    effective_missing: Option<Arc<[bool]>>,
+    effective_missing: Option<Arc<Vec<bool>>>,
 }
 
 /// Classification resolved at the attached ingress boundary and carried with
@@ -818,7 +822,7 @@ struct NativeNode {
 pub(crate) struct NativeArrowClassification {
     pub(crate) encoding: crate::py::geoarrow::GeometryEncoding,
     pub(crate) wkb_offset_width: WkbOffsetWidth,
-    pub(crate) crs: Option<String>,
+    pub(crate) crs: Option<Arc<String>>,
     pub(crate) epoch: Option<f64>,
 }
 
@@ -831,16 +835,38 @@ pub(crate) struct NativeArrowBatch {
 }
 
 impl NativeArrowClassification {
-    pub(crate) fn from_schema(classified: &ClassifiedGeometrySchema) -> (Self, Option<usize>) {
-        (
+    pub(crate) fn new(
+        encoding: crate::py::geoarrow::GeometryEncoding,
+        wkb_offset_width: WkbOffsetWidth,
+        crs: Option<String>,
+        epoch: Option<f64>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            encoding,
+            wkb_offset_width,
+            crs: crs
+                .map(crate::py::arrow_c::try_arc_from_string)
+                .transpose()?,
+            epoch,
+        })
+    }
+
+    pub(crate) fn from_schema(
+        classified: &ClassifiedGeometrySchema,
+    ) -> PyResult<(Self, Option<usize>)> {
+        Ok((
             Self {
                 encoding: classified.encoding,
                 wkb_offset_width: classified.wkb_offset_width,
-                crs: classified.crs.clone(),
+                crs: classified
+                    .crs
+                    .as_deref()
+                    .map(try_arc_from_str)
+                    .transpose()?,
                 epoch: classified.epoch,
             },
             classified.struct_child,
-        )
+        ))
     }
 }
 
@@ -863,12 +889,12 @@ impl NativeNode {
             return None;
         }
         match self.buffers.get(index)? {
-            OwnedBuffer::Bytes(bytes) => Some(bytes),
+            OwnedBuffer::Bytes(bytes) => Some(bytes.as_slice()),
             OwnedBuffer::F64(_) => None,
         }
     }
 
-    fn f64_values(&self) -> Option<&Arc<[f64]>> {
+    fn f64_values(&self) -> Option<&Arc<Vec<f64>>> {
         match self.buffers.get(1) {
             Some(OwnedBuffer::F64(values)) => Some(values),
             _ => None,
@@ -916,7 +942,7 @@ impl NativeNode {
 fn build_owned_node_admitted(
     validated: &mut CaptureLayout,
     schema: &AdmittedArrowSchema,
-    effective_missing: Option<Arc<[bool]>>,
+    effective_missing: Option<Arc<Vec<bool>>>,
 ) -> PyResult<NativeNode> {
     let (buffers, _) = snapshot_native_buffers(validated)?;
     // Own-row nulls from owned validity, OR'd with any ancestor mask.
@@ -1015,9 +1041,9 @@ fn build_owned_node_admitted(
         n_buffers: validated.n_buffers,
         format: validated.format,
         buffers,
-        children: Arc::from(children),
-        schema_name: Arc::from(schema.name()),
-        field_names: Arc::from(field_names),
+        children: try_arc_from_vec(children)?,
+        schema_name: crate::py::arrow_c::try_arc_from_str(schema.name())?,
+        field_names: try_arc_from_vec(field_names)?,
         effective_missing,
     })
 }
@@ -1032,9 +1058,9 @@ fn build_owned_node_admitted(
 fn project_ancestor_missing(
     parent: &CaptureLayout,
     parent_buffers: &OwnedBufferSlots,
-    parent_effective: Option<&Arc<[bool]>>,
+    parent_effective: Option<&Arc<Vec<bool>>>,
     child_length: usize,
-) -> PyResult<Option<Arc<[bool]>>> {
+) -> PyResult<Option<Arc<Vec<bool>>>> {
     let Some(parent_missing) = parent_effective else {
         return Ok(None);
     };
@@ -1113,10 +1139,11 @@ fn project_ancestor_missing(
                 })?;
                 range.fill(true);
             }
-            Ok(missing
-                .iter()
-                .any(|&is_missing| is_missing)
-                .then(|| Arc::from(missing)))
+            if missing.iter().any(|&is_missing| is_missing) {
+                Ok(Some(try_arc_from_vec(missing)?))
+            } else {
+                Ok(None)
+            }
         },
         ArrowFormat::FixedSizeList(width) => {
             let expected = parent.length.checked_mul(width).ok_or_else(|| {
@@ -1138,7 +1165,7 @@ fn project_ancestor_missing(
                 })?;
                 missing[start..start + width].fill(true);
             }
-            Ok(Some(Arc::from(missing)))
+            Ok(Some(try_arc_from_vec(missing)?))
         },
         ArrowFormat::Binary
         | ArrowFormat::LargeBinary
@@ -1152,8 +1179,8 @@ fn project_ancestor_missing(
 fn merge_owned_row_missing(
     array: &CaptureLayout,
     buffers: &OwnedBufferSlots,
-    ancestor: Option<Arc<[bool]>>,
-) -> PyResult<Option<Arc<[bool]>>> {
+    ancestor: Option<Arc<Vec<bool>>>,
+) -> PyResult<Option<Arc<Vec<bool>>>> {
     let len = array.length;
     let mut missing = if let Some(a) = ancestor {
         if a.len() != len {
@@ -1162,7 +1189,7 @@ fn merge_owned_row_missing(
             ));
         }
         let mut missing = crate::try_vec_with_capacity(len)?;
-        missing.extend_from_slice(a.as_ref());
+        missing.extend_from_slice(a.as_slice());
         missing
     } else {
         let mut missing = crate::try_vec_with_capacity(len)?;
@@ -1180,7 +1207,7 @@ fn merge_owned_row_missing(
         }
     }
     if any {
-        Ok(Some(Arc::from(missing)))
+        Ok(Some(try_arc_from_vec(missing)?))
     } else {
         Ok(None)
     }
@@ -1223,13 +1250,13 @@ fn owned_or_raw_row_valid(
 /// content validation **only on the owned copies** (design-1: never
 /// `from_raw_parts` over producer memory for null_count / BinaryView scans).
 ///
-/// Float64 *values* buffers (index 1) are decoded into `Arc<[f64]>` at
+/// Float64 *values* buffers (index 1) are decoded into `Arc<Vec<f64>>` at
 /// admission so coordinate import reuses that Arc instead of retaining
-/// LE bytes **and** materializing a second `Arc<[f64]>`.
+/// LE bytes **and** materializing a second `Arc<Vec<f64>>`.
 #[derive(Clone)]
 enum OwnedBuffer {
-    Bytes(Arc<[u8]>),
-    F64(Arc<[f64]>),
+    Bytes(Arc<Vec<u8>>),
+    F64(Arc<Vec<f64>>),
 }
 
 /// Owned Arrow buffers. Ordinary formats have a fixed small dense layout;
@@ -1239,7 +1266,7 @@ enum OwnedBuffer {
 /// admission proportional to selected descriptors, not `n_buffers`.
 #[derive(Clone)]
 enum OwnedBufferSlots {
-    Dense(Arc<[Option<OwnedBuffer>]>),
+    Dense(Arc<Vec<Option<OwnedBuffer>>>),
     BinaryView {
         validity: OwnedBuffer,
         views: OwnedBuffer,
@@ -1305,9 +1332,8 @@ fn snapshot_native_buffers(
         // (not the physical parent prefix), after the owned descriptors have
         // been rebased to that local origin.
         let mut data = HashMap::new();
-        data.try_reserve(ranges.len()).map_err(|_| {
-            PyTypeError::new_err("Arrow binary-view data range count is too large to allocate")
-        })?;
+        data.try_reserve(ranges.len())
+            .map_err(|_| crate::py::errors::native_memory_error())?;
         for (&data_index, range) in ranges.iter() {
             let len = range
                 .end
@@ -1322,7 +1348,7 @@ fn snapshot_native_buffers(
         let slots = OwnedBufferSlots::BinaryView {
             validity,
             views,
-            data: Arc::new(data),
+            data: try_arc_new(data)?,
             n_buffers: array.n_buffers,
         };
         validate_owned_null_count(array, &slots)?;
@@ -1367,7 +1393,7 @@ fn snapshot_native_buffers(
         ArrowFormat::BinaryView => unreachable!("handled above"),
     }
 
-    let slots = OwnedBufferSlots::Dense(Arc::from(snapshots));
+    let slots = OwnedBufferSlots::Dense(try_arc_from_vec(snapshots)?);
     // Content validation on OWNED validity only (P02 null_count match).
     validate_owned_null_count(array, &slots)?;
     let ranges = array.binary_view_data_ranges.clone();
@@ -1381,12 +1407,12 @@ fn snapshot_one_buffer_range(
     len: usize,
 ) -> PyResult<OwnedBuffer> {
     if len == 0 {
-        // Typed empty for float values so decode reuses Arc<[f64]> without
+        // Typed empty for float values so decode reuses Arc<Vec<f64>> without
         // a second LE→f64 materialization path.
         if matches!(array.format, ArrowFormat::Float64) && index == 1 {
-            return Ok(OwnedBuffer::F64(Arc::from([])));
+            return Ok(OwnedBuffer::F64(try_arc_from_vec(Vec::new())?));
         }
-        return Ok(OwnedBuffer::Bytes(Arc::from(Vec::<u8>::new())));
+        return Ok(OwnedBuffer::Bytes(try_arc_from_vec(Vec::new())?));
     }
     // SAFETY: layout validation + capture shell pin buffer table.
     let source = unsafe { array.buffer_ptr(index) };
@@ -1395,7 +1421,7 @@ fn snapshot_one_buffer_range(
         // required; returning an empty snapshot here would let a later reader
         // index it and panic instead of reporting malformed Arrow input.
         if index == 0 {
-            return Ok(OwnedBuffer::Bytes(Arc::from(Vec::<u8>::new())));
+            return Ok(OwnedBuffer::Bytes(try_arc_from_vec(Vec::new())?));
         }
         return Err(PyTypeError::new_err("Arrow required buffer is missing"));
     }
@@ -1409,13 +1435,13 @@ fn snapshot_one_buffer_range(
     let bytes = unsafe {
         foreign
             .snapshot()
-            .map_err(|_| PyTypeError::new_err("Arrow buffer snapshot allocation failed"))?
+            .map_err(|_| crate::py::errors::native_memory_error())?
     };
     // Float64 values: decode LE f64 once at admission; drop the byte copy.
     if matches!(array.format, ArrowFormat::Float64) && index == 1 {
         return owned_f64_from_le_bytes(&bytes).map(OwnedBuffer::F64);
     }
-    Ok(OwnedBuffer::Bytes(Arc::from(bytes)))
+    Ok(OwnedBuffer::Bytes(try_arc_from_vec(bytes)?))
 }
 
 fn visible_validity_range(array: &CaptureLayout) -> PyResult<(usize, usize)> {
@@ -1452,7 +1478,9 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
         // admission snapshot.
         && unsafe { array.buffer_ptr(1) }.is_null()
     {
-        Arc::from(vec![0_u8; width])
+        let mut empty = crate::try_vec_with_capacity(width)?;
+        empty.resize(width, 0);
+        try_arc_from_vec(empty)?
     } else {
         let OwnedBuffer::Bytes(raw) = snapshot_one_buffer_range(array, 1, start, len)? else {
             unreachable!("offset snapshots are byte buffers")
@@ -1513,7 +1541,7 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
             rebased[at..at + width].copy_from_slice(&local.to_le_bytes());
         }
     }
-    Ok((OwnedBuffer::Bytes(Arc::from(rebased)), first, last))
+    Ok((OwnedBuffer::Bytes(try_arc_from_vec(rebased)?), first, last))
 }
 
 /// Validate the four-byte BinaryView inline prefix against the selected owned
@@ -1572,7 +1600,7 @@ fn validate_binary_view_prefixes(
     Ok(())
 }
 
-fn owned_f64_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<[f64]>> {
+fn owned_f64_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<Vec<f64>>> {
     if !bytes.len().is_multiple_of(8) {
         return Err(PyTypeError::new_err(
             "Arrow float64 values length is not a multiple of 8",
@@ -1584,7 +1612,7 @@ fn owned_f64_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<[f64]>> {
     for chunk in chunks {
         crate::try_push(&mut values, f64::from_le_bytes(*chunk))?;
     }
-    Ok(Arc::from(values))
+    Ok(try_arc_from_vec(values)?)
 }
 
 /// P02: Known(n>0) null_count must match the owned validity bitmap.
@@ -1652,14 +1680,14 @@ fn scan_binary_view_data_ranges_owned(
 ) -> PyResult<Arc<HashMap<usize, std::ops::Range<usize>>>> {
     let mut ranges = HashMap::new();
     if array.length == 0 {
-        return Ok(Arc::new(ranges));
+        return Ok(try_arc_new(ranges)?);
     }
     let max_data_buffers = array.n_buffers - 3;
     let OwnedBuffer::Bytes(views) = views else {
-        return Ok(Arc::new(ranges));
+        return Ok(try_arc_new(ranges)?);
     };
     if views.is_empty() {
-        return Ok(Arc::new(ranges));
+        return Ok(try_arc_new(ranges)?);
     }
     let sizes_index = array.n_buffers - 1;
     let mut declared_sizes = HashMap::new();
@@ -1705,6 +1733,9 @@ fn scan_binary_view_data_ranges_owned(
         let declared_size = if let Some(size) = declared_sizes.get(&buffer_index) {
             *size
         } else {
+            declared_sizes
+                .try_reserve(1)
+                .map_err(|_| crate::py::errors::native_memory_error())?;
             let byte_start = checked_byte_span(
                 buffer_index,
                 8,
@@ -1725,6 +1756,11 @@ fn scan_binary_view_data_ranges_owned(
             ));
         }
         // Prefix match deferred until data buffers are snapshotted (owned).
+        if !ranges.contains_key(&buffer_index) {
+            ranges
+                .try_reserve(1)
+                .map_err(|_| crate::py::errors::native_memory_error())?;
+        }
         ranges
             .entry(buffer_index)
             .and_modify(|range: &mut std::ops::Range<usize>| {
@@ -1733,7 +1769,7 @@ fn scan_binary_view_data_ranges_owned(
             })
             .or_insert(byte_offset..span_end);
     }
-    Ok(Arc::new(ranges))
+    Ok(try_arc_new(ranges)?)
 }
 
 /// Rebase non-inline BinaryView descriptor offsets to their selected owned
@@ -1782,7 +1818,7 @@ fn rebase_owned_binary_view_offsets(
             .map_err(|_| PyTypeError::new_err("Arrow binary-view offset exceeds i32 range"))?;
         view[12..16].copy_from_slice(&local.to_le_bytes());
     }
-    Ok(OwnedBuffer::Bytes(Arc::from(rebased)))
+    Ok(OwnedBuffer::Bytes(try_arc_from_vec(rebased)?))
 }
 
 /// Owned-bitmap BinaryView validity (no producer slice).
@@ -1834,6 +1870,7 @@ mod layout_validation_tests {
     use std::ptr;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use pyo3::exceptions::PyMemoryError;
     use pyo3::ffi;
     use pyo3::prelude::Python;
 
@@ -1961,11 +1998,11 @@ mod layout_validation_tests {
             let OwnedBuffer::Bytes(bitmap) = slots.get(0).expect("owned validity") else {
                 panic!("validity is a byte bitmap")
             };
-            assert_eq!(bitmap.as_ref(), validity);
+            assert_eq!(bitmap.as_slice(), validity);
             let OwnedBuffer::F64(visible_values) = slots.get(1).expect("owned values") else {
                 panic!("float64 values are decoded at admission")
             };
-            assert_eq!(visible_values.as_ref(), &values[5..]);
+            assert_eq!(visible_values.as_slice(), &values[5..]);
             Ok(())
         })
         .unwrap();
@@ -2108,6 +2145,71 @@ mod layout_validation_tests {
         assert_eq!(
             MOVED_ARRAY_RELEASES.load(Ordering::Relaxed),
             array_before + 1
+        );
+    }
+
+    #[test]
+    fn moved_shell_allocation_failure_keeps_source_release_slot() {
+        ensure_python();
+        let _guard = CAPSULE_RELEASE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let array_before = MOVED_ARRAY_RELEASES.load(Ordering::Relaxed);
+        let buffers = dummy_buffers(2);
+        let mut array = stack_array(0, 0, 0, 2, 0, buffers.as_ptr(), ptr::null_mut());
+        array.release = Some(count_moved_array_release);
+
+        let result = crate::test_support::fail_allocations_after(0, || unsafe {
+            MovedArrowShell::take(&raw mut array)
+        });
+        let error = match result {
+            Ok(_) => panic!("moved-shell allocation should have been rejected"),
+            Err(error) => error,
+        };
+        Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
+        assert!(
+            array.release.is_some(),
+            "failed move must retain producer ownership"
+        );
+
+        // The source shell is still live after the failed consumer allocation;
+        // releasing it here proves the failure did not consume or duplicate it.
+        unsafe {
+            let release = array.release.expect("source release remains live");
+            release(&raw mut array);
+        }
+        assert_eq!(
+            MOVED_ARRAY_RELEASES.load(Ordering::Relaxed),
+            array_before + 1
+        );
+    }
+
+    #[test]
+    fn foreign_snapshot_allocation_failure_is_memory_error_and_releases_once() {
+        ensure_python();
+        let _guard = CAPSULE_RELEASE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let array_before = MOVED_ARRAY_RELEASES.load(Ordering::Relaxed);
+        let values = [1.0_f64];
+        let buffers: [*const c_void; 2] = [ptr::null(), values.as_ptr().cast()];
+        let mut array = stack_array(1, 0, 0, 2, 0, buffers.as_ptr(), ptr::null_mut());
+        array.release = Some(count_moved_array_release);
+
+        let result = try_with_stack_layout(&mut array, ArrowFormat::Float64, 0, |layout| {
+            crate::test_support::fail_allocations_after(0, || {
+                snapshot_one_buffer_range(layout, 1, 0, std::mem::size_of::<f64>())
+            })
+        });
+        let error = match result {
+            Ok(_) => panic!("foreign snapshot allocation should have been rejected"),
+            Err(error) => error,
+        };
+        Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
+        assert_eq!(
+            MOVED_ARRAY_RELEASES.load(Ordering::Relaxed),
+            array_before + 1,
+            "the failed snapshot must still release its moved shell exactly once"
         );
     }
 
@@ -2405,12 +2507,12 @@ mod layout_validation_tests {
             let OwnedBuffer::Bytes(bitmap) = slots.get(0).unwrap() else {
                 panic!("expected copied validity byte");
             };
-            assert_eq!(bitmap.as_ref(), &validity[1..2]);
+            assert_eq!(bitmap.as_slice(), &validity[1..2]);
             let OwnedBuffer::Bytes(local_offsets) = slots.get(1).unwrap() else {
                 panic!("expected copied list offsets");
             };
             assert_eq!(local_offsets.len(), 2 * std::mem::size_of::<i32>());
-            let (offsets, remainder) = local_offsets.as_ref().as_chunks::<4>();
+            let (offsets, remainder) = local_offsets.as_slice().as_chunks::<4>();
             assert!(remainder.is_empty());
             assert_eq!(
                 offsets
@@ -2430,7 +2532,7 @@ mod layout_validation_tests {
             let OwnedBuffer::F64(child_values) = child_slots.get(1).unwrap() else {
                 panic!("expected owned f64 child window");
             };
-            assert_eq!(child_values.as_ref(), &values[10..16]);
+            assert_eq!(child_values.as_slice(), &values[10..16]);
         });
     }
 
@@ -2569,7 +2671,7 @@ mod layout_validation_tests {
             let (owned, _) = snapshot_native_buffers(layout)?;
             assert!(matches!(
                 owned.get(data_index + 2),
-                Some(OwnedBuffer::Bytes(bytes)) if bytes.as_ref() == &data[..]
+                Some(OwnedBuffer::Bytes(bytes)) if bytes.as_slice() == &data[..]
             ));
             assert!(owned.get(2).is_none(), "unreferenced low slot was retained");
             assert!(
@@ -2683,7 +2785,7 @@ mod layout_validation_tests {
             let Some(OwnedBuffer::Bytes(payload)) = owned.get(2) else {
                 panic!("selected payload slot was not retained");
             };
-            assert_eq!(payload.as_ref(), &data[2..22]);
+            assert_eq!(payload.as_slice(), &data[2..22]);
             Ok(())
         })
         .unwrap();
@@ -2716,7 +2818,7 @@ mod layout_validation_tests {
             let view = owned
                 .get(1)
                 .and_then(|buffer| match buffer {
-                    OwnedBuffer::Bytes(bytes) => Some(bytes.as_ref()),
+                    OwnedBuffer::Bytes(bytes) => Some(bytes.as_slice()),
                     OwnedBuffer::F64(_) => None,
                 })
                 .expect("owned BinaryView descriptors");
@@ -2725,7 +2827,7 @@ mod layout_validation_tests {
             let payload = owned
                 .get(2)
                 .and_then(|buffer| match buffer {
-                    OwnedBuffer::Bytes(bytes) => Some(bytes.as_ref()),
+                    OwnedBuffer::Bytes(bytes) => Some(bytes.as_slice()),
                     OwnedBuffer::F64(_) => None,
                 })
                 .expect("owned BinaryView payload");
@@ -2765,13 +2867,13 @@ mod layout_validation_tests {
             validity_offset: 0,
             n_buffers: 2,
             format: ArrowFormat::Float64,
-            buffers: OwnedBufferSlots::Dense(Arc::from([
-                Some(OwnedBuffer::Bytes(Arc::from([]))),
-                Some(OwnedBuffer::F64(Arc::from([value]))),
+            buffers: OwnedBufferSlots::Dense(Arc::new(vec![
+                Some(OwnedBuffer::Bytes(Arc::new(Vec::new()))),
+                Some(OwnedBuffer::F64(Arc::new(vec![value]))),
             ])),
-            children: Arc::from([]),
-            schema_name: Arc::from(""),
-            field_names: Arc::from([]),
+            children: Arc::new(Vec::new()),
+            schema_name: Arc::new(String::new()),
+            field_names: Arc::new(Vec::new()),
             effective_missing: None,
         };
         let node = NativeNode {
@@ -2779,10 +2881,12 @@ mod layout_validation_tests {
             validity_offset: 0,
             n_buffers: 1,
             format: ArrowFormat::Struct,
-            buffers: OwnedBufferSlots::Dense(Arc::from([Some(OwnedBuffer::Bytes(Arc::from([])))])),
-            children: Arc::from([leaf(1.0), leaf(2.0)]),
-            schema_name: Arc::from(""),
-            field_names: Arc::from([String::from("x"), String::from("y")]),
+            buffers: OwnedBufferSlots::Dense(Arc::new(vec![Some(OwnedBuffer::Bytes(Arc::new(
+                Vec::new(),
+            )))])),
+            children: Arc::new(vec![leaf(1.0), leaf(2.0)]),
+            schema_name: Arc::new(String::new()),
+            field_names: Arc::new(vec![String::from("x"), String::from("y")]),
             effective_missing: None,
         };
         let batch = NativeArrowBatch {

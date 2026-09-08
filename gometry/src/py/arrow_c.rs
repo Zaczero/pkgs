@@ -11,6 +11,7 @@
 )]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::sync::Arc;
 
 use pyo3::exceptions::PyOverflowError;
 use pyo3::ffi;
@@ -40,6 +41,39 @@ pub(crate) enum NativeArrowExportError {
 }
 
 pub(crate) type NativeArrowExportResult<T> = std::result::Result<T, NativeArrowExportError>;
+
+/// Publish an owned vector only after its final shared allocation succeeds.
+///
+/// `Arc::from(Vec)` uses the infallible allocation path. Arrow admission owns
+/// producer data before it can release the foreign shell, so an allocator
+/// refusal here must remain a catchable Python `MemoryError`.
+pub(crate) fn try_arc_from_vec<T>(values: Vec<T>) -> PyResult<Arc<Vec<T>>> {
+    try_arc_from_vec_native(values).map_err(PyErr::from)
+}
+
+pub(crate) fn try_arc_from_vec_native<T>(values: Vec<T>) -> crate::error::Result<Arc<Vec<T>>> {
+    Arc::try_new(values).map_err(crate::error::Error::from)
+}
+
+/// Publish an owned string only after both its bytes and shared allocation
+/// have succeeded.
+pub(crate) fn try_arc_from_string(value: String) -> PyResult<Arc<String>> {
+    Arc::try_new(value).map_err(|_| errors::native_memory_error())
+}
+
+pub(crate) fn try_arc_from_str(value: &str) -> PyResult<Arc<String>> {
+    let value =
+        crate::boundary::try_string_from_str(value).map_err(|()| errors::native_memory_error())?;
+    try_arc_from_string(value)
+}
+
+pub(crate) fn try_arc_new<T>(value: T) -> PyResult<Arc<T>> {
+    try_arc_new_native(value).map_err(PyErr::from)
+}
+
+pub(crate) fn try_arc_new_native<T>(value: T) -> crate::error::Result<Arc<T>> {
+    Arc::try_new(value).map_err(crate::error::Error::from)
+}
 
 impl From<crate::error::Error> for NativeArrowExportError {
     fn from(error: crate::error::Error) -> Self {

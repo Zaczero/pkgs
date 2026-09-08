@@ -64,7 +64,7 @@ pub(crate) fn geometries_from_native_capsules_classified(
 ) -> PyResult<Py<PyAny>> {
     let (batch, classified) =
         crate::py::arrow_c::native_arrow_batch_from_capsules(schema_capsule, array_capsule)?;
-    let (classification, _) = NativeArrowClassification::from_schema(&classified);
+    let (classification, _) = NativeArrowClassification::from_schema(&classified)?;
     let mut accumulator = NativeArrowAccumulator::new();
     accumulator.admit_classification(&classification)?;
     let decoded = py
@@ -140,13 +140,21 @@ pub(crate) unsafe fn schema_metadata_pairs_owned(
 }
 
 fn copy_metadata_bytes(bytes: &[u8], retained: &mut OwnedMetadataPairs) -> PyResult<Box<[u8]>> {
-    let mut output = Vec::new();
-    if let Err(error) = crate::boundary::try_reserve_vec(&mut output, bytes.len()) {
-        *retained = Vec::new();
-        return Err(error.into());
+    let mut output = match Box::<[u8]>::try_new_uninit_slice(bytes.len()) {
+        Ok(output) => output,
+        Err(_) => {
+            // Drop already-copied metadata before constructing the native
+            // exception so the allocation failure remains recoverable.
+            *retained = Vec::new();
+            return Err(crate::py::errors::native_memory_error());
+        },
+    };
+    for (slot, &byte) in output.iter_mut().zip(bytes) {
+        slot.write(byte);
     }
-    output.extend_from_slice(bytes);
-    Ok(output.into_boxed_slice())
+    // SAFETY: every slot was initialized by the loop above, and the boxed
+    // slice has the exact requested length.
+    Ok(unsafe { output.assume_init() })
 }
 
 const unsafe fn read_metadata_i32(cursor: &mut *const u8) -> i32 {
@@ -209,7 +217,7 @@ pub(crate) fn import_stream(
                     return Err(error);
                 },
             };
-        let (classification, struct_child) = NativeArrowClassification::from_schema(&classified);
+        let (classification, struct_child) = NativeArrowClassification::from_schema(&classified)?;
         let mut accumulator = NativeArrowAccumulator::new();
         accumulator.admit_classification(&classification)?;
         let mut batch_index: usize = 0;
