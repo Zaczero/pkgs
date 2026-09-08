@@ -519,8 +519,8 @@ impl PyGeometryArray {
     /// -------
     /// str or None
     #[getter("common_coordinate_axes")]
-    pub fn coordinate_axes(&self) -> Option<&'static str> {
-        self.uniform_axes().map(geometry::CoordinateAxes::as_str)
+    pub fn coordinate_axes(&self) -> PyResult<Option<&'static str>> {
+        Ok(self.uniform_axes()?.map(geometry::CoordinateAxes::as_str))
     }
     /// Whether each geometry carries a Z ordinate. Missing rows are false.
     ///
@@ -689,7 +689,7 @@ impl PyGeometryArray {
 
         let mut labels = BTreeSet::new();
         let present = |row: usize| !self.is_row_missing(row);
-        match self.uniform_axes() {
+        match self.uniform_axes()? {
             Some(axes) => {
                 let tag = axes.wkt_tag();
                 match self.storage() {

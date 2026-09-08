@@ -875,7 +875,11 @@ impl PyGeometryArray {
                 shapes.push(shape);
             }
         }
-        Ok(Self::from_shapes(shapes, first.frame.clone())?.with_missing_mask(merged_mask)?)
+        let present = Self::from_shapes(shapes, first.frame.clone())?;
+        Ok(match merged_mask {
+            None => present,
+            Some(mask) => Self::scatter_present_rows(&present, mask)?,
+        })
     }
 
     pub(crate) fn concat_pair(&self, other: &Self) -> PyResult<Self> {
@@ -886,8 +890,16 @@ impl PyGeometryArray {
             (other.len(), other.missing()),
         ])
         .map_err(PyErr::from)?;
+        let compact_inputs = self.is_compact_nullable() || other.is_compact_nullable();
         let merged = self.concat_pair_dense(other)?;
-        Ok(merged.with_missing_mask(merged_mask)?)
+        Ok(if compact_inputs {
+            match merged_mask {
+                None => merged,
+                Some(mask) => Self::scatter_present_rows(&merged, mask)?,
+            }
+        } else {
+            merged.with_missing_mask(merged_mask)?
+        })
     }
 
     fn concat_pair_dense(&self, other: &Self) -> PyResult<Self> {

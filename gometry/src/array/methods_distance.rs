@@ -9,10 +9,11 @@
 
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
-    Arc, Bounds, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
-    PackedColumnError, PackedColumnOutput, PackedColumns, PackedStorage, Point, PointColumnBuilder,
-    PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape,
-    column_window, packed_centroid_xy, packed_surface_point, row_bounds_values,
+    Arc, Bounds, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage,
+    GeometryKind, PackedColumnError, PackedColumnOutput, PackedColumns, PackedStorage, Point,
+    PointColumnBuilder, PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel,
+    RowSelection, Shape, StorageLayout, column_window, packed_centroid_xy, packed_surface_point,
+    row_bounds_values,
 };
 use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 
@@ -370,8 +371,11 @@ impl PyGeometryArray {
                 // input (envelope of a box is the box), so the bounds carry
                 // over — but they are DIFFERENT geometry, so the prepared
                 // handles must NOT alias the input's lazily-filled slots.
-                Arc::clone(&self.bounds_cache),
-                Arc::clone(&self.total_bounds_cache),
+                StorageLayout::LogicalRows,
+                ComputedCaches::carried(
+                    Arc::clone(&self.bounds_cache),
+                    Arc::clone(&self.total_bounds_cache),
+                ),
             )?);
         }
         // Packed polygons/lines: build each box from its coordinate window

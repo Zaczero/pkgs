@@ -15,11 +15,12 @@ use crate::array::missing::ValidityCursor;
 #[cfg(test)]
 use crate::array::packed_column_kernels;
 use crate::array::{
-    CoordSeq, CoordinateAxes, CoordinateReplacement, CsrOffsetBuilder, CsrOffsetColumn, Frame,
-    GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point, PointRowLayout, PolygonLevel,
-    PyErr, PyGeometryArray, PyResult, Python, ReplacementAxis, RingLevel, RowSelectionRef,
-    ValidityMask, concat_coord_columns, map_masked_point_columns_to_crs, packed_lines_coord_len,
-    packed_polygons_coord_len, packed_polygons_ring_len, rows_err,
+    ComputedCaches, CoordSeq, CoordinateAxes, CoordinateReplacement, CsrOffsetBuilder,
+    CsrOffsetColumn, Frame, GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point,
+    PointRowLayout, PolygonLevel, PyErr, PyGeometryArray, PyResult, Python, ReplacementAxis,
+    RingLevel, RowSelectionRef, StorageLayout, ValidityMask, concat_coord_columns,
+    map_masked_point_columns_to_crs, packed_lines_coord_len, packed_polygons_coord_len,
+    packed_polygons_ring_len, rows_err,
 };
 use crate::crs::TransformFailure;
 use crate::geometry::{CoordSeqBuilder, CoordWindow, GeometryErrorKind, MOrdinate, ZOrdinate};
@@ -1062,18 +1063,31 @@ fn resolve_columns<'a>(
 
 fn assemble_packed_output(
     output: PackedColumnOutput,
-    frame: Frame,
-) -> crate::error::Result<PyGeometryArray> {
+) -> crate::error::Result<GeometryArrayStorage> {
     match output {
-        PackedColumnOutput::Points(coords) => PyGeometryArray::packed_points(coords, frame),
+        PackedColumnOutput::Points(coords) => {
+            Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
+                coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                row_map: crate::array::RowSelection::Identity,
+            }))
+        },
         PackedColumnOutput::Lines { coords, offsets } => {
-            PyGeometryArray::packed_lines(coords, offsets, frame)
+            Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
+                coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                offsets,
+                row_map: crate::array::RowSelection::Identity,
+            }))
         },
         PackedColumnOutput::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
-        } => PyGeometryArray::packed_polygons(coords, ring_offsets, polygon_offsets, frame),
+        } => Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+            ring_offsets,
+            polygon_offsets,
+            row_map: crate::array::RowSelection::Identity,
+        })),
     }
 }
 
@@ -1664,6 +1678,27 @@ fn map_selected_to_crs(
 }
 
 impl PyGeometryArray {
+    fn assemble_packed_result(
+        &self,
+        output: PackedColumnOutput,
+        output_frame: Frame,
+    ) -> crate::error::Result<Self> {
+        let layout = match (&output, self.storage()) {
+            (
+                PackedColumnOutput::Points(_),
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. }),
+            ) if self.is_compact_nullable() => StorageLayout::PresentOnly,
+            _ => StorageLayout::LogicalRows,
+        };
+        Self::from_result_storage(
+            Arc::try_new(assemble_packed_output(output)?).map_err(crate::error::Error::from)?,
+            output_frame,
+            self.missing().cloned(),
+            layout,
+            ComputedCaches::fresh()?,
+        )
+    }
+
     pub(crate) fn reduce_packed_columns_detached<R>(
         &self,
         py: Python<'_>,
@@ -1697,11 +1732,7 @@ impl PyGeometryArray {
     ) -> PyResult<Option<Self>> {
         let output = self
             .reduce_packed_columns_detached(py, kernel)?
-            .map(|output| {
-                assemble_packed_output(output, output_frame)?
-                    .with_missing_mask(self.missing().cloned())
-                    .map_err(crate::PyErr::from)
-            })
+            .map(|output| self.assemble_packed_result(output, output_frame))
             .transpose()?;
         Ok(output)
     }
@@ -1723,8 +1754,7 @@ impl PyGeometryArray {
             return Ok(None);
         };
         Ok(Some(
-            assemble_packed_output(output, output_frame)?
-                .with_missing_mask(self.missing().cloned())
+            self.assemble_packed_result(output, output_frame)
                 .map_err(crate::PyErr::from)?,
         ))
     }
@@ -1751,8 +1781,7 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame)?
-                .with_missing_mask(self.missing().cloned())
+            self.assemble_packed_result(output, output_frame)
                 .map_err(crate::PyErr::from)?,
         ))
     }
@@ -1778,8 +1807,7 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame)?
-                .with_missing_mask(self.missing().cloned())
+            self.assemble_packed_result(output, output_frame)
                 .map_err(crate::PyErr::from)?,
         ))
     }
@@ -1820,8 +1848,7 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame)?
-                .with_missing_mask(self.missing().cloned())
+            self.assemble_packed_result(output, output_frame)
                 .map_err(crate::PyErr::from)?,
         ))
     }

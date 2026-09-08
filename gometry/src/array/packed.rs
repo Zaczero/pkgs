@@ -13,8 +13,9 @@ use crate::array::{
     Frame, GeometryArrayStorage, GeometryKind, InvalidGeometryError, LogicalRow, LogicalRows,
     OriginSpec, PackedColumns, PackedStorage, Point, PointColumnBuilder, PolygonLevel, Py, PyAny,
     PyErr, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection, RowSelectionRef,
-    Shape, TotalBoundsCache, ValidityMask, packed_per_row_self_origin_affine_columns, physical_row,
-    point_logical_len, prepared, row_map_is_identity, row_ord_extremes,
+    Shape, StorageLayout, TotalBoundsCache, ValidityMask,
+    packed_per_row_self_origin_affine_columns, physical_row, point_logical_len, prepared,
+    row_map_is_identity, row_ord_extremes,
 };
 use crate::geometry::CoordSeqBuilder;
 
@@ -25,6 +26,35 @@ pub(crate) fn sparse_missing_mask(
     missing_rows: &[usize],
 ) -> crate::error::Result<Option<ValidityMask>> {
     ValidityMask::from_sparse(len, missing_rows)
+}
+
+/// Geometry-derived cache owners supplied to the computed-data constructor.
+/// Prepared/frame products deliberately do not live here: every computed
+/// result receives a fresh product owner.
+pub(crate) struct ComputedCaches {
+    bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
+    total_bounds_cache: TotalBoundsCache,
+}
+
+impl ComputedCaches {
+    pub(crate) fn fresh() -> crate::error::Result<Self> {
+        Ok(Self {
+            bounds_cache: Arc::try_new(std::sync::OnceLock::new())
+                .map_err(crate::error::Error::from)?,
+            total_bounds_cache: Arc::try_new(std::sync::OnceLock::new())
+                .map_err(crate::error::Error::from)?,
+        })
+    }
+
+    pub(crate) const fn carried(
+        bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
+        total_bounds_cache: TotalBoundsCache,
+    ) -> Self {
+        Self {
+            bounds_cache,
+            total_bounds_cache,
+        }
+    }
 }
 
 impl PyGeometryArray {
@@ -212,33 +242,31 @@ impl PyGeometryArray {
     /// missing rows are skipped (their XY placeholder must not vote). Packed
     /// all-missing arrays retain their declared layout; heterogeneous
     /// all-missing arrays are `XY`.
-    pub fn uniform_axes(&self) -> Option<CoordinateAxes> {
+    pub fn uniform_axes(&self) -> crate::error::Result<Option<CoordinateAxes>> {
         if let Some(axes) = self.storage().packed_axes() {
-            return Some(axes);
+            return Ok(Some(axes));
         }
         if self
             .missing()
             .as_ref()
             .is_some_and(|mask| mask.present_count() == 0)
         {
-            return Some(CoordinateAxes::XY);
+            return Ok(Some(CoordinateAxes::XY));
         }
         let mut axes = None;
         for (row, shape) in self.storage().iter_shapes().enumerate() {
             if self.is_row_missing(row) {
                 continue;
             }
-            let Ok(shape) = shape else {
-                return None;
-            };
+            let shape = shape?;
             let row_axes = shape.axes();
             match axes {
                 None => axes = Some(row_axes),
-                Some(seen) if seen != row_axes => return None,
+                Some(seen) if seen != row_axes => return Ok(None),
                 Some(_) => {},
             }
         }
-        Some(axes.unwrap_or(CoordinateAxes::XY))
+        Ok(Some(axes.unwrap_or(CoordinateAxes::XY)))
     }
 
     // --- Frame accessors (#37 migration; see PyGeometry::crs_ref) -----------
@@ -298,75 +326,68 @@ impl PyGeometryArray {
         Ok(Some(builder.finish_with_missing_placeholders()?))
     }
 
-    /// Attach a missing mask, normalizing the all-present case back to the
-    /// dense representation so downstream fast paths stay mask-free.
+    /// Attach or normalize a validity mask through the selection constructor.
     ///
-    /// Invalidates mask-dependent aggregates (`total_bounds_cache`): a shared
-    /// clone's warm cache would otherwise report bounds over rows that are
-    /// now masked out.
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "mask length is a caller invariant; the Result is the allocation path"
-    )]
+    /// The current array is the source of this operation, so source-row
+    /// products stay attached to their logical rows. Compact payloads are
+    /// selected before publication when the new mask removes additional rows;
+    /// no product owner is patched after the result exists.
     pub(crate) fn with_missing_mask(
-        mut self,
+        self,
         mask: Option<ValidityMask>,
     ) -> crate::error::Result<Self> {
-        if self.rows.is_compact_nullable() {
-            let mask = mask.expect("compact nullable rows cannot discard validity");
-            assert_eq!(
-                mask.len(),
-                self.len(),
-                "missing mask length must match array length"
-            );
-            if self.missing() == Some(&mask) {
-                return Ok(self);
+        let Some(mask) = mask else {
+            if self.missing().is_some() {
+                return Err(crate::geometry::GeometryErrorKind::message(
+                    "cannot clear an existing GeometryArray missing mask",
+                )
+                .into());
             }
-            let mut shapes = Vec::new();
+            return Ok(self);
+        };
+        if mask.len() != self.len() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "missing mask length must match array length",
+            )
+            .into());
+        }
+        if self.missing() == Some(&mask) {
+            return Ok(self);
+        }
+        if self.is_compact_nullable() {
             for (row, present) in mask.cursor() {
-                if present.is_some() {
-                    shapes.push(self.geometry_at(row)?.shape.shape().clone());
+                if present.is_some() && self.is_row_missing(row) {
+                    return Err(crate::geometry::GeometryErrorKind::message(
+                        "a compact nullable array cannot unmask an existing row",
+                    )
+                    .into());
                 }
             }
-            let present = Self::from_shapes(shapes, self.frame)?;
-            return Self::compact_present_rows(&present, mask);
-        }
-        if let Some(mask) = mask.as_ref()
-            && !matches!(self.storage(), GeometryArrayStorage::Mixed(_))
-        {
-            if self.len() == mask.present_count() {
-                return Self::compact_present_rows(&self, mask.clone());
+            let mut present_rows = Vec::new();
+            crate::boundary::try_reserve_vec(&mut present_rows, mask.present_count())?;
+            for (logical, present) in mask.cursor() {
+                if present.is_some() {
+                    crate::try_push_vec(&mut present_rows, logical)?;
+                }
             }
-            assert_eq!(
-                mask.len(),
-                self.len(),
-                "missing mask length must match array length"
-            );
-            let present_rows: Vec<_> = mask
-                .cursor()
-                .filter_map(|(logical, present)| present.map(|_| logical))
-                .collect();
-            let present = self.gather_logical_rows_dense(&present_rows)?;
-            return Self::compact_present_rows(&present, mask.clone());
-        }
-        if let Some(mask) = mask.as_ref()
-            && matches!(self.storage(), GeometryArrayStorage::Mixed(_))
-            && self.len() == mask.present_count()
-        {
-            return Self::scatter_present_rows(&self, mask.clone());
-        }
-        if let Some(mask) = &mask {
-            assert_eq!(
-                mask.len(),
-                self.len(),
-                "missing mask length must match array length"
+            let storage = self.selected_storage(present_rows.iter().copied())?;
+            return Self::from_selected_storage(
+                &self,
+                Arc::try_new(storage).map_err(crate::error::Error::from)?,
+                self.frame.clone(),
+                Some(mask),
+                StorageLayout::PresentOnly,
+                0..self.len(),
             );
         }
-        self.rows = self.rows.with_missing(mask);
-        // Mask changes which rows contribute to array-wide aggregates.
-        self.total_bounds_cache =
-            Arc::try_new(std::sync::OnceLock::new()).map_err(crate::error::Error::from)?;
-        Ok(self)
+        Self::from_selected_storage(
+            &self,
+            Arc::clone(self.storage_arc()),
+            self.frame.clone(),
+            Some(mask),
+            StorageLayout::LogicalRows,
+            0..self.len(),
+        )
     }
 
     /// The mask entries for a row subset, in gather order.
@@ -393,57 +414,109 @@ impl PyGeometryArray {
         Shape::Empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
     }
 
-    /// Rebuild a full-length masked array from its transformed PRESENT rows:
-    /// row `i` takes the next dense row when unmasked, the placeholder when
-    /// masked. The inverse of `drop_missing` for mask-blind bulk transforms.
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "present count is a caller invariant; the Result is the allocation path"
-    )]
+    /// Publish a row-aligned result from a dense present-only computation.
+    /// The present-only layout is explicit, so a result that already carries
+    /// a mask cannot be scattered a second time.
     pub(crate) fn scatter_present_rows(
         present: &Self,
         mask: ValidityMask,
     ) -> crate::error::Result<Self> {
-        assert_eq!(
-            present.len(),
-            mask.present_count(),
-            "present-row array length must match missing mask present count"
-        );
-        let frame = present.frame.clone();
-        if !matches!(present.storage(), GeometryArrayStorage::Mixed(_)) {
-            return Self::compact_present_rows(present, mask);
+        if present.missing().is_some() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "present-only scatter input must be dense",
+            )
+            .into());
         }
-        let scattered = match present.storage() {
-            GeometryArrayStorage::Packed(
-                PackedStorage::Points { .. }
-                | PackedStorage::Lines { .. }
-                | PackedStorage::Polygons { .. },
-            ) => unreachable!(),
-            GeometryArrayStorage::Mixed(_) => {
-                let mut rows = present.storage().iter_shapes();
-                let mut shapes = Vec::new();
-                for missing in mask.iter() {
-                    if missing {
-                        shapes.push(Self::missing_placeholder());
-                    } else {
-                        shapes.push(
-                            rows.next()
-                                .expect("present count checked before scatter")?
-                                .into_owned(),
-                        );
-                    }
-                }
-                Self::from_shapes(shapes, frame)?
-            },
-        };
-        scattered.with_missing_mask(Some(mask))
+        if present.len() != mask.present_count() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "present-row array length must match missing mask present count",
+            )
+            .into());
+        }
+        Self::from_result_storage(
+            Arc::clone(present.storage_arc()),
+            present.frame.clone(),
+            Some(mask),
+            StorageLayout::PresentOnly,
+            ComputedCaches::fresh()?,
+        )
     }
 
-    fn compact_present_rows(present: &Self, mask: ValidityMask) -> crate::error::Result<Self> {
-        let frame = present.frame.clone();
-        let compact = match present.storage() {
+    pub(crate) fn compact_from_storage(
+        compact: GeometryArrayStorage,
+        mask: ValidityMask,
+        frame: Frame,
+        layout: StorageLayout,
+    ) -> crate::error::Result<Self> {
+        Self::from_result_storage(
+            Arc::try_new(compact).map_err(crate::error::Error::from)?,
+            frame,
+            Some(mask),
+            layout,
+            ComputedCaches::fresh()?,
+        )
+    }
+
+    fn gather_point_coords(
+        coords: &CoordSeq,
+        row_map: RowSelectionRef<'_>,
+    ) -> crate::error::Result<CoordSeq> {
+        let mut builder = PointColumnBuilder::try_with_capacity(
+            coords.axes(),
+            point_logical_len(coords, row_map),
+        )?;
+        for logical in 0..point_logical_len(coords, row_map) {
+            builder.push_at(coords, physical_row(row_map, logical))?;
+        }
+        builder.finish()
+    }
+
+    fn compact_point_storage_from_logical(
+        storage: &GeometryArrayStorage,
+        mask: &ValidityMask,
+    ) -> crate::error::Result<GeometryArrayStorage> {
+        let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = storage
+        else {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "logical nullable point storage requires packed points",
+            )
+            .into());
+        };
+        if storage.len() != mask.len() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "logical nullable payload length must match the missing mask",
+            )
+            .into());
+        }
+        let mut builder =
+            PointColumnBuilder::try_with_capacity(coords.axes(), mask.present_count())?;
+        for (logical, present) in mask.cursor() {
+            if present.is_some() {
+                builder.push_at(coords, physical_row(row_map.as_deref(), logical))?;
+            }
+        }
+        Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
+            coords: Arc::try_new(builder.finish()?).map_err(crate::error::Error::from)?,
+            row_map: RowSelection::Identity,
+        }))
+    }
+
+    /// Convert an explicitly present-only packed payload to the canonical
+    /// nullable layout. Lines and polygons acquire one logical CSR window per
+    /// mask row; points retain one physical coordinate row per present bit.
+    fn compact_storage_from_present(
+        storage: &GeometryArrayStorage,
+        mask: &ValidityMask,
+    ) -> crate::error::Result<GeometryArrayStorage> {
+        if storage.len() != mask.present_count() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "present-only payload length must match the mask present count",
+            )
+            .into());
+        }
+        match storage {
             GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-                GeometryArrayStorage::Packed(PackedStorage::Points {
+                Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
                     coords: if row_map.is_identity() {
                         Arc::clone(coords)
                     } else {
@@ -451,7 +524,7 @@ impl PyGeometryArray {
                             .map_err(crate::error::Error::from)?
                     },
                     row_map: RowSelection::Identity,
-                })
+                }))
             },
             GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
@@ -469,15 +542,11 @@ impl PyGeometryArray {
                         logical_offsets
                             .push_end(offsets[present_row] as usize, i32::MAX as usize)?;
                     }
-                    return Self::compact_from_storage(
-                        GeometryArrayStorage::Packed(PackedStorage::Lines {
-                            coords: Arc::clone(coords),
-                            offsets: logical_offsets.finish(coords.len())?,
-                            row_map: RowSelection::Identity,
-                        }),
-                        mask,
-                        frame,
-                    );
+                    return Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
+                        coords: Arc::clone(coords),
+                        offsets: logical_offsets.finish(coords.len())?,
+                        row_map: RowSelection::Identity,
+                    }));
                 }
                 let mut builder =
                     PointColumnBuilder::try_with_capacity(coords.axes(), coords.len())?;
@@ -494,11 +563,11 @@ impl PyGeometryArray {
                     logical_offsets.push_end(builder.len(), i32::MAX as usize)?;
                 }
                 let coords = builder.finish()?;
-                GeometryArrayStorage::Packed(PackedStorage::Lines {
+                Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
                     offsets: logical_offsets.finish(coords.len())?,
                     coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
                     row_map: RowSelection::Identity,
-                })
+                }))
             },
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
@@ -517,18 +586,14 @@ impl PyGeometryArray {
                         logical_polygons
                             .push_end(polygon_offsets[present_row] as usize, i32::MAX as usize)?;
                     }
-                    return Self::compact_from_storage(
-                        GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                            coords: Arc::clone(coords),
-                            ring_offsets: ring_offsets.clone(),
-                            polygon_offsets: logical_polygons
-                                .finish(ring_offsets.len().saturating_sub(1))?
-                                .cast_level::<PolygonLevel>(),
-                            row_map: RowSelection::Identity,
-                        }),
-                        mask,
-                        frame,
-                    );
+                    return Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                        coords: Arc::clone(coords),
+                        ring_offsets: ring_offsets.clone(),
+                        polygon_offsets: logical_polygons
+                            .finish(ring_offsets.len().saturating_sub(1))?
+                            .cast_level::<PolygonLevel>(),
+                        row_map: RowSelection::Identity,
+                    }));
                 }
                 let mut builder =
                     PointColumnBuilder::try_with_capacity(coords.axes(), coords.len())?;
@@ -556,112 +621,202 @@ impl PyGeometryArray {
                 }
                 let coords = builder.finish()?;
                 let coord_len = coords.len();
-                GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
                     ring_offsets: out_rings.finish(coord_len)?.cast_level::<RingLevel>(),
                     polygon_offsets: out_polygons.finish(rings)?.cast_level::<PolygonLevel>(),
                     row_map: RowSelection::Identity,
-                })
+                }))
             },
-            GeometryArrayStorage::Mixed(_) => unreachable!(),
+            GeometryArrayStorage::Mixed(_) => Err(crate::geometry::GeometryErrorKind::message(
+                "present-only mixed storage requires row scattering",
+            )
+            .into()),
+        }
+    }
+
+    fn scatter_mixed_storage(
+        storage: &GeometryArrayStorage,
+        mask: &ValidityMask,
+    ) -> crate::error::Result<GeometryArrayStorage> {
+        let GeometryArrayStorage::Mixed(shapes) = storage else {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "mixed row scattering requires mixed storage",
+            )
+            .into());
         };
-        Self::compact_from_storage(compact, mask, frame)
+        if shapes.len() != mask.present_count() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "present-only payload length must match the mask present count",
+            )
+            .into());
+        }
+        let mut rows = Vec::new();
+        crate::boundary::try_reserve_vec(&mut rows, mask.len())?;
+        let mut present = shapes.iter();
+        for missing in mask.iter() {
+            if missing {
+                crate::try_push_vec(&mut rows, Self::missing_placeholder())?;
+            } else {
+                let shape = present.next().ok_or_else(|| {
+                    crate::geometry::GeometryErrorKind::message(
+                        "present-only payload ended before the missing mask",
+                    )
+                })?;
+                crate::try_push_vec(&mut rows, shape.clone())?;
+            }
+        }
+        Ok(GeometryArrayStorage::Mixed(rows))
     }
 
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "compact payload length is a caller invariant; the Result is the allocation path"
-    )]
-    pub(crate) fn compact_from_storage(
-        compact: GeometryArrayStorage,
-        mask: ValidityMask,
-        frame: Frame,
-    ) -> crate::error::Result<Self> {
-        let len = mask.len();
-        match &compact {
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => assert_eq!(
-                compact.len(),
-                mask.present_count(),
-                "compact point payload must contain exactly one row per present mask bit"
-            ),
-            GeometryArrayStorage::Packed(
-                PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
-            ) => {
-                assert_eq!(
-                    compact.len(),
-                    len,
-                    "compact row-aligned payload must match the missing-mask length"
-                );
+    fn adopt_rows(
+        storage: Arc<GeometryArrayStorage>,
+        mask: Option<ValidityMask>,
+        layout: StorageLayout,
+    ) -> crate::error::Result<ArrayRows> {
+        let Some(mask) = mask else {
+            return Ok(ArrayRows::new(storage, None));
+        };
+        match layout {
+            StorageLayout::LogicalRows => {
+                if storage.len() != mask.len() {
+                    return Err(crate::geometry::GeometryErrorKind::message(
+                        "logical nullable payload length must match the missing mask",
+                    )
+                    .into());
+                }
+                match storage.as_ref() {
+                    GeometryArrayStorage::Mixed(_) => Ok(ArrayRows::new(storage, Some(mask))),
+                    GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
+                        let compact =
+                            Self::compact_point_storage_from_logical(storage.as_ref(), &mask)?;
+                        Ok(ArrayRows::CompactNullable {
+                            storage: Arc::try_new(compact).map_err(crate::error::Error::from)?,
+                            missing: mask,
+                        })
+                    },
+                    GeometryArrayStorage::Packed(
+                        PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
+                    ) => Ok(ArrayRows::CompactNullable {
+                        storage,
+                        missing: mask,
+                    }),
+                }
             },
-            GeometryArrayStorage::Mixed(_) => {
-                unreachable!("compact nullable storage is built from packed storage only");
+            StorageLayout::PresentOnly => match storage.as_ref() {
+                GeometryArrayStorage::Mixed(_) => {
+                    let scattered = Self::scatter_mixed_storage(storage.as_ref(), &mask)?;
+                    Ok(ArrayRows::new(
+                        Arc::try_new(scattered).map_err(crate::error::Error::from)?,
+                        Some(mask),
+                    ))
+                },
+                GeometryArrayStorage::Packed(_) => {
+                    let compact = Self::compact_storage_from_present(storage.as_ref(), &mask)?;
+                    Ok(ArrayRows::CompactNullable {
+                        storage: Arc::try_new(compact).map_err(crate::error::Error::from)?,
+                        missing: mask,
+                    })
+                },
             },
         }
-        Ok(Self {
-            rows: ArrayRows::CompactNullable {
-                storage: Arc::try_new(compact).map_err(crate::error::Error::from)?,
-                missing: mask,
-            },
-            frame,
-            bounds_cache: Arc::try_new(std::sync::OnceLock::new())
-                .map_err(crate::error::Error::from)?,
-            total_bounds_cache: Arc::try_new(std::sync::OnceLock::new())
-                .map_err(crate::error::Error::from)?,
-            row_products: prepared::RowProducts::fresh(len)?,
-        })
-    }
-
-    fn gather_point_coords(
-        coords: &CoordSeq,
-        row_map: RowSelectionRef<'_>,
-    ) -> crate::error::Result<CoordSeq> {
-        let mut builder = PointColumnBuilder::try_with_capacity(
-            coords.axes(),
-            point_logical_len(coords, row_map),
-        )?;
-        for logical in 0..point_logical_len(coords, row_map) {
-            builder.push_at(coords, physical_row(row_map, logical))?;
-        }
-        builder.finish()
     }
 
     pub(crate) fn from_storage_arc(
         storage: Arc<GeometryArrayStorage>,
         frame: Frame,
     ) -> crate::error::Result<Self> {
-        let len = storage.len();
-        Ok(Self {
-            rows: ArrayRows::new(storage, None),
+        Self::from_result_storage(
+            storage,
             frame,
-            bounds_cache: Arc::try_new(std::sync::OnceLock::new())
-                .map_err(crate::error::Error::from)?,
-            total_bounds_cache: Arc::try_new(std::sync::OnceLock::new())
-                .map_err(crate::error::Error::from)?,
-            row_products: prepared::RowProducts::fresh(len)?,
-        })
+            None,
+            StorageLayout::LogicalRows,
+            ComputedCaches::fresh()?,
+        )
     }
 
-    /// Canonical lifecycle for newly-computed geometry rows. Bounds may be
-    /// carried only when the caller proves them unchanged; prepared and
-    /// frame-dependent caches are always fresh because their invalidation
-    /// rules differ. `total_bounds_cache` follows the same share
-    /// rule as `bounds_cache` (geometry-derived and frame-dependent aggregate).
+    /// Canonical route for newly computed or materialized data. Geometry and
+    /// aggregate caches may be carried explicitly, but prepared/frame
+    /// products are always fresh.
     pub(crate) fn from_result_storage(
         storage: Arc<GeometryArrayStorage>,
         frame: Frame,
         missing: Option<ValidityMask>,
-        bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
-        total_bounds_cache: TotalBoundsCache,
+        layout: StorageLayout,
+        caches: ComputedCaches,
     ) -> crate::error::Result<Self> {
-        let len = storage.len();
-        Self {
-            rows: ArrayRows::new(storage, None),
+        let rows = Self::adopt_rows(storage, missing, layout)?;
+        let len = rows.len();
+        Ok(Self {
+            rows,
             frame,
-            bounds_cache,
-            total_bounds_cache,
+            bounds_cache: caches.bounds_cache,
+            total_bounds_cache: caches.total_bounds_cache,
             row_products: prepared::RowProducts::fresh(len)?,
-        }
-        .with_missing_mask(missing)
+        })
+    }
+
+    /// Canonical route for a selection/view/gather. Product provenance is
+    /// selected from source logical rows independently of the payload's row
+    /// map or whether nullable points were rebased to row zero.
+    pub(crate) fn from_selected_storage(
+        source: &Self,
+        storage: Arc<GeometryArrayStorage>,
+        frame: Frame,
+        missing: Option<ValidityMask>,
+        layout: StorageLayout,
+        source_rows: impl IntoIterator<Item = usize>,
+    ) -> crate::error::Result<Self> {
+        let rows = Self::adopt_rows(storage, missing, layout)?;
+        let products = if rows.missing().is_some_and(|mask| mask.present_count() == 0) {
+            prepared::RowProducts::fresh(rows.len())?
+        } else {
+            source.selected_row_products(source_rows)?
+        };
+        let caches = ComputedCaches::fresh()?;
+        Ok(Self {
+            frame,
+            bounds_cache: caches.bounds_cache,
+            total_bounds_cache: caches.total_bounds_cache,
+            row_products: products,
+            rows,
+        })
+    }
+
+    /// Canonical route for row replacement. Only output rows proven unchanged
+    /// alias source products; every other row is backed by a fresh owner.
+    pub(crate) fn from_replacement_storage(
+        source: &Self,
+        storage: Arc<GeometryArrayStorage>,
+        frame: Frame,
+        missing: Option<ValidityMask>,
+        layout: StorageLayout,
+        unchanged_rows: &[usize],
+    ) -> crate::error::Result<Self> {
+        let rows = Self::adopt_rows(storage, missing, layout)?;
+        let products = if unchanged_rows.len() == rows.len()
+            && unchanged_rows
+                .iter()
+                .copied()
+                .enumerate()
+                .all(|(row, source_row)| row == source_row)
+        {
+            source.row_products.clone()
+        } else {
+            prepared::RowProducts::preserving_physical_rows(
+                rows.len(),
+                &source.row_products,
+                unchanged_rows,
+            )?
+        };
+        let caches = ComputedCaches::fresh()?;
+        Ok(Self {
+            frame,
+            bounds_cache: caches.bounds_cache,
+            total_bounds_cache: caches.total_bounds_cache,
+            row_products: products,
+            rows,
+        })
     }
 
     pub(crate) fn from_storage(
@@ -672,17 +827,6 @@ impl PyGeometryArray {
             Arc::try_new(storage).map_err(crate::error::Error::from)?,
             frame,
         )
-    }
-
-    /// Canonical selection lifecycle: geometry-derived caches remain fresh,
-    /// while frame caches follow their selected source rows.
-    pub(crate) fn with_selected_caches_from(
-        mut self,
-        source: &Self,
-        rows: impl IntoIterator<Item = usize>,
-    ) -> crate::error::Result<Self> {
-        self.row_products = source.selected_row_products(rows)?;
-        Ok(self)
     }
 
     pub(crate) fn retag_frame(&self, frame: Frame) -> crate::error::Result<Self> {
@@ -769,7 +913,7 @@ impl PyGeometryArray {
         }
         let matrix = *matrix;
         let axes = self
-            .uniform_axes()
+            .uniform_axes()?
             .expect("packed storage has uniform axes");
         self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
             let [a, b, d, e, xoff, yoff] = matrix;
@@ -876,35 +1020,54 @@ impl PyGeometryArray {
         Self::from_shapes(shapes, frame)
     }
 
-    /// Build an array straight from kernel-output `Shape`s: all-`Point`
-    /// uniform-axes results pack into one shared `CoordSeq` without ever
-    /// materializing per-row wrappers; anything else lands in array-owned
-    /// `Mixed` shape storage (no per-row `PyGeometry` / `ShapeData`).
-    /// Uniform packing can return a resource error; pack-admission failures
-    /// still fall through to `Mixed`.
-    pub(crate) fn from_shapes(shapes: Vec<Shape>, frame: Frame) -> crate::error::Result<Self> {
+    /// Build storage straight from kernel-output `Shape`s. Uniform packing can
+    /// return a resource error; structural admission failures fall through to
+    /// `Mixed` without publishing a partially packed result.
+    pub(crate) fn storage_from_shapes(
+        shapes: Vec<Shape>,
+    ) -> crate::error::Result<GeometryArrayStorage> {
         // First-kind dispatch, exactly like `pack_or_mixed`.
         match shapes.first() {
             Some(Shape::Point(_)) => {
                 if let Some(column) = Self::uniform_point_column(shapes.iter())? {
-                    return Self::packed_points(column, frame);
+                    return Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
+                        coords: Arc::try_new(column).map_err(crate::error::Error::from)?,
+                        row_map: RowSelection::Identity,
+                    }));
                 }
             },
             Some(Shape::LineString(_)) => {
                 if let Some((coords, offsets)) = Self::uniform_line_column(shapes.iter())? {
-                    return Self::packed_lines(coords, offsets, frame);
+                    return Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
+                        coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                        offsets,
+                        row_map: RowSelection::Identity,
+                    }));
                 }
             },
             Some(Shape::Polygon(_)) => {
                 if let Some((coords, ring_offsets, polygon_offsets)) =
                     Self::uniform_polygon_column(shapes.iter())?
                 {
-                    return Self::packed_polygons(coords, ring_offsets, polygon_offsets, frame);
+                    return Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                        coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                        ring_offsets,
+                        polygon_offsets,
+                        row_map: RowSelection::Identity,
+                    }));
                 }
             },
             _ => {},
         }
-        Self::mixed_shapes(shapes, frame)
+        Ok(GeometryArrayStorage::Mixed(shapes))
+    }
+
+    /// Build an array straight from kernel-output `Shape`s: all-`Point`
+    /// uniform-axes results pack into one shared `CoordSeq` without ever
+    /// materializing per-row wrappers; anything else lands in array-owned
+    /// `Mixed` shape storage (no per-row `PyGeometry` / `ShapeData`).
+    pub(crate) fn from_shapes(shapes: Vec<Shape>, frame: Frame) -> crate::error::Result<Self> {
+        Self::from_storage(Self::storage_from_shapes(shapes)?, frame)
     }
 
     /// Wrap homogeneous `LineString` rows as packed `Lines` storage: one
@@ -982,6 +1145,7 @@ fn affine_linear_is_identity(matrix: [f64; 4]) -> bool {
 mod compact_nullable_tests {
     use super::*;
     use crate::array::ShapeRow;
+    use crate::geometry::{CoordWindow, MColumn, SharedSlice};
     use crate::heap_size::HeapSize as _;
 
     #[test]
@@ -1132,10 +1296,10 @@ mod compact_nullable_tests {
                     .unwrap(),
             )
             .unwrap();
-            assert_eq!(array.uniform_axes(), Some(axes));
+            assert_eq!(array.uniform_axes().unwrap(), Some(axes));
             assert_eq!(array.nbytes(), axes.byte_width(1));
             let all_missing = array.gather_logical_rows(&[0, 2]).unwrap();
-            assert_eq!(all_missing.uniform_axes(), Some(axes));
+            assert_eq!(all_missing.uniform_axes().unwrap(), Some(axes));
             assert_eq!(all_missing.nbytes(), 0);
         }
     }
@@ -1179,6 +1343,197 @@ mod compact_nullable_tests {
             Some(LogicalRow::Missing { .. })
         ));
         assert_eq!(missing.row_products.heap_bytes(), 0);
+    }
+
+    #[test]
+    fn line_and_polygon_gathers_keep_nested_csr_windows_and_missing_rows() {
+        let mask = ValidityMask::from_vec(5, vec![false, true, false, false, true])
+            .unwrap()
+            .unwrap();
+        let lines = PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 10.0, 11.0, 20.0, 21.0],
+                vec![0.0; 6],
+                None,
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::try_new(vec![0, 2, 4, 6], 6).unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let lines = PyGeometryArray::scatter_present_rows(&lines, mask.clone()).unwrap();
+        let selected = lines.gather_logical_rows(&[3, 1, 0, 3]).unwrap();
+        let line_first_x = |array: &PyGeometryArray| {
+            array
+                .logical_rows()
+                .map(|row| match row {
+                    LogicalRow::Missing { .. } => None,
+                    LogicalRow::Present {
+                        row: ShapeRow::Line(coords, start, end),
+                        ..
+                    } if start < end => Some(coords.xs()[start]),
+                    LogicalRow::Present { .. } => Some(f64::NAN),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(line_first_x(&selected), [
+            Some(20.0),
+            None,
+            Some(0.0),
+            Some(20.0)
+        ]);
+        let nested = selected.gather_logical_rows(&[3, 0, 3]).unwrap();
+        assert_eq!(line_first_x(&nested), [Some(20.0), Some(20.0), Some(20.0)]);
+
+        let polygons = PyGeometryArray::packed_polygons(
+            CoordSeq::try_from_vecs(
+                vec![
+                    0.0, 1.0, 1.0, 0.0, 0.0, 10.0, 11.0, 11.0, 10.0, 10.0, 20.0, 21.0, 21.0, 20.0,
+                    20.0,
+                ],
+                vec![
+                    0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0,
+                ],
+                None,
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5, 10, 15], 15).unwrap(),
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1, 2, 3], 3).unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let polygons = PyGeometryArray::scatter_present_rows(&polygons, mask).unwrap();
+        let selected = polygons.gather_logical_rows(&[3, 1, 0, 3]).unwrap();
+        let polygon_first_x = |array: &PyGeometryArray| {
+            array
+                .logical_rows()
+                .map(|row| match row {
+                    LogicalRow::Missing { .. } => None,
+                    LogicalRow::Present {
+                        row: ShapeRow::Rings(coords, offsets, start, end),
+                        ..
+                    } if start < end => Some(coords.xs()[offsets[start] as usize]),
+                    LogicalRow::Present { .. } => Some(f64::NAN),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(polygon_first_x(&selected), [
+            Some(20.0),
+            None,
+            Some(0.0),
+            Some(20.0)
+        ]);
+        let nested = selected.gather_logical_rows(&[3, 0, 3]).unwrap();
+        assert_eq!(polygon_first_x(&nested), [
+            Some(20.0),
+            Some(20.0),
+            Some(20.0)
+        ]);
+    }
+
+    #[test]
+    fn nullable_layout_mismatch_is_rejected_at_result_admission() {
+        let storage = Arc::new(GeometryArrayStorage::Packed(PackedStorage::Points {
+            coords: Arc::new(
+                CoordSeq::try_from_vecs(vec![1.0, 2.0], vec![3.0, 4.0], None, None).unwrap(),
+            ),
+            row_map: RowSelection::Identity,
+        }));
+        let mask = ValidityMask::from_vec(3, vec![false, true, false])
+            .unwrap()
+            .unwrap();
+        let error = PyGeometryArray::from_result_storage(
+            storage,
+            Frame::None,
+            Some(mask),
+            StorageLayout::LogicalRows,
+            ComputedCaches::fresh().unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn already_masked_results_are_not_scattered_again() {
+        let present = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(vec![1.0], vec![2.0], None, None).unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let source = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(2, vec![false, true])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let result = source.scatter_present_result(source.clone()).unwrap();
+        assert!(Arc::ptr_eq(result.storage_arc(), source.storage_arc()));
+        assert!(result.row_products.shares_owner_with(&source.row_products));
+    }
+
+    #[test]
+    fn newly_computed_data_never_reuses_source_products() {
+        let source = PyGeometryArray::from_shapes(
+            vec![Shape::Point(Point::new_raw_xy(1.0, 2.0))],
+            Frame::None,
+        )
+        .unwrap();
+        let source_cache = source.row_products.frame_cache(0).unwrap();
+        let computed = PyGeometryArray::from_shapes(
+            vec![Shape::Point(Point::new_raw_xy(1.0, 2.0))],
+            Frame::None,
+        )
+        .unwrap();
+        let computed_cache = computed.row_products.frame_cache(0).unwrap();
+        assert!(!Arc::ptr_eq(&source_cache, &computed_cache));
+        assert!(
+            !computed
+                .row_products
+                .shares_owner_with(&source.row_products)
+        );
+    }
+
+    #[test]
+    fn sliced_xyzm_selection_keeps_the_independent_m_owner_and_window() {
+        let m = SharedSlice::try_from_vec((50..60).map(f64::from).collect()).unwrap();
+        let coords = CoordSeq::from_shared_columns_with_window(
+            SharedSlice::try_from_vec((0..6).map(f64::from).collect()).unwrap(),
+            SharedSlice::try_from_vec(vec![10.0; 6]).unwrap(),
+            None,
+            Some(MColumn::Local {
+                owner: m.clone(),
+                offset: 4,
+            }),
+            CoordWindow::from_range(2..5, 6),
+        )
+        .unwrap();
+        let source = PyGeometryArray::packed_points(coords, Frame::None).unwrap();
+        let selected = source.gather_logical_rows(&[2, 0]).unwrap();
+        let values = selected
+            .logical_rows()
+            .map(|row| match row {
+                LogicalRow::Present {
+                    row: ShapeRow::Point(point),
+                    ..
+                } => point.m(),
+                LogicalRow::Missing { .. } | LogicalRow::Present { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(values, [Some(56.0), Some(54.0)]);
+        let GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) = selected.storage()
+        else {
+            panic!("selection changed point storage kind");
+        };
+        assert!(Arc::ptr_eq(
+            &coords.column_arcs().m_parts().unwrap().0.owner().unwrap(),
+            &m.owner().unwrap(),
+        ));
     }
 
     #[test]

@@ -82,6 +82,19 @@ pub(crate) enum PointRowLayout {
     Compact,
 }
 
+/// Physical layout presented to a nullable-array constructor.
+///
+/// The layout is an admission fact supplied by the producer, not something a
+/// constructor derives from a payload length (which is ambiguous when a mask
+/// happens to have the same number of present rows as logical rows).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StorageLayout {
+    /// The payload has one physical row/window for every logical mask row.
+    LogicalRows,
+    /// The payload contains only the rows selected by present mask bits.
+    PresentOnly,
+}
+
 impl PointRowLayout {
     pub(crate) const fn is_compact(self) -> bool {
         matches!(self, Self::Compact)
@@ -395,7 +408,7 @@ mod packed_ops;
 mod streaming;
 mod uniform_columns;
 pub(crate) use pack_admission::{CheckedRingWindow, RingWindowError, polygon_pack_axes};
-pub(crate) use packed::sparse_missing_mask;
+pub(crate) use packed::{ComputedCaches, sparse_missing_mask};
 pub(crate) use streaming::StreamingShapes;
 mod shape_row;
 mod storage_impl;

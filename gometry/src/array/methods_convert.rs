@@ -1,9 +1,10 @@
 use crate::array::packed_columns::{LineColumns, PolygonColumns};
 use crate::array::{
-    Arc, Bounds, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec, PackedColumnError,
-    PackedColumns, PackedStorage, PyGeometryArray, PyResult, Python, Result, RowSelection, Shape,
-    clip_lines_packed_xy, geometry, reverse_coord_windows, subdivide_line_columns,
-    subdivide_polygon_columns, validate_densify_fraction, validate_max_segment_length,
+    Arc, Bounds, ComputedCaches, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec,
+    PackedColumnError, PackedColumns, PackedStorage, PyGeometryArray, PyResult, Python, Result,
+    RowSelection, Shape, StorageLayout, clip_lines_packed_xy, geometry, reverse_coord_windows,
+    subdivide_line_columns, subdivide_polygon_columns, validate_densify_fraction,
+    validate_max_segment_length,
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{ExpansionBudget, TopologyDomain};
@@ -292,8 +293,11 @@ impl PyGeometryArray {
                     .map_err(crate::error::Error::from)?,
                     self.frame.clone(),
                     self.missing().cloned(),
-                    Arc::clone(&self.bounds_cache),
-                    Arc::clone(&self.total_bounds_cache),
+                    StorageLayout::LogicalRows,
+                    ComputedCaches::carried(
+                        Arc::clone(&self.bounds_cache),
+                        Arc::clone(&self.total_bounds_cache),
+                    ),
                 )?)
             },
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -329,8 +333,11 @@ impl PyGeometryArray {
                     .map_err(crate::error::Error::from)?,
                     self.frame.clone(),
                     self.missing().cloned(),
-                    Arc::clone(&self.bounds_cache),
-                    Arc::clone(&self.total_bounds_cache),
+                    StorageLayout::LogicalRows,
+                    ComputedCaches::carried(
+                        Arc::clone(&self.bounds_cache),
+                        Arc::clone(&self.total_bounds_cache),
+                    ),
                 )?)
             },
             _ => self.map_shapes(|shape| Ok(shape.reverse()?)),
@@ -392,7 +399,7 @@ impl PyGeometryArray {
             return None;
         }
         let axes = self
-            .uniform_axes()
+            .uniform_axes()?
             .expect("packed storage has uniform axes");
         Python::attach(|py| {
             self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
@@ -462,7 +469,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn quantize_unary_packed(&self, _py: Python<'_>, precision: i32) -> PyResult<Self> {
-        if let Some(axes) = self.uniform_axes()
+        if let Some(axes) = self.uniform_axes()?
             && !matches!(self.storage(), GeometryArrayStorage::Mixed(_))
             && let Some(mapped) = Python::attach(|py| {
                 self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {

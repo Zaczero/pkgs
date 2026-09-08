@@ -2,11 +2,10 @@
 //! any storage, mask-aware, with detached (GIL-free) variants. Child
 //! module of [`super`] (`packed_ops`).
 
-use crate::array::PackedStorage;
 use crate::array::packed_ops::{
-    GeometryArrayStorage, PyGeometryArray, PyResult, Python, Result, Shape, note_array_row,
-    rows_err,
+    PyGeometryArray, PyResult, Python, Result, Shape, note_array_row, rows_err,
 };
+use crate::array::{Arc, GeometryArrayStorage, PackedStorage, StorageLayout};
 
 /// One monomorphized row walker for every per-shape map. `T` lets callers
 /// collect either replacement shapes or optional replacements without an
@@ -72,18 +71,14 @@ fn rebuild_shared_mixed(
     }
     let exhausted = changed.next().is_none();
     debug_assert!(exhausted);
-    let mut result = PyGeometryArray::mixed_shapes(mapped, source.frame.clone())?
-        .with_missing_mask(source.missing().cloned())?;
-    result.row_products = if unchanged_rows.len() == shapes.len() {
-        source.row_products.clone()
-    } else {
-        crate::array::prepared::RowProducts::preserving_physical_rows(
-            shapes.len(),
-            &source.row_products,
-            &unchanged_rows,
-        )?
-    };
-    Ok(result)
+    PyGeometryArray::from_replacement_storage(
+        source,
+        Arc::try_new(GeometryArrayStorage::Mixed(mapped)).map_err(crate::error::Error::from)?,
+        source.frame.clone(),
+        source.missing().cloned(),
+        StorageLayout::LogicalRows,
+        &unchanged_rows,
+    )
 }
 
 impl PyGeometryArray {

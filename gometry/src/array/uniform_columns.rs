@@ -15,6 +15,14 @@ type PackedPolygonColumns = (
     CsrOffsetColumn<PolygonLevel>,
 );
 
+fn admit_or_decline<T>(result: Result<T>) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if matches!(error.kind(), ErrorKind::Resource(_)) => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
 fn finish_packed_coords(builder: CoordSeqBuilder) -> Result<Option<CoordSeq>> {
     match builder.finish() {
         Ok(coords) => Ok(Some(coords)),
@@ -60,7 +68,7 @@ impl PyGeometryArray {
             if total > vertex_cap {
                 return Ok(None);
             }
-            if offset_builder.push_end(total, vertex_cap).is_err() {
+            if admit_or_decline(offset_builder.push_end(total, vertex_cap))?.is_none() {
                 return Ok(None);
             }
         }
@@ -77,7 +85,7 @@ impl PyGeometryArray {
         let Some(coords) = finish_packed_coords(builder)? else {
             return Ok(None);
         };
-        let Ok(offsets) = offset_builder.finish(total) else {
+        let Some(offsets) = admit_or_decline(offset_builder.finish(total))? else {
             return Ok(None);
         };
         Ok(Some((coords, offsets)))
@@ -130,7 +138,7 @@ impl PyGeometryArray {
                 if total_vertices > vertex_cap {
                     return Ok(None);
                 }
-                if ring_builder.push_end(total_vertices, vertex_cap).is_err() {
+                if admit_or_decline(ring_builder.push_end(total_vertices, vertex_cap))?.is_none() {
                     return Ok(None);
                 }
                 let Some(next_ring) = ring_index.checked_add(1) else {
@@ -147,7 +155,7 @@ impl PyGeometryArray {
             }
             // polygon_pack_axes already requires a nonempty ring set.
             debug_assert!(poly_rings > 0);
-            if polygon_builder.push_end(ring_index, vertex_cap).is_err() {
+            if admit_or_decline(polygon_builder.push_end(ring_index, vertex_cap))?.is_none() {
                 return Ok(None);
             }
         }
@@ -166,11 +174,11 @@ impl PyGeometryArray {
         let Some(coords) = finish_packed_coords(builder)? else {
             return Ok(None);
         };
-        let Ok(ring_offsets) = ring_builder.finish(total_vertices) else {
+        let Some(ring_offsets) = admit_or_decline(ring_builder.finish(total_vertices))? else {
             return Ok(None);
         };
         let ring_offsets = ring_offsets.cast_level::<RingLevel>();
-        let Ok(polygon_offsets) = polygon_builder.finish(ring_index) else {
+        let Some(polygon_offsets) = admit_or_decline(polygon_builder.finish(ring_index))? else {
             return Ok(None);
         };
         let polygon_offsets = polygon_offsets.cast_level::<PolygonLevel>();

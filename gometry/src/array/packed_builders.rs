@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::array::{
-    GeometryArrayStorage, PackedStorage, PyGeometryArray, RowProducts, RowSelection, ValidityMask,
+    GeometryArrayStorage, PackedStorage, PyGeometryArray, RowSelection, StorageLayout, ValidityMask,
 };
 
 impl PyGeometryArray {
@@ -24,21 +24,23 @@ impl PyGeometryArray {
         missing: Option<ValidityMask>,
     ) -> crate::error::Result<Self> {
         let storage = self.selected_storage(rows.clone())?;
-        let all_missing = missing
-            .as_ref()
-            .is_some_and(|mask| mask.present_count() == 0);
-        let mut result = match missing {
-            Some(mask) if self.is_compact_nullable() => {
-                Self::compact_from_storage(storage, mask, self.frame.clone())?
-            },
-            mask => Self::from_storage(storage, self.frame.clone())?.with_missing_mask(mask)?,
-        };
-        result.row_products = if all_missing {
-            RowProducts::fresh(result.len())?
+        let layout = if self.is_compact_nullable()
+            && matches!(
+                &storage,
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+            ) {
+            StorageLayout::PresentOnly
         } else {
-            self.selected_row_products(rows)?
+            StorageLayout::LogicalRows
         };
-        Ok(result)
+        Self::from_selected_storage(
+            self,
+            Arc::try_new(storage).map_err(crate::error::Error::from)?,
+            self.frame.clone(),
+            missing,
+            layout,
+            rows,
+        )
     }
 
     /// Select present rows without attaching a validity mask.
@@ -46,13 +48,18 @@ impl PyGeometryArray {
         debug_assert!(
             !self.is_compact_nullable() || rows.iter().all(|&row| !self.is_row_missing(row))
         );
-        Self::from_storage(
-            self.selected_storage(rows.iter().copied())?,
+        Self::from_selected_storage(
+            self,
+            Arc::try_new(self.selected_storage(rows.iter().copied())?)
+                .map_err(crate::error::Error::from)?,
             self.frame.clone(),
+            None,
+            StorageLayout::LogicalRows,
+            rows.iter().copied(),
         )
     }
 
-    fn selected_storage(
+    pub(crate) fn selected_storage(
         &self,
         rows: impl Iterator<Item = usize> + Clone,
     ) -> crate::error::Result<GeometryArrayStorage> {

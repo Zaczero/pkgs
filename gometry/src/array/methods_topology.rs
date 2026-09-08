@@ -362,14 +362,14 @@ impl PyGeometryArray {
         }
         if value.is_some()
             && !overwrite
-            && self.uniform_axes().is_some_and(|axes| ordinate.has(axes))
+            && self.uniform_axes()?.is_some_and(|axes| ordinate.has(axes))
         {
             return Ok(self.clone());
         }
         if !self.is_compact_nullable() && !matches!(self.storage(), GeometryArrayStorage::Mixed(_))
         {
             let input_axes = self
-                .uniform_axes()
+                .uniform_axes()?
                 .expect("packed storage has uniform axes");
             let output_axes = ordinate.output_axes(input_axes, value);
             if let Some(mapped) = self.map_packed_points_detached(

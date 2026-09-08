@@ -55,10 +55,11 @@ fn decode_geojson_value(
         io::collect_geojson_legacy_crs(&parsed, &mut declarations);
         io::reconcile_legacy_geojson_crs(&declarations, fixed)?;
         let (shapes, mask) = feature_value_shapes_and_missing(features)?;
-        return Ok(DecodedGeoJson::Array(
-            PyGeometryArray::from_shapes(shapes, Frame::new(crs, epoch)?)?
-                .with_missing_mask(mask)?,
-        ));
+        let present = PyGeometryArray::from_shapes(shapes, Frame::new(crs, epoch)?)?;
+        return Ok(DecodedGeoJson::Array(match mask {
+            None => present,
+            Some(mask) => PyGeometryArray::scatter_present_rows(&present, mask)?,
+        }));
     }
     let Some((shape, frame)) = coerce_geojson_geometry_value(
         &parsed,
