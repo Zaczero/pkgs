@@ -270,7 +270,6 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             &pool,
             &mut cuts,
             &mut forest,
-            budget,
             &zero,
             &one,
         ) {
@@ -293,8 +292,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     try_reserve_vec(&mut order, unique.len())?;
     for source in 0..unique.len() {
         if !same_point(unique[source].start, unique[source].end) {
-            push_endpoint_cut(&mut cuts[source], SourceParam::Start, start_handle[source])?;
-            push_endpoint_cut(&mut cuts[source], SourceParam::End, end_handle[source])?;
+            push_contact_cut(&mut cuts[source], SourceParam::Start, start_handle[source])?;
+            push_contact_cut(&mut cuts[source], SourceParam::End, end_handle[source])?;
         }
         order.push(try_sort_indices(&cuts[source], &zero, &one)?);
         union_equal_params(&cuts[source], &order[source], &mut forest, &zero, &one)?;
@@ -309,7 +308,6 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         if compact_of[root as usize].is_some() {
             continue;
         }
-        budget.add(1)?;
         let id = u32::try_from(recipes.len()).map_err(|_| ResourceError::SizeOverflow)?;
         match forest.kind[root as usize] {
             HandleKind::Stored(key) => {
@@ -317,6 +315,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
                 recipes.push(NodeRecipe::Stored(key));
             },
             HandleKind::Constructed { unique, cut } => {
+                budget.add(1)?;
                 let param = mem::replace(
                     &mut cuts[unique as usize][cut as usize].param,
                     SourceParam::Start,
@@ -362,7 +361,13 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         }
     }
 
-    let (spans, atom_provenance) = aggregate_atoms(intervals, provenance, budget)?;
+    // The budget counts operation-wide net growth: overlap coalescing can
+    // offset span growth elsewhere, while stored nodes and source atoms are free.
+    let baseline = unique
+        .iter()
+        .filter(|segment| !same_point(segment.start, segment.end))
+        .count();
+    let (spans, atom_provenance) = aggregate_atoms(intervals, provenance, baseline, budget)?;
 
     let mut degree: Vec<u32> = Vec::new();
     try_reserve_vec(&mut degree, recipes.len())?;
@@ -388,19 +393,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     })
 }
 
-fn push_endpoint_cut(cuts: &mut Vec<SourceCut>, param: SourceParam, handle: u32) -> Result<()> {
-    try_reserve_vec(cuts, 1)?;
-    cuts.push(SourceCut { param, handle });
-    Ok(())
-}
-
-fn push_contact_cut(
-    cuts: &mut Vec<SourceCut>,
-    param: SourceParam,
-    handle: u32,
-    budget: &mut ExpansionBudget,
-) -> Result<()> {
-    budget.add(1)?;
+fn push_contact_cut(cuts: &mut Vec<SourceCut>, param: SourceParam, handle: u32) -> Result<()> {
     try_reserve_vec(cuts, 1)?;
     cuts.push(SourceCut { param, handle });
     Ok(())
@@ -411,7 +404,6 @@ fn push_point_on_source(
     point: XY,
     handle: u32,
     cuts: &mut Vec<SourceCut>,
-    budget: &mut ExpansionBudget,
     zero: &ExactDyadic,
     one: &ExactDyadic,
 ) -> Result<()> {
@@ -434,7 +426,7 @@ fn push_point_on_source(
     }
     let param = param_on_segment(segment, point)?;
     if param.is_open_unit(zero, one)? {
-        push_contact_cut(cuts, param, handle, budget)?;
+        push_contact_cut(cuts, param, handle)?;
     }
     Ok(())
 }
@@ -462,7 +454,6 @@ fn visit_pool_pair(
     pool: &[Segment],
     cuts: &mut [Vec<SourceCut>],
     forest: &mut Forest,
-    budget: &mut ExpansionBudget,
     zero: &ExactDyadic,
     one: &ExactDyadic,
 ) -> Result<()> {
@@ -475,7 +466,6 @@ fn visit_pool_pair(
             end_handle,
             cuts,
             forest,
-            budget,
             zero,
             one,
         ),
@@ -486,7 +476,6 @@ fn visit_pool_pair(
                 pool[right].start,
                 handle,
                 &mut cuts[left],
-                budget,
                 zero,
                 one,
             )
@@ -498,7 +487,6 @@ fn visit_pool_pair(
                 pool[left].start,
                 handle,
                 &mut cuts[right],
-                budget,
                 zero,
                 one,
             )
@@ -515,33 +503,16 @@ fn classify_pair_into(
     end_handle: &[u32],
     cuts: &mut [Vec<SourceCut>],
     forest: &mut Forest,
-    budget: &mut ExpansionBudget,
     zero: &ExactDyadic,
     one: &ExactDyadic,
 ) -> Result<()> {
     let a = unique[left];
     let b = unique[right];
     if same_point(a.start, a.end) {
-        return push_point_on_source(
-            b,
-            a.start,
-            start_handle[left],
-            &mut cuts[right],
-            budget,
-            zero,
-            one,
-        );
+        return push_point_on_source(b, a.start, start_handle[left], &mut cuts[right], zero, one);
     }
     if same_point(b.start, b.end) {
-        return push_point_on_source(
-            a,
-            b.start,
-            start_handle[right],
-            &mut cuts[left],
-            budget,
-            zero,
-            one,
-        );
+        return push_point_on_source(a, b.start, start_handle[right], &mut cuts[left], zero, one);
     }
     if segment_envelopes_disjoint(a, b) {
         return Ok(());
@@ -557,14 +528,14 @@ fn classify_pair_into(
             let source = pair_index(source, left, right);
             let handle_source = pair_index(handle_source, left, right);
             let handle = endpoint_handle(handle_source, at_start, start_handle, end_handle);
-            push_contact_cut(&mut cuts[source], param, handle, budget)
+            push_contact_cut(&mut cuts[source], param, handle)
         },
         PairContact::Overlap { cuts: overlap } => {
             for cut in overlap {
                 let source = pair_index(cut.source, left, right);
                 let handle_source = pair_index(cut.handle_source, left, right);
                 let handle = endpoint_handle(handle_source, cut.at_start, start_handle, end_handle);
-                push_contact_cut(&mut cuts[source], cut.param, handle, budget)?;
+                push_contact_cut(&mut cuts[source], cut.param, handle)?;
             }
             Ok(())
         },
@@ -579,8 +550,8 @@ fn classify_pair_into(
             let cut =
                 u32::try_from(cuts[unique_index].len()).map_err(|_| ResourceError::SizeOverflow)?;
             let handle = forest.push(HandleKind::Constructed { unique, cut })?;
-            push_contact_cut(&mut cuts[unique_index], first_param, handle, budget)?;
-            push_contact_cut(&mut cuts[second], second_param, handle, budget)
+            push_contact_cut(&mut cuts[unique_index], first_param, handle)?;
+            push_contact_cut(&mut cuts[second], second_param, handle)
         },
     }
 }
@@ -615,6 +586,7 @@ fn union_equal_params(
 fn aggregate_atoms(
     intervals: Vec<(u32, u32, u32)>,
     source_provenance: &SegmentProvenance,
+    baseline: usize,
     budget: &mut ExpansionBudget,
 ) -> Result<(Vec<ExactSpan>, SegmentProvenance)> {
     let mut atom_of: HashMap<(u32, u32), u32> =
@@ -633,7 +605,9 @@ fn aggregate_atoms(
             contributors.push((atom, unique, reversed));
             continue;
         }
-        budget.add(1)?;
+        if spans.len() >= baseline {
+            budget.add(1)?;
+        }
         let atom = u32::try_from(spans.len()).map_err(|_| ResourceError::SizeOverflow)?;
         try_reserve_vec(&mut spans, 1)?;
         spans.push(ExactSpan {
@@ -996,6 +970,65 @@ mod tests {
 
     fn run(segments: &[Segment]) -> Case {
         Case::from_segments(segments)
+    }
+
+    #[test]
+    fn generated_budget_charges_only_net_canonical_growth() {
+        use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
+
+        let crossing = [seg(0.0, 0.0, 2.0, 2.0), seg(0.0, 2.0, 2.0, 0.0)];
+        let cases = [
+            (vec![seg(0.0, 0.0, 1.0, 0.0)], 0),
+            (vec![seg(0.0, 0.0, 1.0, 0.0); 2], 0),
+            (vec![seg(0.0, 0.0, 1.0, 0.0), seg(1.0, 0.0, 2.0, 0.0)], 0),
+            (vec![seg(1.0, 1.0, 1.0, 1.0)], 0),
+            (crossing.to_vec(), 3),
+            (vec![seg(0.0, 0.0, 4.0, 0.0), seg(1.0, 0.0, 3.0, 0.0)], 1),
+            (vec![seg(0.0, 0.0, 2.0, 0.0), seg(1.0, 0.0, 1.0, 0.0)], 1),
+            (vec![crossing[0], crossing[1], seg(1.0, 1.0, 1.0, 1.0)], 2),
+            (
+                vec![
+                    crossing[0],
+                    crossing[1],
+                    seg(10.0, 0.0, 14.0, 0.0),
+                    seg(10.0, 0.0, 12.0, 0.0),
+                    seg(12.0, 0.0, 14.0, 0.0),
+                ],
+                2,
+            ),
+        ];
+        for (segments, growth) in cases {
+            let case = run(&segments);
+            let mut budget = ExpansionBudget::new("exact_partition", "items");
+            budget.add(GENERATED_ITEM_LIMIT - growth).unwrap();
+            let partition = partition_unique_segments(
+                &case.unique,
+                &case.provenance,
+                &case.isolated,
+                &mut budget,
+            )
+            .unwrap();
+            assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
+            assert!(!partition.recipes.is_empty());
+            if growth > 0 {
+                let mut short = ExpansionBudget::new("exact_partition", "items");
+                short.add(GENERATED_ITEM_LIMIT - growth + 1).unwrap();
+                let error = partition_unique_segments(
+                    &case.unique,
+                    &case.provenance,
+                    &case.isolated,
+                    &mut short,
+                )
+                .err()
+                .expect("one fewer generated item must reject the partition");
+                assert!(matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        GeometryErrorKind::GeneratedOutputTooLarge { .. }
+                    )
+                ));
+            }
+        }
     }
 
     fn constructed_recipe<'a>(partition: &'a ExactPartition<'_>) -> &'a NodeRecipe {
