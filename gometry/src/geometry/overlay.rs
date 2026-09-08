@@ -102,7 +102,7 @@ mod shape;
 pub(in crate::geometry) use exact_partition::{ExactSourceInventory, certify_emitted_incidence};
 
 pub(in crate::geometry) use areal::{
-    binary_areal_overlay, build_areal_arrangement, outside_winding_seeds,
+    binary_areal_overlay, build_areal_arrangement,
 };
 pub(crate) use assembly::{
     build_certified_overlay_shape, build_overlay_shape, build_overlay_shape_from_chains,
