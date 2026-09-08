@@ -170,12 +170,16 @@ fn relate_linework(
     left: &PreparedPlan,
     right: &PreparedPlan,
     mut decide: impl FnMut(&De9imInterval) -> Option<bool>,
-) -> Option<Outcome> {
-    let a = left.staged_linework()?;
-    let b = right.staged_linework()?;
+) -> crate::error::Result<Option<Outcome>> {
+    let Some(a) = left.staged_linework()? else {
+        return Ok(None);
+    };
+    let Some(b) = right.staged_linework()? else {
+        return Ok(None);
+    };
     let mut interval = De9imInterval::open(a.shape(), b.shape());
     if let Some(verdict) = decide(&interval) {
-        return Some(Outcome::Verdict(verdict));
+        return Ok(Some(Outcome::Verdict(verdict)));
     }
 
     let mut touched = [
@@ -240,7 +244,7 @@ fn relate_linework(
         decide(&interval)
     });
     if let Some(verdict) = verdict {
-        return Some(Outcome::Verdict(verdict));
+        return Ok(Some(Outcome::Verdict(verdict)));
     }
 
     if let Some(verdict) = settle_after_sweep(
@@ -251,13 +255,13 @@ fn relate_linework(
         spans,
         &mut decide,
     ) {
-        return Some(Outcome::Verdict(verdict));
+        return Ok(Some(Outcome::Verdict(verdict)));
     }
-    Some(Outcome::Matrix(
+    Ok(Some(Outcome::Matrix(
         interval
             .matrix()
             .expect("every cell of a linework relation is settled"),
-    ))
+    )))
 }
 
 /// Sweep two staged pools against each other and hand every contact to
@@ -391,11 +395,15 @@ fn covered(segment: Segment, spans: &[(usize, XY, XY)], ordinal: usize) -> bool 
 
 /// The full matrix of two linework operands, or `None` when either is not
 /// admitted here.
-pub(crate) fn direct_linework_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
-    match relate_linework(left, right, |_| None)? {
-        Outcome::Matrix(matrix) => Some(matrix),
-        Outcome::Verdict(_) => unreachable!("no predicate was asked"),
-    }
+pub(crate) fn direct_linework_relate(
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+) -> crate::error::Result<Option<De9im>> {
+    Ok(match relate_linework(left, right, |_| None)? {
+        Some(Outcome::Matrix(matrix)) => Some(matrix),
+        Some(Outcome::Verdict(_)) => unreachable!("no predicate was asked"),
+        None => None,
+    })
 }
 
 /// One named predicate over two linework operands, decided as early as the
@@ -404,14 +412,14 @@ pub(crate) fn direct_linework_predicate(
     spec: &PredicateSpec,
     left: &PreparedPlan,
     right: &PreparedPlan,
-) -> Option<bool> {
-    let outcome = relate_linework(left, right, |interval| {
+) -> crate::error::Result<Option<bool>> {
+    Ok(relate_linework(left, right, |interval| {
         predicate_verdict(interval, spec.predicate, Dimension::Curve, Dimension::Curve)
-    })?;
-    Some(match outcome {
+    })?
+    .map(|outcome| match outcome {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
-    })
+    }))
 }
 
 /// One DE-9IM pattern over two linework operands, decided as early as the
@@ -421,12 +429,15 @@ pub(crate) fn direct_linework_pattern(
     pattern: CompiledPattern,
     left: &PreparedPlan,
     right: &PreparedPlan,
-) -> Option<bool> {
-    let outcome = relate_linework(left, right, |interval| interval.pattern(pattern))?;
-    Some(match outcome {
-        Outcome::Verdict(verdict) => verdict,
-        Outcome::Matrix(matrix) => matrix.matches(pattern),
-    })
+) -> crate::error::Result<Option<bool>> {
+    Ok(
+        relate_linework(left, right, |interval| interval.pattern(pattern))?.map(|outcome| {
+            match outcome {
+                Outcome::Verdict(verdict) => verdict,
+                Outcome::Matrix(matrix) => matrix.matches(pattern),
+            }
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -495,13 +506,16 @@ fn polygons_of(plan: &PreparedPlan) -> Option<Vec<&crate::geometry::Polygon>> {
 /// repeated vertices need no gate), and a multi-part or holed operand is
 /// valid, so its rings form a laminar family. The vertex probes run before
 /// this gate: a point-in-polygon reading needs neither.
-fn sweep_admits(plan: &PreparedPlan, polygons: &[&crate::geometry::Polygon]) -> bool {
-    if !plan.areal_rings_have_area() {
-        return false;
+fn sweep_admits(
+    plan: &PreparedPlan,
+    polygons: &[&crate::geometry::Polygon],
+) -> crate::error::Result<bool> {
+    if !plan.areal_rings_have_area()? {
+        return Ok(false);
     }
     let adjacency_possible =
         polygons.len() > 1 || polygons.iter().any(|polygon| !polygon.holes.is_empty());
-    !adjacency_possible || plan.validate_cached().is_none()
+    Ok(!adjacency_possible || plan.validate_cached()?.is_none())
 }
 
 /// The first shell vertex of a polygon, the probe point its owner offers.
@@ -564,12 +578,20 @@ fn locate_off_boundary(polygons: &[&crate::geometry::Polygon], point: XY) -> Opt
 /// other's interior or exterior, and both of its sides — one an interior
 /// patch of its owner, one an exterior patch, whichever way round — share
 /// that placement, which fixes every cell from one located vertex per ring.
-fn relate_areal(left: &PreparedPlan, right: &PreparedPlan, mut ask: Ask<'_>) -> Option<Outcome> {
-    let left_polygons = polygons_of(left)?;
-    let right_polygons = polygons_of(right)?;
+fn relate_areal(
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+    mut ask: Ask<'_>,
+) -> crate::error::Result<Option<Outcome>> {
+    let Some(left_polygons) = polygons_of(left) else {
+        return Ok(None);
+    };
+    let Some(right_polygons) = polygons_of(right) else {
+        return Ok(None);
+    };
     let mut interval = De9imInterval::open(StagedRings::shape(), StagedRings::shape());
     if let Some(verdict) = ask.decide(&interval) {
-        return Some(Outcome::Verdict(verdict));
+        return Ok(Some(Outcome::Verdict(verdict)));
     }
     // One shell vertex of each operand located in the other, before either
     // is admitted, staged or swept: a vertex inside the other decides
@@ -585,7 +607,7 @@ fn relate_areal(left: &PreparedPlan, right: &PreparedPlan, mut ask: Ask<'_>) -> 
             Dimension::Point,
         );
         if let Some(verdict) = ask.decide(&interval) {
-            return Some(Outcome::Verdict(verdict));
+            return Ok(Some(Outcome::Verdict(verdict)));
         }
         interval.witness(
             locate_in_polygons(&left_polygons, first_vertex(right_polygons[0])),
@@ -593,14 +615,18 @@ fn relate_areal(left: &PreparedPlan, right: &PreparedPlan, mut ask: Ask<'_>) -> 
             Dimension::Point,
         );
         if let Some(verdict) = ask.decide(&interval) {
-            return Some(Outcome::Verdict(verdict));
+            return Ok(Some(Outcome::Verdict(verdict)));
         }
     }
-    if !sweep_admits(left, &left_polygons) || !sweep_admits(right, &right_polygons) {
-        return None;
+    if !sweep_admits(left, &left_polygons)? || !sweep_admits(right, &right_polygons)? {
+        return Ok(None);
     }
-    let a = left.staged_rings()?;
-    let b = right.staged_rings()?;
+    let Some(a) = left.staged_rings()? else {
+        return Ok(None);
+    };
+    let Some(b) = right.staged_rings()? else {
+        return Ok(None);
+    };
 
     let mut boundaries_met = false;
     let verdict = sweep_contacts(&a.chains, &b.chains, |_ia, _ib, contact| {
@@ -634,29 +660,33 @@ fn relate_areal(left: &PreparedPlan, right: &PreparedPlan, mut ask: Ask<'_>) -> 
         ask.decide(&interval)
     });
     if let Some(verdict) = verdict {
-        return Some(Outcome::Verdict(verdict));
+        return Ok(Some(Outcome::Verdict(verdict)));
     }
     // Every contact has been seen, so the boundaries' meeting cannot rise
     // further; after a proper crossing that was the one cell still open.
     interval.settle(Loc::Boundary, Loc::Boundary);
     if let Some(matrix) = interval.matrix() {
-        return Some(Outcome::Matrix(matrix));
+        return Ok(Some(Outcome::Matrix(matrix)));
     }
     if boundaries_met {
         // Sides at a touch are the arrangement fold's business.
-        return None;
+        return Ok(None);
     }
 
     // Laminar placement: one vertex locates each ring, and the ring's two
     // sides — one interior and one exterior patch of its owner — inherit it.
     for &vertex in &a.ring_vertices {
-        let placement = locate_off_boundary(&right_polygons, vertex)?;
+        let Some(placement) = locate_off_boundary(&right_polygons, vertex) else {
+            return Ok(None);
+        };
         interval.witness(Loc::Interior, placement, Dimension::Surface);
         interval.witness(Loc::Exterior, placement, Dimension::Surface);
         interval.witness(Loc::Boundary, placement, Dimension::Curve);
     }
     for &vertex in &b.ring_vertices {
-        let placement = locate_off_boundary(&left_polygons, vertex)?;
+        let Some(placement) = locate_off_boundary(&left_polygons, vertex) else {
+            return Ok(None);
+        };
         interval.witness(placement, Loc::Interior, Dimension::Surface);
         interval.witness(placement, Loc::Exterior, Dimension::Surface);
         interval.witness(placement, Loc::Boundary, Dimension::Curve);
@@ -667,23 +697,25 @@ fn relate_areal(left: &PreparedPlan, right: &PreparedPlan, mut ask: Ask<'_>) -> 
         }
     }
     if let Some(verdict) = ask.decide(&interval) {
-        return Some(Outcome::Verdict(verdict));
+        return Ok(Some(Outcome::Verdict(verdict)));
     }
-    Some(Outcome::Matrix(
-        interval
-            .matrix()
-            .expect("every cell of a laminar areal relation is settled"),
-    ))
+    Ok(Some(Outcome::Matrix(interval.matrix().expect(
+        "every cell of a laminar areal relation is settled",
+    ))))
 }
 
 /// The full matrix of two areal operands whose boundaries cross properly or
 /// never meet, or `None` for the touching cases the contact sweep cannot
 /// settle alone.
-pub(crate) fn direct_areal_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
-    match relate_areal(left, right, Ask::Matrix)? {
-        Outcome::Matrix(matrix) => Some(matrix),
-        Outcome::Verdict(_) => unreachable!("no predicate was asked"),
-    }
+pub(crate) fn direct_areal_relate(
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+) -> crate::error::Result<Option<De9im>> {
+    Ok(match relate_areal(left, right, Ask::Matrix)? {
+        Some(Outcome::Matrix(matrix)) => Some(matrix),
+        Some(Outcome::Verdict(_)) => unreachable!("no predicate was asked"),
+        None => None,
+    })
 }
 
 /// One named predicate over two areal operands, decided as early as the
@@ -692,24 +724,23 @@ pub(crate) fn direct_areal_predicate(
     spec: &PredicateSpec,
     left: &PreparedPlan,
     right: &PreparedPlan,
-) -> Option<bool> {
-    Some(
-        match relate_areal(
-            left,
-            right,
-            Ask::Predicate(&mut |interval| {
-                predicate_verdict(
-                    interval,
-                    spec.predicate,
-                    Dimension::Surface,
-                    Dimension::Surface,
-                )
-            }),
-        )? {
-            Outcome::Verdict(verdict) => verdict,
-            Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
-        },
-    )
+) -> crate::error::Result<Option<bool>> {
+    Ok(relate_areal(
+        left,
+        right,
+        Ask::Predicate(&mut |interval| {
+            predicate_verdict(
+                interval,
+                spec.predicate,
+                Dimension::Surface,
+                Dimension::Surface,
+            )
+        }),
+    )?
+    .map(|outcome| match outcome {
+        Outcome::Verdict(verdict) => verdict,
+        Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
+    }))
 }
 
 /// [`direct_areal_predicate`] for a pattern.
@@ -717,17 +748,16 @@ pub(crate) fn direct_areal_pattern(
     pattern: CompiledPattern,
     left: &PreparedPlan,
     right: &PreparedPlan,
-) -> Option<bool> {
-    Some(
-        match relate_areal(
-            left,
-            right,
-            Ask::Predicate(&mut |interval| interval.pattern(pattern)),
-        )? {
-            Outcome::Verdict(verdict) => verdict,
-            Outcome::Matrix(matrix) => matrix.matches(pattern),
-        },
-    )
+) -> crate::error::Result<Option<bool>> {
+    Ok(relate_areal(
+        left,
+        right,
+        Ask::Predicate(&mut |interval| interval.pattern(pattern)),
+    )?
+    .map(|outcome| match outcome {
+        Outcome::Verdict(verdict) => verdict,
+        Outcome::Matrix(matrix) => matrix.matches(pattern),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -762,9 +792,13 @@ fn relate_areal_linework(
     area: &PreparedPlan,
     line: &PreparedPlan,
     mut ask: Ask<'_>,
-) -> Option<Outcome> {
-    let polygons = polygons_of(area)?;
-    let linework = line.staged_linework()?;
+) -> crate::error::Result<Option<Outcome>> {
+    let Some(polygons) = polygons_of(area) else {
+        return Ok(None);
+    };
+    let Some(linework) = line.staged_linework()? else {
+        return Ok(None);
+    };
     let mut interval = De9imInterval::open(StagedRings::shape(), linework.shape());
     interval.witness(Loc::Interior, Loc::Exterior, Dimension::Surface);
     // The line's first vertex located in the area before the area is
@@ -778,13 +812,15 @@ fn relate_areal_linework(
             Dimension::Point,
         );
         if let Some(verdict) = ask.decide(&interval) {
-            return Some(Outcome::Verdict(verdict));
+            return Ok(Some(Outcome::Verdict(verdict)));
         }
     }
-    if !sweep_admits(area, &polygons) {
-        return None;
+    if !sweep_admits(area, &polygons)? {
+        return Ok(None);
     }
-    let rings = area.staged_rings()?;
+    let Some(rings) = area.staged_rings()? else {
+        return Ok(None);
+    };
 
     let mut cuts: Vec<Vec<Cut>> = vec![Vec::new(); linework.chains.segments.len()];
     let mut ring_spans: Vec<(usize, XY, XY)> = Vec::new();
@@ -812,7 +848,7 @@ fn relate_areal_linework(
         },
     );
     if let Some(verdict) = verdict {
-        return Some(Outcome::Verdict(verdict));
+        return Ok(Some(Outcome::Verdict(verdict)));
     }
 
     for line_index in 0..linework.chains.line_count() {
@@ -836,7 +872,7 @@ fn relate_areal_linework(
             }
         }
         if let Some(verdict) = ask.decide(&interval) {
-            return Some(Outcome::Verdict(verdict));
+            return Ok(Some(Outcome::Verdict(verdict)));
         }
     }
 
@@ -856,11 +892,11 @@ fn relate_areal_linework(
         }
     }
     if let Some(verdict) = ask.decide(&interval) {
-        return Some(Outcome::Verdict(verdict));
+        return Ok(Some(Outcome::Verdict(verdict)));
     }
-    Some(Outcome::Matrix(interval.matrix().expect(
+    Ok(Some(Outcome::Matrix(interval.matrix().expect(
         "every cell of an areal/linework relation is settled",
-    )))
+    ))))
 }
 
 /// Record one boundary contact as cuts of the line segment it fell on, and
@@ -1014,15 +1050,15 @@ fn walk_line_pieces(
 pub(crate) fn direct_areal_linework_relate(
     left: &PreparedPlan,
     right: &PreparedPlan,
-) -> Option<De9im> {
+) -> crate::error::Result<Option<De9im>> {
     let unwrap = |outcome: Outcome| match outcome {
         Outcome::Matrix(matrix) => matrix,
         Outcome::Verdict(_) => unreachable!("no predicate was asked"),
     };
-    if let Some(outcome) = relate_areal_linework(left, right, Ask::Matrix) {
-        return Some(unwrap(outcome));
+    if let Some(outcome) = relate_areal_linework(left, right, Ask::Matrix)? {
+        return Ok(Some(unwrap(outcome)));
     }
-    relate_areal_linework(right, left, Ask::Matrix).map(|outcome| unwrap(outcome).transpose())
+    Ok(relate_areal_linework(right, left, Ask::Matrix)?.map(|outcome| unwrap(outcome).transpose()))
 }
 
 /// One named predicate over an areal and a linework operand, in either
@@ -1031,7 +1067,7 @@ pub(crate) fn direct_areal_linework_predicate(
     spec: &PredicateSpec,
     left: &PreparedPlan,
     right: &PreparedPlan,
-) -> Option<bool> {
+) -> crate::error::Result<Option<bool>> {
     let finish = |outcome: Outcome, spec: &PredicateSpec| match outcome {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
@@ -1047,12 +1083,12 @@ pub(crate) fn direct_areal_linework_predicate(
                 Dimension::Curve,
             )
         }),
-    ) {
-        return Some(finish(outcome, spec));
+    )? {
+        return Ok(Some(finish(outcome, spec)));
     }
     // Swapped operands: the predicate on the (line, area) pair is the same
     // predicate on the transposed (area, line) interval.
-    relate_areal_linework(
+    Ok(relate_areal_linework(
         right,
         left,
         Ask::Predicate(&mut |interval| {
@@ -1063,11 +1099,11 @@ pub(crate) fn direct_areal_linework_predicate(
                 Dimension::Surface,
             )
         }),
-    )
+    )?
     .map(|outcome| match outcome {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix.transpose()),
-    })
+    }))
 }
 
 /// [`direct_areal_linework_predicate`] for a pattern, in either operand order.
@@ -1075,7 +1111,7 @@ pub(crate) fn direct_areal_linework_pattern(
     pattern: CompiledPattern,
     left: &PreparedPlan,
     right: &PreparedPlan,
-) -> Option<bool> {
+) -> crate::error::Result<Option<bool>> {
     let finish = |outcome: Outcome| match outcome {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => matrix.matches(pattern),
@@ -1084,19 +1120,19 @@ pub(crate) fn direct_areal_linework_pattern(
         left,
         right,
         Ask::Predicate(&mut |interval| interval.pattern(pattern)),
-    ) {
-        return Some(finish(outcome));
+    )? {
+        return Ok(Some(finish(outcome)));
     }
     let transposed = pattern.transpose();
-    relate_areal_linework(
+    Ok(relate_areal_linework(
         right,
         left,
         Ask::Predicate(&mut |interval| interval.pattern(transposed)),
-    )
+    )?
     .map(|outcome| match outcome {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => matrix.transpose().matches(pattern),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -1175,6 +1211,7 @@ mod tests {
             PreparedPlan::transient(right).unwrap(),
         );
         let direct = direct_linework_relate(&left_plan, &right_plan)
+            .unwrap()
             .unwrap_or_else(|| panic!("{label}: the pair should be admitted"));
         assert_eq!(
             direct.text(),
@@ -1183,7 +1220,9 @@ mod tests {
         );
         for predicate in every_predicate() {
             let spec = spec_of(predicate);
-            let early = direct_linework_predicate(&spec, &left_plan, &right_plan).unwrap();
+            let early = direct_linework_predicate(&spec, &left_plan, &right_plan)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 early,
                 predicate_matrix_value(&spec, expected),
@@ -1193,7 +1232,9 @@ mod tests {
         }
         // And the transpose, since the engine orients pairs.
         let oracle_t = oracle(right, left);
-        let direct_t = direct_linework_relate(&right_plan, &left_plan).unwrap();
+        let direct_t = direct_linework_relate(&right_plan, &left_plan)
+            .unwrap()
+            .unwrap();
         assert_eq!(direct_t.text(), oracle_t.text(), "{label}: transposed");
     }
 
@@ -1297,10 +1338,11 @@ mod tests {
             ),
             (
                 "multi: three parts at one point (boundary)",
-                multi(&[&[(0.0, 0.0), (1.0, 1.0)], &[(0.0, 2.0), (1.0, 1.0)], &[
-                    (2.0, 1.0),
-                    (1.0, 1.0),
-                ]]),
+                multi(&[
+                    &[(0.0, 0.0), (1.0, 1.0)],
+                    &[(0.0, 2.0), (1.0, 1.0)],
+                    &[(2.0, 1.0), (1.0, 1.0)],
+                ]),
                 line(&[(1.0, 1.0), (1.0, 3.0)]),
             ),
             (
@@ -1386,8 +1428,14 @@ mod tests {
             // double back over themselves it has lost owners and dimensions
             // (see `non_simple_linework_matches_geos`), so the fuzz keeps to
             // simple operands and the non-simple cases are pinned to GEOS.
-            if !PreparedPlan::transient(&left).unwrap().is_simple_cached()
-                || !PreparedPlan::transient(&right).unwrap().is_simple_cached()
+            if !PreparedPlan::transient(&left)
+                .unwrap()
+                .is_simple_cached()
+                .unwrap()
+                || !PreparedPlan::transient(&right)
+                    .unwrap()
+                    .is_simple_cached()
+                    .unwrap()
             {
                 continue;
             }
@@ -1448,6 +1496,7 @@ mod tests {
             for pattern in PATTERNS {
                 let compiled = CompiledPattern::new(std::str::from_utf8(pattern).unwrap()).unwrap();
                 let early = direct_linework_pattern(compiled, &l, &r)
+                    .unwrap()
                     .unwrap_or_else(|| panic!("pair should be admitted"));
                 assert_eq!(
                     early,
@@ -1546,6 +1595,7 @@ mod tests {
                 &PreparedPlan::transient(left).unwrap(),
                 &PreparedPlan::transient(right).unwrap(),
             )
+            .unwrap()
             .unwrap();
             assert_eq!(direct.text(), *expected, "{label}");
         }
@@ -1622,7 +1672,7 @@ mod tests {
                 &PreparedPlan::transient(left).unwrap(),
                 &PreparedPlan::transient(right).unwrap(),
             );
-            let direct = direct_areal_relate(left, right);
+            let direct = direct_areal_relate(left, right).unwrap();
             assert_eq!(
                 direct.is_some(),
                 expect != Expect::Touching,
@@ -1633,7 +1683,7 @@ mod tests {
             }
             for predicate in every_predicate() {
                 let spec = spec_of(predicate);
-                let early = direct_areal_predicate(&spec, left, right);
+                let early = direct_areal_predicate(&spec, left, right).unwrap();
                 let must_decide = match expect {
                     Expect::Crossing | Expect::Laminar => true,
                     Expect::Touching => {
@@ -1858,6 +1908,7 @@ mod tests {
                 &PreparedPlan::transient(&bowtie).unwrap(),
                 &PreparedPlan::transient(&other).unwrap(),
             )
+            .unwrap()
             .unwrap_or_else(|| panic!("{label}: admitted"));
             assert_eq!(direct.text(), geos, "{label}");
             let fold = super::super::graph_matrix::try_areal_relate(&bowtie, &other)
@@ -1910,9 +1961,12 @@ mod tests {
                 .unwrap()
                 .unwrap_or_else(|| oracle(area, line));
             let direct = direct_areal_linework_relate(&area_plan, &line_plan)
+                .unwrap()
                 .unwrap_or_else(|| panic!("{label}: admitted"));
             assert_eq!(direct.text(), graph.text(), "{label}: direct matrix");
-            let swapped = direct_areal_linework_relate(&line_plan, &area_plan).unwrap();
+            let swapped = direct_areal_linework_relate(&line_plan, &area_plan)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 swapped.text(),
                 graph.transpose().text(),
@@ -1921,14 +1975,16 @@ mod tests {
             for predicate in every_predicate() {
                 let spec = spec_of(predicate);
                 let early = direct_areal_linework_predicate(&spec, &area_plan, &line_plan)
+                    .unwrap()
                     .unwrap_or_else(|| panic!("{label}: {predicate:?} admitted"));
                 assert_eq!(
                     early,
                     predicate_matrix_value(&spec, graph),
                     "{label}: {predicate:?}"
                 );
-                let early_swapped =
-                    direct_areal_linework_predicate(&spec, &line_plan, &area_plan).unwrap();
+                let early_swapped = direct_areal_linework_predicate(&spec, &line_plan, &area_plan)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(
                     early_swapped,
                     predicate_matrix_value(&spec, graph.transpose()),
@@ -2044,7 +2100,10 @@ mod tests {
                         .collect();
                 let probe = line(&points);
                 if stage_linework(&probe).is_none()
-                    || !PreparedPlan::transient(&probe).unwrap().is_simple_cached()
+                    || !PreparedPlan::transient(&probe)
+                        .unwrap()
+                        .is_simple_cached()
+                        .unwrap()
                 {
                     continue;
                 }

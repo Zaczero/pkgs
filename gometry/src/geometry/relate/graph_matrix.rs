@@ -127,7 +127,7 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
     // from one sweep, cheaper than the convex classifier on the inputs both
     // admit; the convex lane then catches touching convex pairs before the
     // arrangement fold.
-    if let Some(matrix) = super::direct_areal_relate(left, right)
+    if let Some(matrix) = super::direct_areal_relate(left, right)?
         .or_else(|| try_convex_relate(left.shape(), right.shape()))
     {
         return Ok(matrix);
@@ -135,13 +135,13 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
     if let Some(matrix) = try_areal_relate(left.shape(), right.shape())? {
         return Ok(matrix);
     }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right)? {
         return Ok(matrix);
     }
     if let Some(matrix) = try_cartesian_polygon_line_relate(left, right)? {
         return Ok(matrix);
     }
-    if let Some(matrix) = super::direct_linework_relate(left, right) {
+    if let Some(matrix) = super::direct_linework_relate(left, right)? {
         return Ok(matrix);
     }
     graph_relate_data_fallback(left, right)
@@ -177,19 +177,21 @@ pub(crate) fn graph_relate_data_with_left_graph(
     left_graph: &TopologyGraph,
     right: &PreparedPlan,
 ) -> Result<De9im> {
-    if let Some(matrix) = super::direct_areal_relate(left, right) {
+    if let Some(matrix) = super::direct_areal_relate(left, right)? {
         return Ok(matrix);
     }
     if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape())? {
         return Ok(matrix);
     }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right)? {
         return Ok(matrix);
     }
     if let Some(matrix) =
         try_cartesian_polygon_line_relate_with_graphs(left, right, Some(left_graph), None)?
-            .or_else(|| super::direct_linework_relate(left, right))
     {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = super::direct_linework_relate(left, right)? {
         return Ok(matrix);
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -208,6 +210,7 @@ pub(crate) fn graph_relate_data_with_right_graph(
     right: &PreparedPlan,
     right_graph: &TopologyGraph,
 ) -> Result<De9im> {
+<<<<<<< HEAD
     if let Some(matrix) = super::direct_areal_relate(left, right) {
         return Ok(matrix);
     }
@@ -215,12 +218,28 @@ pub(crate) fn graph_relate_data_with_right_graph(
         return Ok(matrix);
     }
     if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
+||||||| 7658eb84
+    if let Some(matrix) = super::direct_areal_relate(left, right)
+        .or_else(|| try_cartesian_areal_relate(left.shape(), right.shape()))
+        .or_else(|| super::direct_areal_linework_relate(left, right))
+    {
+=======
+    if let Some(matrix) = super::direct_areal_relate(left, right)? {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right)? {
+>>>>>>> grok/core-lints
         return Ok(matrix);
     }
     if let Some(matrix) =
         try_cartesian_polygon_line_relate_with_graphs(left, right, None, Some(right_graph))?
-            .or_else(|| super::direct_linework_relate(left, right))
     {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = super::direct_linework_relate(left, right)? {
         return Ok(matrix);
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -386,8 +405,8 @@ fn try_cartesian_polygon_line_relate_with_graphs(
         (Shape::Polygon(polygon), Shape::LineString(line)) => {
             if !polygon_has_nondegenerate_area(polygon)
                 || !line_has_nonzero_segment(line)
-                || left.validate_cached().is_some()
-                || right.validate_cached().is_some()
+                || left.validate_cached()?.is_some()
+                || right.validate_cached()?.is_some()
             {
                 return Ok(None);
             }
@@ -402,8 +421,8 @@ fn try_cartesian_polygon_line_relate_with_graphs(
         (Shape::LineString(line), Shape::Polygon(polygon)) => {
             if !polygon_has_nondegenerate_area(polygon)
                 || !line_has_nonzero_segment(line)
-                || left.validate_cached().is_some()
-                || right.validate_cached().is_some()
+                || left.validate_cached()?.is_some()
+                || right.validate_cached()?.is_some()
             {
                 return Ok(None);
             }
@@ -1576,9 +1595,20 @@ mod tests {
     }
 
     fn donut() -> Polygon {
+<<<<<<< HEAD
         Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0).shell, vec![
             Ring::from_closed(
                 CoordSeq::try_from_points(&[
+||||||| 7658eb84
+        Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0).shell, vec![
+            Ring::from_closed(
+                CoordSeq::try_from_points(&vec![
+=======
+        Polygon::new(
+            rectangle(0.0, 0.0, 10.0, 10.0).shell,
+            vec![Ring::from_closed(
+                CoordSeq::try_from_points(&vec![
+>>>>>>> grok/core-lints
                     Point::new_raw_xy(3.0, 3.0),
                     Point::new_raw_xy(7.0, 3.0),
                     Point::new_raw_xy(7.0, 7.0),
@@ -1586,8 +1616,8 @@ mod tests {
                     Point::new_raw_xy(3.0, 3.0),
                 ])
                 .unwrap(),
-            ),
-        ])
+            )],
+        )
         .unwrap()
     }
 
@@ -2214,9 +2244,12 @@ mod tests {
             vec![rectangle(0.0, 0.0, 3.0, 3.0), rectangle(0.0, 0.0, 3.0, 3.0)].into(),
         );
         let pinched = Shape::geometry_collection(vec![
-            Shape::Polygon(polygon(&[[0.0, 0.0], [-2.0, -1.0], [-2.0, 1.0], [
-                0.0, 0.0,
-            ]])),
+            Shape::Polygon(polygon(&[
+                [0.0, 0.0],
+                [-2.0, -1.0],
+                [-2.0, 1.0],
+                [0.0, 0.0],
+            ])),
             Shape::Polygon(polygon(&[[0.0, 0.0], [2.0, 1.0], [2.0, -1.0], [0.0, 0.0]])),
         ])
         .expect("test collection is valid");
@@ -2229,12 +2262,18 @@ mod tests {
             Shape::Polygon(rectangle(31.0, 1.0, 32.0, 2.0)),
             Shape::Polygon(rectangle(40.0, 0.0, 43.0, 3.0)),
             Shape::Polygon(rectangle(40.0, 0.0, 43.0, 3.0)),
-            Shape::Polygon(polygon(&[[50.0, 0.0], [48.0, -1.0], [48.0, 1.0], [
-                50.0, 0.0,
-            ]])),
-            Shape::Polygon(polygon(&[[50.0, 0.0], [52.0, 1.0], [52.0, -1.0], [
-                50.0, 0.0,
-            ]])),
+            Shape::Polygon(polygon(&[
+                [50.0, 0.0],
+                [48.0, -1.0],
+                [48.0, 1.0],
+                [50.0, 0.0],
+            ])),
+            Shape::Polygon(polygon(&[
+                [50.0, 0.0],
+                [52.0, 1.0],
+                [52.0, -1.0],
+                [50.0, 0.0],
+            ])),
         ])
         .expect("test collection is valid");
         for (name, left, right) in [
@@ -2974,9 +3013,13 @@ mod tests {
             ),
             (
                 "full boundary",
-                line(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [
-                    0.0, 0.0,
-                ]]),
+                line(&[
+                    [0.0, 0.0],
+                    [10.0, 0.0],
+                    [10.0, 10.0],
+                    [0.0, 10.0],
+                    [0.0, 0.0],
+                ]),
                 "FF21FFFF2",
             ),
             (

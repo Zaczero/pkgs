@@ -347,12 +347,8 @@ pub(crate) fn unary_is_closed(data: &PreparedPlan, _ctx: &CachelessRowContext<'_
 }
 
 /// ``is_ring`` kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<bool>"
-)]
 pub(crate) fn unary_is_ring(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
-    Ok(crate::geometry::is_ring_data_in_frame(data, ctx.domain))
+    crate::geometry::is_ring_data_in_frame(data, ctx.domain)
 }
 
 /// ``is_ccw`` kernel shared by the spine-routed free function.
@@ -365,12 +361,8 @@ pub(crate) fn unary_is_ccw(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) 
 }
 
 /// ``is_simple`` kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<bool>"
-)]
 pub(crate) fn unary_is_simple(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
-    Ok(crate::geometry::is_simple_data_in_frame(data, ctx.domain))
+    crate::geometry::is_simple_data_in_frame(data, ctx.domain)
 }
 
 /// ``is_valid`` kernel shared by the spine-routed free function.

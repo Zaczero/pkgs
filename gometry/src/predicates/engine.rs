@@ -754,12 +754,17 @@ pub(crate) fn topology_scalar_pair(
     // The direct engines need the plans, not a graph: a pair that already
     // carries the scalar's graph (the scalar-vs-array lane) is admitted the
     // same way, and the graph stays for what they decline.
-    if let Some((left, right)) = operands.cartesian_plans()
-        && let Some(verdict) = crate::geometry::direct_linework_predicate(spec, left, right)
-            .or_else(|| crate::geometry::direct_areal_predicate(spec, left, right))
-            .or_else(|| crate::geometry::direct_areal_linework_predicate(spec, left, right))
-    {
-        return Ok(verdict);
+    if let Some((left, right)) = operands.cartesian_plans() {
+        if let Some(verdict) = crate::geometry::direct_linework_predicate(spec, left, right)? {
+            return Ok(verdict);
+        }
+        if let Some(verdict) = crate::geometry::direct_areal_predicate(spec, left, right)? {
+            return Ok(verdict);
+        }
+        if let Some(verdict) = crate::geometry::direct_areal_linework_predicate(spec, left, right)?
+        {
+            return Ok(verdict);
+        }
     }
     Ok(predicate_matrix_value(spec, operands.relate()?))
 }
@@ -778,12 +783,17 @@ pub(crate) fn topology_scalar_pattern(
     {
         return Ok(verdict);
     }
-    if let Some((left, right)) = operands.cartesian_plans()
-        && let Some(verdict) = crate::geometry::direct_linework_pattern(pattern, left, right)
-            .or_else(|| crate::geometry::direct_areal_pattern(pattern, left, right))
-            .or_else(|| crate::geometry::direct_areal_linework_pattern(pattern, left, right))
-    {
-        return Ok(verdict);
+    if let Some((left, right)) = operands.cartesian_plans() {
+        if let Some(verdict) = crate::geometry::direct_linework_pattern(pattern, left, right)? {
+            return Ok(verdict);
+        }
+        if let Some(verdict) = crate::geometry::direct_areal_pattern(pattern, left, right)? {
+            return Ok(verdict);
+        }
+        if let Some(verdict) = crate::geometry::direct_areal_linework_pattern(pattern, left, right)?
+        {
+            return Ok(verdict);
+        }
     }
     Ok(operands.relate()?.matches(pattern))
 }

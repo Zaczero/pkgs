@@ -312,21 +312,29 @@ impl PreparedPlan {
         &self.shape
     }
 
-    fn topology(&self) -> &TopologyPlan {
+    fn topology(&self) -> Result<&TopologyPlan> {
         self.topology
-            .get_or_init(|| Box::new(TopologyPlan::default()))
+            .get_or_try_init(|| {
+                Box::try_new(TopologyPlan::default()).map_err(crate::error::Error::from)
+            })
+            .map(Box::as_ref)
     }
 
-    fn metric(&self) -> &MetricPlan {
-        self.metric.get_or_init(|| Box::new(MetricPlan::default()))
+    fn metric(&self) -> Result<&MetricPlan> {
+        self.metric
+            .get_or_try_init(|| {
+                Box::try_new(MetricPlan::default()).map_err(crate::error::Error::from)
+            })
+            .map(Box::as_ref)
     }
 
     pub(crate) fn topology_graph(&self) -> Result<&crate::geometry::TopologyGraph> {
+        let topology = self.topology()?;
         #[cfg(test)]
-        self.topology()
+        topology
             .cartesian_graph_accesses
             .fetch_add(1, Ordering::Relaxed);
-        self.topology()
+        topology
             .cartesian_graph
             .get_or_try_init(|| {
                 Box::try_new(crate::geometry::topology::TopologyGraph::cartesian(
@@ -346,80 +354,87 @@ impl PreparedPlan {
 
     /// The shape staged as linework for the direct relation engine, `None`
     /// when it is not a line operand they admit.
-    pub(crate) fn staged_linework(&self) -> Option<&crate::geometry::StagedLinework> {
-        self.topology()
+    pub(crate) fn staged_linework(&self) -> Result<Option<&crate::geometry::StagedLinework>> {
+        Ok(self
+            .topology()?
             .linework
             .get_or_init(|| crate::geometry::stage_linework(self.shape()).map(Box::new))
-            .as_deref()
+            .as_deref())
     }
 
     /// Whether every ring of this areal shape has a nonzero exact area
     /// (`ring_has_area`), decided once per plan.
-    pub(crate) fn areal_rings_have_area(&self) -> bool {
-        *self.topology().areal_rings_have_area.get_or_init(|| {
+    pub(crate) fn areal_rings_have_area(&self) -> Result<bool> {
+        Ok(*self.topology()?.areal_rings_have_area.get_or_init(|| {
             let mut polygons = Vec::new();
             crate::geometry::collect_polygons(self.shape(), &mut polygons).is_some()
                 && polygons
                     .iter()
                     .all(|polygon| polygon.rings().all(crate::geometry::ring_has_area))
-        })
+        }))
     }
 
     /// The shape's rings staged for the direct relation engine, `None` when
     /// it is not an areal operand.
-    pub(crate) fn staged_rings(&self) -> Option<&crate::geometry::StagedRings> {
-        self.topology()
+    pub(crate) fn staged_rings(&self) -> Result<Option<&crate::geometry::StagedRings>> {
+        Ok(self
+            .topology()?
             .rings
             .get_or_init(|| crate::geometry::stage_rings(self.shape()).map(Box::new))
-            .as_deref()
+            .as_deref())
     }
 
-    pub(crate) fn validate_cached(&self) -> Option<&ValidationIssue> {
-        self.topology()
+    pub(crate) fn validate_cached(&self) -> Result<Option<&ValidationIssue>> {
+        Ok(self
+            .topology()?
             .validity
             .get_or_init(|| self.shape().validate().map(Box::new))
-            .as_deref()
+            .as_deref())
     }
 
-    pub(crate) fn is_simple_cached(&self) -> bool {
-        *self
-            .topology()
+    pub(crate) fn is_simple_cached(&self) -> Result<bool> {
+        Ok(*self
+            .topology()?
             .simplicity
-            .get_or_init(|| self.shape().is_simple())
+            .get_or_init(|| self.shape().is_simple()))
     }
 
-    pub(crate) fn crosses_antimeridian(&self) -> bool {
-        *self
-            .topology()
+    pub(crate) fn crosses_antimeridian(&self) -> Result<bool> {
+        Ok(*self
+            .topology()?
             .antimeridian_crossing
-            .get_or_init(|| self.shape().crosses_antimeridian())
+            .get_or_init(|| self.shape().crosses_antimeridian()))
     }
 
     pub(crate) fn distance_parts(&self) -> Result<&DistanceParts> {
-        if let Some(parts) = self.metric().distance.get() {
+        if let Some(parts) = self.metric.get().and_then(|metric| metric.distance.get()) {
             return Ok(parts.as_ref());
         }
         let parts = Box::new(self.shape().distance_parts()?);
-        Ok(self.metric().distance.get_or_init(|| parts).as_ref())
+        Ok(self.metric()?.distance.get_or_init(|| parts).as_ref())
     }
 
     pub(crate) fn distance_3d_parts(&self) -> Result<&crate::geometry::Distance3dParts> {
-        if let Some(parts) = self.metric().distance_3d.get() {
+        if let Some(parts) = self
+            .metric
+            .get()
+            .and_then(|metric| metric.distance_3d.get())
+        {
             return Ok(parts.as_ref());
         }
         let parts = Box::new(crate::geometry::Distance3dParts::build(self.shape())?);
-        Ok(self.metric().distance_3d.get_or_init(|| parts).as_ref())
+        Ok(self.metric()?.distance_3d.get_or_init(|| parts).as_ref())
     }
 
     pub(crate) fn line_index(&self) -> Result<&LineIndex> {
-        self.metric()
+        self.metric()?
             .line_index
             .get_or_init(|| Box::new(LineIndexSlot::build(self.shape(), &PlanarMetric)))
             .get()
     }
 
     pub(crate) fn measured_line_index(&self) -> Result<&MeasuredLineIndex> {
-        self.metric()
+        self.metric()?
             .measured_line_index
             .get_or_init(|| Box::new(MeasuredLineIndexSlot::build(self.shape())))
             .get()
@@ -494,7 +509,7 @@ impl PreparedPlan {
         _required: crate::geometry::distance::RequiredPointTester,
     ) -> Result<Option<&PointBatchTester>> {
         Ok(self
-            .topology()
+            .topology()?
             .point_tester
             .get_or_try_init(|| -> Result<_> {
                 if matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_)) {
@@ -657,6 +672,51 @@ mod footprint_tests {
         let _ = data.distance_parts().unwrap();
         assert!(data.metric.get().is_some());
         assert!(data.retained_heap_bytes() > cold);
+    }
+
+    #[test]
+    fn cold_topology_sidecar_allocation_failure_is_retryable() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::fail_allocations_after;
+
+        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
+        assert!(plan.topology.get().is_none());
+        assert_eq!(plan.topology_graph_accesses(), 0);
+        let error = fail_allocations_after(0, || plan.topology_graph()).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert!(plan.topology.get().is_none());
+        let first = plan.topology_graph().expect("retry after rejection") as *const _;
+        let second = plan.topology_graph().expect("cached topology graph") as *const _;
+        assert_eq!(first, second);
+        assert!(std::ptr::eq(
+            plan.topology.get().expect("published sidecar").as_ref(),
+            plan.topology.get().expect("reused sidecar").as_ref()
+        ));
+    }
+
+    #[test]
+    fn cold_metric_sidecar_allocation_failure_is_retryable() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::fail_allocations_after;
+
+        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
+        assert!(plan.metric.get().is_none());
+        let error = fail_allocations_after(0, || plan.distance_parts()).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert!(plan.metric.get().is_none());
+        let first = plan.distance_parts().expect("retry after rejection") as *const _;
+        let second = plan.distance_parts().expect("cached distance parts") as *const _;
+        assert_eq!(first, second);
+        assert!(std::ptr::eq(
+            plan.metric.get().expect("published sidecar").as_ref(),
+            plan.metric.get().expect("reused sidecar").as_ref()
+        ));
     }
 }
 
