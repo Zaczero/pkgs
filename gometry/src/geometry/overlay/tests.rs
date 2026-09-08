@@ -13,7 +13,7 @@ fn sourced_noder_orders_extreme_horizontal_cuts_and_keeps_owner() {
             end: XY::new(multiple * scale, scale),
         });
         let (atomic, provenance) =
-            self_node_segments_sourced(std::iter::once(source).chain(cutters));
+            self_node_segments_sourced(std::iter::once(source).chain(cutters)).unwrap();
         let source_atoms: Vec<_> = atomic
             .iter()
             .enumerate()

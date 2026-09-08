@@ -63,7 +63,7 @@ impl Shape {
         let rule = WalkJoinRule::new(join_style, miter_limit);
         if same_topological_coordinate(distance, 0.0)
             && matches!(self, Self::Polygon(_) | Self::MultiPolygon(_))
-            && self.validate().is_none()
+            && self.validate()?.is_none()
         {
             return Ok(self.clone());
         }
@@ -305,7 +305,7 @@ impl Shape {
         // every path.
         let shape = Self::narrow_polygons(crate::geometry::CoordinateAxes::XY, strips);
         let shape = shape?.force_2d()?;
-        if strips_are_pairwise_strictly_disjoint(&shape) || shape.validate().is_none() {
+        if strips_are_pairwise_strictly_disjoint(&shape)? || shape.validate()?.is_none() {
             Ok(shape)
         } else {
             shape.repair(RepairMethod::Structure, false)
@@ -347,18 +347,21 @@ fn edge_delta_overflows(coords: &CoordSeq, cyclic: bool) -> bool {
 /// cannot overlap or touch, which is exactly the remaining MultiPolygon
 /// validity condition. The envelope sweep avoids a quadratic proof for large
 /// multi-line inputs.
-fn strips_are_pairwise_strictly_disjoint(shape: &Shape) -> bool {
+fn strips_are_pairwise_strictly_disjoint(shape: &Shape) -> crate::error::Result<bool> {
     let Shape::MultiPolygon(strips) = shape else {
-        return true;
+        return Ok(true);
     };
     let mut bounds = Vec::with_capacity(strips.len());
     for strip in strips.iter() {
         let Some(bounds_for_strip) = Bounds::from_coords(strip.shell.coords()) else {
-            return false;
+            return Ok(false);
         };
         bounds.push(bounds_for_strip);
     }
-    for_each_overlapping_bounds_pair(&bounds, |_, _| std::ops::ControlFlow::Break(())).is_continue()
+    Ok(
+        for_each_overlapping_bounds_pair(&bounds, |_, _| std::ops::ControlFlow::Break(()))?
+            .is_continue(),
+    )
 }
 
 /// The only non-empty non-collection member of `parts`, if there is exactly

@@ -121,7 +121,7 @@ impl BoundaryContacts {
 pub(crate) fn collect_boundary_contacts(
     pool: &OperandPool,
     op: OverlayOp,
-) -> Option<BoundaryContacts> {
+) -> crate::error::Result<Option<BoundaryContacts>> {
     if matches!(
         op,
         OverlayOp::Union | OverlayOp::Intersection | OverlayOp::Difference
@@ -134,7 +134,7 @@ pub(crate) fn collect_boundary_contacts(
             }
         }
         contacts.has_cross = scan.has_cross;
-        return Some(contacts);
+        return Ok(Some(contacts));
     }
 
     let mut contacts = BoundaryContacts::new(pool.segments.len());
@@ -188,19 +188,21 @@ pub(crate) fn collect_boundary_contacts(
     };
     // The L1-aware noding sweep, with chains broken at ring boundaries so a
     // ring junction cannot hide a same- or cross-operand contact.
-    let _ = for_each_candidate_pair(&pool.segments, |index| pool.ring_of[index], visit);
+    let _ =  for_each_candidate_pair(&pool.segments, |index| pool.ring_of[index], visit)?;
     if !clean {
-        return None;
+        return Ok(None);
     }
     if contacts
         .touch_nodes
         .iter()
         .any(|key| !contacts.shared_nodes.contains(key))
     {
-        return None;
+        return Ok(None);
     }
-    validate_shared_sections(pool, &mut contacts)?;
-    Some(contacts)
+    if validate_shared_sections(pool, &mut contacts).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(contacts))
 }
 
 pub(crate) fn record_touch_node(contacts: &mut BoundaryContacts, point: XY) {

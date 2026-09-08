@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use crate::geometry::segment_index::{
     for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
-    for_each_overlapping_bounds_pair, single_chain, try_for_each_candidate_pair,
+    for_each_overlapping_bounds_pair, single_chain,
 };
 use crate::geometry::{Bounds, Segment, XY, segments_intersect};
 
@@ -105,15 +105,6 @@ mod sweep_characterization {
         let _ = for_each_candidate_pair(pool, single_chain, |a, b| {
             seen.push(pair_key(a, b));
             ControlFlow::Continue(())
-        });
-        sorted_unique(seen)
-    }
-
-    fn every_candidate_try(pool: &[Segment]) -> Vec<u64> {
-        let mut seen = Vec::new();
-        let _ = try_for_each_candidate_pair(pool, single_chain, |a, b| {
-            seen.push(pair_key(a, b));
-            ControlFlow::Continue(())
         })
         .expect("sweep scratch allocation");
         sorted_unique(seen)
@@ -157,26 +148,22 @@ mod sweep_characterization {
                 }
             }
             truly_intersecting.sort_unstable();
-            for (label, visited) in [
-                ("for_each", every_candidate(&pool)),
-                ("try_for_each", every_candidate_try(&pool)),
-            ] {
-                for &pair in &truly_intersecting {
-                    assert!(
-                        visited.binary_search(&pair).is_ok(),
-                        "n={n} {label}: intersecting pair {:?} dropped by the sweep",
-                        (pair >> 32, pair & 0xFFFF_FFFF),
-                    );
-                }
+            let visited = every_candidate(&pool);
+            for &pair in &truly_intersecting {
+                assert!(
+                    visited.binary_search(&pair).is_ok(),
+                    "n={n}: intersecting pair {:?} dropped by the sweep",
+                    (pair >> 32, pair & 0xFFFF_FFFF),
+                );
             }
         }
     }
 
     #[test]
-    fn try_for_each_candidate_pair_stops_on_break() {
+    fn for_each_candidate_pair_stops_on_break() {
         let pool = structured_pool(20);
         let mut visited = 0;
-        let flow = try_for_each_candidate_pair(&pool, single_chain, |_, _| {
+        let flow = for_each_candidate_pair(&pool, single_chain, |_, _| {
             visited += 1;
             ControlFlow::Break(())
         })
@@ -355,13 +342,14 @@ mod run_collapse_dispatch {
         let _ = for_each_candidate_pair(pool, single_chain, |_left, _right| {
             count += 1;
             ControlFlow::Continue(())
-        });
+        })
+        .expect("sweep scratch allocation");
         count
     }
 
     fn runs_of(pool: &[Segment]) -> usize {
         let mut runs = Vec::new();
-        monotone_runs(pool, &single_chain, &mut runs);
+        monotone_runs(pool, &single_chain, &mut runs).expect("run scratch allocation");
         runs.len()
     }
 
@@ -442,7 +430,8 @@ mod sweep_entry_scratch {
         let _ = for_each_overlapping_bounds_pair(bounds, |left, right| {
             pairs.push((left, right));
             ControlFlow::Continue(())
-        });
+        })
+        .expect("bounds sweep scratch allocation");
         pairs
     }
 
@@ -459,10 +448,12 @@ mod sweep_entry_scratch {
             let _ = for_each_candidate_pair(&segments, single_chain, |_, _| {
                 inner_visits += 1;
                 ControlFlow::Continue(())
-            });
+            })
+            .expect("inner candidate sweep");
             nested.push((left, right));
             ControlFlow::Continue(())
-        });
+        })
+        .expect("outer bounds sweep");
         assert_eq!(nested, expected);
         assert!(inner_visits > 0);
     }
@@ -475,10 +466,12 @@ mod sweep_entry_scratch {
 
         let mut first = None;
         let flow = for_each_overlapping_bounds_pair(&bounds, |left, right| {
-            let _ = for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Break(()));
+            let _ = for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Break(()))
+                .expect("inner candidate sweep");
             first = Some((left, right));
             ControlFlow::Break(())
-        });
+        })
+        .expect("outer bounds sweep");
         assert!(matches!(flow, ControlFlow::Break(())));
         assert_eq!(first, expected.first().copied());
         assert_eq!(bounds_pairs(&bounds), expected);
@@ -490,21 +483,72 @@ mod sweep_entry_scratch {
         let segments = crossing_segments(8);
         let expected = bounds_pairs(&bounds);
 
-        let _ =
-            try_for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()));
+        let _ = for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
+            .expect("warm candidate sweep");
 
         let mut inner_failed = false;
         let flow = for_each_overlapping_bounds_pair(&bounds, |_, _| {
             let result = crate::test_support::fail_allocations_after(0, || {
-                try_for_each_candidate_pair(&segments, single_chain, |_, _| {
+                for_each_candidate_pair(&segments, single_chain, |_, _| {
                     ControlFlow::Continue(())
                 })
             });
             inner_failed = result.is_err();
             ControlFlow::Break(())
-        });
+        })
+        .expect("outer bounds sweep");
         assert!(inner_failed);
         assert!(matches!(flow, ControlFlow::Break(())));
         assert_eq!(bounds_pairs(&bounds), expected);
+    }
+
+    fn assert_allocation(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn candidate_sweep_rejects_each_cold_allocation_above_brute() {
+        let segments = crossing_segments(8);
+        assert!(segments.len() > 6);
+        let (_, count) = crate::test_support::allocation_count(|| {
+            let _ = for_each_candidate_pair(&segments, single_chain, |_, _| {
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        });
+        assert!(count > 0);
+        for allowed in 0..count {
+            let Err(error) = crate::test_support::fail_allocations_after(allowed, || {
+                for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
+            }) else {
+                panic!("each cold candidate-sweep allocation must propagate");
+            };
+            assert_allocation(&error);
+        }
+        let _ = for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
+            .unwrap();
+    }
+
+    #[test]
+    fn overlapping_bounds_sweep_rejects_each_cold_allocation_above_brute() {
+        let bounds = overlapping_boxes(8);
+        assert!(bounds.len() > 6);
+        let (_, count) = crate::test_support::allocation_count(|| {
+            let _ = for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(()))
+                .unwrap();
+        });
+        assert!(count > 0);
+        for allowed in 0..count {
+            let Err(error) = crate::test_support::fail_allocations_after(allowed, || {
+                for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(()))
+            }) else {
+                panic!("each cold bounds-sweep allocation must propagate");
+            };
+            assert_allocation(&error);
+        }
+        let _ = for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(())).unwrap();
     }
 }

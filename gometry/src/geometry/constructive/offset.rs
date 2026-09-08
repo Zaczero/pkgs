@@ -35,7 +35,7 @@ pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
         return Ok(Vec::new());
     };
     let strip = Shape::Polygon(strip);
-    if strip.validate().is_none() {
+    if strip.validate()?.is_none() {
         let Shape::Polygon(polygon) = strip else {
             unreachable!("strip is a polygon")
         };
@@ -103,7 +103,7 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         }
     };
     let normalized = |quad: Shape| {
-        if quad.validate().is_none() {
+        if quad.validate()?.is_none() {
             Ok(quad)
         } else {
             quad.repair(RepairMethod::Structure, false)

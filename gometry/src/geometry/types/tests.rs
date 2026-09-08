@@ -152,7 +152,7 @@ mod multipoint_iteration_tests {
         assert_eq!(sum, 4.0);
         assert_eq!(allocations, 0);
 
-        let (issue, allocations) = allocation_count(|| shape.validate());
+        let (issue, allocations) = allocation_count(|| shape.validate().unwrap());
         assert_eq!(issue, None);
         assert_eq!(allocations, 0);
     }

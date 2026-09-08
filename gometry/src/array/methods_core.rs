@@ -1134,18 +1134,18 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn is_closed_unary_packed(&self) -> PyResult<Vec<bool>> {
-        if let Some(closed) = self.storage().lines_bool(line_is_closed) {
+        if let Some(closed) = self.storage().lines_bool(|coords| Ok(line_is_closed(coords))) {
             return Ok(closed?);
         }
         Ok(self
             .storage()
-            .const_or_shape_bool(false, Shape::is_closed)?)
+            .const_or_shape_bool(false, |shape| Ok(shape.is_closed()))?)
     }
 
     pub(crate) fn is_ring_unary_packed(&self) -> PyResult<Vec<bool>> {
         if let Some(ring) = self
             .storage()
-            .lines_bool(|coords| line_is_closed(coords) && line_is_simple(coords))
+            .lines_bool(|coords| Ok(line_is_closed(coords) && line_is_simple(coords)?))
         {
             return Ok(ring?);
         }
@@ -1153,10 +1153,10 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn is_ccw_unary_packed(&self) -> PyResult<Vec<bool>> {
-        if let Some(ccw) = self.storage().lines_bool(line_is_ccw) {
+        if let Some(ccw) = self.storage().lines_bool(|coords| Ok(line_is_ccw(coords))) {
             return Ok(ccw?);
         }
-        Ok(self.storage().const_or_shape_bool(false, Shape::is_ccw)?)
+        Ok(self.storage().const_or_shape_bool(false, |shape| Ok(shape.is_ccw()))?)
     }
 
     pub(crate) fn is_simple_unary_packed(&self) -> Option<PyResult<Vec<bool>>> {
@@ -1241,7 +1241,10 @@ impl PyGeometryArray {
                 Ok(values)
             })());
         }
-        if let Some(valid) = self.storage().lines_bool_masked(missing, line_is_valid) {
+        if let Some(valid) = self
+            .storage()
+            .lines_bool_masked(missing, |coords| Ok(line_is_valid(coords)))
+        {
             return Some(valid.map_err(PyErr::from));
         }
         if let Some(valid) = self
@@ -1283,7 +1286,10 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn crosses_antimeridian_unary_packed(&self) -> Option<PyResult<Vec<bool>>> {
-        if let Some(crosses) = self.storage().lines_bool(line_crosses_antimeridian) {
+        if let Some(crosses) = self
+            .storage()
+            .lines_bool(|coords| Ok(line_crosses_antimeridian(coords)))
+        {
             return Some(crosses.map_err(PyErr::from));
         }
         if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {

@@ -84,9 +84,11 @@ impl Arrangement<i32> {
     /// The vertex-key map is left EMPTY — `component_of_point` must not be
     /// called on a fast-path arrangement (single-loop consumers seed their
     /// one component with `[0]`, never by probe).
-    pub(crate) fn from_single_loop(segments: &[Segment]) -> Option<Self> {
+    pub(crate) fn from_single_loop(segments: &[Segment]) -> crate::error::Result<Option<Self>> {
         let n = segments.len();
-        let (cuts, group_count) = single_loop_cuts(segments)?;
+        let Some((cuts, group_count)) = single_loop_cuts(segments)? else {
+            return Ok(None);
+        };
         let mut spares = arrangement_spares();
         let mut typed = typed_spares::<i32>();
         let mut ids = std::mem::take(&mut spares.ids);
@@ -150,7 +152,7 @@ impl Arrangement<i32> {
             spares.ids = ids;
             spares.filled = filled;
             typed.multiplicities = multiplicities;
-            return None;
+            return Ok(None);
         }
         spares.points = points;
         spares.topology.starts = starts;
@@ -158,7 +160,7 @@ impl Arrangement<i32> {
         spares.edge_of_slot = edge_of_slot;
         spares.filled = filled;
         typed.multiplicities = multiplicities;
-        Some(Self::finish_topology::<false>(ids, spares, typed))
+        Ok(Some(Self::finish_topology::<false>(ids, spares, typed)))
     }
 }
 
@@ -177,9 +179,11 @@ impl<W: WindingWeight> Arrangement<W> {
         segments: &[Segment],
         loop_ranges: &[(u32, u32)],
         weight_of_loop: impl Fn(usize) -> W,
-    ) -> Option<Self> {
+    ) -> crate::error::Result<Option<Self>> {
         let n = segments.len();
-        let (cuts, group_count) = positional_loop_cuts(segments, loop_ranges)?;
+        let Some((cuts, group_count)) = positional_loop_cuts(segments, loop_ranges)? else {
+            return Ok(None);
+        };
         let mut spares = arrangement_spares();
         let mut typed = typed_spares::<W>();
         let mut ids = std::mem::take(&mut spares.ids);
@@ -241,7 +245,7 @@ impl<W: WindingWeight> Arrangement<W> {
             spares.ids = ids;
             spares.filled = filled;
             typed.multiplicities = multiplicities;
-            return None;
+            return Ok(None);
         }
         // Only the loop ANCHORS are ever looked up (component probes map
         // anchors -> components); inserting all 40k vertices for K=2
@@ -256,7 +260,7 @@ impl<W: WindingWeight> Arrangement<W> {
         spares.topology.targets = targets;
         spares.edge_of_slot = edge_of_slot;
         typed.multiplicities = multiplicities;
-        Some(Self::finish_topology::<false>(ids, spares, typed))
+        Ok(Some(Self::finish_topology::<false>(ids, spares, typed)))
     }
 
     /// Build from noded directed segments, `weight_of(index)` giving each

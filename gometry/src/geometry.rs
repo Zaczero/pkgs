@@ -259,7 +259,7 @@ pub(crate) use relate::{
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_between, candidate_pairs_over_staged_runs,
     for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain, try_for_each_candidate_pair,
+    for_each_overlapping_bounds_pair, sign_of, single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 pub(crate) use segments::clip_segment;
@@ -639,18 +639,24 @@ impl Polygon {
                 .sum::<f64>()
     }
 
-    pub(crate) fn validate(&self, name: &str, path: &str) -> Option<ValidationIssue> {
-        validate_ring(self.shell.coords(), || {
+    pub(crate) fn validate(
+        &self,
+        name: &str,
+        path: &str,
+    ) -> crate::error::Result<Option<ValidationIssue>> {
+        if let Some(issue) = validate_ring(self.shell.coords(), || {
             (format!("{name} shell"), format!("{path}.shell"))
-        })
-        .or_else(|| {
-            self.holes.iter().enumerate().find_map(|(idx, hole)| {
-                validate_ring(hole.coords(), || {
-                    (format!("{name} hole"), format!("{path}.holes[{idx}]"))
-                })
-            })
-        })
-        .or_else(|| polygon_rings_issue(self, path))
+        }) {
+            return Ok(Some(issue));
+        }
+        for (idx, hole) in self.holes.iter().enumerate() {
+            if let Some(issue) = validate_ring(hole.coords(), || {
+                (format!("{name} hole"), format!("{path}.holes[{idx}]"))
+            }) {
+                return Ok(Some(issue));
+            }
+        }
+        polygon_rings_issue(self, path)
     }
 
     fn contains_point(&self, point: Point) -> bool {

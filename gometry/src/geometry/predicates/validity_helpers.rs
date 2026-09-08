@@ -424,11 +424,11 @@ pub(crate) fn line_is_valid(coords: &CoordSeq) -> bool {
 
 /// Column-native validity for one packed `Polygon` row (matches
 /// `Polygon::validate`).
-pub(crate) fn polygon_is_valid(polygon: &Polygon) -> bool {
-    polygon.validate("polygon", "$").is_none()
+pub(crate) fn polygon_is_valid(polygon: &Polygon) -> crate::error::Result<bool> {
+    Ok(polygon.validate("polygon", "$")?.is_none())
 }
 
-pub(crate) fn line_is_simple(points: &CoordSeq) -> bool {
+pub(crate) fn line_is_simple(points: &CoordSeq) -> crate::error::Result<bool> {
     // Strictly monotone ordinates are an O(n) simplicity certificate:
     // non-adjacent segments occupy disjoint open extents along the axis,
     // and adjacent segments cannot fold back into a collinear overlap —
@@ -436,7 +436,7 @@ pub(crate) fn line_is_simple(points: &CoordSeq) -> bool {
     // simple case) certify here without staging the candidate engine;
     // non-monotone input fails within a few comparisons.
     if strictly_monotone(points.xs()) || strictly_monotone(points.ys()) {
-        return true;
+        return Ok(true);
     }
     let mut chains = LineworkChains::default();
     let _ = chains.push_line(points);
@@ -482,7 +482,7 @@ fn antimeridian_crosses_x_columns(xs: &[f64]) -> bool {
     )
 }
 
-pub(crate) fn multiline_is_simple<L: AsRef<CoordSeq>>(lines: &[L]) -> bool {
+pub(crate) fn multiline_is_simple<L: AsRef<CoordSeq>>(lines: &[L]) -> crate::error::Result<bool> {
     let mut chains = LineworkChains::default();
     for line in lines {
         let _ = chains.push_line(line.as_ref());
@@ -591,7 +591,7 @@ mod clearance_allocation_tests {
     use crate::geometry::LineSeq;
     use crate::test_support::{allocation_count, fail_allocations_after};
 
-    fn assert_allocation(error: crate::error::Error) {
+    fn assert_allocation(error: &crate::error::Error) {
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Allocation)
@@ -606,8 +606,8 @@ mod clearance_allocation_tests {
     }
 
     fn indexed_line() -> Shape {
-        let points: Vec<Point> = (0..64)
-            .map(|index| Point::new_raw_xy(index as f64, 0.0))
+        let points: Vec<Point> = (0_u8..64)
+            .map(|index| Point::new_raw_xy(f64::from(index), 0.0))
             .collect();
         line(&points)
     }
@@ -626,7 +626,7 @@ mod clearance_allocation_tests {
             let Err(error) = fail_allocations_after(allowed, || indexed_segments(&shape)) else {
                 panic!("each cold construction allocation must propagate");
             };
-            assert_allocation(error);
+            assert_allocation(&error);
         }
         assert_eq!(indexed_segments(&shape).unwrap().len(), 2);
     }
@@ -641,7 +641,7 @@ mod clearance_allocation_tests {
         let Err(error) = fail_allocations_after(0, || first_point_index_by_xy(&points)) else {
             panic!("table reservation must propagate");
         };
-        assert_allocation(error);
+        assert_allocation(&error);
         let indices = first_point_index_by_xy(&points).unwrap();
         assert_eq!(indices[&PointKey::new(points[0])], 0);
         assert_eq!(indices[&PointKey::new(points[1])], 1);
@@ -659,7 +659,7 @@ mod clearance_allocation_tests {
         else {
             panic!("indexed staging reservation must propagate");
         };
-        assert_allocation(error);
+        assert_allocation(&error);
         let indexed = minimum_clearance_witness_indexed(&points, &segments).unwrap();
         let brute = minimum_clearance_witness_brute(&points, &segments);
         assert_eq!(format!("{brute:?}"), format!("{indexed:?}"));

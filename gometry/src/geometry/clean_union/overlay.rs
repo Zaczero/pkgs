@@ -55,7 +55,7 @@ pub(crate) fn clean_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
 
     // Boundary contacts per pool edge (global index). Bails on any contact
     // outside the clean model; the exact arrangement owns those cases.
-    let Some(mut contacts) = collect_boundary_contacts(&pool, op) else {
+    let Some(mut contacts) = collect_boundary_contacts(&pool, op)? else {
         return Ok(None);
     };
     // No crosses or shared runs ⟹ disjoint/nested/touch-only; upstream

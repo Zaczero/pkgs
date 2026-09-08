@@ -384,16 +384,16 @@ fn direct_point_intersection<S: Borrow<Shape>>(
     };
     let (left, right) = (left.borrow(), right.borrow());
     let source_refs = [left, right];
-    if let (Some(point), Some(carrier)) = (scalar_point(left), direct_point_carrier(right)) {
+    if let (Some(point), Some(carrier)) = (scalar_point(left), direct_point_carrier(right)?) {
         return direct_scalar_point_intersection(point, carrier, &source_refs, strictness);
     }
-    if let (Some(point), Some(carrier)) = (scalar_point(right), direct_point_carrier(left)) {
+    if let (Some(point), Some(carrier)) = (scalar_point(right), direct_point_carrier(left)?) {
         return direct_scalar_point_intersection(point, carrier, &source_refs, strictness);
     }
-    if let (Some(points), Some(carrier)) = (multipoint(left), direct_point_carrier(right)) {
+    if let (Some(points), Some(carrier)) = (multipoint(left), direct_point_carrier(right)?) {
         return direct_multipoint_intersection(points, carrier, &source_refs, strictness);
     }
-    if let (Some(points), Some(carrier)) = (multipoint(right), direct_point_carrier(left)) {
+    if let (Some(points), Some(carrier)) = (multipoint(right), direct_point_carrier(left)?) {
         return direct_multipoint_intersection(points, carrier, &source_refs, strictness);
     }
     Ok(None)
@@ -413,8 +413,8 @@ const fn multipoint(shape: &Shape) -> Option<&crate::geometry::MultiPoint> {
     }
 }
 
-fn direct_point_carrier(shape: &Shape) -> Option<DirectPointCarrier<'_>> {
-    match shape {
+fn direct_point_carrier(shape: &Shape) -> Result<Option<DirectPointCarrier<'_>>> {
+    Ok(match shape {
         Shape::LineString(line) if relate::line_has_nonzero_segment(line) => {
             Some(DirectPointCarrier::Line(line))
         },
@@ -426,14 +426,14 @@ fn direct_point_carrier(shape: &Shape) -> Option<DirectPointCarrier<'_>> {
         {
             Some(DirectPointCarrier::MultiLine(lines))
         },
-        Shape::Polygon(polygon) if crate::geometry::polygon_is_valid(polygon) => {
-            Some(DirectPointCarrier::Polygon(polygon))
-        },
-        Shape::MultiPolygon(polygons) if shape.validate().is_none() => {
-            Some(DirectPointCarrier::MultiPolygon(polygons))
-        },
+        Shape::Polygon(polygon) => crate::geometry::polygon_is_valid(polygon)?
+            .then_some(DirectPointCarrier::Polygon(polygon)),
+        Shape::MultiPolygon(polygons) => shape
+            .validate()?
+            .is_none()
+            .then_some(DirectPointCarrier::MultiPolygon(polygons)),
         _ => None,
-    }
+    })
 }
 
 fn direct_scalar_point_intersection(
@@ -663,8 +663,8 @@ fn convex_polygon_intersection(inputs: &[&Shape]) -> Result<Option<Shape>> {
         || !closed_finite(right_shell)
         || !shell_is_convex(left_shell)
         || !shell_is_convex(right_shell)
-        || !crate::geometry::polygon_is_valid(left)
-        || !crate::geometry::polygon_is_valid(right)
+        || !crate::geometry::polygon_is_valid(left)?
+        || !crate::geometry::polygon_is_valid(right)?
     {
         return Ok(None);
     }
@@ -1043,7 +1043,7 @@ fn assemble_line_only_overlay(inputs: &[&Shape], op: OverlayOp) -> Result<Shape>
     if let Some(shape) = cut_lines_overlay(inputs, &pool, op)? {
         return Ok(shape);
     }
-    let (atomic, provenance) = super::self_node_segments_sourced(pool.iter().copied());
+    let (atomic, provenance) = super::self_node_segments_sourced(pool.iter().copied())?;
 
     // Noding splits each unique input segment on its own, so a stretch two
     // inputs share comes back once per input, each copy with its own owners.
@@ -1231,7 +1231,7 @@ fn crossing_table(
 /// chain at the cut, not at the ring's first vertex, and that ordering is
 /// the dissolve's to define.
 fn cut_lines_overlay(inputs: &[&Shape], pool: &[Segment], op: OverlayOp) -> Result<Option<Shape>> {
-    let scan = super::full_noding_events(pool);
+    let scan = super::full_noding_events(pool)?;
     if scan.overlaps_found || scan.junctions_found || consecutive_lines_touch(inputs) {
         return Ok(None);
     }

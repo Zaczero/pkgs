@@ -194,7 +194,7 @@ fn simple_erosion_polygon(
     if !ring_winding(&ring).is_ccw() {
         return Ok(None);
     }
-    if !line_is_simple(&ring) {
+    if !line_is_simple(&ring)? {
         return Ok(None);
     }
     Ok(Some(Polygon::new(Ring::from_closed(ring), Vec::new())?))
@@ -356,7 +356,7 @@ fn simple_stroke_polygon(
     ring_ys.push(ys[0]);
     let ring = CoordSeq::try_from_vecs(ring_xs, ring_ys, None, None)?;
     if ring_winding(&ring).is_ccw()
-        && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple()
+        && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple()?
     {
         Ok(Some(Polygon::new(Ring::from_closed(ring), Vec::new())?))
     } else {

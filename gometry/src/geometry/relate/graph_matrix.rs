@@ -210,28 +210,13 @@ pub(crate) fn graph_relate_data_with_right_graph(
     right: &PreparedPlan,
     right_graph: &TopologyGraph,
 ) -> Result<De9im> {
-<<<<<<< HEAD
-    if let Some(matrix) = super::direct_areal_relate(left, right) {
+    if let Some(matrix) = super::direct_areal_relate(left, right)? {
         return Ok(matrix);
     }
     if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape())? {
         return Ok(matrix);
     }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
-||||||| 7658eb84
-    if let Some(matrix) = super::direct_areal_relate(left, right)
-        .or_else(|| try_cartesian_areal_relate(left.shape(), right.shape()))
-        .or_else(|| super::direct_areal_linework_relate(left, right))
-    {
-=======
-    if let Some(matrix) = super::direct_areal_relate(left, right)? {
-        return Ok(matrix);
-    }
-    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
-        return Ok(matrix);
-    }
     if let Some(matrix) = super::direct_areal_linework_relate(left, right)? {
->>>>>>> grok/core-lints
         return Ok(matrix);
     }
     if let Some(matrix) =
@@ -1595,20 +1580,10 @@ mod tests {
     }
 
     fn donut() -> Polygon {
-<<<<<<< HEAD
-        Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0).shell, vec![
-            Ring::from_closed(
-                CoordSeq::try_from_points(&[
-||||||| 7658eb84
-        Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0).shell, vec![
-            Ring::from_closed(
-                CoordSeq::try_from_points(&vec![
-=======
         Polygon::new(
             rectangle(0.0, 0.0, 10.0, 10.0).shell,
             vec![Ring::from_closed(
-                CoordSeq::try_from_points(&vec![
->>>>>>> grok/core-lints
+                CoordSeq::try_from_points(&[
                     Point::new_raw_xy(3.0, 3.0),
                     Point::new_raw_xy(7.0, 3.0),
                     Point::new_raw_xy(7.0, 7.0),

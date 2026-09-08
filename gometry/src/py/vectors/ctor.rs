@@ -252,7 +252,7 @@ fn self_intersection_csr(
             crate::array::ArrayRow::Missing { .. } => builder.push_row(std::iter::empty())?,
             crate::array::ArrayRow::Present(row) => row.row().try_with_shape(|shape| {
                 builder.push_row(
-                    crate::geometry::self_intersections_in_frame(shape, domain)
+                    crate::geometry::self_intersections_in_frame(shape, domain)?
                         .into_iter()
                         .map(Shape::Point),
                 )
@@ -329,7 +329,7 @@ mod self_intersection_csr_tests {
                 if let crate::array::ArrayRow::Present(row) = row {
                     row.row()
                         .with_shape(|shape| {
-                            crate::geometry::self_intersections_in_frame(shape, domain)
+                            crate::geometry::self_intersections_in_frame(shape, domain).unwrap()
                         })
                         .unwrap();
                 }

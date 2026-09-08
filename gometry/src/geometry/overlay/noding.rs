@@ -6,6 +6,7 @@ use crate::geometry::segments::{
     PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,
     segment_envelopes_disjoint,
 };
+use crate::error::Result;
 use crate::geometry::{
     HashMap, HashMapExt as _, Orientation, PointKey, Segment, XY, dedup_consecutive_xy,
     for_each_candidate_pair, same_point, single_chain, undirected_segment_edge_key,
@@ -193,9 +194,9 @@ fn expand_provenance_to_atoms(
 /// callers that re-enter below a floor). Unique input stays linear: dedup is
 /// one HashMap + two flat vecs, then noding on U = E. Duplicate-rich input
 /// nodes O(U²) and re-expands directed multiplicity for unit-weight consumers.
-pub(crate) fn self_node_segments(segments: &[Segment]) -> Vec<Segment> {
+pub(crate) fn self_node_segments(segments: &[Segment]) -> Result<Vec<Segment>> {
     if segments.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let (unique, provenance) = dedup_undirected_segments_sourced(segments.iter().copied());
     if provenance.all_single_forward() {
@@ -207,12 +208,12 @@ pub(crate) fn self_node_segments(segments: &[Segment]) -> Vec<Segment> {
         // (equal to original order of first occurrence = original order).
         return self_node_segments_unique(&unique);
     }
-    let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique);
-    expand_directed_atoms(atomic, &unique_sources, &provenance)
+    let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique)?;
+    Ok(expand_directed_atoms(atomic, &unique_sources, &provenance))
 }
 
 /// Node a pre-deduped segment set (collinear-overlap pre-pass + full pass).
-fn self_node_segments_unique(segments: &[Segment]) -> Vec<Segment> {
+fn self_node_segments_unique(segments: &[Segment]) -> Result<Vec<Segment>> {
     // Collinear OVERLAPS need a pre-pass: splitting them at each other's
     // endpoints first (exact points) makes coincident strokes
     // BIT-IDENTICAL, so the main pass's canonicalized crossing placement
@@ -221,12 +222,12 @@ fn self_node_segments_unique(segments: &[Segment]) -> Vec<Segment> {
     // solved against two different host extents. Overlaps only exist in
     // folded linework (inverted offsets); the common case detects their
     // absence in the single main sweep and pays nothing extra.
-    let (atomic, overlaps_found) = full_noding_pass(segments);
+    let (atomic, overlaps_found) = full_noding_pass(segments)?;
     if !overlaps_found {
-        return atomic;
+        return Ok(atomic);
     }
-    let pre_split = collinear_overlap_pass(segments);
-    full_noding_pass(&pre_split).0
+    let pre_split = collinear_overlap_pass(segments)?;
+    Ok(full_noding_pass(&pre_split)?.0)
 }
 
 /// [`self_node_segments`] with multi-source provenance per atomic piece.
@@ -242,43 +243,43 @@ fn self_node_segments_unique(segments: &[Segment]) -> Vec<Segment> {
 /// path (no size threshold, no probe-vs-no-probe fork).
 pub(crate) fn self_node_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
-) -> (Vec<Segment>, SegmentProvenance) {
+) -> Result<(Vec<Segment>, SegmentProvenance)> {
     let (unique, provenance) = dedup_undirected_segments_sourced(segments);
     if unique.is_empty() {
-        return (Vec::new(), SegmentProvenance::empty());
+        return Ok((Vec::new(), SegmentProvenance::empty()));
     }
-    let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique);
+    let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique)?;
     let multi = expand_provenance_to_atoms(&unique_sources, &provenance);
-    (atomic, multi)
+    Ok((atomic, multi))
 }
 
-fn self_node_segments_sourced_unique(segments: &[Segment]) -> (Vec<Segment>, Vec<u32>) {
+fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segment>, Vec<u32>)> {
     let NodingScan {
         events,
         overlaps_found,
         ..
-    } = full_noding_events(segments);
+    } = full_noding_events(segments)?;
     if !overlaps_found {
-        return split_by_events_sourced(segments, events);
+        return Ok(split_by_events_sourced(segments, events));
     }
     let (pre_split, pre_sources) =
-        split_by_events_sourced(segments, collinear_overlap_events(segments));
-    let NodingScan { events, .. } = full_noding_events(&pre_split);
+        split_by_events_sourced(segments, collinear_overlap_events(segments)?);
+    let NodingScan { events, .. } = full_noding_events(&pre_split)?;
     let (atomic, mid_sources) = split_by_events_sourced(&pre_split, events);
     let sources = mid_sources
         .into_iter()
         .map(|mid| pre_sources[mid as usize])
         .collect();
-    (atomic, sources)
+    Ok((atomic, sources))
 }
 
 /// Pass 1 of [`self_node_segments`]: collinear-overlap endpoint cuts only.
-pub(crate) fn collinear_overlap_pass(segments: &[Segment]) -> Vec<Segment> {
-    split_by_events(segments, collinear_overlap_events(segments))
+pub(crate) fn collinear_overlap_pass(segments: &[Segment]) -> Result<Vec<Segment>> {
+    Ok(split_by_events(segments, collinear_overlap_events(segments)?))
 }
 
 /// The cut events of [`collinear_overlap_pass`].
-pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Vec<(u32, XY)> {
+pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32, XY)>> {
     let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
     let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
         let (a, b) = (segments[left], segments[right]);
@@ -289,8 +290,8 @@ pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Vec<(u32, XY)> {
             push_collinear_overlap_cuts(segments, left, right, orientations, &mut events);
         }
         std::ops::ControlFlow::Continue(())
-    });
-    events
+    })?;
+    Ok(events)
 }
 
 fn push_collinear_overlap_cuts(
@@ -339,13 +340,13 @@ fn push_collinear_overlap_cuts(
 /// The main pass of [`self_node_segments`]: full pairwise interior cuts,
 /// also reporting whether any collinear OVERLAP pair was seen (the trigger
 /// for the exactness pre-pass).
-pub(crate) fn full_noding_pass(segments: &[Segment]) -> (Vec<Segment>, bool) {
+pub(crate) fn full_noding_pass(segments: &[Segment]) -> Result<(Vec<Segment>, bool)> {
     let NodingScan {
         events,
         overlaps_found,
         ..
-    } = full_noding_events(segments);
-    (split_by_events(segments, events), overlaps_found)
+    } = full_noding_events(segments)?;
+    Ok((split_by_events(segments, events), overlaps_found))
 }
 
 /// What one pass of the candidate sweep learned about a segment pool.
@@ -370,7 +371,7 @@ pub(in crate::geometry) struct NodingScan {
 /// Also the noding front end of [`Arrangement::from_single_loop`], which
 /// replays [`split_by_events`]' ordering bit-for-bit without materializing
 /// the atomic segment soup.
-pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> NodingScan {
+pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<NodingScan> {
     let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
     let mut overlaps_found = false;
     let mut junctions_found = false;
@@ -429,13 +430,13 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> NodingSca
             }
         }
         std::ops::ControlFlow::Continue(())
-    });
-    NodingScan {
+    })?;
+    Ok(NodingScan {
         events,
         overlaps_found,
         junctions_found,
         touches,
-    }
+    })
 }
 
 /// Split every segment at its collected `(ordinal, cut)` events — the

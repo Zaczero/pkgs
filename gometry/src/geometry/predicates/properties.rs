@@ -30,23 +30,27 @@ impl Shape {
         }
     }
 
-    pub fn is_ring(&self) -> bool {
+    pub fn is_ring(&self) -> crate::error::Result<bool> {
         match self {
-            Self::LineString(points) => line_is_closed(points) && line_is_simple(points),
-            _ => false,
+            Self::LineString(points) => Ok(line_is_closed(points) && line_is_simple(points)?),
+            _ => Ok(false),
         }
     }
 
-    pub fn is_simple(&self) -> bool {
+    pub fn is_simple(&self) -> crate::error::Result<bool> {
         match self {
             // Collections are never simple by convention, including the typed
             // empty (matching the empty container form below).
-            Self::Empty(GeometryKind::GeometryCollection, _) | Self::GeometryCollection(_) => false,
-            Self::Point(_) | Self::Empty(..) => true,
-            Self::MultiPoint(points) => unique_xy_points(points).len() == points.coord_count(),
+            Self::Empty(GeometryKind::GeometryCollection, _) | Self::GeometryCollection(_) => {
+                Ok(false)
+            },
+            Self::Point(_) | Self::Empty(..) => Ok(true),
+            Self::MultiPoint(points) => {
+                Ok(unique_xy_points(points).len() == points.coord_count())
+            },
             Self::LineString(points) => line_is_simple(points),
             Self::MultiLineString(lines) => multiline_is_simple(lines),
-            Self::Polygon(_) | Self::MultiPolygon(_) => self.validate().is_none(),
+            Self::Polygon(_) | Self::MultiPolygon(_) => Ok(self.validate()?.is_none()),
         }
     }
 
@@ -63,7 +67,7 @@ impl Shape {
     /// `false` by convention, so no invariant holds there). Output points
     /// are XY only — one node can be created by segments carrying
     /// conflicting Z/M.
-    pub fn self_intersections(&self) -> Vec<Point> {
+    pub fn self_intersections(&self) -> crate::error::Result<Vec<Point>> {
         let mut nodes = Vec::new();
         let mut seen = HashSet::new();
         let mut visit = |point: Point| {
@@ -77,8 +81,8 @@ impl Shape {
         let _ = chains.for_each_candidate_pair(|left, right| {
             collect_offending_pair(chains.at(left), chains.at(right), &mut visit);
             ControlFlow::Continue(())
-        });
-        nodes
+        })?;
+        Ok(nodes)
     }
 
     pub fn crosses_antimeridian(&self) -> bool {
@@ -145,33 +149,33 @@ impl Shape {
         }
     }
 
-    pub fn validate(&self) -> Option<ValidationIssue> {
+    pub fn validate(&self) -> crate::error::Result<Option<ValidationIssue>> {
         match self {
-            Self::Point(point) => validate_point(*point, "$"),
-            Self::MultiPoint(points) => validate_points(points, "$"),
-            Self::LineString(points) => validate_line(points, "line string"),
-            Self::MultiLineString(lines) => lines.iter().enumerate().find_map(|(idx, line)| {
+            Self::Point(point) => Ok(validate_point(*point, "$")),
+            Self::MultiPoint(points) => Ok(validate_points(points, "$")),
+            Self::LineString(points) => Ok(validate_line(points, "line string")),
+            Self::MultiLineString(lines) => Ok(lines.iter().enumerate().find_map(|(idx, line)| {
                 validate_line(line, "multi line string member")
                     .map(|issue| issue.with_path_prefix(&format!("$[{idx}]")))
-            }),
+            })),
             Self::Polygon(polygon) => polygon.validate("polygon", "$"),
-            Self::MultiPolygon(polygons) => polygons
-                .iter()
-                .enumerate()
-                .find_map(|(idx, polygon)| {
-                    polygon
-                        .validate("multi polygon member", "$")
-                        .map(|issue| issue.with_path_prefix(&format!("$[{idx}]")))
-                })
-                .or_else(|| multi_polygon_members_issue(polygons, "$")),
-            Self::GeometryCollection(geometries) => {
-                geometries.iter().enumerate().find_map(|(idx, geometry)| {
-                    geometry
-                        .validate()
-                        .map(|issue| issue.with_path_prefix(&format!("$[{idx}]")))
-                })
+            Self::MultiPolygon(polygons) => {
+                for (idx, polygon) in polygons.iter().enumerate() {
+                    if let Some(issue) = polygon.validate("multi polygon member", "$")? {
+                        return Ok(Some(issue.with_path_prefix(&format!("$[{idx}]"))));
+                    }
+                }
+                multi_polygon_members_issue(polygons, "$")
             },
-            Self::Empty(..) => None,
+            Self::GeometryCollection(geometries) => {
+                for (idx, geometry) in geometries.iter().enumerate() {
+                    if let Some(issue) = geometry.validate()? {
+                        return Ok(Some(issue.with_path_prefix(&format!("$[{idx}]"))));
+                    }
+                }
+                Ok(None)
+            },
+            Self::Empty(..) => Ok(None),
         }
     }
 
@@ -239,7 +243,7 @@ impl Shape {
             Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
                 geometries.try_map_members(|geometry| {
                     // Per-member gate: valid members pass through untouched.
-                    if geometry.validate().is_none() {
+                    if geometry.validate()?.is_none() {
                         Ok(geometry.clone())
                     } else {
                         geometry.repair(method, drop)

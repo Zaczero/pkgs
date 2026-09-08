@@ -225,10 +225,10 @@ pub(crate) fn validate_shape_in_frame(
                     "$",
                 )))
             },
-            |normalized| Ok(normalized.validate()),
+            |normalized| normalized.validate(),
         )
     } else {
-        Ok(shape.validate())
+        shape.validate()
     }
 }
 
@@ -246,32 +246,63 @@ pub(crate) fn validate_data_in_frame(
 
 /// Frame-aware simplicity. Non-crossing inputs keep the frozen handle's cached
 /// verdict; seam-crossing geographic inputs answer on normalized topology.
-pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, domain: TopologyDomain) -> Result<bool> {
-    Ok(if data_needs_topology_split(data, domain)? {
-        try_topology_split(data.shape(), domain).is_ok_and(|shape| shape.is_simple())
+pub(crate) fn is_simple_data_in_frame(
+    data: &PreparedPlan,
+    domain: TopologyDomain,
+) -> Result<bool> {
+    if data_needs_topology_split(data, domain)? {
+        match try_topology_split(data.shape(), domain) {
+            Ok(shape) => shape.is_simple(),
+            Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
+                Err(error)
+            },
+            Err(_) => data.shape().is_simple(),
+        }
     } else {
-        data.is_simple_cached()?
-    })
+        data.is_simple_cached()
+    }
 }
 
 /// Frame-aware `is_ring`: closure is structural on the original line, while
 /// simplicity is evaluated on normalized seam topology.
-pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, domain: TopologyDomain) -> Result<bool> {
-    Ok(if data_needs_topology_split(data, domain)? {
-        data.shape().is_closed()
-            && try_topology_split(data.shape(), domain).is_ok_and(|shape| shape.is_simple())
+pub(crate) fn is_ring_data_in_frame(
+    data: &PreparedPlan,
+    domain: TopologyDomain,
+) -> Result<bool> {
+    if data_needs_topology_split(data, domain)? {
+        if !data.shape().is_closed() {
+            return Ok(false);
+        }
+        match try_topology_split(data.shape(), domain) {
+            Ok(shape) => shape.is_simple(),
+            Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
+                Err(error)
+            },
+            Err(_) => data.shape().is_ring(),
+        }
     } else {
         data.shape().is_ring()
-    })
+    }
 }
 
 /// Frame-aware self-intersection diagnostics, shared by scalar and grouped
 /// array output.
-pub(crate) fn self_intersections_in_frame(shape: &Shape, domain: TopologyDomain) -> Vec<Point> {
+pub(crate) fn self_intersections_in_frame(
+    shape: &Shape,
+    domain: TopologyDomain,
+) -> Result<Vec<Point>> {
     if needs_topology_split(shape, domain) {
         match try_topology_split(shape, domain) {
-            Ok(normalized) if normalized.is_simple() => Vec::new(),
-            Ok(normalized) => normalized.self_intersections(),
+            Ok(normalized) => {
+                if normalized.is_simple()? {
+                    Ok(Vec::new())
+                } else {
+                    normalized.self_intersections()
+                }
+            },
+            Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
+                Err(error)
+            },
             Err(_) => shape.self_intersections(),
         }
     } else {

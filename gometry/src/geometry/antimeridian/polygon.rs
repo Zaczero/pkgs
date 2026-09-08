@@ -475,7 +475,11 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     }
     let (stitched, capped) = extend_over_poles(segments.clone(), PoleClosure::Auto)?;
     let polygons = assemble_polygons(stitched, &kept_holes)?;
-    if !capped || polygons.iter().all(polygon_is_valid) {
+    if !capped
+        || polygons.iter().try_fold(true, |ok, polygon| {
+            Ok::<_, crate::error::Error>(ok && polygon_is_valid(polygon)?)
+        })?
+    {
         return Ok(polygons);
     }
     // The automatic closure picked a pole that self-intersects the ring —
@@ -487,7 +491,9 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     for closure in [PoleClosure::North, PoleClosure::South] {
         let (forced, _) = extend_over_poles(segments.clone(), closure)?;
         if let Ok(candidate) = assemble_polygons(forced, &kept_holes)
-            && candidate.iter().all(polygon_is_valid)
+            && candidate.iter().try_fold(true, |ok, polygon| {
+                Ok::<_, crate::error::Error>(ok && polygon_is_valid(polygon)?)
+            })?
         {
             valid.push(candidate);
         }

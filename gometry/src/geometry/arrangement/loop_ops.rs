@@ -18,7 +18,9 @@ pub(crate) struct LoopCut {
 /// buffers touched: noding events, crossing groups, and every structural
 /// bail. Returns the cuts ordered per ordinal exactly like
 /// `split_segment_at`, plus the group count.
-pub(crate) fn single_loop_cuts(segments: &[Segment]) -> Option<(Vec<LoopCut>, u32)> {
+pub(crate) fn single_loop_cuts(
+    segments: &[Segment],
+) -> crate::error::Result<Option<(Vec<LoopCut>, u32)>> {
     positional_loop_cuts(segments, &[(0, segments.len() as u32)])
 }
 
@@ -29,24 +31,24 @@ pub(crate) fn single_loop_cuts(segments: &[Segment]) -> Option<(Vec<LoopCut>, u3
 pub(crate) fn positional_loop_cuts(
     segments: &[Segment],
     loop_ranges: &[(u32, u32)],
-) -> Option<(Vec<LoopCut>, u32)> {
+) -> crate::error::Result<Option<(Vec<LoopCut>, u32)>> {
     let n = segments.len();
     if n == 0 || loop_ranges.is_empty() {
-        return None;
+        return Ok(None);
     }
     // Bitwise chain closure per loop: positional vertex identity requires
     // every end to be its successor's start AT THE BIT LEVEL — the same
     // identity the general dedup map keys on.
     for &(start, end) in loop_ranges {
         if end <= start {
-            return None;
+            return Ok(None);
         }
         if (start..end).any(|index| {
             let next = if index + 1 < end { index + 1 } else { start };
             PointKey::new(segments[index as usize].end)
                 != PointKey::new(segments[next as usize].start)
         }) {
-            return None;
+            return Ok(None);
         }
     }
     // Key-coincident vertices across loops (exact duplicate multiparts,
@@ -60,17 +62,17 @@ pub(crate) fn positional_loop_cuts(
             .iter()
             .all(|segment| seen.insert(PointKey::new(segment.start)))
         {
-            return None;
+            return Ok(None);
         }
     }
     let crate::geometry::overlay::NodingScan {
         mut events,
         overlaps_found,
         ..
-    } = crate::geometry::overlay::full_noding_events(segments);
+    } = crate::geometry::overlay::full_noding_events(segments)?;
     if overlaps_found {
         // Collinear overlaps take the exactness pre-pass — general path.
-        return None;
+        return Ok(None);
     }
     // Replay split_by_events' ordering exactly: the same unstable sort on
     // the same event list yields the same within-ordinal permutation the
@@ -97,11 +99,11 @@ pub(crate) fn positional_loop_cuts(
             end += 1;
         }
         if end - run != 2 {
-            return None;
+            return Ok(None);
         }
         let second = by_key[run + 1] as usize;
         if events[first].0 == events[second].0 {
-            return None;
+            return Ok(None);
         }
         group_of[first] = group_count;
         group_of[second] = group_count;
@@ -115,7 +117,7 @@ pub(crate) fn positional_loop_cuts(
     // only — a presized set beats sorting the whole key vector.
     let mut seen = crate::collections::HashSet::with_capacity(keys.len());
     if !keys.iter().all(|&key| seen.insert(key)) {
-        return None;
+        return Ok(None);
     }
     // Cuts per ordinal, ordered exactly like split_segment_at: a stable
     // directed-coordinate sort (ordinal and group ride along as payload).
@@ -151,7 +153,7 @@ pub(crate) fn positional_loop_cuts(
         );
         slice_start = slice_end;
     }
-    Some((cuts, group_count))
+    Ok(Some((cuts, group_count)))
 }
 
 /// The ordinal walk of [`Arrangement::from_single_loop`]: dense ids in

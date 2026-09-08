@@ -23,7 +23,7 @@ use crate::geometry::segments::{
 use crate::geometry::tessellation::exact::{ExactDyadic, try_compare_ratios};
 use crate::geometry::{
     ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY, same_point,
-    single_chain, try_for_each_candidate_pair,
+    for_each_candidate_pair, single_chain,
 };
 use crate::try_reserve_vec;
 
@@ -257,7 +257,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     }
     let unique_len = unique.len();
     let mut pair_error = None;
-    match try_for_each_candidate_pair(&pool, single_chain, |left, right| {
+    match for_each_candidate_pair(&pool, single_chain, |left, right| {
         match visit_pool_pair(
             unique,
             unique_len,

@@ -181,7 +181,7 @@ fn linework_area(polygons: &[Polygon]) -> Result<Vec<Polygon>> {
         return Ok(Vec::new());
     }
 
-    let mut atomic = self_node_segments(&segments);
+    let mut atomic = self_node_segments(&segments)?;
     prune_dangles(&mut atomic);
     if atomic.is_empty() {
         return Ok(Vec::new());
@@ -436,7 +436,7 @@ pub(crate) fn single_ring_arrangement(ring: &Ring) -> Result<Option<Arrangement>
             segments.push(Segment { start, end });
         }
     }
-    Ok(Arrangement::from_single_loop(&segments))
+    Arrangement::from_single_loop(&segments)
 }
 
 /// A ring's NONZERO-signed-winding enclosed area — the `Structure` repair

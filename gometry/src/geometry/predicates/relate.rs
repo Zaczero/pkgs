@@ -131,7 +131,7 @@ impl LineworkChains {
     pub(crate) fn for_each_candidate_pair(
         &self,
         mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> ControlFlow<()> {
+    ) -> crate::error::Result<ControlFlow<()>> {
         candidate_pairs_over_staged_runs(&self.segments, &self.runs, || self.bounds, &mut visit)
     }
 
@@ -142,18 +142,20 @@ impl LineworkChains {
         &self,
         other: &Self,
         mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> ControlFlow<()> {
+    ) -> crate::error::Result<ControlFlow<()>> {
         let (a, b) = (self.segments.len(), other.segments.len());
         if a.min(b) == 0 {
-            return ControlFlow::Continue(());
+            return Ok(ControlFlow::Continue(()));
         }
         if a * b < 32 {
             for left in 0..a {
                 for right in 0..b {
-                    visit(left, right)?;
+                    if let ControlFlow::Break(()) = visit(left, right) {
+                        return Ok(ControlFlow::Break(()));
+                    }
                 }
             }
-            return ControlFlow::Continue(());
+            return Ok(ControlFlow::Continue(()));
         }
         let mut bounds = self.bounds;
         bounds.include_bounds(other.bounds);

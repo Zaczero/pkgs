@@ -33,7 +33,7 @@ pub(crate) fn ring_probe_point<C: Coordinates + ?Sized>(ring: &C, reference: &C)
 pub(crate) fn visit_interacting_pairs(
     chains: &LineworkChains,
     mut visit: impl FnMut(&IndexedSegment, &IndexedSegment) -> Option<ValidationIssue>,
-) -> Option<ValidationIssue> {
+) -> crate::error::Result<Option<ValidationIssue>> {
     let mut issue = None;
     let _ = chains.for_each_candidate_pair(|left, right| {
         let (left, right) = (&chains.at(left), &chains.at(right));
@@ -46,8 +46,8 @@ pub(crate) fn visit_interacting_pairs(
             return ControlFlow::Break(());
         }
         ControlFlow::Continue(())
-    });
-    issue
+    })?;
+    Ok(issue)
 }
 
 /// Classify one intersecting pair: same-ring pairs use the simplicity rule;

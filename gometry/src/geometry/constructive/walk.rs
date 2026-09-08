@@ -663,7 +663,7 @@ pub(in crate::geometry) fn winding_region(
     // bit-identical to the general build below, which stays the exact
     // oracle and owns every bail (overlaps, T-junctions, repeats).
     if loop_anchor.len() == 1
-        && let Some(mut arrangement) = Arrangement::from_single_loop(&segments)
+        && let Some(mut arrangement) = Arrangement::from_single_loop(&segments)?
     {
         let windings = arrangement.face_windings(&[0]);
         return assemble_region_polygons(arrangement.region_rings(&windings, keep));
@@ -672,10 +672,11 @@ pub(in crate::geometry) fn winding_region(
     // structure repair): the same positional win across K clean loops,
     // with the general build as the bail oracle. Seeds resolve through
     // the shared outside-winding logic below either way.
-    let mut arrangement = Arrangement::<i32>::from_loops(&segments, &loop_ranges, |_| 1)
-        .unwrap_or_else(|| {
-            Arrangement::new(&crate::geometry::overlay::self_node_segments(&segments))
-        });
+    let mut arrangement =
+        match Arrangement::<i32>::from_loops(&segments, &loop_ranges, |_| 1)? {
+            Some(arrangement) => arrangement,
+            None => Arrangement::new(&crate::geometry::overlay::self_node_segments(&segments)?),
+        };
     let probes = arrangement.component_probes();
     // Single-loop fast seed: one closed loop nodes into ONE connected
     // component (noding never disconnects a curve), and the unbounded

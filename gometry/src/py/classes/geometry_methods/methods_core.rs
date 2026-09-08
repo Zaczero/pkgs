@@ -269,9 +269,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_ring(&self) -> bool {
+    pub fn is_ring(&self) -> PyResult<bool> {
         Python::attach(|py| crate::predicates::unary::is_ring_scalar(py, self))
-            .expect("is_ring is infallible")
     }
     /// Whether a closed ``LineString`` winds counter-clockwise.
     /// ``False`` for open lines and non-lineal geometry.
@@ -298,9 +297,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_simple(&self) -> bool {
+    pub fn is_simple(&self) -> PyResult<bool> {
         Python::attach(|py| crate::predicates::unary::is_simple_scalar(py, self))
-            .expect("is_simple is infallible")
     }
     /// Whether the geometry is topologically valid in its coordinate frame.
     /// Geographic antimeridian crossings are normalized first; projected and
@@ -313,9 +311,8 @@ impl PyGeometry {
     /// -------
     /// bool
     #[getter]
-    pub fn is_valid(&self) -> bool {
+    pub fn is_valid(&self) -> PyResult<bool> {
         Python::attach(|py| crate::predicates::unary::is_valid_scalar(py, self))
-            .expect("is_valid is infallible")
     }
     /// Whether the polygon is convex.
     ///

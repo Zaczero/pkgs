@@ -106,8 +106,8 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
     }))
 }
 
-pub(crate) fn indexed_segments_are_simple(chains: &LineworkChains) -> bool {
-    chains
+pub(crate) fn indexed_segments_are_simple(chains: &LineworkChains) -> crate::error::Result<bool> {
+    Ok(chains
         .for_each_candidate_pair(|left, right| {
             let (left, right) = (chains.at(left), chains.at(right));
             // Chain-adjacent segments share an endpoint by construction —
@@ -120,8 +120,8 @@ pub(crate) fn indexed_segments_are_simple(chains: &LineworkChains) -> bool {
             } else {
                 ControlFlow::Continue(())
             }
-        })
-        .is_continue()
+        })?
+        .is_continue())
 }
 
 pub(crate) fn segment_intersection_is_simple(left: IndexedSegment, right: IndexedSegment) -> bool {

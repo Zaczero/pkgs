@@ -492,7 +492,11 @@ mod winding_buffer_tests {
         ])
         .expect("test collection is valid");
         let buffered = collection.buffer(0.5).unwrap();
-        assert!(buffered.validate().is_none(), "{:?}", buffered.validate());
+        assert!(
+            buffered.validate().unwrap().is_none(),
+            "{:?}",
+            buffered.validate()
+        );
         for part in match &collection {
             Shape::GeometryCollection(parts) => parts,
             _ => unreachable!(),

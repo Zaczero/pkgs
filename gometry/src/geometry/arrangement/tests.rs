@@ -15,7 +15,7 @@ fn loop_segments(points: &[(f64, f64)]) -> Vec<Segment> {
 }
 
 fn general(segments: &[Segment]) -> Arrangement<i32> {
-    Arrangement::new(&super::super::overlay::self_node_segments(segments))
+    Arrangement::new(&super::super::overlay::self_node_segments(segments).unwrap())
 }
 
 /// Bit-exact equality over every derived structure the consumers read:
@@ -60,6 +60,7 @@ fn assert_bit_parity(fast: &mut Arrangement<i32>, slow: &mut Arrangement<i32>) {
 fn assert_parity(points: &[(f64, f64)], expect_cuts: bool) {
     let segments = loop_segments(points);
     let mut fast = Arrangement::from_single_loop(&segments)
+        .unwrap()
         .expect("single-loop fast path must accept this loop");
     if expect_cuts {
         assert!(
@@ -94,13 +95,16 @@ fn pentagram_multi_cut_fast_path_matches_general_noder() {
         })
         .collect();
     let segments = loop_segments(&points);
-    let (cuts, _) = single_loop_cuts(&segments).expect("pentagram is a positional loop");
+    let (cuts, _) = single_loop_cuts(&segments)
+        .unwrap()
+        .expect("pentagram is a positional loop");
     assert!(
         cuts.iter().filter(|cut| cut.ordinal == 0).count() >= 2,
         "the first edge must exercise per-segment cut ordering",
     );
-    let mut fast =
-        Arrangement::from_single_loop(&segments).expect("pentagram fast path must accept");
+    let mut fast = Arrangement::from_single_loop(&segments)
+        .unwrap()
+        .expect("pentagram fast path must accept");
     let mut slow = general(&segments);
     assert_bit_parity(&mut fast, &mut slow);
 }
@@ -136,7 +140,7 @@ fn t_junction_bails() {
         (2.0, 0.0),
         (1.0, 3.0),
     ]);
-    assert!(Arrangement::from_single_loop(&segments).is_none());
+    assert!(Arrangement::from_single_loop(&segments).unwrap().is_none());
     // The general path stays the owner of the case.
     assert!(general(&segments).vertex_count() > 0);
 }
@@ -151,7 +155,7 @@ fn repeated_vertex_bails() {
         (0.0, 2.0),
         (1.0, 1.0),
     ]);
-    assert!(Arrangement::from_single_loop(&segments).is_none());
+    assert!(Arrangement::from_single_loop(&segments).unwrap().is_none());
 }
 
 #[test]
@@ -159,15 +163,15 @@ fn collinear_fold_bails() {
     // The closing edge retraces the bottom edge collinearly with an
     // interior endpoint — the overlaps_found exactness pre-pass case.
     let segments = loop_segments(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (2.0, 0.0)]);
-    assert!(Arrangement::from_single_loop(&segments).is_none());
+    assert!(Arrangement::from_single_loop(&segments).unwrap().is_none());
 }
 
 #[test]
 fn open_chain_bails() {
     let mut segments = loop_segments(&[(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)]);
     segments.pop();
-    assert!(Arrangement::from_single_loop(&segments).is_none());
-    assert!(Arrangement::from_single_loop(&[]).is_none());
+    assert!(Arrangement::from_single_loop(&segments).unwrap().is_none());
+    assert!(Arrangement::from_single_loop(&[]).unwrap().is_none());
 }
 
 /// Two positional loops with weight `1` each, against the general
@@ -210,6 +214,7 @@ fn from_loops_matches_general_when_clean() {
     ] {
         let (segments, ranges) = two_loop(&a, &b);
         let fast = Arrangement::<i32>::from_loops(&segments, &ranges, |_| 1)
+            .unwrap()
             .expect("clean loop pair builds positionally");
         let slow = general(&segments);
         assert_eq!(
@@ -234,7 +239,11 @@ fn from_loops_bails_on_shared_vertex() {
         (3.0, 2.0),
         (2.0, 4.0),
     ]);
-    assert!(Arrangement::<i32>::from_loops(&segments, &ranges, |_| 1).is_none());
+    assert!(
+        Arrangement::<i32>::from_loops(&segments, &ranges, |_| 1)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

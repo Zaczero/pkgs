@@ -245,12 +245,16 @@ pub(crate) fn ring_label(ring: usize) -> String {
 pub(in crate::geometry) fn polygon_rings_issue(
     polygon: &Polygon,
     path: &str,
-) -> Option<ValidationIssue> {
+) -> crate::error::Result<Option<ValidationIssue>> {
     let ring_count = polygon.holes.len() + 1;
     let mut chains = LineworkChains::default();
-    chains.push_line(polygon.shell.coords())?;
+    if chains.push_line(polygon.shell.coords()).is_none() {
+        return Ok(None);
+    }
     for hole in polygon.holes.iter() {
-        chains.push_line(hole.coords())?;
+        if chains.push_line(hole.coords()).is_none() {
+            return Ok(None);
+        }
     }
 
     let mut touches: TouchDirections = HashMap::new();
@@ -262,8 +266,8 @@ pub(in crate::geometry) fn polygon_rings_issue(
                 ring_label(a.max(b))
             )
         })
-    }) {
-        return Some(issue.with_path_prefix(path));
+    })? {
+        return Ok(Some(issue.with_path_prefix(path)));
     }
     if !touches.is_empty()
         && let Some(issue) = settle_touches(&touches, ring_count, true, &|a, b| {
@@ -274,10 +278,10 @@ pub(in crate::geometry) fn polygon_rings_issue(
             )
         })
     {
-        return Some(issue.with_path_prefix(path));
+        return Ok(Some(issue.with_path_prefix(path)));
     }
     if polygon.holes.is_empty() {
-        return None; // nothing to contain, nothing to nest
+        return Ok(None); // nothing to contain, nothing to nest
     }
 
     // Containment: every hole interior must sit inside the shell and
@@ -290,14 +294,14 @@ pub(in crate::geometry) fn polygon_rings_issue(
     for (index, hole) in polygon.holes.iter().enumerate() {
         let probe = ring_probe_point(hole.coords(), polygon.shell.coords());
         if ring_classify_point(polygon.shell.coords(), probe) != RingClass::Interior {
-            return Some(ValidationIssue::new(
+            return Ok(Some(ValidationIssue::new(
                 "hole_outside_shell",
                 format!(
                     "interior ring at index {index} is not contained within the polygon's exterior"
                 ),
                 Some(probe),
                 path,
-            ));
+            )));
         }
         // Empty/degenerate hole bounds cannot nest — use an empty box so the
         // sweep never pairs them. Degenerate rings already failed earlier
@@ -341,8 +345,8 @@ pub(in crate::geometry) fn polygon_rings_issue(
             return std::ops::ControlFlow::Break(());
         }
         std::ops::ControlFlow::Continue(())
-    });
-    nest_issue
+    })?;
+    Ok(nest_issue)
 }
 
 /// Member-pair validity of a multipolygon (each member already valid on
@@ -351,7 +355,7 @@ pub(in crate::geometry) fn polygon_rings_issue(
 pub(in crate::geometry) fn multi_polygon_members_issue(
     polygons: &[Polygon],
     path: &str,
-) -> Option<ValidationIssue> {
+) -> crate::error::Result<Option<ValidationIssue>> {
     let overlap =
         |a: usize, b: usize| format!("polygons at indices {} and {} overlap", a.min(b), b.max(a));
     // Chains stage per RING (the kernel's monotone-run identities); the
@@ -364,7 +368,9 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
         for ring in
             std::iter::once(polygon.shell.coords()).chain(polygon.holes.iter().map(Ring::coords))
         {
-            chains.push_line(ring)?;
+            if chains.push_line(ring).is_none() {
+                return Ok(None);
+            }
             member_of.push(member);
         }
     }
@@ -380,13 +386,13 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
             return None; // same member: already validated by itself
         }
         classify_ring_pair(&left, &right, &mut touches, &overlap)
-    }) {
-        return Some(issue.with_path_prefix(path));
+    })? {
+        return Ok(Some(issue.with_path_prefix(path)));
     }
     if !touches.is_empty()
         && let Some(issue) = settle_touches(&touches, polygons.len(), false, &overlap)
     {
-        return Some(issue.with_path_prefix(path));
+        return Ok(Some(issue.with_path_prefix(path)));
     }
 
     // Nesting/stacking without boundary contact: one shell probe per
@@ -437,8 +443,8 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
             return std::ops::ControlFlow::Break(());
         }
         std::ops::ControlFlow::Continue(())
-    });
-    nest_issue
+    })?;
+    Ok(nest_issue)
 }
 
 /// A representative point of `member` that avoids every ring of `other`

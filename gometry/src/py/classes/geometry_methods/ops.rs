@@ -123,7 +123,7 @@ impl PyGeometry {
         let shape = Arc::clone(&self.shape);
         let domain = geometry::topology_domain(&self.frame)?;
         let points =
-            py.detach(move || geometry::self_intersections_in_frame(shape.shape(), domain));
+            py.detach(move || geometry::self_intersections_in_frame(shape.shape(), domain))?;
         self.parts_to_array(points.into_iter().map(Shape::Point))
     }
 

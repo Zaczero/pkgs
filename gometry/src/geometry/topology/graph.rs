@@ -1575,7 +1575,7 @@ impl GraphBuilder {
         };
         let (atomic, provenance) = crate::geometry::overlay::self_node_segments_sourced(
             self.chart_edges.iter().map(|edge| edge.segment),
-        );
+        )?;
         let mut bundles: HashMap<EdgeBundleKey, EdgeBundle> = HashMap::with_capacity(atomic.len());
         for (piece, owners) in atomic.into_iter().zip(provenance.iter()) {
             if same_point(piece.start, piece.end) {

@@ -176,7 +176,7 @@ pub(crate) fn render_shape_svg(shape: &Shape) -> Result<String> {
     let box_w = px_w + 2.0 * pad;
     let box_h = px_h + 2.0 * pad;
     let flip_y = px_h + pad;
-    let valid = shape.validate().is_none();
+    let valid = shape.validate()?.is_none();
     let stroke = if valid { "#22c55e" } else { "#ef4444" };
     let fill = if valid {
         "rgba(34,197,94,0.25)"

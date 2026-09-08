@@ -2,7 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::alloc::{Layout, handle_alloc_error};
 use std::ops::ControlFlow;
 
 use rstar::{AABB, RTreeObject};
@@ -10,13 +9,6 @@ use rstar::{AABB, RTreeObject};
 use crate::error::{ResourceError, Result};
 use crate::geometry::{Bounds, PointKey, Segment, XY};
 use crate::try_reserve_vec;
-
-fn abort_on_alloc(result: Result<ControlFlow<()>>) -> ControlFlow<()> {
-    result.map_or_else(
-        |_| handle_alloc_error(Layout::from_size_align(1, 1).expect("valid layout")),
-        |flow| flow,
-    )
-}
 
 fn u32_ordinal(value: usize) -> Result<u32> {
     u32::try_from(value).map_err(|_| ResourceError::SizeOverflow.into())
@@ -162,22 +154,24 @@ impl MonotoneRun {
 pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
     bounds: &[Bounds],
     mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> ControlFlow<()> {
+) -> Result<ControlFlow<()>> {
     let count = bounds.len();
     if count < 2 {
-        return ControlFlow::Continue(());
+        return Ok(ControlFlow::Continue(()));
     }
     if count < SWEEP_MIN_ITEMS {
         for left in 0..count {
             for right in (left + 1)..count {
-                if bounds[left].intersects(bounds[right]) {
-                    visit(left, right)?;
+                if bounds[left].intersects(bounds[right])
+                    && let ControlFlow::Break(()) = visit(left, right)
+                {
+                    return Ok(ControlFlow::Break(()));
                 }
             }
         }
-        return ControlFlow::Continue(());
+        return Ok(ControlFlow::Continue(()));
     }
-    abort_on_alloc(try_overlapping_bounds_sweep(bounds, &mut visit))
+    try_overlapping_bounds_sweep(bounds, &mut visit)
 }
 
 fn try_overlapping_bounds_sweep(
@@ -252,17 +246,9 @@ fn try_overlapping_bounds_sweep(
 /// count therefore takes the pruning wherever it exists — a straight 254-segment
 /// pair drops from 252 candidates to 0 — and pays the run machinery only when it
 /// buys something. Below [`SWEEP_MIN_ITEMS`] the brute double loop wins.
+/// Scratch growth is [`ResourceError`]; visit `Break` is
+/// `Ok(ControlFlow::Break(()))`.
 pub(in crate::geometry) fn for_each_candidate_pair(
-    pool: &[Segment],
-    chain_of: impl Fn(usize) -> u32,
-    visit: impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> ControlFlow<()> {
-    abort_on_alloc(try_for_each_candidate_pair(pool, chain_of, visit))
-}
-
-/// Fallible candidate sweep. Scratch growth is [`ResourceError`]; visit
-/// `Break` is `Ok(ControlFlow::Break(()))`.
-pub(in crate::geometry) fn try_for_each_candidate_pair(
     pool: &[Segment],
     chain_of: impl Fn(usize) -> u32,
     mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
@@ -275,8 +261,8 @@ pub(in crate::geometry) fn try_for_each_candidate_pair(
         };
     }
     let mut runs = crate::scratch_pool::ScratchPool::checkout(&RUNS);
-    try_monotone_runs(pool, &chain_of, &mut runs)?;
-    try_candidate_pairs_over_staged_runs(
+    monotone_runs(pool, &chain_of, &mut runs)?;
+    candidate_pairs_over_staged_runs(
         pool,
         &runs,
         || Bounds::from_xy_iter(pool.iter().flat_map(|segment| [segment.start, segment.end])),
@@ -293,23 +279,12 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs(
     runs: &[MonotoneRun],
     bounds: impl FnOnce() -> Bounds,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> ControlFlow<()> {
-    abort_on_alloc(try_candidate_pairs_over_staged_runs(
-        pool, runs, bounds, visit,
-    ))
-}
-
-fn try_candidate_pairs_over_staged_runs(
-    pool: &[Segment],
-    runs: &[MonotoneRun],
-    bounds: impl FnOnce() -> Bounds,
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> Result<ControlFlow<()>> {
     let count = pool.len();
     if count < SWEEP_MIN_ITEMS {
         for left in 0..count {
             for right in (left + 1)..count {
-                if visit(left, right) == ControlFlow::Break(()) {
+                if let ControlFlow::Break(()) = visit(left, right) {
                     return Ok(ControlFlow::Break(()));
                 }
             }
@@ -386,15 +361,6 @@ fn try_candidate_pairs_over_runs(
 /// are wildcards). Zero-length segments break out into their own runs so
 /// their point-touch pairs still reach the visitor through run pairs.
 pub(in crate::geometry) fn monotone_runs(
-    pool: &[Segment],
-    chain_of: &impl Fn(usize) -> u32,
-    runs: &mut Vec<MonotoneRun>,
-) {
-    let _ =
-        abort_on_alloc(try_monotone_runs(pool, chain_of, runs).map(|()| ControlFlow::Continue(())));
-}
-
-fn try_monotone_runs(
     pool: &[Segment],
     chain_of: &impl Fn(usize) -> u32,
     runs: &mut Vec<MonotoneRun>,
@@ -475,15 +441,6 @@ pub(in crate::geometry) fn sign_of(value: f64) -> i8 {
 /// operand's staged runs are swept against each row with: nothing about
 /// the prepared side is rebuilt per call.
 pub(in crate::geometry) fn candidate_pairs_between(
-    a: (&[Segment], &[MonotoneRun]),
-    b: (&[Segment], &[MonotoneRun]),
-    bounds: Bounds,
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> ControlFlow<()> {
-    abort_on_alloc(try_candidate_pairs_between(a, b, bounds, visit))
-}
-
-fn try_candidate_pairs_between(
     a: (&[Segment], &[MonotoneRun]),
     b: (&[Segment], &[MonotoneRun]),
     bounds: Bounds,
@@ -782,9 +739,10 @@ fn try_banded_windows(
                     && right.cross_min <= left.cross_max
                     && right.cross_max >= left.cross_min
                     && band_of(left.cross_min).max(band_of(right.cross_min)) == band
-                    && visit_ordered(left, right, visit) == ControlFlow::Break(())
                 {
-                    return Ok(ControlFlow::Break(()));
+                    if let ControlFlow::Break(()) = visit_ordered(left, right, visit) {
+                        return Ok(ControlFlow::Break(()));
+                    }
                 }
             }
         }

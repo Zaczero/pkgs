@@ -275,7 +275,7 @@ fn exact_cycle_error() -> crate::error::Error {
 }
 
 fn admit_embedded_clip(polygon: &Polygon) -> Result<()> {
-    if polygon_is_valid(polygon) {
+    if polygon_is_valid(polygon)? {
         Ok(())
     } else {
         Err(voronoi_error(
@@ -625,7 +625,7 @@ fn normalize_clip<'a>(
     let mut fixed = Vec::new();
     let source = match boundary {
         VoronoiBoundary::Polygon(polygon) => {
-            if !polygon_is_valid(polygon) {
+            if !polygon_is_valid(polygon)? {
                 return Err(voronoi_error("Voronoi clip polygon is invalid"));
             }
             for (ring_index, ring) in std::iter::once(&polygon.shell)
@@ -3135,7 +3135,7 @@ fn embed(
             })
             .collect::<Result<Vec<_>>>()?;
         let polygon = Polygon::new(shell, holes)?;
-        if !polygon_is_valid(&polygon) {
+        if !polygon_is_valid(&polygon)? {
             return Err(embedding_failure());
         }
         labelled.push((part.owner, polygon));
@@ -3627,7 +3627,7 @@ mod tests {
                             .cloned()
                             .map(Shape::Polygon)
                             .collect();
-                        assert!(cells.iter().all(|cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon))));
+                        assert!(cells.iter().all(|cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())));
                         assert!(coverage_is_valid(&cells, 0.0).unwrap(), "units={units}");
                         let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
                         assert!(
@@ -3787,7 +3787,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
         let diagram = build(&sites, VoronoiBoundary::Padded, &mut budget, true).unwrap();
         assert_eq!(diagram.polygons.len(), sites.len());
-        assert!(diagram.polygons.iter().all(polygon_is_valid));
+        assert!(diagram.polygons.iter().all(|polygon| polygon_is_valid(polygon).unwrap()));
     }
 
     #[test]
@@ -3803,7 +3803,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "cosine circle");
         let diagram = build(&sites, VoronoiBoundary::Envelope, &mut budget, true).unwrap();
         assert_eq!(diagram.polygons.len(), sites.len());
-        assert!(diagram.polygons.iter().all(polygon_is_valid));
+        assert!(diagram.polygons.iter().all(|polygon| polygon_is_valid(polygon).unwrap()));
     }
 
     fn assert_directed_partition(cells: &[Shape], bounds: [f64; 4]) {
@@ -3916,7 +3916,7 @@ mod tests {
             .expect("extreme cluster should be a valid partition");
         assert_eq!(cells.len(), points.len());
         assert!(cells.iter().all(|cell| match cell {
-            Shape::Polygon(polygon) => polygon_is_valid(polygon),
+            Shape::Polygon(polygon) => polygon_is_valid(polygon).unwrap(),
             _ => false,
         }));
         let canonical = shape::canonical_voronoi_sites(
@@ -4480,7 +4480,7 @@ mod tests {
     fn assert_cells_cover_clip(cells: &[Shape], clip: &Polygon) {
         assert!(!cells.is_empty());
         assert!(cells.iter().all(|cell| match cell {
-            Shape::Polygon(polygon) => polygon_is_valid(polygon),
+            Shape::Polygon(polygon) => polygon_is_valid(polygon).unwrap(),
             _ => false,
         }));
         let union = Shape::union_all(cells, Strictness::Lenient).unwrap();
@@ -4997,8 +4997,8 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        let restored_valid = polygon_is_valid(&restored_polygon);
-        let mutated_valid = polygon_is_valid(&mutated_polygon);
+        let restored_valid = polygon_is_valid(&restored_polygon).unwrap();
+        let mutated_valid = polygon_is_valid(&mutated_polygon).unwrap();
         assert_ne!(
             mutated_valid, restored_valid,
             "mutated valid={mutated_valid}, restored valid={restored_valid}"
@@ -6297,7 +6297,7 @@ fn dual_embed(
                 .chain(std::iter::once(&rounded[0]))
                 .map(|xy| Point::new_raw_xy(xy.x, xy.y))
                 .collect();
-            if !polygon_is_valid(&Polygon::new(Ring::closed(closed)?, Vec::new())?) {
+            if !polygon_is_valid(&Polygon::new(Ring::closed(closed)?, Vec::new())?)? {
                 return Err(embedding_failure());
             }
             let site = exact::ExactPoint::from_xy(site_xy);

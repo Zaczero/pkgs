@@ -32,7 +32,7 @@ impl GeometryArrayStorage {
     pub(crate) fn const_or_shape_bool(
         &self,
         constant: bool,
-        shape_pred: impl Fn(&Shape) -> bool,
+        shape_pred: impl Fn(&Shape) -> Result<bool>,
     ) -> Result<Vec<bool>> {
         let mut output = Vec::new();
         crate::boundary::try_reserve_vec(&mut output, self.len())?;
@@ -45,14 +45,17 @@ impl GeometryArrayStorage {
             _ => {
                 for shape in self.iter_shapes() {
                     let shape = shape?;
-                    crate::boundary::try_push_vec(&mut output, shape_pred(&shape))?;
+                    crate::boundary::try_push_vec(&mut output, shape_pred(&shape)?)?;
                 }
             },
         }
         Ok(output)
     }
 
-    pub(crate) fn lines_bool(&self, line: impl Fn(&CoordSeq) -> bool) -> Option<Result<Vec<bool>>> {
+    pub(crate) fn lines_bool(
+        &self,
+        line: impl Fn(&CoordSeq) -> Result<bool>,
+    ) -> Option<Result<Vec<bool>>> {
         match self {
             Self::Packed(PackedStorage::Lines {
                 coords,
@@ -68,7 +71,7 @@ impl GeometryArrayStorage {
                         let window = map.csr_window(offsets.as_slice(), logical);
                         crate::boundary::try_push_vec(
                             &mut output,
-                            line(&coords.view(CoordWindow::from_range(window, coords.len()))),
+                            line(&coords.view(CoordWindow::from_range(window, coords.len())))?,
                         )?;
                     }
                     Ok(output)
@@ -81,7 +84,7 @@ impl GeometryArrayStorage {
     /// Dense polygon-row bool kernel (no missing-mask branch).
     pub(crate) fn polygons_bool(
         &self,
-        polygon: impl Fn(&Polygon) -> bool,
+        polygon: impl Fn(&Polygon) -> Result<bool>,
     ) -> Option<Result<Vec<bool>>> {
         match self {
             Self::Packed(PackedStorage::Polygons {
@@ -102,7 +105,7 @@ impl GeometryArrayStorage {
                                 coords,
                                 ring_offsets,
                                 polygon_rings_range(polygon_offsets.as_slice(), map, logical),
-                            )?),
+                            )?)?,
                         )?;
                     }
                     Ok(output)
@@ -118,7 +121,7 @@ impl GeometryArrayStorage {
     pub(crate) fn lines_bool_masked(
         &self,
         missing: Option<&crate::array::ValidityMask>,
-        line: impl Fn(&CoordSeq) -> bool,
+        line: impl Fn(&CoordSeq) -> Result<bool>,
     ) -> Option<Result<Vec<bool>>> {
         let Some(mask) = missing else {
             return self.lines_bool(line);
@@ -139,7 +142,7 @@ impl GeometryArrayStorage {
                             false
                         } else {
                             let window = map.csr_window(offsets.as_slice(), logical);
-                            line(&coords.view(CoordWindow::from_range(window, coords.len())))
+                            line(&coords.view(CoordWindow::from_range(window, coords.len())))?
                         };
                         crate::boundary::try_push_vec(&mut output, value)?;
                     }
@@ -156,7 +159,7 @@ impl GeometryArrayStorage {
     pub(crate) fn polygons_bool_masked(
         &self,
         missing: Option<&crate::array::ValidityMask>,
-        polygon: impl Fn(&Polygon) -> bool,
+        polygon: impl Fn(&Polygon) -> Result<bool>,
     ) -> Option<Result<Vec<bool>>> {
         let Some(mask) = missing else {
             return self.polygons_bool(polygon);
@@ -181,7 +184,7 @@ impl GeometryArrayStorage {
                                 coords,
                                 ring_offsets,
                                 polygon_rings_range(polygon_offsets.as_slice(), map, logical),
-                            )?)
+                            )?)?
                         };
                         crate::boundary::try_push_vec(&mut output, value)?;
                     }

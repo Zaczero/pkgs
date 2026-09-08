@@ -807,7 +807,7 @@ impl Shape {
                     && (self.is_empty() || !simplified.is_empty()))
             },
             Self::LineString(_) | Self::MultiLineString(_) => {
-                Ok(!self.is_simple() || simplified.is_simple())
+                Ok(!self.is_simple()? || simplified.is_simple()?)
             },
             Self::GeometryCollection(geometries) => {
                 let Self::GeometryCollection(parts) = simplified else {

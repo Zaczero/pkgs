@@ -81,7 +81,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
         .iter()
         .flat_map(|row| row.segments.iter().copied())
         .collect();
-    let atomic = self_node_segments(&all_segments);
+    let atomic = self_node_segments(&all_segments)?;
     let faces = minimal_positive_face_rings(&atomic);
     let regions = arrangement_regions(&faces)?;
 
@@ -563,7 +563,9 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
         && prepared
             .rows
             .iter()
-            .all(|row| row.shape.validate().is_none())
+            .try_fold(true, |ok, row| {
+                Ok::<_, crate::error::Error>(ok && row.shape.validate()?.is_none())
+            })?
     {
         let mut parts = Vec::new();
         for row in &prepared.rows {
@@ -709,9 +711,9 @@ mod tests {
             .iter()
             .flat_map(|row| row.segments.iter().copied())
             .collect();
-        let regions = arrangement_regions(&minimal_positive_face_rings(&self_node_segments(
-            &all_segments,
-        )))
+        let regions = arrangement_regions(&minimal_positive_face_rings(
+            &self_node_segments(&all_segments).unwrap(),
+        ))
         .unwrap();
         let expected: Vec<Shape> = assign_regions_linear(
             &prepared,
