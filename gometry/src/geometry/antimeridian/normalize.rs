@@ -256,7 +256,7 @@ pub(crate) fn is_simple_data_in_frame(
             Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
                 Err(error)
             },
-            Err(_) => data.shape().is_simple(),
+            Err(_) => Ok(false),
         }
     } else {
         data.is_simple_cached()
@@ -278,7 +278,7 @@ pub(crate) fn is_ring_data_in_frame(
             Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
                 Err(error)
             },
-            Err(_) => data.shape().is_ring(),
+            Err(_) => Ok(false),
         }
     } else {
         data.shape().is_ring()

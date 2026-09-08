@@ -332,16 +332,17 @@ impl TopologyGraph {
     pub(crate) fn for_each_area_boundary_candidate(
         &self,
         segment: Segment,
-        mut visit: impl FnMut(usize, Segment),
-    ) {
+        mut visit: impl FnMut(usize, Segment) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
         for candidate in self.support.edge_index.intersecting_candidates(segment) {
             let Some(edge) = self.edges.get(candidate.ordinal) else {
                 continue;
             };
             if edge.is_boundary {
-                visit(candidate.ordinal, edge.segment);
+                visit(candidate.ordinal, edge.segment)?;
             }
         }
+        Ok(())
     }
 
     pub(crate) const fn has_area_interior(&self) -> bool {

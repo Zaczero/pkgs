@@ -204,7 +204,7 @@ fn relate_linework(
             interval.witness(la, lb, Dimension::Point);
         };
         match contact {
-            Contact::Disjoint => return None,
+            Contact::Disjoint => return Ok(None),
             Contact::Cross { .. } => {
                 interval.witness(Loc::Interior, Loc::Interior, Dimension::Point);
                 for (side, ordinal) in [(0, ia), (1, ib)] {
@@ -241,8 +241,8 @@ fn relate_linework(
                 spans[1].push((ib, span.start, span.end));
             },
         }
-        decide(&interval)
-    });
+        Ok(decide(&interval))
+    })?;
     if let Some(verdict) = verdict {
         return Ok(Some(Outcome::Verdict(verdict)));
     }
@@ -270,22 +270,32 @@ fn relate_linework(
 fn sweep_contacts(
     a: &LineworkChains,
     b: &LineworkChains,
-    mut on_contact: impl FnMut(usize, usize, Contact) -> Option<bool>,
-) -> Option<bool> {
+    mut on_contact: impl FnMut(usize, usize, Contact) -> crate::error::Result<Option<bool>>,
+) -> crate::error::Result<Option<bool>> {
     let mut verdict = None;
+    let mut error = None;
     let _ = a.for_each_pair_with(b, |ia, ib| {
         let (sa, sb): (Segment, Segment) = (a.segments[ia], b.segments[ib]);
         if segment_envelopes_disjoint(sa, sb) {
             return ControlFlow::Continue(());
         }
         let (contact, _) = segment_contact_with_orientations(sa, sb);
-        if let Some(found) = on_contact(ia, ib, contact) {
-            verdict = Some(found);
-            return ControlFlow::Break(());
+        match on_contact(ia, ib, contact) {
+            Ok(Some(found)) => {
+                verdict = Some(found);
+                ControlFlow::Break(())
+            },
+            Ok(None) => ControlFlow::Continue(()),
+            Err(found) => {
+                error = Some(found);
+                ControlFlow::Break(())
+            },
         }
-        ControlFlow::Continue(())
-    });
-    verdict
+    })?;
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(verdict)
 }
 
 /// The phases after the contact sweep: the inner cells settle, boundary
@@ -631,7 +641,7 @@ fn relate_areal(
     let mut boundaries_met = false;
     let verdict = sweep_contacts(&a.chains, &b.chains, |_ia, _ib, contact| {
         match contact {
-            Contact::Disjoint => return None,
+            Contact::Disjoint => return Ok(None),
             Contact::Cross { .. } => {
                 for (row, col, dim) in [
                     (Loc::Interior, Loc::Interior, Dimension::Surface),
@@ -657,8 +667,8 @@ fn relate_areal(
             },
         }
         boundaries_met = true;
-        ask.decide(&interval)
-    });
+        Ok(ask.decide(&interval))
+    })?;
     if let Some(verdict) = verdict {
         return Ok(Some(Outcome::Verdict(verdict)));
     }
@@ -828,11 +838,13 @@ fn relate_areal_linework(
         &rings.chains,
         &linework.chains,
         |ring_ordinal, line_ordinal, contact| {
-            let contact_point = cut_line_at_contact(
+            let Some(contact_point) = cut_line_at_contact(
                 linework.chains.segments[line_ordinal],
                 contact,
                 &mut cuts[line_ordinal],
-            )?;
+            )? else {
+                return Ok(None);
+            };
             if let Contact::Collinear { span } = contact
                 && !same_point(span.start, span.end)
             {
@@ -844,9 +856,9 @@ fn relate_areal_linework(
                 linework.class_of(contact_point),
                 Dimension::Point,
             );
-            ask.decide(&interval)
+            Ok(ask.decide(&interval))
         },
-    );
+    )?;
     if let Some(verdict) = verdict {
         return Ok(Some(Outcome::Verdict(verdict)));
     }
@@ -855,7 +867,7 @@ fn relate_areal_linework(
         let Some(span) = linework.chains.line_span(line_index) else {
             continue;
         };
-        let walked = walk_line_pieces(linework, &polygons, span, &mut cuts, &mut interval);
+        let walked = walk_line_pieces(linework, &polygons, span, &mut cuts, &mut interval)?;
         // Line ends in the boundary column: on a cut they are boundary points
         // of the area, otherwise they sit where their piece does.
         if let Some((start, end)) = linework.chains.line_ends(line_index) {
@@ -901,47 +913,51 @@ fn relate_areal_linework(
 
 /// Record one boundary contact as cuts of the line segment it fell on, and
 /// return one point of it (`None` for no contact).
-fn cut_line_at_contact(segment: Segment, contact: Contact, cuts: &mut Vec<Cut>) -> Option<XY> {
+fn cut_line_at_contact(
+    segment: Segment,
+    contact: Contact,
+    cuts: &mut Vec<Cut>,
+) -> crate::error::Result<Option<XY>> {
     use crate::geometry::segment_projection;
-    let mut point_cut = |point: XY| {
+    let mut point_cut = |point: XY| -> crate::error::Result<XY> {
         cuts.push(Cut {
-            at: segment_projection(point, segment),
+            at: segment_projection(point, segment)?,
             point,
             span_delta: 0,
         });
-        point
+        Ok(point)
     };
-    Some(match contact {
-        Contact::Disjoint => return None,
-        Contact::Cross { point } | Contact::Touch { point } => point_cut(point),
-        Contact::Collinear { span } if same_point(span.start, span.end) => point_cut(span.start),
+    let point = match contact {
+        Contact::Disjoint => return Ok(None),
+        Contact::Cross { point } | Contact::Touch { point } => point_cut(point)?,
+        Contact::Collinear { span } if same_point(span.start, span.end) => point_cut(span.start)?,
         Contact::Collinear { span } => {
-            let (open, close) = order_along(segment, span.start, span.end);
+            let (open, close) = order_along(segment, span.start, span.end)?;
             cuts.push(Cut {
-                at: segment_projection(open, segment),
+                at: segment_projection(open, segment)?,
                 point: open,
                 span_delta: 1,
             });
             cuts.push(Cut {
-                at: segment_projection(close, segment),
+                at: segment_projection(close, segment)?,
                 point: close,
                 span_delta: -1,
             });
             span.start
         },
-    })
+    };
+    Ok(Some(point))
 }
 
 /// The two ends of a shared span in the order the line segment runs.
-fn order_along(segment: Segment, first: XY, second: XY) -> (XY, XY) {
+fn order_along(segment: Segment, first: XY, second: XY) -> crate::error::Result<(XY, XY)> {
     use crate::geometry::segment_projection;
-    if segment_projection(second, segment)
-        .cmp_along(&segment_projection(first, segment))
-        .is_lt()
-    {
-        (second, first)
+    let second_projection = segment_projection(second, segment)?;
+    let first_projection = segment_projection(first, segment)?;
+    if second_projection.cmp_along(&first_projection)?.is_lt() {
+        Ok((second, first))
     } else {
-        (first, second)
+        Ok((first, second))
     }
 }
 
@@ -967,7 +983,7 @@ fn walk_line_pieces(
     span: std::ops::Range<usize>,
     cuts: &mut [Vec<Cut>],
     interval: &mut De9imInterval,
-) -> WalkedLine {
+) -> crate::error::Result<WalkedLine> {
     use crate::geometry::segment_midpoint;
     let mut walked = WalkedLine {
         first_piece: None,
@@ -984,7 +1000,7 @@ fn walk_line_pieces(
     for ordinal in span {
         let segment = chains.segments[ordinal];
         let slot = &mut cuts[ordinal];
-        slot.sort_by(|left, right| left.at.cmp_along(&right.at));
+        crate::geometry::try_sort_by(slot, |left, right| left.at.cmp_along(&right.at))?;
         let mut cursor = segment.start;
         let mut index = 0;
         while index < slot.len() {
@@ -992,7 +1008,7 @@ fn walk_line_pieces(
             let at = index;
             let point = slot[at].point;
             let mut delta = 0_i32;
-            while index < slot.len() && slot[index].at.cmp_along(&slot[at].at).is_eq() {
+            while index < slot.len() && slot[index].at.cmp_along(&slot[at].at)?.is_eq() {
                 delta += i32::from(slot[index].span_delta);
                 index += 1;
             }
@@ -1042,7 +1058,7 @@ fn walk_line_pieces(
             walked.last_piece = Some(location);
         }
     }
-    walked
+    Ok(walked)
 }
 
 /// The full matrix of an areal operand against a linework operand, in

@@ -401,7 +401,7 @@ fn try_cartesian_polygon_line_relate_with_graphs(
                     None => left.topology_graph()?,
                 },
                 line,
-            ))
+            )?)
         },
         (Shape::LineString(line), Shape::Polygon(polygon)) => {
             if !polygon_has_nondegenerate_area(polygon)
@@ -418,7 +418,7 @@ fn try_cartesian_polygon_line_relate_with_graphs(
                         None => right.topology_graph()?,
                     },
                     line,
-                )
+                )?
                 .transpose(),
             )
         },
@@ -426,7 +426,7 @@ fn try_cartesian_polygon_line_relate_with_graphs(
     })
 }
 
-fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> De9im {
+fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> Result<De9im> {
     let mut matrix = De9im::empty_disjoint();
     // A bounded nondegenerate polygon leaves a two-dimensional complement on
     // both sides of any finite line. The line walk fills the remaining cells.
@@ -458,7 +458,7 @@ fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> De9im {
         last = Some(end);
     }
     let (Some(first), Some(last)) = (first, last) else {
-        return matrix;
+        return Ok(matrix);
     };
     toggle_line_boundary(&mut line_boundary, graph, first);
     toggle_line_boundary(&mut line_boundary, graph, last);
@@ -475,15 +475,15 @@ fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> De9im {
             match segment_contact_exact(segment, boundary) {
                 Contact::Disjoint => {},
                 Contact::Cross { point } | Contact::Touch { point } => {
-                    contacts.push((segment_projection(point, segment), point, true));
+                    contacts.push((segment_projection(point, segment)?, point, true));
                 },
                 Contact::Collinear { span } => {
-                    contacts.push((segment_projection(span.start, segment), span.start, true));
-                    contacts.push((segment_projection(span.end, segment), span.end, true));
+                    contacts.push((segment_projection(span.start, segment)?, span.start, true));
+                    contacts.push((segment_projection(span.end, segment)?, span.end, true));
                     if !same_point(span.start, span.end) {
-                        let start = segment_projection(span.start, boundary);
-                        let end = segment_projection(span.end, boundary);
-                        let interval = if end.cmp_along(&start).is_lt() {
+                        let start = segment_projection(span.start, boundary)?;
+                        let end = segment_projection(span.end, boundary)?;
+                        let interval = if end.cmp_along(&start)?.is_lt() {
                             (end, start)
                         } else {
                             (start, end)
@@ -492,15 +492,18 @@ fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> De9im {
                     }
                 },
             }
-        });
+            Ok(())
+        })?;
         contacts.push((SegmentProjection::Start, segment.start, false));
         contacts.push((SegmentProjection::End, segment.end, false));
-        contacts.sort_unstable_by(|(left, ..), (right, ..)| left.cmp_along(right));
+        crate::geometry::try_sort_by(&mut contacts, |(left, ..), (right, ..)| {
+            left.cmp_along(right)
+        })?;
         let mut deduplicated: Vec<(SegmentProjection, XY, bool)> =
             Vec::with_capacity(contacts.len());
         for contact in contacts {
             if let Some(previous) = deduplicated.last_mut()
-                && contact.0.cmp_along(&previous.0).is_eq()
+                && contact.0.cmp_along(&previous.0)?.is_eq()
             {
                 // Prefer exact boundary provenance when an endpoint and a
                 // boundary contact share one projected point.
@@ -528,7 +531,7 @@ fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> De9im {
         }
         let mut previous = &contacts[0];
         for current in contacts.iter().skip(1) {
-            if current.0.cmp_along(&previous.0).is_eq() {
+            if current.0.cmp_along(&previous.0)?.is_eq() {
                 continue;
             }
             let midpoint = segment_midpoint(Segment {
@@ -575,26 +578,37 @@ fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> De9im {
         );
     }
 
-    let boundary_is_covered = boundary_edge_count != 0
-        && boundary_coverage.len() == boundary_edge_count
-        && boundary_coverage.iter().all(|(_, intervals)| {
+    let mut boundary_is_covered =
+        boundary_edge_count != 0 && boundary_coverage.len() == boundary_edge_count;
+    if boundary_is_covered {
+        for intervals in boundary_coverage.values() {
             let mut intervals = intervals.clone();
-            intervals.sort_unstable_by(|(left, _), (right, _)| left.cmp_along(right));
+            crate::geometry::try_sort_by(&mut intervals, |(left, _), (right, _)| {
+                left.cmp_along(right)
+            })?;
             let mut cursor = SegmentProjection::Start;
             for (start, end) in intervals {
-                if start.cmp_along(&cursor).is_gt() {
-                    return false;
+                if start.cmp_along(&cursor)?.is_gt() {
+                    boundary_is_covered = false;
+                    break;
                 }
-                if end.cmp_along(&cursor).is_gt() {
+                if end.cmp_along(&cursor)?.is_gt() {
                     cursor = end;
                 }
             }
-            cursor.cmp_along(&SegmentProjection::End).is_eq()
-        });
+            if !boundary_is_covered {
+                break;
+            }
+            if !cursor.cmp_along(&SegmentProjection::End)?.is_eq() {
+                boundary_is_covered = false;
+                break;
+            }
+        }
+    }
     if boundary_is_covered {
         matrix.clear(Loc::Boundary, Loc::Exterior);
     }
-    matrix
+    Ok(matrix)
 }
 
 fn toggle_line_boundary(
@@ -919,7 +933,7 @@ fn graph_relate_with_node_cells(
     let mut matrix = De9im::empty_disjoint();
     add_face_cells(&mut matrix, left, right)?;
 
-    let (edges, hints) = pair_edges(left, right);
+    let (edges, hints) = pair_edges(left, right)?;
     add_edge_cells(&mut matrix, left, right, &edges);
 
     let mut nodes = Vec::with_capacity(left.nodes.len() + right.nodes.len() + edges.len() * 2);
@@ -1246,7 +1260,7 @@ struct EdgeLabel {
 fn pair_edges(
     left: &TopologyGraph,
     right: &TopologyGraph,
-) -> (Vec<(Segment, EdgeLabel)>, HashMap<PointKey, EdgeLabel>) {
+) -> crate::error::Result<(Vec<(Segment, EdgeLabel)>, HashMap<PointKey, EdgeLabel>)> {
     if left.edges.is_empty() || right.edges.is_empty() {
         let (graph, left_present) = if left.edges.is_empty() {
             (right, false)
@@ -1282,7 +1296,7 @@ fn pair_edges(
             }
             edges.push((edge.segment, label));
         }
-        return (edges, hints);
+        return Ok((edges, hints));
     }
     let split = left.edges.len();
     let (atomic, provenance) = overlay::self_node_segments_sourced(
@@ -1290,7 +1304,7 @@ fn pair_edges(
             .iter()
             .map(|edge| edge.segment)
             .chain(right.edges.iter().map(|edge| edge.segment)),
-    );
+    )?;
     if atomic.len() == left.edges.len() + right.edges.len()
         && provenance.iter().all(|owners| owners.len() == 1)
     {
@@ -1313,7 +1327,7 @@ fn pair_edges(
                 (segment, label)
             })
             .collect();
-        return (edges, HashMap::new());
+        return Ok((edges, HashMap::new()));
     }
     let mut by_segment = HashMap::with_capacity(atomic.len());
     let mut hints = HashMap::with_capacity(atomic.len());
@@ -1368,7 +1382,7 @@ fn pair_edges(
             },
         }
     }
-    (by_segment.into_values().collect(), hints)
+    Ok((by_segment.into_values().collect(), hints))
 }
 
 const fn edge_location(edge: &topology::TopologyEdge) -> TopologyLocation {

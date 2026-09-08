@@ -146,7 +146,7 @@ pub(crate) fn minimum_clearance_witness(
     if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
         minimum_clearance_witness_indexed(&points, &segments)
     } else {
-        Ok(minimum_clearance_witness_brute(&points, &segments))
+        minimum_clearance_witness_brute(&points, &segments)
     }
 }
 
