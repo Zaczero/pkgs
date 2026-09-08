@@ -51,7 +51,8 @@ impl Bounded {
         let cross = self.hi.mul_add(other.lo, self.lo * other.hi);
         let (hi, lo) = fast_two_sum(p, e + cross);
         let product = self.magnitude() * other.magnitude();
-        let err = (self.err * other.magnitude() + other.err * self.magnitude() + KAPPA * product).next_up();
+        let err = (self.err * other.magnitude() + other.err * self.magnitude() + KAPPA * product)
+            .next_up();
         Self { hi, lo, err }
     }
 
@@ -63,11 +64,19 @@ impl Bounded {
     }
 
     fn neg(self) -> Self {
-        Self { hi: -self.hi, lo: -self.lo, err: self.err }
+        Self {
+            hi: -self.hi,
+            lo: -self.lo,
+            err: self.err,
+        }
     }
 
     fn twice(self) -> Self {
-        Self { hi: 2.0 * self.hi, lo: 2.0 * self.lo, err: 2.0 * self.err }
+        Self {
+            hi: 2.0 * self.hi,
+            lo: 2.0 * self.lo,
+            err: 2.0 * self.err,
+        }
     }
 
     /// `self / other`, with `other` bounded away from zero by its own error.
@@ -87,7 +96,8 @@ impl Bounded {
         let lo = (r_hi + r_lo) / other.hi;
         let (hi, lo) = fast_two_sum(hi, lo);
         let quotient = Self { hi, lo, err: 0.0 }.magnitude();
-        let err = (self.err / divisor_low + quotient * other.err / divisor_low + KAPPA * quotient).next_up();
+        let err = (self.err / divisor_low + quotient * other.err / divisor_low + KAPPA * quotient)
+            .next_up();
         Some(Self { hi, lo, err })
     }
 
@@ -122,13 +132,18 @@ fn inside_window(value: f64) -> bool {
 }
 
 /// The circumcenter of `a`, `b`, `c` rounded to nearest-even and certified.
-#[expect(clippy::many_single_char_names, reason = "a, b, c are the sites and d the doubled determinant, as in the formula")]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "a, b, c are the sites and d the doubled determinant, as in the formula"
+)]
 pub(super) fn certified_circumcenter(a: XY, b: XY, c: XY) -> Option<CertifiedCenter> {
     let ux = Bounded::exact_difference(b.x, a.x);
     let uy = Bounded::exact_difference(b.y, a.y);
     let vx = Bounded::exact_difference(c.x, a.x);
     let vy = Bounded::exact_difference(c.y, a.y);
-    let admitted = [a.x, a.y, b.x, b.y, c.x, c.y].into_iter().all(inside_window)
+    let admitted = [a.x, a.y, b.x, b.y, c.x, c.y]
+        .into_iter()
+        .all(inside_window)
         && [ux, uy, vx, vy].into_iter().all(|d| inside_window(d.hi));
     if !admitted {
         return None;
@@ -140,7 +155,11 @@ pub(super) fn certified_circumcenter(a: XY, b: XY, c: XY) -> Option<CertifiedCen
     // The center relative to a: (vy bb - uy cc, ux cc - vx bb) / d.
     let nx = vy.mul(bb).add(uy.mul(cc).neg());
     let ny = ux.mul(cc).add(vx.mul(bb).neg());
-    let origin = |value: f64| Bounded { hi: value, lo: 0.0, err: 0.0 };
+    let origin = |value: f64| Bounded {
+        hi: value,
+        lo: 0.0,
+        err: 0.0,
+    };
     let x = nx.div(d)?.add(origin(a.x));
     let y = ny.div(d)?.add(origin(a.y));
     if !(x.hi.is_finite() && y.hi.is_finite() && x.err.is_finite() && y.err.is_finite()) {
@@ -183,7 +202,11 @@ pub(super) fn certified_bisector_hit(a: XY, b: XY, axis: SideAxis, value: f64) -
     if !(inside_window(ux.hi) && inside_window(uy.hi)) {
         return BisectorHit::Declined;
     }
-    let exact = |v: f64| Bounded { hi: v, lo: 0.0, err: 0.0 };
+    let exact = |v: f64| Bounded {
+        hi: v,
+        lo: 0.0,
+        err: 0.0,
+    };
     // 2 ux x + 2 uy y = |b|² - |a|².
     let (fixed_slope, free_slope) = match axis {
         SideAxis::FixedX => (ux, uy),
@@ -204,7 +227,8 @@ pub(super) fn certified_bisector_hit(a: XY, b: XY, axis: SideAxis, value: f64) -
     if !(free.hi.is_finite() && free.err.is_finite()) {
         return BisectorHit::Declined;
     }
-    free.certified_rounding().map_or(BisectorHit::Declined, BisectorHit::Free)
+    free.certified_rounding()
+        .map_or(BisectorHit::Declined, BisectorHit::Free)
 }
 
 #[cfg(test)]
@@ -219,12 +243,23 @@ mod tests {
     fn agree(a: XY, b: XY, c: XY) -> bool {
         match (certified_circumcenter(a, b, c), oracle(a, b, c)) {
             (Some(center), Some(expected)) => {
-                assert_eq!(center.rounded.x.to_bits(), expected.x.to_bits(), "x for {a:?} {b:?} {c:?}");
-                assert_eq!(center.rounded.y.to_bits(), expected.y.to_bits(), "y for {a:?} {b:?} {c:?}");
+                assert_eq!(
+                    center.rounded.x.to_bits(),
+                    expected.x.to_bits(),
+                    "x for {a:?} {b:?} {c:?}"
+                );
+                assert_eq!(
+                    center.rounded.y.to_bits(),
+                    expected.y.to_bits(),
+                    "y for {a:?} {b:?} {c:?}"
+                );
                 true
             },
             (None, _) => false,
-            (Some(center), None) => panic!("certified {center:?} where the exact construction failed", center = center.rounded),
+            (Some(center), None) => panic!(
+                "certified {center:?} where the exact construction failed",
+                center = center.rounded
+            ),
         }
     }
 
@@ -249,11 +284,20 @@ mod tests {
                 3 => 1e150,
                 _ => 1e-150,
             };
-            let p = |next: &mut dyn FnMut() -> f64| XY::new((next() - 0.5) * scale, (next() - 0.5) * scale);
+            let p = |next: &mut dyn FnMut() -> f64| {
+                XY::new((next() - 0.5) * scale, (next() - 0.5) * scale)
+            };
             let (a, b, c) = (p(&mut next), p(&mut next), p(&mut next));
-            if agree(a, b, c) { certified += 1 } else { declined += 1 }
+            if agree(a, b, c) {
+                certified += 1
+            } else {
+                declined += 1
+            }
         }
-        assert!(certified > 110_000 && declined >= 80_000, "certified {certified}, declined {declined}");
+        assert!(
+            certified > 110_000 && declined >= 80_000,
+            "certified {certified}, declined {declined}"
+        );
     }
 
     #[test]
@@ -266,11 +310,19 @@ mod tests {
             ((-1.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
             ((3.0, 7.0), (11.0, 7.0), (3.0, 19.0)),
             ((0.0, 0.0), (1e15, 0.0), (0.0, 1e15)),
-            ((1e300, 1e300), (1e300 + 1e284, 1e300), (1e300, 1e300 + 1e284)),
+            (
+                (1e300, 1e300),
+                (1e300 + 1e284, 1e300),
+                (1e300, 1e300 + 1e284),
+            ),
             // A true tie: the center's x is 2^52 + 1/2, exactly halfway between
             // two doubles, so the certificate must decline and the exact
             // construction round to even.
-            ((4_503_599_627_370_496.0, 0.0), (4_503_599_627_370_497.0, 0.0), (4_503_599_627_370_496.0, 4.0)),
+            (
+                (4_503_599_627_370_496.0, 0.0),
+                (4_503_599_627_370_497.0, 0.0),
+                (4_503_599_627_370_496.0, 4.0),
+            ),
         ] {
             let (a, b, c) = (XY::new(a.0, a.1), XY::new(b.0, b.1), XY::new(c.0, c.1));
             agree(a, b, c);
@@ -292,15 +344,25 @@ mod tests {
             let a = XY::new((next() - 0.5) * scale, (next() - 0.5) * scale);
             let b = XY::new((next() - 0.5) * scale, (next() - 0.5) * scale);
             let value = (next() - 0.5) * scale * 4.0;
-            let axis = if case % 3 == 0 { SideAxis::FixedX } else { SideAxis::FixedY };
-            let BisectorHit::Free(free) = certified_bisector_hit(a, b, axis, value) else { continue };
+            let axis = if case % 3 == 0 {
+                SideAxis::FixedX
+            } else {
+                SideAxis::FixedY
+            };
+            let BisectorHit::Free(free) = certified_bisector_hit(a, b, axis, value) else {
+                continue;
+            };
             let side = match axis {
                 SideAxis::FixedX => (XY::new(value, -1.0e9), XY::new(value, 1.0e9)),
                 SideAxis::FixedY => (XY::new(-1.0e9, value), XY::new(1.0e9, value)),
             };
             let hit = exact::line_intersection(
                 &exact::ExactLine::perpendicular_bisector(a, b),
-                &exact::ExactLine::through_points(&exact::ExactPoint::from_xy(side.0), &exact::ExactPoint::from_xy(side.1)).unwrap(),
+                &exact::ExactLine::through_points(
+                    &exact::ExactPoint::from_xy(side.0),
+                    &exact::ExactPoint::from_xy(side.1),
+                )
+                .unwrap(),
             )
             .round_nearest_even()
             .unwrap();
@@ -308,27 +370,55 @@ mod tests {
                 SideAxis::FixedX => hit.y,
                 SideAxis::FixedY => hit.x,
             };
-            assert_eq!(free.to_bits(), expected.to_bits(), "{a:?} {b:?} {axis:?} {value}");
+            assert_eq!(
+                free.to_bits(),
+                expected.to_bits(),
+                "{a:?} {b:?} {axis:?} {value}"
+            );
             certified += 1;
         }
         assert!(certified > 95_000, "certified {certified}");
         // Sites on a horizontal line have a vertical bisector: parallel to a
         // vertical side, and meeting a horizontal side at x = 1.
-        assert_eq!(certified_bisector_hit(XY::new(0.0, 0.0), XY::new(2.0, 0.0), SideAxis::FixedX, 5.0), BisectorHit::Parallel);
-        assert_eq!(certified_bisector_hit(XY::new(0.0, 0.0), XY::new(2.0, 0.0), SideAxis::FixedY, 5.0), BisectorHit::Free(1.0));
+        assert_eq!(
+            certified_bisector_hit(XY::new(0.0, 0.0), XY::new(2.0, 0.0), SideAxis::FixedX, 5.0),
+            BisectorHit::Parallel
+        );
+        assert_eq!(
+            certified_bisector_hit(XY::new(0.0, 0.0), XY::new(2.0, 0.0), SideAxis::FixedY, 5.0),
+            BisectorHit::Free(1.0)
+        );
         // A true tie at 2^52 + 1/2 must decline rather than round either way.
         let two52 = 4_503_599_627_370_496.0;
         assert_eq!(
-            certified_bisector_hit(XY::new(two52, 0.0), XY::new(two52 + 1.0, 0.0), SideAxis::FixedY, 7.0),
+            certified_bisector_hit(
+                XY::new(two52, 0.0),
+                XY::new(two52 + 1.0, 0.0),
+                SideAxis::FixedY,
+                7.0
+            ),
             BisectorHit::Declined
         );
-        let tie = certified_circumcenter(XY::new(two52, 0.0), XY::new(two52 + 1.0, 0.0), XY::new(two52, 4.0));
-        assert!(tie.is_none(), "a midpoint tie must decline to the exact construction");
+        let tie = certified_circumcenter(
+            XY::new(two52, 0.0),
+            XY::new(two52 + 1.0, 0.0),
+            XY::new(two52, 4.0),
+        );
+        assert!(
+            tie.is_none(),
+            "a midpoint tie must decline to the exact construction"
+        );
     }
 
     #[test]
     fn collinear_and_overflowing_triples_decline() {
-        assert!(certified_circumcenter(XY::new(0.0, 0.0), XY::new(1.0, 1.0), XY::new(2.0, 2.0)).is_none());
-        assert!(certified_circumcenter(XY::new(0.0, 0.0), XY::new(1e200, 0.0), XY::new(0.0, 1e200)).is_none());
+        assert!(
+            certified_circumcenter(XY::new(0.0, 0.0), XY::new(1.0, 1.0), XY::new(2.0, 2.0))
+                .is_none()
+        );
+        assert!(
+            certified_circumcenter(XY::new(0.0, 0.0), XY::new(1e200, 0.0), XY::new(0.0, 1e200))
+                .is_none()
+        );
     }
 }

@@ -1,5 +1,5 @@
-use crate::geometry::{AreaSign, HashMap, PointKey, XY};
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
+use crate::geometry::{AreaSign, HashMap, PointKey, XY};
 use crate::scratch_pool::{
     RetainScratch, ScratchLease, ScratchPool, flat_vec_retained_bytes, hash_map_retained_bytes,
 };
@@ -110,7 +110,9 @@ impl RetainScratch for ArrangementSpares {
             .saturating_add(flat_vec_retained_bytes(&self.edge_of_slot))
             .saturating_add(hash_map_retained_bytes(&self.ids))
             .saturating_add(flat_vec_retained_bytes(&self.filled))
-            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.component_stack))
+            .saturating_add(flat_vec_retained_bytes(
+                &self.topology_scratch.component_stack,
+            ))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.face_cursor))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.successor))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.edge_slots))
@@ -211,7 +213,6 @@ pub(crate) fn region_spares() -> ScratchLease<RegionSpares> {
     ScratchPool::checkout(&REGION_SPARES)
 }
 
-
 /// The arrangement over one noded segment set.
 pub(crate) struct Arrangement<W: WindingWeight = i32> {
     pub(crate) core: ScratchLease<ArrangementSpares>,
@@ -244,11 +245,15 @@ impl<W: WindingWeight> std::ops::Deref for Arrangement<W> {
 impl std::ops::Deref for ArrangementSpares {
     type Target = IndexedTopology;
 
-    fn deref(&self) -> &Self::Target { &self.topology }
+    fn deref(&self) -> &Self::Target {
+        &self.topology
+    }
 }
 
 impl std::ops::DerefMut for ArrangementSpares {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.topology }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.topology
+    }
 }
 
 #[cfg(test)]
@@ -299,10 +304,16 @@ mod tests {
                 .saturating_add(hash_map_retained_bytes(&scratch.ids))
                 .saturating_add(flat_vec_retained_bytes(&scratch.component_of))
                 .saturating_add(flat_vec_retained_bytes(&scratch.filled))
-                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.component_stack))
-                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.face_cursor))
+                .saturating_add(flat_vec_retained_bytes(
+                    &scratch.topology_scratch.component_stack
+                ))
+                .saturating_add(flat_vec_retained_bytes(
+                    &scratch.topology_scratch.face_cursor
+                ))
                 .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.successor))
-                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.edge_slots))
+                .saturating_add(flat_vec_retained_bytes(
+                    &scratch.topology_scratch.edge_slots
+                ))
                 .saturating_add(flat_vec_retained_bytes(&scratch.edge_of_slot))
                 .saturating_add(flat_vec_retained_bytes(&scratch.outer))
                 .saturating_add(

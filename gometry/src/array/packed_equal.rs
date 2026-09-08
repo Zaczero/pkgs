@@ -2,7 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::PackedStorage;
 use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use std::simd::num::SimdFloat as _;
 
@@ -11,7 +10,7 @@ use pyo3::Python;
 use crate::array::packed_columns::{
     LineColumns, PackedColumns, PointColumns, PolygonColumns, XyColumns,
 };
-use crate::array::{GeometryArrayStorage, PyGeometryArray, PyResult, column_window};
+use crate::array::{GeometryArrayStorage, PackedStorage, PyGeometryArray, PyResult, column_window};
 use crate::geometry::{
     ReduceSimd, pair_select_mask, same_topological_coordinate, topology_coordinate_bits_simd,
 };

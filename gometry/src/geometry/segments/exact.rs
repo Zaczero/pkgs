@@ -2,12 +2,12 @@
 //! Orientation uses an outward interval and exact stored-dyadic fallback over
 //! the complete finite binary64 domain.
 
+use crate::geometry::Ordering;
+use crate::geometry::exact_arith::{SPLITTER, dd_add, dd_mul, scale_shift_for_magnitude, two_sum};
+pub(super) use crate::geometry::exact_arith::{dd_diff, exact_power_of_two};
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
-use crate::geometry::Ordering;
-pub(super) use crate::geometry::exact_arith::{dd_diff, exact_power_of_two};
-use crate::geometry::exact_arith::{SPLITTER, dd_add, dd_mul, scale_shift_for_magnitude, two_sum};
 use crate::geometry::tessellation::exact::Interval;
 
 #[path = "exact_orientation.rs"]
@@ -16,14 +16,6 @@ use exact_orientation::orientation_xy as certified_orientation_xy;
 pub(in crate::geometry) use exact_orientation::stored_orientation_sign;
 
 // Dekker's split constant for binary64: 2^ceil(53 / 2) + 1.
-
-
-
-
-
-
-
-
 
 /// Dekker product with an explicit representability certificate for every
 /// intermediate that the error-free-transform proof depends on. A subnormal
@@ -87,14 +79,6 @@ fn certified_difference(left: f64, right: f64) -> Option<f64> {
 const fn same_stored_value(left: f64, right: f64) -> bool {
     left.to_bits() == right.to_bits() || (binary_zero(left) && binary_zero(right))
 }
-
-
-
-
-
-
-
-
 
 pub(super) fn dd_cross(
     left_a: (f64, f64),
@@ -301,10 +285,7 @@ fn signed_sum_order(left: f64, right: f64) -> Ordering {
 
 /// Strictly compare two outward DD enclosures without rounding `head + tail`
 /// through a single `f64`.
-pub(in crate::geometry) fn dd_strict_cmp(
-    left: DdInterval,
-    right: DdInterval,
-) -> Option<Ordering> {
+pub(in crate::geometry) fn dd_strict_cmp(left: DdInterval, right: DdInterval) -> Option<Ordering> {
     let difference = left.sub(right)?;
     if !difference.head.is_finite() || !difference.tail.is_finite() {
         return None;
@@ -518,12 +499,6 @@ pub(super) fn segment_pair_scale_shifts(left: Segment, right: Segment) -> (i16, 
     )
 }
 
-
-
-
-
-
-
 /// Exact orientation of `c` against the directed line `a -> b`.
 ///
 /// A vertex identity (`c` is `a` or `b`, or the line is a point) is a zero
@@ -531,7 +506,10 @@ pub(super) fn segment_pair_scale_shifts(left: Segment, right: Segment) -> (i16, 
 /// constantly: a node against its own incident edges, adjacent ring edges as
 /// a candidate pair. Settling it by comparison keeps the exact path for
 /// genuine near-collinearity.
-#[expect(clippy::float_cmp, reason = "vertex identity, not proximity: the operands either are the same stored coordinate or they are not")]
+#[expect(
+    clippy::float_cmp,
+    reason = "vertex identity, not proximity: the operands either are the same stored coordinate or they are not"
+)]
 pub(in crate::geometry) fn orientation_xy(
     ax: f64,
     ay: f64,

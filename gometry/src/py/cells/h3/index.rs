@@ -5,7 +5,6 @@
 //! validation without exposing an extension point or erasing the concrete
 //! index type.
 
-use crate::py::numpy::reject_masked_array;
 use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
 use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::PyBuffer;
@@ -14,6 +13,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBool;
 
 use crate::py::errors::{ParseFormat, parse_error};
+use crate::py::numpy::reject_masked_array;
 
 mod sealed {
     pub(in crate::py::cells) trait Sealed {}

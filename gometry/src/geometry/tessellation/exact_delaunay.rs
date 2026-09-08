@@ -23,13 +23,11 @@
     reason = "a, b, c, d name the vertices of a quad and e, f, t, u its slots, the geometry kernel convention"
 )]
 
+use super::exact_corner_hull_cycle;
 use crate::collections::HashSet;
-
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY};
-
-use super::exact_corner_hull_cycle;
 
 pub(crate) const EMPTY: usize = usize::MAX;
 
@@ -38,9 +36,12 @@ pub(crate) const fn next_halfedge(edge: usize) -> usize {
 }
 
 pub(crate) const fn prev_halfedge(edge: usize) -> usize {
-    if edge.is_multiple_of(3) { edge + 2 } else { edge - 1 }
+    if edge.is_multiple_of(3) {
+        edge + 2
+    } else {
+        edge - 1
+    }
 }
-
 
 /// The halfedge triangle mesh every tessellation consumer reads: triangle `t`
 /// owns slots `3t..3t + 3`, `halfedges[e]` is the twin slot or [`EMPTY`], and
@@ -89,39 +90,45 @@ impl Mesh {
     /// and refinement can keep inserting into it; `None` when the sites are
     /// collinear and there is no triangle to build.
     pub(super) fn delaunay(points: &[Point]) -> Option<Self> {
-    let hull = exact_corner_hull_cycle(points);
-    if hull.len() < 3 {
-        return None;
-    }
-    let xy = |site: usize| points[site].xy();
-    let mut mesh = Self::seed(&hull, points.len());
-    mesh.legalize(&xy);
+        let hull = exact_corner_hull_cycle(points);
+        if hull.len() < 3 {
+            return None;
+        }
+        let xy = |site: usize| points[site].xy();
+        let mut mesh = Self::seed(&hull, points.len());
+        mesh.legalize(&xy);
 
-    // Interior sites: not on the hull, not an exact duplicate of a site
-    // already placed, in Hilbert order over the point bounds.
-    let mut placed: HashSet<[u64; 2]> = hull.iter().map(|&s| key(xy(s))).collect();
-    let hull_sites: HashSet<usize> = hull.iter().copied().collect();
-    let (min, max) = bounds(points);
-    let mut interior: Vec<(u32, usize)> = (0..points.len())
-        .filter(|site| !hull_sites.contains(site))
-        .filter(|&site| placed.insert(key(xy(site))))
-        .map(|site| (hilbert16(xy(site), min, max), site))
-        .collect();
-    interior.sort_unstable();
+        // Interior sites: not on the hull, not an exact duplicate of a site
+        // already placed, in Hilbert order over the point bounds.
+        let mut placed: HashSet<[u64; 2]> = hull.iter().map(|&s| key(xy(s))).collect();
+        let hull_sites: HashSet<usize> = hull.iter().copied().collect();
+        let (min, max) = bounds(points);
+        let mut interior: Vec<(u32, usize)> = (0..points.len())
+            .filter(|site| !hull_sites.contains(site))
+            .filter(|&site| placed.insert(key(xy(site))))
+            .map(|site| (hilbert16(xy(site), min, max), site))
+            .collect();
+        interior.sort_unstable();
 
-    let mut last = 0_usize;
-    for (_, site) in interior {
-        let located = mesh.locate(&xy, last, xy(site));
-        last = mesh.insert_with(&xy, site, located, None);
-    }
-    Some(mesh)
+        let mut last = 0_usize;
+        for (_, site) in interior {
+            let located = mesh.locate(&xy, last, xy(site));
+            last = mesh.insert_with(&xy, site, located, None);
+        }
+        Some(mesh)
     }
 }
 
 /// One coordinate pair as an exact identity key (bit patterns, with both
 /// signed zeros as one point).
 fn key(p: XY) -> [u64; 2] {
-    let norm = |v: f64| if v == 0.0 { 0.0_f64.to_bits() } else { v.to_bits() };
+    let norm = |v: f64| {
+        if v == 0.0 {
+            0.0_f64.to_bits()
+        } else {
+            v.to_bits()
+        }
+    };
     [norm(p.x), norm(p.y)]
 }
 
@@ -282,7 +289,8 @@ impl Mesh {
     /// The slot of the edge between `u` and `v` in either direction, if it
     /// is an edge; a hull edge exists as one halfedge only.
     pub(super) fn edge_slot(&self, u: usize, v: usize) -> Option<usize> {
-        self.directed_slot(u, v).or_else(|| self.directed_slot(v, u))
+        self.directed_slot(u, v)
+            .or_else(|| self.directed_slot(v, u))
     }
 
     fn directed_slot(&self, u: usize, v: usize) -> Option<usize> {
@@ -313,7 +321,12 @@ impl Mesh {
             }
             let g = self.flip(e);
             let h = self.halfedges[g];
-            stack.extend([next_halfedge(g), prev_halfedge(g), next_halfedge(h), prev_halfedge(h)]);
+            stack.extend([
+                next_halfedge(g),
+                prev_halfedge(g),
+                next_halfedge(h),
+                prev_halfedge(h),
+            ]);
         }
     }
 
@@ -324,7 +337,11 @@ impl Mesh {
         let f = self.halfedges[e];
         debug_assert_ne!(f, EMPTY, "a hull edge cannot flip");
         let (t, u) = (e / 3, f / 3);
-        let (a, b, c) = (self.triangles[e], self.triangles[next_halfedge(e)], self.triangles[prev_halfedge(e)]);
+        let (a, b, c) = (
+            self.triangles[e],
+            self.triangles[next_halfedge(e)],
+            self.triangles[prev_halfedge(e)],
+        );
         let d = self.triangles[prev_halfedge(f)];
         // Outside neighbours that change owner: across a-d and across b-c.
         let across_ad = self.halfedges[next_halfedge(f)];
@@ -382,7 +399,11 @@ impl Mesh {
         p: XY,
         stop: &[bool],
     ) -> Result<Located, usize> {
-        let mut t = if self.alive(start) { start } else { self.any_alive() };
+        let mut t = if self.alive(start) {
+            start
+        } else {
+            self.any_alive()
+        };
         let mut steps = 0_usize;
         loop {
             let e = match self.classify(xy, t, p) {
@@ -406,11 +427,20 @@ impl Mesh {
 
     /// Where `p` stands relative to live triangle `t`: `Err(e)` names the
     /// first edge `p` is strictly to the right of.
-    pub(super) fn classify(&self, xy: &impl Fn(usize) -> XY, t: usize, p: XY) -> Result<Located, usize> {
+    pub(super) fn classify(
+        &self,
+        xy: &impl Fn(usize) -> XY,
+        t: usize,
+        p: XY,
+    ) -> Result<Located, usize> {
         let mut collinear = [false; 3];
         for (i, on) in collinear.iter_mut().enumerate() {
             let e = 3 * t + i;
-            match exact::orient2d(xy(self.triangles[e]), xy(self.triangles[next_halfedge(e)]), p) {
+            match exact::orient2d(
+                xy(self.triangles[e]),
+                xy(self.triangles[next_halfedge(e)]),
+                p,
+            ) {
                 ExactSign::Negative => return Err(e),
                 ExactSign::Zero => *on = true,
                 ExactSign::Positive => {},
@@ -421,14 +451,20 @@ impl Mesh {
             1 => {
                 let e = 3 * t + collinear.iter().position(|&on| on).unwrap_or(0);
                 let (a, b) = (self.triangles[e], self.triangles[next_halfedge(e)]);
-                if p == xy(a) || p == xy(b) { Located::OnVertex } else { Located::OnEdge(e) }
+                if p == xy(a) || p == xy(b) {
+                    Located::OnVertex
+                } else {
+                    Located::OnEdge(e)
+                }
             },
             _ => Located::OnVertex,
         })
     }
 
     fn any_alive(&self) -> usize {
-        (0..self.triangle_count()).find(|&t| self.alive(t)).expect("a seeded mesh has a triangle")
+        (0..self.triangle_count())
+            .find(|&t| self.alive(t))
+            .expect("a seeded mesh has a triangle")
     }
 
     /// Insert `site` at `located`, returning a triangle incident to it for the
@@ -525,12 +561,17 @@ impl Mesh {
             boundary.swap_remove(index);
             at = b;
         }
-        debug_assert!(split_hull.is_some_and(|(a, _)| a == at) || at == start, "the cavity boundary closed");
+        debug_assert!(
+            split_hull.is_some_and(|(a, _)| a == at) || at == start,
+            "the cavity boundary closed"
+        );
         // New triangles (a, b, site): slot 0 = a->b twins the outside, slot 1 =
         // b->site twins slot 2 of the next, slot 2 = site->a twins slot 1 of
         // the previous.
         let count = ordered.len();
-        let slots: Vec<usize> = std::iter::repeat_with(|| self.take_slot()).take(count).collect();
+        let slots: Vec<usize> = std::iter::repeat_with(|| self.take_slot())
+            .take(count)
+            .collect();
         let mut first = 0;
         for (k, &(a, b, twin)) in ordered.iter().enumerate() {
             let t = slots[k];
@@ -556,7 +597,11 @@ impl Mesh {
             first = t;
         }
         if let Some((a, _)) = split_hull {
-            let position = self.hull.iter().position(|&h| h == a).expect("a hull edge starts on the hull");
+            let position = self
+                .hull
+                .iter()
+                .position(|&h| h == a)
+                .expect("a hull edge starts on the hull");
             self.hull.insert(position + 1, site);
         }
         first
@@ -573,7 +618,11 @@ impl Mesh {
     }
 
     pub(super) fn triangle(&self, t: usize) -> [usize; 3] {
-        [self.triangles[3 * t], self.triangles[3 * t + 1], self.triangles[3 * t + 2]]
+        [
+            self.triangles[3 * t],
+            self.triangles[3 * t + 1],
+            self.triangles[3 * t + 2],
+        ]
     }
 
     fn take_slot(&mut self) -> usize {
@@ -613,7 +662,11 @@ impl Mesh {
             .iter()
             .map(|&old| {
                 let twin = self.halfedges[old];
-                if twin == EMPTY { EMPTY } else { 3 * remap[twin / 3] + twin % 3 }
+                if twin == EMPTY {
+                    EMPTY
+                } else {
+                    3 * remap[twin / 3] + twin % 3
+                }
             })
             .collect();
         let mut cocircular = vec![false; halfedges.len()];
@@ -655,11 +708,15 @@ mod tests {
             s ^= s << 17;
             (s >> 11) as f64 / (1_u64 << 53) as f64
         };
-        std::iter::repeat_with(|| Point::new_raw_xy(next() * 1000.0, next() * 1000.0)).take(n).collect()
+        std::iter::repeat_with(|| Point::new_raw_xy(next() * 1000.0, next() * 1000.0))
+            .take(n)
+            .collect()
     }
 
     fn grid(side: usize) -> Vec<Point> {
-        (0..side).flat_map(|y| (0..side).map(move |x| Point::new_raw_xy(x as f64, y as f64))).collect()
+        (0..side)
+            .flat_map(|y| (0..side).map(move |x| Point::new_raw_xy(x as f64, y as f64)))
+            .collect()
     }
 
     fn assert_halfedges_consistent(mesh: &ExactMesh) {
@@ -669,7 +726,11 @@ mod tests {
                 continue;
             }
             assert_eq!(mesh.halfedges[twin], e, "twin of twin is self at {e}");
-            assert_eq!(mesh.triangles[e], mesh.triangles[next_halfedge(twin)], "twins run opposite at {e}");
+            assert_eq!(
+                mesh.triangles[e],
+                mesh.triangles[next_halfedge(twin)],
+                "twins run opposite at {e}"
+            );
             assert_eq!(mesh.triangles[next_halfedge(e)], mesh.triangles[twin]);
         }
     }
@@ -682,12 +743,28 @@ mod tests {
                 continue;
             }
             let t = e / 3;
-            let [a, b, c] = [mesh.triangles[3 * t], mesh.triangles[3 * t + 1], mesh.triangles[3 * t + 2]];
-            assert_eq!(exact::orient2d(xy(a), xy(b), xy(c)), ExactSign::Positive, "triangle {t} is counter-clockwise");
+            let [a, b, c] = [
+                mesh.triangles[3 * t],
+                mesh.triangles[3 * t + 1],
+                mesh.triangles[3 * t + 2],
+            ];
+            assert_eq!(
+                exact::orient2d(xy(a), xy(b), xy(c)),
+                ExactSign::Positive,
+                "triangle {t} is counter-clockwise"
+            );
             let opposite = mesh.triangles[prev_halfedge(twin)];
             let sign = exact::incircle(xy(a), xy(b), xy(c), xy(opposite));
-            assert_ne!(sign, ExactSign::Positive, "opposite vertex {opposite} inside circumcircle of {t}");
-            assert_eq!(sign == ExactSign::Zero, mesh.cocircular[e], "cocircular flag at {e}");
+            assert_ne!(
+                sign,
+                ExactSign::Positive,
+                "opposite vertex {opposite} inside circumcircle of {t}"
+            );
+            assert_eq!(
+                sign == ExactSign::Zero,
+                mesh.cocircular[e],
+                "cocircular flag at {e}"
+            );
         }
     }
 
@@ -715,12 +792,22 @@ mod tests {
             assert_delaunay(&mesh, &pts);
             // Random sites have no cocircular quads, so the Delaunay
             // triangulation is unique and must equal the current engine's.
-            assert!(!mesh.cocircular.iter().any(|&f| f), "random sites should not be cocircular");
+            assert!(
+                !mesh.cocircular.iter().any(|&f| f),
+                "random sites should not be cocircular"
+            );
             let current = super::super::delaunay_triangulation(&pts);
-            assert_eq!(triangle_set(&mesh.triangles), triangle_set(&current.triangles), "seed {seed}");
+            assert_eq!(
+                triangle_set(&mesh.triangles),
+                triangle_set(&current.triangles),
+                "seed {seed}"
+            );
             assert_eq!(mesh.hull, current.hull);
             // Euler for a triangulated convex polygon: T = 2n - h - 2.
-            assert_eq!(mesh.triangles.len() / 3, 2 * pts.len() - mesh.hull.len() - 2);
+            assert_eq!(
+                mesh.triangles.len() / 3,
+                2 * pts.len() - mesh.hull.len() - 2
+            );
         }
     }
 
@@ -750,7 +837,10 @@ mod tests {
         let mesh = exact_delaunay(&pts);
         assert_halfedges_consistent(&mesh);
         assert_delaunay(&mesh, &pts);
-        assert_eq!(mesh.triangles.len() / 3, 2 * pts.len() - mesh.hull.len() - 2);
+        assert_eq!(
+            mesh.triangles.len() / 3,
+            2 * pts.len() - mesh.hull.len() - 2
+        );
         // Every interior diagonal of a unit square is cocircular.
         let flagged = mesh.cocircular.iter().filter(|&&f| f).count() / 2;
         assert_eq!(flagged, 19 * 19, "one cocircular diagonal per grid cell");
@@ -761,7 +851,15 @@ mod tests {
     /// them with an empty triangulation.
     #[test]
     fn duplicate_sites_triangulate_the_distinct_points() {
-        let dup = points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.5, 0.5), (0.5, 0.5)]);
+        let dup = points(&[
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (0.5, 0.5),
+            (0.5, 0.5),
+        ]);
         let mesh = exact_delaunay(&dup);
         assert_halfedges_consistent(&mesh);
         assert_delaunay(&mesh, &dup);
@@ -769,7 +867,11 @@ mod tests {
         // Five distinct sites, four on the hull: 2*5 - 4 - 2 = 4 triangles.
         assert_eq!(mesh.triangles.len() / 3, 4);
         let public = super::super::delaunay_triangulation(&dup);
-        assert_eq!(public.triangles.len() / 3, 4, "the public entry point triangulates the distinct sites");
+        assert_eq!(
+            public.triangles.len() / 3,
+            4,
+            "the public entry point triangulates the distinct sites"
+        );
     }
 
     #[test]
@@ -785,8 +887,14 @@ mod tests {
         // A square, then its centre, then midpoints of the two diagonals'
         // halves (on edges), then a repeat of the centre (on a vertex).
         let pts = points(&[
-            (0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0),
-            (2.0, 2.0), (1.0, 1.0), (3.0, 3.0), (2.0, 2.0),
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (0.0, 4.0),
+            (2.0, 2.0),
+            (1.0, 1.0),
+            (3.0, 3.0),
+            (2.0, 2.0),
         ]);
         let mesh = exact_delaunay(&pts);
         assert_halfedges_consistent(&mesh);

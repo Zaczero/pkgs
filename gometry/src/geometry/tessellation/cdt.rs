@@ -20,11 +20,10 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use super::exact_delaunay::{EMPTY, Located, Mesh, next_halfedge, prev_halfedge};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY, open_xy_cycle_magnitude};
-
-use super::exact_delaunay::{EMPTY, Located, Mesh, next_halfedge, prev_halfedge};
 
 /// The mesh with its constraint flags, one per halfedge slot.
 pub(super) struct ConstrainedMesh {
@@ -93,7 +92,10 @@ impl ConstrainedMesh {
         loop {
             crossing.push(edge);
             let twin = self.mesh.halfedges[edge];
-            debug_assert_ne!(twin, EMPTY, "a constraint inside the hull never reaches the hull");
+            debug_assert_ne!(
+                twin, EMPTY,
+                "a constraint inside the hull never reaches the hull"
+            );
             let apex = self.mesh.triangles[prev_halfedge(twin)];
             if apex == v {
                 break;
@@ -118,36 +120,54 @@ impl ConstrainedMesh {
     }
 
     /// Flip the crossed edges until none cross `u -> v`, then mark the edge.
-    fn flip_until_clear(&mut self, xy: &impl Fn(usize) -> XY, u: usize, v: usize, mut crossing: Vec<usize>) {
+    fn flip_until_clear(
+        &mut self,
+        xy: &impl Fn(usize) -> XY,
+        u: usize,
+        v: usize,
+        mut crossing: Vec<usize>,
+    ) {
         let (pu, pv) = (xy(u), xy(v));
         let mut guard = 0_usize;
         while let Some(edge) = crossing.pop() {
             guard += 1;
             assert!(guard < 1_000_000, "constraint insertion did not converge");
             let twin = self.mesh.halfedges[edge];
-            let (a, b) = (self.mesh.triangles[edge], self.mesh.triangles[next_halfedge(edge)]);
+            let (a, b) = (
+                self.mesh.triangles[edge],
+                self.mesh.triangles[next_halfedge(edge)],
+            );
             let c = self.mesh.triangles[prev_halfedge(edge)];
             let d = self.mesh.triangles[prev_halfedge(twin)];
             // The quad a,b with apexes c,d is flippable only when convex.
-            let convex = exact::orient2d(xy(c), xy(d), xy(a)) != exact::orient2d(xy(c), xy(d), xy(b))
+            let convex = exact::orient2d(xy(c), xy(d), xy(a))
+                != exact::orient2d(xy(c), xy(d), xy(b))
                 && exact::orient2d(xy(a), xy(b), xy(c)) != exact::orient2d(xy(a), xy(b), xy(d));
             if !convex {
                 crossing.insert(0, edge);
                 continue;
             }
             let new_edge = self.mesh.flip(edge);
-            let (na, nb) = (self.mesh.triangles[new_edge], self.mesh.triangles[next_halfedge(new_edge)]);
+            let (na, nb) = (
+                self.mesh.triangles[new_edge],
+                self.mesh.triangles[next_halfedge(new_edge)],
+            );
             let still_crosses = {
                 let s1 = exact::orient2d(pu, pv, xy(na));
                 let s2 = exact::orient2d(pu, pv, xy(nb));
-                s1 != ExactSign::Zero && s2 != ExactSign::Zero && s1 != s2
+                s1 != ExactSign::Zero
+                    && s2 != ExactSign::Zero
+                    && s1 != s2
                     && exact::orient2d(xy(na), xy(nb), pu) != exact::orient2d(xy(na), xy(nb), pv)
             };
             if still_crosses {
                 crossing.insert(0, new_edge);
             }
         }
-        let slot = self.mesh.edge_slot(u, v).expect("the constraint is an edge once nothing crosses it");
+        let slot = self
+            .mesh
+            .edge_slot(u, v)
+            .expect("the constraint is an edge once nothing crosses it");
         self.mark(slot);
     }
 
@@ -213,10 +233,10 @@ impl ConstrainedMesh {
                 }
                 let [a, b, c] = self.mesh.triangle(t);
                 let (pa, pb, pc) = (xy(a, points), xy(b, points), xy(c, points));
-                let violates = min_angle.is_some_and(|limit| triangle_min_angle_degrees(pa, pb, pc) < limit)
-                    || max_area.is_some_and(|limit| {
-                        open_xy_cycle_magnitude(&[pa, pb, pc]).get() > limit
-                    });
+                let violates = min_angle
+                    .is_some_and(|limit| triangle_min_angle_degrees(pa, pb, pc) < limit)
+                    || max_area
+                        .is_some_and(|limit| open_xy_cycle_magnitude(&[pa, pb, pc]).get() > limit);
                 if violates {
                     bad = Some(t);
                     break;
@@ -238,12 +258,18 @@ impl ConstrainedMesh {
             // which face receives it.
             let encroached = (0..self.mesh.halfedges.len()).find(|&e| {
                 self.constrained[e] && self.mesh.alive(e / 3) && {
-                    let (s, t2) = (self.mesh.triangles[e], self.mesh.triangles[next_halfedge(e)]);
+                    let (s, t2) = (
+                        self.mesh.triangles[e],
+                        self.mesh.triangles[next_halfedge(e)],
+                    );
                     in_diametral_circle(xy(s, points), xy(t2, points), center)
                 }
             });
             let midpoint = |e: usize, points: &[Point]| {
-                let (s, t2) = (self.mesh.triangles[e], self.mesh.triangles[next_halfedge(e)]);
+                let (s, t2) = (
+                    self.mesh.triangles[e],
+                    self.mesh.triangles[next_halfedge(e)],
+                );
                 let (ps, pt) = (xy(s, points), xy(t2, points));
                 XY::new(f64::midpoint(ps.x, pt.x), f64::midpoint(ps.y, pt.y))
             };
@@ -255,7 +281,10 @@ impl ConstrainedMesh {
             let placed = if let Some(e) = encroached {
                 split(e)
             } else {
-                match self.mesh.locate_bounded(&xy_now, t, center, &self.constrained) {
+                match self
+                    .mesh
+                    .locate_bounded(&xy_now, t, center, &self.constrained)
+                {
                     Ok(located) => Some((center, located)),
                     Err(e) => split(e),
                 }
@@ -274,7 +303,10 @@ impl ConstrainedMesh {
             if let Located::OnEdge(e) = located
                 && self.constrained[e]
             {
-                let (s, t2) = (self.mesh.triangles[e], self.mesh.triangles[next_halfedge(e)]);
+                let (s, t2) = (
+                    self.mesh.triangles[e],
+                    self.mesh.triangles[next_halfedge(e)],
+                );
                 pairs.remove(&ordered(s, t2));
                 pairs.insert(ordered(s, site));
                 pairs.insert(ordered(site, t2));
@@ -300,7 +332,9 @@ impl ConstrainedMesh {
             match self.mesh.classify(xy, face, m) {
                 Err(crossed) if crossed == e || crossed == twin => {},
                 Ok(Located::Inside(_)) => return Some(Located::OnEdge(e)),
-                Ok(Located::OnEdge(slot)) => return (slot == e || slot == twin).then_some(Located::OnEdge(e)),
+                Ok(Located::OnEdge(slot)) => {
+                    return (slot == e || slot == twin).then_some(Located::OnEdge(e));
+                },
                 Ok(Located::OnVertex) | Err(_) => return None,
             }
         }
@@ -311,7 +345,12 @@ impl ConstrainedMesh {
     fn constrained_pairs(&self) -> HashSet<(usize, usize)> {
         (0..self.mesh.halfedges.len())
             .filter(|&e| self.constrained[e] && self.mesh.alive(e / 3))
-            .map(|e| ordered(self.mesh.triangles[e], self.mesh.triangles[next_halfedge(e)]))
+            .map(|e| {
+                ordered(
+                    self.mesh.triangles[e],
+                    self.mesh.triangles[next_halfedge(e)],
+                )
+            })
             .collect()
     }
 
@@ -323,7 +362,10 @@ impl ConstrainedMesh {
             if !self.mesh.alive(e / 3) {
                 continue;
             }
-            if pairs.contains(&ordered(self.mesh.triangles[e], self.mesh.triangles[next_halfedge(e)])) {
+            if pairs.contains(&ordered(
+                self.mesh.triangles[e],
+                self.mesh.triangles[next_halfedge(e)],
+            )) {
                 self.constrained[e] = true;
             }
         }
@@ -390,9 +432,18 @@ mod tests {
     fn a_constraint_becomes_an_edge_and_survives() {
         // Four corners of a square plus a point off the diagonal that makes
         // the Delaunay diagonal the "wrong" one for the constraint.
-        let pts = points(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (2.0, 8.0)]);
+        let pts = points(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (2.0, 8.0),
+        ]);
         let mesh = ConstrainedMesh::build(&pts, &[[0, 2]]).unwrap();
-        assert!(mesh.mesh.edge_slot(0, 2).is_some(), "the constraint 0-2 is an edge");
+        assert!(
+            mesh.mesh.edge_slot(0, 2).is_some(),
+            "the constraint 0-2 is an edge"
+        );
         let slot = mesh.mesh.edge_slot(0, 2).unwrap();
         assert!(mesh.constrained[slot]);
     }
@@ -402,7 +453,11 @@ mod tests {
         let outer = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
         let hole = [(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)];
         let pts = points(&outer.iter().chain(hole.iter()).copied().collect::<Vec<_>>());
-        let ring = |base: usize| (0..4).map(|i| [base + i, base + (i + 1) % 4]).collect::<Vec<_>>();
+        let ring = |base: usize| {
+            (0..4)
+                .map(|i| [base + i, base + (i + 1) % 4])
+                .collect::<Vec<_>>()
+        };
         let edges: Vec<[usize; 2]> = ring(0).into_iter().chain(ring(4)).collect();
         let mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
         let inside = mesh.inside_faces();
@@ -424,20 +479,25 @@ mod tests {
         let mut pts = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
         let edges: Vec<[usize; 2]> = (0..4).map(|i| [i, (i + 1) % 4]).collect();
         let mut mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
-        assert!(mesh.refine(&mut pts, None, Some(25.0), 10_000), "a generous budget completes");
+        assert!(
+            mesh.refine(&mut pts, None, Some(25.0), 10_000),
+            "a generous budget completes"
+        );
         let inside = mesh.inside_faces();
         for (t, &kept) in inside.iter().enumerate() {
             if kept && mesh.mesh.alive(t) {
                 let [a, b, c] = mesh.mesh.triangle(t);
                 assert!(
-                    open_xy_cycle_magnitude(&[pts[a].xy(), pts[b].xy(), pts[c].xy()]).get()
-                        <= 25.0
+                    open_xy_cycle_magnitude(&[pts[a].xy(), pts[b].xy(), pts[c].xy()]).get() <= 25.0
                 );
             }
         }
         let mut pts2 = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
         let mut mesh2 = ConstrainedMesh::build(&pts2, &edges).unwrap();
-        assert!(!mesh2.refine(&mut pts2, None, Some(0.5), 3), "three vertices cannot reach 0.5 area");
+        assert!(
+            !mesh2.refine(&mut pts2, None, Some(0.5), 3),
+            "three vertices cannot reach 0.5 area"
+        );
     }
 }
 
@@ -457,14 +517,22 @@ mod regressions {
     }
     fn inside_count(cdt: &ConstrainedMesh) -> usize {
         let inside = cdt.inside_faces();
-        (0..cdt.mesh.triangle_count()).filter(|&t| cdt.mesh.alive(t) && inside[t]).count()
+        (0..cdt.mesh.triangle_count())
+            .filter(|&t| cdt.mesh.alive(t) && inside[t])
+            .count()
     }
 
     #[test]
     fn reciprocal_pentagon_swapped_axes_is_three_faces() {
         for exponent in [22_i32, 154, 162] {
             let (large, tiny) = (10_f64.powi(exponent), 10_f64.powi(-exponent));
-            let base = [(-large, 0.0), (-0.5 * large, -tiny), (0.5 * large, -tiny), (large, 0.0), (0.0, tiny)];
+            let base = [
+                (-large, 0.0),
+                (-0.5 * large, -tiny),
+                (0.5 * large, -tiny),
+                (large, 0.0),
+                (0.0, tiny),
+            ];
             let swapped: Vec<(f64, f64)> = base.iter().map(|&(x, y)| (y, x)).collect();
             let points = pts(&swapped);
             let cdt = ConstrainedMesh::build(&points, &ring_edges(5)).expect("five corners");
@@ -477,7 +545,10 @@ mod regressions {
         let mut points = pts(&[(0.0, 0.0), (20.0, 0.0), (20.0, 0.2), (0.1, 0.05)]);
         let mut cdt = ConstrainedMesh::build(&points, &ring_edges(4)).unwrap();
         let before = inside_count(&cdt);
-        assert!(cdt.refine(&mut points, Some(25.0), None, 100_000), "refinement completes");
+        assert!(
+            cdt.refine(&mut points, Some(25.0), None, 100_000),
+            "refinement completes"
+        );
         assert!(inside_count(&cdt) > before);
     }
 
@@ -492,7 +563,10 @@ mod regressions {
                 }
                 let mut points = pts(&base);
                 let mut cdt = ConstrainedMesh::build(&points, &ring_edges(4)).unwrap();
-                assert!(cdt.refine(&mut points, None, Some(0.4), 100_000), "exponent {exponent} swap {swap}");
+                assert!(
+                    cdt.refine(&mut points, None, Some(0.4), 100_000),
+                    "exponent {exponent} swap {swap}"
+                );
                 assert_eq!(inside_count(&cdt), 4, "exponent {exponent} swap {swap}");
             }
         }

@@ -39,7 +39,10 @@ pub(crate) struct PyGeohashCell {
 }
 
 crate::heapless!(PyGeohashCell);
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 #[pyfunction]
 pub(super) fn _unpickle_geohash_cell(token: &str) -> PyResult<PyGeohashCell> {
     Ok(PyGeohashCell {

@@ -19,6 +19,7 @@ mod loop_ops;
 mod walk;
 mod winding;
 
+pub(crate) use indexed::{IndexedTopology, IndexedTopologyScratch};
 pub(crate) use loop_ops::{
     order_single_loop_rows, positional_loop_cuts, positional_loop_pieces, single_loop_cuts,
     single_loop_pieces,
@@ -28,10 +29,9 @@ pub(crate) use walk::{
     split_ring_at_pinches,
 };
 pub(crate) use winding::{
-    Arrangement, ArrangementSpares, Face, TypedSpares, WindingWeight,
-    arrangement_spares, region_spares, typed_spares,
+    Arrangement, ArrangementSpares, Face, TypedSpares, WindingWeight, arrangement_spares,
+    region_spares, typed_spares,
 };
-pub(crate) use indexed::{IndexedTopology, IndexedTopologyScratch};
 
 #[cfg(test)]
 mod tests;

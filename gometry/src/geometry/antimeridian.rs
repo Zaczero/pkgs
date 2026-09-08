@@ -29,7 +29,6 @@ pub(crate) use crs::{
     crosses_antimeridian_coords_in_frame, crosses_antimeridian_in_frame, geographic_crossing,
     topology_domain,
 };
-pub(crate) use polygon::split_geographic_view;
 use linestring::{collect_points, dedup_consecutive, resolve_seam_aliases};
 pub(crate) use linestring::{crossing_latitude_in_frame, segment_coords};
 pub(crate) use normalize::{
@@ -39,3 +38,4 @@ pub(crate) use normalize::{
     self_intersections_in_frame, unary_antimeridian_derived, validate_data_in_frame,
     validate_shape_in_frame,
 };
+pub(crate) use polygon::split_geographic_view;

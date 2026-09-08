@@ -480,8 +480,7 @@ mod tests {
         let unit = [1.0];
         let half_ulp = [2.0_f64.powi(-53)];
         let mut sum = [0.0; 2];
-        let sum_len =
-            expansion_sum_zeroelim::<false>(&unit, &half_ulp, &mut sum, true).unwrap();
+        let sum_len = expansion_sum_zeroelim::<false>(&unit, &half_ulp, &mut sum, true).unwrap();
         assert!(sum_len > 1);
 
         let mut cancelled = [0.0; 3];

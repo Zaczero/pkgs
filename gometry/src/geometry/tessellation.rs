@@ -2,7 +2,6 @@
 //! ear-cut polygon triangles, Voronoi polygons/edges, boundary, and linework
 //! polygonization.
 
-
 mod boundary;
 mod circumcenter;
 mod delaunay;
@@ -16,13 +15,9 @@ mod voronoi;
 mod voronoi_dcel;
 
 pub(crate) use boundary::{line_boundary, multiline_boundary, rings_to_boundary};
-pub(crate) use delaunay::{
-    CdtRefinement, constrained_triangle_vertices, delaunay_triangulation,
-};
+pub(crate) use delaunay::{CdtRefinement, constrained_triangle_vertices, delaunay_triangulation};
 use delaunay::{CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay};
-pub(crate) use earcut::{
-    earcut_polygon_with, point_in_ccw_triangle, try_triangle_shape,
-};
+pub(crate) use earcut::{earcut_polygon_with, point_in_ccw_triangle, try_triangle_shape};
 pub(crate) use polygonize::{
     build_area_lines, minimal_positive_face_rings, polygonize_full, polygonize_lines,
 };

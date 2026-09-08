@@ -48,7 +48,10 @@ pub(crate) struct PyTile {
 }
 
 crate::heapless!(PyTile);
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 /// Rebuild a pickled Tile from its packed id (internal; see
 /// ``Tile.__reduce__``).
 #[pyfunction]

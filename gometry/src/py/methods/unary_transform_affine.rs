@@ -4,8 +4,8 @@
 )]
 use crate::py::methods::unary_transform_methods::{
     Bound, DefaultedF64Input, GeometryArrayStorage, OriginSpec, PyAny, PyGeometry, PyGeometryArray,
-    PyResult, Python, angle_radians, finite_f64_required, parse_affine_matrix,
-    parse_precision, pymethods,
+    PyResult, Python, angle_radians, finite_f64_required, parse_affine_matrix, parse_precision,
+    pymethods,
 };
 
 unary_shape_method!(
@@ -372,9 +372,7 @@ impl PyGeometryArray {
                 tan_x,
                 tan_y,
             },
-            move |data, ctx| {
-                crate::dispatch::kernels::unary_skew(data, ctx, xs, ys, spec)
-            }
+            move |data, ctx| { crate::dispatch::kernels::unary_skew(data, ctx, xs, ys, spec) }
         )
     }
 }

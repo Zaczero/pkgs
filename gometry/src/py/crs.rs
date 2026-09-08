@@ -30,9 +30,9 @@ mod pymethods_geodesic;
 mod pymethods_introspect;
 mod pymethods_operations;
 pub(crate) use functions::{
-    MinConfidence, crs_ellipsoids, crs_info, crs_prime_meridians,
-    crs_proj_operations, crs_same, crs_to_authority, crs_to_epsg, crs_to_proj, crs_to_projjson,
-    crs_to_projjson_dict, crs_to_wkt, crs_unit, crs_units,
+    MinConfidence, crs_ellipsoids, crs_info, crs_prime_meridians, crs_proj_operations, crs_same,
+    crs_to_authority, crs_to_epsg, crs_to_proj, crs_to_projjson, crs_to_projjson_dict, crs_to_wkt,
+    crs_unit, crs_units,
 };
 pub(crate) use functions_catalog::{
     crs_authorities, crs_catalog, crs_celestial_bodies, crs_codes, crs_geoid_models,

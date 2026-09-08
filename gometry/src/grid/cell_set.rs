@@ -94,7 +94,9 @@ pub(crate) fn compact_with_floor<C: HierarchicalCell>(
     cells: Vec<C>,
     floor: u8,
 ) -> crate::error::Result<CanonicalCellSet<C>> {
-    Ok(CanonicalCellSet::from_range_sorted(normalize_with_floor(cells, floor)?))
+    Ok(CanonicalCellSet::from_range_sorted(normalize_with_floor(
+        cells, floor,
+    )?))
 }
 
 /// Expand every cell to `target` (each must be at or above it). Overlapping

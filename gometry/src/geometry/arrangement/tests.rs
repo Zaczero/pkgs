@@ -1,6 +1,5 @@
-use crate::geometry::predicates;
 use crate::geometry::arrangement::*;
-use crate::geometry::*;
+use crate::geometry::{predicates, *};
 
 fn loop_segments(points: &[(f64, f64)]) -> Vec<Segment> {
     (0..points.len())
@@ -273,12 +272,20 @@ fn winding_faces_keep_only_exact_sign_but_ring_faces_keep_magnitude() {
     }));
     let mut winding = Arrangement::new(&segments);
     assert!(winding.faces.iter().all(|face| face.ring.is_empty()));
-    assert!(winding.faces.iter().any(|face| face.area_sign == AreaSign::Positive));
+    assert!(
+        winding
+            .faces
+            .iter()
+            .any(|face| face.area_sign == AreaSign::Positive)
+    );
 
     let mut rings = Arrangement::new_with_rings(&segments);
-    assert!(rings.faces.iter().all(|face| {
-        open_xy_cycle_decision(&face.ring).magnitude().get() > 0.0
-    }));
+    assert!(
+        rings
+            .faces
+            .iter()
+            .all(|face| { open_xy_cycle_decision(&face.ring).magnitude().get() > 0.0 })
+    );
     assert_eq!(winding.face_windings(&[0]), rings.face_windings(&[0]));
 }
 
@@ -304,7 +311,13 @@ fn fan_order_uses_geometry_after_a_pseudo_angle_collision() {
     let mut multiplicities = [1_i32, 2, 3, 4, 5, 6];
     let mut edge_of_slot = [0, 1, 2, 0, 1, 2];
 
-    sort_rows_counterclockwise(&points, &starts, &mut targets, &mut multiplicities, &mut edge_of_slot);
+    sort_rows_counterclockwise(
+        &points,
+        &starts,
+        &mut targets,
+        &mut multiplicities,
+        &mut edge_of_slot,
+    );
 
     assert_eq!(targets[..3], [2, 1, 3]);
     assert_eq!(multiplicities[..3], [2, 1, 3]);

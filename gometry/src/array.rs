@@ -19,9 +19,9 @@ pub(crate) use crate::broadcast::{CollectRows, rows_err};
 use crate::error::{Error, Result};
 use crate::geometry::CsrOffsetColumn;
 pub(crate) use crate::geometry::{
-    CsrOffsetBuilder, PolygonLevel, RingLevel, concat_coord_columns,
-    line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
-    polygon_is_valid, polygon_row_point_membership,
+    CsrOffsetBuilder, PolygonLevel, RingLevel, concat_coord_columns, line_crosses_antimeridian,
+    line_is_ccw, line_is_closed, line_is_simple, line_is_valid, polygon_is_valid,
+    polygon_row_point_membership,
 };
 pub(crate) use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
@@ -35,15 +35,15 @@ use crate::{
     coerce_collected_geometry_items, coordinate_epoch_option, coordinates, crs, crs_arc, crs_label,
     curves, exact_geometry, exact_geometry_array, expected_geometry_or_array,
     fixed_geometry_array_nearest_points, fixed_geometry_array_shortest_line_geodesic, geometry,
-    geometry_array_svg_grid_html_masked, io,
-    line_interpolate_points_coordseq, line_interpolate_points_shape, line_locate_coordseq,
-    map_coordinates_callback, metric_nearest_points, metric_shortest_line, non_negative_int,
-    note_array_row, overlay_operator, owned_voronoi_boundary, paired_arrays,
-    parse_coordinate_replacement, parse_crs, parse_curve_bounds,
-    parse_interpolate_plan, parse_precision, parse_wkt_output_dimension, positive_int, pyclass,
-    replace_shape_coordinates, require_geojson_crs, resolve_line_metric, resolve_metric,
-    row_sample_seed, slice_replacement_for_shape, validate_densify_fraction,
-    validate_equals_exact_tolerance, validate_max_segment_length, validate_subdivide_max_vertices,
+    geometry_array_svg_grid_html_masked, io, line_interpolate_points_coordseq,
+    line_interpolate_points_shape, line_locate_coordseq, map_coordinates_callback,
+    metric_nearest_points, metric_shortest_line, non_negative_int, note_array_row,
+    overlay_operator, owned_voronoi_boundary, paired_arrays, parse_coordinate_replacement,
+    parse_crs, parse_curve_bounds, parse_interpolate_plan, parse_precision,
+    parse_wkt_output_dimension, positive_int, pyclass, replace_shape_coordinates,
+    require_geojson_crs, resolve_line_metric, resolve_metric, row_sample_seed,
+    slice_replacement_for_shape, validate_densify_fraction, validate_equals_exact_tolerance,
+    validate_max_segment_length, validate_subdivide_max_vertices,
 };
 
 /// An immutable array of geometries sharing one CRS/epoch frame.
@@ -236,8 +236,10 @@ impl ArrayRows {
                 if missing.is_missing(logical) {
                     LogicalRow::Missing { logical }
                 } else {
-                    let payload = if matches!(storage.as_ref(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
-                    {
+                    let payload = if matches!(
+                        storage.as_ref(),
+                        GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+                    ) {
                         missing.present_before(logical)
                     } else {
                         logical
@@ -256,7 +258,10 @@ impl ArrayRows {
         let state = match self {
             Self::Dense(storage) => LogicalRowsState::Dense(storage.iter_rows()),
             Self::CompactNullable { storage, missing }
-                if matches!(storage.as_ref(), GeometryArrayStorage::Packed(PackedStorage::Points { .. })) =>
+                if matches!(
+                    storage.as_ref(),
+                    GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+                ) =>
             {
                 LogicalRowsState::CompactPoints {
                     rows: storage.iter_rows(),
@@ -397,8 +402,8 @@ mod tests;
 
 pub(crate) use shape_row::ShapeRow;
 pub(crate) use storage_types::{
-    GeometryArrayStorage, PackedStorage, LineRows, PointRows, RowSelection, RowSelectionRef, RowsIter, ShapesIter,
-    contiguous_physical_range, line_logical_len, packed_lines_coord_len, packed_polygons_coord_len,
-    packed_polygons_ring_len, physical_row, point_logical_len, polygon_logical_len,
-    polygon_rings_range, row_map_is_identity, row_selection_from_logical_rows,
+    GeometryArrayStorage, LineRows, PackedStorage, PointRows, RowSelection, RowSelectionRef,
+    RowsIter, ShapesIter, contiguous_physical_range, line_logical_len, packed_lines_coord_len,
+    packed_polygons_coord_len, packed_polygons_ring_len, physical_row, point_logical_len,
+    polygon_logical_len, polygon_rings_range, row_map_is_identity, row_selection_from_logical_rows,
 };

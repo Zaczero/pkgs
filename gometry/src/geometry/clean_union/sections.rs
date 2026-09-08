@@ -3,8 +3,8 @@ use crate::geometry::clean_union::{
     SharedAction, SharedArc, arc_rule, operand_covers_boundary, other_contains, section_end,
     shared_arc_rule, sort_dedup_cuts,
 };
-use crate::geometry::{PointKey, Segment, XY, same_point};
 use crate::geometry::segments::compare_along_segment;
+use crate::geometry::{PointKey, Segment, XY, same_point};
 
 #[derive(Clone, Copy)]
 pub(crate) struct ArcSection {

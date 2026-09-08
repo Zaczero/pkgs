@@ -317,19 +317,37 @@ macro_rules! unary_shape_method {
 macro_rules! method_doc {
     ($name:ident; body: $body:expr; scalar: $scalar:expr; array: $array:expr; tail: $tail:expr $(;)?) => {
         macro_rules! $name {
-            (scalar) => { concat!($body, $scalar, $tail) };
-            (array) => { concat!($body, $array, $tail) };
-            (@body) => { $body };
-            (@tail) => { $tail };
+            (scalar) => {
+                concat!($body, $scalar, $tail)
+            };
+            (array) => {
+                concat!($body, $array, $tail)
+            };
+            (@body) => {
+                $body
+            };
+            (@tail) => {
+                $tail
+            };
         }
     };
     ($name:ident; pre: $pre:expr; scalar: ($sp:expr, $sr:expr); array: ($ap:expr, $ar:expr); post: $post:expr; tail: $tail:expr $(;)?) => {
         macro_rules! $name {
-            (scalar) => { concat!($pre, $sp, $post, $sr, $tail) };
-            (array) => { concat!($pre, $ap, $post, $ar, $tail) };
-            (@pre) => { $pre };
-            (@post) => { $post };
-            (@tail) => { $tail };
+            (scalar) => {
+                concat!($pre, $sp, $post, $sr, $tail)
+            };
+            (array) => {
+                concat!($pre, $ap, $post, $ar, $tail)
+            };
+            (@pre) => {
+                $pre
+            };
+            (@post) => {
+                $post
+            };
+            (@tail) => {
+                $tail
+            };
         }
     };
 }

@@ -6,8 +6,7 @@ use std::cmp::Ordering;
 
 use crate::geometry::arrangement::WindingWeight;
 use crate::geometry::{
-    HashMap, Orientation, PointKey, Segment, XY,
-    open_xy_cycle_sign, orientation, same_point,
+    HashMap, Orientation, PointKey, Segment, XY, open_xy_cycle_sign, orientation, same_point,
 };
 
 pub(crate) fn split_ring_at_pinches(
@@ -52,7 +51,8 @@ pub(crate) fn split_ring_at_pinches(
 /// exact signs and the face CSR (boundaries come from
 /// [`Arrangement::region_rings`]), so their walks skip both costs.
 pub(crate) fn arrangement_faces<const RINGS: bool>(
-    points: &[XY], topology: &crate::geometry::arrangement::IndexedTopology,
+    points: &[XY],
+    topology: &crate::geometry::arrangement::IndexedTopology,
 ) -> Vec<crate::geometry::arrangement::Face> {
     let mut faces = Vec::new();
     // One cycle scratch for sign classification when rings are not kept
@@ -67,9 +67,13 @@ pub(crate) fn arrangement_faces<const RINGS: bool>(
             cycle_scratch.clear();
             std::mem::take(&mut cycle_scratch)
         };
-        for &slot in &topology.face_slots[topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize] {
+        for &slot in &topology.face_slots
+            [topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize]
+        {
             let slot = slot as usize;
-            if cycle.is_empty() { cycle.push(points[topology.owners[slot] as usize]); }
+            if cycle.is_empty() {
+                cycle.push(points[topology.owners[slot] as usize]);
+            }
             let to = points[topology.targets[slot] as usize];
             cycle.push(to);
         }
@@ -82,7 +86,9 @@ pub(crate) fn arrangement_faces<const RINGS: bool>(
                 Vec::new()
             },
             area_sign,
-            component: topology.component_of[topology.owners[topology.face_slots[topology.face_starts[face] as usize] as usize] as usize],
+            component: topology.component_of[topology.owners
+                [topology.face_slots[topology.face_starts[face] as usize] as usize]
+                as usize],
         });
     }
     faces
