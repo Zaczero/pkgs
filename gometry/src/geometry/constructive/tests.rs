@@ -788,8 +788,8 @@ mod subdivide_columns_tests {
 
     use super::*;
     use crate::geographic::GeographicFrame;
-    use crate::geometry::ExpansionBudget;
     use crate::geometry::constructive::{densify_points_budgeted, segmentize_points_budgeted};
+    use crate::geometry::{ExpansionBudget, GeometryErrorKind};
 
     #[test]
     fn densify_xyzm_interpolates_every_ordinate_lane() {
@@ -828,6 +828,100 @@ mod subdivide_columns_tests {
         .unwrap();
         assert_eq!(segmented.len(), 4);
         assert_eq!(segmented.xs(), &[0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn planar_segmentize_scales_opposing_endpoint_distance_before_planning() {
+        let line = CoordSeq::try_from_points(&[
+            Point::new(-1e308, 0.0).unwrap(),
+            Point::new(1e308, 0.0).unwrap(),
+        ])
+        .unwrap();
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let segmented = segmentize_points_budgeted(
+            &line,
+            1e308,
+            crate::geometry::SegmentPlacement::Planar,
+            &mut budget,
+        )
+        .unwrap();
+
+        assert_eq!(segmented.xs(), &[-1e308, 0.0, 1e308]);
+        assert_eq!(segmented.ys(), &[0.0, 0.0, 0.0]);
+        assert_eq!(budget.used(), 1);
+    }
+
+    #[test]
+    fn planar_segmentize_accepts_exact_representable_length_boundaries() {
+        let line = CoordSeq::try_from_points(&[
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(4.0, 0.0).unwrap(),
+        ])
+        .unwrap();
+
+        let mut unchanged_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let unchanged = segmentize_points_budgeted(
+            &line,
+            4.0,
+            crate::geometry::SegmentPlacement::Planar,
+            &mut unchanged_budget,
+        )
+        .unwrap();
+        assert_eq!(unchanged.xs(), &[0.0, 4.0]);
+        assert_eq!(unchanged_budget.used(), 0);
+
+        let mut split_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let split = segmentize_points_budgeted(
+            &line,
+            2.0,
+            crate::geometry::SegmentPlacement::Planar,
+            &mut split_budget,
+        )
+        .unwrap();
+        assert_eq!(split.xs(), &[0.0, 2.0, 4.0]);
+        assert_eq!(split_budget.used(), 1);
+
+        let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
+        let adjacent_line = CoordSeq::try_from_points(&[
+            Point::new(1.0, 0.0).unwrap(),
+            Point::new(adjacent, 0.0).unwrap(),
+        ])
+        .unwrap();
+        let mut adjacent_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let exact = segmentize_points_budgeted(
+            &adjacent_line,
+            2.0_f64.powi(-52),
+            crate::geometry::SegmentPlacement::Planar,
+            &mut adjacent_budget,
+        )
+        .unwrap();
+        assert_eq!(exact.xs(), &[1.0, adjacent]);
+        assert_eq!(adjacent_budget.used(), 0);
+    }
+
+    #[test]
+    fn planar_segmentize_rejects_an_unrepresentable_binary64_chord() {
+        let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
+        let line = CoordSeq::try_from_points(&[
+            Point::new(1.0, 0.0).unwrap(),
+            Point::new(adjacent, 0.0).unwrap(),
+        ])
+        .unwrap();
+        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let error = segmentize_points_budgeted(
+            &line,
+            2.0_f64.powi(-54),
+            crate::geometry::SegmentPlacement::Planar,
+            &mut budget,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
+                operation: "segmentize"
+            })
+        ));
     }
 
     #[test]

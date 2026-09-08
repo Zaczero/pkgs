@@ -4,11 +4,11 @@ use crate::geometry::constructive::Result;
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
     GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, Polygon,
-    RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY,
+    RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY, axis_pow2_scale,
     bounds_distance_squared, dedup_consecutive_points, interpolate_f64, line_segments,
     point_distance, point_segment_distance, points_dwithin, push_distinct_point,
-    repair_shape_in_frame, same_point, same_topological_coordinate, segment_projection,
-    validate_shape_in_frame,
+    repair_shape_in_frame, same_point, same_topological_coordinate, scaled_residual,
+    segment_projection, validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
@@ -318,17 +318,14 @@ pub(crate) fn segmentize_points_budgeted(
             budget,
         );
     }
-    subdivide_columns(
+    let output = subdivide_columns(
         points,
         SegmentPlacement::Planar,
-        |segment| {
-            Ok(segmentize_steps(
-                point_distance(segment.start, segment.end),
-                max_segment_length,
-            ))
-        },
+        |segment| Ok(planar_segmentize_steps(segment, max_segment_length)),
         budget,
-    )
+    )?;
+    verify_planar_segmentize_output(&output, max_segment_length)?;
+    Ok(output)
 }
 
 fn segmentize_steps(length: f64, max_segment_length: f64) -> usize {
@@ -345,6 +342,64 @@ fn segmentize_steps(length: f64, max_segment_length: f64) -> usize {
     } else {
         pieces as usize
     }
+}
+
+/// Plan the ideal planar piece count without allowing an overflowing endpoint
+/// difference to masquerade as an already-complete segment. The common path
+/// keeps the established distance arithmetic; only a non-finite distance uses
+/// a common power-of-two frame, so the endpoint residual and the limit are
+/// compared in the same scaled units without forming an overflowing length.
+fn planar_segmentize_steps(segment: Segment, max_segment_length: f64) -> usize {
+    if !max_segment_length.is_finite() || max_segment_length <= 0.0 {
+        return 1;
+    }
+    let length = point_distance(segment.start, segment.end);
+    if length.is_finite() {
+        return segmentize_steps(length, max_segment_length);
+    }
+
+    let maximum = segment
+        .start
+        .x
+        .abs()
+        .max(segment.start.y.abs())
+        .max(segment.end.x.abs())
+        .max(segment.end.y.abs());
+    let scale = axis_pow2_scale(maximum);
+    let dx = scaled_residual(segment.end.x, segment.start.x, scale);
+    let dy = scaled_residual(segment.end.y, segment.start.y, scale);
+    let scaled_limit = max_segment_length * scale;
+    let ratio = if scaled_limit > 0.0 {
+        dx.hypot(dy) / scaled_limit
+    } else {
+        f64::INFINITY
+    };
+    let pieces = ratio.ceil();
+    // A huge quotient must not wrap to a small step count, which would admit
+    // output beyond the shared 16M generated-work budget.
+    if !pieces.is_finite() || pieces > GENERATED_ITEM_LIMIT as f64 {
+        // The sink charges inserted vertices (`pieces - 1`), so its sentinel
+        // must remain one past that limit rather than merely one past pieces.
+        GENERATED_ITEM_LIMIT.saturating_add(2)
+    } else {
+        pieces.max(1.0) as usize
+    }
+}
+
+/// The ideal count describes the continuous subdivision, not the binary64
+/// coordinates that the emitter actually stores. Audit the resulting chain so
+/// the public maximum-length promise is about every emitted chord, including
+/// source-to-source chords that can survive as repeated interior points.
+fn verify_planar_segmentize_output(points: &CoordSeq, max_segment_length: f64) -> Result<()> {
+    if !max_segment_length.is_finite() || max_segment_length <= 0.0 {
+        return Ok(());
+    }
+    for segment in line_segments(points) {
+        if !(point_distance(segment.start, segment.end) <= max_segment_length) {
+            return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
+        }
+    }
+    Ok(())
 }
 
 /// Insert `ceil(1 / fraction) - 1` evenly spaced vertices into every segment

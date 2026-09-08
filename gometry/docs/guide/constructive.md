@@ -287,7 +287,10 @@ positional `max_length` when every output segment must be no longer than that
 distance, or pass `fraction=` to split every input segment into equal pieces
 (`fraction=0.25` produces four pieces). Both preserve the represented shape and
 only raise vertex density. See [CRS, units & measurement](crs.md) for the
-`max_length` metric. `fraction=` has no unit and cannot be combined with `unit=`:
+`max_length` metric. The `max_length` path audits the emitted binary64 chords;
+when rounding makes the endpoint-preserving output unable to satisfy the bound,
+it raises `GeometryError` instead of moving an original vertex. `fraction=` has
+no unit and cannot be combined with `unit=`:
 
 ```python exec="on" html="true"
 from _figures import panels, with_vertices

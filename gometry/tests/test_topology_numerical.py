@@ -161,6 +161,48 @@ def test_segmentize_budget_charges_realized_output() -> None:
     assert '16000000' in msg or '16_000_000' in msg or 'exceeding the limit' in msg
 
 
+def test_planar_segmentize_scales_opposing_extreme_endpoints_scalar_and_array() -> None:
+    line = gm.LineString([(-1e308, 0.0), (1e308, 0.0)])
+    expected = [(-1e308, 0.0), (0.0, 0.0), (1e308, 0.0)]
+
+    scalar = line.segmentize(1e308)
+    array = gm.GeometryArray([line]).segmentize(1e308)[0]
+
+    assert list(scalar.coords) == expected
+    assert list(array.coords) == expected
+    assert all(
+        math.hypot(x1 - x0, y1 - y0) <= 1e308
+        for (x0, y0), (x1, y1) in pairwise(expected)
+    )
+
+
+def test_planar_segmentize_rejects_unrepresentable_output_distinct_from_budget_errors() -> (
+    None
+):
+    line = gm.LineString([(1.0, 0.0), (math.nextafter(1.0, 2.0), 0.0)])
+    maximum = 2.0**-54
+
+    for operation in (
+        line.segmentize,
+        lambda value: gm.GeometryArray([line]).segmentize(value),
+    ):
+        with pytest.raises(gm.GeometryError) as unrepresentable:
+            operation(maximum)
+        assert unrepresentable.value.operation == 'segmentize'
+        assert getattr(unrepresentable.value, 'parameter', None) is None
+
+    with pytest.raises(gm.GeometryError) as invalid:
+        line.segmentize(float('nan'))
+    assert invalid.value.param == 'max_length'
+    assert getattr(invalid.value, 'operation', None) is None
+
+    with pytest.raises(gm.GeometryError) as budget:
+        line.segmentize(float.fromhex('0x0.0000000000001p-1022'))
+    assert budget.value.operation == 'segmentize'
+    assert budget.value.parameter == 'max_segment_length'
+    assert budget.value.produced > 16_000_000
+
+
 def test_empty_linestring_parts_family() -> None:
     # Atomic empty LineString is one part (itself); empty MultiLineString has zero.
     # Scalar, array-row, and free `parts` agree.

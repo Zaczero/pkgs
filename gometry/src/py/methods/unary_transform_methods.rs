@@ -461,8 +461,9 @@ CRSError
 GeometryError
     If neither or both constraints are supplied, ``max_length`` is not a
     positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
-    combined with ``fraction``, or ``unit='meters'`` is requested for a
-    CRS-free geometry.
+    combined with ``fraction``, ``unit='meters'`` is requested for a
+    CRS-free geometry, or the endpoint-preserving binary64 output cannot
+    satisfy ``max_length``.
 
 Examples
 --------
