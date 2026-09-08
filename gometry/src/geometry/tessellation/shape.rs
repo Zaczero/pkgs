@@ -1,6 +1,7 @@
 use ahash::HashSetExt as _;
 
 use crate::error::Result;
+use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::derived::monotone_chain_hull;
 use crate::geometry::tessellation::{
     CdtRefinement, Site, build_area_lines, certified_delaunay, collect_sample_triangles,
@@ -602,8 +603,11 @@ impl Shape {
     /// carried by provenance; `strict` selects strict ordinate verification
     /// while the default uses the lenient degradation policy.
     pub fn polygonize_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
-        let graph = TopologyGraph::cartesian_many(shapes)?;
-        let polygons = polygonize_lines(&graph)?
+        let inventory = ExactSourceInventory::from_shapes(shapes)?;
+        let mut budget = ExpansionBudget::new("polygonize", "exact partition");
+        let partition = inventory.partition(&mut budget)?;
+        let polygons = inventory
+            .linework_polygons(&partition, false)?
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -619,8 +623,11 @@ impl Shape {
     ///
     /// [`polygonize_all`]: Self::polygonize_all
     pub fn build_area_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
-        let graph = TopologyGraph::cartesian_many(shapes)?;
-        let polygons = build_area_lines(&graph)?
+        let inventory = ExactSourceInventory::from_shapes(shapes)?;
+        let mut budget = ExpansionBudget::new("build_area", "exact partition");
+        let partition = inventory.partition(&mut budget)?;
+        let polygons = inventory
+            .linework_polygons(&partition, true)?
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -666,8 +673,13 @@ impl Shape {
     /// [`Shape::polygonize_all`] with diagnostics: one combined universe for
     /// polygons, cut edges, dangles, and invalid rings alike.
     pub fn polygonize_full_all(shapes: &[&Self], strict: bool) -> Result<PolygonizeFull> {
+        let inventory = ExactSourceInventory::from_shapes(shapes)?;
+        let mut budget = ExpansionBudget::new("polygonize_full", "exact partition");
+        let partition = inventory.partition(&mut budget)?;
+        let exact_polygons = inventory.linework_polygons(&partition, false)?;
         let graph = TopologyGraph::cartesian_many(shapes)?;
-        let full = polygonize_full(&graph, shapes.len())?;
+        let mut full = polygonize_full(&graph, shapes.len())?;
+        full.polygons = exact_polygons.into_iter().map(Shape::Polygon).collect();
         let carry_diagnostic_rows = |rows: Vec<Vec<Self>>| {
             rows.into_iter()
                 .enumerate()

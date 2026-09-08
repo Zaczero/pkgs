@@ -4,6 +4,7 @@ use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashMapExt as _,
     HashSet, LineSeq, Point, PointKey, Polygon, Ring, Segment, Shape, point_on_segment,
 };
+use crate::{try_push_vec, try_reserve_vec};
 
 /// Order-preserving topological dedup of overlay output points.
 pub(crate) fn dedup_points(points: &mut Vec<Point>) {
@@ -269,10 +270,11 @@ pub(crate) fn build_certified_overlay_shape(
     let polygon_part = (!polygons.is_empty())
         .then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons))
         .transpose()?;
-    let parts: Vec<Shape> = [point_part, line_part, polygon_part]
-        .into_iter()
-        .flatten()
-        .collect();
+    let mut parts = Vec::new();
+    try_reserve_vec(&mut parts, 3)?;
+    for part in [point_part, line_part, polygon_part].into_iter().flatten() {
+        try_push_vec(&mut parts, part)?;
+    }
     match <[Shape; 1]>::try_from(parts) {
         Ok([single]) => Ok(single),
         Err(parts) => Shape::geometry_collection(parts),

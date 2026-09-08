@@ -30,23 +30,6 @@ pub(in crate::geometry) fn clip_polygonal_parts<P: AsRef<Polygon>>(
     polygons: &[P],
     rect: Bounds,
 ) -> Result<Vec<Polygon>> {
-    let holes_strictly_inside = polygons.iter().all(|polygon| {
-        let polygon = polygon.as_ref();
-        polygon.holes.iter().all(|hole| {
-            Bounds::from_coords(hole.coords()).is_none_or(|bounds| {
-                bounds.minx() > rect.minx()
-                    && bounds.maxx() < rect.maxx()
-                    && bounds.miny() > rect.miny()
-                    && bounds.maxy() < rect.maxy()
-            })
-        })
-    });
-    if holes_strictly_inside
-        && let Some(parts) = window_clipped_parts(polygons, rect)?
-        && !window_clip_artifacts(&parts, rect)
-    {
-        return Ok(parts);
-    }
     binary_areal_overlay(
         polygons,
         std::slice::from_ref(&rect_polygon(rect)?),

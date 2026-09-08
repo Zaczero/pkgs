@@ -1,6 +1,7 @@
 use ahash::HashSetExt as _;
 
 use crate::error::Result;
+use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::coverage::{
     AABB, CoverageRow, HashMap, HashMapExt as _, HashSet, RTreeObject,
     coverage_invalid_segments_prepared, coverage_rows, minimal_positive_face_rings, sort_row_ids,
@@ -77,13 +78,11 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
 
     // The global arrangement: node every boundary segment, take its minimal
     // faces, and resolve nesting into regions (face minus direct children).
-    let all_segments: Vec<Segment> = prepared
-        .iter()
-        .flat_map(|row| row.segments.iter().copied())
-        .collect();
-    let atomic = self_node_segments(&all_segments)?;
-    let faces = minimal_positive_face_rings(&atomic);
-    let regions = arrangement_regions(&faces)?;
+    let shape_refs: Vec<&Shape> = snapped.iter().collect();
+    let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
+    let mut budget = crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let regions = inventory.linework_polygons(&partition, false)?;
 
     let per_row = assign_regions(&prepared, regions, gap_width, overlaps)?;
     per_row.into_iter().map(dissolve_regions).collect()
@@ -472,8 +471,10 @@ fn dissolve_edge_incidences(
         return Ok(Shape::empty_polygon());
     }
     survivors.sort_by_key(|segment| undirected_segment_edge_key(*segment));
-    let faces = minimal_positive_face_rings(&survivors);
-    let parts = top_level_regions(arrangement_regions(&faces)?);
+    let inventory = ExactSourceInventory::from_segments(&survivors)?;
+    let mut budget = crate::geometry::ExpansionBudget::new("coverage_union", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let parts = inventory.linework_polygons(&partition, true)?;
     polygon_parts_to_shape(parts)
 }
 

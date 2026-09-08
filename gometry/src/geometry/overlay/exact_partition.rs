@@ -1057,6 +1057,103 @@ impl ExactSourceInventory {
         })
     }
 
+    pub(in crate::geometry) fn from_polygon_operands<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
+        left: &[P],
+        right: &[Q],
+    ) -> Result<Self> {
+        let mut staged = StagedExactSources::new(2)?;
+        for polygon in left {
+            staged.append_polygon(polygon.as_ref(), 0)?;
+        }
+        for polygon in right {
+            staged.append_polygon(polygon.as_ref(), 1)?;
+        }
+        let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
+        Ok(Self {
+            unique,
+            provenance,
+            source_operands: staged.source_operands,
+            source_rings: staged.source_rings,
+            source_boundaries: staged.source_boundaries,
+            polygon_rings: staged.polygon_rings,
+            ring_count: staged.ring_count,
+            isolated: staged.isolated,
+            isolated_operands: staged.isolated_operands,
+            line_boundaries: staged.line_boundaries,
+            invalid_areas: staged.invalid_areas,
+        })
+    }
+
+    pub(in crate::geometry) fn from_segments(segments: &[Segment]) -> Result<Self> {
+        let mut staged = StagedExactSources::new(1)?;
+        for &segment in segments {
+            staged.push_segment(segment, 0, None, false)?;
+        }
+        let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
+        Ok(Self {
+            unique,
+            provenance,
+            source_operands: staged.source_operands,
+            source_rings: staged.source_rings,
+            source_boundaries: staged.source_boundaries,
+            polygon_rings: staged.polygon_rings,
+            ring_count: staged.ring_count,
+            isolated: staged.isolated,
+            isolated_operands: staged.isolated_operands,
+            line_boundaries: staged.line_boundaries,
+            invalid_areas: staged.invalid_areas,
+        })
+    }
+
+    pub(in crate::geometry) fn from_raw_loops(loops: &[(Vec<f64>, Vec<f64>)]) -> Result<Self> {
+        let mut staged = StagedExactSources::new(1)?;
+        for (xs, ys) in loops {
+            let ring_id = u32::try_from(staged.ring_count)
+                .map_err(|_| ResourceError::SizeOverflow)?;
+            staged.ring_count = staged
+                .ring_count
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+            // Raw winding callers pass open coordinate columns for a cyclic
+            // loop; the final-to-first edge is part of that source contract.
+            // This ingress is not the open-line inventory used by overlay.
+            let closed = xs.len() >= 3;
+            let count = xs.len().saturating_sub(usize::from(
+                closed
+                    && same_point(
+                        XY::new(xs[0], ys[0]),
+                        XY::new(xs[xs.len() - 1], ys[ys.len() - 1]),
+                    ),
+            ));
+            for index in 0..count {
+                let next = if index + 1 == count { 0 } else { index + 1 };
+                staged.push_segment(
+                    Segment {
+                        start: XY::new(xs[index], ys[index]),
+                        end: XY::new(xs[next], ys[next]),
+                    },
+                    0,
+                    closed.then_some(ring_id),
+                    false,
+                )?;
+            }
+        }
+        let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
+        Ok(Self {
+            unique,
+            provenance,
+            source_operands: staged.source_operands,
+            source_rings: staged.source_rings,
+            source_boundaries: staged.source_boundaries,
+            polygon_rings: staged.polygon_rings,
+            ring_count: staged.ring_count,
+            isolated: staged.isolated,
+            isolated_operands: staged.isolated_operands,
+            line_boundaries: staged.line_boundaries,
+            invalid_areas: staged.invalid_areas,
+        })
+    }
+
     pub(in crate::geometry) fn partition(
         &self,
         budget: &mut ExpansionBudget,
@@ -1078,9 +1175,142 @@ impl ExactSourceInventory {
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let cells = self.select_cells(partition, &topology, &edges, &global, operation)?;
+        let cells = self.select_cells(partition, &topology, &edges, &global, operation, false)?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
         plan.emit_xy_parts(partition, &topology)
+    }
+
+    pub(in crate::geometry) fn repair_parts(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let cells = self.select_cells(
+            partition,
+            &topology,
+            &edges,
+            &global,
+            crate::geometry::OverlayOp::Union,
+            true,
+        )?;
+        let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
+        plan.emit_xy_parts(partition, &topology)
+    }
+
+    pub(in crate::geometry) fn linework_polygons(
+        &self,
+        partition: &ExactPartition<'_>,
+        build_area: bool,
+    ) -> Result<Vec<Polygon>> {
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let mut cycles: Vec<Vec<Vec<NodeId>>> = Vec::new();
+        try_reserve_vec(&mut cycles, global.count as usize)?;
+        cycles.resize_with(global.count as usize, Vec::new);
+        for walk in 0..topology.face_starts.len().saturating_sub(1) {
+            let start = topology.face_starts[walk] as usize;
+            let end = topology.face_starts[walk + 1] as usize;
+            let mut cycle = Vec::new();
+            try_reserve_vec(&mut cycle, end.saturating_sub(start))?;
+            for &slot in &topology.face_slots[start..end] {
+                cycle.push(NodeId(topology.owners[slot as usize]));
+            }
+            let face = global.walk_faces[walk] as usize;
+            try_reserve_vec(&mut cycles[face], 1)?;
+            cycles[face].push(cycle);
+        }
+        let mut samples = Vec::new();
+        try_reserve_vec(&mut samples, global.count as usize)?;
+        samples.resize(global.count as usize, None);
+        for face in 1..global.count as usize {
+            for cycle in &cycles[face] {
+                for &node in cycle {
+                    if samples[face]
+                        .is_none_or(|prior| partition.compare_nodes(node, prior).is_ok_and(|o| o.is_lt()))
+                    {
+                        samples[face] = Some(node);
+                    }
+                }
+            }
+        }
+        let mut selected = Vec::new();
+        try_reserve_vec(&mut selected, global.count as usize)?;
+        selected.resize(global.count as usize, false);
+        for face in 1..global.count as usize {
+            let Some(sample) = samples[face] else { continue };
+            let mut depth = 0;
+            for other in 1..global.count as usize {
+                if other == face {
+                    continue;
+                }
+                if let Some(cycle) = cycles[other].first()
+                    && cycle_contains_node(partition, cycle, sample)?
+                {
+                    depth += 1;
+                }
+            }
+            selected[face] = !build_area || depth % 2 == 0;
+        }
+        let cells = ArealCells {
+            faces: selected,
+            spans: {
+                let mut values = Vec::new();
+                try_reserve_vec(&mut values, partition.spans.len())?;
+                values.resize(partition.spans.len(), false);
+                values
+            },
+            nodes: {
+                let mut values = Vec::new();
+                try_reserve_vec(&mut values, partition.recipes.len())?;
+                values.resize(partition.recipes.len(), false);
+                values
+            },
+        };
+        let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
+        let (_, _, polygons) = plan.emit_xy_parts(partition, &topology)?;
+        Ok(polygons)
+    }
+
+    pub(in crate::geometry) fn winding_polygons(
+        &self,
+        partition: &ExactPartition<'_>,
+        keep: impl Fn(i64) -> bool,
+    ) -> Result<Vec<Polygon>> {
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let mut selected = Vec::new();
+        try_reserve_vec(&mut selected, global.count as usize)?;
+        selected.resize(global.count as usize, false);
+        partition.visit_face_windings(
+            &topology,
+            &edges,
+            &global,
+            &self.source_rings,
+            self.ring_count,
+            |face, winding| {
+                selected[face as usize] = keep(winding.iter().sum());
+                Ok(())
+            },
+        )?;
+        let cells = ArealCells {
+            faces: selected,
+            spans: {
+                let mut values = Vec::new();
+                try_reserve_vec(&mut values, partition.spans.len())?;
+                values.resize(partition.spans.len(), false);
+                values
+            },
+            nodes: {
+                let mut values = Vec::new();
+                try_reserve_vec(&mut values, partition.recipes.len())?;
+                values.resize(partition.recipes.len(), false);
+                values
+            },
+        };
+        let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
+        let (_, _, polygons) = plan.emit_xy_parts(partition, &topology)?;
+        Ok(polygons)
     }
 
     pub(in crate::geometry) fn relate(
@@ -1168,7 +1398,8 @@ impl ExactSourceInventory {
             |face, winding| {
                 for operand in 0..operands {
                     memberships[face as usize * operands + operand] =
-                        !self.invalid_areas[operand] && self.operand_occupied(winding, operand);
+                        !self.invalid_areas[operand]
+                            && self.operand_occupied(winding, operand, false);
                 }
                 Ok(())
             },
@@ -1304,6 +1535,7 @@ impl ExactSourceInventory {
         edges: &[u32],
         global: &GlobalFaces,
         operation: crate::geometry::OverlayOp,
+        odd: bool,
     ) -> Result<ArealCells> {
         let operands = self.operand_count();
         let mut face_membership = Vec::new();
@@ -1332,7 +1564,7 @@ impl ExactSourceInventory {
             self.ring_count,
             |face, winding| {
                 for operand in 0..operands {
-                    let occupied = self.operand_occupied(winding, operand);
+                    let occupied = self.operand_occupied(winding, operand, odd);
                     face_membership[face as usize * operands + operand] = occupied;
                 }
                 cells.faces[face as usize] = select_operation(
@@ -1418,11 +1650,17 @@ impl ExactSourceInventory {
         Ok(cells)
     }
 
-    fn operand_occupied(&self, winding: &[i64], operand: usize) -> bool {
+    fn operand_occupied(&self, winding: &[i64], operand: usize, odd: bool) -> bool {
         self.polygon_rings[operand].iter().any(|rings| {
             let mut rings = rings.clone();
-            rings.next().is_some_and(|shell| winding[shell] != 0)
-                && !rings.any(|hole| winding[hole] != 0)
+            let filled = |ring| {
+                if odd {
+                    winding[ring] % 2 != 0
+                } else {
+                    winding[ring] != 0
+                }
+            };
+            rings.next().is_some_and(filled) && !rings.any(filled)
         })
     }
 }
@@ -1692,6 +1930,56 @@ const fn location(occupied: bool) -> Loc {
     } else {
         Loc::Exterior
     }
+}
+
+fn cycle_contains_node(
+    partition: &ExactPartition<'_>,
+    cycle: &[NodeId],
+    query: NodeId,
+) -> Result<bool> {
+    let [qx, qy, qw] = partition.homogeneous(query)?;
+    let mut inside = false;
+    for index in 0..cycle.len() {
+        let a = cycle[index];
+        let b = cycle[(index + 1) % cycle.len()];
+        let [ax, ay, aw] = partition.homogeneous(a)?;
+        let [bx, by, bw] = partition.homogeneous(b)?;
+        let y_a = try_compare_ratios(&ay, &aw, &qy, &qw)?;
+        let y_b = try_compare_ratios(&by, &bw, &qy, &qw)?;
+        let dx = bx
+            .try_product(&aw)?
+            .try_subtract(ax.try_product(&bw)?)?;
+        let dy = by
+            .try_product(&aw)?
+            .try_subtract(ay.try_product(&bw)?)?;
+        let qx_rel = qx
+            .try_product(&aw)?
+            .try_subtract(ax.try_product(&qw)?)?;
+        let qy_rel = qy
+            .try_product(&aw)?
+            .try_subtract(ay.try_product(&qw)?)?;
+        let orientation = dx
+            .try_product(&qy_rel)?
+            .try_subtract(dy.try_product(&qx_rel)?)?
+            .sign();
+        if orientation == ExactSign::Zero
+            && try_compare_ratios(&qx, &qw, &ax, &aw)? != Ordering::Less
+            && try_compare_ratios(&qx, &qw, &bx, &bw)? != Ordering::Greater
+            && try_compare_ratios(&qy, &qw, &ay, &aw)? != Ordering::Less
+            && try_compare_ratios(&qy, &qw, &by, &bw)? != Ordering::Greater
+        {
+            return Ok(false);
+        }
+        if y_a == Ordering::Equal || y_b == Ordering::Equal || y_a == y_b {
+            continue;
+        }
+        let crosses_right = (y_a == Ordering::Less && orientation == ExactSign::Negative)
+            || (y_b == Ordering::Less && orientation == ExactSign::Positive);
+        if crosses_right {
+            inside = !inside;
+        }
+    }
+    Ok(inside)
 }
 
 impl<'a> ExactPartition<'a> {

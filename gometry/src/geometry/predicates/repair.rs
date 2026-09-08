@@ -2,7 +2,7 @@ use ahash::HashSetExt as _;
 
 use crate::error::Result;
 use crate::geometry::area::ring_area_sign;
-use crate::geometry::overlay::outside_winding_seeds;
+use crate::geometry::overlay::{ExactSourceInventory, outside_winding_seeds};
 use crate::geometry::predicates::{prune_dangles, validate_points};
 use crate::geometry::{
     AreaSign, Arrangement, CoordSeq, Coordinates, GeometryErrorKind, HashMap, HashMapExt as _,
@@ -21,44 +21,17 @@ use crate::geometry::{
 /// out of either fold.
 pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Result<Shape> {
     let area: Vec<Polygon> = match method {
-        RepairMethod::Linework => {
-            // CLEAN-single-ring fast path: one self-crossing loop with no
-            // duplicate edges, T-junctions, or repeats builds positionally
-            // (`from_single_loop` owns every bail), and directed winding
-            // parity == undirected crossing parity when no edge repeats —
-            // one arrangement instead of the per-ring face decomposition
-            // plus the joint re-noding pass below.
-            if let [polygon] = polygons
-                && polygon.holes.is_empty()
-                && let Some(mut arrangement) = single_ring_arrangement(&polygon.shell)?
-            {
-                let windings = arrangement.face_windings(&[0]);
-                assemble_region_polygons(
-                    arrangement.region_rings(&windings, |winding| winding % 2 != 0),
-                )?
+        RepairMethod::Linework | RepairMethod::Structure => {
+            let empty: &[Polygon] = &[];
+            let inventory = ExactSourceInventory::from_polygon_operands(polygons, empty)?;
+            let mut budget = crate::geometry::ExpansionBudget::new("repair", "exact partition");
+            let partition = inventory.partition(&mut budget)?;
+            let (_, _, parts) = if method == RepairMethod::Linework {
+                inventory.repair_parts(&partition)?
             } else {
-                linework_area(polygons)?
-            }
-        },
-        RepairMethod::Structure => {
-            let mut shells = Vec::new();
-            let mut holes = Vec::new();
-            for polygon in polygons {
-                shells.extend(ring_structure_area(&polygon.shell)?);
-                for hole in polygon.holes.iter() {
-                    holes.extend(ring_structure_area(hole)?);
-                }
-            }
-            let single_shell_source = matches!(polygons, [polygon] if polygon.holes.is_empty());
-            if single_shell_source {
-                // One source shell: its nonzero-winding area is already the
-                // final disjoint region — nothing to union or subtract.
-                shells
-            } else {
-                // union(shells) − union(holes) in one overlay pass (empty
-                // holes degrade to the pure shell union).
-                binary_areal_overlay(&shells, &holes, OverlayOp::Difference)?
-            }
+                inventory.overlay_parts(&partition, OverlayOp::Union)?
+            };
+            parts
         },
     };
     let parts: Vec<Polygon> = area;

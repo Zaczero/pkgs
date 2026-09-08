@@ -7,7 +7,7 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::error::Result;
-use crate::geometry::overlay::{OverlayOp, self_node_segments_sourced};
+use crate::geometry::overlay::{ExactSourceInventory, OverlayOp, self_node_segments_sourced};
 use crate::geometry::{
     Arrangement, Bounds, CoordSeq, Point, Polygon, RingWinding, Segment, SegmentIndex, Shape, XY,
     assemble_region_polygons, ray_crossing_is_right, ring_winding, same_point, wrap_index,
@@ -19,22 +19,11 @@ pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Poly
     right: &[Q],
     op: OverlayOp,
 ) -> Result<Vec<Polygon>> {
-    // Two-operand overlay: mirror `Shape::union`'s clean fast lane so a pair of
-    // simple blobs reassembles from result-boundary arcs instead of paying a
-    // full DCEL/winding arrangement. Bails to the arrangement oracle (below) on
-    // any degeneracy — same contract as the entry.
-    if matches!(
-        op,
-        OverlayOp::Union | OverlayOp::Difference | OverlayOp::SymmetricDifference
-    ) && let Some(shape) = crate::geometry::clean_union::clean_overlay(left, right, op)?
-    {
-        return Ok(match shape {
-            Shape::Polygon(polygon) => vec![polygon],
-            Shape::MultiPolygon(polygons) => polygons.iter().cloned().collect(),
-            _ => Vec::new(),
-        });
-    }
-    build_areal_arrangement(left, right)?.overlay_polygons(op)
+    let inventory = ExactSourceInventory::from_polygon_operands(left, right)?;
+    let mut budget = crate::geometry::ExpansionBudget::new(op.name(), "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let (_, _, polygons) = inventory.overlay_parts(&partition, op)?;
+    Ok(polygons)
 }
 
 impl ArealArrangement {

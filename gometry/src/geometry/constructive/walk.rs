@@ -641,6 +641,11 @@ pub(in crate::geometry) fn winding_region(
     loops: &[(Vec<f64>, Vec<f64>)],
     keep: impl Fn(i32) -> bool,
 ) -> Result<Vec<Polygon>> {
+    let inventory = crate::geometry::overlay::ExactSourceInventory::from_raw_loops(loops)?;
+    let mut budget = crate::geometry::ExpansionBudget::new("winding_region", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    return inventory.winding_polygons(&partition, |winding| keep(winding as i32));
+
     let mut segments = Vec::new();
     let mut segment_loop: Vec<u32> = Vec::new();
     let mut loop_anchor: Vec<XY> = Vec::new();
