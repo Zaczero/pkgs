@@ -2648,6 +2648,8 @@ impl SymbolicAffineEdge {
         end: LiftedVertex,
         kind: LiftKind,
     ) -> Option<Self> {
+        let start_point = ExactPlanarPoint::from_lifted(start)?;
+        let end_point = ExactPlanarPoint::from_lifted(end)?;
         let mut parameters = Vec::with_capacity(8);
         parameters.push(ExactParentParameter::start()?);
         parameters.push(ExactParentParameter::end()?);
@@ -2665,30 +2667,10 @@ impl SymbolicAffineEdge {
                 ExactRatio::from_i64(1, 2)?,
             )?;
         }
-        result.collect_lifted_longitude_seams()?;
-        result.collect_latitude_reflections()?;
-        result.collect_post_reflection_longitude_seams()?;
+        result.collect_lifted_longitude_seams(&start_point, &end_point)?;
+        result.collect_latitude_reflections(&start_point, &end_point)?;
+        result.collect_post_reflection_longitude_seams(&start_point, &end_point)?;
         Some(result)
-    }
-
-    fn lifted_longitude_start(&self) -> Option<ExactExpansion> {
-        let raw = ExactExpansion::from_f64(self.start.longitude.raw)?;
-        let turns = ExactExpansion::exact_degree_turns(self.start.longitude.turns)?;
-        raw.add(&turns)
-    }
-
-    fn lifted_longitude_end(&self) -> Option<ExactExpansion> {
-        let raw = ExactExpansion::from_f64(self.end.longitude.raw)?;
-        let turns = ExactExpansion::exact_degree_turns(self.end.longitude.turns)?;
-        raw.add(&turns)
-    }
-
-    fn latitude_start(&self) -> Option<ExactExpansion> {
-        ExactExpansion::from_f64(self.start.latitude)
-    }
-
-    fn latitude_end(&self) -> Option<ExactExpansion> {
-        ExactExpansion::from_f64(self.end.latitude)
     }
 
     fn parameter_for(
@@ -2737,12 +2719,16 @@ impl SymbolicAffineEdge {
         Some(())
     }
 
-    fn collect_lifted_longitude_seams(&mut self) -> Option<()> {
-        let start = self.lifted_longitude_start()?;
-        let end = self.lifted_longitude_end()?;
-        for level in integer_levels_between(&start, &end, 180, 360)? {
+    fn collect_lifted_longitude_seams(
+        &mut self,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
+    ) -> Option<()> {
+        let start = start_point.longitude();
+        let end = end_point.longitude();
+        for level in integer_levels_between(start, end, 180, 360)? {
             let seam = exact_affine_level(180, 360, level)?;
-            if let ParentCrossing::Present(ratio) = self.parameter_for(&start, &end, &seam)? {
+            if let ParentCrossing::Present(ratio) = self.parameter_for(start, end, &seam)? {
                 self.insert_ratio(
                     ParentParameterKey::Partition(PartitionConstraint::LiftedLongitudeSeam),
                     ratio,
@@ -2752,12 +2738,16 @@ impl SymbolicAffineEdge {
         Some(())
     }
 
-    fn collect_latitude_reflections(&mut self) -> Option<()> {
-        let start = self.latitude_start()?;
-        let end = self.latitude_end()?;
-        for level in integer_levels_between(&start, &end, 90, 180)? {
+    fn collect_latitude_reflections(
+        &mut self,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
+    ) -> Option<()> {
+        let start = start_point.latitude();
+        let end = end_point.latitude();
+        for level in integer_levels_between(start, end, 90, 180)? {
             let reflection = exact_affine_level(90, 180, level)?;
-            if let ParentCrossing::Present(ratio) = self.parameter_for(&start, &end, &reflection)? {
+            if let ParentCrossing::Present(ratio) = self.parameter_for(start, end, &reflection)? {
                 self.insert_ratio(
                     ParentParameterKey::Partition(PartitionConstraint::LatitudeReflection),
                     ratio,
@@ -2767,28 +2757,32 @@ impl SymbolicAffineEdge {
         Some(())
     }
 
-    fn collect_post_reflection_longitude_seams(&mut self) -> Option<()> {
-        let latitude_start = self.latitude_start()?;
-        let latitude_end = self.latitude_end()?;
-        let longitude_start = self.lifted_longitude_start()?;
-        let longitude_end = self.lifted_longitude_end()?;
+    fn collect_post_reflection_longitude_seams(
+        &mut self,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
+    ) -> Option<()> {
+        let latitude_start = start_point.latitude();
+        let latitude_end = end_point.latitude();
+        let longitude_start = start_point.longitude();
+        let longitude_end = end_point.longitude();
         // Inside latitude zone z, selection adds 180*z to longitude before
         // wrapping.  Solving its seams in the *parent* map keeps every split
         // exact even though a later evaluator uses outward `Bound`s.
-        for zone in integer_levels_between(&latitude_start, &latitude_end, 0, 180)? {
+        for zone in integer_levels_between(latitude_start, latitude_end, 0, 180)? {
             let lower = exact_affine_level(-90, 180, zone)?;
             let upper = exact_affine_level(90, 180, zone)?;
             let lower = ExactRatio::from_parts(lower, ExactExpansion::from_i64(1)?)?;
             let upper = ExactRatio::from_parts(upper, ExactExpansion::from_i64(1)?)?;
             let seam_base = 180_i64.checked_sub(180_i64.checked_mul(zone)?)?;
-            for seam in integer_levels_between(&longitude_start, &longitude_end, seam_base, 360)? {
+            for seam in integer_levels_between(longitude_start, longitude_end, seam_base, 360)? {
                 let longitude = exact_affine_level(seam_base, 360, seam)?;
                 let ParentCrossing::Present(ratio) =
-                    self.parameter_for(&longitude_start, &longitude_end, &longitude)?
+                    self.parameter_for(longitude_start, longitude_end, &longitude)?
                 else {
                     continue;
                 };
-                let latitude = self.coordinate_at(&ratio, &latitude_start, &latitude_end)?;
+                let latitude = self.coordinate_at(&ratio, latitude_start, latitude_end)?;
                 if latitude.ordering(&lower)? == Ordering::Less
                     || latitude.ordering(&upper)? == Ordering::Greater
                 {
@@ -2831,17 +2825,19 @@ impl SymbolicAffineEdge {
         interval: &ParentInterval,
         latitude_zone: i64,
         longitude_wrap: i64,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
     ) -> Option<AffineSourceArc> {
         let longitude_offset = 180_i64
             .checked_mul(latitude_zone)?
             .checked_sub(360_i64.checked_mul(longitude_wrap)?)?;
         let longitude_offset = ExactExpansion::from_i64(longitude_offset)?;
-        let longitude0 = self.lifted_longitude_start()?.add(&longitude_offset)?;
-        let longitude1 = self.lifted_longitude_end()?.add(&longitude_offset)?;
+        let longitude0 = start_point.longitude().add(&longitude_offset)?;
+        let longitude1 = end_point.longitude().add(&longitude_offset)?;
         let longitude_delta = longitude1.sub(&longitude0)?;
 
-        let latitude0 = self.latitude_start()?;
-        let latitude1 = self.latitude_end()?;
+        let latitude0 = start_point.latitude();
+        let latitude1 = end_point.latitude();
         let latitude_offset = ExactExpansion::from_i64(180_i64.checked_mul(latitude_zone)?)?;
         let (latitude0, latitude1) = if latitude_zone.rem_euclid(2) == 0 {
             (
@@ -2850,8 +2846,8 @@ impl SymbolicAffineEdge {
             )
         } else {
             (
-                latitude_offset.sub(&latitude0)?,
-                latitude_offset.sub(&latitude1)?,
+                latitude_offset.sub(latitude0)?,
+                latitude_offset.sub(latitude1)?,
             )
         };
         let latitude_delta = latitude1.sub(&latitude0)?;
@@ -2869,14 +2865,26 @@ impl SymbolicAffineEdge {
             endpoint_role(interval.end.key),
         ];
         let poles = [
-            self.selection_endpoint_pole(&interval.start, latitude_zone)
+            self.selection_endpoint_pole(&interval.start, latitude_zone, start_point, end_point)
                 .ok()?,
-            self.selection_endpoint_pole(&interval.end, latitude_zone)
+            self.selection_endpoint_pole(&interval.end, latitude_zone, start_point, end_point)
                 .ok()?,
         ];
         let identities = [
-            self.selection_endpoint_identity(&interval.start, latitude_zone, longitude_wrap)?,
-            self.selection_endpoint_identity(&interval.end, latitude_zone, longitude_wrap)?,
+            self.selection_endpoint_identity(
+                &interval.start,
+                latitude_zone,
+                longitude_wrap,
+                start_point,
+                end_point,
+            )?,
+            self.selection_endpoint_identity(
+                &interval.end,
+                latitude_zone,
+                longitude_wrap,
+                start_point,
+                end_point,
+            )?,
         ];
         AffineSourceArc::from_parent_map(
             map,
@@ -2891,6 +2899,8 @@ impl SymbolicAffineEdge {
         &self,
         parameter: &ExactParentParameter,
         latitude_zone: i64,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
     ) -> Result<Option<PhysicalEndpointKey>, ()> {
         if matches!(parameter.key, ParentParameterKey::Partition(_)) {
             return Ok(None);
@@ -2898,8 +2908,8 @@ impl SymbolicAffineEdge {
         let latitude = self
             .coordinate_at(
                 &parameter.ratio,
-                &self.latitude_start().ok_or(())?,
-                &self.latitude_end().ok_or(())?,
+                start_point.latitude(),
+                end_point.latitude(),
             )
             .ok_or(())?;
         let latitude = selection_latitude_ratio(&latitude, latitude_zone).ok_or(())?;
@@ -2918,10 +2928,12 @@ impl SymbolicAffineEdge {
         &self,
         start: ExactParentParameter,
         end: ExactParentParameter,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
     ) -> Option<SelectionAffinePiece> {
         let midpoint = self.midpoint(&start.ratio, &end.ratio)?;
         let latitude =
-            self.coordinate_at(&midpoint, &self.latitude_start()?, &self.latitude_end()?)?;
+            self.coordinate_at(&midpoint, start_point.latitude(), end_point.latitude())?;
         let latitude_bound = latitude.certified_bound()?;
         let latitude_midpoint = latitude_bound.lo + (latitude_bound.hi - latitude_bound.lo) * 0.5;
         let zone_proposal = ((latitude_midpoint + 90.0) / HALF_TURN_DEGREES).floor();
@@ -2963,11 +2975,8 @@ impl SymbolicAffineEdge {
         debug_assert_eq!(latitude.ordering(&zone_lower)?, Ordering::Greater);
         debug_assert_eq!(latitude.ordering(&zone_upper)?, Ordering::Less);
 
-        let longitude = self.coordinate_at(
-            &midpoint,
-            &self.lifted_longitude_start()?,
-            &self.lifted_longitude_end()?,
-        )?;
+        let longitude =
+            self.coordinate_at(&midpoint, start_point.longitude(), end_point.longitude())?;
         let offset = ExactExpansion::from_i64(180_i64.checked_mul(zone)?)?;
         let offset_product = offset.product(&longitude.denominator)?;
         let selection_numerator = longitude.numerator.add(&offset_product)?;
@@ -3012,10 +3021,22 @@ impl SymbolicAffineEdge {
         }
         let interval = ParentInterval { start, end };
         let selection = [
-            self.selection_planar_point(&interval.start, zone, longitude_wrap)?,
-            self.selection_planar_point(&interval.end, zone, longitude_wrap)?,
+            self.selection_planar_point(
+                &interval.start,
+                zone,
+                longitude_wrap,
+                start_point,
+                end_point,
+            )?,
+            self.selection_planar_point(
+                &interval.end,
+                zone,
+                longitude_wrap,
+                start_point,
+                end_point,
+            )?,
         ];
-        let arc = self.selection_arc(&interval, zone, longitude_wrap)?;
+        let arc = self.selection_arc(&interval, zone, longitude_wrap, start_point, end_point)?;
         Some(SelectionAffinePiece {
             edge: self.key,
             polygon: self.polygon,
@@ -3036,16 +3057,18 @@ impl SymbolicAffineEdge {
         parameter: &ExactParentParameter,
         latitude_zone: i64,
         longitude_wrap: i64,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
     ) -> Option<ExactSelectionPoint> {
         let longitude = self.coordinate_at(
             &parameter.ratio,
-            &self.lifted_longitude_start()?,
-            &self.lifted_longitude_end()?,
+            start_point.longitude(),
+            end_point.longitude(),
         )?;
         let latitude = self.coordinate_at(
             &parameter.ratio,
-            &self.latitude_start()?,
-            &self.latitude_end()?,
+            start_point.latitude(),
+            end_point.latitude(),
         )?;
         let longitude_offset = 180_i64
             .checked_mul(latitude_zone)?
@@ -3080,11 +3103,16 @@ impl SymbolicAffineEdge {
     }
 
     fn selection_pieces(&self, output: &mut Vec<SelectionAffinePiece>) -> Option<()> {
+        let start_point = ExactPlanarPoint::from_lifted(self.start)?;
+        let end_point = ExactPlanarPoint::from_lifted(self.end)?;
         for parameters in self.parameters.windows(2) {
             output.reserve(1);
-            output.push(
-                self.selection_piece(parameters[0].try_clone()?, parameters[1].try_clone()?)?,
-            );
+            output.push(self.selection_piece(
+                parameters[0].try_clone()?,
+                parameters[1].try_clone()?,
+                &start_point,
+                &end_point,
+            )?);
         }
         Some(())
     }
@@ -3094,12 +3122,14 @@ impl SymbolicAffineEdge {
     /// remains a partition identity, never a pole endpoint manufactured from
     /// an outward enclosure.
     fn authority_pieces(&self, output: &mut Vec<AuthorityAffinePiece>) -> Option<()> {
+        let start_point = ExactPlanarPoint::from_lifted(self.start)?;
+        let end_point = ExactPlanarPoint::from_lifted(self.end)?;
         for parameters in self.parameters.windows(2) {
             let start = parameters[0].try_clone()?;
             let end = parameters[1].try_clone()?;
             let midpoint = self.midpoint(&start.ratio, &end.ratio)?;
             let latitude =
-                self.coordinate_at(&midpoint, &self.latitude_start()?, &self.latitude_end()?)?;
+                self.coordinate_at(&midpoint, start_point.latitude(), end_point.latitude())?;
             let south = ExactRatio::from_i64(-90, 1)?;
             let north = ExactRatio::from_i64(90, 1)?;
             if latitude.ordering(&south)? != Ordering::Greater
@@ -3111,19 +3141,28 @@ impl SymbolicAffineEdge {
             output.push(AuthorityAffinePiece {
                 edge: self.key,
                 polygon: self.polygon,
-                arc: self.authority_arc(&ParentInterval { start, end })?,
+                arc: self.authority_arc(
+                    &ParentInterval { start, end },
+                    &start_point,
+                    &end_point,
+                )?,
             });
         }
         Some(())
     }
 
-    fn authority_arc(&self, interval: &ParentInterval) -> Option<AffineSourceArc> {
-        let longitude0 = self.lifted_longitude_start()?;
-        let longitude1 = self.lifted_longitude_end()?;
-        let latitude0 = self.latitude_start()?;
-        let latitude1 = self.latitude_end()?;
-        let longitude_delta = longitude1.sub(&longitude0)?;
-        let latitude_delta = latitude1.sub(&latitude0)?;
+    fn authority_arc(
+        &self,
+        interval: &ParentInterval,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
+    ) -> Option<AffineSourceArc> {
+        let longitude0 = start_point.longitude();
+        let longitude1 = end_point.longitude();
+        let latitude0 = start_point.latitude();
+        let latitude1 = end_point.latitude();
+        let longitude_delta = longitude1.sub(longitude0)?;
+        let latitude_delta = latitude1.sub(latitude0)?;
         let structure =
             affine_structure(&longitude0, &longitude_delta, &latitude0, &latitude_delta)?;
         let map = AffineParentMap {
@@ -3138,12 +3177,14 @@ impl SymbolicAffineEdge {
             endpoint_role(interval.end.key),
         ];
         let poles = [
-            self.authority_endpoint_pole(&interval.start).ok()?,
-            self.authority_endpoint_pole(&interval.end).ok()?,
+            self.authority_endpoint_pole(&interval.start, start_point, end_point)
+                .ok()?,
+            self.authority_endpoint_pole(&interval.end, start_point, end_point)
+                .ok()?,
         ];
         let identities = [
-            self.authority_endpoint_identity(&interval.start)?,
-            self.authority_endpoint_identity(&interval.end)?,
+            self.authority_endpoint_identity(&interval.start, start_point, end_point)?,
+            self.authority_endpoint_identity(&interval.end, start_point, end_point)?,
         ];
         AffineSourceArc::from_parent_map(
             map,
@@ -3157,16 +3198,18 @@ impl SymbolicAffineEdge {
     fn authority_endpoint_identity(
         &self,
         parameter: &ExactParentParameter,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
     ) -> Option<AffineEndpointIdentity> {
         let longitude = self.coordinate_at(
             &parameter.ratio,
-            &self.lifted_longitude_start()?,
-            &self.lifted_longitude_end()?,
+            start_point.longitude(),
+            end_point.longitude(),
         )?;
         let latitude = self.coordinate_at(
             &parameter.ratio,
-            &self.latitude_start()?,
-            &self.latitude_end()?,
+            start_point.latitude(),
+            end_point.latitude(),
         )?;
         endpoint_identity(&longitude, &latitude)
     }
@@ -3176,11 +3219,13 @@ impl SymbolicAffineEdge {
         parameter: &ExactParentParameter,
         latitude_zone: i64,
         longitude_wrap: i64,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
     ) -> Option<AffineEndpointIdentity> {
         let longitude = self.coordinate_at(
             &parameter.ratio,
-            &self.lifted_longitude_start()?,
-            &self.lifted_longitude_end()?,
+            start_point.longitude(),
+            end_point.longitude(),
         )?;
         let offset = 180_i64
             .checked_mul(latitude_zone)?
@@ -3188,8 +3233,8 @@ impl SymbolicAffineEdge {
         let longitude = longitude.add(&ExactRatio::from_i64(offset, 1)?)?;
         let latitude = self.coordinate_at(
             &parameter.ratio,
-            &self.latitude_start()?,
-            &self.latitude_end()?,
+            start_point.latitude(),
+            end_point.latitude(),
         )?;
         let latitude = selection_latitude_ratio(&latitude, latitude_zone)?;
         endpoint_identity(&longitude, &latitude)
@@ -3198,6 +3243,8 @@ impl SymbolicAffineEdge {
     fn authority_endpoint_pole(
         &self,
         parameter: &ExactParentParameter,
+        start_point: &ExactPlanarPoint,
+        end_point: &ExactPlanarPoint,
     ) -> Result<Option<PhysicalEndpointKey>, ()> {
         if matches!(parameter.key, ParentParameterKey::Partition(_)) {
             return Ok(None);
@@ -3205,8 +3252,8 @@ impl SymbolicAffineEdge {
         let latitude = self
             .coordinate_at(
                 &parameter.ratio,
-                &self.latitude_start().ok_or(())?,
-                &self.latitude_end().ok_or(())?,
+                start_point.latitude(),
+                end_point.latitude(),
             )
             .ok_or(())?;
         let north = ExactRatio::from_i64(90, 1).ok_or(())?;

@@ -5,13 +5,14 @@ use h3o::Resolution;
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape, is_axis_aligned_rectangle};
 use crate::grid::affine_source::{
     CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactParentParameter,
-    ExactPlanarPoint, ExactRatio, FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass,
-    LiftKind, LiftedChain, LiftedLongitude, ParentCrossing, ParentParameterKey,
-    PartitionConstraint, RectClass, SourceEdgeKey, SourceVertexKey, SphericalGridTarget,
-    SymbolicAffineEdge, authority_edge_proxy_envelopes, build_authority_edge_index,
-    classify_lifted_ring_bucket, closed_between, closed_between_expansion, closed_between_raw,
-    combine_polygon_point_classes, exact_affine_level, exact_axis_rectangle,
-    exact_segment_touches_rectangle, integer_levels_between, lifted_step, selection_closed_between,
+    ExactPlanarCoordinates, ExactPlanarPoint, ExactRatio, FULL_TURN_DEGREES,
+    GeographicCoverageSource, GridPointClass, LiftKind, LiftedChain, LiftedLongitude,
+    ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass, SourceEdgeKey,
+    SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge, authority_edge_proxy_envelopes,
+    build_authority_edge_index, classify_lifted_ring_bucket, closed_between,
+    closed_between_expansion, closed_between_raw, combine_polygon_point_classes,
+    exact_affine_level, exact_axis_rectangle, exact_segment_touches_rectangle,
+    integer_levels_between, lifted_step, selection_closed_between,
     subdivided_axis_aligned_rectangle,
 };
 use crate::grid::spherical_arc::{
@@ -200,8 +201,10 @@ fn unpartitioned_symbolic_edge(points: &[(f64, f64)]) -> SymbolicAffineEdge {
 #[test]
 fn symbolic_split_stages_cover_longitude_reflection_and_post_reflection_seams() {
     let mut edge = unpartitioned_symbolic_edge(&[(-200.0, -100.0), (160.0, 100.0)]);
-    let longitude_start = edge.lifted_longitude_start().unwrap();
-    let longitude_end = edge.lifted_longitude_end().unwrap();
+    let start_point = ExactPlanarPoint::from_lifted(edge.start).unwrap();
+    let end_point = ExactPlanarPoint::from_lifted(edge.end).unwrap();
+    let longitude_start = start_point.longitude();
+    let longitude_end = end_point.longitude();
     assert_eq!(
         integer_levels_between(&longitude_start, &longitude_end, 180, 360),
         Some(-2..=0)
@@ -231,8 +234,14 @@ fn symbolic_split_stages_cover_longitude_reflection_and_post_reflection_seams() 
             "level {level}"
         );
     }
-    assert!(edge.collect_lifted_longitude_seams().is_some());
-    assert!(edge.collect_latitude_reflections().is_some());
+    assert!(
+        edge.collect_lifted_longitude_seams(&start_point, &end_point)
+            .is_some()
+    );
+    assert!(
+        edge.collect_latitude_reflections(&start_point, &end_point)
+            .is_some()
+    );
     assert!(edge.parameters.iter().any(|parameter| {
         parameter.key == ParentParameterKey::Partition(PartitionConstraint::LiftedLongitudeSeam)
     }));
@@ -240,9 +249,11 @@ fn symbolic_split_stages_cover_longitude_reflection_and_post_reflection_seams() 
         parameter.key == ParentParameterKey::Partition(PartitionConstraint::LatitudeReflection)
     }));
     let mut post_reflection = unpartitioned_symbolic_edge(&[(-100.0, 100.0), (260.0, 110.0)]);
+    let post_start = ExactPlanarPoint::from_lifted(post_reflection.start).unwrap();
+    let post_end = ExactPlanarPoint::from_lifted(post_reflection.end).unwrap();
     assert!(
         post_reflection
-            .collect_post_reflection_longitude_seams()
+            .collect_post_reflection_longitude_seams(&post_start, &post_end)
             .is_some()
     );
     assert!(post_reflection.parameters.iter().any(|parameter| {
@@ -376,12 +387,10 @@ fn generated_parent_split_retains_exact_one_third_through_the_affine_map() {
         split.ratio.ordering(&ExactRatio::from_i64(1, 3).unwrap()),
         Some(Ordering::Equal)
     );
+    let start_point = ExactPlanarPoint::from_lifted(edge.start).unwrap();
+    let end_point = ExactPlanarPoint::from_lifted(edge.end).unwrap();
     let position = edge
-        .coordinate_at(
-            &split.ratio,
-            &edge.lifted_longitude_start().unwrap(),
-            &edge.lifted_longitude_end().unwrap(),
-        )
+        .coordinate_at(&split.ratio, start_point.longitude(), end_point.longitude())
         .unwrap();
     let lower = ExactRatio::from_f64(f64::from_bits(0x402A_AAAA_AAAA_AAAA)).unwrap();
     let upper = ExactRatio::from_f64(f64::from_bits(0x402A_AAAA_AAAA_AAAB)).unwrap();
