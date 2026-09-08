@@ -395,6 +395,11 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
             rebuilt = GeometryArray(
                 [None] * n, crs=self._geoms.crs, epoch=self._geoms.epoch
             )
+            if not fill_missing:
+                fill_geom = cast('Geometry', fill_value)
+                rebuilt = rebuilt._replace_at(
+                    np.arange(n, dtype=np.intp), [fill_geom] * n
+                )
             return type(self)(rebuilt)
 
         gathered = self._geoms[safe_indices]
@@ -410,13 +415,11 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         fill_geom = cast('Geometry', fill_value)
         if not fill_positions.any():
             return type(self)(gathered)
-        # Non-missing fill: materialize only the fill slots via a one-shot
-        # dense list only when needed (fill is a real geometry, not NA).
-        rows: list[Geometry | None] = list(gathered)
-        for position in np.flatnonzero(fill_positions):
-            rows[int(position)] = fill_geom
-        rebuilt = GeometryArray(rows, crs=self._geoms.crs, epoch=self._geoms.epoch)
-        return type(self)(rebuilt)
+        # Scatter only the fill slots natively.  The gathered source rows stay
+        # in their native storage and retain their row-product provenance.
+        positions = np.flatnonzero(fill_positions).astype(np.intp, copy=False)
+        replaced = gathered._replace_at(positions, [fill_geom] * len(positions))
+        return type(self)(replaced)
 
     def _values_for_factorize(self) -> tuple[ObjectArray, object]:
         return np.asarray(self._geoms.to_wkb(drop_epoch=True), dtype=object), None

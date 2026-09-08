@@ -857,31 +857,32 @@ impl PyGeometryArray {
             } else {
                 None
             };
-            for (row, shape) in rows {
+            for (row, shape) in &rows {
                 match shape {
                     None => {
-                        xs[row] = f64::NAN;
-                        ys[row] = f64::NAN;
+                        xs[*row] = f64::NAN;
+                        ys[*row] = f64::NAN;
                         if let Some(flags) = &mut missing_flags {
-                            flags[row] = true;
+                            flags[*row] = true;
                         }
                     },
                     Some(Shape::Point(point)) => {
-                        xs[row] = point.x;
-                        ys[row] = point.y;
+                        xs[*row] = point.x;
+                        ys[*row] = point.y;
                         if let Some(flags) = &mut missing_flags {
-                            flags[row] = false;
+                            flags[*row] = false;
                         }
                     },
                     Some(_) => unreachable!("axes gate above"),
                 }
             }
             let seq = CoordSeq::try_from_vecs(xs, ys, None, None).map_err(PyErr::from)?;
-            return Self::packed_points(seq, self.frame.clone())?
+            let result = Self::packed_points(seq, self.frame.clone())?
                 .with_missing_mask(
                     missing_flags.map(|flags| ValidityMask::from_vec(n, flags)).transpose()?.flatten(),
                 )
-                .map_err(PyErr::from);
+                .map_err(PyErr::from)?;
+            return preserve_unreplaced_products(self, result, &rows);
         }
 
         let mut shapes: Vec<Option<Shape>> = self
@@ -893,23 +894,24 @@ impl PyGeometryArray {
             })
             .collect::<crate::error::Result<Vec<_>>>()
             .map_err(PyErr::from)?;
-        for (row, shape) in rows {
+        for (row, shape) in &rows {
             match shape {
                 None => {
-                    shapes[row] = None;
+                    shapes[*row] = None;
                 },
                 Some(shape) => {
-                    shapes[row] = Some(shape);
+                    shapes[*row] = Some(shape.clone());
                 },
             }
         }
         let missing_flags = shapes.iter().map(Option::is_none).collect();
         let present = Self::from_shapes(shapes.into_iter().flatten().collect(), self.frame.clone())?;
-        ValidityMask::from_vec(n, missing_flags)?.map_or_else(
+        let result = ValidityMask::from_vec(n, missing_flags)?.map_or_else(
             || Ok(present.clone()),
             |mask| Self::scatter_present_rows(&present, mask),
         )
-        .map_err(PyErr::from)
+        .map_err(PyErr::from)?;
+        preserve_unreplaced_products(self, result, &rows)
     }
 
     /// Whether a geometry (or missing row via ``None``) is present.
@@ -1018,6 +1020,86 @@ impl PyGeometryArray {
         Ok(out)
     }
 }
+}
+
+fn preserve_unreplaced_products(
+    source: &PyGeometryArray,
+    mut result: PyGeometryArray,
+    replacements: &[(usize, Option<Shape>)],
+) -> PyResult<PyGeometryArray> {
+    // Replacement construction may rebase storage, but rows outside the
+    // scatter set still refer to the same immutable source products.
+    let mut replaced_rows = crate::try_vec_with_capacity(replacements.len())?;
+    replaced_rows.extend(replacements.iter().map(|(row, _)| *row));
+    replaced_rows.sort_unstable();
+    replaced_rows.dedup();
+
+    let mut unchanged_rows = crate::try_vec_with_capacity(
+        result
+            .len()
+            .checked_sub(replaced_rows.len())
+            .expect("replacement rows were bounds-checked"),
+    )?;
+    let mut replaced = replaced_rows.into_iter();
+    let mut next_replaced = replaced.next();
+    for row in 0..result.len() {
+        if next_replaced == Some(row) {
+            next_replaced = replaced.next();
+        } else {
+            unchanged_rows.push(row);
+        }
+    }
+
+    result.row_products = crate::array::RowProducts::preserving_physical_rows(
+        result.len(),
+        &source.row_products,
+        &unchanged_rows,
+    )
+    .map_err(PyErr::from)?;
+    Ok(result)
+}
+
+#[cfg(test)]
+mod replacement_tests {
+    use super::*;
+    use crate::boundary::Frame;
+    use crate::geometry::{Point, Shape, ShapeData};
+
+    #[test]
+    fn replacement_keeps_unreplaced_row_products() {
+        let source = PyGeometryArray::mixed_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+                Shape::Point(Point::new_raw_xy(1.0, 1.0)),
+            ],
+            Frame::None,
+        )
+        .unwrap();
+        let source_plan = source
+            .row_products
+            .prepared_plan(1, || {
+                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 1.0))))
+                    .map_err(crate::error::Error::from)
+            })
+            .unwrap();
+        let result = PyGeometryArray::mixed_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(9.0, 9.0)),
+                Shape::Point(Point::new_raw_xy(1.0, 1.0)),
+            ],
+            Frame::None,
+        )
+        .unwrap();
+        let result = preserve_unreplaced_products(&source, result, &[(
+            0,
+            Some(Shape::Point(Point::new_raw_xy(9.0, 9.0))),
+        )])
+        .unwrap();
+
+        let result_plan = result.row_products.cached_prepared_plan(1).unwrap();
+        assert!(Arc::ptr_eq(&source_plan, &result_plan));
+        assert!(result.row_products.cached_prepared_plan(0).is_none());
+    }
 }
 
 impl PyGeometryArray {

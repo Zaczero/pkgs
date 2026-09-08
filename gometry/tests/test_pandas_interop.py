@@ -178,6 +178,54 @@ def test_extension_array_take_allow_fill_custom_fill(points: gm.GeometryArray) -
     assert canon(taken[1]) == canon(points[1])
 
 
+def test_extension_array_take_allow_fill_custom_fill_from_empty_source() -> None:
+    source = gm.GeometryArray([], crs=4326).set_epoch(2020.0)
+    data = GeometryExtensionArray(source)
+    fill = gm.Point(9, 9, crs=4326, epoch=2020.0)
+
+    taken = data.take([-1, -1], allow_fill=True, fill_value=fill)
+
+    assert taken.isna().tolist() == [False, False]
+    assert taken.geometry_array.to_wkt() == ['POINT (9 9)', 'POINT (9 9)']
+    assert taken.geometry_array.crs == source.crs
+    assert taken.geometry_array.epoch == source.epoch
+
+
+def test_extension_array_take_allow_fill_custom_fill_scatter_preserves_rows() -> None:
+    source = gm.GeometryArray([
+        gm.Point(0, 0, crs=4326),
+        None,
+        gm.Point(2, 2, crs=4326),
+    ])
+    data = GeometryExtensionArray(source)
+    fill = gm.Point(9, 9, crs=4326)
+
+    taken = data.take([-1, 2, -1, 0], allow_fill=True, fill_value=fill)
+
+    assert taken.isna().tolist() == [False, False, False, False]
+    assert taken.geometry_array.to_wkt() == [
+        'POINT (9 9)',
+        'POINT (2 2)',
+        'POINT (9 9)',
+        'POINT (0 0)',
+    ]
+    assert source.to_wkt() == ['POINT (0 0)', None, 'POINT (2 2)']
+
+
+def test_extension_array_take_allow_fill_missing_fill_stays_missing(
+    points: gm.GeometryArray,
+) -> None:
+    source = points._with_missing(np.array([False, True, False]))
+    data = GeometryExtensionArray(source)
+
+    taken = data.take([-1, 1, 0], allow_fill=True, fill_value=None)
+
+    assert taken.isna().tolist() == [True, True, False]
+    assert taken[0] is None
+    assert taken[1] is None
+    assert canon(taken[2]) == canon(points[0])
+
+
 def test_extension_array_take_allow_fill_rejects_bad_negatives(
     points: gm.GeometryArray,
 ) -> None:
@@ -185,6 +233,38 @@ def test_extension_array_take_allow_fill_rejects_bad_negatives(
     # pandas contract: with allow_fill=True only -1 marks a fill slot.
     with pytest.raises(ValueError, match='only -1'):
         data.take([0, -2], allow_fill=True)
+
+
+@pytest.mark.parametrize(
+    'indices',
+    [[3, -1], [0, 3]],
+    ids=['out-of-bounds-before-fill', 'one-past-end'],
+)
+def test_extension_array_take_allow_fill_rejects_out_of_bounds_indices(
+    points: gm.GeometryArray,
+    indices: list[int],
+) -> None:
+    data = GeometryExtensionArray(points)
+
+    with pytest.raises(IndexError, match='take index out of bounds'):
+        data.take(indices, allow_fill=True)
+
+
+def test_extension_array_take_preserves_view_and_copy_ownership(
+    points: gm.GeometryArray,
+) -> None:
+    data = GeometryExtensionArray(points)
+    view = data.view()
+    copied = data.copy()
+    fill = gm.Point(9, 9, crs=4326)
+
+    taken = data.take([-1, 1], allow_fill=True, fill_value=fill)
+
+    assert data._state is view._state
+    assert data._state is not copied._state
+    assert taken._state is not data._state
+    assert view.geometry_array.to_wkt() == points.to_wkt()
+    assert copied.geometry_array.to_wkt() == points.to_wkt()
 
 
 def test_extension_array_factorize_roundtrip(points: gm.GeometryArray) -> None:
