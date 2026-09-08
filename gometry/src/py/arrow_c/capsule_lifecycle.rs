@@ -166,16 +166,19 @@ pub(crate) fn geometry_to_schema_capsule(
     geometry: &PyGeometry,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
-    let shapes = vec![geometry.shape.shape().clone()];
+    let shape = std::sync::Arc::clone(&geometry.shape);
     let crs = geometry.crs_str().map(str::to_owned);
     let epoch = geometry.epoch();
-    let plan = py
+    let node = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_shapes(&shapes, crs, epoch)?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            let description =
+                crate::py::arrow_c::describe_shape(shape.shape(), crs.as_deref(), epoch)?;
+            description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;
-    let schema = crate::py::arrow_c::materialize_schema_plan(plan)?;
+    let schema = node
+        .materialize_schema()
+        .map_err(|error| error.into_py_err(py))?;
     schema_capsule(py, schema)
 }
 
@@ -186,16 +189,18 @@ pub(crate) fn array_to_schema_capsule(
     register_loaded_pyarrow_extension_types(py)?;
     // Array frame is authoritative (per-row frames no longer exist).
     let array = array.clone();
-    let plan = py
+    let node = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_geometry_array(
+            let description = crate::py::arrow_c::describe_geometry_array(
                 &array,
                 crate::py::arrow::ArrowEncoding::Auto,
             )?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;
-    let schema = crate::py::arrow_c::materialize_schema_plan(plan)?;
+    let schema = node
+        .materialize_schema()
+        .map_err(|error| error.into_py_err(py))?;
     schema_capsule(py, schema)
 }
 

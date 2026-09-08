@@ -1,9 +1,10 @@
-use std::ffi::{c_char, c_int};
+use std::ffi::{CStr, c_char, c_int};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::PyKeyboardInterrupt;
+use pyo3::ffi;
 
 use crate::PyGeometry;
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
@@ -11,6 +12,7 @@ use crate::py::arrow_c::capsule_lifecycle::stream_from_export;
 use crate::py::arrow_c::*;
 
 static NATIVE_SIGNAL_STREAM_TEST_LOCK: Mutex<()> = Mutex::new(());
+static NATIVE_SCHEMA_TEST_LOCK: Mutex<()> = Mutex::new(());
 static NATIVE_SIGNAL_ARRAY_RELEASES: AtomicUsize = AtomicUsize::new(0);
 
 fn release_twice(export: ExportedArray) {
@@ -58,6 +60,104 @@ fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
     materialize_schema_plan(prepare_export_plan(plan).expect("test schema"))
         .expect("test schema")
         .into_box()
+}
+
+fn exported_array(array: &PyGeometryArray) -> ExportedArray {
+    let plan = plan_geometry_array(array, crate::py::arrow::ArrowEncoding::Auto)
+        .expect("test array export plan");
+    materialize_export_plan(prepare_export_plan(plan).expect("test array export schema"))
+        .expect("test array export")
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SchemaSnapshot {
+    format: Vec<u8>,
+    name: Vec<u8>,
+    metadata: Option<Vec<u8>>,
+    flags: i64,
+    children: Vec<Self>,
+}
+
+unsafe fn metadata_snapshot(metadata: *const c_char) -> Option<Vec<u8>> {
+    if metadata.is_null() {
+        return None;
+    }
+    let bytes = metadata.cast::<u8>();
+    let read_i32 = |offset: usize| {
+        // SAFETY: production metadata is a native-endian i32 envelope and the
+        // caller only uses offsets admitted by the preceding length fields.
+        unsafe { ptr::read_unaligned(bytes.add(offset).cast::<i32>()) }
+    };
+    let count = usize::try_from(read_i32(0)).expect("metadata count is non-negative");
+    let mut end = std::mem::size_of::<i32>();
+    for _ in 0..count {
+        let key_len = usize::try_from(read_i32(end)).expect("metadata key length");
+        end = end
+            .checked_add(std::mem::size_of::<i32>() + key_len)
+            .expect("metadata key envelope length");
+        let value_len = usize::try_from(read_i32(end)).expect("metadata value length");
+        end = end
+            .checked_add(std::mem::size_of::<i32>() + value_len)
+            .expect("metadata value envelope length");
+    }
+    // SAFETY: the length was decoded from the complete production envelope.
+    Some(unsafe { std::slice::from_raw_parts(bytes, end) }.to_vec())
+}
+
+unsafe fn schema_snapshot(schema: *const ArrowSchema) -> SchemaSnapshot {
+    assert!(!schema.is_null());
+    // SAFETY: callers provide a live production schema tree and retain it for
+    // the duration of this recursive copy.
+    let schema = unsafe { &*schema };
+    let format = if schema.format.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: schema text is NUL-terminated by the schema owner.
+        unsafe { CStr::from_ptr(schema.format) }.to_bytes().to_vec()
+    };
+    let name = if schema.name.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: schema text is NUL-terminated by the schema owner.
+        unsafe { CStr::from_ptr(schema.name) }.to_bytes().to_vec()
+    };
+    let child_count = usize::try_from(schema.n_children).expect("schema child count");
+    let children = if child_count == 0 {
+        Vec::new()
+    } else {
+        assert!(!schema.children.is_null());
+        // SAFETY: the owner retains a pointer table with n_children entries.
+        unsafe { std::slice::from_raw_parts(schema.children, child_count) }
+            .iter()
+            .map(|child| {
+                // SAFETY: every child pointer in a production schema tree is live.
+                unsafe { schema_snapshot(*child) }
+            })
+            .collect()
+    };
+    SchemaSnapshot {
+        format,
+        name,
+        // SAFETY: the metadata pointer is owned by this live schema.
+        metadata: unsafe { metadata_snapshot(schema.metadata) },
+        flags: schema.flags,
+        children,
+    }
+}
+
+fn schema_only_snapshot(py: Python<'_>, array: &PyGeometryArray) -> PyResult<SchemaSnapshot> {
+    let capsule = array_to_schema_capsule(py, array)?;
+    // SAFETY: the capsule was just created by the production schema exporter
+    // with the exact name used here and remains alive until after the copy.
+    let pointer =
+        unsafe { ffi::PyCapsule_GetPointer(capsule.bind(py).as_ptr(), schema_capsule_name()) };
+    if pointer.is_null() {
+        return Err(PyErr::fetch(py));
+    }
+    // SAFETY: the capsule owns a live ArrowSchema until it is dropped below.
+    let snapshot = unsafe { schema_snapshot(pointer.cast::<ArrowSchema>().cast_const()) };
+    drop(capsule);
+    Ok(snapshot)
 }
 
 unsafe extern "C" fn counted_array_release(array: *mut ArrowArray) {
@@ -287,7 +387,9 @@ fn schema_only_export_releases_without_array_export() {
         crate::boundary::Frame::None,
     )
     .unwrap();
+    reset_schema_release_callbacks();
     release_schema_twice(exported_schema(&point));
+    assert_eq!(schema_release_callbacks(), 3);
 
     let collection = PyGeometry::with_frame(
         Shape::typed_empty(
@@ -297,7 +399,140 @@ fn schema_only_export_releases_without_array_export() {
         crate::boundary::Frame::None,
     )
     .unwrap();
+    reset_schema_release_callbacks();
     release_schema_twice(exported_schema(&collection));
+    assert_eq!(schema_release_callbacks(), 1);
+}
+
+#[test]
+fn schema_only_uses_borrowed_description_without_payload_work() {
+    let _test_lock = NATIVE_SCHEMA_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::test_support::initialize_python();
+    Python::attach(|py| -> PyResult<()> {
+        let present = PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+                Shape::Point(Point::new_raw_xy(3.0, 4.0)),
+            ],
+            crate::boundary::Frame::None,
+        )?;
+        let mask = crate::array::ValidityMask::from_vec(3, vec![false, true, false])?
+            .expect("one missing row");
+        let nullable = PyGeometryArray::scatter_present_rows(&present, mask)?;
+        let gathered = nullable.gather_logical_rows(&[2, 1, 0])?;
+        let line = PyGeometryArray::from_shapes(
+            vec![crate::io::parse_wkt("LINESTRING ZM (0 0 1 2, 1 1 3 4)")?],
+            crate::boundary::Frame::None,
+        )?;
+        let polygon = PyGeometryArray::from_shapes(
+            vec![crate::io::parse_wkt("POLYGON ((0 0, 1 0, 0 1, 0 0))")?],
+            crate::boundary::Frame::None,
+        )?;
+        let mixed_wkb = PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(5.0, 6.0)),
+                crate::io::parse_wkt("POINT Z (7 8 9)")?,
+            ],
+            crate::boundary::Frame::None,
+        )?;
+        let empty_wkb = PyGeometryArray::from_shapes(
+            vec![crate::io::parse_wkt("LINESTRING ZM EMPTY")?],
+            crate::boundary::Frame::None,
+        )?;
+        let framed = PyGeometryArray::from_shapes(
+            vec![Shape::Point(Point::new_raw_xy(9.0, 10.0))],
+            crate::boundary::Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)?,
+        )?;
+
+        for array in [&gathered, &line, &polygon, &mixed_wkb, &empty_wkb, &framed] {
+            reset_payload_events();
+            reset_schema_release_callbacks();
+            let schema_only = schema_only_snapshot(py, array)?;
+            assert_eq!(payload_events(), (0, 0));
+            assert_eq!(
+                schema_release_callbacks(),
+                schema_snapshot_node_count(&schema_only),
+                "schema-only capsule releases its schema tree once"
+            );
+
+            reset_payload_events();
+            reset_schema_release_callbacks();
+            let full = exported_array(array);
+            let full_schema = unsafe { schema_snapshot(full.schema.as_ref()) };
+            let events = payload_events();
+            assert!(events.0 > 0, "full export must plan payloads");
+            assert!(events.1 > 0, "full export must materialize payloads");
+            assert_eq!(schema_only, full_schema);
+            drop(full);
+            assert_eq!(
+                schema_release_callbacks(),
+                schema_snapshot_node_count(&full_schema),
+                "full export releases its schema tree once"
+            );
+        }
+        Ok(())
+    })
+    .expect("schema-only payload negative control");
+}
+
+#[test]
+fn schema_tree_and_metadata_publication_releases_guards_and_retries() {
+    let _test_lock = NATIVE_SCHEMA_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let shapes = vec![crate::io::parse_wkt("POINT ZM (1 2 3 4)").unwrap()];
+    let description = describe_shapes(&shapes, None, Some(2020.0)).unwrap();
+    // Warm the description once so every allocation prefix below covers the
+    // schema tree and metadata publication, not one-time setup.
+    drop(description.materialize_schema().unwrap());
+    let (result, allocations) =
+        crate::test_support::allocation_count(|| materialize_description(&description));
+    let schema = result.expect("unfaulted schema publication");
+    let node_count = schema_node_count(&description.materialize_schema().unwrap());
+    drop(schema);
+    assert!(allocations > 0);
+
+    for successful in 0..allocations {
+        reset_schema_guard_drops();
+        reset_schema_release_callbacks();
+        let result = crate::test_support::fail_allocations_after(successful, || {
+            materialize_description(&description)
+        });
+        assert!(result.is_err(), "allocation {successful} was not rejected");
+        let failed_drops = schema_guard_drops();
+        assert!(failed_drops <= node_count);
+        assert_eq!(failed_drops, schema_release_callbacks());
+        let retry = materialize_description(&description)
+            .expect("schema publication must remain retryable");
+        drop(retry);
+        assert_eq!(
+            schema_guard_drops(),
+            failed_drops + node_count,
+            "every partially published schema guard releases once at allocation {successful}"
+        );
+        assert_eq!(schema_guard_drops(), schema_release_callbacks());
+    }
+}
+
+fn materialize_description(
+    description: &SchemaDescription<'_>,
+) -> NativeArrowExportResult<GometryArrowSchema> {
+    let node = description.materialize_schema()?;
+    node.materialize_schema()
+}
+
+fn schema_node_count(node: &SchemaNode) -> usize {
+    1 + node.children.iter().map(schema_node_count).sum::<usize>()
+}
+
+fn schema_snapshot_node_count(snapshot: &SchemaSnapshot) -> usize {
+    1 + snapshot
+        .children
+        .iter()
+        .map(schema_snapshot_node_count)
+        .sum::<usize>()
 }
 
 #[test]

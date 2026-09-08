@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::ptr;
 
 use crate::py::arrow_c::{
@@ -6,6 +8,21 @@ use crate::py::arrow_c::{
     schema_capsule_name, stream_capsule_name, used_array_capsule_name, used_schema_capsule_name,
     used_stream_capsule_name,
 };
+
+#[cfg(test)]
+thread_local! {
+    static SCHEMA_RELEASE_CALLBACKS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_schema_release_callbacks() {
+    SCHEMA_RELEASE_CALLBACKS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn schema_release_callbacks() -> usize {
+    SCHEMA_RELEASE_CALLBACKS.with(Cell::get)
+}
 
 trait ArrowReleaseTree: ArrowReleaseSlot {
     type Private;
@@ -109,6 +126,14 @@ impl ArrowReleaseTree for ArrowArrayStream {
 /// `schema` must be null or a live gometry-exported Arrow schema, with no
 /// concurrent access or release.
 pub(crate) unsafe extern "C" fn release_schema(schema: *mut ArrowSchema) {
+    #[cfg(test)]
+    if !schema.is_null()
+        // SAFETY: `schema` is either null or a live schema supplied to this
+        // callback; reading its release slot is the idempotence check below.
+        && unsafe { (*schema).release.is_some() }
+    {
+        SCHEMA_RELEASE_CALLBACKS.with(|count| count.set(count.get() + 1));
+    }
     // SAFETY: `release_tree` implements the shared Arrow release-slot/private
     // box order for exported schemas.
     unsafe { release_tree(schema) }

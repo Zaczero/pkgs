@@ -174,6 +174,7 @@ pub(crate) struct SchemaNode {
     format: &'static str,
     name: &'static str,
     metadata: Option<Vec<(String, String)>>,
+    nullable: bool,
     children: Vec<Self>,
 }
 
@@ -229,15 +230,23 @@ pub(crate) use build::{
     admitted_list_array_windowed, apply_prebuilt_top_level_validity, coordinate_array,
     coordinate_schema, empty_array, extension_schema, list_schema, wkb_schema,
 };
+#[cfg(test)]
+pub(crate) use build::{reset_schema_guard_drops, schema_guard_drops};
 pub(crate) use capsule_lifecycle::{
     ArrowReleaseSlot, array_to_array_capsules, array_to_schema_capsule, array_to_stream_capsule,
     capsule_destructor, geometry_to_array_capsules, geometry_to_schema_capsule,
     geometry_to_stream_capsule, pyarrow_array_from_export, release_imported,
 };
 pub(crate) use export::{apply_exported_validity_plan, export_with_schema_node};
+#[cfg(test)]
+pub(crate) use export_plan::materialize_schema_plan;
 pub(crate) use export_plan::{
-    PreparedArrowExportPlan, materialize_export_plan, materialize_schema_plan, plan_geometry_array,
-    plan_shapes, plan_wkb_shapes, prepare_export_plan,
+    PreparedArrowExportPlan, describe_geometry_array, describe_shape, materialize_export_plan,
+    plan_geometry_array, plan_shapes, plan_wkb_shapes, prepare_export_plan,
+};
+#[cfg(test)]
+pub(crate) use export_plan::{
+    SchemaDescription, describe_shapes, payload_events, reset_payload_events,
 };
 pub(crate) use import::{capsule_pointer, geometries_from_arrow_c, release_imported_stream};
 pub(crate) use native::{
@@ -250,3 +259,5 @@ pub(crate) use release::{
     schema_capsule_destructor, stream_capsule_destructor, stream_get_last_error, stream_get_next,
     stream_get_schema,
 };
+#[cfg(test)]
+pub(crate) use release::{reset_schema_release_callbacks, schema_release_callbacks};

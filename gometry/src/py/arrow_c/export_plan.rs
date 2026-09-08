@@ -7,6 +7,10 @@
     reason = "each GeoArrow layout has one explicit planning arm"
 )]
 
+use std::borrow::Cow;
+#[cfg(test)]
+use std::cell::Cell;
+
 use pyo3::prelude::PyResult;
 
 use crate::PyGeometryArray;
@@ -18,6 +22,121 @@ use crate::py::arrow_c::{
     NativeArrowExportResult, SchemaNode, admitted_binary_array, admitted_list_array_windowed,
     coordinate_array, coordinate_schema, extension_schema, list_schema, wkb_schema,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GeometrySchema {
+    encoding: GeometryEncoding,
+    axes: CoordinateAxes,
+}
+
+// GeoArrow's public storage types use PyArrow's default nullable field
+// contract, including coordinate and nested-list children.
+const GEOARROW_SCHEMA_FIELDS_NULLABLE: bool = true;
+
+/// Borrowed facts needed to describe a public GeoArrow schema.
+///
+/// This deliberately contains no coordinate, offset, validity, or WKB owner.
+/// A full export converts it to an owned description only after this decision
+/// is complete; schema-only export materializes the description while its
+/// metadata borrows the source frame.
+#[derive(Clone, Debug)]
+pub(crate) struct SchemaDescription<'a> {
+    layout: GeometrySchema,
+    nullable: bool,
+    crs: Option<Cow<'a, str>>,
+    epoch: Option<f64>,
+}
+
+impl<'a> SchemaDescription<'a> {
+    fn borrowed(layout: GeometrySchema, crs: Option<&'a str>, epoch: Option<f64>) -> Self {
+        Self {
+            layout,
+            nullable: GEOARROW_SCHEMA_FIELDS_NULLABLE,
+            crs: crs.map(Cow::Borrowed),
+            epoch,
+        }
+    }
+
+    fn into_owned(self) -> SchemaDescription<'static> {
+        SchemaDescription {
+            layout: self.layout,
+            nullable: self.nullable,
+            crs: self.crs.map(|value| Cow::Owned(value.into_owned())),
+            epoch: self.epoch,
+        }
+    }
+
+    pub(crate) fn materialize_schema(&self) -> NativeArrowExportResult<SchemaNode> {
+        let storage = match self.layout.encoding {
+            GeometryEncoding::Point => coordinate_schema(self.layout.axes, self.nullable),
+            GeometryEncoding::MultiPoint | GeometryEncoding::LineString => list_schema(
+                coordinate_schema(self.layout.axes, self.nullable)?,
+                self.nullable,
+            ),
+            GeometryEncoding::MultiLineString => list_schema(
+                list_schema(
+                    coordinate_schema(self.layout.axes, self.nullable)?,
+                    self.nullable,
+                )?,
+                self.nullable,
+            ),
+            GeometryEncoding::Polygon => list_schema(
+                list_schema(
+                    coordinate_schema(self.layout.axes, self.nullable)?,
+                    self.nullable,
+                )?,
+                self.nullable,
+            ),
+            GeometryEncoding::MultiPolygon => Ok(list_schema(
+                list_schema(
+                    list_schema(
+                        coordinate_schema(self.layout.axes, self.nullable)?,
+                        self.nullable,
+                    )?,
+                    self.nullable,
+                )?,
+                self.nullable,
+            )?),
+            GeometryEncoding::Wkb => Ok(wkb_schema(self.nullable)),
+        }?;
+        extension_schema(
+            self.layout.encoding,
+            storage,
+            self.crs.as_deref(),
+            self.epoch,
+        )
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PAYLOAD_BUILDERS: Cell<usize> = const { Cell::new(0) };
+    static PAYLOAD_MATERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_payload_events() {
+    PAYLOAD_BUILDERS.with(|count| count.set(0));
+    PAYLOAD_MATERIALIZATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn payload_events() -> (usize, usize) {
+    (
+        PAYLOAD_BUILDERS.with(Cell::get),
+        PAYLOAD_MATERIALIZATIONS.with(Cell::get),
+    )
+}
+
+#[cfg(test)]
+fn record_payload_builder() {
+    PAYLOAD_BUILDERS.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn record_payload_materialization() {
+    PAYLOAD_MATERIALIZATIONS.with(|count| count.set(count.get() + 1));
+}
 
 fn initial_offsets() -> crate::error::Result<Vec<i32>> {
     let mut offsets = Vec::new();
@@ -40,14 +159,6 @@ enum StoragePlan {
 }
 
 impl StoragePlan {
-    fn schema(&self) -> NativeArrowExportResult<SchemaNode> {
-        match self {
-            Self::Coordinates(coords) => coordinate_schema(coords.axes()),
-            Self::List { child, .. } => list_schema(child.schema()?),
-            Self::Binary { .. } => Ok(wkb_schema()),
-        }
-    }
-
     const fn offset(&self) -> usize {
         match self {
             Self::List { start, .. } => *start,
@@ -56,6 +167,8 @@ impl StoragePlan {
     }
 
     fn materialize(self) -> PyResult<GometryArrowArray> {
+        #[cfg(test)]
+        record_payload_materialization();
         match self {
             Self::Coordinates(coords) => coordinate_array(&coords),
             Self::List {
@@ -75,10 +188,8 @@ struct ValidityPlan {
 }
 
 pub(crate) struct ArrowExportPlan {
-    encoding: GeometryEncoding,
+    schema: SchemaDescription<'static>,
     storage: StoragePlan,
-    crs: Option<String>,
-    epoch: Option<f64>,
     validity: Option<ValidityPlan>,
 }
 
@@ -90,12 +201,7 @@ pub(crate) struct PreparedArrowExportPlan {
 pub(crate) fn prepare_export_plan(
     plan: ArrowExportPlan,
 ) -> NativeArrowExportResult<PreparedArrowExportPlan> {
-    let schema = extension_schema(
-        plan.encoding,
-        plan.storage.schema()?,
-        plan.crs.as_deref(),
-        plan.epoch,
-    )?;
+    let schema = plan.schema.materialize_schema()?;
     Ok(PreparedArrowExportPlan { plan, schema })
 }
 
@@ -115,6 +221,7 @@ pub(crate) fn materialize_export_plan(plan: PreparedArrowExportPlan) -> PyResult
     Ok(export)
 }
 
+#[cfg(test)]
 pub(crate) fn materialize_schema_plan(
     plan: PreparedArrowExportPlan,
 ) -> PyResult<crate::py::arrow_c::GometryArrowSchema> {
@@ -123,15 +230,79 @@ pub(crate) fn materialize_schema_plan(
         .map_err(|error| pyo3::Python::attach(|py| error.into_py_err(py)))
 }
 
+pub(crate) fn describe_geometry_array<'a>(
+    array: &'a PyGeometryArray,
+    encoding: ArrowEncoding,
+) -> NativeArrowExportResult<SchemaDescription<'a>> {
+    let layout = match encoding {
+        ArrowEncoding::Auto => match array.storage() {
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) => GeometrySchema {
+                encoding: GeometryEncoding::Point,
+                axes: coords.axes(),
+            },
+            GeometryArrayStorage::Packed(PackedStorage::Lines { coords, .. }) => GeometrySchema {
+                encoding: GeometryEncoding::LineString,
+                axes: coords.axes(),
+            },
+            GeometryArrayStorage::Packed(PackedStorage::Polygons { coords, .. }) => {
+                GeometrySchema {
+                    encoding: GeometryEncoding::Polygon,
+                    axes: coords.axes(),
+                }
+            },
+            GeometryArrayStorage::Mixed(shapes) => describe_shape_slice(shapes),
+        },
+        ArrowEncoding::Wkb => GeometrySchema {
+            encoding: GeometryEncoding::Wkb,
+            axes: CoordinateAxes::XY,
+        },
+    };
+    Ok(SchemaDescription::borrowed(
+        layout,
+        array.crs_str(),
+        array.epoch(),
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn describe_shapes<'a>(
+    shapes: &'a [Shape],
+    crs: Option<&'a str>,
+    epoch: Option<f64>,
+) -> NativeArrowExportResult<SchemaDescription<'a>> {
+    Ok(SchemaDescription::borrowed(
+        describe_shape_slice(shapes),
+        crs,
+        epoch,
+    ))
+}
+
+pub(crate) fn describe_shape<'a>(
+    shape: &'a Shape,
+    crs: Option<&'a str>,
+    epoch: Option<f64>,
+) -> NativeArrowExportResult<SchemaDescription<'a>> {
+    Ok(SchemaDescription::borrowed(
+        describe_shape_iter(std::iter::once(shape)),
+        crs,
+        epoch,
+    ))
+}
+
 pub(crate) fn plan_geometry_array(
     array: &PyGeometryArray,
     encoding: ArrowEncoding,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let crs = array.crs_str().map(str::to_owned);
-    let epoch = array.epoch();
-    let mut plan = match encoding {
-        ArrowEncoding::Auto => plan_geometry_array_auto(array, crs, epoch)?,
-        ArrowEncoding::Wkb => plan_geometry_array_wkb(array, crs, epoch)?,
+    let schema = describe_geometry_array(array, encoding)?.into_owned();
+    #[cfg(test)]
+    record_payload_builder();
+    let mut plan = ArrowExportPlan {
+        storage: match encoding {
+            ArrowEncoding::Auto => plan_geometry_array_auto(array, schema.layout)?,
+            ArrowEncoding::Wkb => plan_geometry_array_wkb(array)?,
+        },
+        schema,
+        validity: None,
     };
     if let Some(mask) = array.missing() {
         plan.validity = Some(plan_validity(mask, plan.storage.offset())?);
@@ -141,29 +312,18 @@ pub(crate) fn plan_geometry_array(
 
 fn plan_geometry_array_auto(
     array: &PyGeometryArray,
-    crs: Option<String>,
-    epoch: Option<f64>,
-) -> NativeArrowExportResult<ArrowExportPlan> {
+    layout: GeometrySchema,
+) -> NativeArrowExportResult<StoragePlan> {
     if let Some(coords) = array.materialized_compact_point_coords()? {
-        return Ok(ArrowExportPlan {
-            encoding: GeometryEncoding::Point,
-            storage: StoragePlan::Coordinates(coords),
-            crs,
-            epoch,
-            validity: None,
-        });
+        return Ok(StoragePlan::Coordinates(coords));
     }
     let gathered =
         crate::array::materialized_gather(array.storage()).map_err(packed_columns_error)?;
     let storage = gathered.as_ref().unwrap_or_else(|| array.storage());
-    plan_storage(storage, crs, epoch)
+    plan_storage(storage, layout)
 }
 
-fn plan_geometry_array_wkb(
-    array: &PyGeometryArray,
-    crs: Option<String>,
-    epoch: Option<f64>,
-) -> NativeArrowExportResult<ArrowExportPlan> {
+fn plan_geometry_array_wkb(array: &PyGeometryArray) -> NativeArrowExportResult<StoragePlan> {
     let mut offsets = Vec::new();
     let mut data = Vec::new();
     crate::boundary::try_reserve_vec(
@@ -204,24 +364,17 @@ fn plan_geometry_array_wkb(
         .map_err(NativeArrowExportError::from)?;
     }
     validate_binary_offsets(&offsets, data.len())?;
-    Ok(ArrowExportPlan {
-        encoding: GeometryEncoding::Wkb,
-        storage: StoragePlan::Binary {
-            offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
-            data: crate::geometry::SharedSlice::try_from_vec(data)?,
-        },
-        crs,
-        epoch,
-        validity: None,
+    Ok(StoragePlan::Binary {
+        offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
+        data: crate::geometry::SharedSlice::try_from_vec(data)?,
     })
 }
 
 fn plan_storage(
     storage: &GeometryArrayStorage,
-    crs: Option<String>,
-    epoch: Option<f64>,
-) -> NativeArrowExportResult<ArrowExportPlan> {
-    let (encoding, storage) = match storage {
+    layout: GeometrySchema,
+) -> NativeArrowExportResult<StoragePlan> {
+    match storage {
         GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
             let coords = match row_map.as_deref() {
                 RowSelectionRef::Identity | RowSelectionRef::Gather(_) => coords.as_ref().clone(),
@@ -229,7 +382,7 @@ fn plan_storage(
                     crate::geometry::CoordWindow::from_range(start..start + len, coords.len()),
                 ),
             };
-            (GeometryEncoding::Point, StoragePlan::Coordinates(coords))
+            Ok(StoragePlan::Coordinates(coords))
         },
         GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords,
@@ -243,7 +396,7 @@ fn plan_storage(
                 RowSelectionRef::Window { start, len } => (start, len),
             };
             validate_list_offsets(offsets.as_slice(), start, length, coords.len())?;
-            (GeometryEncoding::LineString, StoragePlan::List {
+            Ok(StoragePlan::List {
                 offsets: offsets.shared_offsets(),
                 start,
                 length,
@@ -282,22 +435,20 @@ fn plan_storage(
                 child: Box::try_new(StoragePlan::Coordinates(coords.as_ref().clone()))
                     .map_err(crate::error::Error::from)?,
             };
-            (GeometryEncoding::Polygon, StoragePlan::List {
+            Ok(StoragePlan::List {
                 offsets: polygon_offsets.shared_offsets(),
                 start,
                 length,
                 child: Box::try_new(rings).map_err(crate::error::Error::from)?,
             })
         },
-        GeometryArrayStorage::Mixed(shapes) => return plan_shapes(shapes, crs, epoch),
-    };
-    Ok(ArrowExportPlan {
-        encoding,
-        storage,
-        crs,
-        epoch,
-        validity: None,
-    })
+        GeometryArrayStorage::Mixed(shapes) => {
+            let mut refs = Vec::new();
+            crate::try_reserve_vec(&mut refs, shapes.len())?;
+            refs.extend(shapes.iter());
+            plan_shape_refs_with_layout(&refs, layout)
+        },
+    }
 }
 
 pub(crate) fn plan_shapes(
@@ -308,7 +459,15 @@ pub(crate) fn plan_shapes(
     let mut refs = Vec::new();
     crate::try_reserve_vec(&mut refs, shapes.len())?;
     refs.extend(shapes.iter());
-    plan_shape_refs(&refs, crs, epoch)
+    let schema = SchemaDescription::borrowed(describe_shape_refs(&refs), crs.as_deref(), epoch);
+    #[cfg(test)]
+    record_payload_builder();
+    let storage = plan_shape_refs_with_layout(&refs, schema.layout)?;
+    Ok(ArrowExportPlan {
+        schema: schema.into_owned(),
+        storage,
+        validity: None,
+    })
 }
 
 pub(crate) fn plan_wkb_shapes(
@@ -319,125 +478,136 @@ pub(crate) fn plan_wkb_shapes(
     let mut refs = Vec::new();
     crate::try_reserve_vec(&mut refs, shapes.len())?;
     refs.extend(shapes.iter());
-    plan_wkb_refs(&refs, crs, epoch)
+    let layout = GeometrySchema {
+        encoding: GeometryEncoding::Wkb,
+        axes: CoordinateAxes::XY,
+    };
+    #[cfg(test)]
+    record_payload_builder();
+    let storage = plan_wkb_refs(&refs)?;
+    Ok(ArrowExportPlan {
+        schema: SchemaDescription::borrowed(layout, crs.as_deref(), epoch).into_owned(),
+        storage,
+        validity: None,
+    })
 }
 
-fn plan_shape_refs(
-    shapes: &[&Shape],
-    crs: Option<String>,
-    epoch: Option<f64>,
-) -> NativeArrowExportResult<ArrowExportPlan> {
-    let Some(axes) = homogeneous_shape_axes(shapes) else {
-        return plan_wkb_refs(shapes, crs, epoch);
-    };
-    let Some(first) = shapes.first() else {
-        return Ok(ArrowExportPlan {
+fn describe_shape_iter<'a>(mut shapes: impl Iterator<Item = &'a Shape> + Clone) -> GeometrySchema {
+    let mut axes = None;
+    for shape in shapes.clone() {
+        if !accumulate_geometry_axes(shape, &mut axes) {
+            return GeometrySchema {
+                encoding: GeometryEncoding::Wkb,
+                axes: CoordinateAxes::XY,
+            };
+        }
+    }
+    let axes = axes.unwrap_or(CoordinateAxes::XY);
+    let Some(first) = shapes.next() else {
+        return GeometrySchema {
             encoding: GeometryEncoding::Point,
-            storage: StoragePlan::Coordinates(CoordSeq::try_from_points(&[])?),
-            crs,
-            epoch,
-            validity: None,
-        });
+            axes,
+        };
     };
-    let plan = match first {
-        Shape::Point(_) if shapes.iter().all(|shape| matches!(shape, Shape::Point(_))) => {
+    // Top-level typed empties remain WKB; native packing admits concrete
+    // storage variants, while multipart values retain their empty members.
+    let encoding = match first {
+        Shape::Point(_) if shapes.clone().all(|shape| matches!(shape, Shape::Point(_))) => {
+            GeometryEncoding::Point
+        },
+        Shape::MultiPoint(points)
+            if shapes
+                .clone()
+                .all(|shape| matches!(shape, Shape::MultiPoint(_))) =>
+        {
+            let has_empty_members = points.has_empty_members()
+                || shapes.clone().any(|shape| {
+                    matches!(shape, Shape::MultiPoint(points) if points.has_empty_members())
+                });
+            if has_empty_members {
+                GeometryEncoding::Wkb
+            } else {
+                GeometryEncoding::MultiPoint
+            }
+        },
+        Shape::LineString(_)
+            if shapes
+                .clone()
+                .all(|shape| matches!(shape, Shape::LineString(_))) =>
+        {
+            GeometryEncoding::LineString
+        },
+        Shape::MultiLineString(_)
+            if shapes
+                .clone()
+                .all(|shape| matches!(shape, Shape::MultiLineString(_))) =>
+        {
+            GeometryEncoding::MultiLineString
+        },
+        Shape::Polygon(_)
+            if shapes
+                .clone()
+                .all(|shape| matches!(shape, Shape::Polygon(_))) =>
+        {
+            GeometryEncoding::Polygon
+        },
+        Shape::MultiPolygon(_)
+            if shapes
+                .clone()
+                .all(|shape| matches!(shape, Shape::MultiPolygon(_))) =>
+        {
+            GeometryEncoding::MultiPolygon
+        },
+        _ => GeometryEncoding::Wkb,
+    };
+    GeometrySchema { encoding, axes }
+}
+
+fn describe_shape_slice(shapes: &[Shape]) -> GeometrySchema {
+    describe_shape_iter(shapes.iter())
+}
+
+fn describe_shape_refs(shapes: &[&Shape]) -> GeometrySchema {
+    describe_shape_iter(shapes.iter().copied())
+}
+
+fn plan_shape_refs_with_layout(
+    shapes: &[&Shape],
+    layout: GeometrySchema,
+) -> NativeArrowExportResult<StoragePlan> {
+    match layout.encoding {
+        GeometryEncoding::Point => {
             let mut points = Vec::new();
             crate::boundary::try_reserve_vec(&mut points, shapes.len())
                 .map_err(NativeArrowExportError::from)?;
             for shape in shapes {
                 let Shape::Point(point) = shape else {
-                    unreachable!()
+                    unreachable!("schema description selected point payload")
                 };
                 crate::boundary::try_push_vec(&mut points, *point)
                     .map_err(NativeArrowExportError::from)?;
             }
-            ArrowExportPlan {
-                encoding: GeometryEncoding::Point,
-                storage: StoragePlan::Coordinates(CoordSeq::try_from_points(&points)?),
-                crs,
-                epoch,
-                validity: None,
-            }
+            Ok(StoragePlan::Coordinates(CoordSeq::try_from_points(
+                &points,
+            )?))
         },
-        Shape::MultiPoint(_)
-            if shapes
-                .iter()
-                .all(|shape| matches!(shape, Shape::MultiPoint(_))) =>
-        {
-            if shapes.iter().any(
-                |shape| matches!(shape, Shape::MultiPoint(points) if points.has_empty_members()),
-            ) {
-                return plan_wkb_refs(shapes, crs, epoch);
-            }
-            ArrowExportPlan {
-                encoding: GeometryEncoding::MultiPoint,
-                storage: plan_single_list(shapes, axes, |shape| match shape {
-                    Shape::MultiPoint(points) => points,
-                    _ => unreachable!(),
-                })?,
-                crs,
-                epoch,
-                validity: None,
-            }
+        GeometryEncoding::MultiPoint => {
+            plan_single_list(shapes, layout.axes, |shape| match shape {
+                Shape::MultiPoint(points) => points,
+                _ => unreachable!("schema description selected multipoint payload"),
+            })
         },
-        Shape::LineString(_)
-            if shapes
-                .iter()
-                .all(|shape| matches!(shape, Shape::LineString(_))) =>
-        {
-            ArrowExportPlan {
-                encoding: GeometryEncoding::LineString,
-                storage: plan_single_list(shapes, axes, |shape| match shape {
-                    Shape::LineString(points) => points,
-                    _ => unreachable!(),
-                })?,
-                crs,
-                epoch,
-                validity: None,
-            }
+        GeometryEncoding::LineString => {
+            plan_single_list(shapes, layout.axes, |shape| match shape {
+                Shape::LineString(points) => points,
+                _ => unreachable!("schema description selected linestring payload"),
+            })
         },
-        Shape::MultiLineString(_)
-            if shapes
-                .iter()
-                .all(|shape| matches!(shape, Shape::MultiLineString(_))) =>
-        {
-            ArrowExportPlan {
-                encoding: GeometryEncoding::MultiLineString,
-                storage: plan_multilines(shapes, axes)?,
-                crs,
-                epoch,
-                validity: None,
-            }
-        },
-        Shape::Polygon(_)
-            if shapes
-                .iter()
-                .all(|shape| matches!(shape, Shape::Polygon(_))) =>
-        {
-            ArrowExportPlan {
-                encoding: GeometryEncoding::Polygon,
-                storage: plan_polygons(shapes, axes)?,
-                crs,
-                epoch,
-                validity: None,
-            }
-        },
-        Shape::MultiPolygon(_)
-            if shapes
-                .iter()
-                .all(|shape| matches!(shape, Shape::MultiPolygon(_))) =>
-        {
-            ArrowExportPlan {
-                encoding: GeometryEncoding::MultiPolygon,
-                storage: plan_multipolygons(shapes, axes)?,
-                crs,
-                epoch,
-                validity: None,
-            }
-        },
-        _ => return plan_wkb_refs(shapes, crs, epoch),
-    };
-    Ok(plan)
+        GeometryEncoding::MultiLineString => plan_multilines(shapes, layout.axes),
+        GeometryEncoding::Polygon => plan_polygons(shapes, layout.axes),
+        GeometryEncoding::MultiPolygon => plan_multipolygons(shapes, layout.axes),
+        GeometryEncoding::Wkb => plan_wkb_refs(shapes),
+    }
 }
 
 fn plan_single_list(
@@ -674,11 +844,7 @@ fn gather_coordseqs<'a>(
     Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
 }
 
-fn plan_wkb_refs(
-    shapes: &[&Shape],
-    crs: Option<String>,
-    epoch: Option<f64>,
-) -> NativeArrowExportResult<ArrowExportPlan> {
+fn plan_wkb_refs(shapes: &[&Shape]) -> NativeArrowExportResult<StoragePlan> {
     let total = shapes.iter().try_fold(0_usize, |total, shape| {
         total
             .checked_add(crate::io::wkb_len(shape, false)?)
@@ -706,26 +872,10 @@ fn plan_wkb_refs(
         .map_err(NativeArrowExportError::from)?;
     }
     validate_binary_offsets(&offsets, data.len())?;
-    Ok(ArrowExportPlan {
-        encoding: GeometryEncoding::Wkb,
-        storage: StoragePlan::Binary {
-            offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
-            data: crate::geometry::SharedSlice::try_from_vec(data)?,
-        },
-        crs,
-        epoch,
-        validity: None,
+    Ok(StoragePlan::Binary {
+        offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
+        data: crate::geometry::SharedSlice::try_from_vec(data)?,
     })
-}
-
-fn homogeneous_shape_axes(shapes: &[&Shape]) -> Option<CoordinateAxes> {
-    let mut axes = None;
-    for shape in shapes {
-        if !accumulate_geometry_axes(shape, &mut axes) {
-            return None;
-        }
-    }
-    Some(axes.unwrap_or(CoordinateAxes::XY))
 }
 
 fn validate_list_offsets(

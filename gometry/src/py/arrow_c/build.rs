@@ -2,6 +2,8 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+#[cfg(test)]
+use std::cell::Cell;
 use std::fmt::Write as _;
 use std::mem::size_of;
 use std::ptr;
@@ -15,12 +17,28 @@ use crate::py::arrow_c::{
     SchemaPrivate, release_array, release_schema,
 };
 
+#[cfg(test)]
+thread_local! {
+    static SCHEMA_GUARD_DROPS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_schema_guard_drops() {
+    SCHEMA_GUARD_DROPS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn schema_guard_drops() -> usize {
+    SCHEMA_GUARD_DROPS.with(Cell::get)
+}
+
 impl SchemaNode {
     pub(crate) fn materialize_schema(&self) -> NativeArrowExportResult<GometryArrowSchema> {
         let Self {
             format,
             name,
             metadata,
+            nullable,
             children,
         } = self;
         let mut owned_children = Vec::new();
@@ -52,10 +70,8 @@ impl SchemaNode {
                 .metadata
                 .as_ref()
                 .map_or(ptr::null(), |metadata| metadata.as_ptr().cast()),
-            // Arrow C Data Interface nullable flag (value 2) marks a nullable field. The
-            // previous Python builders emitted nullable coordinate/list
-            // fields, so retain that storage-type contract on capsule import.
-            flags: 2,
+            // Arrow C Data Interface nullable flag (value 2) marks a nullable field.
+            flags: if *nullable { 2 } else { 0 },
             n_children: private.children.len() as i64,
             children: if private.child_ptrs.is_empty() {
                 ptr::null_mut()
@@ -93,6 +109,8 @@ impl GometryArrowSchema {
 
 impl Drop for GometryArrowSchema {
     fn drop(&mut self) {
+        #[cfg(test)]
+        SCHEMA_GUARD_DROPS.with(|count| count.set(count.get() + 1));
         // SAFETY: the guard owns the shell and the callback is idempotent.
         unsafe {
             if let Some(release) = self.0.release {
@@ -491,7 +509,10 @@ pub(crate) fn primitive_f64_array_windowed(
     )
 }
 
-pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> NativeArrowExportResult<SchemaNode> {
+pub(crate) fn coordinate_schema(
+    axes: CoordinateAxes,
+    nullable: bool,
+) -> NativeArrowExportResult<SchemaNode> {
     let mut children = Vec::new();
     crate::try_reserve_vec(&mut children, 4)?;
     children.extend([
@@ -499,12 +520,14 @@ pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> NativeArrowExportResult
             format: "g",
             name: "x",
             metadata: None,
+            nullable,
             children: Vec::new(),
         },
         SchemaNode {
             format: "g",
             name: "y",
             metadata: None,
+            nullable,
             children: Vec::new(),
         },
     ]);
@@ -513,6 +536,7 @@ pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> NativeArrowExportResult
             format: "g",
             name: "z",
             metadata: None,
+            nullable,
             children: Vec::new(),
         });
     }
@@ -521,6 +545,7 @@ pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> NativeArrowExportResult
             format: "g",
             name: "m",
             metadata: None,
+            nullable,
             children: Vec::new(),
         });
     }
@@ -528,6 +553,7 @@ pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> NativeArrowExportResult
         format: "+s",
         name: "",
         metadata: None,
+        nullable,
         children,
     })
 }
@@ -746,7 +772,10 @@ fn assemble_extension_metadata(
     Ok(out)
 }
 
-pub(crate) fn list_schema(child: SchemaNode) -> NativeArrowExportResult<SchemaNode> {
+pub(crate) fn list_schema(
+    child: SchemaNode,
+    nullable: bool,
+) -> NativeArrowExportResult<SchemaNode> {
     let mut children = Vec::new();
     crate::try_reserve_vec(&mut children, 1)?;
     children.push(SchemaNode {
@@ -757,15 +786,17 @@ pub(crate) fn list_schema(child: SchemaNode) -> NativeArrowExportResult<SchemaNo
         format: "+l",
         name: "",
         metadata: None,
+        nullable,
         children,
     })
 }
 
-pub(crate) const fn wkb_schema() -> SchemaNode {
+pub(crate) const fn wkb_schema(nullable: bool) -> SchemaNode {
     SchemaNode {
         format: "z",
         name: "",
         metadata: None,
+        nullable,
         children: Vec::new(),
     }
 }
