@@ -1100,4 +1100,42 @@ mod tests {
                 )
         ));
     }
+
+    #[test]
+    fn representative_point_propagates_surface_allocation_failure() {
+        let shape = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(4.0, 0.0),
+                        Point::new_raw_xy(0.0, 4.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let bounds = shape.bounds().expect("nonempty polygon");
+        let bbox_seed = Point::new_raw_xy(
+            bounds.minx() + (bounds.maxx() - bounds.minx()) / 2.0,
+            bounds.miny() + (bounds.maxy() - bounds.miny()) / 2.0,
+        );
+        let (_, count) = crate::test_support::allocation_count(|| {
+            representative_point(&shape, bounds).expect("count staging")
+        });
+        assert!(count > 0, "surface staging must allocate");
+        let error =
+            crate::test_support::fail_allocations_after(0, || representative_point(&shape, bounds))
+                .expect_err("must not swallow staging failure as a bounding-box seed");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        let recovered = representative_point(&shape, bounds).expect("retry");
+        assert_eq!((recovered.x, recovered.y), (1.0, 2.0));
+        assert_ne!((recovered.x, recovered.y), (bbox_seed.x, bbox_seed.y));
+    }
 }
