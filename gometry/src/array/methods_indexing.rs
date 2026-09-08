@@ -404,6 +404,24 @@ impl RowGetItemContainer for PyGeometryArray {
     }
 }
 
+impl PyGeometryArray {
+    pub(crate) fn try_drop_missing(&self) -> crate::error::Result<Self> {
+        let Some(mask) = self.missing() else {
+            return Ok(self.clone());
+        };
+        let mut rows = Vec::new();
+        crate::boundary::try_reserve_vec(&mut rows, mask.present_count())?;
+        rows.extend(mask
+            .iter()
+            .enumerate()
+            .filter(|(_, missing)| !*missing)
+            .map(|(row, _)| row));
+        self
+            .gather_logical_rows_dense(&rows)?
+            .with_selected_caches_from(self, rows.iter().copied())
+    }
+}
+
 frozen_pymethods! {
 impl PyGeometryArray {
     /// Returns
@@ -688,22 +706,6 @@ impl PyGeometryArray {
     /// >>> import gometry as gm
     /// >>> len(gm.GeometryArray([gm.Point(0, 0), None]).drop_missing())
     /// 1
-    pub(crate) fn try_drop_missing(&self) -> crate::error::Result<Self> {
-        let Some(mask) = self.missing() else {
-            return Ok(self.clone());
-        };
-        let mut rows = Vec::new();
-        crate::boundary::try_reserve_vec(&mut rows, mask.present_count())?;
-        rows.extend(mask
-            .iter()
-            .enumerate()
-            .filter(|(_, missing)| !*missing)
-            .map(|(row, _)| row));
-        self
-            .gather_logical_rows_dense(&rows)?
-            .with_selected_caches_from(self, rows.iter().copied())
-    }
-
     pub fn drop_missing(&self) -> PyResult<Self> {
         self.try_drop_missing().map_err(PyErr::from)
     }

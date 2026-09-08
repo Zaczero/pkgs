@@ -1759,8 +1759,8 @@ class Geometry:
         ``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
         WGS84 longitude/latitude: coordinates outside longitude ``[-180, 180]`` or
         latitude ``[-90, 90]`` are rejected, and antimeridian-crossing geometry is
-        split according to RFC 7946. If CRS-free coordinates have projected or
-        other planar semantics, transform them or choose another format.
+        split according to RFC 7946. If CRS-free coordinates have projected or other
+        planar semantics, transform them or choose another format.
 
         Parameters
         ----------
@@ -2025,21 +2025,29 @@ class Geometry:
         maxx: _FloatScalarInput,
         maxy: _FloatScalarInput,
     ) -> Geometry:
-        """Clip a geometry to a rectangle ``(minx, miny, maxx, maxy)``.
+        """Clip a geometry to a closed rectangle ``(minx, miny, maxx, maxy)``.
 
         Source ordinates are carried where meaningful; synthesized clip vertices use
         the operation's natural XY result.
 
-        In a geographic CRS, a subject or rectangle that crosses the seam, reaches a
-        pole, or has a non-canonical longitude is clipped through frame-aware overlay.
-        Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
-        rectangle horizontal edges follow parallels and use the same construction as
-        :func:`box`.
+        In a geographic CRS, ``minx``/``maxx`` are the west/east longitudes and must be
+        canonical endpoints in ``[-180, 180]``. ``west <= east`` selects the ordinary
+        closed interval; ``west > east`` selects the closed interval crossing the
+        antimeridian. ``west=-180`` and ``east=180`` select a full longitude band, and
+        equal endpoints select a zero-width meridian. ``miny``/``maxy`` are the
+        south/north latitudes and must be finite with ``south <= north``.
+
+        A subject that crosses the seam, reaches a pole, or has a non-canonical
+        longitude is clipped through frame-aware overlay. Canonical, seam-free,
+        pole-free inputs use direct rectangle clipping. Geographic rectangle
+        horizontal edges follow parallels and use the same construction as
+        :func:`box` for these canonical endpoints.
 
         Parameters
         ----------
         minx, miny, maxx, maxy : float
-            The clip rectangle bounds.
+            The Cartesian bounds, or the geographic west, south, east, and north
+            endpoints respectively.
 
         Returns
         -------
@@ -2050,7 +2058,8 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If the rectangle bounds are non-finite or unordered.
+            If the rectangle coordinates are non-finite, south exceeds north, or a
+            geographic west/east endpoint is outside ``[-180, 180]``.
 
         Examples
         --------
@@ -3060,8 +3069,9 @@ class Geometry:
         GeometryError
             If neither or both constraints are supplied, ``max_length`` is not a
             positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
-            combined with ``fraction``, or ``unit='meters'`` is requested for a
-            CRS-free geometry.
+            combined with ``fraction``, ``unit='meters'`` is requested for a
+            CRS-free geometry, or the endpoint-preserving binary64 output cannot
+            satisfy ``max_length``.
 
         Examples
         --------
@@ -5529,67 +5539,21 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def __new__(
         cls,
-        values: Iterable[_GeometryT],
+        values: Iterable[_GeometryT_co],
         *,
         crs: CrsInput | None = None,
         epoch: float | None = None,
-    ) -> GeometryArray[_GeometryT]: ...
+    ) -> Self: ...
     @overload
     def __new__(
         cls,
-        values: Iterable[_GeometryT | None],
+        values: Iterable[
+            _GeometryT_co | Buffer | Mapping[str, Any] | SupportsGeoInterface
+        ],
         *,
         crs: CrsInput | None = None,
         epoch: float | None = None,
-    ) -> GeometryArray[_GeometryT | None]: ...
-    @overload
-    def __new__(
-        cls,
-        values: Iterable[Buffer],
-        *,
-        crs: CrsInput | None = None,
-        epoch: float | None = None,
-    ) -> GeometryArray[Geometry]: ...
-    @overload
-    def __new__(
-        cls,
-        values: Iterable[Buffer | None],
-        *,
-        crs: CrsInput | None = None,
-        epoch: float | None = None,
-    ) -> GeometryArray[Geometry | None]: ...
-    @overload
-    def __new__(
-        cls,
-        values: Iterable[Mapping[str, Any] | SupportsGeoInterface],
-        *,
-        crs: CrsInput | None = None,
-        epoch: float | None = None,
-    ) -> GeometryArray[Geometry]: ...
-    @overload
-    def __new__(
-        cls,
-        values: Iterable[Mapping[str, Any] | SupportsGeoInterface | None],
-        *,
-        crs: CrsInput | None = None,
-        epoch: float | None = None,
-    ) -> GeometryArray[Geometry | None]: ...
-    @overload
-    def __new__(
-        cls,
-        values: Iterable[_GeometryLike],
-        *,
-        crs: CrsInput | None = None,
-        epoch: float | None = None,
-    ) -> GeometryArray[Geometry]: ...
-    @overload
-    def __new__(
-        cls,
-        values: Iterable[_GeometryLike | None],
-        *,
-        crs: CrsInput | None = None,
-        epoch: float | None = None,
-    ) -> GeometryArray[Geometry | None]:
+    ) -> GeometryArray[Geometry | _GeometryT_co]:
         """Create and return a new object.  See help(type) for accurate signature."""
     @property
     def crs(self) -> CRS | None:
@@ -5631,9 +5595,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
         WGS84 longitude/latitude ``FeatureCollection`` mapping, with one
         ``Feature`` per row, positional ``id``, and empty ``properties`` — the
         shape geopandas and mapping libraries expect from a geometry column.
-        CRS-free rows are explicitly assumed to already contain WGS84
-        coordinates; out-of-domain coordinates
-        raise and antimeridian crossings are split according to RFC 7946.
         """
     @property
     def coordinate_axes(self) -> list[CoordinateAxes | None]:
@@ -6640,9 +6601,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> gm.GeometryArray([gm.Point(0, 0), None]).is_missing.tolist()
         [False, True]
         """
-    @overload
-    def drop_missing(self: GeometryArray[_GeometryT]) -> GeometryArray[_GeometryT]: ...
-    @overload
     def drop_missing(
         self: GeometryArray[_GeometryT | None],
     ) -> GeometryArray[_GeometryT]:
@@ -6662,15 +6620,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
     @overload
     def fill_missing(
-        self: GeometryArray[_GeometryT], value: _GeometryOtherT
-    ) -> GeometryArray[_GeometryT | _GeometryOtherT]: ...
-    @overload
-    def fill_missing(
         self: GeometryArray[_GeometryT | None], value: _GeometryOtherT
-    ) -> GeometryArray[_GeometryT | _GeometryOtherT]: ...
-    @overload
-    def fill_missing(
-        self: GeometryArray[_GeometryT], value: GeometryArray[_GeometryOtherT | None]
     ) -> GeometryArray[_GeometryT | _GeometryOtherT]: ...
     @overload
     def fill_missing(
@@ -6817,14 +6767,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def polylabel(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         *,
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point]: ...
     @overload
     def polylabel(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         *,
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
@@ -6853,7 +6803,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Returns
         -------
-        GeometryArray[Point | None]
+        GeometryArray[Point]
             One point per row.
 
 
@@ -6871,11 +6821,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def minimum_clearance_line(
-        self: GeometryArray[_GeometryT], *, unit: DistanceUnit | None = None
+        self: GeometryArray[Geometry], *, unit: DistanceUnit | None = None
     ) -> GeometryArray[LineString]: ...
     @overload
     def minimum_clearance_line(
-        self: GeometryArray[_GeometryT | None], *, unit: DistanceUnit | None = None
+        self: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
     ) -> GeometryArray[LineString | None]:
         """Two-point line realizing `minimum_clearance`. The metric matches
         minimum_clearance: on a geographic CRS, the witness is selected in the
@@ -6917,8 +6867,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
         WGS84 longitude/latitude: coordinates outside longitude ``[-180, 180]`` or
         latitude ``[-90, 90]`` are rejected, and antimeridian-crossing geometry is
-        split according to RFC 7946. If CRS-free coordinates have projected or
-        other planar semantics, transform them or choose another format.
+        split according to RFC 7946. If CRS-free coordinates have projected or other
+        planar semantics, transform them or choose another format.
 
         Parameters
         ----------
@@ -6957,11 +6907,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def boundary(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
     ) -> GeometryArray[MultiPoint | LineString | MultiLineString | GeometryCollection]: ...
     @overload
     def boundary(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
     ) -> GeometryArray[MultiPoint | LineString | MultiLineString | GeometryCollection | None]:
         """Return the topological boundary of the geometry.
 
@@ -7089,9 +7039,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def line_merge(self: GeometryArray[_GeometryT]) -> GeometryArray[LineString | MultiLineString]: ...
+    def line_merge(self: GeometryArray[Geometry]) -> GeometryArray[LineString | MultiLineString]: ...
     @overload
-    def line_merge(self: GeometryArray[_GeometryT | None]) -> GeometryArray[LineString | MultiLineString | None]:
+    def line_merge(self: GeometryArray[Geometry | None]) -> GeometryArray[LineString | MultiLineString | None]:
         """Merge connected LineString parts into longer LineStrings.
 
         Returns
@@ -7114,9 +7064,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def minimum_rotated_rectangle(self: GeometryArray[_GeometryT]) -> GeometryArray[Point | LineString | Polygon]: ...
+    def minimum_rotated_rectangle(self: GeometryArray[Geometry]) -> GeometryArray[Point | LineString | Polygon]: ...
     @overload
-    def minimum_rotated_rectangle(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Point | LineString | Polygon | None]:
+    def minimum_rotated_rectangle(self: GeometryArray[Geometry | None]) -> GeometryArray[Point | LineString | Polygon | None]:
         """Minimum-area rotated bounding rectangle, returned in XY.
 
         Returns
@@ -7140,7 +7090,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def clip_by_rect(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         minx: float,
         miny: float,
         maxx: float,
@@ -7148,27 +7098,35 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Geometry]: ...
     @overload
     def clip_by_rect(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         minx: float,
         miny: float,
         maxx: float,
         maxy: float,
     ) -> GeometryArray[Geometry | None]:
-        """Clip a geometry to a rectangle ``(minx, miny, maxx, maxy)``.
+        """Clip a geometry to a closed rectangle ``(minx, miny, maxx, maxy)``.
 
         Source ordinates are carried where meaningful; synthesized clip vertices use
         the operation's natural XY result.
 
-        In a geographic CRS, a subject or rectangle that crosses the seam, reaches a
-        pole, or has a non-canonical longitude is clipped through frame-aware overlay.
-        Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
-        rectangle horizontal edges follow parallels and use the same construction as
-        :func:`box`.
+        In a geographic CRS, ``minx``/``maxx`` are the west/east longitudes and must be
+        canonical endpoints in ``[-180, 180]``. ``west <= east`` selects the ordinary
+        closed interval; ``west > east`` selects the closed interval crossing the
+        antimeridian. ``west=-180`` and ``east=180`` select a full longitude band, and
+        equal endpoints select a zero-width meridian. ``miny``/``maxy`` are the
+        south/north latitudes and must be finite with ``south <= north``.
+
+        A subject that crosses the seam, reaches a pole, or has a non-canonical
+        longitude is clipped through frame-aware overlay. Canonical, seam-free,
+        pole-free inputs use direct rectangle clipping. Geographic rectangle
+        horizontal edges follow parallels and use the same construction as
+        :func:`box` for these canonical endpoints.
 
         Parameters
         ----------
         minx, miny, maxx, maxy : float
-            The clip rectangle bounds.
+            The Cartesian bounds, or the geographic west, south, east, and north
+            endpoints respectively.
 
         Returns
         -------
@@ -7179,7 +7137,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If the rectangle bounds are non-finite or unordered.
+            If the rectangle coordinates are non-finite, south exceeds north, or a
+            geographic west/east endpoint is outside ``[-180, 180]``.
 
         Examples
         --------
@@ -7208,7 +7167,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def line_substring(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         start: FloatInput,
         end: FloatInput,
         *,
@@ -7218,7 +7177,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[LineString | Point]: ...
     @overload
     def line_substring(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         start: FloatInput,
         end: FloatInput,
         *,
@@ -7228,7 +7187,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[LineString | Point | None]: ...
     @overload
     def line_substring(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         start: FloatInput,
         end: FloatInput,
         *,
@@ -7238,7 +7197,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[LineString | Point]: ...
     @overload
     def line_substring(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         start: FloatInput,
         end: FloatInput,
         *,
@@ -7299,7 +7258,31 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def buffer(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
+        distance: float,
+        *,
+        cap_style: CapStyle = 'round',
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        side: BufferSide = 'both',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Polygon | MultiPolygon]: ...
+    @overload
+    def buffer(
+        self: GeometryArray[Geometry | None],
+        distance: float,
+        *,
+        cap_style: CapStyle = 'round',
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        side: BufferSide = 'both',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Polygon | MultiPolygon | None]: ...
+    @overload
+    def buffer(
+        self: GeometryArray[Geometry],
         distance: FloatInput,
         *,
         cap_style: CapStyle = 'round',
@@ -7311,7 +7294,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Polygon | MultiPolygon]: ...
     @overload
     def buffer(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         distance: FloatInput,
         *,
         cap_style: CapStyle = 'round',
@@ -7391,9 +7374,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def unique_points(self: GeometryArray[_GeometryT]) -> GeometryArray[MultiPoint | GeometryCollection]: ...
+    def unique_points(self: GeometryArray[Geometry]) -> GeometryArray[MultiPoint | GeometryCollection]: ...
     @overload
-    def unique_points(self: GeometryArray[_GeometryT | None]) -> GeometryArray[MultiPoint | GeometryCollection | None]:
+    def unique_points(self: GeometryArray[Geometry | None]) -> GeometryArray[MultiPoint | GeometryCollection | None]:
         """Distinct vertices in first-occurrence order. Vertices compare by exact
         structural identity (every active ordinate by bit pattern, the
         ``equals_identical`` notion), so XYZ points that differ only in Z stay
@@ -7518,11 +7501,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def coverage_invalid_edges(
-        self: GeometryArray[_GeometryT], *, gap_width: float = 0.0
+        self: GeometryArray[Geometry], *, gap_width: float = 0.0
     ) -> GeometryArray[LineString | MultiLineString]: ...
     @overload
     def coverage_invalid_edges(
-        self: GeometryArray[_GeometryT | None], *, gap_width: float = 0.0
+        self: GeometryArray[Geometry | None], *, gap_width: float = 0.0
     ) -> GeometryArray[LineString | MultiLineString | None]:
         """Per-row invalid coverage boundary linework (see `coverage_invalid_edges`).
 
@@ -7559,7 +7542,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def coverage_simplify(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         tolerance: float,
         *,
         method: SimplifyMethod = 'vw',
@@ -7567,7 +7550,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Polygon | MultiPolygon]: ...
     @overload
     def coverage_simplify(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         tolerance: float,
         *,
         method: SimplifyMethod = 'vw',
@@ -7612,8 +7595,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> left = gm.Polygon([(0, 0), (1, 0), (1.05, 0.5), (1, 1), (0, 1)])
         >>> right = gm.Polygon([(1, 0), (2, 0), (2, 1), (1, 1), (1.05, 0.5)])
         >>> out = gm.GeometryArray([left, right]).coverage_simplify(0.5)
-        >>> out.to_wkt()[0]
-        'POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))'
+        >>> out.coverage_is_valid()
+        True
+        >>> [round(geometry.area, 6) for geometry in out]
+        [1.0, 1.0]
         """
 
     def coverage_union(self) -> Polygon | MultiPolygon:
@@ -7638,13 +7623,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         --------
         >>> import gometry as gm
         >>> tiles = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
-        >>> tiles.coverage_union().normalize().to_wkt()
-        'POLYGON ((0 0, 1 0, 2 0, 2 1, 1 1, 0 1, 0 0))'
+        >>> merged = tiles.coverage_union()
+        >>> (merged.geometry_type, round(merged.area, 6))
+        ('Polygon', 2.0)
         """
 
     @overload
     def coverage_clean(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         *,
         grid_size: float = 0.0,
         gap_width: float = 0.0,
@@ -7652,7 +7638,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Polygon | MultiPolygon]: ...
     @overload
     def coverage_clean(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         *,
         grid_size: float = 0.0,
         gap_width: float = 0.0,
@@ -7705,13 +7691,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def repair(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         *,
         method: RepairMethod = 'linework',
     ) -> GeometryArray[Geometry]: ...
     @overload
     def repair(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         *,
         method: RepairMethod = 'linework',
     ) -> GeometryArray[Geometry | None]:
@@ -7925,7 +7911,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def line_interpolate(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         at: FloatInput,
         /,
         *,
@@ -7936,7 +7922,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Point]: ...
     @overload
     def line_interpolate(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         at: FloatInput,
         /,
         *,
@@ -7958,7 +7944,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> Groups[GeometryArray[Point]]: ...
     @overload
     def line_interpolate(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         at: FloatInput,
         /,
         *,
@@ -7969,7 +7955,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Point]: ...
     @overload
     def line_interpolate(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         at: FloatInput,
         /,
         *,
@@ -8007,7 +7993,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Returns
         -------
-        GeometryArray[Point] or Groups[GeometryArray[Point | None]]
+        GeometryArray[Point] or Groups[GeometryArray[Point]]
             One point per row for scalar or row-aligned ``at``; one point group per
             row for ``count`` samples.
 
@@ -8058,14 +8044,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def maximum_inscribed_circle(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         *,
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | Polygon]: ...
     @overload
     def maximum_inscribed_circle(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         *,
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
@@ -8153,13 +8139,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def minimum_bounding_circle(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         *,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | Polygon]: ...
     @overload
     def minimum_bounding_circle(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         *,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | Polygon | None]:
@@ -8227,7 +8213,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def concave_hull(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         *,
         concavity: FloatInput = 2.0,
         length_threshold: FloatInput = 0.0,
@@ -8235,7 +8221,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Point | LineString | Polygon]: ...
     @overload
     def concave_hull(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         *,
         concavity: FloatInput = 2.0,
         length_threshold: FloatInput = 0.0,
@@ -8293,9 +8279,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def point_on_surface(self: GeometryArray[_GeometryT]) -> GeometryArray[Point]: ...
+    def point_on_surface(self: GeometryArray[Geometry]) -> GeometryArray[Point]: ...
     @overload
-    def point_on_surface(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Point | None]:
+    def point_on_surface(self: GeometryArray[Geometry | None]) -> GeometryArray[Point | None]:
         """Representative point guaranteed to lie on the geometry. Geographic (lon/lat)
         input crossing the antimeridian is auto-split-normalized; no manual
         ``split_antimeridian`` is required. Always inside (or on) the geometry,
@@ -8310,7 +8296,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Returns
         -------
-        GeometryArray[Point | None]
+        GeometryArray[Point]
             One interior point per row.
 
 
@@ -8390,9 +8376,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def extremes(self: GeometryArray[_GeometryT]) -> Extremes[GeometryArray[Point]]: ...
+    def extremes(self: GeometryArray[Geometry]) -> Extremes[GeometryArray[Point]]: ...
     @overload
-    def extremes(self: GeometryArray[_GeometryT | None]) -> Extremes[GeometryArray[Point | None]]:
+    def extremes(self: GeometryArray[Geometry | None]) -> Extremes[GeometryArray[Point | None]]:
         """Return the west, south, east, and north extreme vertices of the
         geometry (numeric X/Y; ties keep the first vertex in storage order).
 
@@ -8471,8 +8457,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryError
             If neither or both constraints are supplied, ``max_length`` is not a
             positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
-            combined with ``fraction``, or ``unit='meters'`` is requested for a
-            CRS-free geometry.
+            combined with ``fraction``, ``unit='meters'`` is requested for a
+            CRS-free geometry, or the endpoint-preserving binary64 output cannot
+            satisfy ``max_length``.
 
         Examples
         --------
@@ -8525,9 +8512,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def split_antimeridian(self: GeometryArray[_GeometryT]) -> GeometryArray[Geometry]: ...
+    def split_antimeridian(self: GeometryArray[Geometry]) -> GeometryArray[Geometry]: ...
     @overload
-    def split_antimeridian(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Geometry | None]:
+    def split_antimeridian(self: GeometryArray[Geometry | None]) -> GeometryArray[Geometry | None]:
         """Split at the antimeridian. Parts that cross come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result renders and computes correctly in lon/lat tools (the JOSS
@@ -8563,7 +8550,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def offset_curve(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         distance: FloatInput,
         *,
         join_style: JoinStyle = 'round',
@@ -8573,7 +8560,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[LineString | MultiLineString]: ...
     @overload
     def offset_curve(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         distance: FloatInput,
         *,
         join_style: JoinStyle = 'round',
@@ -8651,9 +8638,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def envelope(self: GeometryArray[_GeometryT]) -> GeometryArray[Point | LineString | Polygon]: ...
+    def envelope(self: GeometryArray[Geometry]) -> GeometryArray[Point | LineString | Polygon]: ...
     @overload
-    def envelope(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Point | LineString | Polygon | None]:
+    def envelope(self: GeometryArray[Geometry | None]) -> GeometryArray[Point | LineString | Polygon | None]:
         """Axis-aligned bounding-box polygon of the geometry, returned in XY.
 
         Returns
@@ -8846,16 +8833,16 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def centroid(self: GeometryArray[_GeometryT]) -> GeometryArray[Point]: ...
+    def centroid(self: GeometryArray[Geometry]) -> GeometryArray[Point]: ...
     @overload
-    def centroid(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Point | None]:
+    def centroid(self: GeometryArray[Geometry | None]) -> GeometryArray[Point | None]:
         """Area/length-weighted center of the geometry. Geographic (lon/lat) input
         crossing the antimeridian is auto-split-normalized; no manual
         ``split_antimeridian`` is required. The computed center is an XY point.
 
         Returns
         -------
-        GeometryArray[Point | None]
+        GeometryArray[Point]
             One centroid per row (area/length-weighted; may lie outside).
 
         See Also
@@ -8934,7 +8921,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def snap_to_grid(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
         size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
@@ -8942,7 +8929,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Geometry]: ...
     @overload
     def snap_to_grid(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
         size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
@@ -8995,9 +8982,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def build_area(self: GeometryArray[_GeometryT]) -> GeometryArray[Polygon | MultiPolygon | GeometryCollection]: ...
+    def build_area(self: GeometryArray[Geometry]) -> GeometryArray[Polygon | MultiPolygon | GeometryCollection]: ...
     @overload
-    def build_area(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Polygon | MultiPolygon | GeometryCollection | None]:
+    def build_area(self: GeometryArray[Geometry | None]) -> GeometryArray[Polygon | MultiPolygon | GeometryCollection | None]:
         """Assemble linework into one areal geometry. Input ordinates are carried
         where vertices can be sourced; otherwise the mathematically planar result is XY.
         When returned polygons retain different coordinate axes, they remain separate
@@ -9076,11 +9063,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def convex_hull(
-        self: GeometryArray[_GeometryT],
+        self: GeometryArray[Geometry],
     ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection]: ...
     @overload
     def convex_hull(
-        self: GeometryArray[_GeometryT | None],
+        self: GeometryArray[Geometry | None],
     ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection | None]:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
@@ -9135,9 +9122,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     @overload
-    def node(self: GeometryArray[_GeometryT]) -> GeometryArray[MultiLineString]: ...
+    def node(self: GeometryArray[Geometry]) -> GeometryArray[MultiLineString]: ...
     @overload
-    def node(self: GeometryArray[_GeometryT | None]) -> GeometryArray[MultiLineString | None]:
+    def node(self: GeometryArray[Geometry | None]) -> GeometryArray[MultiLineString | None]:
         """Node linework by splitting every edge at all intersections. Input
         ordinates are carried where possible; unsourceable seam vertices yield XY.
 

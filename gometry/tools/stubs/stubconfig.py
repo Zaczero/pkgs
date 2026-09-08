@@ -50,6 +50,9 @@ def config() -> StubConfig:
         module='gometry._lib',
         stub_path=STUB,
         src_root=SRC,
+        leak_allowlist={
+            'NativeBoundaryIterator': 'cfg(test)-only allocation-boundary fixture',
+        },
         surface=SurfaceConfig(
             targets=SURFACES,
             known_divergences=KNOWN_DIVERGENCES,

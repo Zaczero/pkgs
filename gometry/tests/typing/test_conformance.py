@@ -19,7 +19,7 @@ static type.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, assert_type, cast
+from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast
 
 import gometry as gm
 import gometry._types as sht
@@ -33,6 +33,141 @@ POLY = gm.box(0, 0, 2, 2)
 POINTS = gm.GeometryArray([POINT, gm.Point(2, 2)])
 LINES = gm.GeometryArray([LINE])
 POLYS = gm.GeometryArray([POLY])
+
+_GeometryT = TypeVar('_GeometryT', bound=gm.Geometry)
+
+
+def _drop_missing_generic(
+    values: gm.GeometryArray[_GeometryT | None],
+) -> gm.GeometryArray[_GeometryT]:
+    return values.drop_missing()
+
+
+def _check_buffer_input_precision(
+    dense: gm.GeometryArray[gm.Point],
+    nullable: gm.GeometryArray[gm.Point | None],
+    numpy_scalar: np.float64,
+    scalar_array: np.ndarray[tuple[()], np.dtype[np.float64]],
+    column: np.ndarray[tuple[int], np.dtype[np.float64]],
+    values: list[float],
+) -> None:
+    assert_type(dense.buffer(1.0), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+    assert_type(
+        nullable.buffer(1.0),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(
+        dense.buffer(numpy_scalar), gm.GeometryArray[gm.Polygon | gm.MultiPolygon]
+    )
+    assert_type(
+        nullable.buffer(numpy_scalar),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(
+        dense.buffer(scalar_array), gm.GeometryArray[gm.Polygon | gm.MultiPolygon]
+    )
+    assert_type(
+        nullable.buffer(scalar_array),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(dense.buffer(column), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+    assert_type(
+        nullable.buffer(column),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(dense.buffer(values), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+    assert_type(
+        nullable.buffer(values),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+
+
+def _check_fixed_output_nullability(
+    values: gm.GeometryArray[gm.Geometry | None],
+    distances: list[float],
+) -> None:
+    assert_type(values.polylabel(), gm.GeometryArray[gm.Point | None])
+    assert_type(values.minimum_clearance_line(), gm.GeometryArray[gm.LineString | None])
+    assert_type(
+        values.boundary(),
+        gm.GeometryArray[
+            gm.MultiPoint
+            | gm.LineString
+            | gm.MultiLineString
+            | gm.GeometryCollection
+            | None
+        ],
+    )
+    assert_type(
+        values.line_merge(),
+        gm.GeometryArray[gm.LineString | gm.MultiLineString | None],
+    )
+    assert_type(
+        values.minimum_rotated_rectangle(),
+        gm.GeometryArray[gm.Point | gm.LineString | gm.Polygon | None],
+    )
+    assert_type(
+        values.clip_by_rect(0.0, 0.0, 1.0, 1.0),
+        gm.GeometryArray[gm.Geometry | None],
+    )
+    assert_type(
+        values.line_substring(distances, distances),
+        gm.GeometryArray[gm.LineString | gm.Point | None],
+    )
+    assert_type(
+        values.unique_points(),
+        gm.GeometryArray[gm.MultiPoint | gm.GeometryCollection | None],
+    )
+    assert_type(
+        values.coverage_invalid_edges(),
+        gm.GeometryArray[gm.LineString | gm.MultiLineString | None],
+    )
+    assert_type(
+        values.coverage_simplify(0.1),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(
+        values.coverage_clean(),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(values.repair(), gm.GeometryArray[gm.Geometry | None])
+    assert_type(values.line_interpolate(distances), gm.GeometryArray[gm.Point | None])
+    assert_type(
+        values.maximum_inscribed_circle(tolerance=distances),
+        gm.GeometryArray[gm.Point | gm.Polygon | None],
+    )
+    assert_type(
+        values.minimum_bounding_circle(),
+        gm.GeometryArray[gm.Point | gm.Polygon | None],
+    )
+    assert_type(
+        values.concave_hull(concavity=distances, length_threshold=distances),
+        gm.GeometryArray[gm.Point | gm.LineString | gm.Polygon | None],
+    )
+    assert_type(values.point_on_surface(), gm.GeometryArray[gm.Point | None])
+    assert_type(values.extremes(), gm.Extremes[gm.GeometryArray[gm.Point | None]])
+    assert_type(values.split_antimeridian(), gm.GeometryArray[gm.Geometry | None])
+    assert_type(
+        values.offset_curve(distances),
+        gm.GeometryArray[gm.LineString | gm.MultiLineString | None],
+    )
+    assert_type(
+        values.envelope(),
+        gm.GeometryArray[gm.Point | gm.LineString | gm.Polygon | None],
+    )
+    assert_type(values.centroid(), gm.GeometryArray[gm.Point | None])
+    assert_type(values.snap_to_grid(1.0), gm.GeometryArray[gm.Geometry | None])
+    assert_type(
+        values.build_area(),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | gm.GeometryCollection | None],
+    )
+    assert_type(
+        values.convex_hull(),
+        gm.GeometryArray[
+            gm.Point | gm.LineString | gm.Polygon | gm.GeometryCollection | None
+        ],
+    )
+    assert_type(values.node(), gm.GeometryArray[gm.MultiLineString | None])
 
 
 class _ArrowStream:
@@ -506,6 +641,14 @@ assert_type(NULLABLE_POINTS.fill_missing(POINT), gm.GeometryArray[gm.Point])
 assert_type(
     NULLABLE_POINTS.fill_missing(gm.GeometryArray([None, POINT])),
     gm.GeometryArray[gm.Point],
+)
+assert_type(
+    _drop_missing_generic(NULLABLE_POINTS),
+    gm.GeometryArray[gm.Point],
+)
+assert_type(
+    gm.GeometryArray([None, None]),
+    gm.GeometryArray[gm.Geometry | None],
 )
 assert_type(gm.intersection(POINTS, POLY), gm.GeometryArray[gm.Geometry])
 assert_type(

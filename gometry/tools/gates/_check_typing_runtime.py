@@ -5,10 +5,11 @@ Public annotations must resolve at runtime (numpy, geometry classes, and
 under ``if TYPE_CHECKING:``). Reusable implementation aliases live privately
 in ``gometry._types``; genuine runtime protocols are exported at top level.
 
-Also drives the static gates: pyright AND mypy over the ``assert_type``
-conformance file and the negatives file (misuse whose ``# type: ignore`` must
-stay *used* — a loosened stub makes one unused and fails both checkers), plus
-a full-project pyright run over ``python/gometry`` locked at zero errors.
+Also drives the static gates: pyright AND mypy over the shared ``assert_type``
+conformance and negative fixtures, Pyright over its primary precision fixture,
+and a full-project Pyright run over ``python/gometry`` locked at zero errors.
+Negative misuse carries ``# type: ignore`` whose continued necessity catches a
+loosened stub.
 
 Usage::
 
@@ -32,6 +33,7 @@ from gometry import _types
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFORMANCE = _ROOT / 'tests/typing/test_conformance.py'
 _NEGATIVES = _ROOT / 'tests/typing/negatives.py'
+_PYRIGHT_PRECISION = _ROOT / 'tests/typing/pyright_precision.py'
 
 _TOP_LEVEL_HINT_TARGETS = (
     'from_features',
@@ -320,14 +322,15 @@ def collect_errors() -> list[str]:
 
     _check_overload_witnesses(errors)
 
-    # Dual-checker conformance + negatives + the whole shipped package in ONE
-    # run per checker (5 checker processes -> 2; the checkers dominate the
-    # gate's runtime). Full-project pyright stays locked at 0 errors —
-    # chasing it found a live pandas-repr crash.
+    # Shared conformance, Pyright-primary precision, negatives, and the whole
+    # shipped package run in one Pyright process; shared conformance and
+    # negatives run in one Mypy process. The checkers dominate gate runtime.
+    # Full-project Pyright stays locked at zero errors.
     _check_pyright(
         errors,
-        'pyright (conformance + negatives + python/gometry)',
+        'pyright (conformance + precision + negatives + python/gometry)',
         str(_CONFORMANCE),
+        str(_PYRIGHT_PRECISION),
         str(_NEGATIVES),
         str(_ROOT / 'python' / 'gometry'),
     )

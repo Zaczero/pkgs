@@ -10,11 +10,6 @@ checkers fail. The positive twin is ``test_conformance.py``.
 Everything lives under ``if TYPE_CHECKING`` — the misuse must never execute.
 """
 
-# mypy also needs ignores for the two dataframe-boundary calls below. In this
-# environment pyright resolves those optional inputs as Any, so its matching
-# ignores are intentionally not reported as unused.
-# pyright: reportUnnecessaryTypeIgnoreComment=false
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -137,7 +132,8 @@ if TYPE_CHECKING:
     _pts: gm.GeometryArray[gm.Point] = GEOMS  # type: ignore[assignment]
 
     # Nullability is part of the element type: a nullable array is not dense.
-    _dense_pts: gm.GeometryArray[gm.Point] = gm.GeometryArray([POINT, None])  # type: ignore[assignment]
+    nullable_points = gm.GeometryArray([POINT, None])
+    _dense_pts: gm.GeometryArray[gm.Point] = nullable_points  # type: ignore[assignment]
     _ = gm.GeometryArray([POINT, None])[0].x  # type: ignore[union-attr]
     _ = next(iter(gm.GeometryArray([POINT, None]))).x  # type: ignore[union-attr]
     _dense_cells: gm.CellArray[gm.H3Cell] = gm.CellArray([h3_cell, None])  # type: ignore[assignment]
@@ -195,11 +191,11 @@ if TYPE_CHECKING:
 
     # Optional dataframe boundaries are explicit and statically typed; native
     # arrays are not framework Series/GeoSeries values.
-    gm.from_pandas(POINTS)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+    gm.from_pandas(POINTS)  # type: ignore[arg-type]
     POINTS.to_pandas(name=[])  # type: ignore[arg-type]
     gm.from_polars(POINTS)  # type: ignore[arg-type]
     POINTS.to_polars(name=1)  # type: ignore[arg-type]
-    gm.from_geopandas(POINTS)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+    gm.from_geopandas(POINTS)  # type: ignore[arg-type]
     POINTS.to_geopandas(drop_epoch='yes')  # type: ignore[arg-type]
 
     # Geometry-like collection lanes accept native geometries, binary buffers,
@@ -235,12 +231,8 @@ if TYPE_CHECKING:
     POINTS.__array__(dtype=np.float64)  # type: ignore[arg-type]
     POINTS.to_numpy(np.float64)  # type: ignore[call-arg]
     H3_CELLS.__array__(dtype=np.float64)  # type: ignore[arg-type]
-    gm.CellArray([h3_cell, None]).__array__(dtype=np.uint64)  # type: ignore[call-overload]
+    gm.CellArray([h3_cell, None]).__array__(dtype=np.uint64)  # type: ignore[arg-type]
     POINT.coords.__array__(dtype=np.int64)  # type: ignore[arg-type]
-    POINTS[np.float64(0)]  # pyright: ignore[reportArgumentType]
-    POINTS[np.asarray([0.0], dtype=np.float64)]  # pyright: ignore[reportArgumentType]
-    POINTS[np.asarray([[0]], dtype=np.int64)]  # pyright: ignore[reportArgumentType]
-
     # CRS kind vocabulary rejects unknown tokens.
     gm.crs_search('WGS', kind='not_a_kind')  # type: ignore[arg-type]
     gm.crs_catalog(kind='ellipsoid')  # type: ignore[arg-type]
