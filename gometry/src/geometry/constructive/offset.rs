@@ -4,7 +4,9 @@
 )]
 use std::num::NonZeroU32;
 
-use crate::geometry::constructive::{Result, WalkJoinRule, WalkPlan, materialize_walk};
+use crate::geometry::constructive::{
+    Result, WalkJoinRule, WalkPlan, materialize_walk, unit_right_normal,
+};
 use crate::geometry::{
     BufferJoinStyle, CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, GeometryKind,
     LineSeq, MOrdinate, MultiLineString, Point, Polygon, RepairMethod, Ring, Segment, Shape,
@@ -14,24 +16,19 @@ use crate::geometry::{
 };
 use crate::{Finite, Positive};
 
-/// when it is already valid (the overwhelmingly common case), otherwise the
-/// union of its per-segment quads — the swept region itself, which stays
-/// correct when the path self-crosses and a whole-ring repair would not
-/// (even-odd ring repair cancels faces covered by two sweep arms).
+/// Construct one-sided strips directly when the whole strip is already valid
+/// (the overwhelmingly common case), otherwise use the union of its
+/// per-segment quads — the swept region itself, which stays correct when the
+/// path self-crosses and a whole-ring repair would not (even-odd ring repair
+/// cancels faces covered by two sweep arms).
 pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
     points: &C,
     signed: f64,
 ) -> Result<Vec<Polygon>> {
-    let source = offset_source(points);
-    let Some(strip) = sided_strip(points, signed)? else {
-        let offset_failed = source.as_ref().is_some_and(|source| {
-            offset_segments(&source.vertices, source.closed, signed).len() != source.segment_count()
-        });
-        if offset_failed {
-            return Err(GeometryErrorKind::message(
-                "buffer calculation produced non-finite coordinates",
-            ));
-        }
+    let Some(source) = offset_source(points) else {
+        return Ok(Vec::new());
+    };
+    let Some(strip) = sided_strip_source(&source, signed)? else {
         return Ok(Vec::new());
     };
     let strip = Shape::Polygon(strip);
@@ -50,7 +47,7 @@ pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
 }
 
 /// The strip's per-segment quads — the same miter-joined offset geometry as
-/// [`sided_strip`], one quad per deduplicated input segment, X/Y only (the
+/// the direct strip, one quad per deduplicated input segment, X/Y only (the
 /// repair lane never carries Z/M, matching the whole-ring repair it
 /// replaces). A locally inverted miter can self-cross an individual quad;
 /// those are rebuilt before the union, which requires valid parts.
@@ -66,8 +63,11 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
     let count = source.segment_count();
     if segments.len() != count {
         // Deduplicated vertices offset 1:1; a dropped segment means a
-        // non-finite offset (coordinates at the f64 edge) — no strip.
-        return Ok(Vec::new());
+        // non-finite offset (coordinates at the f64 edge), not an empty
+        // geometric strip.
+        return Err(GeometryErrorKind::message(
+            "buffer calculation produced non-finite coordinates",
+        ));
     }
     let closed = source.closed;
     // One join per joined vertex (every vertex when closed, the interior
@@ -76,12 +76,19 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         (0..count)
             .map(|index| {
                 let previous = segments[wrap_index(index + count - 1, count)];
-                offset_join(previous, segments[index], vertices[index])
+                offset_join(previous, segments[index], vertices[index], signed)
             })
             .collect()
     } else {
         (1..count)
-            .map(|index| offset_join(segments[index - 1], segments[index], vertices[index]))
+            .map(|index| {
+                offset_join(
+                    segments[index - 1],
+                    segments[index],
+                    vertices[index],
+                    signed,
+                )
+            })
             .collect()
     };
     let offset_start = |index: usize| {
@@ -147,10 +154,10 @@ pub(crate) fn xy_ring<const N: usize>(points: [Point; N]) -> Result<Ring> {
     )?))
 }
 
-/// The deduplicated finite vertex run of a line plus its closure flag — the
-/// one normalization in front of every offset construction, so
-/// [`offset_line`] and the sided-strip quads can never disagree on
-/// vertex/segment alignment.
+/// The finite source vertex run, with only exact zero-length edges removed,
+/// plus its closure flag. This is structural edge admission, not a
+/// tolerance-based simplification: raw offsets and sided strips use the same
+/// source order so their edge and join indexes cannot drift apart.
 pub(crate) struct OffsetSource {
     vertices: Vec<Point>,
     closed: bool,
@@ -184,20 +191,17 @@ pub(crate) fn offset_source<C: Coordinates + ?Sized>(points: &C) -> Option<Offse
 
 /// The closed strip polygon between a line and its offset at `signed`
 /// distance: forward along the line, back along the offset (flat ends).
-pub(crate) fn sided_strip<C: Coordinates + ?Sized>(
-    points: &C,
-    signed: f64,
-) -> Result<Option<Polygon>> {
-    let Some(offset) = offset_line(points, signed) else {
-        return Ok(None);
+fn sided_strip_source(source: &OffsetSource, signed: f64) -> Result<Option<Polygon>> {
+    let offset = match offset_line_source(source, signed) {
+        RawOffset::Value(offset) => offset,
+        RawOffset::Empty => return Ok(None),
+        RawOffset::Unrepresentable => {
+            return Err(GeometryErrorKind::message(
+                "buffer calculation produced non-finite coordinates",
+            ));
+        },
     };
-    let mut shell: Vec<Point> = points
-        .iter_coords()
-        .filter(|point| point.x.is_finite() && point.y.is_finite())
-        .collect();
-    if shell.len() < 2 {
-        return Ok(None);
-    }
+    let mut shell = source.vertices.clone();
     shell.extend(offset.into_iter().rev());
     if let Some(first) = shell.first().copied() {
         shell.push(first);
@@ -217,8 +221,9 @@ pub(crate) fn sided_strip<C: Coordinates + ?Sized>(
 /// `distance` offsets LEFT of the line direction, negative RIGHT, and the
 /// output keeps the input direction either way (the left side is the
 /// right-offset of the REVERSED walk, un-reversed after emission). Closed
-/// inputs offset cyclically and close the output. `None` when the walk
-/// plan degenerates (near-folds) — callers fall back to [`offset_line`].
+/// inputs offset cyclically and close the output. `None` means that the raw
+/// offset cannot be represented (or the source has no segment); it is not a
+/// request to switch to the legacy raw-miter emitter.
 pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     points: &C,
     distance: f64,
@@ -226,6 +231,7 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Vec<Point>>> {
+    // Fewer than two occupied source vertices is a genuine typed collapse.
     let Some(source) = offset_source(points) else {
         return Ok(None);
     };
@@ -235,9 +241,13 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     if left {
         walk.reverse();
     }
+    // A failed normal is an unrepresentable raw offset, not permission to
+    // change the requested style to the legacy emitter.
     let Some(plan) = WalkPlan::new(&walk, source.closed, distance.abs(), rule, step_angle)? else {
         return Ok(None);
     };
+    // `reject_nonfinite = false` is the raw-offset overflow contract: the
+    // materializer reports unrepresentable derived coordinates as `None`.
     let Some(columns) = materialize_walk(&plan, step_angle, true, budget, false)? else {
         return Ok(None);
     };
@@ -270,20 +280,39 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     if left {
         result.reverse();
     }
+    // A walk that emitted fewer than two vertices is another genuine
+    // geometric collapse and becomes the typed empty at the caller.
     Ok((result.len() >= 2).then_some(result))
 }
 
+#[cfg(test)]
 pub(crate) fn offset_line<C: Coordinates + ?Sized>(
     points: &C,
     distance: f64,
 ) -> Option<Vec<Point>> {
     let source = offset_source(points)?;
+    match offset_line_source(&source, distance) {
+        RawOffset::Value(offset) => Some(offset),
+        RawOffset::Empty | RawOffset::Unrepresentable => None,
+    }
+}
+
+enum RawOffset {
+    /// The occupied source has no representable line result.
+    Empty,
+    /// A finite source edge or its translated offset exceeded binary64.
+    Unrepresentable,
+    /// A source-ordered offset line.
+    Value(Vec<Point>),
+}
+
+fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
     let vertices = &source.vertices;
     let segments = offset_segments(vertices, source.closed, distance);
     if segments.len() != source.segment_count() {
         // Deduplicated vertices offset 1:1; a dropped segment means a
         // non-finite offset (coordinates at the f64 edge) — no offset line.
-        return None;
+        return RawOffset::Unrepresentable;
     }
 
     let mut result = Vec::with_capacity(vertices.len() + usize::from(source.closed));
@@ -298,7 +327,7 @@ pub(crate) fn offset_line<C: Coordinates + ?Sized>(
         for index in 0..vertices.len() {
             let previous = segments[wrap_index(index + segments.len() - 1, segments.len())];
             let current = segments[index];
-            let join = offset_join(previous, current, vertices[index]);
+            let join = offset_join(previous, current, vertices[index], distance);
             push_join(&mut result, join);
         }
         if let Some(first) = result.first().copied() {
@@ -307,13 +336,21 @@ pub(crate) fn offset_line<C: Coordinates + ?Sized>(
     } else {
         push_distinct_point(&mut result, segments[0].start);
         for index in 1..vertices.len() - 1 {
-            let join = offset_join(segments[index - 1], segments[index], vertices[index]);
+            let join = offset_join(
+                segments[index - 1],
+                segments[index],
+                vertices[index],
+                distance,
+            );
             push_join(&mut result, join);
         }
         push_distinct_point(&mut result, segments[segments.len() - 1].end);
     }
 
-    (result.len() >= 2).then_some(result)
+    match result.len() >= 2 {
+        true => RawOffset::Value(result),
+        false => RawOffset::Empty,
+    }
 }
 
 pub(crate) fn offset_segments(points: &[Point], closed: bool, distance: f64) -> Vec<OffsetEdge> {
@@ -341,21 +378,11 @@ pub(crate) struct OffsetEdge {
 }
 
 pub(crate) fn offset_segment(start: Point, end: Point, distance: f64) -> Option<OffsetEdge> {
-    let dx = end.x - start.x;
-    let dy = end.y - start.y;
-    // Normalize direction via max-abs first so extreme-but-finite segments
-    // (length² overflow) still get a unit normal instead of being dropped.
-    let scale = dx.abs().max(dy.abs());
-    if scale == 0.0 || !scale.is_finite() {
-        return None;
-    }
-    let (ndx, ndy) = (dx / scale, dy / scale);
-    let inv_len = 1.0 / (ndx * ndx + ndy * ndy).sqrt();
-    if !inv_len.is_finite() {
-        return None;
-    }
-    let offset_x = -ndy * inv_len * distance;
-    let offset_y = ndx * inv_len * distance;
+    // Use the walk's one normal kernel for raw and styled constructions. The
+    // raw lane negates the right normal to offset to the left.
+    let (nx, ny) = unit_right_normal(start, end)?;
+    let offset_x = -nx * distance;
+    let offset_y = -ny * distance;
     // Offsetting coordinates near f64::MAX by a same-sign distance can overflow;
     // drop such a segment rather than panicking on the finite-coordinate assert.
     Some(OffsetEdge {
@@ -368,22 +395,9 @@ pub(crate) fn offset_segment(start: Point, end: Point, distance: f64) -> Option<
 /// GEOS/JTS default).
 ///
 /// A near-reversal turn otherwise sends the miter intersection toward
-/// infinity. Shared by buffers (where over-limit spikes clip flat) and
-/// offset curves (where they fall back to a bevel).
+/// infinity. Raw offsets bevel an over-limit join; styled miter walks clip
+/// it flat at the declared reach.
 pub(crate) const DEFAULT_MITER_LIMIT: f64 = 5.0;
-
-/// Buffer input-simplification tolerance as a fraction of `|distance|`. A
-/// vertex deviating less than `|distance| * FACTOR` cannot move the offset
-/// result beyond its arc-faceting error, so the noding/dissolve workload (and
-/// output size) shed the vertices that do not shape the buffer. GEOS's
-/// `BufferInputLineSimplifier` uses 0.01, but it is DIRECTION-AWARE (it only
-/// removes vertices on the concave side the offset fills in, never the convex
-/// side that shapes the outer boundary). This plain Douglas-Peucker is not
-/// direction-aware, so it uses an order-of-magnitude tighter bound: 0.001 keeps
-/// a smooth high-`quadrant_segments` arc faithful (its per-step sagitta stays above the
-/// tolerance, so no boundary-shaping vertex is dropped) while still collapsing
-/// the densely-sampled wiggles whose self-overlapping stroke is the real cost.
-pub(crate) const BUFFER_INPUT_SIMPLIFY_FACTOR: f64 = 0.001;
 
 /// One join between consecutive offset segments: the miter intersection
 /// when it stays within [`DEFAULT_MITER_LIMIT`] offset widths of the vertex,
@@ -421,21 +435,18 @@ impl OffsetJoin {
     clippy::large_types_passed_by_value,
     reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
 )]
-pub(crate) fn offset_join(previous: OffsetEdge, current: OffsetEdge, vertex: Point) -> OffsetJoin {
-    let squared = |a: Point, b: Point| {
-        let dx = a.x - b.x;
-        let dy = a.y - b.y;
-        dx * dx + dy * dy
-    };
+pub(crate) fn offset_join(
+    previous: OffsetEdge,
+    current: OffsetEdge,
+    vertex: Point,
+    distance: f64,
+) -> OffsetJoin {
     let carry = |point: XY| {
         vertex
             .with_xy(point.x, point.y)
             .expect("join point preserves finite vertex ordinates")
     };
-    // |previous.end - vertex| is exactly the offset width, so the miter
-    // limit needs no extra parameter.
-    let limit = DEFAULT_MITER_LIMIT * DEFAULT_MITER_LIMIT * squared(previous.end, vertex);
-    line_intersection(
+    match miter_join(
         Segment {
             start: previous.start.xy(),
             end: previous.end.xy(),
@@ -444,21 +455,160 @@ pub(crate) fn offset_join(previous: OffsetEdge, current: OffsetEdge, vertex: Poi
             start: current.start.xy(),
             end: current.end.xy(),
         },
-    )
-    .filter(|point| {
-        let dx = point.x - vertex.x;
-        let dy = point.y - vertex.y;
-        dx * dx + dy * dy <= limit
-    })
-    .map_or_else(
-        // Near-parallel segments make both bevel points coincide, so
-        // the straight-through join degenerates back to a single point.
-        || OffsetJoin::Bevel {
+        vertex,
+        distance,
+        DEFAULT_MITER_LIMIT,
+        MiterFinish::Bevel,
+    ) {
+        MiterConstruction::WithinLimit(point) => OffsetJoin::Miter(carry(point)),
+        // Near-parallel carriers and over-limit raw joins both retain the
+        // legacy raw-offset bevel. Styled miter joins use MiterFinish::Clip
+        // below and therefore do not silently share this outcome.
+        MiterConstruction::OverLimit
+        | MiterConstruction::Unusable
+        | MiterConstruction::Clipped { .. } => OffsetJoin::Bevel {
             incoming: carry(previous.end.xy()),
             outgoing: carry(current.start.xy()),
         },
-        |point| OffsetJoin::Miter(carry(point)),
-    )
+    }
+}
+
+/// The explicit local finish for an over-limit miter. Raw offsets use a bevel
+/// to retain their established shape; styled miter walks use a clipped miter.
+#[derive(Clone, Copy)]
+pub(crate) enum MiterFinish {
+    Bevel,
+    Clip,
+}
+
+/// Shared miter geometry before the caller applies its local join vocabulary.
+pub(crate) enum MiterConstruction {
+    WithinLimit(XY),
+    OverLimit,
+    Clipped { entry: XY, exit: XY },
+    Unusable,
+}
+
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
+pub(crate) fn miter_join(
+    incoming: Segment,
+    outgoing: Segment,
+    vertex: Point,
+    distance: f64,
+    limit: f64,
+    finish: MiterFinish,
+) -> MiterConstruction {
+    let Some(point) = line_intersection(incoming, outgoing) else {
+        return MiterConstruction::Unusable;
+    };
+    if miter_within_limit(point, vertex, distance, limit) {
+        return MiterConstruction::WithinLimit(point);
+    }
+    if matches!(finish, MiterFinish::Bevel) {
+        return MiterConstruction::OverLimit;
+    }
+    let Some((entry, exit)) = clipped_miter(incoming, outgoing, vertex, point, distance, limit)
+    else {
+        return MiterConstruction::Unusable;
+    };
+    MiterConstruction::Clipped { entry, exit }
+}
+
+/// Compare miter reach against `limit * distance` without squaring either
+/// quantity. The ordinary comparison keeps its direct rounding; subnormal and
+/// overflow cases compare both sides in a common finite scale. Equality is
+/// intentionally within-limit, so the clipped form begins strictly above the
+/// declared reach.
+fn miter_within_limit(point: XY, vertex: Point, distance: f64, limit: f64) -> bool {
+    let distance = distance.abs();
+    let same = same_point(point, vertex);
+    if distance == 0.0 {
+        return same;
+    }
+    let dx = point.x - vertex.x;
+    let dy = point.y - vertex.y;
+    let reach = dx.hypot(dy);
+    let allowed = distance * limit;
+    if same {
+        return true;
+    }
+    if reach.is_normal() && allowed.is_normal() {
+        return reach <= allowed;
+    }
+    if reach.is_finite() && allowed.is_infinite() {
+        return true;
+    }
+    if reach.is_infinite() && allowed.is_finite() {
+        return false;
+    }
+    let scale = point
+        .x
+        .abs()
+        .max(point.y.abs())
+        .max(vertex.x.abs())
+        .max(vertex.y.abs())
+        .max(distance);
+    if scale == 0.0 || !scale.is_finite() {
+        return false;
+    }
+    let scaled_dx = point.x / scale - vertex.x / scale;
+    let scaled_dy = point.y / scale - vertex.y / scale;
+    scaled_dx.hypot(scaled_dy) <= (distance / scale) * limit
+}
+
+fn clipped_miter(
+    incoming: Segment,
+    outgoing: Segment,
+    vertex: Point,
+    point: XY,
+    distance: f64,
+    limit: f64,
+) -> Option<(XY, XY)> {
+    let allowed = distance.abs() * limit;
+    if !allowed.is_finite() {
+        return None;
+    }
+    let (ux, uy) = unit_direction(point, vertex)?;
+    let mid = Point::new_raw_xy(vertex.x + allowed * ux, vertex.y + allowed * uy);
+    if !mid.x.is_finite() || !mid.y.is_finite() {
+        return None;
+    }
+    let clip = Segment {
+        start: mid.into(),
+        end: Point::new_raw_xy(mid.x - uy, mid.y + ux).into(),
+    };
+    let entry = line_intersection(incoming, clip)?;
+    let exit = line_intersection(outgoing, clip)?;
+    (entry.x.is_finite() && entry.y.is_finite() && exit.x.is_finite() && exit.y.is_finite())
+        .then_some((entry, exit))
+}
+
+fn unit_direction(point: XY, vertex: Point) -> Option<(f64, f64)> {
+    let dx = point.x - vertex.x;
+    let dy = point.y - vertex.y;
+    let scale = dx.abs().max(dy.abs());
+    let (dx, dy) = if scale.is_finite() && scale > 0.0 {
+        (dx / scale, dy / scale)
+    } else {
+        let scale = point
+            .x
+            .abs()
+            .max(point.y.abs())
+            .max(vertex.x.abs())
+            .max(vertex.y.abs());
+        if scale == 0.0 || !scale.is_finite() {
+            return None;
+        }
+        (
+            point.x / scale - vertex.x / scale,
+            point.y / scale - vertex.y / scale,
+        )
+    };
+    let length = dx.hypot(dy);
+    (length > 0.0 && length.is_finite()).then_some((dx / length, dy / length))
 }
 
 pub(crate) fn line_intersection(left: Segment, right: Segment) -> Option<XY> {
@@ -557,14 +707,10 @@ impl Shape {
         }
         let rule = WalkJoinRule::new(join_style, miter_limit.get());
         let mut offset = |line: &CoordSeq| -> Result<Option<Vec<Point>>> {
-            // The planned walk owns every style; degenerate plans
-            // (near-folds the robust orientation rejects) fall back to the
-            // raw miter emitter, exactly like the buffer falls back to the
-            // geo engine.
-            Ok(
-                offset_curve_points(line, distance, rule, quadrant_segments, budget)?
-                    .or_else(|| offset_line(line, distance)),
-            )
+            // The planned walk owns every style. A missing result is handled
+            // as typed empty or documented raw-offset unrepresentability;
+            // it never changes the requested join style.
+            offset_curve_points(line, distance, rule, quadrant_segments, budget)
         };
         Ok(match self {
             Self::LineString(points) => match offset(points)? {

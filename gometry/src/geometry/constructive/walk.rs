@@ -5,7 +5,8 @@
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
-use crate::geometry::constructive::{Result, emit_arc, line_intersection, unit_right_normal};
+use crate::geometry::constructive::offset::{MiterConstruction, MiterFinish, miter_join};
+use crate::geometry::constructive::{Result, emit_arc, unit_right_normal};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, Contact, CoordSeq,
     ExpansionBudget, Ordering, Orientation, Point, Polygon, PolygonPointIndex, Ring, Segment,
@@ -39,16 +40,10 @@ pub(crate) enum WalkJoin {
         t_in: SegmentProjection,
         t_out: SegmentProjection,
     },
-    /// Inside turn fallback: through the original vertex — the excursion
-    /// lobe the winding selection cancels. Also the demotion target for
-    /// any crossing that would traverse a consumed edge backwards.
+    /// Fold fallback: through the original vertex — an excursion lobe the
+    /// winding selection cancels where it is an inside fold. Also the
+    /// demotion target for any crossing that would traverse an edge backwards.
     Excursion,
-    /// Either-direction turn whose two offset endpoints sit within the
-    /// separation tolerance (|distance| × 1e-3 — the GEOS
-    /// `OffsetSegmentGenerator` economy): ONE snapped point replaces both
-    /// endpoints. No arc, no excursion lobe, no ulp-twin endpoint pair
-    /// feeding the noding sweep.
-    Snap { point: XY },
     /// Collinear vertex (and bevel outside turns): no join geometry — the
     /// offset endpoints connect directly.
     Straight,
@@ -60,15 +55,10 @@ impl WalkJoin {
     const fn replaces_endpoints(&self) -> bool {
         matches!(
             self,
-            Self::Cross { .. } | Self::Miter { .. } | Self::MiterCut { .. } | Self::Snap { .. }
+            Self::Cross { .. } | Self::Miter { .. } | Self::MiterCut { .. }
         )
     }
 }
-
-/// Offset-endpoint separation under which a join SNAPS to one point
-/// instead of emitting both endpoints (plus arc/excursion geometry) —
-/// GEOS's `OFFSET_SEGMENT_SEPARATION_FACTOR`.
-pub(crate) const OFFSET_SEPARATION_FACTOR: f64 = 1e-3;
 
 /// The outside-turn join rule of an offset walk — the style axis of the
 /// engine. Inside turns are style-independent (crossings/excursions
@@ -104,11 +94,15 @@ pub(crate) fn reflex_cross(
     let Some(point) = segment_cross_point(incoming, outgoing) else {
         return Ok(None);
     };
-    Ok(Some((
-        point,
-        segment_projection(point, incoming)?,
-        segment_projection(point, outgoing)?,
-    )))
+    let t_in = segment_projection(point, incoming)?;
+    let t_out = segment_projection(point, outgoing)?;
+    debug_assert!(
+        t_in.is_start() || t_in.is_end() || (0.0..=1.0).contains(&t_in.fraction())
+    );
+    debug_assert!(
+        t_out.is_start() || t_out.is_end() || (0.0..=1.0).contains(&t_out.fraction())
+    );
+    Ok(Some((point, t_in, t_out)))
 }
 
 /// The outside miter join at `vertex`: the crossing of the two offset
@@ -123,30 +117,18 @@ pub(crate) fn convex_miter(
     distance: f64,
     limit: f64,
 ) -> WalkJoin {
-    let Some(point) = line_intersection(incoming, outgoing) else {
-        return WalkJoin::Straight;
-    };
-    let (dx, dy) = (point.x - vertex.x, point.y - vertex.y);
-    let reach = dx * dx + dy * dy;
-    let allowed = limit * distance.abs();
-    if reach <= allowed * allowed {
-        return WalkJoin::Miter { point };
+    match miter_join(
+        incoming,
+        outgoing,
+        vertex,
+        distance,
+        limit,
+        MiterFinish::Clip,
+    ) {
+        MiterConstruction::WithinLimit(point) => WalkJoin::Miter { point },
+        MiterConstruction::Clipped { entry, exit } => WalkJoin::MiterCut { entry, exit },
+        MiterConstruction::OverLimit | MiterConstruction::Unusable => WalkJoin::Straight,
     }
-    // The full miter point sits on the corner's exterior bisector; clip
-    // the spike with the bisector's perpendicular at the allowed reach.
-    let scale = allowed / reach.sqrt();
-    let mid = Point::new_raw_xy(vertex.x + dx * scale, vertex.y + dy * scale);
-    let clip = Segment {
-        start: mid.into(),
-        end: Point::new_raw_xy(mid.x - dy, mid.y + dx).into(),
-    };
-    let Some(entry) = line_intersection(incoming, clip) else {
-        return WalkJoin::Straight;
-    };
-    let Some(exit) = line_intersection(outgoing, clip) else {
-        return WalkJoin::Straight;
-    };
-    WalkJoin::MiterCut { entry, exit }
 }
 
 /// A planned right-offset walk over `points`: per-edge unit right normals
@@ -239,9 +221,9 @@ impl WalkColumns {
 
 impl WalkSink for WalkColumns {
     fn push(&mut self, x: f64, y: f64, source: u32) -> Result<()> {
-        // Exact adjacent duplicates (collinear runs, snapped joins meeting
-        // edge offsets bit-for-bit) never reach the loop: every duplicate
-        // here is a zero-length noding segment downstream.
+        // Exact adjacent duplicates (collinear runs or joins meeting edge
+        // offsets bit-for-bit) never reach the loop: every duplicate here is
+        // a zero-length noding segment downstream.
         if !self.needs_push(x, y) {
             return Ok(());
         }
@@ -345,9 +327,10 @@ pub(crate) fn close_xy_loop(
 }
 
 impl<'a> WalkPlan<'a> {
-    /// Plan and validate one walk. `None` when an edge degenerates or a
-    /// left turn sweeps past pi (the robust orientation and the normals
-    /// disagree on a near-fold) — the caller falls back to the geo engine.
+    /// Plan and validate one walk. `None` when an edge degenerates or its
+    /// offset cannot be represented. A numerically ambiguous near-fold is
+    /// emitted as an excursion inside this walk rather than switching to a
+    /// different geometry engine.
     pub(crate) fn new(
         points: &'a [Point],
         cyclic: bool,
@@ -357,16 +340,6 @@ impl<'a> WalkPlan<'a> {
     ) -> crate::error::Result<Option<Self>> {
         let count = points.len();
         let edges = if cyclic { count } else { count - 1 };
-        // A convex round join whose turn is no wider than one arc step emits
-        // no interior arc vertex (emit_arc's `steps <= 1` early-out), so it
-        // renders byte-identically to a Straight join. cos is monotone over
-        // the convex sweep range (0, pi], so the unit normals' dot product
-        // (= cos sweep) clears `cos(step_angle)` exactly when the sweep is
-        // within one step — letting those joins skip the two per-join `atan2`s
-        // (measured ~23% of a dense buffer's profile). The +1e-12 margin keeps
-        // every arc-emitting join on the exact angular path (FP noise in the
-        // dot is ~1e-15), so the output is unchanged.
-        let cos_step = step_angle.cos() + 1e-12;
         let mut normals = Vec::new();
         crate::try_reserve_vec(&mut normals, edges)?;
         for edge in 0..edges {
@@ -380,18 +353,6 @@ impl<'a> WalkPlan<'a> {
             start: Point::new_raw_xy(from.x + distance * nx, from.y + distance * ny).into(),
             end: Point::new_raw_xy(to.x + distance * nx, to.y + distance * ny).into(),
         };
-        // Two offset endpoints within the separation tolerance carry no
-        // usable join geometry: snap to the incoming endpoint (the GEOS
-        // economy) — one point instead of endpoint pairs, fillet arcs, or
-        // excursion lobes whose extent is below the tolerance anyway.
-        let separation = (distance * OFFSET_SEPARATION_FACTOR).abs();
-        let snapped = |w: Point, (nx, ny): (f64, f64), (mx, my): (f64, f64)| -> Option<WalkJoin> {
-            let dx = distance * (mx - nx);
-            let dy = distance * (my - ny);
-            (dx * dx + dy * dy <= separation * separation).then(|| WalkJoin::Snap {
-                point: XY::new(w.x + distance * nx, w.y + distance * ny),
-            })
-        };
         let join_count = if cyclic { edges } else { edges - 1 };
         let mut joins = Vec::new();
         crate::try_reserve_vec(&mut joins, join_count)?;
@@ -404,26 +365,18 @@ impl<'a> WalkPlan<'a> {
                     WalkJoinRule::Arc => {
                         let (nx, ny) = normals[join];
                         let (mx, my) = normals[wrap_index(join + 1, edges)];
-                        if let Some(snap) = snapped(w, (nx, ny), (mx, my)) {
-                            snap
-                        } else if nx * mx + ny * my >= cos_step {
-                            WalkJoin::Straight
+                        let from_angle = ny.atan2(nx);
+                        let mut sweep = my.atan2(mx) - from_angle;
+                        if sweep < 0.0 {
+                            sweep += std::f64::consts::TAU;
+                        }
+                        if sweep > std::f64::consts::PI {
+                            WalkJoin::Excursion
                         } else {
-                            let from_angle = ny.atan2(nx);
-                            let mut sweep = my.atan2(mx) - from_angle;
-                            if sweep < 0.0 {
-                                sweep += std::f64::consts::TAU;
-                            }
-                            if sweep > std::f64::consts::PI {
-                                return Ok(None);
-                            }
                             WalkJoin::Arc { from_angle, sweep }
                         }
                     },
-                    WalkJoinRule::Bevel => {
-                        snapped(w, normals[join], normals[wrap_index(join + 1, edges)])
-                            .unwrap_or(WalkJoin::Straight)
-                    },
+                    WalkJoinRule::Bevel => WalkJoin::Straight,
                     WalkJoinRule::Miter { limit } => convex_miter(
                         offset_edge(v, w, normals[join]),
                         offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
@@ -437,8 +390,7 @@ impl<'a> WalkPlan<'a> {
                     offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
                 )? {
                     Some((point, t_in, t_out)) => WalkJoin::Cross { point, t_in, t_out },
-                    None => snapped(w, normals[join], normals[wrap_index(join + 1, edges)])
-                        .unwrap_or(WalkJoin::Excursion),
+                    None => WalkJoin::Excursion,
                 },
                 Orientation::Collinear => WalkJoin::Straight,
             };
@@ -462,49 +414,46 @@ impl<'a> WalkPlan<'a> {
     /// always-correct fallback: its lobe cancels in the winding
     /// selection. Outside joins only EXTEND edges (their crossings sit
     /// past the endpoints), so they are never demotion candidates.
-    /// Demotion only widens the neighbouring edges' parameter spans, so
-    /// the fixpoint loop terminates (each round either demotes a
-    /// crossing or stops).
+    ///
+    /// [`reflex_cross`] obtains both parameters from an exact segment contact
+    /// and a clamped segment projection, so every `Cross` parameter is in
+    /// `[0, 1]`. Demoting a crossing replaces an edge's entry or exit with
+    /// the corresponding endpoint, which can only widen that edge's usable
+    /// parameter interval. Therefore an already-scanned edge cannot become
+    /// backwards later, and one source-ordered scan is the complete fixpoint.
     fn validate(&mut self) -> crate::error::Result<()> {
         let joins = self.joins.len();
         if joins == 0 {
             return Ok(());
         }
         let edges = self.normals.len();
-        loop {
-            let mut changed = false;
-            for edge in 0..edges {
-                let entry_join = if edge == 0 {
-                    self.cyclic.then(|| joins - 1)
-                } else {
-                    Some(edge - 1)
-                };
-                let exit_join = (edge < joins).then_some(edge);
-                let entry = entry_join.and_then(|join| match &self.joins[join] {
-                    WalkJoin::Cross { t_out, .. } => Some(t_out),
-                    _ => None,
-                });
-                let exit = exit_join.and_then(|join| match &self.joins[join] {
-                    WalkJoin::Cross { t_in, .. } => Some(t_in),
-                    _ => None,
-                });
-                let backwards = match (entry, exit) {
-                    (Some(entry), Some(exit)) => entry.cmp_along(exit)? != Ordering::Less,
-                    (Some(entry), None) => entry.is_end(),
-                    (None, Some(exit)) => exit.is_start(),
-                    (None, None) => false,
-                };
-                if backwards {
-                    for join in [entry_join, exit_join].into_iter().flatten() {
-                        if matches!(self.joins[join], WalkJoin::Cross { .. }) {
-                            self.joins[join] = WalkJoin::Excursion;
-                            changed = true;
-                        }
+        for edge in 0..edges {
+            let entry_join = if edge == 0 {
+                self.cyclic.then(|| joins - 1)
+            } else {
+                Some(edge - 1)
+            };
+            let exit_join = (edge < joins).then_some(edge);
+            let entry = entry_join.and_then(|join| match &self.joins[join] {
+                WalkJoin::Cross { t_out, .. } => Some(t_out),
+                _ => None,
+            });
+            let exit = exit_join.and_then(|join| match &self.joins[join] {
+                WalkJoin::Cross { t_in, .. } => Some(t_in),
+                _ => None,
+            });
+            let backwards = match (entry, exit) {
+                (Some(entry), Some(exit)) => entry.cmp_along(exit)? != Ordering::Less,
+                (Some(entry), None) => entry.is_end(),
+                (None, Some(exit)) => exit.is_start(),
+                (None, None) => false,
+            };
+            if backwards {
+                for join in [entry_join, exit_join].into_iter().flatten() {
+                    if matches!(self.joins[join], WalkJoin::Cross { .. }) {
+                        self.joins[join] = WalkJoin::Excursion;
                     }
                 }
-            }
-            if !changed {
-                break;
             }
         }
         Ok(())
@@ -538,11 +487,9 @@ impl<'a> WalkPlan<'a> {
             let source = wrap_index(edge + 1, count) as u32;
             let w = self.points[source as usize];
             match self.joins.get(edge) {
-                Some(
-                    WalkJoin::Cross { point, .. }
-                    | WalkJoin::Miter { point }
-                    | WalkJoin::Snap { point },
-                ) => sink.push(point.x, point.y, source)?,
+                Some(WalkJoin::Cross { point, .. } | WalkJoin::Miter { point }) => {
+                    sink.push(point.x, point.y, source)?
+                },
                 Some(WalkJoin::MiterCut { entry, exit }) => {
                     sink.push(entry.x, entry.y, source)?;
                     sink.push(exit.x, exit.y, source)?;

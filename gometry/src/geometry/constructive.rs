@@ -15,8 +15,7 @@ mod winding;
 
 pub(crate) use edit::{affine_about_origin_ordinate, stable_affine_xy};
 pub(crate) use offset::{
-    BUFFER_INPUT_SIMPLIFY_FACTOR, DEFAULT_MITER_LIMIT, line_intersection, reversed_points,
-    sided_strip_parts,
+    DEFAULT_MITER_LIMIT, line_intersection, reversed_points, sided_strip_parts,
 };
 pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{

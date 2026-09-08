@@ -1,9 +1,9 @@
 use std::num::NonZeroU32;
 
 use crate::geometry::constructive::{
-    BUFFER_INPUT_SIMPLIFY_FACTOR, DEFAULT_MITER_LIMIT, Result, WalkJoinRule,
-    convex_buffer_budgeted, degenerate_polygonal_as_linework, multipoint_loops, point_buffer,
-    sided_strip_parts, validate_buffer_style, winding_buffer_budgeted, winding_collection_budgeted,
+    DEFAULT_MITER_LIMIT, Result, WalkJoinRule, convex_buffer_budgeted,
+    degenerate_polygonal_as_linework, multipoint_loops, point_buffer, sided_strip_parts,
+    validate_buffer_style, winding_buffer_budgeted, winding_collection_budgeted,
     winding_erosion_budgeted, winding_region, winding_stroke_budgeted,
 };
 use crate::geometry::{
@@ -72,34 +72,11 @@ impl Shape {
                 "buffer calculation produced non-finite coordinates",
             ));
         }
-        // GEOS-style input reduction (matches `BufferInputLineSimplifier`):
-        // an input vertex whose deviation is a tiny fraction of the buffer
-        // distance cannot move the offset result beyond its own arc-faceting
-        // error, so dropping such vertices shrinks the noding/dissolve workload
-        // — and the output — proportionally, with no material shape change. A
-        // smooth high-vertex ring/line collapses to the few vertices that
-        // actually shape the buffer; small inputs keep every vertex (their
-        // detail exceeds the tolerance) and are untouched. The win is dramatic
-        // for lineal strokes whose self-overlapping capsule the winding
-        // arrangement would otherwise resolve over every original segment.
-        // Polygons reduce for growth AND erosion; lineal input only for a
-        // positive distance (a non-positive distance annihilates it); `buffer(0)`
-        // must reproduce the exact valid region, so it never reduces.
-        let needs_reduction = match self {
-            Self::Polygon(_) | Self::MultiPolygon(_) => distance != 0.0,
-            Self::LineString(_) | Self::MultiLineString(_) => distance > 0.0,
-            _ => false,
-        };
-        let reduced;
-        let source = if needs_reduction {
-            reduced = self.simplify_dp_raw(distance.abs() * BUFFER_INPUT_SIMPLIFY_FACTOR)?;
-            &reduced
-        } else {
-            self
-        };
+        // The admitted geometry is the occupied support: buffering does not
+        // run a tolerance-based input simplifier before constructing it.
         // Convex hole-free polygons buffer constructively (offset edges +
         // styled joins, no boolean resolution) — see `convex_buffer_budgeted`.
-        if let Self::Polygon(polygon) = source
+        if let Self::Polygon(polygon) = self
             && let Some(fast) =
                 convex_buffer_budgeted(polygon, distance, rule, quadrant_segments, budget)?
         {
@@ -115,7 +92,7 @@ impl Shape {
         // `None` means the polygonal input has degenerate (zero-area) rings,
         // which have no interior to expand or erode.
         if let Some(result) =
-            source.winding_route(distance, cap_style, rule, quadrant_segments, budget)?
+            self.winding_route(distance, cap_style, rule, quadrant_segments, budget)?
         {
             return Ok(result);
         }
@@ -125,7 +102,7 @@ impl Shape {
         // non-positive distance annihilates them, matching the empty erosion
         // of a region with no interior. This is the principled native answer
         // for inputs GEOS itself flags `invalid` and resolves the same way.
-        let linework = degenerate_polygonal_as_linework(source)?;
+        let linework = degenerate_polygonal_as_linework(self)?;
         Ok(linework
             .winding_route(distance, cap_style, rule, quadrant_segments, budget)?
             .unwrap_or_else(Self::empty_polygon))
