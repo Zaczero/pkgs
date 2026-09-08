@@ -3787,7 +3787,12 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
         let diagram = build(&sites, VoronoiBoundary::Padded, &mut budget, true).unwrap();
         assert_eq!(diagram.polygons.len(), sites.len());
-        assert!(diagram.polygons.iter().all(|polygon| polygon_is_valid(polygon).unwrap()));
+        assert!(
+            diagram
+                .polygons
+                .iter()
+                .all(|polygon| polygon_is_valid(polygon).unwrap())
+        );
     }
 
     #[test]
@@ -3803,7 +3808,12 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "cosine circle");
         let diagram = build(&sites, VoronoiBoundary::Envelope, &mut budget, true).unwrap();
         assert_eq!(diagram.polygons.len(), sites.len());
-        assert!(diagram.polygons.iter().all(|polygon| polygon_is_valid(polygon).unwrap()));
+        assert!(
+            diagram
+                .polygons
+                .iter()
+                .all(|polygon| polygon_is_valid(polygon).unwrap())
+        );
     }
 
     fn assert_directed_partition(cells: &[Shape], bounds: [f64; 4]) {
@@ -5408,11 +5418,13 @@ mod convex_cell_certificate {
                 .unwrap_or_else(|error| panic!("scale {scale:e}: {error:?}"))
                 .into_polygons();
             assert_eq!(cells.len(), 5);
-            let area: f64 = cells
-                .iter()
-                .map(|cell| cell.shell.iter().count() as f64)
-                .sum();
-            assert!(area > 0.0);
+            let vertex_count: usize = cells.iter().map(|cell| cell.shell.iter().count()).sum();
+            let shapes: Vec<_> = cells.iter().cloned().map(Shape::Polygon).collect();
+            assert!(shapes.iter().all(
+                |shape| matches!(shape, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())
+            ));
+            assert!(coverage_is_valid(&shapes, 0.0).unwrap());
+            assert!(vertex_count > 0);
         }
     }
 
