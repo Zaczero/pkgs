@@ -23,8 +23,8 @@ pub(crate) struct Distance3dParts {
 }
 
 struct SegmentBvh3d {
-    aabbs: Box<[Aabb3d]>,
-    codes: Box<[u32]>,
+    aabbs: Vec<Aabb3d>,
+    codes: Vec<u32>,
 }
 
 crate::heapless!(Segment3d);
@@ -166,64 +166,129 @@ impl Distance3dParts {
         })
     }
 
-    fn bvh(&self) -> Option<&SegmentBvh3d> {
+    fn bvh(&self) -> crate::error::Result<Option<&SegmentBvh3d>> {
         self.bvh
-            .get_or_init(|| {
-                (self.segments.len() >= BVH_MIN_INDEXED_SEGMENTS)
-                    .then(|| SegmentBvh3d::build(&self.segments))
-                    .flatten()
+            .get_or_try_init(|| {
+                if self.segments.len() < BVH_MIN_INDEXED_SEGMENTS {
+                    Ok(None)
+                } else {
+                    SegmentBvh3d::build(&self.segments)
+                }
             })
-            .as_ref()
+            .map(Option::as_ref)
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    #[test]
+    fn cold_3d_bvh_failure_is_retryable() {
+        let fixture = || Distance3dParts {
+            segments: (0..BVH_MIN_INDEXED_SEGMENTS + 1)
+                .map(|index| {
+                    let start = [index as f64, 0.0, 0.0];
+                    let end = [index as f64, 1.0, 1.0];
+                    Segment3d {
+                        start,
+                        end,
+                        aabb: segment_aabb3(start, end),
+                    }
+                })
+                .collect(),
+            bvh: OnceLock::new(),
+        };
+        let target = fixture();
+        let (_, count) = allocation_count(|| target.bvh().unwrap().unwrap());
+        assert!(count > 0);
+        for allowed in 0..count {
+            let target = fixture();
+            let result = fail_allocations_after(allowed, || target.bvh());
+            let error = result
+                .err()
+                .expect("each cold construction allocation must propagate");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            assert!(target.bvh.get().is_none());
+            let first = target.bvh().unwrap().unwrap();
+            let cached = fail_allocations_after(0, || target.bvh()).unwrap().unwrap();
+            assert!(std::ptr::eq(first, cached));
+        }
+        let probe = Distance3dParts {
+            segments: vec![Segment3d {
+                start: [0.0, 0.0, 3.0],
+                end: [0.0, 0.0, 3.0],
+                aabb: segment_aabb3([0.0, 0.0, 3.0], [0.0, 0.0, 3.0]),
+            }],
+            bvh: OnceLock::new(),
+        };
+        let cold = fixture();
+        assert!(fail_allocations_after(0, || distance_3d_with_parts(&probe, &cold)).is_err());
+        assert_eq!(
+            distance_3d_with_parts(&probe, &cold).unwrap(),
+            distance_3d_brute_parts(&probe, &cold).unwrap()
+        );
     }
 }
 
 impl SegmentBvh3d {
-    fn build(segments: &[Segment3d]) -> Option<Self> {
-        let segment_count = u32::try_from(segments.len()).ok()?;
-        if segment_count == 0 || segment_count > BvhCode::LEAF_BIT / 2 {
-            return None;
-        }
-        let segment_aabbs: Vec<Aabb3d> = segments.iter().map(|segment| segment.aabb).collect();
-        let mut ids: Vec<u32> = (0..segment_count).collect();
-        let node_count = 2 * segment_count as usize - 1;
-        let mut tree = Self {
-            aabbs: vec![[0.0; 6]; node_count].into_boxed_slice(),
-            codes: vec![0; node_count].into_boxed_slice(),
+    fn build(segments: &[Segment3d]) -> crate::error::Result<Option<Self>> {
+        let Ok(segment_count) = u32::try_from(segments.len()) else {
+            return Ok(None);
         };
+        if segment_count == 0 || segment_count > BvhCode::LEAF_BIT / 2 {
+            return Ok(None);
+        }
+        let mut ids = Vec::new();
+        crate::try_reserve_vec(&mut ids, segments.len())?;
+        ids.extend(0..segment_count);
+        let node_count = 2 * segment_count as usize - 1;
+        let mut aabbs = Vec::new();
+        crate::try_reserve_vec(&mut aabbs, node_count)?;
+        aabbs.resize(node_count, [0.0; 6]);
+        let mut codes = Vec::new();
+        crate::try_reserve_vec(&mut codes, node_count)?;
+        codes.resize(node_count, 0);
+        let mut tree = Self { aabbs, codes };
         let mut next = 1;
-        tree.fill_node(0, &mut next, &segment_aabbs, &mut ids);
-        Some(tree)
+        tree.fill_node(0, &mut next, segments, &mut ids);
+        Ok(Some(tree))
     }
 
     fn fill_node(
         &mut self,
         node: usize,
         next: &mut usize,
-        segment_aabbs: &[Aabb3d],
+        segments: &[Segment3d],
         ids: &mut [u32],
     ) {
         if ids.len() == 1 {
-            self.aabbs[node] = segment_aabbs[ids[0] as usize];
+            self.aabbs[node] = segments[ids[0] as usize].aabb;
             self.codes[node] = BvhCode::leaf(ids[0] as usize).raw();
             return;
         }
         let aabb = ids
             .iter()
-            .map(|&id| segment_aabbs[id as usize])
+            .map(|&id| segments[id as usize].aabb)
             .reduce(union_aabb3)
             .expect("non-empty ids");
         let axis = longest_axis(aabb);
         let pivot = ids.len() / 2;
         ids.select_nth_unstable_by(pivot, |&left, &right| {
-            segment_aabbs[left as usize][axis].total_cmp(&segment_aabbs[right as usize][axis])
+            segments[left as usize].aabb[axis].total_cmp(&segments[right as usize].aabb[axis])
         });
         let (lower, upper) = ids.split_at_mut(pivot);
         let first_child = *next;
         *next += 2;
         self.aabbs[node] = aabb;
         self.codes[node] = BvhCode::internal(first_child as u32).raw();
-        self.fill_node(first_child, next, segment_aabbs, lower);
-        self.fill_node(first_child + 1, next, segment_aabbs, upper);
+        self.fill_node(first_child, next, segments, lower);
+        self.fill_node(first_child + 1, next, segments, upper);
     }
 
     fn distance_to_parts(
@@ -335,7 +400,7 @@ pub(crate) fn distance_3d_with_parts(
         (right, left)
     };
     let mut best = f64::INFINITY;
-    if let Some(bvh) = target.bvh() {
+    if let Some(bvh) = target.bvh()? {
         return bvh.distance_to_parts(probe, &target.segments, best);
     }
     for &left_segment in &probe.segments {
