@@ -136,6 +136,17 @@ if TYPE_CHECKING:
     # Covariance points one way: a Geometry array is not a Point array.
     _pts: gm.GeometryArray[gm.Point] = GEOMS  # type: ignore[assignment]
 
+    # Nullability is part of the element type: a nullable array is not dense.
+    _dense_pts: gm.GeometryArray[gm.Point] = gm.GeometryArray([POINT, None])  # type: ignore[assignment]
+    _ = gm.GeometryArray([POINT, None])[0].x  # type: ignore[union-attr]
+    _ = next(iter(gm.GeometryArray([POINT, None]))).x  # type: ignore[union-attr]
+    _dense_cells: gm.CellArray[gm.H3Cell] = gm.CellArray([h3_cell, None])  # type: ignore[assignment]
+    _ = gm.CellArray([h3_cell, None])[0].token  # type: ignore[union-attr]
+    _ = gm.GeometryArray([POINT, None]).centroid()[0].x  # type: ignore[union-attr]
+    _dense_overlay: gm.GeometryArray[gm.Geometry] = gm.intersection(
+        gm.GeometryArray([POINT, None]), POLY
+    )  # type: ignore[assignment]
+
     # Scalar overload result is a bare float — it has no ndarray attributes.
     _ = gm.distance(POINT, POLY).dtype  # type: ignore[attr-defined]
 
@@ -224,6 +235,7 @@ if TYPE_CHECKING:
     POINTS.__array__(dtype=np.float64)  # type: ignore[arg-type]
     POINTS.to_numpy(np.float64)  # type: ignore[call-arg]
     H3_CELLS.__array__(dtype=np.float64)  # type: ignore[arg-type]
+    gm.CellArray([h3_cell, None]).__array__(dtype=np.uint64)  # type: ignore[call-overload]
     POINT.coords.__array__(dtype=np.int64)  # type: ignore[arg-type]
     POINTS[np.float64(0)]  # pyright: ignore[reportArgumentType]
     POINTS[np.asarray([0.0], dtype=np.float64)]  # pyright: ignore[reportArgumentType]

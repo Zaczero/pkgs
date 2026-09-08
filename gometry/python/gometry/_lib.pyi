@@ -149,11 +149,14 @@ _GeometryOtherT = TypeVar('_GeometryOtherT', bound=Geometry)
 # Dissolve group key element type (the `by` iterable's element type).
 _GroupKeyT = TypeVar('_GroupKeyT', bound=Hashable)
 _DefaultT = TypeVar('_DefaultT')
-# Element type of a `GeometryArray`; covariant so `GeometryArray[Point]` is a
-# `GeometryArray[Geometry]`, and defaulted (PEP 696) so a bare `GeometryArray`
-# means `GeometryArray[Geometry]`. `gm.points(...)` yields `GeometryArray[Point]`.
+# Element type of a `GeometryArray`, including `None` when the array is
+# nullable. Covariant so `GeometryArray[Point]` is a `GeometryArray[Geometry]`
+# and a `GeometryArray[Point | None]`. Defaulted (PEP 696) so a bare
+# `GeometryArray` means `GeometryArray[Geometry]` (non-nullable).
+# `gm.points(...)` yields `GeometryArray[Point]`; `GeometryArray([pt, None])`
+# yields `GeometryArray[Point | None]`.
 _GeometryT_co = TypeVar(
-    '_GeometryT_co', bound=Geometry, covariant=True, default=Geometry
+    '_GeometryT_co', bound=Geometry | None, covariant=True, default=Geometry
 )
 # Row element type of a `Groups` container (int64 ndarray, `GeometryArray`, …).
 # Bounded (not value-constrained) so aliases like `Groups[GeometryArray[Point]]`
@@ -812,30 +815,46 @@ class Geometry:
     @overload
     def __and__(self, other: Geometry, /) -> Geometry: ...
     @overload
-    def __and__(self, other: GeometryArray, /) -> GeometryArray: ...
+    def __and__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
     @overload
-    def __and__(self, other: Geometry | GeometryArray, /) -> Geometry | GeometryArray:
+    def __and__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __and__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
         """Return self&value."""
     @overload
     def __or__(self, other: Geometry, /) -> Geometry: ...
     @overload
-    def __or__(self, other: GeometryArray, /) -> GeometryArray: ...
+    def __or__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
     @overload
-    def __or__(self, other: Geometry | GeometryArray, /) -> Geometry | GeometryArray:
+    def __or__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __or__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
         """Return self|value."""
     @overload
     def __sub__(self, other: Geometry, /) -> Geometry: ...
     @overload
-    def __sub__(self, other: GeometryArray, /) -> GeometryArray: ...
+    def __sub__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
     @overload
-    def __sub__(self, other: Geometry | GeometryArray, /) -> Geometry | GeometryArray:
+    def __sub__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __sub__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
         """Return self-value."""
     @overload
     def __xor__(self, other: Geometry, /) -> Geometry: ...
     @overload
-    def __xor__(self, other: GeometryArray, /) -> GeometryArray: ...
+    def __xor__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
     @overload
-    def __xor__(self, other: Geometry | GeometryArray, /) -> Geometry | GeometryArray:
+    def __xor__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __xor__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
         """Return self^value."""
     def __bool__(self) -> bool:
         """``False`` when the geometry is empty; ``True`` otherwise.
@@ -2349,7 +2368,7 @@ class Geometry:
     @overload
     def line_locate(
         self,
-        geom: GeometryArray,
+        geom: GeometryArray[Geometry | None],
         *,
         basis: Literal['distance'] = 'distance',
         normalized: bool = False,
@@ -2367,7 +2386,7 @@ class Geometry:
     @overload
     def line_locate(
         self,
-        geom: GeometryArray,
+        geom: GeometryArray[Geometry | None],
         *,
         basis: Literal['m'],
         normalized: Literal[False] = False,
@@ -2376,7 +2395,7 @@ class Geometry:
     @overload
     def line_locate(
         self,
-        geom: Geometry | GeometryArray,
+        geom: Geometry | GeometryArray[Geometry | None],
         *,
         basis: Literal['distance'] = 'distance',
         normalized: bool = False,
@@ -5205,11 +5224,11 @@ class GeometryArrayIterator(Generic[_GeometryT_co]):
 
     def __iter__(self) -> Self:
         """Implement iter(self)."""
-    def __next__(self) -> _GeometryT_co | None:
+    def __next__(self) -> _GeometryT_co:
         """Implement next(self)."""
 
 @final
-class GeometryArray(Sequence[_GeometryT_co | None]):
+class GeometryArray(Sequence[_GeometryT_co]):
     """An immutable, vectorized geometry column with one shared CRS/epoch frame.
 
     Homogeneous arrays use packed coordinate storage and batched Rust kernels;
@@ -5232,7 +5251,25 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         *,
         path: Literal['rhumb'],
         unit: None = None,
-    ) -> GeometryArray[Point]:
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def destination(
+        self: GeometryArray[Point | None],
+        bearing: float | FloatInput,
+        distance: float | FloatInput,
+        *,
+        path: Literal['geodesic'] = 'geodesic',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def destination(
+        self: GeometryArray[Point | None],
+        bearing: float | FloatInput,
+        distance: float | FloatInput,
+        *,
+        path: Literal['rhumb'],
+        unit: None = None,
+    ) -> GeometryArray[Point | None]:
         """Walk each point along a geodesic or rhumb path.
 
         Parameters
@@ -5287,13 +5324,49 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         """``copy.deepcopy`` returns the object itself: every field is immutable
         and holds no Python references, so there is nothing to copy.
         """
-    def __and__(self, other: Geometry | GeometryArray, /) -> GeometryArray[Geometry]:
+    @overload
+    def __and__(
+        self: GeometryArray[_GeometryT], other: Geometry | GeometryArray[_GeometryOtherT], /
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __and__(
+        self: GeometryArray[_GeometryT_co],
+        other: Geometry | GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[Geometry | None]:
         """Return self&value."""
-    def __or__(self, other: Geometry | GeometryArray, /) -> GeometryArray[Geometry]:
+    @overload
+    def __or__(
+        self: GeometryArray[_GeometryT], other: Geometry | GeometryArray[_GeometryOtherT], /
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __or__(
+        self: GeometryArray[_GeometryT_co],
+        other: Geometry | GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[Geometry | None]:
         """Return self|value."""
-    def __sub__(self, other: Geometry | GeometryArray, /) -> GeometryArray[Geometry]:
+    @overload
+    def __sub__(
+        self: GeometryArray[_GeometryT], other: Geometry | GeometryArray[_GeometryOtherT], /
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __sub__(
+        self: GeometryArray[_GeometryT_co],
+        other: Geometry | GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[Geometry | None]:
         """Return self-value."""
-    def __xor__(self, other: Geometry | GeometryArray, /) -> GeometryArray[Geometry]:
+    @overload
+    def __xor__(
+        self: GeometryArray[_GeometryT], other: Geometry | GeometryArray[_GeometryOtherT], /
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __xor__(
+        self: GeometryArray[_GeometryT_co],
+        other: Geometry | GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[Geometry | None]:
         """Return self^value."""
     def __eq__(self, other: object, /) -> bool:
         """Return self==value."""
@@ -5445,11 +5518,11 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         *,
         crs: CrsInput | None = None,
         epoch: float | None = None,
-    ) -> GeometryArray[Geometry]: ...
+    ) -> GeometryArray[Geometry | None]: ...
     @overload
     def __new__(
         cls,
-        values: Iterable[_GeometryT | None],
+        values: Iterable[_GeometryT],
         *,
         crs: CrsInput | None = None,
         epoch: float | None = None,
@@ -5457,7 +5530,31 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     @overload
     def __new__(
         cls,
+        values: Iterable[_GeometryT | None],
+        *,
+        crs: CrsInput | None = None,
+        epoch: float | None = None,
+    ) -> GeometryArray[_GeometryT | None]: ...
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[Buffer],
+        *,
+        crs: CrsInput | None = None,
+        epoch: float | None = None,
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __new__(
+        cls,
         values: Iterable[Buffer | None],
+        *,
+        crs: CrsInput | None = None,
+        epoch: float | None = None,
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[Mapping[str, Any] | SupportsGeoInterface],
         *,
         crs: CrsInput | None = None,
         epoch: float | None = None,
@@ -5469,6 +5566,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         *,
         crs: CrsInput | None = None,
         epoch: float | None = None,
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[_GeometryLike],
+        *,
+        crs: CrsInput | None = None,
+        epoch: float | None = None,
     ) -> GeometryArray[Geometry]: ...
     @overload
     def __new__(
@@ -5477,7 +5582,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         *,
         crs: CrsInput | None = None,
         epoch: float | None = None,
-    ) -> GeometryArray[Geometry]:
+    ) -> GeometryArray[Geometry | None]:
         """Create and return a new object.  See help(type) for accurate signature."""
     @property
     def crs(self) -> CRS | None:
@@ -5876,7 +5981,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
             use `.row_index` to recover source-row alignment, or call
             `drop_missing()` first for an explicit dense path.
         """
-    def __iter__(self) -> Iterator[_GeometryT_co | None]:
+    def __iter__(self) -> Iterator[_GeometryT_co]:
         """Iterate geometries in row order (including missing rows as ``None``).
 
         Returns
@@ -5884,7 +5989,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         iterator of Geometry or None
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> _GeometryT_co | None: ...
+    def __getitem__(self, index: _IntScalar, /) -> _GeometryT_co: ...
     @overload
     def __getitem__(self, index: slice, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
@@ -5892,7 +5997,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> _GeometryT_co | None: ...
+    def __getitem__(self, index: _IntArray0D, /) -> _GeometryT_co: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
@@ -5908,7 +6013,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         | _IntArray1D
         | _IntArray0D,
         /,
-    ) -> _GeometryT_co | GeometryArray[_GeometryT_co] | None:
+    ) -> _GeometryT_co | GeometryArray[_GeometryT_co]:
         """Select rows by integer, slice, or fancy index.
 
         An ``int`` returns one typed geometry (or raises ``IndexError``).
@@ -6371,9 +6476,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'POLYGON ((0 0, 2 0, 2 1, 3 1, 3 3, 1 3, 1 2, 0 2, 0 0))'
         """
 
+    @overload
     def dissolve(
-        self, by: Iterable[_GroupKeyT]
-    ) -> tuple[GeometryArray[Geometry], list[_GroupKeyT]]:
+        self: GeometryArray[_GeometryT], by: Iterable[_GroupKeyT]
+    ) -> tuple[GeometryArray[Geometry], list[_GroupKeyT]]: ...
+    @overload
+    def dissolve(
+        self: GeometryArray[_GeometryT | None], by: Iterable[_GroupKeyT]
+    ) -> tuple[GeometryArray[Geometry | None], list[_GroupKeyT]]:
         """Dissolve geometries into per-group unions.
 
         Parameters
@@ -6403,9 +6513,15 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         numpy.ndarray
             ``True`` where the geometry is valid, one entry per row.
         """
+    @overload
     def concat(
         self: GeometryArray[_GeometryT_co], *others: GeometryArray[_GeometryOtherT]
-    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]:
+    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]: ...
+    @overload
+    def concat(
+        self: GeometryArray[_GeometryT_co],
+        *others: GeometryArray[_GeometryOtherT | None],
+    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT | None]:
         """Concatenate one or more arrays sharing this array's CRS and epoch.
 
         Parameters
@@ -6514,7 +6630,12 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         >>> gm.GeometryArray([gm.Point(0, 0), None]).is_missing.tolist()
         [False, True]
         """
-    def drop_missing(self) -> Self:
+    @overload
+    def drop_missing(self: GeometryArray[_GeometryT]) -> GeometryArray[_GeometryT]: ...
+    @overload
+    def drop_missing(
+        self: GeometryArray[_GeometryT | None],
+    ) -> GeometryArray[_GeometryT]:
         """Return a new array without the missing rows.
 
         Returns
@@ -6531,12 +6652,21 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         """
     @overload
     def fill_missing(
-        self, value: _GeometryOtherT
-    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]: ...
+        self: GeometryArray[_GeometryT], value: _GeometryOtherT
+    ) -> GeometryArray[_GeometryT | _GeometryOtherT]: ...
     @overload
     def fill_missing(
-        self, value: GeometryArray[_GeometryOtherT]
-    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]:
+        self: GeometryArray[_GeometryT | None], value: _GeometryOtherT
+    ) -> GeometryArray[_GeometryT | _GeometryOtherT]: ...
+    @overload
+    def fill_missing(
+        self: GeometryArray[_GeometryT], value: GeometryArray[_GeometryOtherT | None]
+    ) -> GeometryArray[_GeometryT | _GeometryOtherT]: ...
+    @overload
+    def fill_missing(
+        self: GeometryArray[_GeometryT | None],
+        value: GeometryArray[_GeometryOtherT | None],
+    ) -> GeometryArray[_GeometryT | _GeometryOtherT]:
         """Return a new array with every missing row replaced by ``value``.
 
         Parameters
@@ -6571,7 +6701,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         self,
         positions: Iterable[int],
         values: Iterable[_GeometryOtherT | None],
-    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]:
+    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT | None]:
         """Private batch scatter used by the pandas adapter: replace selected
         positions in one native call (never rebuilds the column through Python
         per row). ``positions`` and ``values`` are equal-length sequences;
@@ -6588,7 +6718,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         -------
         GeometryArray
         """
-    def _with_missing(self, mask: Sequence[bool] | npt.NDArray[np.bool_]) -> Self:
+    def _with_missing(
+        self, mask: Sequence[bool] | npt.NDArray[np.bool_]
+    ) -> GeometryArray[_GeometryT_co | None]:
         """Attach a missing mask to this array's rows (internal; the pandas
         bridge builds masked arrays without a rebuild). Length-checked;
         new bits are OR-merged with any existing mask so clearing a bit
@@ -6673,12 +6805,20 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'LINESTRING M (0 0 0, 10 0 100)'
         """
 
+    @overload
     def polylabel(
-        self,
+        self: GeometryArray[_GeometryT],
         *,
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Point]:
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def polylabel(
+        self: GeometryArray[_GeometryT | None],
+        *,
+        tolerance: FloatInput | None = None,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point | None]:
         """Pole of inaccessibility: the most distant interior point. Center of the
         largest inscribed circle — the best label anchor — measured for the CRS
         exactly like maximum_inscribed_circle (whose center this is).
@@ -6703,7 +6843,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
         Returns
         -------
-        GeometryArray[Point]
+        GeometryArray[Point | None]
             One point per row.
 
 
@@ -6719,9 +6859,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'POINT (1 1)'
         """
 
+    @overload
     def minimum_clearance_line(
-        self, *, unit: DistanceUnit | None = None
-    ) -> GeometryArray[LineString]:
+        self: GeometryArray[_GeometryT], *, unit: DistanceUnit | None = None
+    ) -> GeometryArray[LineString]: ...
+    @overload
+    def minimum_clearance_line(
+        self: GeometryArray[_GeometryT | None], *, unit: DistanceUnit | None = None
+    ) -> GeometryArray[LineString | None]:
         """Two-point line realizing `minimum_clearance`. The metric matches
         minimum_clearance: on a geographic CRS, the witness is selected in the
         geometry's best local projection and returned in source coordinates, so it is a
@@ -6796,9 +6941,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         '{"type":"Point","coordinates":[1.0,2.0]}'
         """
 
+    @overload
     def boundary(
-        self,
-    ) -> GeometryArray[MultiPoint | LineString | MultiLineString | GeometryCollection]:
+        self: GeometryArray[_GeometryT],
+    ) -> GeometryArray[MultiPoint | LineString | MultiLineString | GeometryCollection]: ...
+    @overload
+    def boundary(
+        self: GeometryArray[_GeometryT | None],
+    ) -> GeometryArray[MultiPoint | LineString | MultiLineString | GeometryCollection | None]:
         """Return the topological boundary of the geometry.
 
         Returns
@@ -6924,7 +7074,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         True
         """
 
-    def line_merge(self) -> GeometryArray[LineString | MultiLineString]:
+    @overload
+    def line_merge(self: GeometryArray[_GeometryT]) -> GeometryArray[LineString | MultiLineString]: ...
+    @overload
+    def line_merge(self: GeometryArray[_GeometryT | None]) -> GeometryArray[LineString | MultiLineString | None]:
         """Merge connected LineString parts into longer LineStrings.
 
         Returns
@@ -6946,7 +7099,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'LINESTRING (0 0, 1 1, 2 2)'
         """
 
-    def minimum_rotated_rectangle(self) -> GeometryArray[Point | LineString | Polygon]:
+    @overload
+    def minimum_rotated_rectangle(self: GeometryArray[_GeometryT]) -> GeometryArray[Point | LineString | Polygon]: ...
+    @overload
+    def minimum_rotated_rectangle(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Point | LineString | Polygon | None]:
         """Minimum-area rotated bounding rectangle, returned in XY.
 
         Returns
@@ -6968,13 +7124,22 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         True
         """
 
+    @overload
     def clip_by_rect(
-        self,
+        self: GeometryArray[_GeometryT],
         minx: float,
         miny: float,
         maxx: float,
         maxy: float,
-    ) -> GeometryArray[Geometry]:
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def clip_by_rect(
+        self: GeometryArray[_GeometryT | None],
+        minx: float,
+        miny: float,
+        maxx: float,
+        maxy: float,
+    ) -> GeometryArray[Geometry | None]:
         """Clip a geometry to a rectangle ``(minx, miny, maxx, maxy)``.
 
         Source ordinates are carried where meaningful; synthesized clip vertices use
@@ -7029,7 +7194,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
     @overload
     def line_substring(
-        self,
+        self: GeometryArray[_GeometryT],
         start: FloatInput,
         end: FloatInput,
         *,
@@ -7039,14 +7204,34 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     ) -> GeometryArray[LineString | Point]: ...
     @overload
     def line_substring(
-        self,
+        self: GeometryArray[_GeometryT | None],
+        start: FloatInput,
+        end: FloatInput,
+        *,
+        basis: Literal['m'],
+        normalized: Literal[False] = False,
+        unit: None = None,
+    ) -> GeometryArray[LineString | Point | None]: ...
+    @overload
+    def line_substring(
+        self: GeometryArray[_GeometryT],
         start: FloatInput,
         end: FloatInput,
         *,
         basis: Literal['distance'] = 'distance',
         normalized: bool = False,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[LineString | Point]:
+    ) -> GeometryArray[LineString | Point]: ...
+    @overload
+    def line_substring(
+        self: GeometryArray[_GeometryT | None],
+        start: FloatInput,
+        end: FloatInput,
+        *,
+        basis: Literal['distance'] = 'distance',
+        normalized: bool = False,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[LineString | Point | None]:
         """Return the portion of linework from ``start`` through ``end``.
 
         Parameters
@@ -7098,8 +7283,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'LINESTRING (2 0, 6 0)'
         """
 
+    @overload
     def buffer(
-        self,
+        self: GeometryArray[_GeometryT],
         distance: FloatInput,
         *,
         cap_style: CapStyle = 'round',
@@ -7108,7 +7294,19 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         miter_limit: float = 5.0,
         side: BufferSide = 'both',
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Polygon | MultiPolygon]:
+    ) -> GeometryArray[Polygon | MultiPolygon]: ...
+    @overload
+    def buffer(
+        self: GeometryArray[_GeometryT | None],
+        distance: FloatInput,
+        *,
+        cap_style: CapStyle = 'round',
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        side: BufferSide = 'both',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Polygon | MultiPolygon | None]:
         """Buffer a geometry by ``distance``, returning the offset region (measured for
         the CRS).
 
@@ -7178,7 +7376,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         312
         """
 
-    def unique_points(self) -> GeometryArray[MultiPoint | GeometryCollection]:
+    @overload
+    def unique_points(self: GeometryArray[_GeometryT]) -> GeometryArray[MultiPoint | GeometryCollection]: ...
+    @overload
+    def unique_points(self: GeometryArray[_GeometryT | None]) -> GeometryArray[MultiPoint | GeometryCollection | None]:
         """Distinct vertices in first-occurrence order. Vertices compare by exact
         structural identity (every active ordinate by bit pattern, the
         ``equals_identical`` notion), so XYZ points that differ only in Z stay
@@ -7301,9 +7502,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         False
         """
 
+    @overload
     def coverage_invalid_edges(
-        self, *, gap_width: float = 0.0
-    ) -> GeometryArray[LineString | MultiLineString]:
+        self: GeometryArray[_GeometryT], *, gap_width: float = 0.0
+    ) -> GeometryArray[LineString | MultiLineString]: ...
+    @overload
+    def coverage_invalid_edges(
+        self: GeometryArray[_GeometryT | None], *, gap_width: float = 0.0
+    ) -> GeometryArray[LineString | MultiLineString | None]:
         """Per-row invalid coverage boundary linework (see `coverage_invalid_edges`).
 
         Parameters
@@ -7337,13 +7543,22 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         2
         """
 
+    @overload
     def coverage_simplify(
-        self,
+        self: GeometryArray[_GeometryT],
         tolerance: float,
         *,
         method: SimplifyMethod = 'vw',
         simplify_boundary: bool = True,
-    ) -> GeometryArray[Polygon | MultiPolygon]:
+    ) -> GeometryArray[Polygon | MultiPolygon]: ...
+    @overload
+    def coverage_simplify(
+        self: GeometryArray[_GeometryT | None],
+        tolerance: float,
+        *,
+        method: SimplifyMethod = 'vw',
+        simplify_boundary: bool = True,
+    ) -> GeometryArray[Polygon | MultiPolygon | None]:
         """Simplify this valid polygonal coverage's boundaries (see `coverage_simplify`).
 
         Parameters
@@ -7413,13 +7628,22 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'POLYGON ((0 0, 1 0, 2 0, 2 1, 1 1, 0 1, 0 0))'
         """
 
+    @overload
     def coverage_clean(
-        self,
+        self: GeometryArray[_GeometryT],
         *,
         grid_size: float = 0.0,
         gap_width: float = 0.0,
         overlap_rule: CoverageOverlapRule = 'longest_border',
-    ) -> GeometryArray[Polygon | MultiPolygon]:
+    ) -> GeometryArray[Polygon | MultiPolygon]: ...
+    @overload
+    def coverage_clean(
+        self: GeometryArray[_GeometryT | None],
+        *,
+        grid_size: float = 0.0,
+        gap_width: float = 0.0,
+        overlap_rule: CoverageOverlapRule = 'longest_border',
+    ) -> GeometryArray[Polygon | MultiPolygon | None]:
         """Clean this near-coverage into an exact polygonal coverage (see `coverage_clean`).
 
         Parameters
@@ -7465,11 +7689,18 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         True
         """
 
+    @overload
     def repair(
-        self,
+        self: GeometryArray[_GeometryT],
         *,
         method: RepairMethod = 'linework',
-    ) -> GeometryArray[Geometry]:
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def repair(
+        self: GeometryArray[_GeometryT | None],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[Geometry | None]:
         """Repair invalid geometry, returning corrected result(s) (OGC). Already-valid
         input is returned unchanged at validation cost. Geographic antimeridian
         crossings are normalized before validity is decided, so a valid seam-crossing
@@ -7516,7 +7747,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     @overload
     def line_locate(
         self,
-        geom: Geometry | GeometryArray,
+        geom: Geometry | GeometryArray[Geometry | None],
         *,
         basis: Literal['m'],
         normalized: Literal[False] = False,
@@ -7525,7 +7756,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     @overload
     def line_locate(
         self,
-        geom: Geometry | GeometryArray,
+        geom: Geometry | GeometryArray[Geometry | None],
         *,
         basis: Literal['distance'] = 'distance',
         normalized: bool = False,
@@ -7680,7 +7911,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
     @overload
     def line_interpolate(
-        self,
+        self: GeometryArray[_GeometryT],
         at: FloatInput,
         /,
         *,
@@ -7689,6 +7920,17 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         normalized: bool = False,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point]: ...
+    @overload
+    def line_interpolate(
+        self: GeometryArray[_GeometryT | None],
+        at: FloatInput,
+        /,
+        *,
+        basis: Literal['distance'] = 'distance',
+        count: None = None,
+        normalized: bool = False,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point | None]: ...
     @overload
     def line_interpolate(
         self,
@@ -7702,7 +7944,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     ) -> Groups[GeometryArray[Point]]: ...
     @overload
     def line_interpolate(
-        self,
+        self: GeometryArray[_GeometryT],
         at: FloatInput,
         /,
         *,
@@ -7710,7 +7952,18 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         basis: Literal['m'],
         normalized: Literal[False] = False,
         unit: None = None,
-    ) -> GeometryArray[Point]:
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def line_interpolate(
+        self: GeometryArray[_GeometryT | None],
+        at: FloatInput,
+        /,
+        *,
+        count: None = None,
+        basis: Literal['m'],
+        normalized: Literal[False] = False,
+        unit: None = None,
+    ) -> GeometryArray[Point | None]:
         """Interpolate point locations along linework.
 
         Parameters
@@ -7740,7 +7993,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
         Returns
         -------
-        GeometryArray[Point] or Groups[GeometryArray[Point]]
+        GeometryArray[Point] or Groups[GeometryArray[Point | None]]
             One point per row for scalar or row-aligned ``at``; one point group per
             row for ``count`` samples.
 
@@ -7789,12 +8042,20 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'MULTIPOINT ((0 0), (1 1))'
         """
 
+    @overload
     def maximum_inscribed_circle(
-        self,
+        self: GeometryArray[_GeometryT],
         *,
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Point | Polygon]:
+    ) -> GeometryArray[Point | Polygon]: ...
+    @overload
+    def maximum_inscribed_circle(
+        self: GeometryArray[_GeometryT | None],
+        *,
+        tolerance: FloatInput | None = None,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point | Polygon | None]:
         """Largest circle inscribed in a polygonal geometry, as a filled disk.
         CRS-aware via local projection (approximate). Centered at the pole of
         inaccessibility (see polylabel), with radius reaching the nearest boundary
@@ -7876,11 +8137,18 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         1.0
         """
 
+    @overload
     def minimum_bounding_circle(
-        self,
+        self: GeometryArray[_GeometryT],
         *,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Point | Polygon]:
+    ) -> GeometryArray[Point | Polygon]: ...
+    @overload
+    def minimum_bounding_circle(
+        self: GeometryArray[_GeometryT | None],
+        *,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point | Polygon | None]:
         """Smallest circle enclosing the geometry, as a polygon. The standard shape:
         the enclosing circle as a round 64-gon about the exact Welzl center and
         radius. A single distinct vertex returns itself; empty input returns
@@ -7943,13 +8211,22 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         2.0
         """
 
+    @overload
     def concave_hull(
-        self,
+        self: GeometryArray[_GeometryT],
         *,
         concavity: FloatInput = 2.0,
         length_threshold: FloatInput = 0.0,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[Point | LineString | Polygon]:
+    ) -> GeometryArray[Point | LineString | Polygon]: ...
+    @overload
+    def concave_hull(
+        self: GeometryArray[_GeometryT | None],
+        *,
+        concavity: FloatInput = 2.0,
+        length_threshold: FloatInput = 0.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Point | LineString | Polygon | None]:
         """Compute the concave hull of the geometry. CRS-aware via local projection
         (approximate) and does NOT auto-split antimeridian-crossing geographic input;
         call ``split_antimeridian`` first. Uses gometry's chi-shape kernel: Delaunay
@@ -8001,7 +8278,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         ('Polygon', 3.0)
         """
 
-    def point_on_surface(self) -> GeometryArray[Point]:
+    @overload
+    def point_on_surface(self: GeometryArray[_GeometryT]) -> GeometryArray[Point]: ...
+    @overload
+    def point_on_surface(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Point | None]:
         """Representative point guaranteed to lie on the geometry. Geographic (lon/lat)
         input crossing the antimeridian is auto-split-normalized; no manual
         ``split_antimeridian`` is required. Always inside (or on) the geometry,
@@ -8016,7 +8296,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
         Returns
         -------
-        GeometryArray[Point]
+        GeometryArray[Point | None]
             One interior point per row.
 
 
@@ -8095,7 +8375,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         (0.0, 0.0, 2.0, 2.0)
         """
 
-    def extremes(self) -> Extremes[GeometryArray[Point]]:
+    @overload
+    def extremes(self: GeometryArray[_GeometryT]) -> Extremes[GeometryArray[Point]]: ...
+    @overload
+    def extremes(self: GeometryArray[_GeometryT | None]) -> Extremes[GeometryArray[Point | None]]:
         """Return the west, south, east, and north extreme vertices of the
         geometry (numeric X/Y; ties keep the first vertex in storage order).
 
@@ -8227,7 +8510,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         3
         """
 
-    def split_antimeridian(self) -> GeometryArray[Geometry]:
+    @overload
+    def split_antimeridian(self: GeometryArray[_GeometryT]) -> GeometryArray[Geometry]: ...
+    @overload
+    def split_antimeridian(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Geometry | None]:
         """Split at the antimeridian. Parts that cross come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result renders and computes correctly in lon/lat tools (the JOSS
@@ -8261,15 +8547,26 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         ('MultiLineString', 2)
         """
 
+    @overload
     def offset_curve(
-        self,
+        self: GeometryArray[_GeometryT],
         distance: FloatInput,
         *,
         join_style: JoinStyle = 'round',
         quadrant_segments: int = 8,
         miter_limit: float = 5.0,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[LineString | MultiLineString]:
+    ) -> GeometryArray[LineString | MultiLineString]: ...
+    @overload
+    def offset_curve(
+        self: GeometryArray[_GeometryT | None],
+        distance: FloatInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[LineString | MultiLineString | None]:
         """Compute a line offset to one side of a linestring by ``distance`` (measured
         for the CRS).
 
@@ -8339,7 +8636,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'LINESTRING (2 2, 1 1, 0 0)'
         """
 
-    def envelope(self) -> GeometryArray[Point | LineString | Polygon]:
+    @overload
+    def envelope(self: GeometryArray[_GeometryT]) -> GeometryArray[Point | LineString | Polygon]: ...
+    @overload
+    def envelope(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Point | LineString | Polygon | None]:
         """Axis-aligned bounding-box polygon of the geometry, returned in XY.
 
         Returns
@@ -8531,14 +8831,17 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'LINESTRING (1 1, 3 3)'
         """
 
-    def centroid(self) -> GeometryArray[Point]:
+    @overload
+    def centroid(self: GeometryArray[_GeometryT]) -> GeometryArray[Point]: ...
+    @overload
+    def centroid(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Point | None]:
         """Area/length-weighted center of the geometry. Geographic (lon/lat) input
         crossing the antimeridian is auto-split-normalized; no manual
         ``split_antimeridian`` is required. The computed center is an XY point.
 
         Returns
         -------
-        GeometryArray[Point]
+        GeometryArray[Point | None]
             One centroid per row (area/length-weighted; may lie outside).
 
         See Also
@@ -8615,13 +8918,22 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'POINT Z (1 2 0)'
         """
 
+    @overload
     def snap_to_grid(
-        self,
+        self: GeometryArray[_GeometryT],
         size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
-    ) -> GeometryArray[Geometry]:
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[_GeometryT | None],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool = False,
+    ) -> GeometryArray[Geometry | None]:
         """Snap every coordinate onto a regular grid and clean the result. X/Y move to
         the nearest ``origin + k * size`` grid node; consecutive duplicate vertices
         collapse, and parts that degenerate below their minimum become empty (the
@@ -8668,7 +8980,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'LINESTRING (0 1, 2.5 1.5)'
         """
 
-    def build_area(self) -> GeometryArray[Polygon | MultiPolygon | GeometryCollection]:
+    @overload
+    def build_area(self: GeometryArray[_GeometryT]) -> GeometryArray[Polygon | MultiPolygon | GeometryCollection]: ...
+    @overload
+    def build_area(self: GeometryArray[_GeometryT | None]) -> GeometryArray[Polygon | MultiPolygon | GeometryCollection | None]:
         """Assemble linework into one areal geometry. Input ordinates are carried
         where vertices can be sourced; otherwise the mathematically planar result is XY.
         When returned polygons retain different coordinate axes, they remain separate
@@ -8745,9 +9060,14 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'POLYGON ((0 0, 1 0, 1 1, 0 0))'
         """
 
+    @overload
     def convex_hull(
-        self,
-    ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection]:
+        self: GeometryArray[_GeometryT],
+    ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection]: ...
+    @overload
+    def convex_hull(
+        self: GeometryArray[_GeometryT | None],
+    ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection | None]:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
         ``split_antimeridian`` first. Hull vertices are copies of input vertices, so Z/M
@@ -8800,7 +9120,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         (False, 'exterior ring has a self-intersection')
         """
 
-    def node(self) -> GeometryArray[MultiLineString]:
+    @overload
+    def node(self: GeometryArray[_GeometryT]) -> GeometryArray[MultiLineString]: ...
+    @overload
+    def node(self: GeometryArray[_GeometryT | None]) -> GeometryArray[MultiLineString | None]:
         """Node linework by splitting every edge at all intersections. Input
         ordinates are carried where possible; unsourceable seam vertices yield XY.
 
@@ -9291,7 +9614,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     """
     def __new__(
         cls,
-        values: Geometry | GeometryArray | Iterable[_GeometryLike | None] | None = None,
+        values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None] | None = None,
     ) -> Self:
         """Build a spatial index (STR-tree) over present geometries.
 
@@ -9471,7 +9794,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def query(
         self,
-        geom: GeometryArray,
+        geom: GeometryArray[Geometry | None],
         *,
         predicate: Literal['dwithin'],
         distance: float,
@@ -9489,7 +9812,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def query(
         self,
-        geom: GeometryArray,
+        geom: GeometryArray[Geometry | None],
         *,
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
@@ -9544,7 +9867,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def join(
         self,
-        queries: Geometry | GeometryArray | Iterable[_GeometryLike],
+        queries: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
         *,
         predicate: Literal['dwithin'],
         distance: float,
@@ -9553,7 +9876,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def join(
         self,
-        queries: Geometry | GeometryArray | Iterable[_GeometryLike],
+        queries: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
         *,
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
@@ -9671,7 +9994,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def candidates(
         self,
-        geom: GeometryArray,
+        geom: GeometryArray[Geometry | None],
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
@@ -9679,7 +10002,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def candidates(
         self,
-        geom: Geometry | GeometryArray,
+        geom: Geometry | GeometryArray[Geometry | None],
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
@@ -9749,7 +10072,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: GeometryArray,
+        geom: GeometryArray[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -9761,7 +10084,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: GeometryArray,
+        geom: GeometryArray[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -9773,7 +10096,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: Geometry | GeometryArray,
+        geom: Geometry | GeometryArray[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -9841,11 +10164,11 @@ class SpatialIndex(Mapping[int, Geometry]):
     def insert(self, values: Geometry) -> int: ...
     @overload
     def insert(
-        self, values: GeometryArray | Iterable[_GeometryLike]
+        self, values: GeometryArray[Geometry | None] | Iterable[_GeometryLike]
     ) -> npt.NDArray[np.int64]: ...
     @overload
     def insert(
-        self, values: Geometry | GeometryArray | Iterable[_GeometryLike]
+        self, values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike]
     ) -> int | npt.NDArray[np.int64]:
         """Insert one geometry or many geometries and return their stable handles.
 
@@ -10851,9 +11174,12 @@ class CRS:
         True
         """
 
-# Element type of a `CellArray`; covariant + PEP 696 default so a bare
-# `CellArray` means `CellArray[Cell]` (the public cell protocol). No
-# `bound=Cell`: see `_CellT` — recursive Protocol + TypeVar bound is circular.
+# Element type of a `CellArray`, including `None` when the array is nullable.
+# Covariant + PEP 696 default so a bare `CellArray` means `CellArray[Cell]`
+# (the public cell protocol, non-nullable). No `bound=Cell`: recursive
+# Protocol + TypeVar bound is circular. `_CellT` is the invariant input
+# twin for dense-vs-nullable self annotations.
+_CellT = TypeVar('_CellT')
 _CellT_co = TypeVar('_CellT_co', covariant=True, default=Cell)
 
 @final
@@ -10868,11 +11194,11 @@ class CellArrayIterator(Generic[_CellT_co]):
 
     def __iter__(self) -> Self:
         """Implement iter(self)."""
-    def __next__(self) -> _CellT_co | None:
+    def __next__(self) -> _CellT_co:
         """Return the next typed cell, or ``None`` for a missing row."""
 
 @final
-class CellArray(Sequence[_CellT_co | None]):
+class CellArray(Sequence[_CellT_co]):
     """An immutable array of one grid cell type backed by a shared ``uint64`` id
     column.
 
@@ -10982,6 +11308,23 @@ class CellArray(Sequence[_CellT_co | None]):
     @overload
     def contains(
         self: CellArray[Tile], other: Tile | CellArray[Tile]
+    ) -> npt.NDArray[np.bool_]: ...
+    @overload
+    def contains(
+        self: CellArray[H3Cell | None], other: H3Cell | CellArray[H3Cell | None]
+    ) -> npt.NDArray[np.bool_]: ...
+    @overload
+    def contains(
+        self: CellArray[S2Cell | None], other: S2Cell | CellArray[S2Cell | None]
+    ) -> npt.NDArray[np.bool_]: ...
+    @overload
+    def contains(
+        self: CellArray[GeohashCell | None],
+        other: GeohashCell | CellArray[GeohashCell | None],
+    ) -> npt.NDArray[np.bool_]: ...
+    @overload
+    def contains(
+        self: CellArray[Tile | None], other: Tile | CellArray[Tile | None]
     ) -> npt.NDArray[np.bool_]:
         """Test whether every row hierarchically contains the paired cell.
 
@@ -11021,6 +11364,23 @@ class CellArray(Sequence[_CellT_co | None]):
     @overload
     def intersects(
         self: CellArray[Tile], other: Tile | CellArray[Tile]
+    ) -> npt.NDArray[np.bool_]: ...
+    @overload
+    def intersects(
+        self: CellArray[H3Cell | None], other: H3Cell | CellArray[H3Cell | None]
+    ) -> npt.NDArray[np.bool_]: ...
+    @overload
+    def intersects(
+        self: CellArray[S2Cell | None], other: S2Cell | CellArray[S2Cell | None]
+    ) -> npt.NDArray[np.bool_]: ...
+    @overload
+    def intersects(
+        self: CellArray[GeohashCell | None],
+        other: GeohashCell | CellArray[GeohashCell | None],
+    ) -> npt.NDArray[np.bool_]: ...
+    @overload
+    def intersects(
+        self: CellArray[Tile | None], other: Tile | CellArray[Tile | None]
     ) -> npt.NDArray[np.bool_]:
         """Test whether every row hierarchically intersects the paired cell.
 
@@ -11047,7 +11407,9 @@ class CellArray(Sequence[_CellT_co | None]):
         >>> gm.CellArray([cell, neighbor]).intersects(cell).tolist()
         [True, False]
         """
-    def value_counts(self) -> tuple[CellArray[_CellT_co], npt.NDArray[np.int64]]:
+    def value_counts(
+        self: CellArray[_CellT | None],
+    ) -> tuple[CellArray[_CellT], npt.NDArray[np.int64]]:
         """Unique cells and counts, ordered by descending count (pandas
         value_counts parity), with first appearance breaking ties.
 
@@ -11067,7 +11429,9 @@ class CellArray(Sequence[_CellT_co | None]):
         >>> counts.tolist()
         [2]
         """
-    def factorize(self) -> tuple[npt.NDArray[np.int64], CellArray[_CellT_co]]:
+    def factorize(
+        self: CellArray[_CellT | None],
+    ) -> tuple[npt.NDArray[np.int64], CellArray[_CellT]]:
         """Factorize cells into dense integer codes and first-seen uniques
         (pandas factorize parity).
 
@@ -11217,7 +11581,7 @@ class CellArray(Sequence[_CellT_co | None]):
         '86283082fffffff'
         """
     @property
-    def neighbors(self) -> Groups[CellArray[_CellT_co]]:
+    def neighbors(self: CellArray[_CellT | None]) -> Groups[CellArray[_CellT]]:
         """The edge-adjacent cells of every cell, as ragged rows.
 
         Returns
@@ -11227,7 +11591,9 @@ class CellArray(Sequence[_CellT_co | None]):
             counts vary, so the result is a Groups, not a rectangular
             CellArray.
         """
-    def children(self, depth: int | None = None, /) -> Groups[CellArray[_CellT_co]]:
+    def children(
+        self: CellArray[_CellT | None], depth: int | None = None, /
+    ) -> Groups[CellArray[_CellT]]:
         """Return the child cells of every cell at a finer depth, as ragged rows.
 
         Parameters
@@ -11252,7 +11618,9 @@ class CellArray(Sequence[_CellT_co | None]):
         >>> len(children)
         7
         """
-    def compact(self, depth: int | None = None, /) -> CellArray[_CellT_co]:
+    def compact(
+        self: CellArray[_CellT | None], depth: int | None = None, /
+    ) -> CellArray[_CellT]:
         """Compact this cell set to the coarsest exact covering, returned in the
         grid's public identity order. Duplicates and descendants are absorbed;
         complete sibling groups merge recursively, stopping at ``depth``.
@@ -11279,7 +11647,9 @@ class CellArray(Sequence[_CellT_co | None]):
         >>> len(cells.compact(5))
         2
         """
-    def uncompact(self, depth: int, /) -> CellArray[_CellT_co]:
+    def uncompact(
+        self: CellArray[_CellT | None], depth: int, /
+    ) -> CellArray[_CellT]:
         """Expand this cell set to a uniform depth, returned in the grid's public
         identity order. Expansion is bounded only by checked size arithmetic
         and allocator capacity; it has no fixed cell-count limit.
@@ -11357,7 +11727,7 @@ class CellArray(Sequence[_CellT_co | None]):
         iterator of Cell or None
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> _CellT_co | None: ...
+    def __getitem__(self, index: _IntScalar, /) -> _CellT_co: ...
     @overload
     def __getitem__(self, index: slice, /) -> CellArray[_CellT_co]: ...
     @overload
@@ -11365,7 +11735,7 @@ class CellArray(Sequence[_CellT_co | None]):
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> CellArray[_CellT_co]: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> _CellT_co | None: ...
+    def __getitem__(self, index: _IntArray0D, /) -> _CellT_co: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> CellArray[_CellT_co]: ...
     @overload
@@ -11422,10 +11792,45 @@ class CellArray(Sequence[_CellT_co | None]):
     @overload
     def __new__(
         cls,
+        values: Iterable[H3Cell | None],
+        *,
+        type: None = None,
+    ) -> CellArray[H3Cell | None]: ...
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[S2Cell | None],
+        *,
+        type: None = None,
+    ) -> CellArray[S2Cell | None]: ...
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[GeohashCell | None],
+        *,
+        type: None = None,
+    ) -> CellArray[GeohashCell | None]: ...
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[Tile | None],
+        *,
+        type: None = None,
+    ) -> CellArray[Tile | None]: ...
+    @overload
+    def __new__(
+        cls,
         values: Iterable[GeohashCell | str],
         *,
         type: type[GeohashCell],
     ) -> CellArray[GeohashCell]: ...
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[GeohashCell | str | None],
+        *,
+        type: type[GeohashCell],
+    ) -> CellArray[GeohashCell | None]: ...
     @overload
     def __new__(
         cls,
@@ -11436,6 +11841,13 @@ class CellArray(Sequence[_CellT_co | None]):
     @overload
     def __new__(
         cls,
+        values: Iterable[H3Cell | _IntScalarInput | str | None],
+        *,
+        type: type[H3Cell],
+    ) -> CellArray[H3Cell | None]: ...
+    @overload
+    def __new__(
+        cls,
         values: _IdArray | Iterable[S2Cell | _IntScalarInput | str],
         *,
         type: type[S2Cell],
@@ -11443,10 +11855,24 @@ class CellArray(Sequence[_CellT_co | None]):
     @overload
     def __new__(
         cls,
+        values: Iterable[S2Cell | _IntScalarInput | str | None],
+        *,
+        type: type[S2Cell],
+    ) -> CellArray[S2Cell | None]: ...
+    @overload
+    def __new__(
+        cls,
         values: _IdArray | Iterable[Tile | _IntScalarInput | str],
         *,
         type: type[Tile],
-    ) -> CellArray[Tile]:
+    ) -> CellArray[Tile]: ...
+    @overload
+    def __new__(
+        cls,
+        values: Iterable[Tile | _IntScalarInput | str | None],
+        *,
+        type: type[Tile],
+    ) -> CellArray[Tile | None]:
         """Create and return a new object.  See help(type) for accurate signature."""
     @property
     def grid(self) -> Literal['h3', 's2', 'tile', 'geohash']:
@@ -11465,10 +11891,14 @@ class CellArray(Sequence[_CellT_co | None]):
         int
         """
     @overload
-    def to_numpy(self: CellArray[GeohashCell]) -> npt.NDArray[np.object_]: ...
+    def to_numpy(self: CellArray[GeohashCell | None]) -> npt.NDArray[np.object_]: ...
     @overload
     def to_numpy(
         self: CellArray[H3Cell | S2Cell | Tile],
+    ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
+    @overload
+    def to_numpy(
+        self: CellArray[_CellT | None],
     ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]:
         """Return a read-only NumPy identity column.
 
@@ -11491,7 +11921,9 @@ class CellArray(Sequence[_CellT_co | None]):
         """
     @overload
     def __array__(
-        self: CellArray[GeohashCell], dtype: None = None, copy: bool | None = None
+        self: CellArray[GeohashCell | None],
+        dtype: None = None,
+        copy: bool | None = None,
     ) -> npt.NDArray[np.object_]: ...
     @overload
     def __array__(
@@ -11501,13 +11933,17 @@ class CellArray(Sequence[_CellT_co | None]):
     ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
     @overload
     def __array__(
+        self: CellArray[_CellT | None], dtype: None = None, copy: bool | None = None
+    ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
+    @overload
+    def __array__(
         self: CellArray[H3Cell | S2Cell | Tile],
         dtype: type[np.uint64] | np.dtype[np.uint64] | Literal['uint64', 'u8'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.uint64]: ...
     @overload
     def __array__(
-        self,
+        self: CellArray[_CellT | None],
         dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
@@ -14007,7 +14443,7 @@ def multi_polygons(
 def area(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def area(
-    geom: GeometryArray, *, unit: DistanceUnit | None = None
+    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def area(
@@ -14015,7 +14451,7 @@ def area(
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def area(
-    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
+    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -14058,7 +14494,7 @@ def area(
 def length(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def length(
-    geom: GeometryArray, *, unit: DistanceUnit | None = None
+    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length(
@@ -14066,7 +14502,7 @@ def length(
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length(
-    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
+    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -14109,7 +14545,7 @@ def length(
 def length_3d(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def length_3d(
-    geom: GeometryArray, *, unit: DistanceUnit | None = None
+    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length_3d(
@@ -14117,7 +14553,7 @@ def length_3d(
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length_3d(
-    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
+    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -14164,21 +14600,33 @@ def snap(geom: _GeometryT, reference: Geometry, tolerance: float) -> _GeometryT:
 @overload
 def snap(
     geom: GeometryArray[_GeometryT],
-    reference: Geometry | GeometryArray,
+    reference: Geometry | GeometryArray[_GeometryOtherT],
+    tolerance: FloatInput,
+) -> GeometryArray[_GeometryT]: ...
+@overload
+def snap(
+    geom: GeometryArray[_GeometryT | None],
+    reference: Geometry | GeometryArray[_GeometryOtherT | None],
+    tolerance: FloatInput,
+) -> GeometryArray[_GeometryT | None]: ...
+@overload
+def snap(
+    geom: _GeometryT,
+    reference: GeometryArray[_GeometryOtherT],
     tolerance: FloatInput,
 ) -> GeometryArray[_GeometryT]: ...
 @overload
 def snap(
     geom: _GeometryT,
-    reference: GeometryArray,
+    reference: GeometryArray[_GeometryOtherT | None],
     tolerance: FloatInput,
-) -> GeometryArray[_GeometryT]: ...
+) -> GeometryArray[_GeometryT | None]: ...
 @overload
 def snap(
-    geom: Geometry | GeometryArray,
-    reference: Geometry | GeometryArray,
+    geom: Geometry | GeometryArray[Geometry | None],
+    reference: Geometry | GeometryArray[Geometry | None],
     tolerance: FloatInput,
-) -> Geometry | GeometryArray:
+) -> Geometry | GeometryArray[Geometry | None]:
     """Snap vertices of ``geom`` onto ``reference`` within ``tolerance``.
 
     Parameters
@@ -14513,18 +14961,39 @@ def rhumb_distance(
 def shared_paths(left: Geometry, right: Geometry) -> GeometryCollection: ...
 @overload
 def shared_paths(
-    left: GeometryArray,
-    right: Geometry | GeometryArray,
+    left: Geometry,
+    right: GeometryArray[_GeometryT],
+) -> GeometryArray[GeometryCollection]: ...
+@overload
+def shared_paths(
+    left: GeometryArray[_GeometryT],
+    right: Geometry,
+) -> GeometryArray[GeometryCollection]: ...
+@overload
+def shared_paths(
+    left: GeometryArray[_GeometryT],
+    right: GeometryArray[_GeometryOtherT],
 ) -> GeometryArray[GeometryCollection]: ...
 @overload
 def shared_paths(
     left: Geometry,
-    right: GeometryArray,
-) -> GeometryArray[GeometryCollection]: ...
+    right: GeometryArray[_GeometryT | None],
+) -> GeometryArray[GeometryCollection | None]: ...
 @overload
 def shared_paths(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
-) -> Geometry | GeometryArray:
+    left: GeometryArray[_GeometryT | None],
+    right: Geometry,
+) -> GeometryArray[GeometryCollection | None]: ...
+@overload
+def shared_paths(
+    left: GeometryArray[_GeometryT | None],
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[GeometryCollection | None]: ...
+@overload
+def shared_paths(
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
+) -> GeometryCollection | GeometryArray[GeometryCollection | None]:
     """Shared paths between two lineal geometries.
 
     Parameters
@@ -14552,10 +15021,10 @@ def shared_paths(
     """
 
 @overload
-def bounds(values: GeometryArray) -> npt.NDArray[np.float64]: ...
+def bounds(values: GeometryArray[Geometry | None]) -> npt.NDArray[np.float64]: ...
 @overload
 def bounds(
-    values: GeometryArray | Iterable[_GeometryLike | None],
+    values: GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> npt.NDArray[np.float64]:
     """Axis-aligned bounds as a matrix (see `GeometryArray.bounds`).
 
@@ -14586,12 +15055,20 @@ def from_polyline(
 ) -> Point | LineString: ...
 @overload
 def from_polyline(
+    data: Iterable[str],
+    *,
+    precision: int = 5,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: float | None = None,
+) -> GeometryArray[Point | LineString]: ...
+@overload
+def from_polyline(
     data: Iterable[str | None],
     *,
     precision: int = 5,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
-) -> GeometryArray[Point | LineString]:
+) -> GeometryArray[Point | LineString | None]:
     """Decode polyline text into ``LineString``/``Point`` geometries.
 
     The Google Encoded Polyline Algorithm Format — the compact lat/lon
@@ -14645,15 +15122,15 @@ def from_polyline(
 def contains(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def contains(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: _PredicateOperand, right: GeometryArray
+    left: _PredicateOperand, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` contains ``right``.
 
@@ -14698,15 +15175,15 @@ def contains(
 def contains_properly(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def contains_properly(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: _PredicateOperand, right: GeometryArray
+    left: _PredicateOperand, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` contains ``right`` with no boundary contact.
 
@@ -14747,13 +15224,13 @@ def contains_properly(
 def within(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def within(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def within(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def within(left: _PredicateOperand, right: GeometryArray[Geometry | None]) -> npt.NDArray[np.bool_]: ...
 @overload
 def within(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` lies within ``right``; inverse of ``contains``.
 
@@ -14792,13 +15269,13 @@ def within(
 def covers(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def covers(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def covers(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def covers(left: _PredicateOperand, right: GeometryArray[Geometry | None]) -> npt.NDArray[np.bool_]: ...
 @overload
 def covers(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` covers ``right``: every point of ``right`` lies in
     ``left``.
@@ -14839,15 +15316,15 @@ def covers(
 def covered_by(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def covered_by(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: _PredicateOperand, right: GeometryArray
+    left: _PredicateOperand, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` is covered by ``right``; inverse of ``covers``.
 
@@ -14900,13 +15377,13 @@ def contains_xy(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_xy(
-    geom: GeometryArray,
+    geom: GeometryArray[Geometry | None],
     x: FloatInput,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_xy(
-    geom: _PredicateOperand | GeometryArray, x: FloatInput, y: FloatInput
+    geom: _PredicateOperand | GeometryArray[Geometry | None], x: FloatInput, y: FloatInput
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether a geometry contains each ``(x, y)`` point (vectorized).
 
@@ -14954,13 +15431,13 @@ def intersects_xy(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects_xy(
-    geom: GeometryArray,
+    geom: GeometryArray[Geometry | None],
     x: FloatInput,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects_xy(
-    geom: _PredicateOperand | GeometryArray, x: FloatInput, y: FloatInput
+    geom: _PredicateOperand | GeometryArray[Geometry | None], x: FloatInput, y: FloatInput
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether a geometry intersects each ``(x, y)`` point (vectorized).
 
@@ -14997,15 +15474,15 @@ def intersects_xy(
 def intersects(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def intersects(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects(
-    left: _PredicateOperand, right: GeometryArray
+    left: _PredicateOperand, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share any point.
 
@@ -15043,15 +15520,15 @@ def intersects(
 def disjoint(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def disjoint(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: _PredicateOperand, right: GeometryArray
+    left: _PredicateOperand, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share no point; negation of
     ``intersects``.
@@ -15090,13 +15567,13 @@ def disjoint(
 def touches(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def touches(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def touches(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def touches(left: _PredicateOperand, right: GeometryArray[Geometry | None]) -> npt.NDArray[np.bool_]: ...
 @overload
 def touches(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` touch only at boundaries.
 
@@ -15130,13 +15607,13 @@ def touches(
 def crosses(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def crosses(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def crosses(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def crosses(left: _PredicateOperand, right: GeometryArray[Geometry | None]) -> npt.NDArray[np.bool_]: ...
 @overload
 def crosses(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` cross (interiors meet with lower
     dimension).
@@ -15173,15 +15650,15 @@ def crosses(
 def overlaps(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def overlaps(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: _PredicateOperand, right: GeometryArray
+    left: _PredicateOperand, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` overlap (same dimension, partial
     interior overlap).
@@ -15216,13 +15693,13 @@ def overlaps(
 def relate(left: _PredicateOperand, right: _PredicateOperand) -> str: ...
 @overload
 def relate(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> list[str]: ...
 @overload
-def relate(left: _PredicateOperand, right: GeometryArray) -> list[str]: ...
+def relate(left: _PredicateOperand, right: GeometryArray[Geometry | None]) -> list[str]: ...
 @overload
 def relate(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> str | list[str]:
     """Compute the DE-9IM intersection matrix string for ``left`` and
     ``right``.
@@ -15259,20 +15736,20 @@ def relate_pattern(
 ) -> bool: ...
 @overload
 def relate_pattern(
-    left: GeometryArray,
-    right: _PredicateOperand | GeometryArray,
+    left: GeometryArray[Geometry | None],
+    right: _PredicateOperand | GeometryArray[Geometry | None],
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
     left: _PredicateOperand,
-    right: GeometryArray,
+    right: GeometryArray[Geometry | None],
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
-    left: _PredicateOperand | GeometryArray,
-    right: _PredicateOperand | GeometryArray,
+    left: _PredicateOperand | GeometryArray[Geometry | None],
+    right: _PredicateOperand | GeometryArray[Geometry | None],
     pattern: str,
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether two geometries' DE-9IM matrix matches a pattern.
@@ -15311,13 +15788,13 @@ def relate_pattern(
 def equals(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
 @overload
 def equals(
-    left: GeometryArray, right: _PredicateOperand | GeometryArray
+    left: GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def equals(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def equals(left: _PredicateOperand, right: GeometryArray[Geometry | None]) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals(
-    left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
+    left: _PredicateOperand | GeometryArray[Geometry | None], right: _PredicateOperand | GeometryArray[Geometry | None]
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` are spatially equal.
 
@@ -15354,13 +15831,17 @@ def equals(
 def equals_identical(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def equals_identical(
-    left: GeometryArray, right: Geometry | GeometryArray
+    left: GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def equals_identical(left: Geometry, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def equals_identical(
+    left: Geometry, right: GeometryArray[Geometry | None]
+) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_identical(
-    left: Geometry | GeometryArray, right: Geometry | GeometryArray
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test full value identity elementwise: the vectorized ``==``.
 
@@ -15401,8 +15882,8 @@ def equals_exact(
 ) -> bool: ...
 @overload
 def equals_exact(
-    left: GeometryArray,
-    right: _PredicateOperand | GeometryArray,
+    left: GeometryArray[Geometry | None],
+    right: _PredicateOperand | GeometryArray[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -15411,7 +15892,7 @@ def equals_exact(
 @overload
 def equals_exact(
     left: _PredicateOperand,
-    right: GeometryArray,
+    right: GeometryArray[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -15419,8 +15900,8 @@ def equals_exact(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_exact(
-    left: _PredicateOperand | GeometryArray,
-    right: _PredicateOperand | GeometryArray,
+    left: _PredicateOperand | GeometryArray[Geometry | None],
+    right: _PredicateOperand | GeometryArray[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -15470,19 +15951,19 @@ def distance(
 ) -> float: ...
 @overload
 def distance(
-    left: GeometryArray,
-    right: Geometry | GeometryArray,
+    left: GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance(
-    left: Geometry, right: GeometryArray, *, unit: DistanceUnit | None = None
+    left: Geometry, right: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -15544,19 +16025,19 @@ def distance_3d(
 ) -> float: ...
 @overload
 def distance_3d(
-    left: GeometryArray,
-    right: Geometry | GeometryArray,
+    left: GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance_3d(
-    left: Geometry, right: GeometryArray, *, unit: DistanceUnit | None = None
+    left: Geometry, right: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance_3d(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -15622,8 +16103,8 @@ def hausdorff_distance(
 ) -> float: ...
 @overload
 def hausdorff_distance(
-    left: GeometryArray,
-    right: Geometry | GeometryArray,
+    left: GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
@@ -15631,15 +16112,15 @@ def hausdorff_distance(
 @overload
 def hausdorff_distance(
     left: Geometry,
-    right: GeometryArray,
+    right: GeometryArray[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def hausdorff_distance(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
@@ -15715,8 +16196,8 @@ def frechet_distance(
 ) -> float: ...
 @overload
 def frechet_distance(
-    left: GeometryArray,
-    right: Geometry | GeometryArray,
+    left: GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
@@ -15724,15 +16205,15 @@ def frechet_distance(
 @overload
 def frechet_distance(
     left: Geometry,
-    right: GeometryArray,
+    right: GeometryArray[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def frechet_distance(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
@@ -15798,31 +16279,55 @@ def nearest_points(
 @overload
 def nearest_points(
     left: Geometry,
-    right: GeometryArray,
+    right: GeometryArray[_GeometryT],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray,
+    left: GeometryArray[_GeometryT],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray,
-    right: GeometryArray,
+    left: GeometryArray[_GeometryT],
+    right: GeometryArray[_GeometryOtherT],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
+    left: Geometry,
+    right: GeometryArray[_GeometryT | None],
     *,
     unit: DistanceUnit | None = None,
-) -> tuple[Point, Point] | tuple[GeometryArray[Point], GeometryArray[Point]]:
+) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
+@overload
+def nearest_points(
+    left: GeometryArray[_GeometryT | None],
+    right: Geometry,
+    *,
+    unit: DistanceUnit | None = None,
+) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
+@overload
+def nearest_points(
+    left: GeometryArray[_GeometryT | None],
+    right: GeometryArray[_GeometryOtherT | None],
+    *,
+    unit: DistanceUnit | None = None,
+) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
+@overload
+def nearest_points(
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
+    *,
+    unit: DistanceUnit | None = None,
+) -> (
+    tuple[Point, Point]
+    | tuple[GeometryArray[Point | None], GeometryArray[Point | None]]
+):
     """Return the closest pair of points between two geometries.
 
     Realizes the same minimizer as ``distance``: the geodesically closest pair
@@ -15884,25 +16389,53 @@ def shortest_line(
 ) -> LineString: ...
 @overload
 def shortest_line(
-    left: GeometryArray,
-    right: Geometry | GeometryArray,
+    left: Geometry,
+    right: GeometryArray[_GeometryT],
+    *,
+    unit: DistanceUnit | None = None,
+) -> GeometryArray[LineString]: ...
+@overload
+def shortest_line(
+    left: GeometryArray[_GeometryT],
+    right: Geometry,
+    *,
+    unit: DistanceUnit | None = None,
+) -> GeometryArray[LineString]: ...
+@overload
+def shortest_line(
+    left: GeometryArray[_GeometryT],
+    right: GeometryArray[_GeometryOtherT],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString]: ...
 @overload
 def shortest_line(
     left: Geometry,
-    right: GeometryArray,
+    right: GeometryArray[_GeometryT | None],
     *,
     unit: DistanceUnit | None = None,
-) -> GeometryArray[LineString]: ...
+) -> GeometryArray[LineString | None]: ...
 @overload
 def shortest_line(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
+    left: GeometryArray[_GeometryT | None],
+    right: Geometry,
     *,
     unit: DistanceUnit | None = None,
-) -> LineString | GeometryArray[LineString]:
+) -> GeometryArray[LineString | None]: ...
+@overload
+def shortest_line(
+    left: GeometryArray[_GeometryT | None],
+    right: GeometryArray[_GeometryOtherT | None],
+    *,
+    unit: DistanceUnit | None = None,
+) -> GeometryArray[LineString | None]: ...
+@overload
+def shortest_line(
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
+    *,
+    unit: DistanceUnit | None = None,
+) -> LineString | GeometryArray[LineString | None]:
     """Return the shortest connecting line between two geometries (CRS-aware).
 
     ``nearest_points`` as a ``LineString`` — degenerate when the geometries
@@ -15964,24 +16497,31 @@ def shortest_line(
 @overload
 def split(
     geom: Geometry,
-    splitter: Geometry | GeometryArray,
+    splitter: Geometry | GeometryArray[_GeometryT],
     *,
     tolerance: float = 0.0,
 ) -> GeometryArray[LineString]: ...
 @overload
 def split(
-    geom: GeometryArray,
-    splitter: Geometry | GeometryArray,
+    geom: GeometryArray[_GeometryT],
+    splitter: Geometry | GeometryArray[_GeometryOtherT],
     *,
     tolerance: float = 0.0,
 ) -> GeometryArray[LineString]: ...
 @overload
 def split(
-    geom: Geometry | GeometryArray,
-    splitter: Geometry | GeometryArray,
+    geom: GeometryArray[_GeometryT | None],
+    splitter: Geometry | GeometryArray[_GeometryOtherT | None],
     *,
     tolerance: float = 0.0,
-) -> GeometryArray[LineString]:
+) -> GeometryArray[LineString | None]: ...
+@overload
+def split(
+    geom: Geometry | GeometryArray[Geometry | None],
+    splitter: Geometry | GeometryArray[Geometry | None],
+    *,
+    tolerance: float = 0.0,
+) -> GeometryArray[LineString | None]:
     """Split lineal geometry by point splitter(s).
 
     Parameters
@@ -16027,8 +16567,8 @@ def dwithin(
 ) -> bool: ...
 @overload
 def dwithin(
-    left: GeometryArray,
-    right: _PredicateOperand | GeometryArray,
+    left: GeometryArray[Geometry | None],
+    right: _PredicateOperand | GeometryArray[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
@@ -16036,15 +16576,15 @@ def dwithin(
 @overload
 def dwithin(
     left: _PredicateOperand,
-    right: GeometryArray,
+    right: GeometryArray[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def dwithin(
-    left: _PredicateOperand | GeometryArray,
-    right: _PredicateOperand | GeometryArray,
+    left: _PredicateOperand | GeometryArray[Geometry | None],
+    right: _PredicateOperand | GeometryArray[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
@@ -16104,7 +16644,7 @@ def dwithin(
 
 @overload
 def nearest(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: Geometry,
     *,
     k: int = 1,
@@ -16116,7 +16656,7 @@ def nearest(
 ) -> npt.NDArray[np.int64]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: Geometry,
     *,
     k: int = 1,
@@ -16128,8 +16668,8 @@ def nearest(
 ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
-    geom: GeometryArray,
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: GeometryArray[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -16140,8 +16680,8 @@ def nearest(
 ) -> Groups[npt.NDArray[np.int64]]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
-    geom: GeometryArray,
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: GeometryArray[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -16152,8 +16692,8 @@ def nearest(
 ) -> tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]: ...
 @overload
 def nearest(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
-    geom: Geometry | GeometryArray,
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: Geometry | GeometryArray[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -16215,8 +16755,8 @@ def nearest(
 
 @overload
 def join(
-    left: Geometry | GeometryArray | Iterable[_GeometryLike],
-    right: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    left: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+    right: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     predicate: Literal['dwithin'],
     distance: float,
@@ -16224,8 +16764,8 @@ def join(
 ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
 @overload
 def join(
-    left: Geometry | GeometryArray | Iterable[_GeometryLike],
-    right: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    left: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+    right: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     predicate: TopologicalPredicate = 'intersects',
     distance: None = None,
@@ -16287,23 +16827,38 @@ def intersection(
 @overload
 def intersection(
     left: Geometry,
-    right: GeometryArray,
-) -> GeometryArray: ...
+    right: GeometryArray[_GeometryT],
+) -> GeometryArray[Geometry]: ...
 @overload
 def intersection(
-    left: GeometryArray,
+    left: GeometryArray[_GeometryT],
     right: Geometry,
-) -> GeometryArray: ...
+) -> GeometryArray[Geometry]: ...
 @overload
 def intersection(
-    left: GeometryArray,
-    right: GeometryArray,
-) -> GeometryArray: ...
+    left: GeometryArray[_GeometryT],
+    right: GeometryArray[_GeometryOtherT],
+) -> GeometryArray[Geometry]: ...
 @overload
 def intersection(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
-) -> Geometry | GeometryArray:
+    left: Geometry,
+    right: GeometryArray[_GeometryT | None],
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def intersection(
+    left: GeometryArray[_GeometryT | None],
+    right: Geometry,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def intersection(
+    left: GeometryArray[_GeometryT | None],
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def intersection(
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
+) -> Geometry | GeometryArray[Geometry | None]:
     """Compute the set-theoretic intersection of ``left`` and ``right``.
 
     Evaluated in the coordinate plane. In a geographic CRS, topology resolves
@@ -16344,23 +16899,38 @@ def union(
 @overload
 def union(
     left: Geometry,
-    right: GeometryArray,
-) -> GeometryArray: ...
+    right: GeometryArray[_GeometryT],
+) -> GeometryArray[Geometry]: ...
 @overload
 def union(
-    left: GeometryArray,
+    left: GeometryArray[_GeometryT],
     right: Geometry,
-) -> GeometryArray: ...
+) -> GeometryArray[Geometry]: ...
 @overload
 def union(
-    left: GeometryArray,
-    right: GeometryArray,
-) -> GeometryArray: ...
+    left: GeometryArray[_GeometryT],
+    right: GeometryArray[_GeometryOtherT],
+) -> GeometryArray[Geometry]: ...
 @overload
 def union(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
-) -> Geometry | GeometryArray:
+    left: Geometry,
+    right: GeometryArray[_GeometryT | None],
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def union(
+    left: GeometryArray[_GeometryT | None],
+    right: Geometry,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def union(
+    left: GeometryArray[_GeometryT | None],
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def union(
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
+) -> Geometry | GeometryArray[Geometry | None]:
     """Compute the set-theoretic union of ``left`` and ``right``.
 
     Evaluated in the coordinate plane. In a geographic CRS, topology resolves
@@ -16404,23 +16974,38 @@ def difference(
 @overload
 def difference(
     left: Geometry,
-    right: GeometryArray,
-) -> GeometryArray: ...
+    right: GeometryArray[_GeometryT],
+) -> GeometryArray[Geometry]: ...
 @overload
 def difference(
-    left: GeometryArray,
+    left: GeometryArray[_GeometryT],
     right: Geometry,
-) -> GeometryArray: ...
+) -> GeometryArray[Geometry]: ...
 @overload
 def difference(
-    left: GeometryArray,
-    right: GeometryArray,
-) -> GeometryArray: ...
+    left: GeometryArray[_GeometryT],
+    right: GeometryArray[_GeometryOtherT],
+) -> GeometryArray[Geometry]: ...
 @overload
 def difference(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
-) -> Geometry | GeometryArray:
+    left: Geometry,
+    right: GeometryArray[_GeometryT | None],
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def difference(
+    left: GeometryArray[_GeometryT | None],
+    right: Geometry,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def difference(
+    left: GeometryArray[_GeometryT | None],
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def difference(
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
+) -> Geometry | GeometryArray[Geometry | None]:
     """Compute the set-theoretic difference ``left - right``.
 
     Evaluated in the coordinate plane. In a geographic CRS, topology resolves
@@ -16462,23 +17047,38 @@ def symmetric_difference(
 @overload
 def symmetric_difference(
     left: Geometry,
-    right: GeometryArray,
-) -> GeometryArray: ...
+    right: GeometryArray[_GeometryT],
+) -> GeometryArray[Geometry]: ...
 @overload
 def symmetric_difference(
-    left: GeometryArray,
+    left: GeometryArray[_GeometryT],
     right: Geometry,
-) -> GeometryArray: ...
+) -> GeometryArray[Geometry]: ...
 @overload
 def symmetric_difference(
-    left: GeometryArray,
-    right: GeometryArray,
-) -> GeometryArray: ...
+    left: GeometryArray[_GeometryT],
+    right: GeometryArray[_GeometryOtherT],
+) -> GeometryArray[Geometry]: ...
 @overload
 def symmetric_difference(
-    left: Geometry | GeometryArray,
-    right: Geometry | GeometryArray,
-) -> Geometry | GeometryArray:
+    left: Geometry,
+    right: GeometryArray[_GeometryT | None],
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def symmetric_difference(
+    left: GeometryArray[_GeometryT | None],
+    right: Geometry,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def symmetric_difference(
+    left: GeometryArray[_GeometryT | None],
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def symmetric_difference(
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
+) -> Geometry | GeometryArray[Geometry | None]:
     """Compute the set-theoretic symmetric difference of ``left`` and
     ``right``.
 
@@ -16564,14 +17164,21 @@ def coverage_is_valid(
     False
     """
 
+@overload
 def coverage_invalid_edges(
     values: Polygon
     | MultiPolygon
     | GeometryArray[Polygon | MultiPolygon]
-    | Iterable[_ArealLike | None],
+    | Iterable[_ArealLike],
     *,
     gap_width: float = 0.0,
-) -> GeometryArray[LineString | MultiLineString]:
+) -> GeometryArray[LineString | MultiLineString]: ...
+@overload
+def coverage_invalid_edges(
+    values: GeometryArray[Polygon | MultiPolygon | None] | Iterable[_ArealLike | None],
+    *,
+    gap_width: float = 0.0,
+) -> GeometryArray[LineString | MultiLineString | None]:
     """Per-row invalid coverage boundary linework.
 
     Each output row merges the row's boundary segments that violate the
@@ -16612,16 +17219,25 @@ def coverage_invalid_edges(
     2
     """
 
+@overload
 def coverage_simplify(
     values: Polygon
     | MultiPolygon
     | GeometryArray[Polygon | MultiPolygon]
-    | Iterable[_ArealLike | None],
+    | Iterable[_ArealLike],
     tolerance: float,
     *,
     method: SimplifyMethod = 'vw',
     simplify_boundary: bool = True,
-) -> GeometryArray[Polygon | MultiPolygon]:
+) -> GeometryArray[Polygon | MultiPolygon]: ...
+@overload
+def coverage_simplify(
+    values: GeometryArray[Polygon | MultiPolygon | None] | Iterable[_ArealLike | None],
+    tolerance: float,
+    *,
+    method: SimplifyMethod = 'vw',
+    simplify_boundary: bool = True,
+) -> GeometryArray[Polygon | MultiPolygon | None]:
     """Simplify a VALID polygonal coverage's boundaries, preserving its
     topology.
 
@@ -16679,7 +17295,7 @@ def coverage_simplify(
     """
 
 def polygonize(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> GeometryArray[Polygon]:
     """Build polygons from the pooled linework of many geometries.
 
@@ -16721,7 +17337,7 @@ def polygonize(
     """
 
 def polygonize_full(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> PolygonizeResult:
     """Polygonize pooled linework and return full diagnostics.
 
@@ -16809,16 +17425,25 @@ def coverage_union(
     'POLYGON ((0 0, 1 0, 2 0, 2 1, 1 1, 0 1, 0 0))'
     """
 
+@overload
 def coverage_clean(
     values: Polygon
     | MultiPolygon
     | GeometryArray[Polygon | MultiPolygon]
-    | Iterable[_ArealLike | None],
+    | Iterable[_ArealLike],
     *,
     grid_size: float = 0.0,
     gap_width: float = 0.0,
     overlap_rule: CoverageOverlapRule = 'longest_border',
-) -> GeometryArray[Polygon | MultiPolygon]:
+) -> GeometryArray[Polygon | MultiPolygon]: ...
+@overload
+def coverage_clean(
+    values: GeometryArray[Polygon | MultiPolygon | None] | Iterable[_ArealLike | None],
+    *,
+    grid_size: float = 0.0,
+    gap_width: float = 0.0,
+    overlap_rule: CoverageOverlapRule = 'longest_border',
+) -> GeometryArray[Polygon | MultiPolygon | None]:
     """Clean a near-coverage into an exact polygonal coverage.
 
     Optionally snaps vertices, nodes every boundary, then assigns each face
@@ -16878,7 +17503,7 @@ def coverage_clean(
     """
 
 def union_all(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> Geometry:
     """Union of many geometries into one.
 
@@ -16916,7 +17541,7 @@ def union_all(
     """
 
 def intersection_all(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> Geometry:
     """Common intersection of many geometries.
 
@@ -16953,7 +17578,7 @@ def intersection_all(
     """
 
 def symmetric_difference_all(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> Geometry:
     """Symmetric difference of many geometries.
 
@@ -17013,7 +17638,7 @@ def get_coordinates(
 ): ...
 @overload
 def get_coordinates(
-    values: GeometryArray,
+    values: GeometryArray[Geometry | None],
     *,
     axes: CoordinateAxes | None = None,
     return_index: bool = False,
@@ -17101,7 +17726,7 @@ def parts(
 ) -> GeometryArray[Geometry]: ...
 @overload
 def parts(
-    geom: GeometryArray,
+    geom: GeometryArray[Geometry | None],
 ) -> Groups[GeometryArray[Geometry]]: ...
 @overload
 def parts(
@@ -17137,7 +17762,7 @@ def rings(
 ) -> GeometryArray[LineString]: ...
 @overload
 def rings(
-    geom: GeometryArray,
+    geom: GeometryArray[Geometry | None],
 ) -> Groups[GeometryArray[LineString]]: ...
 @overload
 def rings(
@@ -17172,11 +17797,18 @@ def from_wkt(
 ) -> Geometry: ...
 @overload
 def from_wkt(
+    data: Iterable[str],
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry]: ...
+@overload
+def from_wkt(
     data: Iterable[str | None],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
-) -> GeometryArray:
+) -> GeometryArray[Geometry | None]:
     """Parse a geometry (or array) from Well-Known Text.
 
     Also accepts EWKT; an embedded ``SRID=...;`` prefix becomes the
@@ -17233,18 +17865,25 @@ def from_wkb(
 ) -> Geometry: ...
 @overload
 def from_wkb(
+    data: Iterable[Buffer],
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry]: ...
+@overload
+def from_wkb(
     data: Iterable[Buffer | None],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
-) -> GeometryArray: ...
+) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_wkb(
     data: Buffer | Iterable[Buffer | None],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
-) -> Geometry | GeometryArray:
+) -> Geometry | GeometryArray[Geometry | None]:
     """Parse a geometry (or array) from Well-Known Binary.
 
     Also accepts EWKB; an embedded SRID becomes the geometry's CRS.
@@ -17329,7 +17968,7 @@ def _admit_geoparquet_geometry_storage(
 
 def from_arrow(
     data: _ArrowInput, *, crs: CrsInput | None = None, epoch: float | None = None
-) -> GeometryArray[Geometry]:
+) -> GeometryArray[Geometry | None]:
     """Build geometries from an Arrow array, table, record batch, reader, or
     Arrow-C provider. Protocol callbacks and PyArrow object inspection remain
     attached; selected buffers are owned before the decoder is detached.
@@ -17478,7 +18117,7 @@ def to_feature_collection(
 ) -> GeoJsonFeatureCollection: ...
 @overload
 def to_feature_collection(
-    values: Geometry | GeometryArray | Iterable[Geometry | None] | None,
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[Geometry | None] | None,
     *,
     properties: Mapping[str, Any] | Iterable[Mapping[str, Any] | None] | None = None,
     ids: Iterable[FeatureId] | None = None,
@@ -17538,7 +18177,7 @@ def from_geojson(
     *,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
-) -> GeometryArray: ...
+) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
     data: GeoJsonGeometry | GeoJsonFeatureNonNull,
@@ -17552,21 +18191,21 @@ def from_geojson(
     *,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
-) -> Geometry | GeometryArray: ...
+) -> Geometry | GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
     data: Iterable[_GeoJsonScalar | None],
     *,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
-) -> GeometryArray: ...
+) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
     data: _GeoJsonScalar | Iterable[_GeoJsonScalar | None],
     *,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
-) -> Geometry | GeometryArray:
+) -> Geometry | GeometryArray[Geometry | None]:
     """Parse `geojson` from a string or mapping.
 
     A geometry or ``Feature`` decodes to a ``Geometry`` (Feature properties
@@ -18805,7 +19444,7 @@ def crs_transform_bounds(
 
 @overload
 def geohash_cover(
-    geom: GeometryArray,
+    geom: GeometryArray[Geometry | None],
     precision: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -18871,12 +19510,20 @@ def geohash_cover(
     1
     """
 
+@overload
 def geohash_cells(
     values: GeometryArray[Point] | FloatInput,
     lat: FloatInput | None = None,
     *,
     precision: _IntInput,
-) -> CellArray[GeohashCell]:
+) -> CellArray[GeohashCell]: ...
+@overload
+def geohash_cells(
+    values: GeometryArray[Point | None],
+    lat: FloatInput | None = None,
+    *,
+    precision: _IntInput,
+) -> CellArray[GeohashCell | None]:
     """Build geohash cells from parallel lon/lat columns.
 
     Parameters
@@ -18918,7 +19565,7 @@ def geohash_cells(
     """
 
 def geohash_bounding_cell(
-    value: Geometry | GeometryArray | Iterable[float],
+    value: Geometry | GeometryArray[Geometry | None] | Iterable[float],
 ) -> GeohashCell:
     """Return the deepest single geohash cell containing a geometry or lon/lat bounds.
 
@@ -19061,7 +19708,7 @@ def geohash_difference(
 
 @overload
 def tile_cover(
-    geom: GeometryArray,
+    geom: GeometryArray[Geometry | None],
     zoom: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -19131,12 +19778,20 @@ def tile_cover(
     1
     """
 
+@overload
 def tile_cells(
     values: GeometryArray[Point] | FloatInput,
     lat: FloatInput | None = None,
     *,
     zoom: _IntInput,
-) -> CellArray[Tile]:
+) -> CellArray[Tile]: ...
+@overload
+def tile_cells(
+    values: GeometryArray[Point | None],
+    lat: FloatInput | None = None,
+    *,
+    zoom: _IntInput,
+) -> CellArray[Tile | None]:
     """Build tiles from parallel lon/lat columns.
 
     Parameters
@@ -19184,7 +19839,7 @@ def tile_cells(
     (9, 105, 201)
     """
 
-def tile_bounding_cell(value: Geometry | GeometryArray | Iterable[float]) -> Tile:
+def tile_bounding_cell(value: Geometry | GeometryArray[Geometry | None] | Iterable[float]) -> Tile:
     """Return the deepest single tile containing a geometry or lon/lat bounds.
 
     The mercantile ``bounding_tile``: descends the lower-corner tile and accepts
@@ -19614,7 +20269,7 @@ def osm_shortlink_location(
 
 @overload
 def h3_cover(
-    geom: GeometryArray,
+    geom: GeometryArray[Geometry | None],
     resolution: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -19685,12 +20340,20 @@ def h3_cover(
     (1, '872830828ffffff')
     """
 
+@overload
 def h3_cells(
     values: GeometryArray[Point] | FloatInput,
     lat: FloatInput | None = None,
     *,
     resolution: _IntInput,
-) -> CellArray[H3Cell]:
+) -> CellArray[H3Cell]: ...
+@overload
+def h3_cells(
+    values: GeometryArray[Point | None],
+    lat: FloatInput | None = None,
+    *,
+    resolution: _IntInput,
+) -> CellArray[H3Cell | None]:
     """Build H3 cells from parallel lon/lat columns.
 
     Parameters
@@ -19734,7 +20397,7 @@ def h3_cells(
     (2, '87283080cffffff')
     """
 
-def h3_bounding_cell(value: Geometry | GeometryArray | Iterable[float]) -> H3Cell:
+def h3_bounding_cell(value: Geometry | GeometryArray[Geometry | None] | Iterable[float]) -> H3Cell:
     """Return the deepest single H3 cell containing a geometry or lon/lat bounds.
 
     Walks a necessary ancestor path, then proves the complete region against
@@ -19932,7 +20595,7 @@ def h3_base_cells() -> CellArray[H3Cell]:
 
 @overload
 def s2_cover(
-    geom: GeometryArray,
+    geom: GeometryArray[Geometry | None],
     level: int | None = None,
     *,
     cell_rule: CellRule = 'overlap',
@@ -20029,12 +20692,20 @@ def s2_cover(
     (1, '8085809')
     """
 
+@overload
 def s2_cells(
     values: GeometryArray[Point] | FloatInput,
     lat: FloatInput | None = None,
     *,
     level: _IntInput,
-) -> CellArray[S2Cell]:
+) -> CellArray[S2Cell]: ...
+@overload
+def s2_cells(
+    values: GeometryArray[Point | None],
+    lat: FloatInput | None = None,
+    *,
+    level: _IntInput,
+) -> CellArray[S2Cell | None]:
     """Build S2 cells from parallel lon/lat columns.
 
     Parameters
@@ -20075,7 +20746,7 @@ def s2_cells(
     2
     """
 
-def s2_bounding_cell(value: Geometry | GeometryArray | Iterable[float]) -> S2Cell:
+def s2_bounding_cell(value: Geometry | GeometryArray[Geometry | None] | Iterable[float]) -> S2Cell:
     """Return the deepest S2 cell that **provably** contains a geometry's lon/lat bounding box.
 
     Sibling-consistent with ``geohash_bounding_cell`` / ``tile_bounding_cell`` /

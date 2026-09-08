@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from gometry._lib import (
+    Geometry,
     GeometryArray,
     GeometryError,
     from_wkb,
@@ -36,7 +37,7 @@ def _crs_to_geopandas(crs: object | None) -> str | None:
 
 def from_geopandas(
     geoseries_or_gdf: gpd.GeoSeries | gpd.GeoDataFrame,
-) -> GeometryArray:
+) -> GeometryArray[Geometry | None]:
     """Convert a geopandas ``GeoSeries`` or geometry column to a ``GeometryArray``.
 
     Parameters

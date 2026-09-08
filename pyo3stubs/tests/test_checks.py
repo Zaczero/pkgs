@@ -759,6 +759,38 @@ def test_return_parity_flags_non_self_on_kind_preserving(
     assert 'must return `Self`' in errors[0]
 
 
+def test_duality_none_in_array_element_is_nullability(
+    tmp_path, pristine_stub, pristine_src
+):
+    """``None`` on an array element is missing-row nullability, not a leaf kind."""
+    build = _duality(
+        stub_text=_DUALITY_STUB.replace(
+            '    def hull(self) -> LeafArray[Wide]:\n        """Kind-changing twin."""',
+            '    def hull(self) -> LeafArray[Wide | None]:\n        """Kind-changing twin."""',
+        )
+    )
+    assert (
+        gate('duality').run(build(tmp_path, pristine_stub, pristine_src)).errors == []
+    )
+
+
+def test_duality_none_ignore_still_rejects_wrong_kind(
+    tmp_path, pristine_stub, pristine_src
+):
+    """Discarding ``None`` must not hide a mismatched geometry leaf."""
+    build = _duality(
+        stub_text=_DUALITY_STUB.replace(
+            '    def hull(self) -> LeafArray[Wide]:\n        """Kind-changing twin."""',
+            '    def hull(self) -> LeafArray[Leaf | None]:\n        """Kind-changing twin."""',
+        )
+    )
+    errors = gate('duality').run(build(tmp_path, pristine_stub, pristine_src)).errors
+    assert len(errors) == 1
+    assert 'LeafArray.hull' in errors[0]
+    assert 'LeafArray[Wide]' in errors[0]
+    assert 'LeafArray[Leaf | None]' in errors[0]
+
+
 def test_duality_exempt_rot_is_reported(tmp_path, pristine_stub, pristine_src):
     build = _duality(exempt={'absent': 'stale: no such method'})
     errors = gate('duality').run(build(tmp_path, pristine_stub, pristine_src)).errors

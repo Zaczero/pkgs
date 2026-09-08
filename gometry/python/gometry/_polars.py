@@ -6,6 +6,7 @@ from typing import Any
 
 from gometry._lib import (
     CRSError,
+    Geometry,
     GeometryArray,
     GeometryError,
     from_wkb,
@@ -106,7 +107,7 @@ def from_polars(
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
-) -> GeometryArray:
+) -> GeometryArray[Geometry | None]:
     """Decode a WKB/EWKB polars Series into a ``GeometryArray``.
 
     Parameters

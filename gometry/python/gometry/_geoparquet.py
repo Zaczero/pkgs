@@ -154,7 +154,7 @@ def _physical_storage_axes(encoding: str, source: Any) -> tuple[bool, bool]:
     return False, False
 
 
-def _geometry_types(arr: GeometryArray) -> list[str]:
+def _geometry_types(arr: GeometryArray[Geometry | None]) -> list[str]:
     """Sorted unique GeoParquet geometry_types via one native batch call."""
     return arr._geoparquet_geometry_types()
 
@@ -190,7 +190,9 @@ def _remove_id_from_member_of_ensembles(json_dict: dict[str, Any]) -> None:
                     member.pop('id', None)
 
 
-def _build_geo_metadata(arr: GeometryArray, encoding: str) -> dict[str, Any]:
+def _build_geo_metadata(
+    arr: GeometryArray[Geometry | None], encoding: str
+) -> dict[str, Any]:
     from gometry._arrow import _crs_projjson
 
     column_meta: dict[str, Any] = {
@@ -237,7 +239,9 @@ def _build_geo_metadata(arr: GeometryArray, encoding: str) -> dict[str, Any]:
     }
 
 
-def _as_array(values: Geometry | GeometryArray) -> GeometryArray:
+def _as_array(
+    values: Geometry | GeometryArray[Geometry | None],
+) -> GeometryArray[Geometry | None]:
     if isinstance(values, Geometry):
         return GeometryArray([values])
     return values
@@ -314,7 +318,7 @@ def _attributes_table(pa: Any, attributes: Any, row_count: int) -> Any | None:
 
 
 def to_geoparquet(
-    values: Geometry | GeometryArray,
+    values: Geometry | GeometryArray[Geometry | None],
     path: str | os.PathLike[str],
     *,
     attributes: PyArrowTable | Mapping[str, Any] | None = None,
@@ -689,7 +693,7 @@ def _decode_geometry_column(
     crs: str | None,
     epoch: float | None,
     field: Any | None = None,
-) -> GeometryArray:
+) -> GeometryArray[Geometry | None]:
     if encoding == 'geometrycollection':
         raise _metadata_error(
             'native GeoArrow geometrycollection read is unsupported; re-encode as WKB'
@@ -726,7 +730,9 @@ def _decode_geometry_column(
         source = column
     try:
         # Arrow column/chunked inputs always decode as GeometryArray.
-        result: GeometryArray = from_arrow(source, crs=crs, epoch=epoch)
+        result: GeometryArray[Geometry | None] = from_arrow(
+            source, crs=crs, epoch=epoch
+        )
     except (AttributeError, TypeError, pa.ArrowInvalid) as error:
         raise _metadata_error(
             f'invalid native GeoParquet {encoding!r} storage layout'
@@ -950,7 +956,7 @@ def from_geoparquet(
     row_groups: Iterable[int] | None = None,
     filesystem: Any = None,
     **kwargs: Any,
-) -> tuple[GeometryArray, PyArrowTable]:
+) -> tuple[GeometryArray[Geometry | None], PyArrowTable]:
     """Read a GeoParquet geometry column and its aligned attributes.
 
     Parameters

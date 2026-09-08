@@ -123,7 +123,7 @@ def _is_missing_scalar(value: object) -> bool:
 
 
 def _unpickle_geometry_extension_array(
-    state: list[GeometryArray],
+    state: list[GeometryArray[Geometry | None]],
 ) -> GeometryExtensionArray:
     array = GeometryExtensionArray.__new__(GeometryExtensionArray)
     array._state = state
@@ -143,16 +143,16 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
     __hash__ = None  # type: ignore[assignment]
     _dtype = GeometryDtype()
 
-    def __init__(self, values: GeometryArray) -> None:
+    def __init__(self, values: GeometryArray[Geometry | None]) -> None:
         # one shared, mutable cell so ``view()`` twins alias the same data
         self._state = [values]
 
     @property
-    def _geoms(self) -> GeometryArray:
+    def _geoms(self) -> GeometryArray[Geometry | None]:
         return self._state[0]
 
     @_geoms.setter
-    def _geoms(self, values: GeometryArray) -> None:
+    def _geoms(self, values: GeometryArray[Geometry | None]) -> None:
         self._state[0] = values
 
     @property
@@ -174,7 +174,7 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         return (_unpickle_geometry_extension_array, (self._state,))
 
     @property
-    def geometry_array(self) -> GeometryArray:
+    def geometry_array(self) -> GeometryArray[Geometry | None]:
         return self._geoms
 
     @property
@@ -305,7 +305,7 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         from gometry import equals_identical
 
         if isinstance(other, GeometryExtensionArray):
-            other_values: GeometryArray | Geometry = other._geoms
+            other_values: GeometryArray[Geometry | None] | Geometry = other._geoms
         elif isinstance(other, (GeometryArray, Geometry)):
             other_values = other
         elif _is_missing_scalar(other):
@@ -508,7 +508,7 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
 
 
 def to_pandas(
-    values: GeometryArray,
+    values: GeometryArray[Geometry | None],
     *,
     index: pd.Index | Sequence[Hashable] | None = None,
     name: Hashable | None = None,
@@ -535,7 +535,7 @@ def to_pandas(
     )
 
 
-def from_pandas(series: pd.Series) -> GeometryArray:
+def from_pandas(series: pd.Series) -> GeometryArray[Geometry | None]:
     """Extract the backing ``GeometryArray`` from a geometry Series.
 
     Zero-copy: the Series and the returned array share storage. Missing rows

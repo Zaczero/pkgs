@@ -530,7 +530,7 @@ class Features:
     __slots__ = ('geometries', 'ids', 'properties')
     __match_args__ = ('geometries', 'properties', 'ids')
 
-    geometries: GeometryArray[Geometry]
+    geometries: GeometryArray[Geometry | None]
     """The parsed geometries, one row per feature."""
 
     properties: tuple[dict[str, Any] | None, ...]
@@ -547,7 +547,7 @@ class Features:
 
     def __init__(
         self,
-        geometries: GeometryArray[Geometry],
+        geometries: GeometryArray[Geometry | None],
         properties: Mapping[str, Any]
         | Iterable[Mapping[str, Any] | None]
         | None = None,
@@ -707,7 +707,7 @@ class Features:
     ) -> tuple[
         type[Features],
         tuple[
-            GeometryArray[Geometry],
+            GeometryArray[Geometry | None],
             tuple[dict[str, Any] | None, ...],
             tuple[FeatureId, ...],
         ],
@@ -717,7 +717,9 @@ class Features:
     def __iter__(
         self,
     ) -> Iterator[
-        GeometryArray | tuple[dict[str, Any] | None, ...] | tuple[FeatureId, ...]
+        GeometryArray[Geometry | None]
+        | tuple[dict[str, Any] | None, ...]
+        | tuple[FeatureId, ...]
     ]:
         """Unpack as ``geometries, properties, ids`` (three fields)."""
         return iter((self.geometries, self.properties, self.ids))

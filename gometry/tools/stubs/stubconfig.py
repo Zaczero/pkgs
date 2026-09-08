@@ -34,7 +34,7 @@ GEOMETRY_LEAF = MacroExport(macro='geometry_leaf', rust=0, python=1)
 # 2026-07 form review resolved the index name collision at the source.)
 KNOWN_DIVERGENCES: dict[str, str] = {}
 
-EXTRA_IGNORED_TYPE_NAMES = frozenset({'_GeometryT', '_GeometryT_co'})
+EXTRA_IGNORED_TYPE_NAMES = frozenset({'_GeometryT', '_GeometryT_co', '_CellT'})
 
 SURFACES = (
     ('Geometry', gm.Geometry),

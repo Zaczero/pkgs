@@ -120,6 +120,7 @@ def collect_errors(cfg: StubConfig) -> Findings:
                             actual_ok = False
                             break
                         inners.update(e.strip() for e in inner.split('|'))
+                    inners.discard('None')
                     actual_ok = actual_ok and inners == expected_atoms
                 if not actual_ok:
                     scalar_label = ' | '.join(sorted(scalar_atoms))
