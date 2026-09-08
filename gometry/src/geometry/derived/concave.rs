@@ -4,8 +4,8 @@ use std::collections::BinaryHeap;
 use crate::geometry::derived::{geometric_xy_cmp, monotone_chain_hull};
 use crate::geometry::tessellation::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
 use crate::geometry::{
-    GeometryErrorKind, Point, Ring, Segment, delaunay_triangulation, point_distance,
-    point_segment_distance, ring_winding,
+    GeometryErrorKind, Point, Ring, Segment, delaunay_triangulation, open_xy_cycle_winding,
+    point_distance, point_segment_distance,
 };
 
 pub(crate) fn native_concave_hull(
@@ -25,13 +25,20 @@ pub(crate) fn native_concave_hull(
     }
 
     let triangle_count = triangulation.triangles.len() / 3;
-    let mut alive = vec![true; triangle_count];
-    let mut boundary_degree = vec![0_i16; points.len()];
+    let mut alive = Vec::new();
+    crate::try_reserve_vec(&mut alive, triangle_count)?;
+    alive.resize(triangle_count, true);
+    let mut boundary_degree = Vec::new();
+    crate::try_reserve_vec(&mut boundary_degree, points.len())?;
+    boundary_degree.resize(points.len(), 0_i16);
     let mut heap = BinaryHeap::new();
     for halfedge in 0..triangulation.triangles.len() {
         if is_boundary_halfedge(&triangulation, &alive, halfedge) {
             bump_boundary_degree(&mut boundary_degree, &triangulation, halfedge, 1);
-            heap.push(ConcaveBoundaryEdge::new(points, &triangulation, halfedge));
+            crate::try_push_heap(
+                &mut heap,
+                ConcaveBoundaryEdge::new(points, &triangulation, halfedge),
+            )?;
         }
     }
 
@@ -65,8 +72,8 @@ pub(crate) fn native_concave_hull(
         let right = next_halfedge(halfedge);
         bump_boundary_degree(&mut boundary_degree, &triangulation, left, 1);
         bump_boundary_degree(&mut boundary_degree, &triangulation, right, 1);
-        push_live_twin_boundary(points, &triangulation, &alive, left, &mut heap);
-        push_live_twin_boundary(points, &triangulation, &alive, right, &mut heap);
+        push_live_twin_boundary(points, &triangulation, &alive, left, &mut heap)?;
+        push_live_twin_boundary(points, &triangulation, &alive, right, &mut heap)?;
     }
 
     extract_concave_boundary(points, &triangulation, &alive)
@@ -209,11 +216,12 @@ fn push_live_twin_boundary(
     alive: &[bool],
     peeled_halfedge: usize,
     heap: &mut BinaryHeap<ConcaveBoundaryEdge>,
-) {
+) -> crate::error::Result<()> {
     let twin = triangulation.halfedges[peeled_halfedge];
     if twin != EMPTY && is_boundary_halfedge(triangulation, alive, twin) {
-        heap.push(ConcaveBoundaryEdge::new(points, triangulation, twin));
+        crate::try_push_heap(heap, ConcaveBoundaryEdge::new(points, triangulation, twin))?;
     }
+    Ok(())
 }
 
 fn extract_concave_boundary(
@@ -226,7 +234,9 @@ fn extract_concave_boundary(
     // one `Vec` per point. `overflowed` flags any degree>2 vertex the two slots
     // cannot represent, preserving the malformed-boundary rejection below.
     const NONE: u32 = u32::MAX;
-    let mut adjacency = vec![[NONE; 2]; points.len()];
+    let mut adjacency = Vec::new();
+    crate::try_reserve_vec(&mut adjacency, points.len())?;
+    adjacency.resize(points.len(), [NONE; 2]);
     let mut overflowed = false;
     for halfedge in 0..triangulation.triangles.len() {
         if is_boundary_halfedge(triangulation, alive, halfedge) {
@@ -253,11 +263,13 @@ fn extract_concave_boundary(
         ));
     }
 
-    let mut ring = Vec::with_capacity(adjacency.iter().filter(|slot| slot[0] != NONE).count());
+    let boundary_vertex_count = adjacency.iter().filter(|slot| slot[0] != NONE).count();
+    let mut ring = Vec::new();
+    crate::try_reserve_vec(&mut ring, boundary_vertex_count)?;
     let mut previous = u32::MAX;
     let mut current = start as u32;
     loop {
-        ring.push(current as usize);
+        crate::try_push_vec(&mut ring, current as usize)?;
         let neighbors = adjacency[current as usize];
         let next = if neighbors[0] == previous {
             neighbors[1]
@@ -288,10 +300,18 @@ fn canonicalize_open_hull_indices(
             "concave hull boundary is empty",
         ));
     }
-    let mut closed: Vec<Point> = ring.iter().map(|&index| points[index]).collect();
-    closed.push(points[ring[0]]);
-    let winding = ring_winding(&closed);
-    if closed.len() < Ring::MIN_VERTICES_CLOSED || winding.is_degenerate() {
+    if ring.len() < Ring::MIN_VERTICES_OPEN {
+        return Err(GeometryErrorKind::triangulation(
+            "concave hull boundary is degenerate",
+        ));
+    }
+    let mut cycle = Vec::new();
+    crate::try_reserve_vec(&mut cycle, ring.len())?;
+    for &index in &ring {
+        crate::try_push_vec(&mut cycle, points[index].xy())?;
+    }
+    let winding = open_xy_cycle_winding(&cycle);
+    if winding.is_degenerate() {
         return Err(GeometryErrorKind::triangulation(
             "concave hull boundary is degenerate",
         ));
@@ -388,5 +408,40 @@ mod tests {
         let points = points(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
         let error = canonicalize_open_hull_indices(&points, vec![0, 1, 2]).unwrap_err();
         assert_triangulation_error(error, "concave hull boundary is degenerate");
+    }
+
+    #[test]
+    fn boundary_staging_propagates_each_allocation_and_retries() {
+        let points = points(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]);
+        let triangulation = Triangulation {
+            triangles: vec![0, 1, 2],
+            halfedges: vec![EMPTY; 3],
+            hull: vec![0, 1, 2],
+        };
+        let alive = [true];
+        let (boundary, allocations) = crate::test_support::allocation_count(|| {
+            extract_concave_boundary(&points, &triangulation, &alive)
+                .expect("valid boundary extraction")
+        });
+        assert_eq!(boundary, vec![0, 1, 2]);
+        assert!(allocations > 0, "boundary staging must allocate");
+
+        for allowed in 0..allocations {
+            let result = crate::test_support::fail_allocations_after(allowed, || {
+                extract_concave_boundary(&points, &triangulation, &alive)
+            });
+            let Err(error) = result else {
+                panic!("boundary allocation prefix {allowed} must fail");
+            };
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+            ));
+        }
+
+        assert_eq!(
+            extract_concave_boundary(&points, &triangulation, &alive).unwrap(),
+            boundary
+        );
     }
 }
