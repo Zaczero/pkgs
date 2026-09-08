@@ -645,83 +645,9 @@ pub(in crate::geometry) fn winding_region(
     let mut budget = crate::geometry::ExpansionBudget::new("winding_region", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     return inventory.winding_polygons(&partition, |winding| keep(winding as i32));
-
-    let mut segments = Vec::new();
-    let mut segment_loop: Vec<u32> = Vec::new();
-    let mut loop_anchor: Vec<XY> = Vec::new();
-    let mut loop_ranges: Vec<(u32, u32)> = Vec::new();
-    for (xs, ys) in loops {
-        let before = segments.len();
-        for index in 0..xs.len() {
-            let next = wrap_index(index + 1, xs.len());
-            let start = Point::new_raw_xy(xs[index], ys[index]);
-            let end = Point::new_raw_xy(xs[next], ys[next]);
-            if !same_point(start, end) {
-                segments.push(Segment {
-                    start: start.xy(),
-                    end: end.xy(),
-                });
-                segment_loop.push(loop_anchor.len() as u32);
-            }
-        }
-        if segments.len() > before {
-            loop_ranges.push((before as u32, segments.len() as u32));
-            loop_anchor.push(XY::new(xs[0], ys[0]));
-        }
-    }
-    // Single-loop fast construction (the stroke buffer's whole caseload,
-    // single-ring expansions/erosions too): one closed chain's topology is
-    // positional, so the vertex hashing, the atomic segment soup, and the
-    // edge sort all collapse into one ordinal walk. The arrangement is
-    // bit-identical to the general build below, which stays the exact
-    // oracle and owns every bail (overlaps, T-junctions, repeats).
-    if loop_anchor.len() == 1
-        && let Some(mut arrangement) = Arrangement::from_single_loop(&segments)?
-    {
-        let windings = arrangement.face_windings(&[0]);
-        return assemble_region_polygons(arrangement.region_rings(&windings, keep));
-    }
-    // MULTI-loop positional construction (dissolve leaves, multipolygon
-    // structure repair): the same positional win across K clean loops,
-    // with the general build as the bail oracle. Seeds resolve through
-    // the shared outside-winding logic below either way.
-    let mut arrangement =
-        match Arrangement::<i32>::from_loops(&segments, &loop_ranges, |_| 1)? {
-            Some(arrangement) => arrangement,
-            None => Arrangement::new(&crate::geometry::overlay::self_node_segments(&segments)?),
-        };
-    let probes = arrangement.component_probes();
-    // Single-loop fast seed: one closed loop nodes into ONE connected
-    // component (noding never disconnects a curve), and the unbounded
-    // face's winding is 0 by definition — no per-loop ray queries, no
-    // outside-winding resolution.
-    let seeds: Vec<i32> = if loop_anchor.len() == 1 && probes.len() == 1 {
-        vec![0]
-    } else {
-        // Outside-winding seed per component: every loop lives in exactly
-        // one component, and loops of other components cannot pass through
-        // it — one ray query each (see `outside_winding_seeds`).
-        let loop_component: Vec<u32> = loop_anchor
-            .iter()
-            .map(|&anchor| arrangement.component_of_point(anchor))
-            .collect();
-        let segment_operand = vec![0_u32; segments.len()];
-        crate::geometry::overlay::outside_winding_seeds(
-            &segments,
-            &segment_operand,
-            &segment_loop,
-            &loop_component,
-            &probes,
-        )?
-        .into_iter()
-        .map(|seed| seed[0])
-        .collect()
-    };
-    let windings = arrangement.face_windings(&seeds);
-    // Direct boundary-ring walk: shells arrive CCW and holes CW with no
-    // re-polygonization.
-    assemble_region_polygons(arrangement.region_rings(&windings, keep))
 }
+
+
 
 /// Temporary shell owner used while nesting boundary rings. Line coverage is a
 /// shell operation: the point index deliberately has no hole state, while the

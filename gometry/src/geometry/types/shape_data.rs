@@ -215,13 +215,6 @@ struct TopologyPlan {
     simplicity: OnceLock<bool>,
     antimeridian_crossing: OnceLock<bool>,
     point_tester: OnceLock<Option<Box<PointBatchTester>>>,
-    /// The direct relation engines' stagings, built once per operand.
-    linework: OnceLock<Option<Box<crate::geometry::StagedLinework>>>,
-    rings: OnceLock<Option<Box<crate::geometry::StagedRings>>>,
-    /// Whether every ring of an areal shape has area (the direct engines'
-    /// gate); `false` for a non-areal shape. Each ring is scanned once per
-    /// plan.
-    areal_rings_have_area: OnceLock<bool>,
 }
 
 /// Shape-derived metric products shared by persistent and transient plans.
@@ -350,43 +343,6 @@ impl PreparedPlan {
         self.topology.get().map_or(0, |topology| {
             topology.cartesian_graph_accesses.load(Ordering::Relaxed)
         })
-    }
-
-    /// The shape staged as linework for the direct relation engine, `None`
-    /// when it is not a line operand they admit.
-    pub(crate) fn staged_linework(&self) -> Result<Option<&crate::geometry::StagedLinework>> {
-        Ok(self
-            .topology()?
-            .linework
-            .get_or_try_init(|| {
-                crate::geometry::stage_linework(self.shape())?
-                    .map(|staged| Box::try_new(staged).map_err(crate::error::Error::from))
-                    .transpose()
-            })?
-            .as_deref())
-    }
-
-    /// Whether every ring of this areal shape has a nonzero exact area
-    /// (`ring_has_area`), decided once per plan.
-    pub(crate) fn areal_rings_have_area(&self) -> Result<bool> {
-        Ok(*self
-            .topology()?
-            .areal_rings_have_area
-            .get_or_init(|| all_rings_have_area(self.shape())))
-    }
-
-    /// The shape's rings staged for the direct relation engine, `None` when
-    /// it is not an areal operand.
-    pub(crate) fn staged_rings(&self) -> Result<Option<&crate::geometry::StagedRings>> {
-        Ok(self
-            .topology()?
-            .rings
-            .get_or_try_init(|| {
-                crate::geometry::stage_rings(self.shape())?
-                    .map(|staged| Box::try_new(staged).map_err(crate::error::Error::from))
-                    .transpose()
-            })?
-            .as_deref())
     }
 
     pub(crate) fn validate_cached(&self) -> Result<Option<&ValidationIssue>> {
@@ -582,28 +538,11 @@ impl HeapSize for ShapeData {
     }
 }
 
-fn all_rings_have_area(shape: &Shape) -> bool {
-    match shape {
-        Shape::Polygon(polygon) => polygon.rings().all(crate::geometry::ring_has_area),
-        Shape::MultiPolygon(polygons) => polygons
-            .iter()
-            .all(|polygon| polygon.rings().all(crate::geometry::ring_has_area)),
-        Shape::GeometryCollection(geometries) => geometries.iter().all(all_rings_have_area),
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Empty(..) => false,
-    }
-}
-
 impl HeapSize for TopologyPlan {
     fn heap_bytes(&self) -> usize {
         self.cartesian_graph.heap_bytes()
             + self.validity.heap_bytes()
             + self.point_tester.heap_bytes()
-            + self.linework.heap_bytes()
-            + self.rings.heap_bytes()
     }
 }
 
@@ -720,57 +659,6 @@ mod footprint_tests {
     }
 
     #[test]
-    fn retained_heap_bytes_counts_staged_relation_products() {
-        use crate::geometry::{CoordSeq, LineSeq, Polygon, Ring};
-
-        let line = PreparedPlan::new(Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 0.0], None, None).unwrap(),
-            )
-            .expect("test line has two vertices"),
-        ))
-        .unwrap();
-        line.topology().expect("publish topology sidecar");
-        let before_line = line.retained_heap_bytes();
-        line.staged_linework()
-            .expect("stage linework")
-            .expect("linework is admitted");
-        let after_line = line.retained_heap_bytes();
-        assert_eq!(
-            after_line - before_line,
-            line.topology
-                .get()
-                .expect("topology sidecar")
-                .linework
-                .heap_bytes()
-        );
-
-        let ring = Ring::closed(vec![
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(1.0, 1.0),
-            Point::new_raw_xy(0.0, 0.0),
-        ])
-        .unwrap();
-        let area =
-            PreparedPlan::new(Shape::Polygon(Polygon::new(ring, Vec::new()).unwrap())).unwrap();
-        area.topology().expect("publish topology sidecar");
-        let before_rings = area.retained_heap_bytes();
-        area.staged_rings()
-            .expect("stage rings")
-            .expect("polygon is admitted");
-        let after_rings = area.retained_heap_bytes();
-        assert_eq!(
-            after_rings - before_rings,
-            area.topology
-                .get()
-                .expect("topology sidecar")
-                .rings
-                .heap_bytes()
-        );
-    }
-
-    #[test]
     fn cold_topology_sidecar_allocation_failure_is_retryable() {
         use crate::error::{ErrorKind, ResourceError};
         use crate::test_support::fail_allocations_after;
@@ -819,55 +707,6 @@ mod footprint_tests {
             plan.metric.get().expect("published sidecar").as_ref(),
             plan.metric.get().expect("reused sidecar").as_ref()
         ));
-    }
-
-    #[test]
-    fn cold_nested_topology_product_allocation_failure_is_retryable() {
-        use crate::error::{ErrorKind, ResourceError};
-        use crate::geometry::{CoordSeq, LineSeq};
-        use crate::test_support::fail_allocations_after;
-
-        let plan = PreparedPlan::new(Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 0.0], None, None).unwrap(),
-            )
-            .expect("test line has two vertices"),
-        ))
-        .unwrap();
-        plan.topology().expect("publish topology sidecar");
-        assert!(
-            plan.topology
-                .get()
-                .expect("sidecar")
-                .linework
-                .get()
-                .is_none()
-        );
-        let error = match fail_allocations_after(0, || plan.staged_linework()) {
-            Ok(_) => panic!("staged linework allocation unexpectedly succeeded"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert!(
-            plan.topology
-                .get()
-                .expect("sidecar remains")
-                .linework
-                .get()
-                .is_none()
-        );
-        let first = plan
-            .staged_linework()
-            .expect("retry after rejection")
-            .expect("linework is admitted") as *const _;
-        let second = plan
-            .staged_linework()
-            .expect("cached linework")
-            .expect("linework is admitted") as *const _;
-        assert_eq!(first, second);
     }
 
     #[test]

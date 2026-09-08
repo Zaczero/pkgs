@@ -506,7 +506,7 @@ pub(super) fn carry_ordinates(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
     }
-    let source = OrdinateSource::build(inputs)?;
+    let source = OrdinateSource::build_direct(inputs);
     carry_or_degrade(
         &output,
         &source,
@@ -529,7 +529,7 @@ pub(crate) fn carry_overlay_ordinates(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
     }
-    let source = OrdinateSource::build(inputs)?;
+    let source = OrdinateSource::build_direct(inputs);
     let declared_axes = overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }
@@ -560,7 +560,7 @@ pub(super) fn carry_each(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(outputs);
     }
-    let source = OrdinateSource::build(inputs)?;
+    let source = OrdinateSource::build_direct(inputs);
     let declared_axes = inputs
         .iter()
         .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
