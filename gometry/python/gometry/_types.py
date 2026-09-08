@@ -645,6 +645,20 @@ class Features:
         object.__setattr__(self, 'properties', property_rows)
         object.__setattr__(self, 'ids', id_rows)
 
+    @classmethod
+    def _from_normalized(
+        cls,
+        geometries: GeometryArray[Geometry | None],
+        properties: tuple[dict[str, Any] | None, ...],
+        ids: tuple[FeatureId, ...],
+    ) -> Self:
+        """Finish native decoding after side-data admission and alignment."""
+        instance = object.__new__(cls)
+        object.__setattr__(instance, 'geometries', geometries)
+        object.__setattr__(instance, 'properties', properties)
+        object.__setattr__(instance, 'ids', ids)
+        return instance
+
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f'cannot set attribute {name!r} on frozen Features')
 

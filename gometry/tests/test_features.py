@@ -227,6 +227,60 @@ def test_from_features_native_object_lane_preserves_python_fidelity() -> None:
     assert result.ids[0] is identifier
 
 
+def test_from_features_mapping_side_data_is_snapshotted() -> None:
+    nested: list[str] = []
+    properties = {'nested': nested}
+    feature = {
+        'type': 'Feature',
+        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+        'properties': properties,
+    }
+
+    result = gm.from_features(feature)
+    properties['after'] = 'not captured'
+
+    assert result.properties[0] is not properties
+    assert result.properties[0] == {'nested': nested}
+    assert result.properties[0]['nested'] is nested
+
+
+def test_from_features_text_and_mapping_keep_distinct_side_data_order() -> None:
+    large_id = 2**100 + 1
+    text = (
+        '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
+        '"properties":{"z":1,"a":2,"z":3,"nested":{"b":1,"a":2,"b":4}},'
+        f'"id":{large_id}'
+        '}'
+    )
+    text_result = gm.from_features(text)
+    assert list(text_result.properties[0]) == ['a', 'nested', 'z']
+    assert text_result.properties[0]['z'] == 3
+    assert list(text_result.properties[0]['nested']) == ['a', 'b']
+    assert text_result.properties[0]['nested']['b'] == 4
+    assert text_result.ids == (large_id,)
+
+    mapping_result = gm.from_features({
+        'type': 'Feature',
+        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+        'properties': {'z': 3, 'a': 2, 'nested': {'b': 4, 'a': 2}},
+        'id': large_id,
+    })
+    assert list(mapping_result.properties[0]) == ['z', 'a', 'nested']
+    assert list(mapping_result.properties[0]['nested']) == ['b', 'a']
+    assert mapping_result.ids[0] == large_id
+
+
+def test_from_features_text_wide_properties_keep_sorted_keys() -> None:
+    properties = ','.join(f'"key_{index:04d}":{index}' for index in range(255, -1, -1))
+    text = (
+        '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
+        '"properties":{' + properties + '}}'
+    )
+    result = gm.from_features(text)
+    assert list(result.properties[0]) == [f'key_{index:04d}' for index in range(256)]
+    assert result.properties[0]['key_0255'] == 255
+
+
 def test_from_features_native_generator_and_json_sequence_match() -> None:
     rows = [
         {

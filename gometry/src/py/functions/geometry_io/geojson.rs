@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::collections::HashMap;
 use std::fmt;
 
 use pyo3::exceptions::PyTypeError;
@@ -572,19 +573,41 @@ fn materialize_text_features(py: Python<'_>, output: TextFeatureOutput) -> PyRes
     crate::try_reserve_pair(&mut properties, &mut ids, output.side_rows.len())
         .map_err(PyErr::from)?;
     for (property, id) in output.side_rows {
-        let property = match property {
-            FeatureSideData::Json(value) => feature_properties_raw_py(py, value.as_deref())?,
-            FeatureSideData::Python(value) => value,
-        };
-        let id = match id {
-            FeatureSideData::Json(value) => feature_id_raw_py(py, value.as_deref())?,
-            FeatureSideData::Python(value) => value,
-        };
+        let (property, id) = normalize_feature_side_data(py, property, id)?;
         crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
     }
+    finish_features(py, geometries, properties, ids)
+}
+
+fn normalize_feature_side_data(
+    py: Python<'_>,
+    property: FeatureSideData,
+    id: FeatureSideData,
+) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    let property = match property {
+        FeatureSideData::Json(value) => feature_properties_raw_py(py, value.as_deref())?,
+        FeatureSideData::Python(value) => value,
+    };
+    let id = match id {
+        FeatureSideData::Json(value) => feature_id_raw_py(py, value.as_deref())?,
+        FeatureSideData::Python(value) => value,
+    };
+    Ok((property, id))
+}
+
+/// Finish a feature result after the native decoder has normalized and owned
+/// both side-data columns. The Python constructor remains the public ingress
+/// validator; this private path only publishes already aligned columns.
+fn finish_features(
+    py: Python<'_>,
+    geometries: Bound<'_, PyAny>,
+    properties: Vec<Py<PyAny>>,
+    ids: Vec<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
     let properties = pyo3::types::PyTuple::new(py, properties)?;
     let ids = pyo3::types::PyTuple::new(py, ids)?;
     Ok(crate::py::support::features_type(py)?
+        .getattr("_from_normalized")?
         .call1((geometries, properties, ids))?
         .unbind())
 }
@@ -938,14 +961,7 @@ fn build_features(
             },
         };
 
-        let property = match row_properties {
-            FeatureSideData::Json(value) => feature_properties_raw_py(py, value.as_deref())?,
-            FeatureSideData::Python(value) => value,
-        };
-        let id = match row_id {
-            FeatureSideData::Json(value) => feature_id_raw_py(py, value.as_deref())?,
-            FeatureSideData::Python(value) => value,
-        };
+        let (property, id) = normalize_feature_side_data(py, row_properties, row_id)?;
         crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
     }
     let result = py.detach(move || -> crate::error::Result<PyGeometryArray> {
@@ -961,11 +977,7 @@ fn build_features(
         },
     };
     let geometries = geometries.into_pyobject(py)?.into_any();
-    let properties = pyo3::types::PyTuple::new(py, properties)?;
-    let ids = pyo3::types::PyTuple::new(py, ids)?;
-    Ok(crate::py::support::features_type(py)?
-        .call1((geometries, properties, ids))?
-        .unbind())
+    finish_features(py, geometries, properties, ids)
 }
 
 struct FeatureTopMeta {
@@ -1440,7 +1452,9 @@ impl RawJsonToPy<'_, '_> {
     fn parse_object(&mut self, depth: usize) -> PyResult<Py<PyAny>> {
         self.consume(b'{')?;
         self.skip_whitespace();
-        let mut values: Vec<(String, Py<PyAny>)> = Vec::new();
+        // Keep duplicate keys last-wins with keyed lookup, then sort the
+        // unique entries to retain the established text-side key order.
+        let mut values: HashMap<String, Py<PyAny>> = HashMap::new();
         if self.current() != Some(b'}') {
             loop {
                 self.skip_whitespace();
@@ -1451,13 +1465,8 @@ impl RawJsonToPy<'_, '_> {
                 self.skip_whitespace();
                 self.consume(b':')?;
                 let value = self.parse_value(depth + 1)?;
-                if let Some((_, existing)) =
-                    values.iter_mut().find(|(existing, _)| *existing == key)
-                {
-                    *existing = value;
-                } else {
-                    crate::try_push(&mut values, (key, value))?;
-                }
+                values.try_reserve(1).map_err(crate::error::Error::from)?;
+                values.insert(key, value);
                 self.skip_whitespace();
                 match self.current() {
                     Some(b',') => self.position += 1,
@@ -1468,6 +1477,12 @@ impl RawJsonToPy<'_, '_> {
         }
         self.consume(b'}')?;
         let dict = PyDict::new(self.py);
+        let map = values;
+        let mut values = Vec::new();
+        crate::try_reserve_vec(&mut values, map.len())?;
+        for value in map {
+            crate::try_push(&mut values, value)?;
+        }
         values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         for (key, value) in values {
             dict.set_item(key, value)?;
