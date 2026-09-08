@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::ffi;
+use pyo3::types::{PyList, PyModule};
 
 use crate::PyGeometry;
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
@@ -158,6 +159,24 @@ fn schema_only_snapshot(py: Python<'_>, array: &PyGeometryArray) -> PyResult<Sch
     let snapshot = unsafe { schema_snapshot(pointer.cast::<ArrowSchema>().cast_const()) };
     drop(capsule);
     Ok(snapshot)
+}
+
+fn install_embedded_gometry_module(py: Python<'_>) -> PyResult<()> {
+    // Match the native-module setup used by the embedded Python tests in
+    // lib.rs, then let the real source package load _arrow.py from this crate.
+    let native = PyModule::new(py, "gometry._lib")?;
+    crate::lib(&native)?;
+
+    let package = PyModule::new(py, "gometry")?;
+    let package_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("python/gometry");
+    let package_path = package_path.to_str().expect("gometry source path is UTF-8");
+    package.setattr("__path__", PyList::new(py, [package_path])?)?;
+    package.setattr("__package__", "gometry")?;
+
+    let modules = PyModule::import(py, "sys")?.getattr("modules")?;
+    modules.set_item("gometry", &package)?;
+    modules.set_item("gometry._lib", &native)?;
+    Ok(())
 }
 
 unsafe extern "C" fn counted_array_release(array: *mut ArrowArray) {
@@ -411,6 +430,7 @@ fn schema_only_uses_borrowed_description_without_payload_work() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     crate::test_support::initialize_python();
     Python::attach(|py| -> PyResult<()> {
+        install_embedded_gometry_module(py)?;
         let present = PyGeometryArray::from_shapes(
             vec![
                 Shape::Point(Point::new_raw_xy(1.0, 2.0)),
@@ -478,34 +498,83 @@ fn schema_only_uses_borrowed_description_without_payload_work() {
 }
 
 #[test]
-fn schema_tree_and_metadata_publication_releases_guards_and_retries() {
+fn schema_description_epoch_publication_releases_guards_and_retries() {
     let _test_lock = NATIVE_SCHEMA_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let shapes = vec![crate::io::parse_wkt("POINT ZM (1 2 3 4)").unwrap()];
     let description = describe_shapes(&shapes, None, Some(2020.0)).unwrap();
-    // Warm the description once so every allocation prefix below covers the
-    // schema tree and metadata publication, not one-time setup.
-    drop(description.materialize_schema().unwrap());
-    let (result, allocations) =
-        crate::test_support::allocation_count(|| materialize_description(&description));
-    let schema = result.expect("unfaulted schema publication");
     let node_count = schema_node_count(&description.materialize_schema().unwrap());
+    let (result, allocations) = crate::test_support::allocation_count(|| {
+        let node = description.materialize_schema()?;
+        node.materialize_schema()
+    });
+    let schema = result.expect("unfaulted schema publication");
     drop(schema);
     assert!(allocations > 0);
 
+    assert_schema_allocation_retries(
+        allocations,
+        node_count,
+        |successful| {
+            crate::test_support::fail_allocations_after(successful, || {
+                let node = description.materialize_schema()?;
+                node.materialize_schema()
+            })
+        },
+        || {
+            let node = description.materialize_schema()?;
+            node.materialize_schema()
+        },
+    );
+}
+
+#[test]
+fn crs_schema_tree_publication_releases_guards_after_proj_export() {
+    let _test_lock = NATIVE_SCHEMA_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let shapes = vec![crate::io::parse_wkt("POINT ZM (1 2 3 4)").unwrap()];
+    let crs = "EPSG:4326".to_owned();
+    let description = describe_shapes(&shapes, Some(&crs), None).unwrap();
+    // PROJ's CRS export/cache boundary is outside this allocator test: build
+    // the actual description and its CRS metadata first, then inject failures
+    // only while publishing the native schema tree that retains those bytes.
+    let node = description.materialize_schema().unwrap();
+    let node_count = schema_node_count(&node);
+    let (result, allocations) = crate::test_support::allocation_count(|| node.materialize_schema());
+    let schema = result.expect("unfaulted schema publication");
+    drop(schema);
+    assert!(allocations > 0);
+
+    assert_schema_allocation_retries(
+        allocations,
+        node_count,
+        |successful| {
+            let failing_node = node.clone();
+            crate::test_support::fail_allocations_after(successful, || {
+                failing_node.materialize_schema()
+            })
+        },
+        || node.materialize_schema(),
+    );
+}
+
+fn assert_schema_allocation_retries(
+    allocations: usize,
+    node_count: usize,
+    mut failed: impl FnMut(usize) -> NativeArrowExportResult<GometryArrowSchema>,
+    mut retry: impl FnMut() -> NativeArrowExportResult<GometryArrowSchema>,
+) {
     for successful in 0..allocations {
         reset_schema_guard_drops();
         reset_schema_release_callbacks();
-        let result = crate::test_support::fail_allocations_after(successful, || {
-            materialize_description(&description)
-        });
+        let result = failed(successful);
         assert!(result.is_err(), "allocation {successful} was not rejected");
         let failed_drops = schema_guard_drops();
         assert!(failed_drops <= node_count);
         assert_eq!(failed_drops, schema_release_callbacks());
-        let retry = materialize_description(&description)
-            .expect("schema publication must remain retryable");
+        let retry = retry().expect("schema publication must remain retryable");
         drop(retry);
         assert_eq!(
             schema_guard_drops(),
@@ -514,13 +583,6 @@ fn schema_tree_and_metadata_publication_releases_guards_and_retries() {
         );
         assert_eq!(schema_guard_drops(), schema_release_callbacks());
     }
-}
-
-fn materialize_description(
-    description: &SchemaDescription<'_>,
-) -> NativeArrowExportResult<GometryArrowSchema> {
-    let node = description.materialize_schema()?;
-    node.materialize_schema()
 }
 
 fn schema_node_count(node: &SchemaNode) -> usize {

@@ -167,12 +167,11 @@ pub(crate) fn geometry_to_schema_capsule(
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
     let shape = std::sync::Arc::clone(&geometry.shape);
-    let crs = geometry.crs_str().map(str::to_owned);
-    let epoch = geometry.epoch();
+    let frame = geometry.frame.clone();
     let node = py
         .detach(move || {
             let description =
-                crate::py::arrow_c::describe_shape(shape.shape(), crs.as_deref(), epoch)?;
+                crate::py::arrow_c::describe_shape(shape.shape(), frame.crs_str(), frame.epoch())?;
             description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;

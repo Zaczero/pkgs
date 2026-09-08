@@ -245,9 +245,7 @@ pub(crate) use export_plan::{
     plan_geometry_array, plan_shapes, plan_wkb_shapes, prepare_export_plan,
 };
 #[cfg(test)]
-pub(crate) use export_plan::{
-    SchemaDescription, describe_shapes, payload_events, reset_payload_events,
-};
+pub(crate) use export_plan::{describe_shapes, payload_events, reset_payload_events};
 pub(crate) use import::{capsule_pointer, geometries_from_arrow_c, release_imported_stream};
 pub(crate) use native::{
     NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
