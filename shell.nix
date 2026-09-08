@@ -60,7 +60,6 @@ let
     # Caddyfile entry for the host is maintained by hand on edge.
     (makeScript "docs-serve" ''
       export MATURIN_IMPORT_HOOK_ENABLED=0
-      export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$(pwd)/target}"
       unset SOURCE_DATE_EPOCH
       if [ ! -f properdocs.yml ]; then
         echo "no properdocs.yml in $(pwd)" >&2
@@ -72,7 +71,6 @@ let
 
     (makeScript "docs-build" ''
       export MATURIN_IMPORT_HOOK_ENABLED=0
-      export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$(pwd)/target}"
       unset SOURCE_DATE_EPOCH
       if [ ! -f properdocs.yml ]; then
         echo "no properdocs.yml in $(pwd)" >&2
@@ -87,7 +85,6 @@ let
 
     (makeScript "docs-deploy" ''
       export MATURIN_IMPORT_HOOK_ENABLED=0
-      export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$(pwd)/target}"
       unset SOURCE_DATE_EPOCH
       if [ ! -f properdocs.yml ]; then
         echo "no properdocs.yml in $(pwd)" >&2

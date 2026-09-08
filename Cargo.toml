@@ -134,8 +134,8 @@ split-debuginfo = "unpacked"
 opt-level = 2
 debug = false
 
-# Local release builds stay cheap: thin LTO and default codegen-units cut a warmed
-# build from ~9min to ~4min, and every correctness gate builds a release wheel.
+# Local optimized builds use thin LTO and default codegen-units. Ordinary
+# development builds use the dev profile, including its assertions and checks.
 # `strip` is deliberately absent — with `debug` set, Cargo already defaults to
 # "none", so naming it would restate a default. Line tables plus the symbol table
 # are what turn a panic into a backtrace with names and file:line.
