@@ -772,7 +772,16 @@ impl<'a> PolylabelField<'a> {
             };
             return Ok(distance);
         }
+        // A positive subnormal seed can square to zero. Zero is a valid exact
+        // contact seed, but an underflowed positive seed would prune every
+        // positive AABB bound before the squared refinement gets a chance to
+        // run.
         let bound_squared = bound * bound;
+        let bound_squared = if bound > 0.0 && bound_squared == 0.0 {
+            f64::INFINITY
+        } else {
+            bound_squared
+        };
         let squared = match &self.bvh {
             Some(bvh) => bvh.min_point_distance_with_stack::<true>(
                 &self.linework,
@@ -903,6 +912,26 @@ mod tests {
             let fraction = index as f64 / subdivisions as f64;
             let x = -extent + 2.0 * extent * fraction;
             points.push(Point::new_raw_xy(x, half_height));
+        }
+        points.push(points[0]);
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn dense_unit_polygon(subdivisions: usize) -> Shape {
+        let mut points = Vec::with_capacity(2 * (subdivisions + 1) + 1);
+        for index in 0..=subdivisions {
+            let fraction = index as f64 / subdivisions as f64;
+            points.push(Point::new_raw_xy(-1.0 + 2.0 * fraction, -1.0));
+        }
+        for index in (0..=subdivisions).rev() {
+            let fraction = index as f64 / subdivisions as f64;
+            points.push(Point::new_raw_xy(-1.0 + 2.0 * fraction, 1.0));
         }
         points.push(points[0]);
         Shape::Polygon(
@@ -1059,6 +1088,18 @@ mod tests {
             )
             .unwrap();
         assert_eq!(actual.to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn unframed_positive_seed_underflow_does_not_prune_positive_distance() {
+        let shape = dense_unit_polygon(256);
+        let mut field = PolylabelField::new(&shape, 1.0, None).unwrap();
+        let tiny_seed = f64::from_bits(1);
+        assert_eq!(tiny_seed * tiny_seed, 0.0);
+        let distance = field
+            .boundary_distance(Point::new_raw_xy(0.0, 0.0), tiny_seed)
+            .unwrap();
+        assert_eq!(distance.to_bits(), 1.0_f64.to_bits());
     }
 
     #[test]
