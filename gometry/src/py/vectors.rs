@@ -200,8 +200,8 @@ impl ImmutableI64Owner for Groups {}
 mod ctor;
 
 impl Groups {
-    /// Row `i`'s window into the full int64 values buffer.
-    fn int64_window(&self, row: usize) -> Range<usize> {
+    /// Row `i`'s logical value window in the backing payload.
+    fn row_values_window(&self, row: usize) -> Range<usize> {
         let start = self.offsets[self.rows.start + row] as usize;
         let end = self.offsets[self.rows.start + row + 1] as usize;
         start..end
@@ -211,11 +211,7 @@ impl Groups {
         let GroupsValues::Int64(values) = &self.values else {
             unreachable!("int64_row_slice requires Int64 backing");
         };
-        &values[self.int64_window(row)]
-    }
-
-    fn geometry_indices_window(&self, row: usize) -> Range<usize> {
-        self.int64_window(row)
+        &values[self.row_values_window(row)]
     }
 
     fn geometry_row_view(&self, row: usize) -> PyResult<PyGeometryArray> {
@@ -223,7 +219,7 @@ impl Groups {
             unreachable!("geometry_row_view requires Geometry backing");
         };
         values
-            .gather_logical_row_range(self.geometry_indices_window(row))
+            .gather_logical_row_range(self.row_values_window(row))
             .map_err(PyErr::from)
     }
 
@@ -231,11 +227,11 @@ impl Groups {
         let GroupsValues::Cells(values) = &self.values else {
             unreachable!("cell_row_view requires Cells backing");
         };
-        values.logical_row_range(self.int64_window(row))
+        values.logical_row_range(self.row_values_window(row))
     }
 
     fn coordinate_values_window(&self, row: usize) -> Range<usize> {
-        let rows = self.int64_window(row);
+        let rows = self.row_values_window(row);
         let GroupsValues::Coordinates { dimensions, .. } = &self.values else {
             unreachable!("coordinate_values_window requires Coordinates backing");
         };
@@ -248,15 +244,19 @@ impl Groups {
         slf: Bound<'_, Self>,
         row: usize,
     ) -> PyResult<Py<PyAny>> {
-        let GroupsValues::Coordinates { dimensions, .. } = &self.values else {
+        let GroupsValues::Coordinates { values, dimensions } = &self.values else {
             unreachable!("coordinate_row_array requires Coordinates backing");
         };
-        let rows = self.int64_window(row).len();
-        let values = match &self.values {
-            GroupsValues::Coordinates { values, .. } => &values[self.coordinate_values_window(row)],
-            _ => unreachable!(),
-        };
-        numpy::float64_matrix_slice_array(py, slf.into_any(), values, rows, *dimensions)
+        let rows = self.row_values_window(row);
+        let start = rows.start * *dimensions;
+        let end = rows.end * *dimensions;
+        numpy::float64_matrix_slice_array(
+            py,
+            slf.into_any(),
+            &values[start..end],
+            rows.len(),
+            *dimensions,
+        )
     }
 
     fn slice_rows(&self, rows: Range<usize>) -> Self {
@@ -333,7 +333,7 @@ impl Groups {
     fn groups_equal(&self, other: &Self) -> PyResult<bool> {
         if self.rows.len() != other.rows.len()
             || (0..self.rows.len())
-                .any(|row| self.int64_window(row).len() != other.int64_window(row).len())
+                .any(|row| self.row_values_window(row).len() != other.row_values_window(row).len())
         {
             return Ok(false);
         }
@@ -811,7 +811,7 @@ impl Groups {
                         GroupsValues::Int64(_) => {
                             let value_count = rows.clone().try_fold(0_usize, |total, row| {
                                 total
-                                    .checked_add(this.int64_window(row).len())
+                                    .checked_add(this.row_values_window(row).len())
                                     .ok_or_else(|| {
                                         PyOverflowError::new_err(
                                             "Groups values size overflows usize",
@@ -842,7 +842,7 @@ impl Groups {
                             );
                             let value_count = rows.clone().try_fold(0_usize, |total, row| {
                                 total
-                                    .checked_add(this.geometry_indices_window(row).len())
+                                    .checked_add(this.row_values_window(row).len())
                                     .ok_or_else(|| {
                                         PyOverflowError::new_err(
                                             "Groups values size overflows usize",
@@ -853,8 +853,8 @@ impl Groups {
                                 CsrBuilder::<Shape>::with_capacity(value_count, count)
                                     .map_err(PyErr::from)?;
                             for row in rows {
-                                let row_values = values
-                                    .gather_logical_row_range(this.geometry_indices_window(row))?;
+                                let row_values =
+                                    values.gather_logical_row_range(this.row_values_window(row))?;
                                 for shape in row_values.storage().iter_shapes() {
                                     let shape = shape.map_err(PyErr::from)?.into_owned();
                                     builder.push(shape).map_err(PyErr::from)?;
@@ -884,7 +884,7 @@ impl Groups {
                         GroupsValues::Coordinates { values, dimensions } => {
                             let value_count = rows.clone().try_fold(0_usize, |total, row| {
                                 total
-                                    .checked_add(this.int64_window(row).len())
+                                    .checked_add(this.row_values_window(row).len())
                                     .ok_or_else(|| {
                                         PyOverflowError::new_err(
                                             "Groups values size overflows usize",

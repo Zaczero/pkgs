@@ -293,6 +293,28 @@ def test_coordinate_groups_are_readonly_and_pickle_round_trip() -> None:
     assert restored == groups
 
 
+def test_coordinate_groups_slice_xyz_m_rows_from_the_source_window() -> None:
+    groups = gm.get_coordinates(
+        gm.GeometryArray([
+            gm.from_wkt('LINESTRING ZM (0 0 1 10, 1 1 2 20)'),
+            None,
+            gm.from_wkt('LINESTRING ZM (2 2 3 30, 3 3 4 40, 4 4 5 50)'),
+        ]),
+        axes='XYZM',
+    )
+    assert groups.offsets.tolist() == [0, 2, 2, 5]
+
+    # The slice retains absolute source offsets, so its first nonempty row
+    # must multiply the selected coordinate-row range rather than a rebased
+    # payload position.
+    selected = groups[1:]
+    assert selected[0].shape == (0, 4)
+    np.testing.assert_array_equal(
+        selected[1],
+        [[2.0, 2.0, 3.0, 30.0], [3.0, 3.0, 4.0, 40.0], [4.0, 4.0, 5.0, 50.0]],
+    )
+
+
 def test_coordinate_columns_are_readonly_ndarrays() -> None:
     line = gm.LineString([(0, 0), (1, 1)], z=[5, 6])
     xs = line.coords.x
