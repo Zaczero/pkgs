@@ -6,9 +6,10 @@ use ahash::HashSetExt as _;
 use crate::boundary::geographic::invalid_lonlat_error;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicInputs, GeographicViewError};
+use crate::geometry::overlay::exact_partition::ExactSourceInventory;
 use crate::geometry::overlay::{
-    OverlayOp, Strictness, build_overlay_shape, build_overlay_shape_from_chains, dedup_points,
-    merge_chain_edges, overlay_declared_axes,
+    OverlayOp, Strictness, build_certified_overlay_shape, build_overlay_shape,
+    build_overlay_shape_from_chains, dedup_points, merge_chain_edges, overlay_declared_axes,
 };
 use crate::geometry::segments::compare_along_segment;
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
@@ -124,12 +125,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
             let mut refs = Vec::new();
             crate::try_reserve_vec(&mut refs, geometries.len())?;
             refs.extend(geometries.iter().map(std::borrow::Borrow::borrow));
-            overlay_admitted(
-                OverlayInputs::Cartesian(&refs),
-                op,
-                strictness,
-                bounds_certificates,
-            )
+            exact_cartesian_overlay(&refs, op, strictness)
         },
         TopologyDomain::Geographic(frame) => {
             let originals = GeographicInputs::try_from_shapes(
@@ -140,6 +136,31 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
             overlay_all_geographic_from(&originals, op, strictness, bounds_certificates)
         },
     }
+}
+
+/// The one live Cartesian overlay route. Source inventory, exact incidence,
+/// cell selection, dimensional absorption, and checked emission all belong to
+/// `ExactPartition`; this sink only serializes the certified plan and carries
+/// ordinates afterwards.
+fn exact_cartesian_overlay(
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strictness: Strictness,
+) -> Result<Shape> {
+    if inputs.len() == 1 && operation == OverlayOp::Intersection {
+        return Ok(inputs[0].clone());
+    }
+    let inventory = ExactSourceInventory::from_shapes(inputs)?;
+    let mut budget = crate::geometry::ExpansionBudget::new(operation.name(), "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let (points, lines, polygons) = inventory.overlay_parts(&partition, operation)?;
+    let shape = build_certified_overlay_shape(points, lines, polygons)?;
+    let shape = if shape.is_empty() {
+        empty_nary_overlay_shape(inputs, operation)
+    } else {
+        shape
+    };
+    crate::geometry::carry_overlay_ordinates(shape, inputs, operation, strictness.is_strict())
 }
 
 pub(in crate::geometry) fn overlay_all_geographic_from(

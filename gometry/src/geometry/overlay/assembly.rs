@@ -243,6 +243,42 @@ pub(crate) fn build_overlay_shape(
     build_overlay_shape_from_chains(points, merge_chains(lines)?, polygons)
 }
 
+/// Serialize an already certified exact-partition plan without reclassifying
+/// points or lines against rounded polygon coordinates. The exact selector has
+/// already performed dimensional absorption, so any further coverage test here
+/// would be a second topology owner.
+pub(crate) fn build_certified_overlay_shape(
+    mut points: Vec<Point>,
+    mut lines: Vec<CoordSeq>,
+    mut polygons: Vec<Polygon>,
+) -> crate::error::Result<Shape> {
+    points.sort_by(crate::geometry::compare_points);
+    lines.sort_by(crate::geometry::compare_point_slices);
+    polygons.sort_by(crate::geometry::compare_polygons);
+    let point_part = (!points.is_empty())
+        .then(|| Shape::narrow_points(CoordinateAxes::XY, points))
+        .transpose()?;
+    let line_part = (!lines.is_empty())
+        .then(|| {
+            Shape::narrow_lines(
+                CoordinateAxes::XY,
+                lines.into_iter().map(LineSeq::from_proven).collect(),
+            )
+        })
+        .transpose()?;
+    let polygon_part = (!polygons.is_empty())
+        .then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons))
+        .transpose()?;
+    let parts: Vec<Shape> = [point_part, line_part, polygon_part]
+        .into_iter()
+        .flatten()
+        .collect();
+    match <[Shape; 1]>::try_from(parts) {
+        Ok([single]) => Ok(single),
+        Err(parts) => Shape::geometry_collection(parts),
+    }
+}
+
 /// Canonicalize overlay buckets into the narrowest representable `Shape`.
 ///
 /// Points and lines covered by the polygon output are absorbed (a piece inside

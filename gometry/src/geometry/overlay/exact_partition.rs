@@ -25,8 +25,9 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, try_compare_ratios};
 use crate::geometry::{
-    CoordSeq, ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _, Point, PointKey,
-    Polygon, Result, Ring, Segment, XY, for_each_candidate_pair, same_point, single_chain,
+    CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _,
+    LineSeq, Point, PointKey, Polygon, Result, Ring, Segment, Shape, XY, for_each_candidate_pair,
+    same_point, single_chain,
 };
 use crate::try_reserve_vec;
 
@@ -371,6 +372,7 @@ impl BoundaryPlan {
             }
             xs.push(chords[0].start.x);
             ys.push(chords[0].start.y);
+            canonicalize_closed_xy(&mut xs, &mut ys);
             rings.push(Some(Ring::from_closed(CoordSeq::try_from_vecs(
                 xs, ys, None, None,
             )?)));
@@ -415,8 +417,16 @@ impl BoundaryPlan {
                 xs.push(end.x);
                 ys.push(end.y);
             }
+            if let (Some(first), Some(last)) =
+                (xs.first().zip(ys.first()), xs.last().zip(ys.last()))
+                && (last.0, last.1) < (first.0, first.1)
+            {
+                xs.reverse();
+                ys.reverse();
+            }
             lines.push(CoordSeq::try_from_vecs(xs, ys, None, None)?);
         }
+        lines.sort_by(crate::geometry::compare_point_slices);
         let mut points = Vec::new();
         try_reserve_vec(&mut points, isolated.len())?;
         points.extend(
@@ -667,6 +677,24 @@ impl BoundaryPlan {
         }
         Ok(items)
     }
+}
+
+fn canonicalize_closed_xy(xs: &mut [f64], ys: &mut [f64]) {
+    let open = xs.len().saturating_sub(1);
+    if open == 0 {
+        return;
+    }
+    let start = (0..open)
+        .min_by(|&left, &right| {
+            xs[left]
+                .total_cmp(&xs[right])
+                .then_with(|| ys[left].total_cmp(&ys[right]))
+        })
+        .unwrap_or(0);
+    xs[..open].rotate_left(start);
+    ys[..open].rotate_left(start);
+    xs[open] = xs[0];
+    ys[open] = ys[0];
 }
 
 fn emitted_pair_preserves_incidence(left: [(NodeId, XY); 2], right: [(NodeId, XY); 2]) -> bool {
@@ -971,6 +999,400 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     /// Node ownership in explicit input-point occurrence order, including duplicates.
     pub point_nodes: Vec<NodeId>,
     pub point_sources: Vec<(NodeId, u32)>,
+    /// The first source spelling of each stored node. `PointKey` deliberately
+    /// canonicalizes signed zero for identity; emission must not do the same
+    /// to an endpoint that was already present in the input.
+    stored_points: Vec<Option<XY>>,
+}
+
+/// Fallible Cartesian source inventory shared by overlay, relation, clipping,
+/// repair, and raw linework consumers.
+///
+/// The inventory is deliberately source-oriented: duplicate/reversed segment
+/// occurrences remain in `source_*` until the exact partition has attributed
+/// them to one unique edge. Ring identity and operand identity therefore stay
+/// available for winding and set-operation selection after noding.
+pub(in crate::geometry) struct ExactSourceInventory {
+    unique: Vec<Segment>,
+    provenance: SegmentProvenance,
+    source_operands: Vec<u32>,
+    source_rings: Vec<Option<u32>>,
+    polygon_rings: Vec<Vec<Range<usize>>>,
+    ring_count: usize,
+    isolated: Vec<XY>,
+    isolated_operands: Vec<u32>,
+}
+
+impl ExactSourceInventory {
+    pub(in crate::geometry) fn from_shapes(shapes: &[&Shape]) -> Result<Self> {
+        let mut staged = StagedExactSources::new(shapes.len())?;
+        for (operand, shape) in shapes.iter().enumerate() {
+            staged.append_shape(shape, operand as u32)?;
+        }
+        let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
+        Ok(Self {
+            unique,
+            provenance,
+            source_operands: staged.source_operands,
+            source_rings: staged.source_rings,
+            polygon_rings: staged.polygon_rings,
+            ring_count: staged.ring_count,
+            isolated: staged.isolated,
+            isolated_operands: staged.isolated_operands,
+        })
+    }
+
+    pub(in crate::geometry) fn partition(
+        &self,
+        budget: &mut ExpansionBudget,
+    ) -> Result<ExactPartition<'_>> {
+        partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)
+    }
+
+    fn operand_count(&self) -> usize {
+        self.polygon_rings.len()
+    }
+
+    /// Select and serialize all relatively open cells for one Cartesian
+    /// operation. The exact partition is the only incidence owner; this
+    /// method never reconstructs a graph from rounded coordinates.
+    pub(in crate::geometry) fn overlay_parts(
+        &self,
+        partition: &ExactPartition<'_>,
+        operation: crate::geometry::OverlayOp,
+    ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let cells = self.select_cells(partition, &topology, &edges, &global, operation)?;
+        let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
+        plan.emit_xy_parts(partition, &topology)
+    }
+
+    fn select_cells(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+        operation: crate::geometry::OverlayOp,
+    ) -> Result<ArealCells> {
+        let operands = self.operand_count();
+        let mut face_membership = Vec::new();
+        try_reserve_vec(&mut face_membership, global.count as usize)?;
+        face_membership.resize(global.count as usize * operands, false);
+        let mut cells = ArealCells {
+            faces: Vec::new(),
+            spans: Vec::new(),
+            nodes: Vec::new(),
+        };
+        try_reserve_vec(&mut cells.faces, global.count as usize)?;
+        cells.faces.resize(global.count as usize, false);
+        try_reserve_vec(&mut cells.spans, partition.spans.len())?;
+        cells.spans.resize(partition.spans.len(), false);
+        try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
+        cells.nodes.resize(partition.recipes.len(), false);
+
+        let mut windings = Vec::new();
+        try_reserve_vec(&mut windings, self.ring_count)?;
+        windings.resize(self.ring_count, 0_i64);
+        partition.visit_face_windings(
+            topology,
+            edges,
+            global,
+            &self.source_rings,
+            self.ring_count,
+            |face, winding| {
+                for operand in 0..operands {
+                    let occupied = self.operand_occupied(winding, operand);
+                    face_membership[face as usize * operands + operand] = occupied;
+                }
+                cells.faces[face as usize] = select_operation(
+                    operation,
+                    &face_membership[face as usize * operands..][..operands],
+                );
+                Ok(())
+            },
+        )?;
+
+        // Every exact span is a relatively open one-dimensional cell. Its
+        // source support includes ring boundaries and line sources; a selected
+        // two-dimensional neighbour supplies downward closure, while the
+        // later emission plan absorbs spans covered on both sides.
+        for (span_index, span) in partition.spans.iter().enumerate() {
+            let mut membership = Vec::new();
+            try_reserve_vec(&mut membership, operands)?;
+            membership.resize(operands, false);
+            for &(source, _) in partition.owners(span_index) {
+                // A ring boundary is a one-cell support only when it bounds
+                // an occupied two-cell face. The face terms below provide
+                // that closure. `None` is reserved for genuine line support
+                // and collapsed rings, which remain line cells even without
+                // an occupied face (the collapsed-shell contract).
+                if self.source_rings[source as usize].is_none() {
+                    membership[self.source_operands[source as usize] as usize] = true;
+                }
+            }
+            for (slot, &edge) in edges.iter().enumerate() {
+                if edge as usize != span_index {
+                    continue;
+                }
+                let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
+                let twin = topology.twins[slot] as usize;
+                let other = global.walk_faces[topology.face_of[twin] as usize] as usize;
+                for operand in 0..operands {
+                    membership[operand] |= face_membership[face * operands + operand]
+                        || face_membership[other * operands + operand];
+                }
+            }
+            cells.spans[span_index] = select_operation(operation, &membership);
+            if cells.spans[span_index] {
+                cells.nodes[span.start.0 as usize] = true;
+                cells.nodes[span.end.0 as usize] = true;
+            }
+        }
+
+        // Endpoint incidences are node-cell source membership. Explicit point
+        // occurrences are added separately because they have no segment owner.
+        let mut node_membership = Vec::new();
+        try_reserve_vec(
+            &mut node_membership,
+            partition.recipes.len().saturating_mul(operands),
+        )?;
+        node_membership.resize(partition.recipes.len() * operands, false);
+        for (span_index, span) in partition.spans.iter().enumerate() {
+            for &(source, _) in partition.owners(span_index) {
+                let operand = self.source_operands[source as usize] as usize;
+                node_membership[span.start.0 as usize * operands + operand] = true;
+                node_membership[span.end.0 as usize * operands + operand] = true;
+            }
+        }
+        for (index, &node) in partition.point_nodes.iter().enumerate() {
+            let operand = self.isolated_operands[index] as usize;
+            node_membership[node.0 as usize * operands + operand] = true;
+        }
+        for &(node, source) in &partition.point_sources {
+            let operand = self.source_operands[source as usize] as usize;
+            node_membership[node.0 as usize * operands + operand] = true;
+        }
+        for &node in &partition.isolated {
+            let component = topology.component_of[node.0 as usize] as usize;
+            let host = global.component_hosts[component] as usize;
+            for operand in 0..operands {
+                node_membership[node.0 as usize * operands + operand] |=
+                    face_membership[host * operands + operand];
+            }
+        }
+        for node in 0..partition.recipes.len() {
+            let membership = &node_membership[node * operands..][..operands];
+            cells.nodes[node] |= select_operation(operation, membership);
+        }
+        Ok(cells)
+    }
+
+    fn operand_occupied(&self, winding: &[i64], operand: usize) -> bool {
+        self.polygon_rings[operand].iter().any(|rings| {
+            let mut rings = rings.clone();
+            rings.next().is_some_and(|shell| winding[shell] != 0)
+                && !rings.any(|hole| winding[hole] != 0)
+        })
+    }
+}
+
+struct StagedExactSources {
+    segments: Vec<Segment>,
+    source_operands: Vec<u32>,
+    source_rings: Vec<Option<u32>>,
+    polygon_rings: Vec<Vec<Range<usize>>>,
+    ring_count: usize,
+    isolated: Vec<XY>,
+    isolated_operands: Vec<u32>,
+}
+
+impl StagedExactSources {
+    fn new(operand_count: usize) -> Result<Self> {
+        let mut polygon_rings = Vec::new();
+        try_reserve_vec(&mut polygon_rings, operand_count)?;
+        polygon_rings.resize_with(operand_count, Vec::new);
+        Ok(Self {
+            segments: Vec::new(),
+            source_operands: Vec::new(),
+            source_rings: Vec::new(),
+            polygon_rings,
+            ring_count: 0,
+            isolated: Vec::new(),
+            isolated_operands: Vec::new(),
+        })
+    }
+
+    fn append_shape(&mut self, shape: &Shape, operand: u32) -> Result<()> {
+        match shape {
+            Shape::Point(point) => {
+                try_reserve_vec(&mut self.isolated, 1)?;
+                try_reserve_vec(&mut self.isolated_operands, 1)?;
+                self.isolated.push(point.xy());
+                self.isolated_operands.push(operand);
+            },
+            Shape::MultiPoint(points) => {
+                for point in points.points() {
+                    try_reserve_vec(&mut self.isolated, 1)?;
+                    try_reserve_vec(&mut self.isolated_operands, 1)?;
+                    self.isolated.push(point.xy());
+                    self.isolated_operands.push(operand);
+                }
+            },
+            Shape::LineString(line) => self.append_line(line, operand)?,
+            Shape::MultiLineString(lines) => {
+                for line in lines.iter() {
+                    self.append_line(line, operand)?;
+                }
+            },
+            Shape::Polygon(polygon) => self.append_polygon(polygon, operand)?,
+            Shape::MultiPolygon(polygons) => {
+                for polygon in polygons.iter() {
+                    self.append_polygon(polygon, operand)?;
+                }
+            },
+            Shape::GeometryCollection(geometries) => {
+                for geometry in geometries.iter() {
+                    self.append_shape(geometry, operand)?;
+                }
+            },
+            Shape::Empty(..) => {},
+        }
+        Ok(())
+    }
+
+    fn append_line(&mut self, line: &LineSeq, operand: u32) -> Result<()> {
+        for [start, end] in line.segment_pairs() {
+            self.push_segment(
+                Segment {
+                    start: start.xy(),
+                    end: end.xy(),
+                },
+                operand,
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn append_polygon(&mut self, polygon: &Polygon, operand: u32) -> Result<()> {
+        let first_ring = self.ring_count;
+        for ring in polygon.rings() {
+            let ring_id =
+                u32::try_from(self.ring_count).map_err(|_| ResourceError::SizeOverflow)?;
+            self.ring_count = self
+                .ring_count
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+            let (xs, ys) = (ring.xs(), ring.ys());
+            let mut count = xs.len();
+            if count > 1 && same_point(XY::new(xs[0], ys[0]), XY::new(xs[count - 1], ys[count - 1]))
+            {
+                count -= 1;
+            }
+            let collapsed = crate::geometry::ring_is_collinear(ring.coords());
+            for index in 0..count {
+                let next = if index + 1 == count { 0 } else { index + 1 };
+                self.push_segment(
+                    Segment {
+                        start: XY::new(xs[index], ys[index]),
+                        end: XY::new(xs[next], ys[next]),
+                    },
+                    operand,
+                    (!collapsed).then_some(ring_id),
+                )?;
+            }
+        }
+        try_reserve_vec(&mut self.polygon_rings[operand as usize], 1)?;
+        self.polygon_rings[operand as usize].push(first_ring..self.ring_count);
+        Ok(())
+    }
+
+    fn push_segment(&mut self, segment: Segment, operand: u32, ring: Option<u32>) -> Result<()> {
+        try_reserve_vec(&mut self.segments, 1)?;
+        try_reserve_vec(&mut self.source_operands, 1)?;
+        try_reserve_vec(&mut self.source_rings, 1)?;
+        self.segments.push(segment);
+        self.source_operands.push(operand);
+        self.source_rings.push(ring);
+        Ok(())
+    }
+}
+
+fn dedup_exact_segments(segments: &[Segment]) -> Result<(Vec<Segment>, SegmentProvenance)> {
+    let mut index_of: HashMap<(PointKey, PointKey), u32> =
+        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    index_of
+        .try_reserve(segments.len())
+        .map_err(|_| ResourceError::Allocation)?;
+    let mut unique: Vec<Segment> = Vec::new();
+    try_reserve_vec(&mut unique, segments.len())?;
+    let mut assignment = Vec::new();
+    try_reserve_vec(&mut assignment, segments.len())?;
+    for &segment in segments {
+        let key = crate::geometry::undirected_segment_edge_key(segment);
+        if let Some(&unique_index) = index_of.get(&key) {
+            let representative = unique[unique_index as usize];
+            assignment.push((
+                unique_index,
+                !same_point(representative.start, segment.start),
+            ));
+        } else {
+            let unique_index =
+                u32::try_from(unique.len()).map_err(|_| ResourceError::SizeOverflow)?;
+            index_of.insert(key, unique_index);
+            unique.push(segment);
+            assignment.push((unique_index, false));
+        }
+    }
+    if unique.is_empty() {
+        return Ok((unique, SegmentProvenance::from_csr(vec![0], Vec::new())));
+    }
+    let mut counts = Vec::new();
+    try_reserve_vec(&mut counts, unique.len())?;
+    counts.resize(unique.len(), 0_u32);
+    for &(index, _) in &assignment {
+        counts[index as usize] = counts[index as usize]
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+    }
+    let mut offsets: Vec<u32> = Vec::new();
+    try_reserve_vec(&mut offsets, unique.len() + 1)?;
+    offsets.push(0);
+    for count in counts {
+        let next = offsets
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .checked_add(count)
+            .ok_or(ResourceError::SizeOverflow)?;
+        offsets.push(next);
+    }
+    let mut entries = Vec::new();
+    try_reserve_vec(&mut entries, assignment.len())?;
+    entries.resize(assignment.len(), (0, false));
+    let mut cursor = offsets[..unique.len()].to_vec();
+    for (ordinal, &(index, reversed)) in assignment.iter().enumerate() {
+        let slot = cursor[index as usize] as usize;
+        entries[slot] = (ordinal as u32, reversed);
+        cursor[index as usize] += 1;
+    }
+    Ok((unique, SegmentProvenance::from_csr(offsets, entries)))
+}
+
+fn select_operation(operation: crate::geometry::OverlayOp, membership: &[bool]) -> bool {
+    match operation {
+        crate::geometry::OverlayOp::Union => membership.iter().any(|&value| value),
+        crate::geometry::OverlayOp::Intersection => membership.iter().all(|&value| value),
+        crate::geometry::OverlayOp::Difference => {
+            membership.first().copied().unwrap_or(false)
+                && membership.iter().skip(1).all(|&value| !value)
+        },
+        crate::geometry::OverlayOp::SymmetricDifference => {
+            membership.iter().filter(|&&value| value).count() % 2 == 1
+        },
+    }
 }
 
 impl<'a> ExactPartition<'a> {
@@ -990,7 +1412,7 @@ impl<'a> ExactPartition<'a> {
     pub(in crate::geometry) fn homogeneous(&self, node: NodeId) -> Result<[ExactDyadic; 3]> {
         match self.recipe(node) {
             NodeRecipe::Stored(key) => {
-                let point = key.xy();
+                let point = self.stored_points[node.0 as usize].unwrap_or_else(|| key.xy());
                 Ok([
                     ExactDyadic::try_from_f64(point.x)?,
                     ExactDyadic::try_from_f64(point.y)?,
@@ -1018,10 +1440,17 @@ impl<'a> ExactPartition<'a> {
         try_reserve_vec(&mut coordinates, nodes.len())?;
         for &node in nodes {
             coordinates.push(match self.recipe(node) {
-                NodeRecipe::Stored(key) => key.xy(),
+                NodeRecipe::Stored(key) => {
+                    self.stored_points[node.0 as usize].unwrap_or_else(|| key.xy())
+                },
                 NodeRecipe::Constructed { .. } => {
                     let [x, y, w] = self.homogeneous(node)?;
-                    XY::new(round_ratio(&x, &w)?, round_ratio(&y, &w)?)
+                    let x = round_ratio(&x, &w)?;
+                    let y = round_ratio(&y, &w)?;
+                    XY::new(
+                        if x == 0.0 { 0.0 } else { x },
+                        if y == 0.0 { 0.0 } else { y },
+                    )
                 },
             });
         }
@@ -1697,7 +2126,17 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
 
     let mut endpoint_of: HashMap<PointKey, u32> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    let mut stored_coordinates: HashMap<PointKey, XY> =
+        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     endpoint_of
+        .try_reserve(
+            unique
+                .len()
+                .saturating_mul(2)
+                .saturating_add(isolated.len()),
+        )
+        .map_err(crate::error::Error::from)?;
+    stored_coordinates
         .try_reserve(
             unique
                 .len()
@@ -1712,24 +2151,38 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             .saturating_add(isolated.len()),
     )?;
 
-    let intern_stored =
-        |point: XY, endpoint_of: &mut HashMap<PointKey, u32>, forest: &mut Forest| -> Result<u32> {
-            let key = PointKey::new(point);
-            if let Some(&id) = endpoint_of.get(&key) {
-                return Ok(id);
-            }
-            let id = forest.push(HandleKind::Stored(key))?;
-            endpoint_of.insert(key, id);
-            Ok(id)
-        };
+    let intern_stored = |point: XY,
+                         endpoint_of: &mut HashMap<PointKey, u32>,
+                         stored_coordinates: &mut HashMap<PointKey, XY>,
+                         forest: &mut Forest|
+     -> Result<u32> {
+        let key = PointKey::new(point);
+        if let Some(&id) = endpoint_of.get(&key) {
+            return Ok(id);
+        }
+        let id = forest.push(HandleKind::Stored(key))?;
+        endpoint_of.insert(key, id);
+        stored_coordinates.insert(key, point);
+        Ok(id)
+    };
 
     let mut start_handle = Vec::new();
     let mut end_handle = Vec::new();
     try_reserve_vec(&mut start_handle, unique.len())?;
     try_reserve_vec(&mut end_handle, unique.len())?;
     for &segment in unique {
-        start_handle.push(intern_stored(segment.start, &mut endpoint_of, &mut forest)?);
-        end_handle.push(intern_stored(segment.end, &mut endpoint_of, &mut forest)?);
+        start_handle.push(intern_stored(
+            segment.start,
+            &mut endpoint_of,
+            &mut stored_coordinates,
+            &mut forest,
+        )?);
+        end_handle.push(intern_stored(
+            segment.end,
+            &mut endpoint_of,
+            &mut stored_coordinates,
+            &mut forest,
+        )?);
     }
     let mut cuts: Vec<Vec<SourceCut>> = Vec::new();
     try_reserve_vec(&mut cuts, unique.len())?;
@@ -1747,7 +2200,12 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     for &point in isolated {
         let key = PointKey::new(point);
         let existed = endpoint_of.contains_key(&key);
-        let handle = intern_stored(point, &mut endpoint_of, &mut forest)?;
+        let handle = intern_stored(
+            point,
+            &mut endpoint_of,
+            &mut stored_coordinates,
+            &mut forest,
+        )?;
         point_handles.push(handle);
         if existed {
             continue;
@@ -1809,6 +2267,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     try_reserve_vec(&mut compact_of, forest.parent.len())?;
     compact_of.resize(forest.parent.len(), None);
     let mut recipes: Vec<NodeRecipe> = Vec::new();
+    let mut stored_points: Vec<Option<XY>> = Vec::new();
     for handle in 0..forest.parent.len() {
         let root = forest.find(handle as u32);
         if compact_of[root as usize].is_some() {
@@ -1819,6 +2278,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             HandleKind::Stored(key) => {
                 try_reserve_vec(&mut recipes, 1)?;
                 recipes.push(NodeRecipe::Stored(key));
+                try_reserve_vec(&mut stored_points, 1)?;
+                stored_points.push(stored_coordinates.get(&key).copied());
             },
             HandleKind::Constructed { unique, cut } => {
                 budget.add(1)?;
@@ -1834,6 +2295,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
                 };
                 try_reserve_vec(&mut recipes, 1)?;
                 recipes.push(NodeRecipe::Constructed { unique, num, den });
+                try_reserve_vec(&mut stored_points, 1)?;
+                stored_points.push(None);
             },
         }
         compact_of[root as usize] = Some(id);
@@ -1918,6 +2381,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         isolated: isolated_nodes,
         point_nodes,
         point_sources,
+        stored_points,
     })
 }
 
