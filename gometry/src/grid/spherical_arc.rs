@@ -2901,10 +2901,10 @@ impl AffineSourceArc {
 
 #[cfg(test)]
 fn test_affine_source_arc(lon0: f64, lat0: f64, lon1: f64, lat1: f64) -> Option<AffineSourceArc> {
-    let lambda0 = degrees_to_radians(lon0)?;
-    let phi0 = degrees_to_radians(lat0)?;
-    let lambda1 = degrees_to_radians(lon1)?;
-    let phi1 = degrees_to_radians(lat1)?;
+    let lambda0 = degrees_to_radians_bound(lon0)?;
+    let phi0 = degrees_to_radians_bound(lat0)?;
+    let lambda1 = degrees_to_radians_bound(lon1)?;
+    let phi1 = degrees_to_radians_bound(lat1)?;
     let same_longitude = lon0.to_bits() == lon1.to_bits();
     let same_latitude = lat0.to_bits() == lat1.to_bits();
     let equatorial = lat0 == 0.0 && lat1 == 0.0;
@@ -3396,11 +3396,6 @@ const fn same_strict_sign(left: Bound, right: Bound) -> bool {
         (Some(CertSign::Positive), Some(CertSign::Positive))
             | (Some(CertSign::Negative), Some(CertSign::Negative))
     )
-}
-
-#[cfg(test)]
-fn degrees_to_radians(value: f64) -> Option<Bound> {
-    degree_bound_to_radians(Bound::exact(value)?)
 }
 
 /// The affine source carrier supplies outward degree intervals; this is the
@@ -4918,7 +4913,7 @@ mod tests {
 
     #[test]
     fn degree_windows_are_outward_and_refuse_an_ambiguous_seam() {
-        let radians = |degrees| degrees_to_radians(degrees).unwrap();
+        let radians = |degrees| degrees_to_radians_bound(degrees).unwrap();
         let split = CertifiedCircularBoundsRad {
             latitude: radians(10.0),
             longitude: CertifiedLongitudeRad::Span(
@@ -4980,7 +4975,7 @@ mod tests {
 
     #[test]
     fn trig_rejects_an_enclosed_period_boundary_but_keeps_exact_zero() {
-        assert!(sin_cos(degrees_to_radians(360.0).unwrap()).is_none());
+        assert!(sin_cos(degrees_to_radians_bound(360.0).unwrap()).is_none());
         let (sin, cos) = sin_cos(Bound::exact(0.0).unwrap()).expect("structural zero");
         assert!(sin.bound().unwrap().contains_zero());
         assert!(cos.bound().unwrap().lo <= 1.0 && cos.bound().unwrap().hi >= 1.0);
@@ -4988,7 +4983,7 @@ mod tests {
 
     #[test]
     fn trig_fallback_keeps_an_outward_pi_over_four_enclosure() {
-        let input = degrees_to_radians(45.0).unwrap();
+        let input = degrees_to_radians_bound(45.0).unwrap();
         let (sin, cos) =
             sin_cos(input).expect("the degree conversion only spans an artificial pi/4 cut");
         let value = (PI_LO + PI_HI) * 0.125;
