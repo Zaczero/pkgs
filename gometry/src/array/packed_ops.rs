@@ -54,6 +54,18 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
+        Ok(Self::concat_packed_points_many_native(
+            arrays,
+            first,
+            first_coords,
+        )?)
+    }
+
+    fn concat_packed_points_many_native(
+        arrays: &[&Self],
+        first: &Self,
+        first_coords: &CoordSeq,
+    ) -> Result<Option<Self>> {
         let mut total_rows = 0_usize;
         for array in arrays {
             let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
@@ -66,9 +78,7 @@ impl PyGeometryArray {
             }
             total_rows = total_rows
                 .checked_add(PointColumns::from_parts(coords, row_map.as_deref()).len())
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err("row count overflows usize")
-                })?;
+                .ok_or(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded)?;
         }
         let mut builder = PointColumnBuilder::try_with_capacity(first_coords.axes(), total_rows)?;
         for array in arrays {
@@ -90,6 +100,18 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
+        Ok(Self::concat_packed_lines_many_native(
+            arrays,
+            first,
+            first_coords,
+        )?)
+    }
+
+    fn concat_packed_lines_many_native(
+        arrays: &[&Self],
+        first: &Self,
+        first_coords: &CoordSeq,
+    ) -> Result<Option<Self>> {
         let mut vertex_count = 0_usize;
         for array in arrays {
             let GeometryArrayStorage::Packed(PackedStorage::Lines {
@@ -108,9 +130,7 @@ impl PyGeometryArray {
                     LineColumns::from_parts(coords, offsets, row_map.as_deref())
                         .selected_vertex_len(),
                 )
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err("coordinate count overflows usize")
-                })?;
+                .ok_or(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded)?;
         }
         let mut builder = PackedColumnBuilder::try_like(first_coords, vertex_count)?;
         for array in arrays {
@@ -139,6 +159,18 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
+        Ok(Self::concat_packed_polygons_many_native(
+            arrays,
+            first,
+            first_coords,
+        )?)
+    }
+
+    fn concat_packed_polygons_many_native(
+        arrays: &[&Self],
+        first: &Self,
+        first_coords: &CoordSeq,
+    ) -> Result<Option<Self>> {
         let mut vertex_count = 0_usize;
         let mut ring_count = 0_usize;
         for array in arrays {
@@ -162,14 +194,10 @@ impl PyGeometryArray {
             );
             vertex_count = vertex_count
                 .checked_add(polygons.selected_vertex_len())
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err("coordinate count overflows usize")
-                })?;
+                .ok_or(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded)?;
             ring_count = ring_count
                 .checked_add(polygons.selected_ring_len())
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err("ring count overflows usize")
-                })?;
+                .ok_or(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded)?;
         }
         let mut builder = PackedColumnBuilder::try_like(first_coords, vertex_count)?;
         let mut polygon_builder = CsrOffsetBuilder::new();
@@ -783,6 +811,108 @@ impl PyGeometryArray {
             crate::boundary::try_push_vec(&mut shapes, shape)?;
         }
         f(&shapes)
+    }
+}
+
+#[cfg(test)]
+mod concat_many_admission_tests {
+    use super::PyGeometryArray;
+    use crate::array::Frame;
+    use crate::geometry::{CoordSeq, CsrOffsetColumn, PolygonLevel, RingLevel};
+    use crate::test_support::fail_allocations_after;
+
+    fn xy_points() -> PyGeometryArray {
+        PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(vec![0.0], vec![1.0], None, None).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn xyz_points() -> PyGeometryArray {
+        PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(vec![0.0], vec![1.0], Some(vec![2.0]), None).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn xy_lines() -> PyGeometryArray {
+        PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 1.0], None, None).unwrap(),
+            CsrOffsetColumn::try_new(vec![0, 2], 2).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn xyz_lines() -> PyGeometryArray {
+        PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 1.0], Some(vec![2.0, 3.0]), None)
+                .unwrap(),
+            CsrOffsetColumn::try_new(vec![0, 2], 2).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn xy_polygons() -> PyGeometryArray {
+        PyGeometryArray::packed_polygons(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 1.0, 0.0],
+                None,
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5], 5).unwrap(),
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn xyz_polygons() -> PyGeometryArray {
+        PyGeometryArray::packed_polygons(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 1.0, 0.0],
+                Some(vec![0.0, 0.0, 0.0, 0.0, 0.0]),
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5], 5).unwrap(),
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap(),
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn concat_many_none(left: &PyGeometryArray, right: &PyGeometryArray) {
+        let admitted =
+            fail_allocations_after(0, || PyGeometryArray::concat_packed_many(&[left, right]));
+        assert!(
+            matches!(admitted, Ok(None)),
+            "kind/axes mismatch must return None without allocating"
+        );
+    }
+
+    #[test]
+    fn points_many_kind_and_axes_mismatch_allocate_nothing() {
+        concat_many_none(&xy_points(), &xy_lines());
+        concat_many_none(&xy_points(), &xyz_points());
+    }
+
+    #[test]
+    fn lines_many_kind_and_axes_mismatch_allocate_nothing() {
+        concat_many_none(&xy_lines(), &xy_points());
+        concat_many_none(&xy_lines(), &xyz_lines());
+    }
+
+    #[test]
+    fn polygons_many_kind_and_axes_mismatch_allocate_nothing() {
+        concat_many_none(&xy_polygons(), &xy_points());
+        concat_many_none(&xy_polygons(), &xyz_polygons());
     }
 }
 
