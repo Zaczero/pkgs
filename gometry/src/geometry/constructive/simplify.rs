@@ -36,7 +36,7 @@ pub(crate) fn rdp_keep(
     }
     let tolerance_squared = tolerance * tolerance;
     keep.clear();
-    crate::try_reserve_vec(keep, count.saturating_sub(keep.capacity()))?;
+    crate::try_reserve_vec(keep, count)?;
     keep.resize(count, false);
     keep[0] = true;
     keep[count - 1] = true;
@@ -1682,5 +1682,28 @@ mod keep_mask_scratch_tests {
                 .expect_err("VW keep-mask scratch must propagate allocation failure");
             assert_allocation_error(&error);
         }
+    }
+
+    #[test]
+    fn reused_small_keep_grows_fallibly_for_a_larger_chain() {
+        let small = collinear_xy(8);
+        let mut keep = Vec::new();
+        let mut stack = Vec::new();
+        rdp_keep(&small.0, &small.1, 0.0, &mut keep, &mut stack).unwrap();
+        let capacity = keep.capacity();
+        assert!(capacity >= 8);
+        let (xs, ys) = collinear_xy(capacity + 1);
+        stack.clear();
+        let error = fail_allocations_after(0, || rdp_keep(&xs, &ys, 0.0, &mut keep, &mut stack))
+            .expect_err("growing a reused keep mask must not abort in resize");
+        assert_allocation_error(&error);
+
+        let mut keep = Vec::new();
+        vw_keep(&small.0, &small.1, 1.0, &mut keep).unwrap();
+        let capacity = keep.capacity();
+        let (xs, ys) = collinear_xy(capacity + 1);
+        let error = fail_allocations_after(0, || vw_keep(&xs, &ys, 1.0, &mut keep))
+            .expect_err("growing a reused VW keep mask must not abort in resize");
+        assert_allocation_error(&error);
     }
 }

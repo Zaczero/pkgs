@@ -520,6 +520,7 @@ impl PyGeometryArray {
             // Distance-scale threshold; area form is derived after framing.
             crate::geometry::vw_keep(xs, ys, tolerance, keep)
         })
+        .map_err(crate::PyErr::from)
     }
 
     pub(crate) fn simplify_dp_packed_lines(
@@ -530,10 +531,13 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         // One batch-local DP work stack reused across rows (clear+push, no
         // per-row allocation). Free-threading: not a receiver cache / lock.
-        let mut stack: Vec<(usize, usize)> = Vec::new();
-        self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
-            crate::geometry::rdp_keep(xs, ys, tolerance, keep, &mut stack)
-        })
+        let result = (|| {
+            let mut stack: Vec<(usize, usize)> = Vec::new();
+            self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
+                crate::geometry::rdp_keep(xs, ys, tolerance, keep, &mut stack)
+            })
+        })();
+        result.map_err(crate::PyErr::from)
     }
 
     /// Douglas-Peucker / VW over packed lines, CSR to CSR: one keep-mask per
@@ -543,7 +547,7 @@ impl PyGeometryArray {
         coords: &CoordSeq,
         offsets: &[i32],
         mut keep_mask: impl FnMut(&[f64], &[f64], &mut Vec<bool>) -> crate::error::Result<Option<usize>>,
-    ) -> PyResult<Self> {
+    ) -> Result<Self> {
         let (xs, ys) = (coords.xs(), coords.ys());
         let rows = offsets.len() - 1;
         let mut builder = PackedColumnBuilder::try_like(coords, xs.len())?;

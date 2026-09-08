@@ -472,7 +472,7 @@ fn vw_frame_columns(
     xs: &[f64],
     ys: &[f64],
     distance_tolerance: f64,
-) -> (Option<Vec<f64>>, Option<Vec<f64>>, f64) {
+) -> Result<(Option<Vec<f64>>, Option<Vec<f64>>, f64)> {
     let ox = xs[0];
     let oy = ys[0];
     let mut max_abs_x = ox.abs();
@@ -491,15 +491,20 @@ fn vw_frame_columns(
             || max_abs_y > 1e8
             || !world_area_tol.is_normal());
     if !use_frame {
-        return (None, None, world_area_tol);
+        return Ok((None, None, world_area_tol));
     }
     let Some(frame) =
         AxisFrame::from_origin_extents(Point::new_raw_xy(ox, oy), max_abs_x, max_abs_y)
     else {
-        return (None, None, world_area_tol);
+        return Ok((None, None, world_area_tol));
     };
-    let fxs: Vec<f64> = xs.iter().map(|&x| frame.frame_xy(x, oy).x).collect();
-    let fys: Vec<f64> = ys.iter().map(|&y| frame.frame_xy(ox, y).y).collect();
+    let mut fxs = Vec::new();
+    let mut fys = Vec::new();
+    crate::try_reserve_pair(&mut fxs, &mut fys, xs.len())?;
+    for index in 0..xs.len() {
+        fxs.push(frame.frame_xy(xs[index], oy).x);
+        fys.push(frame.frame_xy(ox, ys[index]).y);
+    }
     // A VW score is an area, so map its distance-square threshold through both
     // exact scale exponents together.  Forming the world threshold first
     // would make a valid huge tolerance `+inf` before the rescue could scale
@@ -507,7 +512,7 @@ fn vw_frame_columns(
     let exponent = power_of_two_exponent(frame.scale_x()) + power_of_two_exponent(frame.scale_y());
     let framed_area =
         0.5 * distance_tolerance * scale_by_power_of_two(distance_tolerance, exponent);
-    (Some(fxs), Some(fys), framed_area)
+    Ok((Some(fxs), Some(fys), framed_area))
 }
 
 #[doc(hidden)]
@@ -526,7 +531,7 @@ pub(crate) fn vw_keep(
     if count < 3 {
         return Ok(None);
     }
-    let (framed_xs, framed_ys, area_tol) = vw_frame_columns(xs, ys, distance_tolerance);
+    let (framed_xs, framed_ys, area_tol) = vw_frame_columns(xs, ys, distance_tolerance)?;
     let xs = framed_xs.as_deref().unwrap_or(xs);
     let ys = framed_ys.as_deref().unwrap_or(ys);
     let area_tolerance = area_tol;
@@ -534,7 +539,7 @@ pub(crate) fn vw_keep(
         0.5 * ((xs[b] - xs[a]) * (ys[c] - ys[a]) - (ys[b] - ys[a]) * (xs[c] - xs[a])).abs()
     };
     keep.clear();
-    crate::try_reserve_vec(keep, count.saturating_sub(keep.capacity()))?;
+    crate::try_reserve_vec(keep, count)?;
     keep.resize(count, true);
     let mut prev = Vec::new();
     crate::try_reserve_vec(&mut prev, count)?;
@@ -620,11 +625,32 @@ mod vw_frame_tests {
         // This calls the exact VW frame used by simplify. Its finite output
         // proves the residual is `x*s - origin*s`; `(x-origin)*s` overflows
         // before it can be scaled.
-        let (Some(fxs), Some(fys), _) = vw_frame_columns(&xs, &ys, 5e307) else {
+        let (Some(fxs), Some(fys), _) = vw_frame_columns(&xs, &ys, 5e307).unwrap() else {
             panic!("opposite-sign extreme coordinates require a VW frame");
         };
         assert!(fxs.iter().chain(&fys).all(|value| value.is_finite()));
         assert_eq!(fxs[0].to_bits(), 0.0_f64.to_bits());
         assert!(fxs[2] > fxs[1] && fxs[1] > fxs[0]);
+    }
+
+    #[test]
+    fn extreme_frame_columns_reject_every_allocation() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::{allocation_count, fail_allocations_after};
+
+        let xs = [-1e308, 0.0, 1e308];
+        let ys = [0.0, 1e307, 0.0];
+        let run = || vw_frame_columns(&xs, &ys, 5e307);
+        let ((framed_x, framed_y, _), allocations) = allocation_count(|| run().unwrap());
+        assert!(framed_x.is_some() && framed_y.is_some());
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = fail_allocations_after(allowed, run)
+                .expect_err("framed VW columns must propagate allocation failure");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
     }
 }
