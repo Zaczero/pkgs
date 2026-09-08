@@ -1390,6 +1390,88 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
+    fn copied_point_intersection_requires_exact_segment_incidence() {
+        let z_polygon = z_square(0.0, 0.0, 4.0, 4.0, 10.0);
+        let near_interior = point(1e-10, 2.0);
+        let lenient = overlay_all(
+            &[&near_interior, &z_polygon],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        assert_eq!(lenient.coordinate_axes(), "XY", "{lenient:?}");
+        let kept = lenient.points_vec().unwrap()[0];
+        assert_eq!((kept.x, kept.y), (1e-10, 2.0));
+        assert_eq!(kept.z(), None);
+
+        let error = overlay_all(
+            &[&near_interior, &z_polygon],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(operation))
+                    if operation.as_ref() == "intersection"
+            ),
+            "{error}"
+        );
+
+        let boundary = point(2.0, 0.0);
+        let boundary_result = overlay_all(
+            &[&boundary, &z_polygon],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(boundary_result.coordinate_axes(), "XYZ");
+        assert_eq!(boundary_result.points_vec().unwrap()[0].z(), Some(12.0));
+
+        let mixed = Shape::MultiPoint(
+            vec![
+                Point::new(1e-10, 2.0).unwrap(),
+                Point::new(2.0, 0.0).unwrap(),
+            ]
+            .into(),
+        );
+        let mixed_lenient = overlay_all(
+            &[&mixed, &z_polygon],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        assert_eq!(mixed_lenient.coordinate_axes(), "XY", "{mixed_lenient:?}");
+        assert_eq!(
+            mixed_lenient
+                .points_vec()
+                .unwrap()
+                .into_iter()
+                .map(|point| (point.x, point.y, point.z()))
+                .collect::<Vec<_>>(),
+            vec![(1e-10, 2.0, None), (2.0, 0.0, None)]
+        );
+        let mixed_strict = overlay_all(
+            &[&mixed, &z_polygon],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap_err();
+        assert!(
+            mixed_strict
+                .to_string()
+                .contains("intersection cannot represent Z/M"),
+            "{mixed_strict}"
+        );
+    }
+
+    #[test]
     fn multipart_point_intersection_matches_generic_for_lineal_carriers() {
         let live = multiline(&[&[(0.0, 0.0), (2.0, 2.0)], &[(4.0, 0.0), (4.0, 2.0)]]);
         let multipoint = Shape::MultiPoint(

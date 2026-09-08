@@ -133,6 +133,29 @@ def test_mixed_zm_overlay_axes_follow_operands() -> None:
     assert gm.intersection(xyz, xym).coordinate_axes == 'XYM'
 
 
+def test_copied_point_intersection_requires_exact_segment_incidence() -> None:
+    """Copied intersection points keep Z only from exact stored incidence.
+
+    A near-interior XY point is covered by a Z polygon but is not on a stored
+    vertex or segment, so lenient intersection stays XY. An exact boundary
+    point interpolates Z. A mixed MultiPoint is homogeneous: one unsourced
+    vertex drops Z for every vertex.
+    """
+    zsquare = _z_polygon()
+    near = gm.Point(1e-10, 2.0)
+    interior = gm.intersection(near, zsquare)
+    assert interior.coordinate_axes == 'XY'
+    assert (interior.x, interior.y) == (1e-10, 2.0)
+
+    boundary = gm.intersection(gm.Point(0.0, 2.0), zsquare)
+    assert boundary.coordinate_axes == 'XYZ'
+    assert next(iter(boundary.coords)) == (0.0, 2.0, 2.5)
+
+    mixed = gm.intersection(gm.MultiPoint([(1e-10, 2.0), (0.0, 2.0)]), zsquare)
+    assert mixed.coordinate_axes == 'XY'
+    assert [(point.x, point.y) for point in mixed] == [(0.0, 2.0), (1e-10, 2.0)]
+
+
 def test_xyzm_m_linear_referencing_on_measured_line() -> None:
     route = gm.from_wkt('LINESTRING ZM (0 0 0 0, 10 0 0 100)')
     interpolated = route.line_interpolate(50.0, basis='m')
