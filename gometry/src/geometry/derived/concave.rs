@@ -4,8 +4,8 @@ use std::collections::BinaryHeap;
 use crate::geometry::derived::{geometric_xy_cmp, monotone_chain_hull};
 use crate::geometry::tessellation::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
 use crate::geometry::{
-    Point, Ring, Segment, delaunay_triangulation, point_distance, point_segment_distance,
-    ring_winding,
+    GeometryErrorKind, Point, Ring, Segment, delaunay_triangulation, point_distance,
+    point_segment_distance, ring_winding,
 };
 
 pub(crate) fn native_concave_hull(
@@ -13,6 +13,9 @@ pub(crate) fn native_concave_hull(
     concavity: f64,
     length_threshold: f64,
 ) -> crate::error::Result<Vec<usize>> {
+    // A point, line, or wholly collinear set has no Delaunay faces. These are
+    // the intentional convex-hull reductions; once faces exist, boundary
+    // extraction must produce the requested concave ring or return an error.
     if points.len() < 3 {
         return Ok(monotone_chain_hull(points));
     }
@@ -66,8 +69,7 @@ pub(crate) fn native_concave_hull(
         push_live_twin_boundary(points, &triangulation, &alive, right, &mut heap);
     }
 
-    Ok(extract_concave_boundary(points, &triangulation, &alive)
-        .unwrap_or_else(|| monotone_chain_hull(points)))
+    extract_concave_boundary(points, &triangulation, &alive)
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -218,7 +220,7 @@ fn extract_concave_boundary(
     points: &[Point],
     triangulation: &Triangulation,
     alive: &[bool],
-) -> Option<Vec<usize>> {
+) -> crate::error::Result<Vec<usize>> {
     // Boundary vertices have degree exactly two, so the adjacency is a single
     // flat `[u32; 2]` per vertex (`NONE` sentinel) — one allocation instead of
     // one `Vec` per point. `overflowed` flags any degree>2 vertex the two slots
@@ -234,7 +236,11 @@ fn extract_concave_boundary(
             overflowed |= push_unique_neighbor(&mut adjacency[end], start as u32);
         }
     }
-    let start = adjacency.iter().position(|slot| slot[0] != NONE)?;
+    let Some(start) = adjacency.iter().position(|slot| slot[0] != NONE) else {
+        return Err(GeometryErrorKind::triangulation(
+            "concave hull boundary has no live edge",
+        ));
+    };
     // Valid boundary vertices are empty ([NONE,NONE]) or degree two ([x,y]);
     // a single filled slot is degree one. Either that or an overflow is malformed.
     if overflowed
@@ -242,8 +248,9 @@ fn extract_concave_boundary(
             .iter()
             .any(|slot| slot[0] != NONE && slot[1] == NONE)
     {
-        debug_assert!(false, "concave hull boundary vertices must have degree two");
-        return None;
+        return Err(GeometryErrorKind::triangulation(
+            "concave hull boundary vertices must have degree two",
+        ));
     }
 
     let mut ring = Vec::with_capacity(adjacency.iter().filter(|slot| slot[0] != NONE).count());
@@ -263,23 +270,31 @@ fn extract_concave_boundary(
             break;
         }
         if ring.len() > points.len() {
-            debug_assert!(false, "concave hull boundary must be one ring");
-            return None;
+            return Err(GeometryErrorKind::triangulation(
+                "concave hull boundary must be one ring",
+            ));
         }
     }
     canonicalize_open_hull_indices(points, ring)
 }
 
 /// CCW open cycle rotated to its lexicographically least XY vertex.
-fn canonicalize_open_hull_indices(points: &[Point], mut ring: Vec<usize>) -> Option<Vec<usize>> {
+fn canonicalize_open_hull_indices(
+    points: &[Point],
+    mut ring: Vec<usize>,
+) -> crate::error::Result<Vec<usize>> {
     if ring.is_empty() {
-        return None;
+        return Err(GeometryErrorKind::triangulation(
+            "concave hull boundary is empty",
+        ));
     }
     let mut closed: Vec<Point> = ring.iter().map(|&index| points[index]).collect();
     closed.push(points[ring[0]]);
     let winding = ring_winding(&closed);
     if closed.len() < Ring::MIN_VERTICES_CLOSED || winding.is_degenerate() {
-        return None;
+        return Err(GeometryErrorKind::triangulation(
+            "concave hull boundary is degenerate",
+        ));
     }
     if winding.reverse_for_clockwise(false) {
         ring.reverse();
@@ -292,7 +307,7 @@ fn canonicalize_open_hull_indices(points: &[Point], mut ring: Vec<usize>) -> Opt
         }
     });
     ring.rotate_left(start);
-    Some(ring)
+    Ok(ring)
 }
 
 /// Record `candidate` in a degree-two adjacency slot. Returns `true` if the
@@ -310,4 +325,68 @@ const fn push_unique_neighbor(neighbors: &mut [u32; 2], candidate: u32) -> bool 
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn points(xy: &[(f64, f64)]) -> Vec<Point> {
+        xy.iter().map(|&(x, y)| Point::new_raw_xy(x, y)).collect()
+    }
+
+    fn assert_triangulation_error(error: crate::error::Error, message: &str) {
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Triangulation(detail))
+                if detail.as_ref() == message
+        ));
+    }
+
+    #[test]
+    fn low_cardinality_and_collinear_inputs_keep_explicit_hull_degeneracy() {
+        assert_eq!(
+            native_concave_hull(&points(&[(0.0, 0.0)]), 1.0, 0.0).unwrap(),
+            vec![0]
+        );
+        assert_eq!(
+            native_concave_hull(&points(&[(0.0, 0.0), (1.0, 0.0)]), 1.0, 0.0).unwrap(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            native_concave_hull(&points(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]), 1.0, 0.0,).unwrap(),
+            vec![0, 2]
+        );
+    }
+
+    #[test]
+    fn empty_extracted_boundary_is_an_error_not_a_convex_hull() {
+        let points = points(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]);
+        let triangulation = Triangulation {
+            triangles: vec![0, 1, 2],
+            halfedges: vec![0, 1, 2],
+            hull: vec![0, 1, 2],
+        };
+        let error = extract_concave_boundary(&points, &triangulation, &[true]).unwrap_err();
+        assert_triangulation_error(error, "concave hull boundary has no live edge");
+    }
+
+    #[test]
+    fn malformed_extracted_boundary_is_an_error_not_a_convex_hull() {
+        let points = points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
+        let triangulation = Triangulation {
+            triangles: vec![0, 1, 2, 0, 2, 3],
+            halfedges: vec![EMPTY; 6],
+            hull: vec![0, 1, 2, 3],
+        };
+        let error = extract_concave_boundary(&points, &triangulation, &[true, true]).unwrap_err();
+        assert_triangulation_error(error, "concave hull boundary vertices must have degree two");
+    }
+
+    #[test]
+    fn degenerate_extracted_boundary_is_an_error_after_triangulation() {
+        let points = points(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
+        let error = canonicalize_open_hull_indices(&points, vec![0, 1, 2]).unwrap_err();
+        assert_triangulation_error(error, "concave hull boundary is degenerate");
+    }
 }

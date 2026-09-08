@@ -10,8 +10,10 @@
 //! Ruppert's: a retained face that misses the angle or area target has its
 //! circumcenter inserted, unless that center encroaches a constraint's
 //! diametral circle, in which case the constraint is split at its midpoint
-//! instead. The vertex budget bounds the loop, and a mesh the budget could
-//! not finish is rejected rather than returned as if it met the request.
+//! instead. A center outside binary64 uses the explicit longest-edge midpoint
+//! construction; resource and invariant failures remain errors. The vertex
+//! budget bounds the loop, and a mesh the budget could not finish is rejected
+//! rather than returned as if it met the request.
 
 #![allow(
     clippy::many_single_char_names,
@@ -21,9 +23,10 @@
 use std::collections::{HashSet, VecDeque};
 
 use super::exact_delaunay::{EMPTY, Located, Mesh, next_halfedge, prev_halfedge};
+use crate::error::{ErrorKind, Result};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
-use crate::geometry::{Point, XY, open_xy_cycle_magnitude};
+use crate::geometry::{GeometryErrorKind, Point, XY, open_xy_cycle_magnitude};
 
 /// The mesh with its constraint flags, one per halfedge slot.
 pub(super) struct ConstrainedMesh {
@@ -214,14 +217,15 @@ impl ConstrainedMesh {
 
     /// Ruppert refinement of the inside faces to `min_angle` degrees and/or
     /// `max_area`, inserting at most `limit` vertices. `Ok(false)` means the
-    /// budget ran out before the mesh met the request.
+    /// budget or a topological placement ran out before the mesh met the
+    /// request; exact construction failures are returned as `Err`.
     pub(super) fn refine(
         &mut self,
         points: &mut Vec<Point>,
         min_angle: Option<f64>,
         max_area: Option<f64>,
         limit: usize,
-    ) -> bool {
+    ) -> Result<bool> {
         let mut inserted = 0_usize;
         loop {
             let inside = self.inside_faces();
@@ -243,13 +247,20 @@ impl ConstrainedMesh {
                 }
             }
             let Some(t) = bad else {
-                return true;
+                return Ok(true);
             };
             if inserted >= limit {
-                return false;
+                return Ok(false);
             }
             let [a, b, c] = self.mesh.triangle(t);
-            let center = circumcenter(xy(a, points), xy(b, points), xy(c, points));
+            let (pa, pb, pc) = (xy(a, points), xy(b, points), xy(c, points));
+            let center = match circumcenter(pa, pb, pc)? {
+                Some(center) => center,
+                // No finite binary64 can represent this center. Ruppert can
+                // still make progress with the explicitly chosen longest-edge
+                // midpoint; this is not a recovery for construction errors.
+                None => longest_edge_midpoint(pa, pb, pc),
+            };
             // Ruppert: a constraint whose diametral circle holds the center is
             // split at its midpoint instead, and so is any constraint, or the
             // hull, that the walk toward the center would have to cross: a
@@ -290,10 +301,10 @@ impl ConstrainedMesh {
                 }
             };
             let Some((candidate, located)) = placed else {
-                return false;
+                return Ok(false);
             };
             if matches!(located, Located::OnVertex) {
-                return false;
+                return Ok(false);
             }
             let site = points.len();
             // The cavity reuses slots, so remember constraints as vertex pairs
@@ -395,24 +406,36 @@ pub(super) fn triangle_min_angle_degrees(a: XY, b: XY, c: XY) -> f64 {
         .to_degrees()
 }
 
-/// The exact circumcenter rounded to nearest, which is what keeps a face
-/// with reciprocal extents from producing a center that has cancelled to
-/// the wrong side of the mesh; where no binary64 point can hold it, the
-/// longest edge's midpoint still shrinks the face.
-fn circumcenter(a: XY, b: XY, c: XY) -> XY {
-    exact::circumcenter(a, b, c)
-        .and_then(|center| center.round_nearest_even())
-        .unwrap_or_else(|_| {
-            let length = |p: XY, q: XY| (p.x - q.x).hypot(p.y - q.y);
-            let (p, q) = if length(a, b) >= length(b, c) && length(a, b) >= length(c, a) {
-                (a, b)
-            } else if length(b, c) >= length(c, a) {
-                (b, c)
-            } else {
-                (c, a)
-            };
-            XY::new(f64::midpoint(p.x, q.x), f64::midpoint(p.y, q.y))
-        })
+/// The exact circumcenter rounded to nearest. `None` means that the exact
+/// center is outside the finite binary64 range; the refinement caller makes
+/// the deliberate midpoint choice for that numerical case. Every other error
+/// remains an error, including resource failures and mesh invariants.
+fn circumcenter(a: XY, b: XY, c: XY) -> Result<Option<XY>> {
+    let center = exact::circumcenter(a, b, c)?;
+    match center.round_nearest_even() {
+        Ok(center) => Ok(Some(center)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::Geometry(GeometryErrorKind::ExactCoordinateOutOfRange)
+            ) =>
+        {
+            Ok(None)
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn longest_edge_midpoint(a: XY, b: XY, c: XY) -> XY {
+    let length = |p: XY, q: XY| (p.x - q.x).hypot(p.y - q.y);
+    let (p, q) = if length(a, b) >= length(b, c) && length(a, b) >= length(c, a) {
+        (a, b)
+    } else if length(b, c) >= length(c, a) {
+        (b, c)
+    } else {
+        (c, a)
+    };
+    XY::new(f64::midpoint(p.x, q.x), f64::midpoint(p.y, q.y))
 }
 
 fn in_diametral_circle(s: XY, t: XY, p: XY) -> bool {
@@ -480,7 +503,7 @@ mod tests {
         let edges: Vec<[usize; 2]> = (0..4).map(|i| [i, (i + 1) % 4]).collect();
         let mut mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
         assert!(
-            mesh.refine(&mut pts, None, Some(25.0), 10_000),
+            mesh.refine(&mut pts, None, Some(25.0), 10_000).unwrap(),
             "a generous budget completes"
         );
         let inside = mesh.inside_faces();
@@ -495,9 +518,47 @@ mod tests {
         let mut pts2 = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
         let mut mesh2 = ConstrainedMesh::build(&pts2, &edges).unwrap();
         assert!(
-            !mesh2.refine(&mut pts2, None, Some(0.5), 3),
+            !mesh2.refine(&mut pts2, None, Some(0.5), 3).unwrap(),
             "three vertices cannot reach 0.5 area"
         );
+    }
+
+    #[test]
+    fn unrepresentable_circumcenter_is_an_explicit_midpoint_case() {
+        let a = XY::new(0.0, 0.0);
+        let b = XY::new(1.0, 0.0);
+        let c = XY::new(0.5, f64::from_bits(1));
+
+        assert_eq!(circumcenter(a, b, c).unwrap(), None);
+        assert_eq!(longest_edge_midpoint(a, b, c), XY::new(0.5, 0.0));
+    }
+
+    #[test]
+    fn collinear_circumcenter_failure_is_not_a_midpoint() {
+        let error =
+            circumcenter(XY::new(0.0, 0.0), XY::new(1.0, 1.0), XY::new(2.0, 2.0)).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Voronoi(_))
+        ));
+    }
+
+    #[test]
+    fn circumcenter_propagates_rounding_allocation_failure() {
+        let a = XY::new(0.0, 0.0);
+        let b = XY::new(1.0, 0.0);
+        let c = XY::new(0.5, f64::from_bits(1));
+        let (result, allocations) = crate::test_support::allocation_count(|| circumcenter(a, b, c));
+        assert_eq!(result.unwrap(), None);
+        assert!(allocations > 0, "the exact rounding path must allocate");
+
+        let error =
+            crate::test_support::fail_allocations_after(allocations - 1, || circumcenter(a, b, c))
+                .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+        ));
     }
 }
 
@@ -546,7 +607,7 @@ mod regressions {
         let mut cdt = ConstrainedMesh::build(&points, &ring_edges(4)).unwrap();
         let before = inside_count(&cdt);
         assert!(
-            cdt.refine(&mut points, Some(25.0), None, 100_000),
+            cdt.refine(&mut points, Some(25.0), None, 100_000).unwrap(),
             "refinement completes"
         );
         assert!(inside_count(&cdt) > before);
@@ -564,7 +625,7 @@ mod regressions {
                 let mut points = pts(&base);
                 let mut cdt = ConstrainedMesh::build(&points, &ring_edges(4)).unwrap();
                 assert!(
-                    cdt.refine(&mut points, None, Some(0.4), 100_000),
+                    cdt.refine(&mut points, None, Some(0.4), 100_000).unwrap(),
                     "exponent {exponent} swap {swap}"
                 );
                 assert_eq!(inside_count(&cdt), 4, "exponent {exponent} swap {swap}");

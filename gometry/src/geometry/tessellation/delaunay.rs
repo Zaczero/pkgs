@@ -500,7 +500,7 @@ pub(crate) fn constrained_triangle_vertices<'a>(
             min_angle.map(crate::Positive::get),
             max_area.map(crate::Positive::get),
             limit,
-        );
+        )?;
         if !complete {
             return Err(GeometryErrorKind::triangulation(format!(
                 "constrained refinement could not satisfy the requested quality within the limit of {GENERATED_ITEM_LIMIT} generated vertices; relax min_angle/max_area"
