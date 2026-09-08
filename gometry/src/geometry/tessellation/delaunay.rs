@@ -463,8 +463,13 @@ pub(crate) fn constrained_triangle_vertices<'a>(
             ring.nth_coord(3),
         );
         if same_point(a.xy(), close.xy()) {
-            let output = vec![a, b, c, a];
-            budget.add(output.len())?;
+            budget.check_additional(4)?;
+            let mut output = Vec::new();
+            crate::try_reserve_vec(&mut output, 4)?;
+            for point in [a, b, c, a] {
+                crate::try_push_vec(&mut output, point)?;
+            }
+            budget.add(4)?;
             return Ok(output);
         }
     }
@@ -519,7 +524,7 @@ pub(crate) fn constrained_triangle_vertices<'a>(
     let capacity = faces
         .len()
         .checked_mul(4)
-        .ok_or_else(|| GeometryErrorKind::triangulation("triangle output size overflow"))?;
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
     for [a, b, c] in &faces {
         validate_refined_triangle(vertices[*a], vertices[*b], vertices[*c], refinement)?;
     }

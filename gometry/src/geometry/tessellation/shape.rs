@@ -169,13 +169,15 @@ impl Shape {
             .triangles()
             .len()
             .checked_mul(4)
-            .ok_or_else(|| GeometryErrorKind::triangulation("triangle output size overflow"))?;
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         budget.check_additional(capacity)?;
         let mut vertices = Vec::new();
         #[cfg(test)]
         note_delaunay_output_reserve();
         crate::try_reserve_vec(&mut vertices, capacity)?;
-        let mut triangles = triangulation.triangles().to_vec();
+        let mut triangles = Vec::new();
+        crate::try_reserve_vec(&mut triangles, triangulation.triangles().len())?;
+        triangles.extend_from_slice(triangulation.triangles());
         triangles.sort_unstable_by_key(|triangle| {
             let mut key = *triangle;
             key.sort_unstable();

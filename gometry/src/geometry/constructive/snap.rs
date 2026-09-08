@@ -1169,7 +1169,18 @@ mod tests {
         let mut count = SubdivisionCount { emitted: 0 };
         emit_subdivision(&[GENERATED_ITEM_LIMIT + 2], &mut count).unwrap();
         let generated = count.generated(2).unwrap();
-        assert!(budget.check_additional(generated).is_err());
+        let over_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let error = over_budget.check_additional(generated).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge {
+                    operation: "segmentize",
+                    parameter: "max_segment_length",
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]
@@ -1180,6 +1191,26 @@ mod tests {
         );
         assert_eq!(
             segmentize_steps((GENERATED_ITEM_LIMIT + 2) as f64, 1.0),
+            GENERATED_ITEM_LIMIT + 2
+        );
+    }
+
+    #[test]
+    fn planar_segmentize_planner_keeps_the_exact_generated_boundary() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new((GENERATED_ITEM_LIMIT + 1) as f64, 0.0),
+        };
+        assert_eq!(
+            planar_segmentize_steps(segment, 1.0),
+            GENERATED_ITEM_LIMIT + 1
+        );
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new((GENERATED_ITEM_LIMIT + 2) as f64, 0.0),
+        };
+        assert_eq!(
+            planar_segmentize_steps(segment, 1.0),
             GENERATED_ITEM_LIMIT + 2
         );
     }
