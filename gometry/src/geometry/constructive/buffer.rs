@@ -173,7 +173,8 @@ impl Shape {
         match self {
             Self::Point(point) => point_buffer(*point, distance, quadrant_segments, budget),
             Self::MultiPoint(points) => {
-                let mut loops = Vec::with_capacity(points.len());
+                let mut loops = Vec::new();
+                crate::try_reserve_vec(&mut loops, points.len())?;
                 if multipoint_loops(&mut loops, points, distance, quadrant_segments, budget)?
                     .is_none()
                 {

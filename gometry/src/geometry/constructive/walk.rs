@@ -180,12 +180,18 @@ pub(crate) struct WalkColumns {
 }
 
 impl WalkColumns {
-    pub(crate) fn new(capacity: usize, track_sources: bool) -> Self {
-        Self {
-            xs: Vec::with_capacity(capacity),
-            ys: Vec::with_capacity(capacity),
-            sources: track_sources.then(|| Vec::with_capacity(capacity)),
-        }
+    pub(crate) fn try_new(capacity: usize, track_sources: bool) -> Result<Self> {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        crate::try_reserve_pair(&mut xs, &mut ys, capacity)?;
+        let sources = if track_sources {
+            let mut sources = Vec::new();
+            crate::try_reserve_vec(&mut sources, capacity)?;
+            Some(sources)
+        } else {
+            None
+        };
+        Ok(Self { xs, ys, sources })
     }
 
     pub(crate) fn into_columns(self) -> (Vec<f64>, Vec<f64>, Option<Vec<u32>>) {
@@ -203,13 +209,27 @@ impl WalkColumns {
                 .is_some_and(|last| last.to_bits() == y.to_bits()))
     }
 
-    fn push_known_new(&mut self, x: f64, y: f64, source: u32) {
+    fn push_known_new(&mut self, x: f64, y: f64, source: u32) -> Result<()> {
         debug_assert!(self.needs_push(x, y));
-        self.xs.push(x);
-        self.ys.push(y);
-        if let Some(sources) = &mut self.sources {
-            sources.push(source);
+        if let Err(error) = crate::try_push_vec(&mut self.xs, x) {
+            self.ys = Vec::new();
+            self.sources = None;
+            return Err(error);
         }
+        if let Err(error) = crate::try_push_vec(&mut self.ys, y) {
+            self.xs = Vec::new();
+            self.sources = None;
+            return Err(error);
+        }
+        if let Some(sources) = &mut self.sources
+            && let Err(error) = crate::try_push_vec(sources, source)
+        {
+            self.xs = Vec::new();
+            self.ys = Vec::new();
+            self.sources = None;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(crate) const fn len(&self) -> usize {
@@ -225,8 +245,7 @@ impl WalkSink for WalkColumns {
         if !self.needs_push(x, y) {
             return Ok(());
         }
-        self.push_known_new(x, y, source);
-        Ok(())
+        self.push_known_new(x, y, source)
     }
 }
 
@@ -302,7 +321,7 @@ pub(crate) fn materialize_walk(
         count.len()
     };
     budget.add(count_len)?;
-    let mut columns = WalkColumns::new(count_len, track_sources);
+    let mut columns = WalkColumns::try_new(count_len, track_sources)?;
     plan.emit_into(step_angle, &mut columns)?;
     debug_assert_eq!(columns.xs.len(), count_len);
     Ok(Some(columns))
@@ -322,9 +341,7 @@ pub(crate) fn close_xy_loop(
         return Ok(());
     };
     budget.add(1)?;
-    xs.push(x);
-    ys.push(y);
-    Ok(())
+    crate::try_push_pair(xs, ys, x, y)
 }
 
 impl<'a> WalkPlan<'a> {
@@ -350,12 +367,15 @@ impl<'a> WalkPlan<'a> {
         // every arc-emitting join on the exact angular path (FP noise in the
         // dot is ~1e-15), so the output is unchanged.
         let cos_step = step_angle.cos() + 1e-12;
-        let Some(normals) = (0..edges)
-            .map(|edge| unit_right_normal(points[edge], points[wrap_index(edge + 1, count)]))
-            .collect::<Option<Vec<(f64, f64)>>>()
-        else {
-            return Ok(None);
-        };
+        let mut normals = Vec::new();
+        crate::try_reserve_vec(&mut normals, edges)?;
+        for edge in 0..edges {
+            let Some(normal) = unit_right_normal(points[edge], points[wrap_index(edge + 1, count)])
+            else {
+                return Ok(None);
+            };
+            crate::try_push_vec(&mut normals, normal)?;
+        }
         let offset_edge = |from: Point, to: Point, (nx, ny): (f64, f64)| Segment {
             start: Point::new_raw_xy(from.x + distance * nx, from.y + distance * ny).into(),
             end: Point::new_raw_xy(to.x + distance * nx, to.y + distance * ny).into(),

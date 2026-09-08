@@ -224,27 +224,32 @@ pub(crate) fn rdp_split(
 /// oriented CCW (`clockwise = false`, shells) or CW (holes), so the ring
 /// interior side is consistent for the offset walk. `None` below 3 strict
 /// vertices.
-pub(crate) fn strict_cycle(coords: &CoordSeq, clockwise: bool) -> Option<Vec<Point>> {
-    let mut ring: Vec<Point> = coords.iter_coords().collect();
+pub(crate) fn strict_cycle(coords: &CoordSeq, clockwise: bool) -> Result<Option<Vec<Point>>> {
+    let mut ring = Vec::new();
+    crate::try_reserve_vec(&mut ring, coords.len())?;
+    for point in coords.iter_coords() {
+        crate::try_push_vec(&mut ring, point)?;
+    }
     dedup_consecutive_points(&mut ring);
     if ring.len() > 1 && same_point(ring[0], ring[ring.len() - 1]) {
         ring.pop();
     }
     if ring.len() < 3 {
-        return None;
+        return Ok(None);
     }
     if open_point_cycle_winding(&ring).reverse_for_clockwise(clockwise) {
         ring.reverse();
     }
-    let strict: Vec<Point> = (0..ring.len())
-        .filter(|&index| {
-            let previous = ring[wrap_index(index + ring.len() - 1, ring.len())];
-            let next = ring[wrap_index(index + 1, ring.len())];
-            orientation(previous, ring[index], next) != Orientation::Collinear
-        })
-        .map(|index| ring[index])
-        .collect();
-    (strict.len() >= 3).then_some(strict)
+    let mut strict = Vec::new();
+    crate::try_reserve_vec(&mut strict, ring.len())?;
+    for index in 0..ring.len() {
+        let previous = ring[wrap_index(index + ring.len() - 1, ring.len())];
+        let next = ring[wrap_index(index + 1, ring.len())];
+        if orientation(previous, ring[index], next) != Orientation::Collinear {
+            crate::try_push_vec(&mut strict, ring[index])?;
+        }
+    }
+    Ok((strict.len() >= 3).then_some(strict))
 }
 
 /// Raw offset loop of a strictly-turning cycle walked with the interior on

@@ -37,7 +37,11 @@ pub(crate) fn ring_as_open_line(ring: &CoordSeq) -> Result<CoordSeq> {
     } else {
         n
     };
-    let points: Vec<Point> = (0..take).map(|index| ring.point_at(index)).collect();
+    let mut points = Vec::new();
+    crate::try_reserve_vec(&mut points, take)?;
+    for index in 0..take {
+        crate::try_push_vec(&mut points, ring.point_at(index))?;
+    }
     CoordSeq::try_from_points(&points)
 }
 
@@ -59,28 +63,31 @@ fn ring_as_open_linework(ring: &CoordSeq) -> Result<Option<LineSeq>> {
 pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
     Ok(match shape {
         Shape::Polygon(polygon) if polygon_encloses_no_area(polygon) => {
-            let lines = polygon
-                .rings()
-                .map(|ring| ring_as_open_linework(ring.coords()))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
+            let mut lines = Vec::new();
+            crate::try_reserve_vec(&mut lines, polygon.rings().count())?;
+            for ring in polygon.rings() {
+                if let Some(line) = ring_as_open_linework(ring.coords())? {
+                    crate::try_push_vec(&mut lines, line)?;
+                }
+            }
             Shape::multi_line_string(polygon.shell.coords().axes(), lines)?
         },
-        Shape::MultiPolygon(polygons) => Shape::geometry_collection(
-            polygons
-                .members()
-                .map(|member| match member {
+        Shape::MultiPolygon(polygons) => {
+            let mut members = Vec::new();
+            crate::try_reserve_vec(&mut members, polygons.len())?;
+            for member in polygons.members() {
+                let shape = match member {
                     crate::geometry::MultiMember::Empty => {
-                        Ok(Shape::typed_empty(GeometryKind::Polygon, polygons.axes()))
+                        Shape::typed_empty(GeometryKind::Polygon, polygons.axes())
                     },
                     crate::geometry::MultiMember::Value(index) => degenerate_polygonal_as_linework(
                         &Shape::Polygon(polygons.as_slice()[index].clone()),
-                    ),
-                })
-                .collect::<Result<Vec<_>>>()?,
-        )?,
+                    )?,
+                };
+                crate::try_push_vec(&mut members, shape)?;
+            }
+            Shape::geometry_collection(members)?
+        },
         Shape::GeometryCollection(parts) => {
             Shape::GeometryCollection(parts.try_map_members(degenerate_polygonal_as_linework)?)
         },
@@ -119,7 +126,7 @@ pub(crate) fn convex_buffer_budgeted(
         return Ok(None);
     }
     if distance > 0.0 {
-        let Some(strict) = strict_cycle(polygon.shell.coords(), false) else {
+        let Some(strict) = strict_cycle(polygon.shell.coords(), false)? else {
             return Ok(None);
         };
         let Some((mut xs, mut ys)) =
@@ -128,9 +135,7 @@ pub(crate) fn convex_buffer_budgeted(
             return Ok(None);
         };
         close_xy_loop(&mut xs, &mut ys, budget)?;
-        let Ok(seq) = CoordSeq::from_owned_columns(xs, ys, None, None) else {
-            return Ok(None);
-        };
+        let seq = CoordSeq::from_owned_columns(xs, ys, None, None)?;
         return Ok(Some(Shape::Polygon(Polygon::new(
             Ring::from_closed(seq),
             Vec::new(),
@@ -150,7 +155,7 @@ fn convex_erosion_certified(
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Shape>> {
     // CW shell walk so the right-side offset goes inward (mirrors erosion_loops).
-    let Some(strict) = strict_cycle(polygon.shell.coords(), true) else {
+    let Some(strict) = strict_cycle(polygon.shell.coords(), true)? else {
         return Ok(None);
     };
     let Some((xs, ys)) = raw_offset_loop(&strict, distance, rule, quadrant_segments, budget)?
@@ -176,9 +181,14 @@ fn simple_erosion_polygon(
     }
     // This is the direct output owner: the raw walk remains open for the
     // winding engine, while the certified erosion result appends its closure.
+    let capacity = xs
+        .len()
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
     budget.add(1)?;
-    let mut ring_xs = Vec::with_capacity(xs.len() + 1);
-    let mut ring_ys = Vec::with_capacity(ys.len() + 1);
+    let mut ring_xs = Vec::new();
+    let mut ring_ys = Vec::new();
+    crate::try_reserve_pair(&mut ring_xs, &mut ring_ys, capacity)?;
     // Reverse the CW offset into CCW presentation while closing.
     for i in (0..xs.len()).rev() {
         ring_xs.push(xs[i]);
@@ -186,9 +196,7 @@ fn simple_erosion_polygon(
     }
     ring_xs.push(ring_xs[0]);
     ring_ys.push(ring_ys[0]);
-    let Ok(ring) = CoordSeq::from_owned_columns(ring_xs, ring_ys, None, None) else {
-        return Ok(None);
-    };
+    let ring = CoordSeq::from_owned_columns(ring_xs, ring_ys, None, None)?;
     // Original CW offset → CCW here. Inversion/degenerate was non-CW open
     // and becomes non-CCW after reverse.
     if !ring_winding(&ring).is_ccw() {
@@ -347,9 +355,14 @@ fn simple_stroke_polygon(
     // The direct-stroke result owns this final closure; charge it before the
     // exact final columns are allocated so raw-walk accounting cannot stop one
     // coordinate short of the public ring.
+    let capacity = xs
+        .len()
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
     budget.add(1)?;
-    let mut ring_xs = Vec::with_capacity(xs.len() + 1);
-    let mut ring_ys = Vec::with_capacity(ys.len() + 1);
+    let mut ring_xs = Vec::new();
+    let mut ring_ys = Vec::new();
+    crate::try_reserve_pair(&mut ring_xs, &mut ring_ys, capacity)?;
     ring_xs.extend_from_slice(xs);
     ring_ys.extend_from_slice(ys);
     ring_xs.push(xs[0]);
@@ -496,16 +509,16 @@ pub(crate) fn expansion_loops(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<()>> {
-    let Some(shell) = strict_cycle(polygon.shell.coords(), false) else {
+    let Some(shell) = strict_cycle(polygon.shell.coords(), false)? else {
         return Ok(None);
     };
     let Some(raw) = raw_offset_loop(&shell, distance, rule, quadrant_segments, budget)? else {
         return Ok(None);
     };
-    loops.push(raw);
+    crate::try_push_vec(loops, raw)?;
     for hole in polygon.holes.iter() {
         // Degenerate (zero-area) holes do not affect the buffer.
-        let Some(ring) = strict_cycle(hole.coords(), true) else {
+        let Some(ring) = strict_cycle(hole.coords(), true)? else {
             continue;
         };
         let Some(raw) = raw_offset_loop(&ring, distance, rule, quadrant_segments, budget)? else {
@@ -527,7 +540,7 @@ pub(crate) fn erosion_loops(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<()>> {
-    let Some(shell) = strict_cycle(polygon.shell.coords(), true) else {
+    let Some(shell) = strict_cycle(polygon.shell.coords(), true)? else {
         return Ok(None);
     };
     let Some(raw) = raw_offset_loop(&shell, distance, rule, quadrant_segments, budget)? else {
@@ -537,7 +550,7 @@ pub(crate) fn erosion_loops(
     // negative-winding region's boundary in the final pass).
     extend_cleaned(loops, &raw)?;
     for hole in polygon.holes.iter() {
-        let Some(ring) = strict_cycle(hole.coords(), false) else {
+        let Some(ring) = strict_cycle(hole.coords(), false)? else {
             continue;
         };
         // Grown holes never invert; their self-crossings (reflex
@@ -545,7 +558,7 @@ pub(crate) fn erosion_loops(
         let Some(raw) = raw_offset_loop(&ring, distance, rule, quadrant_segments, budget)? else {
             return Ok(None);
         };
-        loops.push(raw);
+        crate::try_push_vec(loops, raw)?;
     }
     Ok(Some(()))
 }
@@ -572,6 +585,7 @@ pub(crate) fn stroke_loops(
         };
     }
     let mut points = crate::scratch_pool::ScratchPool::checkout(&GATHER);
+    crate::try_reserve_vec(&mut points, chain.len())?;
     points.extend(chain.iter_coords());
     dedup_consecutive_points(&mut points);
 
@@ -581,7 +595,7 @@ pub(crate) fn stroke_loops(
             let Some(circle) = circle_loop(*point, distance, quadrant_segments, budget)? else {
                 return Ok(None);
             };
-            loops.push(circle);
+            crate::try_push_vec(loops, circle)?;
             // A lone circle is simple by construction.
             Ok(Some(true))
         },
@@ -605,7 +619,7 @@ pub(crate) fn stroke_loops(
             else {
                 return Ok(None);
             };
-            loops.push(columns);
+            crate::try_push_vec(loops, columns)?;
             Ok(Some(clean))
         },
     }
@@ -614,18 +628,25 @@ pub(crate) fn stroke_loops(
 /// One full-circle CCW loop around `center` — the buffer of a point and
 /// the stroke of a zero-length chain. Inscribed vertices on the circle,
 /// per the arc doctrine (`4 * quadrant_segments` steps).
+fn circle_step_count(quadrant_segments: std::num::NonZeroU32) -> Result<usize> {
+    (quadrant_segments.get() as usize)
+        .checked_mul(4)
+        .ok_or(crate::error::ResourceError::SizeOverflow.into())
+}
+
 pub(crate) fn circle_loop(
     center: Point,
     distance: f64,
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<LoopColumns>> {
-    let steps = 4 * quadrant_segments.get() as usize;
+    let steps = circle_step_count(quadrant_segments)?;
     // Circle size is exact without walking it, so admit the exact realized
     // count before the allocation rather than applying an input estimate.
     budget.add(steps)?;
-    let mut xs = Vec::with_capacity(steps);
-    let mut ys = Vec::with_capacity(steps);
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    crate::try_reserve_pair(&mut xs, &mut ys, steps)?;
     // Rotation recurrence — one `sin_cos` per circle (see `emit_arc`).
     let (sin_step, cos_step) = (std::f64::consts::TAU / steps as f64).sin_cos();
     let (mut sin_theta, mut cos_theta) = (0.0_f64, 1.0_f64);
@@ -656,7 +677,8 @@ pub(crate) fn multipoint_loops(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<()>> {
-    let mut seen = HashSet::with_capacity(points.len());
+    let mut seen = HashSet::new();
+    seen.try_reserve(points.len())?;
     for point in points.iter_coords() {
         // `canonical_f64_bits` matches `same_topological_coordinate`: ±0.0
         // share one key while every other finite coordinate remains bit-exact.
@@ -666,7 +688,7 @@ pub(crate) fn multipoint_loops(
         let Some(circle) = circle_loop(point, distance, quadrant_segments, budget)? else {
             return Ok(None);
         };
-        loops.push(circle);
+        crate::try_push_vec(loops, circle)?;
     }
     Ok(Some(()))
 }
@@ -679,22 +701,20 @@ pub(crate) fn point_buffer(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Shape>> {
-    let steps = 4 * quadrant_segments.get() as usize;
+    let steps = circle_step_count(quadrant_segments)?;
     // `circle_loop` emits the open circle and `close_xy_loop` appends the
     // statically known final coordinate. Reserve the whole realized polygon
     // before the 16M open-circle allocation, not one coordinate too late.
     budget.check_additional(
         steps
             .checked_add(1)
-            .expect("u32 quadrant-segment circle count fits usize"),
+            .ok_or(crate::error::ResourceError::SizeOverflow)?,
     )?;
     let Some((mut xs, mut ys)) = circle_loop(center, distance, quadrant_segments, budget)? else {
         return Ok(None);
     };
     close_xy_loop(&mut xs, &mut ys, budget)?;
-    let Ok(seq) = CoordSeq::from_owned_columns(xs, ys, None, None) else {
-        return Ok(None);
-    };
+    let seq = CoordSeq::from_owned_columns(xs, ys, None, None)?;
     Ok(Some(Shape::Polygon(Polygon::new(
         Ring::from_closed(seq),
         Vec::new(),
@@ -717,7 +737,7 @@ pub(crate) fn collection_loops(
                 let Some(circle) = circle_loop(*point, distance, quadrant_segments, budget)? else {
                     return Ok(None);
                 };
-                loops.push(circle);
+                crate::try_push_vec(loops, circle)?;
             },
             Shape::MultiPoint(points) => {
                 if multipoint_loops(loops, points, distance, quadrant_segments, budget)?.is_none() {
@@ -912,7 +932,7 @@ pub(crate) fn raw_stroke_loop(
         (clean, count_only.len())
     };
     budget.add(count_len)?;
-    let mut columns = WalkColumns::new(count_len, false);
+    let mut columns = WalkColumns::try_new(count_len, false)?;
     let Some(real_clean) =
         emit_stroke_loop(chain, distance, cap_style, rule, step_angle, &mut columns)?
     else {
@@ -1045,11 +1065,14 @@ pub(crate) fn stroke_side<S: WalkSink>(
             crate::scratch_pool::ScratchPool::new(Vec::new())
         };
     }
-    let backward = reversed.then(|| {
+    let backward = if reversed {
         let mut scratch = crate::scratch_pool::ScratchPool::checkout(&BACKWARD);
+        crate::try_reserve_vec(&mut scratch, chain.len())?;
         scratch.extend(chain.iter().rev().copied());
-        scratch
-    });
+        Some(scratch)
+    } else {
+        None
+    };
     let walk: &[Point] = backward.as_deref().map_or(chain, Vec::as_slice);
     let Some(plan) = WalkPlan::new(walk, false, distance, rule, step_angle)? else {
         return Ok(None);
