@@ -99,7 +99,7 @@ mod noding;
 mod rect;
 mod shape;
 
-pub(in crate::geometry) use exact_partition::ExactSourceInventory;
+pub(in crate::geometry) use exact_partition::{ExactSourceInventory, certify_emitted_incidence};
 
 pub(in crate::geometry) use areal::{
     binary_areal_overlay, build_areal_arrangement, outside_winding_seeds,

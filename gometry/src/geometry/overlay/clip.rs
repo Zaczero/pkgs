@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::geometry::overlay::{OverlayOp, binary_areal_overlay, rect_polygon};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, LineSeq, Point, Polygon,
-    REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Shape, XY, clip_segment, line_segments, same_point,
+    REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Shape, clip_segment, line_segments, same_point,
     simd_select_indices,
 };
 pub(crate) fn clip_polygonal(polygons: &[Polygon], rect: Bounds) -> crate::error::Result<Shape> {

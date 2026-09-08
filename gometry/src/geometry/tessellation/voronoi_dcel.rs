@@ -33,8 +33,8 @@ use crate::geometry::tessellation::{
 };
 use crate::geometry::{
     BulkRTree, CoordSeq, CoordWindow, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, HashMap,
-    HashMapExt as _, LineSeq, Point, PointKey, Polygon, RTreeObject as _, Ring, Shape, Strictness,
-    VoronoiBoundary, XY, coverage_is_valid, polygon_is_valid,
+    HashMapExt as _, LineSeq, Point, PointKey, Polygon, RTreeObject as _, Ring, Segment, Shape,
+    Strictness, VoronoiBoundary, XY, coverage_is_valid, polygon_is_valid,
 };
 #[cfg(test)]
 use crate::geometry::{GENERATED_ITEM_LIMIT, tessellation::shape};
@@ -2922,63 +2922,23 @@ fn embed(
             candidate += 1;
         }
     }
-    let indexed_edges: Vec<_> = live_edge_ids
-        .iter()
-        .map(|&edge_id| {
-            let edge = &subdivision.edges[edge_id.0 as usize];
-            let start = embedded_point(edge.endpoints[0])?;
-            let end = embedded_point(edge.endpoints[1])?;
-            Ok(rstar::primitives::GeomWithData::new(
-                rstar::primitives::Rectangle::from_corners(
-                    [start.x.min(end.x), start.y.min(end.y)],
-                    [start.x.max(end.x), start.y.max(end.y)],
-                ),
-                edge_id,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let edge_tree = BulkRTree::bulk_load_with_params(indexed_edges.clone());
-    let mut rounded_candidates = Vec::new();
-    for item in &indexed_edges {
-        for other in edge_tree.locate_in_envelope_intersecting(item.envelope()) {
-            if item.data < other.data {
-                budgeted_try_push(&mut rounded_candidates, [item.data, other.data], budget)?;
-            }
-        }
+    let mut emitted_incidence = Vec::new();
+    for &edge_id in &live_edge_ids {
+        let edge = &subdivision.edges[edge_id.0 as usize];
+        budgeted_try_push(
+            &mut emitted_incidence,
+            (
+                [edge.endpoints[0].0, edge.endpoints[1].0],
+                Segment {
+                    start: embedded_point(edge.endpoints[0])?,
+                    end: embedded_point(edge.endpoints[1])?,
+                },
+            ),
+            budget,
+        )?;
     }
-    rounded_candidates.sort_unstable();
-    rounded_candidates.dedup();
-    for [left_id, right_id] in rounded_candidates {
-        let left = &subdivision.edges[left_id.0 as usize];
-        let left_points = [
-            rounded_exact(left.endpoints[0])?,
-            rounded_exact(left.endpoints[1])?,
-        ];
-        let right = &subdivision.edges[right_id.0 as usize];
-        let right_points = [
-            rounded_exact(right.endpoints[0])?,
-            rounded_exact(right.endpoints[1])?,
-        ];
-        let shared: Vec<_> = left
-            .endpoints
-            .iter()
-            .filter(|vertex| right.endpoints.contains(vertex))
-            .copied()
-            .collect();
-        match exact::segment_intersection(
-            &left_points[0],
-            &left_points[1],
-            &right_points[0],
-            &right_points[1],
-        ) {
-            exact::SegmentIntersection::None if shared.is_empty() => {},
-            exact::SegmentIntersection::Point(point)
-                if shared.len() == 1 && point.same_position(&rounded_exact(shared[0])?) => {},
-            _ => {
-                return Err(embedding_failure());
-            },
-        }
-    }
+    crate::geometry::overlay::certify_emitted_incidence(&emitted_incidence)
+        .map_err(|_| embedding_failure())?;
     budget.add(live_edge_ids.len().saturating_mul(2))?;
     let mut incidence_offsets = vec![0_usize; subdivision.vertices.len() + 1];
     for &edge_id in &live_edge_ids {

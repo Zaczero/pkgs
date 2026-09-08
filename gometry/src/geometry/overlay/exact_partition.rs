@@ -1932,6 +1932,76 @@ const fn location(occupied: bool) -> Loc {
     }
 }
 
+/// Certify a rounded embedding whose endpoint identities were decided by a
+/// different exact construction (currently Voronoi). ExactPartition owns the
+/// final noding/incidence pass; the external owner retains cocircular centers,
+/// clipping policy, and fan order.
+pub(in crate::geometry) fn certify_emitted_incidence(
+    items: &[([u32; 2], Segment)],
+) -> Result<()> {
+    let mut coordinates: HashMap<u32, PointKey> =
+        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    let mut by_coordinate: HashMap<PointKey, u32> =
+        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    coordinates
+        .try_reserve(items.len().saturating_mul(2))
+        .map_err(|_| ResourceError::Allocation)?;
+    by_coordinate
+        .try_reserve(items.len().saturating_mul(2))
+        .map_err(|_| ResourceError::Allocation)?;
+    let mut segments = Vec::new();
+    try_reserve_vec(&mut segments, items.len())?;
+    for &([start_id, end_id], segment) in items {
+        for (id, point) in [(start_id, segment.start), (end_id, segment.end)] {
+            let key = PointKey::new(point);
+            if let Some(previous) = coordinates.insert(id, key)
+                && previous != key
+            {
+                return Err(GeometryErrorKind::ExactNodeCollision {
+                    first: id,
+                    second: id,
+                }
+                .into());
+            }
+            if let Some(previous) = by_coordinate.insert(key, id)
+                && previous != id
+            {
+                return Err(GeometryErrorKind::ExactNodeCollision {
+                    first: previous,
+                    second: id,
+                }
+                .into());
+            }
+        }
+        segments.push(segment);
+    }
+    let inventory = ExactSourceInventory::from_segments(&segments)?;
+    let mut budget = ExpansionBudget::new("exact_partition", "Voronoi incidence");
+    let partition = inventory.partition(&mut budget)?;
+    let _ = partition.local_topology()?;
+    let _ = for_each_candidate_pair(&segments, single_chain, |left, right| {
+        match crate::geometry::segment_contact_exact(segments[left], segments[right]) {
+            Contact::Disjoint => std::ops::ControlFlow::Continue(()),
+            Contact::Touch { point } => {
+                let shared = items[left]
+                    .0
+                    .into_iter()
+                    .filter(|id| items[right].0.contains(id))
+                    .collect::<Vec<_>>();
+                if shared.len() == 1 && PointKey::new(point) == coordinates[&shared[0]] {
+                    std::ops::ControlFlow::Continue(())
+                } else {
+                    std::ops::ControlFlow::Break(())
+                }
+            },
+            Contact::Cross { .. } | Contact::Collinear { .. } => {
+                std::ops::ControlFlow::Break(())
+            },
+        }
+    })?;
+    Ok(())
+}
+
 fn cycle_contains_node(
     partition: &ExactPartition<'_>,
     cycle: &[NodeId],

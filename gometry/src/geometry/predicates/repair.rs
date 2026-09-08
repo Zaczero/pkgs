@@ -2,14 +2,11 @@ use ahash::HashSetExt as _;
 
 use crate::error::Result;
 use crate::geometry::area::ring_area_sign;
-use crate::geometry::overlay::{ExactSourceInventory, outside_winding_seeds};
-use crate::geometry::predicates::{prune_dangles, validate_points};
+use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    AreaSign, Arrangement, CoordSeq, Coordinates, GeometryErrorKind, HashMap, HashMapExt as _,
-    HashSet, OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, Segment, Shape, SharedSlice,
-    XY, assemble_region_polygons, binary_areal_overlay, cmp_area_keys_then_closed, line_segments,
-    ordered_edge, polygon_parts_to_shape, ring_decision_area, same_point, self_node_segments,
-    winding_region, wrap_index,
+    AreaSign, CoordSeq, HashMap, HashMapExt as _, HashSet, OverlayOp, Point, PointKey, Polygon,
+    RepairMethod, Ring, Shape, SharedSlice, XY, cmp_area_keys_then_closed, polygon_parts_to_shape,
+    ring_decision_area, same_point, wrap_index,
 };
 ///
 /// `Linework` is even-odd parity over the DEDUPLICATED noded linework

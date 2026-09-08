@@ -9,7 +9,7 @@
 use crate::error::Result;
 use crate::geometry::overlay::{ExactSourceInventory, OverlayOp, self_node_segments_sourced};
 use crate::geometry::{
-    Arrangement, Bounds, CoordSeq, Point, Polygon, RingWinding, Segment, SegmentIndex, Shape, XY,
+    Arrangement, Bounds, CoordSeq, Point, Polygon, RingWinding, Segment, SegmentIndex, XY,
     assemble_region_polygons, ray_crossing_is_right, ring_winding, same_point, wrap_index,
 };
 use crate::scratch_pool::{RetainScratch, ScratchPool, flat_vec_retained_bytes};

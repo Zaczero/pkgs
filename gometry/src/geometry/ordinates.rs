@@ -78,23 +78,6 @@ impl OrdinateSource {
         }
     }
 
-    fn build(inputs: &[&Shape]) -> Result<Self> {
-        let mut result = Self::new(inputs);
-        for shape in inputs {
-            if !(shape.has_z() || shape.has_m()) {
-                continue;
-            }
-            let graph = TopologyGraph::cartesian(shape)?;
-            for source in &graph.source_points {
-                add_vertex(&mut result.vertices, source.point);
-            }
-            for source in &graph.source_edges {
-                result.add_source_edge(source.start, source.end);
-            }
-        }
-        Ok(result)
-    }
-
     fn build_direct(inputs: &[&Shape]) -> Self {
         let mut result = Self::new(inputs);
         for shape in inputs {

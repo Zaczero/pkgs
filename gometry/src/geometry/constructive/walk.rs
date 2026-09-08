@@ -8,10 +8,10 @@ use rstar::primitives::{GeomWithData, Rectangle};
 use crate::geometry::constructive::offset::{MiterConstruction, MiterFinish, miter_join};
 use crate::geometry::constructive::{Result, emit_arc, unit_right_normal};
 use crate::geometry::{
-    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, Contact, CoordSeq,
+    AreaSign, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, Contact, CoordSeq,
     ExpansionBudget, Ordering, Orientation, Point, Polygon, PolygonPointIndex, Ring, Segment,
     SegmentIndex, SegmentProjection, XY, line_segments, open_xy_cycle_decision, orientation,
-    same_point, segment_cross_point, segment_projection, segments_intersect, wrap_index,
+    segment_cross_point, segment_projection, segments_intersect, wrap_index,
 };
 
 /// One planned join of a right-offset walk, between consecutive offset
@@ -633,10 +633,8 @@ pub(crate) fn extend_cleaned(
 /// Faces of the noded arrangement of the directed column `loops` whose
 /// winding number passes `keep`, re-assembled into nested polygons — the
 /// shared region engine behind both of the buffer's winding selections,
-/// running on the columnar half-edge [`Arrangement`] core: directed
-/// multiplicities give every face's winding from ONE probe per connected
-/// component (components never cross, so the winding of all OTHER loops is
-/// constant across each), propagated by BFS over twin half-edges.
+/// running on the exact source partition: directed multiplicities give every
+/// face's winding from one traversal over the connected exact embedding.
 pub(in crate::geometry) fn winding_region(
     loops: &[(Vec<f64>, Vec<f64>)],
     keep: impl Fn(i32) -> bool,
@@ -729,7 +727,7 @@ impl ShellCoverageIndex {
 }
 
 /// Nest boundary rings (shells CCW, holes CW — the
-/// [`Arrangement::region_rings`] convention) into polygons: each hole goes
+/// exact boundary-walk convention) into polygons: each hole goes
 /// to the SMALLEST containing shell.
 pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Result<Vec<Polygon>> {
     let mut shells: Vec<(Ring, f64, Bounds)> = Vec::new();
