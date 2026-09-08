@@ -518,7 +518,7 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
             // Distance-scale threshold; area form is derived after framing.
-            Ok(crate::geometry::vw_keep(xs, ys, tolerance, keep))
+            crate::geometry::vw_keep(xs, ys, tolerance, keep)
         })
     }
 

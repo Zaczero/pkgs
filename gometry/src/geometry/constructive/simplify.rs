@@ -933,7 +933,7 @@ impl Shape {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let mut scratch = KeepScratch::default();
         self.simplify_raw(&mut scratch, &mut |xs, ys, scratch| {
-            Ok(vw_keep(xs, ys, tolerance, &mut scratch.keep))
+            vw_keep(xs, ys, tolerance, &mut scratch.keep)
         })
     }
 
@@ -1623,6 +1623,64 @@ mod guarded_borrow_tests {
                 original.contains(&(xs[index], ys[index], zs[index], ms[index])),
                 "output vertex is not an original index"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod keep_mask_scratch_tests {
+
+    use super::rdp_keep;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::constructive::vw_keep;
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn collinear_xy(count: usize) -> (Vec<f64>, Vec<f64>) {
+        ((0..count).map(|index| index as f64).collect(), vec![
+            0.0;
+            count
+        ])
+    }
+
+    fn assert_allocation_error(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn rdp_keep_rejects_every_allocation() {
+        let (xs, ys) = collinear_xy(8);
+        let run = || {
+            let mut keep = Vec::new();
+            let mut stack = Vec::new();
+            rdp_keep(&xs, &ys, 0.0, &mut keep, &mut stack)
+        };
+        let (kept, allocations) = allocation_count(|| run().unwrap());
+        assert_eq!(kept, Some(2));
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = fail_allocations_after(allowed, run)
+                .expect_err("DP keep-mask scratch must propagate allocation failure");
+            assert_allocation_error(&error);
+        }
+    }
+
+    #[test]
+    fn vw_keep_rejects_every_allocation() {
+        let (xs, ys) = collinear_xy(8);
+        let run = || {
+            let mut keep = Vec::new();
+            vw_keep(&xs, &ys, 1.0, &mut keep)
+        };
+        let (kept, allocations) = allocation_count(|| run().unwrap());
+        assert_eq!(kept, Some(2));
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = fail_allocations_after(allowed, run)
+                .expect_err("VW keep-mask scratch must propagate allocation failure");
+            assert_allocation_error(&error);
         }
     }
 }
