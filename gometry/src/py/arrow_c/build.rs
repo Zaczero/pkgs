@@ -690,13 +690,13 @@ pub(crate) fn extension_metadata_json(
     if crs.is_none() && epoch.is_none() {
         return Ok(None);
     }
+    let projjson = crs.map(crate::crs::to_projjson).transpose()?;
     let epoch = epoch
         .map(|epoch| {
             Number::from_f64(epoch)
                 .ok_or_else(|| NativeArrowExportError::geometry("coordinate epoch must be finite"))
         })
         .transpose()?;
-    let projjson = crs.map(crate::crs::to_projjson).transpose()?;
     Ok(Some(assemble_extension_metadata(projjson, epoch)?))
 }
 
@@ -729,18 +729,18 @@ fn assemble_extension_metadata(
         .ok_or_else(|| crate::error::Error::from(crate::error::ResourceError::SizeOverflow))?;
     let mut out = String::new();
     out.try_reserve_exact(needed)
-        .map_err(|_| crate::error::Error::from(crate::error::ResourceError::Allocation))?;
+        .map_err(crate::error::Error::from)?;
     if let Some(projjson) = projjson {
         out.push_str(CRS_PREFIX);
         out.push_str(&projjson);
         out.push_str(CRS_TYPE_FIELD);
         if let Some(epoch) = epoch {
             out.push_str(EPOCH_FIELD);
-            let _ = write!(out, "{epoch}");
+            write!(out, "{epoch}").expect("writing into a reserved String cannot fail");
         }
     } else if let Some(epoch) = epoch {
         out.push_str(EPOCH_ONLY_PREFIX);
-        let _ = write!(out, "{epoch}");
+        write!(out, "{epoch}").expect("writing into a reserved String cannot fail");
     }
     out.push_str(OBJECT_END);
     Ok(out)
@@ -961,7 +961,7 @@ mod owner_export_tests {
         for epoch in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let error = extension_metadata_json(None, Some(epoch)).unwrap_err();
             assert!(
-                matches!(error, NativeArrowExportError::Geometry(message) if message.contains("finite")),
+                matches!(&error, NativeArrowExportError::Geometry(message) if message.contains("finite")),
                 "{error:?}"
             );
         }
@@ -1004,13 +1004,58 @@ mod owner_export_tests {
         })
         .unwrap_err();
         assert!(matches!(
-            error,
-            NativeArrowExportError::Core(ref error)
+            &error,
+            NativeArrowExportError::Core(error)
                 if matches!(
                     error.kind(),
                     crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
                 )
         ));
+    }
+
+    #[test]
+    fn assemble_extension_metadata_epoch_extremes_use_one_envelope_allocation() {
+        for epoch in [
+            f64::MAX,
+            f64::MIN,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            -0.0,
+        ] {
+            let number = Number::from_f64(epoch).expect("finite epoch");
+            let reserved = number.clone();
+            let (result, allocations) = crate::test_support::allocation_count(|| {
+                assemble_extension_metadata(None, Some(reserved))
+            });
+            let text = result.expect("envelope reserves");
+            assert_eq!(allocations, 1, "epoch {epoch:?} allocated {allocations}");
+            let token = text
+                .strip_prefix(EPOCH_ONLY_PREFIX)
+                .and_then(|body| body.strip_suffix(OBJECT_END))
+                .expect("epoch-only envelope uses the reserved prefix and suffix");
+            assert!(
+                token.len() <= ZMIJ_F64_DISPLAY,
+                "Display outgrew the zmij buffer: {token:?} ({} bytes)",
+                token.len()
+            );
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert!(value["epoch"].is_number(), "{text}");
+            let error = crate::test_support::fail_allocations_after(0, || {
+                assemble_extension_metadata(None, Some(number))
+            })
+            .unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    NativeArrowExportError::Core(error)
+                        if matches!(
+                            error.kind(),
+                            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+                        )
+                ),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]
