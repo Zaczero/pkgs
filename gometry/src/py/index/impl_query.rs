@@ -14,6 +14,10 @@ use crate::py::index::{
 };
 use crate::{CsrBuilder, try_push_vec};
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 fn geographic_keep(
     spec: &PredicateSpec,
     query: crate::geometry::GeographicPrepared<'_>,

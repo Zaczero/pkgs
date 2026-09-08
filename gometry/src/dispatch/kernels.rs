@@ -40,10 +40,6 @@ pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
 }
 
 /// Envelope kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "uniform dispatch kernels return Result<Shape>"
-)]
 pub(crate) fn unary_envelope(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     data.shape().envelope()
 }
@@ -378,10 +374,6 @@ pub(crate) fn unary_is_simple(data: &PreparedPlan, ctx: &CachelessRowContext<'_>
 }
 
 /// ``is_valid`` kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<bool>"
-)]
 pub(crate) fn unary_is_valid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(crate::geometry::validate_data_in_frame(data, ctx.domain)?.is_none())
 }
@@ -664,15 +656,11 @@ pub(crate) fn unary_orient_polygons(
 }
 
 /// Unique-points kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<Shape>"
-)]
 pub(crate) fn unary_unique_points(
     data: &PreparedPlan,
     _ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    Ok(data.shape().unique_points()?)
+    data.shape().unique_points()
 }
 
 /// Remove-repeated-points kernel shared by the spine-routed free function.

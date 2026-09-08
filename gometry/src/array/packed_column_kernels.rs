@@ -1192,12 +1192,16 @@ pub(crate) fn subdivide_polygon_columns(
     })
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "unit scale is the exact identity linear part; a tolerance would still apply the affine"
+)]
 pub(crate) fn packed_per_row_self_origin_affine_columns(
     columns: PackedColumns<'_>,
     spec: OriginSpec,
     linear: [f64; 4],
 ) -> PackedColumnResult<PackedColumnOutput> {
-    let [a, b, d, e] = linear;
+    let [m00, m01, m10, m11] = linear;
     match columns {
         PackedColumns::Points(point_columns) => match spec {
             OriginSpec::Centroid | OriginSpec::Center => {
@@ -1248,19 +1252,21 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                         continue;
                     };
                     let point = point_columns.coords().point_at(physical);
-                    let x = if a == 1.0 && crate::geometry::same_topological_coordinate(b, 0.0) {
+                    let x = if m00 == 1.0 && crate::geometry::same_topological_coordinate(m01, 0.0)
+                    {
                         point.x
                     } else {
                         crate::geometry::affine_about_origin_ordinate(
-                            a, b, pivot_x, pivot_x, pivot_y, point.x, point.y,
+                            m00, m01, pivot_x, pivot_x, pivot_y, point.x, point.y,
                         )
                         .map_err(|error| row_err(logical, error))?
                     };
-                    let y = if crate::geometry::same_topological_coordinate(d, 0.0) && e == 1.0 {
+                    let y = if crate::geometry::same_topological_coordinate(m10, 0.0) && m11 == 1.0
+                    {
                         point.y
                     } else {
                         crate::geometry::affine_about_origin_ordinate(
-                            d, e, pivot_y, pivot_x, pivot_y, point.x, point.y,
+                            m10, m11, pivot_y, pivot_x, pivot_y, point.x, point.y,
                         )
                         .map_err(|error| row_err(logical, error))?
                     };

@@ -115,7 +115,7 @@ impl PackedColumnBuilder {
         Ok(())
     }
 
-    fn extend_coords(&mut self, transformed: CoordSeq) -> CrateResult<()> {
+    fn extend_coords(&mut self, transformed: &CoordSeq) -> CrateResult<()> {
         self.try_reserve_columns(transformed.len())?;
         self.xs.extend_from_slice(transformed.xs());
         self.ys.extend_from_slice(transformed.ys());
@@ -139,7 +139,7 @@ impl PackedColumnBuilder {
         let transformed = coords
             .view(CoordWindow::from_range(window, coords.len()))
             .try_affine_about_origin(linear, origin)?;
-        self.extend_coords(transformed)
+        self.extend_coords(&transformed)
     }
 
     /// Exact affine-map one CSR window about `origin`, then close the row.
@@ -211,12 +211,11 @@ pub(crate) fn concat_packed_line_columns(
             continue;
         }
         let ends = offsets.as_slice();
-        let builder = match builder.as_mut() {
-            Some(builder) => builder,
-            None => {
-                builder = Some(PackedColumnBuilder::try_like(&coords, coords.len())?);
-                builder.as_mut().expect("just inserted")
-            },
+        let builder = if let Some(builder) = builder.as_mut() {
+            builder
+        } else {
+            builder = Some(PackedColumnBuilder::try_like(&coords, coords.len())?);
+            builder.as_mut().expect("just inserted")
         };
         for line in 0..n_lines {
             builder.push_window(&coords, ends[line] as usize..ends[line + 1] as usize)?;

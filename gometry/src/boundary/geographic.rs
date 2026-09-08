@@ -120,7 +120,7 @@ mod validate_lonlat_shape_tests {
         validate_lonlat_shape(shape).expect_err("expected a domain error")
     }
 
-    fn assert_first_xy(error: crate::error::Error, lon: f64, lat: f64) {
+    fn assert_first_xy(error: &crate::error::Error, lon: f64, lat: f64) {
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
@@ -138,7 +138,7 @@ mod validate_lonlat_shape_tests {
     fn first_vertex_is_the_diagnostic() {
         let shape =
             Shape::LineString(LineSeq::try_new(xy_seq(vec![0.0, 10.0], vec![95.0, 91.0])).unwrap());
-        assert_first_xy(domain_error(&shape), 0.0, 95.0);
+        assert_first_xy(&domain_error(&shape), 0.0, 95.0);
     }
 
     #[test]
@@ -151,7 +151,7 @@ mod validate_lonlat_shape_tests {
             Ring::closed_coordseq(xy_seq(vec![0.2, 0.3, 0.3, 0.2], vec![95.0, 0.2, 0.3, 95.0]))
                 .unwrap();
         let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
-        assert_first_xy(domain_error(&shape), 0.2, 95.0);
+        assert_first_xy(&domain_error(&shape), 0.2, 95.0);
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod validate_lonlat_shape_tests {
             Shape::Point(Point::new_raw_xy(0.0, 95.0)),
         ])
         .unwrap();
-        assert_first_xy(domain_error(&shape), 0.0, 95.0);
+        assert_first_xy(&domain_error(&shape), 0.0, 95.0);
     }
 
     #[test]

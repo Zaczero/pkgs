@@ -291,6 +291,10 @@ impl PyGeometryArray {
     /// Invalidates mask-dependent aggregates (`total_bounds_cache`): a shared
     /// clone's warm cache would otherwise report bounds over rows that are
     /// now masked out.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "mask length is a caller invariant; the Result is the allocation path"
+    )]
     pub(crate) fn with_missing_mask(
         mut self,
         mask: Option<ValidityMask>,
@@ -357,10 +361,8 @@ impl PyGeometryArray {
         &self,
         rows: &[usize],
     ) -> crate::error::Result<Option<ValidityMask>> {
-        match self.missing() {
-            Some(mask) => mask.try_gather(rows),
-            None => Ok(None),
-        }
+        self.missing()
+            .map_or(Ok(None), |mask| mask.try_gather(rows))
     }
 
     /// The mask entries for a contiguous row range.
@@ -381,6 +383,10 @@ impl PyGeometryArray {
     /// Rebuild a full-length masked array from its transformed PRESENT rows:
     /// row `i` takes the next dense row when unmasked, the placeholder when
     /// masked. The inverse of `drop_missing` for mask-blind bulk transforms.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "present count is a caller invariant; the Result is the allocation path"
+    )]
     pub(crate) fn scatter_present_rows(
         present: &Self,
         mask: ValidityMask,
@@ -549,6 +555,10 @@ impl PyGeometryArray {
         Self::compact_from_storage(compact, mask, frame)
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "compact payload length is a caller invariant; the Result is the allocation path"
+    )]
     pub(crate) fn compact_from_storage(
         compact: GeometryArrayStorage,
         mask: ValidityMask,

@@ -400,7 +400,7 @@ fn mixed_dimension_collection() -> Shape {
         box_shape(-2.0, -2.0, 2.0, 2.0),
         Shape::LineString(
             LineSeq::try_new(
-                CoordSeq::try_from_points(&vec![
+                CoordSeq::try_from_points(&[
                     Point::new_raw_xy(3.0, -1.0),
                     Point::new_raw_xy(6.0, 1.0),
                 ])
@@ -409,12 +409,9 @@ fn mixed_dimension_collection() -> Shape {
             .expect("test line is valid"),
         ),
         Shape::MultiPoint(
-            CoordSeq::try_from_points(&vec![
-                Point::new_raw_xy(-4.0, 0.0),
-                Point::new_raw_xy(0.0, 4.0),
-            ])
-            .unwrap()
-            .into(),
+            CoordSeq::try_from_points(&[Point::new_raw_xy(-4.0, 0.0), Point::new_raw_xy(0.0, 4.0)])
+                .unwrap()
+                .into(),
         ),
     ])
     .expect("test collection is valid")

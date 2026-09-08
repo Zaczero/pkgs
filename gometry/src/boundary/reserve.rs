@@ -33,6 +33,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyIterator, PySequence};
 
 use crate::error::{ResourceError, Result};
+use crate::py::errors::native_memory_error;
 
 /// Soft upper bound for a single **initial** reservation from an external
 /// length *hint* (`__len__`, etc.). Large enough to avoid thrash on typical
@@ -196,7 +197,7 @@ pub(crate) struct CsrBuilder<T> {
 }
 
 impl<T> CsrBuilder<T> {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             values: Vec::new(),
             offsets: Vec::new(),
@@ -339,7 +340,7 @@ pub(crate) fn try_reserve_hint<T>(vec: &mut Vec<T>, additional: usize) -> PyResu
     }
     if vec.try_reserve(additional).is_err() {
         *vec = Vec::new();
-        return Err(crate::py::errors::native_memory_error());
+        return Err(native_memory_error());
     }
     Ok(())
 }
@@ -353,7 +354,7 @@ pub(crate) fn try_reserve_total<T>(vec: &mut Vec<T>, additional: usize) -> PyRes
     }
     if vec.try_reserve(additional).is_err() {
         *vec = Vec::new();
-        return Err(crate::py::errors::native_memory_error());
+        return Err(native_memory_error());
     }
     Ok(())
 }
@@ -402,7 +403,7 @@ pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
         // Drop the allocation before raising the native error; assignment does
         // not request replacement storage when the heap is exhausted.
         *vec = Vec::new();
-        return Err(crate::py::errors::native_memory_error());
+        return Err(native_memory_error());
     }
     vec.push(item);
     Ok(())
@@ -615,12 +616,12 @@ pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyRes
             .map_err(|_| PyTypeError::new_err(format!("{what} elements have the wrong type")))?;
         let Ok(owned) = try_string_from_str(text) else {
             drop(out);
-            return Err(crate::py::errors::native_memory_error());
+            return Err(native_memory_error());
         };
         if try_reserve_next_raw(&mut out).is_err() {
             drop(owned);
             drop(out);
-            return Err(crate::py::errors::native_memory_error());
+            return Err(native_memory_error());
         }
         out.push(owned);
     }
@@ -850,7 +851,7 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
         // Free retained items before raising the native error (see invariant).
         if try_reserve_next_raw(&mut out).is_err() {
             drop(out);
-            return Err(crate::py::errors::native_memory_error());
+            return Err(native_memory_error());
         }
         match map(item) {
             Ok(value) => out.push(value),
@@ -1380,7 +1381,7 @@ mod tests {
                 .expect_err("integer item must be rejected");
 
             assert!(error.is_instance_of::<PyTypeError>(py));
-            assert!(py.check_signals().is_ok());
+            py.check_signals().unwrap();
             Ok(())
         })
         .expect("wrong item type test");

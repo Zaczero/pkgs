@@ -297,7 +297,7 @@ impl PySpatialIndex {
         };
         if k == 1 {
             return self.bound_ordered_nearest_shared(
-                &bound,
+                bound,
                 exact,
                 OneNearest::default(),
                 max_distance,
@@ -308,7 +308,7 @@ impl PySpatialIndex {
             );
         }
         self.bound_ordered_nearest(
-            &bound,
+            bound,
             exact,
             k,
             max_distance,
@@ -416,7 +416,7 @@ impl PySpatialIndex {
             };
             if k == 1 {
                 return self.bound_ordered_nearest_shared(
-                    &bound,
+                    bound,
                     exact,
                     OneNearest::default(),
                     max_distance,
@@ -427,7 +427,7 @@ impl PySpatialIndex {
                 );
             }
             return self.bound_ordered_nearest(
-                &bound,
+                bound,
                 exact,
                 k,
                 max_distance,
@@ -655,7 +655,7 @@ mod tests {
     use pyo3::Python;
     use pyo3::exceptions::PyMemoryError;
 
-    use super::{HeapNearest, NearestState, NearestVisited, OneNearest};
+    use super::{HeapNearest, NearestState as _, NearestVisited, OneNearest};
     use crate::crs::{RUNTIME_STATE_TEST_LOCK, ResolvedMetric, metric_model};
     use crate::geometry::{FrameDependentCaches, PreparedPlan, ShapeData};
     use crate::py::index::{

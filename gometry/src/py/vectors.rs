@@ -65,7 +65,7 @@ mod preview_tests {
             "Groups([0, 1, 2, 3, 4, 5, 6, 7, ...], len=100)"
         );
         let rows = std::iter::once(Err(pyo3::exceptions::PyValueError::new_err("row failed")));
-        assert!(preview(rows, 1, "Groups").is_err());
+        preview(rows, 1, "Groups").unwrap_err();
     }
 }
 
@@ -1044,7 +1044,7 @@ impl Groups {
     }
 
     fn __repr__(&self) -> PyResult<String> {
-        let rendered = match &self.values {
+        match &self.values {
             GroupsValues::Int64(_) => preview(
                 (0..self.rows.len()).map(|row| Ok(format!("{:?}", self.int64_row_slice(row)))),
                 self.rows.len(),
@@ -1071,8 +1071,7 @@ impl Groups {
                 self.rows.len(),
                 "Groups",
             ),
-        };
-        rendered
+        }
     }
 
     /// Copy into a plain nested Python list.

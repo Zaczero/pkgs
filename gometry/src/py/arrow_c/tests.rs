@@ -82,12 +82,13 @@ impl Drop for NativeSignalStreamState {
         self.remaining_at_release
             .store(remaining, Ordering::Release);
         for batch in &mut self.batches {
-            if let Some(mut batch) = batch.take() {
-                // SAFETY: each retained shell was produced by the production
-                // Arrow builder and remains uniquely owned by this state.
-                if let Some(release) = batch.release {
-                    unsafe { release(batch.as_mut()) }
-                }
+            if let Some(mut batch) = batch.take()
+                && let Some(release) = batch.release
+            {
+                // SAFETY: `batch` is a uniquely owned production Arrow shell
+                // taken out of this stream state; `release` is that shell's
+                // callback and consumes the C struct through `as_mut()`.
+                unsafe { release(batch.as_mut()) }
             }
         }
         self.released.store(true, Ordering::Release);
@@ -102,17 +103,23 @@ unsafe extern "C" fn native_signal_stream_get_schema(
         return -1;
     }
     // SAFETY: the importer calls this with the live test stream and a writable
-    // output shell. The state owns the schema node for the whole stream.
+    // output shell. private_data is the NativeSignalStreamState box installed
+    // by native_signal_stream and is not released until native_signal_stream_release.
     let state = unsafe { (*stream).private_data.cast::<NativeSignalStreamState>() };
     if state.is_null() {
         return -1;
     }
-    let Ok(schema) = (unsafe { &*state }).schema.materialize_schema() else {
+    // SAFETY: private_data is non-null and uniquely owned by this stream for
+    // the callback; the schema node is borrowed only until materialize_schema returns.
+    let state = unsafe { &*state };
+    let Ok(schema) = state.schema.materialize_schema() else {
         return -1;
     };
     // SAFETY: `schema` is an independent production-built Arrow schema shell
     // whose ownership transfers to the importer through `out`.
-    unsafe { ptr::write(out, *schema.into_box()) };
+    unsafe {
+        ptr::write(out, *schema.into_box());
+    }
     0
 }
 
@@ -124,27 +131,37 @@ unsafe extern "C" fn native_signal_stream_get_next(
         return -1;
     }
     // SAFETY: the importer calls this serially while the stream release slot is
-    // live; the state is uniquely owned by the stream callback sequence.
+    // live; private_data is the NativeSignalStreamState box installed by
+    // native_signal_stream and is not released until native_signal_stream_release.
     let state = unsafe { (*stream).private_data.cast::<NativeSignalStreamState>() };
     if state.is_null() {
         return -1;
     }
+    // SAFETY: private_data is non-null and uniquely owned by this serial
+    // callback sequence until release; the mutable borrow does not outlive
+    // this get_next invocation.
     let state = unsafe { &mut *state };
     let index = state.next;
     state.next = state.next.wrapping_add(1);
     if index == state.interrupt_at {
         // SAFETY: this is CPython's public pending-interrupt API, called while
         // the importer owns an attached Python context.
-        unsafe { pyo3::ffi::PyErr_SetInterrupt() };
+        unsafe {
+            pyo3::ffi::PyErr_SetInterrupt();
+        }
     }
     if let Some(batch) = state.batches.get_mut(index).and_then(Option::take) {
         // SAFETY: the batch shell is live and its ownership transfers to the
         // caller's writable ArrowArray output.
-        unsafe { ptr::write(out, *batch) };
+        unsafe {
+            ptr::write(out, *batch);
+        }
     } else {
         // Arrow C Stream EOF is a successful callback with release == NULL.
         // SAFETY: `out` is the writable shell supplied by the importer.
-        unsafe { ptr::write(out, empty_array()) };
+        unsafe {
+            ptr::write(out, empty_array());
+        }
     }
     0
 }
@@ -176,8 +193,8 @@ fn native_signal_stream(
     batch_count: usize,
     interrupt_at: usize,
 ) -> (Box<ArrowArrayStream>, Arc<AtomicUsize>, Arc<AtomicBool>) {
-    let mut exports = (0..batch_count)
-        .map(|_| exported(geometry))
+    let exports = std::iter::repeat_with(|| exported(geometry))
+        .take(batch_count)
         .collect::<Vec<_>>();
     let schema = exports
         .first()
@@ -185,14 +202,16 @@ fn native_signal_stream(
         .schema_node
         .clone();
     let batches = exports
-        .drain(..)
+        .into_iter()
         .map(|export| {
             let ExportedArray {
                 mut schema, array, ..
             } = export;
             // SAFETY: this standalone schema is no longer exposed; the stream
             // owns the cloned SchemaNode used by get_schema instead.
-            unsafe { release_schema(schema.as_mut()) };
+            unsafe {
+                release_schema(schema.as_mut());
+            }
             let mut array = array.into_box();
             array.release = Some(counted_array_release);
             Some(array)
@@ -205,8 +224,8 @@ fn native_signal_stream(
         batches,
         next: 0,
         interrupt_at,
-        remaining_at_release: remaining_at_release.clone(),
-        released: released.clone(),
+        remaining_at_release: Arc::clone(&remaining_at_release),
+        released: Arc::clone(&released),
     });
     (
         Box::new(ArrowArrayStream {
@@ -319,16 +338,15 @@ fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
         let batch_count = 65;
         let (mut stream, remaining_at_release, released) =
             native_signal_stream(&point, batch_count, 63);
-        let stream_ptr = stream.as_mut() as *mut ArrowArrayStream;
+        let stream_ptr = std::ptr::from_mut::<ArrowArrayStream>(stream.as_mut());
         let result = super::import::import_stream(py, stream_ptr, None, None);
         let late_signal = py.check_signals().err();
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!(
+        let Err(error) = result else {
+            panic!(
                 "stream import completed; {} batches remain at release; late signal={}",
                 remaining_at_release.load(Ordering::Acquire),
                 late_signal.is_some()
-            ),
+            );
         };
 
         assert!(error.is_instance_of::<PyKeyboardInterrupt>(py));

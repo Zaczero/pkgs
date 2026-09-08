@@ -27,6 +27,10 @@ fn check_budget(produced: usize, max_cells: Option<usize>) -> Result<(), H3TileE
 /// Geographic classifier against the shared authority (H3 covers are always
 /// WGS84). Every candidate reaches the frame-keyed quotient topology graph;
 /// the flood's edge walk is only a cheap candidate generator.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 fn checked_predicate(
     authority: GeographicPrepared<'_>,
     cell: CellIndex,
@@ -84,6 +88,10 @@ pub(super) fn h3_tile(
 
 /// Accumulate one atomic center-rule H3 source into `coverage`. Aggregate shapes were
 /// decomposed by `visit_grid_cover_components` before reaching this owner.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(super) fn h3_tile_shape(
     shape: &Shape,
     authority: GeographicPrepared<'_>,
@@ -114,6 +122,10 @@ pub(super) fn h3_tile_shape(
 /// Rule-specific point coverage. `center` emits the cell only when the point
 /// is that cell's exact center (bit-identical lon/lat after H3 decode);
 /// Non-area `within` is owned by the certified traversal, not this tiler.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(super) fn h3_tile_point(
     point: Point,
     authority: GeographicPrepared<'_>,
@@ -142,6 +154,10 @@ fn points_equal_signed_zero(a: Point, b: Point) -> bool {
 
 /// Center-rule cells for a line.  Exact overlap/bbox line contact belongs to
 /// the affine carrier and ordered H3 arcs, never this sample-ring helper.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(super) fn h3_tile_line(
     authority: GeographicPrepared<'_>,
     coords: &crate::geometry::CoordSeq,
@@ -168,6 +184,10 @@ pub(super) fn h3_tile_line(
 
 /// Checked inward flood: every first-seen neighbor is tested against the
 /// authority; only matched cells are recorded and enqueued.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 fn flood_checked(
     authority: GeographicPrepared<'_>,
     max_cells: Option<usize>,
@@ -196,6 +216,10 @@ fn flood_checked(
 }
 
 /// Flood-fill one polygon's center-rule H3 coverage into `coverage`.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(super) fn h3_tile_polygon(
     polygon: &Polygon,
     authority: GeographicPrepared<'_>,
@@ -272,6 +296,10 @@ pub(super) fn h3_tile_polygon(
 }
 
 /// Sub-cell seed path for Center mode (no hex Shape materialization).
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 fn h3_tile_polygon_seeds_center(
     polygon: &Polygon,
     part_source: &Shape,
@@ -498,8 +526,7 @@ mod edge_trace_tests {
             .geographic_frame()
             .unwrap();
         let error = h3_tile(&shape, &authority, &cache, frame, Resolution::Six, None)
-            .err()
-            .expect("invalid latitude must fail before tiling");
+            .expect_err("invalid latitude must fail before tiling");
         let GridCoverError::Native(error) = GridCoverError::from(error) else {
             panic!("admission must retain its native error");
         };

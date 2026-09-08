@@ -1655,10 +1655,8 @@ mod tests {
         let collection = Shape::geometry_collection(vec![
             Shape::Point(pt(9.0, 9.0)),
             Shape::LineString(
-                LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![pt(0.0, 0.0), pt(1.0, 1.0)]).unwrap(),
-                )
-                .expect("test line is valid"),
+                LineSeq::try_new(CoordSeq::try_from_points(&[pt(0.0, 0.0), pt(1.0, 1.0)]).unwrap())
+                    .expect("test line is valid"),
             ),
         ])
         .expect("test collection is valid");

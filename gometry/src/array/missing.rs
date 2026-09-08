@@ -19,6 +19,10 @@ pub(crate) struct ValidityMask {
 
 impl ValidityMask {
     /// Build from the public/pickle convention (`true = missing`).
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "mask length is a caller invariant; the Result is the allocation path"
+    )]
     pub(crate) fn from_vec(len: usize, missing: Vec<bool>) -> crate::error::Result<Option<Self>> {
         assert_eq!(
             missing.len(),
@@ -60,6 +64,10 @@ impl ValidityMask {
         }))
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "missing-row indices are a caller invariant; the Result is the allocation path"
+    )]
     pub(crate) fn from_sparse(
         len: usize,
         missing_rows: &[usize],
@@ -359,6 +367,10 @@ const fn trailing_mask(len: usize) -> u8 {
 }
 
 /// Missing propagation is validity intersection (`present iff both present`).
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "paired masks are row-aligned by construction; the Result is the allocation path"
+)]
 pub(crate) fn union_pair(
     left: Option<&ValidityMask>,
     right: Option<&ValidityMask>,
@@ -382,6 +394,10 @@ pub(crate) fn union_pair(
     }
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "unioned masks are row-aligned by construction; the Result is the allocation path"
+)]
 pub(crate) fn union_many<'a>(
     masks: impl IntoIterator<Item = Option<&'a ValidityMask>>,
 ) -> crate::error::Result<Option<ValidityMask>> {

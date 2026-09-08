@@ -422,6 +422,10 @@ impl RowSelectionBuild {
     }
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "row-map membership is a caller invariant; the Result is the allocation path"
+)]
 pub(crate) fn row_selection_from_logical_rows(
     row_map: RowSelectionRef<'_>,
     physical_len: usize,

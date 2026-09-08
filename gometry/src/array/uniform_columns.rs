@@ -9,6 +9,12 @@ use crate::array::{
 use crate::error::{ErrorKind, Result};
 use crate::geometry::CoordSeqBuilder;
 
+type PackedPolygonColumns = (
+    CoordSeq,
+    CsrOffsetColumn<RingLevel>,
+    CsrOffsetColumn<PolygonLevel>,
+);
+
 fn finish_packed_coords(builder: CoordSeqBuilder) -> Result<Option<CoordSeq>> {
     match builder.finish() {
         Ok(coords) => Ok(Some(coords)),
@@ -88,13 +94,7 @@ impl PyGeometryArray {
     /// `Mixed` so packed kernels never panic on empty/short/unclosed spans.
     pub(crate) fn uniform_polygon_column<'a>(
         shapes: impl ExactSizeIterator<Item = &'a Shape> + Clone,
-    ) -> Result<
-        Option<(
-            CoordSeq,
-            CsrOffsetColumn<RingLevel>,
-            CsrOffsetColumn<PolygonLevel>,
-        )>,
-    > {
+    ) -> Result<Option<PackedPolygonColumns>> {
         if shapes.len() == 0 {
             return Ok(None);
         }

@@ -120,11 +120,11 @@ fn assert_indexed_matches_exhaustive(source: &GeographicCoverageSource, points: 
     }
 }
 
-fn polygon_source(shell: Vec<Point>, holes: Vec<Vec<Point>>) -> GeographicCoverageSource {
+fn polygon_source(shell: &[Point], holes: Vec<Vec<Point>>) -> GeographicCoverageSource {
     GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(shell).unwrap()),
                 holes
                     .into_iter()
                     .map(|hole| Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap()))
@@ -620,7 +620,7 @@ fn geographic_coverage_source_keeps_checked_degree_two_rings_available() {
     ];
     let shape = Shape::Polygon(
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&points.to_vec()).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()),
             Vec::new(),
         )
         .unwrap(),
@@ -662,7 +662,7 @@ fn geographic_coverage_source_fails_open_without_a_physical_pole_roof() {
     let source = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points.to_vec()).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()),
                 Vec::new(),
             )
             .unwrap(),
@@ -736,7 +736,7 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
     let source = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points.to_vec()).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()),
                 Vec::new(),
             )
             .unwrap(),
@@ -855,7 +855,7 @@ fn geographic_coverage_source_records_a_physical_south_finite_negative_winding_r
     let source = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points.to_vec()).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()),
                 Vec::new(),
             )
             .unwrap(),
@@ -985,7 +985,7 @@ fn lifted_ring_classifier_matches_the_exhaustive_oracle_at_closed_y_boundaries()
         Point::new(2.0, -2.0).unwrap(),
         Point::new(-2.0, -2.0).unwrap(),
     ];
-    let source = polygon_source(shell, vec![hole]);
+    let source = polygon_source(&shell, vec![hole]);
     assert_indexed_matches_exhaustive(&source, &[
         (0.0, 0.0),
         (2.0, 0.0),
@@ -1004,7 +1004,7 @@ fn lifted_ring_classifier_matches_the_exhaustive_oracle_at_closed_y_boundaries()
         dense.push(Point::new(80.0 * angle.cos(), 20.0 * angle.sin()).unwrap());
     }
     dense.push(dense[0]);
-    let source = polygon_source(dense, Vec::new());
+    let source = polygon_source(&dense, Vec::new());
     assert_indexed_matches_exhaustive(&source, &[
         (0.0, 0.0),
         (0.0, 20.0),
@@ -1024,7 +1024,7 @@ fn lifted_ring_classifier_matches_the_exhaustive_oracle_for_tall_edges_and_windi
         tall.push(Point::new(longitude, latitude).unwrap());
     }
     tall.push(tall[0]);
-    let source = polygon_source(tall, Vec::new());
+    let source = polygon_source(&tall, Vec::new());
     assert_indexed_matches_exhaustive(&source, &[
         (-100.0, 0.0),
         (0.0, 80.0),
@@ -1056,13 +1056,11 @@ fn lifted_ring_classifier_matches_the_exhaustive_oracle_for_tall_edges_and_windi
                 (170.0, latitude),
             ]
         };
-        let source = polygon_source(
-            points
-                .into_iter()
-                .map(|(longitude, latitude)| Point::new(longitude, latitude).unwrap())
-                .collect(),
-            Vec::new(),
-        );
+        let ring: Vec<_> = points
+            .into_iter()
+            .map(|(longitude, latitude)| Point::new(longitude, latitude).unwrap())
+            .collect();
+        let source = polygon_source(&ring, Vec::new());
         let pole_query = if latitude > 0.0 { 85.0 } else { -85.0 };
         assert_indexed_matches_exhaustive(&source, &[
             (0.0, latitude),
@@ -1083,7 +1081,7 @@ fn lifted_ring_index_keeps_nonfinite_queries_and_chains_fail_open() {
     assert!(ExactPlanarPoint::from_stored(f64::INFINITY, 0.0).is_none());
 
     let source = polygon_source(
-        vec![
+        &[
             Point::new(-10.0, -10.0).unwrap(),
             Point::new(10.0, -10.0).unwrap(),
             Point::new(10.0, 10.0).unwrap(),
@@ -1114,7 +1112,7 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
     let forward = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&north.to_vec()).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(north.as_ref()).unwrap()),
                 Vec::new(),
             )
             .unwrap(),

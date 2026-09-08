@@ -191,10 +191,7 @@ impl Groups {
     /// Element-wise self-intersection rows as one flat geometry column.
     pub fn from_self_intersection_rows(py: Python<'_>, array: &PyGeometryArray) -> PyResult<Self> {
         let domain = crate::geometry::topology_domain(&array.frame)?;
-        let builder = match py.detach(|| self_intersection_csr(array, domain)) {
-            Ok(builder) => builder,
-            Err(error) => return Err(error.into()),
-        };
+        let builder = py.detach(|| self_intersection_csr(array, domain))?;
         Self::from_geometry_builder(array.frame.clone(), builder)
     }
 
@@ -291,9 +288,8 @@ mod self_intersection_csr_tests {
             invalid_rings: vec![vec![shape]],
         };
         let result = fail_allocations_after(0, || Groups::polygonize_full_parts(full, Frame::None));
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("cuts allocation must fail"),
+        let Err(error) = result else {
+            panic!("cuts allocation must fail");
         };
         assert!(matches!(
             error.kind(),
@@ -416,9 +412,9 @@ mod self_intersection_csr_tests {
             walk > kernel,
             "CSR row growth must allocate after the infallible kernel (kernel={kernel}, walk={walk})"
         );
-        let error = match fail_allocations_after(kernel, || self_intersection_csr(&array, domain)) {
-            Err(error) => error,
-            Ok(_) => panic!("offset growth must fail under rejection"),
+        let Err(error) = fail_allocations_after(kernel, || self_intersection_csr(&array, domain))
+        else {
+            panic!("offset growth must fail under rejection");
         };
         assert!(matches!(
             error.kind(),

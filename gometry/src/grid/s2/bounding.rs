@@ -32,6 +32,7 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
+use crate::boundary::geographic::normalize_accepted_latitude;
 use crate::geometry::{Bounds, Shape};
 use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::{CellId, Face};
@@ -83,9 +84,9 @@ pub(crate) fn bounding_cell(shape: &Shape) -> Option<CellId> {
 fn normalize_admitted_bbox_latitudes(bounds: Bounds) -> Bounds {
     Bounds::new_raw(
         bounds.minx(),
-        crate::boundary::geographic::normalize_accepted_latitude(bounds.miny()),
+        normalize_accepted_latitude(bounds.miny()),
         bounds.maxx(),
-        crate::boundary::geographic::normalize_accepted_latitude(bounds.maxy()),
+        normalize_accepted_latitude(bounds.maxy()),
     )
 }
 

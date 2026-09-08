@@ -734,7 +734,9 @@ mod owner_export_tests {
         unsafe extern "C" fn counted_release(array: *mut crate::py::arrow_c::ArrowArray) {
             RELEASES.fetch_add(1, Ordering::Relaxed);
             // SAFETY: this callback wraps the production callback on an owned child.
-            unsafe { crate::py::arrow_c::release_array(array) };
+            unsafe {
+                crate::py::arrow_c::release_array(array);
+            }
         }
         ensure_python();
         let fixture = || {

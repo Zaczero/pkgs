@@ -393,10 +393,6 @@ impl PyGeometryArray {
         bool_array(py, results)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "array/array geodesic lane keeps cache ownership explicit"
-    )]
     pub(crate) fn shortest_line(
         &self,
         other: &Bound<'_, PyAny>,

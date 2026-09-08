@@ -236,7 +236,7 @@ pub(crate) fn dispatch_distance(
         right,
         MetricOp::Distance,
         unit,
-        |to_metre, left, right| crate::broadcast::pair_distance_planar(to_metre, left, right),
+        crate::broadcast::pair_distance_planar,
         kernels::binary_distance,
         array_crs_distances,
     )

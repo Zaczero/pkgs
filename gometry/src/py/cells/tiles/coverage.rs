@@ -2,8 +2,8 @@
 
 use crate::grid::tile::{self as kernel, Tile, ensure_cover_shape_in_tile_domain};
 use crate::py::cells::coverage_ops::{
-    RectCoverSpec, build_rect_coverage_ids, coverage_factory_shapes, parse_max_cells,
-    rect_cell_array_for,
+    GridCoverError, RectCoverSpec, build_rect_coverage_ids, coverage_factory_shapes,
+    parse_max_cells, rect_cell_array_for,
 };
 use crate::py::cells::tiles::cell::parse_tile_zoom;
 use crate::py::cells::{
@@ -103,7 +103,7 @@ pub(super) fn tile_cover(
         |geometry, effective_max_cells| {
             let (membership, cover_shape) = coverage_factory_shapes(geometry, "Tile")?;
             if let Err(lat) = ensure_cover_shape_in_tile_domain(&cover_shape) {
-                return Err(crate::py::cells::coverage_ops::GridCoverError::TileLatitude(lat));
+                return Err(GridCoverError::TileLatitude(lat));
             }
             build_rect_coverage_ids::<TileCoverSpec>(
                 &membership,

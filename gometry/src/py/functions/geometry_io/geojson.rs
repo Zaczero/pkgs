@@ -1700,17 +1700,14 @@ mod tests {
             )?;
             let result = build_python_features(py, iterator.bind(py).as_any(), None, None);
             let late_signal = py.check_signals().err();
-            let error = match result {
-                Err(error) => error,
-                Ok(_) => {
-                    let state = iterator.bind(py).borrow();
-                    panic!(
-                        "Feature build completed after {} calls, {} rows remain; late signal={}",
-                        state.calls(),
-                        state.remaining(),
-                        late_signal.is_some()
-                    )
-                },
+            let Err(error) = result else {
+                let state = iterator.bind(py).borrow();
+                panic!(
+                    "Feature build completed after {} calls, {} rows remain; late signal={}",
+                    state.calls(),
+                    state.remaining(),
+                    late_signal.is_some()
+                );
             };
 
             assert!(error.is_instance_of::<PyKeyboardInterrupt>(py));

@@ -289,9 +289,8 @@ macro_rules! h3_index_array_common {
                             slot
                         },
                     };
-                    let code = match i64::try_from(slot) {
-                        Ok(code) => code,
-                        Err(_) => return Err(FactorizationError::CodeOverflow),
+                    let Ok(code) = i64::try_from(slot) else {
+                        return Err(FactorizationError::CodeOverflow);
                     };
                     crate::try_push_vec(&mut codes, code)?;
                 }
@@ -1045,9 +1044,8 @@ mod tests {
         });
         assert!(allocations > 0);
         let error = fail_allocations_after(allocations - 1, || {
-            let error = match assemble() {
-                Ok(_) => panic!("the measured {label} allocation must fail"),
-                Err(error) => error,
+            let Err(error) = assemble() else {
+                panic!("the measured {label} allocation must fail");
             };
             assert!(matches!(&error, FactorizationError::Native(_)));
             error.into_py_err("H3 count overflows int64", "H3 factor code overflows int64")

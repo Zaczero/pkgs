@@ -456,9 +456,8 @@ impl PyCellArray {
                     slot
                 },
             };
-            let code = match i64::try_from(slot) {
-                Ok(code) => code,
-                Err(_) => return Err(FactorizationError::CodeOverflow),
+            let Ok(code) = i64::try_from(slot) else {
+                return Err(FactorizationError::CodeOverflow);
             };
             crate::try_push_vec(&mut codes, code)?;
         }
@@ -1878,9 +1877,8 @@ mod tests {
             assert!(allocations > 0);
 
             let error = fail_allocations_after(allocations - 1, || {
-                let error = match cells.value_count_entries() {
-                    Ok(_) => panic!("the measured value-count allocation must fail"),
-                    Err(error) => error,
+                let Err(error) = cells.value_count_entries() else {
+                    panic!("the measured value-count allocation must fail");
                 };
                 assert!(matches!(&error, FactorizationError::Native(_)));
                 error.into_py_err(
@@ -1909,9 +1907,8 @@ mod tests {
             assert!(allocations > 0);
 
             let error = fail_allocations_after(allocations - 1, || {
-                let error = match cells.factorize_entries() {
-                    Ok(_) => panic!("the measured factorize allocation must fail"),
-                    Err(error) => error,
+                let Err(error) = cells.factorize_entries() else {
+                    panic!("the measured factorize allocation must fail");
                 };
                 assert!(matches!(&error, FactorizationError::Native(_)));
                 error.into_py_err(

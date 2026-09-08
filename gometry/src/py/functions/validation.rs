@@ -93,11 +93,11 @@ pub(crate) fn require(
         let array = require_array_contract(array.clone(), expected.as_ref(), axes, Some(py))?;
         return Ok(array.into_pyobject(py)?.into_any().unbind());
     }
-    if let Ok(groups) = value.cast::<vectors::Groups>() {
-        if let Some(array) = groups.get().geometry_values_view()? {
-            let array = require_array_contract(array, expected.as_ref(), axes, Some(py))?;
-            return Ok(array.into_pyobject(py)?.into_any().unbind());
-        }
+    if let Ok(groups) = value.cast::<vectors::Groups>()
+        && let Some(array) = groups.get().geometry_values_view()?
+    {
+        let array = require_array_contract(array, expected.as_ref(), axes, Some(py))?;
+        return Ok(array.into_pyobject(py)?.into_any().unbind());
     }
     match classify_scalar_or_iterator(value)? {
         ScalarOrIterator::Scalar => {

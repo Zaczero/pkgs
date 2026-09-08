@@ -452,7 +452,7 @@ mod tests {
                 .expect_err("collector allocation must fail")
         });
         assert!(
-            matches!(error, GridCoverError::Native(ref inner) if matches!(
+            matches!(&error, GridCoverError::Native(inner) if matches!(
                 inner.kind(),
                 crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
             )),

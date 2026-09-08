@@ -292,12 +292,12 @@ fn native_stream_memory_error(py: Python<'_>, detail: &[u8]) -> PyErr {
 /// Borrow the provider's last-error string for the duration of the stream
 /// guard. The caller must keep the stream live and unmodified while using the
 /// returned reference.
-unsafe fn stream_last_error_detail<'a>(stream: &'a mut ArrowArrayStream) -> Option<&'a str> {
+unsafe fn stream_last_error_detail(stream: &mut ArrowArrayStream) -> Option<&str> {
     // SAFETY: stream live; get_last_error optional. The exclusive borrow keeps
     // the provider stream unmodified while its returned NUL-terminated text is
     // consumed.
     unsafe {
-        let get_last_error = (*stream).get_last_error?;
+        let get_last_error = stream.get_last_error?;
         let ptr = get_last_error(std::ptr::from_mut(stream));
         if ptr.is_null() {
             return None;

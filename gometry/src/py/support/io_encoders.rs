@@ -17,10 +17,7 @@ pub(crate) fn box_polygon(
     coords.try_push(Point::new(maxx, maxy))?;
     coords.try_push(Point::new(minx, maxy))?;
     coords.try_push(Point::new(minx, miny))?;
-    Ok(Polygon::new(
-        Ring::from_closed(coords.finish()?),
-        Vec::new(),
-    )?)
+    Polygon::new(Ring::from_closed(coords.finish()?), Vec::new())
 }
 
 pub(crate) fn wrapped_box(
@@ -40,11 +37,8 @@ pub(crate) fn wrapped_box(
     if west <= east {
         return Ok(Shape::Polygon(box_polygon(west, south, east, north)?));
     }
-    Ok(Shape::multi_polygon(
-        crate::geometry::CoordinateAxes::XY,
-        vec![
-            box_polygon(west, south, 180.0, north)?,
-            box_polygon(-180.0, south, east, north)?,
-        ],
-    )?)
+    Shape::multi_polygon(crate::geometry::CoordinateAxes::XY, vec![
+        box_polygon(west, south, 180.0, north)?,
+        box_polygon(-180.0, south, east, north)?,
+    ])
 }

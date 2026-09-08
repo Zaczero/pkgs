@@ -779,13 +779,13 @@ mod tests {
             .unwrap();
         let filtered: Vec<_> = overlap
             .into_iter()
-            .filter_map(|cell| {
+            .filter(|cell| {
                 let bounds = cell.bounds();
                 let c = Point::new_raw_xy(
                     f64::midpoint(bounds.minx(), bounds.maxx()),
                     f64::midpoint(bounds.miny(), bounds.maxy()),
                 );
-                graph.covers_point(c.xy()).then_some(cell)
+                graph.covers_point(c.xy())
             })
             .collect();
         assert_eq!(center, filtered);
@@ -910,7 +910,7 @@ mod tests {
                     .unwrap(),
                 ),
                 vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new_raw_xy(-45.0, -45.0),
                         Point::new_raw_xy(0.0, -45.0),
                         Point::new_raw_xy(0.0, 0.0),

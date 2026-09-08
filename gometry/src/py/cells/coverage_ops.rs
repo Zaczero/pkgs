@@ -521,7 +521,7 @@ mod tests {
             try_collect_cover_ids([1_u64, 2, 3]).expect_err("id collect allocation must fail")
         });
         assert!(
-            matches!(error, GridCoverError::Native(ref inner) if matches!(
+            matches!(&error, GridCoverError::Native(inner) if matches!(
                 inner.kind(),
                 ErrorKind::Resource(ResourceError::Allocation)
             )),
