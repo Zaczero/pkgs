@@ -74,7 +74,7 @@ impl PyGeometryArray {
         match self.missing() {
             None => Ok(present),
             Some(mask) if present.missing() == Some(mask) => Ok(present),
-            Some(mask) if present.missing().is_some() => {
+            Some(_) if present.missing().is_some() => {
                 Err(crate::geometry::GeometryErrorKind::message(
                     "already-masked result does not match the source missing mask",
                 )

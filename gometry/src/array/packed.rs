@@ -15,7 +15,7 @@ use crate::array::{
     PyErr, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection, RowSelectionRef,
     Shape, StorageLayout, TotalBoundsCache, ValidityMask,
     packed_per_row_self_origin_affine_columns, physical_row, point_logical_len, prepared,
-    row_map_is_identity, row_ord_extremes,
+    row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
 };
 use crate::geometry::CoordSeqBuilder;
 
@@ -442,21 +442,6 @@ impl PyGeometryArray {
         )
     }
 
-    pub(crate) fn compact_from_storage(
-        compact: GeometryArrayStorage,
-        mask: ValidityMask,
-        frame: Frame,
-        layout: StorageLayout,
-    ) -> crate::error::Result<Self> {
-        Self::from_result_storage(
-            Arc::try_new(compact).map_err(crate::error::Error::from)?,
-            frame,
-            Some(mask),
-            layout,
-            ComputedCaches::fresh()?,
-        )
-    }
-
     fn gather_point_coords(
         coords: &CoordSeq,
         row_map: RowSelectionRef<'_>,
@@ -499,6 +484,68 @@ impl PyGeometryArray {
             coords: Arc::try_new(builder.finish()?).map_err(crate::error::Error::from)?,
             row_map: RowSelection::Identity,
         }))
+    }
+
+    fn compact_storage_from_logical(
+        storage: &GeometryArrayStorage,
+        mask: &ValidityMask,
+    ) -> crate::error::Result<GeometryArrayStorage> {
+        if storage.len() != mask.len() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "logical nullable payload length must match the missing mask",
+            )
+            .into());
+        }
+        let mut present_rows = Vec::new();
+        crate::boundary::try_reserve_vec(&mut present_rows, mask.present_count())?;
+        for (logical, present) in mask.cursor() {
+            if present.is_some() {
+                crate::try_push_vec(&mut present_rows, logical)?;
+            }
+        }
+        match storage {
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
+                Self::compact_point_storage_from_logical(storage, mask)
+            },
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
+                coords,
+                offsets,
+                row_map,
+            }) => {
+                let selected = GeometryArrayStorage::Packed(PackedStorage::Lines {
+                    coords: Arc::clone(coords),
+                    offsets: offsets.clone(),
+                    row_map: row_selection_from_logical_rows(
+                        row_map.as_deref(),
+                        offsets.len().saturating_sub(1),
+                        present_rows.iter().copied(),
+                    )?,
+                });
+                Self::compact_storage_from_present(&selected, mask)
+            },
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                coords,
+                ring_offsets,
+                polygon_offsets,
+                row_map,
+            }) => {
+                let selected = GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                    coords: Arc::clone(coords),
+                    ring_offsets: ring_offsets.clone(),
+                    polygon_offsets: polygon_offsets.clone(),
+                    row_map: row_selection_from_logical_rows(
+                        row_map.as_deref(),
+                        polygon_offsets.len().saturating_sub(1),
+                        present_rows.iter().copied(),
+                    )?,
+                });
+                Self::compact_storage_from_present(&selected, mask)
+            },
+            GeometryArrayStorage::Mixed(_) => Err(crate::geometry::GeometryErrorKind::message(
+                "logical nullable mixed storage cannot use packed compaction",
+            )
+            .into()),
+        }
     }
 
     /// Convert an explicitly present-only packed payload to the canonical
@@ -697,10 +744,13 @@ impl PyGeometryArray {
                     },
                     GeometryArrayStorage::Packed(
                         PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
-                    ) => Ok(ArrayRows::CompactNullable {
-                        storage,
-                        missing: mask,
-                    }),
+                    ) => {
+                        let compact = Self::compact_storage_from_logical(storage.as_ref(), &mask)?;
+                        Ok(ArrayRows::CompactNullable {
+                            storage: Arc::try_new(compact).map_err(crate::error::Error::from)?,
+                            missing: mask,
+                        })
+                    },
                 }
             },
             StorageLayout::PresentOnly => match storage.as_ref() {
@@ -1431,6 +1481,85 @@ mod compact_nullable_tests {
             Some(20.0),
             Some(20.0)
         ]);
+    }
+
+    #[test]
+    fn masking_dense_lines_and_polygons_removes_missing_csr_payload_windows() {
+        let lines = PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 10.0, 11.0, 20.0, 21.0],
+                vec![0.0; 6],
+                None,
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::try_new(vec![0, 2, 4, 6], 6).unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let source_line_cache = lines.row_products.frame_cache(0).unwrap();
+        let lines = lines
+            .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]).unwrap())
+            .unwrap();
+        let GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords, offsets, ..
+        }) = lines.storage()
+        else {
+            panic!("masked lines changed storage kind");
+        };
+        assert_eq!(coords.len(), 4);
+        assert_eq!(offsets.as_slice(), &[0, 2, 2, 4]);
+        assert!(matches!(
+            lines.logical_row(1),
+            Some(LogicalRow::Missing { logical: 1 })
+        ));
+        assert!(Arc::ptr_eq(
+            &source_line_cache,
+            &lines.row_products.frame_cache(0).unwrap(),
+        ));
+
+        let polygons = PyGeometryArray::packed_polygons(
+            CoordSeq::try_from_vecs(
+                vec![
+                    0.0, 1.0, 1.0, 0.0, 0.0, 10.0, 11.0, 11.0, 10.0, 10.0, 20.0, 21.0, 21.0, 20.0,
+                    20.0,
+                ],
+                vec![
+                    0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0,
+                ],
+                None,
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5, 10, 15], 15).unwrap(),
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1, 2, 3], 3).unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let source_polygon_cache = polygons.row_products.frame_cache(0).unwrap();
+        let polygons = polygons
+            .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]).unwrap())
+            .unwrap();
+        let GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            ..
+        }) = polygons.storage()
+        else {
+            panic!("masked polygons changed storage kind");
+        };
+        assert_eq!(coords.len(), 10);
+        assert_eq!(ring_offsets.as_slice(), &[0, 5, 10]);
+        assert_eq!(polygon_offsets.as_slice(), &[0, 1, 1, 2]);
+        assert!(matches!(
+            polygons.logical_row(1),
+            Some(LogicalRow::Missing { logical: 1 })
+        ));
+        assert!(Arc::ptr_eq(
+            &source_polygon_cache,
+            &polygons.row_products.frame_cache(0).unwrap(),
+        ));
     }
 
     #[test]

@@ -398,9 +398,11 @@ impl PyGeometryArray {
         if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
             return None;
         }
-        let axes = self
-            .uniform_axes()?
-            .expect("packed storage has uniform axes");
+        let axes = match self.uniform_axes() {
+            Ok(Some(axes)) => axes,
+            Ok(None) => unreachable!("packed storage has uniform axes"),
+            Err(error) => return Some(Err(error.into())),
+        };
         Python::attach(|py| {
             self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
                 let (sx, sy) = size.tuple();

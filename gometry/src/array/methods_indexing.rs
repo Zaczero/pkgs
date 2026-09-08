@@ -1050,13 +1050,15 @@ fn unchanged_rows_after_replacements(
     len: usize,
     replacements: &[(usize, Option<Shape>)],
 ) -> crate::error::Result<Vec<usize>> {
-    let mut replaced = crate::try_vec_with_capacity(len)?;
+    let mut replaced = Vec::new();
+    crate::boundary::try_reserve_vec(&mut replaced, len)?;
     replaced.resize(len, false);
     for &(row, _) in replacements {
         replaced[row] = true;
     }
     let unchanged_len = replaced.iter().filter(|&&is_replaced| !is_replaced).count();
-    let mut unchanged = crate::try_vec_with_capacity(unchanged_len)?;
+    let mut unchanged = Vec::new();
+    crate::boundary::try_reserve_vec(&mut unchanged, unchanged_len)?;
     for (row, is_replaced) in replaced.into_iter().enumerate() {
         if !is_replaced {
             crate::try_push_vec(&mut unchanged, row)?;
