@@ -25,9 +25,9 @@ pub(crate) fn _unpickle_prepared(geometry: &Bound<'_, PyAny>) -> PyResult<PyPrep
 
 /// A geometry handle that opts repeated predicate tests into prepared kernels.
 ///
-/// Returned by ``geom.prepare()``: the full predicate surface
-/// The relevant spatial product is built lazily on first use. Pass this handle
-/// on either side of free predicate functions.
+/// Returned by ``geom.prepare()``. The handle is usable on either side of
+/// free predicate functions. The relevant spatial product is built lazily
+/// on first use. The handle shares ownership of the source geometry.
 #[pyclass(
     name = "PreparedGeometry",
     module = "gometry",

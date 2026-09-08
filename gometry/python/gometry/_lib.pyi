@@ -9242,9 +9242,9 @@ class SpatialIndexIterator(Iterator[int]):
 class PreparedGeometry:
     """A geometry handle that opts repeated predicate tests into prepared kernels.
 
-    Returned by ``geom.prepare()``: the full predicate surface
-    The relevant spatial product is built lazily on first use. Pass this handle
-    on either side of free predicate functions.
+    Returned by ``geom.prepare()``. The handle is usable on either side of
+    free predicate functions. The relevant spatial product is built lazily
+    on first use. The handle shares ownership of the source geometry.
     """
     def __new__(cls, _nonconstructible: Never, /) -> Self: ...
     @property
