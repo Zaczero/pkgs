@@ -362,8 +362,7 @@ impl PreparedPlan {
         Ok(*self
             .topology()?
             .simplicity
-            .get_or_try_init(|| self.shape().is_simple())
-            ?)
+            .get_or_try_init(|| self.shape().is_simple())?)
     }
 
     pub(crate) fn crosses_antimeridian(&self) -> Result<bool> {

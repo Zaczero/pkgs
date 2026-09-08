@@ -2927,13 +2927,10 @@ fn embed(
         let edge = &subdivision.edges[edge_id.0 as usize];
         budgeted_try_push(
             &mut emitted_incidence,
-            (
-                [edge.endpoints[0].0, edge.endpoints[1].0],
-                Segment {
-                    start: embedded_point(edge.endpoints[0])?,
-                    end: embedded_point(edge.endpoints[1])?,
-                },
-            ),
+            ([edge.endpoints[0].0, edge.endpoints[1].0], Segment {
+                start: embedded_point(edge.endpoints[0])?,
+                end: embedded_point(edge.endpoints[1])?,
+            }),
             budget,
         )?;
     }

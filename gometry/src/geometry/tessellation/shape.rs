@@ -1,13 +1,13 @@
 use ahash::HashSetExt as _;
 
 use crate::error::Result;
-use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::derived::monotone_chain_hull;
+use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
-    CdtRefinement, Site, build_area_lines, certified_delaunay, collect_sample_triangles,
+    CdtRefinement, Site, certified_delaunay, collect_sample_triangles,
     constrained_triangle_vertices, earcut_polygon_with, line_boundary, multiline_boundary,
-    polygonize_full, polygonize_lines, rings_to_boundary, sample_weighted, snap_sites,
-    try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
+    polygonize_full, rings_to_boundary, sample_weighted, snap_sites, try_triangle_shape,
+    uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,

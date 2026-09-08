@@ -26,8 +26,8 @@ use crate::geometry::segments::{
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, try_compare_ratios};
 use crate::geometry::{
     Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget, GeometryErrorKind,
-    HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon, Result, Ring, Segment,
-    Shape, XY, for_each_candidate_pair, same_point, segment_contact_exact, single_chain,
+    HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon, Result, Ring, Segment, Shape,
+    XY, for_each_candidate_pair, same_point, segment_contact_exact, single_chain,
 };
 use crate::try_reserve_vec;
 
@@ -1108,8 +1108,8 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn from_raw_loops(loops: &[(Vec<f64>, Vec<f64>)]) -> Result<Self> {
         let mut staged = StagedExactSources::new(1)?;
         for (xs, ys) in loops {
-            let ring_id = u32::try_from(staged.ring_count)
-                .map_err(|_| ResourceError::SizeOverflow)?;
+            let ring_id =
+                u32::try_from(staged.ring_count).map_err(|_| ResourceError::SizeOverflow)?;
             staged.ring_count = staged
                 .ring_count
                 .checked_add(1)
@@ -1226,9 +1226,11 @@ impl ExactSourceInventory {
         for face in 1..global.count as usize {
             for cycle in &cycles[face] {
                 for &node in cycle {
-                    if samples[face]
-                        .is_none_or(|prior| partition.compare_nodes(node, prior).is_ok_and(|o| o.is_lt()))
-                    {
+                    if samples[face].is_none_or(|prior| {
+                        partition
+                            .compare_nodes(node, prior)
+                            .is_ok_and(|o| o.is_lt())
+                    }) {
                         samples[face] = Some(node);
                     }
                 }
@@ -1238,7 +1240,9 @@ impl ExactSourceInventory {
         try_reserve_vec(&mut selected, global.count as usize)?;
         selected.resize(global.count as usize, false);
         for face in 1..global.count as usize {
-            let Some(sample) = samples[face] else { continue };
+            let Some(sample) = samples[face] else {
+                continue;
+            };
             let mut depth = 0;
             for other in 1..global.count as usize {
                 if other == face {
@@ -1313,10 +1317,7 @@ impl ExactSourceInventory {
         Ok(polygons)
     }
 
-    pub(in crate::geometry) fn relate(
-        &self,
-        partition: &ExactPartition<'_>,
-    ) -> Result<De9im> {
+    pub(in crate::geometry) fn relate(&self, partition: &ExactPartition<'_>) -> Result<De9im> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         let face_membership = self.face_memberships(partition, &topology, &edges, &global)?;
@@ -1397,9 +1398,8 @@ impl ExactSourceInventory {
             self.ring_count,
             |face, winding| {
                 for operand in 0..operands {
-                    memberships[face as usize * operands + operand] =
-                        !self.invalid_areas[operand]
-                            && self.operand_occupied(winding, operand, false);
+                    memberships[face as usize * operands + operand] = !self.invalid_areas[operand]
+                        && self.operand_occupied(winding, operand, false);
                 }
                 Ok(())
             },
@@ -1745,15 +1745,7 @@ impl StagedExactSources {
             }
             first.get_or_insert(start);
             last = Some(end);
-            self.push_segment(
-                Segment {
-                    start,
-                    end,
-                },
-                operand,
-                None,
-                false,
-            )?;
+            self.push_segment(Segment { start, end }, operand, None, false)?;
         }
         if let (Some(first), Some(last)) = (first, last)
             && !same_point(first, last)
@@ -1793,8 +1785,8 @@ impl StagedExactSources {
             let mut self_intersection = false;
             for left in 0..ring_segments.len() {
                 for right in left + 1..ring_segments.len() {
-                    let adjacent = right == left + 1
-                        || (left == 0 && right + 1 == ring_segments.len());
+                    let adjacent =
+                        right == left + 1 || (left == 0 && right + 1 == ring_segments.len());
                     if !adjacent
                         && matches!(
                             segment_contact_exact(ring_segments[left], ring_segments[right]),
@@ -1936,9 +1928,7 @@ const fn location(occupied: bool) -> Loc {
 /// different exact construction (currently Voronoi). ExactPartition owns the
 /// final noding/incidence pass; the external owner retains cocircular centers,
 /// clipping policy, and fan order.
-pub(in crate::geometry) fn certify_emitted_incidence(
-    items: &[([u32; 2], Segment)],
-) -> Result<()> {
+pub(in crate::geometry) fn certify_emitted_incidence(items: &[([u32; 2], Segment)]) -> Result<()> {
     let mut coordinates: HashMap<u32, PointKey> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     let mut by_coordinate: HashMap<PointKey, u32> =
@@ -1994,9 +1984,7 @@ pub(in crate::geometry) fn certify_emitted_incidence(
                     std::ops::ControlFlow::Break(())
                 }
             },
-            Contact::Cross { .. } | Contact::Collinear { .. } => {
-                std::ops::ControlFlow::Break(())
-            },
+            Contact::Cross { .. } | Contact::Collinear { .. } => std::ops::ControlFlow::Break(()),
         }
     })?;
     Ok(())
@@ -2016,18 +2004,10 @@ fn cycle_contains_node(
         let [bx, by, bw] = partition.homogeneous(b)?;
         let y_a = try_compare_ratios(&ay, &aw, &qy, &qw)?;
         let y_b = try_compare_ratios(&by, &bw, &qy, &qw)?;
-        let dx = bx
-            .try_product(&aw)?
-            .try_subtract(ax.try_product(&bw)?)?;
-        let dy = by
-            .try_product(&aw)?
-            .try_subtract(ay.try_product(&bw)?)?;
-        let qx_rel = qx
-            .try_product(&aw)?
-            .try_subtract(ax.try_product(&qw)?)?;
-        let qy_rel = qy
-            .try_product(&aw)?
-            .try_subtract(ay.try_product(&qw)?)?;
+        let dx = bx.try_product(&aw)?.try_subtract(ax.try_product(&bw)?)?;
+        let dy = by.try_product(&aw)?.try_subtract(ay.try_product(&bw)?)?;
+        let qx_rel = qx.try_product(&aw)?.try_subtract(ax.try_product(&qw)?)?;
+        let qy_rel = qy.try_product(&aw)?.try_subtract(ay.try_product(&qw)?)?;
         let orientation = dx
             .try_product(&qy_rel)?
             .try_subtract(dy.try_product(&qx_rel)?)?

@@ -96,12 +96,8 @@ pub(crate) fn reflex_cross(
     };
     let t_in = segment_projection(point, incoming)?;
     let t_out = segment_projection(point, outgoing)?;
-    debug_assert!(
-        t_in.is_start() || t_in.is_end() || (0.0..=1.0).contains(&t_in.fraction())
-    );
-    debug_assert!(
-        t_out.is_start() || t_out.is_end() || (0.0..=1.0).contains(&t_out.fraction())
-    );
+    debug_assert!(t_in.is_start() || t_in.is_end() || (0.0..=1.0).contains(&t_in.fraction()));
+    debug_assert!(t_out.is_start() || t_out.is_end() || (0.0..=1.0).contains(&t_out.fraction()));
     Ok(Some((point, t_in, t_out)))
 }
 
@@ -644,8 +640,6 @@ pub(in crate::geometry) fn winding_region(
     let partition = inventory.partition(&mut budget)?;
     return inventory.winding_polygons(&partition, |winding| keep(winding as i32));
 }
-
-
 
 /// Temporary shell owner used while nesting boundary rings. Line coverage is a
 /// shell operation: the point index deliberately has no hole state, while the

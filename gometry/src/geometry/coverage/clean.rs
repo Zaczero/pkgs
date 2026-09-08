@@ -1,12 +1,12 @@
 use ahash::HashSetExt as _;
 
 use crate::error::Result;
-use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::coverage::{
     AABB, CoverageRow, HashMap, HashMapExt as _, HashSet, RTreeObject,
     coverage_invalid_segments_prepared, coverage_rows, minimal_positive_face_rings, sort_row_ids,
     valid_coverage_rows,
 };
+use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, OverlayOp, PointKey, Polygon,
     Ring, Segment, SegmentIndex, Shape, XY, carry_overlay_ordinates, face_interior_point,
@@ -561,12 +561,9 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
         .edge_incidences
         .values()
         .all(|&(_, count)| count == 1)
-        && prepared
-            .rows
-            .iter()
-            .try_fold(true, |ok, row| {
-                Ok::<_, crate::error::Error>(ok && row.shape.validate()?.is_none())
-            })?
+        && prepared.rows.iter().try_fold(true, |ok, row| {
+            Ok::<_, crate::error::Error>(ok && row.shape.validate()?.is_none())
+        })?
     {
         let mut parts = Vec::new();
         for row in &prepared.rows {

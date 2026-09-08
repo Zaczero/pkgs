@@ -7,10 +7,9 @@ use crate::boundary::geographic::invalid_lonlat_error;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicInputs, GeographicViewError};
 use crate::geometry::overlay::{
-    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape, build_overlay_shape,
-    build_overlay_shape_from_chains, dedup_points, merge_chain_edges, overlay_declared_axes,
+    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
+    build_overlay_shape, dedup_points, overlay_declared_axes,
 };
-use crate::geometry::segments::compare_along_segment;
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
