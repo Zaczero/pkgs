@@ -34,6 +34,7 @@ use std::ops::ControlFlow;
 
 use super::interval::{De9imInterval, OperandShape, predicate_verdict};
 use super::{De9im, Loc, line_has_nonzero_segment};
+use crate::HeapSize;
 use crate::geometry::predicates::LineworkChains;
 use crate::geometry::segments::{
     Contact, segment_contact_with_orientations, segment_envelopes_disjoint,
@@ -42,19 +43,6 @@ use crate::geometry::{
     CompiledPattern, Dimension, PointKey, PreparedPlan, Segment, Shape, XY, same_point,
 };
 use crate::predicates::{PredicateSpec, predicate_matrix_value};
-
-/// The lines of one admitted operand.
-fn admitted_lines(shape: &Shape) -> Option<Vec<&crate::geometry::CoordSeq>> {
-    match shape {
-        Shape::LineString(line) if line_has_nonzero_segment(line) => Some(vec![line]),
-        Shape::MultiLineString(lines)
-            if !lines.is_empty() && lines.iter().all(|line| line_has_nonzero_segment(line)) =>
-        {
-            Some(lines.iter().map(|line| &**line).collect())
-        },
-        _ => None,
-    }
-}
 
 /// A linework operand staged for the engine: its chains (segments, monotone
 /// runs, bounds) and its sorted mod-2 endpoint set. Built once per operand
@@ -65,26 +53,46 @@ pub(crate) struct StagedLinework {
     boundary: Vec<PointKey>,
 }
 
+impl HeapSize for StagedLinework {
+    fn heap_bytes(&self) -> usize {
+        self.chains.heap_bytes() + self.boundary.heap_bytes()
+    }
+}
+
 /// Stage a line operand, or `None` when it is not admitted here: Cartesian
 /// `LineString`/`MultiLineString` whose every member has a real segment.
-pub(crate) fn stage_linework(shape: &Shape) -> Option<StagedLinework> {
-    let lines = admitted_lines(shape)?;
+pub(crate) fn stage_linework(shape: &Shape) -> crate::error::Result<Option<StagedLinework>> {
     let mut chains = LineworkChains::default();
-    for line in &lines {
-        // Admission proved a real segment, so staging never declines.
-        chains.push_line(line);
+    match shape {
+        Shape::LineString(line) if line_has_nonzero_segment(line) => {
+            let _ = chains.push_line(line)?;
+        },
+        Shape::MultiLineString(lines)
+            if !lines.is_empty() && lines.iter().all(|line| line_has_nonzero_segment(line)) =>
+        {
+            for line in lines {
+                let _ = chains.push_line(line)?;
+            }
+        },
+        _ => return Ok(None),
     }
     // OGC line boundaries are the mod-2 endpoints of the whole operand: an
     // end shared by an even number of parts is interior.
-    let mut ends: Vec<PointKey> = Vec::with_capacity(2 * chains.line_count());
+    let end_count = chains
+        .line_count()
+        .checked_mul(2)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let mut ends = Vec::new();
+    crate::try_reserve_vec(&mut ends, end_count)?;
     for line in 0..chains.line_count() {
         if let Some((start, end)) = chains.line_ends(line) {
-            ends.push(PointKey::new(start));
-            ends.push(PointKey::new(end));
+            crate::try_push_vec(&mut ends, PointKey::new(start))?;
+            crate::try_push_vec(&mut ends, PointKey::new(end))?;
         }
     }
     ends.sort_unstable();
-    let mut boundary = Vec::with_capacity(ends.len());
+    let mut boundary = Vec::new();
+    crate::try_reserve_vec(&mut boundary, ends.len())?;
     let mut run = ends.iter().peekable();
     while let Some(&key) = run.next() {
         let mut multiplicity = 1_usize;
@@ -93,10 +101,10 @@ pub(crate) fn stage_linework(shape: &Shape) -> Option<StagedLinework> {
             multiplicity += 1;
         }
         if multiplicity % 2 == 1 {
-            boundary.push(key);
+            crate::try_push_vec(&mut boundary, key)?;
         }
     }
-    Some(StagedLinework { chains, boundary })
+    Ok(Some(StagedLinework { chains, boundary }))
 }
 
 impl StagedLinework {
@@ -464,26 +472,71 @@ pub(crate) struct StagedRings {
     ring_vertices: Vec<XY>,
 }
 
-/// Stage an areal operand's rings, or `None` when it is not areal here (see
-/// `collect_areal_polygons`); admission proper is decided per call.
-pub(crate) fn stage_rings(shape: &Shape) -> Option<StagedRings> {
-    let mut polygons = Vec::new();
-    super::graph_matrix::collect_polygons(shape, &mut polygons)?;
-    if polygons.is_empty() {
-        return None;
+impl HeapSize for StagedRings {
+    fn heap_bytes(&self) -> usize {
+        self.chains.heap_bytes() + self.ring_vertices.heap_bytes()
     }
+}
+
+/// Stage an areal operand's rings, or `None` when it is not areal here (see
+/// the structural polygon collection); admission proper is decided per call.
+pub(crate) fn stage_rings(shape: &Shape) -> crate::error::Result<Option<StagedRings>> {
     let mut chains = LineworkChains::default();
     let mut ring_vertices = Vec::new();
-    for polygon in &polygons {
-        for ring in polygon.rings() {
-            chains.push_line(ring.coords());
-            ring_vertices.push(XY::new(ring.coords().xs()[0], ring.coords().ys()[0]));
-        }
+    if !stage_rings_shape(shape, &mut chains, &mut ring_vertices)? {
+        return Ok(None);
     }
-    Some(StagedRings {
+    if ring_vertices.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(StagedRings {
         chains,
         ring_vertices,
-    })
+    }))
+}
+
+fn stage_rings_shape(
+    shape: &Shape,
+    chains: &mut LineworkChains,
+    ring_vertices: &mut Vec<XY>,
+) -> crate::error::Result<bool> {
+    match shape {
+        Shape::Polygon(polygon) => {
+            for ring in polygon.rings() {
+                let _ = chains.push_line(ring.coords())?;
+                crate::try_push_vec(
+                    ring_vertices,
+                    XY::new(ring.coords().xs()[0], ring.coords().ys()[0]),
+                )?;
+            }
+            Ok(true)
+        },
+        Shape::MultiPolygon(polygons) => {
+            for polygon in polygons {
+                for ring in polygon.rings() {
+                    let _ = chains.push_line(ring.coords())?;
+                    crate::try_push_vec(
+                        ring_vertices,
+                        XY::new(ring.coords().xs()[0], ring.coords().ys()[0]),
+                    )?;
+                }
+            }
+            Ok(true)
+        },
+        Shape::GeometryCollection(geometries) => {
+            for geometry in geometries {
+                if !stage_rings_shape(geometry, chains, ring_vertices)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => Ok(false),
+    }
 }
 
 impl StagedRings {
@@ -502,13 +555,49 @@ impl StagedRings {
 /// Those can only arise in a multi-part or holed operand, so exactly those
 /// are admitted only once validated (cached on a prepared operand, the way
 /// the polygon/line fold already gates); a plain polygon costs nothing here.
-fn polygons_of(plan: &PreparedPlan) -> Option<Vec<&crate::geometry::Polygon>> {
+fn polygons_of(
+    plan: &PreparedPlan,
+) -> crate::error::Result<Option<Vec<&crate::geometry::Polygon>>> {
     let mut polygons = Vec::new();
-    super::graph_matrix::collect_polygons(plan.shape(), &mut polygons)?;
-    if polygons.is_empty() {
-        return None;
+    if try_collect_polygons(plan.shape(), &mut polygons)?.is_none() {
+        return Ok(None);
     }
-    Some(polygons)
+    if polygons.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(polygons))
+}
+
+fn try_collect_polygons<'a>(
+    shape: &'a Shape,
+    polygons: &mut Vec<&'a crate::geometry::Polygon>,
+) -> crate::error::Result<Option<()>> {
+    match shape {
+        Shape::Polygon(polygon) => {
+            crate::try_push_vec(polygons, polygon)?;
+            Ok(Some(()))
+        },
+        Shape::MultiPolygon(parts) => {
+            crate::try_reserve_vec(polygons, parts.len())?;
+            for polygon in parts {
+                crate::try_push_vec(polygons, polygon)?;
+            }
+            Ok(Some(()))
+        },
+        Shape::GeometryCollection(parts) => {
+            for part in parts {
+                if try_collect_polygons(part, polygons)?.is_none() {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(()))
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => Ok(None),
+    }
 }
 
 /// Whether the contact sweep and ring placement may reason about this
@@ -593,10 +682,10 @@ fn relate_areal(
     right: &PreparedPlan,
     mut ask: Ask<'_>,
 ) -> crate::error::Result<Option<Outcome>> {
-    let Some(left_polygons) = polygons_of(left) else {
+    let Some(left_polygons) = polygons_of(left)? else {
         return Ok(None);
     };
-    let Some(right_polygons) = polygons_of(right) else {
+    let Some(right_polygons) = polygons_of(right)? else {
         return Ok(None);
     };
     let mut interval = De9imInterval::open(StagedRings::shape(), StagedRings::shape());
@@ -803,7 +892,7 @@ fn relate_areal_linework(
     line: &PreparedPlan,
     mut ask: Ask<'_>,
 ) -> crate::error::Result<Option<Outcome>> {
-    let Some(polygons) = polygons_of(area) else {
+    let Some(polygons) = polygons_of(area)? else {
         return Ok(None);
     };
     let Some(linework) = line.staged_linework()? else {
@@ -1432,7 +1521,7 @@ mod tests {
             let right = points(right_n);
             let label = format!("fuzz {left:?} vs {right:?}");
             let (left, right) = (line(&left), line(&right));
-            if stage_linework(&left).is_none() || stage_linework(&right).is_none() {
+            if stage_linework(&left).unwrap().is_none() || stage_linework(&right).unwrap().is_none() {
                 continue; // a collapsed line: not admitted, the graph keeps it
             }
             // The graph is the oracle only where it is trusted: on a line
@@ -2115,7 +2204,7 @@ mod tests {
                         .take(count)
                         .collect();
                 let probe = line(&points);
-                if stage_linework(&probe).is_none()
+                if stage_linework(&probe).unwrap().is_none()
                     || !PreparedPlan::transient(&probe)
                         .unwrap()
                         .is_simple_cached()

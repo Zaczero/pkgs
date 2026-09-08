@@ -53,7 +53,7 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
     let mut chords: Vec<usize> = Vec::new();
     for (before, after) in ring_pairs {
         let ordinal_base = chains.segments.len();
-        if chains.push_line(after).is_none() {
+        if chains.push_line(after)?.is_none() {
             return Ok(false); // a ring collapsed to nothing
         }
         let changed = after.coord_count() != before.coord_count();

@@ -248,9 +248,9 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
 }
 pub(crate) use relate::{
     De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, StagedLinework, StagedRings,
-    admitted_bounds_are_sound, collect_polygons, direct_areal_linework_pattern,
-    direct_areal_linework_predicate, direct_areal_pattern, direct_areal_predicate,
-    direct_linework_pattern, direct_linework_predicate, graph_intersects_bounds, graph_relate_data,
+    admitted_bounds_are_sound, direct_areal_linework_pattern, direct_areal_linework_predicate,
+    direct_areal_pattern, direct_areal_predicate, direct_linework_pattern,
+    direct_linework_predicate, graph_intersects_bounds, graph_relate_data,
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
     graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
     graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,

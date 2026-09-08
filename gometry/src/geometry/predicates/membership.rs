@@ -248,11 +248,11 @@ pub(in crate::geometry) fn polygon_rings_issue(
 ) -> crate::error::Result<Option<ValidationIssue>> {
     let ring_count = polygon.holes.len() + 1;
     let mut chains = LineworkChains::default();
-    if chains.push_line(polygon.shell.coords()).is_none() {
+    if chains.push_line(polygon.shell.coords())?.is_none() {
         return Ok(None);
     }
     for hole in polygon.holes.iter() {
-        if chains.push_line(hole.coords()).is_none() {
+        if chains.push_line(hole.coords())?.is_none() {
             return Ok(None);
         }
     }
@@ -368,7 +368,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
         for ring in
             std::iter::once(polygon.shell.coords()).chain(polygon.holes.iter().map(Ring::coords))
         {
-            if chains.push_line(ring).is_none() {
+            if chains.push_line(ring)?.is_none() {
                 return Ok(None);
             }
             member_of.push(member);

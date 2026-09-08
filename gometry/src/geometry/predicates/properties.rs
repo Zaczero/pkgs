@@ -77,7 +77,7 @@ impl Shape {
         };
         collect_duplicate_points(self, &mut visit);
         let mut chains = LineworkChains::default();
-        chains.push_shape(self);
+        chains.push_shape(self)?;
         let _ = chains.for_each_candidate_pair(|left, right| {
             collect_offending_pair(chains.at(left), chains.at(right), &mut visit);
             ControlFlow::Continue(())

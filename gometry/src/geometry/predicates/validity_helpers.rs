@@ -443,7 +443,7 @@ pub(crate) fn line_is_simple(points: &CoordSeq) -> crate::error::Result<bool> {
         return Ok(true);
     }
     let mut chains = LineworkChains::default();
-    let _ = chains.push_line(points);
+    let _ = chains.push_line(points)?;
     indexed_segments_are_simple(&chains)
 }
 
@@ -489,7 +489,7 @@ fn antimeridian_crosses_x_columns(xs: &[f64]) -> bool {
 pub(crate) fn multiline_is_simple<L: AsRef<CoordSeq>>(lines: &[L]) -> crate::error::Result<bool> {
     let mut chains = LineworkChains::default();
     for line in lines {
-        let _ = chains.push_line(line.as_ref());
+        let _ = chains.push_line(line.as_ref())?;
     }
     indexed_segments_are_simple(&chains)
 }
