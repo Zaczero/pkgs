@@ -23,14 +23,6 @@ fn admit_or_decline<T>(result: Result<T>) -> Result<Option<T>> {
     }
 }
 
-fn finish_packed_coords(builder: CoordSeqBuilder) -> Result<Option<CoordSeq>> {
-    match builder.finish() {
-        Ok(coords) => Ok(Some(coords)),
-        Err(error) if matches!(error.kind(), ErrorKind::Resource(_)) => Err(error),
-        Err(_) => Ok(None),
-    }
-}
-
 impl PyGeometryArray {
     /// `Some((coords, offsets))` when every row is a non-empty `LineString`
     /// of one shared axes layout — the packed-`Lines` gate. Bails (`None`)
@@ -82,7 +74,7 @@ impl PyGeometryArray {
             };
             builder.extend_window(seq, 0..seq.len())?;
         }
-        let Some(coords) = finish_packed_coords(builder)? else {
+        let Some(coords) = admit_or_decline(builder.finish())? else {
             return Ok(None);
         };
         let Some(offsets) = admit_or_decline(offset_builder.finish(total))? else {
@@ -171,7 +163,7 @@ impl PyGeometryArray {
                 builder.extend_window(seq, 0..seq.len())?;
             }
         }
-        let Some(coords) = finish_packed_coords(builder)? else {
+        let Some(coords) = admit_or_decline(builder.finish())? else {
             return Ok(None);
         };
         let Some(ring_offsets) = admit_or_decline(ring_builder.finish(total_vertices))? else {
@@ -220,6 +212,6 @@ impl PyGeometryArray {
             };
             builder.push(*point)?;
         }
-        finish_packed_coords(builder)
+        admit_or_decline(builder.finish())
     }
 }
