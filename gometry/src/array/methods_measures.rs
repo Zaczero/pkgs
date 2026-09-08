@@ -389,7 +389,7 @@ impl PyGeometryArray {
         };
         let domain = crate::geometry::topology_domain(&self.frame)?;
         let shape = py.detach(move || Shape::union_all_topo(&shapes, domain, strictness))?;
-        Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())))
+        Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())?))
     }
 
     /// Dissolve geometries into per-group unions.
@@ -479,12 +479,12 @@ impl PyGeometryArray {
                 equal
             };
             if let Some(index) = index {
-                group_shapes[index].push(shape.into_owned());
+                group_shapes[index].push(shape);
             } else {
                 let index = groups.len();
                 groups.push(key.clone().unbind());
                 let mut values = crate::try_vec_with_capacity(1)?;
-                values.push(shape.into_owned());
+                values.push(shape);
                 group_shapes.push(values);
                 if hashable {
                     hash_groups.set_item(key, index)?;
@@ -872,7 +872,7 @@ impl PyGeometryArray {
         for array in arrays {
             for row in array.present_shape_rows() {
                 let (_, shape) = row.map_err(PyErr::from)?;
-                shapes.push(shape.into_owned());
+                shapes.push(shape);
             }
         }
         Ok(Self::from_shapes(shapes, first.frame.clone())?.with_missing_mask(merged_mask)?)
@@ -899,11 +899,11 @@ impl PyGeometryArray {
             let mut shapes = crate::try_vec_with_capacity(total_rows)?;
             for row in self.present_shape_rows() {
                 let (_, shape) = row.map_err(PyErr::from)?;
-                shapes.push(shape.into_owned());
+                shapes.push(shape);
             }
             for row in other.present_shape_rows() {
                 let (_, shape) = row.map_err(PyErr::from)?;
-                shapes.push(shape.into_owned());
+                shapes.push(shape);
             }
             return Ok(Self::from_shapes(shapes, self.frame.clone())?);
         }
@@ -941,7 +941,7 @@ impl PyGeometryArray {
                 out_coords,
                 out_offsets,
                 self.frame.clone(),
-            ));
+            )?);
         }
         if let (
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -982,11 +982,11 @@ impl PyGeometryArray {
         let mut shapes = crate::try_vec_with_capacity(total_rows)?;
         for row in self.present_shape_rows() {
             let (_, shape) = row.map_err(PyErr::from)?;
-            shapes.push(shape.into_owned());
+            shapes.push(shape);
         }
         for row in other.present_shape_rows() {
             let (_, shape) = row.map_err(PyErr::from)?;
-            shapes.push(shape.into_owned());
+            shapes.push(shape);
         }
         Ok(Self::from_shapes(shapes, self.frame.clone())?)
     }
@@ -1013,7 +1013,7 @@ impl PyGeometryArray {
         Ok(crate::Typed(PyGeometry::with_frame(
             shape,
             self.frame.clone(),
-        )))
+        )?))
     }
 }
 
@@ -1068,7 +1068,7 @@ mod geographic_masked_bounds_tests {
             Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("valid test frame"),
         )
         .unwrap()
-        .with_missing_mask(ValidityMask::from_sparse(3, &[1]))
+        .with_missing_mask(ValidityMask::from_sparse(3, &[1]).unwrap())
         .unwrap();
 
         let values = Python::attach(|py| array.bounds_unary_packed(py))
@@ -1100,7 +1100,9 @@ mod geographic_masked_bounds_tests {
         let present = PyGeometryArray::from_shapes(vec![left, right], frame).unwrap();
         let masked = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_sparse(3, &[1]).expect("one row is missing"),
+            ValidityMask::from_sparse(3, &[1])
+                .unwrap()
+                .expect("one row is missing"),
         )
         .unwrap();
 

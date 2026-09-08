@@ -344,7 +344,7 @@ fn iter_detach_finalize(
     let epoch = explicit_epoch.or(first_epoch);
     guard_epoch_frame(epoch, crs.as_ref())?;
     let array = rows.finish(Frame::new(crs, epoch)?)?;
-    if let Some(mask) = crate::array::sparse_missing_mask(row_count, &missing_rows) {
+    if let Some(mask) = crate::array::sparse_missing_mask(row_count, &missing_rows)? {
         Ok(array.with_missing_mask(Some(mask))?)
     } else {
         Ok(array)
@@ -753,7 +753,7 @@ fn item_detach_finalize(
     let crs = frame.finish()?;
     guard_epoch_frame(epoch, crs.as_ref())?;
     let array = rows.finish(Frame::new(crs, epoch)?)?;
-    if let Some(mask) = crate::array::sparse_missing_mask(row_count, &missing_rows) {
+    if let Some(mask) = crate::array::sparse_missing_mask(row_count, &missing_rows)? {
         Ok(array.with_missing_mask(Some(mask))?)
     } else {
         Ok(array)

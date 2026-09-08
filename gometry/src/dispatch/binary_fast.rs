@@ -88,10 +88,10 @@ pub(crate) fn dispatch_predicate(
         (classify_input(left), classify_input(right))
     {
         left.frame.compatible(&right.frame, operation.name())?;
-        let left_plan = left.plan_or_transient();
-        let right_plan = right.plan_or_transient();
-        let left_cache = left.frame_cache();
-        let right_cache = right.frame_cache();
+        let left_plan = left.plan_or_transient()?;
+        let right_plan = right.plan_or_transient()?;
+        let left_cache = left.frame_cache()?;
+        let right_cache = right.frame_cache()?;
         let domain = crate::geometry::topology_domain(&left.frame)?;
         let spec = predicate.spec();
         let value = py.detach(move || {
@@ -561,13 +561,14 @@ mod tests {
                 .expect("EPSG:4326 is a valid geographic frame");
             let invalid = Bound::new(
                 py,
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone()),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone())
+                    .unwrap(),
             )
             .expect("invalid-latitude point binds")
             .into_any();
             let other = Bound::new(
                 py,
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame).unwrap(),
             )
             .expect("origin point binds")
             .into_any();
@@ -593,13 +594,14 @@ mod tests {
                 .expect("EPSG:4326 is a valid geographic frame");
             let invalid = Bound::new(
                 py,
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone()),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone())
+                    .unwrap(),
             )
             .expect("invalid-latitude point binds")
             .into_any();
             let other = Bound::new(
                 py,
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame).unwrap(),
             )
             .expect("origin point binds")
             .into_any();

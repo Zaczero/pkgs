@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 
 use crate::{
     GeometryKind, PyGeometry, PyGeometryCollection, PyLineString, PyMultiLineString, PyMultiPoint,
-    PyMultiPolygon, PyPoint, PyPolygon, Shape, ShapeData, Typed,
+    PyMultiPolygon, PyPoint, PyPolygon, Shape, Typed,
 };
 
 mod construct;

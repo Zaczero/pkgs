@@ -313,11 +313,11 @@ pub(crate) fn crs_line_locate_point(
 ) -> PyResult<f64> {
     let query = require_locate_point(point, MetricOp::LineLocatePoint)?;
     let model = resolve_line_metric(line.crs_str(), unit, normalized, MetricOp::LineLocatePoint)?;
-    let line_plan = line.plan_or_transient();
+    let line_plan = line.plan_or_transient()?;
     Ok(line_locate_shape(
         &model,
         &line_plan,
-        &line.frame_cache(),
+        &*line.frame_cache()?,
         query,
         normalized,
     )?)

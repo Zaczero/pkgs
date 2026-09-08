@@ -440,7 +440,7 @@ impl PySpatialIndex {
                             let shape = rows.prepared(row)?;
                             self.topological_matches_append(
                                 &shape,
-                                &rows.frame_cache(row_index),
+                                &*rows.frame_cache(row_index)?,
                                 topological,
                                 builder.values_mut(),
                             )?;

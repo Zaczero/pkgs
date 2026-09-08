@@ -212,7 +212,7 @@ fn interpolate_mixed_row_groups(
                         line_interpolate_points_shape(
                             model,
                             &line,
-                            &rows.frame_cache(logical),
+                            &*rows.frame_cache(logical)?,
                             plan,
                         )
                     })
@@ -261,7 +261,7 @@ mod tests {
             if let crate::array::ArrayRow::Present(row) = logical_row {
                 let logical = row.logical();
                 let _prepared = rows.prepared(row);
-                let _cache = rows.frame_cache(logical);
+                let _cache = rows.frame_cache(logical).unwrap();
             }
         }
     }
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn mixed_missing_row_is_empty_group() {
         let array = mixed_zm_and_xy_lines()
-            .with_missing_mask(ValidityMask::from_sparse(2, &[1]))
+            .with_missing_mask(ValidityMask::from_sparse(2, &[1]).unwrap())
             .unwrap();
         let builder = interpolate_mixed_row_groups(
             &array,
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn mixed_builder_allocation_fails_after_warm_cache() {
         let array = mixed_zm_and_xy_lines()
-            .with_missing_mask(ValidityMask::from_sparse(2, &[0]))
+            .with_missing_mask(ValidityMask::from_sparse(2, &[0]).unwrap())
             .unwrap();
         warm_row_products(&array);
         let error = fail_allocations_after(0, || {

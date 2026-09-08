@@ -6,7 +6,7 @@ use std::cell::Cell;
 
 use pyo3::types::{PyDict, PyTuple};
 
-use crate::boundary::coordinate_input::coordinate_arc_values;
+use crate::boundary::coordinate_input::coordinate_column_values;
 use crate::geometry::{MOrdinate, SharedSlice, ZOrdinate};
 use crate::py::classes::coordinate_methods::{
     Bound, CoordSeq, CoordinateAxes, CoordinateAxis, CoordinateReplacement, Point, PyAny,
@@ -70,10 +70,10 @@ fn required_axis(
         return Err(explicit_none_error(name));
     }
     // Receiver length is known: exact collect so `itertools.repeat` cannot hang (D11).
-    let values = crate::coordinate_arc_values_exact(py, &value, name, expected_len, |got| {
+    let values = crate::coordinate_column_values_exact(py, &value, name, expected_len, |got| {
         axis_length_error(name, expected_len, got)
     })?;
-    SharedSlice::try_from_vec(values.to_vec()).map_err(PyErr::from)
+    SharedSlice::try_from_vec(values).map_err(PyErr::from)
 }
 
 fn optional_replace_axis(
@@ -88,7 +88,7 @@ fn optional_replace_axis(
     if value.is_none() {
         return Err(explicit_none_error(name));
     }
-    let values = crate::coordinate_arc_values_exact(py, &value, name, expected_len, |got| {
+    let values = crate::coordinate_column_values_exact(py, &value, name, expected_len, |got| {
         axis_length_error(name, expected_len, got)
     })?;
     if !crate::geometry::column_all_finite(&values) {
@@ -97,7 +97,7 @@ fn optional_replace_axis(
         )));
     }
     Ok(ReplacementAxis::Replace(
-        SharedSlice::try_from_vec(values.to_vec()).map_err(PyErr::from)?,
+        SharedSlice::try_from_vec(values).map_err(PyErr::from)?,
     ))
 }
 
@@ -160,18 +160,12 @@ fn replacement_from_coordinates_view(
             xs: seq.carried_xs().map_err(PyErr::from)?,
             ys: seq.carried_ys().map_err(PyErr::from)?,
             zs: seq
-                .zs()
-                .map(|values| {
-                    SharedSlice::try_from_vec(values.to_vec())
-                        .map(ReplacementAxis::Replace)
-                        .map_err(PyErr::from)
-                })
-                .transpose()?
-                .unwrap_or(ReplacementAxis::Carry),
+                .carried_zs()?
+                .map_or(ReplacementAxis::Carry, ReplacementAxis::Replace),
             ms: seq
                 .ms()
                 .map(|values| {
-                    SharedSlice::try_from_vec(values.to_vec())
+                    SharedSlice::try_from_vec(crate::geometry::try_copy_slice(values)?)
                         .map(ReplacementAxis::Replace)
                         .map_err(PyErr::from)
                 })
@@ -268,7 +262,7 @@ fn replacement_from_matrix(
         return Err(replacement_width_error(expected_width, width));
     }
     let flat_obj = array.call_method0("ravel")?;
-    let flat = coordinate_arc_values(py, &flat_obj, "coordinates")?;
+    let flat = coordinate_column_values(py, &flat_obj, "coordinates")?;
     let mut xs = Vec::new();
     let mut ys = Vec::new();
     crate::try_reserve_pair(&mut xs, &mut ys, rows).map_err(PyErr::from)?;

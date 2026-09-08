@@ -79,7 +79,8 @@ fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<Pack
     Ok(match storage {
         PackedStorage::Points { coords, row_map } => match row_map.as_deref() {
             RowSelectionRef::Gather(map) => Some(PackedStorage::Points {
-                coords: Arc::new(gather_point_columns(coords, map).map_err(batch_err)?),
+                coords: Arc::try_new(gather_point_columns(coords, map).map_err(batch_err)?)
+                    .map_err(crate::error::Error::from)?,
                 row_map: RowSelection::Identity,
             }),
             _ => None,
@@ -93,7 +94,7 @@ fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<Pack
                 let (out_coords, out_offsets) =
                     gather_line_columns(coords, offsets.as_slice(), map).map_err(batch_err)?;
                 Some(PackedStorage::Lines {
-                    coords: Arc::new(out_coords),
+                    coords: Arc::try_new(out_coords).map_err(crate::error::Error::from)?,
                     offsets: out_offsets,
                     row_map: RowSelection::Identity,
                 })
@@ -115,7 +116,7 @@ fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<Pack
                 )
                 .map_err(batch_err)?;
                 Some(PackedStorage::Polygons {
-                    coords: Arc::new(out_coords),
+                    coords: Arc::try_new(out_coords).map_err(crate::error::Error::from)?,
                     ring_offsets: out_ring_offsets,
                     polygon_offsets: out_polygon_offsets,
                     row_map: RowSelection::Identity,

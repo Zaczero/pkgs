@@ -204,7 +204,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
                 .saturating_mul(2)
                 .saturating_add(isolated.len()),
         )
-        .map_err(|_| ResourceError::Allocation)?;
+        .map_err(crate::error::Error::from)?;
     let mut forest = Forest::with_capacity(
         unique
             .len()
@@ -619,7 +619,7 @@ fn aggregate_atoms(
     let mut atom_of: HashMap<(u32, u32), u32> = HashMap::new();
     atom_of
         .try_reserve(intervals.len())
-        .map_err(|_| ResourceError::Allocation)?;
+        .map_err(crate::error::Error::from)?;
     let mut spans: Vec<ExactSpan> = Vec::new();
     let mut contributors: Vec<(u32, u32, bool)> = Vec::new();
     try_reserve_vec(&mut contributors, intervals.len())?;

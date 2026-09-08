@@ -7,11 +7,10 @@ use std::sync::Arc;
 use crate::array::{
     ArrayRow, Bound, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage,
     PackedColumnBuilder, PackedStorage, Point, PointColumnBuilder, PolygonLevel, PyAny, PyGeometry,
-    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, RowSelectionRef, Shape,
-    column_window, concat_coord_columns, curves, line_logical_len, note_array_row,
-    packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len,
-    parse_curve_bounds, physical_row, point_logical_len, polygon_logical_len,
-    row_selection_from_logical_rows, rows_err,
+    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelectionRef, Shape, column_window,
+    concat_coord_columns, curves, line_logical_len, note_array_row, packed_lines_coord_len,
+    packed_polygons_coord_len, packed_polygons_ring_len, parse_curve_bounds, physical_row,
+    point_logical_len, polygon_logical_len, rows_err,
 };
 
 #[repr(transparent)]
@@ -31,14 +30,6 @@ fn resolve_physical_rows(
     row_map: RowSelectionRef<'_>,
 ) -> impl ExactSizeIterator<Item = PhysicalRow> + '_ {
     (0..len).map(move |logical| resolve_physical_row(row_map, LogicalRow(logical)))
-}
-
-fn row_selection_from_typed_logical_rows(
-    row_map: RowSelectionRef<'_>,
-    physical_len: usize,
-    rows: impl IntoIterator<Item = LogicalRow>,
-) -> RowSelection {
-    row_selection_from_logical_rows(row_map, physical_len, rows.into_iter().map(|row| row.0))
 }
 
 fn selected_row_map_heap_bytes(
@@ -64,19 +55,7 @@ impl PyGeometryArray {
         first: &Self,
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
-        let total_rows = arrays.iter().try_fold(0_usize, |total, array| {
-            let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
-                array.storage()
-            else {
-                return Ok::<_, pyo3::PyErr>(total);
-            };
-            total
-                .checked_add(point_logical_len(coords, row_map.as_deref()))
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err("row count overflows usize")
-                })
-        })?;
-        let mut builder = PointColumnBuilder::try_with_capacity(first_coords.axes(), total_rows)?;
+        let mut total_rows = 0_usize;
         for array in arrays {
             let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
                 array.storage()
@@ -86,6 +65,19 @@ impl PyGeometryArray {
             if coords.axes() != first_coords.axes() {
                 return Ok(None);
             }
+            total_rows = total_rows
+                .checked_add(point_logical_len(coords, row_map.as_deref()))
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err("row count overflows usize")
+                })?;
+        }
+        let mut builder = PointColumnBuilder::try_with_capacity(first_coords.axes(), total_rows)?;
+        for array in arrays {
+            let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
+                array.storage()
+            else {
+                unreachable!("storage kind checked in reservation pass");
+            };
             let map = row_map.as_deref();
             for logical in 0..point_logical_len(coords, map) {
                 builder.push_at(coords, physical_row(map, logical))?;
@@ -94,7 +86,7 @@ impl PyGeometryArray {
         Ok(Some(Self::packed_points(
             builder.finish()?,
             first.frame.clone(),
-        )))
+        )?))
     }
 
     fn concat_packed_lines_many(
@@ -144,7 +136,7 @@ impl PyGeometryArray {
             coords,
             offsets,
             first.frame.clone(),
-        )))
+        )?))
     }
 
     fn concat_packed_polygons_many(
@@ -226,7 +218,7 @@ impl PyGeometryArray {
             ring_offsets,
             polygon_offsets,
             first.frame.clone(),
-        )))
+        )?))
     }
 
     /// Concatenate homogeneous packed arrays in one pass with one exact
@@ -345,7 +337,7 @@ impl PyGeometryArray {
         for logical in 0..len {
             builder.push_at(coords, resolve_physical_row(row_map, LogicalRow(logical)).0)?;
         }
-        Ok(Self::packed_points(builder.finish()?, self.frame.clone()))
+        Ok(Self::packed_points(builder.finish()?, self.frame.clone())?)
     }
 
     /// Materialize packed `Points` storage when `row_map` reorders rows.
@@ -357,30 +349,6 @@ impl PyGeometryArray {
             return self.materialize_packed_points_parts(coords, row_map.as_deref());
         }
         Ok(self.clone())
-    }
-
-    /// Zero-copy logical row reorder/subset via `row_map` composition.
-    pub(crate) fn remap_packed_lines(
-        &self,
-        coords: Arc<CoordSeq>,
-        offsets: CsrOffsetColumn,
-        row_map: &RowSelection,
-        rows: impl Iterator<Item = usize>,
-    ) -> Self {
-        let physical_len = offsets.len().saturating_sub(1);
-        let row_map = row_selection_from_typed_logical_rows(
-            row_map.as_deref(),
-            physical_len,
-            rows.map(LogicalRow),
-        );
-        Self::from_storage(
-            GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }),
-            self.frame.clone(),
-        )
     }
 
     /// Gather logical packed-line rows into fresh CSR columns in logical order,
@@ -413,32 +381,6 @@ impl PyGeometryArray {
             return self.materialize_packed_lines_parts(coords, offsets, row_map.as_deref());
         }
         Ok(self.clone())
-    }
-
-    /// Zero-copy logical row reorder/subset via `row_map` composition.
-    pub(crate) fn remap_packed_polygons(
-        &self,
-        coords: Arc<CoordSeq>,
-        ring_offsets: CsrOffsetColumn<RingLevel>,
-        polygon_offsets: CsrOffsetColumn<PolygonLevel>,
-        row_map: &RowSelection,
-        rows: impl Iterator<Item = usize>,
-    ) -> Self {
-        let physical_len = polygon_offsets.len().saturating_sub(1);
-        let row_map = row_selection_from_typed_logical_rows(
-            row_map.as_deref(),
-            physical_len,
-            rows.map(LogicalRow),
-        );
-        Self::from_storage(
-            GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map,
-            }),
-            self.frame.clone(),
-        )
     }
 
     /// Gather logical packed-polygon rows into fresh two-level CSR columns in
@@ -499,7 +441,7 @@ impl PyGeometryArray {
             out_coords,
             out_offsets,
             self.frame.clone(),
-        ))
+        )?)
     }
 
     pub(crate) fn concat_packed_polygons(
@@ -528,7 +470,7 @@ impl PyGeometryArray {
             out_ring_offsets,
             out_polygon_offsets,
             self.frame.clone(),
-        ))
+        )?)
     }
 
     /// Gather selected packed-polygon rows into fresh two-level CSR columns —
@@ -565,7 +507,7 @@ impl PyGeometryArray {
             out_ring_offsets,
             out_polygon_offsets,
             self.frame.clone(),
-        ))
+        )?)
     }
 
     pub(crate) fn simplify_vw_packed_lines(
@@ -632,7 +574,7 @@ impl PyGeometryArray {
             out_coords,
             out_offsets,
             self.frame.clone(),
-        ))
+        )?)
     }
 
     /// Shared curve-key engine: one frame for the whole array (explicit
@@ -860,7 +802,7 @@ impl PyGeometryArray {
                     row_map: row_map.clone(),
                 }),
                 self.frame.clone(),
-            )
+            )?
             .with_missing_mask(self.missing().cloned())?);
         }
         self.map_shapes(|shape| Ok(shape.boundary()?))
@@ -920,7 +862,7 @@ impl PyGeometryArray {
         let mut shapes = Vec::new();
         crate::boundary::try_reserve_vec(&mut shapes, rows.len())?;
         for shape in &rows {
-            crate::boundary::try_push_vec(&mut shapes, shape.as_ref())?;
+            crate::boundary::try_push_vec(&mut shapes, shape)?;
         }
         f(&shapes)
     }

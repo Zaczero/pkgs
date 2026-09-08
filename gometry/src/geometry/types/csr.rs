@@ -1,8 +1,7 @@
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use crate::error::Result;
-use crate::geometry::types::{GeometryErrorKind, Shape};
+use crate::geometry::types::{GeometryErrorKind, Shape, SharedSlice};
 
 /// The seven geometry kinds, as a `Copy` discriminant of [`Shape`]. Used to
 /// pick the typed Python subclass for a returned geometry without cloning the
@@ -58,47 +57,6 @@ impl GeometryKind {
     }
 }
 
-/// `GeoArrow` list-array vertex offset — `repr(transparent)` over `i32` (0 is
-/// valid).
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct CsrOffset(i32);
-
-impl CsrOffset {
-    fn try_from_vertex_index(index: usize) -> Result<Self> {
-        Ok(Self(
-            i32::try_from(index).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
-        ))
-    }
-}
-
-// SAFETY: `CsrOffset` is `repr(transparent)` over `i32` with no extra fields.
-unsafe impl bytemuck::TransparentWrapper<i32> for CsrOffset {}
-
-/// Reinterpret `Arc<[CsrOffset]>` as `Arc<[i32]>` without copying.
-///
-/// # Safety invariant
-///
-/// `CsrOffset` is `repr(transparent)` over `i32`, so it has identical size and
-/// alignment.
-fn arc_i32_from_csr_offsets(arc: Arc<[CsrOffset]>) -> Arc<[i32]> {
-    let raw = Arc::into_raw(arc);
-    // SAFETY: transparent layout over `i32` with matching size/alignment.
-    unsafe { Arc::from_raw(raw as *const [i32]) }
-}
-
-/// Reinterpret `Arc<[i32]>` as `Arc<[CsrOffset]>` without copying.
-///
-/// # Safety invariant
-///
-/// `CsrOffset` is `repr(transparent)` over `i32` with identical size and
-/// alignment, as required by the transparent representation.
-fn arc_csr_offsets_from_i32(arc: Arc<[i32]>) -> Arc<[CsrOffset]> {
-    let raw = Arc::into_raw(arc);
-    // SAFETY: transparent layout over `i32` with matching size/align.
-    unsafe { Arc::from_raw(raw as *const [CsrOffset]) }
-}
-
 /// Amortized CSR offset column builder for hot mutators (simplify, densify, …).
 pub(crate) struct CsrOffsetBuilder {
     builder: crate::boundary::CsrBuilder<()>,
@@ -145,13 +103,11 @@ impl CsrOffsetBuilder {
         for offset in offsets {
             crate::boundary::try_push_vec(
                 &mut values,
-                CsrOffset(
-                    i32::try_from(offset).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
-                ),
+                i32::try_from(offset).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
             )?;
         }
         Ok(CsrOffsetColumn {
-            offsets: values.into(),
+            offsets: SharedSlice::try_from_vec(values)?,
             _level: PhantomData,
         })
     }
@@ -165,7 +121,7 @@ pub struct PolygonLevel;
 /// Validated frozen CSR offset column for packed lineal / polygonal storage.
 #[derive(Clone, Debug)]
 pub struct CsrOffsetColumn<Level = ()> {
-    offsets: Arc<[CsrOffset]>,
+    offsets: SharedSlice<i32>,
     _level: PhantomData<Level>,
 }
 
@@ -186,10 +142,9 @@ impl<Level> CsrOffsetColumn<Level> {
         self.offsets.is_empty()
     }
 
-    /// Borrow the offset column as `i32` CSR ends — zero-cost
-    /// `repr(transparent)` view.
+    /// Borrow the validated `i32` CSR ends.
     pub fn as_slice(&self) -> &[i32] {
-        bytemuck::TransparentWrapper::peel_slice(&self.offsets)
+        &self.offsets
     }
     /// Single O(n) validation at freeze: monotonic, starts at 0, last <=
     /// `end_cap`.
@@ -217,12 +172,15 @@ impl<Level> CsrOffsetColumn<Level> {
         let base = *prefix
             .last()
             .ok_or(GeometryErrorKind::MalformedCsrOffsets)? as usize;
-        let mut ends: Vec<usize> = prefix.iter().map(|&offset| offset as usize).collect();
+        let mut ends = Vec::new();
+        crate::boundary::try_reserve_vec(&mut ends, prefix.len())?;
+        ends.extend(prefix.iter().map(|&offset| offset as usize));
         for &offset in tail.iter().skip(1) {
-            ends.push(
+            crate::try_push_vec(
+                &mut ends,
                 base.checked_add(offset as usize)
                     .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?,
-            );
+            )?;
         }
         Self::try_new(ends, combined_vertex_cap)
     }
@@ -267,25 +225,24 @@ impl<Level> CsrOffsetColumn<Level> {
             prev = rebased;
         }
         Ok(Self {
-            offsets: arc_csr_offsets_from_i32(Arc::from(out)),
+            offsets: SharedSlice::try_from_vec(out)?,
             _level: PhantomData,
         })
     }
 
-    /// Zero-copy reinterpret for `GeoArrow` export (`Arc<[i32]>` shares the
-    /// allocation).
-    pub fn as_arc_i32(&self) -> Arc<[i32]> {
-        arc_i32_from_csr_offsets(Arc::clone(&self.offsets))
+    /// Share the primitive offset owner for `GeoArrow` export.
+    pub(crate) fn shared_offsets(&self) -> SharedSlice<i32> {
+        self.offsets.clone()
     }
 
     /// Validate a foreign-owned `i32` offset buffer and wrap without copying.
     ///
     /// `end_cap` is the maximum allowed value of the last CSR end (see
     /// [`Self::try_new`]).
-    pub fn try_from_arc_i32(arc: Arc<[i32]>, end_cap: usize) -> Result<Self> {
-        validate_csr_offsets_i32(&arc, end_cap)?;
+    pub(crate) fn try_from_shared_i32(offsets: SharedSlice<i32>, end_cap: usize) -> Result<Self> {
+        validate_csr_offsets_i32(&offsets, end_cap)?;
         Ok(Self {
-            offsets: arc_csr_offsets_from_i32(arc),
+            offsets,
             _level: PhantomData,
         })
     }
@@ -320,13 +277,16 @@ fn validate_csr_offsets_i32(offsets: &[i32], end_cap: usize) -> Result<()> {
     Ok(())
 }
 
-fn offsets_from_ends(ends: Vec<usize>) -> Result<Arc<[CsrOffset]>> {
+fn offsets_from_ends(ends: Vec<usize>) -> Result<SharedSlice<i32>> {
     let mut offsets = Vec::new();
     crate::boundary::try_reserve_vec(&mut offsets, ends.len())?;
     for end in ends {
-        crate::boundary::try_push_vec(&mut offsets, CsrOffset::try_from_vertex_index(end)?)?;
+        crate::boundary::try_push_vec(
+            &mut offsets,
+            i32::try_from(end).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
+        )?;
     }
-    Ok(offsets.into())
+    SharedSlice::try_from_vec(offsets)
 }
 
 fn validate_csr_ends(ends: &[usize], vertex_cap: usize) -> Result<()> {

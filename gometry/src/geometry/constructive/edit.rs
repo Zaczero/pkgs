@@ -885,7 +885,7 @@ impl Shape {
         bounds: Option<Bounds>,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Self> {
-        let subject_plan = crate::geometry::PreparedPlan::transient(self);
+        let subject_plan = crate::geometry::PreparedPlan::transient(self)?;
         let subject_cache = crate::geometry::FrameDependentCaches::default();
         let subject =
             crate::geometry::GeographicPrepared::try_new(&subject_plan, &subject_cache, frame)?;

@@ -161,6 +161,18 @@ impl From<ResourceError> for Error {
     }
 }
 
+impl From<std::alloc::AllocError> for Error {
+    fn from(_: std::alloc::AllocError) -> Self {
+        ResourceError::Allocation.into()
+    }
+}
+
+impl From<std::collections::TryReserveError> for Error {
+    fn from(_: std::collections::TryReserveError) -> Self {
+        ResourceError::Allocation.into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Error, ErrorKind, ResourceError};

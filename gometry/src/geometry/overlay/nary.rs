@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 
 use ahash::HashSetExt as _;
 
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 use crate::geographic::GeographicInputs;
 use crate::geometry::overlay::{
     OverlayOp, Strictness, build_overlay_shape, build_overlay_shape_from_chains, dedup_points,
@@ -194,7 +194,7 @@ fn overlay_admitted(
             let mut sources = Vec::new();
             sources
                 .try_reserve_exact(originals.views().len())
-                .map_err(|_| ResourceError::Allocation)?;
+                .map_err(crate::error::Error::from)?;
             for view in originals.views() {
                 let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
                     crate::geometry::split_geographic_view(*view)?.normalize()?
@@ -992,7 +992,7 @@ fn assemble_components_overlay(
                 let mut subset = Vec::new();
                 subset
                     .try_reserve_exact(component.len())
-                    .map_err(|_| ResourceError::Allocation)?;
+                    .map_err(crate::error::Error::from)?;
                 subset.extend(component.iter().map(|&index| shapes[index]));
                 assemble_overlay(
                     OverlayInputs::Cartesian(&subset),

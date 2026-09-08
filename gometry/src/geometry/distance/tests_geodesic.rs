@@ -507,8 +507,8 @@ fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
     for (name, left, right) in cases {
         with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
             let (semi_major, flattening) = metric.ellipsoid_parameters();
-            let left_data = PreparedPlan::new(left.clone());
-            let right_data = PreparedPlan::new(right.clone());
+            let left_data = PreparedPlan::new(left.clone()).unwrap();
+            let right_data = PreparedPlan::new(right.clone()).unwrap();
             let left_cache = FrameDependentCaches::default();
             let right_cache = FrameDependentCaches::default();
             let expected_distance = left.geodesic_distance(&right, metric)?;
@@ -774,7 +774,7 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
                 _ => panic!("{name}: fused sweep caps presence mismatch"),
             }
             let (semi_major, flattening) = metric.ellipsoid_parameters();
-            let data = PreparedPlan::new(shape.clone());
+            let data = PreparedPlan::new(shape.clone()).unwrap();
             let frame_cache = FrameDependentCaches::default();
             let runtime_state = crate::crs::runtime_state_snapshot()?;
             data.prepare_geodesic_parts(&frame_cache, "EPSG:4326", semi_major, flattening, metric)?;

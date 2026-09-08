@@ -241,7 +241,7 @@ pub(crate) fn lonlat_nonempty_shapes(array: &PyGeometryArray) -> crate::error::R
         }
         let owned = match resolved {
             std::borrow::Cow::Owned(shape) => shape,
-            std::borrow::Cow::Borrowed(_) => input.into_owned(),
+            std::borrow::Cow::Borrowed(_) => input,
         };
         crate::try_push_vec(&mut out, owned)?;
     }
@@ -457,9 +457,9 @@ fn split_geodesic_operands(
                     Ok(if crosses {
                         PreparedPlan::new(ShapeData::from(
                             x.shape().split_antimeridian_in_frame(frame)?,
-                        ))
+                        ))?
                     } else {
-                        PreparedPlan::new(ShapeData::new(x.shape().clone()))
+                        PreparedPlan::new(ShapeData::new(x.shape().clone()))?
                     })
                 };
             return Ok(Some((normalize(a, a_crosses)?, normalize(b, b_crosses)?)));
@@ -531,7 +531,7 @@ pub(crate) fn pair_dwithin_planar(
     distance: f64,
 ) -> crate::error::Result<bool> {
     let distance = NonNegative::try_new("distance", distance)?;
-    Ok(a.dwithin(b, distance.get() / to_metre)?)
+    a.dwithin(b, distance.get() / to_metre)
 }
 
 pub(crate) fn pair_dwithin_geodesic(
@@ -1036,7 +1036,11 @@ mod dwithin_parity_tests {
 
     fn shape_data_dwithin(a: Point, b: Point, limit: f64) -> bool {
         PreparedPlan::new(ShapeData::new(Shape::Point(a)))
-            .dwithin(&PreparedPlan::new(ShapeData::new(Shape::Point(b))), limit)
+            .unwrap()
+            .dwithin(
+                &PreparedPlan::new(ShapeData::new(Shape::Point(b))).unwrap(),
+                limit,
+            )
             .unwrap()
     }
 
@@ -1089,6 +1093,7 @@ mod lonlat_points_tests {
 
     fn packed_xy(xs: Vec<f64>, ys: Vec<f64>, frame: Frame) -> PyGeometryArray {
         PyGeometryArray::packed_points(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap(), frame)
+            .unwrap()
     }
 
     #[test]
@@ -1104,7 +1109,9 @@ mod lonlat_points_tests {
     #[test]
     fn missing_row_is_not_validated_and_keeps_logical_index() {
         let present = packed_xy(vec![1.0], vec![2.0], Frame::None);
-        let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
+        let mask = ValidityMask::from_vec(3, vec![true, false, true])
+            .unwrap()
+            .expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         assert!(array.is_compact_nullable());
         let points = lonlat_points(&array).expect("present row is in domain");
@@ -1132,7 +1139,9 @@ mod lonlat_points_tests {
     #[test]
     fn compact_missing_domain_error_uses_logical_index() {
         let present = packed_xy(vec![0.0, 200.0], vec![0.0, 0.0], Frame::None);
-        let mask = ValidityMask::from_vec(4, vec![true, false, true, false]).expect("mask");
+        let mask = ValidityMask::from_vec(4, vec![true, false, true, false])
+            .unwrap()
+            .expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         match lonlat_points(&array) {
             Err(LonLatPointsError::Row(row, _)) => assert_eq!(row, 3),
@@ -1167,7 +1176,9 @@ mod lonlat_points_tests {
             Vec::new(),
             Frame::Crs(crs_arc_static(unavailable)),
         );
-        let mask = ValidityMask::from_vec(2, vec![true, true]).expect("mask");
+        let mask = ValidityMask::from_vec(2, vec![true, true])
+            .unwrap()
+            .expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         assert!(array.is_compact_nullable());
         assert!(
@@ -1245,6 +1256,7 @@ mod lonlat_nonempty_shapes_tests {
 
     fn packed_xy(xs: Vec<f64>, ys: Vec<f64>, frame: Frame) -> PyGeometryArray {
         PyGeometryArray::packed_points(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap(), frame)
+            .unwrap()
     }
 
     fn square() -> Shape {
@@ -1299,7 +1311,9 @@ mod lonlat_nonempty_shapes_tests {
             Frame::None,
         )
         .unwrap();
-        let mask = ValidityMask::from_vec(3, vec![false, true, false]).expect("mask");
+        let mask = ValidityMask::from_vec(3, vec![false, true, false])
+            .unwrap()
+            .expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         let shapes = lonlat_nonempty_shapes(&array).expect("empty and missing skip");
         assert_eq!(shapes.len(), 1);

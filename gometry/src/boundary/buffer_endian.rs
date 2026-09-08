@@ -8,7 +8,6 @@
 
 use std::ffi::CStr;
 use std::mem::MaybeUninit;
-use std::sync::Arc;
 
 use pyo3::buffer::PyBuffer;
 #[cfg(Py_GIL_DISABLED)]
@@ -89,7 +88,7 @@ pub(crate) const fn swap_u64_endian(value: u64) -> u64 {
     value.swap_bytes()
 }
 
-/// Copy a C-contiguous `f64` buffer into an `Arc<[f64]>` in host-native order.
+/// Copy a C-contiguous `f64` buffer into a `Vec<f64>` in host-native order.
 ///
 /// Reads each element through [`pyo3::buffer::ReadOnlyCell`], forming a Rust
 /// slice over the exporter's storage. That is only sound while nothing else can
@@ -98,18 +97,18 @@ pub(crate) const fn swap_u64_endian(value: u64) -> u64 {
 ///
 /// # Safety contract
 /// Caller must only pass a C-contiguous `f64` buffer held for this scope.
-pub(crate) fn buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Arc<[f64]>> {
+pub(crate) fn buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Vec<f64>> {
     if !exporter_storage_is_stable(py, buffer) {
-        return buffer_to_vec_f64(py, buffer).map(Into::into);
+        return buffer_to_vec_f64(py, buffer);
     }
     let len = buffer.item_count();
     // A third-party exporter can provide inconsistent buffer metadata. Preserve
     // the public error path rather than turning that inconsistency into a panic.
     let Some(cells) = buffer.as_slice(py) else {
-        return buffer_to_vec_f64(py, buffer).map(Into::into);
+        return buffer_to_vec_f64(py, buffer);
     };
     if cells.len() != len {
-        return buffer_to_vec_f64(py, buffer).map(Into::into);
+        return buffer_to_vec_f64(py, buffer);
     }
     let mut values = Vec::<MaybeUninit<f64>>::new();
     crate::try_reserve_vec(&mut values, len).map_err(pyo3::PyErr::from)?;
@@ -117,7 +116,9 @@ pub(crate) fn buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
     // `MaybeUninit<f64>` has no initialization requirement, so every slot in
     // `0..len` is a valid value of the element type. Setting the length here
     // avoids a second, infallible resize through the allocator.
-    unsafe { values.set_len(len); }
+    unsafe {
+        values.set_len(len);
+    }
     if buffer_format_is_native_endian(buffer.format()) {
         for (dst, cell) in values.iter_mut().zip(cells.iter()) {
             dst.write(cell.get());
@@ -130,7 +131,7 @@ pub(crate) fn buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
     let (ptr, len, capacity) = values.into_raw_parts();
     // SAFETY: every slot was written above and `MaybeUninit<f64>` is
     // layout-compatible with `f64`.
-    Ok(unsafe { Vec::from_raw_parts(ptr.cast(), len, capacity) }.into())
+    Ok(unsafe { Vec::from_raw_parts(ptr.cast(), len, capacity) })
 }
 
 /// Copy buffer elements to a `Vec<f64>` in host-native order (byteswaps when

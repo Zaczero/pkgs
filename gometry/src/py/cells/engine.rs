@@ -215,7 +215,7 @@ fn cover_array_rows(
                         max_cells.expect("finite budget"),
                     )));
                 }
-                let geometry = PyGeometry::wgs84(shape);
+                let geometry = PyGeometry::wgs84(shape)?;
                 let ids = build(&geometry, remaining)?;
                 drop(geometry);
                 produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
@@ -250,7 +250,7 @@ fn remaining_cover_budget(
         .transpose()
 }
 
-pub(super) fn lonlat_point_geometry(point: Point) -> PyGeometry {
+pub(super) fn lonlat_point_geometry(point: Point) -> crate::error::Result<PyGeometry> {
     PyGeometry::wgs84(Shape::Point(point))
 }
 
@@ -270,7 +270,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
         },
         shape => shape,
     };
-    Ok(PyGeometry::typed_wgs84(shape))
+    Ok(PyGeometry::typed_wgs84(shape)?)
 }
 
 /// Topology-driven dissolve for a uniform-depth rect-grid coverage (geohash /
@@ -389,6 +389,7 @@ mod tests {
             .unwrap(),
             crate::boundary::Frame::None,
         )
+        .unwrap()
     }
 
     #[test]
@@ -427,7 +428,9 @@ mod tests {
             crate::boundary::Frame::None,
         )
         .unwrap();
-        let mask = crate::array::ValidityMask::from_vec(3, vec![false, true, false]).expect("mask");
+        let mask = crate::array::ValidityMask::from_vec(3, vec![false, true, false])
+            .unwrap()
+            .expect("mask");
         let array = crate::PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         let rows = cover_array_rows(&array, None, |_, _| Ok(vec![7]))
             .expect("empty and missing are groups");

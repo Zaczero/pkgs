@@ -815,7 +815,7 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
     // One prepared source for every centroid: the shape-level predicate
     // rebuilds both topology graphs per call, so the oracle otherwise pays a
     // full graph construction per triangle.
-    let source_plan = crate::geometry::PreparedPlan::transient(&source);
+    let source_plan = crate::geometry::PreparedPlan::transient(&source).unwrap();
     let triangles = source
         .polygon_triangles()
         .expect("earcut triangulates test polygon");
@@ -857,7 +857,7 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
         assert!(
             crate::geometry::graph_relate_data(
                 &source_plan,
-                &crate::geometry::PreparedPlan::transient(&centroid),
+                &crate::geometry::PreparedPlan::transient(&centroid).unwrap(),
             )
             .unwrap()
             .is_contains(),

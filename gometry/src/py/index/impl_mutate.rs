@@ -42,21 +42,21 @@ impl PySpatialIndex {
                 .source
                 .geometry_at(handle)
                 .map_err(crate::PyErr::from)?;
-            let plan = self.rows.prepared_row(handle)?.into_owned_plan();
-            return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
+            let plan = self.rows.prepared_row(handle)?.into_owned_plan()?;
+            return Ok(crate::Typed(geometry.with_prepared_plan(plan)?));
         }
         let geometry = &self.rows.boxed[handle - packed_len];
         if let Some(plan) = geometry.cached_prepared_plan() {
-            return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
+            return Ok(crate::Typed(geometry.with_prepared_plan(plan)?));
         }
         Ok(crate::Typed(crate::PyGeometry::with_frame(
             crate::ShapeData::new(self.rows.row(handle).with_shape(std::clone::Clone::clone)?),
             frame,
-        )))
+        )?))
     }
 
     pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> PyResult<usize> {
-        let geometry = geometry.with_prepared_plan(geometry.plan_or_transient());
+        let geometry = geometry.with_prepared_plan(geometry.plan_or_transient()?)?;
         // A non-empty index validates the frame WITHOUT mutating; an empty index
         // will adopt this geometry's frame, but only AFTER the geometry is proven
         // indexable below — so a failed empty insert never frame-locks a fresh
@@ -101,10 +101,11 @@ impl PySpatialIndex {
         if items.is_empty() {
             return Ok(Vec::new());
         }
-        let items: Vec<PyGeometry> = items
-            .into_iter()
-            .map(|item| item.with_prepared_plan(item.plan_or_transient()))
-            .collect();
+        let items = crate::try_collect_results(
+            items
+                .into_iter()
+                .map(|item| Ok(item.with_prepared_plan(item.plan_or_transient()?)?)),
+        )?;
         let frame = index_metadata(&items)?;
         if let Some(frame) = &frame {
             self.check_insert_frame(frame)?;
@@ -182,11 +183,11 @@ impl PySpatialIndex {
                     return Err(pyo3::PyErr::from(error));
                 }
             }
-            let plan = array.prepared_row(offset, row)?.into_owned_plan();
+            let plan = array.prepared_row(offset, row)?.into_owned_plan()?;
             non_prunable_live += usize::from(!geodesic_prunable_point(plan.shape()));
             if let Err(error) = crate::try_push_vec(
                 &mut items,
-                PyGeometry::from_prepared_plan(plan, array.frame.clone()),
+                PyGeometry::from_prepared_plan(plan, array.frame.clone())?,
             ) {
                 drop(entries);
                 return Err(pyo3::PyErr::from(error));

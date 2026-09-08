@@ -104,8 +104,8 @@ pub(crate) fn admitted_bounds_are_sound(
 /// Every named predicate is a projection of this result.
 pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> Result<De9im> {
     graph_relate_data(
-        &PreparedPlan::transient(left),
-        &PreparedPlan::transient(right),
+        &PreparedPlan::transient(left)?,
+        &PreparedPlan::transient(right)?,
     )
 }
 
@@ -114,8 +114,8 @@ pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> Result<De9im> 
 #[cfg(test)]
 fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
     graph_relate_plans(
-        &PreparedPlan::transient(left),
-        &PreparedPlan::transient(right),
+        &PreparedPlan::transient(left).unwrap(),
+        &PreparedPlan::transient(right).unwrap(),
         TopologySpace::Geographic,
     )
 }
@@ -1617,11 +1617,11 @@ mod tests {
     }
 
     fn assert_polygon_line_direct_case(name: &str, polygon: &Shape, line: &Shape, expected: &str) {
-        let polygon_plan = PreparedPlan::transient(polygon);
-        let line_plan = PreparedPlan::transient(line);
+        let polygon_plan = PreparedPlan::transient(polygon).unwrap();
+        let line_plan = PreparedPlan::transient(line).unwrap();
         let oracle = graph_relate_data_oracle(
-            &PreparedPlan::transient(polygon),
-            &PreparedPlan::transient(line),
+            &PreparedPlan::transient(polygon).unwrap(),
+            &PreparedPlan::transient(line).unwrap(),
         )
         .unwrap();
         let direct = try_cartesian_polygon_line_relate(&polygon_plan, &line_plan)
@@ -1630,11 +1630,11 @@ mod tests {
         assert_eq!(direct.text(), expected, "{name}: known matrix");
         assert_eq!(direct.0, oracle.0, "{name}: generic differential");
 
-        let reverse_polygon_plan = PreparedPlan::transient(polygon);
-        let reverse_line_plan = PreparedPlan::transient(line);
+        let reverse_polygon_plan = PreparedPlan::transient(polygon).unwrap();
+        let reverse_line_plan = PreparedPlan::transient(line).unwrap();
         let reverse_oracle = graph_relate_data_oracle(
-            &PreparedPlan::transient(line),
-            &PreparedPlan::transient(polygon),
+            &PreparedPlan::transient(line).unwrap(),
+            &PreparedPlan::transient(polygon).unwrap(),
         )
         .unwrap();
         let reverse = try_cartesian_polygon_line_relate(&reverse_line_plan, &reverse_polygon_plan)
@@ -1719,8 +1719,8 @@ mod tests {
 
     fn assert_areal_fast_path(name: &str, left: &Shape, right: &Shape) {
         let expected = graph_relate_data_oracle(
-            &PreparedPlan::transient(left),
-            &PreparedPlan::transient(right),
+            &PreparedPlan::transient(left).unwrap(),
+            &PreparedPlan::transient(right).unwrap(),
         )
         .unwrap();
         let fast = try_areal_relate(left, right).expect("areal fast-path admission");
@@ -1729,8 +1729,8 @@ mod tests {
         assert_eq!(reverse.0, expected.transpose().0, "{name}: reverse");
         assert_eq!(
             graph_relate_data(
-                &PreparedPlan::transient(left),
-                &PreparedPlan::transient(right)
+                &PreparedPlan::transient(left).unwrap(),
+                &PreparedPlan::transient(right).unwrap()
             )
             .unwrap()
             .0,
@@ -1743,14 +1743,14 @@ mod tests {
         assert!(try_areal_relate(left, right).is_none(), "{name}: admission");
         assert_eq!(
             graph_relate_data(
-                &PreparedPlan::transient(left),
-                &PreparedPlan::transient(right)
+                &PreparedPlan::transient(left).unwrap(),
+                &PreparedPlan::transient(right).unwrap()
             )
             .unwrap()
             .0,
             graph_relate_data_oracle(
-                &PreparedPlan::transient(left),
-                &PreparedPlan::transient(right),
+                &PreparedPlan::transient(left).unwrap(),
+                &PreparedPlan::transient(right).unwrap(),
             )
             .unwrap()
             .0,
@@ -1765,8 +1765,8 @@ mod tests {
         eligible: bool,
         expected: &str,
     ) {
-        let left_plan = PreparedPlan::transient(left);
-        let right_plan = PreparedPlan::transient(right);
+        let left_plan = PreparedPlan::transient(left).unwrap();
+        let right_plan = PreparedPlan::transient(right).unwrap();
         let oracle = graph_relate_data_oracle(&left_plan, &right_plan).unwrap();
         assert_eq!(oracle.text(), expected, "{name}: oracle");
         assert_eq!(
@@ -1780,8 +1780,8 @@ mod tests {
             "{name}: dispatch"
         );
 
-        let reverse_left = PreparedPlan::transient(right);
-        let reverse_right = PreparedPlan::transient(left);
+        let reverse_left = PreparedPlan::transient(right).unwrap();
+        let reverse_right = PreparedPlan::transient(left).unwrap();
         let reverse_oracle = graph_relate_data_oracle(&reverse_left, &reverse_right).unwrap();
         assert_eq!(
             graph_relate_data(&reverse_left, &reverse_right).unwrap().0,
@@ -1862,13 +1862,13 @@ mod tests {
         ];
         for other in &others {
             let as_polygon = graph_relate_data_oracle(
-                &PreparedPlan::transient(&flat),
-                &PreparedPlan::transient(other),
+                &PreparedPlan::transient(&flat).unwrap(),
+                &PreparedPlan::transient(other).unwrap(),
             )
             .unwrap();
             let as_line = graph_relate_data_oracle(
-                &PreparedPlan::transient(&ring),
-                &PreparedPlan::transient(other),
+                &PreparedPlan::transient(&ring).unwrap(),
+                &PreparedPlan::transient(other).unwrap(),
             )
             .unwrap();
             assert_eq!(
@@ -1985,14 +1985,14 @@ mod tests {
             .unwrap(),
         );
         let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
-        let left = PreparedPlan::transient(&two_unique);
-        let right = PreparedPlan::transient(&square);
+        let left = PreparedPlan::transient(&two_unique).unwrap();
+        let right = PreparedPlan::transient(&square).unwrap();
         let oracle = graph_relate_data_oracle(&left, &right).unwrap();
         assert!(try_convex_relate(&two_unique, &square).is_none());
         assert_eq!(graph_relate_data(&left, &right).unwrap().0, oracle.0);
 
-        let reverse_left = PreparedPlan::transient(&square);
-        let reverse_right = PreparedPlan::transient(&two_unique);
+        let reverse_left = PreparedPlan::transient(&square).unwrap();
+        let reverse_right = PreparedPlan::transient(&two_unique).unwrap();
         let reverse_oracle = graph_relate_data_oracle(&reverse_left, &reverse_right).unwrap();
         assert!(try_convex_relate(&square, &two_unique).is_none());
         assert_eq!(
@@ -2301,8 +2301,8 @@ mod tests {
         ];
         for (left, right) in pairs {
             let expected = graph_relate_shapes(&left, &right).unwrap();
-            let left = PreparedPlan::new(left);
-            let right = PreparedPlan::new(right);
+            let left = PreparedPlan::new(left).unwrap();
+            let right = PreparedPlan::new(right).unwrap();
             assert_eq!(
                 graph_relate_data(&left, &right).unwrap().text(),
                 expected.text()
@@ -2312,8 +2312,8 @@ mod tests {
 
     #[test]
     fn areal_oracle_does_not_build_graphs_for_direct_relation() {
-        let left = PreparedPlan::new(Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0)));
-        let right = PreparedPlan::new(Shape::Polygon(rectangle(1.0, 1.0, 2.0, 2.0)));
+        let left = PreparedPlan::new(Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0))).unwrap();
+        let right = PreparedPlan::new(Shape::Polygon(rectangle(1.0, 1.0, 2.0, 2.0))).unwrap();
 
         assert_eq!(
             graph_relate_data_oracle(&left, &right).unwrap().text(),
@@ -2328,14 +2328,14 @@ mod tests {
         let area = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
         let point = Shape::Point(Point::new_raw_xy(1.0, 1.0));
 
-        let left = PreparedPlan::new(area.clone());
-        let right = PreparedPlan::new(point.clone());
+        let left = PreparedPlan::new(area.clone()).unwrap();
+        let right = PreparedPlan::new(point.clone()).unwrap();
         graph_relate_data_oracle(&left, &right).unwrap();
         assert_eq!(left.topology_graph_accesses(), 1);
         assert_eq!(right.topology_graph_accesses(), 0);
 
-        let left = PreparedPlan::new(point);
-        let right = PreparedPlan::new(area);
+        let left = PreparedPlan::new(point).unwrap();
+        let right = PreparedPlan::new(area).unwrap();
         graph_relate_data(&left, &right).unwrap();
         assert_eq!(left.topology_graph_accesses(), 0);
         assert_eq!(right.topology_graph_accesses(), 1);
@@ -2384,8 +2384,8 @@ mod tests {
         right: &Shape,
         frame: crate::geographic::GeographicFrame,
     ) -> De9im {
-        let left = PreparedPlan::transient(left);
-        let right = PreparedPlan::transient(right);
+        let left = PreparedPlan::transient(left).unwrap();
+        let right = PreparedPlan::transient(right).unwrap();
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
         let left = GeographicPrepared::try_new(&left, &left_cache, frame)
@@ -2698,8 +2698,8 @@ mod tests {
                 expected.0,
                 "{name}: fold"
             );
-            let left_plan = PreparedPlan::transient(&left);
-            let right_plan = PreparedPlan::transient(&right);
+            let left_plan = PreparedPlan::transient(&left).unwrap();
+            let right_plan = PreparedPlan::transient(&right).unwrap();
             let left_cache = crate::geometry::FrameDependentCaches::default();
             let right_cache = crate::geometry::FrameDependentCaches::default();
             assert_eq!(
@@ -2748,8 +2748,8 @@ mod tests {
                 "{name}: fold admission"
             );
             let expected = geographic_graph_oracle(&left, &ordinary, frame);
-            let left_plan = PreparedPlan::transient(&left);
-            let right_plan = PreparedPlan::transient(&ordinary);
+            let left_plan = PreparedPlan::transient(&left).unwrap();
+            let right_plan = PreparedPlan::transient(&ordinary).unwrap();
             let left_cache = crate::geometry::FrameDependentCaches::default();
             let right_cache = crate::geometry::FrameDependentCaches::default();
             assert_eq!(
@@ -2822,8 +2822,8 @@ mod tests {
                 "101FF0212",
                 "radial case {case}: line/polygon"
             );
-            let polygon_plan = PreparedPlan::transient(&polygon);
-            let line_plan = PreparedPlan::transient(&line);
+            let polygon_plan = PreparedPlan::transient(&polygon).unwrap();
+            let line_plan = PreparedPlan::transient(&line).unwrap();
             assert_eq!(
                 graph_relate_data(&polygon_plan, &line_plan).unwrap().text(),
                 "1F20F1102",
@@ -2997,8 +2997,8 @@ mod tests {
         let collapsed = line(&[[1.0, 1.0], [1.0, 1.0]]);
         assert!(
             try_cartesian_polygon_line_relate(
-                &PreparedPlan::transient(&valid_polygon),
-                &PreparedPlan::transient(&collapsed),
+                &PreparedPlan::transient(&valid_polygon).unwrap(),
+                &PreparedPlan::transient(&collapsed).unwrap(),
             )
             .unwrap()
             .is_none()
@@ -3011,8 +3011,8 @@ mod tests {
         );
         assert!(
             try_cartesian_polygon_line_relate(
-                &PreparedPlan::transient(&valid_polygon),
-                &PreparedPlan::transient(&invalid_line),
+                &PreparedPlan::transient(&valid_polygon).unwrap(),
+                &PreparedPlan::transient(&invalid_line).unwrap(),
             )
             .unwrap()
             .is_none()
@@ -3027,8 +3027,8 @@ mod tests {
         ]));
         assert!(
             try_cartesian_polygon_line_relate(
-                &PreparedPlan::transient(&invalid),
-                &PreparedPlan::transient(&line(&[[-1.0, 5.0], [11.0, 5.0]])),
+                &PreparedPlan::transient(&invalid).unwrap(),
+                &PreparedPlan::transient(&line(&[[-1.0, 5.0], [11.0, 5.0]])).unwrap(),
             )
             .unwrap()
             .is_none()
@@ -3049,8 +3049,8 @@ mod tests {
         );
         assert!(
             try_cartesian_polygon_line_relate(
-                &PreparedPlan::transient(&valid_polygon),
-                &PreparedPlan::transient(&multi_line),
+                &PreparedPlan::transient(&valid_polygon).unwrap(),
+                &PreparedPlan::transient(&multi_line).unwrap(),
             )
             .unwrap()
             .is_none()
@@ -3172,8 +3172,8 @@ mod tests {
                 graph_relate_shapes_geographic(geometry, &point).text(),
                 expected
             );
-            let left = PreparedPlan::new(geometry.clone());
-            let right = PreparedPlan::new(point);
+            let left = PreparedPlan::new(geometry.clone()).unwrap();
+            let right = PreparedPlan::new(point).unwrap();
             let left_cache = crate::geometry::FrameDependentCaches::default();
             let right_cache = crate::geometry::FrameDependentCaches::default();
             assert_eq!(
@@ -3200,8 +3200,9 @@ mod tests {
             raw_pole = raw_pole.next_up();
         }
         assert_eq!(raw_pole.to_bits(), frame.pole().to_bits());
-        let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, frame.pole())));
-        let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(200.0, frame.pole())));
+        let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, frame.pole()))).unwrap();
+        let right =
+            PreparedPlan::new(Shape::Point(Point::new_raw_xy(200.0, frame.pole()))).unwrap();
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
         assert!(
@@ -3332,8 +3333,8 @@ mod tests {
             .unwrap(),
         );
         let matrix = graph_relate_data_oracle(
-            &PreparedPlan::transient(&star),
-            &PreparedPlan::transient(&probe),
+            &PreparedPlan::transient(&star).unwrap(),
+            &PreparedPlan::transient(&probe).unwrap(),
         )
         .unwrap();
         assert_eq!(matrix.text(), "1020F1102");
@@ -3358,9 +3359,11 @@ mod tests {
             (2.0, 1.0),
             (1.0, 2.0),
         ]);
-        let matrix =
-            graph_relate_data_oracle(&PreparedPlan::transient(&a), &PreparedPlan::transient(&b))
-                .unwrap();
+        let matrix = graph_relate_data_oracle(
+            &PreparedPlan::transient(&a).unwrap(),
+            &PreparedPlan::transient(&b).unwrap(),
+        )
+        .unwrap();
         assert_eq!(matrix.text(), "1F1F00102");
     }
 }

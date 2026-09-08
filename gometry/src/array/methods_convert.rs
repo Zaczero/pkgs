@@ -270,11 +270,13 @@ impl PyGeometryArray {
                 offsets,
                 row_map,
             }) => Ok(Self::from_result_storage(
-                Arc::new(GeometryArrayStorage::Packed(PackedStorage::Lines {
-                    coords: Arc::new(reverse_coord_windows(coords, offsets)?),
+                Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Lines {
+                    coords: Arc::try_new(reverse_coord_windows(coords, offsets)?)
+                        .map_err(crate::error::Error::from)?,
                     offsets: offsets.clone(),
                     row_map: row_map.clone(),
-                })),
+                }))
+                .map_err(crate::error::Error::from)?,
                 self.frame.clone(),
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
@@ -286,12 +288,14 @@ impl PyGeometryArray {
                 polygon_offsets,
                 row_map,
             }) => Ok(Self::from_result_storage(
-                Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                    coords: Arc::new(reverse_coord_windows(coords, ring_offsets)?),
+                Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                    coords: Arc::try_new(reverse_coord_windows(coords, ring_offsets)?)
+                        .map_err(crate::error::Error::from)?,
                     ring_offsets: ring_offsets.clone(),
                     polygon_offsets: polygon_offsets.clone(),
                     row_map: row_map.clone(),
-                })),
+                }))
+                .map_err(crate::error::Error::from)?,
                 self.frame.clone(),
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
@@ -302,14 +306,14 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn swap_xy_unary_packed(&self) -> PyResult<Self> {
-        self.swap_xy_packed_storage()
+        self.swap_xy_packed_storage()?
             .map_or_else(|| self.map_shapes(|shape| Ok(shape.swap_xy()?)), Ok)
     }
 
     pub(crate) fn unique_points_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
         // A packed array can still contain a million-vertex row; walk the
         // pure-Rust deduplication detached just like the packed linref lanes.
-        self.map_shapes_detached(py, |shape| Ok(shape.unique_points()?))
+        self.map_shapes_detached(py, |shape| shape.unique_points())
     }
 
     pub(crate) fn orient_polygons_unary_packed(&self, ccw: bool) -> PyResult<Self> {

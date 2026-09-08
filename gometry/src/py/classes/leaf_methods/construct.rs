@@ -4,8 +4,6 @@
 //! [`crate::py::functions::constructors`], then attaches the typed leaf marker through
 //! [`PyClassInitializer`].
 
-use std::sync::Arc;
-
 use pyo3::prelude::{PyClassInitializer, PyResult};
 use pyo3::types::PyDict;
 use pyo3::{Bound, PyAny};
@@ -14,7 +12,7 @@ use crate::boundary::metadata::FrameEdit;
 use crate::geometry::{GeometryKind, MOrdinate, Point, Shape, ZOrdinate};
 use crate::py::classes::leaf_methods::{
     PyErr, PyGeometry, PyGeometryCollection, PyLineString, PyMultiLineString, PyMultiPoint,
-    PyMultiPolygon, PyPoint, PyPolygon, PyRef, ShapeData, Typed, pymethods,
+    PyMultiPolygon, PyPoint, PyPolygon, PyRef, Typed, pymethods,
 };
 use crate::py::errors::InvalidGeometryError;
 use crate::py::functions::constructors::{
@@ -220,10 +218,7 @@ impl PyPoint {
             .map_err(PyErr::from)?;
         }
 
-        Ok(Typed(PyGeometry::with_frame(
-            Arc::new(ShapeData::new(shape)),
-            frame,
-        )))
+        Ok(Typed(PyGeometry::with_frame(shape, frame)?))
     }
 }
 

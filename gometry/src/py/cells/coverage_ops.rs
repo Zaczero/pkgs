@@ -173,7 +173,7 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
     }
     let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons)
         .map_err(PyErr::from)?;
-    Ok(PyGeometry::typed_wgs84(shape))
+    Ok(PyGeometry::typed_wgs84(shape)?)
 }
 
 pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
@@ -202,7 +202,7 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
     }
     let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons)
         .map_err(PyErr::from)?;
-    Ok(Some(PyGeometry::typed_wgs84(shape)))
+    Ok(Some(PyGeometry::typed_wgs84(shape)?))
 }
 
 pub(crate) fn coordseq_crosses_lon_seam(segment: &CoordSeq) -> bool {
@@ -317,8 +317,8 @@ where
     S: RectCoverSpec,
 {
     let authority = membership.shape.as_ref();
-    let authority_plan = membership.plan_or_transient();
-    let authority_cache = membership.frame_cache();
+    let authority_plan = membership.plan_or_transient()?;
+    let authority_cache = membership.frame_cache()?;
     let TopologyDomain::Geographic(frame) = crate::geometry::topology_domain(&membership.frame)?
     else {
         unreachable!("normalized coverage geometry has a geographic frame")
@@ -410,7 +410,7 @@ pub(crate) fn coverage_factory_geometry(
         drop(normalized);
         return Err(GridCoverError::Empty(label));
     }
-    Ok(PyGeometry::wgs84(normalized))
+    Ok(PyGeometry::wgs84(normalized)?)
 }
 
 /// Prepare the historical planar cover lanes with caller-owned WGS84
@@ -466,14 +466,15 @@ mod tests {
 
     #[test]
     fn scalar_empty_is_empty_coverage() {
-        let geometry = crate::PyGeometry::wgs84(Shape::empty_polygon());
+        let geometry = crate::PyGeometry::wgs84(Shape::empty_polygon()).unwrap();
         let error = coverage_factory_geometry(&geometry, "H3").expect_err("empty scalar");
         assert!(matches!(error, GridCoverError::Empty("H3")), "{error:?}");
     }
 
     #[test]
     fn invalid_lonlat_is_native_geometry() {
-        let geometry = crate::PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(0.0, 95.0)));
+        let geometry =
+            crate::PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(0.0, 95.0))).unwrap();
         let error = coverage_factory_geometry(&geometry, "H3").expect_err("out of domain");
         let GridCoverError::Native(error) = error else {
             panic!("expected native lonlat error, got {error:?}");

@@ -12,10 +12,7 @@ use crate::broadcast::{
 pub(crate) fn parse_wkb_geometry(value: &[u8]) -> crate::error::Result<PyGeometry> {
     let geometry = crate::io::parse_wkb(value)?;
     let crs = crate::io::crs_from_optional_srid(geometry.srid)?;
-    Ok(PyGeometry::with_frame(
-        geometry.shape,
-        Frame::new(crs.map(crs_arc), None)?,
-    ))
+    PyGeometry::with_frame(geometry.shape, Frame::new(crs.map(crs_arc), None)?)
 }
 
 /// The canonical "wrong argument type" error for the dispatch helpers, owned in
@@ -151,7 +148,7 @@ pub(crate) fn coerce_geometry(
                      geometries become missing rows",
                 ));
             };
-            Ok(PyGeometry::with_frame(shape, frame))
+            PyGeometry::with_frame(shape, frame)
         })?);
     }
     if item.cast::<pyo3::types::PyString>().is_ok() {

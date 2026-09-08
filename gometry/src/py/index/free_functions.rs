@@ -217,7 +217,7 @@ pub(crate) fn join_pair_columns(
                 let left = logical as i64;
                 let shape = rows.prepared(row)?;
                 for right_idx in
-                    index.topological_matches(&shape, &rows.frame_cache(logical), topological)?
+                    index.topological_matches(&shape, &*rows.frame_cache(logical)?, topological)?
                 {
                     crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
                 }

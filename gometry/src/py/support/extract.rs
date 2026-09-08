@@ -145,7 +145,10 @@ pub(crate) fn parse_owned_geometry_item(
         OwnedGeometryItem::Wkb(bytes) => {
             let parsed = crate::io::parse_wkb(bytes.as_slice())?;
             let crs = crate::io::crs_from_optional_srid(parsed.srid)?.map(crate::crs_arc);
-            Ok(PyGeometry::with_frame(parsed.shape, Frame::new(crs, None)?))
+            Ok(PyGeometry::with_frame(
+                parsed.shape,
+                Frame::new(crs, None)?,
+            )?)
         },
         OwnedGeometryItem::GeoJson(value) => {
             let Some((shape, frame)) = crate::coerce_geojson_geometry_value(
@@ -159,7 +162,7 @@ pub(crate) fn parse_owned_geometry_item(
                     "Feature has null geometry (an unlocated feature); parse the FeatureCollection with from_geojson/from_features, where null geometries become missing rows",
                 ));
             };
-            Ok(PyGeometry::with_frame(shape, frame))
+            Ok(PyGeometry::with_frame(shape, frame)?)
         },
     }
 }
@@ -364,7 +367,7 @@ pub(crate) fn rings(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<P
                 let (_, shape) = row.map_err(PyErr::from)?;
                 push_ring_shapes(&shape, &mut rings)?;
             }
-            PyGeometryArray::from_shapes(rings, array.frame.clone())?.into_py_any(py)
+            PyGeometryArray::from_shapes(rings, array.frame)?.into_py_any(py)
         },
     }
 }
@@ -373,7 +376,7 @@ fn validate_ring_shapes(array: &PyGeometryArray) -> PyResult<()> {
     for row in array.present_shape_rows() {
         let (_, shape) = row.map_err(PyErr::from)?;
         if !matches!(
-            *shape,
+            shape,
             Shape::Polygon(_)
                 | Shape::MultiPolygon(_)
                 | Shape::Empty(

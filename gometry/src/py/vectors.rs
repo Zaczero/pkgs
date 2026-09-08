@@ -35,11 +35,38 @@ use crate::{CsrBuilder, HeapSize};
 ///
 /// Callers own the per-row rendering so geometry/cell groups use the public
 /// Python `__repr__` path rather than Rust `Debug`.
-fn preview(values: impl Iterator<Item = String>, len: usize, name: &str) -> String {
+fn preview(
+    values: impl Iterator<Item = PyResult<String>>,
+    len: usize,
+    name: &str,
+) -> PyResult<String> {
     const PREVIEW: usize = 8;
-    let body: Vec<String> = values.take(PREVIEW).collect();
+    let body = crate::try_collect_results(values.take(PREVIEW))?;
     let ellipsis = if len > PREVIEW { ", ..." } else { "" };
-    format!("{name}([{}{}], len={len})", body.join(", "), ellipsis)
+    Ok(format!(
+        "{name}([{}{}], len={len})",
+        body.join(", "),
+        ellipsis
+    ))
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::preview;
+
+    #[test]
+    fn preview_only_renders_visible_rows_and_propagates_their_errors() {
+        let rows = (0..100).map(|row| {
+            assert!(row < 8, "hidden row was rendered");
+            Ok(row.to_string())
+        });
+        assert_eq!(
+            preview(rows, 100, "Groups").unwrap(),
+            "Groups([0, 1, 2, 3, 4, 5, 6, 7, ...], len=100)"
+        );
+        let rows = std::iter::once(Err(pyo3::exceptions::PyValueError::new_err("row failed")));
+        assert!(preview(rows, 1, "Groups").is_err());
+    }
 }
 
 /// Step-`1` slices with `start <= stop` and both bounds in-range are
@@ -200,7 +227,7 @@ impl Groups {
             .map_err(PyErr::from)
     }
 
-    fn cell_row_view(&self, row: usize) -> PyCellArray {
+    fn cell_row_view(&self, row: usize) -> crate::error::Result<PyCellArray> {
         let GroupsValues::Cells(values) = &self.values else {
             unreachable!("cell_row_view requires Cells backing");
         };
@@ -298,7 +325,7 @@ impl Groups {
         match &self.values {
             GroupsValues::Int64(_) => frozen_i64_view(slf, |this| this.int64_row_slice(row)),
             GroupsValues::Geometry(_) => self.geometry_row_view(row)?.into_py_any(py),
-            GroupsValues::Cells(_) => self.cell_row_view(row).into_py_any(py),
+            GroupsValues::Cells(_) => self.cell_row_view(row)?.into_py_any(py),
             GroupsValues::Coordinates { .. } => self.coordinate_row_array(py, slf, row),
         }
     }
@@ -324,8 +351,8 @@ impl Groups {
                     .expect("geometry backing is known from the match"),
             ),
             (GroupsValues::Cells(left), GroupsValues::Cells(right)) => Ok(left
-                .logical_row_range(self.values_window())
-                .logical_eq(&right.logical_row_range(other.values_window()))),
+                .logical_row_range(self.values_window())?
+                .logical_eq(&right.logical_row_range(other.values_window())?)),
             (
                 GroupsValues::Coordinates {
                     values: left,
@@ -413,9 +440,12 @@ impl Groups {
                 };
                 geometry_arrays_equal(&self.geometry_row_view(row)?, other.get())
             },
-            GroupsValues::Cells(_) => Ok(item
-                .cast::<PyCellArray>()
-                .is_ok_and(|other| self.cell_row_view(row).logical_eq(other.get()))),
+            GroupsValues::Cells(_) => {
+                let Ok(other) = item.cast::<PyCellArray>() else {
+                    return Ok(false);
+                };
+                Ok(self.cell_row_view(row)?.logical_eq(other.get()))
+            },
             GroupsValues::Coordinates { values, dimensions } => {
                 let Ok(expected) = item.extract::<Vec<Vec<f64>>>() else {
                     return Ok(false);
@@ -477,7 +507,12 @@ impl Groups {
                 Ok(false)
             },
             GroupsContainsNeedle::Cells(expected) => {
-                Ok((0..self.rows.len()).any(|row| self.cell_row_view(row).logical_eq(&expected)))
+                for row in 0..self.rows.len() {
+                    if self.cell_row_view(row)?.logical_eq(&expected) {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
             },
             GroupsContainsNeedle::Coordinates(values) => {
                 let GroupsValues::Coordinates {
@@ -604,7 +639,7 @@ impl Groups {
                 if start == 0 && end == values.len() {
                     values.as_ref().clone().into_py_any(py)
                 } else {
-                    values.logical_row_range(start..end).into_py_any(py)
+                    values.logical_row_range(start..end)?.into_py_any(py)
                 }
             },
             GroupsValues::Coordinates { values, dimensions } => {
@@ -840,7 +875,7 @@ impl Groups {
                             let mut builder = CsrBuilder::<u64>::new();
                             for row in rows {
                                 builder
-                                    .push_row(this.cell_row_view(row).logical_ids()?)
+                                    .push_row(this.cell_row_view(row)?.logical_ids()?)
                                     .map_err(PyErr::from)?;
                             }
                             let (ids, offsets) = builder.finish().map_err(PyErr::from)?;
@@ -886,7 +921,7 @@ impl Groups {
     fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
         let needle = self.admit_contains_needle(item)?;
         let groups = self.clone();
-        Ok(py.detach(move || groups.contains_needle(needle))?)
+        py.detach(move || groups.contains_needle(needle))
     }
 
     /// First index of an equal row in ``[start, stop)``.
@@ -1011,20 +1046,17 @@ impl Groups {
     fn __repr__(&self) -> PyResult<String> {
         let rendered = match &self.values {
             GroupsValues::Int64(_) => preview(
-                (0..self.rows.len()).map(|row| format!("{:?}", self.int64_row_slice(row))),
+                (0..self.rows.len()).map(|row| Ok(format!("{:?}", self.int64_row_slice(row)))),
                 self.rows.len(),
                 "Groups",
             ),
             GroupsValues::Geometry(_) => preview(
-                crate::try_collect_results(
-                    (0..self.rows.len()).map(|row| self.geometry_row_view(row)?.__repr__()),
-                )?
-                .into_iter(),
+                (0..self.rows.len()).map(|row| self.geometry_row_view(row)?.__repr__()),
                 self.rows.len(),
                 "Groups",
             ),
             GroupsValues::Cells(_) => preview(
-                (0..self.rows.len()).map(|row| self.cell_row_view(row).__repr__()),
+                (0..self.rows.len()).map(|row| Ok(self.cell_row_view(row)?.__repr__())),
                 self.rows.len(),
                 "Groups",
             ),
@@ -1034,13 +1066,13 @@ impl Groups {
                         .chunks(*dimensions)
                         .map(|chunk| chunk.to_vec())
                         .collect::<Vec<_>>();
-                    format!("{values:?}")
+                    Ok(format!("{values:?}"))
                 }),
                 self.rows.len(),
                 "Groups",
             ),
         };
-        Ok(rendered)
+        rendered
     }
 
     /// Copy into a plain nested Python list.
@@ -1073,7 +1105,7 @@ impl Groups {
                     PyList::new(py, items)?.into_py_any(py)?
                 },
                 GroupsValues::Cells(_) => {
-                    let items = self.cell_row_view(row).to_cell_list(py)?;
+                    let items = self.cell_row_view(row)?.to_cell_list(py)?;
                     PyList::new(py, items)?.into_py_any(py)?
                 },
                 GroupsValues::Coordinates { values, dimensions } => {
@@ -1140,7 +1172,7 @@ impl Groups {
                 let windowed = if start == 0 && end == values.len() {
                     values.as_ref().clone()
                 } else {
-                    values.logical_row_range(start..end)
+                    values.logical_row_range(start..end)?
                 };
                 let args = (Py::new(py, windowed)?, rebased).into_py_any(py)?;
                 Ok((

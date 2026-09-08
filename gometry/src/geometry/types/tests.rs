@@ -178,7 +178,7 @@ mod csr_offset_column_tests {
     #[test]
     fn csr_offset_column_validates_monotonic_zero_start() {
         let column = CsrOffsetColumn::<()>::try_new(vec![0, 2, 5], 5).expect("valid column");
-        assert_eq!(column.as_arc_i32().as_ref(), &[0, 2, 5]);
+        assert_eq!(column.shared_offsets().as_ref(), &[0, 2, 5]);
     }
 
     #[test]
@@ -188,7 +188,10 @@ mod csr_offset_column_tests {
         builder.push_end(7, 10).expect("in-range end");
         let built = builder.finish(7).expect("finish");
         let direct = CsrOffsetColumn::<()>::try_new(vec![0, 3, 7], 7).expect("direct");
-        assert_eq!(built.as_arc_i32().as_ref(), direct.as_arc_i32().as_ref());
+        assert_eq!(
+            built.shared_offsets().as_ref(),
+            direct.shared_offsets().as_ref()
+        );
     }
 
     #[test]
@@ -227,23 +230,26 @@ mod csr_offset_column_tests {
         let prefix = &[0, 3, 7];
         let tail = &[0, 2, 5];
         let column = CsrOffsetColumn::<()>::rebase_concat(prefix, tail, 12).expect("rebase");
-        assert_eq!(column.as_arc_i32().as_ref(), &[0, 3, 7, 9, 12]);
+        assert_eq!(column.shared_offsets().as_ref(), &[0, 3, 7, 9, 12]);
     }
 
     #[test]
-    fn csr_offset_try_from_arc_i32_roundtrips_as_arc_i32() {
+    fn csr_offset_try_from_shared_i32_roundtrips_shared_offsets() {
         let column = CsrOffsetColumn::<()>::try_new(vec![0, 3, 7], 7).expect("valid");
-        let arc = column.as_arc_i32();
-        let roundtrip = CsrOffsetColumn::<()>::try_from_arc_i32(arc, 7).expect("roundtrip");
+        let arc = column.shared_offsets();
+        let roundtrip = CsrOffsetColumn::<()>::try_from_shared_i32(arc, 7).expect("roundtrip");
         assert_eq!(roundtrip.as_slice(), &[0, 3, 7]);
     }
 
     #[test]
-    fn csr_offset_try_from_arc_i32_rejects_negative_as_malformed() {
+    fn csr_offset_try_from_shared_i32_rejects_negative_as_malformed() {
         use crate::error::ErrorKind;
 
-        let error = CsrOffsetColumn::<()>::try_from_arc_i32(Arc::from([0, -1, 3]), 3)
-            .expect_err("negative offset");
+        let error = CsrOffsetColumn::<()>::try_from_shared_i32(
+            crate::geometry::SharedSlice::try_from_vec(vec![0, -1, 3]).unwrap(),
+            3,
+        )
+        .expect_err("negative offset");
         assert!(matches!(
             error.kind(),
             ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)

@@ -371,34 +371,21 @@ impl RowContainer for PyGeometryArray {
 
 impl RowGetItemContainer for PyGeometryArray {
     fn gather_rows(&self, rows: &[usize]) -> PyResult<Self> {
-        Ok(self.gather_logical_rows(rows).map_err(PyErr::from)?)
+        self.gather_logical_rows(rows).map_err(PyErr::from)
     }
 
     fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self> {
         if step == 1 {
-            return Ok(self
+            return self
                 .gather_logical_row_range(start as usize..stop.max(start) as usize)
-                .map_err(PyErr::from)?);
+                .map_err(PyErr::from);
         }
-        if matches!(
-            self.storage(),
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-        ) && !self.is_compact_nullable()
-        {
-            let rows = collect_slice_rows(start, stop, step);
-            let sliced = self.slice_packed_points(start, stop, step)?;
-            let sliced = sliced
-                .with_missing_mask(self.gather_missing(&rows)?)
-                .map_err(PyErr::from)?;
-            return Ok(sliced.with_selected_caches_from(self, rows));
-        }
-        Ok(self
-            .gather_logical_rows(&collect_slice_rows(start, stop, step))
-            .map_err(PyErr::from)?)
+        self.gather_logical_rows(&collect_slice_rows(start, stop, step))
+            .map_err(PyErr::from)
     }
 
     fn empty(&self) -> PyResult<Self> {
-        Ok(self.gather_logical_rows(&[]).map_err(PyErr::from)?)
+        self.gather_logical_rows(&[]).map_err(PyErr::from)
     }
 
     fn container_to_py(py: Python<'_>, value: Self) -> PyResult<Py<PyAny>> {
@@ -681,11 +668,11 @@ impl PyGeometryArray {
     pub fn _with_missing(&self, py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Self> {
         let expected = self.len();
         let mask = crate::collect_bool_mask(py, mask, expected)?;
-        let incoming = ValidityMask::from_vec(expected, mask);
+        let incoming = ValidityMask::from_vec(expected, mask)?;
         // OR with existing bits (pandas GeometryExtensionArray semantics):
         // never unmask a row that already carries a missing placeholder.
-        let merged = crate::array::missing::union_pair(self.missing(), incoming.as_ref());
-        Ok(self.clone().with_missing_mask(merged).map_err(PyErr::from)?)
+        let merged = crate::array::missing::union_pair(self.missing(), incoming.as_ref())?;
+        self.clone().with_missing_mask(merged).map_err(PyErr::from)
     }
 
     /// Return a new array without the missing rows.
@@ -705,15 +692,16 @@ impl PyGeometryArray {
         let Some(mask) = self.missing() else {
             return Ok(self.clone());
         };
-        let rows: Vec<usize> = mask
+        let mut rows = Vec::new();
+        crate::boundary::try_reserve_vec(&mut rows, mask.present_count())?;
+        rows.extend(mask
             .iter()
             .enumerate()
             .filter(|(_, missing)| !*missing)
-            .map(|(row, _)| row)
-            .collect();
-        Ok(self
+            .map(|(row, _)| row));
+        self
             .gather_logical_rows_dense(&rows)?
-            .with_selected_caches_from(self, rows.iter().copied()))
+            .with_selected_caches_from(self, rows.iter().copied())
     }
 
     pub fn drop_missing(&self) -> PyResult<Self> {
@@ -771,7 +759,7 @@ impl PyGeometryArray {
             // The column keeps its own stored label (`compatible` is
             // left-biased); the fill only has to name the same frame.
             self.frame.compatible(&geometry.frame, "fill_missing")?;
-            return Ok(self.fill_missing_with_shape(mask, geometry.shape.shape())?);
+            return self.fill_missing_with_shape(mask, geometry.shape.shape());
         }
         if let Some(fill) = fill_array {
             self.frame.compatible(&fill.frame, "fill_missing")?;
@@ -784,7 +772,7 @@ impl PyGeometryArray {
                     ));
                 }
             }
-            return Ok(self.fill_missing_with_array(mask, fill)?);
+            return self.fill_missing_with_array(mask, fill);
         }
         unreachable!("fill value type checked above")
     }
@@ -889,11 +877,11 @@ impl PyGeometryArray {
                 }
             }
             let seq = CoordSeq::try_from_vecs(xs, ys, None, None).map_err(PyErr::from)?;
-            return Ok(Self::packed_points(seq, self.frame.clone())
+            return Self::packed_points(seq, self.frame.clone())?
                 .with_missing_mask(
-                    missing_flags.and_then(|flags| ValidityMask::from_vec(n, flags)),
+                    missing_flags.map(|flags| ValidityMask::from_vec(n, flags)).transpose()?.flatten(),
                 )
-                .map_err(PyErr::from)?);
+                .map_err(PyErr::from);
         }
 
         let mut shapes: Vec<Option<Shape>> = self
@@ -917,11 +905,11 @@ impl PyGeometryArray {
         }
         let missing_flags = shapes.iter().map(Option::is_none).collect();
         let present = Self::from_shapes(shapes.into_iter().flatten().collect(), self.frame.clone())?;
-        Ok(ValidityMask::from_vec(n, missing_flags).map_or_else(
+        ValidityMask::from_vec(n, missing_flags)?.map_or_else(
             || Ok(present.clone()),
             |mask| Self::scatter_present_rows(&present, mask),
         )
-        .map_err(PyErr::from)?)
+        .map_err(PyErr::from)
     }
 
     /// Whether a geometry (or missing row via ``None``) is present.
@@ -949,7 +937,7 @@ impl PyGeometryArray {
             }
             for row in array.present_shape_rows() {
                 let (_, shape) = row.map_err(PyErr::from)?;
-                if shape.as_ref() == expected.shape() {
+                if &shape == expected.shape() {
                     return Ok(true);
                 }
             }

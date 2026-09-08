@@ -42,7 +42,7 @@ fn line_locate_geometry_points(
         )?
         .require_model(MetricOp::LineLocate)?
         .clone();
-    let line = geometry.plan_or_transient();
+    let line = geometry.plan_or_transient()?;
     if points.is_compact_nullable()
         && matches!(
             points.storage(),
@@ -61,7 +61,7 @@ fn line_locate_geometry_points(
                     let crate::array::ShapeRow::Point(query) = row.row() else {
                         return Ok(f64::NAN);
                     };
-                    line_locate_shape(&model, &line, &geometry.frame_cache(), query, normalized)
+                    line_locate_shape(&model, &line, &*geometry.frame_cache()?, query, normalized)
                 })
                 .collect_rows()
         });
@@ -76,7 +76,7 @@ fn line_locate_geometry_points(
                 if is_missing_row(missing.as_ref(), row) {
                     return Ok(f64::NAN);
                 }
-                line_locate_shape(&model, &line, &geometry.frame_cache(), query, normalized)
+                line_locate_shape(&model, &line, &*geometry.frame_cache()?, query, normalized)
             })
             .collect_rows()
     })
@@ -119,7 +119,7 @@ pub(crate) fn line_locate_point_input(
                 .resolve_ctx(&array.frame, &mut crate::dispatch::MetricScratch::default())?
                 .require_model(MetricOp::LineLocate)?
                 .clone();
-            let missing = union_pair(array.missing(), points.missing());
+            let missing = union_pair(array.missing(), points.missing())?;
             if array.is_compact_nullable() || points.is_compact_nullable() {
                 let array = array.clone();
                 let points = points.clone();
@@ -141,7 +141,7 @@ pub(crate) fn line_locate_point_input(
                             degrade_linref_float(line_locate_shape(
                                 &model,
                                 &line,
-                                &rows.frame_cache(row),
+                                &*rows.frame_cache(row)?,
                                 query,
                                 normalized,
                             ))
@@ -188,7 +188,7 @@ pub(crate) fn line_locate_point_input(
                         degrade_linref_float(line_locate_shape(
                             &model,
                             &line,
-                            &rows.frame_cache(row),
+                            &*rows.frame_cache(row)?,
                             query,
                             normalized,
                         ))
@@ -218,7 +218,7 @@ pub(crate) fn line_locate_point_m_input(
             let query = require_locate_point(point_geometry, MetricOp::LineLocate)?;
             let model =
                 crate::resolve_line_metric(geometry.crs_str(), None, false, MetricOp::LineLocate)?;
-            let line = geometry.plan_or_transient();
+            let line = geometry.plan_or_transient()?;
             return Ok(line_locate_shape_m(&model, &line, query)?
                 .into_pyobject(py)?
                 .unbind()
@@ -234,7 +234,7 @@ pub(crate) fn line_locate_point_m_input(
             )?;
             let model =
                 crate::resolve_line_metric(geometry.crs_str(), None, false, MetricOp::LineLocate)?;
-            let line = geometry.plan_or_transient();
+            let line = geometry.plan_or_transient()?;
             if points.is_compact_nullable()
                 && matches!(
                     points.storage(),
@@ -339,8 +339,8 @@ pub(crate) fn line_interpolate_points_scalar(
         )?
         .require_model(MetricOp::LineInterpolate)?
         .clone();
-    let line = geometry.plan_or_transient();
-    let shapes = line_interpolate_points_shape(&model, &line, &geometry.frame_cache(), plan)?;
+    let line = geometry.plan_or_transient()?;
+    let shapes = line_interpolate_points_shape(&model, &line, &*geometry.frame_cache()?, plan)?;
     Ok(PyGeometryArray::from_shapes(
         shapes,
         geometry.frame.clone(),

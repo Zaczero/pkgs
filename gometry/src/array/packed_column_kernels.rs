@@ -178,7 +178,9 @@ pub(crate) fn clip_lines_packed_xy(
         return Ok(None);
     }
     let (xs, ys) = (coords.xs(), coords.ys());
-    let mut builder = PackedColumnBuilder::try_like(coords, coords.len()).map_err(batch_err)?;
+    let selected_len =
+        crate::array::packed_lines_coord_len(line_columns.offsets(), line_columns.selection());
+    let mut builder = PackedColumnBuilder::try_like(coords, selected_len).map_err(batch_err)?;
 
     for row in 0..line_columns.rows() {
         if line_columns.is_missing(row) {
@@ -355,15 +357,21 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
     // Multi-leaf groups (polygons): reinterpret ring offsets as identity leaf
     // runs, reduce rings unscaled through the short/long selector, then fold
     // ring results by polygon offsets (missing → NaN; scale once per polygon).
-    let leaf_missing = runs.group_missing.and_then(|missing| {
-        let mut mask = vec![false; runs.n_leaves()];
-        for (group, is_missing) in missing.iter().enumerate() {
-            if is_missing {
-                mask[runs.group_leaves(group)].fill(true);
+    let leaf_missing = runs
+        .group_missing
+        .map(|missing| {
+            let mut mask = Vec::new();
+            crate::try_reserve_vec(&mut mask, runs.n_leaves())?;
+            mask.resize(runs.n_leaves(), false);
+            for (group, is_missing) in missing.iter().enumerate() {
+                if is_missing {
+                    mask[runs.group_leaves(group)].fill(true);
+                }
             }
-        }
-        ValidityMask::from_vec(runs.n_leaves(), mask)
-    });
+            ValidityMask::from_vec(runs.n_leaves(), mask)
+        })
+        .transpose()?
+        .flatten();
     let leaf_runs = SegmentedRuns {
         leaf_offsets: runs.leaf_offsets,
         group_offsets: None,
@@ -1127,7 +1135,8 @@ pub(crate) fn subdivide_line_columns(
 ) -> Result<PackedColumnOutput> {
     let coords = columns.coords();
     let rows = columns.rows();
-    let mut builder = PackedColumnBuilder::try_like(coords, coords.len())?;
+    let selected_len = crate::array::packed_lines_coord_len(columns.offsets(), columns.selection());
+    let mut builder = PackedColumnBuilder::try_like(coords, selected_len)?;
     let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
     for row in 0..rows {
         if columns.is_missing(row) {
@@ -1153,7 +1162,12 @@ pub(crate) fn subdivide_polygon_columns(
 ) -> Result<PackedColumnOutput> {
     let coords = columns.coords();
     let ring_offsets = columns.ring_offsets();
-    let mut builder = PackedColumnBuilder::try_like(coords, coords.len())?;
+    let selected_len = crate::array::packed_polygons_coord_len(
+        ring_offsets,
+        columns.polygon_offsets(),
+        columns.selection(),
+    );
+    let mut builder = PackedColumnBuilder::try_like(coords, selected_len)?;
     let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(columns.rows())?;
     let mut output_rings = 0;

@@ -285,7 +285,7 @@ impl NativeArrowAccumulator {
         let epoch = reconcile_arrow_epoch(self.epoch, epoch)?;
         let frame = Frame::new(crs, epoch)?;
         let present = PyGeometryArray::from_shapes(self.shapes, frame)?;
-        let output = match crate::array::ValidityMask::from_sparse(self.length, &self.missing) {
+        let output = match crate::array::ValidityMask::from_sparse(self.length, &self.missing)? {
             Some(mask) => present.with_missing_mask(Some(mask)),
             None => Ok(present),
         };

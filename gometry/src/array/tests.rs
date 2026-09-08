@@ -251,6 +251,34 @@ mod multipart_storage_tests {
     use crate::io::{parse_wkt, to_wkt};
 
     #[test]
+    fn selected_polygon_bounds_do_not_require_shape_allocation() {
+        let shape = parse_wkt("POLYGON ((0 0, 4 0, 4 4, 0 0))").unwrap();
+        let source = PyGeometryArray::from_shapes(vec![shape], Frame::None).unwrap();
+        let selected = source.gather_logical_rows(&[0, 0]).unwrap();
+        let bounds =
+            crate::test_support::fail_allocations_after(0, || selected.storage().total_bounds());
+        assert_eq!(bounds.unwrap().into_tuple(), (0.0, 0.0, 4.0, 4.0));
+    }
+
+    #[test]
+    fn local_crs_estimation_preserves_row_allocation_failure() {
+        pyo3::Python::initialize();
+        let shape = parse_wkt("POLYGON ((0 0, 4 0, 4 4, 0 0))").unwrap();
+        let source = PyGeometryArray::from_shapes(
+            vec![shape],
+            Frame::Crs(crate::boundary::crs_arc_static("EPSG:4326")),
+        )
+        .unwrap();
+        pyo3::Python::attach(|py| {
+            let error =
+                crate::test_support::fail_allocations_after(0, || source.estimate_local_crs())
+                    .err()
+                    .expect("row allocation must fail");
+            assert!(error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py));
+        });
+    }
+
+    #[test]
     fn mixed_slice_and_mask_keep_explicit_multipart_members() {
         let multi =
             parse_wkt("MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))").expect("multipart WKT parses");
@@ -268,7 +296,7 @@ mod multipart_storage_tests {
             "MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))"
         );
 
-        let masked = array.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]));
+        let masked = array.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]).unwrap());
         let selected = masked.unwrap().gather_logical_rows(&[1, 0]).unwrap();
         assert!(!selected.is_row_missing(0));
         assert!(selected.is_row_missing(1));

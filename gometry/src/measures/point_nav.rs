@@ -1591,11 +1591,15 @@ const fn input_missing<'a>(input: &'a GeometryInput<'_>) -> Option<&'a ValidityM
     }
 }
 
-fn union_missing_masks(inputs: &[&GeometryInput<'_>]) -> Option<ValidityMask> {
+fn union_missing_masks(
+    inputs: &[&GeometryInput<'_>],
+) -> crate::error::Result<Option<ValidityMask>> {
     crate::array::missing::union_many(inputs.iter().map(|input| input_missing(input)))
 }
 
-fn union_point_operand_missing(inputs: &[&PointOperand<'_>]) -> Option<ValidityMask> {
+fn union_point_operand_missing(
+    inputs: &[&PointOperand<'_>],
+) -> crate::error::Result<Option<ValidityMask>> {
     crate::array::missing::union_many(inputs.iter().map(|input| input.missing()))
 }
 
@@ -1698,7 +1702,7 @@ impl<'a> PointBinaryPlan<'a> {
             },
         };
         let output_frame = left.frame().compatible(right.frame(), operation.name())?;
-        let missing = crate::array::missing::union_pair(left.missing(), right.missing());
+        let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
         Ok(Self {
             left,
             right,
@@ -1800,7 +1804,7 @@ fn destination_many_array(
                     missing_for_rows.as_ref(),
                 )
             })?;
-            return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())
+            return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())?
                 .with_missing_mask(missing)?
                 .into_pyobject(py)?
                 .unbind()
@@ -1818,7 +1822,7 @@ fn destination_many_array(
                 crate::array::ArrayRow::Present(row) => {
                     let logical = row.logical();
                     row.row().try_with_shape(|shape| {
-                        let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
+                        let geometry = PyGeometry::with_frame(shape.clone(), frame.clone())?;
                         point_destination(
                             &geometry,
                             bearing.values[logical],
@@ -1869,7 +1873,7 @@ fn destination_point_array(
     match point_in {
         One(geometry) if len == 1 && bearing.scalar && distance.scalar => {
             let shape = point_destination(geometry, bearing.values[0], distance.values[0], unit)?;
-            Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind())
+            Ok(geometry.typed_shape(shape)?.into_pyobject(py)?.unbind())
         },
         One(geometry) => {
             let point = require_point(geometry, MetricOp::Destination)?;
@@ -1888,7 +1892,7 @@ fn destination_point_array(
                 )
             })?;
             Ok(
-                PyGeometryArray::packed_points(coords, geometry.frame.clone())
+                PyGeometryArray::packed_points(coords, geometry.frame.clone())?
                     .into_pyobject(py)?
                     .unbind()
                     .into(),
@@ -1919,7 +1923,7 @@ pub(crate) fn destination_point_receiver(
     validate_destination_distances(&distance.values)?;
     if len == 1 && bearing.scalar && distance.scalar {
         let shape = point_destination(geometry, bearing.values[0], distance.values[0], unit)?;
-        return Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind());
+        return Ok(geometry.typed_shape(shape)?.into_pyobject(py)?.unbind());
     }
     let point = require_point(geometry, MetricOp::Destination)?;
     let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
@@ -1935,7 +1939,7 @@ pub(crate) fn destination_point_receiver(
         )
     })?;
     Ok(
-        PyGeometryArray::packed_points(coords, geometry.frame.clone())
+        PyGeometryArray::packed_points(coords, geometry.frame.clone())?
             .into_pyobject(py)?
             .unbind()
             .into(),
@@ -1967,14 +1971,14 @@ pub(crate) fn rhumb_destination_point_receiver(
             distance.values[0],
             &metric.state,
         )?;
-        return Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind());
+        return Ok(geometry.typed_shape(shape)?.into_pyobject(py)?.unbind());
     }
     let axes = CoordinateAxes::from_point(point);
     let coords = py.detach(move || {
         rhumb_destination_scalar_coords(&metric, point, &bearing.values, &distance.values, axes)
     })?;
     Ok(
-        PyGeometryArray::packed_points(coords, geometry.frame.clone())
+        PyGeometryArray::packed_points(coords, geometry.frame.clone())?
             .into_pyobject(py)?
             .unbind()
             .into(),
@@ -2073,7 +2077,7 @@ where
             )
         })?;
         Ok(
-            PyGeometryArray::packed_points(coords, plan.output_frame.clone())
+            PyGeometryArray::packed_points(coords, plan.output_frame.clone())?
                 .with_missing_mask(missing)?
                 .into_pyobject(py)?
                 .unbind()
@@ -2162,7 +2166,7 @@ fn point_binary_geometry_sink(
             } else {
                 fallback(left, right, 0)?
             };
-            return Ok(left.typed_shape(shape).into_pyobject(py)?.unbind());
+            return Ok(left.typed_shape(shape)?.into_pyobject(py)?.unbind());
         },
         PointBinaryExecution::Rows(len) => len,
     };
@@ -2224,12 +2228,12 @@ fn point_unary_geometry(
             if let Some(point) = geometry_point(geometry) {
                 let ctx = setup(geometry.crs_str())?;
                 return Ok(geometry
-                    .typed_shape(point_unary_geometry_eval(point_op, &ctx, 0, point)?)
+                    .typed_shape(point_unary_geometry_eval(point_op, &ctx, 0, point)?)?
                     .into_pyobject(py)?
                     .unbind());
             }
             Ok(geometry
-                .typed_shape(fallback(geometry, 0)?)
+                .typed_shape(fallback(geometry, 0)?)?
                 .into_pyobject(py)?
                 .unbind())
         },
@@ -2261,7 +2265,7 @@ fn point_unary_geometry(
                             missing_for_rows.as_ref(),
                         )
                     })?;
-                    return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())
+                    return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())?
                         .with_missing_mask(missing)?
                         .into_pyobject(py)?
                         .unbind()
@@ -2279,7 +2283,8 @@ fn point_unary_geometry(
                         crate::array::ArrayRow::Present(row) => {
                             let logical = row.logical();
                             row.row().try_with_shape(|shape| {
-                                let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
+                                let geometry =
+                                    PyGeometry::with_frame(shape.clone(), frame.clone())?;
                                 fallback(&geometry, logical)
                                     .map(Some)
                                     .map_err(|err| crate::note_array_row(err, logical))
@@ -2351,7 +2356,7 @@ fn cross_track_broadcast(
             let (end_crs, end_epoch) = input_frame(&end_in);
             Frame::compatible_parts(point_crs, point_epoch, start_crs, start_epoch, OP.name())?;
             Frame::compatible_parts(point_crs, point_epoch, end_crs, end_epoch, OP.name())?;
-            let missing = union_missing_masks(&[&point_in, &start_in, &end_in]);
+            let missing = union_missing_masks(&[&point_in, &start_in, &end_in])?;
             if let (Some(points), Some(starts), Some(ends)) = (
                 input_point(&point_in),
                 input_point(&start_in),
@@ -2365,7 +2370,7 @@ fn cross_track_broadcast(
                 let radius = crs::geodesic_cross_track_radius_crs_at(&metric.crs, &metric.state)
                     .map_err(PyErr::from)
                     .map_err(row_zero)?;
-                let missing_for_rows = union_point_operand_missing(&[&points, &starts, &ends]);
+                let missing_for_rows = union_point_operand_missing(&[&points, &starts, &ends])?;
                 return float64_array(
                     py,
                     py.detach(move || {
@@ -2783,7 +2788,7 @@ fn rhumb_destination_point_array(
             rhumb_destination_scalar_coords(&metric, point, &bearing.values, &distance.values, axes)
         })?;
         return Ok(
-            PyGeometryArray::packed_points(coords, geometry.frame.clone())
+            PyGeometryArray::packed_points(coords, geometry.frame.clone())?
                 .into_pyobject(py)?
                 .unbind()
                 .into(),

@@ -194,7 +194,7 @@ pub(crate) fn voronoi_edges_flatten(
     Ok(if coords.is_empty() {
         PyGeometryArray::from_shapes(Vec::new(), frame)?
     } else {
-        PyGeometryArray::packed_lines(coords, offsets, frame)
+        PyGeometryArray::packed_lines(coords, offsets, frame)?
     })
 }
 
@@ -336,7 +336,7 @@ pub(crate) fn metric_concave_hull(
             |projected| {
                 let mut seen = HashSet::new();
                 seen.try_reserve(projected.coord_count())
-                    .map_err(|_| crate::error::ResourceError::Allocation)?;
+                    .map_err(crate::error::Error::from)?;
                 let mut pairs = Vec::new();
                 crate::boundary::try_reserve_vec(&mut pairs, projected.coord_count())?;
                 let mut point_index = 0;

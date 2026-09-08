@@ -288,7 +288,7 @@ pub(crate) fn present_polylines_of(
                     crate::geometry::GeometryErrorKind::ordinate_dropped("to_polyline").into(),
                 );
             }
-            encode_shape(shape.as_ref(), factor)
+            encode_shape(&shape, factor)
         };
         encode()
             .map(|encoded| (row, encoded))

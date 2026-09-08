@@ -262,7 +262,8 @@ mod coordinate_groups_tests {
         let array = PyGeometryArray::packed_points(
             CoordSeq::try_from_vecs(vec![1.0, 3.0], vec![2.0, 4.0], None, None).unwrap(),
             Frame::None,
-        );
+        )
+        .unwrap();
         let error = crate::test_support::fail_allocations_after(0, || {
             coordinate_groups(&array, &[CoordinateAxis::X, CoordinateAxis::Y])
                 .err()

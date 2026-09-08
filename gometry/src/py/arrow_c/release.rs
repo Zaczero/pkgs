@@ -60,12 +60,9 @@ impl ArrowReleaseTree for ArrowSchema {
     }
 
     unsafe fn release_private(private: *mut Self::Private) {
-        // SAFETY: `SchemaPrivate` owns the children vector; children are
-        // released before the private box drops their shells.
+        // SAFETY: this pointer came from Box::into_raw. Child guards release
+        // their schemas when the private owner is dropped.
         unsafe {
-            for child in &mut (*private).children {
-                release_schema(child.as_mut());
-            }
             drop(Box::from_raw(private));
         }
     }
@@ -80,12 +77,9 @@ impl ArrowReleaseTree for ArrowArray {
     }
 
     unsafe fn release_private(private: *mut Self::Private) {
-        // SAFETY: `ArrayPrivate` owns child shells and buffer-holder Arcs;
-        // children are released before the private box drops their shells.
+        // SAFETY: this pointer came from Box::into_raw. Child guards release
+        // their arrays when the private owner is dropped.
         unsafe {
-            for child in &mut (*private).children {
-                release_array(child.as_mut());
-            }
             drop(Box::from_raw(private));
         }
     }
@@ -104,11 +98,7 @@ impl ArrowReleaseTree for ArrowArrayStream {
         // if any. Once `get_next` moves it into the consumer's out pointer,
         // ownership leaves the stream and this option is `None`.
         unsafe {
-            let mut private = Box::from_raw(private);
-            if let Some(mut array) = private.array.take() {
-                release_array(array.as_mut());
-            }
-            drop(private);
+            drop(Box::from_raw(private));
         }
     }
 }
@@ -166,11 +156,11 @@ pub(crate) unsafe extern "C" fn stream_get_schema(
         if private.is_null() {
             return -1;
         }
-        let Ok(schema) = (*private).schema.clone().into_schema() else {
+        let Ok(schema) = (*private).schema.materialize_schema() else {
             (*private).last_error = c"failed to materialize Arrow schema";
             return -1;
         };
-        ptr::write(out, *schema);
+        ptr::write(out, *schema.into_box());
     }
     0
 }
@@ -195,7 +185,7 @@ pub(crate) unsafe extern "C" fn stream_get_next(
             return -1;
         }
         if let Some(array) = (*private).array.take() {
-            ptr::write(out, *array);
+            ptr::write(out, *array.into_box());
         } else {
             ptr::write(out, empty_array());
         }

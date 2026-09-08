@@ -125,7 +125,7 @@ impl FrameDependentCaches {
         self.geographic_topology_builds
             .fetch_add(1, Ordering::Relaxed);
         let built = Arc::try_new(crate::geometry::topology::TopologyGraph::geographic(view)?)
-            .map_err(|_| crate::error::ResourceError::Allocation)?;
+            .map_err(crate::error::Error::from)?;
         let mut slot = self
             .geographic_topology
             .lock()
@@ -291,15 +291,15 @@ impl ShapeData {
 }
 
 impl PreparedPlan {
-    pub(crate) fn new(shape: impl Into<Arc<ShapeData>>) -> Self {
-        Self {
-            shape: shape.into(),
+    pub(crate) fn new(shape: impl IntoSharedShape) -> crate::error::Result<Self> {
+        Ok(Self {
+            shape: shape.try_into_shared()?,
             topology: OnceLock::new(),
             metric: OnceLock::new(),
-        }
+        })
     }
 
-    pub(crate) fn transient(shape: &Shape) -> Self {
+    pub(crate) fn transient(shape: &Shape) -> crate::error::Result<Self> {
         Self::new(ShapeData::new(shape.clone()))
     }
 
@@ -331,7 +331,7 @@ impl PreparedPlan {
                 Box::try_new(crate::geometry::topology::TopologyGraph::cartesian(
                     self.shape(),
                 )?)
-                .map_err(|_| crate::error::Error::from(crate::error::ResourceError::Allocation))
+                .map_err(crate::error::Error::from)
             })
             .map(Box::as_ref)
     }
@@ -499,8 +499,7 @@ impl PreparedPlan {
                 if matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_)) {
                     let tester = PointBatchTester::new(self.shape())?;
                     Ok(Some(
-                        Box::try_new(tester)
-                            .map_err(|_| crate::error::ResourceError::Allocation)?,
+                        Box::try_new(tester).map_err(crate::error::Error::from)?,
                     ))
                 } else {
                     Ok(None)
@@ -606,9 +605,25 @@ impl From<Shape> for ShapeData {
     }
 }
 
-impl From<Shape> for std::sync::Arc<ShapeData> {
-    fn from(shape: Shape) -> Self {
-        Self::new(ShapeData::new(shape))
+pub(crate) trait IntoSharedShape {
+    fn try_into_shared(self) -> crate::error::Result<Arc<ShapeData>>;
+}
+
+impl IntoSharedShape for Shape {
+    fn try_into_shared(self) -> crate::error::Result<Arc<ShapeData>> {
+        ShapeData::new(self).try_into_shared()
+    }
+}
+
+impl IntoSharedShape for ShapeData {
+    fn try_into_shared(self) -> crate::error::Result<Arc<ShapeData>> {
+        Arc::try_new(self).map_err(crate::error::Error::from)
+    }
+}
+
+impl IntoSharedShape for Arc<ShapeData> {
+    fn try_into_shared(self) -> crate::error::Result<Arc<ShapeData>> {
+        Ok(self)
     }
 }
 
@@ -628,7 +643,7 @@ mod footprint_tests {
 
     #[test]
     fn retained_heap_bytes_does_not_force_caches() {
-        let data = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)));
+        let data = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
         let cold = data.retained_heap_bytes();
         assert!(data.metric.get().is_none());
         assert!(data.topology.get().is_none());
@@ -709,7 +724,8 @@ mod frame_cache_tests {
                     .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ));
+        ))
+        .unwrap();
         let cache = FrameDependentCaches::default();
         let first = shape
             .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
@@ -733,7 +749,8 @@ mod frame_cache_tests {
                 .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ));
+        ))
+        .unwrap();
         let first = shape.measured_line_index().expect("measured line index") as *const _;
         let second = shape
             .measured_line_index()
@@ -768,7 +785,8 @@ mod frame_cache_tests {
                 .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ));
+        ))
+        .unwrap();
         shape.measured_line_index().expect("measured line index");
 
         let (_, allocations) = allocation_count(|| {
@@ -797,7 +815,8 @@ mod frame_cache_tests {
                     .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ));
+        ))
+        .unwrap();
         let cache = FrameDependentCaches::default();
         shape
             .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)

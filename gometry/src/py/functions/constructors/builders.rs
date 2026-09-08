@@ -10,21 +10,21 @@ use crate::py::errors::parameter_error;
 use crate::py::functions::constructors::{
     Bound, CRSError, CoordSeq, CoordinateAxes, Crs, Frame, FrameAdoption, GeometryKind,
     InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr, PyGeometry,
-    PyGeometryArray, PyResult, PyTypeError, Ring, Shape, ShapeData, box_polygon,
-    coordinate_arc_values, coordinate_arc_values_exact, coordinate_epoch_option,
-    coordinate_sequence_len_hint, crs, ensure_homogeneous_axes, exact_geometry, extract_coordinate,
-    extract_coordinate_or_empty, extract_lines, extract_points, extract_polygons,
-    finite_coordinate_required, optional_coordinate_arc_values, optional_coordinates, parse_crs,
-    parse_crs_epoch, wrapped_box,
+    PyGeometryArray, PyResult, PyTypeError, Ring, Shape, box_polygon, coordinate_column_values,
+    coordinate_column_values_exact, coordinate_epoch_option, coordinate_sequence_len_hint, crs,
+    ensure_homogeneous_axes, exact_geometry, extract_coordinate, extract_coordinate_or_empty,
+    extract_lines, extract_points, extract_polygons, finite_coordinate_required,
+    optional_coordinate_column_values, optional_coordinates, parse_crs, parse_crs_epoch,
+    wrapped_box,
 };
 use crate::py::numpy;
 
 pub(super) fn geometry_with_crs_epoch(
-    shape: impl Into<std::sync::Arc<ShapeData>>,
+    shape: impl crate::geometry::IntoSharedShape,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
-    Ok(PyGeometry::with_frame(shape, parse_crs_epoch(crs, epoch)?))
+    Ok(PyGeometry::with_frame(shape, parse_crs_epoch(crs, epoch)?)?)
 }
 
 fn multipart_members(
@@ -48,9 +48,9 @@ fn multipart_members(
                     "{context} expected {expected} at element {this_row}"
                 ))
             })?;
-            Ok(PyGeometry::with_frame(shape, geometry.frame.clone()))
+            Ok(PyGeometry::with_frame(shape, geometry.frame.clone())?)
         } else {
-            Ok(PyGeometry::with_frame(raw(&item)?, Frame::None))
+            Ok(PyGeometry::with_frame(raw(&item)?, Frame::None)?)
         }
     })?;
     let frame = Frame::resolve_items(
@@ -234,23 +234,23 @@ pub(super) fn coordinate_vertices(
             let xs = if x_hint.is_none()
                 && let Some(expected) = established
             {
-                coordinate_arc_values_exact(x.py(), x, "x", expected, |got| {
+                coordinate_column_values_exact(x.py(), x, "x", expected, |got| {
                     InvalidGeometryError::new_err(format!(
                         "x and y must have the same length, got {got} and {expected}"
                     ))
                 })?
             } else {
-                coordinate_arc_values(x.py(), x, "x")?
+                coordinate_column_values(x.py(), x, "x")?
             };
             let ys = if y_hint.is_none() && established.is_some() {
                 let expected = xs.len();
-                coordinate_arc_values_exact(y.py(), y, "y", expected, |got| {
+                coordinate_column_values_exact(y.py(), y, "y", expected, |got| {
                     InvalidGeometryError::new_err(format!(
                         "x and y must have the same length, got {expected} and {got}"
                     ))
                 })?
             } else {
-                coordinate_arc_values(y.py(), y, "y")?
+                coordinate_column_values(y.py(), y, "y")?
             };
             if xs.len() != ys.len() {
                 return Err(InvalidGeometryError::new_err(format!(
@@ -260,14 +260,9 @@ pub(super) fn coordinate_vertices(
                 )));
             }
             let expected = xs.len();
-            let z = optional_coordinate_arc_values(x.py(), z, expected, "z")?;
-            let m = optional_coordinate_arc_values(x.py(), m, expected, "m")?;
-            Ok(CoordSeq::try_from_vecs(
-                xs.to_vec(),
-                ys.to_vec(),
-                z.map(|values| values.to_vec()),
-                m.map(|values| values.to_vec()),
-            )?)
+            let z = optional_coordinate_column_values(x.py(), z, expected, "z")?;
+            let m = optional_coordinate_column_values(x.py(), m, expected, "m")?;
+            Ok(CoordSeq::try_from_vecs(xs, ys, z, m)?)
         },
         (None, None, None) => Err(InvalidGeometryError::new_err(
             "provide a coordinate sequence or both x= and y= columns",
@@ -403,7 +398,7 @@ pub(crate) fn build_multi_point(
         },
     )?;
     if members.is_empty() {
-        return Ok(PyGeometry::with_frame(empty_multi_point(), frame));
+        return Ok(PyGeometry::with_frame(empty_multi_point(), frame)?);
     }
     let axes = homogeneous_multipart_axes(&members, "MultiPoint")?;
     if members.iter().all(|shape| matches!(shape, Shape::Point(_))) {
@@ -420,7 +415,7 @@ pub(crate) fn build_multi_point(
                 CoordSeq::try_from_points(&points).map_err(PyErr::from)?,
             ),
             frame,
-        ));
+        )?);
     }
     let mut point_members = crate::try_vec_with_capacity(members.len())?;
     for shape in members {
@@ -431,12 +426,12 @@ pub(crate) fn build_multi_point(
         })?;
     }
     if point_members.is_empty() {
-        return Ok(PyGeometry::with_frame(empty_multi_point(), frame));
+        return Ok(PyGeometry::with_frame(empty_multi_point(), frame)?);
     }
     Ok(PyGeometry::with_frame(
         Shape::MultiPoint(MultiPoint::try_new(axes, point_members).map_err(PyErr::from)?),
         frame,
-    ))
+    )?)
 }
 
 /// Build a ``MultiLineString`` from a sequence of line coordinate sequences.
@@ -477,7 +472,7 @@ pub(crate) fn build_multi_line_string(
         },
     )?;
     if members.is_empty() {
-        return Ok(PyGeometry::with_frame(empty_multi_line_string(), frame));
+        return Ok(PyGeometry::with_frame(empty_multi_line_string(), frame)?);
     }
     let axes = homogeneous_multipart_axes(&members, "MultiLineString")?;
     if members
@@ -493,7 +488,7 @@ pub(crate) fn build_multi_line_string(
         }
         let shape = Shape::multi_line_string(axes, lines).map_err(PyErr::from)?;
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-        return Ok(PyGeometry::with_frame(shape, frame));
+        return Ok(PyGeometry::with_frame(shape, frame)?);
     }
     let member_count = members.len();
     let mut line_members = Vec::new();
@@ -515,7 +510,7 @@ pub(crate) fn build_multi_line_string(
     // members at construction rather than admit a shape that cannot serialize
     // without inventing Z/M.
     crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-    Ok(PyGeometry::with_frame(shape, frame))
+    Ok(PyGeometry::with_frame(shape, frame)?)
 }
 
 /// Build a ``MultiPolygon`` from a sequence of polygons.
@@ -542,7 +537,7 @@ pub(crate) fn build_multi_polygon(
         polygon_from_coordinates_item,
     )?;
     if members.is_empty() {
-        return Ok(PyGeometry::with_frame(empty_multi_polygon(), frame));
+        return Ok(PyGeometry::with_frame(empty_multi_polygon(), frame)?);
     }
     let axes = homogeneous_multipart_axes(&members, "MultiPolygon")?;
     if members
@@ -558,7 +553,7 @@ pub(crate) fn build_multi_polygon(
         }
         let shape = Shape::multi_polygon(axes, polygons).map_err(PyErr::from)?;
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-        return Ok(PyGeometry::with_frame(shape, frame));
+        return Ok(PyGeometry::with_frame(shape, frame)?);
     }
     let member_count = members.len();
     let mut polygon_members = Vec::new();
@@ -577,7 +572,7 @@ pub(crate) fn build_multi_polygon(
     let shape =
         Shape::MultiPolygon(MultiPolygon::try_new(axes, polygon_members).map_err(PyErr::from)?);
     crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-    Ok(PyGeometry::with_frame(shape, frame))
+    Ok(PyGeometry::with_frame(shape, frame)?)
 }
 
 pub(super) fn build_box_shape(

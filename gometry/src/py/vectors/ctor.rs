@@ -66,7 +66,7 @@ impl Groups {
         line_offsets: crate::geometry::CsrOffsetColumn,
         group_offsets: Vec<i64>,
     ) -> PyResult<Self> {
-        let values = PyGeometryArray::packed_lines(coords, line_offsets, frame);
+        let values = PyGeometryArray::packed_lines(coords, line_offsets, frame)?;
         validate_csr_offsets(&group_offsets, values.len())?;
         let n = group_offsets
             .len()
@@ -371,7 +371,7 @@ mod self_intersection_csr_tests {
             Frame::None,
         )
         .unwrap()
-        .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]))
+        .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]).unwrap())
         .unwrap();
         let (shapes, offsets) = self_intersection_csr(&array, domain(&array))
             .expect("CSR walk")

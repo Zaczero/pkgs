@@ -1520,7 +1520,8 @@ mod tests {
             ring_offsets.clone(),
             polygon_offsets.clone(),
             Frame::default(),
-        );
+        )
+        .unwrap();
         let points = array.coordinate_view().collect_points();
 
         assert_eq!(points.len(), 15);
@@ -1537,8 +1538,11 @@ mod tests {
             ring_offsets,
             polygon_offsets,
             Frame::default(),
-            RowSelection::gather_checked_native(vec![1, 0].into(), 2).unwrap(),
-        );
+            RowSelection::gather_checked_native(vec![1, 0], 2)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
         let gathered_points = gathered.coordinate_view().collect_points();
         assert_eq!(gathered_points.len(), 15);
         assert_eq!(gathered_points[0].point, pt(10.0, 10.0));
@@ -1548,7 +1552,7 @@ mod tests {
         assert_eq!(gathered_points[10].path.ring, Some(1));
 
         let masked = gathered
-            .with_missing_mask(ValidityMask::from_vec(2, vec![true, false]))
+            .with_missing_mask(ValidityMask::from_vec(2, vec![true, false]).unwrap())
             .unwrap();
         let masked_view = masked.coordinate_view();
         let masked_points = masked_view.collect_points();
@@ -1574,7 +1578,7 @@ mod tests {
         ])
         .unwrap();
         let offsets = CsrOffsetColumn::try_new(vec![0, 2, 5], 5).unwrap();
-        let array = PyGeometryArray::packed_lines(coords, offsets, Frame::default());
+        let array = PyGeometryArray::packed_lines(coords, offsets, Frame::default()).unwrap();
         let view = array.coordinate_view();
         assert_eq!(view.row_index_i64().unwrap(), vec![0, 0, 1, 1, 1]);
         assert_eq!(view.row_index().unwrap(), vec![0, 0, 1, 1, 1]);
@@ -1608,7 +1612,8 @@ mod tests {
             ring_offsets,
             polygon_offsets,
             Frame::default(),
-        );
+        )
+        .unwrap();
         let view = array.coordinate_view();
         // Row 0: shell (5) + hole (5); row 1: shell (5).
         assert_eq!(view.row_index_i64().unwrap(), vec![
@@ -1632,8 +1637,11 @@ mod tests {
             coords,
             offsets,
             Frame::default(),
-            RowSelection::gather_checked_native(vec![2, 0].into(), 3).unwrap(),
-        );
+            RowSelection::gather_checked_native(vec![2, 0], 3)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
         let view = gathered.coordinate_view();
         // Logical row 0 = physical 2 (2 verts); logical row 1 = physical 0 (2 verts).
         assert_eq!(view.row_index_i64().unwrap(), vec![0, 0, 1, 1]);

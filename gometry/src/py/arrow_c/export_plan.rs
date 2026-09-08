@@ -7,8 +7,6 @@
     reason = "each GeoArrow layout has one explicit planning arm"
 )]
 
-use std::sync::Arc;
-
 use pyo3::prelude::PyResult;
 
 use crate::PyGeometryArray;
@@ -16,31 +14,37 @@ use crate::array::{ArrayRow, GeometryArrayStorage, PackedStorage, RowSelectionRe
 use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Polygon, Shape};
 use crate::py::arrow::{ArrowEncoding, accumulate_geometry_axes};
 use crate::py::arrow_c::{
-    ArrowSchema, ExportedArray, GeometryEncoding, GometryArrowArray, NativeArrowExportError,
+    ExportedArray, GeometryEncoding, GometryArrowArray, NativeArrowExportError,
     NativeArrowExportResult, SchemaNode, admitted_binary_array, admitted_list_array_windowed,
     coordinate_array, coordinate_schema, extension_schema, list_schema, wkb_schema,
 };
 
+fn initial_offsets() -> crate::error::Result<Vec<i32>> {
+    let mut offsets = Vec::new();
+    crate::try_push_vec(&mut offsets, 0)?;
+    Ok(offsets)
+}
+
 enum StoragePlan {
     Coordinates(CoordSeq),
     List {
-        offsets: Arc<[i32]>,
+        offsets: crate::geometry::SharedSlice<i32>,
         start: usize,
         length: usize,
         child: Box<Self>,
     },
     Binary {
-        offsets: Arc<[i32]>,
-        data: Arc<[u8]>,
+        offsets: crate::geometry::SharedSlice<i32>,
+        data: crate::geometry::SharedSlice<u8>,
     },
 }
 
 impl StoragePlan {
-    fn schema(&self) -> SchemaNode {
+    fn schema(&self) -> NativeArrowExportResult<SchemaNode> {
         match self {
             Self::Coordinates(coords) => coordinate_schema(coords.axes()),
-            Self::List { child, .. } => list_schema(child.schema()),
-            Self::Binary { .. } => wkb_schema(),
+            Self::List { child, .. } => list_schema(child.schema()?),
+            Self::Binary { .. } => Ok(wkb_schema()),
         }
     }
 
@@ -66,7 +70,7 @@ impl StoragePlan {
 }
 
 struct ValidityPlan {
-    bitmap: Arc<[u8]>,
+    bitmap: crate::geometry::SharedSlice<u8>,
     null_count: usize,
 }
 
@@ -88,7 +92,7 @@ pub(crate) fn prepare_export_plan(
 ) -> NativeArrowExportResult<PreparedArrowExportPlan> {
     let schema = extension_schema(
         plan.encoding,
-        plan.storage.schema(),
+        plan.storage.schema()?,
         plan.crs.as_deref(),
         plan.epoch,
     )?;
@@ -111,8 +115,12 @@ pub(crate) fn materialize_export_plan(plan: PreparedArrowExportPlan) -> PyResult
     Ok(export)
 }
 
-pub(crate) fn materialize_schema_plan(plan: PreparedArrowExportPlan) -> PyResult<Box<ArrowSchema>> {
-    plan.schema.into_schema()
+pub(crate) fn materialize_schema_plan(
+    plan: PreparedArrowExportPlan,
+) -> PyResult<crate::py::arrow_c::GometryArrowSchema> {
+    plan.schema
+        .materialize_schema()
+        .map_err(|error| pyo3::Python::attach(|py| error.into_py_err(py)))
 }
 
 pub(crate) fn plan_geometry_array(
@@ -199,8 +207,8 @@ fn plan_geometry_array_wkb(
     Ok(ArrowExportPlan {
         encoding: GeometryEncoding::Wkb,
         storage: StoragePlan::Binary {
-            offsets: offsets.into(),
-            data: data.into(),
+            offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
+            data: crate::geometry::SharedSlice::try_from_vec(data)?,
         },
         crs,
         epoch,
@@ -236,10 +244,11 @@ fn plan_storage(
             };
             validate_list_offsets(offsets.as_slice(), start, length, coords.len())?;
             (GeometryEncoding::LineString, StoragePlan::List {
-                offsets: offsets.as_arc_i32(),
+                offsets: offsets.shared_offsets(),
                 start,
                 length,
-                child: Box::new(StoragePlan::Coordinates(coords.as_ref().clone())),
+                child: Box::try_new(StoragePlan::Coordinates(coords.as_ref().clone()))
+                    .map_err(crate::error::Error::from)?,
             })
         },
         GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -267,16 +276,17 @@ fn plan_storage(
                 ring_offsets.len().saturating_sub(1),
             )?;
             let rings = StoragePlan::List {
-                offsets: ring_offsets.as_arc_i32(),
+                offsets: ring_offsets.shared_offsets(),
                 start: 0,
                 length: ring_offsets.len().saturating_sub(1),
-                child: Box::new(StoragePlan::Coordinates(coords.as_ref().clone())),
+                child: Box::try_new(StoragePlan::Coordinates(coords.as_ref().clone()))
+                    .map_err(crate::error::Error::from)?,
             };
             (GeometryEncoding::Polygon, StoragePlan::List {
-                offsets: polygon_offsets.as_arc_i32(),
+                offsets: polygon_offsets.shared_offsets(),
                 start,
                 length,
-                child: Box::new(rings),
+                child: Box::try_new(rings).map_err(crate::error::Error::from)?,
             })
         },
         GeometryArrayStorage::Mixed(shapes) => return plan_shapes(shapes, crs, epoch),
@@ -295,7 +305,9 @@ pub(crate) fn plan_shapes(
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let refs: Vec<&Shape> = shapes.iter().collect();
+    let mut refs = Vec::new();
+    crate::try_reserve_vec(&mut refs, shapes.len())?;
+    refs.extend(shapes.iter());
     plan_shape_refs(&refs, crs, epoch)
 }
 
@@ -304,7 +316,9 @@ pub(crate) fn plan_wkb_shapes(
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let refs: Vec<&Shape> = shapes.iter().collect();
+    let mut refs = Vec::new();
+    crate::try_reserve_vec(&mut refs, shapes.len())?;
+    refs.extend(shapes.iter());
     plan_wkb_refs(&refs, crs, epoch)
 }
 
@@ -454,10 +468,10 @@ fn plan_single_list(
     }
     let coords = gather_coordseqs(axes, total, shapes.iter().map(|shape| points_of(shape)))?;
     Ok(StoragePlan::List {
-        offsets: offsets.into(),
+        offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
         start: 0,
         length: shapes.len(),
-        child: Box::new(StoragePlan::Coordinates(coords)),
+        child: Box::try_new(StoragePlan::Coordinates(coords)).map_err(crate::error::Error::from)?,
     })
 }
 
@@ -465,8 +479,8 @@ fn plan_multilines(
     shapes: &[&Shape],
     axes: CoordinateAxes,
 ) -> NativeArrowExportResult<StoragePlan> {
-    let mut geometry_offsets = vec![0_i32];
-    let mut line_offsets = vec![0_i32];
+    let mut geometry_offsets = initial_offsets()?;
+    let mut line_offsets = initial_offsets()?;
     let mut lines = Vec::new();
     let mut line_count = 0_i32;
     let mut point_count = 0_i32;
@@ -504,21 +518,23 @@ fn plan_multilines(
         lines.into_iter().map(LineSeq::as_coords),
     )?;
     Ok(StoragePlan::List {
-        offsets: geometry_offsets.into(),
+        offsets: crate::geometry::SharedSlice::try_from_vec(geometry_offsets)?,
         start: 0,
         length: shapes.len(),
-        child: Box::new(StoragePlan::List {
-            offsets: line_offsets.into(),
+        child: Box::try_new(StoragePlan::List {
+            offsets: crate::geometry::SharedSlice::try_from_vec(line_offsets)?,
             start: 0,
             length: line_count as usize,
-            child: Box::new(StoragePlan::Coordinates(coords)),
-        }),
+            child: Box::try_new(StoragePlan::Coordinates(coords))
+                .map_err(crate::error::Error::from)?,
+        })
+        .map_err(crate::error::Error::from)?,
     })
 }
 
 fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportResult<StoragePlan> {
-    let mut polygon_offsets = vec![0_i32];
-    let mut ring_offsets = vec![0_i32];
+    let mut polygon_offsets = initial_offsets()?;
+    let mut ring_offsets = initial_offsets()?;
     let mut rings = Vec::new();
     let mut ring_count = 0_i32;
     let mut point_count = 0_i32;
@@ -535,15 +551,17 @@ fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportRe
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;
     Ok(StoragePlan::List {
-        offsets: polygon_offsets.into(),
+        offsets: crate::geometry::SharedSlice::try_from_vec(polygon_offsets)?,
         start: 0,
         length: shapes.len(),
-        child: Box::new(StoragePlan::List {
-            offsets: ring_offsets.into(),
+        child: Box::try_new(StoragePlan::List {
+            offsets: crate::geometry::SharedSlice::try_from_vec(ring_offsets)?,
             start: 0,
             length: ring_count as usize,
-            child: Box::new(StoragePlan::Coordinates(coords)),
-        }),
+            child: Box::try_new(StoragePlan::Coordinates(coords))
+                .map_err(crate::error::Error::from)?,
+        })
+        .map_err(crate::error::Error::from)?,
     })
 }
 
@@ -551,9 +569,9 @@ fn plan_multipolygons(
     shapes: &[&Shape],
     axes: CoordinateAxes,
 ) -> NativeArrowExportResult<StoragePlan> {
-    let mut multipolygon_offsets = vec![0_i32];
-    let mut polygon_offsets = vec![0_i32];
-    let mut ring_offsets = vec![0_i32];
+    let mut multipolygon_offsets = initial_offsets()?;
+    let mut polygon_offsets = initial_offsets()?;
+    let mut ring_offsets = initial_offsets()?;
     let mut rings = Vec::new();
     let mut polygon_count = 0_i32;
     let mut ring_count = 0_i32;
@@ -589,20 +607,23 @@ fn plan_multipolygons(
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;
     Ok(StoragePlan::List {
-        offsets: multipolygon_offsets.into(),
+        offsets: crate::geometry::SharedSlice::try_from_vec(multipolygon_offsets)?,
         start: 0,
         length: shapes.len(),
-        child: Box::new(StoragePlan::List {
-            offsets: polygon_offsets.into(),
+        child: Box::try_new(StoragePlan::List {
+            offsets: crate::geometry::SharedSlice::try_from_vec(polygon_offsets)?,
             start: 0,
             length: polygon_count as usize,
-            child: Box::new(StoragePlan::List {
-                offsets: ring_offsets.into(),
+            child: Box::try_new(StoragePlan::List {
+                offsets: crate::geometry::SharedSlice::try_from_vec(ring_offsets)?,
                 start: 0,
                 length: ring_count as usize,
-                child: Box::new(StoragePlan::Coordinates(coords)),
-            }),
-        }),
+                child: Box::try_new(StoragePlan::Coordinates(coords))
+                    .map_err(crate::error::Error::from)?,
+            })
+            .map_err(crate::error::Error::from)?,
+        })
+        .map_err(crate::error::Error::from)?,
     })
 }
 
@@ -688,8 +709,8 @@ fn plan_wkb_refs(
     Ok(ArrowExportPlan {
         encoding: GeometryEncoding::Wkb,
         storage: StoragePlan::Binary {
-            offsets: offsets.into(),
-            data: data.into(),
+            offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
+            data: crate::geometry::SharedSlice::try_from_vec(data)?,
         },
         crs,
         epoch,
@@ -771,7 +792,7 @@ fn plan_validity(
                 values[bit / 8] |= 1 << (bit % 8);
             }
         }
-        values.into()
+        crate::geometry::SharedSlice::try_from_vec(values)?
     };
     Ok(ValidityPlan {
         bitmap,

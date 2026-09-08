@@ -112,10 +112,7 @@ impl GeodesicMetric {
             &crs,
             state,
             |error| error,
-            |g| {
-                Box::try_new(*g)
-                    .map_err(|_| crate::error::Error::from(crate::error::ResourceError::Allocation))
-            },
+            |g| Box::try_new(*g).map_err(crate::error::Error::from),
         )?;
         Ok(Self {
             crs,

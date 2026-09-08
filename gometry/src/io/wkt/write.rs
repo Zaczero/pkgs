@@ -32,7 +32,7 @@ pub(crate) fn to_wkt_with_dimension(
                 .ok_or_else(|| IoError::wkt("WKT output length overflows usize"))?;
             output
                 .try_reserve(length)
-                .map_err(|_| crate::error::ResourceError::Allocation)?;
+                .map_err(crate::error::Error::from)?;
             output.push_str(&prefix);
             output.push_str(&body);
             Ok(output)
@@ -139,7 +139,7 @@ fn format_wkt(
         .ok_or_else(|| IoError::wkt("WKT output length overflows usize"))?;
     let mut out = String::new();
     out.try_reserve(capacity)
-        .map_err(|_| crate::error::ResourceError::Allocation)?;
+        .map_err(crate::error::Error::from)?;
     write_wkt(&mut out, shape, output_dimension, format, usize::MAX)?;
     Ok(out)
 }
@@ -155,7 +155,7 @@ pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
         .ok_or_else(|| IoError::wkt("WKT preview length overflows usize"))?;
     let mut out = String::new();
     out.try_reserve(capacity)
-        .map_err(|_| crate::error::ResourceError::Allocation)?;
+        .map_err(crate::error::Error::from)?;
     write_wkt(&mut out, shape, None, WktNumberFormat::Shortest, limit)?;
     Ok(out)
 }

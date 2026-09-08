@@ -523,13 +523,13 @@ impl<'a> IndexRowOperation<'a> {
             );
         }
         let geometry = &self.rows.boxed[handle - packed_len];
-        Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()))
+        Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()?))
     }
 
     pub(crate) fn frame_cache(
         &mut self,
         handle: usize,
-    ) -> Arc<crate::geometry::FrameDependentCaches> {
+    ) -> crate::error::Result<Arc<crate::geometry::FrameDependentCaches>> {
         let packed_len = self
             .rows
             .packed

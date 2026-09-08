@@ -55,7 +55,9 @@ fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
         geometry.epoch(),
     )
     .expect("test schema plan");
-    materialize_schema_plan(prepare_export_plan(plan).expect("test schema")).expect("test schema")
+    materialize_schema_plan(prepare_export_plan(plan).expect("test schema"))
+        .expect("test schema")
+        .into_box()
 }
 
 unsafe extern "C" fn counted_array_release(array: *mut ArrowArray) {
@@ -105,12 +107,12 @@ unsafe extern "C" fn native_signal_stream_get_schema(
     if state.is_null() {
         return -1;
     }
-    let Ok(schema) = (unsafe { &*state }).schema.clone().into_schema() else {
+    let Ok(schema) = (unsafe { &*state }).schema.materialize_schema() else {
         return -1;
     };
     // SAFETY: `schema` is an independent production-built Arrow schema shell
     // whose ownership transfers to the importer through `out`.
-    unsafe { ptr::write(out, *schema) };
+    unsafe { ptr::write(out, *schema.into_box()) };
     0
 }
 
@@ -221,10 +223,14 @@ fn native_signal_stream(
 
 #[test]
 fn release_callbacks_are_idempotent_for_native_exports() {
-    let point = PyGeometry::from_shape_crs(Shape::Point(Point::new_raw_xy(1.0, 2.0)), None);
+    let point = PyGeometry::with_frame(
+        Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+        crate::boundary::Frame::None,
+    )
+    .unwrap();
     release_twice(exported(&point));
 
-    let line = PyGeometry::from_shape_crs(
+    let line = PyGeometry::with_frame(
         Shape::LineString(
             LineSeq::try_new(
                 CoordSeq::try_from_points(&[
@@ -235,8 +241,9 @@ fn release_callbacks_are_idempotent_for_native_exports() {
             )
             .expect("test line is valid"),
         ),
-        None,
-    );
+        crate::boundary::Frame::None,
+    )
+    .unwrap();
     release_twice(exported(&line));
 
     let ring = Ring::closed(vec![
@@ -246,32 +253,42 @@ fn release_callbacks_are_idempotent_for_native_exports() {
         Point::new_raw_xy(0.0, 0.0),
     ])
     .unwrap();
-    let polygon = PyGeometry::from_shape_crs(
+    let polygon = PyGeometry::with_frame(
         Shape::Polygon(Polygon::new(ring, Vec::new()).unwrap()),
-        None,
-    );
+        crate::boundary::Frame::None,
+    )
+    .unwrap();
     release_twice(exported(&polygon));
 }
 
 #[test]
 fn schema_only_export_releases_without_array_export() {
-    let point = PyGeometry::from_shape_crs(Shape::Point(Point::new_raw_xy(1.0, 2.0)), None);
+    let point = PyGeometry::with_frame(
+        Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+        crate::boundary::Frame::None,
+    )
+    .unwrap();
     release_schema_twice(exported_schema(&point));
 
-    let collection = PyGeometry::from_shape_crs(
+    let collection = PyGeometry::with_frame(
         Shape::typed_empty(
             crate::geometry::GeometryKind::GeometryCollection,
             crate::geometry::CoordinateAxes::XY,
         ),
-        None,
-    );
+        crate::boundary::Frame::None,
+    )
+    .unwrap();
     release_schema_twice(exported_schema(&collection));
 }
 
 #[test]
 fn stream_export_release_is_idempotent_after_batch_move() {
-    let point = PyGeometry::from_shape_crs(Shape::Point(Point::new_raw_xy(1.0, 2.0)), None);
-    let mut stream = stream_from_export(exported(&point));
+    let point = PyGeometry::with_frame(
+        Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+        crate::boundary::Frame::None,
+    )
+    .unwrap();
+    let mut stream = stream_from_export(exported(&point)).unwrap();
     let mut array = empty_array();
 
     // SAFETY: this test owns the stream and moves its one batch into a
@@ -294,7 +311,11 @@ fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
     crate::test_support::initialize_python();
     Python::attach(|py| -> PyResult<()> {
         let _signal_guard = crate::test_support::PythonSignalTestGuard::new(py);
-        let point = PyGeometry::from_shape_crs(Shape::Point(Point::new_raw_xy(1.0, 2.0)), None);
+        let point = PyGeometry::with_frame(
+            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+            crate::boundary::Frame::None,
+        )
+        .unwrap();
         let batch_count = 65;
         let (mut stream, remaining_at_release, released) =
             native_signal_stream(&point, batch_count, 63);

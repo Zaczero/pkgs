@@ -524,8 +524,8 @@ impl<'a> CoverContext<'a> {
         affine: &'a GeographicCoverageSource,
         relation: WorkingShapeRelation,
     ) -> Result<Self, crate::error::Error> {
-        let tester = Arc::try_new(PointBatchTester::new(source)?)
-            .map_err(|_| crate::error::ResourceError::Allocation)?;
+        let tester =
+            Arc::try_new(PointBatchTester::new(source)?).map_err(crate::error::Error::from)?;
         let shared_area_tester = matches!(source, Shape::Polygon(_) | Shape::MultiPolygon(_))
             .then(|| Arc::clone(&tester));
         Ok(Self {

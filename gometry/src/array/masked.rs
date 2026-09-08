@@ -2,7 +2,6 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::borrow::Cow;
 
 use crate::array::{
     Arc, ArrayRow, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python, Shape, ValidityMask,
@@ -30,11 +29,11 @@ impl PyGeometryArray {
     /// and row-seeded kernels.
     pub(crate) fn present_shape_rows(
         &self,
-    ) -> impl Iterator<Item = crate::error::Result<(usize, Cow<'_, Shape>)>> + '_ {
+    ) -> impl Iterator<Item = crate::error::Result<(usize, Shape)>> + '_ {
         self.row_operation().present_rows().map(|row| {
             row.row()
                 .with_shape(Clone::clone)
-                .map(|shape| (row.logical(), Cow::Owned(shape)))
+                .map(|shape| (row.logical(), shape))
         })
     }
 
@@ -54,9 +53,11 @@ impl PyGeometryArray {
     /// Present row shapes as owned values for n-ary kernels that stage a
     /// coverage or noding universe.
     pub(crate) fn present_shapes(&self) -> crate::error::Result<Vec<Shape>> {
-        self.present_shape_rows()
-            .map(|result| result.map(|(_, shape)| shape.into_owned()))
-            .collect()
+        let mut shapes = Vec::new();
+        for row in self.present_shape_rows() {
+            crate::try_push_vec(&mut shapes, row?.1)?;
+        }
+        Ok(shapes)
     }
 
     /// Coordinate view that skips missing rows while preserving source row ids.

@@ -60,13 +60,13 @@ pub(crate) fn py_nearest_points(
         crate::dispatch::MetricOp::NearestPoints,
     )?;
     let common = crate::geometry::common_axes(left.shape.shape(), right.shape.shape());
-    let left_plan = left.plan_or_transient();
-    let right_plan = right.plan_or_transient();
+    let left_plan = left.plan_or_transient()?;
+    let right_plan = right.plan_or_transient()?;
     let pair = py.detach(move || metric_nearest_points(&model, &left_plan, &right_plan))?;
     let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair, common);
     Ok((
-        Typed(PyGeometry::with_frame(left_shape, left.frame.clone())),
-        Typed(PyGeometry::with_frame(right_shape, right.frame.clone())),
+        Typed(PyGeometry::with_frame(left_shape, left.frame.clone())?),
+        Typed(PyGeometry::with_frame(right_shape, right.frame.clone())?),
     ))
 }
 
@@ -103,7 +103,7 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
                     crate::broadcast::degrade_linref_float(line_locate_shape(
                         &model,
                         &line,
-                        &rows.frame_cache(index),
+                        &*rows.frame_cache(index)?,
                         query,
                         normalized,
                     ))
@@ -139,8 +139,8 @@ pub(crate) fn fixed_geometry_array_nearest_points(
         unit,
         crate::dispatch::MetricOp::NearestPoints,
     )?;
-    let fixed_plan = fixed.plan_or_transient();
-    let fixed_cache = fixed.frame_cache();
+    let fixed_plan = fixed.plan_or_transient()?;
+    let fixed_cache = fixed.frame_cache()?;
     let array_owned = array.clone();
     if let crate::crs::MetricModel::Geodesic { crs, frame, state } = model {
         let rows = py.detach(move || {
@@ -168,7 +168,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                             };
                             let row_index = row.logical();
                             let element = rows.prepared(row)?;
-                            let element_cache = rows.frame_cache(row_index);
+                            let element_cache = rows.frame_cache(row_index)?;
                             let common =
                                 crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                             if fixed_is_left {
@@ -244,8 +244,8 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     } else {
         array.frame.clone()
     };
-    let fixed_plan = fixed.plan_or_transient();
-    let fixed_cache = fixed.frame_cache();
+    let fixed_plan = fixed.plan_or_transient()?;
+    let fixed_cache = fixed.frame_cache()?;
     let array_owned = array.clone();
     let rows = py.detach(move || {
         let mut array_rows = array_owned.row_operation();
@@ -267,7 +267,9 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                     for row in array_rows.present_rows() {
                         let logical = row.logical();
                         let element = array_rows.prepared(row).map_err(|error| (logical, error))?;
-                        let element_cache = array_rows.frame_cache(logical);
+                        let element_cache = array_rows
+                            .frame_cache(logical)
+                            .map_err(|error| (logical, error))?;
                         let pair = if fixed_is_left {
                             fixed_plan
                                 .geodesic_nearest_points_cached_split(

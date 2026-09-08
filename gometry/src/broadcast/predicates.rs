@@ -104,8 +104,8 @@ pub(crate) fn predicate_scalar_vs_array(
     let domain = crate::geometry::topology_domain(&compatible)?;
     let spec = *spec;
     let missing = array.missing().cloned();
-    let plan = scalar.plan_or_transient();
-    let scalar_cache = scalar.frame_cache();
+    let plan = scalar.plan_or_transient()?;
+    let scalar_cache = scalar.frame_cache()?;
     let array = array.clone();
     bool_array_mask_missing(
         py,
@@ -141,7 +141,7 @@ pub(crate) fn predicate_pairwise_arrays(
     let (..) = paired_arrays(left, right, spec.token)?;
     let domain = crate::geometry::topology_domain(&left.frame)?;
     let spec = *spec;
-    let missing = crate::array::missing::union_pair(left.missing(), right.missing());
+    let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
     let left_bounds = left.cached_element_bounds();
     let right_bounds = right.cached_element_bounds();
     let left_array = left.clone();
@@ -184,8 +184,8 @@ pub(crate) fn predicate_pairwise_arrays(
                             }
                             let left = left_rows.prepared_at(index, left)?;
                             let right = right_rows.prepared_at(index, right)?;
-                            let left_cache = left_rows.frame_cache(index);
-                            let right_cache = right_rows.frame_cache(index);
+                            let left_cache = left_rows.frame_cache(index)?;
+                            let right_cache = right_rows.frame_cache(index)?;
                             Ok(topology_scalar_pair(
                                 &spec,
                                 PreparedTopologyPair::try_for_domain(
@@ -205,8 +205,8 @@ pub(crate) fn predicate_pairwise_arrays(
                             }
                             let left = left_rows.prepared_at(index, left)?;
                             let right = right_rows.prepared_at(index, right)?;
-                            let left_cache = left_rows.frame_cache(index);
-                            let right_cache = right_rows.frame_cache(index);
+                            let left_cache = left_rows.frame_cache(index)?;
+                            let right_cache = right_rows.frame_cache(index)?;
                             Ok(topology_scalar_pair(
                                 &spec,
                                 PreparedTopologyPair::try_for_domain(
@@ -317,8 +317,8 @@ where
     F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
     let output_missing = array.missing().cloned();
-    let scalar_plan = scalar.plan_or_transient();
-    let scalar_cache = scalar.frame_cache();
+    let scalar_plan = scalar.plan_or_transient()?;
+    let scalar_cache = scalar.frame_cache()?;
     let array = array.clone();
     let values = py
         .detach(move || {
@@ -334,7 +334,7 @@ where
                     let row = present.logical();
                     let shape = present.row();
                     let element_plan = rows.prepared_at(row, shape)?;
-                    let element_cache = rows.frame_cache(row);
+                    let element_cache = rows.frame_cache(row)?;
                     let operands = if scalar_is_left {
                         PreparedTopologyPair::try_for_domain(
                             &scalar_plan,
@@ -374,7 +374,7 @@ where
     F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
     paired_arrays(left, right, operation)?;
-    let missing = crate::array::missing::union_pair(left.missing(), right.missing());
+    let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
     let output_missing = missing;
     let left = left.clone();
     let right = right.clone();
@@ -396,8 +396,8 @@ where
                     let right_shape = right.row();
                     let left_plan = left_rows.prepared_at(left_index, left_shape)?;
                     let right_plan = right_rows.prepared_at(right_index, right_shape)?;
-                    let left_cache = left_rows.frame_cache(left_index);
-                    let right_cache = right_rows.frame_cache(right_index);
+                    let left_cache = left_rows.frame_cache(left_index)?;
+                    let right_cache = right_rows.frame_cache(right_index)?;
                     evaluate(PreparedTopologyPair::try_for_domain(
                         &left_plan,
                         &left_cache,
@@ -436,10 +436,10 @@ where
     let domain = crate::geometry::topology_domain(&frame)?;
     match (left, right) {
         (GeometryInput::One(left), GeometryInput::One(right)) => {
-            let left_plan = left.plan_or_transient();
-            let right_plan = right.plan_or_transient();
-            let left_cache = left.frame_cache();
-            let right_cache = right.frame_cache();
+            let left_plan = left.plan_or_transient()?;
+            let right_plan = right.plan_or_transient()?;
+            let left_cache = left.frame_cache()?;
+            let right_cache = right.frame_cache()?;
             let value = py.detach(move || {
                 PreparedTopologyPair::try_for_domain(
                     &left_plan,
@@ -612,8 +612,8 @@ fn xy_predicate_array_values(
                         let row = row.row();
                         let point = Point::new_raw_xy(x, y);
                         let row = rows.prepared_at(logical, row)?;
-                        let row_cache = rows.frame_cache(logical);
-                        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
+                        let row_cache = rows.frame_cache(logical)?;
+                        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)))?;
                         let point_cache = crate::geometry::FrameDependentCaches::default();
                         Ok(topology_scalar_pair(
                             &spec,
@@ -644,9 +644,9 @@ fn xy_array_values(
     x.into_iter()
         .zip(y)
         .map(|(x, y)| {
-            let point = PreparedPlan::new(ShapeData::from(Shape::Point(Point::new_raw_xy(x, y))));
+            let point = PreparedPlan::new(ShapeData::from(Shape::Point(Point::new_raw_xy(x, y))))?;
             let point_cache = crate::geometry::FrameDependentCaches::default();
-            Ok(topology_scalar_pair(
+            topology_scalar_pair(
                 &spec,
                 PreparedTopologyPair::try_for_domain(
                     original,
@@ -655,7 +655,7 @@ fn xy_array_values(
                     &point_cache,
                     domain,
                 )?,
-            )?)
+            )
         })
         .collect_rows()
 }
@@ -674,11 +674,11 @@ pub(crate) fn xy_predicate_values(
         Predicate::Contains.spec()
     };
     let domain = crate::geometry::topology_domain(&geometry.frame)?;
-    let original = geometry.plan_or_transient();
-    let original_cache = geometry.frame_cache();
+    let original = geometry.plan_or_transient()?;
+    let original_cache = geometry.frame_cache()?;
     if scalar {
         let point = Point::new(x[0], y[0])?;
-        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
+        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)))?;
         let point_cache = crate::geometry::FrameDependentCaches::default();
         let value = py.detach(move || {
             PreparedTopologyPair::try_for_domain(
@@ -727,7 +727,7 @@ mod geographic_tests {
         );
         let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
             .expect("EPSG:4326 is a valid geographic frame");
-        let geometry = PyGeometry::with_frame(shape, frame);
+        let geometry = PyGeometry::with_frame(shape, frame).unwrap();
 
         // The first four points sit on or immediately beside both longitude
         // representations of the seam; the rest test the high-latitude cap.
@@ -742,16 +742,16 @@ mod geographic_tests {
         ];
         let x = probes.iter().map(|&(x, _)| x).collect();
         let y = probes.iter().map(|&(_, y)| y).collect();
-        let source = geometry.plan_or_transient();
+        let source = geometry.plan_or_transient().unwrap();
         let domain = crate::geometry::topology_domain(&geometry.frame).unwrap();
         let expected: Vec<bool> = probes
             .iter()
             .map(|&(x, y)| {
-                let point = PreparedPlan::new(Shape::Point(Point::new_raw_xy(x, y)));
+                let point = PreparedPlan::new(Shape::Point(Point::new_raw_xy(x, y))).unwrap();
                 let point_cache = crate::geometry::FrameDependentCaches::default();
                 PreparedTopologyPair::try_for_domain(
                     &source,
-                    &geometry.frame_cache(),
+                    &geometry.frame_cache().unwrap(),
                     &point,
                     &point_cache,
                     domain,

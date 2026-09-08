@@ -70,7 +70,7 @@ pub(super) fn build_coverage(
         // a traversal/seed working image; membership stays unsplit and normalized.
         CellRule::Center => {
             let (membership_geometry, cover_shape) = coverage_factory_shapes(geometry, "H3")?;
-            let authority = membership_geometry.plan_or_transient();
+            let authority = membership_geometry.plan_or_transient()?;
             let crate::geometry::TopologyDomain::Geographic(frame) =
                 crate::geometry::topology_domain(&membership_geometry.frame)?
             else {
@@ -79,7 +79,7 @@ pub(super) fn build_coverage(
             let annotated = h3_tile(
                 &cover_shape,
                 &authority,
-                &membership_geometry.frame_cache(),
+                &*membership_geometry.frame_cache()?,
                 frame,
                 resolution,
                 max_cells,

@@ -655,7 +655,9 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     let transient_cache = crate::geometry::FrameDependentCaches::default();
                     let row_cache = row_operation
                         .as_mut()
-                        .map(|operation| operation.frame_cache(index));
+                        .map(|operation| operation.frame_cache(index))
+                        .transpose()
+                        .map_err(|error| (index, error))?;
                     let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
                     let element_prepared =
                         GeographicPrepared::try_new(&element, element_cache, frame)
@@ -875,8 +877,8 @@ mod tests {
         let gate =
             |left: &crate::geometry::Shape, right: &crate::geometry::Shape, pattern: &str| {
                 let (lp, rp) = (
-                    PreparedPlan::transient(left),
-                    PreparedPlan::transient(right),
+                    PreparedPlan::transient(left).unwrap(),
+                    PreparedPlan::transient(right).unwrap(),
                 );
                 let lo = GateOperand::cartesian(ShapeRow::Shape(lp.shape()), lp.bounds());
                 let ro = GateOperand::cartesian(ShapeRow::Shape(rp.shape()), rp.bounds());
@@ -1003,7 +1005,7 @@ mod tests {
 
     #[test]
     fn scalar_rows_relate_from_fixed_graphs_in_both_cartesian_orders() {
-        let scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let rows = [line((-1.0, 1.0), (3.0, 1.0)), line((3.0, 3.0), (4.0, 4.0))];
         let cache = crate::geometry::FrameDependentCaches::default();
         for scalar_is_left in [true, false] {
@@ -1026,7 +1028,7 @@ mod tests {
     #[test]
     fn refuted_scalar_rows_do_not_admit_topology() {
         let rows = [line((10.0, 10.0), (11.0, 11.0))];
-        let cartesian = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let cartesian = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let cartesian_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
             scalar_vs_shapes(
@@ -1045,7 +1047,7 @@ mod tests {
         );
         assert_eq!(cartesian.topology_graph_accesses(), 0);
 
-        let geographic = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let geographic = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let geographic_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
             scalar_vs_shapes(
@@ -1068,7 +1070,7 @@ mod tests {
     #[test]
     fn admitted_scalar_rows_reuse_one_query_graph() {
         let rows = [line((-1.0, 0.5), (3.0, 0.5)), line((-1.0, 1.5), (3.0, 1.5))];
-        let cartesian = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let cartesian = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let cartesian_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
             scalar_vs_shapes(
@@ -1087,7 +1089,7 @@ mod tests {
         );
         assert_eq!(cartesian.topology_graph_accesses(), 1);
 
-        let line_scalar = PreparedPlan::new(line((-1.0, 1.0), (3.0, 1.0)));
+        let line_scalar = PreparedPlan::new(line((-1.0, 1.0), (3.0, 1.0))).unwrap();
         let polygon_rows = [rectangle(0.0, 0.0, 2.0, 2.0)];
         for scalar_is_left in [true, false] {
             assert_eq!(
@@ -1109,7 +1111,7 @@ mod tests {
         }
         assert_eq!(line_scalar.topology_graph_accesses(), 0);
 
-        let geographic = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let geographic = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let geographic_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
             scalar_vs_shapes(
@@ -1131,7 +1133,7 @@ mod tests {
 
     #[test]
     fn geographic_line_scalar_does_not_enter_cartesian_direct_relation() {
-        let scalar = PreparedPlan::new(line((175.0, 0.0), (-175.0, 0.0)));
+        let scalar = PreparedPlan::new(line((175.0, 0.0), (-175.0, 0.0))).unwrap();
         let polygon = Shape::Polygon(
             Polygon::new(
                 Ring::from_closed(
@@ -1165,11 +1167,12 @@ mod tests {
 
     #[test]
     fn scalar_rows_relate_prepared_array_rows_from_fixed_graphs() {
-        let scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let array = PyGeometryArray::mixed_shapes(
             vec![line((-1.0, 1.0), (3.0, 1.0)), line((3.0, 3.0), (4.0, 4.0))],
             Frame::None,
-        );
+        )
+        .unwrap();
         let cache = crate::geometry::FrameDependentCaches::default();
         let actual = scalar_vs_shapes(
             &Predicate::Intersects.spec(),
@@ -1271,8 +1274,8 @@ mod tests {
         ] {
             let spec = predicate.spec();
             for (left, right) in &corpus {
-                let left_plan = PreparedPlan::new(left.clone());
-                let right_plan = PreparedPlan::new(right.clone());
+                let left_plan = PreparedPlan::new(left.clone()).unwrap();
+                let right_plan = PreparedPlan::new(right.clone()).unwrap();
                 let pair = PreparedTopologyPair::Cartesian {
                     left: &left_plan,
                     right: &right_plan,
@@ -1293,7 +1296,7 @@ mod tests {
 
     #[test]
     fn geographic_crossing_rows_fail_open_the_bounds_gate() {
-        let query = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
+        let query = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0)).unwrap();
         let crossing = rectangle(170.0, 40.0, -170.0, 50.0);
         let cache = crate::geometry::FrameDependentCaches::default();
         let actual = scalar_vs_shapes(
@@ -1311,7 +1314,7 @@ mod tests {
 
     #[test]
     fn geographic_crossing_packed_rows_fail_open_the_bounds_gate() {
-        let query = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
+        let query = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0)).unwrap();
         let coords = CoordSeq::try_from_points(&[
             Point::new_raw_xy(170.0, 40.0),
             Point::new_raw_xy(-170.0, 40.0),
@@ -1337,9 +1340,9 @@ mod tests {
 
     #[test]
     fn geographic_scalar_rows_cover_sound_and_unsound_operands_in_both_orders() {
-        let sound_scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let sound_scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let sound_row = line((-1.0, 1.0), (3.0, 1.0));
-        let unsound_scalar = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
+        let unsound_scalar = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0)).unwrap();
         let unsound_row = rectangle(170.0, 40.0, -170.0, 50.0);
 
         for (scalar, row) in [(&sound_scalar, &sound_row), (&unsound_scalar, &unsound_row)] {
@@ -1362,9 +1365,10 @@ mod tests {
 
     #[test]
     fn geographic_scalar_rows_relate_prepared_unsound_array_rows() {
-        let scalar = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
+        let scalar = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0)).unwrap();
         let array =
-            PyGeometryArray::mixed_shapes(vec![rectangle(170.0, 40.0, -170.0, 50.0)], Frame::None);
+            PyGeometryArray::mixed_shapes(vec![rectangle(170.0, 40.0, -170.0, 50.0)], Frame::None)
+                .unwrap();
         let cache = crate::geometry::FrameDependentCaches::default();
         let actual = scalar_vs_shapes(
             &Predicate::Intersects.spec(),
@@ -1415,8 +1419,8 @@ mod tests {
         let nested = (0..5).fold(line((0.0, 0.0), (1.0, 0.0)), |shape, _| {
             Shape::geometry_collection(vec![shape]).expect("test collection is valid")
         });
-        let nested = PreparedPlan::new(nested);
-        let other = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
+        let nested = PreparedPlan::new(nested).unwrap();
+        let other = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let nested_cache = crate::geometry::FrameDependentCaches::default();
         let other_cache = crate::geometry::FrameDependentCaches::default();
         let frame = degrees();
@@ -1440,7 +1444,7 @@ mod tests {
 
     #[test]
     fn geographic_invalid_latitude_is_not_a_bounds_false() {
-        let query = PreparedPlan::new(rectangle(0.0, 0.0, 1.0, 1.0));
+        let query = PreparedPlan::new(rectangle(0.0, 0.0, 1.0, 1.0)).unwrap();
         let invalid = Shape::Point(Point::new_raw_xy(0.5, 91.0));
         let cache = crate::geometry::FrameDependentCaches::default();
         let error = scalar_vs_shapes(
@@ -1462,8 +1466,8 @@ mod tests {
 
     #[test]
     fn geographic_try_for_domain_rejects_invalid_right_latitude() {
-        let left = PreparedPlan::new(rectangle(0.0, 0.0, 1.0, 1.0));
-        let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(10.0, 91.0)));
+        let left = PreparedPlan::new(rectangle(0.0, 0.0, 1.0, 1.0)).unwrap();
+        let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(10.0, 91.0))).unwrap();
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
         let error = match PreparedTopologyPair::try_for_domain(

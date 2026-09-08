@@ -55,15 +55,13 @@ fn spatial_index_rows(
     let total_rows = items.len();
     let placeholder_frame = metadata.clone().unwrap_or_default();
     let rows = crate::try_collect_results(items.into_iter().map(|item| {
-        Ok::<_, pyo3::PyErr>(item.map_or_else(
-            || {
-                PyGeometry::with_frame(
-                    PyGeometryArray::missing_placeholder(),
-                    placeholder_frame.clone(),
-                )
-            },
-            |item| item.with_prepared_plan(item.plan_or_transient()),
-        ))
+        Ok::<_, pyo3::PyErr>(match item {
+            None => PyGeometry::with_frame(
+                PyGeometryArray::missing_placeholder(),
+                placeholder_frame.clone(),
+            )?,
+            Some(item) => item.with_prepared_plan(item.plan_or_transient()?)?,
+        })
     }))?;
     Ok(PySpatialIndex {
         rows: IndexRows {
@@ -250,11 +248,11 @@ pub(crate) fn build_spatial_index(
             |logical_row| match logical_row {
                 crate::array::ArrayRow::Missing { .. } => Ok(None),
                 crate::array::ArrayRow::Present(row) => {
-                    let plan = row_operation.prepared(row)?.into_owned_plan();
+                    let plan = row_operation.prepared(row)?.into_owned_plan()?;
                     Ok(Some(PyGeometry::from_prepared_plan(
                         plan,
                         array.frame.clone(),
-                    )))
+                    )?))
                 },
             },
         ))?;
@@ -321,12 +319,13 @@ pub(crate) fn restore_spatial_index(
     }
     let mut rows = crate::try_vec_with_capacity_hint(values.len())?;
     for row in values.storage().iter_rows() {
-        let plan = std::sync::Arc::new(crate::PreparedPlan::new(ShapeData::new(
+        let plan = std::sync::Arc::try_new(crate::PreparedPlan::new(ShapeData::new(
             row.with_shape(std::clone::Clone::clone)?,
-        )));
+        ))?)
+        .map_err(crate::error::Error::from)?;
         crate::try_push(
             &mut rows,
-            PyGeometry::from_prepared_plan(plan, values.frame.clone()),
+            PyGeometry::from_prepared_plan(plan, values.frame.clone())?,
         )?;
     }
     let total_rows = rows.len();
@@ -402,6 +401,7 @@ mod ownership_tests {
             CoordSeq::try_from_vecs(vec![0.0, 10.0], vec![0.0, 10.0], None, None).unwrap(),
             Frame::None,
         )
+        .unwrap()
     }
 
     fn long_lines() -> PyGeometryArray {
@@ -411,6 +411,7 @@ mod ownership_tests {
             CsrOffsetColumn::try_new(vec![0, 34], 34).unwrap(),
             Frame::None,
         )
+        .unwrap()
     }
 
     fn polygons() -> PyGeometryArray {
@@ -426,6 +427,7 @@ mod ownership_tests {
             CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap(),
             Frame::None,
         )
+        .unwrap()
     }
 
     #[test]
@@ -459,15 +461,26 @@ mod ownership_tests {
             crate::array::PreparedRow::Owned(data) => data,
             crate::array::PreparedRow::Transient(_) => panic!("long packed row must persist"),
         };
-        let indexed_arc = index.rows.prepared_row(0).unwrap().into_owned_plan();
+        let indexed_arc = index
+            .rows
+            .prepared_row(0)
+            .unwrap()
+            .into_owned_plan()
+            .unwrap();
         assert!(Arc::ptr_eq(&source_arc, &indexed_arc));
 
         let inverse = packed_spatial_index(&source).unwrap().unwrap();
-        let indexed_first = inverse.rows.prepared_row(0).unwrap().into_owned_plan();
+        let indexed_first = inverse
+            .rows
+            .prepared_row(0)
+            .unwrap()
+            .into_owned_plan()
+            .unwrap();
         let source_second = source
             .prepared_row(0, source.storage().row(0))
             .unwrap()
-            .into_owned_plan();
+            .into_owned_plan()
+            .unwrap();
         assert!(Arc::ptr_eq(&indexed_first, &source_second));
         assert!(crate::HeapSize::heap_bytes(&source) > source.nbytes());
     }

@@ -357,8 +357,8 @@ fn admit_pickled_polygon_rings(
         crate::boundary::try_push_vec(&mut new_offsets, next)?;
     }
     let seq = builder.finish()?;
-    let ring_offsets = crate::geometry::CsrOffsetColumn::try_from_arc_i32(
-        std::sync::Arc::<[i32]>::from(new_offsets),
+    let ring_offsets = crate::geometry::CsrOffsetColumn::try_from_shared_i32(
+        crate::geometry::SharedSlice::try_from_vec(new_offsets)?,
         seq.len(),
     )
     .map_err(|_| pickle_error("polygon-array pickle ring offsets are not a valid CSR"))?;
@@ -401,7 +401,7 @@ fn pickled_usize_row_map(
             .map_err(|_| pickle_error(format!("{label} pickle row_map index out of range")))?;
         crate::boundary::try_push_vec(&mut map, value)?;
     }
-    RowSelection::gather_checked_native(map.into(), physical_rows).ok_or_else(|| {
+    RowSelection::gather_checked_native(map, physical_rows)?.ok_or_else(|| {
         pickle_error(format!(
             "{label} pickle row_map references a nonexistent physical row"
         ))
@@ -446,7 +446,7 @@ fn pickled_missing_mask(
     for &byte in bytes {
         crate::boundary::try_push_vec(&mut values, byte != 0)?;
     }
-    let mask = ValidityMask::from_vec(len, values);
+    let mask = ValidityMask::from_vec(len, values)?;
     let decoded_present_count = mask.as_ref().map_or(len, ValidityMask::present_count);
     if present_count.is_some_and(|present_count| decoded_present_count != present_count) {
         return Err(pickle_error(format!(
@@ -470,9 +470,7 @@ fn pickled_coordseq(
     zs: Option<&[u8]>,
     ms: Option<&[u8]>,
 ) -> crate::error::Result<CoordSeq> {
-    use std::sync::Arc;
-
-    let column = |bytes: &[u8]| -> crate::error::Result<Arc<[f64]>> {
+    let column = |bytes: &[u8]| -> crate::error::Result<Vec<f64>> {
         if !bytes.len().is_multiple_of(size_of::<f64>()) {
             unreachable!("column lengths are validated before allocation");
         }
@@ -484,7 +482,7 @@ fn pickled_coordseq(
         for chunk in chunks {
             crate::boundary::try_push_vec(&mut values, f64::from_le_bytes(*chunk))?;
         }
-        Ok(values.into())
+        Ok(values)
     };
     for bytes in [Some(xs), Some(ys), zs, ms].into_iter().flatten() {
         if !bytes.len().is_multiple_of(size_of::<f64>()) {
@@ -492,39 +490,16 @@ fn pickled_coordseq(
         }
     }
     let xs = column(xs)?;
-    let ys = match column(ys) {
-        Ok(values) => values,
-        Err(error) => {
-            drop(xs);
-            return Err(error);
-        },
-    };
-    let zs = match zs.map(column).transpose() {
-        Ok(values) => values,
-        Err(error) => {
-            drop((xs, ys));
-            return Err(error);
-        },
-    };
-    let ms = match ms.map(column).transpose() {
-        Ok(values) => values,
-        Err(error) => {
-            drop((xs, ys, zs));
-            return Err(error);
-        },
-    };
+    let ys = column(ys)?;
+    let zs = zs.map(column).transpose()?;
+    let ms = ms.map(column).transpose()?;
     if xs.len() != ys.len()
         || zs.as_ref().is_some_and(|column| column.len() != xs.len())
         || ms.as_ref().is_some_and(|column| column.len() != xs.len())
     {
         return Err(pickle_error("packed-array pickle columns differ in length"));
     }
-    CoordSeq::from_owned_columns(
-        xs.to_vec(),
-        ys.to_vec(),
-        zs.map(|values| values.to_vec()),
-        ms.map(|values| values.to_vec()),
-    )
+    CoordSeq::from_owned_columns(xs, ys, zs, ms)
 }
 
 struct GeometryPicklePayload {
@@ -1104,10 +1079,7 @@ fn unpickle_geometry_detached(
     guard_embedded_crs_conflict(embedded.as_deref(), fallback.as_deref(), "EWKB SRID")?;
     let crs = embedded.or(fallback);
     let epoch = deserialized_epoch(epoch, crs.as_deref())?;
-    Ok(PyGeometry::with_frame(
-        parsed.shape,
-        Frame::new(crs, epoch)?,
-    ))
+    PyGeometry::with_frame(parsed.shape, Frame::new(crs, epoch)?)
 }
 
 fn unpickle_geometry_array_detached(
@@ -1141,7 +1113,7 @@ fn unpickle_geometry_array_detached(
             parsed.unwrap_or_else(PyGeometryArray::missing_placeholder),
         )?;
     }
-    Ok(PyGeometryArray::mixed_shapes(shapes, frame).with_missing_mask(mask)?)
+    PyGeometryArray::mixed_shapes(shapes, frame)?.with_missing_mask(mask)
 }
 
 fn unpickle_point_array_detached(
@@ -1160,7 +1132,7 @@ fn unpickle_point_array_detached(
     let frame = Frame::new(crs, epoch)?;
     let physical_rows = seq.len();
     let row_map = pickled_usize_row_map(row_map.as_deref(), physical_rows, "point-array")?;
-    let present = PyGeometryArray::packed_points_mapped(seq, frame, row_map);
+    let present = PyGeometryArray::packed_points_mapped(seq, frame, row_map)?;
     let present_count = present.len();
     let mask_len = missing.as_ref().map_or(present_count, Vec::len);
     if let Some(mask) = pickled_missing_mask(
@@ -1204,11 +1176,14 @@ fn unpickle_line_array_detached(
     let crs = deserialized_crs(crs)?;
     let epoch = deserialized_epoch(epoch, crs.as_deref())?;
     let frame = Frame::new(crs, epoch)?;
-    let offsets = crate::geometry::CsrOffsetColumn::try_from_arc_i32(offsets.into(), seq.len())
-        .map_err(|_| pickle_error("line-array pickle offsets are not a valid line CSR"))?;
+    let offsets = crate::geometry::CsrOffsetColumn::try_from_shared_i32(
+        crate::geometry::SharedSlice::try_from_vec(offsets)?,
+        seq.len(),
+    )
+    .map_err(|_| pickle_error("line-array pickle offsets are not a valid line CSR"))?;
     let physical_rows = offsets.len().saturating_sub(1);
     let row_map = pickled_usize_row_map(row_map.as_deref(), physical_rows, "line-array")?;
-    let present = PyGeometryArray::packed_lines_mapped(seq, offsets, frame, row_map);
+    let present = PyGeometryArray::packed_lines_mapped(seq, offsets, frame, row_map)?;
     let present_count = present.len();
     let mask_len = missing.as_ref().map_or(present_count, Vec::len);
     if let Some(mask) = pickled_missing_mask(
@@ -1247,9 +1222,11 @@ fn unpickle_polygon_array_detached(
             "polygon-array pickle ring offsets are not a valid CSR",
         ));
     }
-    let ring_offsets =
-        crate::geometry::CsrOffsetColumn::try_from_arc_i32(ring_offsets.into(), seq.len())
-            .map_err(|_| pickle_error("polygon-array pickle ring offsets are not a valid CSR"))?;
+    let ring_offsets = crate::geometry::CsrOffsetColumn::try_from_shared_i32(
+        crate::geometry::SharedSlice::try_from_vec(ring_offsets)?,
+        seq.len(),
+    )
+    .map_err(|_| pickle_error("polygon-array pickle ring offsets are not a valid CSR"))?;
     let ring_count = ring_offsets.len().saturating_sub(1);
     let polygon_offsets = pickled_i32_csr_offsets(&polygon_offsets, "polygon-array polygon")?;
     let ring_count_i32 = i32::try_from(ring_count)
@@ -1262,11 +1239,11 @@ fn unpickle_polygon_array_detached(
             "polygon-array pickle polygon offsets are not a valid CSR",
         ));
     }
-    let polygon_offsets =
-        crate::geometry::CsrOffsetColumn::try_from_arc_i32(polygon_offsets.into(), ring_count)
-            .map_err(|_| {
-                pickle_error("polygon-array pickle polygon offsets are not a valid CSR")
-            })?;
+    let polygon_offsets = crate::geometry::CsrOffsetColumn::try_from_shared_i32(
+        crate::geometry::SharedSlice::try_from_vec(polygon_offsets)?,
+        ring_count,
+    )
+    .map_err(|_| pickle_error("polygon-array pickle polygon offsets are not a valid CSR"))?;
     let (seq, ring_offsets) = admit_pickled_polygon_rings(seq, ring_offsets)?;
     validate_pickled_polygon_shells(&polygon_offsets)?;
     let crs = deserialized_crs(crs)?;
@@ -1274,8 +1251,13 @@ fn unpickle_polygon_array_detached(
     let frame = Frame::new(crs, epoch)?;
     let physical_rows = polygon_offsets.len().saturating_sub(1);
     let row_map = pickled_usize_row_map(row_map.as_deref(), physical_rows, "polygon-array")?;
-    let present =
-        PyGeometryArray::packed_polygons_mapped(seq, ring_offsets, polygon_offsets, frame, row_map);
+    let present = PyGeometryArray::packed_polygons_mapped(
+        seq,
+        ring_offsets,
+        polygon_offsets,
+        frame,
+        row_map,
+    )?;
     let present_count = present.len();
     let mask_len = missing.as_ref().map_or(present_count, Vec::len);
     if let Some(mask) = pickled_missing_mask(

@@ -235,7 +235,7 @@ impl PyGeometryArray {
                 None
             } else {
                 let geometry = self.geometry_at(index).map_err(PyErr::from)?;
-                let plan = geometry.plan_or_transient();
+                let plan = geometry.plan_or_transient()?;
                 let issue = crate::geometry::validate_data_in_frame(&plan, domain)?;
                 Some(PyValidationReport { geometry, issue })
             };
@@ -425,7 +425,7 @@ impl PyGeometryArray {
             if let Some(array) = exact_geometry_array(other) {
                 paired_arrays(self, array, crate::dispatch::MetricOp::ShortestLine.name())?;
                 let (lefts, rights) = (self.clone(), array.clone());
-                let missing = crate::array::missing::union_pair(self.missing(), array.missing());
+                let missing = crate::array::missing::union_pair(self.missing(), array.missing())?;
                 let rows = Python::attach(|py| {
                     py.detach(move || {
                         let mut left_rows = lefts.row_operation();
@@ -444,8 +444,8 @@ impl PyGeometryArray {
                                     let row = left.logical();
                                     let left = left_rows.prepared(left)?;
                                     let right = right_rows.prepared(right)?;
-                                    let left_cache = left_rows.frame_cache(row);
-                                    let right_cache = right_rows.frame_cache(row);
+                                    let left_cache = left_rows.frame_cache(row)?;
+                                    let right_cache = right_rows.frame_cache(row)?;
                                     Ok(Some(crate::geometry::nearest_line(
                                         left.geodesic_nearest_points_cached_split(
                                             &left_cache,
@@ -506,7 +506,7 @@ impl PyGeometryArray {
                 unit,
                 crate::dispatch::MetricOp::NearestPoints,
             )?;
-            let missing = crate::array::missing::union_pair(self.missing(), array.missing());
+            let missing = crate::array::missing::union_pair(self.missing(), array.missing())?;
             if let crs::MetricModel::Geodesic { crs, frame, state } = model {
                 let pairs = py
                     .detach(move || {
@@ -536,8 +536,8 @@ impl PyGeometryArray {
                                     let row = left.logical();
                                     let left = left_rows.prepared(left)?;
                                     let right = right_rows.prepared(right)?;
-                                    let left_cache = left_rows.frame_cache(row);
-                                    let right_cache = right_rows.frame_cache(row);
+                                    let left_cache = left_rows.frame_cache(row)?;
+                                    let right_cache = right_rows.frame_cache(row)?;
                                     let common =
                                         crate::geometry::common_axes(left.shape(), right.shape());
                                     left.geodesic_nearest_points_cached_split(

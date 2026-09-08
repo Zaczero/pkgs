@@ -6,11 +6,11 @@ use crate::py::functions::constructors::{
     Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
     PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
     broadcast_crs_coordinate_inputs, build_box_shape, build_geometry_array,
-    coordinate_arc_values_from_buffer, coordinate_epoch_option, coordinate_inputs_are_scalar,
+    coordinate_column_values_from_buffer, coordinate_epoch_option, coordinate_inputs_are_scalar,
     finite_coordinate_required, line_string_from_data_item, multi_line_string_from_data_item,
     multi_point_from_data_item, multi_polygon_from_data_item,
-    optional_coordinate_arc_values_from_buffer, parse_crs, parse_crs_epoch, polygon_from_data_item,
-    pyfunction,
+    optional_coordinate_column_values_from_buffer, parse_crs, parse_crs_epoch,
+    polygon_from_data_item, pyfunction,
 };
 use crate::py::numpy;
 
@@ -91,7 +91,7 @@ pub(super) fn box_(
     Ok(Typed(PyGeometry::with_frame(
         shape,
         Frame::new(crs, epoch)?,
-    )))
+    )?))
 }
 
 /// Create a ``GeometryArray`` of points from parallel coordinate columns.
@@ -167,7 +167,7 @@ pub(super) fn points(
     // broadcast and arbitrary iterators keep the CoordinateInput path below.
     if let Some(seq) = try_points_from_arc_columns(py, x, y, z, m)? {
         let frame = parse_crs_epoch(crs, epoch)?;
-        return Ok(PyGeometryArray::packed_points(seq, frame));
+        return Ok(PyGeometryArray::packed_points(seq, frame)?);
     }
     // Sibling length pin (D11): a list/buffer column establishes the count so
     // a bare `itertools.repeat` sibling rejects instantly instead of hanging.
@@ -210,7 +210,7 @@ pub(super) fn points(
         z.map(|value| value.values),
         m.map(|value| value.values),
     )?;
-    Ok(PyGeometryArray::packed_points(seq, frame))
+    Ok(PyGeometryArray::packed_points(seq, frame)?)
 }
 
 /// Fast path for `points(x, y, …)` when every supplied column is a real f64
@@ -269,16 +269,11 @@ fn try_points_from_arc_columns(
             "x and y must have the same length, got {x_len} and {y_len}",
         )));
     }
-    let xs = coordinate_arc_values_from_buffer(py, &x_buffer)?;
-    let ys = coordinate_arc_values_from_buffer(py, &y_buffer)?;
-    let zs = optional_coordinate_arc_values_from_buffer(py, z_buffer.as_ref(), x_len, "z")?;
-    let ms = optional_coordinate_arc_values_from_buffer(py, m_buffer.as_ref(), x_len, "m")?;
-    Ok(Some(CoordSeq::from_owned_columns(
-        xs.to_vec(),
-        ys.to_vec(),
-        zs.map(|values| values.to_vec()),
-        ms.map(|values| values.to_vec()),
-    )?))
+    let xs = coordinate_column_values_from_buffer(py, &x_buffer)?;
+    let ys = coordinate_column_values_from_buffer(py, &y_buffer)?;
+    let zs = optional_coordinate_column_values_from_buffer(py, z_buffer.as_ref(), x_len, "z")?;
+    let ms = optional_coordinate_column_values_from_buffer(py, m_buffer.as_ref(), x_len, "m")?;
+    Ok(Some(CoordSeq::from_owned_columns(xs, ys, zs, ms)?))
 }
 
 /// Create a ``GeometryArray`` of rectangular polygons from bound columns.

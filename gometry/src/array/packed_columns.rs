@@ -712,7 +712,10 @@ fn resolve_columns<'a>(
     }
 }
 
-fn assemble_packed_output(output: PackedColumnOutput, frame: Frame) -> PyGeometryArray {
+fn assemble_packed_output(
+    output: PackedColumnOutput,
+    frame: Frame,
+) -> crate::error::Result<PyGeometryArray> {
     match output {
         PackedColumnOutput::Points(coords) => PyGeometryArray::packed_points(coords, frame),
         PackedColumnOutput::Lines { coords, offsets } => {
@@ -1347,7 +1350,7 @@ impl PyGeometryArray {
         let output = self
             .reduce_packed_columns_detached(py, kernel)?
             .map(|output| {
-                assemble_packed_output(output, output_frame)
+                assemble_packed_output(output, output_frame)?
                     .with_missing_mask(self.missing().cloned())
                     .map_err(crate::PyErr::from)
             })
@@ -1372,7 +1375,7 @@ impl PyGeometryArray {
             return Ok(None);
         };
         Ok(Some(
-            assemble_packed_output(output, output_frame)
+            assemble_packed_output(output, output_frame)?
                 .with_missing_mask(self.missing().cloned())
                 .map_err(crate::PyErr::from)?,
         ))
@@ -1400,7 +1403,7 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame)
+            assemble_packed_output(output, output_frame)?
                 .with_missing_mask(self.missing().cloned())
                 .map_err(crate::PyErr::from)?,
         ))
@@ -1427,7 +1430,7 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame)
+            assemble_packed_output(output, output_frame)?
                 .with_missing_mask(self.missing().cloned())
                 .map_err(crate::PyErr::from)?,
         ))
@@ -1469,7 +1472,7 @@ impl PyGeometryArray {
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame)
+            assemble_packed_output(output, output_frame)?
                 .with_missing_mask(self.missing().cloned())
                 .map_err(crate::PyErr::from)?,
         ))
@@ -1600,10 +1603,10 @@ impl PyGeometryArray {
     }
 
     /// O(1) packed-storage X/Y swap — narrow escape hatch, not a general scan.
-    pub(crate) fn swap_xy_packed_storage(&self) -> Option<Self> {
-        match self.storage() {
+    pub(crate) fn swap_xy_packed_storage(&self) -> crate::error::Result<Option<Self>> {
+        Ok(match self.storage() {
             GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => Some(
-                Self::packed_points_mapped(coords.swap_xy(), self.frame.clone(), row_map.clone()),
+                Self::packed_points_mapped(coords.swap_xy(), self.frame.clone(), row_map.clone())?,
             ),
             GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
@@ -1614,7 +1617,7 @@ impl PyGeometryArray {
                 offsets.clone(),
                 self.frame.clone(),
                 row_map.clone(),
-            )),
+            )?),
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
@@ -1626,9 +1629,9 @@ impl PyGeometryArray {
                 polygon_offsets.clone(),
                 self.frame.clone(),
                 row_map.clone(),
-            )),
+            )?),
             GeometryArrayStorage::Mixed(_) => None,
-        }
+        })
     }
 }
 
@@ -1650,11 +1653,16 @@ mod tests {
 
     #[test]
     fn selected_views_resolve_physical_rows_directly() {
-        let selection =
-            || RowSelection::gather_checked_native(Arc::from([1_usize, 0, 1]), 2).unwrap();
+        let selection = || {
+            RowSelection::gather_checked_native(vec![1_usize, 0, 1], 2)
+                .unwrap()
+                .unwrap()
+        };
         let point_storage = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::new(coords()),
-            row_map: RowSelection::gather_checked_native(Arc::from([2_usize, 0, 2]), 6).unwrap(),
+            row_map: RowSelection::gather_checked_native(vec![2_usize, 0, 2], 6)
+                .unwrap()
+                .unwrap(),
         });
         let line_storage = GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords: Arc::new(coords()),
@@ -1682,9 +1690,11 @@ mod tests {
 
     #[test]
     fn point_row_cursor_maps_present_ranks_only_for_compact_payloads() {
-        let compact_map =
-            RowSelection::gather_checked_native(Arc::from([5_usize, 2, 5]), 6).unwrap();
+        let compact_map = RowSelection::gather_checked_native(vec![5_usize, 2, 5], 6)
+            .unwrap()
+            .unwrap();
         let compact_mask = ValidityMask::from_vec(6, vec![true, false, true, true, false, false])
+            .unwrap()
             .expect("compact mask");
         let compact = PointRows::new(
             6,
@@ -1703,10 +1713,12 @@ mod tests {
             (5, Some(5))
         ]);
 
-        let row_aligned_map =
-            RowSelection::gather_checked_native(Arc::from([2_usize, 0, 2]), 3).unwrap();
-        let row_aligned_mask =
-            ValidityMask::from_vec(3, vec![false, true, false]).expect("row-aligned mask");
+        let row_aligned_map = RowSelection::gather_checked_native(vec![2_usize, 0, 2], 3)
+            .unwrap()
+            .unwrap();
+        let row_aligned_mask = ValidityMask::from_vec(3, vec![false, true, false])
+            .unwrap()
+            .expect("row-aligned mask");
         let row_aligned = PointRows::new(
             3,
             row_aligned_map.as_deref(),
@@ -1720,9 +1732,12 @@ mod tests {
             (2, Some(2))
         ]);
 
-        let equal_length_compact_mask = ValidityMask::from_sparse(3, &[1]).expect("compact mask");
-        let equal_length_compact_map =
-            RowSelection::gather_checked_native(Arc::from([0_usize, 1, 0]), 2).unwrap();
+        let equal_length_compact_mask = ValidityMask::from_sparse(3, &[1])
+            .unwrap()
+            .expect("compact mask");
+        let equal_length_compact_map = RowSelection::gather_checked_native(vec![0_usize, 1, 0], 2)
+            .unwrap()
+            .unwrap();
         let equal_length_compact = PointRows::new(
             2,
             equal_length_compact_map.as_deref(),
@@ -1742,9 +1757,10 @@ mod tests {
             coords: Arc::new(coords()),
             offsets: CsrOffsetColumn::try_new(vec![0, 3, 6], 6).expect("valid offsets"),
             row_map: RowSelection::gather_checked_native(
-                (0..rows).map(|row| row & 1).collect::<Vec<_>>().into(),
+                (0..rows).map(|row| row & 1).collect::<Vec<_>>(),
                 2,
             )
+            .unwrap()
             .unwrap(),
         })
     }

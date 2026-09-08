@@ -70,7 +70,7 @@ fn cached_auxiliary_unit(
     if aux_cache.len() == aux_cache.capacity() {
         aux_cache
             .try_reserve(1)
-            .map_err(|_| ResourceError::Allocation)?;
+            .map_err(crate::error::Error::from)?;
     }
     let auxiliary = metric.auxiliary_unit(point);
     aux_cache.insert(key, auxiliary);
@@ -100,7 +100,7 @@ impl GeodesicFacetBvh {
         let mut aux_cache = HashMap::new();
         aux_cache
             .try_reserve(segments.len() + 1)
-            .map_err(|_| ResourceError::Allocation)?;
+            .map_err(crate::error::Error::from)?;
         let mut ids = Vec::new();
         crate::try_reserve_vec(&mut ids, segments.len())?;
         for (index, segment) in segments.iter().enumerate() {

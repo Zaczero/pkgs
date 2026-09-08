@@ -1162,8 +1162,8 @@ mod tests {
     /// end-to-end case first passed here.
     fn oracle(left: &Shape, right: &Shape) -> De9im {
         graph_relate_data_oracle(
-            &PreparedPlan::transient(left),
-            &PreparedPlan::transient(right),
+            &PreparedPlan::transient(left).unwrap(),
+            &PreparedPlan::transient(right).unwrap(),
         )
         .unwrap()
     }
@@ -1171,8 +1171,8 @@ mod tests {
     fn check(label: &str, left: &Shape, right: &Shape) {
         let expected = oracle(left, right);
         let (left_plan, right_plan) = (
-            PreparedPlan::transient(left),
-            PreparedPlan::transient(right),
+            PreparedPlan::transient(left).unwrap(),
+            PreparedPlan::transient(right).unwrap(),
         );
         let direct = direct_linework_relate(&left_plan, &right_plan)
             .unwrap_or_else(|| panic!("{label}: the pair should be admitted"));
@@ -1386,8 +1386,8 @@ mod tests {
             // double back over themselves it has lost owners and dimensions
             // (see `non_simple_linework_matches_geos`), so the fuzz keeps to
             // simple operands and the non-simple cases are pinned to GEOS.
-            if !PreparedPlan::transient(&left).is_simple_cached()
-                || !PreparedPlan::transient(&right).is_simple_cached()
+            if !PreparedPlan::transient(&left).unwrap().is_simple_cached()
+                || !PreparedPlan::transient(&right).unwrap().is_simple_cached()
             {
                 continue;
             }
@@ -1442,8 +1442,8 @@ mod tests {
         for (left, right) in &corpus {
             let expected = oracle(left, right);
             let (l, r) = (
-                PreparedPlan::transient(left),
-                PreparedPlan::transient(right),
+                PreparedPlan::transient(left).unwrap(),
+                PreparedPlan::transient(right).unwrap(),
             );
             for pattern in PATTERNS {
                 let compiled = CompiledPattern::new(std::str::from_utf8(pattern).unwrap()).unwrap();
@@ -1543,8 +1543,8 @@ mod tests {
         ];
         for (label, left, right, expected) in &cases {
             let direct = direct_linework_relate(
-                &PreparedPlan::transient(left),
-                &PreparedPlan::transient(right),
+                &PreparedPlan::transient(left).unwrap(),
+                &PreparedPlan::transient(right).unwrap(),
             )
             .unwrap();
             assert_eq!(direct.text(), *expected, "{label}");
@@ -1617,8 +1617,8 @@ mod tests {
                 "{label}: the two oracles disagree"
             );
             let (left, right) = (
-                &PreparedPlan::transient(left),
-                &PreparedPlan::transient(right),
+                &PreparedPlan::transient(left).unwrap(),
+                &PreparedPlan::transient(right).unwrap(),
             );
             let direct = direct_areal_relate(left, right);
             assert_eq!(
@@ -1853,8 +1853,8 @@ mod tests {
             ),
         ] {
             let direct = direct_areal_relate(
-                &PreparedPlan::transient(&bowtie),
-                &PreparedPlan::transient(&other),
+                &PreparedPlan::transient(&bowtie).unwrap(),
+                &PreparedPlan::transient(&other).unwrap(),
             )
             .unwrap_or_else(|| panic!("{label}: admitted"));
             assert_eq!(direct.text(), geos, "{label}");
@@ -1899,8 +1899,10 @@ mod tests {
         /// boundary crossing on the star below — see the ledger). Outside its
         /// admission the graph is what there is.
         fn check(label: &str, area: &Shape, line: &Shape) {
-            let (area_plan, line_plan) =
-                (PreparedPlan::transient(area), PreparedPlan::transient(line));
+            let (area_plan, line_plan) = (
+                PreparedPlan::transient(area).unwrap(),
+                PreparedPlan::transient(line).unwrap(),
+            );
             let graph = try_cartesian_polygon_line_relate(&area_plan, &line_plan)
                 .unwrap()
                 .unwrap_or_else(|| oracle(area, line));
@@ -2039,7 +2041,7 @@ mod tests {
                         .collect();
                 let probe = line(&points);
                 if stage_linework(&probe).is_none()
-                    || !PreparedPlan::transient(&probe).is_simple_cached()
+                    || !PreparedPlan::transient(&probe).unwrap().is_simple_cached()
                 {
                     continue;
                 }

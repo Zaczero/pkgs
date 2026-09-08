@@ -9,8 +9,8 @@ use crate::py::classes::geometry_methods::{
 use crate::py::crs::drain_accuracy_warning;
 use crate::py::replace::{ReplacePresence, reject_unknown_kwargs, replace_crs, replace_epoch};
 use crate::{
-    GeometryTransformFrame, PyCrs, PyPreparedGeometry, TransformOptionArgs, coordinate_epoch_option,
-    crs, crs_arc, parse_crs,
+    GeometryTransformFrame, PyCrs, PyPreparedGeometry, TransformOptionArgs,
+    coordinate_epoch_option, crs, crs_arc, parse_crs,
 };
 
 #[pymethods]
@@ -60,11 +60,11 @@ impl PyGeometry {
     /// >>> prep = gm.box(0, 0, 2, 2).prepare()
     /// >>> gm.contains(prep, gm.Point(1, 1))
     /// True
-    pub fn prepare(&self) -> PyPreparedGeometry {
-        self.plan_or_transient();
-        PyPreparedGeometry {
+    pub fn prepare(&self) -> PyResult<PyPreparedGeometry> {
+        self.plan_or_transient()?;
+        Ok(PyPreparedGeometry {
             geometry: self.clone(),
-        }
+        })
     }
 
     /// Attach or relabel the CRS *without* moving coordinates.
@@ -306,6 +306,6 @@ impl PyGeometry {
         }
         let shape = transformer.transform_shape(&self.shape)?;
         drain_accuracy_warning(py, &transformer.execution())?;
-        Ok(Typed(Self::with_frame(shape, output)))
+        Ok(Typed(Self::with_frame(shape, output)?))
     }
 }

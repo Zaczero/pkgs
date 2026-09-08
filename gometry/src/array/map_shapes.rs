@@ -72,7 +72,7 @@ fn rebuild_shared_mixed(
     }
     let exhausted = changed.next().is_none();
     debug_assert!(exhausted);
-    let mut result = PyGeometryArray::mixed_shapes(mapped, source.frame.clone())
+    let mut result = PyGeometryArray::mixed_shapes(mapped, source.frame.clone())?
         .with_missing_mask(source.missing().cloned())?;
     result.row_products = if unchanged_rows.len() == shapes.len() {
         source.row_products.clone()
@@ -279,7 +279,8 @@ mod tests {
             .map(|x| Shape::Point(Point::new_raw_xy(f64::from(x), 0.0)))
             .collect();
         PyGeometryArray::mixed_shapes(shapes, Frame::None)
-            .with_missing_mask(ValidityMask::from_sparse(3, &[1]))
+            .unwrap()
+            .with_missing_mask(ValidityMask::from_sparse(3, &[1]).unwrap())
             .unwrap()
     }
 
@@ -289,7 +290,7 @@ mod tests {
         // Warm prepared slots so the shared map can transfer them.
         let warmed0 = source.geometry_at(0).unwrap();
         let warmed1 = source.geometry_at(1).unwrap();
-        let before_cache = source.row_products.frame_cache(0);
+        let before_cache = source.row_products.frame_cache(0).unwrap();
         let result = source
             .map_shapes_shared(|shape| {
                 Ok((shape == &Shape::Point(Point::new_raw_xy(2.0, 0.0)))
@@ -310,11 +311,11 @@ mod tests {
         ));
         assert!(Arc::ptr_eq(
             &before_cache,
-            &result.row_products.frame_cache(0)
+            &result.row_products.frame_cache(0).unwrap()
         ));
         assert!(!Arc::ptr_eq(
-            &source.row_products.frame_cache(2),
-            &result.row_products.frame_cache(2)
+            &source.row_products.frame_cache(2).unwrap(),
+            &result.row_products.frame_cache(2).unwrap()
         ));
         assert!(result.is_row_missing(1));
     }
@@ -328,8 +329,8 @@ mod tests {
         assert!(result.row_products.shares_owner_with(&source.row_products));
         for row in 0..source.len() {
             assert!(Arc::ptr_eq(
-                &source.row_products.frame_cache(row),
-                &result.row_products.frame_cache(row)
+                &source.row_products.frame_cache(row).unwrap(),
+                &result.row_products.frame_cache(row).unwrap()
             ));
         }
     }
@@ -339,8 +340,8 @@ mod tests {
         let source = mixed_with_missing()
             .gather_logical_rows(&[2, 0, 2])
             .unwrap();
-        let source_unchanged = source.row_products.frame_cache(0);
-        let source_changed = source.row_products.frame_cache(1);
+        let source_unchanged = source.row_products.frame_cache(0).unwrap();
+        let source_changed = source.row_products.frame_cache(1).unwrap();
         let result = source
             .map_shapes_shared(|shape| {
                 Ok((shape == &Shape::Point(Point::new_raw_xy(0.0, 0.0)))
@@ -351,15 +352,15 @@ mod tests {
         assert!(!result.row_products.shares_owner_with(&source.row_products));
         assert!(Arc::ptr_eq(
             &source_unchanged,
-            &result.row_products.frame_cache(0)
+            &result.row_products.frame_cache(0).unwrap()
         ));
         assert!(!Arc::ptr_eq(
             &source_changed,
-            &result.row_products.frame_cache(1)
+            &result.row_products.frame_cache(1).unwrap()
         ));
         assert!(Arc::ptr_eq(
             &source_unchanged,
-            &result.row_products.frame_cache(2)
+            &result.row_products.frame_cache(2).unwrap()
         ));
     }
 

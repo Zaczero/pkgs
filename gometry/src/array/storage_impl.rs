@@ -453,10 +453,7 @@ impl GeometryArrayStorage {
             let (miny, maxy) = crate::geometry::column_minmax(seq.ys())?;
             return Some(Bounds::new_raw(minx, miny, maxx, maxy));
         }
-        // Mixed rows fold their cached per-row bounds.
-        let mut values = self
-            .iter_shapes()
-            .filter_map(|shape| shape.ok().and_then(|shape| shape.bounds()));
+        let mut values = self.iter_rows().filter_map(ShapeRow::quick_bounds);
         let first = values.next()?;
         Some(values.fold(first, |mut acc, bounds| {
             acc.include_bounds(bounds);
@@ -622,33 +619,34 @@ impl GeometryArrayStorage {
     /// Mixed rows must go through [`PyGeometryArray::geometry_at`] so the
     /// array-side prepared cache owns the plan and its ShapeData.
     pub(crate) fn shape_data_at(&self, index: usize) -> Result<Arc<ShapeData>> {
-        match self {
-            Self::Mixed(shapes) => Ok(Arc::new(ShapeData::new(shapes[index].clone()))),
+        use crate::geometry::IntoSharedShape as _;
+        let shape = match self {
+            Self::Mixed(shapes) => shapes[index].clone(),
             Self::Packed(PackedStorage::Points { coords, row_map }) => {
-                Ok(Arc::new(ShapeData::new(Shape::Point(
-                    coords.point_at(physical_row(row_map.as_deref(), index)),
-                ))))
+                Shape::Point(coords.point_at(physical_row(row_map.as_deref(), index)))
             },
             Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            }) => Ok(Arc::new(ShapeData::new(Shape::Polygon(
-                Self::polygon_view(
-                    coords,
-                    ring_offsets,
-                    polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
-                )?,
-            )))),
+            }) => Shape::Polygon(Self::polygon_view(
+                coords,
+                ring_offsets,
+                polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
+            )?),
             Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            }) => Ok(Arc::new(ShapeData::new(Shape::LineString(
-                LineSeq::from_proven(Self::line_view(coords, offsets, row_map.as_deref(), index)),
-            )))),
-        }
+            }) => Shape::LineString(LineSeq::from_proven(Self::line_view(
+                coords,
+                offsets,
+                row_map.as_deref(),
+                index,
+            ))),
+        };
+        shape.try_into_shared()
     }
 }
 

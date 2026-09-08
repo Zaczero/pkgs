@@ -32,7 +32,7 @@ fn execute_unary_scalar<R: BulkElement>(
         metric,
         lane: Lane::Scalar,
     };
-    let plan = geometry.plan_or_transient();
+    let plan = geometry.plan_or_transient()?;
     py.detach(move || kernel(&plan, &ctx))
 }
 
@@ -204,7 +204,7 @@ pub(crate) fn unary_scalar_shape(
 ) -> PyResult<Typed> {
     let frame = geometry.frame.clone();
     let shape = unary_scalar(py, geometry, op, unit, kernel)?;
-    Ok(Typed(PyGeometry::with_frame(shape, frame)))
+    Ok(Typed(PyGeometry::with_frame(shape, frame)?))
 }
 
 pub(crate) fn unary_scalar_shape_admitted(
@@ -215,7 +215,10 @@ pub(crate) fn unary_scalar_shape_admitted(
 ) -> PyResult<Typed> {
     let shape =
         execute_unary_scalar(py, geometry, domain, MetricCtx::None, kernel).map_err(PyErr::from)?;
-    Ok(Typed(PyGeometry::with_frame(shape, geometry.frame.clone())))
+    Ok(Typed(PyGeometry::with_frame(
+        shape,
+        geometry.frame.clone(),
+    )?))
 }
 
 /// Array geometry method returning a `GeometryArray` — natively, without the
@@ -289,22 +292,24 @@ pub(crate) fn unary_scalar_linref_shape(
                 return Err(PyErr::from(error));
             },
         };
-        let row = LinearReferenceRow {
-            op: CachelessRowContext {
-                frame: &frame,
-                domain,
-                metric,
-                lane: Lane::Scalar,
-            },
-            model,
-            cache: &geometry.frame_cache(),
-        };
-        let plan = geometry.plan_or_transient();
-        py.detach(move || kernel(&plan, &row))
+        (|| -> Result<_> {
+            let row = LinearReferenceRow {
+                op: CachelessRowContext {
+                    frame: &frame,
+                    domain,
+                    metric,
+                    lane: Lane::Scalar,
+                },
+                model,
+                cache: &*geometry.frame_cache()?,
+            };
+            let plan = geometry.plan_or_transient()?;
+            py.detach(move || kernel(&plan, &row))
+        })()
     };
     drop(scratch);
     let shape = result?;
-    Ok(Typed(PyGeometry::with_frame(shape, frame)))
+    Ok(Typed(PyGeometry::with_frame(shape, frame)?))
 }
 
 pub(crate) fn unary_array_linref_shapes(
@@ -335,7 +340,7 @@ pub(crate) fn unary_array_linref_shapes(
                 let row_index = present.logical();
                 let shape = present.row();
                 let data = crate::array::PreparedRow::transient(shape)?;
-                let cache = rows.frame_cache(row_index);
+                let cache = rows.frame_cache(row_index)?;
                 let row = LinearReferenceRow {
                     op: CachelessRowContext {
                         frame: &frame,

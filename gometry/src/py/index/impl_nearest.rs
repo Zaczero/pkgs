@@ -190,7 +190,7 @@ impl PySpatialIndex {
             unit,
             crate::dispatch::MetricOp::Nearest,
         )?;
-        let query_plan = geometry.plan_or_transient();
+        let query_plan = geometry.plan_or_transient()?;
         let mut frontier = BinaryHeap::new();
         let mut leaf_frontier = Vec::new();
         let mut visited = NearestVisited::default();
@@ -337,7 +337,9 @@ impl PySpatialIndex {
         metric: &crs::MetricModel,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
-        query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
+        query_cache: &mut impl FnMut() -> crate::error::Result<
+            std::sync::Arc<crate::geometry::FrameDependentCaches>,
+        >,
         k: usize,
         max_distance: Option<NonNegative>,
         options: NearestOptions,
@@ -381,7 +383,9 @@ impl PySpatialIndex {
         metric: &crs::MetricModel,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
-        query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
+        query_cache: &mut impl FnMut() -> crate::error::Result<
+            std::sync::Arc<crate::geometry::FrameDependentCaches>,
+        >,
         k: usize,
         max_distance: Option<NonNegative>,
         exclusive: bool,
@@ -394,7 +398,7 @@ impl PySpatialIndex {
         };
         let exclude = exclusive.then_some(query.shape());
         if let Some(pruner) = self.geodesic_pruner(metric, shape_pruner_point(query.shape())) {
-            let query_cache_owner = query_cache();
+            let query_cache_owner = query_cache()?;
             let mut rows = self.rows.operation();
             // Geodesic point query over an all-point index: prune with the
             // sound lower bound instead of Karney-evaluating every entry.
@@ -404,7 +408,7 @@ impl PySpatialIndex {
                 pair_distance_geodesic(
                     resolved,
                     &data,
-                    &rows.frame_cache(idx),
+                    &*rows.frame_cache(idx)?,
                     query,
                     &query_cache_owner,
                 )
@@ -470,19 +474,21 @@ impl PySpatialIndex {
         max_distance: Option<NonNegative>,
         exclude: Option<&Shape>,
         visited: &mut NearestVisited,
-        query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
+        query_cache: &mut impl FnMut() -> crate::error::Result<
+            std::sync::Arc<crate::geometry::FrameDependentCaches>,
+        >,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
     ) -> PyResult<Vec<NearestCandidate>> {
         visited.reset(self.rows.len())?;
-        let query_cache_owner = query_cache();
+        let query_cache_owner = query_cache()?;
         let mut rows = self.rows.operation();
         let mut exact = |idx| {
             let data = rows.prepared(idx)?;
             pair_distance_geodesic(
                 resolved,
                 &data,
-                &rows.frame_cache(idx),
+                &*rows.frame_cache(idx)?,
                 query,
                 &query_cache_owner,
             )
@@ -690,20 +696,24 @@ mod tests {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         Python::initialize();
         Python::attach(|py| {
-            let index = spatial_index(vec![PyGeometry::with_frame(
-                ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
-                Frame::None,
-            )])
+            let index = spatial_index(vec![
+                PyGeometry::with_frame(
+                    ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
+                    Frame::None,
+                )
+                .unwrap(),
+            ])
             .expect("fixture index");
             let state = HeapNearest::new(2, index.__len__()).expect("state is chosen first");
             let mut visited = NearestVisited::default();
             let mut cache_calls = 0_usize;
             let mut query_cache = || {
                 cache_calls += 1;
-                Arc::new(FrameDependentCaches::default())
+                Ok(Arc::new(FrameDependentCaches::default()))
             };
             let query =
-                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))));
+                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))))
+                    .unwrap();
             let model = metric_model(Some("EPSG:4326")).expect("geodesic model");
             let ResolvedMetric::Geodesic(resolved) =
                 ResolvedMetric::from_model(&model).expect("resolved geodesic")

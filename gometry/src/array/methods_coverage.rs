@@ -178,7 +178,7 @@ impl PyGeometryArray {
         }
         let domain = geometry::topology_domain(&self.frame)?;
         let shape = py.detach(move || geometry::coverage_union_topo(&shapes, domain))?;
-        Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())))
+        Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())?))
     }
 
     /// Clean this near-coverage into an exact polygonal coverage (see `coverage_clean`).

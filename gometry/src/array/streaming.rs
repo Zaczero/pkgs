@@ -255,7 +255,7 @@ impl StreamingShapes {
                 }
                 Ok(PyGeometryArray::from_shapes(shapes, frame)?)
             },
-            Self::Points(builder) => Ok(PyGeometryArray::packed_points(builder.finish()?, frame)),
+            Self::Points(builder) => Ok(PyGeometryArray::packed_points(builder.finish()?, frame)?),
             Self::Lines(builder) => builder.finish(frame),
             Self::Polygons(builder) => builder.finish(frame),
             Self::Shapes { shapes, .. } => Ok(PyGeometryArray::from_shapes(shapes, frame)?),
@@ -297,7 +297,7 @@ impl StreamingLines {
         let (coords, offsets) = self.into_parts()?;
         if packed_i32_capacity(coords.len())? {
             let offsets = CsrOffsetColumn::try_new(offsets, coords.len())?;
-            Ok(PyGeometryArray::packed_lines(coords, offsets, frame))
+            Ok(PyGeometryArray::packed_lines(coords, offsets, frame)?)
         } else {
             Ok(PyGeometryArray::from_shapes(
                 line_shapes_from_parts(&coords, &offsets)?,
@@ -380,7 +380,7 @@ impl StreamingPolygons {
                 ring_offsets,
                 polygon_offsets,
                 frame,
-            ))
+            )?)
         } else {
             Ok(PyGeometryArray::from_shapes(
                 polygon_shapes_from_parts(&coords, &ring_ends, &polygon_ends)?,

@@ -347,7 +347,8 @@ mod convex_tests {
         assert!(is_axis_aligned_rectangle(&densified, bounds(&densified)));
         assert!(
             PreparedPlan::transient(&densified)
-                .intersects(&PreparedPlan::transient(&r))
+                .unwrap()
+                .intersects(&PreparedPlan::transient(&r).unwrap())
                 .unwrap(),
             "cached planar intersects recognizes a densified rectangle"
         );

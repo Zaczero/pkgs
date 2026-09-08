@@ -13,7 +13,10 @@ use crate::{
     require_geojson_crs,
 };
 
-#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
+)]
 #[pymethods]
 impl PyGeometry {
     #[new]
@@ -195,7 +198,7 @@ impl PyGeometry {
             self.shape.coord_count(),
         )?;
         let shape = replace_shape_coordinates(self.shape.shape(), &replacement)?;
-        Ok(self.typed_shape(shape))
+        Ok(self.typed_shape(shape)?)
     }
     /// Apply a vectorized callback to this geometry's coordinate matrix.
     ///
@@ -223,7 +226,7 @@ impl PyGeometry {
         )));
         let replacement = map_coordinates_callback(py, coords, func)?;
         let shape = replace_shape_coordinates(self.shape.shape(), &replacement)?;
-        Ok(self.typed_shape(shape))
+        Ok(self.typed_shape(shape)?)
     }
     /// Whether the geometry is empty (no points, rings, or parts).
     ///

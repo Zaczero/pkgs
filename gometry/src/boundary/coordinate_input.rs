@@ -10,15 +10,13 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
-use std::sync::Arc;
-
 use numpy::{PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyFloat, PyInt};
 use pyo3::{Borrowed, FromPyObject};
 
-use crate::boundary::buffer_endian::{buffer_to_arc_f64, buffer_to_vec_f64};
+use crate::boundary::buffer_endian::{buffer_to_column_f64, buffer_to_vec_f64};
 use crate::geometry::column_all_finite;
 use crate::py::errors::InvalidGeometryError;
 use crate::{
@@ -426,53 +424,51 @@ pub(crate) fn integer_values_exact(
     )
 }
 
-/// Copy a C-contiguous `f64` buffer into a freshly allocated `Arc<[f64]>` —
-/// one allocation, no `Vec`→`Arc` realloc. Non-native endian is bulk-byteswapped
-/// into that allocation (still one alloc). Non-contiguous buffers use a direct
-/// stride-to-Arc fill (no `Vec` intermediate). Non-buffer inputs fall back to
-/// [`coordinate_values`] + `into()`.
-pub(crate) fn coordinate_arc_values(
+/// Capture a coordinate column in owned native-endian storage. Contiguous and
+/// simple strided buffers fill the column directly; general inputs use
+/// [`coordinate_values`].
+pub(crate) fn coordinate_column_values(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     name: &str,
-) -> PyResult<Arc<[f64]>> {
+) -> PyResult<Vec<f64>> {
     reject_multidimensional_coordinate_array(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        return coordinate_arc_values_from_buffer(py, &buffer);
+        return coordinate_column_values_from_buffer(py, &buffer);
     }
-    coordinate_values(py, value, name).map(Into::into)
+    coordinate_values(py, value, name)
 }
 
 /// Copy an already-admitted `f64` buffer into its final native-endian column.
 /// Keeping the admission object across the caller's length checks avoids a
 /// second `PyBuffer::get` and preserves the same contiguous/strided safety
-/// paths as [`coordinate_arc_values`].
-pub(crate) fn coordinate_arc_values_from_buffer(
+/// paths as [`coordinate_column_values`].
+pub(crate) fn coordinate_column_values_from_buffer(
     py: Python<'_>,
     buffer: &PyBuffer<f64>,
-) -> PyResult<Arc<[f64]>> {
+) -> PyResult<Vec<f64>> {
     if buffer.is_c_contiguous() {
-        return buffer_to_arc_f64(py, buffer);
+        return buffer_to_column_f64(py, buffer);
     }
-    // Strided 1-D (or flattened multi-D): fill Arc directly via strided walk.
-    strided_buffer_to_arc_f64(py, buffer)
+    // Strided 1-D (or flattened multi-D): fill the column via a strided walk.
+    strided_buffer_to_column_f64(py, buffer)
 }
 
-/// Fill an `Arc<[f64]>` from a non-contiguous buffer without a `Vec` bounce.
+/// Capture a non-contiguous buffer in an owned column.
 ///
 /// Each element is read through [`pyo3::buffer::ReadOnlyCell`] — never as a
 /// plain `&f64` / `&[f64]` over buffer memory another free-threaded mutator may
 /// write (aliasing UB). `ReadOnlyCell::get` is a non-atomic load: the producer
 /// must stay quiescent until this capture returns, after which only the owned
-/// `Arc` is retained.
-fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Arc<[f64]>> {
+/// column is retained.
+fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Vec<f64>> {
     use pyo3::buffer::ReadOnlyCell;
 
     // The strided fast path below reads through a raw pointer. When the
     // exporter's storage may change under it, take the same contiguous copy the
     // suboffset case already falls back to.
     if !crate::boundary::buffer_endian::exporter_storage_is_stable(py, buffer) {
-        return buffer_to_vec_f64(py, buffer).map(Into::into);
+        return buffer_to_vec_f64(py, buffer);
     }
 
     let len = buffer.item_count();
@@ -482,11 +478,10 @@ fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult
     // pointer-table bytes as f64 coordinates. Route through PyO3's safe
     // contiguous copy which honors suboffsets via `PyBuffer_GetPointer`.
     if buffer.suboffsets().is_some() {
-        return buffer_to_vec_f64(py, buffer).map(Into::into);
+        return buffer_to_vec_f64(py, buffer);
     }
-    // `to_vec` handles arbitrary strides/endian via pyo3; then Arc without
-    // realloc when capacity == len (usual). Prefer exact Arc fill when the
-    // buffer is a simple 1-D strided native-endian column.
+    // General strides and byte order use PyO3's contiguous copy. A simple
+    // native-endian column can fill its destination directly.
     if buffer.dimensions() == 1
         && crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format())
     {
@@ -519,11 +514,11 @@ fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult
                 let (ptr, len, capacity) = values.into_raw_parts();
                 // SAFETY: every slot was written above and the transparent
                 // element layouts are identical.
-                return Ok(Vec::from_raw_parts(ptr.cast(), len, capacity).into());
+                return Ok(Vec::from_raw_parts(ptr.cast(), len, capacity));
             }
         }
     }
-    buffer_to_vec_f64(py, buffer).map(Into::into)
+    buffer_to_vec_f64(py, buffer)
 }
 
 /// Build a [`CoordSeq`] from an indirect (suboffset) N×D `f64` buffer via
@@ -564,45 +559,28 @@ fn coordseq_from_indirect_nd_buffer(
             crate::try_push(ms, flat[base + 3])?;
         }
     }
-    let mut zs: Option<Arc<[f64]>> = zs_col.map(Into::into);
-    let mut ms: Option<Arc<[f64]>> = ms_col.map(Into::into);
+    let mut zs = zs_col;
+    let mut ms = ms_col;
     if let Some(z_col) = z {
-        zs = Some(coordinate_arc_values_exact(
-            z_col.py(),
-            z_col,
-            "z",
-            n,
-            |got| {
-                InvalidGeometryError::new_err(format!(
-                    "z must have the same length as x/y coordinates (got length {got})"
-                ))
-            },
-        )?);
+        zs = Some(coordinate_values_exact(z_col.py(), z_col, "z", n, |got| {
+            InvalidGeometryError::new_err(format!(
+                "z must have the same length as x/y coordinates (got length {got})"
+            ))
+        })?);
     }
     if let Some(m_col) = m {
-        ms = Some(coordinate_arc_values_exact(
-            m_col.py(),
-            m_col,
-            "m",
-            n,
-            |got| {
-                InvalidGeometryError::new_err(format!(
-                    "m must have the same length as x/y coordinates (got length {got})"
-                ))
-            },
-        )?);
+        ms = Some(coordinate_values_exact(m_col.py(), m_col, "m", n, |got| {
+            InvalidGeometryError::new_err(format!(
+                "m must have the same length as x/y coordinates (got length {got})"
+            ))
+        })?);
     }
-    Ok(CoordSeq::try_from_vecs(
-        xs.to_vec(),
-        ys.to_vec(),
-        zs.map(|values| values.to_vec()),
-        ms.map(|values| values.to_vec()),
-    )?)
+    Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
 }
 
 /// Try to build a final SoA [`CoordSeq`] from a contiguous (or regularly
-/// strided) N×D numeric buffer — one pass into Arc columns, no nested
-/// `Vec`→`Vec<Point>`→Arc. Returns `Ok(None)` when the value is not an N×D
+/// strided) N×D numeric buffer directly into owned columns.
+/// Returns `Ok(None)` when the value is not an N×D
 /// float buffer (caller falls back to the general extractor).
 ///
 /// `z`/`m` optional columns override inline ordinates and cannot combine with
@@ -653,7 +631,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     let native = crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format());
     let swap = !native;
 
-    let fill_column = |col: usize| -> crate::error::Result<Arc<[f64]>> {
+    let fill_column = |col: usize| -> crate::error::Result<Vec<f64>> {
         use pyo3::buffer::ReadOnlyCell;
 
         let mut values = Vec::<std::mem::MaybeUninit<f64>>::new();
@@ -685,7 +663,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
             let (ptr, len, capacity) = values.into_raw_parts();
             // SAFETY: every slot was written above and the element layouts are
             // identical.
-            Ok(Vec::from_raw_parts(ptr.cast(), len, capacity).into())
+            Ok(Vec::from_raw_parts(ptr.cast(), len, capacity))
         }
     };
 
@@ -714,7 +692,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
 
     // Optional parallel z/m columns (only valid when D == 2).
     if let Some(z_col) = z {
-        let values = coordinate_arc_values_exact(z_col.py(), z_col, "z", n, |got| {
+        let values = coordinate_values_exact(z_col.py(), z_col, "z", n, |got| {
             InvalidGeometryError::new_err(format!(
                 "z must have the same length as x/y coordinates (got length {got})"
             ))
@@ -722,7 +700,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
         zs = Some(values);
     }
     if let Some(m_col) = m {
-        let values = coordinate_arc_values_exact(m_col.py(), m_col, "m", n, |got| {
+        let values = coordinate_values_exact(m_col.py(), m_col, "m", n, |got| {
             InvalidGeometryError::new_err(format!(
                 "m must have the same length as x/y coordinates (got length {got})"
             ))
@@ -731,23 +709,18 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     }
 
     // Finite check + axes from column presence.
-    Ok(Some(CoordSeq::try_from_vecs(
-        xs.to_vec(),
-        ys.to_vec(),
-        zs.map(|values| values.to_vec()),
-        ms.map(|values| values.to_vec()),
-    )?))
+    Ok(Some(CoordSeq::try_from_vecs(xs, ys, zs, ms)?))
 }
 
-/// Like [`coordinate_arc_values`], but stop after `expected + 1` items when
+/// Like [`coordinate_column_values`], but stop after `expected + 1` items when
 /// the length is known from the receiver (D11: `set_coordinates`, …).
-pub(crate) fn coordinate_arc_values_exact(
+pub(crate) fn coordinate_column_values_exact(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     name: &str,
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
-) -> PyResult<Arc<[f64]>> {
+) -> PyResult<Vec<f64>> {
     reject_multidimensional_coordinate_array(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
@@ -755,28 +728,28 @@ pub(crate) fn coordinate_arc_values_exact(
             return Err(on_len(got));
         }
         if buffer.is_c_contiguous() {
-            return buffer_to_arc_f64(py, &buffer);
+            return buffer_to_column_f64(py, &buffer);
         }
-        return coordinate_arc_values_from_buffer(py, &buffer);
+        return coordinate_column_values_from_buffer(py, &buffer);
     }
-    coordinate_values_exact(py, value, name, expected, on_len).map(Into::into)
+    coordinate_values_exact(py, value, name, expected, on_len)
 }
 
 /// Optional `z`/`m` column for the columnar constructor path — the
-/// [`coordinate_arc_values`] sibling of [`optional_coordinates`].
-pub(crate) fn optional_coordinate_arc_values(
+/// [`coordinate_column_values`] sibling of [`optional_coordinates`].
+pub(crate) fn optional_coordinate_column_values(
     py: Python<'_>,
     value: Option<&Bound<'_, PyAny>>,
     expected_len: usize,
     name: &str,
-) -> PyResult<Option<Arc<[f64]>>> {
+) -> PyResult<Option<Vec<f64>>> {
     let Some(value) = value else {
         return Ok(None);
     };
     if value.is_none() {
         return Ok(None);
     }
-    let values = coordinate_arc_values_exact(py, value, name, expected_len, |got| {
+    let values = coordinate_column_values_exact(py, value, name, expected_len, |got| {
         InvalidGeometryError::new_err(format!(
             "{name} must have the same length as x/y coordinates (got length {got})"
         ))
@@ -785,12 +758,12 @@ pub(crate) fn optional_coordinate_arc_values(
 }
 
 /// Length-check and copy an already-admitted optional `f64` column.
-pub(crate) fn optional_coordinate_arc_values_from_buffer(
+pub(crate) fn optional_coordinate_column_values_from_buffer(
     py: Python<'_>,
     buffer: Option<&PyBuffer<f64>>,
     expected_len: usize,
     name: &str,
-) -> PyResult<Option<Arc<[f64]>>> {
+) -> PyResult<Option<Vec<f64>>> {
     let Some(buffer) = buffer else {
         return Ok(None);
     };
@@ -800,7 +773,7 @@ pub(crate) fn optional_coordinate_arc_values_from_buffer(
             "{name} must have the same length as x/y coordinates (got length {got})"
         )));
     }
-    coordinate_arc_values_from_buffer(py, buffer).map(Some)
+    coordinate_column_values_from_buffer(py, buffer).map(Some)
 }
 
 pub(crate) fn coordinate_values(

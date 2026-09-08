@@ -10,8 +10,7 @@
     reason = "C Data Interface child pointers require stable pointee addresses"
 )]
 
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
-use std::sync::Arc;
+use std::ffi::{CStr, c_char, c_int, c_void};
 
 use pyo3::exceptions::PyOverflowError;
 use pyo3::ffi;
@@ -19,7 +18,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use serde_json::{Map, Number, Value};
 
-use crate::geometry::{CoordSeq, CoordinateAxes, SharedSlice};
+use crate::geometry::{CoordSeq, CoordinateAxes};
 use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::geoarrow::GeometryEncoding;
@@ -117,25 +116,23 @@ pub(crate) struct ArrowArrayStream {
 }
 
 struct SchemaPrivate {
-    format: CString,
-    name: CString,
+    format: Vec<u8>,
+    name: Vec<u8>,
     metadata: Option<Vec<u8>>,
-    children: Vec<Box<ArrowSchema>>,
+    children: Vec<GometryArrowSchema>,
     child_ptrs: Vec<*mut ArrowSchema>,
 }
 
 struct ArrayPrivate {
-    _f64_buffers: Vec<SharedSlice<f64>>,
-    _i32_buffers: Vec<Arc<[i32]>>,
-    u8_buffers: Vec<Arc<[u8]>>,
+    owners: Vec<OwnedBufferSlot>,
     buffers: Vec<*const c_void>,
-    children: Vec<Box<ArrowArray>>,
+    _children: Vec<GometryArrowArray>,
     child_ptrs: Vec<*mut ArrowArray>,
 }
 
 struct StreamPrivate {
     schema: SchemaNode,
-    array: Option<Box<ArrowArray>>,
+    array: Option<GometryArrowArray>,
     last_error: &'static CStr,
 }
 
@@ -148,7 +145,7 @@ pub(crate) struct SchemaNode {
 }
 
 pub(crate) struct ExportedArray {
-    schema: Box<ArrowSchema>,
+    schema: GometryArrowSchema,
     schema_node: SchemaNode,
     array: GometryArrowArray,
 }
@@ -195,9 +192,9 @@ mod tests;
 
 pub(crate) use admitted::{ClassifiedGeometrySchema, admit_and_classify_raw_schema};
 pub(crate) use build::{
-    GometryArrowArray, admitted_binary_array, admitted_list_array_windowed,
-    apply_prebuilt_top_level_validity, coordinate_array, coordinate_schema, empty_array,
-    extension_schema, list_schema, wkb_schema,
+    GometryArrowArray, GometryArrowSchema, OwnedBufferSlot, admitted_binary_array,
+    admitted_list_array_windowed, apply_prebuilt_top_level_validity, coordinate_array,
+    coordinate_schema, empty_array, extension_schema, list_schema, wkb_schema,
 };
 pub(crate) use capsule_lifecycle::{
     ArrowReleaseSlot, array_to_array_capsules, array_to_schema_capsule, array_to_stream_capsule,

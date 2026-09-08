@@ -2,7 +2,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::HeapSize;
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 
 /// Immutable, allocation-fallible ownership for a slice-facing payload.
 ///
@@ -22,7 +22,7 @@ impl<T> SharedSlice<T> {
             return Ok(Self::empty());
         }
         Ok(Self {
-            owner: Some(Arc::try_new(values).map_err(|_| ResourceError::Allocation)?),
+            owner: Some(Arc::try_new(values).map_err(crate::error::Error::from)?),
         })
     }
 

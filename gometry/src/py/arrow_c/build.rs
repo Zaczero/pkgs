@@ -4,39 +4,47 @@
 )]
 use std::mem::size_of;
 use std::ptr;
-use std::sync::Arc;
 
 use crate::geometry::SharedSlice;
 use crate::py::arrow_c::{
-    ArrayPrivate, ArrowArray, ArrowSchema, CString, CoordSeq, CoordinateAxes, GeometryEncoding,
+    ArrayPrivate, ArrowArray, ArrowSchema, CoordSeq, CoordinateAxes, GeometryEncoding,
     GeometryError, Map, NativeArrowExportError, NativeArrowExportResult, Number, PyResult,
     SchemaNode, SchemaPrivate, Value, release_array, release_schema,
 };
 
 impl SchemaNode {
-    pub(crate) fn into_schema(self) -> PyResult<Box<ArrowSchema>> {
+    pub(crate) fn materialize_schema(&self) -> NativeArrowExportResult<GometryArrowSchema> {
         let Self {
             format,
             name,
             metadata,
             children,
         } = self;
-        let children =
-            crate::try_collect_results(children.into_iter().map(|child| child.into_schema()))?;
-        let mut child_ptrs = crate::try_vec_with_capacity(children.len())?;
+        let mut owned_children = Vec::new();
+        crate::try_reserve_vec(&mut owned_children, children.len())?;
+        for child in children {
+            owned_children.push(child.materialize_schema()?);
+        }
+        let children = owned_children;
+        let mut child_ptrs = Vec::new();
+        crate::try_reserve_vec(&mut child_ptrs, children.len())?;
         for child in &children {
             child_ptrs.push(ptr::from_ref(child.as_ref()).cast_mut());
         }
-        let mut private = Box::new(SchemaPrivate {
-            format: CString::new(format).expect("schema format has no nul"),
-            name: CString::new(name).expect("schema name has no nul"),
-            metadata: metadata.map(encode_schema_metadata).transpose()?,
+        let mut private = Box::try_new(SchemaPrivate {
+            format: schema_text(format)?,
+            name: schema_text(name)?,
+            metadata: metadata
+                .as_deref()
+                .map(encode_schema_metadata)
+                .transpose()?,
             children,
             child_ptrs,
-        });
-        let schema = ArrowSchema {
-            format: private.format.as_ptr(),
-            name: private.name.as_ptr(),
+        })
+        .map_err(crate::error::Error::from)?;
+        let mut schema = Box::try_new(ArrowSchema {
+            format: private.format.as_ptr().cast(),
+            name: private.name.as_ptr().cast(),
             metadata: private
                 .metadata
                 .as_ref()
@@ -53,33 +61,86 @@ impl SchemaNode {
             },
             dictionary: ptr::null_mut(),
             release: Some(release_schema),
-            private_data: Box::into_raw(private).cast(),
-        };
-        Ok(Box::new(schema))
+            private_data: ptr::null_mut(),
+        })
+        .map_err(crate::error::Error::from)?;
+        schema.private_data = Box::into_raw(private).cast();
+        Ok(GometryArrowSchema(schema))
     }
 }
 
-pub(crate) fn encode_schema_metadata(pairs: Vec<(String, String)>) -> PyResult<Vec<u8>> {
-    let pair_count = i32::try_from(pairs.len())
-        .map_err(|_| GeometryError::new_err("Arrow schema metadata has too many entries"))?;
+pub(crate) struct GometryArrowSchema(Box<ArrowSchema>);
+
+impl GometryArrowSchema {
+    pub(crate) fn into_box(self) -> Box<ArrowSchema> {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: ownership leaves the guard exactly once; its destructor is disabled.
+        unsafe { ptr::read(ptr::from_ref(&this.0)) }
+    }
+
+    pub(crate) fn as_ref(&self) -> &ArrowSchema {
+        &self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_mut(&mut self) -> &mut ArrowSchema {
+        &mut self.0
+    }
+}
+
+impl Drop for GometryArrowSchema {
+    fn drop(&mut self) {
+        // SAFETY: the guard owns the shell and the callback is idempotent.
+        unsafe {
+            if let Some(release) = self.0.release {
+                release(self.0.as_mut());
+            }
+        }
+    }
+}
+
+fn schema_text(text: &str) -> NativeArrowExportResult<Vec<u8>> {
+    if text.as_bytes().contains(&0) {
+        return Err(NativeArrowExportError::geometry(
+            "Arrow schema text contains a nul",
+        ));
+    }
+    let mut bytes = Vec::new();
+    let capacity = text
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| NativeArrowExportError::overflow("Arrow schema text is too large"))?;
+    crate::try_reserve_vec(&mut bytes, capacity)?;
+    bytes.extend_from_slice(text.as_bytes());
+    bytes.push(0);
+    Ok(bytes)
+}
+
+pub(crate) fn encode_schema_metadata(
+    pairs: &[(String, String)],
+) -> NativeArrowExportResult<Vec<u8>> {
+    let pair_count = i32::try_from(pairs.len()).map_err(|_| {
+        NativeArrowExportError::geometry("Arrow schema metadata has too many entries")
+    })?;
     let mut capacity = size_of::<i32>();
-    for (key, value) in &pairs {
-        i32::try_from(key.len())
-            .map_err(|_| GeometryError::new_err("Arrow schema metadata key is too large"))?;
-        i32::try_from(value.len())
-            .map_err(|_| GeometryError::new_err("Arrow schema metadata value is too large"))?;
+    for (key, value) in pairs {
+        i32::try_from(key.len()).map_err(|_| {
+            NativeArrowExportError::geometry("Arrow schema metadata key is too large")
+        })?;
+        i32::try_from(value.len()).map_err(|_| {
+            NativeArrowExportError::geometry("Arrow schema metadata value is too large")
+        })?;
         capacity = capacity
             .checked_add(size_of::<i32>())
             .and_then(|size| size.checked_add(key.len()))
             .and_then(|size| size.checked_add(size_of::<i32>()))
             .and_then(|size| size.checked_add(value.len()))
-            .ok_or_else(|| GeometryError::new_err("Arrow schema metadata size overflows usize"))?;
+            .ok_or_else(|| {
+                NativeArrowExportError::geometry("Arrow schema metadata size overflows usize")
+            })?;
     }
     let mut out = Vec::new();
-    if let Err(error) = crate::try_reserve_vec(&mut out, capacity) {
-        drop(pairs);
-        return Err(error.into());
-    }
+    crate::try_reserve_vec(&mut out, capacity)?;
     out.extend_from_slice(&pair_count.to_ne_bytes());
     for (key, value) in pairs {
         out.extend_from_slice(&(key.len() as i32).to_ne_bytes());
@@ -99,8 +160,8 @@ pub(crate) enum OwnedBufferSlot {
     /// Null validity / empty slot (Arrow null buffer pointer).
     Null,
     F64(SharedSlice<f64>),
-    I32(Arc<[i32]>),
-    U8(Arc<[u8]>),
+    I32(crate::geometry::SharedSlice<i32>),
+    U8(crate::geometry::SharedSlice<u8>),
 }
 
 /// Gometry-built Arrow array shell. Only the builders in this module construct
@@ -110,7 +171,9 @@ pub(crate) struct GometryArrowArray(Box<ArrowArray>);
 
 impl GometryArrowArray {
     pub(crate) fn into_box(self) -> Box<ArrowArray> {
-        self.0
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: ownership leaves the guard exactly once; its destructor is disabled.
+        unsafe { ptr::read(ptr::from_ref(&this.0)) }
     }
 
     pub(crate) fn as_mut(&mut self) -> &mut ArrowArray {
@@ -122,6 +185,17 @@ impl GometryArrowArray {
         usize::try_from(self.0.length).map_err(|_| {
             GeometryError::new_err("Arrow geometry export length is negative or too large")
         })
+    }
+}
+
+impl Drop for GometryArrowArray {
+    fn drop(&mut self) {
+        // SAFETY: the guard owns the live shell; the callback is idempotent.
+        unsafe {
+            if let Some(release) = self.0.release {
+                release(self.0.as_mut());
+            }
+        }
     }
 }
 
@@ -178,8 +252,8 @@ fn ensure_owned_buffer_window(
 /// free logical window over a short owner cannot publish OOB buffers.
 fn make_array(
     length: usize,
-    buffers: Vec<OwnedBufferSlot>,
-    children: Vec<GometryArrowArray>,
+    buffers: impl IntoIterator<Item = OwnedBufferSlot>,
+    children: impl IntoIterator<Item = GometryArrowArray>,
 ) -> PyResult<GometryArrowArray> {
     make_array_with_offset(length, 0, buffers, children)
 }
@@ -193,58 +267,39 @@ fn make_array(
 fn make_array_with_offset(
     length: usize,
     offset: usize,
-    buffers: Vec<OwnedBufferSlot>,
-    children: Vec<GometryArrowArray>,
+    buffers: impl IntoIterator<Item = OwnedBufferSlot>,
+    children: impl IntoIterator<Item = GometryArrowArray>,
 ) -> PyResult<GometryArrowArray> {
+    let buffers = crate::try_collect_results(buffers.into_iter().map(Ok))?;
+    let mut children = crate::try_collect_results(children.into_iter().map(Ok))?;
     ensure_owned_buffer_window(length, offset, &buffers)?;
     let n_buffers = buffers.len();
     let length_i64 = checked_i64(length, "length")?;
     let offset_i64 = checked_i64(offset, "offset")?;
     let n_buffers_i64 = checked_i64(n_buffers, "n_buffers")?;
 
-    let mut f64_buffers = Vec::new();
-    let mut i32_buffers = Vec::new();
-    let mut u8_buffers = Vec::new();
     let mut buffer_ptrs = crate::try_vec_with_capacity(n_buffers)?;
-    for slot in buffers {
-        match slot {
-            OwnedBufferSlot::Null => crate::try_push(&mut buffer_ptrs, ptr::null())?,
-            OwnedBufferSlot::F64(values) => {
-                crate::try_push(&mut buffer_ptrs, values.as_ptr().cast())?;
-                f64_buffers.push(values);
-            },
-            OwnedBufferSlot::I32(values) => {
-                crate::try_push(&mut buffer_ptrs, values.as_ptr().cast())?;
-                i32_buffers.push(values);
-            },
-            OwnedBufferSlot::U8(values) => {
-                crate::try_push(&mut buffer_ptrs, values.as_ptr().cast())?;
-                u8_buffers.push(values);
-            },
-        }
+    for slot in &buffers {
+        buffer_ptrs.push(match slot {
+            OwnedBufferSlot::Null => ptr::null(),
+            OwnedBufferSlot::F64(values) => values.as_ptr().cast(),
+            OwnedBufferSlot::I32(values) => values.as_ptr().cast(),
+            OwnedBufferSlot::U8(values) => values.as_ptr().cast(),
+        });
     }
-
-    let children = crate::try_collect_results(
-        children
-            .into_iter()
-            .map(|child| Ok::<_, pyo3::PyErr>(child.into_box())),
-    )?;
-    let mut private = Box::new(ArrayPrivate {
-        _f64_buffers: f64_buffers,
-        _i32_buffers: i32_buffers,
-        u8_buffers,
+    let n_children_i64 = checked_i64(children.len(), "n_children")?;
+    let mut child_ptrs = crate::try_vec_with_capacity(children.len())?;
+    for child in &mut children {
+        child_ptrs.push(ptr::from_mut(child.as_mut()));
+    }
+    let mut private = Box::try_new(ArrayPrivate {
+        owners: buffers,
         buffers: buffer_ptrs,
-        children,
-        child_ptrs: Vec::new(),
-    });
-    private.child_ptrs = crate::try_collect_results(
-        private
-            .children
-            .iter_mut()
-            .map(|child| Ok::<_, pyo3::PyErr>(ptr::from_mut(child.as_mut()))),
-    )?;
-    let n_children_i64 = checked_i64(private.children.len(), "n_children")?;
-    let array = ArrowArray {
+        _children: children,
+        child_ptrs,
+    })
+    .map_err(crate::error::Error::from)?;
+    let mut array = Box::try_new(ArrowArray {
         length: length_i64,
         null_count: 0,
         offset: offset_i64,
@@ -258,9 +313,11 @@ fn make_array_with_offset(
         },
         dictionary: ptr::null_mut(),
         release: Some(release_array),
-        private_data: Box::into_raw(private).cast(),
-    };
-    Ok(GometryArrowArray(Box::new(array)))
+        private_data: ptr::null_mut(),
+    })
+    .map_err(crate::error::Error::from)?;
+    array.private_data = Box::into_raw(private).cast();
+    Ok(GometryArrowArray(array))
 }
 
 /// Attach a top-level validity bitmap to a **gometry-built** array shell.
@@ -314,7 +371,7 @@ pub(crate) fn apply_top_level_validity(
                 validity[bit / 8] |= 1 << (bit % 8);
             }
         }
-        Arc::<[u8]>::from(validity)
+        crate::geometry::SharedSlice::try_from_vec(validity)?
     };
     let private = array.private_data.cast::<ArrayPrivate>();
     if private.is_null() {
@@ -323,8 +380,8 @@ pub(crate) fn apply_top_level_validity(
         ));
     }
     // SAFETY: `GometryArrowArray` always carries an `ArrayPrivate` box whose
-    // `buffers` vector backs `array.buffers`. Appending the validity Arc may
-    // move that vector, so the exported buffer pointer is refreshed.
+    // `buffers` vector backs `array.buffers`. Replacing its validity owner
+    // preserves both vector allocations and retains the published bytes.
     unsafe {
         let private = &mut *private;
         if private.buffers.is_empty() {
@@ -332,13 +389,8 @@ pub(crate) fn apply_top_level_validity(
                 "Arrow geometry export has no top-level validity buffer slot",
             ));
         }
-        private.u8_buffers.push(validity);
-        private.buffers[0] = private
-            .u8_buffers
-            .last()
-            .expect("validity buffer was just pushed")
-            .as_ptr()
-            .cast();
+        private.buffers[0] = validity.as_ptr().cast();
+        private.owners[0] = OwnedBufferSlot::U8(validity);
         array.buffers = private.buffers.as_ptr();
     }
     array.null_count = i64::try_from(null_count)
@@ -351,7 +403,7 @@ pub(crate) fn apply_top_level_validity(
 /// null count; it does not inspect or rebuild the bitmap.
 pub(crate) fn apply_prebuilt_top_level_validity(
     array: &mut GometryArrowArray,
-    validity: Arc<[u8]>,
+    validity: crate::geometry::SharedSlice<u8>,
     null_count: usize,
 ) -> PyResult<()> {
     let array = array.as_mut();
@@ -386,14 +438,9 @@ pub(crate) fn apply_prebuilt_top_level_validity(
                 "Arrow geometry export has no top-level validity buffer slot",
             ));
         }
-        private.u8_buffers.push(validity);
+        private.buffers[0] = validity.as_ptr().cast();
+        private.owners[0] = OwnedBufferSlot::U8(validity);
         array.buffers = private.buffers.as_ptr();
-        private.buffers[0] = private
-            .u8_buffers
-            .last()
-            .expect("validity buffer was just pushed")
-            .as_ptr()
-            .cast();
     }
     array.null_count = i64::try_from(null_count)
         .map_err(|_| GeometryError::new_err("Arrow geometry export null count exceeds i64"))?;
@@ -436,13 +483,15 @@ pub(crate) fn primitive_f64_array_windowed(
     make_array_with_offset(
         len,
         start,
-        vec![OwnedBufferSlot::Null, OwnedBufferSlot::F64(values)],
+        [OwnedBufferSlot::Null, OwnedBufferSlot::F64(values)],
         Vec::new(),
     )
 }
 
-pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> SchemaNode {
-    let mut children = vec![
+pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> NativeArrowExportResult<SchemaNode> {
+    let mut children = Vec::new();
+    crate::try_reserve_vec(&mut children, 4)?;
+    children.extend([
         SchemaNode {
             format: "g",
             name: "x",
@@ -455,7 +504,7 @@ pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> SchemaNode {
             metadata: None,
             children: Vec::new(),
         },
-    ];
+    ]);
     if axes.has_z() {
         children.push(SchemaNode {
             format: "g",
@@ -472,12 +521,12 @@ pub(crate) fn coordinate_schema(axes: CoordinateAxes) -> SchemaNode {
             children: Vec::new(),
         });
     }
-    SchemaNode {
+    Ok(SchemaNode {
         format: "+s",
         name: "",
         metadata: None,
         children,
-    }
+    })
 }
 
 pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
@@ -488,10 +537,9 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
     let start = columns.window.start;
     let len = columns.window.end - columns.window.start;
     let m_parts = columns.m_parts();
-    let mut children = vec![
-        primitive_f64_array_windowed(columns.xs, start, len)?,
-        primitive_f64_array_windowed(columns.ys, start, len)?,
-    ];
+    let mut children = crate::try_vec_with_capacity(4)?;
+    children.push(primitive_f64_array_windowed(columns.xs, start, len)?);
+    children.push(primitive_f64_array_windowed(columns.ys, start, len)?);
     if let Some(zs) = columns.zs {
         children.push(primitive_f64_array_windowed(zs, start, len)?);
     }
@@ -502,7 +550,7 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
             m_range.end - m_range.start,
         )?);
     }
-    make_array(len, vec![OwnedBufferSlot::Null], children)
+    make_array(len, [OwnedBufferSlot::Null], children)
 }
 
 /// List array over a full CSR offsets buffer with a logical row window.
@@ -515,7 +563,7 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
 /// window, and the window terminal must not exceed the child length.
 #[cfg(test)]
 pub(crate) fn list_array_windowed(
-    offsets: Arc<[i32]>,
+    offsets: crate::geometry::SharedSlice<i32>,
     child: GometryArrowArray,
     start: usize,
     length: usize,
@@ -532,8 +580,8 @@ pub(crate) fn list_array_windowed(
     make_array_with_offset(
         length,
         start,
-        vec![OwnedBufferSlot::Null, OwnedBufferSlot::I32(offsets)],
-        vec![child],
+        [OwnedBufferSlot::Null, OwnedBufferSlot::I32(offsets)],
+        [child],
     )
 }
 
@@ -541,7 +589,7 @@ pub(crate) fn list_array_windowed(
 /// the detached export planner. No offset scan or native packing work belongs
 /// in the attached capsule egress.
 pub(crate) fn admitted_list_array_windowed(
-    offsets: Arc<[i32]>,
+    offsets: crate::geometry::SharedSlice<i32>,
     child: GometryArrowArray,
     start: usize,
     length: usize,
@@ -549,8 +597,8 @@ pub(crate) fn admitted_list_array_windowed(
     make_array_with_offset(
         length,
         start,
-        vec![OwnedBufferSlot::Null, OwnedBufferSlot::I32(offsets)],
-        vec![child],
+        [OwnedBufferSlot::Null, OwnedBufferSlot::I32(offsets)],
+        [child],
     )
 }
 
@@ -560,7 +608,10 @@ pub(crate) fn admitted_list_array_windowed(
 /// non-negative and non-decreasing, and the terminal must lie within `data`.
 /// Intermediate OOB/negative values (e.g. `[100, 2]` or `[-5, 0]`) are rejected.
 #[cfg(test)]
-pub(crate) fn binary_array(offsets: Arc<[i32]>, data: Arc<[u8]>) -> PyResult<GometryArrowArray> {
+pub(crate) fn binary_array(
+    offsets: crate::geometry::SharedSlice<i32>,
+    data: crate::geometry::SharedSlice<u8>,
+) -> PyResult<GometryArrowArray> {
     if offsets.is_empty() {
         return Err(GeometryError::new_err(
             "Arrow binary offsets must contain at least one entry",
@@ -570,7 +621,7 @@ pub(crate) fn binary_array(offsets: Arc<[i32]>, data: Arc<[u8]>) -> PyResult<Gom
     crate::py::arrow::ensure_i32_offsets_monotonic(&offsets, 0, length, data.len())?;
     make_array(
         length,
-        vec![
+        [
             OwnedBufferSlot::Null,
             OwnedBufferSlot::I32(offsets),
             OwnedBufferSlot::U8(data),
@@ -580,15 +631,15 @@ pub(crate) fn binary_array(offsets: Arc<[i32]>, data: Arc<[u8]>) -> PyResult<Gom
 }
 
 pub(crate) fn admitted_binary_array(
-    offsets: Arc<[i32]>,
-    data: Arc<[u8]>,
+    offsets: crate::geometry::SharedSlice<i32>,
+    data: crate::geometry::SharedSlice<u8>,
 ) -> PyResult<GometryArrowArray> {
     let length = offsets.len().checked_sub(1).ok_or_else(|| {
         GeometryError::new_err("Arrow binary offsets must contain at least one entry")
     })?;
     make_array(
         length,
-        vec![
+        [
             OwnedBufferSlot::Null,
             OwnedBufferSlot::I32(offsets),
             OwnedBufferSlot::U8(data),
@@ -604,9 +655,15 @@ pub(crate) fn extension_schema(
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<SchemaNode> {
     let extension_name = encoding.extension_name();
-    let mut metadata = vec![("ARROW:extension:name".to_owned(), extension_name.to_owned())];
+    let mut metadata = Vec::new();
+    crate::try_reserve_vec(&mut metadata, 2)?;
+    let text = |value: &str| {
+        crate::boundary::try_string_from_str(value)
+            .map_err(|()| crate::error::Error::from(crate::error::ResourceError::Allocation))
+    };
+    metadata.push((text("ARROW:extension:name")?, text(extension_name)?));
     if let Some(value) = extension_metadata_json(crs, epoch)? {
-        metadata.push(("ARROW:extension:metadata".to_owned(), value));
+        metadata.push((text("ARROW:extension:metadata")?, value));
     }
     Ok(SchemaNode {
         metadata: Some(metadata),
@@ -641,16 +698,19 @@ pub(crate) fn extension_metadata_json(
     }
 }
 
-pub(crate) fn list_schema(child: SchemaNode) -> SchemaNode {
-    SchemaNode {
+pub(crate) fn list_schema(child: SchemaNode) -> NativeArrowExportResult<SchemaNode> {
+    let mut children = Vec::new();
+    crate::try_reserve_vec(&mut children, 1)?;
+    children.push(SchemaNode {
+        name: "item",
+        ..child
+    });
+    Ok(SchemaNode {
         format: "+l",
         name: "",
         metadata: None,
-        children: vec![SchemaNode {
-            name: "item",
-            ..child
-        }],
-    }
+        children,
+    })
 }
 
 pub(crate) const fn wkb_schema() -> SchemaNode {
@@ -664,6 +724,43 @@ pub(crate) const fn wkb_schema() -> SchemaNode {
 
 #[cfg(test)]
 mod owner_export_tests {
+    #[test]
+    fn failed_parent_publication_releases_child_tree_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use super::{OwnedBufferSlot, make_array};
+        use crate::test_support::{allocation_count, fail_allocations_after};
+        static RELEASES: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn counted_release(array: *mut crate::py::arrow_c::ArrowArray) {
+            RELEASES.fetch_add(1, Ordering::Relaxed);
+            // SAFETY: this callback wraps the production callback on an owned child.
+            unsafe { crate::py::arrow_c::release_array(array) };
+        }
+        ensure_python();
+        let fixture = || {
+            let mut child = make_array(0, [OwnedBufferSlot::Null], Vec::new()).unwrap();
+            child.as_mut().release = Some(counted_release);
+            ([OwnedBufferSlot::Null], [child])
+        };
+        let (buffers, children) = fixture();
+        let (parent, allocations) = allocation_count(|| make_array(0, buffers, children));
+        drop(parent.unwrap());
+        assert_eq!(RELEASES.load(Ordering::Relaxed), 1);
+        assert!(allocations > 0);
+        for successful in 0..allocations {
+            RELEASES.store(0, Ordering::Relaxed);
+            let (buffers, children) = fixture();
+            let result = fail_allocations_after(successful, || make_array(0, buffers, children));
+            assert!(result.is_err(), "allocation {successful} was not rejected");
+            drop(result);
+            assert_eq!(
+                RELEASES.load(Ordering::Relaxed),
+                1,
+                "allocation {successful}"
+            );
+        }
+    }
+
     use super::*;
 
     fn ensure_python() {
@@ -681,56 +778,69 @@ mod owner_export_tests {
     #[test]
     fn list_window_rejects_empty_and_oob_offsets() {
         ensure_python();
-        let empty: Arc<[i32]> = Arc::from([]);
-        let child = make_array(0, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
+        let empty: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![]).unwrap();
+        let child = make_array(0, [OwnedBufferSlot::Null], Vec::new()).unwrap();
         assert!(list_array_windowed(empty, child, 0, 0).is_err());
 
-        let offsets: Arc<[i32]> = Arc::from([0, 1, 2]);
-        let child = make_array(0, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
+        let offsets: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![0, 1, 2]).unwrap();
+        let child = make_array(0, [OwnedBufferSlot::Null], Vec::new()).unwrap();
         assert!(list_array_windowed(offsets, child, 0, 3).is_err());
     }
 
     #[test]
     fn list_rejects_non_monotonic_and_terminal_past_child() {
         ensure_python();
-        let child = make_array(2, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
+        let child = make_array(2, [OwnedBufferSlot::Null], Vec::new()).unwrap();
         // Decreasing: 0, 2, 1
-        let offsets: Arc<[i32]> = Arc::from([0, 2, 1]);
+        let offsets: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![0, 2, 1]).unwrap();
         assert!(list_array_windowed(offsets, child, 0, 2).is_err());
 
-        let child = make_array(2, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
+        let child = make_array(2, [OwnedBufferSlot::Null], Vec::new()).unwrap();
         // Terminal 5 > child length 2
-        let offsets: Arc<[i32]> = Arc::from([0, 5]);
+        let offsets: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![0, 5]).unwrap();
         assert!(list_array_windowed(offsets, child, 0, 1).is_err());
     }
 
     #[test]
     fn binary_rejects_empty_offsets_and_overlong_terminal() {
         ensure_python();
-        let empty: Arc<[i32]> = Arc::from([]);
-        let data: Arc<[u8]> = Arc::from([1_u8, 2]);
-        assert!(binary_array(empty, Arc::clone(&data)).is_err());
+        let empty: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![]).unwrap();
+        let data: crate::geometry::SharedSlice<u8> =
+            crate::geometry::SharedSlice::try_from_vec(vec![1_u8, 2]).unwrap();
+        assert!(binary_array(empty, data.clone()).is_err());
 
-        let offsets: Arc<[i32]> = Arc::from([0, 9]);
+        let offsets: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![0, 9]).unwrap();
         assert!(binary_array(offsets, data).is_err());
 
-        let offsets: Arc<[i32]> = Arc::from([0, 2]);
-        let data: Arc<[u8]> = Arc::from([1_u8, 2]);
+        let offsets: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![0, 2]).unwrap();
+        let data: crate::geometry::SharedSlice<u8> =
+            crate::geometry::SharedSlice::try_from_vec(vec![1_u8, 2]).unwrap();
         binary_array(offsets, data).unwrap();
     }
 
     #[test]
     fn binary_rejects_intermediate_oob_and_negative_offsets() {
         ensure_python();
-        let data: Arc<[u8]> = Arc::from([1_u8, 2, 3, 4]);
+        let data: crate::geometry::SharedSlice<u8> =
+            crate::geometry::SharedSlice::try_from_vec(vec![1_u8, 2, 3, 4]).unwrap();
         // Intermediate 100 > data.len(); terminal 2 is fine — still reject.
-        let offsets: Arc<[i32]> = Arc::from([100, 2]);
-        assert!(binary_array(Arc::clone(&offsets), Arc::clone(&data)).is_err());
+        let offsets: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![100, 2]).unwrap();
+        assert!(binary_array(offsets, data.clone()).is_err());
         // Negative intermediate with non-negative terminal.
-        let offsets: Arc<[i32]> = Arc::from([-5, 0]);
-        assert!(binary_array(offsets, Arc::clone(&data)).is_err());
+        let offsets: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![-5, 0]).unwrap();
+        assert!(binary_array(offsets, data.clone()).is_err());
         // Non-monotonic positive chain.
-        let offsets: Arc<[i32]> = Arc::from([0, 3, 1]);
+        let offsets: crate::geometry::SharedSlice<i32> =
+            crate::geometry::SharedSlice::try_from_vec(vec![0, 3, 1]).unwrap();
         assert!(binary_array(offsets, data).is_err());
     }
 
@@ -753,10 +863,14 @@ mod owner_export_tests {
     #[test]
     fn validity_mask_length_checked_in_release() {
         ensure_python();
-        let mut array = make_array(2, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
-        let short = crate::array::ValidityMask::from_vec(1, vec![true]).unwrap();
+        let mut array = make_array(2, [OwnedBufferSlot::Null], Vec::new()).unwrap();
+        let short = crate::array::ValidityMask::from_vec(1, vec![true])
+            .unwrap()
+            .unwrap();
         assert!(apply_top_level_validity(&mut array, &short).is_err());
-        let mask = crate::array::ValidityMask::from_vec(2, vec![false, true]).unwrap();
+        let mask = crate::array::ValidityMask::from_vec(2, vec![false, true])
+            .unwrap()
+            .unwrap();
         apply_top_level_validity(&mut array, &mask).unwrap();
     }
 
@@ -766,14 +880,14 @@ mod owner_export_tests {
         let parent = crate::array::ValidityMask::from_vec(8, vec![
             false, false, false, true, false, true, false, false,
         ])
+        .unwrap()
         .unwrap();
         let window = parent.window(3, 3).unwrap();
         let (bitmap, offset) = window.arrow_bitmap();
         assert_eq!(offset, 3);
         assert_eq!(bitmap.as_ref(), &[0b1101_0111]);
 
-        let mut array =
-            make_array_with_offset(3, 3, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
+        let mut array = make_array_with_offset(3, 3, [OwnedBufferSlot::Null], Vec::new()).unwrap();
         apply_top_level_validity(&mut array, &window).unwrap();
         assert_eq!(array.0.null_count, 2);
         // SAFETY: `apply_top_level_validity` populated the buffer array with

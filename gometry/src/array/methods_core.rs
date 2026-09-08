@@ -161,7 +161,7 @@ fn replace_dense_packed_coordinates(
             Ok(Ok(PyGeometryArray::packed_points(
                 coords,
                 array.frame.clone(),
-            )))
+            )?))
         },
         GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords,
@@ -174,7 +174,7 @@ fn replace_dense_packed_coordinates(
                 coords,
                 offsets.clone(),
                 array.frame.clone(),
-            )))
+            )?))
         },
         GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
@@ -190,7 +190,7 @@ fn replace_dense_packed_coordinates(
                 ring_offsets.clone(),
                 polygon_offsets.clone(),
                 array.frame.clone(),
-            )))
+            )?))
         },
         GeometryArrayStorage::Packed(
             PackedStorage::Points { .. }
@@ -259,12 +259,8 @@ impl PyGeometryArray {
         })?;
         let shapes = crate::try_collect_results(
             self.present_shape_rows()
-                .map(|result| {
-                    result
-                        .map(|(_, shape)| shape.into_owned())
-                        .map_err(PyErr::from)
-                })
-                .filter(|result| result.as_ref().is_ok_and(|shape| !shape.is_empty())),
+                .map(|result| result.map(|(_, shape)| shape).map_err(PyErr::from))
+                .filter(|result| !matches!(result, Ok(shape) if shape.is_empty())),
         )?;
         if shapes.is_empty() {
             return Err(CRSError::new_err(
@@ -397,7 +393,7 @@ impl PyGeometryArray {
         Ok(if has_missing {
             Self::scatter_present_rows(
                 &array,
-                ValidityMask::from_vec(mask.len(), mask)
+                ValidityMask::from_vec(mask.len(), mask)?
                     .expect("has_missing guarantees a present missing mask"),
             )?
         } else {
@@ -568,14 +564,10 @@ impl PyGeometryArray {
                 | PackedStorage::Lines { coords, .. }
                 | PackedStorage::Polygons { coords, .. },
             ) => coords.axes().has_z(),
-            GeometryArrayStorage::Mixed(_) => {
-                self.storage()
-                    .iter_shapes()
-                    .enumerate()
-                    .any(|(row, shape)| {
-                        !self.is_row_missing(row) && shape.is_ok_and(|shape| shape.has_z())
-                    })
-            },
+            GeometryArrayStorage::Mixed(shapes) => shapes
+                .iter()
+                .enumerate()
+                .any(|(row, shape)| !self.is_row_missing(row) && shape.has_z()),
         }
     }
     /// Whether each geometry carries an M ordinate. Missing rows are false.
@@ -617,14 +609,10 @@ impl PyGeometryArray {
                 | PackedStorage::Lines { coords, .. }
                 | PackedStorage::Polygons { coords, .. },
             ) => coords.axes().has_m(),
-            GeometryArrayStorage::Mixed(_) => {
-                self.storage()
-                    .iter_shapes()
-                    .enumerate()
-                    .any(|(row, shape)| {
-                        !self.is_row_missing(row) && shape.is_ok_and(|shape| shape.has_m())
-                    })
-            },
+            GeometryArrayStorage::Mixed(shapes) => shapes
+                .iter()
+                .enumerate()
+                .any(|(row, shape)| !self.is_row_missing(row) && shape.has_m()),
         }
     }
     /// Per-geometry bounds ``(minx, miny, maxx, maxy)`` (see
@@ -744,7 +732,7 @@ impl PyGeometryArray {
             },
         }
         let label_count = labels.len();
-        try_collect_values(labels.into_iter(), label_count)
+        try_collect_values(labels, label_count)
     }
     /// Top-level parts grouped by source row.
     ///

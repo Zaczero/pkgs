@@ -446,8 +446,8 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
     let (expected_distance, expected_nearest) =
         brute_geodesic_distance_and_nearest_points(&left, &right, &metric)
             .expect("non-empty shapes");
-    let left_data = PreparedPlan::new(left);
-    let right_data = PreparedPlan::new(right);
+    let left_data = PreparedPlan::new(left).unwrap();
+    let right_data = PreparedPlan::new(right).unwrap();
     let left_cache = FrameDependentCaches::default();
     let right_cache = FrameDependentCaches::default();
     let actual_distance = left_data.geodesic_distance_cached(

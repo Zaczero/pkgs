@@ -274,10 +274,13 @@ pub(crate) fn array_to_stream_capsule(
     stream_capsule(py, export)
 }
 
-pub(crate) fn schema_capsule(py: Python<'_>, schema: Box<ArrowSchema>) -> PyResult<Py<PyAny>> {
+pub(crate) fn schema_capsule(
+    py: Python<'_>,
+    schema: crate::py::arrow_c::GometryArrowSchema,
+) -> PyResult<Py<PyAny>> {
     owned_capsule(
         py,
-        schema,
+        schema.into_box(),
         schema_capsule_name(),
         schema_capsule_destructor,
         release_schema,
@@ -323,33 +326,27 @@ pub(crate) fn array_capsule(py: Python<'_>, array: GometryArrowArray) -> PyResul
     )
 }
 
-pub(crate) fn stream_from_export(export: ExportedArray) -> Box<ArrowArrayStream> {
-    let stream = Box::new(ArrowArrayStream {
+pub(crate) fn stream_from_export(export: ExportedArray) -> PyResult<Box<ArrowArrayStream>> {
+    let private = Box::try_new(StreamPrivate {
+        schema: export.schema_node,
+        array: Some(export.array),
+        last_error: c"",
+    })
+    .map_err(crate::error::Error::from)?;
+    let mut stream = Box::try_new(ArrowArrayStream {
         get_schema: Some(stream_get_schema),
         get_next: Some(stream_get_next),
         get_last_error: Some(stream_get_last_error),
         release: Some(release_stream),
-        private_data: Box::into_raw(Box::new(StreamPrivate {
-            schema: export.schema_node,
-            array: Some(export.array.into_box()),
-            last_error: c"",
-        }))
-        .cast(),
-    });
-    // The standalone schema in `ExportedArray` is not part of the stream.
-    let mut schema = export.schema;
-    // SAFETY: `export.schema` is a standalone schema tree not attached to the
-    // stream; release it before discarding the box.
-    unsafe {
-        if schema.release.is_some() {
-            release_schema(schema.as_mut());
-        }
-    }
-    stream
+        private_data: std::ptr::null_mut(),
+    })
+    .map_err(crate::error::Error::from)?;
+    stream.private_data = Box::into_raw(private).cast();
+    Ok(stream)
 }
 
 pub(crate) fn stream_capsule(py: Python<'_>, export: ExportedArray) -> PyResult<Py<PyAny>> {
-    let stream = stream_from_export(export);
+    let stream = stream_from_export(export)?;
     owned_capsule(
         py,
         stream,

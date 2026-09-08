@@ -43,11 +43,11 @@ pub(crate) use types::{
     Bounds, Bounds3D, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder,
     CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
     FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
-    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, LineSeq, MAX_NESTING, MColumn,
-    MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointKey, Polygon,
-    PolygonLevel, PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod, Ring, RingLevel,
-    Segment, Shape, ShapeData, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
-    VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
+    MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
+    PointKey, Polygon, PolygonLevel, PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod,
+    Ring, RingLevel, Segment, Shape, ShapeData, SharedSlice, SimplifyMethod, SmoothMethod,
+    ValidationIssue, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
     concat_coord_columns, ordered_edge, segment_midpoint, try_copy_slice,
 };
 mod antimeridian;

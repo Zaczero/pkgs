@@ -242,7 +242,13 @@ where
                 return Err(error);
             },
         };
-        let fixed_plan = fixed.plan_or_transient();
+        let fixed_plan = match fixed.plan_or_transient() {
+            Ok(plan) => plan,
+            Err(error) => {
+                drop(metric_scratch);
+                return Err(error.into());
+            },
+        };
         // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
         // frame caches are derived from MetricCtx. Never demote these kernels to
         // bare `&Shape` (Deref coercion would drop prepared engines).
@@ -279,7 +285,7 @@ where
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
     let (lefts, rights) = paired_arrays(left, right, op_name)?;
-    let missing = crate::array::missing::union_pair(left.missing(), right.missing());
+    let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
     let (frame, domain) = binary_frame(
         (left.crs_ref(), left.epoch()),
         (right.crs_ref(), right.epoch()),
@@ -435,166 +441,168 @@ where
             },
         };
 
-        match (left_input, right_input, resolved) {
-            (One(left), One(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
-                let left = left.plan_or_transient();
-                let right = right.plan_or_transient();
-                RawMetricBinary::Scalar(py.detach(|| planar(to_metre.get(), &left, &right)))
-            },
-            (One(left), One(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
-                let left_plan = left.plan_or_transient();
-                let right_plan = right.plan_or_transient();
-                let row = GeodesicBinaryRow {
-                    metric,
-                    left_cache: &left.frame_cache(),
-                    right_cache: &right.frame_cache(),
-                };
-                RawMetricBinary::Scalar(py.detach(|| geodesic(&left_plan, &right_plan, &row)))
-            },
-            (Many(array), One(fixed), crate::crs::ResolvedMetric::Planar { to_metre })
-            | (One(fixed), Many(array), crate::crs::ResolvedMetric::Planar { to_metre }) => {
-                let scalar_left = matches!(left_input, One(_));
-                let fixed = fixed.plan_or_transient();
-                let output_missing = array.missing().cloned();
-                let array = array.clone();
-                RawMetricBinary::Array(
-                    py.detach(move || {
-                        let mut rows = array.row_operation();
-                        rows.rows_with_missing(R::missing_value)
-                            .map(|logical_row| {
-                                let ArrayRow::Present(row) = logical_row else {
-                                    if let ArrayRow::Missing { value, .. } = logical_row {
-                                        return Ok(value);
-                                    }
-                                    unreachable!();
-                                };
-                                let data = rows.prepared(row)?;
-                                if scalar_left {
-                                    planar(to_metre.get(), &fixed, &data)
-                                } else {
-                                    planar(to_metre.get(), &data, &fixed)
-                                }
-                            })
-                            .collect_rows()
-                    }),
-                    output_missing,
-                )
-            },
-            (Many(array), One(fixed), crate::crs::ResolvedMetric::Geodesic(metric))
-            | (One(fixed), Many(array), crate::crs::ResolvedMetric::Geodesic(metric)) => {
-                let scalar_left = matches!(left_input, One(_));
-                let fixed_plan = fixed.plan_or_transient();
-                let fixed_cache = fixed.frame_cache();
-                let output_missing = array.missing().cloned();
-                let array = array.clone();
-                RawMetricBinary::Array(
-                    py.detach(move || {
-                        let mut rows = array.row_operation();
-                        rows.rows_with_missing(R::missing_value)
-                            .map(|logical_row| {
-                                let ArrayRow::Present(row) = logical_row else {
-                                    if let ArrayRow::Missing { value, .. } = logical_row {
-                                        return Ok(value);
-                                    }
-                                    unreachable!();
-                                };
-                                let row_index = row.logical();
-                                let data = rows.prepared(row)?;
-                                let row_cache = rows.frame_cache(row_index);
-                                let row = if scalar_left {
-                                    GeodesicBinaryRow {
-                                        metric,
-                                        left_cache: &fixed_cache,
-                                        right_cache: &row_cache,
-                                    }
-                                } else {
-                                    GeodesicBinaryRow {
-                                        metric,
-                                        left_cache: &row_cache,
-                                        right_cache: &fixed_cache,
-                                    }
-                                };
-                                if scalar_left {
-                                    geodesic(&fixed_plan, &data, &row)
-                                } else {
-                                    geodesic(&data, &fixed_plan, &row)
-                                }
-                            })
-                            .collect_rows()
-                    }),
-                    output_missing,
-                )
-            },
-            (Many(left), Many(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
-                if let Err(error) = crate::broadcast::paired_arrays_len(left, right) {
-                    drop(scratch);
-                    return Err(error);
-                }
-                let missing = crate::array::missing::union_pair(left.missing(), right.missing());
-                let left = left.clone();
-                let right = right.clone();
-                RawMetricBinary::Array(
-                    py.detach(move || {
-                        let mut left_rows = left.row_operation();
-                        let mut right_rows = right.row_operation();
-                        left_rows
-                            .rows_with_missing(R::missing_value)
-                            .zip(right_rows.rows_with_missing(R::missing_value))
-                            .map(|(left_row, right_row)| match (left_row, right_row) {
-                                (ArrayRow::Present(a), ArrayRow::Present(b)) => {
-                                    let a = left_rows.prepared(a)?;
-                                    let b = right_rows.prepared(b)?;
-                                    planar(to_metre.get(), &a, &b)
-                                },
-                                (ArrayRow::Missing { value, .. }, _)
-                                | (_, ArrayRow::Missing { value, .. }) => Ok(value),
-                            })
-                            .collect_rows()
-                    }),
-                    missing,
-                )
-            },
-            (Many(left), Many(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
-                if let Err(error) = crate::broadcast::paired_arrays_len(left, right) {
-                    drop(scratch);
-                    return Err(error);
-                }
-                let missing = crate::array::missing::union_pair(left.missing(), right.missing());
-                let left = left.clone();
-                let right = right.clone();
-                RawMetricBinary::Array(
-                    py.detach(move || {
-                        let mut left_rows = left.row_operation();
-                        let mut right_rows = right.row_operation();
-                        left_rows
-                            .rows_with_missing(R::missing_value)
-                            .zip(right_rows.rows_with_missing(R::missing_value))
-                            .map(|(left_row, right_row)| match (left_row, right_row) {
-                                (ArrayRow::Present(a), ArrayRow::Present(b)) => {
-                                    let row_index = a.logical();
-                                    let a = left_rows.prepared(a)?;
-                                    let b = right_rows.prepared(b)?;
-                                    let left_cache = left_rows.frame_cache(row_index);
-                                    let right_cache = right_rows.frame_cache(row_index);
-                                    let row = GeodesicBinaryRow {
-                                        metric,
-                                        left_cache: &left_cache,
-                                        right_cache: &right_cache,
-                                    };
-                                    geodesic(&a, &b, &row)
-                                },
-                                (ArrayRow::Missing { value, .. }, _)
-                                | (_, ArrayRow::Missing { value, .. }) => Ok(value),
-                            })
-                            .collect_rows()
-                    }),
-                    missing,
-                )
-            },
+        if let (Many(left), Many(right)) = (left_input, right_input)
+            && let Err(error) = crate::broadcast::paired_arrays_len(left, right)
+        {
+            drop(scratch);
+            return Err(error);
         }
+        (|| -> Result<_> {
+            Ok(match (left_input, right_input, resolved) {
+                (One(left), One(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
+                    let left = left.plan_or_transient()?;
+                    let right = right.plan_or_transient()?;
+                    RawMetricBinary::Scalar(py.detach(|| planar(to_metre.get(), &left, &right)))
+                },
+                (One(left), One(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
+                    let left_plan = left.plan_or_transient()?;
+                    let right_plan = right.plan_or_transient()?;
+                    let row = GeodesicBinaryRow {
+                        metric,
+                        left_cache: &*left.frame_cache()?,
+                        right_cache: &*right.frame_cache()?,
+                    };
+                    RawMetricBinary::Scalar(py.detach(|| geodesic(&left_plan, &right_plan, &row)))
+                },
+                (Many(array), One(fixed), crate::crs::ResolvedMetric::Planar { to_metre })
+                | (One(fixed), Many(array), crate::crs::ResolvedMetric::Planar { to_metre }) => {
+                    let scalar_left = matches!(left_input, One(_));
+                    let fixed = fixed.plan_or_transient()?;
+                    let output_missing = array.missing().cloned();
+                    let array = array.clone();
+                    RawMetricBinary::Array(
+                        py.detach(move || {
+                            let mut rows = array.row_operation();
+                            rows.rows_with_missing(R::missing_value)
+                                .map(|logical_row| {
+                                    let ArrayRow::Present(row) = logical_row else {
+                                        if let ArrayRow::Missing { value, .. } = logical_row {
+                                            return Ok(value);
+                                        }
+                                        unreachable!();
+                                    };
+                                    let data = rows.prepared(row)?;
+                                    if scalar_left {
+                                        planar(to_metre.get(), &fixed, &data)
+                                    } else {
+                                        planar(to_metre.get(), &data, &fixed)
+                                    }
+                                })
+                                .collect_rows()
+                        }),
+                        output_missing,
+                    )
+                },
+                (Many(array), One(fixed), crate::crs::ResolvedMetric::Geodesic(metric))
+                | (One(fixed), Many(array), crate::crs::ResolvedMetric::Geodesic(metric)) => {
+                    let scalar_left = matches!(left_input, One(_));
+                    let fixed_plan = fixed.plan_or_transient()?;
+                    let fixed_cache = fixed.frame_cache()?;
+                    let output_missing = array.missing().cloned();
+                    let array = array.clone();
+                    RawMetricBinary::Array(
+                        py.detach(move || {
+                            let mut rows = array.row_operation();
+                            rows.rows_with_missing(R::missing_value)
+                                .map(|logical_row| {
+                                    let ArrayRow::Present(row) = logical_row else {
+                                        if let ArrayRow::Missing { value, .. } = logical_row {
+                                            return Ok(value);
+                                        }
+                                        unreachable!();
+                                    };
+                                    let row_index = row.logical();
+                                    let data = rows.prepared(row)?;
+                                    let row_cache = rows.frame_cache(row_index)?;
+                                    let row = if scalar_left {
+                                        GeodesicBinaryRow {
+                                            metric,
+                                            left_cache: &fixed_cache,
+                                            right_cache: &row_cache,
+                                        }
+                                    } else {
+                                        GeodesicBinaryRow {
+                                            metric,
+                                            left_cache: &row_cache,
+                                            right_cache: &fixed_cache,
+                                        }
+                                    };
+                                    if scalar_left {
+                                        geodesic(&fixed_plan, &data, &row)
+                                    } else {
+                                        geodesic(&data, &fixed_plan, &row)
+                                    }
+                                })
+                                .collect_rows()
+                        }),
+                        output_missing,
+                    )
+                },
+                (Many(left), Many(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
+                    let missing =
+                        crate::array::missing::union_pair(left.missing(), right.missing())?;
+                    let left = left.clone();
+                    let right = right.clone();
+                    RawMetricBinary::Array(
+                        py.detach(move || {
+                            let mut left_rows = left.row_operation();
+                            let mut right_rows = right.row_operation();
+                            left_rows
+                                .rows_with_missing(R::missing_value)
+                                .zip(right_rows.rows_with_missing(R::missing_value))
+                                .map(|(left_row, right_row)| match (left_row, right_row) {
+                                    (ArrayRow::Present(a), ArrayRow::Present(b)) => {
+                                        let a = left_rows.prepared(a)?;
+                                        let b = right_rows.prepared(b)?;
+                                        planar(to_metre.get(), &a, &b)
+                                    },
+                                    (ArrayRow::Missing { value, .. }, _)
+                                    | (_, ArrayRow::Missing { value, .. }) => Ok(value),
+                                })
+                                .collect_rows()
+                        }),
+                        missing,
+                    )
+                },
+                (Many(left), Many(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
+                    let missing =
+                        crate::array::missing::union_pair(left.missing(), right.missing())?;
+                    let left = left.clone();
+                    let right = right.clone();
+                    RawMetricBinary::Array(
+                        py.detach(move || {
+                            let mut left_rows = left.row_operation();
+                            let mut right_rows = right.row_operation();
+                            left_rows
+                                .rows_with_missing(R::missing_value)
+                                .zip(right_rows.rows_with_missing(R::missing_value))
+                                .map(|(left_row, right_row)| match (left_row, right_row) {
+                                    (ArrayRow::Present(a), ArrayRow::Present(b)) => {
+                                        let row_index = a.logical();
+                                        let a = left_rows.prepared(a)?;
+                                        let b = right_rows.prepared(b)?;
+                                        let left_cache = left_rows.frame_cache(row_index)?;
+                                        let right_cache = right_rows.frame_cache(row_index)?;
+                                        let row = GeodesicBinaryRow {
+                                            metric,
+                                            left_cache: &left_cache,
+                                            right_cache: &right_cache,
+                                        };
+                                        geodesic(&a, &b, &row)
+                                    },
+                                    (ArrayRow::Missing { value, .. }, _)
+                                    | (_, ArrayRow::Missing { value, .. }) => Ok(value),
+                                })
+                                .collect_rows()
+                        }),
+                        missing,
+                    )
+                },
+            })
+        })()
     };
     drop(scratch);
-    match raw {
+    match raw? {
         RawMetricBinary::Scalar(result) => R::into_py(result.map_err(PyErr::from)?, py, &frame),
         RawMetricBinary::Array(result, missing) => {
             let values = match result {
@@ -649,9 +657,11 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
             metric,
             lane: Lane::Scalar,
         };
-        let left_plan = left.plan_or_transient();
-        let right_plan = right.plan_or_transient();
-        py.detach(move || kernel(&left_plan, &right_plan, &ctx))
+        (|| -> Result<_> {
+            let left_plan = left.plan_or_transient()?;
+            let right_plan = right.plan_or_transient()?;
+            py.detach(move || kernel(&left_plan, &right_plan, &ctx))
+        })()
     };
     drop(metric_scratch);
     let result = result.map_err(PyErr::from)?;
@@ -752,13 +762,14 @@ fn split_operand_arc_for_topology(
     domain: TopologyDomain,
     geometry: &PyGeometry,
 ) -> Result<Arc<PreparedPlan>> {
-    let plan = geometry.plan_or_transient();
+    let plan = geometry.plan_or_transient()?;
     if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(plan.shape(), frame)
     {
-        Ok(Arc::new(PreparedPlan::new(ShapeData::from(
+        Arc::try_new(PreparedPlan::new(ShapeData::from(
             plan.shape().split_antimeridian_in_frame(frame)?,
-        ))))
+        ))?)
+        .map_err(crate::error::Error::from)
     } else {
         Ok(plan)
     }
@@ -788,14 +799,14 @@ where
         let left_split = if left_crosses {
             Some(PreparedPlan::new(ShapeData::from(
                 left.shape().split_antimeridian_in_frame(frame)?,
-            )))
+            ))?)
         } else {
             None
         };
         let right_split = if right_crosses {
             Some(PreparedPlan::new(ShapeData::from(
                 right.shape().split_antimeridian_in_frame(frame)?,
-            )))
+            ))?)
         } else {
             None
         };
@@ -852,17 +863,22 @@ where
                     metric,
                     lane: Lane::Scalar,
                 };
-                let left_shape = left.plan_or_transient();
-                let right_shape = right.plan_or_transient();
-                py.detach(move || {
-                    invoke_topology_geometry_kernel(domain, &left_shape, &right_shape, &|l, r| {
-                        kernel(l, r, &ctx)
+                (|| -> Result<_> {
+                    let left_shape = left.plan_or_transient()?;
+                    let right_shape = right.plan_or_transient()?;
+                    py.detach(move || {
+                        invoke_topology_geometry_kernel(
+                            domain,
+                            &left_shape,
+                            &right_shape,
+                            &|l, r| kernel(l, r, &ctx),
+                        )
                     })
-                })
+                })()
             };
             drop(metric_scratch);
             let shape = result?;
-            Ok(Typed(PyGeometry::with_frame(shape, frame))
+            Ok(Typed(PyGeometry::with_frame(shape, frame)?)
                 .into_pyobject(py)?
                 .unbind())
         },
@@ -1036,7 +1052,6 @@ where
                         )
                     },
                 )
-                .map(|shapes| (shapes, left.missing().cloned()))
             },
             Many(right) => {
                 let rows = match paired_arrays_len(left, right) {
@@ -1068,17 +1083,16 @@ where
                         })
                     },
                 )
-                .map(|shapes| {
-                    (
-                        shapes,
-                        crate::array::missing::union_pair(left.missing(), right.missing()),
-                    )
-                })
             },
         }
     };
     drop(metric_scratch);
-    let (shapes, output_missing) = result.map_err(rows_err)?;
+    let shapes = result.map_err(rows_err)?;
+    let output_missing = match right {
+        One(_) => Ok(left.missing().cloned()),
+        Many(right) => crate::array::missing::union_pair(left.missing(), right.missing()),
+    };
+    let (shapes, output_missing) = output_missing.map(|mask| (shapes, mask))?;
     Ok(
         PyGeometryArray::from_shapes(shapes, Frame::new(output_crs, output_epoch)?)?
             .with_missing_mask(output_missing)?,
@@ -1120,7 +1134,8 @@ mod tests {
                 frame.clone(),
             )
             .unwrap();
-            let right = PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 0.0)), frame);
+            let right =
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 0.0)), frame).unwrap();
             let result = run_fast_path::<bool, _>(
                 py,
                 &array,
