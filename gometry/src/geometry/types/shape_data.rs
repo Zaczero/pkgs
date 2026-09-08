@@ -358,7 +358,11 @@ impl PreparedPlan {
         Ok(self
             .topology()?
             .linework
-            .get_or_init(|| crate::geometry::stage_linework(self.shape()).map(Box::new))
+            .get_or_try_init(|| {
+                crate::geometry::stage_linework(self.shape())
+                    .map(|staged| Box::try_new(staged).map_err(crate::error::Error::from))
+                    .transpose()
+            })?
             .as_deref())
     }
 
@@ -380,7 +384,11 @@ impl PreparedPlan {
         Ok(self
             .topology()?
             .rings
-            .get_or_init(|| crate::geometry::stage_rings(self.shape()).map(Box::new))
+            .get_or_try_init(|| {
+                crate::geometry::stage_rings(self.shape())
+                    .map(|staged| Box::try_new(staged).map_err(crate::error::Error::from))
+                    .transpose()
+            })?
             .as_deref())
     }
 
@@ -388,7 +396,12 @@ impl PreparedPlan {
         Ok(self
             .topology()?
             .validity
-            .get_or_init(|| self.shape().validate().map(Box::new))
+            .get_or_try_init(|| {
+                self.shape()
+                    .validate()
+                    .map(|issue| Box::try_new(issue).map_err(crate::error::Error::from))
+                    .transpose()
+            })?
             .as_deref())
     }
 
@@ -410,8 +423,12 @@ impl PreparedPlan {
         if let Some(parts) = self.metric.get().and_then(|metric| metric.distance.get()) {
             return Ok(parts.as_ref());
         }
-        let parts = Box::new(self.shape().distance_parts()?);
-        Ok(self.metric()?.distance.get_or_init(|| parts).as_ref())
+        self.metric()?
+            .distance
+            .get_or_try_init(|| {
+                Box::try_new(self.shape().distance_parts()?).map_err(crate::error::Error::from)
+            })
+            .map(Box::as_ref)
     }
 
     pub(crate) fn distance_3d_parts(&self) -> Result<&crate::geometry::Distance3dParts> {
@@ -422,21 +439,32 @@ impl PreparedPlan {
         {
             return Ok(parts.as_ref());
         }
-        let parts = Box::new(crate::geometry::Distance3dParts::build(self.shape())?);
-        Ok(self.metric()?.distance_3d.get_or_init(|| parts).as_ref())
+        self.metric()?
+            .distance_3d
+            .get_or_try_init(|| {
+                Box::try_new(crate::geometry::Distance3dParts::build(self.shape())?)
+                    .map_err(crate::error::Error::from)
+            })
+            .map(Box::as_ref)
     }
 
     pub(crate) fn line_index(&self) -> Result<&LineIndex> {
         self.metric()?
             .line_index
-            .get_or_init(|| Box::new(LineIndexSlot::build(self.shape(), &PlanarMetric)))
+            .get_or_try_init(|| {
+                Box::try_new(LineIndexSlot::build(self.shape(), &PlanarMetric))
+                    .map_err(crate::error::Error::from)
+            })?
             .get()
     }
 
     pub(crate) fn measured_line_index(&self) -> Result<&MeasuredLineIndex> {
         self.metric()?
             .measured_line_index
-            .get_or_init(|| Box::new(MeasuredLineIndexSlot::build(self.shape())))
+            .get_or_try_init(|| {
+                Box::try_new(MeasuredLineIndexSlot::build(self.shape()))
+                    .map_err(crate::error::Error::from)
+            })?
             .get()
     }
 
@@ -455,7 +483,8 @@ impl PreparedPlan {
         if let Some(index) = cached {
             return Ok(index);
         }
-        let index = Arc::new(LineIndex::build(self.shape(), metric)?);
+        let index = Arc::try_new(LineIndex::build(self.shape(), metric)?)
+            .map_err(crate::error::Error::from)?;
         let entry = frame_cache.merge(key, |entry| {
             entry.line_index.get_or_insert_with(|| Arc::clone(&index));
         });
@@ -480,7 +509,8 @@ impl PreparedPlan {
         if let Some(parts) = cached {
             return Ok(parts);
         }
-        let parts = Arc::new(self.shape().geodesic_parts(metric)?);
+        let parts = Arc::try_new(self.shape().geodesic_parts(metric)?)
+            .map_err(crate::error::Error::from)?;
         let entry = frame_cache.merge(key, |entry| {
             entry.parts.get_or_insert_with(|| Arc::clone(&parts));
         });
@@ -717,6 +747,78 @@ mod footprint_tests {
             plan.metric.get().expect("published sidecar").as_ref(),
             plan.metric.get().expect("reused sidecar").as_ref()
         ));
+    }
+
+    #[test]
+    fn cold_nested_topology_product_allocation_failure_is_retryable() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::geometry::{CoordSeq, LineSeq};
+        use crate::test_support::fail_allocations_after;
+
+        let plan = PreparedPlan::new(Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 0.0], None, None).unwrap(),
+            )
+            .expect("test line has two vertices"),
+        ))
+        .unwrap();
+        plan.topology().expect("publish topology sidecar");
+        assert!(
+            plan.topology
+                .get()
+                .expect("sidecar")
+                .linework
+                .get()
+                .is_none()
+        );
+        let error = fail_allocations_after(0, || plan.staged_linework()).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert!(
+            plan.topology
+                .get()
+                .expect("sidecar remains")
+                .linework
+                .get()
+                .is_none()
+        );
+        let first = plan
+            .staged_linework()
+            .expect("retry after rejection")
+            .expect("linework is admitted") as *const _;
+        let second = plan
+            .staged_linework()
+            .expect("cached linework")
+            .expect("linework is admitted") as *const _;
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn cold_nested_metric_product_allocation_failure_is_retryable() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::fail_allocations_after;
+
+        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
+        plan.metric().expect("publish metric sidecar");
+        assert!(plan.metric.get().expect("sidecar").distance.get().is_none());
+        let error = fail_allocations_after(0, || plan.distance_parts()).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert!(
+            plan.metric
+                .get()
+                .expect("sidecar remains")
+                .distance
+                .get()
+                .is_none()
+        );
+        let first = plan.distance_parts().expect("retry after rejection") as *const _;
+        let second = plan.distance_parts().expect("cached distance parts") as *const _;
+        assert_eq!(first, second);
     }
 }
 
