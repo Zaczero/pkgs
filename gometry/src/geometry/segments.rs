@@ -135,6 +135,8 @@ pub(crate) struct ExactSegmentProjection {
     numerator: ExactDyadic,
     denominator: ExactDyadic,
     fraction: f64,
+    // This is an emitted-witness override only; source calculations use N/D.
+    emitted_foot: Option<XY>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -147,7 +149,9 @@ pub(crate) struct CertifiedSegmentProjection {
 
 impl CertifiedSegmentProjection {
     fn exact(self) -> Result<ExactSegmentProjection> {
-        exact_interior_projection(self.point, self.segment)
+        let mut exact = exact_interior_projection(self.point, self.segment)?;
+        exact.emitted_foot = Some(self.foot);
+        Ok(exact)
     }
 }
 
@@ -171,6 +175,16 @@ impl ExactSegmentProjection {
     fn distance(&self, point: XY, segment: Segment) -> Result<f64> {
         let squared = self.squared_distance(point, segment)?;
         round_sqrt_ratio(&squared.numerator, &squared.denominator)
+    }
+
+    fn emitted_xy(&self, segment: Segment) -> Result<XY> {
+        Ok(match self.emitted_foot {
+            Some(foot) => foot,
+            None => XY::new(
+                self.interpolate(segment.start.x, segment.end.x)?,
+                self.interpolate(segment.start.y, segment.end.y)?,
+            ),
+        })
     }
 }
 
@@ -206,6 +220,15 @@ impl SegmentProjection {
 
     pub(super) const fn uses_exact_ratio(&self) -> bool {
         matches!(self, Self::CertifiedInterior(_) | Self::ExactInterior(_))
+    }
+
+    fn into_exact_ratio(self) -> Result<Self> {
+        match self {
+            Self::CertifiedInterior(projection) => {
+                Ok(Self::ExactInterior(Box::try_new(projection.exact()?)?))
+            },
+            projection => Ok(projection),
+        }
     }
 
     pub(super) fn fraction(&self) -> f64 {
@@ -357,10 +380,7 @@ impl SegmentProjection {
                 interpolate_segment_point(segment.start, segment.end, *fraction)
             },
             Self::CertifiedInterior(projection) => projection.foot,
-            Self::ExactInterior(projection) => XY::new(
-                projection.interpolate(segment.start.x, segment.end.x)?,
-                projection.interpolate(segment.start.y, segment.end.y)?,
-            ),
+            Self::ExactInterior(projection) => projection.emitted_xy(segment)?,
         })
     }
 
@@ -1479,26 +1499,15 @@ fn projection_from_classification(
         },
     };
     let fraction = round_ratio(&terms.numerator, &terms.denominator)?;
-    if let Some(historical) = historical_fraction
-        && historical.to_bits() == fraction.to_bits()
-    {
-        // Preserve the established emitted witness, but retain source-bound
-        // exact N/D in a provenance variant. The old demotion to plain
-        // `Interior` made this same equality discard the ratio owner.
-        return Ok(SegmentProjection::CertifiedInterior(
-            CertifiedSegmentProjection {
-                point,
-                segment,
-                fraction: historical,
-                foot: interpolate_segment_point(segment.start, segment.end, historical),
-            },
-        ));
-    }
+    let emitted_foot = historical_fraction
+        .filter(|historical| historical.to_bits() == fraction.to_bits())
+        .map(|historical| interpolate_segment_point(segment.start, segment.end, historical));
     Ok(SegmentProjection::ExactInterior(Box::try_new(
         ExactSegmentProjection {
             numerator: terms.numerator,
             denominator: terms.denominator,
             fraction,
+            emitted_foot,
         },
     )?))
 }
@@ -1513,6 +1522,7 @@ fn exact_interior_projection(point: XY, segment: Segment) -> Result<ExactSegment
         numerator: terms.numerator,
         denominator: terms.denominator,
         fraction,
+        emitted_foot: None,
     })
 }
 
@@ -1544,17 +1554,23 @@ struct ExactSquaredDistance {
 }
 
 impl ExactSquaredDistance {
-    fn interior(terms: &ExactProjectionTerms) -> Result<Self> {
-        let point_squared = terms
-            .qx
-            .try_product(&terms.qx)?
-            .try_add(terms.qy.try_product(&terms.qy)?)?;
+    fn from_operands(
+        qx: &ExactDyadic,
+        qy: &ExactDyadic,
+        numerator: &ExactDyadic,
+        denominator: &ExactDyadic,
+    ) -> Result<Self> {
+        let point_squared = qx.try_product(qx)?.try_add(qy.try_product(qy)?)?;
         Ok(Self {
             numerator: point_squared
-                .try_product(&terms.denominator)?
-                .try_subtract(terms.numerator.try_product(&terms.numerator)?)?,
-            denominator: terms.denominator.try_clone()?,
+                .try_product(denominator)?
+                .try_subtract(numerator.try_product(numerator)?)?,
+            denominator: denominator.try_clone()?,
         })
+    }
+
+    fn interior(terms: &ExactProjectionTerms) -> Result<Self> {
+        Self::from_operands(&terms.qx, &terms.qy, &terms.numerator, &terms.denominator)
     }
 
     fn from_projection(
@@ -1564,13 +1580,7 @@ impl ExactSquaredDistance {
     ) -> Result<Self> {
         let qx = projection_difference(point.x, segment.start.x)?;
         let qy = projection_difference(point.y, segment.start.y)?;
-        let point_squared = qx.try_product(&qx)?.try_add(qy.try_product(&qy)?)?;
-        Ok(Self {
-            numerator: point_squared
-                .try_product(&projection.denominator)?
-                .try_subtract(projection.numerator.try_product(&projection.numerator)?)?,
-            denominator: projection.denominator.try_clone()?,
-        })
+        Self::from_operands(&qx, &qy, &projection.numerator, &projection.denominator)
     }
 
     fn rounded(&self) -> Result<f64> {
@@ -1655,6 +1665,7 @@ impl PointSegmentSelection {
                         numerator: inner.numerator.try_clone()?,
                         denominator: inner.denominator.try_clone()?,
                         fraction: inner.fraction,
+                        emitted_foot: inner.emitted_foot,
                     })?,
                 )),
                 other => Ok(other.clone()),
@@ -1792,7 +1803,8 @@ fn point_segment_metric_cancelled(
         point,
         segment,
         ClassifiedSegmentProjection::FilteredInterior(filtered),
-    )?;
+    )?
+    .into_exact_ratio()?;
     let Some(measurement_squared) = projection.continuum_squared_trustworthy(point, segment)?
     else {
         return Ok(PointSegmentMetric::Projection(projection));
@@ -1855,6 +1867,7 @@ fn point_segment_metric_exact(point: XY, segment: Segment) -> Result<PointSegmen
                     numerator: terms.numerator,
                     denominator: terms.denominator,
                     fraction,
+                    emitted_foot: None,
                 })?);
             match rounded {
                 Some(measurement_squared) => {

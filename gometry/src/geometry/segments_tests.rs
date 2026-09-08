@@ -1055,6 +1055,26 @@ fn exact_source_distance_survives_a_coincident_emitted_foot() {
 }
 
 #[test]
+fn exact_source_distance_reports_infinity_for_finite_overflowing_distance() {
+    let maximum = f64::MAX;
+    let segment = Segment {
+        start: XY::new(-maximum, -maximum),
+        end: XY::new(maximum, maximum),
+    };
+    let point = XY::new(maximum, -maximum);
+    let projection = segment_projection(point, segment).unwrap();
+    assert!(projection.uses_exact_ratio());
+    assert_eq!(
+        super::point_segment_distance(point, segment).unwrap(),
+        f64::INFINITY
+    );
+    assert_eq!(
+        super::point_segment_distance_squared(point, segment).unwrap(),
+        f64::INFINITY
+    );
+}
+
+#[test]
 fn endpoint_projection_preserves_source_signed_zero_bits() {
     let segment = Segment {
         start: XY::new(-0.0, 0.0),
@@ -1112,6 +1132,30 @@ mod exact_projection_allocation_tests {
         let point = XY::new(0.0, 0.0);
         prefix_sweep(|| {
             super::super::classify_segment_projection_exact(point, segment).map(|_| ())
+        });
+    }
+
+    #[test]
+    fn historical_equal_exact_projection_retains_ratio_on_publication() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(
+                f64::from_bits(0x2013_6323_7586_2748),
+                f64::from_bits(0x2000_FBF1_9953_AE0A),
+            ),
+        };
+        let point = XY::new(
+            f64::from_bits(0xA018_FBE4_C3D7_9F2E),
+            f64::from_bits(0x2039_6423_3D01_E367),
+        );
+        prefix_sweep(|| {
+            segment_projection(point, segment).map(|projection| {
+                assert!(matches!(
+                    projection,
+                    super::super::SegmentProjection::ExactInterior(inner)
+                        if inner.emitted_foot.is_some()
+                ));
+            })
         });
     }
 
@@ -1192,6 +1236,41 @@ mod exact_projection_allocation_tests {
             projection.interpolate_point(start, end).unwrap(),
             expected,
             "interpolation must be retryable after every rejected allocation"
+        );
+    }
+
+    #[test]
+    fn historical_equal_exact_projection_does_not_rebuild_ratio_on_interpolation() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(
+                f64::from_bits(0x2013_6323_7586_2748),
+                f64::from_bits(0x2000_FBF1_9953_AE0A),
+            ),
+        };
+        let point = XY::new(
+            f64::from_bits(0xA018_FBE4_C3D7_9F2E),
+            f64::from_bits(0x2039_6423_3D01_E367),
+        );
+        let retained = segment_projection(point, segment).unwrap();
+        let exact = super::super::exact_interior_projection(point, segment).unwrap();
+        let exact = super::super::SegmentProjection::ExactInterior(Box::try_new(exact).unwrap());
+        let start = Point::new_raw_xy(0.0, 0.0);
+        let end = Point::new_raw_axes(
+            segment.end.x,
+            segment.end.y,
+            ZOrdinate(Some(13.0)),
+            MOrdinate(Some(29.0)),
+        );
+
+        let (retained_result, retained_allocations) =
+            allocation_count(|| retained.interpolate_point(start, end));
+        let (exact_result, exact_allocations) =
+            allocation_count(|| exact.interpolate_point(start, end));
+        assert_eq!(retained_result.unwrap(), exact_result.unwrap());
+        assert_eq!(
+            retained_allocations, exact_allocations,
+            "an exact owner with an emitted-foot override must not rebuild N/D"
         );
     }
 
