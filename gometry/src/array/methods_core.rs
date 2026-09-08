@@ -438,9 +438,9 @@ impl PyGeometryArray {
         self.frame.epoch()
     }
     /// ``__geo_interface__`` for the whole array: a GeoJSON-style
-    /// ``FeatureCollection`` mapping (one ``Feature`` per row, positional
-    /// ``id``, empty ``properties``) — the shape geopandas and mapping
-    /// libraries expect from a geometry column.
+    /// WGS84 longitude/latitude ``FeatureCollection`` mapping, with one
+    /// ``Feature`` per row, positional ``id``, and empty ``properties`` — the
+    /// shape geopandas and mapping libraries expect from a geometry column.
     #[getter("__geo_interface__")]
     pub fn geo_interface<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         use pyo3::types::{PyDict, PyList};
@@ -451,7 +451,7 @@ impl PyGeometryArray {
             ));
         }
         let array = self.clone();
-        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let domain = crate::io::geojson_domain(self.crs_str())?;
         let geometry_texts = py
             .detach(move || {
                 let mut texts = Vec::new();

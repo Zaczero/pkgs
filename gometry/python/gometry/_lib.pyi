@@ -1119,6 +1119,9 @@ class Geometry:
     def __geo_interface__(self) -> GeoJsonGeometry:
         """GeoJSON-like mapping for the `__geo_interface__` protocol.
 
+        Coordinates are interpreted as WGS84 longitude/latitude, including
+        when the geometry is CRS-free; out-of-domain coordinates raise and
+        antimeridian crossings are split according to RFC 7946.
         Z ordinates are included when present. M ordinates and coordinate epochs
         are not representable by GeoJSON and therefore raise. Use an explicit
         export operation with its metadata-dropping option when loss is intended.
@@ -1753,7 +1756,11 @@ class Geometry:
     def to_geojson(self, *, include_z: bool = True, drop_epoch: bool = False) -> str:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
-        ``to_crs(4326)`` first. CRS-free input is serialized as-is.
+        ``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
+        WGS84 longitude/latitude: coordinates outside longitude ``[-180, 180]`` or
+        latitude ``[-90, 90]`` are rejected, and antimeridian-crossing geometry is
+        split according to RFC 7946. If CRS-free coordinates have projected or
+        other planar semantics, transform them or choose another format.
 
         Parameters
         ----------
@@ -5621,9 +5628,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @property
     def __geo_interface__(self) -> GeoJsonFeatureCollection:
         """``__geo_interface__`` for the whole array: a GeoJSON-style
-        ``FeatureCollection`` mapping (one ``Feature`` per row, positional
-        ``id``, empty ``properties``) — the shape geopandas and mapping
-        libraries expect from a geometry column.
+        WGS84 longitude/latitude ``FeatureCollection`` mapping, with one
+        ``Feature`` per row, positional ``id``, and empty ``properties`` — the
+        shape geopandas and mapping libraries expect from a geometry column.
+        CRS-free rows are explicitly assumed to already contain WGS84
+        coordinates; out-of-domain coordinates
+        raise and antimeridian crossings are split according to RFC 7946.
         """
     @property
     def coordinate_axes(self) -> list[CoordinateAxes | None]:
@@ -6904,7 +6914,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[str | None]:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
-        ``to_crs(4326)`` first. CRS-free input is serialized as-is.
+        ``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
+        WGS84 longitude/latitude: coordinates outside longitude ``[-180, 180]`` or
+        latitude ``[-90, 90]`` are rejected, and antimeridian-crossing geometry is
+        split according to RFC 7946. If CRS-free coordinates have projected or
+        other planar semantics, transform them or choose another format.
 
         Parameters
         ----------
@@ -18064,7 +18078,8 @@ def to_feature(
     ----------
     geom : Geometry, optional
         Geometry to encode. ``None`` emits a null GeoJSON geometry. A geometry
-        with a CRS must use EPSG:4326 longitude/latitude coordinates.
+        with a CRS must use WGS84 longitude/latitude coordinates. A CRS-free
+        geometry is explicitly assumed to already use those coordinates too.
     properties : Mapping[str, Any], optional
         Feature properties. The mapping is copied and all keys must be strings.
     id : str or finite number, optional
@@ -18087,9 +18102,9 @@ def to_feature(
         If properties are not a string-keyed mapping, the id is invalid, or
         coordinate epoch metadata is present without ``drop_epoch=True``.
     InvalidGeometryError
-        If the geometry has an M ordinate, or a WGS84-tagged geometry has
-        coordinates outside the lon/lat domain. GeoJSON Feature mappings have
-        no representation for M; use WKT/GeoArrow to preserve it.
+        If the geometry has an M ordinate or coordinates outside the WGS84
+        longitude/latitude domain. GeoJSON Feature mappings have no
+        representation for M; use WKT/GeoArrow to preserve it.
     CRSError
         If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 
@@ -18132,7 +18147,8 @@ def to_feature_collection(
         Features already owns aligned properties and ids, so properties and ids
         must be omitted; supplying them raises ``TypeError``.
         Otherwise, one geometry or geometry rows to encode. CRS-tagged rows must
-        use EPSG:4326 longitude/latitude coordinates.
+        use WGS84 longitude/latitude coordinates; CRS-free rows are explicitly
+        assumed to already use those coordinates.
     properties : Mapping or iterable of Mapping or None, optional
         One mapping broadcasts to every geometry. An iterable supplies one
         mapping or explicit ``None`` per row. Omit for independent empty mappings.
@@ -18157,9 +18173,9 @@ def to_feature_collection(
         If properties or ids are invalid or are not aligned with geometries, or
         coordinate epoch metadata is present without ``drop_epoch=True``.
     InvalidGeometryError
-        If a geometry has an M ordinate, or a WGS84-tagged geometry has
-        coordinates outside the lon/lat domain. GeoJSON Feature mappings have
-        no representation for M; use WKT/GeoArrow to preserve it.
+        If a geometry has an M ordinate or coordinates outside the WGS84
+        longitude/latitude domain. GeoJSON Feature mappings have no
+        representation for M; use WKT/GeoArrow to preserve it.
     CRSError
         If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 

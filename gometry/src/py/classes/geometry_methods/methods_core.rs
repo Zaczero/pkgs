@@ -352,7 +352,7 @@ impl PyGeometry {
             ));
         }
         let shape = std::sync::Arc::clone(&self.shape);
-        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let domain = crate::io::geojson_domain(self.crs_str())?;
         let text =
             py.detach(move || crate::io::to_geojson_string::<true>(shape.shape(), domain))?;
         let geometry = crate::boundary::json_text_to_py(py, &text)?;

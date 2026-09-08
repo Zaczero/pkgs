@@ -70,18 +70,6 @@ fn require_geojson_shape(shape: &Shape, crs: Option<&str>) -> PyResult<()> {
     Ok(())
 }
 
-/// The RFC 7946 coordinate domain for a Feature's declared CRS.
-fn feature_domain(crs: Option<&str>) -> crate::error::Result<crate::geometry::TopologyDomain> {
-    Ok(match crs {
-        Some(crs) => crate::crs::info(crs)?
-            .geographic_frame()
-            .map_or(crate::geometry::TopologyDomain::Cartesian, |frame| {
-                crate::geometry::TopologyDomain::Geographic(frame)
-            }),
-        None => crate::geometry::TopologyDomain::Cartesian,
-    })
-}
-
 fn feature_dict<'py>(
     py: Python<'py>,
     geometry: Option<&Bound<'py, PyAny>>,
@@ -116,7 +104,7 @@ fn serialize_feature_shapes(
             .map(|shape| {
                 shape
                     .map(|(shape, crs)| {
-                        let domain = feature_domain(crs.as_deref())?;
+                        let domain = crate::io::geojson_domain(crs.as_deref())?;
                         crate::io::to_geojson_string::<true>(&shape, domain)
                     })
                     .transpose()
@@ -133,7 +121,7 @@ fn serialize_array_feature_shapes(
 ) -> PyResult<Vec<Option<String>>> {
     let array = array.clone();
     py.detach(move || {
-        let domain = feature_domain(crs.as_deref())?;
+        let domain = crate::io::geojson_domain(crs.as_deref())?;
         let mut output = Vec::new();
         crate::boundary::try_reserve_vec(&mut output, array.len())?;
         for row in array.row_operation().rows_with_missing(|| ()) {
@@ -203,7 +191,8 @@ enum FeatureGeometryRows {
 /// ----------
 /// geom : Geometry, optional
 ///     Geometry to encode. ``None`` emits a null GeoJSON geometry. A geometry
-///     with a CRS must use EPSG:4326 longitude/latitude coordinates.
+///     with a CRS must use WGS84 longitude/latitude coordinates. A CRS-free
+///     geometry is explicitly assumed to already use those coordinates too.
 /// properties : Mapping[str, Any], optional
 ///     Feature properties. The mapping is copied and all keys must be strings.
 /// id : str or finite number, optional
@@ -226,9 +215,9 @@ enum FeatureGeometryRows {
 ///     If properties are not a string-keyed mapping, the id is invalid, or
 ///     coordinate epoch metadata is present without ``drop_epoch=True``.
 /// InvalidGeometryError
-///     If the geometry has an M ordinate, or a WGS84-tagged geometry has
-///     coordinates outside the lon/lat domain. GeoJSON Feature mappings have
-///     no representation for M; use WKT/GeoArrow to preserve it.
+///     If the geometry has an M ordinate or coordinates outside the WGS84
+///     longitude/latitude domain. GeoJSON Feature mappings have no
+///     representation for M; use WKT/GeoArrow to preserve it.
 /// CRSError
 ///     If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 ///
@@ -269,7 +258,7 @@ pub(crate) fn to_feature(
         let shape = geometry.shape.shape().clone();
         Some(
             py.detach(move || {
-                let domain = feature_domain(crs.as_deref())?;
+                let domain = crate::io::geojson_domain(crs.as_deref())?;
                 crate::io::to_geojson_string::<true>(&shape, domain)
             })
             .map_err(PyErr::from)?,
@@ -333,7 +322,8 @@ fn aligned_rows<'py>(
 ///     Features already owns aligned properties and ids, so properties and ids
 ///     must be omitted; supplying them raises ``TypeError``.
 ///     Otherwise, one geometry or geometry rows to encode. CRS-tagged rows must
-///     use EPSG:4326 longitude/latitude coordinates.
+///     use WGS84 longitude/latitude coordinates; CRS-free rows are explicitly
+///     assumed to already use those coordinates.
 /// properties : Mapping or iterable of Mapping or None, optional
 ///     One mapping broadcasts to every geometry. An iterable supplies one
 ///     mapping or explicit ``None`` per row. Omit for independent empty mappings.
@@ -358,9 +348,9 @@ fn aligned_rows<'py>(
 ///     If properties or ids are invalid or are not aligned with geometries, or
 ///     coordinate epoch metadata is present without ``drop_epoch=True``.
 /// InvalidGeometryError
-///     If a geometry has an M ordinate, or a WGS84-tagged geometry has
-///     coordinates outside the lon/lat domain. GeoJSON Feature mappings have
-///     no representation for M; use WKT/GeoArrow to preserve it.
+///     If a geometry has an M ordinate or coordinates outside the WGS84
+///     longitude/latitude domain. GeoJSON Feature mappings have no
+///     representation for M; use WKT/GeoArrow to preserve it.
 /// CRSError
 ///     If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 ///

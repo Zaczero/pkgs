@@ -15,8 +15,8 @@ use crate::io::{
 
 #[cfg(test)]
 pub(crate) fn to_geojson_string_with_z(shape: &Shape, include_z: bool) -> String {
-    // The writer-parity fixtures are CRS-free planar shapes: only ring winding
-    // is canonicalized (no geographic domain check or antimeridian cut).
+    // Writer-parity fixtures select the low-level Cartesian domain explicitly;
+    // public CRS-free inputs use `geojson_domain` and therefore select WGS84.
     if include_z {
         to_geojson_string::<true>(shape, TopologyDomain::Cartesian)
     } else {
@@ -28,15 +28,14 @@ pub(crate) fn to_geojson_string_with_z(shape: &Shape, include_z: bool) -> String
 /// Serialize a geometry to an RFC 7946 GeoJSON string.
 ///
 /// GeoJSON coordinates are WGS84 longitude/latitude by specification
-/// (RFC 7946 §4). When the domain is geographic (the geometry carries a WGS84
-/// frame),
+/// (RFC 7946 §4). When the domain is geographic,
 /// the writer enforces the standard's geographic rules: positions are
 /// validated against the lon/lat domain (§4), antimeridian-crossing parts are
 /// cut into seam-following multiparts (§3.1.9), and polygon rings are emitted
 /// with right-hand winding — exterior counterclockwise, holes clockwise
-/// (§3.1.6). A CRS-free geometry is untagged/planar: only the ring-winding
-/// representation is canonicalized, since domain and antimeridian are
-/// geographic semantics that do not apply to planar coordinates.
+/// (§3.1.6). Public CRS-free geometries explicitly assume WGS84 coordinates
+/// and select this geographic domain; callers with projected or other planar
+/// semantics must transform or choose another format.
 pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
     shape: &Shape,
     domain: TopologyDomain,
@@ -60,6 +59,25 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
         .map_err(crate::error::Error::from)?;
     write_geojson_to_impl::<INCLUDE_Z>(&mut out, &prepared);
     Ok(out)
+}
+
+/// Select the RFC 7946 domain for a public GeoJSON writer.
+///
+/// GeoJSON has no CRS member in its current specification. An absent CRS is
+/// therefore an explicit WGS84-coordinate assumption, not permission to emit
+/// arbitrary Cartesian coordinates. Tagged non-WGS84 values retain their
+/// existing low-level domain selection; the Python boundary rejects them
+/// before serialization.
+pub(crate) fn geojson_domain(crs: Option<&str>) -> Result<TopologyDomain> {
+    Ok(match crs {
+        None => TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+        Some(crs) if crate::crs::is_wgs84_lonlat(crs) => {
+            TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84())
+        },
+        Some(crs) => crate::crs::info(crs)?
+            .geographic_frame()
+            .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic),
+    })
 }
 
 pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Result<()> {

@@ -126,6 +126,52 @@ def test_b1_to_feature_rejects_out_of_range_lonlat() -> None:
         gm.to_feature(gm.Point(181, 91, crs=4326))
 
 
+def test_crs_free_geojson_rejects_out_of_domain_scalar() -> None:
+    for coordinates in ((181.0, 0.0), (0.0, 91.0)):
+        with pytest.raises(gm.InvalidGeometryError, match=r'outside the WGS84 domain'):
+            gm.Point(*coordinates).to_geojson()
+
+
+def test_crs_free_geojson_rejects_out_of_domain_array() -> None:
+    with pytest.raises(gm.InvalidGeometryError, match=r'outside the WGS84 domain'):
+        gm.GeometryArray([gm.Point(181.0, 0.0)]).to_geojson()
+
+
+def test_crs_free_geojson_rejects_out_of_domain_feature_writers() -> None:
+    point = gm.Point(181.0, 0.0)
+    with pytest.raises(gm.InvalidGeometryError, match=r'outside the WGS84 domain'):
+        gm.to_feature(point)
+    with pytest.raises(gm.InvalidGeometryError, match=r'outside the WGS84 domain'):
+        gm.to_feature_collection([point])
+
+
+def test_crs_free_geojson_round_trip_declares_crs84() -> None:
+    point = gm.Point(21.0, 52.0)
+    assert gm.from_geojson(point.to_geojson()).crs == 'OGC:CRS84'
+
+    array = gm.GeometryArray([point])
+    decoded = gm.from_geojson(array.to_geojson())
+    assert isinstance(decoded, gm.GeometryArray)
+    assert decoded.crs == 'OGC:CRS84'
+
+    feature = gm.to_feature(point)
+    assert gm.from_features(feature).geometries.crs == 'OGC:CRS84'
+
+
+def test_crs_free_geojson_uses_wgs84_antimeridian_rules() -> None:
+    crossing = gm.LineString([(170.0, 0.0), (-170.0, 0.0)])
+    array = gm.GeometryArray([crossing])
+    assert json.loads(crossing.to_geojson())['type'] == 'MultiLineString'
+    assert json.loads(array.to_geojson()[0])['type'] == 'MultiLineString'
+    assert crossing.__geo_interface__['type'] == 'MultiLineString'
+    assert array.__geo_interface__['features'][0]['geometry']['type'] == 'MultiLineString'
+    assert gm.to_feature(crossing)['geometry']['type'] == 'MultiLineString'
+    assert (
+        gm.to_feature_collection([crossing])['features'][0]['geometry']['type']
+        == 'MultiLineString'
+    )
+
+
 def test_b1_to_feature_splits_antimeridian_seam() -> None:
     poly = gm.from_wkt(
         'POLYGON((170 0, -170 0, -170 10, 170 10, 170 0))',

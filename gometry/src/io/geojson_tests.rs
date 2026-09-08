@@ -247,7 +247,9 @@ fn writer_preserves_uniform_xyz_and_mixed_collection_axes() {
 #[test]
 fn write_rejects_out_of_domain_geographic_positions() {
     // Latitude beyond ±90 and longitude beyond ±180 fail on a geographic
-    // frame; the same coordinates serialize fine as untagged planar data.
+    // domain. The low-level serializer still accepts an explicitly selected
+    // Cartesian domain for internal parity fixtures; public CRS-free writers
+    // select the geographic domain instead.
     to_geojson_string::<false>(&Shape::Point(point(0.0, 91.0)), geographic_domain()).unwrap_err();
     to_geojson_string::<false>(&Shape::Point(point(181.0, 0.0)), geographic_domain()).unwrap_err();
     to_geojson_string::<false>(
@@ -390,8 +392,9 @@ fn geographic_line_is_cut_at_the_antimeridian_and_round_trips() {
 }
 
 #[test]
-fn planar_line_is_never_cut() {
-    // The identical coordinates on a CRS-free (planar) frame stay one line.
+fn explicit_cartesian_line_is_never_cut() {
+    // An explicitly selected Cartesian domain stays one line. Public
+    // CRS-free writers select the geographic domain instead.
     let out = written(
         &line(&[(170.0, 0.0), (-170.0, 0.0)]),
         crate::geometry::TopologyDomain::Cartesian,

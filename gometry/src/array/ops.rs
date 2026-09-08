@@ -188,14 +188,13 @@ impl PyGeometryArray {
             ));
         }
         let array = self.clone();
-        // A WGS84-tagged frame opts into the RFC 7946 geographic rules (domain
-        // validation, antimeridian cutting); CRS-free rows are planar. A
+        // GeoJSON treats CRS-free coordinates as WGS84 lon/lat too. A
         // domain-invalid row is a spec violation, not a degradable data
         // condition, so it fails the batch (like the M-ordinate refusal above).
         let frame = self.frame.clone();
         Ok(if include_z {
             py.detach(move || {
-                let domain = crate::geometry::topology_domain(&frame)?;
+                let domain = io::geojson_domain(frame.crs_str())?;
                 let mut out = Vec::new();
                 for row in array.row_operation().rows_with_missing(String::new) {
                     let value = match row {
@@ -211,7 +210,7 @@ impl PyGeometryArray {
         } else {
             let frame = self.frame.clone();
             py.detach(move || {
-                let domain = crate::geometry::topology_domain(&frame)?;
+                let domain = io::geojson_domain(frame.crs_str())?;
                 let mut out = Vec::new();
                 for row in array.row_operation().rows_with_missing(String::new) {
                     let value = match row {

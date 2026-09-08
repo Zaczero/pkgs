@@ -521,7 +521,8 @@ pub(crate) fn is_wgs84_family_crs(crs: Option<&str>) -> bool {
 
 /// `GeoJSON` is WGS84 by specification (RFC 7946): refuse to serialize
 /// coordinates declared in any other frame — raw projected output would be
-/// read as longitude/latitude downstream. CRS-free input is trusted as-is.
+/// read as longitude/latitude downstream. CRS-free input is treated as WGS84
+/// coordinates and validated by the writer.
 pub(crate) fn require_geojson_crs(crs: Option<&str>) -> PyResult<()> {
     if is_wgs84_family_crs(crs) {
         Ok(())

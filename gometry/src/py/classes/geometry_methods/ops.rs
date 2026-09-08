@@ -84,12 +84,12 @@ impl PyGeometry {
                 "GeoJSON has no M ordinate; remove M with set_m(None), or use WKT/GeoArrow",
             ));
         }
-        // A WGS84-tagged frame opts into the RFC 7946 geographic rules (domain
-        // validation, antimeridian cutting); CRS-free geometry is planar.
+        // GeoJSON treats CRS-free coordinates as WGS84 lon/lat too, so the
+        // public writer always selects the RFC 7946 geographic rules.
         let shape = Arc::clone(&self.shape);
         let frame = self.frame.clone();
         py.detach(move || {
-            let domain = geometry::topology_domain(&frame)?;
+            let domain = io::geojson_domain(frame.crs_str())?;
             Ok(if include_z {
                 io::to_geojson_string::<true>(&shape, domain)?
             } else {

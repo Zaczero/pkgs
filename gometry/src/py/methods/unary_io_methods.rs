@@ -125,7 +125,11 @@ method_doc! {
     doc_to_geojson;
     body: r"Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
 CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
-``to_crs(4326)`` first. CRS-free input is serialized as-is.
+``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
+WGS84 longitude/latitude: coordinates outside longitude ``[-180, 180]`` or
+latitude ``[-90, 90]`` are rejected, and antimeridian-crossing geometry is
+split according to RFC 7946. If CRS-free coordinates have projected or other
+planar semantics, transform them or choose another format.
 
 Parameters
 ----------

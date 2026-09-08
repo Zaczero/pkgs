@@ -133,6 +133,14 @@ positions as `[lon, lat]` with an optional third altitude element. It has **no p
 for M or coordinate epoch metadata**. [`to_geojson`][gometry.Geometry.to_geojson]
 and `__geo_interface__` raise when those values cannot be represented.
 
+GeoJSON is WGS84 longitude/latitude interchange. A CRS-free geometry is an
+explicit assumption that its coordinates already have those semantics: output
+validates longitude in `[-180, 180]` and latitude in `[-90, 90]`, and splits
+antimeridian-crossing geometry according to RFC 7946. CRS-free projected or
+other planar coordinates must be transformed or written with another format.
+On read, the default `crs='OGC:CRS84'` records this WGS84 assumption; pass
+`crs=None` only when you intentionally want to discard the CRS metadata.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
@@ -239,6 +247,8 @@ suitable for `json.dumps` **only when every property value is JSON-serializable*
 Python objects in `properties` raise `TypeError` at dump time. `to_geojson` honors
 the WGS84 contract on the way out too: reproject with [`to_crs(4326)`][gometry.Geometry.to_crs] first if your
 geometry is in another frame.
+For CRS-free geometry, the same contract assumes that the stored coordinates
+already are WGS84 longitude/latitude.
 
 Pass one mapping to broadcast shared metadata across every row (each feature gets
 an independent outer dictionary), or pass an aligned iterable of mappings/`None`.
@@ -279,7 +289,7 @@ print(restored == point, restored.crs, restored.epoch)
 | EWKB | `to_wkb(include_srid=True, drop_epoch=True)` | [`from_wkb`][gometry.from_wkb] | yes (SRID) | no (requires `drop_epoch=True` when present) | yes | yes |
 | WKT | [`to_wkt(output_dimension=, drop_epoch=True)`][gometry.Geometry.to_wkt] | [`from_wkt`][gometry.from_wkt] | no | no (requires `drop_epoch=True` when present) | yes (default; `output_dimension=2` drops) | yes (`M`/`ZM` tags) |
 | EWKT | `to_wkt(include_srid=True, output_dimension=, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes (default) | yes |
-| GeoJSON | [`to_geojson(include_z=, drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | declares WGS84 on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes (when `include_z=True`) | no — always raises on M; clear it explicitly first |
+| GeoJSON | [`to_geojson(include_z=, drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | assumes WGS84 lon/lat on write and declares it on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes (when `include_z=True`) | no — always raises on M; clear it explicitly first |
 | `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no — raises when present | yes (when present) | no — raises when present |
 | GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes, in gometry's extension metadata (gometry or extension-aware consumers; not standard GeoArrow metadata) | yes | yes (packed Z/M children for homogeneous axes without explicit empty members; WKB fallback for mixed axes or explicit empty members) |
 | pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of [`Geometry`][gometry.Geometry] | yes (on each geometry) | yes (on each geometry object) | yes | yes |
