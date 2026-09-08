@@ -518,7 +518,7 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
             // Distance-scale threshold; area form is derived after framing.
-            crate::geometry::vw_keep(xs, ys, tolerance, keep)
+            Ok(crate::geometry::vw_keep(xs, ys, tolerance, keep))
         })
     }
 
@@ -542,7 +542,7 @@ impl PyGeometryArray {
         &self,
         coords: &CoordSeq,
         offsets: &[i32],
-        mut keep_mask: impl FnMut(&[f64], &[f64], &mut Vec<bool>) -> Option<usize>,
+        mut keep_mask: impl FnMut(&[f64], &[f64], &mut Vec<bool>) -> crate::error::Result<Option<usize>>,
     ) -> PyResult<Self> {
         let (xs, ys) = (coords.xs(), coords.ys());
         let rows = offsets.len() - 1;
@@ -555,7 +555,7 @@ impl PyGeometryArray {
                 column_window(xs, &window),
                 column_window(ys, &window),
                 &mut keep,
-            );
+            )?;
             // Too short or nothing removable: the row passes through whole.
             if kept.is_none_or(|count| count == end - start) {
                 builder.push_window(coords, window)?;

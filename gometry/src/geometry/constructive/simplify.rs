@@ -18,29 +18,31 @@ use crate::geometry::{
 };
 
 /// The Douglas-Peucker keep mask over raw columns: `keep` and `stack` are
-/// cleared and refilled (reusable across packed-array rows); `Some(kept_count)`
-/// unless the chain is too short to simplify. The packed-array lane appends
-/// kept vertices straight into new CSR columns from this mask. `stack` must
-/// stay batch-local — never a receiver cache or lock (free-threading).
+/// cleared and refilled (reusable across packed-array rows); `Ok(Some(kept_count))`
+/// unless the chain is too short to simplify. Keep-mask and split-stack
+/// growth report allocation failure. The packed-array lane appends kept
+/// vertices straight into new CSR columns from this mask. `stack` must stay
+/// batch-local — never a receiver cache or lock (free-threading).
 pub(crate) fn rdp_keep(
     xs: &[f64],
     ys: &[f64],
     tolerance: f64,
     keep: &mut Vec<bool>,
     stack: &mut Vec<(usize, usize)>,
-) -> Option<usize> {
+) -> Result<Option<usize>> {
     let count = xs.len();
     if count <= 2 {
-        return None;
+        return Ok(None);
     }
     let tolerance_squared = tolerance * tolerance;
     keep.clear();
+    crate::try_reserve_vec(keep, count.saturating_sub(keep.capacity()))?;
     keep.resize(count, false);
     keep[0] = true;
     keep[count - 1] = true;
     let mut kept = 2_usize;
     stack.clear();
-    stack.push((0_usize, count - 1));
+    crate::try_push_vec(stack, (0_usize, count - 1))?;
     while let Some((start, end)) = stack.pop() {
         if end - start < 2 {
             continue;
@@ -48,11 +50,11 @@ pub(crate) fn rdp_keep(
         if let Some(farthest) = rdp_split(xs, ys, start, end, tolerance, tolerance_squared) {
             keep[farthest] = true;
             kept += 1;
-            stack.push((start, farthest));
-            stack.push((farthest, end));
+            crate::try_push_vec(stack, (start, farthest))?;
+            crate::try_push_vec(stack, (farthest, end))?;
         }
     }
-    Some(kept)
+    Ok(Some(kept))
 }
 
 /// The farthest interior vertex of one Douglas-Peucker range, when its
@@ -465,9 +467,9 @@ struct KeepScratch {
 fn kept_coords(
     points: &CoordSeq,
     scratch: &mut KeepScratch,
-    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<Option<CoordSeq>> {
-    let Some(kept) = keep_mask(points.xs(), points.ys(), scratch) else {
+    let Some(kept) = keep_mask(points.xs(), points.ys(), scratch)? else {
         return Ok(None);
     };
     (kept != points.len())
@@ -492,7 +494,7 @@ enum RingKeep {
 fn keep_ring(
     ring: &Ring,
     scratch: &mut KeepScratch,
-    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<RingKeep> {
     Ok(match kept_coords(ring.coords(), scratch, keep_mask)? {
         None => RingKeep::Same,
@@ -519,7 +521,7 @@ fn try_clone_ring_prefix(holes: &[Ring], end: usize) -> Result<Vec<Ring>> {
 fn keep_polygon(
     polygon: &Polygon,
     scratch: &mut KeepScratch,
-    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<PolygonKeep> {
     let new_shell = match keep_ring(&polygon.shell, scratch, keep_mask)? {
         RingKeep::Drop => return Ok(PolygonKeep::Empty),
@@ -584,7 +586,7 @@ fn try_prefix_line_members(
 fn keep_multi_lines(
     lines: &MultiLineString,
     scratch: &mut KeepScratch,
-    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<RawSimplify> {
     let mut out: Option<Vec<MultiMember<LineSeq>>> = None;
     for (index, member) in lines.members().enumerate() {
@@ -648,7 +650,7 @@ fn try_prefix_polygon_members(
 fn keep_multi_polygons(
     polygons: &MultiPolygon,
     scratch: &mut KeepScratch,
-    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+    keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<RawSimplify> {
     let mut out: Option<Vec<MultiMember<Polygon>>> = None;
     for (index, member) in polygons.members().enumerate() {
@@ -931,14 +933,14 @@ impl Shape {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let mut scratch = KeepScratch::default();
         self.simplify_raw(&mut scratch, &mut |xs, ys, scratch| {
-            vw_keep(xs, ys, tolerance, &mut scratch.keep)
+            Ok(vw_keep(xs, ys, tolerance, &mut scratch.keep))
         })
     }
 
     fn simplify_raw(
         &self,
         scratch: &mut KeepScratch,
-        keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Option<usize>,
+        keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
     ) -> Result<RawSimplify> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => RawSimplify::Unchanged,
@@ -1320,7 +1322,9 @@ mod dp_zero_split_tests {
     fn kept_mask(xs: &[f64], ys: &[f64]) -> Vec<bool> {
         let mut keep = Vec::new();
         let mut stack = Vec::new();
-        rdp_keep(xs, ys, 0.0, &mut keep, &mut stack).expect("chain long enough to mask");
+        rdp_keep(xs, ys, 0.0, &mut keep, &mut stack)
+            .expect("keep-mask scratch")
+            .expect("chain long enough to mask");
         keep
     }
 
@@ -1477,8 +1481,12 @@ mod dp_zero_split_tests {
         let mut keep_pos = Vec::new();
         let mut keep_neg = Vec::new();
         let mut stack = Vec::new();
-        rdp_keep(&xs, &ys, 0.0, &mut keep_pos, &mut stack).unwrap();
-        rdp_keep(&xs, &ys, -0.0, &mut keep_neg, &mut stack).unwrap();
+        rdp_keep(&xs, &ys, 0.0, &mut keep_pos, &mut stack)
+            .unwrap()
+            .unwrap();
+        rdp_keep(&xs, &ys, -0.0, &mut keep_neg, &mut stack)
+            .unwrap()
+            .unwrap();
         assert_eq!(keep_pos, keep_neg);
         assert_eq!(keep_pos, [true, true, true]);
     }
@@ -1490,7 +1498,7 @@ mod guarded_borrow_tests {
     use super::RawSimplify;
     use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, Polygon, Ring, Shape, TopologyGuard, XY};
-    use crate::test_support::fail_allocations_after;
+    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn closed_ring(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f64]>) -> Ring {
         Ring::from_closed(
@@ -1560,11 +1568,17 @@ mod guarded_borrow_tests {
     #[test]
     fn guarded_construction_reports_allocation_failure() {
         let polygon = sliver_xyzm();
-        let error = fail_allocations_after(0, || polygon.simplify_dp(1.0, true)).unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
+        let (out, allocations) = allocation_count(|| polygon.simplify_dp(1.0, true).unwrap());
+        assert!(matches!(out, Shape::Polygon(_)));
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = fail_allocations_after(allowed, || polygon.simplify_dp(1.0, true))
+                .expect_err("every reachable allocation on the sliver path must propagate");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
     }
 
     #[test]
