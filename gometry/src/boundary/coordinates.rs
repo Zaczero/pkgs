@@ -14,7 +14,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use crate::GeometryArrayStorage;
-use crate::array::{PackedStorage, ValidityMask};
+use crate::array::{PackedStorage, RowSelectionRef, ValidityMask};
 use crate::geometry::{
     CoordSeq, CoordWindow, CoordinateAxes, MOrdinate, Point, Shape, ShapeData, ZOrdinate,
 };
@@ -418,23 +418,20 @@ impl CoordinateView {
 
     /// Resolve one axis to a borrowed or materialized column.
     pub fn column(&self, axis: CoordinateAxis) -> crate::error::Result<CoordinateColumnRef<'_>> {
+        if let CoordinateOwner::Array {
+            storage,
+            missing: None,
+        } = &self.owner
+            && let GeometryArrayStorage::Packed(packed) = storage.as_ref()
+            && let Some((coords, span)) = packed_contiguous_coord_span(packed)
+        {
+            return Ok(borrowed_axis(coords, span, axis));
+        }
         if let CoordinateOwner::Array { storage, missing } = &self.owner
             && let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
                 storage.as_ref()
             && missing.is_none()
         {
-            if let Some(window) = row_map.as_deref().contiguous_window() {
-                return Ok(match axis {
-                    CoordinateAxis::X => CoordinateColumnRef::Borrowed(&coords.xs()[window]),
-                    CoordinateAxis::Y => CoordinateColumnRef::Borrowed(&coords.ys()[window]),
-                    CoordinateAxis::Z => coords.zs().map_or(CoordinateColumnRef::Missing, |zs| {
-                        CoordinateColumnRef::Borrowed(&zs[window])
-                    }),
-                    CoordinateAxis::M => coords.ms().map_or(CoordinateColumnRef::Missing, |ms| {
-                        CoordinateColumnRef::Borrowed(&ms[window])
-                    }),
-                });
-            }
             if let Some(map) = row_map.explicit_indices() {
                 let values = match axis {
                     CoordinateAxis::X => coords.xs(),
@@ -956,6 +953,118 @@ fn coordseq_columns_bit_eq(left: &CoordSeq, right: &CoordSeq) -> bool {
         }
 }
 
+fn borrowed_axis(
+    coords: &CoordSeq,
+    span: std::ops::Range<usize>,
+    axis: CoordinateAxis,
+) -> CoordinateColumnRef<'_> {
+    match axis {
+        CoordinateAxis::X => CoordinateColumnRef::Borrowed(&coords.xs()[span]),
+        CoordinateAxis::Y => CoordinateColumnRef::Borrowed(&coords.ys()[span]),
+        CoordinateAxis::Z => coords.zs().map_or(CoordinateColumnRef::Missing, |zs| {
+            CoordinateColumnRef::Borrowed(&zs[span])
+        }),
+        CoordinateAxis::M => coords.ms().map_or(CoordinateColumnRef::Missing, |ms| {
+            CoordinateColumnRef::Borrowed(&ms[span])
+        }),
+    }
+}
+
+fn line_window_coord_span(
+    offsets: &[i32],
+    coords_len: usize,
+    start: usize,
+    len: usize,
+) -> Option<std::ops::Range<usize>> {
+    let end = start.checked_add(len)?;
+    if offsets.len() <= end {
+        return None;
+    }
+    let start = offsets[start] as usize;
+    let end = offsets[end] as usize;
+    (end <= coords_len && start <= end).then_some(start..end)
+}
+
+fn polygon_window_coord_span(
+    ring_offsets: &[i32],
+    polygon_offsets: &[i32],
+    coords_len: usize,
+    start: usize,
+    len: usize,
+) -> Option<std::ops::Range<usize>> {
+    let end = start.checked_add(len)?;
+    if polygon_offsets.len() <= end {
+        return None;
+    }
+    let ring_start = polygon_offsets[start] as usize;
+    let ring_end = polygon_offsets[end] as usize;
+    if ring_offsets.len() <= ring_end || ring_start > ring_end {
+        return None;
+    }
+    let start = ring_offsets[ring_start] as usize;
+    let end = ring_offsets[ring_end] as usize;
+    (end <= coords_len && start <= end).then_some(start..end)
+}
+
+/// Visible contiguous coordinate span for unmasked identity or windowed packed
+/// storage. Gathered maps are not one span.
+fn packed_contiguous_coord_span(
+    packed: &PackedStorage,
+) -> Option<(&CoordSeq, std::ops::Range<usize>)> {
+    match packed {
+        PackedStorage::Points { coords, row_map } => match row_map.as_deref() {
+            RowSelectionRef::Identity => Some((coords.as_ref(), 0..coords.len())),
+            RowSelectionRef::Window { start, len } => {
+                let end = start.checked_add(len)?;
+                (end <= coords.len()).then_some((coords.as_ref(), start..end))
+            },
+            RowSelectionRef::Gather(_) => None,
+        },
+        PackedStorage::Lines {
+            coords,
+            offsets,
+            row_map,
+        } => match row_map.as_deref() {
+            RowSelectionRef::Identity => Some((coords.as_ref(), 0..coords.len())),
+            RowSelectionRef::Window { start, len } => {
+                let span = line_window_coord_span(offsets.as_slice(), coords.len(), start, len)?;
+                Some((coords.as_ref(), span))
+            },
+            RowSelectionRef::Gather(_) => None,
+        },
+        PackedStorage::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            row_map,
+        } => match row_map.as_deref() {
+            RowSelectionRef::Identity => Some((coords.as_ref(), 0..coords.len())),
+            RowSelectionRef::Window { start, len } => {
+                let span = polygon_window_coord_span(
+                    ring_offsets.as_slice(),
+                    polygon_offsets.as_slice(),
+                    coords.len(),
+                    start,
+                    len,
+                )?;
+                Some((coords.as_ref(), span))
+            },
+            RowSelectionRef::Gather(_) => None,
+        },
+    }
+}
+
+fn coord_views_bit_eq(
+    left: &CoordSeq,
+    left_span: std::ops::Range<usize>,
+    right: &CoordSeq,
+    right_span: std::ops::Range<usize>,
+) -> bool {
+    let left = left.view(CoordWindow::from_range(left_span, left.len()));
+    let right = right.view(CoordWindow::from_range(right_span, right.len()));
+    coordseq_columns_bit_eq(&left, &right)
+}
+
 fn row_selection_eq(left: &crate::array::RowSelection, right: &crate::array::RowSelection) -> bool {
     match (left.as_deref(), right.as_deref()) {
         (crate::array::RowSelectionRef::Identity, crate::array::RowSelectionRef::Identity) => true,
@@ -1100,22 +1209,15 @@ fn packed_lines_columnar_eq(
         // partition rows; different breaks with the same verts stay equal).
         crate::array::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
         crate::array::RowSelectionRef::Window { start, len } => {
-            let end = start + len;
-            if oa.len() <= end || ob.len() <= end {
-                return Some(false);
-            }
             // Per-side absolute spans (prefixes may differ); compare only the
             // visible coordinate slices, never the absolute offset numbers.
-            let c0a = oa[start] as usize;
-            let c1a = oa[end] as usize;
-            let c0b = ob[start] as usize;
-            let c1b = ob[end] as usize;
-            if c1a > ca.len() || c1b > cb.len() || c0a > c1a || c0b > c1b {
+            let Some(left) = line_window_coord_span(oa, ca.len(), start, len) else {
                 return Some(false);
-            }
-            let la = ca.view(CoordWindow::from_range(c0a..c1a, ca.len()));
-            let lb = cb.view(CoordWindow::from_range(c0b..c1b, cb.len()));
-            Some(coordseq_columns_bit_eq(&la, &lb))
+            };
+            let Some(right) = line_window_coord_span(ob, cb.len(), start, len) else {
+                return Some(false);
+            };
+            Some(coord_views_bit_eq(ca, left, cb, right))
         },
         crate::array::RowSelectionRef::Gather(_) => None,
     }
@@ -1123,11 +1225,11 @@ fn packed_lines_columnar_eq(
 
 fn packed_polygons_columnar_eq(
     ca: &CoordSeq,
-    _ra: &[i32],
+    ra: &[i32],
     pa: &[i32],
     ma: &crate::array::RowSelection,
     cb: &CoordSeq,
-    _rb: &[i32],
+    rb: &[i32],
     pb: &[i32],
     mb: &crate::array::RowSelection,
 ) -> Option<bool> {
@@ -1141,15 +1243,13 @@ fn packed_polygons_columnar_eq(
         crate::array::RowSelectionRef::Window { start, len } => {
             // Visible polygons start..end → ring range via polygon_offsets →
             // coord span via ring_offsets. Different absolute prefixes are fine.
-            let end = start + len;
-            if pa.len() <= end || pb.len() <= end {
-                return None;
-            }
-            // Fall through to dual stream for windowed polygons: resolving the
-            // two-level CSR span without duplicating ring-offset wiring is the
-            // dual stream's job. Identity (the hot full-array case) is bulk.
-            let _ = (pa, pb, end);
-            None
+            let Some(left) = polygon_window_coord_span(ra, pa, ca.len(), start, len) else {
+                return Some(false);
+            };
+            let Some(right) = polygon_window_coord_span(rb, pb, cb.len(), start, len) else {
+                return Some(false);
+            };
+            Some(coord_views_bit_eq(ca, left, cb, right))
         },
         crate::array::RowSelectionRef::Gather(_) => None,
     }
@@ -1701,5 +1801,215 @@ mod tests {
             CoordinateColumnRef::Borrowed(_) => panic!("expected Nullable Z column, got Borrowed"),
             CoordinateColumnRef::Dense(_) => panic!("expected Nullable Z column, got Dense"),
         }
+    }
+
+    fn closed_box(minx: f64, miny: f64, maxx: f64, maxy: f64) -> [Point; 5] {
+        [
+            pt(minx, miny),
+            pt(maxx, miny),
+            pt(maxx, maxy),
+            pt(minx, maxy),
+            pt(minx, miny),
+        ]
+    }
+
+    fn packed_polygons(
+        coords: CoordSeq,
+        ring_ends: Vec<usize>,
+        polygon_ends: Vec<usize>,
+        rows: std::ops::Range<usize>,
+    ) -> PyGeometryArray {
+        let n_rings = ring_ends.len() - 1;
+        let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(ring_ends, coords.len()).unwrap();
+        let polygon_offsets =
+            CsrOffsetColumn::<PolygonLevel>::try_new(polygon_ends, n_rings).unwrap();
+        PyGeometryArray::packed_polygons_mapped(
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            Frame::default(),
+            RowSelection::window(rows.start, rows.end.saturating_sub(rows.start)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn packed_polygon_windows_with_unequal_prefixes_equal_without_buffering() {
+        let mut left_points = Vec::from(closed_box(9.0, 9.0, 9.5, 9.5));
+        left_points.extend(closed_box(1.0, 0.0, 3.0, 2.0));
+        left_points.extend(closed_box(4.0, 0.0, 5.0, 1.0));
+        let left = packed_polygons(
+            CoordSeq::try_from_points(&left_points).unwrap(),
+            vec![0, 5, 10, 15],
+            vec![0, 1, 2, 3],
+            1..3,
+        );
+        let mut right_points = vec![pt(8.0, 8.0), pt(8.0, 7.0), pt(7.0, 8.0), pt(8.0, 8.0)];
+        right_points.extend(closed_box(1.0, 0.0, 3.0, 2.0));
+        right_points.extend(closed_box(4.0, 0.0, 5.0, 1.0));
+        let right = packed_polygons(
+            CoordSeq::try_from_points(&right_points).unwrap(),
+            vec![0, 4, 9, 14],
+            vec![0, 1, 2, 3],
+            1..3,
+        );
+        let left_view = left.coordinate_view();
+        let right_view = right.coordinate_view();
+        assert_eq!(left_view.len(), 10);
+        assert_eq!(right_view.len(), 10);
+        let equal = crate::test_support::fail_allocations_after(0, || {
+            left_view.equal_visible(&right_view, None, None)
+        });
+        assert!(equal);
+        let mut mismatched = right_points;
+        mismatched[8] = pt(9.0, 9.0);
+        let other = packed_polygons(
+            CoordSeq::try_from_points(&mismatched).unwrap(),
+            vec![0, 4, 9, 14],
+            vec![0, 1, 2, 3],
+            1..3,
+        );
+        assert!(!left_view.equal_visible(&other.coordinate_view(), None, None));
+    }
+
+    #[test]
+    fn packed_polygon_empty_windows_compare_equal() {
+        let left = packed_polygons(
+            CoordSeq::try_from_points(&Vec::from(closed_box(0.0, 0.0, 1.0, 1.0))).unwrap(),
+            vec![0, 5],
+            vec![0, 1],
+            1..1,
+        );
+        let right = packed_polygons(
+            CoordSeq::try_from_points(&vec![
+                pt(2.0, 2.0),
+                pt(3.0, 2.0),
+                pt(2.0, 3.0),
+                pt(2.0, 2.0),
+            ])
+            .unwrap(),
+            vec![0, 4],
+            vec![0, 1],
+            1..1,
+        );
+        assert_eq!(left.coordinate_view().len(), 0);
+        assert_eq!(right.coordinate_view().len(), 0);
+        assert!(
+            left.coordinate_view()
+                .equal_visible(&right.coordinate_view(), None, None)
+        );
+    }
+
+    #[test]
+    fn packed_polygon_window_column_borrows_visible_span() {
+        let mut points = Vec::from(closed_box(0.0, 0.0, 1.0, 1.0));
+        points.extend(closed_box(2.0, 0.0, 4.0, 1.0));
+        points.extend(closed_box(5.0, 0.0, 6.0, 1.0));
+        let coords = CoordSeq::try_from_points(&points).unwrap();
+        let array = packed_polygons(coords.clone(), vec![0, 5, 10, 15], vec![0, 1, 2, 3], 1..2);
+        let view = array.coordinate_view();
+        let (_, allocations) =
+            crate::test_support::allocation_count(|| view.column(CoordinateAxis::X).unwrap());
+        assert_eq!(allocations, 0);
+        match view.column(CoordinateAxis::X).unwrap() {
+            CoordinateColumnRef::Borrowed(xs) => {
+                assert_eq!(xs, &coords.xs()[5..10]);
+                assert_eq!(xs.as_ptr(), coords.xs()[5..10].as_ptr());
+            },
+            _ => panic!("expected borrowed X"),
+        }
+        match view.column(CoordinateAxis::Y).unwrap() {
+            CoordinateColumnRef::Borrowed(ys) => {
+                assert_eq!(ys.as_ptr(), coords.ys()[5..10].as_ptr());
+            },
+            _ => panic!("expected borrowed Y"),
+        }
+    }
+
+    #[test]
+    fn packed_line_window_column_borrows_visible_span() {
+        let coords = CoordSeq::try_from_points(&[
+            pt(9.0, 9.0),
+            pt(9.0, 8.0),
+            pt(1.0, 0.0),
+            pt(2.0, 0.0),
+            pt(3.0, 0.0),
+            pt(4.0, 0.0),
+            pt(5.0, 0.0),
+        ])
+        .unwrap();
+        let offsets = CsrOffsetColumn::try_new(vec![0, 2, 5, 7], 7).unwrap();
+        let array = PyGeometryArray::packed_lines_mapped(
+            coords.clone(),
+            offsets,
+            Frame::default(),
+            crate::array::row_selection_from_logical_rows(
+                crate::array::RowSelectionRef::Identity,
+                3,
+                1..3,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let view = array.coordinate_view();
+        let (_, allocations) =
+            crate::test_support::allocation_count(|| view.column(CoordinateAxis::X).unwrap());
+        assert_eq!(allocations, 0);
+        match view.column(CoordinateAxis::X).unwrap() {
+            CoordinateColumnRef::Borrowed(xs) => {
+                assert_eq!(xs, &coords.xs()[2..7]);
+                assert_eq!(xs.as_ptr(), coords.xs()[2..7].as_ptr());
+            },
+            _ => panic!("expected borrowed X"),
+        }
+    }
+
+    #[test]
+    fn packed_polygon_window_zm_compares_optional_axes() {
+        use crate::geometry::{MOrdinate, ZOrdinate};
+        let ring = |z: f64| {
+            [
+                Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(None)).unwrap(),
+                Point::new_axes(1.0, 0.0, ZOrdinate(Some(z)), MOrdinate(None)).unwrap(),
+                Point::new_axes(1.0, 1.0, ZOrdinate(Some(z)), MOrdinate(None)).unwrap(),
+                Point::new_axes(0.0, 1.0, ZOrdinate(Some(z)), MOrdinate(None)).unwrap(),
+                Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(None)).unwrap(),
+            ]
+        };
+        let mut prefix = Vec::from(ring(0.0));
+        let mut left_points = prefix.clone();
+        left_points.extend(ring(1.0));
+        prefix[0] = Point::new_axes(2.0, 2.0, ZOrdinate(Some(9.0)), MOrdinate(None)).unwrap();
+        let mut right_points = prefix;
+        right_points.extend(ring(1.0));
+        let left = packed_polygons(
+            CoordSeq::try_from_points(&left_points).unwrap(),
+            vec![0, 5, 10],
+            vec![0, 1, 2],
+            1..2,
+        );
+        let right = packed_polygons(
+            CoordSeq::try_from_points(&right_points).unwrap(),
+            vec![0, 5, 10],
+            vec![0, 1, 2],
+            1..2,
+        );
+        assert!(
+            left.coordinate_view()
+                .equal_visible(&right.coordinate_view(), None, None)
+        );
+        let mut other_points = right_points;
+        other_points[5] = Point::new_axes(0.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(None)).unwrap();
+        let other = packed_polygons(
+            CoordSeq::try_from_points(&other_points).unwrap(),
+            vec![0, 5, 10],
+            vec![0, 1, 2],
+            1..2,
+        );
+        assert!(
+            !left
+                .coordinate_view()
+                .equal_visible(&other.coordinate_view(), None, None)
+        );
     }
 }

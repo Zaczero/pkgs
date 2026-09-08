@@ -89,6 +89,10 @@ impl RowSelection {
         matches!(self, Self::Identity)
     }
 
+    pub(crate) const fn window(start: usize, len: usize) -> Self {
+        Self::Window(RowWindow { start, len })
+    }
+
     pub const fn reorders(&self) -> bool {
         !self.is_identity()
     }

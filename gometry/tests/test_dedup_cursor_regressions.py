@@ -221,6 +221,28 @@ def test_coordinates_equality_ignores_csr_absolute_offsets():
     assert list(left[1:].coords) != list(other[1:].coords)
     assert left[1:].coords != other[1:].coords
 
+    # Polygons: unequal prefix vertex counts, same visible window.
+    left_polys = gm.GeometryArray([
+        gm.Polygon([(9.0, 9.0), (9.0, 8.0), (8.0, 9.0), (9.0, 9.0)]),
+        gm.box(1.0, 0.0, 3.0, 2.0),
+        gm.box(4.0, 0.0, 5.0, 1.0),
+    ])
+    right_polys = gm.GeometryArray([
+        gm.box(8.0, 8.0, 11.0, 11.0),
+        gm.box(1.0, 0.0, 3.0, 2.0),
+        gm.box(4.0, 0.0, 5.0, 1.0),
+    ])
+    lp, rp = left_polys[1:].coords, right_polys[1:].coords
+    assert list(lp) == list(rp)
+    assert lp == rp
+    other_polys = gm.GeometryArray([
+        gm.box(8.0, 8.0, 11.0, 11.0),
+        gm.box(1.0, 0.0, 3.0, 2.0),
+        gm.box(4.0, 0.0, 9.0, 1.0),
+    ])
+    assert list(left_polys[1:].coords) != list(other_polys[1:].coords)
+    assert left_polys[1:].coords != other_polys[1:].coords
+
 
 # Wall-clock scaling for gathered/windowed coords equality lives in
 # `benches/cases/case_coordinates_equality_scale.py` (not a pytest gate).
