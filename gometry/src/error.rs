@@ -21,6 +21,8 @@ use crate::io::IoError;
 /// user-facing exception only after the producer has released retained output.
 #[derive(Debug, ThisError)]
 pub(crate) enum ResourceError {
+    #[error("operating system entropy acquisition failed")]
+    Entropy,
     #[error("memory allocation failed while materializing output")]
     Allocation,
     #[error("resource size arithmetic overflowed")]
@@ -54,6 +56,7 @@ enum ErrorStorage {
 }
 
 static ALLOCATION_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Allocation);
+static ENTROPY_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Entropy);
 static SIZE_OVERFLOW_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::SizeOverflow);
 
 /// The domain error kinds. Adding a kind forces a deliberate Python exception
@@ -117,6 +120,7 @@ impl Error {
 impl From<ErrorKind> for Error {
     fn from(kind: ErrorKind) -> Self {
         Self(match kind {
+            ErrorKind::Resource(ResourceError::Entropy) => ErrorStorage::Static(&ENTROPY_ERROR),
             ErrorKind::Resource(ResourceError::Allocation) => {
                 ErrorStorage::Static(&ALLOCATION_ERROR)
             },

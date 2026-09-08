@@ -16,9 +16,32 @@
 //! `IsEnabled` impl).
 
 use std::hash::BuildHasher as _;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 pub(crate) use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
+
+static TOPOLOGY_HASH_STATE: OnceLock<ahash::RandomState> = OnceLock::new();
+
+pub(crate) fn topology_hash_state() -> crate::error::Result<&'static ahash::RandomState> {
+    topology_hash_state_with(&TOPOLOGY_HASH_STATE, getrandom::fill)
+}
+
+fn topology_hash_state_with(
+    state: &OnceLock<ahash::RandomState>,
+    fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
+) -> crate::error::Result<&ahash::RandomState> {
+    state.get_or_try_init(|| {
+        let mut bytes = [0_u8; 32];
+        fill(&mut bytes).map_err(|_| crate::error::ResourceError::Entropy)?;
+        let words = bytes.as_chunks::<8>().0;
+        Ok(ahash::RandomState::with_seeds(
+            u64::from_ne_bytes(words[0]),
+            u64::from_ne_bytes(words[1]),
+            u64::from_ne_bytes(words[2]),
+            u64::from_ne_bytes(words[3]),
+        ))
+    })
+}
 
 /// One process-stable `ahash` state for Python `__hash__` implementations.
 /// Python requires only intra-process consistency (str hashes vary per run
@@ -135,6 +158,45 @@ impl RowIdSortScratch {
 #[cfg(test)]
 mod row_id_sort_tests {
     use super::RowIdSortScratch;
+
+    #[test]
+    fn cold_topology_hash_state_needs_no_rust_heap_allocation() {
+        crate::test_support::fail_allocations_after(0, || {
+            let state = super::topology_hash_state().unwrap();
+            let map = super::HashMap::<u64, u64>::with_hasher(state.clone());
+            assert_eq!(map.capacity(), 0);
+        });
+    }
+
+    #[test]
+    fn topology_entropy_failure_remains_retryable_and_maps_to_os_error() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::fail_allocations_after;
+
+        pyo3::Python::initialize();
+        let state = std::sync::OnceLock::new();
+        let error = fail_allocations_after(0, || {
+            super::topology_hash_state_with(&state, |_| Err(getrandom::Error::UNSUPPORTED))
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Entropy)
+        ));
+        assert!(state.get().is_none());
+        pyo3::Python::attach(|py| {
+            let error: pyo3::PyErr = fail_allocations_after(0, || error.into());
+            assert!(error.is_instance_of::<pyo3::exceptions::PyOSError>(py));
+        });
+        let first = fail_allocations_after(0, || {
+            super::topology_hash_state_with(&state, getrandom::fill)
+        })
+        .unwrap();
+        let reused =
+            super::topology_hash_state_with(&state, |_| panic!("initialized entropy reused"))
+                .unwrap();
+        assert!(std::ptr::eq(first, reused));
+    }
 
     #[test]
     fn reusable_sort_matches_ascending_order_for_sparse_and_dense_rows() {

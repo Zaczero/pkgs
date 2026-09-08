@@ -22,8 +22,8 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, try_compare_ratios};
 use crate::geometry::{
-    ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _, PointKey, Result, Segment, XY,
-    same_point, single_chain, try_for_each_candidate_pair,
+    ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY, same_point,
+    single_chain, try_for_each_candidate_pair,
 };
 use crate::try_reserve_vec;
 
@@ -196,7 +196,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let zero = ExactDyadic::try_from_f64(0.0)?;
     let one = ExactDyadic::try_from_f64(1.0)?;
 
-    let mut endpoint_of: HashMap<PointKey, u32> = HashMap::new();
+    let mut endpoint_of: HashMap<PointKey, u32> =
+        HashMap::with_hasher(crate::collections::topology_hash_state()?.clone());
     endpoint_of
         .try_reserve(
             unique
@@ -616,7 +617,8 @@ fn aggregate_atoms(
     source_provenance: &SegmentProvenance,
     budget: &mut ExpansionBudget,
 ) -> Result<(Vec<ExactSpan>, SegmentProvenance)> {
-    let mut atom_of: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut atom_of: HashMap<(u32, u32), u32> =
+        HashMap::with_hasher(crate::collections::topology_hash_state()?.clone());
     atom_of
         .try_reserve(intervals.len())
         .map_err(crate::error::Error::from)?;

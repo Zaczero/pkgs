@@ -264,6 +264,7 @@ fn with_attrs(err: PyErr, attrs: &[(&str, Attr<'_>)]) -> PyErr {
 }
 
 enum NativeResource {
+    Entropy,
     Allocation,
     Overflow,
     OverflowContext(&'static str),
@@ -272,6 +273,16 @@ enum NativeResource {
 impl NativeResource {
     fn into_py_err(self) -> PyErr {
         match self {
+            Self::Entropy => Python::attach(|py| {
+                // SAFETY: the interpreter is attached and the message is static.
+                unsafe {
+                    ffi::PyErr_SetString(
+                        ffi::PyExc_OSError,
+                        c"operating system entropy acquisition failed".as_ptr(),
+                    );
+                }
+                PyErr::fetch(py)
+            }),
             Self::Allocation => native_memory_error(),
             Self::Overflow => native_size_overflow_error(),
             Self::OverflowContext(message) => native_overflow_error(message),
@@ -331,11 +342,10 @@ pub(crate) fn native_overflow_error(message: &str) -> PyErr {
 fn native_resource(error: &Error) -> Option<NativeResource> {
     match error.kind() {
         ErrorKind::Resource(kind) => Some(match kind {
+            ResourceError::Entropy => NativeResource::Entropy,
             ResourceError::Allocation => NativeResource::Allocation,
             ResourceError::SizeOverflow => NativeResource::Overflow,
-            ResourceError::SizeOverflowContext(message) => {
-                NativeResource::OverflowContext(message)
-            },
+            ResourceError::SizeOverflowContext(message) => NativeResource::OverflowContext(message),
         }),
         _ => None,
     }
