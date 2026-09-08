@@ -792,7 +792,7 @@ mod gather_allocation_tests {
     use super::*;
     use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{LineSeq, Shape};
-    use crate::test_support::fail_allocations_after;
+    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn repeated_xy_line() -> Shape {
         Shape::LineString(
@@ -900,14 +900,20 @@ mod gather_allocation_tests {
     }
 
     #[test]
-    fn minimum_clearance_returns_resource_not_infinity() {
+    fn minimum_clearance_rejects_each_cold_allocation() {
         let shape = three_vertex_line();
-        match fail_allocations_after(0, || shape.minimum_clearance()) {
-            Err(error) => assert_allocation(&error),
-            Ok(value) if value.is_infinite() => {
-                panic!("allocation failure must not look like infinite clearance")
-            },
-            Ok(_) => panic!("expected allocation failure"),
+        let (clearance, count) = allocation_count(|| shape.minimum_clearance().unwrap());
+        assert!(count > 0);
+        assert!(clearance.is_finite());
+        for allowed in 0..count {
+            match fail_allocations_after(allowed, || shape.minimum_clearance()) {
+                Err(error) => assert_allocation(&error),
+                Ok(value) if value.is_infinite() => {
+                    panic!("allocation failure must not look like infinite clearance")
+                },
+                Ok(_) => panic!("each cold construction allocation must propagate"),
+            }
         }
+        assert_eq!(shape.minimum_clearance().unwrap(), clearance);
     }
 }

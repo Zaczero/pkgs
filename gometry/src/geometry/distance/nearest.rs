@@ -1,3 +1,4 @@
+use crate::error::Result;
 use crate::geometry::distance::parts_covers_point;
 use crate::geometry::{
     BVH_MIN_INDEXED_SEGMENTS, DistanceParts, FacetBvh, NearestCandidate, Point, PointSetIndex,
@@ -9,7 +10,7 @@ pub(crate) fn nearest_probe_to_parts(
     target: &DistanceParts,
     best: Option<OrientedCandidate>,
     swapped: bool,
-) -> Option<OrientedCandidate> {
+) -> Result<Option<OrientedCandidate>> {
     // The incoming best may belong to the OTHER orientation; keep its tag
     // unless this sweep improves on it.
     let incoming = best;
@@ -27,7 +28,7 @@ pub(crate) fn nearest_probe_to_parts(
             .nearest_to_points(probe.probe_points(), best),
     };
     if !target.point_only.is_empty() {
-        if let Some(index) = target.point_index() {
+        if let Some(index) = target.point_index()? {
             // Indexed: each probe point's nearest target point in O(log points).
             for probe_point in probe.probe_points() {
                 if let Some((target_point, distance_squared)) = index.nearest(probe_point) {
@@ -79,9 +80,9 @@ pub(crate) fn nearest_probe_to_parts(
     });
     match (best, incoming, improved) {
         (Some(candidate), _, true) | (Some(candidate), None, _) => {
-            Some(OrientedCandidate { candidate, swapped })
+            Ok(Some(OrientedCandidate { candidate, swapped }))
         },
-        (_, incoming, _) => incoming,
+        (_, incoming, _) => Ok(incoming),
     }
 }
 
@@ -195,13 +196,16 @@ impl DistanceParts {
     /// The cached R-tree over this side's isolated points, built on first use
     /// once the point count clears the crossover (`None` below it — a short
     /// brute scan wins under the rstar bulk-load setup cost).
-    pub(crate) fn point_index(&self) -> Option<&PointSetIndex> {
+    pub(crate) fn point_index(&self) -> Result<Option<&PointSetIndex>> {
         self.point_index
-            .get_or_init(|| {
-                (self.point_only.len() >= POINT_INDEX_MIN_POINTS)
-                    .then(|| PointSetIndex::build(self.point_only.iter().copied()))
+            .get_or_try_init(|| {
+                if self.point_only.len() >= POINT_INDEX_MIN_POINTS {
+                    PointSetIndex::build(self.point_only.iter().copied()).map(Some)
+                } else {
+                    Ok(None)
+                }
             })
-            .as_ref()
+            .map(Option::as_ref)
     }
 }
 

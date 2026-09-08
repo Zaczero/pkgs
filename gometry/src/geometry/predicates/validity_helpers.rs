@@ -142,23 +142,21 @@ pub(crate) fn minimum_clearance_witness(
     if points.len() < 2 {
         return Ok(None);
     }
-    let segments = indexed_segments(shape);
-    Ok(
-        if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
-            minimum_clearance_witness_indexed(&points, &segments)
-        } else {
-            minimum_clearance_witness_brute(&points, &segments)
-        },
-    )
+    let segments = indexed_segments(shape)?;
+    if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
+        minimum_clearance_witness_indexed(&points, &segments)
+    } else {
+        Ok(minimum_clearance_witness_brute(&points, &segments))
+    }
 }
 
 /// Indexed nearest-query path (large multipoints / dense linework).
 fn minimum_clearance_witness_indexed(
     points: &[Point],
     segments: &[IndexedSegment],
-) -> Option<MinimumClearanceWitness> {
-    let first_point_index_by_xy = first_point_index_by_xy(points);
-    let vertex_index = PointSetIndex::build(points.iter().copied());
+) -> crate::error::Result<Option<MinimumClearanceWitness>> {
+    let first_point_index_by_xy = first_point_index_by_xy(points)?;
+    let vertex_index = PointSetIndex::build(points.iter().copied())?;
     let mut witness = None;
     let mut clearance_squared = f64::INFINITY;
     for (point_index, point) in points.iter().enumerate() {
@@ -209,7 +207,7 @@ fn minimum_clearance_witness_indexed(
             });
         }
     }
-    witness
+    Ok(witness)
 }
 
 /// Brute O(n²) path for small multipoints / sparse linework.
@@ -324,71 +322,81 @@ struct IndexedSegment {
     end: usize,
 }
 
-fn first_point_index_by_xy(points: &[Point]) -> HashMap<PointKey, usize> {
-    let mut indices = HashMap::with_capacity(points.len());
+fn first_point_index_by_xy(points: &[Point]) -> crate::error::Result<HashMap<PointKey, usize>> {
+    let mut indices = HashMap::with_hasher(crate::collections::topology_hash_state()?.clone());
+    indices
+        .try_reserve(points.len())
+        .map_err(crate::error::Error::from)?;
     for (index, &point) in points.iter().enumerate() {
         indices.entry(PointKey::new(point)).or_insert(index);
     }
-    indices
+    Ok(indices)
 }
 
-fn indexed_segments(shape: &Shape) -> Vec<IndexedSegment> {
+fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> {
     fn line_segments_with_indices<C: Coordinates + ?Sized>(
         coords: &C,
         cursor: &mut usize,
         out: &mut Vec<IndexedSegment>,
-    ) {
+    ) -> crate::error::Result<()> {
         let base = *cursor;
         for index in 0..coords.coord_count().saturating_sub(1) {
             let start = coords.nth_coord(index);
             let end = coords.nth_coord(index + 1);
-            out.push(IndexedSegment {
+            crate::try_push_vec(out, IndexedSegment {
                 xy: Segment {
                     start: start.xy(),
                     end: end.xy(),
                 },
                 start: base + index,
                 end: base + index + 1,
-            });
+            })?;
         }
         *cursor += coords.coord_count();
+        Ok(())
     }
 
-    fn walk(shape: &Shape, cursor: &mut usize, out: &mut Vec<IndexedSegment>) {
+    fn walk(
+        shape: &Shape,
+        cursor: &mut usize,
+        out: &mut Vec<IndexedSegment>,
+    ) -> crate::error::Result<()> {
         match shape {
             Shape::Point(_) => *cursor += 1,
             Shape::MultiPoint(points) => *cursor += points.coord_count(),
-            Shape::LineString(points) => line_segments_with_indices(points, cursor, out),
+            Shape::LineString(points) => line_segments_with_indices(points, cursor, out)?,
             Shape::MultiLineString(lines) => {
                 for line in lines {
-                    line_segments_with_indices(line, cursor, out);
+                    line_segments_with_indices(line, cursor, out)?;
                 }
             },
             Shape::Polygon(polygon) => {
                 for ring in polygon.rings() {
-                    line_segments_with_indices(ring, cursor, out);
+                    line_segments_with_indices(ring, cursor, out)?;
                 }
             },
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons {
                     for ring in polygon.rings() {
-                        line_segments_with_indices(ring, cursor, out);
+                        line_segments_with_indices(ring, cursor, out)?;
                     }
                 }
             },
             Shape::GeometryCollection(geometries) => {
                 for geometry in geometries {
-                    walk(geometry, cursor, out);
+                    walk(geometry, cursor, out)?;
                 }
             },
             Shape::Empty(..) => {},
         }
+        Ok(())
     }
 
-    let mut out = Vec::with_capacity(shape.segment_count());
+    let mut out = Vec::new();
+    crate::try_reserve_vec(&mut out, shape.segment_count())?;
     let mut cursor = 0;
-    walk(shape, &mut cursor, &mut out);
-    out
+    walk(shape, &mut cursor, &mut out)?;
+    Ok(out)
 }
 
 pub(crate) fn line_is_closed<C: Coordinates + ?Sized>(points: &C) -> bool {
@@ -573,5 +581,83 @@ mod prune_dangles_tests {
             },
         ];
         assert_same_pruned_set(ring);
+    }
+}
+
+#[cfg(test)]
+mod clearance_allocation_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::LineSeq;
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn assert_allocation(error: crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    fn line(points: &[Point]) -> Shape {
+        Shape::LineString(
+            LineSeq::try_new(CoordSeq::try_from_points(points).unwrap())
+                .expect("test line is valid"),
+        )
+    }
+
+    fn indexed_line() -> Shape {
+        let points: Vec<Point> = (0..64)
+            .map(|index| Point::new_raw_xy(index as f64, 0.0))
+            .collect();
+        line(&points)
+    }
+
+    #[test]
+    fn indexed_segments_reject_each_cold_allocation() {
+        let shape = line(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(0.0, 1.0),
+        ]);
+        let (segments, count) = allocation_count(|| indexed_segments(&shape).unwrap());
+        assert_eq!(segments.len(), 2);
+        assert!(count > 0);
+        for allowed in 0..count {
+            let error = fail_allocations_after(allowed, || indexed_segments(&shape))
+                .expect_err("each cold construction allocation must propagate");
+            assert_allocation(error);
+        }
+        assert_eq!(indexed_segments(&shape).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn first_point_index_failure_is_retryable() {
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ];
+        let error = fail_allocations_after(0, || first_point_index_by_xy(&points))
+            .expect_err("table reservation must propagate");
+        assert_allocation(error);
+        let indices = first_point_index_by_xy(&points).unwrap();
+        assert_eq!(indices[&PointKey::new(points[0])], 0);
+        assert_eq!(indices[&PointKey::new(points[1])], 1);
+        assert_eq!(indices.len(), 2);
+    }
+
+    #[test]
+    fn indexed_clearance_producer_rejects_package_owned_staging() {
+        let shape = indexed_line();
+        let points = shape.points_vec().unwrap();
+        let segments = indexed_segments(&shape).unwrap();
+        assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
+        let error =
+            fail_allocations_after(0, || minimum_clearance_witness_indexed(&points, &segments))
+                .expect_err("indexed staging reservation must propagate");
+        assert_allocation(error);
+        let indexed = minimum_clearance_witness_indexed(&points, &segments).unwrap();
+        let brute = minimum_clearance_witness_brute(&points, &segments);
+        assert_eq!(format!("{brute:?}"), format!("{indexed:?}"));
     }
 }

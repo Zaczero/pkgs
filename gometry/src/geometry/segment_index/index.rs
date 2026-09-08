@@ -165,12 +165,16 @@ pub(crate) struct PointSetIndex {
 }
 
 impl PointSetIndex {
-    pub(crate) fn build(points: impl IntoIterator<Item = Point>) -> Self {
-        Self {
-            tree: BulkRTree::bulk_load_with_params(
-                points.into_iter().map(|point| [point.x, point.y]).collect(),
-            ),
+    pub(crate) fn build(points: impl IntoIterator<Item = Point>) -> crate::error::Result<Self> {
+        let points = points.into_iter();
+        let mut coords = Vec::new();
+        crate::try_reserve_vec(&mut coords, points.size_hint().0)?;
+        for point in points {
+            crate::try_push_vec(&mut coords, [point.x, point.y])?;
         }
+        Ok(Self {
+            tree: BulkRTree::bulk_load_with_params(coords),
+        })
     }
 
     /// The nearest indexed point (INCLUDING a coincident one, distance 0) with
@@ -202,6 +206,31 @@ impl PointSetIndex {
 impl HeapSize for PointSetIndex {
     fn heap_bytes(&self) -> usize {
         super::bulk_rtree_heap_bytes(&self.tree)
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::fail_allocations_after;
+
+    #[test]
+    fn point_set_index_collect_failure_is_retryable() {
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(0.0, 1.0),
+        ];
+        let error = fail_allocations_after(0, || PointSetIndex::build(points.iter().copied()))
+            .expect_err("coordinate staging reservation must propagate");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        let index = PointSetIndex::build(points.iter().copied()).unwrap();
+        let (other, _) = index.nearest_other(points[0]).unwrap();
+        assert!(!same_point(other, points[0]));
     }
 }
 

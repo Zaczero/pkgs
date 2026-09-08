@@ -46,8 +46,8 @@ impl PreparedPlan {
         {
             return Ok(Some((witness, witness)));
         }
-        let best = nearest_probe_to_parts(self_parts, other_parts, None, false);
-        let best = nearest_probe_to_parts(other_parts, self_parts, best, true);
+        let best = nearest_probe_to_parts(self_parts, other_parts, None, false)?;
+        let best = nearest_probe_to_parts(other_parts, self_parts, best, true)?;
         // Squared-space ordering cannot distinguish a false-zero or quantized
         // subnormal candidate from another tiny witness. Re-run the rare
         // untrustworthy class through the shape-level hypot reduction, whose
