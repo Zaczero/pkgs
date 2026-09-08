@@ -16,7 +16,8 @@ use crate::geometry::XY;
 use crate::geometry::exact_arith::{two_product_exact, two_sum};
 
 /// Certified outward bounds around a certified rounding: the exact value lies
-/// within half an ulp of `rounded`, so within its two binary64 neighbours.
+/// inside `rounded`'s nearest-even cell, so it is between the two binary64
+/// neighbours used by the comparison filter.
 pub(super) struct CertifiedCenter {
     pub(super) rounded: XY,
     pub(super) bounds: [(f64, f64); 2],
@@ -46,14 +47,14 @@ impl Bounded {
         Self { hi, lo, err: 0.0 }
     }
 
-    fn mul(self, other: Self) -> Self {
-        let (p, e) = two_product_exact(self.hi, other.hi);
+    fn mul(self, other: Self) -> Option<Self> {
+        let (p, e) = two_product_exact(self.hi, other.hi)?;
         let cross = self.hi.mul_add(other.lo, self.lo * other.hi);
         let (hi, lo) = fast_two_sum(p, e + cross);
         let product = self.magnitude() * other.magnitude();
         let err = (self.err * other.magnitude() + other.err * self.magnitude() + KAPPA * product)
             .next_up();
-        Self { hi, lo, err }
+        (hi.is_finite() && lo.is_finite() && err.is_finite()).then_some(Self { hi, lo, err })
     }
 
     fn add(self, other: Self) -> Self {
@@ -88,7 +89,7 @@ impl Bounded {
         }
         let hi = self.hi / other.hi;
         // Remainder r = self - hi * other, in double-double.
-        let (p, e) = two_product_exact(hi, other.hi);
+        let (p, e) = two_product_exact(hi, other.hi)?;
         let (r_hi, r_lo) = {
             let (s, t) = two_sum(self.hi, -p);
             fast_two_sum(s, t - e + self.lo - hi * other.lo)
@@ -104,6 +105,9 @@ impl Bounded {
     /// The nearest-even binary64 of the exact value, when the error interval
     /// lies strictly inside one rounding cell; `None` on a possible tie.
     fn certified_rounding(self) -> Option<f64> {
+        if !self.err.is_finite() || self.err < 0.0 {
+            return None;
+        }
         let candidate = self.hi + self.lo;
         if !candidate.is_finite() || !candidate.is_normal() {
             return None;
@@ -111,9 +115,17 @@ impl Bounded {
         // The distance from the candidate to hi + lo, with its own rounding.
         let (d, d_err) = two_sum(self.hi - candidate, self.lo);
         let offset = (d.abs() + d_err.abs()).next_up();
-        let half_ulp = 0.5 * (candidate.abs().next_up() - candidate.abs());
+        let predecessor = candidate.next_down();
+        let successor = candidate.next_up();
+        if !(predecessor.is_finite() && successor.is_finite()) {
+            return None;
+        }
+        // The cells are asymmetric at every binade boundary.  Distances are
+        // formed before halving so the midpoint itself need not be a binary64.
+        let lower_midpoint_distance = 0.5 * (candidate - predecessor);
+        let upper_midpoint_distance = 0.5 * (successor - candidate);
         let reach = (offset + self.err).next_up();
-        (reach < half_ulp * (1.0 - 1e-12)).then_some(candidate)
+        (reach < lower_midpoint_distance && reach < upper_midpoint_distance).then_some(candidate)
     }
 }
 
@@ -141,6 +153,9 @@ pub(super) fn certified_circumcenter(a: XY, b: XY, c: XY) -> Option<CertifiedCen
     let uy = Bounded::exact_difference(b.y, a.y);
     let vx = Bounded::exact_difference(c.x, a.x);
     let vy = Bounded::exact_difference(c.y, a.y);
+    // This is the ingress proof for stored sites and rounded difference heads.
+    // Cancellation in a derived numerator or quotient can leave the window,
+    // so every later FMA decomposition remains fallible.
     let admitted = [a.x, a.y, b.x, b.y, c.x, c.y]
         .into_iter()
         .all(inside_window)
@@ -149,12 +164,12 @@ pub(super) fn certified_circumcenter(a: XY, b: XY, c: XY) -> Option<CertifiedCen
         return None;
     }
     // d = 2 (ux vy - vx uy); bb = |u|²; cc = |v|².
-    let d = ux.mul(vy).add(vx.mul(uy).neg()).twice();
-    let bb = ux.mul(ux).add(uy.mul(uy));
-    let cc = vx.mul(vx).add(vy.mul(vy));
+    let d = ux.mul(vy)?.add(vx.mul(uy)?.neg()).twice();
+    let bb = ux.mul(ux)?.add(uy.mul(uy)?);
+    let cc = vx.mul(vx)?.add(vy.mul(vy)?);
     // The center relative to a: (vy bb - uy cc, ux cc - vx bb) / d.
-    let nx = vy.mul(bb).add(uy.mul(cc).neg());
-    let ny = ux.mul(cc).add(vx.mul(bb).neg());
+    let nx = vy.mul(bb)?.add(uy.mul(cc)?.neg());
+    let ny = ux.mul(cc)?.add(vx.mul(bb)?.neg());
     let origin = |value: f64| Bounded {
         hi: value,
         lo: 0.0,
@@ -215,12 +230,26 @@ pub(super) fn certified_bisector_hit(a: XY, b: XY, axis: SideAxis, value: f64) -
     if free_slope.hi == 0.0 && free_slope.lo == 0.0 {
         return BisectorHit::Parallel;
     }
-    let squares = exact(b.x)
-        .mul(exact(b.x))
-        .add(exact(b.y).mul(exact(b.y)))
-        .add(exact(a.x).mul(exact(a.x)).neg())
-        .add(exact(a.y).mul(exact(a.y)).neg());
-    let numerator = squares.add(fixed_slope.mul(exact(value)).twice().neg());
+    let Some(bx_squared) = exact(b.x).mul(exact(b.x)) else {
+        return BisectorHit::Declined;
+    };
+    let Some(by_squared) = exact(b.y).mul(exact(b.y)) else {
+        return BisectorHit::Declined;
+    };
+    let Some(ax_squared) = exact(a.x).mul(exact(a.x)) else {
+        return BisectorHit::Declined;
+    };
+    let Some(ay_squared) = exact(a.y).mul(exact(a.y)) else {
+        return BisectorHit::Declined;
+    };
+    let squares = bx_squared
+        .add(by_squared)
+        .add(ax_squared.neg())
+        .add(ay_squared.neg());
+    let Some(fixed_term) = fixed_slope.mul(exact(value)) else {
+        return BisectorHit::Declined;
+    };
+    let numerator = squares.add(fixed_term.twice().neg());
     let Some(free) = numerator.div(free_slope.twice()) else {
         return BisectorHit::Declined;
     };
@@ -261,6 +290,82 @@ mod tests {
                 center = center.rounded
             ),
         }
+    }
+
+    #[test]
+    fn rounding_certificate_uses_signed_asymmetric_cells() {
+        let one = Bounded {
+            hi: 1.0,
+            lo: 0.0,
+            err: 0.0,
+        };
+        let lower = 0.5 * (1.0 - 1.0_f64.next_down());
+        let upper = 0.5 * (1.0_f64.next_up() - 1.0);
+        assert!(lower < upper);
+        assert_eq!(one.certified_rounding(), Some(1.0));
+        assert_eq!(Bounded { err: lower, ..one }.certified_rounding(), None);
+        assert_eq!(Bounded { err: upper, ..one }.certified_rounding(), None);
+
+        // The old symmetric upward cell admitted this interval even though
+        // its lower end crosses the predecessor midpoint.
+        assert_eq!(
+            Bounded {
+                err: 3.0 * 2.0_f64.powi(-55),
+                ..one
+            }
+            .certified_rounding(),
+            None
+        );
+        assert_eq!(
+            Bounded {
+                err: 2.0_f64.powi(-56),
+                ..one
+            }
+            .certified_rounding(),
+            Some(1.0)
+        );
+
+        let negative = Bounded {
+            hi: -1.0,
+            lo: 0.0,
+            err: 2.0_f64.powi(-56),
+        };
+        assert_eq!(negative.certified_rounding(), Some(-1.0));
+        assert_eq!(
+            Bounded {
+                hi: 0.0,
+                lo: 0.0,
+                err: 0.0,
+            }
+            .certified_rounding(),
+            None
+        );
+        assert_eq!(
+            Bounded {
+                hi: f64::from_bits(1),
+                lo: 0.0,
+                err: 0.0,
+            }
+            .certified_rounding(),
+            None
+        );
+        assert_eq!(
+            Bounded {
+                hi: f64::MAX,
+                lo: 0.0,
+                err: 0.0,
+            }
+            .certified_rounding(),
+            None
+        );
+    }
+
+    #[test]
+    fn known_bounded_triangle_keeps_a_positive_certificate() {
+        let center =
+            certified_circumcenter(XY::new(0.0, 0.0), XY::new(2.0, 0.0), XY::new(0.0, 2.0))
+                .expect("a unit circumcenter is inside the proven fast domain");
+        assert_eq!(center.rounded, XY::new(1.0, 1.0));
     }
 
     #[test]

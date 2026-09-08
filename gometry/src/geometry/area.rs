@@ -125,39 +125,38 @@ fn expansion_sum(left: &[f64], right: &[f64]) -> Vec<f64> {
     output
 }
 
-fn exact_product_expansion(left: f64, right: f64) -> Vec<f64> {
+fn exact_product_expansion(left: f64, right: f64) -> Option<Vec<f64>> {
     let mut output = [0.0; 3];
     let mut scratch = [0.0; 3];
-    let len = scale_expansion_zeroelim(&[left], right, &mut output, &mut scratch, false)
-        .expect("single-product buffers hold the expansion");
-    output[..len].to_vec()
+    let len = scale_expansion_zeroelim(&[left], right, &mut output, &mut scratch, false)?;
+    Some(output[..len].to_vec())
 }
 
 /// Exact expansion for the shared-frame residual `value * scale - origin *
 /// scale`.  The ordinary frame may round that subtraction to zero before the
 /// exact shoelace fallback sees it (the `2^-28` triangle is the smallest
 /// useful counterexample), so the fallback must retain both subtraction tails.
-fn exact_scaled_residual(value: f64, origin: f64, scale: f64) -> Vec<f64> {
-    let value = exact_product_expansion(value, scale);
-    let mut origin = exact_product_expansion(origin, scale);
+fn exact_scaled_residual(value: f64, origin: f64, scale: f64) -> Option<Vec<f64>> {
+    let value = exact_product_expansion(value, scale)?;
+    let mut origin = exact_product_expansion(origin, scale)?;
     for term in &mut origin {
         *term = -*term;
     }
-    expansion_sum(&value, &origin)
+    Some(expansion_sum(&value, &origin))
 }
 
-fn expansion_product(left: &[f64], right: &[f64]) -> Vec<f64> {
+fn expansion_product(left: &[f64], right: &[f64]) -> Option<Vec<f64>> {
     let mut product = vec![0.0];
     for &left_part in left {
         for &right_part in right {
-            let term = exact_product_expansion(left_part, right_part);
+            let term = exact_product_expansion(left_part, right_part)?;
             product = expansion_sum(&product, &term);
         }
     }
-    product
+    Some(product)
 }
 
-/// Exact local ring area for the shared-frame area fallback.
+/// Exact local ring area while every framed product residual fits binary64.
 fn exact_ring_area_sum_local(
     xs: &[f64],
     ys: &[f64],
@@ -166,21 +165,21 @@ fn exact_ring_area_sum_local(
     oy: f64,
     sx: f64,
     sy: f64,
-) -> f64 {
+) -> Option<f64> {
     let mut area = vec![0.0];
     for index in 0..pairs {
-        let x0 = exact_scaled_residual(xs[index], ox, sx);
-        let y0 = exact_scaled_residual(ys[index], oy, sy);
-        let x1 = exact_scaled_residual(xs[index + 1], ox, sx);
-        let y1 = exact_scaled_residual(ys[index + 1], oy, sy);
-        let forward = expansion_product(&x0, &y1);
-        let mut reverse = expansion_product(&y0, &x1);
+        let x0 = exact_scaled_residual(xs[index], ox, sx)?;
+        let y0 = exact_scaled_residual(ys[index], oy, sy)?;
+        let x1 = exact_scaled_residual(xs[index + 1], ox, sx)?;
+        let y1 = exact_scaled_residual(ys[index + 1], oy, sy)?;
+        let forward = expansion_product(&x0, &y1)?;
+        let mut reverse = expansion_product(&y0, &x1)?;
         for term in &mut reverse {
             *term = -*term;
         }
         area = expansion_sum(&area, &expansion_sum(&forward, &reverse));
     }
-    estimate(&area)
+    Some(estimate(&area))
 }
 
 /// Axis residual extent for scale selection. Prefer the finite `|x - origin|`
@@ -433,7 +432,10 @@ pub(crate) fn shoelace_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> 
     // approximation has lost every reliable bit. This expansion is the
     // magnitude fallback for this framed shoelace path.
     if value.is_finite() {
-        return SignedAreaMeasure::new(exact_half_area_measure_columns(xs, ys, pairs));
+        if let Some(exact) = exact_half_area_measure_columns(xs, ys, pairs) {
+            return SignedAreaMeasure::new(exact);
+        }
+        return SignedAreaMeasure::new(closed_ring_sum_columns(xs, ys, pairs).round_to_area());
     }
     // Extreme-but-finite rescue: scale each axis independently, form residuals
     // as `x*sx - origin_x*sx` / `y*sy - origin_y*sy` (never subtract then
@@ -456,18 +458,23 @@ pub(crate) fn shoelace_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> 
     if scaled.is_finite() && !shoelace_shifted_needs_exact(xs, ys, pairs, ox, oy, sx, sy, scaled) {
         SignedAreaMeasure::new(unscale_area(scaled, sx, sy))
     } else {
-        SignedAreaMeasure::new(exact_half_area_measure_columns(xs, ys, pairs))
+        exact_half_area_measure_columns(xs, ys, pairs).map_or_else(
+            || SignedAreaMeasure::new(closed_ring_sum_columns(xs, ys, pairs).round_to_area()),
+            SignedAreaMeasure::new,
+        )
     }
 }
 
 /// Exact-expansion signed half-area for the rare finite-zero measurement
 /// fallback. Its power-of-two frame is undone in one exponent operation, so a
 /// normal final result never passes through a lossy subnormal intermediate.
-fn exact_half_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> f64 {
+fn exact_half_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> Option<f64> {
     exact_cycle_area_measure_columns(xs, ys, pairs, |index| (index, index + 1))
 }
 
-/// The one exact area-magnitude owner for closed rings and open cycles.
+/// Framed exact expansion for closed rings and open cycles. A product outside
+/// its binary64 residual domain returns `None`; the caller uses the original
+/// coordinate [`ExactSum`] owner instead.
 ///
 /// Callers differ only in their final edge (`n - 1 → 0` for an open cycle),
 /// never in the normalization or accumulation that establishes magnitude.
@@ -478,10 +485,10 @@ fn exact_cycle_area_measure_columns(
     ys: &[f64],
     edge_count: usize,
     edge_at: impl FnMut(usize) -> (usize, usize),
-) -> f64 {
+) -> Option<f64> {
     let RingFrame { ox, oy, sx, sy } = ring_normalize_params(xs, ys);
     if sx == 0.0 {
-        return 0.0;
+        return Some(0.0);
     }
     let mut expansion = vec![0.0];
     let mut edge_at = edge_at;
@@ -490,19 +497,19 @@ fn exact_cycle_area_measure_columns(
         // Keep the product and subtraction tails from the affine frame.  A
         // rounded `scaled_residual` here would make this supposedly exact
         // owner disagree with the polygon fallback on thin rotated cycles.
-        let x0 = exact_scaled_residual(xs[start], ox, sx);
-        let y0 = exact_scaled_residual(ys[start], oy, sy);
-        let x1 = exact_scaled_residual(xs[end], ox, sx);
-        let y1 = exact_scaled_residual(ys[end], oy, sy);
-        let forward = expansion_product(&x0, &y1);
-        let mut reverse = expansion_product(&y0, &x1);
+        let x0 = exact_scaled_residual(xs[start], ox, sx)?;
+        let y0 = exact_scaled_residual(ys[start], oy, sy)?;
+        let x1 = exact_scaled_residual(xs[end], ox, sx)?;
+        let y1 = exact_scaled_residual(ys[end], oy, sy)?;
+        let forward = expansion_product(&x0, &y1)?;
+        let mut reverse = expansion_product(&y0, &x1)?;
         for term in &mut reverse {
             *term = -*term;
         }
         let cross = expansion_sum(&forward, &reverse);
         expansion = expansion_sum(&expansion, &cross);
     }
-    unscale_area(estimate(&expansion) / 2.0, sx, sy)
+    Some(unscale_area(estimate(&expansion) / 2.0, sx, sy))
 }
 
 /// Origin-shifted, optionally per-axis-scaled shoelace half-sum / 2.
@@ -781,21 +788,60 @@ pub(crate) fn polygon_area_measure_with(
     });
     if needs_exact || area == 0.0 {
         let mut exact_area2 = 0.0_f64;
+        let mut local_exact = true;
         visit(&mut |xs, ys, hole| {
+            if !local_exact {
+                return;
+            }
             let pairs = xs.len().saturating_sub(1);
             if pairs == 0 {
                 return;
             }
-            let ring_area2 = exact_ring_area_sum_local(xs, ys, pairs, ox, oy, sx, sy);
+            let Some(ring_area2) = exact_ring_area_sum_local(xs, ys, pairs, ox, oy, sx, sy) else {
+                local_exact = false;
+                return;
+            };
             if hole {
                 exact_area2 -= ring_area2.abs();
             } else {
                 exact_area2 += ring_area2.abs();
             }
         });
+        if !local_exact {
+            return exact_polygon_area_measure_with(visit);
+        }
         area = exact_area2 / 2.0;
     }
     unscale_area(area, sx, sy)
+}
+
+/// Exact fallback for a shared shell/hole area when a framed expansion term
+/// falls outside the binary64 residual contract.  The product-sum owner works
+/// in the original coordinate frame, so no subnormal intermediate is needed
+/// and shell/hole cancellation remains exact before one final rounding.
+fn exact_polygon_area_measure_with(visit: impl Fn(&mut dyn FnMut(&[f64], &[f64], bool))) -> f64 {
+    let mut total = ExactSum::zero();
+    visit(&mut |xs, ys, hole| {
+        let pairs = xs.len().saturating_sub(1);
+        if pairs == 0 {
+            return;
+        }
+        let mut ring = ExactSum::zero();
+        for index in 0..pairs {
+            ring.add_cross(xs[index], ys[index], xs[index + 1], ys[index + 1]);
+        }
+        let ordering = ring.ordering();
+        if ordering == std::cmp::Ordering::Equal {
+            return;
+        }
+        let negate = (ordering == std::cmp::Ordering::Less) ^ hole;
+        for index in 0..pairs {
+            let coefficient = if negate { -1 } else { 1 };
+            total.add_product(coefficient, xs[index], ys[index + 1]);
+            total.add_product(-coefficient, xs[index + 1], ys[index]);
+        }
+    });
+    total.round_to_area()
 }
 
 /// Packed polygon area with a fused ordinary path.

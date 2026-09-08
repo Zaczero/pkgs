@@ -128,7 +128,8 @@ pub(crate) fn expansion_sum_zeroelim<const NEGATE_RIGHT: bool>(
 
 /// Multiply an expansion by one scalar using caller-owned ping-pong storage.
 /// The result is retained in `output`; both buffers need room for twice the
-/// input length plus the canonical zero limb.
+/// input length plus the canonical zero limb. `None` also means that a product
+/// residual falls outside the exact binary64 fast domain.
 pub(crate) fn scale_expansion_zeroelim(
     input: &[f64],
     scale: f64,
@@ -141,7 +142,7 @@ pub(crate) fn scale_expansion_zeroelim(
         return None;
     }
     if let [value] = input {
-        let (head, tail) = two_product(*value, scale);
+        let (head, tail) = two_product(*value, scale)?;
         if !head.is_finite() || !tail.is_finite() {
             if require_finite {
                 return None;
@@ -162,7 +163,7 @@ pub(crate) fn scale_expansion_zeroelim(
     output[0] = 0.0;
     let mut output_len = 1;
     for &value in input {
-        let (head, tail) = two_product(value, scale);
+        let (head, tail) = two_product(value, scale)?;
         let term = if tail == 0.0 {
             [head, 0.0]
         } else {
@@ -400,14 +401,15 @@ mod tests {
             let legacy_scale_len = old_scale(left, pair[1], &mut legacy_scale, &mut legacy_scratch);
             let mut shared_scale = [0.0; 5];
             let mut shared_scratch = [0.0; 5];
-            let shared_scale_len = scale_expansion_zeroelim(
+            let Some(shared_scale_len) = scale_expansion_zeroelim(
                 left,
                 pair[1],
                 &mut shared_scale,
                 &mut shared_scratch,
                 false,
-            )
-            .unwrap();
+            ) else {
+                continue;
+            };
             assert_semantically_equal(
                 &legacy_scale[..legacy_scale_len],
                 &shared_scale[..shared_scale_len],
@@ -444,14 +446,15 @@ mod tests {
                 let legacy_len = old_scale(&input, scale, &mut legacy, &mut legacy_scratch);
                 let mut actual = vec![0.0; length * 2 + 1];
                 let mut actual_scratch = vec![0.0; length * 2 + 1];
-                let actual_len = scale_expansion_zeroelim(
+                let Some(actual_len) = scale_expansion_zeroelim(
                     &input,
                     scale,
                     &mut actual,
                     &mut actual_scratch,
                     false,
-                )
-                .unwrap();
+                ) else {
+                    continue;
+                };
                 assert_semantically_equal(&legacy[..legacy_len], &actual[..actual_len]);
             }
         }

@@ -8,9 +8,9 @@
 //! because `mul_add` is a libm call on the x86-64-v2 baseline. The two agree
 //! bit for bit whenever the residual cannot underflow, which is every head of
 //! magnitude at least 2^-969; below that the split may round the residual to
-//! the subnormal grid, at most one subnormal ulp off, and the expansion
-//! arithmetic takes [`two_product_exact`] instead. Named tests below pin both
-//! residual contracts.
+//! the subnormal grid, at most one subnormal ulp off. Exact expansion and
+//! certificate callers use [`two_product_exact`], which declines a product
+//! unless its residual is representable by the returned binary64 pair.
 
 pub(crate) mod product_sum;
 
@@ -46,6 +46,10 @@ pub(crate) const MAX_SPLITTABLE: f64 = f64::MAX / SPLITTER;
 pub(crate) const MAX_CROSS_COORD_EXPONENT: i32 = 480;
 
 pub(crate) const MIN_CROSS_COORD_EXPONENT: i32 = -400;
+
+/// Lowest rounded-product exponent whose 106-bit exact product still fits the
+/// binary64 subnormal grid in its residual.
+const MIN_EXACT_PRODUCT_EXPONENT: i32 = -969;
 
 /// Error-free product without FMA for finite, non-underflowing binary64
 /// products, including mixed-exponent operands that overflow the splitter.
@@ -141,22 +145,30 @@ pub(crate) fn exact_power_of_two(shift: i16) -> f64 {
     f64::from_bits((stored as u64) << 52)
 }
 
-/// The always-exact product residual, by fused multiply-add.
+/// A product decomposition whose residual is exactly representable as binary64.
 ///
-/// Where a product's residual underflows into the subnormal range, Dekker's
-/// split rounds it to that grid while this stays exact, so the expansion
-/// arithmetic — the exact-predicate fallback, where one subnormal ulp can be
-/// the whole answer — uses this form. `mul_add` is a libm call on the
-/// x86-64-v2 baseline, which is why the filtered predicates, whose error
-/// bound already covers that rounding, take [`two_product`] instead.
-pub(crate) fn two_product_exact(left: f64, right: f64) -> (f64, f64) {
+/// A binary64 product has at most 106 significant bits.  If its rounded head
+/// has exponent `e >= -969`, its exact low bit is no smaller than `2^-1074`,
+/// so the fused residual can be carried by the returned tail.  A lower normal
+/// head, a subnormal head, or a nonzero product that rounds to zero may have a
+/// residual below the binary64 grid and is declined rather than silently
+/// returning a false expansion. Exact zero products are admitted separately.
+/// `mul_add` is a libm call on the x86-64-v2 baseline, which is why filtered
+/// predicates, whose error bound covers their residual rounding, take
+/// [`two_product`] instead.
+pub(crate) fn two_product_exact(left: f64, right: f64) -> Option<(f64, f64)> {
     let product = left * right;
-    let tail = if product.is_finite() {
-        left.mul_add(right, -product)
-    } else {
-        0.0
-    };
-    (product, tail)
+    if !product.is_finite() {
+        return None;
+    }
+    if product == 0.0 {
+        return (left == 0.0 || right == 0.0).then_some((product, 0.0));
+    }
+    if !product.is_normal() || floor_binary_exponent(product.abs()) < MIN_EXACT_PRODUCT_EXPONENT {
+        return None;
+    }
+    let tail = left.mul_add(right, -product);
+    tail.is_finite().then_some((product, tail))
 }
 
 /// [`two_product`] that declines a non-finite head instead of returning it
@@ -259,13 +271,6 @@ mod tests {
                 0xA7B9_6B30_449B_05B0,
             ),
             (
-                "underflow residual",
-                0x2082_6B6C_1DD3_EF04,
-                0x9FC0_6EE1_DBDA_1774,
-                0x8052_EB12_A8DA_CDFD,
-                0x0000_0000_0000_0002,
-            ),
-            (
                 "maximum finite half",
                 0x7FEF_FFFF_FFFF_FFFF,
                 0x3FE0_0000_0000_0000,
@@ -275,7 +280,9 @@ mod tests {
         ];
         for &(name, lhs, rhs, expected_head, expected_tail) in &cases {
             let (lhs, rhs) = (f64::from_bits(lhs), f64::from_bits(rhs));
-            let (head, tail) = two_product_exact(lhs, rhs);
+            let Some((head, tail)) = two_product_exact(lhs, rhs) else {
+                panic!("{name}: product residual was outside the exact fast domain")
+            };
             assert_eq!(head.to_bits(), expected_head, "{name}: head");
             if expected_tail == 0 {
                 assert_eq!(tail, 0.0, "{name}: tail");
@@ -283,6 +290,46 @@ mod tests {
                 assert_eq!(tail.to_bits(), expected_tail, "{name}: tail");
             }
         }
+    }
+
+    #[test]
+    fn exact_product_declines_an_unrepresentable_normal_head_residual() {
+        // x² = 2^-1022 + 2^-1073 + 2^-1126. The rounded head is normal,
+        // but the final term is below the binary64 subnormal grid; an FMA tail
+        // cannot carry the exact residual as a single f64.
+        let x = f64::from_bits(0x2000_0000_0000_0001);
+        let head = x * x;
+        assert!(head.is_normal());
+        assert_eq!(head.to_bits(), 0x0010_0000_0000_0002);
+        assert_eq!(x.mul_add(x, -head), 0.0);
+        assert_eq!(two_product_exact(x, x), None);
+    }
+
+    #[test]
+    fn exact_product_admits_zero_and_representable_boundaries() {
+        assert_eq!(two_product_exact(0.0, f64::MAX), Some((0.0, 0.0)));
+        assert_eq!(two_product_exact(-0.0, 3.0), Some((-0.0, 0.0)));
+
+        let near_threshold = f64::from_bits(0x0360_0000_0000_0001);
+        assert!(near_threshold.is_normal());
+        let (_, threshold_tail) = two_product_exact(near_threshold, 1.0 + f64::EPSILON)
+            .expect("the threshold residual is representable");
+        assert_eq!(threshold_tail.to_bits(), 0x2);
+        let (negative_head, _) = two_product_exact(-near_threshold, 1.0 + f64::EPSILON)
+            .expect("negative normal product is in the exact fast domain");
+        assert!(negative_head.is_sign_negative());
+
+        // The exact product is representable, but a subnormal head is outside
+        // the fast contract because its residual may require a finer grid.
+        assert_eq!(two_product_exact(f64::MIN_POSITIVE, 0.5), None);
+        assert_eq!(
+            two_product_exact(f64::MIN_POSITIVE, f64::MIN_POSITIVE),
+            None
+        );
+        assert!(two_product_exact(f64::MAX, 0.5).is_some());
+        assert_eq!(two_product_exact(f64::MAX, 2.0), None);
+        assert_eq!(two_product_exact(f64::INFINITY, 1.0), None);
+        assert_eq!(two_product_exact(f64::NAN, 1.0), None);
     }
 
     #[test]

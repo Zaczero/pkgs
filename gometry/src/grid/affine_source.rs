@@ -931,7 +931,9 @@ impl ExactExpansion {
         let mut scratch = CompactLimbs::zero();
         for &left in self.as_slice() {
             for &right in rhs.as_slice() {
-                let (head, tail) = two_product(left, right);
+                let Some((head, tail)) = two_product(left, right) else {
+                    return None;
+                };
                 if !head.is_finite() || !tail.is_finite() {
                     return None;
                 }
