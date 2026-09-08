@@ -279,7 +279,7 @@ pub(crate) fn raw_offset_loop(
     }
     let quadrant_segments = quadrant_segments.get();
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments);
-    let Some(plan) = WalkPlan::new(strict, true, distance, rule, step_angle)? else {
+    let Some(plan) = WalkPlan::new(strict, true, distance, rule)? else {
         return Ok(None);
     };
     // Capacity: two offset points per edge, up to one reflex insert per

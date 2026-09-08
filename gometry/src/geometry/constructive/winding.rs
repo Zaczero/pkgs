@@ -911,19 +911,42 @@ pub(crate) fn raw_stroke_loop(
 ) -> Result<Option<(LoopColumns, bool)>> {
     let quadrant_segments = quadrant_segments.get();
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments);
+    let Some(right_plan) = WalkPlan::new(chain, false, distance, rule)? else {
+        return Ok(None);
+    };
+    // Keep the reversed source walk alive alongside its plan. The plan is
+    // immutable after validation, and retaining both plans across the count
+    // and materialization passes prevents a second normal/join calculation.
+    thread_local! {
+        static BACKWARD: crate::scratch_pool::ScratchPool<Vec<Point>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
+    }
+    let mut backward = crate::scratch_pool::ScratchPool::checkout(&BACKWARD);
+    crate::try_reserve_vec(&mut backward, chain.len())?;
+    backward.extend(chain.iter().rev().copied());
+    let Some(left_plan) = WalkPlan::new(backward.as_slice(), false, distance, rule)? else {
+        return Ok(None);
+    };
+    let (enx, eny) = right_plan.last_normal();
+    let (snx, sny) = left_plan.first_normal();
+
     let (clean, count_len) = {
         let mut count_only = WalkCount::budgeted(budget);
-        let Some(clean) = emit_stroke_loop(
-            chain,
+        let clean = emit_stroke_loop(
+            &right_plan,
+            &left_plan,
+            chain[chain.len() - 1],
+            enx,
+            eny,
+            chain[0],
+            snx,
+            sny,
             distance,
             cap_style,
-            rule,
             step_angle,
             &mut count_only,
-        )?
-        else {
-            return Ok(None);
-        };
+        )?;
         if !count_only.all_finite() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "buffer calculation produced non-finite coordinates",
@@ -933,33 +956,42 @@ pub(crate) fn raw_stroke_loop(
     };
     budget.add(count_len)?;
     let mut columns = WalkColumns::try_new(count_len, false)?;
-    let Some(real_clean) =
-        emit_stroke_loop(chain, distance, cap_style, rule, step_angle, &mut columns)?
-    else {
-        return Ok(None);
-    };
+    let real_clean = emit_stroke_loop(
+        &right_plan,
+        &left_plan,
+        chain[chain.len() - 1],
+        enx,
+        eny,
+        chain[0],
+        snx,
+        sny,
+        distance,
+        cap_style,
+        step_angle,
+        &mut columns,
+    )?;
     debug_assert_eq!(columns.len(), count_len);
+    debug_assert_eq!(real_clean, clean);
     let (xs, ys, _) = columns.into_columns();
     Ok(Some(((xs, ys), clean && real_clean)))
 }
 
 fn emit_stroke_loop<S: WalkSink>(
-    chain: &[Point],
+    right_plan: &WalkPlan<'_>,
+    left_plan: &WalkPlan<'_>,
+    end: Point,
+    enx: f64,
+    eny: f64,
+    start: Point,
+    snx: f64,
+    sny: f64,
     distance: f64,
     cap_style: BufferCapStyle,
-    rule: WalkJoinRule,
     step_angle: f64,
     sink: &mut S,
-) -> Result<Option<bool>> {
-    let count = chain.len();
+) -> Result<bool> {
     // Forward (right) side, end cap, backward (left) side, start cap.
-    let Some(right_clean) = stroke_side(chain, false, distance, rule, step_angle, sink)? else {
-        return Ok(None);
-    };
-    let (end_prev, end) = (chain[count - 2], chain[count - 1]);
-    let Some((enx, eny)) = unit_right_normal(end_prev, end) else {
-        return Ok(None);
-    };
+    let right_clean = stroke_side(right_plan, step_angle, sink)?;
     emit_cap(
         end,
         enx,
@@ -967,18 +999,12 @@ fn emit_stroke_loop<S: WalkSink>(
         distance,
         cap_style,
         step_angle,
-        (count - 1) as u32,
+        (right_plan.source_len() - 1) as u32,
         sink,
     )?;
-    let Some(left_clean) = stroke_side(chain, true, distance, rule, step_angle, sink)? else {
-        return Ok(None);
-    };
-    let (start_next, start) = (chain[1], chain[0]);
-    let Some((snx, sny)) = unit_right_normal(start_next, start) else {
-        return Ok(None);
-    };
+    let left_clean = stroke_side(left_plan, step_angle, sink)?;
     emit_cap(start, snx, sny, distance, cap_style, step_angle, 0, sink)?;
-    Ok(Some(right_clean && left_clean))
+    Ok(right_clean && left_clean)
 }
 
 /// Unit right-side normal of the edge `from -> to` (`None` for degenerate
@@ -1044,43 +1070,20 @@ pub(crate) fn emit_arc<S: WalkSink>(
 }
 
 /// One directed side of a stroke: right-offset edges with the polygon
-/// join rules. `reversed` walks the chain backward (which IS the left
-/// side — the normals flip with the walk).
+/// join rules. The left-side caller supplies a plan over the reversed walk.
 /// Emit one stroke side; `true` when no join fell back to an
 /// `Excursion` — a consuming inside `Cross` trims its overlap away, but
 /// an excursion lobe cancels ONLY in the winding selection, so its raw
 /// loop can never be a directly valid ring.
 pub(crate) fn stroke_side<S: WalkSink>(
-    chain: &[Point],
-    reversed: bool,
-    distance: f64,
-    rule: WalkJoinRule,
+    plan: &WalkPlan<'_>,
     step_angle: f64,
     sink: &mut S,
-) -> Result<Option<bool>> {
-    // Reused per-thread scratch: bulk buffers stroke thousands of rows,
-    // and the reversed-side gather was one of two allocations per row.
-    thread_local! {
-        static BACKWARD: crate::scratch_pool::ScratchPool<Vec<Point>> = const {
-            crate::scratch_pool::ScratchPool::new(Vec::new())
-        };
-    }
-    let backward = if reversed {
-        let mut scratch = crate::scratch_pool::ScratchPool::checkout(&BACKWARD);
-        crate::try_reserve_vec(&mut scratch, chain.len())?;
-        scratch.extend(chain.iter().rev().copied());
-        Some(scratch)
-    } else {
-        None
-    };
-    let walk: &[Point] = backward.as_deref().map_or(chain, Vec::as_slice);
-    let Some(plan) = WalkPlan::new(walk, false, distance, rule, step_angle)? else {
-        return Ok(None);
-    };
+) -> Result<bool> {
     let excursion_free = plan
         .joins
         .iter()
         .all(|join| !matches!(join, WalkJoin::Excursion));
     plan.emit_into(step_angle, sink)?;
-    Ok(Some(excursion_free))
+    Ok(excursion_free)
 }

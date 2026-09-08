@@ -145,6 +145,23 @@ pub(crate) struct WalkPlan<'a> {
     distance: f64,
 }
 
+#[cfg(test)]
+thread_local! {
+    static WALK_PLAN_CONSTRUCTIONS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_walk_plan_construction_count() {
+    WALK_PLAN_CONSTRUCTIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn walk_plan_construction_count() -> usize {
+    WALK_PLAN_CONSTRUCTIONS.with(std::cell::Cell::get)
+}
+
 /// Destination for one planned offset-walk vertex.  The walk deliberately
 /// owns the duplicate rule, so every destination — count-only preflight,
 /// budgeted growth, and materialized columns — sees the identical sequence.
@@ -336,7 +353,6 @@ impl<'a> WalkPlan<'a> {
         cyclic: bool,
         distance: f64,
         rule: WalkJoinRule,
-        step_angle: f64,
     ) -> crate::error::Result<Option<Self>> {
         let count = points.len();
         let edges = if cyclic { count } else { count - 1 };
@@ -404,7 +420,27 @@ impl<'a> WalkPlan<'a> {
             distance,
         };
         plan.validate()?;
+        #[cfg(test)]
+        WALK_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
         Ok(Some(plan))
+    }
+
+    pub(crate) fn first_normal(&self) -> (f64, f64) {
+        self.normals
+            .first()
+            .copied()
+            .expect("a walk plan has at least one edge")
+    }
+
+    pub(crate) fn last_normal(&self) -> (f64, f64) {
+        self.normals
+            .last()
+            .copied()
+            .expect("a walk plan has at least one edge")
+    }
+
+    pub(crate) const fn source_len(&self) -> usize {
+        self.points.len()
     }
 
     /// Demote any inside crossing clipping an edge to a BACKWARDS
@@ -892,7 +928,7 @@ mod tests {
             Point::new_raw_xy(1.0, 0.0),
             Point::new_raw_xy(1.0, 1.0),
         ];
-        let plan = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Arc, 0.1)
+        let plan = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Arc)
             .unwrap()
             .unwrap();
         let mut budget = ExpansionBudget::new("test", "count");

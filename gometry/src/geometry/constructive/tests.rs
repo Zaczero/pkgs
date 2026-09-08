@@ -4,9 +4,12 @@ use crate::Positive;
 use crate::geometry::constructive::offset::{
     OffsetEdge, offset_curve_points, offset_join, offset_line,
 };
-use crate::geometry::constructive::walk::{WalkJoin, WalkPlan, convex_miter, reflex_cross};
+use crate::geometry::constructive::walk::{
+    WalkCount, WalkJoin, WalkPlan, close_xy_loop, convex_miter, materialize_walk, reflex_cross,
+};
 use crate::geometry::constructive::{
-    WalkJoinRule, winding_buffer, winding_erosion, winding_stroke,
+    WalkJoinRule, reset_walk_plan_construction_count, walk_plan_construction_count, winding_buffer,
+    winding_erosion, winding_stroke,
 };
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, CoordSeq, ExpansionBudget, LineSeq, MAX_NESTING, MultiPolygon,
@@ -105,12 +108,11 @@ fn walk_keeps_small_turns_styled_and_sends_near_reversals_to_excursions() {
         Point::new_raw_xy(1.0, 0.0),
         Point::new_raw_xy(2.0, 1e-6),
     ];
-    let step = std::f64::consts::FRAC_PI_2 / 8.0;
-    let round = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Arc, step)
+    let round = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Arc)
         .unwrap()
         .unwrap();
     assert!(matches!(round.joins[0], WalkJoin::Arc { .. }));
-    let bevel = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Bevel, step)
+    let bevel = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Bevel)
         .unwrap()
         .unwrap();
     assert!(matches!(bevel.joins[0], WalkJoin::Straight));
@@ -120,10 +122,158 @@ fn walk_keeps_small_turns_styled_and_sends_near_reversals_to_excursions() {
         Point::new_raw_xy(1.0, 0.0),
         Point::new_raw_xy(0.0, -1e-6),
     ];
-    let folded = WalkPlan::new(&reversal, false, 1.0, WalkJoinRule::Arc, step)
+    let folded = WalkPlan::new(&reversal, false, 1.0, WalkJoinRule::Arc)
         .unwrap()
         .unwrap();
     assert!(matches!(folded.joins[0], WalkJoin::Excursion));
+}
+
+fn assert_plan_count_matches_materialization(
+    points: &[Point],
+    cyclic: bool,
+    distance: f64,
+    rule: WalkJoinRule,
+    step_angle: f64,
+    closes: bool,
+) {
+    let plan = WalkPlan::new(points, cyclic, distance, rule)
+        .unwrap()
+        .unwrap();
+    let count_budget = ExpansionBudget::new("test", "count");
+    let mut count = WalkCount::budgeted(&count_budget);
+    plan.emit_into(step_angle, &mut count).unwrap();
+    let expected = count.len();
+    assert!(count.all_finite());
+
+    let mut output_budget = ExpansionBudget::new("test", "count");
+    let columns = materialize_walk(&plan, step_angle, false, &mut output_budget, true)
+        .unwrap()
+        .unwrap();
+    let (mut xs, mut ys, _) = columns.into_columns();
+    assert_eq!(xs.len(), expected);
+    assert_eq!(ys.len(), expected);
+    assert_eq!(output_budget.used(), expected);
+    if closes {
+        close_xy_loop(&mut xs, &mut ys, &mut output_budget).unwrap();
+        assert_eq!(xs.len(), expected + 1);
+        assert_eq!(output_budget.used(), expected + 1);
+    }
+}
+
+#[test]
+fn one_immutable_walk_plan_counts_and_materializes_every_join_shape() {
+    let step = std::f64::consts::FRAC_PI_2 / 8.0;
+    // Round arcs on an open walk.
+    assert_plan_count_matches_materialization(
+        &[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(1.0, 1.0),
+        ],
+        false,
+        1.0,
+        WalkJoinRule::Arc,
+        step,
+        false,
+    );
+    // A closed sharp corner exercises miter cuts and the separately charged
+    // public closing coordinate.
+    let cut_points = [
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(12.0, 1.0),
+        Point::new_raw_xy(0.0, 2.0),
+    ];
+    let cut_plan = WalkPlan::new(&cut_points, true, 0.5, WalkJoinRule::Miter { limit: 2.0 })
+        .unwrap()
+        .unwrap();
+    assert!(
+        cut_plan
+            .joins
+            .iter()
+            .any(|join| matches!(join, WalkJoin::MiterCut { .. }))
+    );
+    assert_plan_count_matches_materialization(
+        &[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(12.0, 1.0),
+            Point::new_raw_xy(0.0, 2.0),
+        ],
+        true,
+        0.5,
+        WalkJoinRule::Miter { limit: 2.0 },
+        step,
+        true,
+    );
+    // Near-fold excursions and a scale outside the ordinary squared-length
+    // range use the same plan/count/materialize lifecycle.
+    assert_plan_count_matches_materialization(
+        &[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(0.0, -1e-6),
+        ],
+        false,
+        1.0,
+        WalkJoinRule::Arc,
+        step,
+        false,
+    );
+    let excursion_points = [
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(1.0, 0.0),
+        Point::new_raw_xy(0.0, -1e-6),
+    ];
+    let excursion_plan = WalkPlan::new(&excursion_points, false, 1.0, WalkJoinRule::Arc)
+        .unwrap()
+        .unwrap();
+    assert!(
+        excursion_plan
+            .joins
+            .iter()
+            .any(|join| matches!(join, WalkJoin::Excursion))
+    );
+    assert_plan_count_matches_materialization(
+        &[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1e155, 0.0),
+            Point::new_raw_xy(1e155, 1e155),
+        ],
+        false,
+        1e150,
+        WalkJoinRule::Bevel,
+        step,
+        false,
+    );
+}
+
+#[test]
+fn stroke_reuses_each_validated_walk_plan_for_count_and_output() {
+    let chain = [
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(1.0, 0.0),
+        Point::new_raw_xy(1.0, 1.0),
+    ];
+    let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
+    reset_walk_plan_construction_count();
+    // At distance 1 the inside offset reaches the bend endpoint and is
+    // correctly demoted to an excursion; keep both leg crossings interior
+    // so this fixture exercises the clean fast-path certificate.
+    let (columns, clean) = crate::geometry::constructive::winding::raw_stroke_loop(
+        &chain,
+        0.1,
+        BufferCapStyle::Round,
+        WalkJoinRule::Arc,
+        NonZeroU32::new(8).unwrap(),
+        &mut budget,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(clean);
+    assert_eq!(walk_plan_construction_count(), 2);
+    assert_eq!(columns.0.len(), columns.1.len());
+    // A deliberately doubled charge would fail this equality, while a
+    // divergent second plan would fail the exact count/output assertion.
+    assert_eq!(budget.used(), columns.0.len());
 }
 
 #[test]
@@ -136,6 +286,7 @@ fn styled_offset_restores_source_order_and_ordinate_provenance() {
     )
     .unwrap();
     let mut budget = ExpansionBudget::new("offset_curve", "quadrant_segments");
+    reset_walk_plan_construction_count();
     let output = offset_curve_points(
         &line,
         1.0,
@@ -145,6 +296,8 @@ fn styled_offset_restores_source_order_and_ordinate_provenance() {
     )
     .unwrap()
     .unwrap();
+    assert_eq!(walk_plan_construction_count(), 1);
+    assert_eq!(budget.used(), output.len());
     assert_eq!(
         output
             .iter()
@@ -1556,5 +1709,25 @@ mod winding_allocation_tests {
             .buffer(-1.0)
             .unwrap();
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn preconstruction_convex_shortcut_does_not_charge_generated_output() {
+        let polygon = square();
+        let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
+        reset_walk_plan_construction_count();
+        assert!(
+            convex_buffer_budgeted(
+                &polygon,
+                0.0,
+                WalkJoinRule::Arc,
+                NonZeroU32::new(8).unwrap(),
+                &mut budget,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(budget.used(), 0);
+        assert_eq!(walk_plan_construction_count(), 0);
     }
 }

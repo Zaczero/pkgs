@@ -14,9 +14,7 @@ mod walk;
 mod winding;
 
 pub(crate) use edit::{affine_about_origin_ordinate, stable_affine_xy};
-pub(crate) use offset::{
-    DEFAULT_MITER_LIMIT, line_intersection, reversed_points, sided_strip_parts,
-};
+pub(crate) use offset::{DEFAULT_MITER_LIMIT, reversed_points, sided_strip_parts};
 pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{
     decimal_scale, normalized_line, orient_ring, quantize_column_simd, quantize_to_scale,
@@ -35,6 +33,8 @@ pub(crate) use walk::{
     extend_cleaned, materialize_walk,
 };
 pub(in crate::geometry) use walk::{assemble_region_polygons, winding_region};
+#[cfg(test)]
+pub(crate) use walk::{reset_walk_plan_construction_count, walk_plan_construction_count};
 #[cfg(test)]
 pub(crate) use winding::{convex_buffer, winding_buffer, winding_erosion, winding_stroke};
 pub(crate) use winding::{

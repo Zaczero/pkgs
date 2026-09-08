@@ -243,7 +243,7 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     }
     // A failed normal is an unrepresentable raw offset, not permission to
     // change the requested style to the legacy emitter.
-    let Some(plan) = WalkPlan::new(&walk, source.closed, distance.abs(), rule, step_angle)? else {
+    let Some(plan) = WalkPlan::new(&walk, source.closed, distance.abs(), rule)? else {
         return Ok(None);
     };
     // `reject_nonfinite = false` is the raw-offset overflow contract: the
