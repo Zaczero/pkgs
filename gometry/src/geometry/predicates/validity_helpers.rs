@@ -665,7 +665,7 @@ mod clearance_allocation_tests {
         };
         assert_allocation(&error);
         let indexed = minimum_clearance_witness_indexed(&points, &segments).unwrap();
-        let brute = minimum_clearance_witness_brute(&points, &segments);
+        let brute = minimum_clearance_witness_brute(&points, &segments).unwrap();
         assert_eq!(format!("{brute:?}"), format!("{indexed:?}"));
     }
 }
