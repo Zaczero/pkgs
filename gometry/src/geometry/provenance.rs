@@ -1,6 +1,7 @@
 //! Source-frame vertex provenance for operations whose output vertices are
 //! selected from, or interpolated on, the original input geometry.
 
+use crate::error::Result;
 use crate::geometry::{Point, SegmentProjection};
 
 /// How one output vertex derives from the operation's source-frame input.
@@ -25,16 +26,20 @@ pub(crate) enum VertexProvenance {
 /// `Input(i)` is a bit-exact copy of `original[i]`. `OnSegment` interpolates
 /// directly on the original segment, so projected coordinates can never leak
 /// into a copy/partial-output operation.
-pub(crate) fn emit_from_original(original: &[Point], plan: &[VertexProvenance]) -> Vec<Point> {
-    let mut output = Vec::with_capacity(plan.len());
+pub(crate) fn emit_from_original(
+    original: &[Point],
+    plan: &[VertexProvenance],
+) -> Result<Vec<Point>> {
+    let mut output = Vec::new();
+    crate::try_reserve_vec(&mut output, plan.len())?;
     for vertex in plan {
         let point = match vertex {
             VertexProvenance::Input(index) => original[*index],
             VertexProvenance::OnSegment { i, j, projection } => {
-                projection.interpolate_point(original[*i], original[*j])
+                projection.interpolate_point(original[*i], original[*j])?
             },
         };
         output.push(point);
     }
-    output
+    Ok(output)
 }

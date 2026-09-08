@@ -374,7 +374,7 @@ fn segment_nearest_points_returns_edge_interior_foot() {
         start: XY::new(5.0, 3.0),
         end: XY::new(5.0, 5.0),
     };
-    let (on_horizontal, on_stub) = segment_nearest_points(horizontal, stub);
+    let (on_horizontal, on_stub) = segment_nearest_points(horizontal, stub).unwrap();
     assert_eq!(on_horizontal, XY::new(5.0, 0.0));
     assert_eq!(on_stub, XY::new(5.0, 3.0));
 }
@@ -390,7 +390,7 @@ fn segment_nearest_points_uses_intersection_for_crossing() {
         start: XY::new(0.0, 2.0),
         end: XY::new(2.0, 0.0),
     };
-    let (left, right) = segment_nearest_points(a, b);
+    let (left, right) = segment_nearest_points(a, b).unwrap();
     assert_eq!(left, XY::new(1.0, 1.0));
     assert_eq!(left, right);
 }
@@ -647,7 +647,7 @@ fn squared_distance_intervals_contain_the_exact_stored_double_distance() {
             start: XY::new(shift - 2.0, -0.75),
             end: XY::new(shift + 3.0, 0.625),
         };
-        let key = point_segment_distance_key(point, segment);
+        let key = point_segment_distance_key(point, segment).unwrap();
         assert!(key.is_bounded(), "index={index}");
         assert!(key.contains_exact(), "index={index}");
     }
@@ -669,7 +669,9 @@ fn ordinary_selection_uses_no_exact_fallback() {
         };
         assert!(
             point_segment_distance_key(probe, near)
-                .cmp(&point_segment_distance_key(probe, far))
+                .unwrap()
+                .cmp(&point_segment_distance_key(probe, far).unwrap())
+                .unwrap()
                 .is_lt()
         );
     }
@@ -695,10 +697,11 @@ fn ordinary_nearest_rows_use_no_exact_fallback() {
             let key = point_segment_distance_key(probe, Segment {
                 start: vertex(index),
                 end: vertex(index + 1),
-            });
+            })
+            .unwrap();
             if best
                 .as_ref()
-                .is_none_or(|incumbent| key.cmp(incumbent).is_lt())
+                .is_none_or(|incumbent| key.cmp(incumbent).unwrap().is_lt())
             {
                 best = Some(key);
             }
@@ -749,11 +752,11 @@ fn cancelling_near_endpoint_selection_escalates_and_keeps_the_interior() {
         f64::from_bits(0x3FF1_ACED_9BE6_93E6),
     );
     EXACT_SELECTION_FALLBACKS.with(|count| count.set(0));
-    let interior = point_segment_distance_key(point, segment);
+    let interior = point_segment_distance_key(point, segment).unwrap();
     let endpoint = point_pair_distance_key(point, segment.start);
     assert!(interior.is_bounded());
     assert!(interior.contains_exact());
-    assert!(interior.cmp(&endpoint).is_lt());
+    assert!(interior.cmp(&endpoint).unwrap().is_lt());
     let entries = EXACT_SELECTION_FALLBACKS.with(std::cell::Cell::get);
     eprintln!("cancelling exact-selection fallback entries: {entries}");
     assert_eq!(entries, 1);
@@ -772,7 +775,10 @@ fn faithful_case_a_keeps_the_exactly_closer_lerp_witness() {
         f64::from_bits(0xA018_FBE4_C3D7_9F2E),
         f64::from_bits(0x2039_6423_3D01_E367),
     );
-    let witness = segment_projection(point, segment).interpolate_xy(segment);
+    let witness = segment_projection(point, segment)
+        .unwrap()
+        .interpolate_xy(segment)
+        .unwrap();
     assert_eq!(
         witness,
         XY::new(
@@ -785,7 +791,10 @@ fn faithful_case_a_keeps_the_exactly_closer_lerp_witness() {
     );
 
     let reversed = reverse_segment(segment);
-    let reversed_witness = segment_projection(point, reversed).interpolate_xy(reversed);
+    let reversed_witness = segment_projection(point, reversed)
+        .unwrap()
+        .interpolate_xy(reversed)
+        .unwrap();
     assert_eq!(
         reversed_witness,
         XY::new(
@@ -795,7 +804,9 @@ fn faithful_case_a_keeps_the_exactly_closer_lerp_witness() {
     );
     assert!(
         point_segment_distance_key(point, segment)
-            .cmp(&point_segment_distance_key(point, reversed))
+            .unwrap()
+            .cmp(&point_segment_distance_key(point, reversed).unwrap())
+            .unwrap()
             .is_lt(),
         "selection must compare the two emitted coordinates, not identify reversed supports",
     );
@@ -809,14 +820,18 @@ fn exact_selection_compares_the_emitted_foot_against_a_point_candidate() {
     };
     let probe = XY::new(-2.506_180_295_312_065, -0.186_351_125_729_832_03);
     let point_candidate = XY::new(-2.506_533_121_444_889_4, -0.185_421_981_330_493_8);
-    let emitted = segment_projection(probe, segment).interpolate_xy(segment);
+    let emitted = segment_projection(probe, segment)
+        .unwrap()
+        .interpolate_xy(segment)
+        .unwrap();
     assert_eq!(
         emitted,
         XY::new(-2.507_172_816_964_488, -0.186_403_052_257_709_84),
     );
     assert!(
         point_pair_distance_key(probe, point_candidate)
-            .cmp(&point_segment_distance_key(probe, segment))
+            .cmp(&point_segment_distance_key(probe, segment).unwrap())
+            .unwrap()
             .is_lt(),
         "the rejected point is exactly closer than the emitted line foot",
     );
@@ -826,5 +841,59 @@ fn reverse_segment(segment: Segment) -> Segment {
     Segment {
         start: segment.end,
         end: segment.start,
+    }
+}
+
+#[cfg(test)]
+mod exact_projection_allocation_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn assert_allocation(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    fn prefix_sweep(run: impl Fn() -> crate::error::Result<()>) {
+        let (_, allocations) = allocation_count(|| run().unwrap());
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = fail_allocations_after(allowed, || run())
+                .expect_err("exact projection scratch must propagate allocation failure");
+            assert_allocation(&error);
+        }
+    }
+
+    #[test]
+    fn endpoint_exact_classification_rejects_every_allocation() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(1.0, 0.0),
+        };
+        let point = XY::new(0.0, 0.0);
+        prefix_sweep(|| super::classify_segment_projection_exact(point, segment).map(|_| ()));
+    }
+
+    #[test]
+    fn interior_exact_terms_reject_every_allocation() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(2.0, 0.0),
+        };
+        let point = XY::new(1.0, 1.0);
+        prefix_sweep(|| super::exact_projection_terms(point, segment).map(|_| ()));
+    }
+
+    #[test]
+    fn extreme_exact_projection_rejects_every_allocation() {
+        let segment = Segment {
+            start: XY::new(1e200, 0.0),
+            end: XY::new(1e200 + 1.0, 0.0),
+        };
+        let point = XY::new(1e200 + 0.5, 1.0);
+        prefix_sweep(|| segment_projection(point, segment).map(|_| ()));
     }
 }

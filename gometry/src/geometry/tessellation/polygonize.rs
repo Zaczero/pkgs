@@ -130,7 +130,7 @@ pub(crate) fn polygonize_faces_from_arrangement(
 }
 
 pub(crate) fn polygonize_faces(graph: &TopologyGraph) -> (Vec<Face>, Vec<Option<usize>>) {
-    let mut arrangement = arrangement_from_graph(graph);
+    let mut arrangement = arrangement_from_graph(graph)?;
     polygonize_faces_from_arrangement(&mut arrangement)
 }
 
@@ -215,7 +215,7 @@ pub(crate) fn polygonize_full(
     graph: &TopologyGraph,
     source_row_count: usize,
 ) -> Result<PolygonizeFull> {
-    let mut arrangement = arrangement_from_graph(graph);
+    let mut arrangement = arrangement_from_graph(graph)?;
     let (faces, parents) = polygonize_faces_from_arrangement(&mut arrangement);
     let children = children_of(&parents);
     let polygons: Vec<Polygon> = (0..faces.len())
@@ -297,30 +297,33 @@ pub(crate) fn polygonize_full(
     })
 }
 
-fn arrangement_from_graph(graph: &TopologyGraph) -> Arrangement {
+fn arrangement_from_graph(graph: &TopologyGraph) -> crate::error::Result<Arrangement> {
     let segments: Vec<_> = graph.edges.iter().map(|edge| edge.segment).collect();
-    let weights: Vec<_> = graph
-        .edges
-        .iter()
-        .map(|edge| {
-            edge.sources
-                .iter()
-                .map(|&source_index| {
-                    source_direction(
-                        edge.segment,
-                        graph.source_edges[source_index as usize].segment,
-                    )
-                })
-                .sum()
-        })
-        .collect();
-    Arrangement::build::<true>(&segments, |index| weights[index])
+    let mut weights = Vec::new();
+    crate::try_reserve_vec(&mut weights, graph.edges.len())?;
+    for edge in &graph.edges {
+        let mut weight = 0;
+        for &source_index in &edge.sources {
+            weight += source_direction(
+                edge.segment,
+                graph.source_edges[source_index as usize].segment,
+            )?;
+        }
+        weights.push(weight);
+    }
+    Ok(Arrangement::build::<true>(&segments, |index| {
+        weights[index]
+    }))
 }
 
-fn source_direction(piece: Segment, source: Segment) -> i32 {
-    let start = segment_projection(piece.start, source);
-    let end = segment_projection(piece.end, source);
-    if end.cmp_along(&start).is_ge() { 1 } else { -1 }
+fn source_direction(piece: Segment, source: Segment) -> crate::error::Result<i32> {
+    let start = segment_projection(piece.start, source)?;
+    let end = segment_projection(piece.end, source)?;
+    Ok(if end.cmp_along(&start)?.is_ge() {
+        1
+    } else {
+        -1
+    })
 }
 
 fn undirected_edge_key(

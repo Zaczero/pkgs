@@ -40,13 +40,13 @@ impl PreparedPlan {
         if let Some((left, right)) = bounds
             && bounds_squared_safe(left)
             && bounds_squared_safe(right)
-            && let Some(squared) = puntal_brute_distance_squared(self.shape(), other.shape())
+            && let Some(squared) = puntal_brute_distance_squared(self.shape(), other.shape())?
         {
             // Always finish through the shared rescue — bare sqrt false-zeros
             // at 1e-200 point×line / multipoint×poly separations.
-            return Ok(finish_planar_squared_min(squared, || {
-                puntal_brute_distance(self.shape(), other.shape()).unwrap_or(0.0)
-            }));
+            return finish_planar_squared_min(squared, || {
+                Ok(puntal_brute_distance(self.shape(), other.shape())?.unwrap_or(0.0))
+            });
         }
         let self_parts = self.distance_parts()?;
         let other_parts = other.distance_parts()?;
@@ -55,9 +55,8 @@ impl PreparedPlan {
         {
             return Ok(0.0);
         }
-        Ok(self
-            .shape()
-            .distance_disjoint_with_parts(self_parts, other_parts))
+        self.shape()
+            .distance_disjoint_with_parts(self_parts, other_parts)
     }
 
     /// Planar `dwithin` on cached prepared state — see [`Self::distance`].
@@ -87,11 +86,11 @@ impl PreparedPlan {
             && let Some((left_b, right_b)) = bounds
             && bounds_squared_safe(left_b)
             && bounds_squared_safe(right_b)
-            && let Some(squared) = puntal_brute_distance_squared(self.shape(), other.shape())
+            && let Some(squared) = puntal_brute_distance_squared(self.shape(), other.shape())?
         {
             let d = finish_planar_squared_min(squared, || {
-                puntal_brute_distance(self.shape(), other.shape()).unwrap_or(0.0)
-            });
+                Ok(puntal_brute_distance(self.shape(), other.shape())?.unwrap_or(0.0))
+            })?;
             return Ok(d <= distance);
         }
         let self_parts = self.distance_parts()?;
@@ -104,12 +103,11 @@ impl PreparedPlan {
         if !limit.is_finite() || !use_sq {
             return Ok(self
                 .shape()
-                .distance_disjoint_with_parts(self_parts, other_parts)
+                .distance_disjoint_with_parts(self_parts, other_parts)?
                 <= distance);
         }
-        Ok(self
-            .shape()
-            .dwithin_disjoint_with_parts(self_parts, other_parts, distance))
+        self.shape()
+            .dwithin_disjoint_with_parts(self_parts, other_parts, distance)
     }
 
     /// Geodesic distance with both sides' geodesic working state cached on the
@@ -206,7 +204,7 @@ impl PreparedPlan {
                 parts_squared_safe,
                 bvh,
                 &mut stack,
-            );
+            )?;
             crate::try_push_vec(&mut distances, distance)?;
         }
         Ok(distances)
@@ -220,63 +218,55 @@ impl PreparedPlan {
         parts_squared_safe: bool,
         bvh: Option<&FacetBvh>,
         stack: &mut Vec<u32>,
-    ) -> f64 {
+    ) -> Result<f64> {
         if tester.map_or_else(
             || parts_covers_point(shape, parts, point),
             |tester| tester.covers_point(point),
         ) {
-            return 0.0;
+            return Ok(0.0);
         }
         let safe = parts_squared_safe && coordinate_squared_safe(point);
         // Local min to linework: squared (SQUARED=true) or distance space.
-        let mut min_linework = |squared: bool| -> f64 {
+        let mut min_linework = |squared: bool| -> Result<f64> {
             if squared {
-                bvh.map_or_else(
-                    || {
-                        parts.linework.min_points_distance::<true>(
-                            std::iter::once((point.x, point.y)),
-                            f64::INFINITY,
-                        )
-                    },
-                    |bvh| {
-                        bvh.min_point_distance_with_stack::<true>(
-                            &parts.linework,
-                            point.x,
-                            point.y,
-                            stack,
-                            f64::INFINITY,
-                        )
-                    },
-                )
+                match bvh {
+                    None => parts.linework.min_points_distance::<true>(
+                        std::iter::once((point.x, point.y)),
+                        f64::INFINITY,
+                    ),
+                    Some(bvh) => bvh.min_point_distance_with_stack::<true>(
+                        &parts.linework,
+                        point.x,
+                        point.y,
+                        stack,
+                        f64::INFINITY,
+                    ),
+                }
             } else {
-                bvh.map_or_else(
-                    || {
-                        parts.linework.min_points_distance::<false>(
-                            std::iter::once((point.x, point.y)),
-                            f64::INFINITY,
-                        )
-                    },
-                    |bvh| {
-                        bvh.min_point_distance_with_stack::<false>(
-                            &parts.linework,
-                            point.x,
-                            point.y,
-                            stack,
-                            f64::INFINITY,
-                        )
-                    },
-                )
+                match bvh {
+                    None => parts.linework.min_points_distance::<false>(
+                        std::iter::once((point.x, point.y)),
+                        f64::INFINITY,
+                    ),
+                    Some(bvh) => bvh.min_point_distance_with_stack::<false>(
+                        &parts.linework,
+                        point.x,
+                        point.y,
+                        stack,
+                        f64::INFINITY,
+                    ),
+                }
             }
         };
         let mut best = if safe {
-            finish_planar_squared_min(min_linework(true), || min_linework(false))
+            finish_planar_squared_min(min_linework(true)?, || min_linework(false))?
         } else {
-            min_linework(false)
+            min_linework(false)?
         };
         for &other in &parts.point_only {
             best = best.min(point_distance(point, other));
         }
-        best
+        Ok(best)
     }
 
     /// Planar `dwithin` from one point probe, on cached prepared state —
@@ -314,7 +304,7 @@ impl PreparedPlan {
                 parts_squared_safe,
                 bvh,
                 &mut stack,
-            );
+            )?;
             crate::try_push_vec(&mut matches, matched)?;
         }
         Ok(matches)
@@ -329,7 +319,7 @@ impl PreparedPlan {
     ) -> Result<bool> {
         let tester = self.point_tester_required(RequiredPointTester(()))?;
         let parts = self.distance_parts()?;
-        Ok(Self::dwithin_point_with_resolved(
+        Self::dwithin_point_with_resolved(
             self.shape(),
             point,
             distance,
@@ -338,7 +328,7 @@ impl PreparedPlan {
             squared_space_safe(parts),
             parts.bvh(),
             stack,
-        ))
+        )
     }
 
     fn dwithin_point_with_resolved(
@@ -350,17 +340,17 @@ impl PreparedPlan {
         parts_squared_safe: bool,
         bvh: Option<&FacetBvh>,
         stack: &mut Vec<u32>,
-    ) -> bool {
+    ) -> Result<bool> {
         if tester.map_or_else(
             || parts_covers_point(shape, parts, point),
             |tester| tester.covers_point(point),
         ) {
-            return true;
+            return Ok(true);
         }
         let limit_sq = distance * distance;
         let use_sq = limit_sq.is_normal() && distance > 0.0;
         if !use_sq {
-            return Self::distance_point_with_resolved(
+            return Ok(Self::distance_point_with_resolved(
                 shape,
                 point,
                 tester,
@@ -368,33 +358,29 @@ impl PreparedPlan {
                 parts_squared_safe,
                 bvh,
                 stack,
-            ) <= distance;
+            )? <= distance);
         }
         let simd = parts_squared_safe && coordinate_squared_safe(point);
-        let linework_hit = bvh.map_or_else(
-            || {
-                parts.linework.any_points_within(
-                    std::iter::once((point.x, point.y)),
-                    limit_sq,
-                    simd,
-                )
-            },
-            |bvh| {
-                bvh.point_within_with_stack(
-                    &parts.linework,
-                    point.x,
-                    point.y,
-                    limit_sq,
-                    simd,
-                    stack,
-                )
-            },
-        );
-        linework_hit
+        let linework_hit = match bvh {
+            None => parts.linework.any_points_within(
+                std::iter::once((point.x, point.y)),
+                limit_sq,
+                simd,
+            )?,
+            Some(bvh) => bvh.point_within_with_stack(
+                &parts.linework,
+                point.x,
+                point.y,
+                limit_sq,
+                simd,
+                stack,
+            )?,
+        };
+        Ok(linework_hit
             || parts
                 .point_only
                 .iter()
-                .any(|&other| points_dwithin(point, other, distance))
+                .any(|&other| points_dwithin(point, other, distance)))
     }
 
     /// Per-row geodesic distances from lon/lat point probes to this fixed

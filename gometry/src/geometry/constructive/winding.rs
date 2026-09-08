@@ -1051,7 +1051,7 @@ pub(crate) fn stroke_side<S: WalkSink>(
         scratch
     });
     let walk: &[Point] = backward.as_deref().map_or(chain, Vec::as_slice);
-    let Some(plan) = WalkPlan::new(walk, false, distance, rule, step_angle) else {
+    let Some(plan) = WalkPlan::new(walk, false, distance, rule, step_angle)? else {
         return Ok(None);
     };
     let excursion_free = plan

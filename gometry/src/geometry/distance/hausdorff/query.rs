@@ -299,10 +299,10 @@ impl HausdorffLineworkQuery {
         probes: &[(f64, f64)],
         out: &mut [HausdorffProbeResult],
         stack: &mut Vec<u32>,
-    ) {
+    ) -> crate::error::Result<()> {
         debug_assert_eq!(probes.len(), out.len());
         if probes.is_empty() {
-            return;
+            return Ok(());
         }
         let mut scratch = ScratchPool::checkout(&QUERY_SCRATCH);
         // An empty linework target contributes no zero-distance
@@ -314,11 +314,12 @@ impl HausdorffLineworkQuery {
         scratch.witness.resize(probes.len(), u32::MAX);
         if self.squared_safe {
             let QueryScratch { dist, witness } = &mut *scratch;
-            self.batch_probe_inner::<true>(probes, out, stack, dist, witness);
+            self.batch_probe_inner::<true>(probes, out, stack, dist, witness)?;
         } else {
             let QueryScratch { dist, witness } = &mut *scratch;
-            self.batch_probe_inner::<false>(probes, out, stack, dist, witness);
+            self.batch_probe_inner::<false>(probes, out, stack, dist, witness)?;
         }
+        Ok(())
     }
 
     fn batch_probe_inner<const SQUARED: bool>(
@@ -328,7 +329,7 @@ impl HausdorffLineworkQuery {
         stack: &mut Vec<u32>,
         dist: &mut [f64],
         witness: &mut [u32],
-    ) {
+    ) -> crate::error::Result<()> {
         if let Some(bvh) = &self.facet_bvh {
             bvh.batch_min_point_distance_with_witness::<SQUARED>(
                 &self.linework,
@@ -336,10 +337,10 @@ impl HausdorffLineworkQuery {
                 dist,
                 witness,
                 stack,
-            );
+            )?;
         } else {
             self.linework
-                .batch_min_point_distance_with_witness::<SQUARED>(probes, dist, witness);
+                .batch_min_point_distance_with_witness::<SQUARED>(probes, dist, witness)?;
         }
         for (slot, (&distance, &feature_id)) in
             std::iter::zip(out.iter_mut(), std::iter::zip(dist.iter(), witness.iter()))
@@ -353,25 +354,29 @@ impl HausdorffLineworkQuery {
                 feature_id,
             };
         }
+        Ok(())
     }
 
-    pub(crate) fn distance_squared(&self, point: XY) -> f64 {
+    pub(crate) fn distance_squared(&self, point: XY) -> crate::error::Result<f64> {
         let mut stack = Vec::new();
         let mut out = [HausdorffProbeResult::default()];
-        self.batch_probe(&[(point.x, point.y)], &mut out, &mut stack);
-        out[0].distance_squared
+        self.batch_probe(&[(point.x, point.y)], &mut out, &mut stack)?;
+        Ok(out[0].distance_squared)
     }
 }
 
-pub(crate) fn point_feature_distance(point: XY, feature: HausdorffFeature) -> f64 {
-    match feature {
+pub(crate) fn point_feature_distance(
+    point: XY,
+    feature: HausdorffFeature,
+) -> crate::error::Result<f64> {
+    Ok(match feature {
         HausdorffFeature::Point(target) => {
             sqrt_distance_squared(point_distance_squared(point, target))
         },
         HausdorffFeature::Segment(segment) => {
-            sqrt_distance_squared(point_segment_distance_squared(point, segment))
+            sqrt_distance_squared(point_segment_distance_squared(point, segment)?)
         },
-    }
+    })
 }
 
 /// Outward-rounded tight upper bound on max point-to-target distance along a

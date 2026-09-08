@@ -366,7 +366,7 @@ pub(crate) fn metric_concave_hull(
                     &projected_points,
                     concavity,
                     length_threshold,
-                ) {
+                )? {
                     crate::boundary::try_push_vec(
                         &mut provenance,
                         VertexProvenance::Input(pairs[index].1),
@@ -400,7 +400,7 @@ pub(crate) fn geodesic_by_identity(
         ));
     }
     let plan = plan_fn(&projected)?;
-    rebuild(emit_from_original(&original, &plan))
+    rebuild(emit_from_original(&original, &plan)?)
 }
 
 /// CRS-aware minimum enclosing circle. Planar/projected frames build the circle

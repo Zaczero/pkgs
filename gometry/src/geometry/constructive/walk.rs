@@ -97,16 +97,18 @@ impl WalkJoinRule {
 pub(crate) fn reflex_cross(
     incoming: Segment,
     outgoing: Segment,
-) -> Option<(XY, SegmentProjection, SegmentProjection)> {
+) -> crate::error::Result<Option<(XY, SegmentProjection, SegmentProjection)>> {
     if !segments_intersect(incoming, outgoing) {
-        return None;
+        return Ok(None);
     }
-    let point = segment_cross_point(incoming, outgoing)?;
-    Some((
+    let Some(point) = segment_cross_point(incoming, outgoing) else {
+        return Ok(None);
+    };
+    Ok(Some((
         point,
-        segment_projection(point, incoming),
-        segment_projection(point, outgoing),
-    ))
+        segment_projection(point, incoming)?,
+        segment_projection(point, outgoing)?,
+    )))
 }
 
 /// The outside miter join at `vertex`: the crossing of the two offset
@@ -335,7 +337,7 @@ impl<'a> WalkPlan<'a> {
         distance: f64,
         rule: WalkJoinRule,
         step_angle: f64,
-    ) -> Option<Self> {
+    ) -> crate::error::Result<Option<Self>> {
         let count = points.len();
         let edges = if cyclic { count } else { count - 1 };
         // A convex round join whose turn is no wider than one arc step emits
@@ -348,9 +350,12 @@ impl<'a> WalkPlan<'a> {
         // every arc-emitting join on the exact angular path (FP noise in the
         // dot is ~1e-15), so the output is unchanged.
         let cos_step = step_angle.cos() + 1e-12;
-        let normals: Vec<(f64, f64)> = (0..edges)
+        let Some(normals) = (0..edges)
             .map(|edge| unit_right_normal(points[edge], points[wrap_index(edge + 1, count)]))
-            .collect::<Option<_>>()?;
+            .collect::<Option<Vec<(f64, f64)>>>()
+        else {
+            return Ok(None);
+        };
         let offset_edge = |from: Point, to: Point, (nx, ny): (f64, f64)| Segment {
             start: Point::new_raw_xy(from.x + distance * nx, from.y + distance * ny).into(),
             end: Point::new_raw_xy(to.x + distance * nx, to.y + distance * ny).into(),
@@ -367,59 +372,58 @@ impl<'a> WalkPlan<'a> {
                 point: XY::new(w.x + distance * nx, w.y + distance * ny),
             })
         };
-        let joins: Vec<WalkJoin> = (0..if cyclic { edges } else { edges - 1 })
-            .map(|join| {
-                let v = points[join];
-                let w = points[wrap_index(join + 1, count)];
-                let u = points[wrap_index(join + 2, count)];
-                Some(match orientation(v, w, u) {
-                    Orientation::CounterClockwise => match rule {
-                        WalkJoinRule::Arc => {
-                            let (nx, ny) = normals[join];
-                            let (mx, my) = normals[wrap_index(join + 1, edges)];
-                            if let Some(snap) = snapped(w, (nx, ny), (mx, my)) {
-                                return Some(snap);
-                            }
-                            if nx * mx + ny * my >= cos_step {
-                                return Some(WalkJoin::Straight);
-                            }
+        let join_count = if cyclic { edges } else { edges - 1 };
+        let mut joins = Vec::new();
+        crate::try_reserve_vec(&mut joins, join_count)?;
+        for join in 0..join_count {
+            let v = points[join];
+            let w = points[wrap_index(join + 1, count)];
+            let u = points[wrap_index(join + 2, count)];
+            let planned = match orientation(v, w, u) {
+                Orientation::CounterClockwise => match rule {
+                    WalkJoinRule::Arc => {
+                        let (nx, ny) = normals[join];
+                        let (mx, my) = normals[wrap_index(join + 1, edges)];
+                        if let Some(snap) = snapped(w, (nx, ny), (mx, my)) {
+                            snap
+                        } else if nx * mx + ny * my >= cos_step {
+                            WalkJoin::Straight
+                        } else {
                             let from_angle = ny.atan2(nx);
                             let mut sweep = my.atan2(mx) - from_angle;
                             if sweep < 0.0 {
                                 sweep += std::f64::consts::TAU;
                             }
                             if sweep > std::f64::consts::PI {
-                                return None;
+                                return Ok(None);
                             }
                             WalkJoin::Arc { from_angle, sweep }
-                        },
-                        WalkJoinRule::Bevel => {
-                            snapped(w, normals[join], normals[wrap_index(join + 1, edges)])
-                                .unwrap_or(WalkJoin::Straight)
-                        },
-                        WalkJoinRule::Miter { limit } => convex_miter(
-                            offset_edge(v, w, normals[join]),
-                            offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
-                            w,
-                            distance,
-                            limit,
-                        ),
+                        }
                     },
-                    Orientation::Clockwise => reflex_cross(
+                    WalkJoinRule::Bevel => {
+                        snapped(w, normals[join], normals[wrap_index(join + 1, edges)])
+                            .unwrap_or(WalkJoin::Straight)
+                    },
+                    WalkJoinRule::Miter { limit } => convex_miter(
                         offset_edge(v, w, normals[join]),
                         offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
-                    )
-                    .map_or_else(
-                        || {
-                            snapped(w, normals[join], normals[wrap_index(join + 1, edges)])
-                                .unwrap_or(WalkJoin::Excursion)
-                        },
-                        |(point, t_in, t_out)| WalkJoin::Cross { point, t_in, t_out },
+                        w,
+                        distance,
+                        limit,
                     ),
-                    Orientation::Collinear => WalkJoin::Straight,
-                })
-            })
-            .collect::<Option<_>>()?;
+                },
+                Orientation::Clockwise => match reflex_cross(
+                    offset_edge(v, w, normals[join]),
+                    offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
+                )? {
+                    Some((point, t_in, t_out)) => WalkJoin::Cross { point, t_in, t_out },
+                    None => snapped(w, normals[join], normals[wrap_index(join + 1, edges)])
+                        .unwrap_or(WalkJoin::Excursion),
+                },
+                Orientation::Collinear => WalkJoin::Straight,
+            };
+            joins.push(planned);
+        }
         let mut plan = Self {
             points,
             normals,
@@ -427,8 +431,8 @@ impl<'a> WalkPlan<'a> {
             cyclic,
             distance,
         };
-        plan.validate();
-        Some(plan)
+        plan.validate()?;
+        Ok(Some(plan))
     }
 
     /// Demote any inside crossing clipping an edge to a BACKWARDS
@@ -441,10 +445,10 @@ impl<'a> WalkPlan<'a> {
     /// Demotion only widens the neighbouring edges' parameter spans, so
     /// the fixpoint loop terminates (each round either demotes a
     /// crossing or stops).
-    fn validate(&mut self) {
+    fn validate(&mut self) -> crate::error::Result<()> {
         let joins = self.joins.len();
         if joins == 0 {
-            return;
+            return Ok(());
         }
         let edges = self.normals.len();
         loop {
@@ -465,7 +469,7 @@ impl<'a> WalkPlan<'a> {
                     _ => None,
                 });
                 let backwards = match (entry, exit) {
-                    (Some(entry), Some(exit)) => entry.cmp_along(exit) != Ordering::Less,
+                    (Some(entry), Some(exit)) => entry.cmp_along(exit)? != Ordering::Less,
                     (Some(entry), None) => entry.is_end(),
                     (None, Some(exit)) => exit.is_start(),
                     (None, None) => false,
@@ -483,6 +487,7 @@ impl<'a> WalkPlan<'a> {
                 break;
             }
         }
+        Ok(())
     }
 
     /// Append the walk's offset points: per-edge offsets stitched by the
@@ -735,14 +740,14 @@ impl ShellCoverageIndex {
     /// between two covered vertices. The boundary index supplies exact contact
     /// intervals, and one classified midpoint per interval settles each open
     /// portion without constructing a source topology graph.
-    fn covers_line(&self, points: &[XY]) -> bool {
+    fn covers_line(&self, points: &[XY]) -> crate::error::Result<bool> {
         if points.len() < 2 {
-            return true;
+            return Ok(true);
         }
         if points.iter().any(|point| !self.covers_xy(point.x, point.y)) {
-            return false;
+            return Ok(false);
         }
-        points.array_windows::<2>().all(|[start, end]| {
+        for [start, end] in points.array_windows::<2>() {
             let segment = Segment {
                 start: *start,
                 end: *end,
@@ -751,24 +756,27 @@ impl ShellCoverageIndex {
             for entry in self.boundary.intersecting_candidates(segment) {
                 match crate::geometry::segment_contact_exact(segment, entry.segment) {
                     Contact::Disjoint => {},
-                    Contact::Cross { .. } => return false,
+                    Contact::Cross { .. } => return Ok(false),
                     Contact::Touch { point } => {
-                        contacts.push((segment_projection(point, segment), point));
+                        contacts.push((segment_projection(point, segment)?, point));
                     },
                     Contact::Collinear { span } => {
-                        contacts.push((segment_projection(span.start, segment), span.start));
-                        contacts.push((segment_projection(span.end, segment), span.end));
+                        contacts.push((segment_projection(span.start, segment)?, span.start));
+                        contacts.push((segment_projection(span.end, segment)?, span.end));
                     },
                 }
             }
-            contacts.push((crate::geometry::segment_projection(*start, segment), *start));
-            contacts.push((crate::geometry::segment_projection(*end, segment), *end));
-            contacts.sort_unstable_by(|(left, _), (right, _)| left.cmp_along(right));
+            contacts.push((
+                crate::geometry::segment_projection(*start, segment)?,
+                *start,
+            ));
+            contacts.push((crate::geometry::segment_projection(*end, segment)?, *end));
+            crate::geometry::try_sort_by(&mut contacts, |left, right| left.0.cmp_along(&right.0))?;
 
             let mut previous_projection = &contacts[0].0;
             let mut previous_point = contacts[0].1;
             for (projection, point) in contacts.iter().skip(1) {
-                if projection.cmp_along(previous_projection).is_eq() {
+                if projection.cmp_along(previous_projection)?.is_eq() {
                     continue;
                 }
                 let midpoint = crate::geometry::segment_midpoint(Segment {
@@ -776,13 +784,13 @@ impl ShellCoverageIndex {
                     end: *point,
                 });
                 if !self.covers_xy(midpoint.x, midpoint.y) {
-                    return false;
+                    return Ok(false);
                 }
                 previous_projection = projection;
                 previous_point = *point;
             }
-            true
-        })
+        }
+        Ok(true)
     }
 }
 
@@ -862,7 +870,7 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Resu
             if index
                 .as_ref()
                 .expect("shell index was initialized")
-                .covers_line(&hole)
+                .covers_line(&hole)?
             {
                 owner = Some(shell_index);
                 break;
@@ -917,7 +925,9 @@ mod tests {
             Point::new_raw_xy(1.0, 0.0),
             Point::new_raw_xy(1.0, 1.0),
         ];
-        let plan = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Arc, 0.1).unwrap();
+        let plan = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Arc, 0.1)
+            .unwrap()
+            .unwrap();
         let mut budget = ExpansionBudget::new("test", "count");
         budget.add(GENERATED_ITEM_LIMIT).unwrap();
 
@@ -1018,13 +1028,21 @@ mod tests {
         ];
         let ring = Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap());
         let index = ShellCoverageIndex::new(&ring).unwrap();
-        assert!(index.covers_line(&[
-            XY::new(0.0, 0.0),
-            XY::new(6.0, 0.0),
-            XY::new(6.0, 2.0),
-            XY::new(2.0, 2.0),
-        ]));
-        assert!(!index.covers_line(&[XY::new(5.0, 1.0), XY::new(1.0, 5.0), XY::new(5.5, 1.0),]));
+        assert!(
+            index
+                .covers_line(&[
+                    XY::new(0.0, 0.0),
+                    XY::new(6.0, 0.0),
+                    XY::new(6.0, 2.0),
+                    XY::new(2.0, 2.0),
+                ])
+                .unwrap()
+        );
+        assert!(
+            !index
+                .covers_line(&[XY::new(5.0, 1.0), XY::new(1.0, 5.0), XY::new(5.5, 1.0)])
+                .unwrap()
+        );
     }
 
     #[test]

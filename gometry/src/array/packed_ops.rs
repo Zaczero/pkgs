@@ -438,12 +438,12 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         // One batch-local DP work stack reused across rows (clear+push, no
         // per-row allocation). Free-threading: not a receiver cache / lock.
-        let result = (|| {
+        let result = {
             let mut stack: Vec<(usize, usize)> = Vec::new();
             self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
                 crate::geometry::rdp_keep(xs, ys, tolerance, keep, &mut stack)
             })
-        })();
+        };
         result.map_err(crate::PyErr::from)
     }
 
@@ -481,14 +481,10 @@ impl PyGeometryArray {
         }
         let cap = builder.vertex_len();
         let (out_coords, out_offsets) = builder.finish(cap)?;
-        Ok(Self::packed_lines(
-            out_coords,
-            out_offsets,
-            self.frame.clone(),
-        )?)
+        Self::packed_lines(out_coords, out_offsets, self.frame.clone())
     }
 
-    /// Shared curve-key engine: one frame for the whole array (explicit
+    /// Shared curve-key engine: one frame for the whole array (explicit)
     /// bounds or total bounds), one key per row. Empty and missing rows use
     /// `u64::MAX`, the documented sort-last sentinel.
     pub(crate) fn curve_keys(

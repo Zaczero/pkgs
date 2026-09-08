@@ -107,7 +107,7 @@ impl HausdorffTarget {
         })
     }
 
-    fn linework_distance_squared(&self, point: XY) -> f64 {
+    fn linework_distance_squared(&self, point: XY) -> crate::error::Result<f64> {
         self.query.distance_squared(point)
     }
 
@@ -115,12 +115,12 @@ impl HausdorffTarget {
         clippy::same_name_method,
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
-    pub(crate) fn distance_squared(&self, point: XY) -> f64 {
-        let mut best = self.linework_distance_squared(point);
+    pub(crate) fn distance_squared(&self, point: XY) -> crate::error::Result<f64> {
+        let mut best = self.linework_distance_squared(point)?;
         for &target in &self.points {
             best = best.min(point_distance_squared(point, target.xy()));
         }
-        best
+        Ok(best)
     }
 }
 
@@ -167,13 +167,16 @@ impl SmallLineTarget {
     }
 }
 
-pub(crate) fn small_line_target_distance_squared(target: &SmallLineTarget, point: XY) -> f64 {
+pub(crate) fn small_line_target_distance_squared(
+    target: &SmallLineTarget,
+    point: XY,
+) -> crate::error::Result<f64> {
     let probe = Point::new_raw_xy(point.x, point.y);
     let mut best = f64::INFINITY;
     for &segment in &target.segments[..target.n_segments as usize] {
-        best = best.min(point_segment_distance_squared(probe, segment));
+        best = best.min(point_segment_distance_squared(probe, segment)?);
     }
-    best
+    Ok(best)
 }
 
 pub(crate) fn small_line_target_features_slice(target: &SmallLineTarget) -> &[HausdorffFeature] {
@@ -184,7 +187,7 @@ pub(crate) fn max_point_to_target_squared_on_segment_small_culled(
     source: Segment,
     target: &SmallLineTarget,
     cmax_sq: Option<f64>,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let ax = source.start.x;
     let ay = source.start.y;
     let dx = source.end.x - ax;
@@ -259,7 +262,7 @@ pub(crate) fn sample_hausdorff_on_segment_small(
     dy: f64,
     t: f64,
     target: &SmallLineTarget,
-) -> f64 {
+) -> crate::error::Result<f64> {
     small_line_target_distance_squared(target, XY::new(ax + t * dx, ay + t * dy))
 }
 
@@ -271,7 +274,7 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_small_culled(
     params: &mut [f64],
     target: &SmallLineTarget,
     cmax_sq: Option<f64>,
-) -> f64 {
+) -> crate::error::Result<f64> {
     evaluate_max_point_to_target_squared_on_segment_quadratic_small_culled(
         ax, ay, dx, dy, params, target, cmax_sq,
     )
@@ -285,7 +288,7 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_bisect_small(
     dy: f64,
     params: &mut [f64],
     target: &SmallLineTarget,
-) -> f64 {
+) -> crate::error::Result<f64> {
     evaluate_max_point_to_target_squared_on_segment_with_roots_small(
         ax,
         ay,
@@ -306,13 +309,15 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_with_roots_small(
     params: &mut [f64],
     target: &SmallLineTarget,
     interval: &mut impl EquidistantRootSink,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let param_count = compact_hausdorff_params(params);
     let params = &params[..param_count];
 
     let mut best = 0.0_f64;
     for &t in params {
-        best = best.max(sample_hausdorff_on_segment_small(ax, ay, dx, dy, t, target));
+        best = best.max(sample_hausdorff_on_segment_small(
+            ax, ay, dx, dy, t, target,
+        )?);
     }
 
     let features = small_line_target_features_slice(target);
@@ -333,14 +338,16 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_with_roots_small(
                     features[left],
                     features[right],
                     interval,
-                );
+                )?;
             }
         }
         for &t in interval.roots() {
-            best = best.max(sample_hausdorff_on_segment_small(ax, ay, dx, dy, t, target));
+            best = best.max(sample_hausdorff_on_segment_small(
+                ax, ay, dx, dy, t, target,
+            )?);
         }
     }
-    best
+    Ok(best)
 }
 
 pub(crate) fn evaluate_max_point_to_target_squared_on_segment_quadratic_small_culled(
@@ -351,13 +358,15 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_quadratic_small_cu
     params: &mut [f64],
     target: &SmallLineTarget,
     cmax_sq: Option<f64>,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let param_count = compact_hausdorff_params(params);
     let params = &params[..param_count];
 
     let mut best = 0.0_f64;
     for &t in params {
-        best = best.max(sample_hausdorff_on_segment_small(ax, ay, dx, dy, t, target));
+        best = best.max(sample_hausdorff_on_segment_small(
+            ax, ay, dx, dy, t, target,
+        )?);
     }
 
     let prune_margin = cmax_sq.and_then(|cmax_sq| {
@@ -397,12 +406,14 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_quadratic_small_cu
                     left_feature,
                     right_feature,
                     &mut interval,
-                );
+                )?;
             }
         }
         for &t in interval.roots() {
-            best = best.max(sample_hausdorff_on_segment_small(ax, ay, dx, dy, t, target));
+            best = best.max(sample_hausdorff_on_segment_small(
+                ax, ay, dx, dy, t, target,
+            )?);
         }
     }
-    best
+    Ok(best)
 }

@@ -184,7 +184,7 @@ fn simplify_chain_kept(
                 cyclic,
                 &|prev, vertex, next| {
                     let area = triangle_area(prev, vertex, next);
-                    (area < area_tolerance).then_some(area)
+                    Ok((area < area_tolerance).then_some(area))
                 },
                 guard,
             )
@@ -206,7 +206,7 @@ fn simplify_chain_kept(
                         let cross = (n.x - p.x) * (v.y - p.y) - (n.y - p.y) * (v.x - p.x);
                         cross * cross / base_sq
                     };
-                    (deviation_sq < tolerance_sq).then_some(deviation_sq)
+                    Ok((deviation_sq < tolerance_sq).then_some(deviation_sq))
                 },
                 guard,
             )
@@ -230,7 +230,7 @@ pub(in crate::geometry) fn simplify_chain_guarded(
     count: usize,
     xy: impl Fn(usize) -> XY,
     cyclic: bool,
-    candidate: &impl Fn(XY, XY, XY) -> Option<f64>,
+    candidate: &impl Fn(XY, XY, XY) -> Result<Option<f64>>,
     guard: &TopologyGuard<'_>,
 ) -> Result<Vec<usize>> {
     let floor = if cyclic { 4 } else { 2 };
@@ -267,7 +267,7 @@ pub(in crate::geometry) fn simplify_chain_guarded(
     let mut heap: BinaryHeap<Reverse<(u64, usize, u32)>> = BinaryHeap::new();
     crate::try_reserve_heap(&mut heap, count)?;
     for index in 1..count - 1 {
-        if let Some(importance) = candidate(xy(index - 1), xy(index), xy(index + 1)) {
+        if let Some(importance) = candidate(xy(index - 1), xy(index), xy(index + 1))? {
             crate::try_push_heap(&mut heap, Reverse((total_order_key(importance), index, 0)))?;
         }
     }
@@ -293,7 +293,7 @@ pub(in crate::geometry) fn simplify_chain_guarded(
             }
             generation[neighbor] += 1;
             if let Some(importance) =
-                candidate(xy(prev[neighbor]), xy(neighbor), xy(next[neighbor]))
+                candidate(xy(prev[neighbor]), xy(neighbor), xy(next[neighbor]))?
             {
                 crate::try_push_heap(
                     &mut heap,
@@ -655,7 +655,7 @@ mod guarded_scratch_tests {
     fn short_chain_identity_rejects_allocation() {
         let guard = dummy_guard();
         let error = fail_allocations_after(0, || {
-            simplify_chain_guarded(2, collinear_x, false, &|_, _, _| None, &guard)
+            simplify_chain_guarded(2, collinear_x, false, &|_, _, _| Ok(None), &guard)
         })
         .unwrap_err();
         assert_allocation_error(&error);
@@ -664,7 +664,7 @@ mod guarded_scratch_tests {
     #[test]
     fn candidate_none_scratch_rejects_every_allocation() {
         let guard = dummy_guard();
-        let never = |_: XY, _: XY, _: XY| None;
+        let never = |_: XY, _: XY, _: XY| Ok(None);
         let (kept, allocations) = allocation_count(|| {
             simplify_chain_guarded(6, collinear_x, false, &never, &guard).unwrap()
         });
@@ -682,7 +682,7 @@ mod guarded_scratch_tests {
     #[test]
     fn collinear_removal_scratch_rejects_every_allocation() {
         let guard = dummy_guard();
-        let drop_all = |_: XY, _: XY, _: XY| Some(0.0);
+        let drop_all = |_: XY, _: XY, _: XY| Ok(Some(0.0));
         let (kept, allocations) = allocation_count(|| {
             simplify_chain_guarded(8, collinear_x, false, &drop_all, &guard).unwrap()
         });
@@ -700,7 +700,7 @@ mod guarded_scratch_tests {
     #[test]
     fn collinear_removal_keeps_endpoints_in_order() {
         let guard = dummy_guard();
-        let drop_all = |_: XY, _: XY, _: XY| Some(0.0);
+        let drop_all = |_: XY, _: XY, _: XY| Ok(Some(0.0));
         let kept = simplify_chain_guarded(5, collinear_x, false, &drop_all, &guard).unwrap();
         assert_eq!(kept, vec![0, 4]);
         let cyclic = simplify_chain_guarded(6, collinear_x, true, &drop_all, &guard).unwrap();

@@ -162,7 +162,9 @@ fn minimum_clearance_witness_indexed(
     for (point_index, point) in points.iter().enumerate() {
         if let Some((other, raw_sq)) = vertex_index.nearest_other(*point)
             && let Some(distance_squared) =
-                admit_clearance_squared(raw_sq, clearance_squared, || point_distance(*point, other))
+                admit_clearance_squared(raw_sq, clearance_squared, || {
+                    Ok(point_distance(*point, other))
+                })?
         {
             clearance_squared = distance_squared;
             let other_index = first_point_index_by_xy[&PointKey::new(other)];
@@ -186,11 +188,11 @@ fn minimum_clearance_witness_indexed(
         if let Some((seg_i, _segment, raw_sq)) =
             segment_index.nearest_segment_ordinal_if(*point, probe_best, |segment, _distance| {
                 !same_point(*point, segment.start) && !same_point(*point, segment.end)
-            })
+            })?
             && let Some(distance_squared) =
                 admit_clearance_squared(raw_sq, clearance_squared, || {
                     point_segment_distance(*point, segments[seg_i].xy)
-                })
+                })?
         {
             clearance_squared = distance_squared;
             let segment = segments[seg_i];
@@ -200,7 +202,7 @@ fn minimum_clearance_witness_indexed(
                     VertexProvenance::OnSegment {
                         i: segment.start,
                         j: segment.end,
-                        projection: segment_projection(*point, segment.xy),
+                        projection: segment_projection(*point, segment.xy)?,
                     },
                 ],
                 distance_squared,
@@ -214,7 +216,7 @@ fn minimum_clearance_witness_indexed(
 fn minimum_clearance_witness_brute(
     points: &[Point],
     segments: &[IndexedSegment],
-) -> Option<MinimumClearanceWitness> {
+) -> crate::error::Result<Option<MinimumClearanceWitness>> {
     let mut witness = None;
     let mut clearance_squared = f64::INFINITY;
     for (left_index, left) in points.iter().enumerate() {
@@ -226,10 +228,11 @@ fn minimum_clearance_witness_brute(
             // residuals recompute in distance space (1.5e-162 not dropped,
             // 2.2e-162 not quantized).
             let Some(distance_squared) = admit_clearance_from_try(
-                try_point_distance_squared(*left, *right),
+                Ok(try_point_distance_squared(*left, *right)),
                 clearance_squared,
-                || point_distance(*left, *right),
-            ) else {
+                || Ok(point_distance(*left, *right)),
+            )?
+            else {
                 continue;
             };
             clearance_squared = distance_squared;
@@ -251,7 +254,8 @@ fn minimum_clearance_witness_brute(
                 try_point_segment_distance_squared(*point, segment.xy),
                 clearance_squared,
                 || point_segment_distance(*point, segment.xy),
-            ) else {
+            )?
+            else {
                 continue;
             };
             clearance_squared = distance_squared;
@@ -261,14 +265,14 @@ fn minimum_clearance_witness_brute(
                     VertexProvenance::OnSegment {
                         i: segment.start,
                         j: segment.end,
-                        projection: segment_projection(*point, segment.xy),
+                        projection: segment_projection(*point, segment.xy)?,
                     },
                 ],
                 distance_squared,
             });
         }
     }
-    witness
+    Ok(witness)
 }
 
 /// True when candidate distance `d` is strictly closer than the current
@@ -291,27 +295,27 @@ fn clearance_beats_distance(clearance_squared: f64, d: f64) -> bool {
 fn admit_clearance_squared(
     raw_sq: f64,
     clearance_squared: f64,
-    honest_d: impl FnOnce() -> f64,
-) -> Option<f64> {
+    honest_d: impl FnOnce() -> crate::error::Result<f64>,
+) -> crate::error::Result<Option<f64>> {
     if squared_norm_is_trustworthy(raw_sq, false) {
-        (raw_sq > 0.0 && raw_sq < clearance_squared).then_some(raw_sq)
+        Ok((raw_sq > 0.0 && raw_sq < clearance_squared).then_some(raw_sq))
     } else {
-        let d = honest_d();
-        (d > 0.0 && clearance_beats_distance(clearance_squared, d)).then_some(d * d)
+        let d = honest_d()?;
+        Ok((d > 0.0 && clearance_beats_distance(clearance_squared, d)).then_some(d * d))
     }
 }
 
 /// Brute-path twin of [`admit_clearance_squared`] over a `try_*` Option square.
 fn admit_clearance_from_try(
-    tried: Option<f64>,
+    tried: crate::error::Result<Option<f64>>,
     clearance_squared: f64,
-    honest_d: impl FnOnce() -> f64,
-) -> Option<f64> {
-    if let Some(sq) = tried {
+    honest_d: impl FnOnce() -> crate::error::Result<f64>,
+) -> crate::error::Result<Option<f64>> {
+    if let Some(sq) = tried? {
         admit_clearance_squared(sq, clearance_squared, honest_d)
     } else {
-        let d = honest_d();
-        (d > 0.0 && clearance_beats_distance(clearance_squared, d)).then_some(d * d)
+        let d = honest_d()?;
+        Ok((d > 0.0 && clearance_beats_distance(clearance_squared, d)).then_some(d * d))
     }
 }
 

@@ -16,7 +16,7 @@ pub(crate) fn max_point_to_target_squared_on_segment_culled<T: HausdorffTargetLi
     source: Segment,
     target: &T,
     cmax_sq: Option<f64>,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let ax = source.start.x;
     let ay = source.start.y;
     let dx = source.end.x - ax;
@@ -32,9 +32,9 @@ pub(crate) fn max_point_to_target_squared_on_segment_culled<T: HausdorffTargetLi
     // are not trustworthy.
     if target.segments_len() == 0
         && target.points_len() > 0
-        && let Some(answer) = max_point_to_point_target_squared_on_segment_envelope(source, target)
+        && let Some(answer) = max_point_to_point_target_squared_on_segment_envelope(source, target)?
     {
-        return answer;
+        return Ok(answer);
     }
 
     max_point_to_target_squared_on_segment_culled_legacy(source, target, cmax_sq)
@@ -44,7 +44,7 @@ fn max_point_to_target_squared_on_segment_culled_legacy<T: HausdorffTargetLike>(
     source: Segment,
     target: &T,
     cmax_sq: Option<f64>,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let ax = source.start.x;
     let ay = source.start.y;
     let dx = source.end.x - ax;
@@ -112,20 +112,23 @@ impl PointEnvelopeLine {
 fn max_point_to_point_target_squared_on_segment_envelope<T: HausdorffTargetLike>(
     source: Segment,
     target: &T,
-) -> Option<f64> {
+) -> crate::error::Result<Option<f64>> {
     // The envelope route is deliberately limited to normal squared space.
     // The framed continuous finisher owns the subnormal/overflow cases.
-    try_point_distance_squared(source.start, source.end)?;
+    if try_point_distance_squared(source.start, source.end).is_none() {
+        return Ok(None);
+    }
     let mut lines = Vec::with_capacity(target.points_len());
     for index in 0..target.points_len() {
-        lines.push(PointEnvelopeLine::from_target_point(
-            source,
-            target.point_xy_at(index),
-        )?);
+        let Some(line) = PointEnvelopeLine::from_target_point(source, target.point_xy_at(index))
+        else {
+            return Ok(None);
+        };
+        lines.push(line);
     }
     let (candidate_count, hull) = point_envelope_lower_hull(lines);
     if candidate_count == 0 {
-        return Some(f64::INFINITY);
+        return Ok(Some(f64::INFINITY));
     }
 
     stats::inc_point_envelope_candidates(candidate_count);
@@ -134,15 +137,17 @@ fn max_point_to_point_target_squared_on_segment_envelope<T: HausdorffTargetLike>
     // Endpoints are unconditional candidates. Retain the target query here:
     // it preserves the existing nearest-point reduction exactly at t=0 and 1.
     let mut best = target
-        .distance_squared(source.start)
-        .max(target.distance_squared(source.end));
+        .distance_squared(source.start)?
+        .max(target.distance_squared(source.end)?);
     stats::inc_point_envelope_samples(2);
     // Every out-of-range switch clamps to one of these endpoint-neighbour
     // parameters. Cache the full target query so a long inactive hull tail
     // cannot turn conservative clipping into a quadratic path.
     let mut clipped_samples = Vec::<(u64, f64)>::with_capacity(4);
     for pair in hull.array_windows::<2>() {
-        let t = pair[0].breakpoint_after(pair[1])?;
+        let Some(t) = pair[0].breakpoint_after(pair[1]) else {
+            return Ok(None);
+        };
         let interior = t.total_cmp(&0.0).is_gt() && t.total_cmp(&1.0).is_lt();
         // A division can round a true boundary switch just outside [0, 1].
         // Clamp first, then include the two adjacent representable parameters.
@@ -170,18 +175,18 @@ fn max_point_to_point_target_squared_on_segment_envelope<T: HausdorffTargetLike>
             {
                 *distance
             } else {
-                let distance = target.distance_squared(probe);
+                let distance = target.distance_squared(probe)?;
                 clipped_samples.push((t.to_bits(), distance));
                 distance
             };
             if !distance.is_finite() {
-                return None;
+                return Ok(None);
             }
             best = best.max(distance);
             stats::inc_point_envelope_samples(1);
         }
     }
-    Some(best)
+    Ok(Some(best))
 }
 
 /// Exact numerical slope equality for envelope grouping. Coefficients are
@@ -262,7 +267,7 @@ pub(crate) fn max_point_to_target_squared_on_segment_culled_legacy_for_test<
 >(
     source: Segment,
     target: &T,
-) -> f64 {
+) -> crate::error::Result<f64> {
     max_point_to_target_squared_on_segment_culled_legacy(source, target, None)
 }
 
@@ -473,7 +478,7 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_culled<T: Hausdorf
     params: &mut [f64],
     target: &T,
     cmax_sq: Option<f64>,
-) -> f64 {
+) -> crate::error::Result<f64> {
     evaluate_max_point_to_target_squared_on_segment_with_roots_culled(
         ax,
         ay,
@@ -497,13 +502,13 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_with_roots_culled<
     target: &T,
     interval: &mut impl EquidistantRootSink,
     cmax_sq: Option<f64>,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let param_count = compact_hausdorff_params(params);
     let params = &params[..param_count];
 
     let mut best = 0.0_f64;
     for &t in params {
-        best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target));
+        best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target)?);
     }
 
     let prune_margin = cmax_sq.and_then(|cmax_sq| {
@@ -545,14 +550,14 @@ pub(crate) fn evaluate_max_point_to_target_squared_on_segment_with_roots_culled<
                     left_feature,
                     right_feature,
                     interval,
-                );
+                )?;
             }
         }
         for &t in interval.roots() {
-            best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target));
+            best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target)?);
         }
     }
-    best
+    Ok(best)
 }
 
 pub(crate) fn sample_hausdorff_on_segment<T: HausdorffTargetLike>(
@@ -562,7 +567,7 @@ pub(crate) fn sample_hausdorff_on_segment<T: HausdorffTargetLike>(
     dy: f64,
     t: f64,
     target: &T,
-) -> f64 {
+) -> crate::error::Result<f64> {
     target.distance_squared(XY::new(ax + t * dx, ay + t * dy))
 }
 
@@ -627,10 +632,10 @@ pub(crate) fn hausdorff_feature_distance_squared_at(
     dy: f64,
     t: f64,
     feature: HausdorffFeature,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let point = XY::new(ax + t * dx, ay + t * dy);
-    match feature {
+    Ok(match feature {
         HausdorffFeature::Point(target) => point_distance_squared(point, target),
-        HausdorffFeature::Segment(segment) => point_segment_distance_squared(point, segment),
-    }
+        HausdorffFeature::Segment(segment) => point_segment_distance_squared(point, segment)?,
+    })
 }

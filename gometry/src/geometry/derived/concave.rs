@@ -12,13 +12,13 @@ pub(crate) fn native_concave_hull(
     points: &[Point],
     concavity: f64,
     length_threshold: f64,
-) -> Vec<usize> {
+) -> crate::error::Result<Vec<usize>> {
     if points.len() < 3 {
-        return monotone_chain_hull(points);
+        return Ok(monotone_chain_hull(points));
     }
     let triangulation = delaunay_triangulation(points);
     if triangulation.triangles.is_empty() {
-        return monotone_chain_hull(points);
+        return Ok(monotone_chain_hull(points));
     }
 
     let triangle_count = triangulation.triangles.len() / 3;
@@ -52,7 +52,7 @@ pub(crate) fn native_concave_hull(
             halfedge,
             length,
             concavity,
-        ) {
+        )? {
             continue;
         }
 
@@ -66,8 +66,8 @@ pub(crate) fn native_concave_hull(
         push_live_twin_boundary(points, &triangulation, &alive, right, &mut heap);
     }
 
-    extract_concave_boundary(points, &triangulation, &alive)
-        .unwrap_or_else(|| monotone_chain_hull(points))
+    Ok(extract_concave_boundary(points, &triangulation, &alive)
+        .unwrap_or_else(|| monotone_chain_hull(points)))
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -123,10 +123,10 @@ fn can_peel_boundary_triangle(
     halfedge: usize,
     length: f64,
     concavity: f64,
-) -> bool {
+) -> crate::error::Result<bool> {
     let opposite = triangulation.triangles[prev_halfedge(halfedge)];
     if boundary_degree[opposite] != 0 {
-        return false;
+        return Ok(false);
     }
     let max_length = if concavity == 0.0 {
         f64::INFINITY
@@ -136,11 +136,11 @@ fn can_peel_boundary_triangle(
     let a = points[triangulation.triangles[halfedge]];
     let b = points[triangulation.triangles[next_halfedge(halfedge)]];
     let c = points[opposite];
-    point_segment_distance(c, Segment {
+    Ok(point_segment_distance(c, Segment {
         start: a.into(),
         end: b.into(),
-    }) <= max_length
-        && edge_point_distance(a, c).min(edge_point_distance(c, b)) < max_length
+    })? <= max_length
+        && edge_point_distance(a, c).min(edge_point_distance(c, b)) < max_length)
 }
 
 fn edge_length(points: &[Point], triangulation: &Triangulation, halfedge: usize) -> f64 {

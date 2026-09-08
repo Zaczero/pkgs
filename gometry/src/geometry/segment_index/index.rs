@@ -86,9 +86,10 @@ impl SegmentIndex {
         point: Point,
         best: f64,
         keep: impl Fn(&Segment, f64) -> bool,
-    ) -> Option<(Segment, f64)> {
-        self.nearest_segment_ordinal_if(point, best, keep)
-            .map(|(_, segment, distance)| (segment, distance))
+    ) -> crate::error::Result<Option<(Segment, f64)>> {
+        Ok(self
+            .nearest_segment_ordinal_if(point, best, keep)?
+            .map(|(_, segment, distance)| (segment, distance)))
     }
 
     pub(crate) fn nearest_segment_ordinal_if(
@@ -96,7 +97,7 @@ impl SegmentIndex {
         point: Point,
         mut best: f64,
         keep: impl Fn(&Segment, f64) -> bool,
-    ) -> Option<(usize, Segment, f64)> {
+    ) -> crate::error::Result<Option<(usize, Segment, f64)>> {
         let query = [point.x, point.y];
         let mut witness = None;
         let mut stack: Vec<&RTreeNode<SegmentEntry>> = self.tree.root().children().iter().collect();
@@ -111,19 +112,21 @@ impl SegmentIndex {
                 RTreeNode::Leaf(entry) => {
                     let lower_bound = entry.envelope.distance_2(&query);
                     if lower_bound < best || (witness.is_some() && lower_bound <= best) {
-                        let distance = point_segment_distance_squared(point, entry.segment);
+                        let distance = point_segment_distance_squared(point, entry.segment)?;
                         let replace = if distance < best {
                             true
                         } else if distance.total_cmp(&best).is_eq() {
-                            witness.as_ref().is_some_and(|(ordinal, incumbent, _)| {
-                                match point_segment_distance_key(point.xy(), entry.segment)
-                                    .cmp(&point_segment_distance_key(point.xy(), *incumbent))
+                            if let Some((ordinal, incumbent, _)) = witness.as_ref() {
+                                match point_segment_distance_key(point.xy(), entry.segment)?
+                                    .cmp(&point_segment_distance_key(point.xy(), *incumbent)?)?
                                 {
                                     Ordering::Less => true,
                                     Ordering::Equal => entry.ordinal < *ordinal,
                                     Ordering::Greater => false,
                                 }
-                            })
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         };
@@ -135,7 +138,7 @@ impl SegmentIndex {
                 },
             }
         }
-        witness
+        Ok(witness)
     }
 
     /// Indexed entries whose envelope intersects `query`'s — the noding /

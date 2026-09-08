@@ -235,7 +235,7 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     if left {
         walk.reverse();
     }
-    let Some(plan) = WalkPlan::new(&walk, source.closed, distance.abs(), rule, step_angle) else {
+    let Some(plan) = WalkPlan::new(&walk, source.closed, distance.abs(), rule, step_angle)? else {
         return Ok(None);
     };
     let Some(columns) = materialize_walk(&plan, step_angle, true, budget, false)? else {

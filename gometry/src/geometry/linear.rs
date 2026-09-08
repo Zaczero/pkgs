@@ -100,7 +100,7 @@ impl Shape {
         let mut pieces = Vec::new();
         match self {
             Self::LineString(line) => {
-                for part in split_line_by_points(line, splitters.as_slice(), tolerance) {
+                for part in split_line_by_points(line, splitters.as_slice(), tolerance)? {
                     pieces.push(Self::LineString(LineSeq::from_proven(
                         CoordSeq::try_from_points(&part)?,
                     )));
@@ -108,7 +108,7 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 for line in lines.iter() {
-                    for part in split_line_by_points(line, splitters.as_slice(), tolerance) {
+                    for part in split_line_by_points(line, splitters.as_slice(), tolerance)? {
                         pieces.push(Self::LineString(LineSeq::from_proven(
                             CoordSeq::try_from_points(&part)?,
                         )));
@@ -613,16 +613,16 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
     line: &C,
     points: &[Point],
     tolerance: f64,
-) -> Vec<Vec<Point>> {
+) -> crate::error::Result<Vec<Vec<Point>>> {
     let coords: Vec<Point> = line.iter_coords().collect();
     if coords.len() < 2 {
-        return vec![coords];
+        return Ok(vec![coords]);
     }
     let Some(first_live) = coords
         .array_windows::<2>()
         .position(|pair| point_distance(pair[0], pair[1]) > 0.0)
     else {
-        return vec![coords];
+        return Ok(vec![coords]);
     };
     let last_live = coords
         .array_windows::<2>()
@@ -631,37 +631,42 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
 
     let mut cuts = points
         .iter()
-        .filter_map(|point| line_point_offset(&coords, *point, tolerance))
-        .filter(|(index, projection)| {
-            !(*index == first_live && projection.is_start()
-                || *index == last_live && projection.is_end())
-        })
-        .collect::<Vec<_>>();
-    cuts.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| left.1.cmp_along(&right.1))
+        .filter_map(|point| line_point_offset(&coords, *point, tolerance).transpose())
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    cuts.retain(|(index, projection)| {
+        !(*index == first_live && projection.is_start()
+            || *index == last_live && projection.is_end())
     });
-    cuts.dedup_by(|left, right| {
-        if left.0 != right.0 {
-            return false;
+    crate::geometry::try_sort_by(&mut cuts, |left, right| {
+        Ok(left.0.cmp(&right.0).then(left.1.cmp_along(&right.1)?))
+    })?;
+    let mut keep = Vec::new();
+    crate::try_reserve_vec(&mut keep, cuts.len())?;
+    for cut in cuts {
+        if let Some(previous) = keep.last()
+            && previous.0 == cut.0
+        {
+            if previous.1.cmp_along(&cut.1)?.is_eq() {
+                continue;
+            }
+            if tolerance != 0.0 {
+                let start = coords[cut.0];
+                let end = coords[cut.0 + 1];
+                if point_distance(
+                    previous.1.interpolate_point(start, end)?,
+                    cut.1.interpolate_point(start, end)?,
+                ) <= tolerance
+                {
+                    continue;
+                }
+            }
         }
-        if left.1.cmp_along(&right.1).is_eq() {
-            return true;
-        }
-        if tolerance == 0.0 {
-            return false;
-        }
-        let start = coords[left.0];
-        let end = coords[left.0 + 1];
-        point_distance(
-            left.1.interpolate_point(start, end),
-            right.1.interpolate_point(start, end),
-        ) <= tolerance
-    });
+        keep.push(cut);
+    }
+    let cuts = keep;
 
     if cuts.is_empty() {
-        return vec![coords];
+        return Ok(vec![coords]);
     }
 
     let mut pieces = Vec::with_capacity(cuts.len() + 1);
@@ -673,7 +678,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
             .is_some_and(|(cut_index, _)| *cut_index == segment_index)
         {
             let (_, projection) = cuts.next().expect("peeked cut exists");
-            let point = projection.interpolate_point(pair[0], pair[1]);
+            let point = projection.interpolate_point(pair[0], pair[1])?;
             push_distinct_point(&mut piece, point);
             if piece.len() >= 2 {
                 pieces.push(std::mem::replace(&mut piece, vec![point]));
@@ -684,7 +689,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
     if piece.len() >= 2 {
         pieces.push(piece);
     }
-    pieces
+    Ok(pieces)
 }
 
 /// Segment-local position at which `point` lies on `line` within `tolerance`
@@ -693,7 +698,7 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
     line: &C,
     point: Point,
     tolerance: f64,
-) -> Option<(usize, SegmentProjection)> {
+) -> crate::error::Result<Option<(usize, SegmentProjection)>> {
     let mut best = None;
     let mut best_distance = f64::INFINITY;
     for (segment_index, [start, end]) in line.segment_pairs().enumerate() {
@@ -705,15 +710,15 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
             start: start.xy(),
             end: end.xy(),
         };
-        let projection = segment_projection(point, segment);
-        let projected = projection.interpolate_point(start, end);
+        let projection = segment_projection(point, segment)?;
+        let projected = projection.interpolate_point(start, end)?;
         let distance = point_distance(point, projected);
         if distance <= tolerance && distance < best_distance {
             best_distance = distance;
             best = Some((segment_index, projection));
         }
     }
-    best
+    Ok(best)
 }
 
 /// Append `point` unless it duplicates the current last vertex.

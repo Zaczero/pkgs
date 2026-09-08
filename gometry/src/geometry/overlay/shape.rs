@@ -209,7 +209,7 @@ fn shared_paths_from_graph(graph: &TopologyGraph) -> Result<(Vec<CoordSeq>, Vec<
         let mut right_mask = 0_u8;
         for &source_index in &edge.sources {
             let source = &graph.source_edges[source_index as usize];
-            let direction = source_direction(edge.segment, source.segment);
+            let direction = source_direction(edge.segment, source.segment)?;
             match source.source_row {
                 0 => {
                     left_direction.get_or_insert(direction);
@@ -268,10 +268,10 @@ fn shared_paths_from_graph(graph: &TopologyGraph) -> Result<(Vec<CoordSeq>, Vec<
     ))
 }
 
-fn source_direction(piece: Segment, source: Segment) -> bool {
-    let start = segment_projection(piece.start, source);
-    let end = segment_projection(piece.end, source);
-    end.cmp_along(&start).is_ge()
+fn source_direction(piece: Segment, source: Segment) -> Result<bool> {
+    let start = segment_projection(piece.start, source)?;
+    let end = segment_projection(piece.end, source)?;
+    Ok(end.cmp_along(&start)?.is_ge())
 }
 
 fn orient_shared_paths(

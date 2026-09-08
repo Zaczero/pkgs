@@ -47,7 +47,7 @@ pub(crate) fn rdp_keep(
         if end - start < 2 {
             continue;
         }
-        if let Some(farthest) = rdp_split(xs, ys, start, end, tolerance, tolerance_squared) {
+        if let Some(farthest) = rdp_split(xs, ys, start, end, tolerance, tolerance_squared)? {
             keep[farthest] = true;
             kept += 1;
             crate::try_push_vec(stack, (start, farthest))?;
@@ -77,7 +77,7 @@ pub(crate) fn rdp_split(
     end: usize,
     tolerance: f64,
     tolerance_squared: f64,
-) -> Option<usize> {
+) -> Result<Option<usize>> {
     let (ax, ay) = (xs[start], ys[start]);
     let (bx, by) = (xs[end], ys[end]);
     let (dx, dy) = (bx - ax, by - ay);
@@ -85,19 +85,20 @@ pub(crate) fn rdp_split(
     let threshold = tolerance_squared * chord_squared;
     let mut best = 0.0_f64;
     let mut farthest = start;
-    let exact_scan = |best: &mut f64, farthest: &mut usize| {
+    let exact_scan = |best: &mut f64, farthest: &mut usize| -> Result<()> {
         let chord = Segment {
             start: XY::new(ax, ay),
             end: XY::new(bx, by),
         };
         *best = f64::NEG_INFINITY;
         for index in start + 1..end {
-            let deviation = point_segment_distance_squared(XY::new(xs[index], ys[index]), chord);
+            let deviation = point_segment_distance_squared(XY::new(xs[index], ys[index]), chord)?;
             if deviation > *best {
                 *best = deviation;
                 *farthest = index;
             }
         }
+        Ok(())
     };
     // When tolerance² underflows/overflows or the chord collapses, recover
     // with unsquared distances against the raw (positive) tolerance. Once
@@ -130,15 +131,15 @@ pub(crate) fn rdp_split(
                 if point_on_segment(point, chord.start, chord.end) {
                     continue;
                 }
-                let d = point_segment_distance(point, chord);
+                let d = point_segment_distance(point, chord)?;
                 if split.is_none() || d > best_d {
                     split = Some(index);
                     best_d = d;
                 }
             }
-            return split;
+            return Ok(split);
         } else {
-            return None;
+            return Ok(None);
         };
         let chord = Segment {
             start: XY::new(ax, ay),
@@ -146,13 +147,13 @@ pub(crate) fn rdp_split(
         };
         let mut best_d = f64::NEG_INFINITY;
         for index in start + 1..end {
-            let d = point_segment_distance(XY::new(xs[index], ys[index]), chord);
+            let d = point_segment_distance(XY::new(xs[index], ys[index]), chord)?;
             if d > best_d {
                 best_d = d;
                 farthest = index;
             }
         }
-        return (best_d > tol).then_some(farthest);
+        return Ok((best_d > tol).then_some(farthest));
     }
     let mut index = start + 1;
     if end - index >= REDUCE_LANES {
@@ -211,10 +212,10 @@ pub(crate) fn rdp_split(
         }
     }
     if !best.is_finite() {
-        exact_scan(&mut best, &mut farthest);
-        return (best > tolerance_squared).then_some(farthest);
+        exact_scan(&mut best, &mut farthest)?;
+        return Ok((best > tolerance_squared).then_some(farthest));
     }
-    (best > threshold).then_some(farthest)
+    Ok((best > threshold).then_some(farthest))
 }
 
 /// Clean strictly-turning vertex cycle of a ring: closing duplicate,
@@ -273,7 +274,7 @@ pub(crate) fn raw_offset_loop(
     }
     let quadrant_segments = quadrant_segments.get();
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments);
-    let Some(plan) = WalkPlan::new(strict, true, distance, rule, step_angle) else {
+    let Some(plan) = WalkPlan::new(strict, true, distance, rule, step_angle)? else {
         return Ok(None);
     };
     // Capacity: two offset points per edge, up to one reflex insert per
@@ -832,8 +833,8 @@ impl Shape {
             let deviation = point_segment_distance(vertex, Segment {
                 start: prev,
                 end: next,
-            });
-            (deviation <= tolerance).then_some(deviation)
+            })?;
+            Ok((deviation <= tolerance).then_some(deviation))
         })
     }
 
@@ -841,7 +842,10 @@ impl Shape {
     /// importance criterion (chord deviation for Douglas-Peucker, triangle
     /// area for Visvalingam-Whyatt): the least important removable vertex
     /// the topology guard accepts drops first.
-    fn simplify_guarded_with(&self, candidate: impl Fn(XY, XY, XY) -> Option<f64>) -> Result<Self> {
+    fn simplify_guarded_with(
+        &self,
+        candidate: impl Fn(XY, XY, XY) -> Result<Option<f64>>,
+    ) -> Result<Self> {
         let mut segments = Vec::new();
         self.try_for_each_segment_chain(|chain| {
             for segment in line_segments(chain) {
@@ -910,7 +914,7 @@ impl Shape {
                     let area_tolerance = vw_area_tolerance(tolerance);
                     self.simplify_guarded_with(|prev, vertex, next| {
                         let area = triangle_area(prev, vertex, next);
-                        (area < area_tolerance).then_some(area)
+                        Ok((area < area_tolerance).then_some(area))
                     })
                 }
             },

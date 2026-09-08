@@ -28,29 +28,32 @@ pub(super) fn refine_facet_nearest(
     facet: Facet,
     probe: Point,
     best: &mut Option<NearestCandidate>,
-) {
+) -> crate::error::Result<()> {
     for index in 0..facet.segment_count as usize {
         let (start, end) = linework.vertex_pair_full(facet, index);
         let segment = Segment {
             start: start.xy(),
             end: end.xy(),
         };
-        let selection = point_segment_selection(probe.xy(), segment);
-        if best.as_ref().is_none_or(|candidate| {
-            selection
-                .cmp(probe.xy(), segment, &candidate.distance_key)
-                .is_lt()
-        }) {
-            let projection = selection.projection(probe.xy(), segment);
-            let target = projection.interpolate_point(start, end);
+        let selection = point_segment_selection(probe.xy(), segment)?;
+        let closer = match best.as_ref() {
+            None => true,
+            Some(candidate) => selection
+                .cmp(probe.xy(), segment, &candidate.distance_key)?
+                .is_lt(),
+        };
+        if closer {
+            let projection = selection.projection(probe.xy(), segment)?;
+            let target = projection.interpolate_point(start, end)?;
             *best = Some(NearestCandidate {
                 probe,
                 target,
                 distance_squared: selection.distance_squared,
-                distance_key: selection.distance_key(probe.xy(), segment),
+                distance_key: selection.distance_key(probe.xy(), segment)?,
             });
         }
     }
+    Ok(())
 }
 
 /// Flat binary AABB tree over a [`PreparedLinework`]'s facets,
@@ -144,12 +147,13 @@ impl FacetBvh {
         linework: &PreparedLinework,
         probes: impl Iterator<Item = (f64, f64)>,
         mut best: f64,
-    ) -> f64 {
+    ) -> crate::error::Result<f64> {
         let mut stack: Vec<u32> = Vec::new();
         for (x, y) in probes {
-            best = self.min_point_distance_with_stack::<SQUARED>(linework, x, y, &mut stack, best);
+            best =
+                self.min_point_distance_with_stack::<SQUARED>(linework, x, y, &mut stack, best)?;
         }
-        best
+        Ok(best)
     }
 
     /// One probe's branch-and-bound descent with witness segment index.
@@ -160,7 +164,7 @@ impl FacetBvh {
         y: f64,
         stack: &mut Vec<u32>,
         mut best: f64,
-    ) -> (f64, u32) {
+    ) -> crate::error::Result<(f64, u32)> {
         let probe = point_aabb(x, y);
         let bound = |aabb: [f64; 4]| {
             if SQUARED {
@@ -180,7 +184,7 @@ impl FacetBvh {
                 BvhNode::Leaf(facet_index) => {
                     let facet = linework.facets[facet_index];
                     let (candidate, witness_index) =
-                        linework.facet_min_with_witness::<SQUARED>(facet, x, y);
+                        linework.facet_min_with_witness::<SQUARED>(facet, x, y)?;
                     if candidate < best {
                         best = candidate;
                         witness = witness_index;
@@ -191,7 +195,7 @@ impl FacetBvh {
                 },
             }
         }
-        (best, witness)
+        Ok((best, witness))
     }
 
     /// Batch BVH point queries with per-probe witness segment indices.
@@ -202,7 +206,7 @@ impl FacetBvh {
         out_dist: &mut [f64],
         out_witness: &mut [u32],
         stack: &mut Vec<u32>,
-    ) {
+    ) -> crate::error::Result<()> {
         debug_assert_eq!(probes.len(), out_dist.len());
         debug_assert_eq!(probes.len(), out_witness.len());
         for (index, &(x, y)) in probes.iter().enumerate() {
@@ -212,10 +216,11 @@ impl FacetBvh {
                 y,
                 stack,
                 f64::INFINITY,
-            );
+            )?;
             out_dist[index] = distance;
             out_witness[index] = witness;
         }
+        Ok(())
     }
 
     /// One probe's branch-and-bound descent over a caller-provided (reused)
@@ -230,7 +235,7 @@ impl FacetBvh {
         y: f64,
         stack: &mut Vec<u32>,
         mut best: f64,
-    ) -> f64 {
+    ) -> crate::error::Result<f64> {
         let probe = point_aabb(x, y);
         let bound = |aabb: [f64; 4]| {
             if SQUARED {
@@ -249,9 +254,9 @@ impl FacetBvh {
                 BvhNode::Leaf(facet_index) => {
                     let facet = linework.facets[facet_index];
                     let candidate = if SQUARED {
-                        linework.facet_point_distance_squared(facet, x, y)
+                        linework.facet_point_distance_squared(facet, x, y)?
                     } else {
-                        linework.facet_point_distance(facet, Point::new_raw_xy(x, y))
+                        linework.facet_point_distance(facet, Point::new_raw_xy(x, y))?
                     };
                     best = best.min(candidate);
                 },
@@ -260,7 +265,7 @@ impl FacetBvh {
                 },
             }
         }
-        best
+        Ok(best)
     }
 
     /// Whether any probe vertex lies within `limit` (squared, inclusive) of
@@ -275,9 +280,14 @@ impl FacetBvh {
         mut probes: impl Iterator<Item = (f64, f64)>,
         limit: f64,
         simd: bool,
-    ) -> bool {
+    ) -> crate::error::Result<bool> {
         let mut stack: Vec<u32> = Vec::new();
-        probes.any(|(x, y)| self.point_within_with_stack(linework, x, y, limit, simd, &mut stack))
+        for (x, y) in probes {
+            if self.point_within_with_stack(linework, x, y, limit, simd, &mut stack)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// One probe's within-limit descent over a caller-provided (reused) stack
@@ -292,7 +302,7 @@ impl FacetBvh {
         limit: f64,
         simd: bool,
         stack: &mut Vec<u32>,
-    ) -> bool {
+    ) -> crate::error::Result<bool> {
         let probe = point_aabb(x, y);
         stack.clear();
         stack.push(0);
@@ -304,24 +314,26 @@ impl FacetBvh {
             // Upper-bound early-TRUE: every point of the node's box
             // (hence every segment vertex beneath it) is within limit.
             if aabb_max_distance_squared(aabb, probe) <= limit {
-                return true;
+                return Ok(true);
             }
             match BvhCode::new(self.codes[index as usize]).decode() {
                 BvhNode::Leaf(facet_index) => {
                     let facet = linework.facets[facet_index];
                     let candidate = if simd {
-                        linework.facet_point_distance_squared(facet, x, y)
+                        linework.facet_point_distance_squared(facet, x, y)?
                     } else {
                         let point = Point::new_raw_xy(x, y);
-                        (0..facet.segment_count as usize).fold(f64::INFINITY, |best, i| {
-                            best.min(point_segment_distance_squared(
+                        let mut best = f64::INFINITY;
+                        for i in 0..facet.segment_count as usize {
+                            best = best.min(point_segment_distance_squared(
                                 point,
                                 linework.segment(facet, i),
-                            ))
-                        })
+                            )?);
+                        }
+                        best
                     };
                     if candidate <= limit {
-                        return true;
+                        return Ok(true);
                     }
                 },
                 BvhNode::Internal(first_child) => {
@@ -331,7 +343,7 @@ impl FacetBvh {
                 },
             }
         }
-        false
+        Ok(false)
     }
 
     /// Visit every box-overlapping segment pair between the two trees'
@@ -544,7 +556,7 @@ impl FacetBvh {
         linework: &PreparedLinework,
         probes: impl Iterator<Item = Point>,
         mut best: Option<NearestCandidate>,
-    ) -> Option<NearestCandidate> {
+    ) -> crate::error::Result<Option<NearestCandidate>> {
         let mut stack: Vec<u32> = Vec::new();
         for probe in probes {
             let probe_aabb = point_aabb(probe.x, probe.y);
@@ -561,8 +573,9 @@ impl FacetBvh {
                 match BvhCode::new(self.codes[index as usize]).decode() {
                     BvhNode::Leaf(facet_index) => {
                         let facet = linework.facets[facet_index];
-                        if linework.facet_point_distance_squared(facet, probe.x, probe.y) <= limit {
-                            refine_facet_nearest(linework, facet, probe, &mut best);
+                        if linework.facet_point_distance_squared(facet, probe.x, probe.y)? <= limit
+                        {
+                            refine_facet_nearest(linework, facet, probe, &mut best)?;
                         }
                     },
                     BvhNode::Internal(first_child) => {
@@ -571,7 +584,7 @@ impl FacetBvh {
                 }
             }
         }
-        best
+        Ok(best)
     }
 
     fn push_nearer_last(

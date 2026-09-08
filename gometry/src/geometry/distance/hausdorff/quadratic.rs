@@ -131,19 +131,19 @@ pub(crate) fn push_equidistant_roots_on_interval(
     left: HausdorffFeature,
     right: HausdorffFeature,
     roots: &mut impl EquidistantRootSink,
-) {
+) -> crate::error::Result<()> {
     let t_ref = f64::midpoint(ta, tb);
     let q_left = HausdorffQuadratic::from_feature(ax, ay, dx, dy, left, t_ref);
     let q_right = HausdorffQuadratic::from_feature(ax, ay, dx, dy, right, t_ref);
     if !q_left.is_finite() || !q_right.is_finite() {
-        push_equidistant_root_bisect(ax, ay, dx, dy, ta, tb, left, right, roots);
-        return;
+        return push_equidistant_root_bisect(ax, ay, dx, dy, ta, tb, left, right, roots);
     }
     let before = roots.roots().len();
     push_equidistant_roots_quadratic(q_left, q_right, ta, tb, roots);
     if roots.roots().len() == before {
-        push_equidistant_root_bisect(ax, ay, dx, dy, ta, tb, left, right, roots);
+        push_equidistant_root_bisect(ax, ay, dx, dy, ta, tb, left, right, roots)?;
     }
+    Ok(())
 }
 
 pub(crate) fn push_equidistant_root_bisect(
@@ -156,34 +156,34 @@ pub(crate) fn push_equidistant_root_bisect(
     left: HausdorffFeature,
     right: HausdorffFeature,
     roots: &mut impl EquidistantRootSink,
-) {
-    let mut fa = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, ta, left)
-        - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, ta, right);
-    let fb = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, tb, left)
-        - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, tb, right);
+) -> crate::error::Result<()> {
+    let mut fa = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, ta, left)?
+        - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, ta, right)?;
+    let fb = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, tb, left)?
+        - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, tb, right)?;
     if !fa.is_finite() || !fb.is_finite() {
-        return;
+        return Ok(());
     }
     if fa == 0.0 {
         roots.push_root(ta);
-        return;
+        return Ok(());
     }
     if fb == 0.0 {
         roots.push_root(tb);
-        return;
+        return Ok(());
     }
     if fa.signum() == fb.signum() {
-        return;
+        return Ok(());
     }
     let mut lo = ta;
     let mut hi = tb;
     for _ in 0..64 {
         let mid = f64::midpoint(lo, hi);
-        let fm = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, mid, left)
-            - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, mid, right);
+        let fm = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, mid, left)?
+            - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, mid, right)?;
         if fm == 0.0 || hi - lo <= 1e-15 {
             roots.push_root(mid);
-            return;
+            return Ok(());
         }
         if fa.signum() == fm.signum() {
             lo = mid;
@@ -193,4 +193,5 @@ pub(crate) fn push_equidistant_root_bisect(
         }
     }
     roots.push_root(f64::midpoint(lo, hi));
+    Ok(())
 }

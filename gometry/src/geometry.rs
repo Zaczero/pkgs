@@ -263,6 +263,7 @@ pub(in crate::geometry) use segment_index::{
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 pub(crate) use segments::clip_segment;
+pub(in crate::geometry) use segments::try_sort_by;
 use segments::{
     CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SharedSpan, SquaredDistanceKey,
     interpolate_optional, interpolate_segment_point, nearest_points, orientation_xy,
@@ -811,7 +812,7 @@ impl Polygon {
 
     fn snap_to_reference(&self, reference: &SnapReference) -> Result<Self> {
         self.map_ring_seqs(|ring| {
-            CoordSeq::try_from_points(&snap_ring_to_reference(ring, reference))
+            CoordSeq::try_from_points(&snap_ring_to_reference(ring, reference)?)
         })
     }
 

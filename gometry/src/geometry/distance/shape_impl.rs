@@ -74,7 +74,7 @@ impl Shape {
         &self,
         self_parts: &DistanceParts,
         other_parts: &DistanceParts,
-    ) -> f64 {
+    ) -> Result<f64> {
         // Callers have already short-circuited intersecting operands to 0.
         // For disjoint operands the two vertex sweeps are COMPLETE: squared
         // segment-pair distance is convex over the parameter square; a
@@ -90,16 +90,16 @@ impl Shape {
         // Both spaces fold the same minima.
         if squared_space_safe(self_parts) && squared_space_safe(other_parts) {
             let mut best = f64::INFINITY;
-            best = min_parts_to_parts::<true>(self_parts, other_parts, best);
-            best = min_parts_to_parts::<true>(other_parts, self_parts, best);
+            best = min_parts_to_parts::<true>(self_parts, other_parts, best)?;
+            best = min_parts_to_parts::<true>(other_parts, self_parts, best)?;
             return finish_planar_squared_min(best, || {
                 let mut d = f64::INFINITY;
-                d = min_parts_to_parts::<false>(self_parts, other_parts, d);
+                d = min_parts_to_parts::<false>(self_parts, other_parts, d)?;
                 min_parts_to_parts::<false>(other_parts, self_parts, d)
             });
         }
         let mut best = f64::INFINITY;
-        best = min_parts_to_parts::<false>(self_parts, other_parts, best);
+        best = min_parts_to_parts::<false>(self_parts, other_parts, best)?;
         min_parts_to_parts::<false>(other_parts, self_parts, best)
     }
 
@@ -313,7 +313,7 @@ impl Shape {
         self_parts: &DistanceParts,
         other_parts: &DistanceParts,
         distance: f64,
-    ) -> bool {
+    ) -> Result<bool> {
         // Same disjointness guarantee as `distance_disjoint_with_parts`.
         // Boundary-inclusive. Underflow-safe via any_parts_within.
         let limit_sq = distance * distance;
@@ -321,8 +321,10 @@ impl Shape {
             && squared_space_safe(other_parts)
             && limit_sq.is_normal()
             && distance > 0.0;
-        any_parts_within(self_parts, other_parts, distance, limit_sq, simd)
-            || any_parts_within(other_parts, self_parts, distance, limit_sq, simd)
+        Ok(
+            any_parts_within(self_parts, other_parts, distance, limit_sq, simd)?
+                || any_parts_within(other_parts, self_parts, distance, limit_sq, simd)?,
+        )
     }
 
     /// The closest pair of points, one on each geometry; `None` only when an
@@ -393,7 +395,7 @@ impl Shape {
         // Hausdorff maximum is exactly the largest line-vertex distance to
         // that baseline. This keeps a reciprocal-scale bend in source metric
         // space instead of erasing its live minor ordinate in a similarity.
-        if let Some(distance) = hausdorff_shared_baseline(self, other) {
+        if let Some(distance) = hausdorff_shared_baseline(self, other)? {
             return Ok(distance);
         }
         // Every public shape kind reaches this one exact translation
@@ -408,12 +410,12 @@ impl Shape {
         // unrelated squared witness there.  It is exact in source distance
         // space and therefore cannot be pre-empted by that witness.
         if let (Some(left), Some(right)) = (linework_as_segment(self), linework_as_segment(other)) {
-            return Ok(hausdorff_between_segments(left, right));
+            return Ok(hausdorff_between_segments(left, right)?);
         }
-        if let Some(distance) = hausdorff_segment_graph(self, other) {
+        if let Some(distance) = hausdorff_segment_graph(self, other)? {
             return Ok(distance);
         }
-        if let Some(distance) = hausdorff_segment_graph(other, self) {
+        if let Some(distance) = hausdorff_segment_graph(other, self)? {
             return Ok(distance);
         }
         // The power-of-two similarity is an exact coordinate change for
@@ -522,7 +524,7 @@ fn hausdorff_continuous_framed(left: &Shape, right: &Shape) -> Result<f64> {
     if let (Some(left_segment), Some(right_segment)) =
         (linework_as_segment(left), linework_as_segment(right))
     {
-        return Ok(hausdorff_between_segments(left_segment, right_segment));
+        return Ok(hausdorff_between_segments(left_segment, right_segment)?);
     }
     // Likewise, the maximum nearest-endpoint distance of a segment whose two
     // endpoints are the target is its true midpoint radius. This is a closed
@@ -592,41 +594,52 @@ fn robust_continuous_hausdorff(left: &Shape, right: &Shape) -> Result<f64> {
 
 pub(super) fn robust_directed_hausdorff(source: &Shape, target: &Shape) -> Result<f64> {
     let target = HausdorffTarget::build(target)?;
-    let distance = |point: XY| {
-        target
-            .features
-            .iter()
-            .map(|feature| match *feature {
+    let distance = |point: XY| -> Result<f64> {
+        let mut best = f64::INFINITY;
+        for feature in &target.features {
+            let candidate = match *feature {
                 HausdorffFeature::Point(other) => point_distance(point, other),
-                HausdorffFeature::Segment(segment) => robust_point_segment_distance(point, segment),
-            })
-            .fold(f64::INFINITY, f64::min)
+                HausdorffFeature::Segment(segment) => {
+                    robust_point_segment_distance(point, segment)?
+                },
+            };
+            best = best.min(candidate);
+        }
+        Ok(best)
     };
     let mut best = 0.0_f64;
-    source.for_each_point(|point| best = best.max(distance(point.xy())));
-    source.for_each_segment(|segment| {
-        let mut params = robust_hausdorff_segment_params(segment, &target.features);
+    source.try_for_each_point(|point| {
+        best = best.max(distance(point.xy())?);
+        Ok::<_, crate::error::Error>(())
+    })?;
+    source.try_for_each_vertex_pair(|start, end| {
+        let segment = Segment {
+            start: start.xy(),
+            end: end.xy(),
+        };
+        let mut params = robust_hausdorff_segment_params(segment, &target.features)?;
         let count = compact_hausdorff_params(&mut params);
         for &t in &params[..count] {
-            best = best.max(distance(robust_segment_point(segment, t)));
+            best = best.max(distance(robust_segment_point(segment, t))?);
         }
-    });
+        Ok(())
+    })?;
     Ok(best)
 }
 
-pub(super) fn robust_point_segment_distance(point: XY, segment: Segment) -> f64 {
-    let projection = segment_projection(point, segment);
+pub(super) fn robust_point_segment_distance(point: XY, segment: Segment) -> Result<f64> {
+    let projection = segment_projection(point, segment)?;
     if projection.is_start() {
-        return point_distance(point, segment.start);
+        return Ok(point_distance(point, segment.start));
     }
     if projection.is_end() {
-        return point_distance(point, segment.end);
+        return Ok(point_distance(point, segment.end));
     }
     if segment.start.y.to_bits() == segment.end.y.to_bits() {
-        return (point.y - segment.start.y).abs();
+        return Ok((point.y - segment.start.y).abs());
     }
     if segment.start.x.to_bits() == segment.end.x.to_bits() {
-        return (point.x - segment.start.x).abs();
+        return Ok((point.x - segment.start.x).abs());
     }
     let max_delta = (segment.end.x - segment.start.x)
         .abs()
@@ -635,7 +648,7 @@ pub(super) fn robust_point_segment_distance(point: XY, segment: Segment) -> f64 
         .max((point.y - segment.start.y).abs());
     let scale = axis_pow2_scale(max_delta);
     if scale == 0.0 {
-        return 0.0;
+        return Ok(0.0);
     }
     let local_end = XY::new(
         scaled_residual(segment.end.x, segment.start.x, scale),
@@ -666,12 +679,18 @@ pub(super) fn robust_point_segment_distance(point: XY, segment: Segment) -> f64 
         )
         .abs();
         let local_distance = local_area / local_end.x.hypot(local_end.y);
-        return scale_by_power_of_two(local_distance, -power_of_two_exponent(scale));
+        return Ok(scale_by_power_of_two(
+            local_distance,
+            -power_of_two_exponent(scale),
+        ));
     }
     point_segment_distance(point, segment)
 }
 
-fn robust_hausdorff_segment_params(source: Segment, features: &[HausdorffFeature]) -> Vec<f64> {
+fn robust_hausdorff_segment_params(
+    source: Segment,
+    features: &[HausdorffFeature],
+) -> Result<Vec<f64>> {
     let mut params = vec![0.0, 1.0];
     for &feature in features {
         let (source, feature) = normalized_source_and_features(source, feature, feature);
@@ -713,13 +732,13 @@ fn robust_hausdorff_segment_params(source: Segment, features: &[HausdorffFeature
                     normalized_left,
                     normalized_right,
                     &mut roots,
-                );
+                )?;
             }
         }
     }
     params.truncate(base_count);
     params.extend(roots);
-    params
+    Ok(params)
 }
 
 fn normalized_source_and_features(
@@ -787,28 +806,34 @@ fn robust_segment_point(segment: Segment, t: f64) -> XY {
     )
 }
 
-fn hausdorff_between_segments(left: Segment, right: Segment) -> f64 {
-    point_segment_distance(left.start, right)
-        .max(point_segment_distance(left.end, right))
-        .max(point_segment_distance(right.start, left))
-        .max(point_segment_distance(right.end, left))
+fn hausdorff_between_segments(left: Segment, right: Segment) -> Result<f64> {
+    Ok(point_segment_distance(left.start, right)?
+        .max(point_segment_distance(left.end, right)?)
+        .max(point_segment_distance(right.start, left)?)
+        .max(point_segment_distance(right.end, left)?))
 }
 
 /// Exact Hausdorff reduction for a line that is a single-valued graph over a
 /// complete baseline segment. Every baseline point has a perpendicular graph
 /// witness, while distance to the baseline is convex on each graph edge, so
 /// the symmetric maximum occurs at a stored graph vertex.
-fn hausdorff_segment_graph(baseline: &Shape, graph: &Shape) -> Option<f64> {
-    let baseline = linework_as_segment(baseline)?;
+fn hausdorff_segment_graph(baseline: &Shape, graph: &Shape) -> Result<Option<f64>> {
+    let Some(baseline) = linework_as_segment(baseline) else {
+        return Ok(None);
+    };
     let Shape::LineString(graph) = graph else {
-        return None;
+        return Ok(None);
     };
     let mut projections = graph
         .iter()
-        .map(|point| segment_projection(point.xy(), baseline));
-    let first = projections.next()?;
+        .map(|point| segment_projection(point.xy(), baseline))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter();
+    let Some(first) = projections.next() else {
+        return Ok(None);
+    };
     if !first.is_start() {
-        return None;
+        return Ok(None);
     }
     let mut previous = first.fraction();
     let mut ended = false;
@@ -817,24 +842,23 @@ fn hausdorff_segment_graph(baseline: &Shape, graph: &Shape) -> Option<f64> {
         // declined must retain its exact ratio for ordering; the general
         // Hausdorff kernel is the simpler owner of that uncommon case.
         if projection.uses_exact_ratio() {
-            return None;
+            return Ok(None);
         }
         let fraction = projection.fraction();
         if fraction < previous {
-            return None;
+            return Ok(None);
         }
         previous = fraction;
         ended = projection.is_end();
     }
     if !ended {
-        return None;
+        return Ok(None);
     }
-    Some(
-        graph
-            .iter()
-            .map(|point| robust_point_segment_distance(point.xy(), baseline))
-            .fold(0.0_f64, f64::max),
-    )
+    let mut best = 0.0_f64;
+    for point in graph.iter() {
+        best = best.max(robust_point_segment_distance(point.xy(), baseline)?);
+    }
+    Ok(Some(best))
 }
 
 /// A LineString whose every stored vertex lies on its endpoint segment.
@@ -1150,26 +1174,29 @@ fn hausdorff_axis_segment_parallel_points(left: &Shape, right: &Shape) -> Option
 /// the scalar projection from the line's shared first endpoint to its shared
 /// last endpoint is continuous and spans the complete baseline, placing every
 /// baseline point below a line point at no larger perpendicular distance.
-fn hausdorff_shared_baseline(left: &Shape, right: &Shape) -> Option<f64> {
+fn hausdorff_shared_baseline(left: &Shape, right: &Shape) -> Result<Option<f64>> {
     let (baseline, line) = match (single_line_segment(left), right) {
         (Some(baseline), Shape::LineString(line)) => (baseline, line),
         _ => match (single_line_segment(right), left) {
             (Some(baseline), Shape::LineString(line)) => (baseline, line),
-            _ => return None,
+            _ => return Ok(None),
         },
     };
     let first = line.nth_coord(0).xy();
-    let last = line.nth_coord(line.coord_count().checked_sub(1)?).xy();
+    let Some(last_index) = line.coord_count().checked_sub(1) else {
+        return Ok(None);
+    };
+    let last = line.nth_coord(last_index).xy();
     if !((same_point(first, baseline.start) && same_point(last, baseline.end))
         || (same_point(first, baseline.end) && same_point(last, baseline.start)))
     {
-        return None;
+        return Ok(None);
     }
-    Some(
-        line.iter()
-            .map(|point| point_segment_distance(point.xy(), baseline))
-            .fold(0.0_f64, f64::max),
-    )
+    let mut best = 0.0_f64;
+    for point in line.iter() {
+        best = best.max(point_segment_distance(point.xy(), baseline)?);
+    }
+    Ok(Some(best))
 }
 
 fn is_its_endpoint_pair(shape: &Shape, segment: Segment) -> bool {

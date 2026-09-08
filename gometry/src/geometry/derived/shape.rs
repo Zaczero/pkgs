@@ -140,7 +140,7 @@ impl Shape {
             return Ok(Self::empty_polygon());
         }
         canonicalize_concave_hull_points(&mut points);
-        let hull_indices = native_concave_hull(&points, concavity, length_threshold);
+        let hull_indices = native_concave_hull(&points, concavity, length_threshold)?;
         let hull: Vec<Point> = hull_indices
             .into_iter()
             .map(|index| points[index])

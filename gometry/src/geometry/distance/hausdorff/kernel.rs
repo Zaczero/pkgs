@@ -30,19 +30,23 @@ use crate::geometry::{
 };
 
 pub(crate) trait HausdorffTargetLike {
-    fn distance_squared(&self, point: XY) -> f64;
+    fn distance_squared(&self, point: XY) -> crate::error::Result<f64>;
     fn batch_probe(
         &self,
         probes: &[(f64, f64)],
         out: &mut [HausdorffProbeResult],
         stack: &mut Vec<u32>,
-    );
+    ) -> crate::error::Result<()>;
     fn features_slice(&self) -> &[HausdorffFeature];
     fn segments_len(&self) -> usize;
     fn segment_at(&self, index: usize) -> Segment;
     fn points_len(&self) -> usize;
     fn point_xy_at(&self, index: usize) -> XY;
-    fn max_distance_squared_on_segment_culled(&self, source: Segment, cmax_sq: f64) -> f64;
+    fn max_distance_squared_on_segment_culled(
+        &self,
+        source: Segment,
+        cmax_sq: f64,
+    ) -> crate::error::Result<f64>;
 }
 
 fn fold_isolated_point_probes(
@@ -70,7 +74,11 @@ fn fold_isolated_point_probes(
 }
 
 impl HausdorffTargetLike for SmallLineTarget {
-    fn max_distance_squared_on_segment_culled(&self, source: Segment, cmax_sq: f64) -> f64 {
+    fn max_distance_squared_on_segment_culled(
+        &self,
+        source: Segment,
+        cmax_sq: f64,
+    ) -> crate::error::Result<f64> {
         max_point_to_target_squared_on_segment_small_culled(source, self, Some(cmax_sq))
     }
 
@@ -79,7 +87,7 @@ impl HausdorffTargetLike for SmallLineTarget {
         probes: &[(f64, f64)],
         out: &mut [HausdorffProbeResult],
         _stack: &mut Vec<u32>,
-    ) {
+    ) -> crate::error::Result<()> {
         debug_assert_eq!(probes.len(), out.len());
         for (slot, &(x, y)) in std::iter::zip(out.iter_mut(), probes) {
             let mut best = f64::INFINITY;
@@ -91,7 +99,7 @@ impl HausdorffTargetLike for SmallLineTarget {
                 .take(self.n_segments as usize)
             {
                 let distance_squared =
-                    point_segment_distance_squared(Point::new_raw_xy(x, y), segment);
+                    point_segment_distance_squared(Point::new_raw_xy(x, y), segment)?;
                 if distance_squared < best {
                     best = distance_squared;
                     witness = index as u32;
@@ -102,9 +110,10 @@ impl HausdorffTargetLike for SmallLineTarget {
                 feature_id: witness,
             };
         }
+        Ok(())
     }
 
-    fn distance_squared(&self, point: XY) -> f64 {
+    fn distance_squared(&self, point: XY) -> crate::error::Result<f64> {
         small_line_target_distance_squared(self, point)
     }
 
@@ -131,7 +140,11 @@ impl HausdorffTargetLike for SmallLineTarget {
 }
 
 impl HausdorffTargetLike for HausdorffTarget {
-    fn max_distance_squared_on_segment_culled(&self, source: Segment, cmax_sq: f64) -> f64 {
+    fn max_distance_squared_on_segment_culled(
+        &self,
+        source: Segment,
+        cmax_sq: f64,
+    ) -> crate::error::Result<f64> {
         max_point_to_target_squared_on_segment_culled(source, self, Some(cmax_sq))
     }
 
@@ -140,14 +153,15 @@ impl HausdorffTargetLike for HausdorffTarget {
         probes: &[(f64, f64)],
         out: &mut [HausdorffProbeResult],
         stack: &mut Vec<u32>,
-    ) {
-        self.query.batch_probe(probes, out, stack);
+    ) -> crate::error::Result<()> {
+        self.query.batch_probe(probes, out, stack)?;
         if !self.points.is_empty() {
             fold_isolated_point_probes(self, probes, out);
         }
+        Ok(())
     }
 
-    fn distance_squared(&self, point: XY) -> f64 {
+    fn distance_squared(&self, point: XY) -> crate::error::Result<f64> {
         Self::distance_squared(self, point)
     }
 
@@ -272,10 +286,9 @@ pub(crate) fn directed_hausdorff_4v_bisect(
     debug_assert_eq!(xs.len(), 4);
     let mut best = 0.0_f64;
     for index in 0..4 {
-        best = best.max(small_line_target_distance_squared(
-            target,
-            XY::new(xs[index], ys[index]),
-        ));
+        best = best.max(
+            small_line_target_distance_squared(target, XY::new(xs[index], ys[index])).unwrap(),
+        );
     }
     for index in 1..4 {
         let ax = xs[index - 1];
@@ -283,7 +296,7 @@ pub(crate) fn directed_hausdorff_4v_bisect(
         let dx = xs[index] - ax;
         let dy = ys[index] - ay;
         if dx == 0.0 && dy == 0.0 {
-            best = best.max(small_line_target_distance_squared(target, XY::new(ax, ay)));
+            best = best.max(small_line_target_distance_squared(target, XY::new(ax, ay)).unwrap());
         } else {
             let mut params = SmallHausdorffParams::new();
             collect_hausdorff_segment_params_small(ax, ay, dx, dy, target, &mut params);
@@ -295,7 +308,8 @@ pub(crate) fn directed_hausdorff_4v_bisect(
                     dy,
                     params.as_mut_slice(),
                     target,
-                ),
+                )
+                .unwrap(),
             );
         }
     }
@@ -435,7 +449,11 @@ enum HausdorffTargetBorrowed {
 }
 
 impl HausdorffTargetLike for HausdorffTargetBorrowed {
-    fn max_distance_squared_on_segment_culled(&self, source: Segment, cmax_sq: f64) -> f64 {
+    fn max_distance_squared_on_segment_culled(
+        &self,
+        source: Segment,
+        cmax_sq: f64,
+    ) -> crate::error::Result<f64> {
         match self {
             Self::Small(target) => target.max_distance_squared_on_segment_culled(source, cmax_sq),
             Self::Indexed(target) => target.max_distance_squared_on_segment_culled(source, cmax_sq),
@@ -447,14 +465,14 @@ impl HausdorffTargetLike for HausdorffTargetBorrowed {
         probes: &[(f64, f64)],
         out: &mut [HausdorffProbeResult],
         stack: &mut Vec<u32>,
-    ) {
+    ) -> crate::error::Result<()> {
         match self {
             Self::Small(target) => target.batch_probe(probes, out, stack),
             Self::Indexed(target) => target.batch_probe(probes, out, stack),
         }
     }
 
-    fn distance_squared(&self, point: XY) -> f64 {
+    fn distance_squared(&self, point: XY) -> crate::error::Result<f64> {
         match self {
             Self::Small(target) => target.distance_squared(point),
             Self::Indexed(target) => target.distance_squared(point),

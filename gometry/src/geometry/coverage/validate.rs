@@ -370,7 +370,7 @@ pub(crate) fn segment_offends_row(
                 .index()?
                 .nearest_segment_if(point.point(), gap_width * gap_width, |_, distance| {
                     distance > 0.0
-                })
+                })?
                 .is_some())
         };
         if near(midpoint.into())? || near(segment.start)? || near(segment.end)? {

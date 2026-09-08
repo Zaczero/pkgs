@@ -54,7 +54,8 @@ fn point_segment_distance_divides_before_unscaling_tiny_area() {
     let actual = shape_impl::robust_point_segment_distance(XY::new(midpoint, offset_y), Segment {
         start: XY::new(0.0, 0.0),
         end: XY::new(end, end),
-    });
+    })
+    .unwrap();
     // `Fraction` from these STORED doubles gives
     // d² = (offset_y - midpoint)² / 2 exactly. Its correctly-rounded square
     // root is 0x1.6a09e667f3bcdp-719; dividing by rounded sqrt(2) is one ulp low.
@@ -123,6 +124,7 @@ fn continuous_hausdorff_finds_reciprocal_axis_gap_between_target_parts() {
                 start: XY::new(-length, 0.0),
                 end: XY::new(-half_gap, 0.0),
             },)
+            .unwrap()
             .to_bits(),
             half_gap.to_bits(),
         );
@@ -1027,7 +1029,7 @@ fn extreme_coord_line(segment_count: usize) -> Shape {
 fn brute_point_line_distance(point: Point, line: &Shape) -> f64 {
     let mut best = f64::INFINITY;
     line.for_each_segment(|segment| {
-        best = best.min(point_segment_distance_squared(point.xy(), segment));
+        best = best.min(point_segment_distance_squared(point.xy(), segment).unwrap());
     });
     best.sqrt()
 }

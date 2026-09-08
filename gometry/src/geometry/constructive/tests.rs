@@ -21,7 +21,7 @@ fn reflex_cross_retains_an_exact_endpoint_local_parameter() {
         start: XY::new(x, -1.0),
         end: XY::new(x, 1.0),
     };
-    let (point, t_in, t_out) = reflex_cross(incoming, outgoing).unwrap();
+    let (point, t_in, t_out) = reflex_cross(incoming, outgoing).unwrap().unwrap();
     assert_eq!(point, XY::new(x, 0.0));
     assert!(t_in.uses_exact_ratio());
     assert!(!t_in.is_start() && !t_in.is_end());

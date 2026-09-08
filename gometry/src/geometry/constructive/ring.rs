@@ -466,13 +466,15 @@ pub(crate) fn stable_snap_ordinate(value: f64, origin: f64, size: f64) -> f64 {
     if result.is_finite() { result } else { classic }
 }
 
-/// Chain-wide per-axis power-of-two frame for VW scoring, returning framed
-/// columns (when needed) and the area threshold in that frame.
-fn vw_frame_columns(
-    xs: &[f64],
-    ys: &[f64],
-    distance_tolerance: f64,
-) -> Result<(Option<Vec<f64>>, Option<Vec<f64>>, f64)> {
+/// Chain-wide per-axis power-of-two frame for VW scoring: optional framed
+/// columns and the area threshold in that frame.
+struct VwScoringFrame {
+    xs: Option<Vec<f64>>,
+    ys: Option<Vec<f64>>,
+    area_tolerance: f64,
+}
+
+fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> Result<VwScoringFrame> {
     let ox = xs[0];
     let oy = ys[0];
     let mut max_abs_x = ox.abs();
@@ -491,12 +493,20 @@ fn vw_frame_columns(
             || max_abs_y > 1e8
             || !world_area_tol.is_normal());
     if !use_frame {
-        return Ok((None, None, world_area_tol));
+        return Ok(VwScoringFrame {
+            xs: None,
+            ys: None,
+            area_tolerance: world_area_tol,
+        });
     }
     let Some(frame) =
         AxisFrame::from_origin_extents(Point::new_raw_xy(ox, oy), max_abs_x, max_abs_y)
     else {
-        return Ok((None, None, world_area_tol));
+        return Ok(VwScoringFrame {
+            xs: None,
+            ys: None,
+            area_tolerance: world_area_tol,
+        });
     };
     let mut fxs = Vec::new();
     let mut fys = Vec::new();
@@ -512,7 +522,11 @@ fn vw_frame_columns(
     let exponent = power_of_two_exponent(frame.scale_x()) + power_of_two_exponent(frame.scale_y());
     let framed_area =
         0.5 * distance_tolerance * scale_by_power_of_two(distance_tolerance, exponent);
-    Ok((Some(fxs), Some(fys), framed_area))
+    Ok(VwScoringFrame {
+        xs: Some(fxs),
+        ys: Some(fys),
+        area_tolerance: framed_area,
+    })
 }
 
 #[doc(hidden)]
@@ -531,10 +545,10 @@ pub(crate) fn vw_keep(
     if count < 3 {
         return Ok(None);
     }
-    let (framed_xs, framed_ys, area_tol) = vw_frame_columns(xs, ys, distance_tolerance)?;
-    let xs = framed_xs.as_deref().unwrap_or(xs);
-    let ys = framed_ys.as_deref().unwrap_or(ys);
-    let area_tolerance = area_tol;
+    let framed = vw_frame_columns(xs, ys, distance_tolerance)?;
+    let xs = framed.xs.as_deref().unwrap_or(xs);
+    let ys = framed.ys.as_deref().unwrap_or(ys);
+    let area_tolerance = framed.area_tolerance;
     let area = |a: usize, b: usize, c: usize| -> f64 {
         0.5 * ((xs[b] - xs[a]) * (ys[c] - ys[a]) - (ys[b] - ys[a]) * (xs[c] - xs[a])).abs()
     };
@@ -625,10 +639,11 @@ mod vw_frame_tests {
         // This calls the exact VW frame used by simplify. Its finite output
         // proves the residual is `x*s - origin*s`; `(x-origin)*s` overflows
         // before it can be scaled.
-        let (Some(fxs), Some(fys), _) = vw_frame_columns(&xs, &ys, 5e307).unwrap() else {
+        let framed = vw_frame_columns(&xs, &ys, 5e307).unwrap();
+        let (Some(fxs), Some(fys)) = (framed.xs.as_deref(), framed.ys.as_deref()) else {
             panic!("opposite-sign extreme coordinates require a VW frame");
         };
-        assert!(fxs.iter().chain(&fys).all(|value| value.is_finite()));
+        assert!(fxs.iter().chain(fys).all(|value| value.is_finite()));
         assert_eq!(fxs[0].to_bits(), 0.0_f64.to_bits());
         assert!(fxs[2] > fxs[1] && fxs[1] > fxs[0]);
     }
@@ -641,8 +656,8 @@ mod vw_frame_tests {
         let xs = [-1e308, 0.0, 1e308];
         let ys = [0.0, 1e307, 0.0];
         let run = || vw_frame_columns(&xs, &ys, 5e307);
-        let ((framed_x, framed_y, _), allocations) = allocation_count(|| run().unwrap());
-        assert!(framed_x.is_some() && framed_y.is_some());
+        let (framed, allocations) = allocation_count(|| run().unwrap());
+        assert!(framed.xs.is_some() && framed.ys.is_some());
         assert!(allocations > 0);
         for allowed in 0..allocations {
             let error = fail_allocations_after(allowed, run)

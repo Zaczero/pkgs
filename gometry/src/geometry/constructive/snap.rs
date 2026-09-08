@@ -117,9 +117,9 @@ impl SnapReference {
     /// segment but of neither endpoint, placed at its projection (XY from
     /// the reference, Z/M interpolated), with only references at an
     /// identical projected position deduplicated.
-    pub(crate) fn insertions(&self, start: Point, end: Point) -> Vec<Point> {
+    pub(crate) fn insertions(&self, start: Point, end: Point) -> crate::error::Result<Vec<Point>> {
         if same_point(start, end) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let segment = Segment {
             start: start.into(),
@@ -128,23 +128,24 @@ impl SnapReference {
         let tolerance = self.tolerance;
         let limit = self.limit;
         let mut candidates: Vec<(SegmentProjection, u32, Point)> = Vec::new();
-        let mut consider = |reference: XY, ordinal: u32| {
+        let mut consider = |reference: XY, ordinal: u32| -> crate::error::Result<()> {
             let ref_pt = Point::new_raw_xy(reference.x, reference.y);
             // Skip if within tolerance of either endpoint, or farther than
             // tolerance from the open segment (honest distance, not squared).
             if points_dwithin(reference, start, tolerance)
                 || points_dwithin(reference, end, tolerance)
-                || point_segment_distance(ref_pt, segment) > tolerance
+                || point_segment_distance(ref_pt, segment)? > tolerance
             {
-                return;
+                return Ok(());
             }
-            let projection = segment_projection(ref_pt, segment);
+            let projection = segment_projection(ref_pt, segment)?;
             if !projection.is_start() && !projection.is_end() {
-                let mut point = projection.interpolate_point(start, end);
+                let mut point = projection.interpolate_point(start, end)?;
                 point.x = reference.x;
                 point.y = reference.y;
                 candidates.push((projection, ordinal, point));
             }
+            Ok(())
         };
         match &self.tree {
             // Indexed + a finite limit: only vertices in the segment's
@@ -161,7 +162,7 @@ impl SnapReference {
                     consider(
                         XY::new(candidate.geom()[0], candidate.geom()[1]),
                         candidate.data,
-                    );
+                    )?;
                 }
             },
             Some(tree) => {
@@ -169,26 +170,28 @@ impl SnapReference {
                     consider(
                         XY::new(candidate.geom()[0], candidate.geom()[1]),
                         candidate.data,
-                    );
+                    )?;
                 }
             },
             // Brute: scan every reference vertex (small reference); `consider`
             // applies the exact tolerance/projection filter.
             None => {
                 for (ordinal, reference) in self.points.iter().enumerate() {
-                    consider(XY::new(reference.x, reference.y), ordinal as u32);
+                    consider(XY::new(reference.x, reference.y), ordinal as u32)?;
                 }
             },
         }
         // Fraction order with build-order ties: identical to the linear
         // scan's input-order stable sort.
-        candidates.sort_unstable_by(|a, b| a.0.cmp_along(&b.0).then(a.1.cmp(&b.1)));
+        crate::geometry::try_sort_by(&mut candidates, |a, b| {
+            Ok(a.0.cmp_along(&b.0)?.then(a.1.cmp(&b.1)))
+        })?;
         // Collapse only genuine duplicates — references at an identical
         // projected position. A fixed parametric epsilon would merge distinct
         // reference points (e.g. 0.5 and 0.5000000000005) even at tolerance 0.
         #[expect(clippy::float_cmp, reason = "exact projected-position identity")]
         candidates.dedup_by(|right, left| right.2.x == left.2.x && right.2.y == left.2.y);
-        candidates.into_iter().map(|(_, _, point)| point).collect()
+        Ok(candidates.into_iter().map(|(_, _, point)| point).collect())
     }
 }
 
@@ -205,42 +208,43 @@ pub(crate) fn snap_points_to_reference<C: Coordinates + ?Sized>(
 pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
     points: &C,
     reference: &SnapReference,
-) -> Vec<Point> {
+) -> crate::error::Result<Vec<Point>> {
     if points.coord_count() < 2 {
-        return snap_points_to_reference(points, reference);
+        return Ok(snap_points_to_reference(points, reference));
     }
 
-    let mut result = Vec::with_capacity(points.coord_count());
+    let mut result = Vec::new();
+    crate::try_reserve_vec(&mut result, points.coord_count())?;
     push_distinct_point(&mut result, reference.snap_point(points.nth_coord(0)));
 
     for [start, end] in points.segment_pairs() {
-        for point in reference.insertions(start, end) {
+        for point in reference.insertions(start, end)? {
             push_distinct_point(&mut result, point);
         }
         push_distinct_point(&mut result, reference.snap_point(end));
     }
     if result.len() == 1 {
-        return vec![
+        return Ok(vec![
             reference.snap_point(points.nth_coord(0)),
             reference.snap_point(points.nth_coord(points.coord_count() - 1)),
-        ];
+        ]);
     }
-    result
+    Ok(result)
 }
 
 pub(crate) fn snap_ring_to_reference<C: Coordinates + ?Sized>(
     points: &C,
     reference: &SnapReference,
-) -> Vec<Point> {
+) -> crate::error::Result<Vec<Point>> {
     let len = points.coord_count();
-    let mut result = snap_line_to_reference(points, reference);
+    let mut result = snap_line_to_reference(points, reference)?;
     if result.len() > 1 && len > 1 && same_point(points.nth_coord(0), points.nth_coord(len - 1)) {
         let first = result[0];
         if let Some(last) = result.last_mut() {
             *last = first;
         }
     }
-    result
+    Ok(result)
 }
 
 /// Consecutive-duplicate removal against the LAST KEPT vertex (the GEOS
@@ -775,13 +779,13 @@ impl Shape {
                 Self::MultiPoint(points.map_values(|point| engine.snap_point(point))?)
             },
             Self::LineString(points) => Self::LineString(LineSeq::try_new(
-                CoordSeq::try_from_points(&snap_line_to_reference(points, &engine))?,
+                CoordSeq::try_from_points(&snap_line_to_reference(points, &engine)?)?,
             )?),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
                     LineSeq::try_new(CoordSeq::try_from_points(&snap_line_to_reference(
                         line, &engine,
-                    ))?)
+                    )?)?)
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.snap_to_reference(&engine)?),

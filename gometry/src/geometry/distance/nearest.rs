@@ -1,4 +1,3 @@
-use crate::error::Result;
 use crate::geometry::distance::parts_covers_point;
 use crate::geometry::{
     BVH_MIN_INDEXED_SEGMENTS, DistanceParts, FacetBvh, NearestCandidate, Point, PointSetIndex,
@@ -10,7 +9,7 @@ pub(crate) fn nearest_probe_to_parts(
     target: &DistanceParts,
     best: Option<OrientedCandidate>,
     swapped: bool,
-) -> Result<Option<OrientedCandidate>> {
+) -> crate::error::Result<Option<OrientedCandidate>> {
     // The incoming best may belong to the OTHER orientation; keep its tag
     // unless this sweep improves on it.
     let incoming = best;
@@ -22,20 +21,19 @@ pub(crate) fn nearest_probe_to_parts(
     });
     let incoming_distance = best.as_ref().map(|b| b.distance_squared);
     best = match target.bvh() {
-        Some(bvh) => bvh.nearest_to_points(&target.linework, probe.probe_points(), best),
+        Some(bvh) => bvh.nearest_to_points(&target.linework, probe.probe_points(), best)?,
         None => target
             .linework
-            .nearest_to_points(probe.probe_points(), best),
+            .nearest_to_points(probe.probe_points(), best)?,
     };
     if !target.point_only.is_empty() {
-        if let Some(index) = target.point_index()? {
+        if let Some(index) = target.point_index() {
             // Indexed: each probe point's nearest target point in O(log points).
             for probe_point in probe.probe_points() {
                 if let Some((target_point, distance_squared)) = index.nearest(probe_point) {
                     let distance_key = point_pair_distance_key(probe_point.xy(), target_point.xy());
-                    if best
-                        .as_ref()
-                        .is_some_and(|candidate| !distance_key.cmp(&candidate.distance_key).is_lt())
+                    if let Some(candidate) = best.as_ref()
+                        && !distance_key.cmp(&candidate.distance_key)?.is_lt()
                     {
                         continue;
                     }
@@ -74,16 +72,16 @@ pub(crate) fn nearest_probe_to_parts(
                 || !same_point(candidate.target, previous.candidate.target)
                 || candidate
                     .distance_key
-                    .cmp(&previous.candidate.distance_key)
+                    .cmp(&previous.candidate.distance_key)?
                     .is_lt()
         })
     });
-    match (best, incoming, improved) {
+    Ok(match (best, incoming, improved) {
         (Some(candidate), _, true) | (Some(candidate), None, _) => {
-            Ok(Some(OrientedCandidate { candidate, swapped }))
+            Some(OrientedCandidate { candidate, swapped })
         },
-        (_, incoming, _) => Ok(incoming),
-    }
+        (_, incoming, _) => incoming,
+    })
 }
 
 /// A [`NearestCandidate`] remembering which operand was the probe side.
@@ -196,16 +194,13 @@ impl DistanceParts {
     /// The cached R-tree over this side's isolated points, built on first use
     /// once the point count clears the crossover (`None` below it — a short
     /// brute scan wins under the rstar bulk-load setup cost).
-    pub(crate) fn point_index(&self) -> Result<Option<&PointSetIndex>> {
+    pub(crate) fn point_index(&self) -> Option<&PointSetIndex> {
         self.point_index
-            .get_or_try_init(|| {
-                if self.point_only.len() >= POINT_INDEX_MIN_POINTS {
-                    PointSetIndex::build(self.point_only.iter().copied()).map(Some)
-                } else {
-                    Ok(None)
-                }
+            .get_or_init(|| {
+                (self.point_only.len() >= POINT_INDEX_MIN_POINTS)
+                    .then(|| PointSetIndex::build(self.point_only.iter().copied()))
             })
-            .map(Option::as_ref)
+            .as_ref()
     }
 }
 

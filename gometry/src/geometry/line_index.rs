@@ -104,8 +104,8 @@ impl SegmentMetric for PlanarMetric {
         length: f64,
         _best: f64,
     ) -> Result<(f64, f64)> {
-        let (distance, projection) = planar_projection(probe, start, end);
-        Ok((distance, projection.scale(length)))
+        let (distance, projection) = planar_projection(probe, start, end)?;
+        Ok((distance, projection.scale(length)?))
     }
 
     fn locate_with_measure(
@@ -116,17 +116,21 @@ impl SegmentMetric for PlanarMetric {
         _length: f64,
         _best: f64,
     ) -> Result<(f64, f64)> {
-        let (distance, projection) = planar_projection(probe, start, end);
+        let (distance, projection) = planar_projection(probe, start, end)?;
         // Keep the certified projection ratio until measure interpolation;
         // converting a subnormal ratio to along-distance and back loses it.
         Ok((
             distance,
-            projection.interpolate_point(start, end).m().unwrap_or(0.0),
+            projection.interpolate_point(start, end)?.m().unwrap_or(0.0),
         ))
     }
 }
 
-fn planar_projection(probe: Point, start: Point, end: Point) -> (f64, SegmentProjection) {
+fn planar_projection(
+    probe: Point,
+    start: Point,
+    end: Point,
+) -> crate::error::Result<(f64, SegmentProjection)> {
     // Projection classification, witness placement, and along-segment
     // reconstruction share the segment kernel's certified owner. The
     // exact fallback retains its ratio until `interpolate_xy` / `scale`,
@@ -136,8 +140,8 @@ fn planar_projection(probe: Point, start: Point, end: Point) -> (f64, SegmentPro
         start: start.into(),
         end: end.into(),
     };
-    let projection = segment_projection(probe, segment);
-    let foot = projection.interpolate_xy(segment);
+    let projection = segment_projection(probe, segment)?;
+    let foot = projection.interpolate_xy(segment)?;
     let ex = probe.x - foot.x;
     let ey = probe.y - foot.y;
     let squared = ex * ex + ey * ey;
@@ -155,7 +159,7 @@ fn planar_projection(probe: Point, start: Point, end: Point) -> (f64, SegmentPro
     // extremes the suite covers resolve correctly through the scaled
     // projection + `hypot` rescues above; guarding the last class was
     // measured at +14% on every real locate.
-    (distance, projection)
+    Ok((distance, projection))
 }
 
 /// Any [`GeodesicMetric`] is a [`SegmentMetric`] (lengths in meters).

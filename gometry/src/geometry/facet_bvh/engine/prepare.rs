@@ -307,9 +307,9 @@ impl PreparedLinework {
         x: f64,
         y: f64,
         mut best: f64,
-    ) -> (f64, u32) {
+    ) -> crate::error::Result<(f64, u32)> {
         let Some(aabb) = self.aabb else {
-            return (best, u32::MAX);
+            return Ok((best, u32::MAX));
         };
         let gate = if SQUARED {
             aabb_distance_squared(aabb, point_aabb(x, y))
@@ -317,17 +317,17 @@ impl PreparedLinework {
             aabb_distance(aabb, point_aabb(x, y))
         };
         if gate >= best {
-            return (best, u32::MAX);
+            return Ok((best, u32::MAX));
         }
         let mut witness = u32::MAX;
         for &facet in &self.facets {
-            let (candidate, index) = self.facet_min_with_witness::<SQUARED>(facet, x, y);
+            let (candidate, index) = self.facet_min_with_witness::<SQUARED>(facet, x, y)?;
             if candidate < best {
                 best = candidate;
                 witness = index;
             }
         }
-        (best, witness)
+        Ok((best, witness))
     }
 
     /// Batch flat-scan point queries with per-probe witness segment indices.
@@ -336,15 +336,16 @@ impl PreparedLinework {
         probes: &[(f64, f64)],
         out_dist: &mut [f64],
         out_witness: &mut [u32],
-    ) {
+    ) -> crate::error::Result<()> {
         debug_assert_eq!(probes.len(), out_dist.len());
         debug_assert_eq!(probes.len(), out_witness.len());
         for (index, &(x, y)) in probes.iter().enumerate() {
             let (distance, witness) =
-                self.min_point_distance_with_witness::<SQUARED>(x, y, f64::INFINITY);
+                self.min_point_distance_with_witness::<SQUARED>(x, y, f64::INFINITY)?;
             out_dist[index] = distance;
             out_witness[index] = witness;
         }
+        Ok(())
     }
 
     /// Flat-scan minimum distance from a probe coordinate stream (below the
@@ -355,9 +356,9 @@ impl PreparedLinework {
         &self,
         probes: impl Iterator<Item = (f64, f64)>,
         mut best: f64,
-    ) -> f64 {
+    ) -> crate::error::Result<f64> {
         let Some(aabb) = self.aabb else {
-            return best;
+            return Ok(best);
         };
         for (x, y) in probes {
             let gate = if SQUARED {
@@ -370,17 +371,17 @@ impl PreparedLinework {
             }
             for &facet in &self.facets {
                 let candidate = if SQUARED {
-                    self.facet_point_distance_squared(facet, x, y)
+                    self.facet_point_distance_squared(facet, x, y)?
                 } else {
-                    self.facet_point_distance(facet, Point::new_raw_xy(x, y))
+                    self.facet_point_distance(facet, Point::new_raw_xy(x, y))?
                 };
                 best = best.min(candidate);
             }
         }
-        best
+        Ok(best)
     }
 
-    /// Flat-scan boundary-inclusive on-segment test (below the tree
+    /// Flat-scan boundary-inclusive on-segment test (below the tree)
     /// crossover) — exact `point_on_segment`, box-gated per facet.
     pub(crate) fn covers_point(&self, point: Point) -> bool {
         self.facets.iter().any(|&facet| {
@@ -398,27 +399,34 @@ impl PreparedLinework {
         mut probes: impl Iterator<Item = (f64, f64)>,
         limit: f64,
         simd: bool,
-    ) -> bool {
+    ) -> crate::error::Result<bool> {
         let Some(aabb) = self.aabb else {
-            return false;
+            return Ok(false);
         };
-        probes.any(|(x, y)| {
-            aabb_distance_squared(aabb, point_aabb(x, y)) <= limit
-                && self.facets.iter().any(|&facet| {
-                    let candidate = if simd {
-                        self.facet_point_distance_squared(facet, x, y)
-                    } else {
-                        let point = Point::new_raw_xy(x, y);
-                        (0..facet.segment_count as usize).fold(f64::INFINITY, |best, index| {
-                            best.min(point_segment_distance_squared(
-                                point,
-                                self.segment(facet, index),
-                            ))
-                        })
-                    };
-                    candidate <= limit
-                })
-        })
+        for (x, y) in probes {
+            if aabb_distance_squared(aabb, point_aabb(x, y)) > limit {
+                continue;
+            }
+            for &facet in &self.facets {
+                let candidate = if simd {
+                    self.facet_point_distance_squared(facet, x, y)?
+                } else {
+                    let point = Point::new_raw_xy(x, y);
+                    let mut best = f64::INFINITY;
+                    for index in 0..facet.segment_count as usize {
+                        best = best.min(point_segment_distance_squared(
+                            point,
+                            self.segment(facet, index),
+                        )?);
+                    }
+                    best
+                };
+                if candidate <= limit {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Flat-scan argmin nearest (below the tree crossover) — see
@@ -427,9 +435,9 @@ impl PreparedLinework {
         &self,
         probes: impl Iterator<Item = Point>,
         mut best: Option<NearestCandidate>,
-    ) -> Option<NearestCandidate> {
+    ) -> crate::error::Result<Option<NearestCandidate>> {
         let Some(aabb) = self.aabb else {
-            return best;
+            return Ok(best);
         };
         for probe in probes {
             let limit = best
@@ -442,12 +450,12 @@ impl PreparedLinework {
                 let limit = best
                     .as_ref()
                     .map_or(f64::INFINITY, |b| b.distance_key.upper_bound());
-                if self.facet_point_distance_squared(facet, probe.x, probe.y) <= limit {
-                    refine_facet_nearest(self, facet, probe, &mut best);
+                if self.facet_point_distance_squared(facet, probe.x, probe.y)? <= limit {
+                    refine_facet_nearest(self, facet, probe, &mut best)?;
                 }
             }
         }
-        best
+        Ok(best)
     }
 
     /// Flat-scan first touching/crossing pair against another linework
@@ -478,28 +486,33 @@ impl PreparedLinework {
         facet: Facet,
         px: f64,
         py: f64,
-    ) -> (f64, u32) {
+    ) -> crate::error::Result<(f64, u32)> {
         let point = Point::new_raw_xy(px, py);
         let mut best = f64::INFINITY;
         let mut witness = facet.first_segment;
         for index in 0..facet.segment_count as usize {
             let candidate = if SQUARED {
-                point_segment_distance_squared(point, self.segment(facet, index))
+                point_segment_distance_squared(point, self.segment(facet, index))?
             } else {
-                point_segment_distance(point, self.segment(facet, index))
+                point_segment_distance(point, self.segment(facet, index))?
             };
             if candidate < best {
                 best = candidate;
                 witness = facet.first_segment + index as u32;
             }
         }
-        (best, witness)
+        Ok((best, witness))
     }
 
     /// Exact minimum squared distance from `(px, py)` to one facet's
     /// segments — eight clamped-projection distances in one SIMD register
     /// for full facets, a scalar fold for chain tails.
-    pub(crate) fn facet_point_distance_squared(&self, facet: Facet, px: f64, py: f64) -> f64 {
+    pub(crate) fn facet_point_distance_squared(
+        &self,
+        facet: Facet,
+        px: f64,
+        py: f64,
+    ) -> crate::error::Result<f64> {
         let (chain, facet) = self.facet_chain(facet);
         let first = facet.first_vertex as usize;
         let count = facet.segment_count as usize;
@@ -513,24 +526,32 @@ impl PreparedLinework {
                 py,
             );
             if simd.is_finite() {
-                return simd;
+                return Ok(simd);
             }
         }
         let point = Point::new_raw_xy(px, py);
-        (0..count).fold(f64::INFINITY, |best, index| {
-            best.min(point_segment_distance_squared(
+        let mut best = f64::INFINITY;
+        for index in 0..count {
+            best = best.min(point_segment_distance_squared(
                 point,
                 self.segment(facet, index),
-            ))
-        })
+            )?);
+        }
+        Ok(best)
     }
 
     /// Scalar `hypot`-space fold for one facet — the overflow-safe sibling of
     /// the SIMD kernel, for extreme-coordinate operands.
-    pub(crate) fn facet_point_distance(&self, facet: Facet, point: Point) -> f64 {
-        (0..facet.segment_count as usize).fold(f64::INFINITY, |best, index| {
-            best.min(point_segment_distance(point, self.segment(facet, index)))
-        })
+    pub(crate) fn facet_point_distance(
+        &self,
+        facet: Facet,
+        point: Point,
+    ) -> crate::error::Result<f64> {
+        let mut best = f64::INFINITY;
+        for index in 0..facet.segment_count as usize {
+            best = best.min(point_segment_distance(point, self.segment(facet, index))?);
+        }
+        Ok(best)
     }
 
     /// The AABB of one facet's vertex run, as `[minx, miny, maxx, maxy]`.
