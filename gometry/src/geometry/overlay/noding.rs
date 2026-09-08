@@ -43,13 +43,6 @@ impl SegmentProvenance {
 
     /// Adopt a caller-built CSR. Allocation of `offsets`/`entries` is the
     /// caller's fallible work; this only binds the two columns.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "CSR adoption is retained for the exact partition's provenance constructor"
-        )
-    )]
     pub(crate) fn from_csr(offsets: Vec<u32>, entries: Vec<SegmentSource>) -> Self {
         debug_assert!(!offsets.is_empty());
         Self { offsets, entries }

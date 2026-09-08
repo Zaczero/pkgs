@@ -38,10 +38,6 @@ impl<T> SharedSlice<T> {
         self.as_slice().len()
     }
 
-    #[expect(
-        dead_code,
-        reason = "capacity is the retained heap-accounting surface even when callers currently go through HeapSize"
-    )]
     pub(crate) fn capacity(&self) -> usize {
         self.owner.as_deref().map_or(0, Vec::capacity)
     }
@@ -50,10 +46,6 @@ impl<T> SharedSlice<T> {
         self.owner.is_none()
     }
 
-    #[expect(
-        dead_code,
-        reason = "owner clone is the sharing handle for a retained Vec; callers still go through as_slice"
-    )]
     #[expect(
         clippy::rc_buffer,
         reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
@@ -242,7 +234,13 @@ mod tests {
     fn failed_freeze_drops_non_copy_values() {
         let drops = Arc::new(AtomicUsize::new(0));
         let values = vec![DropProbe(Arc::clone(&drops))];
-        fail_allocations_after(0, || SharedSlice::try_from_vec(values)).unwrap_err();
+        let Err(error) = fail_allocations_after(0, || SharedSlice::try_from_vec(values)) else {
+            panic!("freeze must fail under allocation rejection");
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+        ));
         assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 

@@ -525,13 +525,6 @@ impl ExactDyadic {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "magnitude compare is retained for the exact partition's source-parameter owner"
-        )
-    )]
     pub(in crate::geometry) fn cmp_magnitude(&self, other: &Self) -> Ordering {
         let exponent = self.exponent.min(other.exponent);
         Self::compare_aligned(

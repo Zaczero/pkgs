@@ -385,13 +385,6 @@ fn try_candidate_pairs_over_runs(
 /// keeps both direction signs within the run's quadrant (zero components
 /// are wildcards). Zero-length segments break out into their own runs so
 /// their point-touch pairs still reach the visitor through run pairs.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "aborting monotone-run wrapper is retained for the fallible sweep's infallible callers"
-    )
-)]
 pub(in crate::geometry) fn monotone_runs(
     pool: &[Segment],
     chain_of: &impl Fn(usize) -> u32,

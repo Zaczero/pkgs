@@ -149,13 +149,6 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
 /// direct folds' test oracle. Tests must reach the graph THROUGH this, never
 /// through `graph_relate_data`, which now admits the direct engines first and
 /// would compare an engine with itself.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "source-graph oracle is retained as the complete fallback; tests must reach the graph through this path"
-    )
-)]
 pub(crate) fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
     if let Some(matrix) = try_areal_relate(left.shape(), right.shape()) {
         return Ok(matrix);
@@ -869,13 +862,15 @@ pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
     seen.iter().all(|&corner| corner)
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "shared domain is an internal construction invariant, not a public input"
+)]
 fn graph_relate(left: &TopologyGraph, right: &TopologyGraph) -> Result<De9im> {
-    if left.domain != right.domain {
-        return Err(crate::geometry::GeometryErrorKind::Invalid(
-            "relation graphs must share a coordinate domain".into(),
-        )
-        .into());
-    }
+    assert_eq!(
+        left.domain, right.domain,
+        "relation graphs must share a coordinate domain"
+    );
     if let Some(point) = single_point(right) {
         return Ok(graph_relate_to_point(left, point));
     }

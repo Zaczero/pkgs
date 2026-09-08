@@ -130,13 +130,10 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::ignored_unit_patterns,
-        reason = "place is Fn(&T, &mut u64); the unit piece is borrowed"
-    )]
     fn cumulative_reserve_fails_before_place() {
         let error = fail_allocations_after(0, || {
-            sample_weighted(2, 1, &[()], |_| 1.0, |_, _| panic!("place")).expect_err("alloc 0")
+            sample_weighted(2, 1, &[()], |&()| 1.0, |&(), _state| panic!("place"))
+                .expect_err("alloc 0")
         });
         assert!(matches!(
             error.kind(),
@@ -145,13 +142,10 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::ignored_unit_patterns,
-        reason = "place is Fn(&T, &mut u64); the unit piece is borrowed"
-    )]
     fn points_reserve_fails_before_place() {
         let error = fail_allocations_after(1, || {
-            sample_weighted(2, 1, &[()], |_| 1.0, |_, _| panic!("place")).expect_err("alloc 1")
+            sample_weighted(2, 1, &[()], |&()| 1.0, |&(), _state| panic!("place"))
+                .expect_err("alloc 1")
         });
         assert!(matches!(
             error.kind(),

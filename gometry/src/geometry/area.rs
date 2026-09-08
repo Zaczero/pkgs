@@ -25,17 +25,9 @@ impl AreaMeasure {
 /// `> 0.0` / `== 0.0` outside this module is a compile error.
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-#[expect(
-    dead_code,
-    reason = "exact signed-area magnitude lane is retained until topology consumes SignedAreaMeasure"
-)]
 pub(crate) struct SignedAreaMeasure(f64);
 
 impl SignedAreaMeasure {
-    #[expect(
-        dead_code,
-        reason = "exact signed-area magnitude lane is retained until topology consumes SignedAreaMeasure"
-    )]
     const fn new(value: f64) -> Self {
         Self(value)
     }
@@ -200,10 +192,6 @@ fn exact_ring_area_sum_local(
 /// lane-wise OR rather than a branch, and the `|x|` fallback span is computed
 /// only on the overflow path that reads it. This runs inside every exact ring
 /// area sign, which is why it is written for the vector unit.
-#[expect(
-    dead_code,
-    reason = "exact signed-area magnitude lane is retained until topology consumes SignedAreaMeasure"
-)]
 fn axis_extent_for_scale(
     values: impl IntoIterator<Item = f64> + Clone,
     origin: f64,
@@ -227,10 +215,6 @@ fn axis_extent_for_scale(
 
 /// The power-of-two frame a ring's cross terms are evaluated in.
 #[derive(Clone, Copy)]
-#[expect(
-    dead_code,
-    reason = "exact signed-area magnitude lane is retained until topology consumes SignedAreaMeasure"
-)]
 struct RingFrame {
     ox: f64,
     oy: f64,
@@ -242,10 +226,6 @@ struct RingFrame {
 /// Returns `(ox, oy, sx, sy)` with `sx == 0.0` for a fully-collapsed ring
 /// (both axes zero). Per-axis positive power-of-two scales preserve sign of
 /// the shoelace cross product while keeping each edge term normal.
-#[expect(
-    dead_code,
-    reason = "exact signed-area magnitude lane is retained until topology consumes SignedAreaMeasure"
-)]
 fn ring_normalize_params(xs: &[f64], ys: &[f64]) -> RingFrame {
     if xs.is_empty() {
         return RingFrame {
@@ -431,10 +411,6 @@ fn exact_open_point_sign(points: &[Point]) -> AreaSign {
 /// in [`crossover`].
 const SHOELACE_SIMD_MIN: usize = crossover::OFFSET_PAIR_MEASURE;
 
-#[expect(
-    dead_code,
-    reason = "exact signed-area magnitude lane is retained until topology consumes SignedAreaMeasure"
-)]
 pub(crate) fn shoelace_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> SignedAreaMeasure {
     // Translation-invariant origin shift: products become O(ring_extent²)
     // instead of O(coord²), so large absolute coordinates (e.g. UTM) no longer
@@ -487,10 +463,6 @@ pub(crate) fn shoelace_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> 
 /// Exact-expansion signed half-area for the rare finite-zero measurement
 /// fallback. Its power-of-two frame is undone in one exponent operation, so a
 /// normal final result never passes through a lossy subnormal intermediate.
-#[expect(
-    dead_code,
-    reason = "exact signed-area magnitude lane is retained until topology consumes SignedAreaMeasure"
-)]
 fn exact_half_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> f64 {
     exact_cycle_area_measure_columns(xs, ys, pairs, |index| (index, index + 1))
 }
@@ -501,10 +473,6 @@ fn exact_half_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> f64 
 /// never in the normalization or accumulation that establishes magnitude.
 /// Keeping that distinction as data prevents a fast helper, a topology owner,
 /// and a preflight from gradually adopting incompatible loss rules.
-#[expect(
-    dead_code,
-    reason = "exact signed-area magnitude lane is retained until topology consumes SignedAreaMeasure"
-)]
 fn exact_cycle_area_measure_columns(
     xs: &[f64],
     ys: &[f64],
@@ -749,13 +717,6 @@ fn unsigned_area(sum: &ExactSum) -> AreaMeasure {
     AreaMeasure(sum.round_to_area().abs())
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "columnar ring-area magnitude is retained until the public area path consumes it"
-    )
-)]
 pub(crate) fn ring_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaMeasure {
     unsigned_area(&closed_ring_sum_columns(xs, ys, pairs))
 }

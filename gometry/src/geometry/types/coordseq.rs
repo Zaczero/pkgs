@@ -1135,14 +1135,15 @@ impl CoordSeqBuilder {
     /// Callers must have validated all present-user coordinates before pushing
     /// and use non-finite values only for rows guarded by an external missing
     /// mask.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "placeholder finish is trusted; mismatched axes are a caller programming error"
+    )]
     pub(crate) fn finish_with_missing_placeholders(self) -> Result<CoordSeq> {
-        if let Some(got) = self.mismatch_axes {
-            return Err(GeometryErrorKind::CoordinateAxesMismatch {
-                declared: self.axes(),
-                got,
-            }
-            .into());
-        }
+        assert!(
+            self.mismatch_axes.is_none(),
+            "missing-coordinate placeholders must preserve the builder axes"
+        );
         // Same-axes appends keep live columns the same length. Route through
         // the checked boundary so a pathological length cannot truncate the
         // stored u32 window.

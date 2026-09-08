@@ -10,14 +10,6 @@
 //! nodes, and canonical atoms are generated items. Sweep scratch is
 //! [`ResourceError`], not the item cap.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "exact source partition is the future incidence owner; overlay has not connected it yet"
-    )
-)]
-
 use std::cmp::Ordering;
 use std::mem;
 use std::ops::ControlFlow;
