@@ -167,18 +167,20 @@ fn coverage_chains(rows: &[CoverageRow<'_>]) -> (Vec<Chain>, HashMap<(PointKey, 
 /// criterion — effective triangle area (Visvalingam-Whyatt) or chord
 /// deviation (Douglas-Peucker) — both read `tolerance` on the same distance
 /// scale.
-fn simplify_chain(
-    chain: &[XY],
+fn simplify_chain_kept(
+    count: usize,
+    xy: impl Fn(usize) -> XY,
     cyclic: bool,
     tolerance: f64,
     method: SimplifyMethod,
     guard: &TopologyGuard<'_>,
-) -> Vec<XY> {
+) -> Result<Vec<usize>> {
     match method {
         SimplifyMethod::Vw => {
             let area_tolerance = vw_area_tolerance(tolerance);
             simplify_chain_guarded(
-                chain,
+                count,
+                xy,
                 cyclic,
                 &|prev, vertex, next| {
                     let area = triangle_area(prev, vertex, next);
@@ -190,12 +192,13 @@ fn simplify_chain(
         SimplifyMethod::Dp => {
             let tolerance_sq = tolerance * tolerance;
             simplify_chain_guarded(
-                chain,
+                count,
+                xy,
                 cyclic,
                 &|prev, vertex, next| {
                     // Squared perpendicular deviation of `vertex` from the
                     // `prev`-`next` chord; importance orders smallest first.
-                    let (p, v, n): (XY, XY, XY) = (prev, vertex, next);
+                    let (p, v, n) = (prev, vertex, next);
                     let base_sq = (n.x - p.x).powi(2) + (n.y - p.y).powi(2);
                     let deviation_sq = if base_sq == 0.0 {
                         (v.x - p.x).powi(2) + (v.y - p.y).powi(2)
@@ -219,16 +222,20 @@ fn simplify_chain(
 /// so each round pays O(failures + 1) guard queries instead of guarding
 /// every candidate. Endpoints (and a cyclic chain's anchor/closure) are
 /// pinned; cyclic chains keep at least a triangle.
-pub(in crate::geometry) fn simplify_chain_guarded<P: Copy + Into<XY>>(
-    alive: &[P],
+///
+/// `xy` is random-access original XY (borrowed columns or an index slice).
+/// Survivors are original indices so the caller can select from the source
+/// carrier without staging a `Point` AoS just to walk the chain.
+pub(in crate::geometry) fn simplify_chain_guarded(
+    count: usize,
+    xy: impl Fn(usize) -> XY,
     cyclic: bool,
-    candidate: &impl Fn(P, P, P) -> Option<f64>,
+    candidate: &impl Fn(XY, XY, XY) -> Option<f64>,
     guard: &TopologyGuard<'_>,
-) -> Vec<P> {
+) -> Result<Vec<usize>> {
     let floor = if cyclic { 4 } else { 2 };
-    let count = alive.len();
     if count <= floor {
-        return alive.to_vec();
+        return identity_indices(count);
     }
     // Lazy min-heap over a doubly linked interior walk: each removal
     // re-evaluates only its two neighbors (generation stamps invalidate
@@ -251,7 +258,7 @@ pub(in crate::geometry) fn simplify_chain_guarded<P: Copy + Into<XY>>(
     let mut removed = vec![false; count];
     let mut heap: BinaryHeap<Reverse<(u64, usize, u32)>> = BinaryHeap::with_capacity(count);
     for index in 1..count - 1 {
-        if let Some(importance) = candidate(alive[index - 1], alive[index], alive[index + 1]) {
+        if let Some(importance) = candidate(xy(index - 1), xy(index), xy(index + 1)) {
             heap.push(Reverse((total_order_key(importance), index, 0)));
         }
     }
@@ -264,11 +271,7 @@ pub(in crate::geometry) fn simplify_chain_guarded<P: Copy + Into<XY>>(
             continue;
         }
         let (before, after) = (prev[index], next[index]);
-        if !guard.removal_is_safe(
-            alive[before].into(),
-            alive[index].into(),
-            alive[after].into(),
-        ) {
+        if !guard.removal_is_safe(xy(before), xy(index), xy(after)) {
             continue;
         }
         removed[index] = true;
@@ -280,11 +283,9 @@ pub(in crate::geometry) fn simplify_chain_guarded<P: Copy + Into<XY>>(
                 continue;
             }
             generation[neighbor] += 1;
-            if let Some(importance) = candidate(
-                alive[prev[neighbor]],
-                alive[neighbor],
-                alive[next[neighbor]],
-            ) {
+            if let Some(importance) =
+                candidate(xy(prev[neighbor]), xy(neighbor), xy(next[neighbor]))
+            {
                 heap.push(Reverse((
                     total_order_key(importance),
                     neighbor,
@@ -293,13 +294,21 @@ pub(in crate::geometry) fn simplify_chain_guarded<P: Copy + Into<XY>>(
             }
         }
     }
-    let mut kept = Vec::with_capacity(live);
+    let mut kept = Vec::new();
+    crate::try_reserve_vec(&mut kept, live)?;
     let mut cursor = 0;
     while cursor < count {
-        kept.push(alive[cursor]);
+        kept.push(cursor);
         cursor = next[cursor];
     }
-    kept
+    Ok(kept)
+}
+
+fn identity_indices(count: usize) -> Result<Vec<usize>> {
+    let mut kept = Vec::new();
+    crate::try_reserve_vec(&mut kept, count)?;
+    kept.extend(0..count);
+    Ok(kept)
 }
 
 /// The Visvalingam-Whyatt effective-area threshold for a distance-scale
@@ -338,16 +347,29 @@ pub(in crate::geometry) struct TopologyGuard<'a> {
 
 impl<'a> TopologyGuard<'a> {
     /// Wrap the original segments and the vertex cloud they span.
-    pub(in crate::geometry) fn new(
-        segments: &'a [Segment],
-        vertices: impl IntoIterator<Item = XY>,
-    ) -> Self {
+    ///
+    /// `vertex_cloud` is the guard's required XY index payload, gathered by
+    /// walking original carriers once. Construction does not allocate.
+    pub(in crate::geometry) fn new(segments: &'a [Segment], vertex_cloud: Vec<[f64; 2]>) -> Self {
         Self {
             segments,
             segment_index: std::cell::OnceCell::new(),
-            vertex_cloud: vertices.into_iter().map(|p| [p.x, p.y]).collect(),
+            vertex_cloud,
             vertex_tree: std::cell::OnceCell::new(),
         }
+    }
+
+    /// Walk original XY once into the vertex cloud the index stores.
+    pub(in crate::geometry) fn try_vertex_cloud(
+        vertices: impl IntoIterator<Item = XY>,
+    ) -> Result<Vec<[f64; 2]>> {
+        let vertices = vertices.into_iter();
+        let mut vertex_cloud = Vec::new();
+        crate::try_reserve_vec(&mut vertex_cloud, vertices.size_hint().0)?;
+        for point in vertices {
+            crate::try_push_vec(&mut vertex_cloud, [point.x, point.y])?;
+        }
+        Ok(vertex_cloud)
     }
 
     fn segment_index(&self) -> &SegmentIndex {
@@ -444,31 +466,46 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
     }
     let (chains, chain_of) = coverage_chains(&prepared);
 
-    let all_segments: Vec<Segment> = prepared
-        .iter()
-        .flat_map(|row| row.segments.iter().copied())
-        .collect();
+    let mut all_segments = Vec::new();
+    for row in &prepared {
+        crate::try_reserve_vec(&mut all_segments, row.segments.len())?;
+        for &segment in &row.segments {
+            crate::try_push_vec(&mut all_segments, segment)?;
+        }
+    }
     let guard = TopologyGuard::new(
         &all_segments,
-        chains.iter().flat_map(|chain| chain.points.iter().copied()),
+        TopologyGuard::try_vertex_cloud(
+            chains.iter().flat_map(|chain| chain.points.iter().copied()),
+        )?,
     );
     let simplified: Vec<Cow<'_, [XY]>> = chains
         .iter()
         .map(|chain| {
             if !simplify_boundary && !chain.shared {
-                return Cow::Borrowed(chain.points.as_slice());
+                return Ok(Cow::Borrowed(chain.points.as_slice()));
             }
             let cyclic = chain.points.len() > 1
                 && same_point(chain.points[0], *chain.points.last().expect("non-empty"));
-            Cow::Owned(simplify_chain(
-                &chain.points,
+            let kept = simplify_chain_kept(
+                chain.points.len(),
+                |index| chain.points[index],
                 cyclic,
                 tolerance,
                 method,
                 &guard,
-            ))
+            )?;
+            if kept.len() == chain.points.len() {
+                return Ok(Cow::Borrowed(chain.points.as_slice()));
+            }
+            let mut points = Vec::new();
+            crate::try_reserve_vec(&mut points, kept.len())?;
+            for index in kept {
+                crate::try_push_vec(&mut points, chain.points[index])?;
+            }
+            Ok(Cow::Owned(points))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     prepared
         .iter()

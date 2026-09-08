@@ -1051,33 +1051,33 @@ impl Shape {
     /// original chain (cheap column clone, no re-materialization).
     pub(crate) fn map_chains(
         &self,
-        transform: &impl Fn(&CoordSeq) -> Option<Vec<Point>>,
+        transform: &impl Fn(&CoordSeq) -> Result<Option<CoordSeq>>,
     ) -> Result<Self> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
-            Self::LineString(points) => Self::LineString(match transform(points) {
-                Some(line) => LineSeq::from_proven(CoordSeq::try_from_points(&line)?),
+            Self::LineString(points) => Self::LineString(match transform(points)? {
+                Some(line) => LineSeq::from_proven(line),
                 None => points.clone(),
             }),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<LineSeq, crate::error::Error>(match transform(line) {
-                        Some(line) => LineSeq::from_proven(CoordSeq::try_from_points(&line)?),
+                    Ok::<LineSeq, crate::error::Error>(match transform(line)? {
+                        Some(coords) => LineSeq::from_proven(coords),
                         None => line.clone(),
                     })
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.map_ring_seqs(|ring| {
-                Ok(match transform(ring) {
-                    Some(line) => CoordSeq::try_from_points(&line)?,
+                Ok(match transform(ring)? {
+                    Some(coords) => coords,
                     None => ring.clone(),
                 })
             })?),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
                     polygon.map_ring_seqs(|ring| {
-                        Ok(match transform(ring) {
-                            Some(line) => CoordSeq::try_from_points(&line)?,
+                        Ok(match transform(ring)? {
+                            Some(coords) => coords,
                             None => ring.clone(),
                         })
                     })

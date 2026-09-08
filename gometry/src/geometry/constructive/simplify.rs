@@ -826,8 +826,8 @@ impl Shape {
     fn simplify_guarded(&self, tolerance: f64) -> Result<Self> {
         self.simplify_guarded_with(|prev, vertex, next| {
             let deviation = point_segment_distance(vertex, Segment {
-                start: prev.into(),
-                end: next.into(),
+                start: prev,
+                end: next,
             });
             (deviation <= tolerance).then_some(deviation)
         })
@@ -837,10 +837,7 @@ impl Shape {
     /// importance criterion (chord deviation for Douglas-Peucker, triangle
     /// area for Visvalingam-Whyatt): the least important removable vertex
     /// the topology guard accepts drops first.
-    fn simplify_guarded_with(
-        &self,
-        candidate: impl Fn(Point, Point, Point) -> Option<f64>,
-    ) -> Result<Self> {
+    fn simplify_guarded_with(&self, candidate: impl Fn(XY, XY, XY) -> Option<f64>) -> Result<Self> {
         let mut segments = Vec::new();
         self.try_for_each_segment_chain(|chain| {
             for segment in line_segments(chain) {
@@ -848,17 +845,33 @@ impl Shape {
             }
             Ok::<_, crate::error::Error>(())
         })?;
-        let mut vertices = Vec::new();
-        self.try_for_each_point(|point| crate::try_push_vec(&mut vertices, point.xy()))?;
-        let guard = TopologyGuard::new(&segments, vertices.iter().copied());
+        let mut vertex_cloud = Vec::new();
+        crate::try_reserve_vec(&mut vertex_cloud, self.coord_count())?;
+        // Original XY only: the guard indexes the source point set, never
+        // simplified output. Isolated points participate in the vertex
+        // probe, so the walk is every vertex, not only segment chains.
+        self.try_for_each_point(|point| {
+            crate::try_push_vec(&mut vertex_cloud, [point.x, point.y])
+        })?;
+        let guard = TopologyGuard::new(&segments, vertex_cloud);
         self.map_chains(&|points: &CoordSeq| {
-            let alive: Vec<Point> = points.iter_coords().collect();
-            let closed = alive.len() >= 2
-                && alive
-                    .first()
-                    .zip(alive.last())
-                    .is_some_and(|(first, last)| same_point(*first, *last));
-            Some(simplify_chain_guarded(&alive, closed, &candidate, &guard))
+            let xs = points.xs();
+            let ys = points.ys();
+            let count = xs.len();
+            let closed = count >= 2
+                && same_point(XY::new(xs[0], ys[0]), XY::new(xs[count - 1], ys[count - 1]));
+            let kept = simplify_chain_guarded(
+                count,
+                |index| XY::new(xs[index], ys[index]),
+                closed,
+                &candidate,
+                &guard,
+            )?;
+            if kept.len() == count {
+                Ok(None)
+            } else {
+                Ok(Some(points.select(kept.into_iter())?))
+            }
         })
     }
 
@@ -1467,5 +1480,134 @@ mod dp_zero_split_tests {
         rdp_keep(&xs, &ys, -0.0, &mut keep_neg, &mut stack).unwrap();
         assert_eq!(keep_pos, keep_neg);
         assert_eq!(keep_pos, [true, true, true]);
+    }
+}
+
+#[cfg(test)]
+mod guarded_borrow_tests {
+
+    use super::RawSimplify;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::{CoordSeq, Polygon, Ring, Shape, TopologyGuard, XY};
+    use crate::test_support::fail_allocations_after;
+
+    fn closed_ring(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f64]>) -> Ring {
+        Ring::from_closed(
+            CoordSeq::try_from_vecs(
+                xs.into(),
+                ys.into(),
+                zs.map(<[f64]>::to_vec),
+                ms.map(<[f64]>::to_vec),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn sliver_xyzm() -> Shape {
+        Shape::Polygon(
+            Polygon::new(
+                closed_ring(
+                    &[0.0, 1.0, 0.5, 0.0],
+                    &[0.0, 0.0, 0.1, 0.0],
+                    Some(&[1.0, 2.0, 3.0, 1.0]),
+                    Some(&[10.0, 20.0, 30.0, 10.0]),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn vertex_cloud_walk_rejects_allocation_and_stores_xy() {
+        let vertices = [XY::new(1.0, 2.0), XY::new(3.0, 4.0)];
+        let error =
+            fail_allocations_after(0, || TopologyGuard::try_vertex_cloud(vertices)).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert_eq!(TopologyGuard::try_vertex_cloud(vertices).unwrap(), vec![
+            [1.0, 2.0],
+            [3.0, 4.0]
+        ]);
+    }
+
+    #[test]
+    fn guarded_sliver_keep_all_reuses_source_columns() {
+        let polygon = sliver_xyzm();
+        assert!(matches!(
+            polygon.simplify_raw_dp(1.0).unwrap(),
+            RawSimplify::Changed(_)
+        ));
+        let Shape::Polygon(src) = &polygon else {
+            panic!("sliver fixture");
+        };
+        let src_xs = src.shell.xs().as_ptr();
+        let src_zs = src.shell.zs().unwrap().as_ptr();
+        let src_ms = src.shell.ms().unwrap().as_ptr();
+        let Shape::Polygon(out) = polygon.simplify_dp(1.0, true).unwrap() else {
+            panic!("topology-preserving sliver remains a polygon");
+        };
+        assert_eq!(out.shell.xs().as_ptr(), src_xs);
+        assert_eq!(out.shell.zs().unwrap().as_ptr(), src_zs);
+        assert_eq!(out.shell.ms().unwrap().as_ptr(), src_ms);
+        assert_eq!(out.shell.zs(), Some(&[1.0, 2.0, 3.0, 1.0][..]));
+        assert_eq!(out.shell.ms(), Some(&[10.0, 20.0, 30.0, 10.0][..]));
+    }
+
+    #[test]
+    fn guarded_construction_reports_allocation_failure() {
+        let polygon = sliver_xyzm();
+        let error = fail_allocations_after(0, || polygon.simplify_dp(1.0, true)).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn guarded_select_keeps_source_index_ordinates() {
+        let polygon = Shape::Polygon(
+            Polygon::new(
+                closed_ring(
+                    &[0.0, 10.0, 10.0, 5.0, 0.0, 0.0],
+                    &[0.0, 0.0, 0.01, 0.01, 0.01, 0.0],
+                    Some(&[1.0, 2.0, 3.0, 4.0, 5.0, 1.0]),
+                    Some(&[10.0, 20.0, 30.0, 40.0, 50.0, 10.0]),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            polygon.simplify_raw_dp(1.0).unwrap(),
+            RawSimplify::Changed(_)
+        ));
+        let Shape::Polygon(out) = polygon.simplify_dp(1.0, true).unwrap() else {
+            panic!("topology-preserving thin ring remains a polygon");
+        };
+        let xs = out.shell.xs();
+        let ys = out.shell.ys();
+        let zs = out.shell.zs().expect("XYZM");
+        let ms = out.shell.ms().expect("XYZM");
+        assert!(
+            (4..6).contains(&xs.len()),
+            "guarded cyclic floor is a triangle, got {}",
+            xs.len()
+        );
+        let original = [
+            (0.0, 0.0, 1.0, 10.0),
+            (10.0, 0.0, 2.0, 20.0),
+            (10.0, 0.01, 3.0, 30.0),
+            (5.0, 0.01, 4.0, 40.0),
+            (0.0, 0.01, 5.0, 50.0),
+        ];
+        for index in 0..xs.len() {
+            assert!(
+                original.contains(&(xs[index], ys[index], zs[index], ms[index])),
+                "output vertex is not an original index"
+            );
+        }
     }
 }
