@@ -206,13 +206,13 @@ fn symbolic_split_stages_cover_longitude_reflection_and_post_reflection_seams() 
     let longitude_start = start_point.longitude();
     let longitude_end = end_point.longitude();
     assert_eq!(
-        integer_levels_between(&longitude_start, &longitude_end, 180, 360),
+        integer_levels_between(longitude_start, longitude_end, 180, 360),
         Some(-2..=0)
     );
     let seam_crossing = edge
         .parameter_for(
-            &longitude_start,
-            &longitude_end,
+            longitude_start,
+            longitude_end,
             &ExactExpansion::from_i64(-180).unwrap(),
         )
         .unwrap();
@@ -226,10 +226,10 @@ fn symbolic_split_stages_cover_longitude_reflection_and_post_reflection_seams() 
         )
         .is_some()
     );
-    for level in integer_levels_between(&longitude_start, &longitude_end, 180, 360).unwrap() {
+    for level in integer_levels_between(longitude_start, longitude_end, 180, 360).unwrap() {
         let seam = exact_affine_level(180, 360, level).unwrap();
         assert!(
-            edge.parameter_for(&longitude_start, &longitude_end, &seam)
+            edge.parameter_for(longitude_start, longitude_end, &seam)
                 .is_some(),
             "level {level}"
         );

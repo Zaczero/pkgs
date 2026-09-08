@@ -3163,11 +3163,10 @@ impl SymbolicAffineEdge {
         let latitude1 = end_point.latitude();
         let longitude_delta = longitude1.sub(longitude0)?;
         let latitude_delta = latitude1.sub(latitude0)?;
-        let structure =
-            affine_structure(&longitude0, &longitude_delta, &latitude0, &latitude_delta)?;
+        let structure = affine_structure(longitude0, &longitude_delta, latitude0, &latitude_delta)?;
         let map = AffineParentMap {
-            lambda0: degree_expansion_bound(&longitude0).and_then(degree_bound_to_radians)?,
-            phi0: degree_expansion_bound(&latitude0).and_then(degree_bound_to_radians)?,
+            lambda0: degree_expansion_bound(longitude0).and_then(degree_bound_to_radians)?,
+            phi0: degree_expansion_bound(latitude0).and_then(degree_bound_to_radians)?,
             dlambda: degree_expansion_bound(&longitude_delta).and_then(degree_bound_to_radians)?,
             dphi: degree_expansion_bound(&latitude_delta).and_then(degree_bound_to_radians)?,
             structure,
