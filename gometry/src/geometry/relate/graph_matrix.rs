@@ -1594,9 +1594,8 @@ mod tests {
     }
 
     fn donut() -> Polygon {
-        Polygon::new(
-            rectangle(0.0, 0.0, 10.0, 10.0).shell,
-            vec![Ring::from_closed(
+        Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0).shell, vec![
+            Ring::from_closed(
                 CoordSeq::try_from_points(&[
                     Point::new_raw_xy(3.0, 3.0),
                     Point::new_raw_xy(7.0, 3.0),
@@ -1605,8 +1604,8 @@ mod tests {
                     Point::new_raw_xy(3.0, 3.0),
                 ])
                 .unwrap(),
-            )],
-        )
+            ),
+        ])
         .unwrap()
     }
 
@@ -2233,12 +2232,9 @@ mod tests {
             vec![rectangle(0.0, 0.0, 3.0, 3.0), rectangle(0.0, 0.0, 3.0, 3.0)].into(),
         );
         let pinched = Shape::geometry_collection(vec![
-            Shape::Polygon(polygon(&[
-                [0.0, 0.0],
-                [-2.0, -1.0],
-                [-2.0, 1.0],
-                [0.0, 0.0],
-            ])),
+            Shape::Polygon(polygon(&[[0.0, 0.0], [-2.0, -1.0], [-2.0, 1.0], [
+                0.0, 0.0,
+            ]])),
             Shape::Polygon(polygon(&[[0.0, 0.0], [2.0, 1.0], [2.0, -1.0], [0.0, 0.0]])),
         ])
         .expect("test collection is valid");
@@ -2251,18 +2247,12 @@ mod tests {
             Shape::Polygon(rectangle(31.0, 1.0, 32.0, 2.0)),
             Shape::Polygon(rectangle(40.0, 0.0, 43.0, 3.0)),
             Shape::Polygon(rectangle(40.0, 0.0, 43.0, 3.0)),
-            Shape::Polygon(polygon(&[
-                [50.0, 0.0],
-                [48.0, -1.0],
-                [48.0, 1.0],
-                [50.0, 0.0],
-            ])),
-            Shape::Polygon(polygon(&[
-                [50.0, 0.0],
-                [52.0, 1.0],
-                [52.0, -1.0],
-                [50.0, 0.0],
-            ])),
+            Shape::Polygon(polygon(&[[50.0, 0.0], [48.0, -1.0], [48.0, 1.0], [
+                50.0, 0.0,
+            ]])),
+            Shape::Polygon(polygon(&[[50.0, 0.0], [52.0, 1.0], [52.0, -1.0], [
+                50.0, 0.0,
+            ]])),
         ])
         .expect("test collection is valid");
         for (name, left, right) in [
@@ -3002,13 +2992,9 @@ mod tests {
             ),
             (
                 "full boundary",
-                line(&[
-                    [0.0, 0.0],
-                    [10.0, 0.0],
-                    [10.0, 10.0],
-                    [0.0, 10.0],
-                    [0.0, 0.0],
-                ]),
+                line(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [
+                    0.0, 0.0,
+                ]]),
                 "FF21FFFF2",
             ),
             (

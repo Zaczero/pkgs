@@ -735,13 +735,13 @@ impl<'a> PolylabelField<'a> {
     /// the result, so the descent prunes every node farther than it from the
     /// outset (the true nearest is never pruned — it lies at or below the
     /// bound). `f64::INFINITY` means "no prior knowledge" (the seed cells).
-    fn boundary_distance(&mut self, point: Point, bound_squared: f64) -> f64 {
+    fn boundary_distance(&mut self, point: Point, bound_squared: f64) -> Result<f64> {
         if let Some(frame) = self.frame {
             let mut best = f64::INFINITY;
             self.linework.for_each_segment(|segment| {
                 best = best.min(framed_metric_nearest_on_segment(frame, point, segment).1);
             });
-            return best;
+            return Ok(best);
         }
         let squared = match &self.bvh {
             Some(bvh) => bvh.min_point_distance_with_stack::<true>(
@@ -755,7 +755,7 @@ impl<'a> PolylabelField<'a> {
                 .linework
                 .min_points_distance::<true>(std::iter::once((point.x, point.y)), bound_squared),
         };
-        squared.sqrt()
+        Ok(squared?.sqrt())
     }
 
     /// Build a cell with its signed boundary distance (`+d` inside the area,
@@ -789,7 +789,7 @@ impl<'a> PolylabelField<'a> {
             let sign = (parent.distance.abs() > gap).then_some(parent.distance > 0.0);
             (bound * bound, sign)
         });
-        let distance = self.boundary_distance(center, bound_squared);
+        let distance = self.boundary_distance(center, bound_squared)?;
         // Containment is needed only for the seed cells and the few cells that
         // straddle the boundary (deep cells inherit their parent's sign), so a
         // direct even-odd ray cast beats building a hierarchical

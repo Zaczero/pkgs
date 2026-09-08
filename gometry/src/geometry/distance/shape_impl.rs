@@ -622,7 +622,7 @@ pub(super) fn robust_directed_hausdorff(source: &Shape, target: &Shape) -> Resul
         for &t in &params[..count] {
             best = best.max(distance(robust_segment_point(segment, t))?);
         }
-        Ok(())
+        Ok::<(), crate::error::Error>(())
     })?;
     Ok(best)
 }

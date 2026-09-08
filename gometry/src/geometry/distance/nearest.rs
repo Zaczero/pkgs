@@ -27,7 +27,7 @@ pub(crate) fn nearest_probe_to_parts(
             .nearest_to_points(probe.probe_points(), best)?,
     };
     if !target.point_only.is_empty() {
-        if let Some(index) = target.point_index() {
+        if let Some(index) = target.point_index()? {
             // Indexed: each probe point's nearest target point in O(log points).
             for probe_point in probe.probe_points() {
                 if let Some((target_point, distance_squared)) = index.nearest(probe_point) {
@@ -50,10 +50,11 @@ pub(crate) fn nearest_probe_to_parts(
                 for &target_point in &target.point_only {
                     let distance_squared = point_distance_squared(probe_point, target_point);
                     let distance_key = point_pair_distance_key(probe_point.xy(), target_point.xy());
-                    if best
-                        .as_ref()
-                        .is_none_or(|candidate| distance_key.cmp(&candidate.distance_key).is_lt())
-                    {
+                    let improves = match best.as_ref() {
+                        Some(candidate) => distance_key.cmp(&candidate.distance_key)?.is_lt(),
+                        None => true,
+                    };
+                    if improves {
                         best = Some(NearestCandidate {
                             probe: probe_point,
                             target: target_point,
@@ -65,17 +66,21 @@ pub(crate) fn nearest_probe_to_parts(
             }
         }
     }
-    let improved = incoming.as_ref().is_none_or(|previous| {
-        best.as_ref().is_some_and(|candidate| {
-            Some(candidate.distance_squared) != incoming_distance
-                || !same_point(candidate.probe, previous.candidate.probe)
-                || !same_point(candidate.target, previous.candidate.target)
-                || candidate
-                    .distance_key
-                    .cmp(&previous.candidate.distance_key)?
-                    .is_lt()
-        })
-    });
+    let improved = match incoming.as_ref() {
+        None => true,
+        Some(previous) => match best.as_ref() {
+            None => false,
+            Some(candidate) => {
+                Some(candidate.distance_squared) != incoming_distance
+                    || !same_point(candidate.probe, previous.candidate.probe)
+                    || !same_point(candidate.target, previous.candidate.target)
+                    || candidate
+                        .distance_key
+                        .cmp(&previous.candidate.distance_key)?
+                        .is_lt()
+            },
+        },
+    };
     Ok(match (best, incoming, improved) {
         (Some(candidate), _, true) | (Some(candidate), None, _) => {
             Some(OrientedCandidate { candidate, swapped })
@@ -194,13 +199,21 @@ impl DistanceParts {
     /// The cached R-tree over this side's isolated points, built on first use
     /// once the point count clears the crossover (`None` below it — a short
     /// brute scan wins under the rstar bulk-load setup cost).
-    pub(crate) fn point_index(&self) -> Option<&PointSetIndex> {
-        self.point_index
-            .get_or_init(|| {
-                (self.point_only.len() >= POINT_INDEX_MIN_POINTS)
-                    .then(|| PointSetIndex::build(self.point_only.iter().copied()))
-            })
-            .as_ref()
+    pub(crate) fn point_index(&self) -> crate::error::Result<Option<&PointSetIndex>> {
+        if let Some(index) = self.point_index.get() {
+            return Ok(index.as_ref());
+        }
+        let index = if self.point_only.len() >= POINT_INDEX_MIN_POINTS {
+            Some(PointSetIndex::build(self.point_only.iter().copied())?)
+        } else {
+            None
+        };
+        let _ = self.point_index.set(index);
+        Ok(self
+            .point_index
+            .get()
+            .expect("point index was published")
+            .as_ref())
     }
 }
 

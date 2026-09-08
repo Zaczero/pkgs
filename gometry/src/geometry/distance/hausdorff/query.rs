@@ -51,7 +51,7 @@ mod scratch_tests {
         let held = ScratchPool::checkout(&QUERY_SCRATCH);
         let query =
             HausdorffLineworkQuery::from_open_xy_columns(&[0.0, 1.0], &[0.0, 0.0], false).unwrap();
-        assert_eq!(query.distance_squared(XY::new(0.5, 1.0)), 1.0);
+        assert_eq!(query.distance_squared(XY::new(0.5, 1.0)).unwrap(), 1.0);
         drop(held);
 
         reserve(crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<f64>() + 1);
@@ -76,7 +76,9 @@ mod scratch_tests {
         for force_bvh in [false, true] {
             let query = HausdorffLineworkQuery::from_open_xy_columns(&xs, &ys, force_bvh).unwrap();
             let mut result = [HausdorffProbeResult::default()];
-            query.batch_probe(&probe, &mut result, &mut Vec::new());
+            query
+                .batch_probe(&probe, &mut result, &mut Vec::new())
+                .unwrap();
             assert_eq!(result[0].distance_squared, 1.0, "force_bvh={force_bvh}");
             assert_eq!(
                 result[0].feature_id,
@@ -95,7 +97,9 @@ mod scratch_tests {
     ) -> (HausdorffLineworkQuery, HausdorffProbeResult) {
         let query = HausdorffLineworkQuery::from_open_xy_columns(xs, ys, force_bvh).unwrap();
         let mut result = [HausdorffProbeResult::default()];
-        query.batch_probe(&[(px, py)], &mut result, &mut Vec::new());
+        query
+            .batch_probe(&[(px, py)], &mut result, &mut Vec::new())
+            .unwrap();
         (query, result[0])
     }
 
@@ -113,7 +117,8 @@ mod scratch_tests {
             assert_eq!(
                 query
                     .linework
-                    .min_points_distance::<false>(std::iter::once((2e150, 2.0)), f64::INFINITY),
+                    .min_points_distance::<false>(std::iter::once((2e150, 2.0)), f64::INFINITY)
+                    .unwrap(),
                 2.0,
                 "force_bvh={force_bvh}: non-witness hypot stays hypot"
             );
@@ -392,7 +397,7 @@ pub(crate) fn hausdorff_segment_tight_upper_bound_squared(
     features: &[HausdorffFeature],
     start_xy: Option<XY>,
     end_xy: Option<XY>,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let half = 0.5 * length;
     let lip = 0.5 * (dist_start + dist_end + length);
     let piece = (0.5 * (dist_start + dist_mid + half)).max(0.5 * (dist_mid + dist_end + half));
@@ -405,7 +410,7 @@ pub(crate) fn hausdorff_segment_tight_upper_bound_squared(
             let feature = features[witness as usize];
             let du = point_feature_distance(start, feature);
             let dv = point_feature_distance(end, feature);
-            single = single.min(du.max(dv));
+            single = single.min(du?.max(dv?));
         }
     }
     let ub = lip.min(piece).min(single);
@@ -415,5 +420,5 @@ pub(crate) fn hausdorff_segment_tight_upper_bound_squared(
     } else {
         ub
     };
-    rounded * rounded
+    Ok(rounded * rounded)
 }

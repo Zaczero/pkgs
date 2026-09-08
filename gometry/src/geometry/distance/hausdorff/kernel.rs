@@ -199,37 +199,41 @@ pub(crate) fn directed_hausdorff_distance_squared_shapes(
         return Ok(f64::INFINITY);
     }
     let target = HausdorffTarget::build(target)?;
-    Ok(directed_hausdorff_distance_squared_with_target_shape(
-        source, &target,
-    ))
+    directed_hausdorff_distance_squared_with_target_shape(source, &target)
 }
 
 pub(crate) fn directed_hausdorff_distance_squared_with_target_shape<T: HausdorffTargetLike>(
     source: &Shape,
     target: &T,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let mut cmax = 0.0_f64;
-    source.for_each_point(|point| {
-        cmax = cmax.max(target.distance_squared(point.xy()));
-    });
-    source.for_each_segment(|segment| {
+    source.try_for_each_point(|point| {
+        cmax = cmax.max(target.distance_squared(point.xy())?);
+        Ok::<(), crate::error::Error>(())
+    })?;
+    source.try_for_each_vertex_pair(|start, end| {
+        let segment = Segment {
+            start: start.xy(),
+            end: end.xy(),
+        };
         let dx = segment.end.x - segment.start.x;
         let dy = segment.end.y - segment.start.y;
         if dx == 0.0 && dy == 0.0 {
-            cmax = cmax.max(target.distance_squared(segment.start));
-            return;
+            cmax = cmax.max(target.distance_squared(segment.start)?);
+            return Ok::<(), crate::error::Error>(());
         }
         let bound_sq = hausdorff_segment_upper_bound_squared(
-            target.distance_squared(segment.start),
-            target.distance_squared(segment.end),
+            target.distance_squared(segment.start)?,
+            target.distance_squared(segment.end)?,
             dx * dx + dy * dy,
         );
         if bound_sq <= cmax {
-            return;
+            return Ok(());
         }
-        cmax = cmax.max(target.max_distance_squared_on_segment_culled(segment, cmax));
-    });
-    cmax
+        cmax = cmax.max(target.max_distance_squared_on_segment_culled(segment, cmax)?);
+        Ok(())
+    })?;
+    Ok(cmax)
 }
 
 /// Planar Hausdorff between two uniform 4-vertex line windows (closed-form
@@ -239,7 +243,7 @@ pub(crate) fn hausdorff_distance_uniform_4v(
     left_ys: &[f64],
     right_xs: &[f64],
     right_ys: &[f64],
-) -> f64 {
+) -> Result<f64> {
     hausdorff_distance_4v_exact(left_xs, left_ys, right_xs, right_ys)
 }
 
@@ -249,7 +253,7 @@ pub(crate) fn hausdorff_distance_4v_exact(
     left_ys: &[f64],
     right_xs: &[f64],
     right_ys: &[f64],
-) -> f64 {
+) -> Result<f64> {
     hausdorff_distance_4v_with_targets(
         left_xs,
         left_ys,
@@ -323,13 +327,17 @@ pub(crate) fn hausdorff_distance_4v_with_targets(
     right_xs: &[f64],
     right_ys: &[f64],
     right: &SmallLineTarget,
-) -> f64 {
-    directed_hausdorff_4v_fused(left_xs, left_ys, right)
-        .max(directed_hausdorff_4v_fused(right_xs, right_ys, left))
-        .sqrt()
+) -> Result<f64> {
+    Ok(directed_hausdorff_4v_fused(left_xs, left_ys, right)?
+        .max(directed_hausdorff_4v_fused(right_xs, right_ys, left)?)
+        .sqrt())
 }
 
-pub(crate) fn directed_hausdorff_4v_fused(xs: &[f64], ys: &[f64], target: &SmallLineTarget) -> f64 {
+pub(crate) fn directed_hausdorff_4v_fused(
+    xs: &[f64],
+    ys: &[f64],
+    target: &SmallLineTarget,
+) -> Result<f64> {
     debug_assert_eq!(xs.len(), 4);
     directed_hausdorff_distance_squared_with_target_pruned(xs, ys, target)
 }
@@ -368,11 +376,11 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
         return Ok(
             directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
                 left_xs, left_ys, &right, 0.0, scratch,
-            )
+            )?
             .max(
                 directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
                     right_xs, right_ys, &left, 0.0, scratch,
-                ),
+                )?,
             ),
         );
     }
@@ -383,13 +391,13 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
         left_ys,
         &right_target,
         scratch,
-    );
+    )?;
     let lb_ba = directed_hausdorff_vertex_lower_bound_squared_with_scratch(
         right_xs,
         right_ys,
         &left_target,
         scratch,
-    );
+    )?;
     if lb_ab >= lb_ba {
         let exact_ab = directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
             left_xs,
@@ -397,7 +405,7 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
             &right_target,
             0.0,
             scratch,
-        );
+        )?;
         Ok(exact_ab.max(
             directed_hausdorff_distance_squared_with_target_pruned_initial_with_scratch(
                 right_xs,
@@ -405,7 +413,7 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
                 &left_target,
                 exact_ab,
                 scratch,
-            ),
+            )?,
         ))
     } else {
         let exact_ba = directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
@@ -414,7 +422,7 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
             &left_target,
             0.0,
             scratch,
-        );
+        )?;
         Ok(exact_ba.max(
             directed_hausdorff_distance_squared_with_target_pruned_initial_with_scratch(
                 left_xs,
@@ -422,7 +430,7 @@ fn hausdorff_distance_squared_line_columns_with_scratch(
                 &right_target,
                 exact_ba,
                 scratch,
-            ),
+            )?,
         ))
     }
 }
@@ -609,7 +617,7 @@ pub(crate) fn hausdorff_distance_line_columns_batch(
             };
             if left_xs.len() == 4 && right_xs.len() == 4 {
                 let closed_form =
-                    hausdorff_distance_uniform_4v(left_xs, left_ys, right_xs, right_ys);
+                    hausdorff_distance_uniform_4v(left_xs, left_ys, right_xs, right_ys)?;
                 if closed_form.is_finite()
                     && closed_form.to_bits().abs_diff(source_distance.to_bits()) <= 1
                 {

@@ -65,9 +65,10 @@ fn point_target_envelope_clamps_endpoint_switches_before_sampling() {
         end: XY::new(1.0, 0.0),
     };
     stats::reset();
-    let fast = max_point_to_target_squared_on_segment_culled(source, &target, None);
+    let fast = max_point_to_target_squared_on_segment_culled(source, &target, None).unwrap();
     let snapshot = stats::snapshot();
-    let legacy = max_point_to_target_squared_on_segment_culled_legacy_for_test(source, &target);
+    let legacy =
+        max_point_to_target_squared_on_segment_culled_legacy_for_test(source, &target).unwrap();
     assert_eq!(fast.to_bits(), legacy.to_bits());
     assert_eq!(snapshot.point_envelope_breakpoints, 1);
     assert_eq!(snapshot.point_envelope_samples, 5);
@@ -174,8 +175,9 @@ fn point_target_envelope_is_bitwise_identical_to_the_prior_continuous_kernel() {
     ];
     for (source, points) in cases {
         let target = point_target(points);
-        let fast = max_point_to_target_squared_on_segment_culled(source, &target, None);
-        let legacy = max_point_to_target_squared_on_segment_culled_legacy_for_test(source, &target);
+        let fast = max_point_to_target_squared_on_segment_culled(source, &target, None).unwrap();
+        let legacy =
+            max_point_to_target_squared_on_segment_culled_legacy_for_test(source, &target).unwrap();
         assert_eq!(
             fast.to_bits(),
             legacy.to_bits(),

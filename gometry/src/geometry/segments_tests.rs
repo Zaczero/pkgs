@@ -605,8 +605,10 @@ fn squared_distance_intervals_contain_the_exact_stored_double_distance() {
         point_pair
             .witness
             .squared()
+            .expect("ordinary point-pair exact square")
             .rounded_trustworthy()
             .expect("ordinary point-pair square rounds normally")
+            .expect("ordinary point-pair square is normal")
             .to_bits(),
         point_pair.filter.hi.to_bits(),
     );
@@ -874,7 +876,9 @@ mod exact_projection_allocation_tests {
             end: XY::new(1.0, 0.0),
         };
         let point = XY::new(0.0, 0.0);
-        prefix_sweep(|| super::classify_segment_projection_exact(point, segment).map(|_| ()));
+        prefix_sweep(|| {
+            super::super::classify_segment_projection_exact(point, segment).map(|_| ())
+        });
     }
 
     #[test]
@@ -884,7 +888,7 @@ mod exact_projection_allocation_tests {
             end: XY::new(2.0, 0.0),
         };
         let point = XY::new(1.0, 1.0);
-        prefix_sweep(|| super::exact_projection_terms(point, segment).map(|_| ()));
+        prefix_sweep(|| super::super::exact_projection_terms(point, segment).map(|_| ()));
     }
 
     #[test]

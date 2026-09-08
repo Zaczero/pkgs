@@ -660,8 +660,9 @@ mod vw_frame_tests {
         assert!(framed.xs.is_some() && framed.ys.is_some());
         assert!(allocations > 0);
         for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, run)
-                .expect_err("framed VW columns must propagate allocation failure");
+            let Err(error) = fail_allocations_after(allowed, run) else {
+                panic!("framed VW columns must propagate allocation failure");
+            };
             assert!(matches!(
                 error.kind(),
                 ErrorKind::Resource(ResourceError::Allocation)

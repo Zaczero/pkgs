@@ -640,7 +640,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
     crate::geometry::try_sort_by(&mut cuts, |left, right| {
         Ok(left.0.cmp(&right.0).then(left.1.cmp_along(&right.1)?))
     })?;
-    let mut keep = Vec::new();
+    let mut keep: Vec<(usize, SegmentProjection)> = Vec::new();
     crate::try_reserve_vec(&mut keep, cuts.len())?;
     for cut in cuts {
         if let Some(previous) = keep.last()

@@ -842,7 +842,8 @@ fn relate_areal_linework(
                 linework.chains.segments[line_ordinal],
                 contact,
                 &mut cuts[line_ordinal],
-            )? else {
+            )?
+            else {
                 return Ok(None);
             };
             if let Contact::Collinear { span } = contact
@@ -1354,11 +1355,10 @@ mod tests {
             ),
             (
                 "multi: three parts at one point (boundary)",
-                multi(&[
-                    &[(0.0, 0.0), (1.0, 1.0)],
-                    &[(0.0, 2.0), (1.0, 1.0)],
-                    &[(2.0, 1.0), (1.0, 1.0)],
-                ]),
+                multi(&[&[(0.0, 0.0), (1.0, 1.0)], &[(0.0, 2.0), (1.0, 1.0)], &[
+                    (2.0, 1.0),
+                    (1.0, 1.0),
+                ]]),
                 line(&[(1.0, 1.0), (1.0, 3.0)]),
             ),
             (

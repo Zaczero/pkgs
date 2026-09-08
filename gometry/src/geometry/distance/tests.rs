@@ -610,7 +610,7 @@ fn brute_directed_hausdorff_squared(source: &Shape, target: &Shape) -> f64 {
     let target = HausdorffTarget::build(target).unwrap();
     let mut best = 0.0_f64;
     source.for_each_point(|point| {
-        best = best.max(target.distance_squared(point.xy()));
+        best = best.max(target.distance_squared(point.xy()).unwrap());
     });
     source.for_each_segment(|segment| {
         best = best.max(brute_max_on_segment_squared(segment, &target));
@@ -624,13 +624,13 @@ fn brute_max_on_segment_squared(source: Segment, target: &HausdorffTarget) -> f6
     let dx = source.end.x - ax;
     let dy = source.end.y - ay;
     if dx == 0.0 && dy == 0.0 {
-        return target.distance_squared(source.start);
+        return target.distance_squared(source.start).unwrap();
     }
     let steps = 256_usize;
     let mut best = 0.0_f64;
     for step in 0..=steps {
         let t = step as f64 / steps as f64;
-        best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target));
+        best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target).unwrap());
     }
     best
 }
@@ -788,7 +788,7 @@ fn directed_hausdorff_distance_squared_columns_forced(
         });
     }
     let target = HausdorffTarget::from_parts(&segments, Vec::new(), Some(force_index));
-    directed_hausdorff_distance_squared_with_target_columns(left_xs, left_ys, &target)
+    directed_hausdorff_distance_squared_with_target_columns(left_xs, left_ys, &target).unwrap()
 }
 
 #[test]
@@ -834,7 +834,8 @@ fn small_hausdorff_column_path_matches_forced_indexed() {
 fn hausdorff_4v_exact_matches_bisection_oracle() {
     let (left_xs, left_ys) = wiggly_line_columns(4, 0.0);
     let (right_xs, right_ys) = wiggly_line_columns(4, 0.3);
-    let exact = super::hausdorff_distance_4v_exact(&left_xs, &left_ys, &right_xs, &right_ys);
+    let exact =
+        super::hausdorff_distance_4v_exact(&left_xs, &left_ys, &right_xs, &right_ys).unwrap();
     let bisect = super::hausdorff_distance_4v_fused(&left_xs, &left_ys, &right_xs, &right_ys);
     assert_eq!(exact.to_bits(), bisect.to_bits());
     assert_hausdorff_close(exact, bisect);
@@ -844,7 +845,8 @@ fn hausdorff_4v_exact_matches_bisection_oracle() {
                  left_ys: [f64; 4],
                  right_xs: [f64; 4],
                  right_ys: [f64; 4]| {
-        let exact = super::hausdorff_distance_4v_exact(&left_xs, &left_ys, &right_xs, &right_ys);
+        let exact =
+            super::hausdorff_distance_4v_exact(&left_xs, &left_ys, &right_xs, &right_ys).unwrap();
         let bisect = super::hausdorff_distance_4v_fused(&left_xs, &left_ys, &right_xs, &right_ys);
         assert_hausdorff_close(exact, bisect);
     };

@@ -129,9 +129,9 @@ pub(crate) fn polygonize_faces_from_arrangement(
     (faces, parents)
 }
 
-pub(crate) fn polygonize_faces(graph: &TopologyGraph) -> (Vec<Face>, Vec<Option<usize>>) {
+pub(crate) fn polygonize_faces(graph: &TopologyGraph) -> Result<(Vec<Face>, Vec<Option<usize>>)> {
     let mut arrangement = arrangement_from_graph(graph)?;
-    polygonize_faces_from_arrangement(&mut arrangement)
+    Ok(polygonize_faces_from_arrangement(&mut arrangement))
 }
 
 /// Polygonize noded linework: every minimal cycle becomes its own polygon (the
@@ -140,7 +140,7 @@ pub(crate) fn polygonize_faces(graph: &TopologyGraph) -> (Vec<Face>, Vec<Option<
 /// right — exactly like GEOS (a donut yields the holed annulus AND the inner
 /// disk).
 pub(crate) fn polygonize_lines(graph: &TopologyGraph) -> Result<Vec<Polygon>> {
-    let (faces, parents) = polygonize_faces(graph);
+    let (faces, parents) = polygonize_faces(graph)?;
     let children = children_of(&parents);
     (0..faces.len())
         .map(|index| {
@@ -180,7 +180,7 @@ pub(crate) fn children_of(parents: &[Option<usize>]) -> Vec<Vec<usize>> {
 /// faces immediately nested within. The right model for dissolving a cell-grid
 /// coverage into its outline.
 pub(crate) fn build_area_lines(graph: &TopologyGraph) -> Result<Vec<Polygon>> {
-    let (faces, parents) = polygonize_faces(graph);
+    let (faces, parents) = polygonize_faces(graph)?;
     let children = children_of(&parents);
     // Parents point to earlier (larger-area) positions, so depth folds forward.
     let mut depths = vec![0_usize; faces.len()];

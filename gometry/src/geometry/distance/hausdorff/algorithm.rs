@@ -171,27 +171,32 @@ impl HausdorffScratch {
 
     /// Run `target.batch_probe` against the staged probe buffer without
     /// overlapping field borrows (probes/results/stack are temporarily taken).
-    fn run_batch_probe<T: HausdorffTargetLike>(&mut self, target: &T) {
+    fn run_batch_probe<T: HausdorffTargetLike>(&mut self, target: &T) -> crate::error::Result<()> {
         let probes = std::mem::take(&mut self.probes);
         let mut results = std::mem::take(&mut self.probe_results);
         let mut stack = std::mem::take(&mut self.stack);
-        target.batch_probe(&probes, &mut results, &mut stack);
+        let result = target.batch_probe(&probes, &mut results, &mut stack);
         self.probes = probes;
         self.probe_results = results;
         self.stack = stack;
+        result
     }
 
     /// Midpoint probe batch against staged midpoint buffers.
-    fn run_midpoint_batch_probe<T: HausdorffTargetLike>(&mut self, target: &T) {
+    fn run_midpoint_batch_probe<T: HausdorffTargetLike>(
+        &mut self,
+        target: &T,
+    ) -> crate::error::Result<()> {
         let probes = std::mem::take(&mut self.midpoint_probes);
         let mut results = std::mem::take(&mut self.mid_results);
         let mut stack = std::mem::take(&mut self.stack);
         results.clear();
         results.resize(probes.len(), HausdorffProbeResult::default());
-        target.batch_probe(&probes, &mut results, &mut stack);
+        let result = target.batch_probe(&probes, &mut results, &mut stack);
         self.midpoint_probes = probes;
         self.mid_results = results;
         self.stack = stack;
+        result
     }
 }
 
@@ -211,7 +216,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned<T: Hausdorf
     left_xs: &[f64],
     left_ys: &[f64],
     target: &T,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let mut scratch = hausdorff_scratch();
     directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
         left_xs,
@@ -230,7 +235,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_with_scratc
     target: &T,
     initial_cmax_sq: f64,
     scratch: &mut HausdorffScratch,
-) -> f64 {
+) -> crate::error::Result<f64> {
     directed_hausdorff_distance_squared_with_target_pruned_initial_with_scratch(
         left_xs,
         left_ys,
@@ -252,11 +257,11 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
     target: &T,
     initial_cmax_sq: f64,
     scratch: &mut HausdorffScratch,
-) -> f64 {
+) -> crate::error::Result<f64> {
     let vertex_count = left_xs.len();
     debug_assert_eq!(vertex_count, left_ys.len());
     if vertex_count == 0 {
-        return 0.0;
+        return Ok(0.0);
     }
     // Length-exact reborrows: vertex/segment loops index slices whose lengths
     // ARE the loop bounds (bounds-check elision).
@@ -265,7 +270,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
 
     {
         scratch.prepare_vertices(left_xs, left_ys);
-        scratch.run_batch_probe(target);
+        scratch.run_batch_probe(target)?;
         stats::inc_vertex_probes(vertex_count);
         let mut cmax = initial_cmax_sq;
         let probe_count = scratch.probe_results.len();
@@ -281,7 +286,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
             cmax = cmax.max(distance_squared);
         }
         if vertex_count < 2 {
-            return cmax;
+            return Ok(cmax);
         }
 
         let segment_count = vertex_count - 1;
@@ -307,7 +312,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
                 .push((f64::midpoint(ax, bx), f64::midpoint(ay, by)));
         }
         if !scratch.midpoint_probes.is_empty() {
-            scratch.run_midpoint_batch_probe(target);
+            scratch.run_midpoint_batch_probe(target)?;
             // Collect mid results first so we can write into midpoint columns
             // without overlapping borrows on `scratch`.
             let mid_pairs: Vec<(usize, f64, u32)> = scratch
@@ -340,7 +345,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
         let midpoint_dist_sq = &midpoint_dist_sq_buf[..segment_count];
         let midpoint_witness = &midpoint_witness_buf[..segment_count];
 
-        let process_segment = |segment_index: usize, cmax: &mut f64| {
+        let process_segment = |segment_index: usize, cmax: &mut f64| -> crate::error::Result<()> {
             let dist_start_sq = vertex_dist_sq[segment_index];
             let dist_end_sq = vertex_dist_sq[segment_index + 1];
             let ax = left_xs[segment_index];
@@ -350,7 +355,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
             let dx = bx - ax;
             let dy = by - ay;
             if dx == 0.0 && dy == 0.0 {
-                return;
+                return Ok(());
             }
             let length = sqrt_distance_squared(dx * dx + dy * dy);
             let bound_sq = hausdorff_segment_tight_upper_bound_squared(
@@ -364,14 +369,14 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
                 features,
                 Some(XY::new(ax, ay)),
                 Some(XY::new(bx, by)),
-            );
+            )?;
             if bound_sq <= *cmax {
                 stats::inc_segment_bound_skips();
-                return;
+                return Ok(());
             }
             if segment_radius_coverage_certified(ax, ay, dx, dy, target, *cmax) {
                 stats::inc_coverage_certificate_skips();
-                return;
+                return Ok(());
             }
             stats::inc_exact_segment_evals();
             let exact = target.max_distance_squared_on_segment_culled(
@@ -380,19 +385,20 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
                     end: XY::new(bx, by),
                 },
                 *cmax,
-            );
+            )?;
             *cmax = (*cmax).max(exact);
+            Ok(())
         };
 
         if segment_count <= 8 {
             for segment_index in 0..segment_count {
-                process_segment(segment_index, &mut cmax);
+                process_segment(segment_index, &mut cmax)?;
             }
             scratch.vertex_dist_sq = vertex_dist_sq_buf;
             scratch.vertex_witness = vertex_witness_buf;
             scratch.midpoint_dist_sq = midpoint_dist_sq_buf;
             scratch.midpoint_witness = midpoint_witness_buf;
-            return cmax;
+            return Ok(cmax);
         }
 
         // Heapify bound entries in O(n) and pop descending until the top
@@ -424,7 +430,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
                     features,
                     Some(XY::new(ax, ay)),
                     Some(XY::new(bx, by)),
-                ),
+                )?,
                 index: segment_index,
             });
         }
@@ -433,7 +439,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
             if entry.bound_sq <= cmax {
                 break;
             }
-            process_segment(entry.index, &mut cmax);
+            process_segment(entry.index, &mut cmax)?;
         }
         // Return capacity to the scratch for the next call.
         scratch.order_entries = order.into_vec();
@@ -442,7 +448,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_wit
         scratch.vertex_witness = vertex_witness_buf;
         scratch.midpoint_dist_sq = midpoint_dist_sq_buf;
         scratch.midpoint_witness = midpoint_witness_buf;
-        cmax
+        Ok(cmax)
     }
 }
 
@@ -452,14 +458,14 @@ pub(crate) fn directed_hausdorff_vertex_lower_bound_squared_with_scratch<T: Haus
     left_ys: &[f64],
     target: &T,
     scratch: &mut HausdorffScratch,
-) -> f64 {
+) -> crate::error::Result<f64> {
     scratch.prepare_vertices(left_xs, left_ys);
-    scratch.run_batch_probe(target);
-    scratch
+    scratch.run_batch_probe(target)?;
+    Ok(scratch
         .probe_results
         .iter()
         .map(|result| result.distance_squared)
-        .fold(0.0_f64, f64::max)
+        .fold(0.0_f64, f64::max))
 }
 
 #[cfg(test)]
@@ -467,7 +473,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_columns<T: Hausdor
     left_xs: &[f64],
     left_ys: &[f64],
     target: &T,
-) -> f64 {
+) -> crate::error::Result<f64> {
     directed_hausdorff_distance_squared_with_target_pruned(left_xs, left_ys, target)
 }
 
