@@ -53,18 +53,6 @@ impl PyGeometryArray {
         arrays: &[&Self],
         first: &Self,
         first_coords: &CoordSeq,
-    ) -> PyResult<Option<Self>> {
-        Ok(Self::concat_packed_points_many_native(
-            arrays,
-            first,
-            first_coords,
-        )?)
-    }
-
-    fn concat_packed_points_many_native(
-        arrays: &[&Self],
-        first: &Self,
-        first_coords: &CoordSeq,
     ) -> Result<Option<Self>> {
         let mut total_rows = 0_usize;
         for array in arrays {
@@ -96,18 +84,6 @@ impl PyGeometryArray {
     }
 
     fn concat_packed_lines_many(
-        arrays: &[&Self],
-        first: &Self,
-        first_coords: &CoordSeq,
-    ) -> PyResult<Option<Self>> {
-        Ok(Self::concat_packed_lines_many_native(
-            arrays,
-            first,
-            first_coords,
-        )?)
-    }
-
-    fn concat_packed_lines_many_native(
         arrays: &[&Self],
         first: &Self,
         first_coords: &CoordSeq,
@@ -155,18 +131,6 @@ impl PyGeometryArray {
     }
 
     fn concat_packed_polygons_many(
-        arrays: &[&Self],
-        first: &Self,
-        first_coords: &CoordSeq,
-    ) -> PyResult<Option<Self>> {
-        Ok(Self::concat_packed_polygons_many_native(
-            arrays,
-            first,
-            first_coords,
-        )?)
-    }
-
-    fn concat_packed_polygons_many_native(
         arrays: &[&Self],
         first: &Self,
         first_coords: &CoordSeq,
@@ -239,7 +203,7 @@ impl PyGeometryArray {
         if arrays.iter().any(|array| array.is_compact_nullable()) {
             return Ok(None);
         }
-        match first.storage() {
+        let packed = match first.storage() {
             GeometryArrayStorage::Packed(PackedStorage::Points {
                 coords: first_coords,
                 ..
@@ -253,7 +217,8 @@ impl PyGeometryArray {
                 ..
             }) => Self::concat_packed_polygons_many(arrays, first, first_coords),
             GeometryArrayStorage::Mixed(_) => Ok(None),
-        }
+        };
+        Ok(packed?)
     }
 
     /// Pair concat of homogeneous packed storage. Dense+dense reserves one
