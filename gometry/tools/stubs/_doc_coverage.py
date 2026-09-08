@@ -83,6 +83,8 @@ ALLOWED_BUILTIN_RAISES = frozenset({
     'IndexError',
     'KeyError',
     'BufferError',
+    'MemoryError',
+    'OSError',
     'OverflowError',
     'StopIteration',
     'ModuleNotFoundError',
@@ -262,6 +264,10 @@ def required_raises(
         'GeometryArray',
     ):
         required.add('ParseError')
+    if qualname == 'from_arrow':
+        # Arrow-C stream callback failures remain native protocol errors:
+        # status 12 is MemoryError, other nonzero statuses are OSError.
+        required |= {'MemoryError', 'OSError'}
     if qualname in ('box', 'points'):
         required.add('InvalidGeometryError')
     if name == 'to_crs':

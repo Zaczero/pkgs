@@ -17986,6 +17986,74 @@ def from_arrow(
     """Build geometries from an Arrow array, table, record batch, reader, or
     Arrow-C provider. Protocol callbacks and PyArrow object inspection remain
     attached; selected buffers are owned before the decoder is detached.
+    Arrow null slots become missing rows; typed empty geometries remain typed
+    empty values. Empty arrays and streams return an empty array while retaining
+    compatible CRS and epoch metadata when the input provides it.
+
+    Parameters
+    ----------
+    data : object
+        A foreign PyArrow ``Array``, ``ChunkedArray``, ``Table``,
+        ``RecordBatch``, or ``RecordBatchReader``, or an object implementing
+        ``__arrow_c_array__`` or ``__arrow_c_stream__``. The input must use a
+        supported GeoArrow encoding, including GeoArrow WKB.
+
+    crs : str, int, or CRS-like object, optional
+        CRS to attach when the input has no embedded CRS. If embedded metadata
+        is present, it must be operationally compatible with this value and the
+        explicit value is retained as the result's CRS. Passing ``None`` does
+        not strip compatible embedded metadata.
+
+    epoch : float, optional
+        Coordinate epoch (decimal year) to attach as frame metadata. A supplied
+        epoch must be finite and have a compatible embedded or explicit CRS; an
+        embedded epoch is preserved when this argument is omitted.
+
+    Returns
+    -------
+    GeometryArray[Geometry | None]
+        Decoded geometry rows. Arrow null slots become missing ``None`` rows;
+        typed empty geometries remain typed empty values. Empty input produces
+        an empty array, retaining compatible CRS and epoch metadata when
+        available.
+
+    Raises
+    ------
+    CRSError
+        If ``crs`` or an embedded EWKB SRID cannot be resolved, or ``epoch`` is
+        supplied without a CRS or with a static CRS.
+    CRSMismatchError
+        If explicit CRS or epoch metadata conflicts with embedded metadata, or
+        EWKB row SRIDs disagree.
+    GeometryError
+        If ``epoch`` is not finite or admitted geometry data violates a geometry
+        invariant.
+    ParseError
+        If GeoArrow metadata, offsets, validity buffers, coordinate buffers, or
+        WKB data are malformed.
+    TypeError
+        If ``data`` is not a supported Arrow object or provider, its schema or
+        encoding cannot be classified, or it has no geometry column.
+    OSError
+        If an Arrow C stream schema or batch callback returns a nonzero status
+        other than 12; the callback status is exposed as ``errno``.
+    MemoryError
+        If an Arrow C stream callback returns status 12 (ENOMEM), or native
+        storage allocation fails.
+    OverflowError
+        If Arrow lengths or offsets exceed representable native sizes.
+
+    See Also
+    --------
+    GeometryArray.to_arrow : Export an array as a GeoArrow array.
+
+    Examples
+    --------
+    >>> import gometry as gm
+    >>> source = gm.points([1.0], [2.0])
+    >>> restored = gm.from_arrow(source.to_arrow())
+    >>> restored.to_wkt()
+    ['POINT (1 2)']
     """
 
 def from_features(

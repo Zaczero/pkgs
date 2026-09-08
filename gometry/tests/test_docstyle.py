@@ -12,7 +12,7 @@ import json
 import textwrap
 from typing import TYPE_CHECKING
 
-from tests._support import load_tool
+from tests._support import GOMETRY_ROOT, load_tool
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -128,6 +128,33 @@ def test_empty_raises_description() -> None:
     empty = [f for f in findings if f.class_ == 'numpydoc.empty_raises_description']
     assert len(empty) == 1
     assert empty[0].entry == 'GeometryError'
+
+
+def test_from_arrow_stream_errors_are_allowed_and_required() -> None:
+    """Arrow-C stream status failures stay in the public doc contract."""
+    coverage = load_tool(
+        'doc_coverage', GOMETRY_ROOT / 'tools/stubs/_doc_coverage.py'
+    )
+    expected = coverage.required_raises('from_arrow', {'data', 'crs', 'epoch'})
+    assert {'CRSError', 'GeometryError', 'ParseError', 'OSError', 'MemoryError'} <= expected
+
+    errors: list[str] = []
+    coverage._check_raises(
+        'from_arrow',
+        [
+            'CRSError',
+            'CRSMismatchError',
+            'GeometryError',
+            'ParseError',
+            'TypeError',
+            'OSError',
+            'MemoryError',
+            'OverflowError',
+        ],
+        errors,
+        parameters={'data', 'crs', 'epoch'},
+    )
+    assert errors == []
 
 
 def test_missing_blank_before_section() -> None:
