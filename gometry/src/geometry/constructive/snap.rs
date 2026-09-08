@@ -492,7 +492,7 @@ enum SubdivisionEmission<'a> {
 }
 
 impl<'a> SubdivisionEmission<'a> {
-    fn recompute(placement: SegmentPlacement<'a>) -> Self {
+    const fn recompute(placement: SegmentPlacement<'a>) -> Self {
         match placement {
             SegmentPlacement::Planar => Self::Planar,
             SegmentPlacement::Geodesic(geodesic, frame) => {
@@ -744,7 +744,7 @@ fn subdivide_columns_from_steps<'a>(
         return Ok(points.clone());
     }
     let mut output = SubdivisionColumns::new(points, emission, total);
-    emit_subdivision(&steps, &mut output)?;
+    emit_subdivision(steps, &mut output)?;
     output.emission.assert_exhausted();
     output.finish()
 }

@@ -1068,32 +1068,24 @@ impl Shape {
     ) -> Result<Self> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
-            Self::LineString(points) => Self::LineString(match transform(points)? {
-                Some(line) => LineSeq::from_proven(line),
-                None => points.clone(),
-            }),
+            Self::LineString(points) => Self::LineString(
+                transform(points)?.map_or_else(|| points.clone(), LineSeq::from_proven),
+            ),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<LineSeq, crate::error::Error>(match transform(line)? {
-                        Some(coords) => LineSeq::from_proven(coords),
-                        None => line.clone(),
-                    })
+                    Ok::<_, crate::error::Error>(
+                        transform(line)?.map_or_else(|| line.clone(), LineSeq::from_proven),
+                    )
                 })?)
             },
-            Self::Polygon(polygon) => Self::Polygon(polygon.map_ring_seqs(|ring| {
-                Ok(match transform(ring)? {
-                    Some(coords) => coords,
-                    None => ring.clone(),
-                })
-            })?),
+            Self::Polygon(polygon) => Self::Polygon(
+                polygon
+                    .map_ring_seqs(|ring| Ok(transform(ring)?.unwrap_or_else(|| ring.clone())))?,
+            ),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    polygon.map_ring_seqs(|ring| {
-                        Ok(match transform(ring)? {
-                            Some(coords) => coords,
-                            None => ring.clone(),
-                        })
-                    })
+                    polygon
+                        .map_ring_seqs(|ring| Ok(transform(ring)?.unwrap_or_else(|| ring.clone())))
                 })?)
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
+#[cfg(test)]
 use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
     Bounds, CoordSeq, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape, SharedSlice,

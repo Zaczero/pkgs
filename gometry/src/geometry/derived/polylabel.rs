@@ -404,15 +404,15 @@ fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
                 return;
             },
         };
-        let replace = best.as_ref().map_or(true, |current| {
-            match compare_exact_ratios(&candidate, current) {
-                Ok(order) => order == Ordering::Less,
-                Err(failure) => {
-                    error = Some(failure);
-                    false
-                },
-            }
-        });
+        let replace =
+            best.as_ref()
+                .is_none_or(|current| match compare_exact_ratios(&candidate, current) {
+                    Ok(order) => order == Ordering::Less,
+                    Err(failure) => {
+                        error = Some(failure);
+                        false
+                    },
+                });
         if replace {
             best = Some(candidate);
         }

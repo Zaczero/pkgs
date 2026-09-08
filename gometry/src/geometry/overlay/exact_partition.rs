@@ -1021,14 +1021,13 @@ mod tests {
             if growth > 0 {
                 let mut short = ExpansionBudget::new("exact_partition", "items");
                 short.add(GENERATED_ITEM_LIMIT - growth + 1).unwrap();
-                let error = match partition_unique_segments(
+                let Err(error) = partition_unique_segments(
                     &case.unique,
                     &case.provenance,
                     &case.isolated,
                     &mut short,
-                ) {
-                    Err(error) => error,
-                    Ok(_) => panic!("one fewer generated item must reject the partition"),
+                ) else {
+                    panic!("one fewer generated item must reject the partition");
                 };
                 assert!(matches!(
                     error.kind(),

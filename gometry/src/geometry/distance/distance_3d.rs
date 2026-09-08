@@ -422,9 +422,8 @@ mod allocation_tests {
         for allowed in 0..count {
             let target = fixture();
             let result = fail_allocations_after(allowed, || target.bvh());
-            let error = match result {
-                Err(error) => error,
-                Ok(_) => panic!("each cold construction allocation must propagate"),
+            let Err(error) = result else {
+                panic!("each cold construction allocation must propagate");
             };
             assert!(matches!(
                 error.kind(),

@@ -459,9 +459,8 @@ fn geodesic_sweep_propagates_bvh_allocation_failure() -> Result<()> {
         let result = fail_allocations_after(0, || {
             geodesic_sweep_with_parts(&probe, &parts, metric, f64::INFINITY)
         });
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("BVH allocation failure was swallowed by capped fallback"),
+        let Err(error) = result else {
+            panic!("BVH allocation failure was swallowed by capped fallback");
         };
         assert!(matches!(
             error.kind(),
