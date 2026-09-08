@@ -81,11 +81,11 @@ impl OrdinateSource {
     fn build_direct(inputs: &[&Shape]) -> Self {
         let mut result = Self::new(inputs);
         for shape in inputs {
-            if !(shape.has_z() || shape.has_m()) {
-                continue;
-            }
             if matches!(shape, Shape::Point(_) | Shape::MultiPoint(_)) {
                 shape.for_each_point(|point| add_vertex(&mut result.vertices, point));
+            }
+            if !(shape.has_z() || shape.has_m()) {
+                continue;
             }
             shape.for_each_vertex_pair(|start, end| {
                 if !same_point(start, end) {
@@ -139,11 +139,23 @@ impl OrdinateSource {
     fn resolve(&self, point: Point) -> Result<(Option<f64>, Option<f64>)> {
         let mut z = AxisValue::default();
         let mut m = AxisValue::default();
-        if let Some(candidates) = self.vertices.get(&PointKey::new(point)) {
+        let source_vertex = self.vertices.get(&PointKey::new(point));
+        if let Some(candidates) = source_vertex {
             for &candidate in candidates {
                 z.observe(candidate.z());
                 m.observe(candidate.m());
             }
+        }
+        // An exact source occurrence owns its XY even when it is merely near
+        // another ordinate-carrying segment. Do not turn that near miss into
+        // a fabricated interpolation through a tolerance envelope.
+        if source_vertex.is_some()
+            && !self
+                .segments
+                .iter()
+                .any(|&(start, end)| point_on_segment(point.xy(), start.xy(), end.xy()))
+        {
+            return Ok((z.value(), m.value()));
         }
         if self.segments.is_empty() || (z.conflict && m.conflict) {
             return Ok((z.value(), m.value()));

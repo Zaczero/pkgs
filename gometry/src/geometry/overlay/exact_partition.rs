@@ -426,6 +426,23 @@ impl BoundaryPlan {
                 xs.push(end.x);
                 ys.push(end.y);
             }
+            if xs.len() > 2
+                && same_point(
+                    XY::new(xs[0], ys[0]),
+                    XY::new(xs[xs.len() - 1], ys[ys.len() - 1]),
+                )
+            {
+                canonicalize_closed_xy(&mut xs, &mut ys);
+                let open = xs.len() - 1;
+                let next = (xs[1], ys[1]);
+                let previous = (xs[open - 1], ys[open - 1]);
+                if next > previous {
+                    xs[1..open].reverse();
+                    ys[1..open].reverse();
+                    xs[open] = xs[0];
+                    ys[open] = ys[0];
+                }
+            }
             if let (Some(first), Some(last)) =
                 (xs.first().zip(ys.first()), xs.last().zip(ys.last()))
                 && (last.0, last.1) < (first.0, first.1)
@@ -766,6 +783,13 @@ impl GlobalFaces {
         let mut protected = Vec::new();
         try_reserve_vec(&mut protected, partition.recipes.len())?;
         protected.resize(partition.recipes.len(), false);
+        if partition.protect_stored {
+            for (node, recipe) in partition.recipes.iter().enumerate() {
+                if partition.protect_all || matches!(recipe, NodeRecipe::Stored(_)) {
+                    protected[node] = true;
+                }
+            }
+        }
         for &node in &partition.point_nodes {
             protected[node.0 as usize] = true;
         }
@@ -1012,6 +1036,8 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     /// canonicalizes signed zero for identity; emission must not do the same
     /// to an endpoint that was already present in the input.
     stored_points: Vec<Option<XY>>,
+    protect_stored: bool,
+    protect_all: bool,
 }
 
 /// Fallible Cartesian source inventory shared by overlay, relation, clipping,
@@ -1027,6 +1053,7 @@ pub(in crate::geometry) struct ExactSourceInventory {
     source_operands: Vec<u32>,
     source_rings: Vec<Option<u32>>,
     source_boundaries: Vec<bool>,
+    source_collapsed: Vec<bool>,
     polygon_rings: Vec<Vec<Range<usize>>>,
     ring_count: usize,
     isolated: Vec<XY>,
@@ -1048,6 +1075,7 @@ impl ExactSourceInventory {
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
             source_boundaries: staged.source_boundaries,
+            source_collapsed: staged.source_collapsed,
             polygon_rings: staged.polygon_rings,
             ring_count: staged.ring_count,
             isolated: staged.isolated,
@@ -1075,6 +1103,7 @@ impl ExactSourceInventory {
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
             source_boundaries: staged.source_boundaries,
+            source_collapsed: staged.source_collapsed,
             polygon_rings: staged.polygon_rings,
             ring_count: staged.ring_count,
             isolated: staged.isolated,
@@ -1087,7 +1116,7 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn from_segments(segments: &[Segment]) -> Result<Self> {
         let mut staged = StagedExactSources::new(1)?;
         for &segment in segments {
-            staged.push_segment(segment, 0, None, false)?;
+            staged.push_segment(segment, 0, None, false, false)?;
         }
         let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
         Ok(Self {
@@ -1096,6 +1125,7 @@ impl ExactSourceInventory {
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
             source_boundaries: staged.source_boundaries,
+            source_collapsed: staged.source_collapsed,
             polygon_rings: staged.polygon_rings,
             ring_count: staged.ring_count,
             isolated: staged.isolated,
@@ -1135,6 +1165,7 @@ impl ExactSourceInventory {
                     0,
                     closed.then_some(ring_id),
                     false,
+                    false,
                 )?;
             }
         }
@@ -1145,6 +1176,7 @@ impl ExactSourceInventory {
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
             source_boundaries: staged.source_boundaries,
+            source_collapsed: staged.source_collapsed,
             polygon_rings: staged.polygon_rings,
             ring_count: staged.ring_count,
             isolated: staged.isolated,
@@ -1158,7 +1190,11 @@ impl ExactSourceInventory {
         &self,
         budget: &mut ExpansionBudget,
     ) -> Result<ExactPartition<'_>> {
-        partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)
+        let mut partition =
+            partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)?;
+        partition.protect_stored = self.polygon_rings.iter().all(Vec::is_empty);
+        partition.protect_all = partition.protect_stored;
+        Ok(partition)
     }
 
     fn operand_count(&self) -> usize {
@@ -1589,7 +1625,11 @@ impl ExactSourceInventory {
                 // that closure. `None` is reserved for genuine line support
                 // and collapsed rings, which remain line cells even without
                 // an occupied face (the collapsed-shell contract).
-                if self.source_rings[source as usize].is_none() {
+                if self.line_support(
+                    partition,
+                    span_index,
+                    self.source_operands[source as usize] as usize,
+                ) {
                     membership[self.source_operands[source as usize] as usize] = true;
                 }
             }
@@ -1621,10 +1661,11 @@ impl ExactSourceInventory {
         )?;
         node_membership.resize(partition.recipes.len() * operands, false);
         for (span_index, span) in partition.spans.iter().enumerate() {
-            for &(source, _) in partition.owners(span_index) {
-                let operand = self.source_operands[source as usize] as usize;
-                node_membership[span.start.0 as usize * operands + operand] = true;
-                node_membership[span.end.0 as usize * operands + operand] = true;
+            for operand in 0..operands {
+                if self.line_support(partition, span_index, operand) {
+                    node_membership[span.start.0 as usize * operands + operand] = true;
+                    node_membership[span.end.0 as usize * operands + operand] = true;
+                }
             }
         }
         for (index, &node) in partition.point_nodes.iter().enumerate() {
@@ -1644,6 +1685,19 @@ impl ExactSourceInventory {
             }
         }
         for node in 0..partition.recipes.len() {
+            let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
+            if range.is_empty() {
+                continue;
+            }
+            for operand in 0..operands {
+                let any = range.clone().any(|slot| {
+                    let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
+                    face_membership[face * operands + operand]
+                });
+                node_membership[node * operands + operand] |= any;
+            }
+        }
+        for node in 0..partition.recipes.len() {
             let membership = &node_membership[node * operands..][..operands];
             cells.nodes[node] |= select_operation(operation, membership);
         }
@@ -1656,12 +1710,30 @@ impl ExactSourceInventory {
             let filled = |ring| {
                 if odd {
                     winding[ring] % 2 != 0
+                } else if self.invalid_areas[operand] {
+                    winding[ring] < 0
                 } else {
                     winding[ring] != 0
                 }
             };
             rings.next().is_some_and(filled) && !rings.any(filled)
         })
+    }
+
+    fn line_support(&self, partition: &ExactPartition<'_>, span: usize, operand: usize) -> bool {
+        let mut net = 0_i64;
+        for &(source, reversed) in partition.owners(span) {
+            if self.source_operands[source as usize] as usize == operand
+                && (self.source_rings[source as usize].is_none()
+                    || self.source_boundaries[source as usize])
+            {
+                if self.source_collapsed[source as usize] {
+                    return true;
+                }
+                net += if reversed { -1 } else { 1 };
+            }
+        }
+        net != 0
     }
 }
 
@@ -1670,6 +1742,7 @@ struct StagedExactSources {
     source_operands: Vec<u32>,
     source_rings: Vec<Option<u32>>,
     source_boundaries: Vec<bool>,
+    source_collapsed: Vec<bool>,
     polygon_rings: Vec<Vec<Range<usize>>>,
     ring_count: usize,
     isolated: Vec<XY>,
@@ -1688,6 +1761,7 @@ impl StagedExactSources {
             source_operands: Vec::new(),
             source_rings: Vec::new(),
             source_boundaries: Vec::new(),
+            source_collapsed: Vec::new(),
             polygon_rings,
             ring_count: 0,
             isolated: Vec::new(),
@@ -1745,7 +1819,7 @@ impl StagedExactSources {
             }
             first.get_or_insert(start);
             last = Some(end);
-            self.push_segment(Segment { start, end }, operand, None, false)?;
+            self.push_segment(Segment { start, end }, operand, None, false, false)?;
         }
         if let (Some(first), Some(last)) = (first, last)
             && !same_point(first, last)
@@ -1814,6 +1888,7 @@ impl StagedExactSources {
                     operand,
                     (!collapsed).then_some(ring_id),
                     self_intersection,
+                    collapsed,
                 )?;
             }
         }
@@ -1828,15 +1903,18 @@ impl StagedExactSources {
         operand: u32,
         ring: Option<u32>,
         boundary: bool,
+        collapsed: bool,
     ) -> Result<()> {
         try_reserve_vec(&mut self.segments, 1)?;
         try_reserve_vec(&mut self.source_operands, 1)?;
         try_reserve_vec(&mut self.source_rings, 1)?;
         try_reserve_vec(&mut self.source_boundaries, 1)?;
+        try_reserve_vec(&mut self.source_collapsed, 1)?;
         self.segments.push(segment);
         self.source_operands.push(operand);
         self.source_rings.push(ring);
         self.source_boundaries.push(boundary);
+        self.source_collapsed.push(collapsed);
         Ok(())
     }
 }
@@ -3019,6 +3097,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         point_nodes,
         point_sources,
         stored_points,
+        protect_stored: false,
+        protect_all: false,
     })
 }
 
