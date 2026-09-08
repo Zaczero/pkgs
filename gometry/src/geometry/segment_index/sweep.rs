@@ -12,10 +12,10 @@ use crate::geometry::{Bounds, PointKey, Segment, XY};
 use crate::try_reserve_vec;
 
 fn abort_on_alloc(result: Result<ControlFlow<()>>) -> ControlFlow<()> {
-    match result {
-        Ok(flow) => flow,
-        Err(_) => handle_alloc_error(Layout::from_size_align(1, 1).expect("valid layout")),
-    }
+    result.map_or_else(
+        |_| handle_alloc_error(Layout::from_size_align(1, 1).expect("valid layout")),
+        |flow| flow,
+    )
 }
 
 fn u32_ordinal(value: usize) -> Result<u32> {
@@ -309,7 +309,7 @@ fn try_candidate_pairs_over_staged_runs(
     if count < SWEEP_MIN_ITEMS {
         for left in 0..count {
             for right in (left + 1)..count {
-                if let ControlFlow::Break(()) = visit(left, right) {
+                if visit(left, right) == ControlFlow::Break(()) {
                     return Ok(ControlFlow::Break(()));
                 }
             }
@@ -385,6 +385,13 @@ fn try_candidate_pairs_over_runs(
 /// keeps both direction signs within the run's quadrant (zero components
 /// are wildcards). Zero-length segments break out into their own runs so
 /// their point-touch pairs still reach the visitor through run pairs.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "aborting monotone-run wrapper is retained for the fallible sweep's infallible callers"
+    )
+)]
 pub(in crate::geometry) fn monotone_runs(
     pool: &[Segment],
     chain_of: &impl Fn(usize) -> u32,
@@ -782,10 +789,9 @@ fn try_banded_windows(
                     && right.cross_min <= left.cross_max
                     && right.cross_max >= left.cross_min
                     && band_of(left.cross_min).max(band_of(right.cross_min)) == band
+                    && visit_ordered(left, right, visit) == ControlFlow::Break(())
                 {
-                    if let ControlFlow::Break(()) = visit_ordered(left, right, visit) {
-                        return Ok(ControlFlow::Break(()));
-                    }
+                    return Ok(ControlFlow::Break(()));
                 }
             }
         }

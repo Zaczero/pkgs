@@ -148,7 +148,7 @@ fn exact_snap_does_not_use_a_rounded_axis_rejection() {
 #[test]
 fn public_delaunay_keeps_collinear_empty_contract() {
     let source = Shape::MultiPoint(
-        crate::geometry::CoordSeq::try_from_points(&vec![xy(0.0, 0.0), xy(1.0, 0.0), xy(2.0, 0.0)])
+        crate::geometry::CoordSeq::try_from_points(&[xy(0.0, 0.0), xy(1.0, 0.0), xy(2.0, 0.0)])
             .unwrap()
             .into(),
     );

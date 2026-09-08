@@ -404,16 +404,15 @@ fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
                 return;
             },
         };
-        let replace = match &best {
-            None => true,
-            Some(current) => match compare_exact_ratios(&candidate, current) {
+        let replace = best.as_ref().map_or(true, |current| {
+            match compare_exact_ratios(&candidate, current) {
                 Ok(order) => order == Ordering::Less,
                 Err(failure) => {
                     error = Some(failure);
                     false
                 },
-            },
-        };
+            }
+        });
         if replace {
             best = Some(candidate);
         }
@@ -832,7 +831,7 @@ mod tests {
                     _ => (0.0, -1.0),
                 }
             } else {
-                let (sin, cos) = (std::f64::consts::TAU * step as f64 / 64.0).sin_cos();
+                let (sin, cos) = (std::f64::consts::TAU * f64::from(step) / 64.0).sin_cos();
                 (cos, sin)
             };
             points.push(Point::new_raw_xy(

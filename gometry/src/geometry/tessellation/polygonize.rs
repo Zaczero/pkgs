@@ -155,7 +155,7 @@ pub(crate) fn polygonize_lines(graph: &TopologyGraph) -> Result<Vec<Polygon>> {
                         .map(Ring::from_closed)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(Polygon::new(shell, holes)?)
+            Polygon::new(shell, holes)
         })
         .collect()
 }
@@ -206,7 +206,7 @@ pub(crate) fn build_area_lines(graph: &TopologyGraph) -> Result<Vec<Polygon>> {
                         .map(Ring::from_closed)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(Polygon::new(shell, holes)?)
+            Polygon::new(shell, holes)
         })
         .collect()
 }
@@ -231,7 +231,7 @@ pub(crate) fn polygonize_full(
                         .map(Ring::from_closed)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(Polygon::new(shell, holes)?)
+            Polygon::new(shell, holes)
         })
         .collect::<Result<Vec<_>>>()?;
     let used_segments = polygon_segment_keys(&polygons);

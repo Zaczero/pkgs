@@ -108,12 +108,7 @@ pub(crate) fn assemble_rings(rings: Vec<Vec<XY>>) -> crate::error::Result<Option
             }
             shells
                 .into_iter()
-                .map(|shell| {
-                    Ok(Polygon::new(
-                        Ring::from_closed(closed_coordseq(shell)?),
-                        Vec::new(),
-                    )?)
-                })
+                .map(|shell| Polygon::new(Ring::from_closed(closed_coordseq(shell)?), Vec::new()))
                 .collect::<crate::error::Result<Vec<_>>>()?
         },
     };

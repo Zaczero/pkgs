@@ -72,7 +72,7 @@ fn holed_rectangle(
     let (hx0, hy0, hx1, hy1) = hole;
     Polygon::new(rectangle(minx, miny, maxx, maxy).shell, vec![
         Ring::from_closed(
-            CoordSeq::try_from_points(&vec![
+            CoordSeq::try_from_points(&[
                 Point::new_raw_xy(hx0, hy0),
                 Point::new_raw_xy(hx1, hy0),
                 Point::new_raw_xy(hx1, hy1),

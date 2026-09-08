@@ -3,12 +3,14 @@ use std::ops::ControlFlow;
 
 use ahash::HashSetExt as _;
 
-use crate::error::Result;
-use crate::geographic::GeographicInputs;
+use crate::boundary::geographic::invalid_lonlat_error;
+use crate::error::{ResourceError, Result};
+use crate::geographic::{GeographicInputs, GeographicViewError};
 use crate::geometry::overlay::{
     OverlayOp, Strictness, build_overlay_shape, build_overlay_shape_from_chains, dedup_points,
     merge_chain_edges, overlay_declared_axes,
 };
+use crate::geometry::segments::compare_along_segment;
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
@@ -135,19 +137,19 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
                 geometries.iter().map(std::borrow::Borrow::borrow),
             )
             .map_err(overlay_view_error)?;
-            overlay_all_geographic_from(originals, op, strictness, bounds_certificates)
+            overlay_all_geographic_from(&originals, op, strictness, bounds_certificates)
         },
     }
 }
 
 pub(in crate::geometry) fn overlay_all_geographic_from(
-    originals: GeographicInputs<'_>,
+    originals: &GeographicInputs<'_>,
     op: OverlayOp,
     strictness: crate::geometry::Strictness,
     bounds_certificates: bool,
 ) -> Result<Shape> {
     overlay_admitted(
-        OverlayInputs::Geographic(&originals),
+        OverlayInputs::Geographic(originals),
         op,
         strictness,
         bounds_certificates,
@@ -230,10 +232,10 @@ fn overlay_admitted(
                 .map_err(overlay_view_error)?,
         ),
     };
-    let staged = match noded.as_ref() {
-        Some(noded) => OverlayInputs::Geographic(noded),
-        None => OverlayInputs::Cartesian(&refs),
-    };
+    let staged = noded.as_ref().map_or_else(
+        || OverlayInputs::Cartesian(&refs),
+        OverlayInputs::Geographic,
+    );
     let input_crosses = match domain {
         TopologyDomain::Cartesian => false,
         TopologyDomain::Geographic(frame) => {
@@ -689,8 +691,8 @@ enum OverlayInputs<'a, 's> {
     Geographic(&'a GeographicInputs<'s>),
 }
 
-impl<'a, 's> OverlayInputs<'a, 's> {
-    fn domain(self) -> TopologyDomain {
+impl<'s> OverlayInputs<'_, 's> {
+    const fn domain(self) -> TopologyDomain {
         match self {
             Self::Cartesian(_) => TopologyDomain::Cartesian,
             Self::Geographic(inputs) => TopologyDomain::Geographic(inputs.frame()),
@@ -712,18 +714,11 @@ impl<'a, 's> OverlayInputs<'a, 's> {
     }
 }
 
-pub(in crate::geometry) fn overlay_view_error(
-    error: crate::geographic::GeographicViewError,
-) -> crate::error::Error {
+pub(in crate::geometry) fn overlay_view_error(error: GeographicViewError) -> crate::error::Error {
     match error {
-        crate::geographic::GeographicViewError::Resource => {
-            crate::error::ResourceError::Allocation.into()
-        },
-        crate::geographic::GeographicViewError::Diagnostic(diagnostic) => {
-            crate::boundary::geographic::invalid_lonlat_error(
-                diagnostic.native.x,
-                diagnostic.native.y,
-            )
+        GeographicViewError::Resource => ResourceError::Allocation.into(),
+        GeographicViewError::Diagnostic(diagnostic) => {
+            invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y)
         },
     }
 }
@@ -1313,11 +1308,7 @@ fn cut_lines_overlay(inputs: &[&Shape], pool: &[Segment], op: OverlayOp) -> Resu
             // segment meets them; the chain ends there only where two or more
             // kept segments meet, as the dissolve's degree rule has it.
             cuts.sort_by(|left, right| {
-                crate::geometry::segments::compare_along_segment(
-                    Segment { start, end },
-                    *left,
-                    *right,
-                )
+                compare_along_segment(Segment { start, end }, *left, *right)
             });
             for &cut in &cuts {
                 if points.last().is_some_and(|last| same_point(last.xy(), cut)) {
@@ -1731,7 +1722,7 @@ fn canonicalize_polygon(
         .iter()
         .map(canonicalize)
         .collect::<Result<Vec<_>>>()?;
-    Ok(crate::geometry::Polygon::new(shell, holes)?)
+    crate::geometry::Polygon::new(shell, holes)
 }
 
 fn face_probe(ring: &[XY], sign: AreaSign) -> Option<XY> {

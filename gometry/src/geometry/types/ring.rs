@@ -38,6 +38,10 @@ impl Ring {
 
     /// Validate and close `points` under the shared ring-admission policy.
     /// The boundary constructor for parsed / constructed input.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "admission takes ownership of constructed point vectors at the ring boundary"
+    )]
     pub fn closed(points: Vec<Point>) -> Result<Self> {
         Self::closed_coordseq(CoordSeq::try_from_points(&points)?)
     }

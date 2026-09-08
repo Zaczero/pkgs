@@ -122,7 +122,7 @@ fn assert_liang_authority_agrees(name: &str, start: XY, end: XY, rect: Bounds) {
     let authority = clip_segment_authority(start, end, rect);
     match fast {
         ClipVerdict::Declined => {
-            assert_eq!(clip_segment(start, end, rect).unwrap(), authority, "{name}")
+            assert_eq!(clip_segment(start, end, rect).unwrap(), authority, "{name}");
         },
         decided => {
             let fast = decided.into_clip();

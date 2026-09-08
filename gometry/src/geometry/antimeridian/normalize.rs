@@ -350,7 +350,7 @@ fn wrap_longitude(lon: f64, frame: GeographicFrame) -> Result<f64> {
         .longitude()
         .canonicalize(lon)
         .map(|longitude| longitude.get())
-        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()).into())
+        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 
 /// Rewrap a derived point's longitude after an unwrapped planar kernel.
@@ -407,13 +407,12 @@ pub(crate) fn unary_antimeridian_derived(
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
     match domain {
-        TopologyDomain::Cartesian => kernel(shape),
         TopologyDomain::Geographic(frame)
             if crate::geometry::crosses_antimeridian_in_frame(shape, frame) =>
         {
             derived_point_unwrapped(shape, frame, strategy, kernel)
         },
-        TopologyDomain::Geographic(_) => kernel(shape),
+        TopologyDomain::Cartesian | TopologyDomain::Geographic(_) => kernel(shape),
     }
 }
 

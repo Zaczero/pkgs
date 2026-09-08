@@ -640,7 +640,7 @@ mod tests {
         );
         let [upper, lower] = ring_chains(&tri_pool.rings[0]);
         assert_ne!(upper.len, lower.len, "triangle chains are asymmetric");
-        let (_, allocations) = crate::test_support::allocation_count(|| {
+        let ((), allocations) = crate::test_support::allocation_count(|| {
             ring_chains(&pool.rings[0]);
             ring_chains(&pool.rings[1]);
             ring_chains(&tri_pool.rings[0]);

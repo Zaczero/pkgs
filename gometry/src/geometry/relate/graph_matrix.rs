@@ -1,5 +1,7 @@
+use crate::boundary::geographic::invalid_lonlat_error;
 use crate::collections::{HashSet, HashSetExt as _};
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
+use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
 use crate::geometry::convex_contact::ConvexRelation;
 #[cfg(test)]
 use crate::geometry::predicates;
@@ -21,7 +23,7 @@ use crate::geometry::{
 pub(crate) struct GeographicPrepared<'a> {
     plan: &'a PreparedPlan,
     frame_cache: &'a crate::geometry::FrameDependentCaches,
-    view: crate::geographic::ScalarGeographicView<'a>,
+    view: ScalarGeographicView<'a>,
 }
 
 impl<'a> GeographicPrepared<'a> {
@@ -31,11 +33,11 @@ impl<'a> GeographicPrepared<'a> {
         self.plan
     }
 
-    pub(crate) const fn frame(&self) -> crate::geographic::GeographicFrame {
+    pub(crate) const fn frame(&self) -> GeographicFrame {
         self.view.frame()
     }
 
-    pub(crate) const fn view(self) -> crate::geographic::ScalarGeographicView<'a> {
+    pub(crate) const fn view(self) -> ScalarGeographicView<'a> {
         self.view
     }
 
@@ -43,15 +45,15 @@ impl<'a> GeographicPrepared<'a> {
     pub(crate) fn try_new(
         plan: &'a PreparedPlan,
         frame_cache: &'a crate::geometry::FrameDependentCaches,
-        frame: crate::geographic::GeographicFrame,
+        frame: GeographicFrame,
     ) -> crate::error::Result<Self> {
-        let view = match crate::geographic::ScalarGeographicView::try_new(frame, plan.shape()) {
+        let view = match ScalarGeographicView::try_new(frame, plan.shape()) {
             Ok(view) => view,
-            Err(crate::geographic::GeographicViewError::Resource) => {
-                return Err(crate::error::ResourceError::Allocation.into());
+            Err(GeographicViewError::Resource) => {
+                return Err(ResourceError::Allocation.into());
             },
-            Err(crate::geographic::GeographicViewError::Diagnostic(diagnostic)) => {
-                return Err(crate::boundary::geographic::invalid_lonlat_error(
+            Err(GeographicViewError::Diagnostic(diagnostic)) => {
+                return Err(invalid_lonlat_error(
                     diagnostic.native.x,
                     diagnostic.native.y,
                 ));
@@ -147,6 +149,13 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
 /// direct folds' test oracle. Tests must reach the graph THROUGH this, never
 /// through `graph_relate_data`, which now admits the direct engines first and
 /// would compare an engine with itself.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "source-graph oracle is retained as the complete fallback; tests must reach the graph through this path"
+    )
+)]
 pub(crate) fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
     if let Some(matrix) = try_areal_relate(left.shape(), right.shape()) {
         return Ok(matrix);
@@ -222,6 +231,10 @@ pub(crate) fn graph_relate_data_with_right_graph(
     graph_relate(left.topology_graph()?, right_graph)
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "GeographicPrepared is a Copy view of three borrows; the relate functions take the completed prepare step by value"
+)]
 pub(crate) fn graph_relate_data_geographic(
     left: GeographicPrepared<'_>,
     right: GeographicPrepared<'_>,
@@ -250,6 +263,10 @@ pub(crate) fn graph_relate_data_geographic(
 
 /// Compute a geographic relation from topology graphs already resolved by the
 /// caller. This keeps the direct areal fold ahead of graph assembly.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "GeographicPrepared is a Copy view of three borrows; the relate functions take the completed prepare step by value"
+)]
 pub(crate) fn graph_relate_data_geographic_with_left_graph(
     left: &PreparedPlan,
     left_graph: &TopologyGraph,
@@ -276,6 +293,10 @@ pub(crate) fn graph_relate_data_geographic_with_left_graph(
 
 /// Compute a geographic relation while reusing the right operand's resolved
 /// graph. The left graph remains lazy so direct areal pairs do no graph work.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "GeographicPrepared is a Copy view of three borrows; the relate functions take the completed prepare step by value"
+)]
 pub(crate) fn graph_relate_data_geographic_with_right_graph(
     left: GeographicPrepared<'_>,
     right: &PreparedPlan,
@@ -849,10 +870,12 @@ pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
 }
 
 fn graph_relate(left: &TopologyGraph, right: &TopologyGraph) -> Result<De9im> {
-    assert_eq!(
-        left.domain, right.domain,
-        "relation graphs must share a coordinate domain"
-    );
+    if left.domain != right.domain {
+        return Err(crate::geometry::GeometryErrorKind::Invalid(
+            "relation graphs must share a coordinate domain".into(),
+        )
+        .into());
+    }
     if let Some(point) = single_point(right) {
         return Ok(graph_relate_to_point(left, point));
     }
@@ -1540,7 +1563,7 @@ mod tests {
     fn donut() -> Polygon {
         Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0).shell, vec![
             Ring::from_closed(
-                CoordSeq::try_from_points(&vec![
+                CoordSeq::try_from_points(&[
                     Point::new_raw_xy(3.0, 3.0),
                     Point::new_raw_xy(7.0, 3.0),
                     Point::new_raw_xy(7.0, 7.0),
@@ -3037,7 +3060,7 @@ mod tests {
         let multi_line = Shape::MultiLineString(
             vec![
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new_raw_xy(-1.0, 5.0),
                         Point::new_raw_xy(11.0, 5.0),
                     ])
@@ -3129,7 +3152,7 @@ mod tests {
             Shape::Polygon(
                 Polygon::new(
                     Ring::from_closed(
-                        CoordSeq::try_from_points(&vec![
+                        CoordSeq::try_from_points(&[
                             Point::new_raw_xy(0.0, 0.0),
                             Point::new_raw_xy(-2.0, -1.0),
                             Point::new_raw_xy(-2.0, 1.0),
@@ -3144,7 +3167,7 @@ mod tests {
             Shape::Polygon(
                 Polygon::new(
                     Ring::from_closed(
-                        CoordSeq::try_from_points(&vec![
+                        CoordSeq::try_from_points(&[
                             Point::new_raw_xy(0.0, 0.0),
                             Point::new_raw_xy(2.0, 1.0),
                             Point::new_raw_xy(2.0, -1.0),
@@ -3221,7 +3244,7 @@ mod tests {
             Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0)),
             Shape::LineString(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new_raw_xy(-1.0, 1.0),
                         Point::new_raw_xy(1.0, 1.0),
                         Point::new_raw_xy(3.0, 1.0),
@@ -3237,7 +3260,7 @@ mod tests {
             Shape::Polygon(rectangle(1.0, -1.0, 3.0, 1.0)),
             Shape::LineString(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new_raw_xy(1.0, 1.0),
                         Point::new_raw_xy(1.0, 3.0),
                     ])
@@ -3264,7 +3287,7 @@ mod tests {
             ])),
             Shape::LineString(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new_raw_xy(175.0, 5.0),
                         Point::new_raw_xy(180.0, 5.0),
                         Point::new_raw_xy(-175.0, 5.0),
@@ -3280,7 +3303,7 @@ mod tests {
             Shape::Polygon(rectangle(175.0, -5.0, 179.0, 5.0)),
             Shape::LineString(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new_raw_xy(180.0, 5.0),
                         Point::new_raw_xy(180.0, 15.0),
                     ])

@@ -16,6 +16,7 @@ use crate::error::ResourceError;
 #[cfg(test)]
 use crate::geometry::GENERATED_ITEM_LIMIT;
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::{GeometryErrorKind, Point, Result, XY};
 use crate::try_reserve_vec;
 
@@ -524,6 +525,13 @@ impl ExactDyadic {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "magnitude compare is retained for the exact partition's source-parameter owner"
+        )
+    )]
     pub(in crate::geometry) fn cmp_magnitude(&self, other: &Self) -> Ordering {
         let exponent = self.exponent.min(other.exponent);
         Self::compare_aligned(
@@ -545,12 +553,12 @@ fn difference(left: f64, right: f64) -> ExactDyadic {
 /// it take what it declines, including anything non-finite.
 fn orient2d_float(a: XY, b: XY, c: XY) -> Option<ExactSign> {
     const ERRBOUND: f64 = (3.0 + 16.0 * f64::EPSILON) * f64::EPSILON;
-    let (acx, acy, bcx, bcy) = (a.x - c.x, a.y - c.y, b.x - c.x, b.y - c.y);
     // Components in [2^-450, 2^450] lie on the 2^-502 lattice.
     // Degree-two products and cancellations cannot underflow; the upper
     // bound also leaves room for the determinant sum and its error bound.
     const MIN_COMPONENT: f64 = f64::from_bits((1023 - 450) << 52);
     const MAX_COMPONENT: f64 = f64::from_bits((1023 + 450) << 52);
+    let (acx, acy, bcx, bcy) = (a.x - c.x, a.y - c.y, b.x - c.x, b.y - c.y);
     if [acx, acy, bcx, bcy]
         .iter()
         .any(|value| *value != 0.0 && !(MIN_COMPONENT..=MAX_COMPONENT).contains(&value.abs()))
@@ -577,9 +585,6 @@ fn orient2d_float(a: XY, b: XY, c: XY) -> Option<ExactSign> {
 /// `(10 + 96ε)ε` bound on its permanent.
 fn incircle_float(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     const ERRBOUND: f64 = (10.0 + 96.0 * f64::EPSILON) * f64::EPSILON;
-    let (adx, ady) = (a.x - d.x, a.y - d.y);
-    let (bdx, bdy) = (b.x - d.x, b.y - d.y);
-    let (cdx, cdy) = (c.x - d.x, c.y - d.y);
     // The relative-error filter requires normal intermediate arithmetic.
     // Components in [2^-200, 2^200] lie on the 2^-252 lattice, so every
     // nonzero degree-four intermediate is at least 2^-1008. Products and
@@ -587,6 +592,9 @@ fn incircle_float(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     // 2^-800, keeping its error bound normal too.
     const MIN_COMPONENT: f64 = f64::from_bits((1023 - 200) << 52);
     const MAX_COMPONENT: f64 = f64::from_bits((1023 + 200) << 52);
+    let (adx, ady) = (a.x - d.x, a.y - d.y);
+    let (bdx, bdy) = (b.x - d.x, b.y - d.y);
+    let (cdx, cdy) = (c.x - d.x, c.y - d.y);
     if [adx, ady, bdx, bdy, cdx, cdy]
         .iter()
         .any(|value| *value != 0.0 && !(MIN_COMPONENT..=MAX_COMPONENT).contains(&value.abs()))
@@ -699,7 +707,7 @@ pub(super) fn orient2d(a: XY, b: XY, c: XY) -> ExactSign {
     if let Some(sign) = orient2d_float(a, b, c) {
         debug_assert_eq!(
             sign,
-            crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y),
+            stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y),
             "float-filtered orient2d disagrees"
         );
         return sign;
@@ -707,12 +715,12 @@ pub(super) fn orient2d(a: XY, b: XY, c: XY) -> ExactSign {
     if let Some(sign) = orient2d_lattice(a, b, c) {
         debug_assert_eq!(
             sign,
-            crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y),
+            stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y),
             "lattice orient2d disagrees"
         );
         return sign;
     }
-    crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y)
+    stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y)
 }
 
 /// The interval filter for the in-circle determinant, with the same
@@ -2545,9 +2553,7 @@ mod tests {
         ] {
             assert_eq!(super::orient2d(left, middle, right), expected);
             assert_eq!(
-                crate::geometry::segments::stored_orientation_sign(
-                    left.x, left.y, middle.x, middle.y, right.x, right.y
-                ),
+                stored_orientation_sign(left.x, left.y, middle.x, middle.y, right.x, right.y),
                 expected
             );
         }
@@ -2557,10 +2563,6 @@ mod tests {
     /// Cases that decline are still checked through the complete predicate;
     /// decline is conservative and is not itself a contract here.
     #[test]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "a, b, c, d are the predicate's four points"
-    )]
     fn filtered_predicates_never_contradict_exact_signs() {
         let mu = f64::from_bits(1);
         let orientation_cases = [
@@ -3244,7 +3246,7 @@ mod tests {
             XY::new(-2.0, -6.0),
         ];
         assert_eq!(
-            crate::geometry::segments::stored_orientation_sign(
+            stored_orientation_sign(
                 ordinary[0].x,
                 ordinary[0].y,
                 ordinary[1].x,

@@ -42,7 +42,7 @@ impl CompiledPattern {
 }
 
 #[cfg(test)]
-pub(crate) fn compile(pattern: &str) -> CompiledPattern {
+pub(crate) const fn compile(pattern: &str) -> CompiledPattern {
     CompiledPattern::new(pattern).expect("test DE-9IM pattern is valid")
 }
 
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn new_admits_each_ogc_literal() {
-        for literal in [b'T', b'F', b'*', b'0', b'1', b'2'] {
+        for literal in *b"TF*012" {
             let mut pattern = *b"*********";
             pattern[0] = literal;
             let text = std::str::from_utf8(&pattern).unwrap();

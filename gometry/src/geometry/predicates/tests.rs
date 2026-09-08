@@ -8,13 +8,13 @@ fn ogc_mod2_multiline_point_relations_have_known_answers() {
         MultiLineString::from_values(CoordinateAxes::XY, vec![
             MultiMember::Value(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![point(0.0, 0.0), point(4.0, 0.0)]).unwrap(),
+                    CoordSeq::try_from_points(&[point(0.0, 0.0), point(4.0, 0.0)]).unwrap(),
                 )
                 .expect("test line is valid"),
             ),
             MultiMember::Value(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![point(4.0, 0.0), point(4.0, 4.0)]).unwrap(),
+                    CoordSeq::try_from_points(&[point(4.0, 0.0), point(4.0, 4.0)]).unwrap(),
                 )
                 .expect("test line is valid"),
             ),

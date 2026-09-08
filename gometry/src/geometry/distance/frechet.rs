@@ -397,25 +397,6 @@ fn frechet_dp_columns_distance_framed(
     frechet_dp_columns_distance(&sxs, &sys, &lxs, &lys) / scale
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn framed_distance_rescues_finite_opposite_extreme_operands() {
-        let magnitude = f64::MAX;
-        let short_x = [-magnitude, magnitude];
-        let short_y = [0.0, 0.0];
-        let long_x = [-magnitude, 0.0];
-        let long_y = [0.0, 0.0];
-
-        assert_eq!(
-            frechet_dp_columns_distance_framed(&short_x, &short_y, &long_x, &long_y).to_bits(),
-            magnitude.to_bits()
-        );
-    }
-}
-
 fn frechet_columns_vertexwise_equal(
     short_xs: &[f64],
     short_ys: &[f64],
@@ -472,4 +453,23 @@ fn frechet_dp_columns_distance(
         std::mem::swap(&mut previous, &mut current);
     }
     previous[width - 1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn framed_distance_rescues_finite_opposite_extreme_operands() {
+        let magnitude = f64::MAX;
+        let short_x = [-magnitude, magnitude];
+        let short_y = [0.0, 0.0];
+        let long_x = [-magnitude, 0.0];
+        let long_y = [0.0, 0.0];
+
+        assert_eq!(
+            frechet_dp_columns_distance_framed(&short_x, &short_y, &long_x, &long_y).to_bits(),
+            magnitude.to_bits()
+        );
+    }
 }

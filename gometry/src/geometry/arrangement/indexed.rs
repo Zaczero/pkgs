@@ -28,7 +28,11 @@ impl IndexedTopology {
         let start = self.starts[target] as usize;
         let end = self.starts[target + 1] as usize;
         let reverse = self.twins[slot] as usize;
-        if reverse == start { (end - 1) as u32 } else { (reverse - 1) as u32 }
+        if reverse == start {
+            (end - 1) as u32
+        } else {
+            (reverse - 1) as u32
+        }
     }
 
     pub(crate) fn predecessor_slot(&self, slot: u32) -> u32 {
@@ -51,7 +55,11 @@ impl IndexedTopology {
         self.face_slots.clear();
     }
 
-    pub(crate) fn finish(&mut self, edge_of_slot: &[u32], scratch: &mut IndexedTopologyScratch) -> u32 {
+    pub(crate) fn finish(
+        &mut self,
+        edge_of_slot: &[u32],
+        scratch: &mut IndexedTopologyScratch,
+    ) -> u32 {
         let vertices = self.starts.len().saturating_sub(1);
         let slots = self.targets.len();
         debug_assert_eq!(self.starts.first(), Some(&0));
@@ -63,7 +71,7 @@ impl IndexedTopology {
         debug_assert!(self.twins.capacity() >= slots);
         debug_assert!(self.component_of.capacity() >= vertices);
         debug_assert!(self.face_of.capacity() >= slots);
-        debug_assert!(self.face_starts.capacity() >= slots + 1);
+        debug_assert!(self.face_starts.capacity() > slots);
         debug_assert!(self.face_slots.capacity() >= slots);
         debug_assert!(scratch.component_stack.capacity() >= vertices);
         debug_assert!(scratch.successor.capacity() >= slots);
@@ -72,14 +80,19 @@ impl IndexedTopology {
         for vertex in 0..vertices {
             let row = self.starts[vertex] as usize..self.starts[vertex + 1] as usize;
             debug_assert!(row.end <= slots);
-            self.owners.extend(std::iter::repeat_n(vertex as u32, row.len()));
+            self.owners
+                .extend(std::iter::repeat_n(vertex as u32, row.len()));
         }
 
         scratch.edge_slots.clear();
         scratch.edge_slots.resize(slots / 2, [u32::MAX; 2]);
         for (slot, &edge) in edge_of_slot.iter().enumerate() {
             let pair = &mut scratch.edge_slots[edge as usize];
-            if pair[0] == u32::MAX { pair[0] = slot as u32; } else { pair[1] = slot as u32; }
+            if pair[0] == u32::MAX {
+                pair[0] = slot as u32;
+            } else {
+                pair[1] = slot as u32;
+            }
         }
         self.twins.clear();
         self.twins.resize(slots, u32::MAX);
@@ -97,11 +110,14 @@ impl IndexedTopology {
         scratch.component_stack.clear();
         let mut component_count = 0;
         for seed in 0..vertices {
-            if self.component_of[seed] != u32::MAX { continue; }
+            if self.component_of[seed] != u32::MAX {
+                continue;
+            }
             self.component_of[seed] = component_count;
             scratch.component_stack.push(seed as u32);
             while let Some(vertex) = scratch.component_stack.pop() {
-                let row = self.starts[vertex as usize] as usize..self.starts[vertex as usize + 1] as usize;
+                let row = self.starts[vertex as usize] as usize
+                    ..self.starts[vertex as usize + 1] as usize;
                 for &neighbor in &self.targets[row] {
                     let neighbor = neighbor as usize;
                     if self.component_of[neighbor] == u32::MAX {
@@ -115,8 +131,8 @@ impl IndexedTopology {
 
         scratch.successor.clear();
         scratch.successor.resize(slots, u32::MAX);
-        for slot in 0..slots {
-            scratch.successor[slot] = self.successor_slot(slot as u32);
+        for (slot, successor) in scratch.successor.iter_mut().enumerate() {
+            *successor = self.successor_slot(slot as u32);
         }
         self.face_of.clear();
         self.face_of.resize(slots, u32::MAX);
@@ -124,7 +140,9 @@ impl IndexedTopology {
         self.face_starts.push(0);
         self.face_slots.clear();
         for seed in 0..slots {
-            if self.face_of[seed] != u32::MAX { continue; }
+            if self.face_of[seed] != u32::MAX {
+                continue;
+            }
             let face = (self.face_starts.len() - 1) as u32;
             let mut slot = seed;
             for _ in 0..slots {
@@ -132,7 +150,9 @@ impl IndexedTopology {
                 self.face_of[slot] = face;
                 self.face_slots.push(slot as u32);
                 slot = scratch.successor[slot] as usize;
-                if slot == seed { break; }
+                if slot == seed {
+                    break;
+                }
             }
             debug_assert_eq!(slot, seed);
             self.face_starts.push(self.face_slots.len() as u32);

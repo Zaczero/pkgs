@@ -140,6 +140,10 @@ fn mixed_signed_zero_rectangle() -> Vec<Point> {
     ]
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "hull vertices are identified by stored coordinates, including signed-zero spelling"
+)]
 fn assert_open_hull_is_mixed_zero_rectangle(hull: &Shape) {
     let verts = hull.points_vec().unwrap();
     let open = &verts[..verts.len() - 1];
@@ -215,6 +219,10 @@ fn concave_hull_mixed_signed_zero_rectangle_keeps_collinear_edge_site() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "hull vertices are identified by stored coordinates, including signed-zero spelling"
+)]
 fn convex_hull_transposed_signed_zero_collinear_drops_midpoint() {
     let points = vec![
         point(0.0, -0.0),

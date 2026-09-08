@@ -10,19 +10,18 @@
 use std::cmp::Ordering;
 
 use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
-
-use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
 use crate::geometry::{
     AreaSign, CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
     Orientation, Point, PointKey, Result, XY, open_xy_cycle_magnitude, orientation,
     ring_decision_area, same_point,
 };
 
-#[path = "exact_delaunay.rs"]
-pub(super) mod exact_delaunay;
 #[path = "cdt.rs"]
 mod cdt;
+#[path = "exact_delaunay.rs"]
+pub(super) mod exact_delaunay;
 
 // Test-only companion to the output budget: constrained output admission
 // must happen before the result vector is reserved.
@@ -109,7 +108,12 @@ fn validate_refinement_request(area: f64, refinement: CdtRefinement) -> Result<(
     Ok(())
 }
 
-fn validate_refined_triangle(a: Point, b: Point, c: Point, refinement: CdtRefinement) -> Result<()> {
+fn validate_refined_triangle(
+    a: Point,
+    b: Point,
+    c: Point,
+    refinement: CdtRefinement,
+) -> Result<()> {
     let CdtRefinement::On {
         min_angle,
         max_area,
@@ -126,8 +130,7 @@ fn validate_refined_triangle(a: Point, b: Point, c: Point, refinement: CdtRefine
         )));
     }
     if let Some(limit) = max_area
-        && open_xy_cycle_magnitude(&[a.xy(), b.xy(), c.xy()]).get()
-            > limit.get() * (1.0 + 1.0e-12)
+        && open_xy_cycle_magnitude(&[a.xy(), b.xy(), c.xy()]).get() > limit.get() * (1.0 + 1.0e-12)
     {
         return Err(GeometryErrorKind::triangulation(format!(
             "constrained refinement did not satisfy max_area={}",
@@ -308,14 +311,16 @@ fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
     };
     let mut lower: Vec<usize> = Vec::new();
     for &site in &order {
-        while lower.len() >= 2 && pops(orient(lower[lower.len() - 2], lower[lower.len() - 1], site)) {
+        while lower.len() >= 2 && pops(orient(lower[lower.len() - 2], lower[lower.len() - 1], site))
+        {
             lower.pop();
         }
         lower.push(site);
     }
     let mut upper: Vec<usize> = Vec::new();
     for &site in order.iter().rev() {
-        while upper.len() >= 2 && pops(orient(upper[upper.len() - 2], upper[upper.len() - 1], site)) {
+        while upper.len() >= 2 && pops(orient(upper[upper.len() - 2], upper[upper.len() - 1], site))
+        {
             upper.pop();
         }
         upper.push(site);
@@ -346,9 +351,19 @@ pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
 fn collinear_order(points: &[Point]) -> Vec<usize> {
     let mut order: Vec<_> = (0..points.len()).collect();
     let (minx, maxx, miny, maxy) = points.iter().fold(
-        (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY),
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
         |(minx, maxx, miny, maxy), point| {
-            (minx.min(point.x), maxx.max(point.x), miny.min(point.y), maxy.max(point.y))
+            (
+                minx.min(point.x),
+                maxx.max(point.x),
+                miny.min(point.y),
+                maxy.max(point.y),
+            )
         },
     );
     if maxx - minx >= maxy - miny {
@@ -368,6 +383,10 @@ fn collinear_order(points: &[Point]) -> Vec<usize> {
 /// Geometric coordinate order: values that compare equal, including mixed
 /// signed zeros, tie; otherwise IEEE total order. Hull seeds need this lex
 /// instead of raw `total_cmp`, which would treat `-0` as left of `+0`.
+#[expect(
+    clippy::float_cmp,
+    reason = "signed-zero identity must tie; total_cmp would order -0 left of +0 and change hull seeds"
+)]
 fn geometric_cmp(left: f64, right: f64) -> Ordering {
     if left == right {
         Ordering::Equal
@@ -404,7 +423,11 @@ fn delaunay_euler_complete(n: usize, triangulation: &Triangulation) -> bool {
     if t == 0 {
         return false;
     }
-    let h = triangulation.halfedges.iter().filter(|&&edge| edge == EMPTY).count();
+    let h = triangulation
+        .halfedges
+        .iter()
+        .filter(|&&edge| edge == EMPTY)
+        .count();
     h >= 3 && t == n.saturating_mul(2).saturating_sub(2).saturating_sub(h)
 }
 
@@ -466,7 +489,11 @@ pub(crate) fn constrained_triangle_vertices<'a>(
             "constrained triangulation needs three non-collinear vertices",
         ));
     };
-    if let CdtRefinement::On { min_angle, max_area } = refinement {
+    if let CdtRefinement::On {
+        min_angle,
+        max_area,
+    } = refinement
+    {
         let limit = GENERATED_ITEM_LIMIT.saturating_sub(vertices.len());
         let complete = cdt.refine(
             &mut vertices,
@@ -515,10 +542,12 @@ fn constraint_vertex_index(
     vertex_indices: &mut HashMap<PointKey, usize>,
 ) -> usize {
     let next_index = vertices.len();
-    *vertex_indices.entry(PointKey::new(point)).or_insert_with(|| {
-        vertices.push(Point::new_raw_xy(point.x, point.y));
-        next_index
-    })
+    *vertex_indices
+        .entry(PointKey::new(point))
+        .or_insert_with(|| {
+            vertices.push(Point::new_raw_xy(point.x, point.y));
+            next_index
+        })
 }
 
 /// Prepare constraint segments: exact endpoint-key deduplication
@@ -577,7 +606,10 @@ mod tests {
             if reverse == EMPTY {
                 continue;
             }
-            assert_eq!(mesh.edge_is_cocircular(slot), mesh.edge_is_cocircular(reverse));
+            assert_eq!(
+                mesh.edge_is_cocircular(slot),
+                mesh.edge_is_cocircular(reverse)
+            );
             cocircular_pairs += usize::from(mesh.edge_is_cocircular(slot));
         }
         assert_eq!(cocircular_pairs, 2);
@@ -585,14 +617,24 @@ mod tests {
 
     #[test]
     fn public_topology_is_clockwise_and_euler_complete() {
-        let points: Vec<Point> = [(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0), (1.0, 1.0), (2.5, 2.0)]
-            .into_iter()
-            .map(|(x, y)| Point::new_raw_xy(x, y))
-            .collect();
+        let points: Vec<Point> = [
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 3.0),
+            (0.0, 3.0),
+            (1.0, 1.0),
+            (2.5, 2.0),
+        ]
+        .into_iter()
+        .map(|(x, y)| Point::new_raw_xy(x, y))
+        .collect();
         let topology = delaunay_triangulation(&points);
         assert!(delaunay_euler_complete(points.len(), &topology));
         for &[a, b, c] in topology.triangles.as_chunks::<3>().0 {
-            assert_eq!(orientation(points[a].xy(), points[b].xy(), points[c].xy()), Orientation::Clockwise);
+            assert_eq!(
+                orientation(points[a].xy(), points[b].xy(), points[c].xy()),
+                Orientation::Clockwise
+            );
         }
         for (slot, &twin) in topology.halfedges.iter().enumerate() {
             if twin != EMPTY {

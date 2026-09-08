@@ -127,7 +127,7 @@ fn segment_walkers_share_chain_order_without_crossing_and_keep_ordinates() {
         segments.push((
             (segment.start.x, segment.start.y),
             (segment.end.x, segment.end.y),
-        ))
+        ));
     });
     assert_eq!(
         segments,

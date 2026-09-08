@@ -1334,6 +1334,10 @@ fn fixed_coordinates(
     Ok(fixed)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "atom emission needs the endpoints, events, windings, owner, and seed sink together"
+)]
 fn emit_atom_windows(
     start: &exact::ExactPoint,
     end: &exact::ExactPoint,
@@ -1747,10 +1751,8 @@ fn build_exact_subdivision(
     edge_of_slot.resize(slots, 0);
     for (edge, atom) in atoms.edges.iter().enumerate() {
         let edge = u32::try_from(edge).map_err(|_| voronoi_error("too many exact edges"))?;
-        for (origin, target) in [
-            (atom.endpoints[0], atom.endpoints[1]),
-            (atom.endpoints[1], atom.endpoints[0]),
-        ] {
+        let [start, end] = atom.endpoints;
+        for (origin, target) in [(start, end), (end, start)] {
             let slot = cursors[origin.0 as usize] as usize;
             topology.targets[slot] = target.0;
             edge_of_slot[slot] = edge;
@@ -2050,7 +2052,7 @@ fn graft_components(
         let owner = nearest_site_walk(&start.midpoint(end), sites, adjacency, SiteId(0), budget)?;
         let label = RegionLabel {
             frame_winding: 1,
-            clip_winding: if transition.clip_delta > 0 { 1 } else { 0 },
+            clip_winding: i32::from(transition.clip_delta > 0),
             owner: Some(owner),
         };
         assign_walk_label(&mut labels, &mut queue, outside, label)?;
@@ -2758,7 +2760,7 @@ fn marked_site_candidates(
 fn embed(
     subdivision: &ExactSubdivision,
     parts: Vec<ExactCellPart>,
-    chains: Vec<ExactEdgeChain>,
+    chains: &[ExactEdgeChain],
     clip: &NormalizedClip<'_>,
     sites: &[Site],
     require_cells: bool,
@@ -2782,7 +2784,7 @@ fn embed(
             live[vertex.0 as usize] = true;
         }
     }
-    for chain in &chains {
+    for chain in chains {
         live_edges.extend(chain.edges.iter().copied());
         for vertex in &chain.vertices {
             live[vertex.0 as usize] = true;
@@ -3255,7 +3257,7 @@ fn embed(
         // gap between the rounded partition and the source clip.  That numerical
         // equality is deliberately not part of the topological-snap contract.
     }
-    let edges = pack_separator_chains(&chains, |vertex| embedded_point(vertex))?;
+    let edges = pack_separator_chains(chains, embedded_point)?;
     Ok(EmbeddedVoronoi {
         polygons,
         edges,
@@ -3311,7 +3313,7 @@ pub(super) fn build(
     graft_components(&mut subdivision, sites, &adjacency, budget)?;
     let parts = assemble_cells(&subdivision, budget)?;
     let chains = assemble_edges(&subdivision, budget)?;
-    embed(&subdivision, parts, chains, &clip, sites, true, budget)
+    embed(&subdivision, parts, &chains, &clip, sites, true, budget)
 }
 
 pub(super) fn build_edges(
@@ -3559,7 +3561,7 @@ pub(super) fn build_collinear_edges(
     let embedded = embed(
         &subdivision,
         Vec::new(),
-        chains,
+        &chains,
         &split_clip,
         sites,
         false,
@@ -4500,11 +4502,11 @@ mod tests {
             .enumerate()
             .flat_map(|(index, left)| cells[index + 1..].iter().map(move |right| (left, right)))
         {
-            assert!(
+            assert_eq!(
                 left.intersection(right, Strictness::Lenient)
                     .unwrap()
-                    .area()
-                    == 0.0
+                    .area(),
+                0.0
             );
         }
     }

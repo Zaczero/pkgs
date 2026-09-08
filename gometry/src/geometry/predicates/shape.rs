@@ -4,6 +4,7 @@ use crate::geometry::{
     CompiledPattern, Coordinates as _, GeometryErrorKind, Point, PreparedPlan, Shape,
     graph_relate_shapes, point_equals_exact, point_on_segment, points_equal_exact, same_point,
 };
+use crate::predicates::engine::{PreparedTopologyPair, topology_scalar_pattern};
 
 impl Shape {
     /// Strict point membership used by coordinate operations and geometry
@@ -175,11 +176,11 @@ impl Shape {
             CompiledPattern::new(pattern).ok_or_else(|| Self::invalid_de9im_pattern(pattern))?;
         let left = PreparedPlan::transient(self)?;
         let right = PreparedPlan::transient(other)?;
-        let pair = crate::predicates::engine::PreparedTopologyPair::Cartesian {
+        let pair = PreparedTopologyPair::Cartesian {
             left: &left,
             right: &right,
         };
-        crate::predicates::engine::topology_scalar_pattern(compiled, &pair)
+        topology_scalar_pattern(compiled, &pair)
     }
 
     fn invalid_de9im_pattern(pattern: &str) -> crate::error::Error {

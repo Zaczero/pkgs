@@ -40,7 +40,7 @@ fn disconnected_bvh_target() -> Shape {
     Shape::geometry_collection(
         (0..65)
             .map(|index| {
-                let longitude = index as f64 * 2.0;
+                let longitude = f64::from(index) * 2.0;
                 line(vec![p(longitude, 0.0), p(longitude, 1.0)])
             })
             .collect(),
@@ -459,9 +459,10 @@ fn geodesic_sweep_propagates_bvh_allocation_failure() -> Result<()> {
         let result = fail_allocations_after(0, || {
             geodesic_sweep_with_parts(&probe, &parts, metric, f64::INFINITY)
         });
-        let error = result
-            .err()
-            .expect("BVH allocation failure was swallowed by capped fallback");
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("BVH allocation failure was swallowed by capped fallback"),
+        };
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Allocation)

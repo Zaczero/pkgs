@@ -711,7 +711,6 @@ fn query_itree_node<B>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HeapSize;
 
     fn collect_at(index: &YStabbingIndex<u32>, y: f64) -> Vec<u32> {
         let mut out = Vec::new();

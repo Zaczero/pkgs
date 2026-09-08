@@ -423,10 +423,7 @@ fn arrangement_regions(faces: &[Vec<XY>]) -> Result<Vec<Polygon>> {
                 .iter()
                 .map(|&hole| CoordSeq::try_from_xy(&faces[hole]).map(Ring::from_closed))
                 .collect::<Result<Vec<_>>>()?;
-            Ok(Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_xy(face)?),
-                holes,
-            )?)
+            Polygon::new(Ring::from_closed(CoordSeq::try_from_xy(face)?), holes)
         })
         .collect()
 }

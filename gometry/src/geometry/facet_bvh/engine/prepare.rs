@@ -93,7 +93,7 @@ impl PreparedLinework {
         HeapSize::heap_bytes(self)
     }
 
-    fn empty() -> Self {
+    const fn empty() -> Self {
         Self {
             chains: Vec::new(),
             chain_vertex_offsets: Vec::new(),
@@ -135,8 +135,8 @@ impl PreparedLinework {
         let mut facets = Vec::new();
         let mut reference_axes = None;
         let mut uniform_ordinates = true;
-        let mut global_vertices = 0usize;
-        let mut global_segments = 0usize;
+        let mut global_vertices = 0_usize;
+        let mut global_segments = 0_usize;
         shape.try_for_each_segment_chain(|chain| {
             let vertices = chain.len();
             if vertices < 2 {
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn columns_nine_segments_split_into_two_facets() {
-        let xs: Vec<f64> = (0..10).map(|value| value as f64).collect();
+        let xs: Vec<f64> = (0..10).map(f64::from).collect();
         let ys = vec![0.0; 10];
         let linework = PreparedLinework::from_open_xy_columns(&xs, &ys).unwrap();
         assert_eq!(linework.segment_count(), 9);

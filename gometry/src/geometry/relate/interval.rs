@@ -198,6 +198,10 @@ impl De9imInterval {
     }
 }
 
+#[expect(
+    clippy::panic,
+    reason = "named DE-9IM patterns are string literals; a misspelling is a programming error"
+)]
 const fn named_pattern(pattern: &str) -> CompiledPattern {
     match CompiledPattern::new(pattern) {
         Some(compiled) => compiled,
@@ -547,7 +551,7 @@ mod tests {
         };
         let entries = matrix.text().into_bytes();
         for cell in 0..9 {
-            for literal in [b'T', b'F', b'*', b'0', b'1', b'2'] {
+            for literal in *b"TF*012" {
                 let mut cells = *b"*********";
                 cells[cell] = literal;
                 let pattern = compile(std::str::from_utf8(&cells).unwrap());

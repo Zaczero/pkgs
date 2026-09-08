@@ -10,6 +10,14 @@
 //! nodes, and canonical atoms are generated items. Sweep scratch is
 //! [`ResourceError`], not the item cap.
 
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "exact source partition is the future incidence owner; overlay has not connected it yet"
+    )
+)]
+
 use std::cmp::Ordering;
 use std::mem;
 use std::ops::ControlFlow;
@@ -57,7 +65,7 @@ pub(in crate::geometry) struct ExactPartition<'a> {
 }
 
 impl<'a> ExactPartition<'a> {
-    pub(in crate::geometry) fn unique(&self) -> &'a [Segment] {
+    pub(in crate::geometry) const fn unique(&self) -> &'a [Segment] {
         self.unique
     }
 
@@ -162,8 +170,7 @@ impl Forest {
                 GeometryErrorKind::Invalid("exact partition unioned distinct stored points".into())
                     .into(),
             ),
-            (HandleKind::Stored(_), HandleKind::Stored(_))
-            | (HandleKind::Stored(_), HandleKind::Constructed { .. }) => {
+            (HandleKind::Stored(_), HandleKind::Stored(_) | HandleKind::Constructed { .. }) => {
                 self.parent[b as usize] = a;
                 Ok(())
             },
@@ -351,11 +358,11 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             if prev == Some(id) {
                 continue;
             }
-            if let Some(start) = prev {
-                if start != id {
-                    try_reserve_vec(&mut intervals, 1)?;
-                    intervals.push((source as u32, start, id));
-                }
+            if let Some(start) = prev
+                && start != id
+            {
+                try_reserve_vec(&mut intervals, 1)?;
+                intervals.push((source as u32, start, id));
             }
             prev = Some(id);
         }
@@ -431,11 +438,16 @@ fn push_point_on_source(
     Ok(())
 }
 
-fn pair_index(which: u32, left: usize, right: usize) -> usize {
+const fn pair_index(which: u32, left: usize, right: usize) -> usize {
     if which == 0 { left } else { right }
 }
 
-fn endpoint_handle(source: usize, at_start: bool, start_handle: &[u32], end_handle: &[u32]) -> u32 {
+const fn endpoint_handle(
+    source: usize,
+    at_start: bool,
+    start_handle: &[u32],
+    end_handle: &[u32],
+) -> u32 {
     if at_start {
         start_handle[source]
     } else {
@@ -443,6 +455,10 @@ fn endpoint_handle(source: usize, at_start: bool, start_handle: &[u32], end_hand
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pair visit needs the unique pool, endpoint handles, and cut sinks together"
+)]
 fn visit_pool_pair(
     unique: &[Segment],
     unique_len: usize,
@@ -703,7 +719,7 @@ fn merge_indices(
             cuts[src[left] as usize]
                 .param
                 .cmp(&cuts[src[right] as usize].param, zero, one)?;
-        if order != Ordering::Greater {
+        if order.is_le() {
             dst[out] = src[left];
             left += 1;
         } else {
@@ -887,7 +903,7 @@ fn param_on_segment(segment: Segment, point: XY) -> Result<SourceParam> {
         .try_subtract(ExactDyadic::try_from_f64(segment.start.x)?)?;
     let dy = ExactDyadic::try_from_f64(segment.end.y)?
         .try_subtract(ExactDyadic::try_from_f64(segment.start.y)?)?;
-    if dx.cmp_magnitude(&dy) != Ordering::Less {
+    if dx.cmp_magnitude(&dy).is_ge() {
         let num = ExactDyadic::try_from_f64(point.x)?
             .try_subtract(ExactDyadic::try_from_f64(segment.start.x)?)?;
         Ok(SourceParam::Ratio { num, den: dx })
@@ -1013,14 +1029,15 @@ mod tests {
             if growth > 0 {
                 let mut short = ExpansionBudget::new("exact_partition", "items");
                 short.add(GENERATED_ITEM_LIMIT - growth + 1).unwrap();
-                let error = partition_unique_segments(
+                let error = match partition_unique_segments(
                     &case.unique,
                     &case.provenance,
                     &case.isolated,
                     &mut short,
-                )
-                .err()
-                .expect("one fewer generated item must reject the partition");
+                ) {
+                    Err(error) => error,
+                    Ok(_) => panic!("one fewer generated item must reject the partition"),
+                };
                 assert!(matches!(
                     error.kind(),
                     crate::error::ErrorKind::Geometry(
@@ -1415,7 +1432,7 @@ mod tests {
     fn disjoint_thirty_two_thousand_segments_are_not_capped_as_pairs() {
         let mut segments = Vec::with_capacity(32_000);
         for index in 0..32_000 {
-            let x = index as f64;
+            let x = f64::from(index);
             segments.push(seg(x, 0.0, x, 1.0));
         }
         let case = run(&segments);

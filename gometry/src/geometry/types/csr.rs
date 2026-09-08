@@ -138,7 +138,7 @@ impl<Level> CsrOffsetColumn<Level> {
         self.offsets.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.offsets.is_empty()
     }
 

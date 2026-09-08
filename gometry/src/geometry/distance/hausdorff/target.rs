@@ -12,6 +12,7 @@ use crate::geometry::distance::hausdorff::{
     hausdorff_feature_bbox_disjoint_from_expanded_source, push_equidistant_roots_on_interval,
     push_segment_projection_breakpoints, sqrt_distance_squared,
 };
+use crate::geometry::facet_bvh::packed_index_count;
 use crate::geometry::{
     Point, Segment, Shape, XY, point_distance_squared, point_segment_distance_squared,
 };
@@ -81,10 +82,7 @@ impl HausdorffTarget {
 
     fn from_query(query: HausdorffLineworkQuery, points: Vec<Point>) -> crate::error::Result<Self> {
         let mut features = Vec::new();
-        let count = crate::geometry::facet_bvh::packed_index_count(
-            query.linework.segment_count(),
-            points.len(),
-        )?;
+        let count = packed_index_count(query.linework.segment_count(), points.len())?;
         crate::boundary::try_reserve_vec(&mut features, count)?;
         let mut error = None;
         query.linework.any_segment(|segment| {

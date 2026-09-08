@@ -91,7 +91,11 @@ impl ExactSum {
             return 0.0;
         }
         let value = round_nonnegative(&magnitude, PRODUCT_MIN_EXP);
-        if sign == Ordering::Less { -value } else { value }
+        if sign == Ordering::Less {
+            -value
+        } else {
+            value
+        }
     }
 
     pub(crate) fn ordering(&self) -> Ordering {
@@ -348,8 +352,7 @@ fn area_scaled_product(area: &[u64; LIMBS], mantissa: u64, exponent: i32) -> [u6
     if mantissa == 0 {
         return result;
     }
-    let shift =
-        usize::try_from(exponent + 1074).expect("candidate aligns to cubic quantum");
+    let shift = usize::try_from(exponent + 1074).expect("candidate aligns to cubic quantum");
     let factor = mantissa * 3;
     for (index, &word) in area.iter().enumerate() {
         let product = u128::from(word) * u128::from(factor);
@@ -476,11 +479,11 @@ fn round_nonnegative(magnitude: &[u64; LIMBS], quantum_exp: i32) -> f64 {
     let Some(k) = most_significant_bit(magnitude) else {
         return 0.0;
     };
-    let normal_threshold = usize::try_from(-1022 - quantum_exp)
-        .expect("product-sum normal threshold fits usize");
+    let normal_threshold =
+        usize::try_from(-1022 - quantum_exp).expect("product-sum normal threshold fits usize");
     if k < normal_threshold {
-        let subnormal_shift = usize::try_from(-1074 - quantum_exp)
-            .expect("product-sum subnormal shift fits usize");
+        let subnormal_shift =
+            usize::try_from(-1074 - quantum_exp).expect("product-sum subnormal shift fits usize");
         let mut units = bits_from(magnitude, subnormal_shift + 51, 52);
         let guard = limb_bit(magnitude, subnormal_shift - 1);
         let sticky = or_bits_through(magnitude, subnormal_shift - 2);
@@ -533,10 +536,8 @@ fn or_bits_through(limbs: &[u64; LIMBS], last: usize) -> bool {
     debug_assert!(last < LIMBS * 64);
     let last_word = last / 64;
     let last_off = last % 64;
-    for word in 0..last_word {
-        if limbs[word] != 0 {
-            return true;
-        }
+    if limbs[..last_word].iter().any(|&word| word != 0) {
+        return true;
     }
     let mask = if last_off == 63 {
         u64::MAX
@@ -563,6 +564,10 @@ fn bits_from(limbs: &[u64; LIMBS], high: usize, width: u32) -> u64 {
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "test helpers move limb arrays into the accumulator they construct"
+    )]
     fn moment(magnitude: [u64; CUBIC_LIMBS]) -> ExactCubicSum {
         ExactCubicSum {
             positive: magnitude,
@@ -570,8 +575,15 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "test helpers move limb arrays into the accumulator they construct"
+    )]
     fn negative_moment(magnitude: [u64; CUBIC_LIMBS]) -> ExactCubicSum {
-        ExactCubicSum { positive: [0; CUBIC_LIMBS], negative: magnitude }
+        ExactCubicSum {
+            positive: [0; CUBIC_LIMBS],
+            negative: magnitude,
+        }
     }
 
     fn decrement(words: &mut [u64; CUBIC_LIMBS]) {
@@ -673,13 +685,19 @@ mod tests {
         let mut maximum = power(2098);
         subtract(&mut maximum, &power(2045));
         multiply_small(&mut maximum, 6);
-        assert_eq!(exact_centroid_quotient(&moment(maximum), &area, Ordering::Greater), Some(f64::MAX));
+        assert_eq!(
+            exact_centroid_quotient(&moment(maximum), &area, Ordering::Greater),
+            Some(f64::MAX)
+        );
 
         let mut first_tie = power(1074);
         let half_ulp = power(1021);
         add_words(&mut first_tie, &half_ulp);
         multiply_small(&mut first_tie, 6);
-        assert_eq!(exact_centroid_quotient(&moment(first_tie), &area, Ordering::Greater), Some(1.0));
+        assert_eq!(
+            exact_centroid_quotient(&moment(first_tie), &area, Ordering::Greater),
+            Some(1.0)
+        );
 
         let mut second_tie = power(1074);
         add_words(&mut second_tie, &half_ulp);
@@ -687,8 +705,14 @@ mod tests {
         add_words(&mut second_tie, &half_ulp);
         multiply_small(&mut second_tie, 6);
         let upper = f64::from_bits(1.0_f64.to_bits() + 2);
-        assert_eq!(exact_centroid_quotient(&moment(second_tie), &area, Ordering::Greater), Some(upper));
-        assert_eq!(exact_centroid_quotient(&negative_moment(second_tie), &area, Ordering::Greater), Some(-upper));
+        assert_eq!(
+            exact_centroid_quotient(&moment(second_tie), &area, Ordering::Greater),
+            Some(upper)
+        );
+        assert_eq!(
+            exact_centroid_quotient(&negative_moment(second_tie), &area, Ordering::Greater),
+            Some(-upper)
+        );
     }
 
     #[test]
@@ -697,14 +721,29 @@ mod tests {
         area[0] = 2;
         let mut magnitude = [0_u64; CUBIC_LIMBS];
         magnitude[0] = 3;
-        assert_eq!(exact_centroid_quotient(&negative_moment(magnitude), &area, Ordering::Greater).unwrap().to_bits(), 0);
+        assert_eq!(
+            exact_centroid_quotient(&negative_moment(magnitude), &area, Ordering::Greater)
+                .unwrap()
+                .to_bits(),
+            0
+        );
     }
 
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "test helpers move limb arrays into the accumulator they construct"
+    )]
     fn doubled_sum(magnitude: [u64; LIMBS], sign: Ordering) -> ExactSum {
         match sign {
             Ordering::Equal => ExactSum::zero(),
-            Ordering::Greater => ExactSum { positive: magnitude, negative: [0; LIMBS] },
-            Ordering::Less => ExactSum { positive: [0; LIMBS], negative: magnitude },
+            Ordering::Greater => ExactSum {
+                positive: magnitude,
+                negative: [0; LIMBS],
+            },
+            Ordering::Less => ExactSum {
+                positive: [0; LIMBS],
+                negative: magnitude,
+            },
         }
     }
 
@@ -806,10 +845,7 @@ mod tests {
 
     #[test]
     fn raw_sum_rounds_at_midpoint_and_subnormal_boundaries() {
-        let midpoint = actual_sum(&[
-            (1, 1.0, 1.0),
-            (1, 2.0_f64.powi(-53), 1.0),
-        ]);
+        let midpoint = actual_sum(&[(1, 1.0, 1.0), (1, 2.0_f64.powi(-53), 1.0)]);
         assert_eq!(midpoint.round_to_binary64().to_bits(), 1.0_f64.to_bits());
 
         let min_subnormal = actual_sum(&[(1, f64::from_bits(1), 1.0)]);
@@ -820,7 +856,10 @@ mod tests {
             negative_underflow.round_to_binary64().to_bits(),
             (-0.0_f64).to_bits()
         );
-        assert_eq!(negative_underflow.round_to_area().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            negative_underflow.round_to_area().to_bits(),
+            0.0_f64.to_bits()
+        );
     }
 
     #[test]
@@ -865,9 +904,7 @@ mod tests {
         assert_eq!(third[6], 1);
 
         let mut higher = [0_u64; LIMBS];
-        for word in 2..8 {
-            higher[word] = u64::MAX;
-        }
+        higher[2..8].fill(u64::MAX);
         add_shifted_product(&mut higher, 1, 128);
         assert_eq!(higher[2], 0);
         assert_eq!(higher[7], 0);
@@ -923,12 +960,18 @@ mod tests {
 
     #[test]
     fn area_finish_exact_min_subnormal() {
-        assert_eq!(round_nonnegative_area(&area_bits(&[1075])), f64::from_bits(1));
+        assert_eq!(
+            round_nonnegative_area(&area_bits(&[1075])),
+            f64::from_bits(1)
+        );
     }
 
     #[test]
     fn area_finish_exact_min_normal() {
-        assert_eq!(round_nonnegative_area(&area_bits(&[1127])), f64::MIN_POSITIVE);
+        assert_eq!(
+            round_nonnegative_area(&area_bits(&[1127])),
+            f64::MIN_POSITIVE
+        );
         assert_eq!(
             doubled_sum(area_bits(&[1127]), Ordering::Less).round_to_area(),
             -f64::MIN_POSITIVE

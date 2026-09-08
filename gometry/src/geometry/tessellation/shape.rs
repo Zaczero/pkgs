@@ -664,7 +664,7 @@ impl Shape {
     pub fn polygonize_full_all(shapes: &[&Self], strict: bool) -> Result<PolygonizeFull> {
         let graph = TopologyGraph::cartesian_many(shapes)?;
         let full = polygonize_full(&graph, shapes.len())?;
-        let carry_diagnostic_rows = |rows: Vec<Vec<Shape>>| {
+        let carry_diagnostic_rows = |rows: Vec<Vec<Self>>| {
             rows.into_iter()
                 .enumerate()
                 .map(|(row, outputs)| {

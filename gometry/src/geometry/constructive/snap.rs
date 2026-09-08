@@ -310,7 +310,7 @@ pub(crate) fn segmentize_points_budgeted(
                 frame,
                 solutions.as_slice(),
             )),
-            steps,
+            &steps,
             budget,
         );
     }
@@ -425,7 +425,7 @@ struct GeodesicEmitter<'a> {
 }
 
 impl<'a> GeodesicEmitter<'a> {
-    fn recompute(geodesic: &'a geographiclib_rs::Geodesic, frame: GeographicFrame) -> Self {
+    const fn recompute(geodesic: &'a geographiclib_rs::Geodesic, frame: GeographicFrame) -> Self {
         Self {
             geodesic,
             frame,
@@ -719,7 +719,7 @@ pub(crate) fn subdivide_columns(
     subdivide_columns_from_steps(
         points,
         SubdivisionEmission::recompute(placement),
-        steps,
+        &steps,
         budget,
     )
 }
@@ -727,12 +727,12 @@ pub(crate) fn subdivide_columns(
 fn subdivide_columns_from_steps<'a>(
     points: &'a CoordSeq,
     emission: SubdivisionEmission<'a>,
-    steps: Vec<usize>,
+    steps: &[usize],
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     let count = points.len();
     let mut count_sink = SubdivisionCount { emitted: 0 };
-    emit_subdivision(&steps, &mut count_sink)?;
+    emit_subdivision(steps, &mut count_sink)?;
     let total = count_sink.emitted;
     // Existing source vertices are input-sized work. Charge only the vertices
     // this operation creates, once for the whole caller-owned budget.

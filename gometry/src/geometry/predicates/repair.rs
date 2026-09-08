@@ -1,14 +1,15 @@
 use ahash::HashSetExt as _;
 
 use crate::error::Result;
+use crate::geometry::area::ring_area_sign;
 use crate::geometry::overlay::outside_winding_seeds;
 use crate::geometry::predicates::{prune_dangles, validate_points};
 use crate::geometry::{
     AreaSign, Arrangement, CoordSeq, Coordinates, GeometryErrorKind, HashMap, HashMapExt as _,
-    HashSet, OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, Segment, Shape, XY,
-    assemble_region_polygons, binary_areal_overlay, line_segments, ordered_edge,
-    polygon_parts_to_shape, ring_decision_area, same_point, self_node_segments, winding_region,
-    wrap_index,
+    HashSet, OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, Segment, Shape, SharedSlice,
+    XY, assemble_region_polygons, binary_areal_overlay, cmp_area_keys_then_closed, line_segments,
+    ordered_edge, polygon_parts_to_shape, ring_decision_area, same_point, self_node_segments,
+    winding_region, wrap_index,
 };
 ///
 /// `Linework` is even-odd parity over the DEDUPLICATED noded linework
@@ -83,7 +84,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             .iter()
             .map(|ring| (ring, ring_decision_area(ring.coords())))
             .max_by(|(left, left_area), (right, right_area)| {
-                crate::geometry::cmp_area_keys_then_closed(
+                cmp_area_keys_then_closed(
                     left_area.magnitude().get(),
                     right_area.magnitude().get(),
                     left.coords(),
@@ -93,7 +94,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             .map_or(AreaSign::Zero, |(_, decision)| decision.sign());
         let (shells, mut holes): (Vec<Ring>, Vec<Ring>) = loops
             .into_iter()
-            .partition(|ring| crate::geometry::area::ring_area_sign(ring.coords()) == dominant);
+            .partition(|ring| ring_area_sign(ring.coords()) == dominant);
         for hole in polygon.holes.iter() {
             if let Some(hole) = ring_without_antennas(hole)? {
                 holes.extend(split_pinched_ring(&hole)?);
@@ -119,13 +120,13 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             }
             for (lobe, holes) in lobes.iter_mut().zip(lobe_holes) {
                 if !holes.is_empty() {
-                    lobe.holes = crate::geometry::SharedSlice::try_from_vec(holes)?;
+                    lobe.holes = SharedSlice::try_from_vec(holes)?;
                 }
             }
             cleaned.extend(lobes);
         }
     }
-    Ok(polygon_parts_to_shape(cleaned)?)
+    polygon_parts_to_shape(cleaned)
 }
 
 /// Build the linework repair region from one joint arrangement.

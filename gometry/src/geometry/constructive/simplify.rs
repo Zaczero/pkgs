@@ -759,10 +759,10 @@ impl Shape {
             )?))
         }
         Ok(match self {
-            Self::Polygon(polygon) => match clean(&polygon)? {
-                Some(polygon) => Self::Polygon(polygon),
-                None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
-            },
+            Self::Polygon(polygon) => clean(&polygon)?.map_or_else(
+                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+                Self::Polygon,
+            ),
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
@@ -940,12 +940,10 @@ impl Shape {
     ) -> Result<RawSimplify> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => RawSimplify::Unchanged,
-            Self::LineString(points) => match kept_coords(points, scratch, keep_mask)? {
-                None => RawSimplify::Unchanged,
-                Some(coords) => {
+            Self::LineString(points) => kept_coords(points, scratch, keep_mask)?
+                .map_or(RawSimplify::Unchanged, |coords| {
                     RawSimplify::Changed(Self::LineString(LineSeq::from_proven(coords)))
-                },
-            },
+                }),
             Self::MultiLineString(lines) => keep_multi_lines(lines, scratch, keep_mask)?,
             Self::Polygon(polygon) => match keep_polygon(polygon, scratch, keep_mask)? {
                 PolygonKeep::Same => RawSimplify::Unchanged,
@@ -956,7 +954,7 @@ impl Shape {
             },
             Self::MultiPolygon(polygons) => keep_multi_polygons(polygons, scratch, keep_mask)?,
             Self::GeometryCollection(geometries) => {
-                let mut out: Option<Vec<Shape>> = None;
+                let mut out: Option<Vec<Self>> = None;
                 for (index, geometry) in geometries.iter().enumerate() {
                     match geometry.simplify_raw(scratch, keep_mask)? {
                         RawSimplify::Unchanged => {

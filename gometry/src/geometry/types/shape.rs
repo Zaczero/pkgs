@@ -6,7 +6,7 @@ use crate::error::Result;
 use crate::geometry::GeometryKind;
 use crate::geometry::types::{
     CoordIter, CoordSeq, CoordWindow, CoordinateAxes, Coordinates, GeometryErrorKind, Point,
-    Polygon, SharedSlice, coordseq,
+    Polygon, SharedSlice, SharedSliceIter, coordseq,
 };
 
 /// Maximum number of nested `GeometryCollection` containers in one shape.
@@ -321,7 +321,7 @@ impl<'a, T> IntoIterator for &'a NonEmptyVec<T> {
 
 impl<T: Clone> IntoIterator for NonEmptyVec<T> {
     type Item = T;
-    type IntoIter = crate::geometry::types::SharedSliceIter<T>;
+    type IntoIter = SharedSliceIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter_owned()
@@ -456,7 +456,7 @@ impl<'a> IntoIterator for &'a GeometryCollection {
 
 impl IntoIterator for GeometryCollection {
     type Item = Shape;
-    type IntoIter = crate::geometry::types::SharedSliceIter<Shape>;
+    type IntoIter = SharedSliceIter<Shape>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.members.into_iter()
@@ -1085,7 +1085,7 @@ macro_rules! impl_multipart_iteration {
 
         impl IntoIterator for $name {
             type Item = $member;
-            type IntoIter = crate::geometry::types::SharedSliceIter<$member>;
+            type IntoIter = SharedSliceIter<$member>;
 
             fn into_iter(self) -> Self::IntoIter {
                 self.values.iter_owned()
@@ -1334,10 +1334,8 @@ mod mapping_fault_tests {
     #[test]
     fn try_map_points_returns_resource_on_allocation_failure() {
         let line = two_point_line();
-        let error = fail_allocations_after(0, || {
-            line.try_map_points(|point| Ok::<_, crate::error::Error>(point))
-        })
-        .unwrap_err();
+        let error = fail_allocations_after(0, || line.try_map_points(Ok::<_, crate::error::Error>))
+            .unwrap_err();
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Allocation)
@@ -1345,6 +1343,10 @@ mod mapping_fault_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "fixture identity selects the second stored point, not a nearby ordinate"
+    )]
     fn try_map_members_reports_callback_error_in_member_order() {
         let collection = two_point_collection();
         let mut seen = 0;
@@ -1376,6 +1378,10 @@ mod mapping_fault_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "fixture identity selects the second stored point, not a nearby ordinate"
+    )]
     fn try_filter_map_owned_members_preserves_kept_order() {
         let collection = two_point_collection();
         let filtered = collection
@@ -1402,10 +1408,9 @@ mod mapping_fault_tests {
             MultiMember::Value(Point::new_raw_xy(1.0, 1.0)),
         ])
         .unwrap();
-        let error = fail_allocations_after(0, || {
-            points.try_map_values(|point| Ok::<_, crate::error::Error>(point))
-        })
-        .unwrap_err();
+        let error =
+            fail_allocations_after(0, || points.try_map_values(Ok::<_, crate::error::Error>))
+                .unwrap_err();
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Allocation)

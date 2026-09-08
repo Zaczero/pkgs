@@ -8,6 +8,10 @@ use crate::error::Result;
 ///
 /// Empty payloads have no allocation. Non-empty payloads retain the original
 /// `Vec` so its capacity remains part of retained heap accounting.
+#[expect(
+    clippy::rc_buffer,
+    reason = "nonempty owner is a fallibly allocated Arc<Vec<T>> so capacity remains in heap accounting; Arc<[T]> would lose that publication boundary"
+)]
 pub(crate) struct SharedSlice<T> {
     owner: Option<Arc<Vec<T>>>,
 }
@@ -34,6 +38,10 @@ impl<T> SharedSlice<T> {
         self.as_slice().len()
     }
 
+    #[expect(
+        dead_code,
+        reason = "capacity is the retained heap-accounting surface even when callers currently go through HeapSize"
+    )]
     pub(crate) fn capacity(&self) -> usize {
         self.owner.as_deref().map_or(0, Vec::capacity)
     }
@@ -42,6 +50,14 @@ impl<T> SharedSlice<T> {
         self.owner.is_none()
     }
 
+    #[expect(
+        dead_code,
+        reason = "owner clone is the sharing handle for a retained Vec; callers still go through as_slice"
+    )]
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     pub(crate) fn owner(&self) -> Option<Arc<Vec<T>>> {
         self.owner.clone()
     }
@@ -131,7 +147,7 @@ mod tests {
         CoordSeq, CoordWindow, CoordinateAxes, MultiMember, MultiPolygon, Point, Polygon, Ring,
         Shape,
     };
-    use crate::heap_size::HeapSize;
+    use crate::heap_size::HeapSize as _;
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[derive(Clone)]
@@ -177,10 +193,10 @@ mod tests {
     #[test]
     fn nested_views_advance_local_m_offset_without_copying() {
         let sequence = CoordSeq::try_from_vecs(
-            (0..6).map(|value| value as f64).collect(),
+            (0..6).map(f64::from).collect(),
             vec![0.0; 6],
             None,
-            Some((10..16).map(|value| value as f64).collect()),
+            Some((10..16).map(f64::from).collect()),
         )
         .unwrap();
         let outer = sequence.view(CoordWindow::from_range(1..5, sequence.len()));
@@ -225,10 +241,8 @@ mod tests {
     #[test]
     fn failed_freeze_drops_non_copy_values() {
         let drops = Arc::new(AtomicUsize::new(0));
-        let mut values = Vec::new();
-        values.push(DropProbe(Arc::clone(&drops)));
-        let result = fail_allocations_after(0, || SharedSlice::try_from_vec(values));
-        assert!(result.is_err());
+        let values = vec![DropProbe(Arc::clone(&drops))];
+        fail_allocations_after(0, || SharedSlice::try_from_vec(values)).unwrap_err();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
@@ -238,8 +252,7 @@ mod tests {
         let right = CoordSeq::try_from_vecs(vec![1.0], vec![1.0], None, None).unwrap();
         let xyz = CoordSeq::try_from_vecs(vec![1.0], vec![1.0], Some(vec![2.0]), None).unwrap();
         assert!(matches!(left.concat(&xyz), Ok(None)));
-        let failed = fail_allocations_after(0, || left.concat(&right));
-        assert!(failed.is_err());
+        fail_allocations_after(0, || left.concat(&right)).unwrap_err();
     }
 
     #[test]

@@ -22,6 +22,10 @@ mod fixture_conversions {
         }
     }
 
+    #[expect(
+        clippy::fallible_impl_from,
+        reason = "test fixtures panic on empty; TryFrom would reintroduce a production-shaped empty path"
+    )]
     impl From<Vec<Point>> for MultiPoint {
         fn from(points: Vec<Point>) -> Self {
             Self::from_coordseq(CoordSeq::try_from_points(&points).unwrap())
@@ -29,6 +33,10 @@ mod fixture_conversions {
         }
     }
 
+    #[expect(
+        clippy::fallible_impl_from,
+        reason = "test fixtures panic on empty; TryFrom would reintroduce a production-shaped empty path"
+    )]
     impl From<Vec<XY>> for MultiPoint {
         fn from(points: Vec<XY>) -> Self {
             Self::from_coordseq(CoordSeq::try_from_xy(&points).unwrap())
@@ -196,7 +204,7 @@ mod csr_offset_column_tests {
 
     #[test]
     fn csr_offset_builder_rejects_invalid_final_capacity() {
-        for (end, cap) in [(7, 6), (2_147_483_648, 2_147_483_648)] {
+        for (end, cap) in [(7, 6), (0x8000_0000, 0x8000_0000)] {
             let mut builder = CsrOffsetBuilder::new();
             builder.push_end(end, end).unwrap();
             let error = builder.finish(cap).unwrap_err();
@@ -488,7 +496,7 @@ mod coordseq_builder_tests {
         builder.push(Point::new_raw_xy(0.0, 0.0)).unwrap();
         match fail_allocations_after(0, || {
             for index in 1..32 {
-                builder.push(Point::new_raw_xy(index as f64, index as f64))?;
+                builder.push(Point::new_raw_xy(f64::from(index), f64::from(index)))?;
             }
             Ok::<_, crate::error::Error>(())
         }) {
@@ -517,7 +525,7 @@ mod coordseq_builder_tests {
                 error.kind(),
                 ErrorKind::Resource(ResourceError::Allocation)
             )),
-            Ok(_) => panic!("expected allocation failure"),
+            Ok(()) => panic!("expected allocation failure"),
         }
         assert_eq!(builder.len(), 0);
     }
@@ -537,7 +545,7 @@ mod coordseq_builder_tests {
                 error.kind(),
                 ErrorKind::Resource(ResourceError::Allocation)
             )),
-            Ok(_) => panic!("expected allocation failure"),
+            Ok(()) => panic!("expected allocation failure"),
         }
         assert_eq!(builder.len(), 0);
     }
@@ -688,10 +696,10 @@ mod coordseq_m_storage_tests {
     fn nested_middle_local_m_keeps_distinct_offset_and_carries_without_allocation() {
         use crate::test_support::{allocation_count, fail_allocations_after};
 
-        let m =
-            SharedSlice::try_from_vec((0..10).map(|value| value as f64 + 50.0).collect()).unwrap();
+        let m = SharedSlice::try_from_vec((0..10).map(|value| f64::from(value) + 50.0).collect())
+            .unwrap();
         let seq = CoordSeq::from_shared_columns_with_window(
-            SharedSlice::try_from_vec((0..6).map(|value| value as f64).collect()).unwrap(),
+            SharedSlice::try_from_vec((0..6).map(f64::from).collect()).unwrap(),
             SharedSlice::try_from_vec(vec![10.0; 6]).unwrap(),
             None,
             Some(MColumn::Local {
@@ -815,7 +823,7 @@ mod gather_allocation_tests {
         )
     }
 
-    fn assert_allocation(error: crate::error::Error) {
+    fn assert_allocation(error: &crate::error::Error) {
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Allocation)
@@ -826,7 +834,7 @@ mod gather_allocation_tests {
     fn points_vec_returns_resource_on_allocation_failure() {
         let shape = repeated_xy_line();
         match fail_allocations_after(0, || shape.points_vec()) {
-            Err(error) => assert_allocation(error),
+            Err(error) => assert_allocation(&error),
             Ok(_) => panic!("expected allocation failure"),
         }
     }
@@ -837,7 +845,7 @@ mod gather_allocation_tests {
         let mut out = vec![Point::new_raw_xy(-1.0, -1.0)];
         match fail_allocations_after(0, || shape.collect_points_into(&mut out)) {
             Err(error) => {
-                assert_allocation(error);
+                assert_allocation(&error);
                 assert_eq!(out.len(), 1);
                 assert_eq!(out[0].x, -1.0);
             },
@@ -853,7 +861,7 @@ mod gather_allocation_tests {
                 .join()
                 .unwrap();
         match result {
-            Err(error) => assert_allocation(error),
+            Err(error) => assert_allocation(&error),
             Ok(_) => panic!("expected allocation failure"),
         }
     }
@@ -895,7 +903,7 @@ mod gather_allocation_tests {
     fn minimum_clearance_returns_resource_not_infinity() {
         let shape = three_vertex_line();
         match fail_allocations_after(0, || shape.minimum_clearance()) {
-            Err(error) => assert_allocation(error),
+            Err(error) => assert_allocation(&error),
             Ok(value) if value.is_infinite() => {
                 panic!("allocation failure must not look like infinite clearance")
             },

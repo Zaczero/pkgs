@@ -12,7 +12,9 @@
 
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
+use crate::geometry::tessellation::exact::{
+    ExactDyadic, compare_ratios, round_ratio, try_compare_ratios,
+};
 use crate::geometry::{
     Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Shape, XY, ZOrdinate,
     axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
@@ -741,48 +743,28 @@ impl ClipParameter {
                     numerator,
                     denominator,
                 },
-            ) => crate::geometry::tessellation::exact::try_compare_ratios(
-                zero,
-                one,
-                numerator,
-                denominator,
-            ),
+            ) => try_compare_ratios(zero, one, numerator, denominator),
             (
                 Self::End,
                 Self::Ratio {
                     numerator,
                     denominator,
                 },
-            ) => crate::geometry::tessellation::exact::try_compare_ratios(
-                one,
-                one,
-                numerator,
-                denominator,
-            ),
+            ) => try_compare_ratios(one, one, numerator, denominator),
             (
                 Self::Ratio {
                     numerator,
                     denominator,
                 },
                 Self::Start,
-            ) => crate::geometry::tessellation::exact::try_compare_ratios(
-                numerator,
-                denominator,
-                zero,
-                one,
-            ),
+            ) => try_compare_ratios(numerator, denominator, zero, one),
             (
                 Self::Ratio {
                     numerator,
                     denominator,
                 },
                 Self::End,
-            ) => crate::geometry::tessellation::exact::try_compare_ratios(
-                numerator,
-                denominator,
-                one,
-                one,
-            ),
+            ) => try_compare_ratios(numerator, denominator, one, one),
             (
                 Self::Ratio {
                     numerator: left_numerator,
@@ -792,7 +774,7 @@ impl ClipParameter {
                     numerator: right_numerator,
                     denominator: right_denominator,
                 },
-            ) => crate::geometry::tessellation::exact::try_compare_ratios(
+            ) => try_compare_ratios(
                 left_numerator,
                 left_denominator,
                 right_numerator,
@@ -2820,6 +2802,10 @@ pub(crate) fn points_dwithin(left: impl Into<XY>, right: impl Into<XY>, limit: f
 /// straight segment, so X suffices unless it is constant. The other axis
 /// makes rounded off-support cuts deterministic and keeps equal point keys
 /// adjacent for deduplication.
+#[expect(
+    clippy::float_cmp,
+    reason = "cut order uses exact coordinate identity along a stored segment; a tolerance would reorder distinct cuts"
+)]
 pub(crate) fn compare_along_segment(segment: Segment, left: XY, right: XY) -> std::cmp::Ordering {
     let x_primary = segment.start.x != segment.end.x;
     let compare_axis = |left: f64, right: f64, start: f64, end: f64| {

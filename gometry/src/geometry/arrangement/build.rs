@@ -1,11 +1,11 @@
+use super::walk::arrangement_faces;
 use crate::geometry::arrangement::{
-    Arrangement, Face, TypedSpares, WindingWeight, arrangement_spares,
+    Arrangement, ArrangementSpares, Face, TypedSpares, WindingWeight, arrangement_spares,
     build_csr, dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts,
     positional_loop_pieces, region_spares, single_loop_cuts, single_loop_pieces,
     sort_rows_counterclockwise, split_ring_at_pinches, typed_spares,
 };
-use crate::geometry::arrangement;
-use crate::geometry::{HashMap, PointKey, Segment, XY, wrap_index};
+use crate::geometry::{HashMap, PointKey, Segment, XY, arrangement, wrap_index};
 
 impl Arrangement<i32> {
     /// Build from noded directed segments with unit weights. Coincident
@@ -134,7 +134,13 @@ impl Arrangement<i32> {
             multiplicities[twin] = -1;
             edge_of_slot[twin] = edge as u32;
         }
-        if !order_single_loop_rows(&points, &starts, &mut targets, &mut multiplicities, &mut edge_of_slot) {
+        if !order_single_loop_rows(
+            &points,
+            &starts,
+            &mut targets,
+            &mut multiplicities,
+            &mut edge_of_slot,
+        ) {
             // Restock the pools (contents are stale by definition) and let
             // the general path own the case.
             spares.points = points;
@@ -221,7 +227,13 @@ impl<W: WindingWeight> Arrangement<W> {
             multiplicities[twin] = weight.neg();
             edge_of_slot[twin] = edge as u32;
         }
-        if !order_single_loop_rows(&points, &starts, &mut targets, &mut multiplicities, &mut edge_of_slot) {
+        if !order_single_loop_rows(
+            &points,
+            &starts,
+            &mut targets,
+            &mut multiplicities,
+            &mut edge_of_slot,
+        ) {
             spares.points = points;
             spares.topology.starts = starts;
             spares.topology.targets = targets;
@@ -278,7 +290,13 @@ impl<W: WindingWeight> Arrangement<W> {
         );
         typed.edges = edges;
         typed.edges.clear();
-        sort_rows_counterclockwise(&points, &starts, &mut targets, &mut multiplicities, &mut edge_of_slot);
+        sort_rows_counterclockwise(
+            &points,
+            &starts,
+            &mut targets,
+            &mut multiplicities,
+            &mut edge_of_slot,
+        );
         spares.points = points;
         spares.topology.starts = starts;
         spares.topology.targets = targets;
@@ -293,13 +311,11 @@ impl<W: WindingWeight> Arrangement<W> {
     /// already final — everything here is derived.
     pub(crate) fn finish_topology<const RINGS: bool>(
         ids: HashMap<PointKey, u32>,
-        mut core: crate::scratch_pool::ScratchLease<
-            arrangement::ArrangementSpares,
-        >,
+        mut core: crate::scratch_pool::ScratchLease<arrangement::ArrangementSpares>,
         typed: crate::scratch_pool::ScratchLease<TypedSpares<W>>,
     ) -> Self {
         let component_count = {
-            let crate::geometry::arrangement::ArrangementSpares {
+            let ArrangementSpares {
                 topology,
                 topology_scratch,
                 edge_of_slot,
@@ -320,7 +336,7 @@ impl<W: WindingWeight> Arrangement<W> {
         };
         core.edge_of_slot.clear();
         core.ids = ids;
-        let faces = crate::geometry::arrangement::walk::arrangement_faces::<RINGS>(&core.points, &core.topology);
+        let faces = arrangement_faces::<RINGS>(&core.points, &core.topology);
         Self {
             core,
             typed,

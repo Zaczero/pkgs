@@ -179,63 +179,6 @@ impl Distance3dParts {
     }
 }
 
-#[cfg(test)]
-mod allocation_tests {
-    use super::*;
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    #[test]
-    fn cold_3d_bvh_failure_is_retryable() {
-        let fixture = || Distance3dParts {
-            segments: (0..BVH_MIN_INDEXED_SEGMENTS + 1)
-                .map(|index| {
-                    let start = [index as f64, 0.0, 0.0];
-                    let end = [index as f64, 1.0, 1.0];
-                    Segment3d {
-                        start,
-                        end,
-                        aabb: segment_aabb3(start, end),
-                    }
-                })
-                .collect(),
-            bvh: OnceLock::new(),
-        };
-        let target = fixture();
-        let (_, count) = allocation_count(|| target.bvh().unwrap().unwrap());
-        assert!(count > 0);
-        for allowed in 0..count {
-            let target = fixture();
-            let result = fail_allocations_after(allowed, || target.bvh());
-            let error = result
-                .err()
-                .expect("each cold construction allocation must propagate");
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            assert!(target.bvh.get().is_none());
-            let first = target.bvh().unwrap().unwrap();
-            let cached = fail_allocations_after(0, || target.bvh()).unwrap().unwrap();
-            assert!(std::ptr::eq(first, cached));
-        }
-        let probe = Distance3dParts {
-            segments: vec![Segment3d {
-                start: [0.0, 0.0, 3.0],
-                end: [0.0, 0.0, 3.0],
-                aabb: segment_aabb3([0.0, 0.0, 3.0], [0.0, 0.0, 3.0]),
-            }],
-            bvh: OnceLock::new(),
-        };
-        let cold = fixture();
-        assert!(fail_allocations_after(0, || distance_3d_with_parts(&probe, &cold)).is_err());
-        assert_eq!(
-            distance_3d_with_parts(&probe, &cold).unwrap(),
-            distance_3d_brute_parts(&probe, &cold).unwrap()
-        );
-    }
-}
-
 impl SegmentBvh3d {
     fn build(segments: &[Segment3d]) -> crate::error::Result<Option<Self>> {
         let Ok(segment_count) = u32::try_from(segments.len()) else {
@@ -449,4 +392,62 @@ pub(crate) fn distance_3d_brute_parts(
         }
     }
     Ok(best)
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    #[test]
+    fn cold_3d_bvh_failure_is_retryable() {
+        let fixture = || Distance3dParts {
+            segments: (0..=BVH_MIN_INDEXED_SEGMENTS)
+                .map(|index| {
+                    let start = [index as f64, 0.0, 0.0];
+                    let end = [index as f64, 1.0, 1.0];
+                    Segment3d {
+                        start,
+                        end,
+                        aabb: segment_aabb3(start, end),
+                    }
+                })
+                .collect(),
+            bvh: OnceLock::new(),
+        };
+        let target = fixture();
+        let (_, count) = allocation_count(|| target.bvh().unwrap().unwrap());
+        assert!(count > 0);
+        for allowed in 0..count {
+            let target = fixture();
+            let result = fail_allocations_after(allowed, || target.bvh());
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("each cold construction allocation must propagate"),
+            };
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            assert!(target.bvh.get().is_none());
+            let first = target.bvh().unwrap().unwrap();
+            let cached = fail_allocations_after(0, || target.bvh()).unwrap().unwrap();
+            assert!(std::ptr::eq(first, cached));
+        }
+        let probe = Distance3dParts {
+            segments: vec![Segment3d {
+                start: [0.0, 0.0, 3.0],
+                end: [0.0, 0.0, 3.0],
+                aabb: segment_aabb3([0.0, 0.0, 3.0], [0.0, 0.0, 3.0]),
+            }],
+            bvh: OnceLock::new(),
+        };
+        let cold = fixture();
+        fail_allocations_after(0, || distance_3d_with_parts(&probe, &cold)).unwrap_err();
+        assert_eq!(
+            distance_3d_with_parts(&probe, &cold).unwrap(),
+            distance_3d_brute_parts(&probe, &cold).unwrap()
+        );
+    }
 }

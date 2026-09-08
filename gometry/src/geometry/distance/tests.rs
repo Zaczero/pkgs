@@ -189,6 +189,10 @@ fn pzm(x: f64, y: f64, z: f64, m: f64) -> Point {
     Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m))).expect("finite test point")
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "test helpers take owned fixture vectors at the call site"
+)]
 pub(super) fn line(points: Vec<Point>) -> Shape {
     Shape::LineString(
         LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).expect("test line is valid"),
@@ -205,6 +209,10 @@ fn multiline(lines: Vec<Vec<Point>>) -> Shape {
     )
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "test helpers take owned fixture vectors at the call site"
+)]
 pub(super) fn multipoint(points: Vec<Point>) -> Shape {
     Shape::multi_point(
         crate::geometry::CoordinateAxes::XY,
@@ -212,6 +220,10 @@ pub(super) fn multipoint(points: Vec<Point>) -> Shape {
     )
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "test helpers take owned fixture vectors at the call site"
+)]
 pub(super) fn polygon(points: Vec<Point>) -> Shape {
     Shape::Polygon(
         Polygon::new(

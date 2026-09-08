@@ -60,8 +60,7 @@ impl Clone for MColumn {
 impl MColumn {
     fn owner(&self) -> SharedSlice<f64> {
         match self {
-            Self::Shared(owner) => owner.clone(),
-            Self::Local { owner, .. } => owner.clone(),
+            Self::Shared(owner) | Self::Local { owner, .. } => owner.clone(),
         }
     }
 
@@ -137,10 +136,10 @@ fn admit_m_column(ms: Option<&MColumn>, xy_physical: usize, visible: usize) -> R
     match ms {
         None => Ok(()),
         Some(MColumn::Shared(owner)) => {
-            if owner.len() != xy_physical {
-                Err(GeometryErrorKind::CoordinateLength(xy_physical, owner.len()).into())
-            } else {
+            if owner.len() == xy_physical {
                 Ok(())
+            } else {
+                Err(GeometryErrorKind::CoordinateLength(xy_physical, owner.len()).into())
             }
         },
         Some(MColumn::Local { owner, offset }) => local_m_covers(owner, *offset, visible),
@@ -1137,10 +1136,13 @@ impl CoordSeqBuilder {
     /// and use non-finite values only for rows guarded by an external missing
     /// mask.
     pub(crate) fn finish_with_missing_placeholders(self) -> Result<CoordSeq> {
-        assert!(
-            self.mismatch_axes.is_none(),
-            "missing-coordinate placeholders must preserve the builder axes"
-        );
+        if let Some(got) = self.mismatch_axes {
+            return Err(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: self.axes(),
+                got,
+            }
+            .into());
+        }
         // Same-axes appends keep live columns the same length. Route through
         // the checked boundary so a pathological length cannot truncate the
         // stored u32 window.

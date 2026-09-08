@@ -285,10 +285,6 @@ impl Shape {
     /// multi-linestring members, and polygon rings, recursively through
     /// collections — as borrowed columns. The chain enumeration behind
     /// segment-level prepared state (facet linework).
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
-    )]
     pub(crate) fn for_each_segment_chain(&self, mut visit: impl FnMut(&CoordSeq)) {
         let _: ControlFlow<()> = self.for_each_segment_chain_inner(&mut |chain| {
             visit(chain);
@@ -297,10 +293,6 @@ impl Shape {
     }
 
     /// Visit every segment-bearing chain until `visit` returns `Err`.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
-    )]
     pub(crate) fn try_for_each_segment_chain<E>(
         &self,
         mut visit: impl FnMut(&CoordSeq) -> Result<(), E>,
@@ -345,10 +337,6 @@ impl Shape {
         ControlFlow::Continue(())
     }
 
-    #[expect(
-        clippy::match_same_arms,
-        reason = "the arms bind different member types; they cannot share a pattern"
-    )]
     pub fn parts(&self) -> ShapePartsIter<'_> {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => {

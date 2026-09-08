@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
+use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
     Bounds, CoordSeq, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape, SharedSlice,
     ring_edge_membership, xy_bounds_columns,
@@ -307,6 +308,10 @@ impl HeapSize for PolygonPointIndex {
 /// Batched point-membership tester for a fixed shape: polygonal shapes get a
 /// hierarchical Y-stabbing plan (parts → shell/holes → edges); everything else
 /// falls through to the point kernels.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Generic carries the topology graph in place; boxing it would add a heap hop on the non-indexed fallback"
+)]
 pub(crate) enum PointBatchTester {
     /// Single polygon — no multipolygon Y-index indirection.
     Polygon {
@@ -388,10 +393,7 @@ impl PointBatchTester {
                 });
                 hit
             },
-            Self::Generic(graph) => {
-                graph.locate_point(point.xy())
-                    == crate::geometry::topology::TopologyLocation::Interior
-            },
+            Self::Generic(graph) => graph.locate_point(point.xy()) == TopologyLocation::Interior,
         }
     }
 

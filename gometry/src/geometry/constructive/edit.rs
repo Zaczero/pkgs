@@ -9,6 +9,7 @@ use crate::geometry::constructive::{
     snap_column_simd, split,
 };
 use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::overlay::{OverlayOp, overlay_all_geographic_from, overlay_view_error};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
     LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon,
@@ -178,6 +179,14 @@ impl CoordSeq {
     /// Exact origin-relative affine transform of the XY columns. Identity
     /// rows carry their source column unchanged; every other row is rounded
     /// from its exact five-product expression in [`ExactSum`].
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "a, b, d, e are the stored affine matrix entries"
+    )]
+    #[expect(
+        clippy::float_cmp,
+        reason = "identity rows are exact unit coefficients; a tolerance would skip the exact five-product transform"
+    )]
     pub(crate) fn try_affine_about_origin(
         &self,
         linear: [f64; 4],
@@ -732,6 +741,10 @@ impl Shape {
     /// Linear map about `origin` evaluated as `origin + M*(p - origin)` so
     /// extreme-but-finite centers do not overflow the expanded
     /// `xoff = ox - a*ox` form (which can produce `inf - inf` NaNs).
+    #[expect(
+        clippy::float_cmp,
+        reason = "identity rows are exact unit coefficients; a tolerance would skip the exact five-product transform"
+    )]
     fn affine_about_origin(
         &self,
         m00: f64,
@@ -922,10 +935,10 @@ impl Shape {
             subject.view(),
             std::iter::once(&rectangle),
         )
-        .map_err(crate::geometry::overlay::overlay_view_error)?;
-        let clipped = crate::geometry::overlay::overlay_all_geographic_from(
-            originals,
-            crate::geometry::overlay::OverlayOp::Intersection,
+        .map_err(overlay_view_error)?;
+        let clipped = overlay_all_geographic_from(
+            &originals,
+            OverlayOp::Intersection,
             Strictness::from(drop),
             true,
         )?;
@@ -1146,10 +1159,10 @@ impl Shape {
                 lines
                     .try_map_values(lines.axes(), |line| line.remove_repeated_points(tolerance))?,
             ),
-            Self::Polygon(polygon) => match remove_repeated_polygon(polygon)? {
-                Some(polygon) => Self::Polygon(polygon),
-                None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
-            },
+            Self::Polygon(polygon) => remove_repeated_polygon(polygon)?.map_or_else(
+                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+                Self::Polygon,
+            ),
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()

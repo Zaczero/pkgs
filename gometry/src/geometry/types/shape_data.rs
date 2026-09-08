@@ -136,6 +136,7 @@ impl FrameDependentCaches {
             }
             slot.graph = Some(Arc::clone(&built));
         }
+        drop(slot);
         Ok(built)
     }
 
@@ -751,10 +752,12 @@ mod frame_cache_tests {
             .expect("line coordinate sequence must contain at least two vertices"),
         ))
         .unwrap();
-        let first = shape.measured_line_index().expect("measured line index") as *const _;
-        let second = shape
-            .measured_line_index()
-            .expect("cached measured line index") as *const _;
+        let first = std::ptr::from_ref(shape.measured_line_index().expect("measured line index"));
+        let second = std::ptr::from_ref(
+            shape
+                .measured_line_index()
+                .expect("cached measured line index"),
+        );
         assert_eq!(first, second);
         assert!(shape.retained_heap_bytes() > 0);
         let (_, interpolation_allocations) = allocation_count(|| {

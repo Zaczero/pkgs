@@ -912,7 +912,7 @@ mod binary_areal_overlay_tests {
             Polygon::new(
                 polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
                 vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new(2.0, 2.0).unwrap(),
                         Point::new(4.0, 2.0).unwrap(),
                         Point::new(4.0, 4.0).unwrap(),
@@ -965,7 +965,7 @@ mod binary_areal_overlay_tests {
                 ])
                 .shell,
                 vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new(4.0, 4.0).unwrap(),
                         Point::new(6.0, 4.0).unwrap(),
                         Point::new(6.0, 6.0).unwrap(),
@@ -1251,7 +1251,7 @@ mod binary_areal_overlay_tests {
             Polygon::new(
                 polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
                 vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new(2.0, 2.0).unwrap(),
                         Point::new(4.0, 2.0).unwrap(),
                         Point::new(4.0, 4.0).unwrap(),
@@ -1598,7 +1598,7 @@ mod binary_areal_overlay_tests {
         let hole_polygon = Polygon::new(
             polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
             vec![Ring::from_closed(
-                CoordSeq::try_from_points(&vec![
+                CoordSeq::try_from_points(&[
                     Point::new(2.0, 2.0).unwrap(),
                     Point::new(4.0, 2.0).unwrap(),
                     Point::new(4.0, 4.0).unwrap(),
@@ -1726,7 +1726,7 @@ mod binary_areal_overlay_tests {
         let repeated_line = Shape::MultiLineString(
             MultiLineString::from_values(CoordinateAxes::XYZ, vec![MultiMember::Value(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(None)).unwrap(),
                         Point::new_axes(0.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(None)).unwrap(),
                         Point::new_axes(2.0, 0.0, ZOrdinate(Some(2.0)), MOrdinate(None)).unwrap(),
@@ -2049,7 +2049,7 @@ mod binary_areal_overlay_tests {
             Shape::MultiLineString(
                 vec![
                     LineSeq::try_new(
-                        CoordSeq::try_from_points(&vec![
+                        CoordSeq::try_from_points(&[
                             Point::new(2.0, 2.0).unwrap(),
                             Point::new(3.0, 2.0).unwrap(),
                         ])
@@ -2321,7 +2321,7 @@ mod binary_areal_overlay_tests {
             MultiMember::Value(line(1.0, 10.0, 1.0)),
             MultiMember::Value(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new_axes(1.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(11.0)))
                             .unwrap(),
                         Point::new_axes(2.0, 0.0, ZOrdinate(Some(100.0)), MOrdinate(Some(12.0)))

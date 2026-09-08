@@ -332,10 +332,24 @@ impl Shape {
 
     /// Sub-line between measures `m0` and `m1` along this geometry's M
     /// ordinate.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "M-ordinate substring is retained until linear-referencing callers connect it"
+        )
+    )]
     pub(crate) fn line_substring_m(&self, range: MeasureRange) -> Result<Self> {
         self.line_substring_m_with(range, &PlanarMetric)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "M-ordinate substring is retained until linear-referencing callers connect it"
+        )
+    )]
     pub(crate) fn line_substring_m_with<M: SegmentMetric>(
         &self,
         range: MeasureRange,
@@ -426,7 +440,7 @@ impl MeasuredLineIndex {
         let mut last = None;
         let mut previous: Option<Point> = None;
         for part in &parts {
-            for point in part.iter() {
+            for point in part {
                 if point.m().is_none() {
                     return Err(MeasuredLineAdmission::MissingMeasure);
                 }
@@ -452,7 +466,7 @@ impl MeasuredLineIndex {
     fn for_each_window(&self, mut visit: impl FnMut(Point, Point) -> Result<bool>) -> Result<()> {
         let mut previous = None;
         for part in &self.parts {
-            for point in part.iter() {
+            for point in part {
                 if let Some(start) = previous
                     && !visit(start, point)?
                 {
@@ -494,7 +508,7 @@ impl MeasuredLineIndex {
         let mut best_measure = self.first.m().unwrap_or(0.0);
         let mut previous = None;
         for part in &self.parts {
-            for end in part.iter() {
+            for end in part {
                 let Some(start) = previous else {
                     previous = Some(end);
                     continue;

@@ -474,7 +474,7 @@ mod winding_buffer_tests {
             Shape::Point(Point::new(12.0, 3.0).unwrap()),
             Shape::LineString(
                 LineSeq::try_new(
-                    CoordSeq::try_from_points(&vec![
+                    CoordSeq::try_from_points(&[
                         Point::new(0.0, 0.0).unwrap(),
                         Point::new(4.0, 0.0).unwrap(),
                     ])

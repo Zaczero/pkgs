@@ -22,7 +22,7 @@ fn geodesic_leaf_count(segment_count: usize) -> usize {
         return 1;
     }
     let quotient = segment_count / GEODESIC_LEAF_SEGMENTS;
-    let base = 1usize << quotient.ilog2();
+    let base = 1_usize << quotient.ilog2();
     // At `base * threshold` segments the balanced tree has `base` leaves;
     // it gains one leaf per segment until the next complete level.
     (base * 2).min(base + segment_count - GEODESIC_LEAF_SEGMENTS * base)
