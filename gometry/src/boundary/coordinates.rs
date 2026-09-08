@@ -431,41 +431,30 @@ impl CoordinateView {
             && let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
                 storage.as_ref()
             && missing.is_none()
+            && let Some(map) = row_map.explicit_indices()
         {
-            if let Some(map) = row_map.explicit_indices() {
-                let values = match axis {
-                    CoordinateAxis::X => coords.xs(),
-                    CoordinateAxis::Y => coords.ys(),
-                    CoordinateAxis::Z => {
-                        let Some(zs) = coords.zs() else {
-                            return Ok(CoordinateColumnRef::Missing);
-                        };
-                        let mut out = Vec::new();
-                        crate::boundary::try_reserve_vec(&mut out, map.len())?;
-                        for &row in map.iter() {
-                            crate::boundary::try_push_vec(&mut out, zs[row])?;
-                        }
-                        return Ok(CoordinateColumnRef::Dense(out));
-                    },
-                    CoordinateAxis::M => {
-                        let Some(ms) = coords.ms() else {
-                            return Ok(CoordinateColumnRef::Missing);
-                        };
-                        let mut out = Vec::new();
-                        crate::boundary::try_reserve_vec(&mut out, map.len())?;
-                        for &row in map.iter() {
-                            crate::boundary::try_push_vec(&mut out, ms[row])?;
-                        }
-                        return Ok(CoordinateColumnRef::Dense(out));
-                    },
-                };
-                let mut out = Vec::new();
-                crate::boundary::try_reserve_vec(&mut out, map.len())?;
-                for &row in map.iter() {
-                    crate::boundary::try_push_vec(&mut out, values[row])?;
-                }
-                return Ok(CoordinateColumnRef::Dense(out));
+            let values = match axis {
+                CoordinateAxis::X => coords.xs(),
+                CoordinateAxis::Y => coords.ys(),
+                CoordinateAxis::Z => {
+                    let Some(zs) = coords.zs() else {
+                        return Ok(CoordinateColumnRef::Missing);
+                    };
+                    zs
+                },
+                CoordinateAxis::M => {
+                    let Some(ms) = coords.ms() else {
+                        return Ok(CoordinateColumnRef::Missing);
+                    };
+                    ms
+                },
+            };
+            let mut out = Vec::new();
+            crate::boundary::try_reserve_vec(&mut out, map.len())?;
+            for &row in map.iter() {
+                crate::boundary::try_push_vec(&mut out, values[row])?;
             }
+            return Ok(CoordinateColumnRef::Dense(out));
         }
         if let Some(seq) = self.single_seq() {
             return Ok(match axis {
@@ -1803,13 +1792,13 @@ mod tests {
         }
     }
 
-    fn closed_box(minx: f64, miny: f64, maxx: f64, maxy: f64) -> [Point; 5] {
+    fn closed_box(left: f64, bottom: f64, right: f64, top: f64) -> [Point; 5] {
         [
-            pt(minx, miny),
-            pt(maxx, miny),
-            pt(maxx, maxy),
-            pt(minx, maxy),
-            pt(minx, miny),
+            pt(left, bottom),
+            pt(right, bottom),
+            pt(right, top),
+            pt(left, top),
+            pt(left, bottom),
         ]
     }
 
@@ -1839,20 +1828,20 @@ mod tests {
         .unwrap()
     }
 
-    fn concat3(a: [Point; 5], b: [Point; 5], c: [Point; 5]) -> [Point; 15] {
+    fn concat3(a: &[Point; 5], b: &[Point; 5], c: &[Point; 5]) -> [Point; 15] {
         let mut points = [pt(0.0, 0.0); 15];
-        points[..5].copy_from_slice(&a);
-        points[5..10].copy_from_slice(&b);
-        points[10..].copy_from_slice(&c);
+        points[..5].copy_from_slice(a);
+        points[5..10].copy_from_slice(b);
+        points[10..].copy_from_slice(c);
         points
     }
 
     #[test]
     fn packed_polygon_windows_with_unequal_prefixes_equal_without_buffering() {
         let left_points = concat3(
-            closed_box(9.0, 9.0, 9.5, 9.5),
-            closed_box(1.0, 0.0, 3.0, 2.0),
-            closed_box(4.0, 0.0, 5.0, 1.0),
+            &closed_box(9.0, 9.0, 9.5, 9.5),
+            &closed_box(1.0, 0.0, 3.0, 2.0),
+            &closed_box(4.0, 0.0, 5.0, 1.0),
         );
         let left = packed_polygons(
             CoordSeq::try_from_points(&left_points).unwrap(),
@@ -1927,12 +1916,13 @@ mod tests {
                 Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap(),
             ]
         };
-        let xy = concat3(ring(1.0, 10.0), ring(2.0, 20.0), ring(3.0, 30.0));
+        let xy = concat3(&ring(1.0, 10.0), &ring(2.0, 20.0), &ring(3.0, 30.0));
         let xs: [f64; 15] = std::array::from_fn(|i| xy[i].x);
         let ys: [f64; 15] = std::array::from_fn(|i| xy[i].y);
         let zs: [f64; 15] = std::array::from_fn(|i| xy[i].z().unwrap());
         let m_owner =
-            SharedSlice::try_from_vec((0..20).map(|value| value as f64 + 50.0).collect()).unwrap();
+            SharedSlice::try_from_vec((0_u8..20).map(|value| f64::from(value) + 50.0).collect())
+                .unwrap();
         let coords = CoordSeq::from_shared_columns(
             SharedSlice::try_from_vec(xs.to_vec()).unwrap(),
             SharedSlice::try_from_vec(ys.to_vec()).unwrap(),
@@ -1971,9 +1961,9 @@ mod tests {
         }
         let xy_only = packed_polygons(
             CoordSeq::try_from_points(&concat3(
-                closed_box(0.0, 0.0, 1.0, 1.0),
-                closed_box(0.0, 0.0, 1.0, 1.0),
-                closed_box(0.0, 0.0, 1.0, 1.0),
+                &closed_box(0.0, 0.0, 1.0, 1.0),
+                &closed_box(0.0, 0.0, 1.0, 1.0),
+                &closed_box(0.0, 0.0, 1.0, 1.0),
             ))
             .unwrap(),
             vec![0, 5, 10, 15],

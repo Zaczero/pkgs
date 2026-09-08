@@ -153,13 +153,6 @@ impl RowSelectionRef<'_> {
     pub(crate) const fn is_identity(self) -> bool {
         matches!(self, Self::Identity)
     }
-
-    pub(crate) const fn contiguous_window(self) -> Option<std::ops::Range<usize>> {
-        match self {
-            Self::Window { start, len } => Some(start..start + len),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
