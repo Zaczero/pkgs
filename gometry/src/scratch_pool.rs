@@ -323,16 +323,16 @@ mod tests {
     #[test]
     fn worker_threads_have_independent_pools_and_teardown_drops_values() {
         THREAD_DROPS.store(0, Ordering::Relaxed);
-        
+
         assert_eq!(
             (1..=2)
-            .map(|capacity| {
-                std::thread::spawn(move || {
-                    let mut lease = ScratchPool::checkout(&THREAD_POOL);
-                    lease.0.reserve_exact(capacity * 16);
-                    lease.0.capacity()
+                .map(|capacity| {
+                    std::thread::spawn(move || {
+                        let mut lease = ScratchPool::checkout(&THREAD_POOL);
+                        lease.0.reserve_exact(capacity * 16);
+                        lease.0.capacity()
+                    })
                 })
-            })
                 .map(|h| h.join().unwrap())
                 .collect::<Vec<_>>(),
             [16, 32]

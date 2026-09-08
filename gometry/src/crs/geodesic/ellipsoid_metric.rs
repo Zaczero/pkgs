@@ -1,10 +1,10 @@
-use crate::crs::geodesic;
 use geographiclib_rs::Geodesic;
 
+use crate::crs::geodesic;
 use crate::crs::geodesic::{
-    DirectGeodesic, IntersectSolver, InverseGeodesic as _, LowerBoundKernel, cached_lower_bound_kernel,
-    checked_geodesic_segment, geodesic_foot_on_segment, geodesic_locate_on_segment,
-    geodesic_point_to_segment, geodesic_point_within_segment,
+    DirectGeodesic, IntersectSolver, InverseGeodesic as _, LowerBoundKernel,
+    cached_lower_bound_kernel, checked_geodesic_segment, geodesic_foot_on_segment,
+    geodesic_locate_on_segment, geodesic_point_to_segment, geodesic_point_within_segment,
     geodesic_segment_intersection_with_solver, interpolate_optional_ordinate,
 };
 use crate::geographic::GeographicFrame;
@@ -110,7 +110,10 @@ impl<'a> EllipsoidMetric<'a> {
             .expect("geographic metric received an admitted point")
     }
 
-    #[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
     fn to_geodesic_segment(&self, segment: GeodesicSegment) -> GeodesicSegment {
         GeodesicSegment {
             start: self.to_geodesic_point(segment.start),
@@ -238,7 +241,10 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         )
     }
 
-    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+    )]
     fn interpolate(&self, a: Point, b: Point, fraction: f64) -> Point {
         if fraction == 0.0 {
             return a;

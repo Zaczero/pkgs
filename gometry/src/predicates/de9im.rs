@@ -269,9 +269,7 @@ pub(crate) fn equals_exact(
         }
         let tolerance = match tolerance {
             DefaultedF64Input::Default(value) => value,
-            DefaultedF64Input::Supplied(value) => {
-                finite_f64_required("tolerance", value.bind(py))?
-            },
+            DefaultedF64Input::Supplied(value) => finite_f64_required("tolerance", value.bind(py))?,
         };
         let tolerance = validate_equals_exact_tolerance(tolerance)?.get();
         match (include_z, include_m) {

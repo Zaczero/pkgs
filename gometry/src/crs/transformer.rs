@@ -3,7 +3,6 @@
 //! Wraps a cached pipeline for repeated coordinate transforms; reaches the FFI
 //! pipeline engine and helpers in the parent `crs` module via `use super::*`.
 
-use crate::crs::transform;
 use std::sync::Arc;
 
 use crate::crs::transform::{
@@ -14,9 +13,9 @@ use crate::crs::transform::{
 use crate::crs::{
     InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
     TransformFailure, TransformOptions, begin_transform_observation, coordinate_identity_crs,
-    ensure_geographic_domain_in_frame, record_transform_engine, runtime_state_snapshot,
-    transform_in_core_xy_batch, try_in_core_transform_with_state,
-    validate_coordinate_lanes, with_proj_pipeline_at, with_proj_pipeline_indexed_at,
+    ensure_geographic_domain_in_frame, record_transform_engine, runtime_state_snapshot, transform,
+    transform_in_core_xy_batch, try_in_core_transform_with_state, validate_coordinate_lanes,
+    with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
 use crate::error::{ErrorKind, Result};
 use crate::geometry::{GeometryErrorKind, TopologyDomain};

@@ -162,12 +162,8 @@ pub(super) fn transform_in_core_xy_batch_indexed(
     match operation {
         InCoreTransform::RawWebMercatorForward => webmerc::raw_forward_batch_indexed(x, y),
         InCoreTransform::RawWebMercatorInverse => webmerc::raw_inverse_batch_indexed(x, y),
-        InCoreTransform::One(InCoreStep::Forward(setup)) => {
-            one_batch_indexed::<true>(setup, x, y)
-        },
-        InCoreTransform::One(InCoreStep::Inverse(setup)) => {
-            one_batch_indexed::<false>(setup, x, y)
-        },
+        InCoreTransform::One(InCoreStep::Forward(setup)) => one_batch_indexed::<true>(setup, x, y),
+        InCoreTransform::One(InCoreStep::Inverse(setup)) => one_batch_indexed::<false>(setup, x, y),
         InCoreTransform::Two {
             inverse: ProjSetup::WebMercator(webmerc),
             forward: ProjSetup::Tmerc(tmerc),
@@ -194,15 +190,11 @@ fn one_batch_indexed<const FORWARD: bool>(
         ProjSetup::Tmerc(projected) => {
             projected_batch_indexed::<tmerc::Tmerc, FORWARD>(projected, x, y)
         },
-        ProjSetup::Lcc(projected) => {
-            projected_batch_indexed::<lcc::Lcc, FORWARD>(projected, x, y)
-        },
+        ProjSetup::Lcc(projected) => projected_batch_indexed::<lcc::Lcc, FORWARD>(projected, x, y),
         ProjSetup::Laea(projected) => {
             projected_batch_indexed::<laea::Laea, FORWARD>(projected, x, y)
         },
-        ProjSetup::Aea(projected) => {
-            projected_batch_indexed::<aea::Aea, FORWARD>(projected, x, y)
-        },
+        ProjSetup::Aea(projected) => projected_batch_indexed::<aea::Aea, FORWARD>(projected, x, y),
         ProjSetup::PolarStereo(projected) => {
             projected_batch_indexed::<stere::PolarStereo, FORWARD>(projected, x, y)
         },
@@ -435,13 +427,10 @@ mod tests {
     fn batch_forward_rejects_latitude_outside_closed_domain() {
         let mut x = [0.0];
         let mut y = [100.0];
-        let error = projected_batch_indexed::<IdentityKernel, true>(
-            &identity_projected(),
-            &mut x,
-            &mut y,
-        )
-        .unwrap_err()
-        .error;
+        let error =
+            projected_batch_indexed::<IdentityKernel, true>(&identity_projected(), &mut x, &mut y)
+                .unwrap_err()
+                .error;
         assert!(error.to_string().contains("latitude"));
     }
 

@@ -344,7 +344,10 @@ fn longitude_transit(lon1: f64, lon2: f64) -> i64 {
     }
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn normalize_longitude(longitude: f64) -> f64 {
     let normalized = (longitude + 180.0).rem_euclid(360.0) - 180.0;
     if normalized == -180.0 {

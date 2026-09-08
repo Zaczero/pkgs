@@ -1,4 +1,7 @@
-#![allow(clippy::similar_names, reason = "latitude, longitude and azimuth triples are named by axis and endpoint")]
+#![allow(
+    clippy::similar_names,
+    reason = "latitude, longitude and azimuth triples are named by axis and endpoint"
+)]
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -47,7 +50,10 @@ pub(crate) fn checked_geodesic_segment(
     })
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn ensure_unique_shortest(
     geodesic: &Geodesic,
     start: Point,
@@ -99,7 +105,10 @@ fn longitude_difference(start: f64, end: f64) -> f64 {
     difference
 }
 
-#[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_segment_intersection_with_solver(
     geodesic: &Geodesic,
     solver: &IntersectSolver,
@@ -134,7 +143,10 @@ pub(crate) fn geodesic_point_to_segment(
     Ok(geodesic_segment_minimum(geodesic, point, segment, best)?.distance)
 }
 
-#[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 /// Certify whether `point` is within `limit` metres of `segment`.
 ///
 /// The distance-valued kernel may stop within its reporting tolerance once it
@@ -245,7 +257,10 @@ pub(crate) fn geodesic_locate_on_segment(
     Ok((minimum.distance, minimum.along))
 }
 
-#[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn geodesic_foot_on_segment(
     geodesic: &Geodesic,
     point: Point,
@@ -263,7 +278,10 @@ pub(crate) fn geodesic_foot_on_segment(
     geodesic_segment_witness_at(geodesic, segment, minimum.distance, minimum.along)
 }
 
-#[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 pub(crate) fn cached_geodesic_line(geodesic: &Geodesic, segment: GeodesicSegment) -> GeodesicLine {
     let key = GeodesicLineKey {
         semi_major_bits: geodesic.a.to_bits(),
@@ -482,7 +500,10 @@ fn ensure_finite_distance(distance: f64) -> Result<()> {
     }
 }
 
-#[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+)]
 fn point_on_geodesic_segment(
     geodesic: &Geodesic,
     point: Point,
@@ -917,7 +938,10 @@ impl IntersectSolver {
         solver.distpolar(latitude)
     }
 
-    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+    )]
     fn distoblique(geodesic: &Geodesic, radius: f64, d: f64, tol: f64) -> Result<f64> {
         if geodesic.f == 0.0 {
             return Ok(d);
@@ -983,7 +1007,10 @@ impl IntersectSolver {
     }
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn angle_difference(first: f64, second: f64) -> (f64, f64) {
     let (sum, error) = exact_sum(remainder(-first, 360.0), remainder(second, 360.0));
     let (difference, error) = exact_sum(remainder(sum, 360.0), error);
@@ -1027,7 +1054,10 @@ fn angle_round(value: f64) -> f64 {
     magnitude.copysign(value)
 }
 
-#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
+#[expect(
+    clippy::float_cmp,
+    reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
+)]
 fn sincos_degrees(value: f64, correction: f64) -> (f64, f64) {
     let reduced_turn = value.rem_euclid(360.0);
     let quadrant = ((reduced_turn / 90.0) + 0.5).floor() as i32;
@@ -1112,5 +1142,7 @@ fn segmentmode(sx: f64, sy: f64, p: XPoint) -> i32 {
 fn side_code(value: f64, limit: f64) -> i32 {
     if value < 0.0 {
         -1
-    } else { i32::from(value > limit) }
+    } else {
+        i32::from(value > limit)
+    }
 }
