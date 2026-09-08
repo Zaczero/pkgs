@@ -851,7 +851,8 @@ impl Shape {
         // simplified output. Isolated points participate in the vertex
         // probe, so the walk is every vertex, not only segment chains.
         self.try_for_each_point(|point| {
-            crate::try_push_vec(&mut vertex_cloud, [point.x, point.y])
+            vertex_cloud.push([point.x, point.y]);
+            Ok::<_, crate::error::Error>(())
         })?;
         let guard = TopologyGuard::new(&segments, vertex_cloud);
         self.map_chains(&|points: &CoordSeq| {

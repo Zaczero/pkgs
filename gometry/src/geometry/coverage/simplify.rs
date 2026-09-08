@@ -252,14 +252,23 @@ pub(in crate::geometry) fn simplify_chain_guarded(
             bits ^ (1 << 63)
         }
     };
-    let mut prev: Vec<usize> = (0..count).map(|index| index.wrapping_sub(1)).collect();
-    let mut next: Vec<usize> = (1..=count).collect();
-    let mut generation = vec![0_u32; count];
-    let mut removed = vec![false; count];
-    let mut heap: BinaryHeap<Reverse<(u64, usize, u32)>> = BinaryHeap::with_capacity(count);
+    let mut prev = Vec::new();
+    crate::try_reserve_vec(&mut prev, count)?;
+    prev.extend((0..count).map(|index| index.wrapping_sub(1)));
+    let mut next = Vec::new();
+    crate::try_reserve_vec(&mut next, count)?;
+    next.extend(1..=count);
+    let mut generation = Vec::new();
+    crate::try_reserve_vec(&mut generation, count)?;
+    generation.resize(count, 0_u32);
+    let mut removed = Vec::new();
+    crate::try_reserve_vec(&mut removed, count)?;
+    removed.resize(count, false);
+    let mut heap: BinaryHeap<Reverse<(u64, usize, u32)>> = BinaryHeap::new();
+    crate::try_reserve_heap(&mut heap, count)?;
     for index in 1..count - 1 {
         if let Some(importance) = candidate(xy(index - 1), xy(index), xy(index + 1)) {
-            heap.push(Reverse((total_order_key(importance), index, 0)));
+            crate::try_push_heap(&mut heap, Reverse((total_order_key(importance), index, 0)))?;
         }
     }
     let mut live = count;
@@ -286,11 +295,10 @@ pub(in crate::geometry) fn simplify_chain_guarded(
             if let Some(importance) =
                 candidate(xy(prev[neighbor]), xy(neighbor), xy(next[neighbor]))
             {
-                heap.push(Reverse((
-                    total_order_key(importance),
-                    neighbor,
-                    generation[neighbor],
-                )));
+                crate::try_push_heap(
+                    &mut heap,
+                    Reverse((total_order_key(importance), neighbor, generation[neighbor])),
+                )?;
             }
         }
     }
@@ -469,9 +477,7 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
     let mut all_segments = Vec::new();
     for row in &prepared {
         crate::try_reserve_vec(&mut all_segments, row.segments.len())?;
-        for &segment in &row.segments {
-            crate::try_push_vec(&mut all_segments, segment)?;
-        }
+        all_segments.extend(row.segments.iter().copied());
     }
     let guard = TopologyGuard::new(
         &all_segments,
@@ -500,9 +506,7 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
             }
             let mut points = Vec::new();
             crate::try_reserve_vec(&mut points, kept.len())?;
-            for index in kept {
-                crate::try_push_vec(&mut points, chain.points[index])?;
-            }
+            points.extend(kept.iter().map(|&index| chain.points[index]));
             Ok(Cow::Owned(points))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -618,4 +622,85 @@ fn rebuild_polygon(
             })
             .collect::<Result<Vec<_>>>()?,
     )
+}
+
+#[cfg(test)]
+mod guarded_scratch_tests {
+    use super::{TopologyGuard, simplify_chain_guarded};
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::XY;
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn dummy_guard() -> TopologyGuard<'static> {
+        TopologyGuard::new(&[], Vec::new())
+    }
+
+    fn collinear_x(index: usize) -> XY {
+        XY::new(index as f64, 0.0)
+    }
+
+    fn assert_allocation_error(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn short_chain_identity_rejects_allocation() {
+        let guard = dummy_guard();
+        let error = fail_allocations_after(0, || {
+            simplify_chain_guarded(2, collinear_x, false, &|_, _, _| None, &guard)
+        })
+        .unwrap_err();
+        assert_allocation_error(&error);
+    }
+
+    #[test]
+    fn candidate_none_scratch_rejects_every_allocation() {
+        let guard = dummy_guard();
+        let never = |_: XY, _: XY, _: XY| None;
+        let (kept, allocations) = allocation_count(|| {
+            simplify_chain_guarded(6, collinear_x, false, &never, &guard).unwrap()
+        });
+        assert_eq!(kept, vec![0, 1, 2, 3, 4, 5]);
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = fail_allocations_after(allowed, || {
+                simplify_chain_guarded(6, collinear_x, false, &never, &guard)
+            })
+            .expect_err("package scratch must propagate allocation failure");
+            assert_allocation_error(&error);
+        }
+    }
+
+    #[test]
+    fn collinear_removal_scratch_rejects_every_allocation() {
+        let guard = dummy_guard();
+        let drop_all = |_: XY, _: XY, _: XY| Some(0.0);
+        let (kept, allocations) = allocation_count(|| {
+            simplify_chain_guarded(8, collinear_x, false, &drop_all, &guard).unwrap()
+        });
+        assert_eq!(kept, vec![0, 7]);
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = fail_allocations_after(allowed, || {
+                simplify_chain_guarded(8, collinear_x, false, &drop_all, &guard)
+            })
+            .expect_err("stale-entry heap growth must propagate allocation failure");
+            assert_allocation_error(&error);
+        }
+    }
+
+    #[test]
+    fn collinear_removal_keeps_endpoints_in_order() {
+        let guard = dummy_guard();
+        let drop_all = |_: XY, _: XY, _: XY| Some(0.0);
+        let kept = simplify_chain_guarded(5, collinear_x, false, &drop_all, &guard).unwrap();
+        assert_eq!(kept, vec![0, 4]);
+        let cyclic = simplify_chain_guarded(6, collinear_x, true, &drop_all, &guard).unwrap();
+        assert_eq!(cyclic.first().copied(), Some(0));
+        assert_eq!(cyclic.last().copied(), Some(5));
+        assert_eq!(cyclic.len(), 4);
+    }
 }
