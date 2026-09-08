@@ -106,6 +106,7 @@ thread_local! {
 mod bearing;
 mod bulk;
 mod cache;
+mod certified;
 mod distance;
 mod domain;
 mod ellipsoid_metric;

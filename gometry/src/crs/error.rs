@@ -58,6 +58,8 @@ pub enum CrsError {
     MetricUnits { crs: Box<str>, message: Box<str> },
     #[error("geodesic metric requires degree angular axis units on CRS {crs:?}: {message}")]
     GeodesicUnits { crs: Box<str>, message: Box<str> },
+    #[error("certified geodesic exponent range overflowed")]
+    GeodesicExponentOverflow,
     #[error("{0}")]
     Message(Box<str>),
 }

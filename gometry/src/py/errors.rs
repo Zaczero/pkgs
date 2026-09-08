@@ -339,6 +339,40 @@ pub(crate) fn native_overflow_error(message: &str) -> PyErr {
     })
 }
 
+/// Stage the static numerical-indeterminacy exception without constructing a
+/// Rust string or a PyO3 argument tuple.  CPython owns the exception message
+/// after `PyErr_SetString`; the Rust-side allocator is not part of this path.
+pub(crate) fn native_numerical_indeterminacy_error() -> PyErr {
+    Python::attach(|py| {
+        // SAFETY: `type_object_raw` returns the live custom exception type for
+        // the attached interpreter, and the C string has static storage.
+        unsafe {
+            ffi::PyErr_SetString(
+                <GeometryError as pyo3::type_object::PyTypeInfo>::type_object_raw(py).cast(),
+                c"certified numerical result remains indeterminate under the supplied policy"
+                    .as_ptr(),
+            );
+        }
+        debug_assert!(PyErr::occurred(py));
+        PyErr::fetch(py)
+    })
+}
+
+fn native_crs_exponent_overflow_error() -> PyErr {
+    Python::attach(|py| {
+        // SAFETY: `type_object_raw` returns the live custom exception type for
+        // the attached interpreter, and the C string has static storage.
+        unsafe {
+            ffi::PyErr_SetString(
+                <CRSError as pyo3::type_object::PyTypeInfo>::type_object_raw(py).cast(),
+                c"certified geodesic exponent range overflowed".as_ptr(),
+            );
+        }
+        debug_assert!(PyErr::occurred(py));
+        PyErr::fetch(py)
+    })
+}
+
 fn native_resource(error: &Error) -> Option<NativeResource> {
     match error.kind() {
         ErrorKind::Resource(kind) => Some(match kind {
@@ -363,6 +397,17 @@ impl From<Error> for PyErr {
         if let Some(resource) = native_resource(&error) {
             drop(error);
             return resource.into_py_err();
+        }
+        if matches!(
+            error.kind(),
+            ErrorKind::Crs(crate::crs::CrsError::GeodesicExponentOverflow)
+        ) {
+            drop(error);
+            return native_crs_exponent_overflow_error();
+        }
+        if matches!(error.kind(), ErrorKind::NumericalIndeterminacy) {
+            drop(error);
+            return native_numerical_indeterminacy_error();
         }
         let message = match error.kind() {
             ErrorKind::Io(error) => error.display_message(),
@@ -475,6 +520,7 @@ impl From<Error> for PyErr {
                 | C::GeodesicUnits { crs, .. } => {
                     with_attrs(CRSError::new_err(message), &[("crs", Attr::Str(crs))])
                 },
+                C::GeodesicExponentOverflow => CRSError::new_err(message),
                 C::Create { .. }
                 | C::Export { .. }
                 | C::Identify { .. }
@@ -546,6 +592,7 @@ impl From<Error> for PyErr {
                 },
             },
             ErrorKind::Resource(_) => unreachable!("resource errors are handled before formatting"),
+            ErrorKind::NumericalIndeterminacy => GeometryError::new_err(message),
         }
     }
 }
@@ -609,8 +656,8 @@ mod tests {
     use pyo3::exceptions::{PyMemoryError, PyOverflowError};
     use pyo3::prelude::*;
 
-    use super::{native_memory_error, native_overflow_error};
-    use crate::error::{Error, ResourceError};
+    use super::{GeometryError, native_memory_error, native_overflow_error};
+    use crate::error::{Error, ErrorKind, ResourceError};
     use crate::test_support::fail_allocations_after;
 
     #[test]
@@ -681,6 +728,31 @@ mod tests {
                     .unwrap(),
                 "row count overflow"
             );
+            drop(error);
+        });
+    }
+
+    #[test]
+    fn numerical_indeterminacy_maps_to_the_existing_geometry_value_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error: PyErr = Error::from(ErrorKind::NumericalIndeterminacy).into();
+            assert!(error.is_instance_of::<GeometryError>(py));
+            assert!(!error.is_instance_of::<PyMemoryError>(py));
+            drop(error);
+        });
+    }
+
+    #[test]
+    fn numerical_indeterminacy_stages_without_a_rust_format_allocation() {
+        Python::initialize();
+        let error = fail_allocations_after(0, || {
+            let error = Error::from(ErrorKind::NumericalIndeterminacy);
+            let error: PyErr = error.into();
+            error
+        });
+        Python::attach(|py| {
+            assert!(error.is_instance_of::<GeometryError>(py));
             drop(error);
         });
     }

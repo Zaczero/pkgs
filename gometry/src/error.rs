@@ -58,6 +58,9 @@ enum ErrorStorage {
 static ALLOCATION_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Allocation);
 static ENTROPY_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Entropy);
 static SIZE_OVERFLOW_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::SizeOverflow);
+static NUMERICAL_INDETERMINACY_ERROR: ErrorKind = ErrorKind::NumericalIndeterminacy;
+static GEODESIC_EXPONENT_OVERFLOW_ERROR: ErrorKind =
+    ErrorKind::Crs(CrsError::GeodesicExponentOverflow);
 
 /// The domain error kinds. Adding a kind forces a deliberate Python exception
 /// classification in `py::errors` (the conversion match has no wildcard arm).
@@ -73,6 +76,8 @@ pub(crate) enum ErrorKind {
     Frame(#[from] FrameError),
     #[error(transparent)]
     Resource(#[from] ResourceError),
+    #[error("certified numerical result remains indeterminate under the supplied policy")]
+    NumericalIndeterminacy,
 }
 
 impl Error {
@@ -127,6 +132,12 @@ impl From<ErrorKind> for Error {
             ErrorKind::Resource(ResourceError::SizeOverflow) => {
                 ErrorStorage::Static(&SIZE_OVERFLOW_ERROR)
             },
+            ErrorKind::NumericalIndeterminacy => {
+                ErrorStorage::Static(&NUMERICAL_INDETERMINACY_ERROR)
+            },
+            ErrorKind::Crs(CrsError::GeodesicExponentOverflow) => {
+                ErrorStorage::Static(&GEODESIC_EXPONENT_OVERFLOW_ERROR)
+            },
             kind => Box::try_new(kind)
                 .map_or(ErrorStorage::Static(&ALLOCATION_ERROR), ErrorStorage::Owned),
         })
@@ -178,6 +189,7 @@ impl From<std::collections::TryReserveError> for Error {
 #[cfg(test)]
 mod tests {
     use super::{Error, ErrorKind, ResourceError};
+    use crate::crs::CrsError;
     use crate::test_support::fail_allocations_after;
 
     #[test]
@@ -200,6 +212,18 @@ mod tests {
         assert!(matches!(
             context.kind(),
             ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        let numerical: Error =
+            fail_allocations_after(0, || ErrorKind::NumericalIndeterminacy.into());
+        assert!(matches!(
+            numerical.kind(),
+            ErrorKind::NumericalIndeterminacy
+        ));
+        let exponent =
+            fail_allocations_after(0, || Error::from(CrsError::GeodesicExponentOverflow));
+        assert!(matches!(
+            exponent.kind(),
+            ErrorKind::Crs(CrsError::GeodesicExponentOverflow)
         ));
     }
 }
