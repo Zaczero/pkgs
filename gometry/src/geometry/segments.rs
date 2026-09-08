@@ -13,7 +13,8 @@
 use crate::error::{ErrorKind, Result};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact::{
-    ExactDyadic, try_compare_ratios, round_ratio, };
+    ExactDyadic, round_ratio, round_sqrt_ratio, try_compare_ratios,
+};
 use crate::geometry::{
     Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Shape, XY, ZOrdinate,
     axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
@@ -162,12 +163,29 @@ impl ExactSegmentProjection {
         let numerator = ExactDyadic::try_from_f64(value)?.try_product(&self.numerator)?;
         round_ratio(&numerator, &self.denominator)
     }
+
+    fn squared_distance(&self, point: XY, segment: Segment) -> Result<ExactSquaredDistance> {
+        ExactSquaredDistance::from_projection(point, segment, self)
+    }
+
+    fn distance(&self, point: XY, segment: Segment) -> Result<f64> {
+        let squared = self.squared_distance(point, segment)?;
+        round_sqrt_ratio(&squared.numerator, &squared.denominator)
+    }
+}
+
+fn local_projection_residual(point: XY, segment: Segment, fraction: f64) -> (f64, f64) {
+    let dx = segment.end.x - segment.start.x;
+    let dy = segment.end.y - segment.start.y;
+    let qx = point.x - segment.start.x;
+    let qy = point.y - segment.start.y;
+    (qx - fraction * dx, qy - fraction * dy)
 }
 
 /// One certified clamped projection. The provenance-carrying variants retain
-/// their ratio until coordinate and along-distance reconstruction; a rounded
-/// `t == 0` or `t == 1` therefore cannot turn a genuine interior foot into an
-/// endpoint.
+/// their source ratio until coordinate, distance, and along-distance
+/// reconstruction; a rounded `t == 0` or `t == 1` therefore cannot turn a
+/// genuine interior foot into an endpoint.
 #[derive(Clone, Debug)]
 pub(crate) enum SegmentProjection {
     Start,
@@ -197,6 +215,64 @@ impl SegmentProjection {
             Self::CertifiedInterior(projection) => projection.fraction,
             Self::ExactInterior(projection) => projection.fraction,
             Self::End => 1.0,
+        }
+    }
+
+    fn continuum_distance(&self, point: XY, segment: Segment) -> Result<f64> {
+        match self {
+            Self::Start => Ok(point_distance(point, segment.start)),
+            Self::Interior(fraction) => {
+                let (ex, ey) = local_projection_residual(point, segment, *fraction);
+                Ok(ex.hypot(ey))
+            },
+            Self::CertifiedInterior(projection) => projection.exact()?.distance(point, segment),
+            Self::ExactInterior(projection) => projection.distance(point, segment),
+            Self::End => Ok(point_distance(point, segment.end)),
+        }
+    }
+
+    fn continuum_squared(&self, point: XY, segment: Segment) -> Result<f64> {
+        match self {
+            Self::Start => Ok(point_distance(point, segment.start).powi(2)),
+            Self::Interior(fraction) => {
+                let (ex, ey) = local_projection_residual(point, segment, *fraction);
+                Ok(ex * ex + ey * ey)
+            },
+            Self::CertifiedInterior(projection) => projection
+                .exact()?
+                .squared_distance(point, segment)?
+                .rounded(),
+            Self::ExactInterior(projection) => {
+                projection.squared_distance(point, segment)?.rounded()
+            },
+            Self::End => Ok(point_distance(point, segment.end).powi(2)),
+        }
+    }
+
+    fn continuum_squared_trustworthy(&self, point: XY, segment: Segment) -> Result<Option<f64>> {
+        match self {
+            Self::Start => {
+                let (ex, ey) = (point.x - segment.start.x, point.y - segment.start.y);
+                let squared = ex * ex + ey * ey;
+                Ok(squared_norm_is_trustworthy(squared, ex == 0.0 && ey == 0.0).then_some(squared))
+            },
+            Self::Interior(fraction) => {
+                let (ex, ey) = local_projection_residual(point, segment, *fraction);
+                let squared = ex * ex + ey * ey;
+                Ok(squared_norm_is_trustworthy(squared, ex == 0.0 && ey == 0.0).then_some(squared))
+            },
+            Self::CertifiedInterior(projection) => projection
+                .exact()?
+                .squared_distance(point, segment)?
+                .rounded_trustworthy(),
+            Self::ExactInterior(projection) => projection
+                .squared_distance(point, segment)?
+                .rounded_trustworthy(),
+            Self::End => {
+                let (ex, ey) = (point.x - segment.end.x, point.y - segment.end.y);
+                let squared = ex * ex + ey * ey;
+                Ok(squared_norm_is_trustworthy(squared, ex == 0.0 && ey == 0.0).then_some(squared))
+            },
         }
     }
 
@@ -291,12 +367,14 @@ impl SegmentProjection {
     pub(super) fn interpolate_point(&self, start: Point, end: Point) -> Result<Point> {
         let exact;
         let projection = match self {
+            Self::Start => return Ok(start),
+            Self::End => return Ok(end),
             Self::ExactInterior(projection) => projection.as_ref(),
             Self::CertifiedInterior(certified) => {
                 exact = certified.exact()?;
                 &exact
             },
-            _ => return Ok(lerp_point(start, end, self.fraction())),
+            Self::Interior(_) => return Ok(lerp_point(start, end, self.fraction())),
         };
         let interpolate_optional = |start: Option<f64>, end: Option<f64>| -> Result<Option<f64>> {
             match (start, end) {
@@ -1378,9 +1456,6 @@ fn projection_from_classification(
         ClassifiedSegmentProjection::FilteredInterior(filtered) => {
             if let Some((fraction, foot)) = certified_projection(point, segment, filtered.fraction)
             {
-                if fraction.to_bits() == filtered.fraction.to_bits() {
-                    return Ok(SegmentProjection::Interior(filtered.fraction));
-                }
                 return Ok(SegmentProjection::CertifiedInterior(
                     CertifiedSegmentProjection {
                         point,
@@ -1404,8 +1479,20 @@ fn projection_from_classification(
         },
     };
     let fraction = round_ratio(&terms.numerator, &terms.denominator)?;
-    if historical_fraction.is_some_and(|historical| historical.to_bits() == fraction.to_bits()) {
-        return Ok(SegmentProjection::Interior(fraction));
+    if let Some(historical) = historical_fraction
+        && historical.to_bits() == fraction.to_bits()
+    {
+        // Preserve the established emitted witness, but retain source-bound
+        // exact N/D in a provenance variant. The old demotion to plain
+        // `Interior` made this same equality discard the ratio owner.
+        return Ok(SegmentProjection::CertifiedInterior(
+            CertifiedSegmentProjection {
+                point,
+                segment,
+                fraction: historical,
+                foot: interpolate_segment_point(segment.start, segment.end, historical),
+            },
+        ));
     }
     Ok(SegmentProjection::ExactInterior(Box::try_new(
         ExactSegmentProjection {
@@ -1468,6 +1555,30 @@ impl ExactSquaredDistance {
                 .try_subtract(terms.numerator.try_product(&terms.numerator)?)?,
             denominator: terms.denominator.try_clone()?,
         })
+    }
+
+    fn from_projection(
+        point: XY,
+        segment: Segment,
+        projection: &ExactSegmentProjection,
+    ) -> Result<Self> {
+        let qx = projection_difference(point.x, segment.start.x)?;
+        let qy = projection_difference(point.y, segment.start.y)?;
+        let point_squared = qx.try_product(&qx)?.try_add(qy.try_product(&qy)?)?;
+        Ok(Self {
+            numerator: point_squared
+                .try_product(&projection.denominator)?
+                .try_subtract(projection.numerator.try_product(&projection.numerator)?)?,
+            denominator: projection.denominator.try_clone()?,
+        })
+    }
+
+    fn rounded(&self) -> Result<f64> {
+        match round_ratio(&self.numerator, &self.denominator) {
+            Ok(rounded) => Ok(rounded),
+            Err(error) if matches!(error.kind(), ErrorKind::Resource(_)) => Err(error),
+            Err(_) => Ok(f64::INFINITY),
+        }
     }
 
     fn point_pair(left: XY, right: XY) -> Result<Self> {
@@ -1618,6 +1729,9 @@ fn point_segment_metric(point: XY, segment: Segment) -> Result<PointSegmentMetri
     }
     Ok(match classification {
         ClassifiedSegmentProjection::FilteredInterior(filtered) => {
+            if !filtered.terms_do_not_cancel {
+                return point_segment_metric_cancelled(point, segment, filtered);
+            }
             // Measure in the segment-start frame. Reconstructing the foot in
             // world coordinates and then subtracting it from `point` loses the
             // small residual at large coordinate bases (ordinary UTM is
@@ -1631,53 +1745,28 @@ fn point_segment_metric(point: XY, segment: Segment) -> Result<PointSegmentMetri
             let ey = qy - filtered.fraction * dy;
             let squared = ex * ex + ey * ey;
             if squared_norm_is_trustworthy(squared, ex == 0.0 && ey == 0.0) {
-                if filtered.terms_do_not_cancel {
-                    // Measurement owns the continuum residual above; nearest
-                    // selection owns the emitted binary64 witness. Keep their
-                    // filters separate because an unrepresentable foot can
-                    // make those two distances differ in the last ulps.
-                    let emitted =
-                        interpolate_segment_point(segment.start, segment.end, filtered.fraction);
-                    let selection_dx = point.x - emitted.x;
-                    let selection_dy = point.y - emitted.y;
-                    let selection_squared =
-                        selection_dx * selection_dx + selection_dy * selection_dy;
-                    PointSegmentMetric::Squared {
-                        measurement_squared: squared,
+                // Measurement owns the continuum residual above; nearest
+                // selection owns the emitted binary64 witness. Keep their
+                // filters separate because an unrepresentable foot can
+                // make those two distances differ in the last ulps.
+                let emitted =
+                    interpolate_segment_point(segment.start, segment.end, filtered.fraction);
+                let selection_dx = point.x - emitted.x;
+                let selection_dy = point.y - emitted.y;
+                let selection_squared = selection_dx * selection_dx + selection_dy * selection_dy;
+                PointSegmentMetric::Squared {
+                    measurement_squared: squared,
+                    selection_squared,
+                    filter: if squared_norm_is_trustworthy(
                         selection_squared,
-                        filter: if squared_norm_is_trustworthy(
-                            selection_squared,
-                            selection_dx == 0.0 && selection_dy == 0.0,
-                        ) {
-                            SquaredDistanceFilter::point_pair(selection_squared)
-                        } else {
-                            SquaredDistanceFilter::unbounded()
-                        },
-                        witness_kind: PointSegmentWitnessKind::Interior,
-                        projection: SelectionProjectionSource::Classified(classification),
-                    }
-                } else {
-                    let projection =
-                        projection_from_classification(point, segment, classification)?;
-                    let emitted = projection.interpolate_xy(segment)?;
-                    let selection_dx = point.x - emitted.x;
-                    let selection_dy = point.y - emitted.y;
-                    let selection_squared =
-                        selection_dx * selection_dx + selection_dy * selection_dy;
-                    PointSegmentMetric::Squared {
-                        measurement_squared: squared,
-                        selection_squared,
-                        filter: if squared_norm_is_trustworthy(
-                            selection_squared,
-                            selection_dx == 0.0 && selection_dy == 0.0,
-                        ) {
-                            SquaredDistanceFilter::point_pair(selection_squared)
-                        } else {
-                            SquaredDistanceFilter::unbounded()
-                        },
-                        witness_kind: PointSegmentWitnessKind::Interior,
-                        projection: SelectionProjectionSource::Ready(projection),
-                    }
+                        selection_dx == 0.0 && selection_dy == 0.0,
+                    ) {
+                        SquaredDistanceFilter::point_pair(selection_squared)
+                    } else {
+                        SquaredDistanceFilter::unbounded()
+                    },
+                    witness_kind: PointSegmentWitnessKind::Interior,
+                    projection: SelectionProjectionSource::Classified(classification),
                 }
             } else {
                 PointSegmentMetric::Projection(projection_from_classification(
@@ -1689,6 +1778,42 @@ fn point_segment_metric(point: XY, segment: Segment) -> Result<PointSegmentMetri
         },
         ClassifiedSegmentProjection::Declined => return point_segment_metric_exact(point, segment),
         ClassifiedSegmentProjection::Start | ClassifiedSegmentProjection::End => unreachable!(),
+    })
+}
+
+#[cold]
+#[inline(never)]
+fn point_segment_metric_cancelled(
+    point: XY,
+    segment: Segment,
+    filtered: FilteredInteriorProjection,
+) -> Result<PointSegmentMetric> {
+    let projection = projection_from_classification(
+        point,
+        segment,
+        ClassifiedSegmentProjection::FilteredInterior(filtered),
+    )?;
+    let Some(measurement_squared) = projection.continuum_squared_trustworthy(point, segment)?
+    else {
+        return Ok(PointSegmentMetric::Projection(projection));
+    };
+    let emitted = projection.interpolate_xy(segment)?;
+    let selection_dx = point.x - emitted.x;
+    let selection_dy = point.y - emitted.y;
+    let selection_squared = selection_dx * selection_dx + selection_dy * selection_dy;
+    Ok(PointSegmentMetric::Squared {
+        measurement_squared,
+        selection_squared,
+        filter: if squared_norm_is_trustworthy(
+            selection_squared,
+            selection_dx == 0.0 && selection_dy == 0.0,
+        ) {
+            SquaredDistanceFilter::point_pair(selection_squared)
+        } else {
+            SquaredDistanceFilter::unbounded()
+        },
+        witness_kind: PointSegmentWitnessKind::Interior,
+        projection: SelectionProjectionSource::Ready(projection),
     })
 }
 
@@ -2692,7 +2817,7 @@ pub(super) fn point_segment_distance(point: impl Into<XY>, segment: Segment) -> 
             ..
         } => measurement_squared.sqrt(),
         PointSegmentMetric::Projection(projection) => {
-            point_distance(point, projection.interpolate_xy(segment)?)
+            projection.continuum_distance(point, segment)?
         },
     })
 }
@@ -2766,8 +2891,7 @@ pub(super) fn point_segment_distance_squared(
             ..
         } => measurement_squared,
         PointSegmentMetric::Projection(projection) => {
-            let distance = point_distance(point, projection.interpolate_xy(segment)?);
-            distance * distance
+            projection.continuum_squared(point, segment)?
         },
     })
 }

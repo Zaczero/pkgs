@@ -2,6 +2,7 @@ use crate::geometry::segments::{
     ClipVerdict, EXACT_SELECTION_FALLBACKS, clip_segment, clip_segment_authority,
     clip_segment_liang_barsky, compare_along_segment, segment_nearest_points,
 };
+use crate::geometry::tessellation::exact::{ExactDyadic, try_compare_ratios};
 use crate::geometry::*;
 
 #[test]
@@ -839,6 +840,238 @@ fn exact_selection_compares_the_emitted_foot_against_a_point_candidate() {
     );
 }
 
+fn assert_projection_ratio(
+    projection: &super::SegmentProjection,
+    numerator: f64,
+    denominator: f64,
+) {
+    let expected_numerator = ExactDyadic::from_f64(numerator);
+    let expected_denominator = ExactDyadic::from_f64(denominator);
+    match projection {
+        super::SegmentProjection::CertifiedInterior(certified) => {
+            let exact = certified.exact().unwrap();
+            assert_eq!(
+                try_compare_ratios(
+                    &exact.numerator,
+                    &exact.denominator,
+                    &expected_numerator,
+                    &expected_denominator,
+                )
+                .unwrap(),
+                std::cmp::Ordering::Equal,
+            );
+        },
+        super::SegmentProjection::ExactInterior(exact) => {
+            assert_eq!(
+                try_compare_ratios(
+                    &exact.numerator,
+                    &exact.denominator,
+                    &expected_numerator,
+                    &expected_denominator,
+                )
+                .unwrap(),
+                std::cmp::Ordering::Equal,
+            );
+        },
+        other => panic!("expected a source-bound interior, got {other:?}"),
+    }
+}
+
+#[test]
+fn cancelling_projection_retains_exact_ratio_on_reversed_supports() {
+    let segment = Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(13.0, 13.0),
+    };
+    let point = XY::new(20.0, -6.0);
+    let projection = segment_projection(point, segment).unwrap();
+    assert!(projection.uses_exact_ratio());
+    assert_projection_ratio(&projection, 7.0, 13.0);
+    assert_eq!(
+        projection.interpolate_xy(segment).unwrap(),
+        XY::new(7.0, 7.0)
+    );
+    assert!(
+        projection
+            .cmp_along(&super::SegmentProjection::Start)
+            .unwrap()
+            .is_gt()
+    );
+    assert!(
+        projection
+            .cmp_along(&super::SegmentProjection::End)
+            .unwrap()
+            .is_lt()
+    );
+
+    let reversed = reverse_segment(segment);
+    let reversed_projection = segment_projection(point, reversed).unwrap();
+    assert!(reversed_projection.uses_exact_ratio());
+    assert_projection_ratio(&reversed_projection, 6.0, 13.0);
+    assert_eq!(
+        reversed_projection.interpolate_xy(reversed).unwrap(),
+        XY::new(7.0, 7.0)
+    );
+    assert!(projection.cmp_along(&reversed_projection).unwrap().is_gt());
+}
+
+#[test]
+fn exact_interior_ratio_that_rounds_to_zero_keeps_xy_and_ordinates() {
+    let minimum = f64::from_bits(1);
+    let extent = f64::from_bits(0x7FE0_0000_0000_0000);
+    let segment = Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(extent, 0.0),
+    };
+    let point = XY::new(minimum, 1.0);
+    let projection = segment_projection(point, segment).unwrap();
+    assert!(projection.uses_exact_ratio());
+    assert!(!projection.is_start() && !projection.is_end());
+    assert_eq!(projection.fraction().to_bits(), 0.0_f64.to_bits());
+    assert!(
+        projection
+            .cmp_along(&super::SegmentProjection::Start)
+            .unwrap()
+            .is_gt()
+    );
+    assert!(
+        projection
+            .cmp_along(&super::SegmentProjection::End)
+            .unwrap()
+            .is_lt()
+    );
+    assert_eq!(
+        projection.interpolate_xy(segment).unwrap(),
+        XY::new(minimum, 0.0)
+    );
+
+    let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(0.0)));
+    let end = Point::new_raw_axes(
+        extent,
+        0.0,
+        ZOrdinate(Some(extent)),
+        MOrdinate(Some(extent)),
+    );
+    let lifted = projection.interpolate_point(start, end).unwrap();
+    assert_eq!(lifted.x.to_bits(), minimum.to_bits());
+    assert_eq!(lifted.z().unwrap().to_bits(), minimum.to_bits());
+    assert_eq!(lifted.m().unwrap().to_bits(), minimum.to_bits());
+}
+
+#[test]
+fn exact_interior_ratio_that_rounds_to_one_keeps_large_ordinates_interior() {
+    let previous = 1.0_f64.next_down();
+    let large = f64::from_bits(0x7FE0_0000_0000_0000);
+    let segment = Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(1.0, 1.0),
+    };
+    let projection = segment_projection(XY::new(1.0, previous), segment).unwrap();
+    assert!(projection.uses_exact_ratio());
+    assert!(!projection.is_start() && !projection.is_end());
+    assert_eq!(projection.fraction().to_bits(), 1.0_f64.to_bits());
+    assert_eq!(projection.interpolate_xy(segment).unwrap(), segment.end);
+
+    let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(-large)), MOrdinate(Some(-large)));
+    let end = Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(large)), MOrdinate(Some(large)));
+    let lifted = projection.interpolate_point(start, end).unwrap();
+    let expected = large.next_down();
+    assert_eq!(lifted.z().unwrap().to_bits(), expected.to_bits());
+    assert_eq!(lifted.m().unwrap().to_bits(), expected.to_bits());
+    assert_ne!(lifted.z().unwrap().to_bits(), end.z().unwrap().to_bits());
+    assert_ne!(lifted.m().unwrap().to_bits(), end.m().unwrap().to_bits());
+}
+
+#[test]
+fn exact_clamp_classification_wins_around_one_plus_two_to_the_minus_fifty_four() {
+    let half_ulp = 2.0_f64.powi(-53);
+    let segment = Segment {
+        start: XY::new(0.0, -half_ulp),
+        end: XY::new(1.0, 1.0 - half_ulp),
+    };
+    let point = XY::new(1.0, 1.0);
+    let terms = super::exact_projection_terms(point, segment).unwrap();
+    let expected_numerator = ExactDyadic::from_f64(1.0)
+        .try_add(ExactDyadic::from_f64(2.0_f64.powi(-54)))
+        .unwrap();
+    assert_eq!(
+        try_compare_ratios(
+            &terms.numerator,
+            &terms.denominator,
+            &expected_numerator,
+            &ExactDyadic::from_f64(1.0),
+        )
+        .unwrap(),
+        std::cmp::Ordering::Equal
+    );
+    assert!(matches!(
+        super::classify_segment_projection_exact(point, segment).unwrap(),
+        super::ExactClassifiedSegmentProjection::End
+    ));
+    let projection = segment_projection(point, segment).unwrap();
+    assert!(projection.is_end());
+    assert_eq!(
+        projection.interpolate_xy(segment).unwrap().y.to_bits(),
+        segment.end.y.to_bits()
+    );
+}
+
+#[test]
+fn exact_source_distance_survives_a_coincident_emitted_foot() {
+    let segment = Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(
+            f64::from_bits(0x10D2_C800_0000_0000),
+            f64::from_bits(0x10BB_2000_0000_0000),
+        ),
+    };
+    let point = XY::new(
+        f64::from_bits(0x10CB_BC18_D59F_50B3),
+        f64::from_bits(0x10B4_0731_074E_D707),
+    );
+    let projection = segment_projection(point, segment).unwrap();
+    let emitted = projection.interpolate_xy(segment).unwrap();
+    assert_eq!(emitted, point);
+    assert!(projection.uses_exact_ratio());
+
+    let distance = super::point_segment_distance(point, segment).unwrap();
+    assert_eq!(distance.to_bits(), 0x0D06_6F97_90E5_906D);
+    assert!(distance > 0.0);
+    assert!(
+        super::point_segment_distance_key(point, segment)
+            .unwrap()
+            .cmp(&super::point_pair_distance_key(point, point))
+            .unwrap()
+            .is_lt(),
+        "selection keeps the projected identity on an emitted-XY tie"
+    );
+    assert_eq!(
+        super::point_segment_distance_squared(point, segment)
+            .unwrap()
+            .to_bits(),
+        0,
+        "the source square is below the binary64 normal range, while the source distance remains positive"
+    );
+}
+
+#[test]
+fn endpoint_projection_preserves_source_signed_zero_bits() {
+    let segment = Segment {
+        start: XY::new(-0.0, 0.0),
+        end: XY::new(1.0, 1.0),
+    };
+    let projection = segment_projection(XY::new(-0.0, 0.0), segment).unwrap();
+    assert!(projection.is_start());
+    let foot = projection.interpolate_xy(segment).unwrap();
+    assert_eq!(foot.x.to_bits(), (-0.0_f64).to_bits());
+    let start = Point::new_raw_axes(-0.0, 0.0, ZOrdinate(Some(-0.0)), MOrdinate(Some(3.0)));
+    let end = Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(9.0)), MOrdinate(Some(7.0)));
+    let lifted = projection.interpolate_point(start, end).unwrap();
+    assert_eq!(lifted.x.to_bits(), start.x.to_bits());
+    assert_eq!(lifted.z().unwrap().to_bits(), start.z().unwrap().to_bits());
+    assert_eq!(lifted.m().unwrap().to_bits(), start.m().unwrap().to_bits());
+}
+
 fn reverse_segment(segment: Segment) -> Segment {
     Segment {
         start: segment.end,
@@ -860,13 +1093,14 @@ mod exact_projection_allocation_tests {
     }
 
     fn prefix_sweep(run: impl Fn() -> crate::error::Result<()>) {
-        let (_, allocations) = allocation_count(|| run().unwrap());
+        let ((), allocations) = allocation_count(|| run().unwrap());
         assert!(allocations > 0);
         for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, || run())
+            let error = fail_allocations_after(allowed, &run)
                 .expect_err("exact projection scratch must propagate allocation failure");
             assert_allocation(&error);
         }
+        run().expect("exact projection must retry cleanly after allocation failure");
     }
 
     #[test]
@@ -882,6 +1116,20 @@ mod exact_projection_allocation_tests {
     }
 
     #[test]
+    fn ordinary_projection_path_stays_allocation_free() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(2.0, 0.0),
+        };
+        let ((), allocations) = allocation_count(|| {
+            let projection = segment_projection(XY::new(1.0, 1.0), segment).unwrap();
+            assert!(!projection.uses_exact_ratio());
+            projection.interpolate_xy(segment).unwrap();
+        });
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
     fn interior_exact_terms_reject_every_allocation() {
         let segment = Segment {
             start: XY::new(0.0, 0.0),
@@ -889,6 +1137,88 @@ mod exact_projection_allocation_tests {
         };
         let point = XY::new(1.0, 1.0);
         prefix_sweep(|| super::super::exact_projection_terms(point, segment).map(|_| ()));
+    }
+
+    #[test]
+    fn interior_exact_classification_rejects_every_allocation() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(1.0, 1.0),
+        };
+        let point = XY::new(1.0, 1.0_f64.next_down());
+        prefix_sweep(|| {
+            super::super::classify_segment_projection_exact(point, segment).map(|classification| {
+                assert!(matches!(
+                    classification,
+                    super::super::ExactClassifiedSegmentProjection::Interior(_)
+                ));
+            })
+        });
+    }
+
+    #[test]
+    fn retained_exact_ratio_publication_and_clone_reject_every_allocation() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(1.0, 1.0),
+        };
+        let point = XY::new(1.0, 1.0_f64.next_down());
+        let selection = super::super::point_segment_selection(point, segment).unwrap();
+        assert!(
+            selection
+                .projection(point, segment)
+                .unwrap()
+                .uses_exact_ratio()
+        );
+        prefix_sweep(|| {
+            selection.projection(point, segment).map(|projection| {
+                assert!(projection.uses_exact_ratio());
+            })
+        });
+    }
+
+    #[test]
+    fn exact_ratio_interpolation_rejects_every_allocation_and_retries_cleanly() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(1.0, 1.0),
+        };
+        let projection = segment_projection(XY::new(1.0, 1.0_f64.next_down()), segment).unwrap();
+        let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(-1.0)), MOrdinate(Some(-3.0)));
+        let end = Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(5.0)), MOrdinate(Some(9.0)));
+        let expected = projection.interpolate_point(start, end).unwrap();
+        prefix_sweep(|| projection.interpolate_point(start, end).map(|_| ()));
+        assert_eq!(
+            projection.interpolate_point(start, end).unwrap(),
+            expected,
+            "interpolation must be retryable after every rejected allocation"
+        );
+    }
+
+    #[test]
+    fn certified_ratio_interpolation_rejects_every_allocation() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(13.0, 13.0),
+        };
+        let projection = segment_projection(XY::new(20.0, -6.0), segment).unwrap();
+        assert!(matches!(
+            projection,
+            super::super::SegmentProjection::CertifiedInterior(_)
+        ));
+        let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(Some(3.0)));
+        let end = Point::new_raw_axes(13.0, 13.0, ZOrdinate(Some(5.0)), MOrdinate(Some(9.0)));
+        prefix_sweep(|| projection.interpolate_point(start, end).map(|_| ()));
+    }
+
+    #[test]
+    fn exact_ratio_xy_interpolation_rejects_every_allocation() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(1.0, 1.0),
+        };
+        let projection = segment_projection(XY::new(1.0, 1.0_f64.next_down()), segment).unwrap();
+        prefix_sweep(|| projection.interpolate_xy(segment).map(|_| ()));
     }
 
     #[test]
