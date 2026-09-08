@@ -1265,6 +1265,9 @@ mod winding_allocation_tests {
         run: impl Fn() -> crate::error::Result<T>,
         assert_success: impl Fn(&T),
     ) {
+        let value = run().unwrap_or_else(|_| panic!("unfaulted construction must succeed"));
+        assert_success(&value);
+        drop(value);
         let (value, allocations) = allocation_count(|| {
             run().unwrap_or_else(|_| panic!("unfaulted construction must succeed"))
         });
@@ -1272,10 +1275,11 @@ mod winding_allocation_tests {
         drop(value);
         assert!(allocations > 0, "construction must cross an owned boundary");
         for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, || match run() {
+            let result = fail_allocations_after(allowed, &run);
+            let error = match result {
                 Err(error) => error,
-                Ok(_) => panic!("an allocation rejection must return an error"),
-            });
+                Ok(_) => panic!("allocation rejection at prefix {allowed} returned Ok"),
+            };
             assert_resource(&error);
         }
         let value = run().unwrap_or_else(|_| panic!("construction must retry after rejection"));

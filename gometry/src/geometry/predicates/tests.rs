@@ -264,6 +264,42 @@ mod convex_tests {
     }
 
     #[test]
+    fn convexity_keeps_only_the_terminal_closure_duplicate() {
+        let p = |x: f64, y: f64| Point::new_raw_xy(x, y);
+        let square = [p(0.0, 0.0), p(4.0, 0.0), p(4.0, 4.0), p(0.0, 4.0)];
+        let closed = [square[0], square[1], square[2], square[3], square[0]];
+        assert!(shell_is_convex(closed.as_slice()));
+        let repeated_closure = [
+            square[0], square[0], square[1], square[2], square[3], square[3], square[0],
+        ];
+        assert!(shell_is_convex(repeated_closure.as_slice()));
+        // The return to the first vertex is intermediate rather than the
+        // terminal closure, so it remains in the cyclic sequence and the
+        // self-crossing ring is not admitted as convex.
+        let intermediate_return = [square[0], square[1], square[0], square[2], square[3]];
+        assert!(!shell_is_convex(intermediate_return.as_slice()));
+    }
+
+    #[test]
+    fn convexity_over_a_closed_coordseq_does_not_allocate() {
+        let shell = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(4.0, 0.0),
+            Point::new_raw_xy(4.0, 4.0),
+            Point::new_raw_xy(0.0, 4.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ])
+        .unwrap();
+        let (convex, allocations) =
+            crate::test_support::allocation_count(|| shell_is_convex(&shell));
+        assert!(convex);
+        assert_eq!(allocations, 0);
+        crate::test_support::fail_allocations_after(0, || {
+            assert!(shell_is_convex(&shell));
+        });
+    }
+
+    #[test]
     fn axis_rectangle_detection_and_intersects_fast_path() {
         let p = |x: f64, y: f64| Point::new_raw_xy(x, y);
         let rect = |minx, miny, maxx, maxy| {

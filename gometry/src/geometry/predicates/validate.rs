@@ -1,6 +1,6 @@
 use crate::geometry::{
     Coordinates, Orientation, Point, ValidationIssue, XY, column_all_finite, orientation_xy,
-    same_point, same_topological_coordinate, wrap_index,
+    same_point, same_topological_coordinate,
 };
 
 const SMALL_RING_FUSED_LIMIT: usize = 16;
@@ -201,80 +201,165 @@ fn shell_convexity<C: Coordinates + ?Sized>(shell: &C, strict: bool) -> bool {
             return false;
         }
     }
-    // Convexity is planar, so gather the XY engine coord (16 bytes) rather than
-    // the ordinate-carrying Point (40 bytes) — 2.5× less to allocate and scan.
-    let mut points: Vec<XY> = shell.iter_coords().map(XY::from).collect();
-    points.dedup();
-    // Strip the closing duplicate, then the wraparound duplicate a repeated
-    // final vertex can leave behind — zero-length edges have no direction.
-    if points.len() > 1 && points[0] == points[points.len() - 1] {
-        points.pop();
-    }
-    let ring = points.as_slice();
-    let n = ring.len();
+    // Convexity is planar, but this predicate is a hot admission gate and its
+    // normalized ring is only a cursor over the source: avoid materializing a
+    // second XY vector just to remove consecutive duplicates and the terminal
+    // closing coordinate. The first pass recovers the exact sequence length
+    // and the second streams its cyclic triples.
+    let len = shell.coord_count();
+    let (distinct, first, last) = normalized_shell_extent(shell, len);
+    let n = if distinct > 1 && first == last {
+        distinct - 1
+    } else {
+        distinct
+    };
     if n < 3 {
         return !strict;
     }
+    let mut state = ConvexityState::new(strict);
+    let mut previous = None;
+    let mut first_point = None;
+    let mut second_point = None;
+    let mut edge_start = None;
+    let mut edge_end = None;
+    let mut emitted = 0;
+    for index in 0..len {
+        let point = XY::from(shell.nth_coord(index));
+        if previous == Some(point) {
+            continue;
+        }
+        previous = Some(point);
+        if emitted == n {
+            // Only the final duplicate of the first distinct coordinate is
+            // removed. An intermediate return to that coordinate remains in
+            // the normalized cycle, exactly as Vec::dedup followed by pop.
+            break;
+        }
+        match emitted {
+            0 => first_point = Some(point),
+            1 => second_point = Some(point),
+            _ => {
+                let a = edge_start.expect("normalized shell has an edge start");
+                let b = edge_end.expect("normalized shell has an edge end");
+                if !state.push(a, b, point) {
+                    return false;
+                }
+            },
+        }
+        edge_start = edge_end;
+        edge_end = Some(point);
+        emitted += 1;
+    }
+    debug_assert_eq!(emitted, n);
+    let first_point = first_point.expect("a normalized shell with three points has a first point");
+    let second_point =
+        second_point.expect("a normalized shell with three points has a second point");
+    let penultimate = edge_start.expect("normalized shell has a penultimate point");
+    let last = edge_end.expect("normalized shell has a terminal point");
+    if !state.push(penultimate, last, first_point) || !state.push(last, first_point, second_point) {
+        return false;
+    }
+    state.finish()
+}
+
+fn normalized_shell_extent<C: Coordinates + ?Sized>(
+    shell: &C,
+    len: usize,
+) -> (usize, Option<XY>, Option<XY>) {
+    let mut distinct = 0;
+    let mut first = None;
+    let mut last = None;
+    let mut previous = None;
+    for index in 0..len {
+        let point = XY::from(shell.nth_coord(index));
+        if previous == Some(point) {
+            continue;
+        }
+        if first.is_none() {
+            first = Some(point);
+        }
+        previous = Some(point);
+        last = Some(point);
+        distinct += 1;
+    }
+    (distinct, first, last)
+}
+
+struct ConvexityState {
+    strict: bool,
     // Schorn-Fisher convexity, atan2-free: a simple polygon is convex iff
     // every turn keeps ONE orientation AND its edge direction winds exactly
     // once. `orient2d` gives the robust turn sign; winding-once is read off
     // the direction signs — each component (dx, dy) reverses sign exactly
     // TWICE around a single convex loop (its direction angle sweeps one full
     // turn, so cos/sin each cross zero twice), whereas a self-intersecting
-    // "all-same-turn" star winds 2+ times and overshoots. This replaces the
-    // per-vertex `atan2` turning sum that profiled at ~30% of a
-    // convex-polygon buffer / first point-query (`convex_shell` cache init).
-    let component_sign = |value: f64| i32::from(value > 0.0) - i32::from(value < 0.0);
-    let mut sign = Orientation::Collinear;
-    let (mut x_flips, mut y_flips) = (0_u32, 0_u32);
-    // First and most-recent NON-ZERO direction sign per axis: zero components
-    // (axis-aligned edges) carry the previous sign so they never count as a
-    // flip, and the wrap edge closes the cyclic sequence at the end.
-    let (mut first_x, mut last_x) = (0_i32, 0_i32);
-    let (mut first_y, mut last_y) = (0_i32, 0_i32);
-    for index in 0..n {
-        let a = ring[index];
-        let b = ring[wrap_index(index + 1, n)];
-        let c = ring[wrap_index(index + 2, n)];
+    // "all-same-turn" star winds 2+ times and overshoots.
+    sign: Orientation,
+    x_flips: u32,
+    y_flips: u32,
+    first_x: i32,
+    last_x: i32,
+    first_y: i32,
+    last_y: i32,
+}
+
+impl ConvexityState {
+    const fn new(strict: bool) -> Self {
+        Self {
+            strict,
+            sign: Orientation::Collinear,
+            x_flips: 0,
+            y_flips: 0,
+            first_x: 0,
+            last_x: 0,
+            first_y: 0,
+            last_y: 0,
+        }
+    }
+
+    fn push(&mut self, a: XY, b: XY, c: XY) -> bool {
         let turn = orientation_xy(a.x, a.y, b.x, b.y, c.x, c.y);
         if turn != Orientation::Collinear {
-            if sign == Orientation::Collinear {
-                sign = turn;
-            } else if turn != sign {
+            if self.sign == Orientation::Collinear {
+                self.sign = turn;
+            } else if turn != self.sign {
                 return false;
             }
-        } else if strict {
+        } else if self.strict {
             return false;
         }
+        let component_sign = |value: f64| i32::from(value > 0.0) - i32::from(value < 0.0);
         let sx = component_sign(b.x - a.x);
         if sx != 0 {
-            if last_x == 0 {
-                first_x = sx;
-            } else if sx != last_x {
-                x_flips += 1;
+            if self.last_x == 0 {
+                self.first_x = sx;
+            } else if sx != self.last_x {
+                self.x_flips += 1;
             }
-            last_x = sx;
+            self.last_x = sx;
         }
         let sy = component_sign(b.y - a.y);
         if sy != 0 {
-            if last_y == 0 {
-                first_y = sy;
-            } else if sy != last_y {
-                y_flips += 1;
+            if self.last_y == 0 {
+                self.first_y = sy;
+            } else if sy != self.last_y {
+                self.y_flips += 1;
             }
-            last_y = sy;
+            self.last_y = sy;
         }
+        true
     }
-    // All turns collinear is a degenerate sliver, not a convex region.
-    if sign == Orientation::Collinear {
-        return false;
+
+    fn finish(mut self) -> bool {
+        if self.sign == Orientation::Collinear {
+            return false;
+        }
+        if self.last_x != 0 && self.last_x != self.first_x {
+            self.x_flips += 1;
+        }
+        if self.last_y != 0 && self.last_y != self.first_y {
+            self.y_flips += 1;
+        }
+        self.x_flips == 2 && self.y_flips == 2
     }
-    // Close the cyclic direction sequences (last non-zero sign back to first).
-    if last_x != 0 && last_x != first_x {
-        x_flips += 1;
-    }
-    if last_y != 0 && last_y != first_y {
-        y_flips += 1;
-    }
-    x_flips == 2 && y_flips == 2
 }
