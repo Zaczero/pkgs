@@ -78,8 +78,8 @@ impl Shape {
         // shapely); one half-open chord scan at the bbox bisector is a
         // few hundred ns and needs no conversion.
         let polygonal = match self {
-            Self::Polygon(polygon) => polygonal_surface_point(std::iter::once(polygon)),
-            Self::MultiPolygon(polygons) => polygonal_surface_point(polygons.as_slice().iter()),
+            Self::Polygon(polygon) => polygonal_surface_point(std::iter::once(polygon))?,
+            Self::MultiPolygon(polygons) => polygonal_surface_point(polygons.as_slice().iter())?,
             _ => None,
         };
         if let Some(point) = polygonal {

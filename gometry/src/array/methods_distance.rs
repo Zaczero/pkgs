@@ -298,7 +298,7 @@ impl PyGeometryArray {
                         rings,
                         row_bounds,
                         crossings,
-                    ))
+                    )?)
                 },
             )
         })? {
