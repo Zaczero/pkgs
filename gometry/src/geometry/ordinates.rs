@@ -353,39 +353,37 @@ pub(crate) fn carry_direct_points_ordinates(
         return Ok(output);
     }
     let declared_axes = overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
-    match &output {
-        Shape::Empty(kind, _) => Ok(Shape::typed_empty(*kind, declared_axes)),
-        _ => {
-            let mut has_z = declared_axes.has_z();
-            let mut has_m = declared_axes.has_m();
-            output.for_each_point(|point| {
-                let (z, m) = resolve_copied_point_ordinates(point, inputs);
-                has_z &= z.is_some();
-                has_m &= m.is_some();
-            });
-            let axes = CoordinateAxes::new(HasZ(has_z), HasM(has_m));
-            if strict && axes != declared_axes && !output.is_empty() {
-                return Err(GeometryErrorKind::ordinate_dropped("intersection"));
-            }
-            output.map_points(&|point| {
-                let (z, m) = resolve_copied_point_ordinates(point, inputs);
-                debug_assert!(
-                    !axes.has_z() || z.is_some(),
-                    "retained Z is not reproducible at {point:?}; axes={axes:?}"
-                );
-                debug_assert!(
-                    !axes.has_m() || m.is_some(),
-                    "retained M is not reproducible at {point:?}; axes={axes:?}"
-                );
-                Ok(Point::new_raw_axes(
-                    point.x,
-                    point.y,
-                    ZOrdinate(axes.has_z().then(|| z.expect("retained Z is sourced"))),
-                    MOrdinate(axes.has_m().then(|| m.expect("retained M is sourced"))),
-                ))
-            })
-        },
+    if let Shape::Empty(kind, _) = &output {
+        return Ok(Shape::typed_empty(*kind, declared_axes));
     }
+    let mut has_z = declared_axes.has_z();
+    let mut has_m = declared_axes.has_m();
+    output.for_each_point(|point| {
+        let (z, m) = resolve_copied_point_ordinates(point, inputs);
+        has_z &= z.is_some();
+        has_m &= m.is_some();
+    });
+    let axes = CoordinateAxes::new(HasZ(has_z), HasM(has_m));
+    if strict && axes != declared_axes && !output.is_empty() {
+        return Err(GeometryErrorKind::ordinate_dropped("intersection"));
+    }
+    output.map_points(&|point| {
+        let (z, m) = resolve_copied_point_ordinates(point, inputs);
+        debug_assert!(
+            !axes.has_z() || z.is_some(),
+            "retained Z is not reproducible at {point:?}; axes={axes:?}"
+        );
+        debug_assert!(
+            !axes.has_m() || m.is_some(),
+            "retained M is not reproducible at {point:?}; axes={axes:?}"
+        );
+        Ok(Point::new_raw_axes(
+            point.x,
+            point.y,
+            ZOrdinate(axes.has_z().then(|| z.expect("retained Z is sourced"))),
+            MOrdinate(axes.has_m().then(|| m.expect("retained M is sourced"))),
+        ))
+    })
 }
 
 fn resolve_copied_point_ordinates(point: Point, inputs: &[&Shape]) -> (Option<f64>, Option<f64>) {
