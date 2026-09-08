@@ -708,7 +708,7 @@ impl<'a> PolylabelField<'a> {
         let linework = PreparedLinework::build(shape)?;
         // Below the indexing crossover the flat SIMD facet scan beats a tree
         // descent (its stack churn does not pay for a handful of facets).
-        let bvh = (frame.is_none() && linework.segment_count() >= BVH_MIN_INDEXED_SEGMENTS)
+        let bvh = (linework.segment_count() >= BVH_MIN_INDEXED_SEGMENTS)
             .then(|| FacetBvh::build(&linework))
             .flatten();
         Ok(Self {
@@ -725,24 +725,54 @@ impl<'a> PolylabelField<'a> {
         self.linework.segment_count() == 0
     }
 
-    /// Unsigned distance from `point` to the boundary linework. The BVH runs
-    /// its SIMD **squared** kernel (eight segment distances per vector op) and
-    /// the single `sqrt` lifts the winner back to Euclidean units for the
-    /// priority bound `half_size·√2 + d` — far cheaper than the scalar `hypot`
-    /// path, which evaluates each segment distance one lane at a time.
+    /// Unsigned distance from `point` to the boundary linework. The unframed
+    /// path runs its SIMD **squared** kernel (eight segment distances per
+    /// vector op) and the single `sqrt` lifts the winner back to Euclidean
+    /// units. A framed path stays in unsquared original-metric units because
+    /// its independent local-axis scales make squared local distances
+    /// meaningless.
     ///
-    /// `bound_squared` seeds the branch-and-bound with a known upper bound on
-    /// the result, so the descent prunes every node farther than it from the
+    /// `bound` seeds the branch-and-bound with a known upper bound on the
+    /// result, so the descent prunes every node farther than it from the
     /// outset (the true nearest is never pruned — it lies at or below the
     /// bound). `f64::INFINITY` means "no prior knowledge" (the seed cells).
-    fn boundary_distance(&mut self, point: Point, bound_squared: f64) -> Result<f64> {
+    fn boundary_distance(&mut self, point: Point, bound: f64) -> Result<f64> {
         if let Some(frame) = self.frame {
-            let mut best = f64::INFINITY;
-            self.linework.for_each_segment(|segment| {
-                best = best.min(framed_metric_nearest_on_segment(frame, point, segment).1);
-            });
-            return Ok(best);
+            let linework = &self.linework;
+            let mut refine = |facet: crate::geometry::facet_bvh::Facet| {
+                let mut best = f64::INFINITY;
+                for index in 0..facet.segment_count as usize {
+                    best = best.min(
+                        framed_metric_nearest_on_segment(
+                            frame,
+                            point,
+                            linework.segment(facet, index),
+                        )
+                        .1,
+                    );
+                }
+                best
+            };
+            let distance = match self.bvh.as_ref() {
+                Some(bvh) => bvh.min_point_distance_with_stack_framed(
+                    linework,
+                    point,
+                    frame,
+                    &mut self.stack,
+                    bound,
+                    &mut refine,
+                )?,
+                None => {
+                    let mut best = f64::INFINITY;
+                    linework.for_each_segment(|segment| {
+                        best = best.min(framed_metric_nearest_on_segment(frame, point, segment).1);
+                    });
+                    best
+                },
+            };
+            return Ok(distance);
         }
+        let bound_squared = bound * bound;
         let squared = match &self.bvh {
             Some(bvh) => bvh.min_point_distance_with_stack::<true>(
                 &self.linework,
@@ -780,16 +810,16 @@ impl<'a> PolylabelField<'a> {
         // the search with that bound (padded by a hair so float rounding never
         // prunes the true nearest facet). The same gap decides the sign for
         // free when the boundary cannot reach across it.
-        let (bound_squared, inherited_sign) = parent.map_or((f64::INFINITY, None), |parent| {
+        let (bound, inherited_sign) = parent.map_or((f64::INFINITY, None), |parent| {
             let gap = self.frame.map_or(
                 parent.half_size * std::f64::consts::FRAC_1_SQRT_2,
                 |frame| framed_metric_cell_radius(frame, parent.half_size / 2.0),
             );
             let bound = (parent.distance.abs() + gap) * (1.0 + 1e-9);
             let sign = (parent.distance.abs() > gap).then_some(parent.distance > 0.0);
-            (bound * bound, sign)
+            (bound, sign)
         });
-        let distance = self.boundary_distance(center, bound_squared)?;
+        let distance = self.boundary_distance(center, bound)?;
         // Containment is needed only for the seed cells and the few cells that
         // straddle the boundary (deep cells inherit their parent's sign), so a
         // direct even-odd ray cast beats building a hierarchical
@@ -860,6 +890,86 @@ mod tests {
         )
     }
 
+    fn dense_reciprocal_polygon(subdivisions: usize) -> Shape {
+        let extent = 1.0e162;
+        let half_height = 1.0e-162;
+        let mut points = Vec::with_capacity(2 * (subdivisions + 1) + 1);
+        for index in 0..=subdivisions {
+            let fraction = index as f64 / subdivisions as f64;
+            let x = -extent + 2.0 * extent * fraction;
+            points.push(Point::new_raw_xy(x, -half_height));
+        }
+        for index in (0..=subdivisions).rev() {
+            let fraction = index as f64 / subdivisions as f64;
+            let x = -extent + 2.0 * extent * fraction;
+            points.push(Point::new_raw_xy(x, half_height));
+        }
+        points.push(points[0]);
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn normalized_dense_reciprocal_polygon() -> PolylabelFrame {
+        let shape = dense_reciprocal_polygon(256);
+        let bounds = shape.bounds().expect("dense polygon has bounds");
+        normalized_polylabel_frame(&shape, bounds)
+            .unwrap()
+            .expect("reciprocal axes have a frame")
+    }
+
+    fn flat_framed_nearest(
+        frame: AxisFrame,
+        linework: &PreparedLinework,
+        point: Point,
+    ) -> (Point, f64) {
+        let mut nearest = (Point::new_raw_xy(0.0, 0.0), f64::INFINITY);
+        linework.for_each_segment(|segment| {
+            let candidate = framed_metric_nearest_on_segment(frame, point, segment);
+            if candidate.1 < nearest.1 {
+                nearest = candidate;
+            }
+        });
+        nearest
+    }
+
+    fn indexed_framed_nearest(
+        frame: AxisFrame,
+        linework: &PreparedLinework,
+        bvh: &FacetBvh,
+        point: Point,
+    ) -> (Point, f64) {
+        let mut nearest = (Point::new_raw_xy(0.0, 0.0), f64::INFINITY);
+        let mut stack = Vec::new();
+        let distance = bvh
+            .min_point_distance_with_stack_framed(
+                linework,
+                point,
+                frame,
+                &mut stack,
+                f64::INFINITY,
+                |facet| {
+                    for index in 0..facet.segment_count as usize {
+                        let candidate = framed_metric_nearest_on_segment(
+                            frame,
+                            point,
+                            linework.segment(facet, index),
+                        );
+                        if candidate.1 < nearest.1 {
+                            nearest = candidate;
+                        }
+                    }
+                    nearest.1
+                },
+            )
+            .unwrap();
+        (nearest.0, distance)
+    }
+
     #[test]
     fn reciprocal_ribbon_keeps_the_physical_nearest_edge() {
         let extent = 1.0e162;
@@ -882,6 +992,113 @@ mod tests {
         );
         let center = polylabel_point(&shape, None).expect("finite ribbon");
         assert_eq!(center, Point::new_raw_xy(0.0, 0.0));
+    }
+
+    #[test]
+    fn reciprocal_axis_dense_indexed_field_preserves_distance_and_witness() {
+        let normalized = normalized_dense_reciprocal_polygon();
+        let linework = PreparedLinework::build(&normalized.shape).unwrap();
+        let bvh = FacetBvh::build(&linework).expect("dense linework has an index");
+        let mut field = PolylabelField::new(
+            &normalized.shape,
+            normalized.max_inradius,
+            Some(normalized.frame),
+        )
+        .unwrap();
+
+        for point in [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(0.25, -0.2),
+            Point::new_raw_xy(-0.75, 0.4),
+        ] {
+            let (flat_foot, flat_distance) =
+                flat_framed_nearest(normalized.frame, &linework, point);
+            let (indexed_foot, indexed_distance) =
+                indexed_framed_nearest(normalized.frame, &linework, &bvh, point);
+            let field_distance = field.boundary_distance(point, f64::INFINITY).unwrap();
+            assert_eq!(indexed_distance.to_bits(), flat_distance.to_bits());
+            assert_eq!(field_distance.to_bits(), flat_distance.to_bits());
+            assert_eq!(indexed_foot.x.to_bits(), flat_foot.x.to_bits());
+            assert_eq!(indexed_foot.y.to_bits(), flat_foot.y.to_bits());
+        }
+    }
+
+    #[test]
+    fn framed_subnormal_seed_stays_in_unsquared_distance_units() {
+        let frame = AxisFrame::from_origin_extents(Point::new_raw_xy(0.0, 0.0), 1.0, 1.0e-320)
+            .expect("positive frame extents");
+        let linework = PreparedLinework::from_open_xy_columns(&[0.0, 1.0], &[1.0, 1.0]).unwrap();
+        let bvh = FacetBvh::build(&linework).expect("one facet has a tree root");
+        let point = Point::new_raw_xy(0.0, 0.0);
+        let expected =
+            framed_metric_nearest_on_segment(frame, point, linework.segment(linework.facets[0], 0))
+                .1;
+        assert!(expected > 0.0 && expected < f64::MIN_POSITIVE);
+        let mut stack = Vec::new();
+        let actual = bvh
+            .min_point_distance_with_stack_framed(
+                &linework,
+                point,
+                frame,
+                &mut stack,
+                expected,
+                |facet| {
+                    let mut best = f64::INFINITY;
+                    for index in 0..facet.segment_count as usize {
+                        best = best.min(
+                            framed_metric_nearest_on_segment(
+                                frame,
+                                point,
+                                linework.segment(facet, index),
+                            )
+                            .1,
+                        );
+                    }
+                    best
+                },
+            )
+            .unwrap();
+        assert_eq!(actual.to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn reciprocal_axis_index_refines_fewer_facets_and_segments_than_flat() {
+        let normalized = normalized_dense_reciprocal_polygon();
+        let linework = PreparedLinework::build(&normalized.shape).unwrap();
+        let bvh = FacetBvh::build(&linework).expect("dense linework has an index");
+        let point = Point::new_raw_xy(0.0, 0.0);
+        let mut refined_facets = 0;
+        let mut refined_segments = 0;
+        let mut stack = Vec::new();
+        let indexed_distance = bvh
+            .min_point_distance_with_stack_framed(
+                &linework,
+                point,
+                normalized.frame,
+                &mut stack,
+                f64::INFINITY,
+                |facet| {
+                    refined_facets += 1;
+                    refined_segments += facet.segment_count as usize;
+                    let mut best = f64::INFINITY;
+                    for index in 0..facet.segment_count as usize {
+                        best = best.min(
+                            framed_metric_nearest_on_segment(
+                                normalized.frame,
+                                point,
+                                linework.segment(facet, index),
+                            )
+                            .1,
+                        );
+                    }
+                    best
+                },
+            )
+            .unwrap();
+        let (_, flat_distance) = flat_framed_nearest(normalized.frame, &linework, point);
+        assert_eq!(indexed_distance.to_bits(), flat_distance.to_bits());
+        assert!(refined_facets < linework.facets.len());
+        assert!(refined_segments < linework.segment_count());
     }
 
     #[test]

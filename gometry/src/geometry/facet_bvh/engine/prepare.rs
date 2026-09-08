@@ -396,7 +396,7 @@ impl PreparedLinework {
     /// inclusive); `simd` as in [`FacetBvh::any_points_within`].
     pub(crate) fn any_points_within(
         &self,
-        mut probes: impl Iterator<Item = (f64, f64)>,
+        probes: impl Iterator<Item = (f64, f64)>,
         limit: f64,
         simd: bool,
     ) -> crate::error::Result<bool> {

@@ -1,12 +1,13 @@
 use std::ops::ControlFlow;
 
+use super::super::aabb::aabb_distance_with_scales;
 use crate::HeapSize;
 use crate::geometry::facet_bvh::{
     Facet, PreparedLinework, aabb_distance, aabb_distance_squared, aabb_max_distance_squared,
     aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
 use crate::geometry::{
-    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, point_on_segment,
+    AxisFrame, BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, point_on_segment,
     point_segment_distance_squared, point_segment_selection, segments_intersect,
 };
 
@@ -191,7 +192,7 @@ impl FacetBvh {
                     }
                 },
                 BvhNode::Internal(first_child) => {
-                    self.push_nearer_last(stack, first_child as u32, bound);
+                    self.push_nearer_last(stack, first_child as u32, &bound);
                 },
             }
         }
@@ -228,22 +229,14 @@ impl FacetBvh {
     /// [`min_points_distance`](Self::min_points_distance) and the packed
     /// point-array lanes (which need per-row results, not one fold). Returns
     /// `best` folded with this probe's minimum.
-    pub(crate) fn min_point_distance_with_stack<const SQUARED: bool>(
+    fn min_point_distance_with_stack_by(
         &self,
         linework: &PreparedLinework,
-        x: f64,
-        y: f64,
         stack: &mut Vec<u32>,
         mut best: f64,
+        bound: impl Fn([f64; 4]) -> f64,
+        mut refine: impl FnMut(Facet) -> crate::error::Result<f64>,
     ) -> crate::error::Result<f64> {
-        let probe = point_aabb(x, y);
-        let bound = |aabb: [f64; 4]| {
-            if SQUARED {
-                aabb_distance_squared(aabb, probe)
-            } else {
-                aabb_distance(aabb, probe)
-            }
-        };
         stack.clear();
         stack.push(0);
         while let Some(index) = stack.pop() {
@@ -252,20 +245,60 @@ impl FacetBvh {
             }
             match BvhCode::new(self.codes[index as usize]).decode() {
                 BvhNode::Leaf(facet_index) => {
-                    let facet = linework.facets[facet_index];
-                    let candidate = if SQUARED {
-                        linework.facet_point_distance_squared(facet, x, y)?
-                    } else {
-                        linework.facet_point_distance(facet, Point::new_raw_xy(x, y))?
-                    };
+                    let candidate = refine(linework.facets[facet_index])?;
                     best = best.min(candidate);
                 },
                 BvhNode::Internal(first_child) => {
-                    self.push_nearer_last(stack, first_child as u32, bound);
+                    self.push_nearer_last(stack, first_child as u32, &bound);
                 },
             }
         }
         Ok(best)
+    }
+
+    pub(crate) fn min_point_distance_with_stack<const SQUARED: bool>(
+        &self,
+        linework: &PreparedLinework,
+        x: f64,
+        y: f64,
+        stack: &mut Vec<u32>,
+        best: f64,
+    ) -> crate::error::Result<f64> {
+        let bound = |aabb: [f64; 4]| {
+            if SQUARED {
+                aabb_distance_squared(aabb, point_aabb(x, y))
+            } else {
+                aabb_distance(aabb, point_aabb(x, y))
+            }
+        };
+        self.min_point_distance_with_stack_by(linework, stack, best, bound, |facet| {
+            if SQUARED {
+                linework.facet_point_distance_squared(facet, x, y)
+            } else {
+                linework.facet_point_distance(facet, Point::new_raw_xy(x, y))
+            }
+        })
+    }
+
+    /// One probe's branch-and-bound descent in the original metric of an
+    /// anisotropic local frame. The caller refines a leaf facet because its
+    /// metric and witness are owned by the operation using the frame.
+    pub(crate) fn min_point_distance_with_stack_framed(
+        &self,
+        linework: &PreparedLinework,
+        point: Point,
+        frame: AxisFrame,
+        stack: &mut Vec<u32>,
+        best: f64,
+        mut refine: impl FnMut(Facet) -> f64,
+    ) -> crate::error::Result<f64> {
+        let probe = point_aabb(point.x, point.y);
+        let bound = |aabb: [f64; 4]| {
+            aabb_distance_with_scales(aabb, probe, frame.scale_x(), frame.scale_y())
+        };
+        self.min_point_distance_with_stack_by(linework, stack, best, bound, |facet| {
+            Ok(refine(facet))
+        })
     }
 
     /// Whether any probe vertex lies within `limit` (squared, inclusive) of
@@ -277,7 +310,7 @@ impl FacetBvh {
     pub(crate) fn any_points_within(
         &self,
         linework: &PreparedLinework,
-        mut probes: impl Iterator<Item = (f64, f64)>,
+        probes: impl Iterator<Item = (f64, f64)>,
         limit: f64,
         simd: bool,
     ) -> crate::error::Result<bool> {
@@ -579,7 +612,7 @@ impl FacetBvh {
                         }
                     },
                     BvhNode::Internal(first_child) => {
-                        self.push_nearer_last(&mut stack, first_child as u32, bound);
+                        self.push_nearer_last(&mut stack, first_child as u32, &bound);
                     },
                 }
             }
@@ -591,7 +624,7 @@ impl FacetBvh {
         &self,
         stack: &mut Vec<u32>,
         first_child: u32,
-        bound: impl Fn([f64; 4]) -> f64,
+        bound: &impl Fn([f64; 4]) -> f64,
     ) {
         let left = first_child as usize;
         let right = left + 1;
