@@ -366,19 +366,26 @@ impl ExactDyadic {
         if other.is_zero() {
             return Ok(self);
         }
-        let exponent = self.exponent.min(other.exponent);
+        Self::try_combine_refs(&self, &other, false)
+    }
+
+    fn try_combine_refs(left: &Self, right: &Self, negate_right: bool) -> Result<Self> {
+        debug_assert!(!left.is_zero() && !right.is_zero());
+        let exponent = left.exponent.min(right.exponent);
+        let left_negative = left.negative;
+        let right_negative = right.negative ^ negate_right;
         let left_shift =
-            usize::try_from(self.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
+            usize::try_from(left.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
         let right_shift =
-            usize::try_from(other.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
-        let left = Aligned::new(&self.limbs, left_shift);
-        let right = Aligned::new(&other.limbs, right_shift);
-        let (negative, limbs) = if self.negative == other.negative {
-            (self.negative, Self::try_add_aligned(left, right)?)
+            usize::try_from(right.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
+        let left = Aligned::new(&left.limbs, left_shift);
+        let right = Aligned::new(&right.limbs, right_shift);
+        let (negative, limbs) = if left_negative == right_negative {
+            (left_negative, Self::try_add_aligned(left, right)?)
         } else {
             match Self::compare_aligned(left, right) {
-                Ordering::Greater => (self.negative, Self::try_subtract_aligned(left, right)?),
-                Ordering::Less => (other.negative, Self::try_subtract_aligned(right, left)?),
+                Ordering::Greater => (left_negative, Self::try_subtract_aligned(left, right)?),
+                Ordering::Less => (right_negative, Self::try_subtract_aligned(right, left)?),
                 Ordering::Equal => return Ok(Self::zero()),
             }
         };
@@ -391,12 +398,56 @@ impl ExactDyadic {
         Ok(result)
     }
 
+    fn try_subtract_ref(&self, other: &Self) -> Result<Self> {
+        if self.is_zero() {
+            let mut result = other.try_clone()?;
+            if !result.is_zero() {
+                result.negative = !result.negative;
+            }
+            return Ok(result);
+        }
+        if other.is_zero() {
+            return self.try_clone();
+        }
+        Self::try_combine_refs(self, other, true)
+    }
+
+    pub(in crate::geometry) fn try_subtract(self, other: Self) -> Result<Self> {
+        if self.is_zero() {
+            return Ok(other.neg());
+        }
+        if other.is_zero() {
+            return Ok(self);
+        }
+        Self::try_combine_refs(&self, &other, true)
+    }
+
     pub(in crate::geometry) fn subtract(self, other: Self) -> Self {
         self.add(other.neg())
     }
 
-    pub(in crate::geometry) fn try_subtract(self, other: Self) -> Result<Self> {
-        self.try_add(other.neg())
+    /// Compare `self` with `other * 2^shift` by magnitude without constructing
+    /// the scalar product. The ratio-rounding residual uses this for the exact
+    /// power-of-two gap between adjacent binary64 values.
+    fn cmp_magnitude_scaled(&self, other: &Self, shift: i64) -> Option<Ordering> {
+        if self.is_zero() {
+            return Some(if other.is_zero() {
+                Ordering::Equal
+            } else {
+                Ordering::Less
+            });
+        }
+        if other.is_zero() {
+            return Some(Ordering::Greater);
+        }
+        let other_exponent = other.exponent.checked_add(shift)?;
+        let exponent = self.exponent.min(other_exponent);
+        let left_shift = usize::try_from(self.exponent.checked_sub(exponent)?).ok()?;
+        let right_shift = usize::try_from(other_exponent.checked_sub(exponent)?).ok()?;
+        Some(Self::compare_aligned(
+            Aligned::new(&self.limbs, left_shift),
+            Aligned::new(&other.limbs, right_shift),
+        ))
     }
 
     fn write_product(short: &[u64], long: &[u64], out: &mut Vec<u64>) {
@@ -1680,7 +1731,7 @@ pub(super) fn enclosing_frame_binary64<'a>(
     // Seeding only. A wrong estimate costs extra certified widening rounds,
     // never a wrong frame.
     let approx = |numerator: &ExactDyadic, denominator: &ExactDyadic| -> Option<f64> {
-        let magnitude = approximate_ratio(&numerator.clone().abs(), &denominator.clone().abs())?;
+        let magnitude = approximate_ratio(numerator, denominator)?;
         let negative = numerator.negative != denominator.negative;
         Some(if negative { -magnitude } else { magnitude })
     };
@@ -2224,28 +2275,45 @@ fn exact_ratio_bracket(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
     proposal: f64,
-) -> Result<Option<(u64, u64)>> {
+    sign: ExactSign,
+) -> Result<Option<(u64, u64, Option<ExactDyadic>)>> {
     const MAX_ULP_STEPS: usize = 4;
     let max_bits = f64::MAX.to_bits();
-    let compare = |bits: u64| -> Result<Ordering> {
-        Ok(ExactDyadic::try_from_f64(f64::from_bits(bits))?
-            .try_product(denominator)?
-            .cmp(numerator))
+    let compare = |bits: u64| -> Result<(Ordering, ExactDyadic)> {
+        let magnitude = f64::from_bits(bits);
+        let candidate = if sign == ExactSign::Negative {
+            -magnitude
+        } else {
+            magnitude
+        };
+        let product = ExactDyadic::try_from_f64(candidate)?.try_product(denominator)?;
+        let order = product.cmp(numerator);
+        Ok((
+            if numerator.negative {
+                order.reverse()
+            } else {
+                order
+            },
+            product,
+        ))
     };
     let mut bits = proposal.to_bits();
-    match compare(bits)? {
-        Ordering::Equal => return Ok(Some((bits, bits))),
+    let (order, product) = compare(bits)?;
+    match order {
+        Ordering::Equal => return Ok(Some((bits, bits, None))),
         Ordering::Less => {
+            let mut lower_product = product;
             for _ in 0..MAX_ULP_STEPS {
                 if bits == max_bits {
                     return Ok(None);
                 }
                 let lower = bits;
                 bits += 1;
-                match compare(bits)? {
-                    Ordering::Less => {},
-                    Ordering::Equal => return Ok(Some((bits, bits))),
-                    Ordering::Greater => return Ok(Some((lower, bits))),
+                let (order, product) = compare(bits)?;
+                match order {
+                    Ordering::Less => lower_product = product,
+                    Ordering::Equal => return Ok(Some((bits, bits, None))),
+                    Ordering::Greater => return Ok(Some((lower, bits, Some(lower_product)))),
                 }
             }
         },
@@ -2256,10 +2324,11 @@ fn exact_ratio_bracket(
                 }
                 let upper = bits;
                 bits -= 1;
-                match compare(bits)? {
+                let (order, product) = compare(bits)?;
+                match order {
                     Ordering::Greater => {},
-                    Ordering::Equal => return Ok(Some((bits, bits))),
-                    Ordering::Less => return Ok(Some((bits, upper))),
+                    Ordering::Equal => return Ok(Some((bits, bits, None))),
+                    Ordering::Less => return Ok(Some((bits, upper, Some(product)))),
                 }
             }
         },
@@ -2336,19 +2405,51 @@ pub(in crate::geometry) fn round_ratio(
         return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
     }
     let sign = numerator.sign().quotient(denominator.sign());
-    let magnitude_numerator = numerator.try_clone()?.abs();
-    let magnitude_denominator = denominator.try_clone()?.abs();
-    if let Some(proposal) = approximate_ratio(&magnitude_numerator, &magnitude_denominator)
-        && let Some((low, high)) =
-            exact_ratio_bracket(&magnitude_numerator, &magnitude_denominator, proposal)?
+    if numerator.is_zero() {
+        return Ok(0.0);
+    }
+    if numerator.cmp_magnitude(denominator) == Ordering::Equal {
+        return Ok(if sign == ExactSign::Negative {
+            -1.0
+        } else {
+            1.0
+        });
+    }
+    if let Some(proposal) = approximate_ratio(numerator, denominator)
+        && let Some((low, high, lower_product)) =
+            exact_ratio_bracket(numerator, denominator, proposal, sign)?
     {
+        if low == high {
+            let rounded = f64::from_bits(low);
+            return Ok(if sign == ExactSign::Negative {
+                -rounded
+            } else {
+                rounded
+            });
+        }
         let lower = f64::from_bits(low);
         let upper = f64::from_bits(high);
-        let twice_numerator = magnitude_numerator.try_product(&ExactDyadic::try_from_f64(2.0)?)?;
-        let midpoint_scaled = ExactDyadic::try_from_f64(lower)?
-            .try_add(ExactDyadic::try_from_f64(upper)?)?
-            .try_product(&magnitude_denominator)?;
-        let rounded = match twice_numerator.cmp(&midpoint_scaled) {
+        let lower_product = lower_product.expect("a two-point bracket has a lower product");
+        let residual = numerator.try_subtract_ref(&lower_product)?;
+        let spacing_exponent = {
+            // The lower binade owns the gap at every power-of-two boundary.
+            let encoded_exponent = (low >> 52) & 0x7FF;
+            if encoded_exponent == 0 {
+                -1074
+            } else {
+                encoded_exponent as i64 - 1075
+            }
+        };
+        let midpoint_order =
+            if let Some(order) = residual.cmp_magnitude_scaled(denominator, spacing_exponent - 1) {
+                order
+            } else {
+                let spacing = ExactDyadic::try_from_f64(upper - lower)?;
+                let scaled_spacing = spacing.try_product(denominator)?;
+                let twice_residual = residual.try_product(&ExactDyadic::try_from_f64(2.0)?)?;
+                twice_residual.cmp_magnitude(&scaled_spacing)
+            };
+        let rounded = match midpoint_order {
             Ordering::Less => lower,
             Ordering::Equal if low & 1 == 0 => lower,
             Ordering::Greater | Ordering::Equal => upper,
@@ -2867,6 +2968,177 @@ mod tests {
             round_ratio(&zero, &negative_denominator).unwrap().to_bits(),
             0.0_f64.to_bits()
         );
+    }
+
+    #[test]
+    fn exact_singleton_and_equal_magnitude_brackets_preserve_sign() {
+        let numerator = ExactDyadic::from_f64(3.0);
+        let denominator = ExactDyadic::from_f64(-3.0);
+        assert_eq!(round_ratio(&numerator, &denominator).unwrap(), -1.0);
+        assert_eq!(round_ratio(&denominator, &numerator).unwrap(), -1.0);
+        assert_eq!(round_ratio(&numerator.neg(), &denominator).unwrap(), 1.0);
+
+        let half = ExactDyadic::from_f64(1.0);
+        let two = ExactDyadic::from_f64(2.0);
+        assert_eq!(round_ratio(&half, &two).unwrap(), 0.5);
+        assert_eq!(round_ratio(&half.neg(), &two).unwrap(), -0.5);
+    }
+
+    #[test]
+    fn adjacent_cells_and_midpoint_ties_keep_nearest_even_policy() {
+        let one_f64: f64 = 1.0;
+        let one_up_f64 = one_f64.next_up();
+        let one_up_twice_f64 = one_up_f64.next_up();
+        let one = ExactDyadic::from_f64(one_f64);
+        let one_up = ExactDyadic::from_f64(one_up_f64);
+        let midpoint = one
+            .clone()
+            .add(one_up.clone())
+            .product(&ExactDyadic::from_f64(0.5));
+        let quarter_gap = one_up
+            .clone()
+            .subtract(one.clone())
+            .product(&ExactDyadic::from_f64(0.25));
+        assert_eq!(
+            round_ratio(
+                &midpoint.clone().subtract(quarter_gap.clone()),
+                &ExactDyadic::one()
+            )
+            .unwrap()
+            .to_bits(),
+            1.0_f64.to_bits()
+        );
+        assert_eq!(
+            round_ratio(&midpoint.clone().add(quarter_gap), &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            one_up_f64.to_bits()
+        );
+        assert_eq!(
+            round_ratio(&midpoint, &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            1.0_f64.to_bits()
+        );
+        assert_eq!(
+            round_ratio(&midpoint.clone().neg(), &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            (-1.0_f64).to_bits()
+        );
+
+        let odd_lower = one_up;
+        let even_upper_f64 = one_up_twice_f64;
+        let even_upper = ExactDyadic::from_f64(even_upper_f64);
+        let odd_midpoint = odd_lower
+            .add(even_upper.clone())
+            .product(&ExactDyadic::from_f64(0.5));
+        assert_eq!(
+            round_ratio(&odd_midpoint, &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            even_upper_f64.to_bits()
+        );
+        assert_eq!(
+            round_ratio(&odd_midpoint.neg(), &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            (-even_upper_f64).to_bits()
+        );
+    }
+
+    #[test]
+    fn ratio_rounding_preserves_signs_subnormals_and_power_boundaries() {
+        let min_subnormal = ExactDyadic::from_f64(f64::from_bits(1));
+        assert_eq!(
+            round_ratio(&min_subnormal, &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            1
+        );
+        let below_minimum = ExactDyadic {
+            negative: false,
+            limbs: vec![1],
+            exponent: -1075,
+        };
+        assert_eq!(
+            round_ratio(&below_minimum, &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            0
+        );
+        assert_eq!(
+            round_ratio(&below_minimum.neg(), &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            (-0.0_f64).to_bits()
+        );
+
+        let predecessor = 1.0_f64.next_down();
+        let lower_midpoint = ExactDyadic::from_f64(predecessor)
+            .add(ExactDyadic::from_f64(1.0))
+            .product(&ExactDyadic::from_f64(0.5));
+        assert_eq!(
+            round_ratio(&lower_midpoint, &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            1.0_f64.to_bits()
+        );
+
+        for (numerator, denominator) in [(5.0, 3.0), (-5.0, 3.0), (5.0, -3.0), (-5.0, -3.0)] {
+            let numerator = ExactDyadic::from_f64(numerator);
+            let denominator = ExactDyadic::from_f64(denominator);
+            assert_eq!(
+                round_ratio(&numerator, &denominator).unwrap().to_bits(),
+                round_ratio_binary(&numerator, &denominator)
+                    .unwrap()
+                    .to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn ratio_rounding_matches_binary_reference_on_curated_bit_patterns() {
+        let patterns = [
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            0x000F_FFFF_FFFF_FFFF,
+            0x0010_0000_0000_0000,
+            0x3FE0_0000_0000_0000,
+            0x3FF0_0000_0000_0000,
+            0x3FF0_0000_0000_0001,
+            0x4000_0000_0000_0000,
+            0x7FE0_0000_0000_0000,
+            0x7FEF_FFFF_FFFF_FFFF,
+        ];
+        for &numerator_bits in &patterns {
+            for &denominator_bits in &patterns {
+                for (numerator_bits, denominator_bits) in [
+                    (numerator_bits, denominator_bits),
+                    (numerator_bits | (1_u64 << 63), denominator_bits),
+                    (numerator_bits, denominator_bits | (1_u64 << 63)),
+                ] {
+                    let numerator = ExactDyadic::from_f64(f64::from_bits(numerator_bits));
+                    let denominator = ExactDyadic::from_f64(f64::from_bits(denominator_bits));
+                    if denominator.is_zero() {
+                        continue;
+                    }
+                    let actual = round_ratio(&numerator, &denominator);
+                    let reference = round_ratio_binary(&numerator, &denominator);
+                    match (actual, reference) {
+                        (Ok(actual), Ok(reference)) => {
+                            assert_eq!(actual.to_bits(), reference.to_bits());
+                        },
+                        (Err(_), Err(_)) => {},
+                        (actual, reference) => {
+                            panic!(
+                                "fast and binary ratio paths disagree: {actual:?} vs {reference:?}"
+                            );
+                        },
+                    }
+                }
+            }
+        }
     }
 
     #[test]
