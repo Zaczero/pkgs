@@ -16,7 +16,6 @@ use pyo3::exceptions::PyOverflowError;
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
-use serde_json::{Map, Number, Value};
 
 use crate::geometry::{CoordSeq, CoordinateAxes};
 use crate::py::errors;
