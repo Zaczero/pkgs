@@ -889,8 +889,9 @@ impl Shape {
         self.clip_by_rect_with_bounds(rect, drop, self.bounds())
     }
 
-    /// Clip in a geographic frame, where longitude aliases and pole vertices
-    /// require the frame-aware topology graph rather than Cartesian windows.
+    /// Clip a canonical geographic rectangle in a frame, where subject
+    /// longitude aliases and pole vertices require the frame-aware topology
+    /// graph rather than Cartesian windows.
     pub(crate) fn clip_by_rect_in_geographic_frame(
         &self,
         rect: Bounds,

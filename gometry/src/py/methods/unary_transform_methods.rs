@@ -478,21 +478,29 @@ Examples
 
 method_doc! {
     doc_clip_by_rect;
-    body: r"Clip a geometry to a rectangle ``(minx, miny, maxx, maxy)``.
+    body: r"Clip a geometry to a closed rectangle ``(minx, miny, maxx, maxy)``.
 
 Source ordinates are carried where meaningful; synthesized clip vertices use
 the operation's natural XY result.
 
-In a geographic CRS, a subject or rectangle that crosses the seam, reaches a
-pole, or has a non-canonical longitude is clipped through frame-aware overlay.
-Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
-rectangle horizontal edges follow parallels and use the same construction as
-:func:`box`.
+In a geographic CRS, ``minx``/``maxx`` are the west/east longitudes and must be
+canonical endpoints in ``[-180, 180]``. ``west <= east`` selects the ordinary
+closed interval; ``west > east`` selects the closed interval crossing the
+antimeridian. ``west=-180`` and ``east=180`` select a full longitude band, and
+equal endpoints select a zero-width meridian. ``miny``/``maxy`` are the
+south/north latitudes and must be finite with ``south <= north``.
+
+A subject that crosses the seam, reaches a pole, or has a non-canonical
+longitude is clipped through frame-aware overlay. Canonical, seam-free,
+pole-free inputs use direct rectangle clipping. Geographic rectangle
+horizontal edges follow parallels and use the same construction as
+:func:`box` for these canonical endpoints.
 
 Parameters
 ----------
 minx, miny, maxx, maxy : float
-    The clip rectangle bounds.";
+    The Cartesian bounds, or the geographic west, south, east, and north
+    endpoints respectively.";
     scalar: r"
 
 Returns
@@ -513,7 +521,8 @@ GeometryArray
 Raises
 ------
 GeometryError
-    If the rectangle bounds are non-finite or unordered.
+    If the rectangle coordinates are non-finite, south exceeds north, or a
+    geographic west/east endpoint is outside ``[-180, 180]``.
 
 Examples
 --------

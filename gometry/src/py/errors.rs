@@ -401,6 +401,7 @@ impl From<Error> for PyErr {
                 },
                 G::NegativeSidedBufferDistance
                 | G::InvalidRectangle
+                | G::InvalidGeographicRectangle
                 | G::InvalidMeasureRange(..)
                 | G::SubstringOrder(..)
                 | G::SubstringMeasureOrder(..)

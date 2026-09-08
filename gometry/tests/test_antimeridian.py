@@ -566,6 +566,36 @@ def test_crossing_polygon_clip_by_rect_scalar_and_array() -> None:
     )
 
 
+def test_geographic_clip_by_rect_canonical_boundaries_match_scalar_and_array() -> None:
+    cases = [
+        (
+            gm.LineString([(-2, 0), (2, 0)], crs=4326),
+            (-1, -1, 1, 1),
+            gm.LineString([(-1, 0), (1, 0)], crs=4326),
+        ),
+        (
+            gm.LineString([(175, 0), (-175, 0)], crs=4326),
+            (170, -1, -170, 1),
+            gm.LineString([(175, 0), (-175, 0)], crs=4326),
+        ),
+        (
+            gm.LineString([(-10, 0), (10, 0)], crs=4326),
+            (-180, -1, 180, 1),
+            gm.LineString([(-10, 0), (10, 0)], crs=4326),
+        ),
+        (
+            gm.LineString([(180, -2), (180, 2)], crs=4326),
+            (180, -1, 180, 1),
+            gm.LineString([(180, -1), (180, 1)], crs=4326),
+        ),
+    ]
+    for shape, rect, expected in cases:
+        assert gm.equals(shape.clip_by_rect(*rect), expected)
+        assert gm.equals(
+            gm.GeometryArray([shape]).clip_by_rect(*rect)[0], expected
+        )
+
+
 def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
     noncanonical = gm.Point(360, 0, crs=4326)
     pole = gm.Point(0, 90, crs=4326)
@@ -585,16 +615,48 @@ def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
         assert gm.equals(gm.GeometryArray([shape]).clip_by_rect(*rect)[0], expected)
 
 
-def test_packed_geographic_clip_uses_native_grad_seam() -> None:
-    grad_line = gm.LineString([(-199, 0), (199, 0)], crs=4807)
-    grad_rect = (198, -1, -198, 1)
-    grad_expected = gm.from_wkt(
-        'MULTILINESTRING ((-200 0, -199 0), (199 0, 200 0))', crs=4807
-    )
-    assert gm.equals(grad_line.clip_by_rect(*grad_rect), grad_expected)
-    assert gm.equals(
-        gm.GeometryArray([grad_line]).clip_by_rect(*grad_rect)[0], grad_expected
-    )
+@pytest.mark.parametrize(
+    ('shape', 'rect'),
+    [
+        (
+            gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326),
+            (170, -1, 190, 1),
+        ),
+        (
+            gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326),
+            (190, -1, -170, 1),
+        ),
+        (
+            gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326),
+            (-190, -1, 170, 1),
+        ),
+        (
+            gm.LineString([(-199, 0), (199, 0)], crs=4807),
+            (198, -1, -198, 1),
+        ),
+    ],
+    ids=['ordered-alias', 'crossing-alias', 'west-out-of-domain', 'grad-native'],
+)
+def test_geographic_clip_by_rect_rejects_noncanonical_longitudes(
+    shape: gm.Geometry, rect: tuple[float, float, float, float]
+) -> None:
+    for clipped in (
+        lambda: shape.clip_by_rect(*rect),
+        lambda: gm.GeometryArray([shape]).clip_by_rect(*rect),
+    ):
+        with pytest.raises(ValueError, match='clip rectangle bounds'):
+            clipped()
+
+
+def test_geographic_clip_by_rect_rejects_unordered_latitudes_scalar_and_array() -> None:
+    shape = gm.LineString([(-2, 0), (2, 0)], crs=4326)
+    rect = (1, 1, -1, -1)
+    for clipped in (
+        lambda: shape.clip_by_rect(*rect),
+        lambda: gm.GeometryArray([shape]).clip_by_rect(*rect),
+    ):
+        with pytest.raises(ValueError, match='clip rectangle bounds'):
+            clipped()
 
 
 def test_packed_geographic_clip_declines_crossing_grad_rectangle() -> None:
@@ -606,18 +668,6 @@ def test_packed_geographic_clip_declines_crossing_grad_rectangle() -> None:
     assert gm.equals(grad_line.clip_by_rect(*grad_rect), grad_expected)
     assert gm.equals(
         gm.GeometryArray([grad_line]).clip_by_rect(*grad_rect)[0], grad_expected
-    )
-
-
-def test_packed_geographic_clip_declines_ordered_alias_rectangle() -> None:
-    alias_line = gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326)
-    alias_rect = (170, -1, 190, 1)
-    alias_expected = gm.from_wkt(
-        'MULTILINESTRING ((-175 0, -170 0), (170 0, 175 0))', crs=4326
-    )
-    assert gm.equals(alias_line.clip_by_rect(*alias_rect), alias_expected)
-    assert gm.equals(
-        gm.GeometryArray([alias_line]).clip_by_rect(*alias_rect)[0], alias_expected
     )
 
 

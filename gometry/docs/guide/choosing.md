@@ -40,7 +40,7 @@ edge is *not* contained — use `covers` for boundary-inclusive membership. See
 
 | Situation | Use |
 | --- | --- |
-| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand; in a geographic CRS, seam-crossing, polar, or non-canonical inputs use frame-aware topology and rectangle parallels match [`box`][gometry.box] |
+| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand; in a geographic CRS, pass canonical west/east longitudes in `[-180, 180]` (`west > east` crosses the antimeridian), while seam-crossing, polar, or non-canonical subjects use frame-aware topology |
 | crop to an arbitrary mask geometry | [`intersection`][gometry.intersection] (or the `&` operator) |
 
 There is no separate `clip(mask)`: use [`clip_by_rect`][gometry.Geometry.clip_by_rect] for a

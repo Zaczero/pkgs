@@ -838,18 +838,21 @@ impl Bounds {
         }
     }
 
-    /// Geographic clip rectangle: finite latitudes with ``south <= north``;
-    /// longitudes may use west>east to signal an antimeridian-crossing window.
-    pub fn new_geographic(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Result<Self> {
-        if minx.is_finite()
-            && miny.is_finite()
-            && maxx.is_finite()
-            && maxy.is_finite()
-            && miny <= maxy
+    /// Geographic clip rectangle with canonical longitudes in ``[-180, 180]``.
+    /// Finite west/east endpoints use west>east to signal an
+    /// antimeridian-crossing window; latitudes must satisfy ``south <= north``.
+    pub fn new_geographic(west: f64, south: f64, east: f64, north: f64) -> Result<Self> {
+        if west.is_finite()
+            && south.is_finite()
+            && east.is_finite()
+            && north.is_finite()
+            && (-180.0..=180.0).contains(&west)
+            && (-180.0..=180.0).contains(&east)
+            && south <= north
         {
-            Ok(Self::new_raw(minx, miny, maxx, maxy))
+            Ok(Self::new_raw(west, south, east, north))
         } else {
-            Err(GeometryErrorKind::InvalidRectangle.into())
+            Err(GeometryErrorKind::InvalidGeographicRectangle.into())
         }
     }
 

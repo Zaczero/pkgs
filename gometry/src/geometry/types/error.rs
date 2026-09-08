@@ -44,6 +44,10 @@ pub enum GeometryErrorKind {
     RingTooShort(usize),
     #[error("clip rectangle bounds must be finite and ordered min <= max")]
     InvalidRectangle,
+    #[error(
+        "geographic clip rectangle bounds must use finite longitudes in [-180, 180] and south <= north"
+    )]
+    InvalidGeographicRectangle,
     #[error("non-empty linework is required")]
     EmptyLinework,
     #[error("is_convex requires a Polygon")]
