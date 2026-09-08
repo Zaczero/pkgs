@@ -425,6 +425,23 @@ mod sweep_entry_scratch {
             .collect()
     }
 
+    fn cold_allocation_count<T: Send + 'static>(
+        operation: impl FnOnce() -> T + Send + 'static,
+    ) -> (T, usize) {
+        std::thread::spawn(move || crate::test_support::allocation_count(operation))
+            .join()
+            .expect("cold allocation-count thread")
+    }
+
+    fn cold_fail_allocations_after<T: Send + 'static>(
+        allowed: usize,
+        operation: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        std::thread::spawn(move || crate::test_support::fail_allocations_after(allowed, operation))
+        .join()
+        .expect("cold allocation-failure thread")
+    }
+
     fn bounds_pairs(bounds: &[Bounds]) -> Vec<(usize, usize)> {
         let mut pairs = Vec::new();
         let _ = for_each_overlapping_bounds_pair(bounds, |left, right| {
@@ -513,17 +530,22 @@ mod sweep_entry_scratch {
     fn candidate_sweep_rejects_each_cold_allocation_above_brute() {
         let segments = crossing_segments(8);
         assert!(segments.len() > 6);
-        let (_, count) = crate::test_support::allocation_count(|| {
-            let _ = for_each_candidate_pair(&segments, single_chain, |_, _| {
-                ControlFlow::Continue(())
-            })
-            .unwrap();
+        let (_, count) = cold_allocation_count({
+            let segments = segments.clone();
+            move || {
+                let _ = for_each_candidate_pair(&segments, single_chain, |_, _| {
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+            }
         });
         assert!(count > 0);
         for allowed in 0..count {
-            let Err(error) = crate::test_support::fail_allocations_after(allowed, || {
+            let segments = segments.clone();
+            let result = cold_fail_allocations_after(allowed, move || {
                 for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
-            }) else {
+            });
+            let Err(error) = result else {
                 panic!("each cold candidate-sweep allocation must propagate");
             };
             assert_allocation(&error);
@@ -536,15 +558,20 @@ mod sweep_entry_scratch {
     fn overlapping_bounds_sweep_rejects_each_cold_allocation_above_brute() {
         let bounds = overlapping_boxes(8);
         assert!(bounds.len() > 6);
-        let (_, count) = crate::test_support::allocation_count(|| {
-            let _ = for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(()))
-                .unwrap();
+        let (_, count) = cold_allocation_count({
+            let bounds = bounds.clone();
+            move || {
+                let _ = for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(()))
+                    .unwrap();
+            }
         });
         assert!(count > 0);
         for allowed in 0..count {
-            let Err(error) = crate::test_support::fail_allocations_after(allowed, || {
+            let bounds = bounds.clone();
+            let result = cold_fail_allocations_after(allowed, move || {
                 for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(()))
-            }) else {
+            });
+            let Err(error) = result else {
                 panic!("each cold bounds-sweep allocation must propagate");
             };
             assert_allocation(&error);
