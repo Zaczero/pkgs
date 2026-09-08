@@ -207,7 +207,7 @@ fn linework_area(polygons: &[Polygon]) -> Result<Vec<Polygon>> {
             &segment_loop,
             &loop_component,
             &arrangement.component_probes(),
-        )
+        )?
         .into_iter()
         .map(|seed| seed[0])
         .collect::<Vec<_>>()
@@ -256,7 +256,7 @@ fn linework_area(polygons: &[Polygon]) -> Result<Vec<Polygon>> {
             &seed_loop,
             &loop_component,
             &arrangement.component_probes(),
-        )
+        )?
         .into_iter()
         .map(|seed| seed[0])
         .collect::<Vec<_>>()

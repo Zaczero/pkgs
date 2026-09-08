@@ -280,7 +280,7 @@ pub(in crate::geometry) fn simplify_chain_guarded(
             continue;
         }
         let (before, after) = (prev[index], next[index]);
-        if !guard.removal_is_safe(xy(before), xy(index), xy(after)) {
+        if !guard.removal_is_safe(xy(before), xy(index), xy(after))? {
             continue;
         }
         removed[index] = true;
@@ -380,9 +380,9 @@ impl<'a> TopologyGuard<'a> {
         Ok(vertex_cloud)
     }
 
-    fn segment_index(&self) -> &SegmentIndex {
+    fn segment_index(&self) -> Result<&SegmentIndex> {
         self.segment_index
-            .get_or_init(|| SegmentIndex::build(self.segments))
+            .get_or_try_init(|| SegmentIndex::build(self.segments))
     }
 
     fn vertex_tree(&self) -> &BulkRTree<[f64; 2]> {
@@ -390,7 +390,12 @@ impl<'a> TopologyGuard<'a> {
             .get_or_init(|| BulkRTree::bulk_load_with_params(self.vertex_cloud.clone()))
     }
 
-    pub(in crate::geometry) fn removal_is_safe(&self, prev: XY, vertex: XY, next: XY) -> bool {
+    pub(in crate::geometry) fn removal_is_safe(
+        &self,
+        prev: XY,
+        vertex: XY,
+        next: XY,
+    ) -> Result<bool> {
         // Exact-collinear interior vertex: the shortcut occupies precisely
         // the union of the two original segments — the linework's point set
         // is unchanged, so both probes are vacuous. This keeps gridded /
@@ -401,7 +406,7 @@ impl<'a> TopologyGuard<'a> {
             && vertex.y >= prev.y.min(next.y)
             && vertex.y <= prev.y.max(next.y)
         {
-            return true;
+            return Ok(true);
         }
         // No crossing of the shortcut with any segment that does not share
         // one of its endpoints.
@@ -410,7 +415,7 @@ impl<'a> TopologyGuard<'a> {
             end: next,
         };
         let crossing = self
-            .segment_index()
+            .segment_index()?
             .intersecting_candidates(shortcut)
             .any(|entry| {
                 let touches_endpoint = [entry.segment.start, entry.segment.end]
@@ -419,7 +424,7 @@ impl<'a> TopologyGuard<'a> {
                 !touches_endpoint && segments_intersect(shortcut, entry.segment)
             });
         if crossing {
-            return false;
+            return Ok(false);
         }
         // No foreign vertex strictly inside the swept triangle.
         let (min_x, max_x) = (
@@ -438,7 +443,7 @@ impl<'a> TopologyGuard<'a> {
                 !(same_point(point, prev) || same_point(point, vertex) || same_point(point, next))
                     && point_in_triangle(point, prev, vertex, next)
             });
-        !inside
+        Ok(!inside)
     }
 }
 

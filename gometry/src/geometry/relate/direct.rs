@@ -1609,7 +1609,9 @@ mod tests {
         /// check that it returns what `expect` says it must, so a regression
         /// that merely stops deciding cannot pass as "undecided".
         fn check(label: &str, left: &Shape, right: &Shape, expect: Expect) {
-            let fold = try_areal_relate(left, right).unwrap_or_else(|| panic!("{label}: fold"));
+            let fold = try_areal_relate(left, right)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{label}: fold"));
             let graph = oracle(left, right);
             assert_eq!(
                 fold.text(),
@@ -1783,7 +1785,7 @@ mod tests {
                 };
                 let left = polygon(&star(0.0, 0.0, scale_left, n_left), &[]);
                 let right = polygon(&star(cx, cy, scale_right, n_right), &[]);
-                let Some(fold) = try_areal_relate(&left, &right) else {
+                let Some(fold) = try_areal_relate(&left, &right).unwrap() else {
                     continue;
                 };
                 // Star shells about distinct centres either cross, nest, or
@@ -1859,6 +1861,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{label}: admitted"));
             assert_eq!(direct.text(), geos, "{label}");
             let fold = super::super::graph_matrix::try_areal_relate(&bowtie, &other)
+                .unwrap()
                 .unwrap_or_else(|| panic!("{label}: fold admits the pair"));
             assert_eq!(
                 fold.text(),

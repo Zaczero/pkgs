@@ -112,7 +112,7 @@ fn assign_regions(
         }
         row_edge_keys.push(edge_keys);
     }
-    let boundary_index = SegmentIndex::build(&boundary_segments);
+    let boundary_index = SegmentIndex::build(&boundary_segments)?;
     assign_regions_with_gap_neighbor(
         prepared,
         regions,

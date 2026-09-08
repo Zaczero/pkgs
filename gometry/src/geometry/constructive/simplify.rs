@@ -729,7 +729,7 @@ impl Shape {
                 }
                 // Keep-count identity already returned `Unchanged`. The validity
                 // branch-check only runs when vertices actually dropped.
-                if self.simplify_kept_topology(&raw) {
+                if self.simplify_kept_topology(&raw)? {
                     Ok(raw)
                 } else {
                     self.simplify_guarded(tolerance)
@@ -794,29 +794,31 @@ impl Shape {
     /// Whether raw DP output preserved what `preserve_topology` promises:
     /// polygonal output stays valid and non-collapsed; a simple lineal
     /// input stays simple.
-    fn simplify_kept_topology(&self, simplified: &Self) -> bool {
+    fn simplify_kept_topology(&self, simplified: &Self) -> Result<bool> {
         match self {
             Self::Polygon(_) | Self::MultiPolygon(_) => {
                 // Delta guard: vertex-subset removals can only break the
                 // NEW chord edges (for the contract's valid-input
                 // promise), so the chords are checked instead of
                 // re-validating the whole polygon.
-                simplified_polygon_delta_is_simple(self, simplified)
-                    && (self.is_empty() || !simplified.is_empty())
+                Ok(simplified_polygon_delta_is_simple(self, simplified)?
+                    && (self.is_empty() || !simplified.is_empty()))
             },
             Self::LineString(_) | Self::MultiLineString(_) => {
-                !self.is_simple() || simplified.is_simple()
+                Ok(!self.is_simple() || simplified.is_simple())
             },
             Self::GeometryCollection(geometries) => {
                 let Self::GeometryCollection(parts) = simplified else {
-                    return false;
+                    return Ok(false);
                 };
-                geometries
-                    .iter()
-                    .zip(parts)
-                    .all(|(original, part)| original.simplify_kept_topology(part))
+                for (original, part) in geometries.iter().zip(parts) {
+                    if !original.simplify_kept_topology(part)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             },
-            _ => true,
+            _ => Ok(true),
         }
     }
 
@@ -900,7 +902,7 @@ impl Shape {
                 if !preserve_topology {
                     return raw.dropping_collapsed_rings();
                 }
-                if self.simplify_kept_topology(&raw) {
+                if self.simplify_kept_topology(&raw)? {
                     Ok(raw)
                 } else {
                     let area_tolerance = vw_area_tolerance(tolerance);

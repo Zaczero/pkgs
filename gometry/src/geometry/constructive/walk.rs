@@ -698,7 +698,7 @@ pub(in crate::geometry) fn winding_region(
             &segment_loop,
             &loop_component,
             &probes,
-        )
+        )?
         .into_iter()
         .map(|seed| seed[0])
         .collect()
@@ -721,7 +721,7 @@ impl ShellCoverageIndex {
     fn new(shell: &Ring) -> Result<Self> {
         Ok(Self {
             point_index: PolygonPointIndex::build_shell(shell)?,
-            boundary: SegmentIndex::build_from_iter(line_segments(shell)),
+            boundary: SegmentIndex::build_from_iter(line_segments(shell))?,
         })
     }
 

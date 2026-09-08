@@ -48,26 +48,28 @@ impl HeapSize for SegmentIndex {
 }
 
 impl SegmentIndex {
-    pub(crate) fn build(segments: &[Segment]) -> Self {
+    pub(crate) fn build(segments: &[Segment]) -> crate::error::Result<Self> {
         Self::build_from_iter(segments.iter().copied())
     }
 
     /// Build straight from a segment iterator — entries are gathered once for
     /// the bulk load, with no caller-side `Vec<Segment>` staging.
-    pub(crate) fn build_from_iter(segments: impl IntoIterator<Item = Segment>) -> Self {
-        Self {
-            tree: BulkRTree::bulk_load_with_params(
-                segments
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ordinal, segment)| SegmentEntry {
-                        segment,
-                        ordinal,
-                        envelope: segment_envelope(segment),
-                    })
-                    .collect(),
-            ),
+    pub(crate) fn build_from_iter(
+        segments: impl IntoIterator<Item = Segment>,
+    ) -> crate::error::Result<Self> {
+        let segments = segments.into_iter();
+        let mut entries = Vec::new();
+        crate::try_reserve_vec(&mut entries, segments.size_hint().0)?;
+        for (ordinal, segment) in segments.enumerate() {
+            crate::try_push_vec(&mut entries, SegmentEntry {
+                segment,
+                ordinal,
+                envelope: segment_envelope(segment),
+            })?;
         }
+        Ok(Self {
+            tree: BulkRTree::bulk_load_with_params(entries),
+        })
     }
 
     /// The realizing segment of the minimum [`point_segment_distance_squared`]
@@ -216,14 +218,39 @@ mod allocation_tests {
     use crate::test_support::fail_allocations_after;
 
     #[test]
+    fn segment_index_collect_failure_is_retryable() {
+        let segments = [
+            Segment {
+                start: crate::geometry::XY::new(0.0, 0.0),
+                end: crate::geometry::XY::new(1.0, 0.0),
+            },
+            Segment {
+                start: crate::geometry::XY::new(1.0, 0.0),
+                end: crate::geometry::XY::new(1.0, 1.0),
+            },
+        ];
+        let Err(error) = fail_allocations_after(0, || SegmentIndex::build(&segments)) else {
+            panic!("entry staging reservation must propagate");
+        };
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        let index = SegmentIndex::build(&segments).unwrap();
+        assert!(index.covers_point(Point::new_raw_xy(0.5, 0.0)));
+    }
+
+    #[test]
     fn point_set_index_collect_failure_is_retryable() {
         let points = [
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 0.0),
             Point::new_raw_xy(0.0, 1.0),
         ];
-        let error = fail_allocations_after(0, || PointSetIndex::build(points.iter().copied()))
-            .expect_err("coordinate staging reservation must propagate");
+        let Err(error) = fail_allocations_after(0, || PointSetIndex::build(points.iter().copied()))
+        else {
+            panic!("coordinate staging reservation must propagate");
+        };
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Allocation)

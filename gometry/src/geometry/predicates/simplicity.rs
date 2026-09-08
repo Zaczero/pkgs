@@ -18,7 +18,7 @@ use crate::geometry::{
 pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
     original: &Shape,
     simplified: &Shape,
-) -> bool {
+) -> crate::error::Result<bool> {
     let same_ring_structure = match (original, simplified) {
         (Shape::Polygon(before), Shape::Polygon(after)) => {
             before.rings().count() == after.rings().count()
@@ -33,7 +33,7 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
         _ => false,
     };
     if !same_ring_structure {
-        return false;
+        return Ok(false);
     }
     let ring_pairs: Vec<(&CoordSeq, &CoordSeq)> = match (original, simplified) {
         (Shape::Polygon(before), Shape::Polygon(after)) => before
@@ -47,14 +47,14 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
             .map(Ring::coords)
             .zip(after.iter().flat_map(Polygon::rings).map(Ring::coords))
             .collect(),
-        _ => return false,
+        _ => return Ok(false),
     };
     let mut chains = LineworkChains::default();
     let mut chords: Vec<usize> = Vec::new();
     for (before, after) in ring_pairs {
         let ordinal_base = chains.segments.len();
         if chains.push_line(after).is_none() {
-            return false; // a ring collapsed to nothing
+            return Ok(false); // a ring collapsed to nothing
         }
         let changed = after.coord_count() != before.coord_count();
         if !changed {
@@ -62,7 +62,7 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
         }
         // A changed ring must still be a ring with area.
         if after.coord_count() < Ring::MIN_VERTICES_CLOSED || ring_winding(after).is_degenerate() {
-            return false;
+            return Ok(false);
         }
         // Two-pointer over the ordered vertex subset: an output edge
         // that skips original vertices is a NEW chord.
@@ -76,7 +76,7 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
                 source += 1;
                 steps += 1;
                 if source >= bx.len() {
-                    return false; // not a subset — re-check everything
+                    return Ok(false); // not a subset — re-check everything
                 }
                 // Bit equality is the intent: output vertices ARE input
                 // vertices (the keep-mask contract).
@@ -90,10 +90,10 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
         }
     }
     if chords.is_empty() {
-        return true;
+        return Ok(true);
     }
-    let index = SegmentIndex::build(&chains.segments);
-    chords.iter().all(|&ordinal| {
+    let index = SegmentIndex::build(&chains.segments)?;
+    Ok(chords.iter().all(|&ordinal| {
         let chord = chains.at(ordinal);
         index.intersecting_candidates(chord.segment).all(|entry| {
             entry.ordinal == ordinal || {
@@ -103,7 +103,7 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
                     || segment_intersection_is_simple(chord, other)
             }
         })
-    })
+    }))
 }
 
 pub(crate) fn indexed_segments_are_simple(chains: &LineworkChains) -> bool {

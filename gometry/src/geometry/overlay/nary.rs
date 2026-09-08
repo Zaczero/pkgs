@@ -497,7 +497,7 @@ fn direct_multipoint_candidates(
                 SegmentIndex::build_from_iter(line.segment_pairs().map(|[start, end]| Segment {
                     start: start.xy(),
                     end: end.xy(),
-                }));
+                }))?;
             points
                 .points()
                 .filter(|point| index.covers_point(*point))
@@ -512,7 +512,7 @@ fn direct_multipoint_candidates(
                         start: start.xy(),
                         end: end.xy(),
                     }),
-            );
+            )?;
             points
                 .points()
                 .filter(|point| index.covers_point(*point))
@@ -909,7 +909,7 @@ fn assemble_overlay(
             .all(|polygon| polygon.rings().all(relate::ring_is_sound))
         {
             let (points, lines, polygons) =
-                super::build_areal_arrangement(&left_polygons, &right_polygons)
+                super::build_areal_arrangement(&left_polygons, &right_polygons)?
                     .intersection_parts()?;
             return build_overlay_shape(points, &lines, &polygons);
         }

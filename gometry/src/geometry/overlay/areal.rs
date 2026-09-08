@@ -34,7 +34,7 @@ pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Poly
             _ => Vec::new(),
         });
     }
-    build_areal_arrangement(left, right).overlay_polygons(op)
+    build_areal_arrangement(left, right)?.overlay_polygons(op)
 }
 
 impl ArealArrangement {
@@ -239,7 +239,7 @@ fn stage_areal_operand<P: AsRef<Polygon>>(
 pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     left: &[P],
     right: &[Q],
-) -> ArealArrangement {
+) -> Result<ArealArrangement> {
     // Tight upper bounds from the ring inventory: every ring of `n` points
     // yields at most `n` segments and exactly one anchor.
     let (left_segments, left_rings) = areal_operand_inventory(left);
@@ -343,7 +343,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
         &probes,
         &mut ranges,
         &mut boxes,
-    );
+    )?;
     let windings = arrangement.face_windings(&seeds);
     scratch.segments = segments;
     scratch.tags = tags;
@@ -355,10 +355,10 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     scratch.probes = probes;
     scratch.ranges = ranges;
     scratch.boxes = boxes;
-    ArealArrangement {
+    Ok(ArealArrangement {
         arrangement,
         windings,
-    }
+    })
 }
 
 /// Outside-winding seeds for every arrangement component: per operand,
@@ -378,7 +378,7 @@ pub(in crate::geometry) fn outside_winding_seeds(
     segment_loop: &[u32],
     loop_component: &[u32],
     probes: &[XY],
-) -> Vec<[i32; 2]> {
+) -> Result<Vec<[i32; 2]>> {
     let mut ranges = Vec::new();
     let mut boxes = Vec::new();
     outside_winding_seeds_with_scratch(
@@ -400,7 +400,7 @@ fn outside_winding_seeds_with_scratch(
     probes: &[XY],
     ranges: &mut Vec<(u32, u32)>,
     boxes: &mut Vec<Bounds>,
-) -> Vec<[i32; 2]> {
+) -> Result<Vec<[i32; 2]>> {
     // Loops are contiguous runs of the soup: recover each loop's segment
     // range and bbox in one pass (the arm choice needs the longest run).
     let loop_count = loop_component.len();
@@ -433,7 +433,7 @@ fn outside_winding_seeds_with_scratch(
         .unwrap_or(0) as usize;
     let brute = probes.len() * longest <= 64 * segments.len() + 256 * probes.len();
     if brute {
-        return probes
+        return Ok(probes
             .iter()
             .enumerate()
             .map(|(component, &probe)| {
@@ -451,13 +451,13 @@ fn outside_winding_seeds_with_scratch(
                 }
                 seed
             })
-            .collect();
+            .collect());
     }
-    let index = SegmentIndex::build(segments);
+    let index = SegmentIndex::build(segments)?;
     let ray_end = segments.iter().fold(f64::NEG_INFINITY, |end, segment| {
         end.max(segment.start.x).max(segment.end.x)
     }) + 1.0;
-    probes
+    Ok(probes
         .iter()
         .enumerate()
         .map(|(component, &probe)| {
@@ -474,7 +474,7 @@ fn outside_winding_seeds_with_scratch(
             }
             seed
         })
-        .collect()
+        .collect())
 }
 
 /// One segment's signed contribution to the rightward-ray winding number

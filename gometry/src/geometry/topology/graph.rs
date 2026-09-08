@@ -924,7 +924,7 @@ impl TopologySupport {
         nodes: &[TopologyNode],
         source_points: &[SourcePoint],
         area: AreaMembership,
-    ) -> Self {
+    ) -> crate::error::Result<Self> {
         let point_support = source_points
             .iter()
             .map(|source| quotient_key(domain, source.point.xy()))
@@ -939,15 +939,15 @@ impl TopologySupport {
             .filter(|node| node.support.area_boundary || node.support.line_boundary)
             .map(|node| quotient_key(domain, node.point))
             .collect();
-        Self {
+        Ok(Self {
             edge_index: crate::geometry::SegmentIndex::build_from_iter(
                 edges.iter().map(|edge| edge.segment),
-            ),
+            )?,
             area,
             point_support,
             noncollapsed_point_support,
             boundary_support,
-        }
+        })
     }
 
     #[expect(
@@ -1701,7 +1701,7 @@ impl GraphBuilder {
         }
         let lineal_overlap_collection = is_collection
             && !has_polygonal_members
-            && has_cross_component_line_overlap(&self.source_edges);
+            && has_cross_component_line_overlap(&self.source_edges)?;
         let boundary_dimension = if edges.iter().any(|edge| edge.is_boundary) {
             Some(Dimension::Curve)
         } else if !line_boundary.is_empty()
@@ -1728,7 +1728,7 @@ impl GraphBuilder {
             &self.nodes,
             &self.source_points,
             area_membership,
-        );
+        )?;
         let mut graph = TopologyGraph {
             domain: self.domain,
             effective_dimension,
@@ -2507,29 +2507,29 @@ fn condense_area_face_support(
     }
 }
 
-fn has_cross_component_line_overlap(edges: &[SourceEdge]) -> bool {
+fn has_cross_component_line_overlap(edges: &[SourceEdge]) -> crate::error::Result<bool> {
     let lines: Vec<_> = edges
         .iter()
         .filter(|edge| matches!(edge.support, SourceSupport::Line))
         .collect();
     if lines.len().saturating_mul(lines.len().saturating_sub(1)) / 2 < SEGMENT_INDEX_MIN_PAIRS {
-        return lines.iter().enumerate().any(|(index, left)| {
+        return Ok(lines.iter().enumerate().any(|(index, left)| {
             lines[index + 1..].iter().any(|right| {
                 left.component != right.component
                     && shared_segment_part(left.segment, right.segment)
                         .is_some_and(|(_, run)| !same_point(run[0], run[1]))
             })
-        });
+        }));
     }
-    let index = SegmentIndex::build_from_iter(lines.iter().map(|edge| edge.segment));
-    lines.iter().enumerate().any(|(ordinal, left)| {
+    let index = SegmentIndex::build_from_iter(lines.iter().map(|edge| edge.segment))?;
+    Ok(lines.iter().enumerate().any(|(ordinal, left)| {
         index.intersecting_candidates(left.segment).any(|right| {
             right.ordinal > ordinal
                 && left.component != lines[right.ordinal].component
                 && shared_segment_part(left.segment, lines[right.ordinal].segment)
                     .is_some_and(|(_, run)| !same_point(run[0], run[1]))
         })
-    })
+    }))
 }
 
 fn shape_has_polygonal_members(shape: &Shape) -> bool {

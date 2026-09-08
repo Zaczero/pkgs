@@ -175,7 +175,7 @@ fn minimum_clearance_witness_indexed(
             });
         }
     }
-    let segment_index = SegmentIndex::build_from_iter(segments.iter().map(|segment| segment.xy));
+    let segment_index = SegmentIndex::build_from_iter(segments.iter().map(|segment| segment.xy))?;
     for (point_index, point) in points.iter().enumerate() {
         // Untrustworthy best must not prune the R-tree (would hide nearer segments).
         let probe_best = if clearance_squared.is_normal() {
@@ -323,7 +323,7 @@ struct IndexedSegment {
 }
 
 fn first_point_index_by_xy(points: &[Point]) -> crate::error::Result<HashMap<PointKey, usize>> {
-    let mut indices = HashMap::with_hasher(crate::collections::topology_hash_state()?.clone());
+    let mut indices = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     indices
         .try_reserve(points.len())
         .map_err(crate::error::Error::from)?;
@@ -623,8 +623,9 @@ mod clearance_allocation_tests {
         assert_eq!(segments.len(), 2);
         assert!(count > 0);
         for allowed in 0..count {
-            let error = fail_allocations_after(allowed, || indexed_segments(&shape))
-                .expect_err("each cold construction allocation must propagate");
+            let Err(error) = fail_allocations_after(allowed, || indexed_segments(&shape)) else {
+                panic!("each cold construction allocation must propagate");
+            };
             assert_allocation(error);
         }
         assert_eq!(indexed_segments(&shape).unwrap().len(), 2);
@@ -637,8 +638,9 @@ mod clearance_allocation_tests {
             Point::new_raw_xy(1.0, 0.0),
             Point::new_raw_xy(0.0, 0.0),
         ];
-        let error = fail_allocations_after(0, || first_point_index_by_xy(&points))
-            .expect_err("table reservation must propagate");
+        let Err(error) = fail_allocations_after(0, || first_point_index_by_xy(&points)) else {
+            panic!("table reservation must propagate");
+        };
         assert_allocation(error);
         let indices = first_point_index_by_xy(&points).unwrap();
         assert_eq!(indices[&PointKey::new(points[0])], 0);
@@ -652,9 +654,11 @@ mod clearance_allocation_tests {
         let points = shape.points_vec().unwrap();
         let segments = indexed_segments(&shape).unwrap();
         assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
-        let error =
+        let Err(error) =
             fail_allocations_after(0, || minimum_clearance_witness_indexed(&points, &segments))
-                .expect_err("indexed staging reservation must propagate");
+        else {
+            panic!("indexed staging reservation must propagate");
+        };
         assert_allocation(error);
         let indexed = minimum_clearance_witness_indexed(&points, &segments).unwrap();
         let brute = minimum_clearance_witness_brute(&points, &segments);

@@ -20,13 +20,13 @@ use std::sync::{LazyLock, OnceLock};
 
 pub(crate) use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 
-static TOPOLOGY_HASH_STATE: OnceLock<ahash::RandomState> = OnceLock::new();
+static COLLECTION_HASH_STATE: OnceLock<ahash::RandomState> = OnceLock::new();
 
-pub(crate) fn topology_hash_state() -> crate::error::Result<&'static ahash::RandomState> {
-    topology_hash_state_with(&TOPOLOGY_HASH_STATE, getrandom::fill)
+pub(crate) fn collection_hash_state() -> crate::error::Result<&'static ahash::RandomState> {
+    collection_hash_state_with(&COLLECTION_HASH_STATE, getrandom::fill)
 }
 
-fn topology_hash_state_with(
+fn collection_hash_state_with(
     state: &OnceLock<ahash::RandomState>,
     fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
 ) -> crate::error::Result<&ahash::RandomState> {
@@ -160,23 +160,23 @@ mod row_id_sort_tests {
     use super::RowIdSortScratch;
 
     #[test]
-    fn cold_topology_hash_state_needs_no_rust_heap_allocation() {
+    fn cold_collection_hash_state_needs_no_rust_heap_allocation() {
         crate::test_support::fail_allocations_after(0, || {
-            let state = super::topology_hash_state().unwrap();
+            let state = super::collection_hash_state().unwrap();
             let map = super::HashMap::<u64, u64>::with_hasher(state.clone());
             assert_eq!(map.capacity(), 0);
         });
     }
 
     #[test]
-    fn topology_entropy_failure_remains_retryable_and_maps_to_os_error() {
+    fn collection_entropy_failure_remains_retryable_and_maps_to_os_error() {
         use crate::error::{ErrorKind, ResourceError};
         use crate::test_support::fail_allocations_after;
 
         pyo3::Python::initialize();
         let state = std::sync::OnceLock::new();
         let error = fail_allocations_after(0, || {
-            super::topology_hash_state_with(&state, |_| Err(getrandom::Error::UNSUPPORTED))
+            super::collection_hash_state_with(&state, |_| Err(getrandom::Error::UNSUPPORTED))
         })
         .unwrap_err();
         assert!(matches!(
@@ -189,11 +189,11 @@ mod row_id_sort_tests {
             assert!(error.is_instance_of::<pyo3::exceptions::PyOSError>(py));
         });
         let first = fail_allocations_after(0, || {
-            super::topology_hash_state_with(&state, getrandom::fill)
+            super::collection_hash_state_with(&state, getrandom::fill)
         })
         .unwrap();
         let reused =
-            super::topology_hash_state_with(&state, |_| panic!("initialized entropy reused"))
+            super::collection_hash_state_with(&state, |_| panic!("initialized entropy reused"))
                 .unwrap();
         assert!(std::ptr::eq(first, reused));
     }

@@ -233,15 +233,20 @@ impl NativeRectClassifier {
                 Ok(AreaRectClassifier {
                     bounds: shape.bounds(),
                     tester,
-                    boundary_index: polygon_segment_index(&shape),
+                    boundary_index: polygon_segment_index(&shape)?,
                 })
             })
             .transpose()?;
 
         let mut line_seqs = Vec::new();
         collect_line_sequences(source, &mut line_seqs);
-        let line_index = (!line_seqs.is_empty())
-            .then(|| SegmentIndex::build_from_iter(line_seqs.into_iter().flat_map(line_segments)));
+        let line_index = if line_seqs.is_empty() {
+            None
+        } else {
+            Some(SegmentIndex::build_from_iter(
+                line_seqs.into_iter().flat_map(line_segments),
+            )?)
+        };
 
         let mut points = Vec::new();
         collect_points(source, &mut points);
@@ -393,7 +398,7 @@ fn collect_line_sequences<'a>(source: &'a Shape, out: &mut Vec<&'a CoordSeq>) {
     }
 }
 
-fn polygon_segment_index(source: &Shape) -> SegmentIndex {
+fn polygon_segment_index(source: &Shape) -> crate::error::Result<SegmentIndex> {
     match source {
         Shape::Polygon(polygon) => {
             SegmentIndex::build_from_iter(polygon.rings().flat_map(line_segments))

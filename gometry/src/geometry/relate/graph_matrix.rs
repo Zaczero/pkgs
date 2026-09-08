@@ -129,8 +129,10 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
     // arrangement fold.
     if let Some(matrix) = super::direct_areal_relate(left, right)
         .or_else(|| try_convex_relate(left.shape(), right.shape()))
-        .or_else(|| try_areal_relate(left.shape(), right.shape()))
     {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = try_areal_relate(left.shape(), right.shape())? {
         return Ok(matrix);
     }
     if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
@@ -150,7 +152,7 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
 /// through `graph_relate_data`, which now admits the direct engines first and
 /// would compare an engine with itself.
 pub(crate) fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    if let Some(matrix) = try_areal_relate(left.shape(), right.shape()) {
+    if let Some(matrix) = try_areal_relate(left.shape(), right.shape())? {
         return Ok(matrix);
     }
     graph_relate_data_fallback(left, right)
@@ -175,10 +177,13 @@ pub(crate) fn graph_relate_data_with_left_graph(
     left_graph: &TopologyGraph,
     right: &PreparedPlan,
 ) -> Result<De9im> {
-    if let Some(matrix) = super::direct_areal_relate(left, right)
-        .or_else(|| try_cartesian_areal_relate(left.shape(), right.shape()))
-        .or_else(|| super::direct_areal_linework_relate(left, right))
-    {
+    if let Some(matrix) = super::direct_areal_relate(left, right) {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape())? {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
         return Ok(matrix);
     }
     if let Some(matrix) =
@@ -203,10 +208,13 @@ pub(crate) fn graph_relate_data_with_right_graph(
     right: &PreparedPlan,
     right_graph: &TopologyGraph,
 ) -> Result<De9im> {
-    if let Some(matrix) = super::direct_areal_relate(left, right)
-        .or_else(|| try_cartesian_areal_relate(left.shape(), right.shape()))
-        .or_else(|| super::direct_areal_linework_relate(left, right))
-    {
+    if let Some(matrix) = super::direct_areal_relate(left, right) {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape())? {
+        return Ok(matrix);
+    }
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
         return Ok(matrix);
     }
     if let Some(matrix) =
@@ -234,7 +242,7 @@ pub(crate) fn graph_relate_data_geographic(
 ) -> Result<De9im> {
     debug_assert_eq!(left.frame(), right.frame());
     if let Some(matrix) =
-        try_areal_relate_geographic(left.plan.shape(), right.plan.shape(), left.frame())
+        try_areal_relate_geographic(left.plan.shape(), right.plan.shape(), left.frame())?
     {
         return Ok(matrix);
     }
@@ -266,7 +274,7 @@ pub(crate) fn graph_relate_data_geographic_with_left_graph(
     right: GeographicPrepared<'_>,
 ) -> Result<De9im> {
     if let Some(matrix) =
-        try_areal_relate_geographic(left.shape(), right.plan.shape(), right.frame())
+        try_areal_relate_geographic(left.shape(), right.plan.shape(), right.frame())?
     {
         return Ok(matrix);
     }
@@ -296,7 +304,7 @@ pub(crate) fn graph_relate_data_geographic_with_right_graph(
     right_graph: &TopologyGraph,
 ) -> Result<De9im> {
     if let Some(matrix) =
-        try_areal_relate_geographic(left.plan.shape(), right.shape(), left.frame())
+        try_areal_relate_geographic(left.plan.shape(), right.shape(), left.frame())?
     {
         return Ok(matrix);
     }
@@ -339,12 +347,15 @@ fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: Topology
 #[cfg(test)]
 fn try_areal_relate_in(left: &Shape, right: &Shape, space: TopologySpace) -> Option<De9im> {
     (space == TopologySpace::Cartesian)
-        .then(|| try_cartesian_areal_relate(left, right))
+        .then(|| try_cartesian_areal_relate(left, right).unwrap())
         .flatten()
 }
 
-fn try_cartesian_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
-    try_convex_relate(left, right).or_else(|| try_areal_relate(left, right))
+fn try_cartesian_areal_relate(left: &Shape, right: &Shape) -> Result<Option<De9im>> {
+    Ok(match try_convex_relate(left, right) {
+        Some(matrix) => Some(matrix),
+        None => try_areal_relate(left, right)?,
+    })
 }
 
 /// Whether a scalar operand broadcast against `row` reaches the direct
@@ -610,32 +621,41 @@ fn try_areal_relate_geographic(
     left: &Shape,
     right: &Shape,
     frame: crate::geographic::GeographicFrame,
-) -> Option<De9im> {
-    let left_bounds = left.bounds()?;
-    let right_bounds = right.bounds()?;
-    (crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(left), left_bounds, frame)
+) -> Result<Option<De9im>> {
+    let Some(left_bounds) = left.bounds() else {
+        return Ok(None);
+    };
+    let Some(right_bounds) = right.bounds() else {
+        return Ok(None);
+    };
+    if crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(left), left_bounds, frame)
         && crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
             Some(right),
             right_bounds,
             frame,
-        ))
-    .then(|| try_areal_relate(left, right))
-    .flatten()
+        )
+    {
+        try_areal_relate(left, right)
+    } else {
+        Ok(None)
+    }
 }
 
 /// Fold a complete DE-9IM matrix from the one arrangement shared by two
 /// nondegenerate Cartesian areal operands. Source graphs retain boundary-only
 /// degeneracies, so those inputs deliberately stay on the graph path.
-pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
+pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Result<Option<De9im>> {
     let mut left_polygons = Vec::new();
     let mut right_polygons = Vec::new();
-    collect_areal_polygons(left, &mut left_polygons)?;
-    collect_areal_polygons(right, &mut right_polygons)?;
-    if left_polygons.is_empty() || right_polygons.is_empty() {
-        return None;
+    if collect_areal_polygons(left, &mut left_polygons).is_none()
+        || collect_areal_polygons(right, &mut right_polygons).is_none()
+        || left_polygons.is_empty()
+        || right_polygons.is_empty()
+    {
+        return Ok(None);
     }
 
-    let built = overlay::build_areal_arrangement(&left_polygons, &right_polygons);
+    let built = overlay::build_areal_arrangement(&left_polygons, &right_polygons)?;
     let mut matrix = De9im::empty_disjoint();
     for winding in &built.windings {
         matrix.set_at_least(
@@ -681,7 +701,7 @@ pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
             crate::geometry::Dimension::Point,
         );
     }
-    Some(matrix)
+    Ok(Some(matrix))
 }
 
 /// The polygons of an areal shape whose every ring is sound (see
@@ -1057,9 +1077,9 @@ fn add_face_cells(matrix: &mut De9im, left: &TopologyGraph, right: &TopologyGrap
         (false, false) => {
             let arrangement = if left.domain.space() == TopologySpace::Geographic {
                 let (left_polygons, right_polygons) = geographic_area_polygons(left, right)?;
-                overlay::build_areal_arrangement(&left_polygons, &right_polygons)
+                overlay::build_areal_arrangement(&left_polygons, &right_polygons)?
             } else {
-                overlay::build_areal_arrangement(&left_polygons, &right_polygons)
+                overlay::build_areal_arrangement(&left_polygons, &right_polygons)?
             };
             for winding in arrangement.windings {
                 let left_loc = if winding[0] != 0 {
@@ -1741,9 +1761,13 @@ mod tests {
             &PreparedPlan::transient(right).unwrap(),
         )
         .unwrap();
-        let fast = try_areal_relate(left, right).expect("areal fast-path admission");
+        let fast = try_areal_relate(left, right)
+            .expect("areal fast-path allocation")
+            .expect("areal fast-path admission");
         assert_eq!(fast.0, expected.0, "{name}: forward");
-        let reverse = try_areal_relate(right, left).expect("reverse areal fast-path admission");
+        let reverse = try_areal_relate(right, left)
+            .expect("reverse areal fast-path allocation")
+            .expect("reverse areal fast-path admission");
         assert_eq!(reverse.0, expected.transpose().0, "{name}: reverse");
         assert_eq!(
             graph_relate_data(
@@ -1758,7 +1782,12 @@ mod tests {
     }
 
     fn assert_areal_fallback(name: &str, left: &Shape, right: &Shape) {
-        assert!(try_areal_relate(left, right).is_none(), "{name}: admission");
+        assert!(
+            try_areal_relate(left, right)
+                .expect("areal admission allocation")
+                .is_none(),
+            "{name}: admission"
+        );
         assert_eq!(
             graph_relate_data(
                 &PreparedPlan::transient(left).unwrap(),
@@ -2711,6 +2740,7 @@ mod tests {
             let expected = geographic_graph_oracle(&left, &right, frame);
             assert_eq!(
                 try_areal_relate_geographic(&left, &right, frame)
+                    .expect("safe geographic areal allocation")
                     .expect("safe geographic areal admission")
                     .0,
                 expected.0,
@@ -2762,7 +2792,9 @@ mod tests {
             ("longitude 360", noncanonical),
         ] {
             assert!(
-                try_areal_relate_geographic(&left, &ordinary, frame).is_none(),
+                try_areal_relate_geographic(&left, &ordinary, frame)
+                    .expect("geographic admission allocation")
+                    .is_none(),
                 "{name}: fold admission"
             );
             let expected = geographic_graph_oracle(&left, &ordinary, frame);

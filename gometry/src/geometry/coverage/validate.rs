@@ -20,9 +20,9 @@ pub(crate) struct CoverageRow<'a> {
 }
 
 impl CoverageRow<'_> {
-    pub(crate) fn index(&self) -> &SegmentIndex {
+    pub(crate) fn index(&self) -> crate::error::Result<&SegmentIndex> {
         self.index
-            .get_or_init(|| SegmentIndex::build(&self.segments))
+            .get_or_try_init(|| SegmentIndex::build(&self.segments))
     }
 }
 
@@ -349,11 +349,14 @@ pub(crate) fn segment_offends_row(
             })
         })
     } else {
-        other.index().intersecting_candidates(segment).any(|entry| {
-            segment_cross_point(segment, entry.segment).is_some_and(|point| {
-                !same_point(point, segment.start) && !same_point(point, segment.end)
+        other
+            .index()?
+            .intersecting_candidates(segment)
+            .any(|entry| {
+                segment_cross_point(segment, entry.segment).is_some_and(|point| {
+                    !same_point(point, segment.start) && !same_point(point, segment.end)
+                })
             })
-        })
     };
     if crossing {
         return Ok(true);
@@ -362,15 +365,15 @@ pub(crate) fn segment_offends_row(
     // than gap_width without touching it. Nearest-segment needs the index
     // (or a full scan); only pay when gap_width is active.
     if gap_width > 0.0 {
-        let near = |point: XY| {
-            other
-                .index()
+        let near = |point: XY| -> Result<bool> {
+            Ok(other
+                .index()?
                 .nearest_segment_if(point.point(), gap_width * gap_width, |_, distance| {
                     distance > 0.0
                 })
-                .is_some()
+                .is_some())
         };
-        if near(midpoint.into()) || near(segment.start) || near(segment.end) {
+        if near(midpoint.into())? || near(segment.start)? || near(segment.end)? {
             return Ok(true);
         }
     }

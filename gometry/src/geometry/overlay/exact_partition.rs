@@ -196,7 +196,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let one = ExactDyadic::try_from_f64(1.0)?;
 
     let mut endpoint_of: HashMap<PointKey, u32> =
-        HashMap::with_hasher(crate::collections::topology_hash_state()?.clone());
+        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     endpoint_of
         .try_reserve(
             unique
@@ -598,7 +598,7 @@ fn aggregate_atoms(
     budget: &mut ExpansionBudget,
 ) -> Result<(Vec<ExactSpan>, SegmentProvenance)> {
     let mut atom_of: HashMap<(u32, u32), u32> =
-        HashMap::with_hasher(crate::collections::topology_hash_state()?.clone());
+        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     atom_of
         .try_reserve(intervals.len())
         .map_err(crate::error::Error::from)?;
