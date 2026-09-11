@@ -17950,10 +17950,56 @@ def _parse_geoarrow_extension_metadata(
 ) -> tuple[str | None, float | None]:
     """Private Python entry: parse GeoArrow extension metadata bytes → (crs, epoch)."""
 
+class _GeoParquetColumnFrame:
+    """Native GeoParquet CRS/epoch declaration, retaining key presence."""
+
+    @property
+    def crs(self) -> str | None: ...
+
+    @property
+    def epoch(self) -> float | None: ...
+
+    @property
+    def crs_present(self) -> bool: ...
+
+    @property
+    def epoch_present(self) -> bool: ...
+
+    def __iter__(self) -> Iterator[str | float | None]: ...
+
+class _GeoParquetPhysicalLayout:
+    """Native physical-layout facts admitted from one GeoParquet field."""
+
+    @property
+    def encoding(self) -> str: ...
+
+    @property
+    def has_extension(self) -> bool: ...
+
+    @property
+    def embedded_crs(self) -> str | None: ...
+
+    @property
+    def embedded_epoch(self) -> float | None: ...
+
+    @property
+    def list_depth(self) -> int | None: ...
+
+    @property
+    def has_z(self) -> bool: ...
+
+    @property
+    def has_m(self) -> bool: ...
+
+    @property
+    def wkb_offset_width(self) -> str: ...
+
+    def __iter__(self) -> Iterator[bool | str | float | None]: ...
+
 def _parse_geoparquet_column_frame(
     metadata: Mapping[str, Any],
     column_name: str,
-) -> tuple[str | None, float | None]:
+) -> _GeoParquetColumnFrame:
     """Private Python entry: parse one already-decoded GeoParquet column mapping for
     the shared CRS/epoch/edges frame (defaults missing CRS to OGC:CRS84; CRS must
     be a PROJJSON object or null when present).
@@ -17964,15 +18010,22 @@ def _admit_geoparquet_geometry_storage(
     encoding: str,
     column_name: str,
     field: Any | None = None,
-) -> tuple[bool, str | None, float | None]:
+) -> _GeoParquetPhysicalLayout:
     """Admit GeoParquet geometry storage against a declared encoding.
 
     Dictionary-wrapped WKB is accepted. ExtensionType and Field metadata are
     reconciled together (name + frame) so raw-field frame metadata is never
-    discarded. Returns ``(has_extension, crs, epoch)`` — when
-    ``has_extension`` is true the frame came from reconciled extension
-    metadata (possibly both-None for empty metadata).
+    discarded. The result is one immutable physical-layout admission record.
     """
+
+def _from_geoparquet_arrow(
+    data: Any,
+    layout: _GeoParquetPhysicalLayout,
+    *,
+    crs: str | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry | None]:
+    """Decode a PyArrow column with one already-admitted physical layout."""
 
 def from_arrow(
     data: _ArrowInput, *, crs: CrsInput | None = None, epoch: float | None = None

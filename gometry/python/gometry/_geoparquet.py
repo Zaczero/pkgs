@@ -17,7 +17,6 @@ from gometry._lib import (
     GeometryArray,
     GeometryError,
     ParseError,
-    from_arrow,
 )
 from gometry._optional import missing_optional_dependency
 from gometry._types import PyArrowTable, mapping_as_dict
@@ -136,24 +135,6 @@ def _axes_token(has_z: bool, has_m: bool) -> str:
     return 'XY'
 
 
-def _physical_storage_axes(encoding: str, source: Any) -> tuple[bool, bool]:
-    """Ordinate layout of structural (native GeoArrow) storage only.
-
-    Native GeoArrow coordinate structs expose axes via field names
-    (``_storage_axes``). WKB encodes Z/M *inside* the binary blob — binary
-    storage makes no XY/XYZ claim, so this returns ``(False, False)`` for WKB
-    without inventing a 2D inventory. Callers must not reconcile declared
-    ``geometry_types`` against that non-claim for empty/all-null WKB columns.
-    """
-    if encoding in GEOARROW_ENCODINGS:
-        from gometry._arrow import _storage_axes
-
-        storage_type = getattr(source.type, 'storage_type', source.type)
-        return _storage_axes(storage_type)
-    # WKB / unknown: no structural ordinate fields.
-    return False, False
-
-
 def _geometry_types(arr: GeometryArray[Geometry | None]) -> list[str]:
     """Sorted unique GeoParquet geometry_types via one native batch call."""
     return arr._geoparquet_geometry_types()
@@ -164,6 +145,8 @@ def _embedded_frame_conflicts(
     embedded_epoch: float | None,
     declared_crs: str | None,
     declared_epoch: float | None,
+    *,
+    declared_epoch_present: bool = True,
 ) -> bool:
     """Whether declared frame metadata contradicts an embedded frame.
 
@@ -175,7 +158,7 @@ def _embedded_frame_conflicts(
         or not CRS(embedded_crs).same_as(declared_crs, mode='ignore_axis_order')
     ):
         return True
-    return embedded_epoch is not None and (
+    return embedded_epoch is not None and declared_epoch_present and (
         declared_epoch is None or embedded_epoch != declared_epoch
     )
 
@@ -403,6 +386,13 @@ def to_geoparquet(
 def _metadata_error(detail: str) -> ParseError:
     error = ParseError(f'malformed GeoParquet geo metadata: {detail}')
     error.format = 'geoparquet'
+    error.category = 'metadata'
+    return error
+
+
+def _layout_error(detail: str) -> GeometryError:
+    error = GeometryError(detail)
+    error.category = 'layout'
     return error
 
 
@@ -460,7 +450,7 @@ def _require_native_geometry_types_axes(
     for label in geometry_types:
         has_z, has_m = _geometry_type_axes(label)
         if (has_z and not storage_has_z) or (has_m and not storage_has_m):
-            raise _metadata_error(
+            raise _layout_error(
                 f'column {column_name!r} geometry_types entry {label!r} exceeds '
                 f'structural storage axes (has_z={storage_has_z}, has_m={storage_has_m})'
             )
@@ -630,8 +620,8 @@ def _admit_geometry_storage(
     encoding: str,
     column_name: str,
     field: Any | None = None,
-) -> tuple[bool, str | None, float | None]:
-    """Native field/storage admission; returns (has_extension, crs, epoch)."""
+) -> Any:
+    """Return the one native physical-layout admission record."""
     from gometry._lib import _admit_geoparquet_geometry_storage
 
     return _admit_geoparquet_geometry_storage(arrow_type, encoding, column_name, field)
@@ -645,40 +635,54 @@ def _native_geoarrow_column(
     epoch: float | None,
     field: Any | None = None,
     column_name: str = 'geometry',
+    layout: Any | None = None,
+    declared_epoch_present: bool = True,
 ) -> Any:
-    from gometry._arrow import (
-        _extension_type_from_storage,
-        _storage_axes,
-    )
+    from gometry._arrow import _extension_type_from_storage
 
-    extension_name = f'geoarrow.{encoding}'
+    if layout is None:
+        layout = _admit_geometry_storage(column.type, encoding, column_name, field)
+    if layout.encoding != encoding:
+        raise _layout_error(
+            f"admitted GeoParquet encoding {layout.encoding!r} does not match "
+            f"requested {encoding!r}"
+        )
+    extension_name = f'geoarrow.{layout.encoding}'
     # Native admission owns dictionary unwrap, extension reconcile (name +
-    # frame), list-depth checks, and same-depth native relabeling. Raw-field
+    # frame), list depth, coordinate axes, and same-depth relabeling. Raw-field
     # frame metadata is preserved when has_extension is true.
-    has_extension, embedded_crs, embedded_epoch = _admit_geometry_storage(
-        column.type, encoding, column_name, field
-    )
+    has_extension = layout.has_extension
+    embedded_crs = layout.embedded_crs
+    embedded_epoch = layout.embedded_epoch
     # Absent CRS/epoch is "no opinion" (GeoParquet declared frame wins).
     # GeoArrow explicit ``"crs": null`` is rejected during native metadata
     # admission; ``None`` here means the extension made no CRS declaration.
     if has_extension and _embedded_frame_conflicts(
-        embedded_crs, embedded_epoch, crs, epoch
+        embedded_crs,
+        embedded_epoch,
+        crs,
+        epoch,
+        declared_epoch_present=declared_epoch_present,
     ):
         raise _metadata_error(
             'geoparquet metadata conflicts with Arrow extension metadata'
         )
+    effective_epoch = (
+        epoch
+        if declared_epoch_present or embedded_epoch is None
+        else embedded_epoch
+    )
     try:
         storage_type = getattr(column.type, 'storage_type', column.type)
-        _storage_axes(storage_type)
         extension_type = _extension_type_from_storage(
-            pa, extension_name, storage_type, crs, epoch
+            pa, extension_name, storage_type, crs, effective_epoch
         )
         chunks = []
         for chunk in column.chunks:
             storage = getattr(chunk, 'storage', chunk)
             chunks.append(pa.ExtensionArray.from_storage(extension_type, storage))
     except (AttributeError, TypeError, ValueError, pa.ArrowInvalid) as error:
-        raise _metadata_error(
+        raise _layout_error(
             f'invalid native GeoParquet {encoding!r} storage layout'
         ) from error
     return pa.chunked_array(chunks, type=extension_type)
@@ -693,52 +697,74 @@ def _decode_geometry_column(
     crs: str | None,
     epoch: float | None,
     field: Any | None = None,
+    layout: Any | None = None,
 ) -> GeometryArray[Geometry | None]:
     if encoding == 'geometrycollection':
         raise _metadata_error(
             'native GeoArrow geometrycollection read is unsupported; re-encode as WKB'
         )
-    if encoding == 'WKB':
-        # Native admission owns extension/dictionary unwrap and the Arrow-field
-        # frame. Carry the result through: never re-derive frame from a column
-        # type that registration / read_dictionary may have rewritten.
-        # Precedence: when an Arrow extension frame is present it must agree
-        # with the GeoParquet-declared frame (else typed metadata error); the
-        # accepted frame is that agreed value. When no extension frame is
-        # present, the declared GeoParquet frame wins (including CRS84 default).
-        has_extension, embedded_crs, embedded_epoch = _admit_geometry_storage(
-            column.type, encoding, column_name, field
+    if layout is None:
+        layout = _admit_geometry_storage(column.type, encoding, column_name, field)
+    if layout.encoding != encoding:
+        raise _layout_error(
+            f"admitted GeoParquet encoding {layout.encoding!r} does not match "
+            f"requested {encoding!r}"
         )
+    # Consume physical facts from the schema-admission record. The materialized
+    # value may have been rewritten by extension registration or dictionary
+    # decoding, so it is not a second source of layout truth.
+    if encoding == 'WKB':
+        has_extension = layout.has_extension
+        embedded_crs = layout.embedded_crs
+        embedded_epoch = layout.embedded_epoch
         # Absent CRS/epoch is "no opinion" (GeoParquet declared frame wins).
-        # Limitation: GeoArrow explicit ``"crs": null`` also arrives as None from
-        # admission and is treated as no opinion — tri-state would require a
-        # broader admission API change for rare producer output.
+        # An omitted epoch leaves the embedded epoch authoritative; an explicit
+        # JSON null remains a declaration and is checked as a conflict.
         if has_extension and _embedded_frame_conflicts(
-            embedded_crs, embedded_epoch, crs, epoch
+            embedded_crs,
+            embedded_epoch,
+            crs,
+            epoch,
+            declared_epoch_present='epoch' in column_metadata,
         ):
             raise _metadata_error(
                 'geoparquet metadata conflicts with Arrow extension metadata'
             )
+        if 'epoch' not in column_metadata and embedded_epoch is not None:
+            epoch = embedded_epoch
         # Unwrap dictionary (top-level or under ExtensionType storage) before
         # native import. Generic GeoArrow dictionary encodings are out of scope.
         source = _dictionary_decode_column(pa, column)
     elif encoding in GEOARROW_ENCODINGS:
+        if 'epoch' not in column_metadata and layout.embedded_epoch is not None:
+            epoch = layout.embedded_epoch
         source = _native_geoarrow_column(
-            pa, column, encoding, crs, epoch, field, column_name=column_name
+            pa,
+            column,
+            encoding,
+            crs,
+            epoch,
+            field,
+            column_name=column_name,
+            layout=layout,
+            declared_epoch_present='epoch' in column_metadata,
         )
     else:
         source = column
     try:
-        # Arrow column/chunked inputs always decode as GeometryArray.
-        result: GeometryArray[Geometry | None] = from_arrow(
-            source, crs=crs, epoch=epoch
+        # The admitted record supplies the native classification to the Arrow
+        # decoder; it must not classify the rewritten PyArrow value again.
+        from gometry._lib import _from_geoparquet_arrow
+
+        result: GeometryArray[Geometry | None] = _from_geoparquet_arrow(
+            source, layout, crs=crs, epoch=epoch
         )
     except (AttributeError, TypeError, pa.ArrowInvalid) as error:
-        raise _metadata_error(
+        raise _layout_error(
             f'invalid native GeoParquet {encoding!r} storage layout'
         ) from error
 
-    storage_has_z, storage_has_m = _physical_storage_axes(encoding, source)
+    storage_has_z, storage_has_m = layout.has_z, layout.has_m
 
     # GeoParquet 1.x has no M ordinate; reject schema-wide from decoded content
     # OR structural native storage (empty/all-null native XYM must not slip).
@@ -780,7 +806,7 @@ def _decode_geometry_column(
         # the same base-kind set.
         actual_kinds = {_geometry_type_base(label) for label in actual}
         if actual_kinds and actual_kinds != {expected_kind}:
-            raise _metadata_error(
+            raise _layout_error(
                 f'column {column_name!r} encoding {encoding!r} produced '
                 f'geometry kinds {sorted(actual_kinds)!r}'
             )
@@ -797,32 +823,6 @@ def _decode_geometry_column(
     return result
 
 
-def _physical_matches_encoding(
-    pa: Any, arrow_type: Any, encoding: str, field: Any | None = None
-) -> bool:
-    """True when *arrow_type* / *field* is the physical storage for *encoding*.
-
-    Storage-layout mismatches return False so the caller can raise the
-    pinned "does not match physical storage" message. Malformed metadata
-    (non-UTF-8 extension names, type/field conflicts, …) still propagates.
-    """
-    del pa  # native admitter imports pyarrow itself
-    try:
-        _admit_geometry_storage(arrow_type, encoding, '_', field)
-    except ParseError as error:
-        message = str(error)
-        if (
-            'does not match storage layout' in message
-            or "encoding 'WKB' requires Binary" in message
-            or 'conflicts with embedded Arrow extension' in message
-        ):
-            return False
-        raise
-    except (TypeError, ValueError, GeometryError):
-        return False
-    return True
-
-
 def _schema_name_indices(schema_names: Sequence[str]) -> dict[str, list[int]]:
     """Map each schema name to its occurrence indices in one O(schema) pass."""
     indices: dict[str, list[int]] = {}
@@ -835,6 +835,8 @@ def _validate_declared_geometry_columns(
     pa: Any,
     schema: Any,
     metadata: Mapping[str, Any],
+    *,
+    admitted_layouts: dict[str, Any] | None = None,
 ) -> frozenset[str]:
     """Validate every geo.columns entry exists once and matches physical encoding.
 
@@ -875,10 +877,16 @@ def _validate_declared_geometry_columns(
                 f'unsupported GeoParquet geometry encoding: {encoding!r}'
             )
         field = schema.field(occurrences[0])
-        if not _physical_matches_encoding(pa, field.type, encoding, field):
-            raise _metadata_error(
+        try:
+            layout = _admit_geometry_storage(field.type, encoding, name, field)
+        except GeometryError as error:
+            if getattr(error, 'category', None) != 'layout':
+                raise
+            raise _layout_error(
                 f'column {name!r} encoding {encoding!r} does not match physical storage'
-            )
+            ) from error
+        if admitted_layouts is not None:
+            admitted_layouts[name] = layout
         validated.append(name)
     return frozenset(validated)
 
@@ -910,9 +918,16 @@ def _validate_attribute_columns(
     schema: Any,
     metadata: Mapping[str, Any],
     columns: Iterable[str] | None,
+    *,
+    admitted_layouts: dict[str, Any] | None = None,
 ) -> list[str]:
     pa = _pyarrow()
-    geometry_columns = _validate_declared_geometry_columns(pa, schema, metadata)
+    geometry_columns = _validate_declared_geometry_columns(
+        pa,
+        schema,
+        metadata,
+        admitted_layouts=admitted_layouts,
+    )
     schema_names = list(schema.names)
     if columns is None:
         return [name for name in schema_names if name not in geometry_columns]
@@ -1060,7 +1075,14 @@ def from_geoparquet(
     )
     # Schema is known: validate columns online (bounded by finite attribute set).
     # Selected geometry is already a member of the declared geometry columns.
-    attribute_columns = _validate_attribute_columns(schema, geo_metadata, columns)
+    admitted_layouts: dict[str, Any] = {}
+    attribute_columns = _validate_attribute_columns(
+        schema,
+        geo_metadata,
+        columns,
+        admitted_layouts=admitted_layouts,
+    )
+    layout = admitted_layouts[selected_geometry]
 
     projected_columns = [selected_geometry, *attribute_columns]
     if parquet_file is not None:
@@ -1094,6 +1116,7 @@ def from_geoparquet(
         crs,
         epoch,
         field=geometry_field,
+        layout=layout,
     )
     attributes = _attribute_result(table.select(attribute_columns))
     return geometry_array, attributes

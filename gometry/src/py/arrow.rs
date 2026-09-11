@@ -687,19 +687,13 @@ fn pyarrow_batch(
     Ok(batch)
 }
 
-pub(crate) fn geometries_from_pyarrow(
+fn decode_pyarrow_selected(
     py: Python<'_>,
-    pa: &Bound<'_, PyModule>,
-    value: &Bound<'_, PyAny>,
+    selected: &Bound<'_, PyAny>,
+    classification: NativeArrowClassification,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    let input = arrow_geometry_input(pa, value)?;
-    let selected = input.value.bind(py);
-    let field = input.field.as_ref().map(|field| field.bind(py));
-    // Resolve both ExtensionType and field metadata before consuming any
-    // selected value's Arrow-C export.
-    let classification = metadata::arrow_classification_for_value(selected, field)?;
     let mut accumulator = NativeArrowAccumulator::new();
     accumulator.admit_classification(&classification)?;
 
@@ -721,6 +715,51 @@ pub(crate) fn geometries_from_pyarrow(
         accumulator.push_decoded(decoded)?;
     }
     accumulator.finish(py, crs, epoch)
+}
+
+pub(crate) fn geometries_from_pyarrow_with_classification(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    classification: NativeArrowClassification,
+    crs: Option<&Bound<'_, PyAny>>,
+    epoch: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    decode_pyarrow_selected(py, value, classification, crs, epoch)
+}
+
+pub(crate) fn geometries_from_pyarrow(
+    py: Python<'_>,
+    pa: &Bound<'_, PyModule>,
+    value: &Bound<'_, PyAny>,
+    crs: Option<&Bound<'_, PyAny>>,
+    epoch: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let input = arrow_geometry_input(pa, value)?;
+    let selected = input.value.bind(py);
+    let field = input.field.as_ref().map(|field| field.bind(py));
+    // Resolve both ExtensionType and field metadata before consuming any
+    // selected value's Arrow-C export.
+    let classification = metadata::arrow_classification_for_value(selected, field)?;
+    decode_pyarrow_selected(py, selected, classification, crs, epoch)
+}
+
+#[pyfunction]
+#[pyo3(
+    name = "_from_geoparquet_arrow",
+    signature = (data, layout, *, crs = None, epoch = None)
+)]
+fn py_from_geoparquet_arrow(
+    py: Python<'_>,
+    data: &Bound<'_, PyAny>,
+    layout: &Bound<'_, PyAny>,
+    crs: Option<&Bound<'_, PyAny>>,
+    epoch: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let layout = layout.cast::<metadata::GeoParquetPhysicalLayout>()?.get();
+    let embedded_crs = crate::parse_crs(crs)?.map(|value| value.as_str().to_owned());
+    let embedded_epoch = crate::coordinate_epoch_option("epoch", epoch)?;
+    let classification = layout.classification(embedded_crs, embedded_epoch)?;
+    geometries_from_pyarrow_with_classification(py, data, classification, crs, epoch)
 }
 
 pub(crate) use metadata::{
@@ -849,10 +888,13 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_functions!(
         m;
         from_arrow,
+        py_from_geoparquet_arrow,
         metadata::py_parse_geoarrow_extension_metadata,
         metadata::py_parse_geoparquet_column_frame,
         metadata::py_admit_geoparquet_geometry_storage,
     );
+    m.add_class::<metadata::GeoParquetColumnFrame>()?;
+    m.add_class::<metadata::GeoParquetPhysicalLayout>()?;
     Ok(())
 }
 

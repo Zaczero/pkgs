@@ -379,6 +379,94 @@ def test_geoparquet_absent_and_null_crs_are_distinct(parquet_path: str) -> None:
     assert unframed.crs is None
 
 
+def test_geoparquet_column_frame_retains_absent_and_null_declarations() -> None:
+    from gometry._lib import _parse_geoparquet_column_frame
+
+    absent = _parse_geoparquet_column_frame({}, 'geometry')
+    explicit_null = _parse_geoparquet_column_frame(
+        {'crs': None, 'epoch': None}, 'geometry'
+    )
+
+    assert absent.crs == 'OGC:CRS84'
+    assert absent.epoch is None
+    assert absent.crs_present is False
+    assert absent.epoch_present is False
+    assert explicit_null.crs is None
+    assert explicit_null.epoch is None
+    assert explicit_null.crs_present is True
+    assert explicit_null.epoch_present is True
+
+
+def test_geoparquet_layout_and_metadata_errors_have_typed_categories() -> None:
+    import pyarrow as pa
+    from gometry._geoparquet import _decode_geometry_column
+    from gometry._lib import _parse_geoparquet_column_frame
+
+    native_point = gm.points([1.0], [2.0]).to_arrow()
+    with pytest.raises(gm.GeometryError) as layout:
+        _decode_geometry_column(
+            pa,
+            pa.chunked_array([native_point]),
+            {'geometry_types': ['Point']},
+            'geometry',
+            'WKB',
+            None,
+            None,
+        )
+    assert layout.value.category == 'layout'
+
+    with pytest.raises(gm.ParseError) as metadata:
+        _parse_geoparquet_column_frame({'epoch': '2020'}, 'geometry')
+    assert metadata.value.category == 'metadata'
+    assert metadata.value.format == 'geoparquet'
+
+
+def test_geoparquet_selected_geometry_preserves_all_declared_columns(
+    parquet_path: str,
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    first = pa.array([gm.Point(1, 2).to_wkb()], type=pa.binary())
+    second = pa.array([gm.Point(3, 4).to_wkb()], type=pa.binary())
+    schema = pa.schema(
+        [
+            pa.field('geometry', pa.binary()),
+            pa.field('alternate', pa.binary()),
+            pa.field('id', pa.int64()),
+        ],
+        metadata={
+            b'geo': json.dumps({
+                'version': '1.1.0',
+                'primary_column': 'geometry',
+                'columns': {
+                    'geometry': {
+                        'encoding': 'WKB',
+                        'geometry_types': ['Point'],
+                        'crs': None,
+                    },
+                    'alternate': {
+                        'encoding': 'WKB',
+                        'geometry_types': ['Point'],
+                        'crs': None,
+                    },
+                },
+            }).encode()
+        },
+    )
+    pq.write_table(
+        pa.Table.from_arrays([first, second, pa.array([7])], schema=schema),
+        parquet_path,
+    )
+
+    restored, attributes = gm.from_geoparquet(
+        parquet_path, geometry='alternate', columns=['id']
+    )
+    assert restored.to_wkt() == ['POINT (3 4)']
+    assert attributes.column_names == ['id']
+    assert attributes['id'].to_pylist() == [7]
+
+
 def test_geoparquet_native_point_roundtrip(parquet_path: str) -> None:
     values = gm.points([1.0, 3.0], [2.0, 4.0], crs=4326)
     values.to_geoparquet(parquet_path, encoding='native')

@@ -1,3 +1,4 @@
+use pyo3::PyErr;
 use pyo3::types::{PyDict, PyFloat, PyList, PyString};
 
 use crate::py::support::{
@@ -140,6 +141,28 @@ enum JsonProjection {
     Geometry,
 }
 
+/// Conversion failures with semantic information retained for callers that
+/// need to classify a JSON boundary without inspecting its display text.
+pub(crate) enum JsonValueError {
+    NonFinite,
+    Python(PyErr),
+}
+
+impl From<PyErr> for JsonValueError {
+    fn from(error: PyErr) -> Self {
+        Self::Python(error)
+    }
+}
+
+impl JsonValueError {
+    fn into_py_err(self) -> PyErr {
+        match self {
+            Self::NonFinite => GeometryError::new_err("JSON number must be finite"),
+            Self::Python(error) => error,
+        }
+    }
+}
+
 /// Convert a Python `int` into a JSON number.
 ///
 /// - Values that fit in `i64`/`u64` stay integer-shaped `Number`s (PROJJSON
@@ -192,7 +215,7 @@ fn py_to_json_value_mapping(
     dict: &Bound<'_, PyDict>,
     projection: JsonProjection,
     depth: usize,
-) -> PyResult<Value> {
+) -> Result<Value, JsonValueError> {
     let mut map = serde_json::Map::new();
     for (key, val) in dict.iter() {
         let key_str = key.extract::<String>()?;
@@ -236,16 +259,15 @@ fn py_to_json_value_inner(
     value: &Bound<'_, PyAny>,
     projection: JsonProjection,
     depth: usize,
-) -> PyResult<Value> {
+) -> Result<Value, JsonValueError> {
     let max_depth = match projection {
         JsonProjection::Full => crate::geometry::MAX_NESTING,
         JsonProjection::Geometry => MAX_JSON_NESTING,
     };
     if depth > max_depth {
-        return Err(crate::io::IoError::geojson(format!(
-            "JSON nesting exceeds the limit of {max_depth}"
-        ))
-        .into());
+        return Err(JsonValueError::Python(PyErr::from(
+            crate::io::IoError::geojson(format!("JSON nesting exceeds the limit of {max_depth}")),
+        )));
     }
     if value.is_none() {
         return Ok(Value::Null);
@@ -287,21 +309,27 @@ fn py_to_json_value_inner(
     // Coordinate exactness for the i64/u64 range is enforced by the shared
     // Value decoder via json_number_to_f64.
     if value.cast::<PyInt>().is_ok() && value.cast::<PyBool>().is_err() {
-        return py_int_to_json_number(value);
+        return Ok(py_int_to_json_number(value)?);
     }
     if let Ok(f) = value.cast::<PyFloat>() {
         let f = f.value();
         return serde_json::Number::from_f64(f)
             .map(Value::Number)
-            .ok_or_else(|| GeometryError::new_err("JSON number must be finite"));
+            .ok_or(JsonValueError::NonFinite);
     }
-    Err(GeometryError::new_err(format!(
+    Err(JsonValueError::Python(GeometryError::new_err(format!(
         "unsupported JSON value type {}",
         value.get_type().name()?
-    )))
+    ))))
 }
 
 pub(crate) fn py_to_json_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
+    py_to_json_value_inner(value, JsonProjection::Full, 0).map_err(JsonValueError::into_py_err)
+}
+
+pub(crate) fn py_to_json_value_classified(
+    value: &Bound<'_, PyAny>,
+) -> Result<Value, JsonValueError> {
     py_to_json_value_inner(value, JsonProjection::Full, 0)
 }
 
@@ -407,7 +435,8 @@ fn parse_geojson_input(
 
 fn parse_geojson_geometry_mapping(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Some(dict) = mapping_as_dict(value)? {
-        return py_to_json_value_mapping(&dict, JsonProjection::Geometry, 0);
+        return py_to_json_value_mapping(&dict, JsonProjection::Geometry, 0)
+            .map_err(JsonValueError::into_py_err);
     }
     let text = json_dumps(value.py())?
         .call1((value,))?

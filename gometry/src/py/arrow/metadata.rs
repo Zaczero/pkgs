@@ -2,16 +2,211 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use pyo3::pyfunction;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyTuple, PyTupleMethods as _};
+use pyo3::{IntoPyObject as _, pyclass, pyfunction, pymethods};
 use serde_json::Value;
 
 use crate::py::arrow::{
-    Bound, GeometryEncoding, PyAny, PyAnyMethods as _, PyErr, PyModule, PyResult, PyTypeError,
+    Bound, GeometryEncoding, Py, PyAny, PyAnyMethods as _, PyErr, PyModule, PyResult, PyTypeError,
     PyTypeMethods as _, Python, WkbOffsetWidth,
 };
 use crate::py::arrow_c::NativeArrowClassification;
-use crate::py::errors::{ParseFormat, parse_error};
+use crate::py::errors::{GeometryError, ParseFormat, parse_error};
+
+/// One native admission result for a GeoParquet geometry column.
+///
+/// The record is produced from the file schema before any materialized column
+/// is decoded.  Its encoding, physical nesting, ordinate fields, and embedded
+/// frame are immutable facts carried through the Python adapter; decoding must
+/// not infer them again from a post-read PyArrow value.
+#[pyclass(
+    name = "_GeoParquetPhysicalLayout",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    skip_from_py_object
+)]
+pub(crate) struct GeoParquetPhysicalLayout {
+    encoding: GeometryEncoding,
+    wkb_offset_width: WkbOffsetWidth,
+    has_extension: bool,
+    embedded_crs: Option<String>,
+    embedded_epoch: Option<f64>,
+    list_depth: Option<u8>,
+    has_z: bool,
+    has_m: bool,
+}
+
+impl GeoParquetPhysicalLayout {
+    pub(crate) fn classification(
+        &self,
+        crs: Option<String>,
+        epoch: Option<f64>,
+    ) -> PyResult<NativeArrowClassification> {
+        NativeArrowClassification::new(self.encoding, self.wkb_offset_width, crs, epoch)
+    }
+
+    fn native(
+        encoding: GeometryEncoding,
+        has_extension: bool,
+        embedded_crs: Option<String>,
+        embedded_epoch: Option<f64>,
+        list_depth: u8,
+        has_z: bool,
+        has_m: bool,
+    ) -> Self {
+        Self {
+            encoding,
+            wkb_offset_width: WkbOffsetWidth::Int32,
+            has_extension,
+            embedded_crs,
+            embedded_epoch,
+            list_depth: Some(list_depth),
+            has_z,
+            has_m,
+        }
+    }
+
+    fn wkb(
+        has_extension: bool,
+        embedded_crs: Option<String>,
+        embedded_epoch: Option<f64>,
+        wkb_offset_width: WkbOffsetWidth,
+    ) -> Self {
+        Self {
+            encoding: GeometryEncoding::Wkb,
+            wkb_offset_width,
+            has_extension,
+            embedded_crs,
+            embedded_epoch,
+            list_depth: None,
+            has_z: false,
+            has_m: false,
+        }
+    }
+}
+
+#[pymethods]
+impl GeoParquetPhysicalLayout {
+    #[getter]
+    fn encoding(&self) -> &'static str {
+        match self.encoding {
+            GeometryEncoding::Point => "point",
+            GeometryEncoding::MultiPoint => "multipoint",
+            GeometryEncoding::LineString => "linestring",
+            GeometryEncoding::MultiLineString => "multilinestring",
+            GeometryEncoding::Polygon => "polygon",
+            GeometryEncoding::MultiPolygon => "multipolygon",
+            GeometryEncoding::Wkb => "WKB",
+        }
+    }
+
+    #[getter]
+    fn has_extension(&self) -> bool {
+        self.has_extension
+    }
+
+    #[getter]
+    fn embedded_crs(&self) -> Option<String> {
+        self.embedded_crs.clone()
+    }
+
+    #[getter]
+    fn embedded_epoch(&self) -> Option<f64> {
+        self.embedded_epoch
+    }
+
+    #[getter]
+    fn list_depth(&self) -> Option<u8> {
+        self.list_depth
+    }
+
+    #[getter]
+    fn has_z(&self) -> bool {
+        self.has_z
+    }
+
+    #[getter]
+    fn has_m(&self) -> bool {
+        self.has_m
+    }
+
+    #[getter]
+    fn wkb_offset_width(&self) -> &'static str {
+        match self.wkb_offset_width {
+            WkbOffsetWidth::Int32 => "int32",
+            WkbOffsetWidth::Int64 => "int64",
+            WkbOffsetWidth::View => "view",
+        }
+    }
+
+    /// Retain the historical private `(has_extension, crs, epoch)` unpacking
+    /// contract while exposing the full record through named properties.
+    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let values = (
+            self.has_extension,
+            self.embedded_crs.clone(),
+            self.embedded_epoch,
+        )
+            .into_pyobject(py)?;
+        values.call_method0("__iter__").map(Bound::unbind)
+    }
+}
+
+/// Typed failure categories at the GeoParquet physical-layout boundary.
+///
+/// The Python projection deliberately retains its historical exception
+/// classes: layout failures are `GeometryError`, malformed or contradictory
+/// metadata is `ParseError(format="geoparquet")`, and native allocation
+/// failures remain `MemoryError`.
+#[derive(Debug)]
+enum GeoParquetAdmissionError {
+    Layout(String),
+    Metadata(String),
+    Resource(crate::error::Error),
+}
+
+impl GeoParquetAdmissionError {
+    fn layout_from_py(error: PyErr) -> Self {
+        Python::attach(|py| {
+            if error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py) {
+                Self::Resource(crate::error::ResourceError::Allocation.into())
+            } else {
+                Self::Layout(error.value(py).to_string())
+            }
+        })
+    }
+
+    fn into_py_err(self) -> PyErr {
+        match self {
+            Self::Layout(detail) => geoparquet_layout_error(detail),
+            Self::Metadata(detail) => geoparquet_meta_error(detail),
+            Self::Resource(error) => geoparquet_resource_error(error),
+        }
+    }
+}
+
+impl From<PyErr> for GeoParquetAdmissionError {
+    fn from(error: PyErr) -> Self {
+        Python::attach(|py| {
+            if error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py) {
+                Self::Resource(crate::error::ResourceError::Allocation.into())
+            } else {
+                Self::Metadata(error.value(py).to_string())
+            }
+        })
+    }
+}
+
+impl From<crate::error::Error> for GeoParquetAdmissionError {
+    fn from(error: crate::error::Error) -> Self {
+        if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) {
+            Self::Resource(error)
+        } else {
+            Self::Metadata(error.to_string())
+        }
+    }
+}
 
 pub(crate) fn arrow_classification(
     pa: &Bound<'_, PyModule>,
@@ -630,28 +825,29 @@ pub(crate) fn py_parse_geoarrow_extension_metadata(
 pub(crate) fn py_parse_geoparquet_column_frame(
     metadata: &Bound<'_, PyAny>,
     column_name: &str,
-) -> PyResult<(Option<String>, Option<f64>)> {
-    let value = crate::py_to_json_value(metadata).map_err(|error| {
-        Python::attach(|py| {
-            let message = error.value(py).to_string();
-            // Non-finite numbers (epoch) surface as "JSON number must be finite".
-            if message.contains("finite") {
-                geoparquet_column_error(column_name, "epoch must be finite")
-            } else {
-                geoparquet_column_error(column_name, message)
-            }
-        })
+) -> PyResult<GeoParquetColumnFrame> {
+    let value = crate::py::support::py_to_json_value_classified(metadata).map_err(|error| {
+        match error {
+            crate::py::support::JsonValueError::NonFinite => GeoParquetAdmissionError::Metadata(
+                format!("invalid GeoParquet column '{column_name}': epoch must be finite"),
+            ),
+            crate::py::support::JsonValueError::Python(error) => {
+                GeoParquetAdmissionError::from(error)
+            },
+        }
+        .into_py_err()
     })?;
-    parse_geoparquet_column_frame_value(&value, column_name)
+    parse_geoparquet_column_frame_value_typed(&value, column_name)
+        .map_err(GeoParquetAdmissionError::into_py_err)
 }
 
 /// Admit GeoParquet geometry storage against a declared encoding.
 ///
 /// Dictionary-wrapped WKB is accepted. ExtensionType and Field metadata are
 /// reconciled together (name + frame) so raw-field frame metadata is never
-/// discarded. Returns ``(has_extension, crs, epoch)`` — when
-/// ``has_extension`` is true the frame came from reconciled extension
-/// metadata (possibly both-None for empty metadata).
+/// discarded. Returns one immutable ``_GeoParquetPhysicalLayout`` record whose
+/// fields are consumed by decoding without re-inspecting the materialized
+/// value.
 #[pyfunction]
 #[pyo3(
     name = "_admit_geoparquet_geometry_storage",
@@ -663,31 +859,43 @@ pub(crate) fn py_admit_geoparquet_geometry_storage(
     encoding: &str,
     column_name: &str,
     field: Option<&Bound<'_, PyAny>>,
-) -> PyResult<(bool, Option<String>, Option<f64>)> {
+) -> PyResult<GeoParquetPhysicalLayout> {
     admit_geoparquet_geometry_storage(py, arrow_type, encoding, column_name, field)
+        .map_err(GeoParquetAdmissionError::into_py_err)
 }
 
 fn geoparquet_meta_error(detail: impl std::fmt::Display) -> PyErr {
-    crate::py::errors::parse_error(
+    let error = crate::py::errors::parse_error(
         format!("malformed GeoParquet geo metadata: {detail}"),
         crate::error::ParseFormat::GeoParquet,
-    )
+    );
+    Python::attach(|py| {
+        let _ = error.value(py).setattr("category", "metadata");
+    });
+    error
 }
 
-fn geoparquet_column_error(column_name: &str, detail: impl std::fmt::Display) -> PyErr {
-    crate::py::errors::parse_error(
-        format!(
-            "malformed GeoParquet geo metadata: invalid GeoParquet column '{column_name}': {detail}"
-        ),
-        crate::error::ParseFormat::GeoParquet,
-    )
+fn geoparquet_layout_error(detail: impl std::fmt::Display) -> PyErr {
+    let error = GeometryError::new_err(detail.to_string());
+    Python::attach(|py| {
+        let _ = error.value(py).setattr("category", "layout");
+    });
+    error
+}
+
+fn geoparquet_resource_error(error: crate::error::Error) -> PyErr {
+    let error: PyErr = error.into();
+    Python::attach(|py| {
+        let _ = error.value(py).setattr("category", "resource");
+    });
+    error
 }
 
 /// GeoParquet field/storage admission: declared encoding vs physical type.
 ///
-/// Returns ``(has_extension, crs, epoch)``. When no extension is present
-/// (plain binary WKB or untyped native list storage whose depth matches the
-/// declaration) the frame is ``(false, None, None)``.
+/// The record's embedded frame is absent when no extension is present (plain
+/// binary WKB or untyped native list storage whose depth matches the
+/// declaration).
 ///
 /// Extension sources are collected **before** physical unwrap, from (1) the
 /// column/array type, (2) the schema field's type (ExtensionType after
@@ -703,9 +911,9 @@ fn admit_geoparquet_geometry_storage(
     encoding: &str,
     column_name: &str,
     field: Option<&Bound<'_, PyAny>>,
-) -> PyResult<(bool, Option<String>, Option<f64>)> {
+) -> Result<GeoParquetPhysicalLayout, GeoParquetAdmissionError> {
     let Some(declared) = GeometryEncoding::from_geoparquet_encoding(encoding) else {
-        return Err(geoparquet_meta_error(format!(
+        return Err(GeoParquetAdmissionError::Metadata(format!(
             "unsupported GeoParquet geometry encoding: {encoding:?}"
         )));
     };
@@ -713,14 +921,15 @@ fn admit_geoparquet_geometry_storage(
     // Extension name/metadata decode errors (e.g. non-UTF-8) and source
     // conflicts surface as GeoParquet metadata — one boundary class for the
     // reader (Python previously used `_metadata_error` / format=geoparquet).
-    let as_geoparquet =
-        |error: PyErr| Python::attach(|py| geoparquet_meta_error(error.value(py).to_string()));
+    let as_geoparquet = GeoParquetAdmissionError::from;
 
     // Frame sources before any physical peel (see module comment above).
     let column_type_source = type_extension_source(arrow_type).map_err(as_geoparquet)?;
     let (field_type_source, field_meta_source) = match field {
         Some(field) => {
-            let field_type = field.getattr("type")?;
+            let field_type = field
+                .getattr("type")
+                .map_err(GeoParquetAdmissionError::from)?;
             (
                 type_extension_source(&field_type).map_err(as_geoparquet)?,
                 field_extension_source(field).map_err(as_geoparquet)?,
@@ -735,39 +944,63 @@ fn admit_geoparquet_geometry_storage(
         reconcile_extension_sources(reconciled, field_meta_source).map_err(as_geoparquet)?;
 
     // Physical storage: extension wrapper first, then dictionary encoding.
-    let storage_type = unwrap_extension_then_dictionary(pa, arrow_type)?;
+    let storage_type = unwrap_extension_then_dictionary(pa, arrow_type)
+        .map_err(GeoParquetAdmissionError::layout_from_py)?;
 
     match declared {
         GeometryEncoding::Wkb => {
-            let is_binary = arrow_type_is_binary_family(pa, &storage_type)?;
+            let is_binary = arrow_type_is_binary_family(pa, &storage_type)
+                .map_err(GeoParquetAdmissionError::layout_from_py)?;
+            let is_large_binary = arrow_type_is_large_binary(pa, &storage_type)
+                .map_err(GeoParquetAdmissionError::layout_from_py)?;
+            let is_binary_view = arrow_type_is_binary_view(pa, &storage_type)
+                .map_err(GeoParquetAdmissionError::layout_from_py)?;
             if let Some((extension_name, metadata)) = reconciled {
-                if extension_name != "geoarrow.wkb" || !is_binary {
-                    return Err(geoparquet_meta_error(format!(
+                if !is_binary {
+                    return Err(GeoParquetAdmissionError::Layout(format!(
                         "column '{column_name}' encoding 'WKB' requires Binary, \
                          LargeBinary, BinaryView, or geoarrow.wkb storage \
                          (dictionary-encoded binary is allowed)"
                     )));
                 }
+                if extension_name != "geoarrow.wkb" {
+                    return Err(GeoParquetAdmissionError::Metadata(format!(
+                        "column '{column_name}' encoding 'WKB' conflicts with \
+                         embedded Arrow extension '{extension_name}'"
+                    )));
+                }
                 // Frame parse failures stay on the GeoParquet boundary class.
                 let (crs, epoch) =
                     parse_geoarrow_extension_metadata(&metadata).map_err(as_geoparquet)?;
-                return Ok((true, crs, epoch));
+                return Ok(GeoParquetPhysicalLayout::wkb(
+                    true,
+                    crs,
+                    epoch,
+                    wkb_offset_width(is_large_binary, is_binary_view),
+                ));
             }
             if !is_binary {
-                return Err(geoparquet_meta_error(format!(
+                return Err(GeoParquetAdmissionError::Layout(format!(
                     "column '{column_name}' encoding 'WKB' requires Binary, \
                      LargeBinary, BinaryView, or geoarrow.wkb storage \
                      (dictionary-encoded binary is allowed)"
                 )));
             }
-            Ok((false, None, None))
+            Ok(GeoParquetPhysicalLayout::wkb(
+                false,
+                None,
+                None,
+                wkb_offset_width(is_large_binary, is_binary_view),
+            ))
         },
         native => {
             let expected_name = native.extension_name();
+            let physical = geoarrow_native_layout(pa, &storage_type)
+                .map_err(GeoParquetAdmissionError::layout_from_py)?;
             if let Some((extension_name, metadata)) = reconciled {
                 if extension_name != expected_name {
                     // Match Python !r quoting so pinned tests keep working.
-                    return Err(geoparquet_meta_error(format!(
+                    return Err(GeoParquetAdmissionError::Metadata(format!(
                         "native GeoParquet encoding '{encoding}' conflicts with \
                          embedded Arrow extension '{extension_name}'"
                     )));
@@ -775,19 +1008,34 @@ fn admit_geoparquet_geometry_storage(
                 // Frame parse failures stay on the GeoParquet boundary class.
                 let (crs, epoch) =
                     parse_geoarrow_extension_metadata(&metadata).map_err(as_geoparquet)?;
-                return Ok((true, crs, epoch));
+                let Some(physical) = physical else {
+                    return Err(GeoParquetAdmissionError::Layout(format!(
+                        "native GeoParquet encoding '{encoding}' does not match storage layout"
+                    )));
+                };
+                return Ok(GeoParquetPhysicalLayout::native(
+                    native, true, crs, epoch, physical.0, physical.1, physical.2,
+                ));
             }
             // No extension: declared encoding + exact list depth + xy struct.
             let expected_depth = native.list_depth().expect("native encoding has list depth");
-            let depth = geoarrow_list_depth(pa, &storage_type)?;
-            if depth != Some(expected_depth) {
-                return Err(geoparquet_meta_error(format!(
+            let Some(physical) = physical else {
+                return Err(GeoParquetAdmissionError::Layout(format!(
+                    "native GeoParquet encoding '{encoding}' does not match \
+                     storage layout (expected list depth {expected_depth})"
+                )));
+            };
+            if physical.0 != expected_depth {
+                return Err(GeoParquetAdmissionError::Layout(format!(
                     "native GeoParquet encoding '{encoding}' does not match \
                      storage layout (expected list depth {expected_depth}, \
-                     got {depth:?})"
+                     got {:?})",
+                    Some(physical.0)
                 )));
             }
-            Ok((false, None, None))
+            Ok(GeoParquetPhysicalLayout::native(
+                native, false, None, None, physical.0, physical.1, physical.2,
+            ))
         },
     }
 }
@@ -840,21 +1088,18 @@ fn unwrap_dictionary_type<'py>(
     Ok(current)
 }
 
-/// List nesting above a coordinate struct with x/y, or None when not geoarrow-like.
-fn geoarrow_list_depth(
+/// Native GeoArrow physical facts: list nesting and terminal ordinate fields.
+///
+/// This is the only GeoParquet physical-shape walk.  The returned tuple is
+/// carried in [`GeoParquetPhysicalLayout`] instead of being recomputed during
+/// rewrapping or decoded-content validation.
+fn geoarrow_native_layout(
     pa: &Bound<'_, PyModule>,
     arrow_type: &Bound<'_, PyAny>,
-) -> PyResult<Option<u8>> {
+) -> PyResult<Option<(u8, bool, bool)>> {
     let types = pa.getattr("types")?;
-    let storage = match arrow_type.getattr("storage_type") {
-        Ok(storage_type) => storage_type,
-        Err(err) if err.is_instance_of::<pyo3::exceptions::PyAttributeError>(arrow_type.py()) => {
-            arrow_type.clone()
-        },
-        Err(err) => return Err(err),
-    };
     let mut depth: u8 = 0;
-    let mut current = storage;
+    let mut current = arrow_type.clone();
     loop {
         let is_list = types
             .call_method1("is_list", (&current,))?
@@ -877,8 +1122,26 @@ fn geoarrow_list_depth(
     }
     // Terminal coordinate type: separated struct or interleaved FixedSizeList.
     if arrow_type_is_fixed_size_list(pa, &current)? {
+        ensure_pyarrow_interleaved_coords(pa, &current)?;
         let list_size: i32 = current.getattr("list_size")?.extract()?;
-        return Ok((2..=4).contains(&list_size).then_some(depth));
+        let has_z;
+        let has_m;
+        if list_size == 2 {
+            has_z = false;
+            has_m = false;
+        } else if list_size == 4 {
+            has_z = true;
+            has_m = true;
+        } else {
+            let name = current
+                .getattr("value_field")
+                .ok()
+                .and_then(|field| field.getattr("name").ok())
+                .and_then(|name| name.extract::<String>().ok());
+            has_z = name.as_deref() != Some("xym");
+            has_m = name.as_deref() == Some("xym");
+        }
+        return Ok(Some((depth, has_z, has_m)));
     }
     let is_struct = if types.hasattr("is_struct")? {
         types
@@ -904,24 +1167,90 @@ fn geoarrow_list_depth(
         }
         names
     };
-    if names.iter().any(|n| n == "x") && names.iter().any(|n| n == "y") {
-        Ok(Some(depth))
-    } else {
-        Ok(None)
+    let fields = current.getattr("fields")?;
+    if fields.len()? != names.len() {
+        return Ok(None);
     }
+    let mut ordinate_fields = crate::try_vec_with_capacity(names.len())?;
+    for (index, name) in names.iter().enumerate() {
+        let field_type = fields.get_item(index)?.getattr("type")?;
+        let is_float64 = pyarrow_type_is_float64(&types, &field_type)?;
+        crate::try_push(&mut ordinate_fields, (name.as_str(), is_float64))?;
+    }
+    let axes = crate::py::geoarrow::classify_geoarrow_ordinates(ordinate_fields).ok();
+    Ok(axes.map(|axes| (depth, axes.has_z, axes.has_m)))
 }
 
 /// GeoParquet column-level CRS/epoch/edges boundary (frame only — encoding,
 /// geometry_types, orientation, and bbox stay in the Python reader).
-pub(crate) fn parse_geoparquet_column_frame_value(
+#[pyclass(
+    name = "_GeoParquetColumnFrame",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    skip_from_py_object
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GeoParquetColumnFrame {
+    pub(crate) crs: Option<String>,
+    pub(crate) epoch: Option<f64>,
+    /// Retain key presence independently from its decoded value.  In
+    /// particular, an omitted epoch and an explicit JSON null are not the same
+    /// declaration even though both decode to `None`.
+    pub(crate) crs_present: bool,
+    pub(crate) epoch_present: bool,
+}
+
+#[pymethods]
+impl GeoParquetColumnFrame {
+    #[getter]
+    fn crs(&self) -> Option<String> {
+        self.crs.clone()
+    }
+
+    #[getter]
+    fn epoch(&self) -> Option<f64> {
+        self.epoch
+    }
+
+    #[getter]
+    fn crs_present(&self) -> bool {
+        self.crs_present
+    }
+
+    #[getter]
+    fn epoch_present(&self) -> bool {
+        self.epoch_present
+    }
+
+    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let values = (self.crs.clone(), self.epoch).into_pyobject(py)?;
+        values.call_method0("__iter__").map(Bound::unbind)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let Ok(other) = other.cast::<PyTuple>() else {
+            return Ok(false);
+        };
+        if other.len() != 2 {
+            return Ok(false);
+        }
+        Ok(other.get_item(0)?.extract::<Option<String>>()? == self.crs
+            && other.get_item(1)?.extract::<Option<f64>>()? == self.epoch)
+    }
+}
+
+fn parse_geoparquet_column_frame_value_typed(
     value: &Value,
     column_name: &str,
-) -> PyResult<(Option<String>, Option<f64>)> {
+) -> Result<GeoParquetColumnFrame, GeoParquetAdmissionError> {
+    let column_error = |detail: String| {
+        GeoParquetAdmissionError::Metadata(format!(
+            "invalid GeoParquet column '{column_name}': {detail}"
+        ))
+    };
     let Value::Object(object) = value else {
-        return Err(geoparquet_column_error(
-            column_name,
-            "metadata must be a JSON object",
-        ));
+        return Err(column_error("metadata must be a JSON object".to_owned()));
     };
 
     // edges: planar only; spherical is real unsupported metadata; other tokens unknown.
@@ -929,29 +1258,25 @@ pub(crate) fn parse_geoparquet_column_frame_value(
         None => {},
         Some(Value::String(value)) if value == "planar" => {},
         Some(Value::String(value)) if value == "spherical" => {
-            return Err(geoparquet_column_error(
-                column_name,
-                format!("edges '{value}' are unsupported; only planar edges are accepted"),
-            ));
+            return Err(column_error(format!(
+                "edges '{value}' are unsupported; only planar edges are accepted"
+            )));
         },
         Some(Value::String(value)) => {
-            return Err(geoparquet_column_error(
-                column_name,
-                format!("edges has an unknown value '{value}'"),
-            ));
+            return Err(column_error(format!(
+                "edges has an unknown value '{value}'"
+            )));
         },
         Some(value) => {
-            return Err(geoparquet_column_error(
-                column_name,
-                format!("edges has an unknown value {value}"),
-            ));
+            return Err(column_error(format!("edges has an unknown value {value}")));
         },
     }
 
     // CRS: absent → OGC:CRS84; present null → CRS-free; present object → PROJJSON;
     // present string is rejected (GeoParquet 1.x requires PROJJSON or null).
+    let crs_present = object.contains_key("crs");
     let crs = match object.get("crs") {
-        None => Some(normalize_geoparquet_crs("OGC:CRS84", column_name)?),
+        None => Some(normalize_geoparquet_crs_typed("OGC:CRS84", column_name)?),
         Some(Value::Null) => None,
         Some(crs @ Value::Object(projjson)) => {
             let identity = projjson.get("id").and_then(|id| {
@@ -964,46 +1289,54 @@ pub(crate) fn parse_geoparquet_column_frame_value(
                 Some(format!("{authority}:{code}"))
             });
             let reference = identity.unwrap_or_else(|| crs.to_string());
-            Some(normalize_geoparquet_crs(&reference, column_name)?)
+            Some(normalize_geoparquet_crs_typed(&reference, column_name)?)
         },
         Some(_) => {
-            return Err(geoparquet_column_error(
-                column_name,
-                "crs must be a PROJJSON object or null",
+            return Err(column_error(
+                "crs must be a PROJJSON object or null".to_owned(),
             ));
         },
     };
 
+    let epoch_present = object.contains_key("epoch");
     let epoch = match object.get("epoch") {
         None | Some(Value::Null) => None,
         Some(Value::Number(number)) => Some(
             number
                 .as_f64()
-                .ok_or_else(|| geoparquet_column_error(column_name, "epoch must be finite"))?,
+                .ok_or_else(|| column_error("epoch must be finite".to_owned()))?,
         ),
         Some(_) => {
-            return Err(geoparquet_column_error(
-                column_name,
-                "epoch must be a number",
-            ));
+            return Err(column_error("epoch must be a number".to_owned()));
         },
     };
     let epoch = match epoch {
         None => None,
         Some(value) if value.is_finite() => Some(if value == 0.0 { 0.0 } else { value }),
         Some(_) => {
-            return Err(geoparquet_column_error(column_name, "epoch must be finite"));
+            return Err(column_error("epoch must be finite".to_owned()));
         },
     };
     if epoch.is_some() && crs.is_none() {
-        return Err(geoparquet_column_error(column_name, "epoch requires crs"));
+        return Err(column_error("epoch requires crs".to_owned()));
     }
-    Ok((crs, epoch))
+    Ok(GeoParquetColumnFrame {
+        crs,
+        epoch,
+        crs_present,
+        epoch_present,
+    })
 }
 
-fn normalize_geoparquet_crs(reference: &str, column_name: &str) -> PyResult<String> {
-    crate::crs::normalize(reference)
-        .map_err(|error| geoparquet_column_error(column_name, format!("{error}")))
+fn normalize_geoparquet_crs_typed(
+    reference: &str,
+    column_name: &str,
+) -> Result<String, GeoParquetAdmissionError> {
+    crate::crs::normalize(reference).map_err(|error| {
+        GeoParquetAdmissionError::Metadata(format!(
+            "invalid GeoParquet column '{column_name}': {error}"
+        ))
+    })
 }
 
 pub(crate) fn arrow_type_is_large_binary(
@@ -1068,5 +1401,67 @@ const fn wkb_offset_width(is_large_binary: bool, is_binary_view: bool) -> WkbOff
         WkbOffsetWidth::Int64
     } else {
         WkbOffsetWidth::Int32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::exceptions::PyMemoryError;
+    use pyo3::types::PyAnyMethods as _;
+
+    use super::GeoParquetAdmissionError;
+
+    #[test]
+    fn geoparquet_error_categories_keep_python_projections_distinct() {
+        crate::test_support::initialize_python();
+        pyo3::Python::attach(|py| {
+            let layout = GeoParquetAdmissionError::Layout("wrong storage".to_owned()).into_py_err();
+            assert!(layout.is_instance_of::<crate::py::errors::GeometryError>(py));
+            assert_eq!(
+                layout
+                    .value(py)
+                    .getattr("category")
+                    .expect("layout category")
+                    .extract::<&str>()
+                    .expect("layout category string"),
+                "layout"
+            );
+
+            let metadata =
+                GeoParquetAdmissionError::Metadata("bad declaration".to_owned()).into_py_err();
+            assert!(metadata.is_instance_of::<crate::py::errors::ParseError>(py));
+            assert_eq!(
+                metadata
+                    .value(py)
+                    .getattr("category")
+                    .expect("metadata category")
+                    .extract::<&str>()
+                    .expect("metadata category string"),
+                "metadata"
+            );
+            assert_eq!(
+                metadata
+                    .value(py)
+                    .getattr("format")
+                    .expect("metadata format")
+                    .extract::<&str>()
+                    .expect("metadata format string"),
+                "geoparquet"
+            );
+
+            let resource =
+                GeoParquetAdmissionError::Resource(crate::error::ResourceError::Allocation.into())
+                    .into_py_err();
+            assert!(resource.is_instance_of::<PyMemoryError>(py));
+            assert_eq!(
+                resource
+                    .value(py)
+                    .getattr("category")
+                    .expect("resource category")
+                    .extract::<&str>()
+                    .expect("resource category string"),
+                "resource"
+            );
+        });
     }
 }
