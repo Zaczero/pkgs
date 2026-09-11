@@ -21,7 +21,7 @@ use crate::geometry::{
 
 const MAX_REFINEMENT_DEPTH: u8 = 48;
 const GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT: usize = 32;
-const MAX_LOCAL_SITES: usize = 24;
+const PRELOCAL_SITE_LIMIT: usize = 24;
 
 #[derive(Clone, Copy, Debug)]
 struct FilledCell {
@@ -472,11 +472,12 @@ impl FilledSearch<'_> {
             Site::Point(point) => point_to_cell_distance(point, cell, origin) <= cell.upper,
             Site::Line(line) => line_to_cell_distance(line, cell, origin) <= cell.upper,
         });
-        if self.target.features.len() > GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT
-            && sites.len() > MAX_LOCAL_SITES
+        if cell.depth < 3
+            && self.target.features.len() > GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT
+            && sites.len() > PRELOCAL_SITE_LIMIT
         {
             sites.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
-            sites.truncate(MAX_LOCAL_SITES);
+            sites.truncate(PRELOCAL_SITE_LIMIT);
         }
         let sites: Vec<Site> = sites.into_iter().map(|(_, site)| site).collect();
 
@@ -1239,5 +1240,32 @@ mod tests {
         search.solve_local(cell).unwrap();
         assert!(search.best > 2.0, "local best={}", search.best);
         assert!(search.best < 4.0, "local best={}", search.best);
+    }
+
+    #[test]
+    fn large_local_neighborhood_finishes_with_all_final_supports() {
+        let source = polygon(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            &[],
+        );
+        let mut target_parts = Vec::new();
+        for index in 0..9 {
+            let start = index as f64 * 10.0 / 9.0;
+            let end = (index + 1) as f64 * 10.0 / 9.0;
+            target_parts.extend([
+                line((start, 0.0), (end, 0.0)),
+                line((10.0, start), (10.0, end)),
+                line((end, 10.0), (start, 10.0)),
+                line((0.0, end), (0.0, start)),
+            ]);
+        }
+        let target = Shape::geometry_collection(target_parts).unwrap();
+        assert_eq!(filled_hausdorff_distance(&source, &target).unwrap(), 5.0);
     }
 }
