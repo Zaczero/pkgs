@@ -88,6 +88,14 @@ impl GeoParquetPhysicalLayout {
 
 #[pymethods]
 impl GeoParquetPhysicalLayout {
+    /// Canonical GeoParquet encoding label admitted for the field.
+    ///
+    /// Returns
+    /// -------
+    /// str
+    ///     ``'WKB'`` for binary storage, or the lower-case native kind label:
+    ///     ``'point'``, ``'multipoint'``, ``'linestring'``,
+    ///     ``'multilinestring'``, ``'polygon'``, or ``'multipolygon'``.
     #[getter]
     fn encoding(&self) -> &'static str {
         match self.encoding {
@@ -101,36 +109,86 @@ impl GeoParquetPhysicalLayout {
         }
     }
 
+    /// Whether the field carried reconciled GeoArrow extension metadata.
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     ``True`` when extension metadata was found on the Arrow type or
+    ///     field and reconciled; ``False`` for plain or untyped storage.
     #[getter]
     fn has_extension(&self) -> bool {
         self.has_extension
     }
 
+    /// Normalized CRS from the field's own GeoArrow extension metadata.
+    ///
+    /// Returns
+    /// -------
+    /// str or None
+    ///     The embedded CRS label when the extension declares one; ``None``
+    ///     when the extension metadata omits a CRS. This is not the caller's
+    ///     GeoParquet column declaration.
     #[getter]
     fn embedded_crs(&self) -> Option<String> {
         self.embedded_crs.clone()
     }
 
+    /// Coordinate epoch from the field's own GeoArrow extension metadata.
+    ///
+    /// Returns
+    /// -------
+    /// float or None
+    ///     A finite decimal year when embedded metadata declares an epoch;
+    ///     ``None`` when it omits one. This is not the caller's declaration.
     #[getter]
     fn embedded_epoch(&self) -> Option<f64> {
         self.embedded_epoch
     }
 
+    /// Native GeoArrow list levels above coordinate storage.
+    ///
+    /// Returns
+    /// -------
+    /// int or None
+    ///     The number of nested list levels above the coordinate struct or
+    ///     interleaved coordinate list; ``None`` for WKB storage.
     #[getter]
     fn list_depth(&self) -> Option<u8> {
         self.list_depth
     }
 
+    /// Whether admitted native coordinate storage contains a Z ordinate field.
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     ``True`` when the terminal native coordinate storage has a Z field;
+    ///     ``False`` for XY storage and WKB, whose dimensions live in payloads.
     #[getter]
     fn has_z(&self) -> bool {
         self.has_z
     }
 
+    /// Whether admitted native coordinate storage contains an M ordinate field.
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     ``True`` when the terminal native coordinate storage has an M field;
+    ///     ``False`` for XY/Z storage and WKB, whose dimensions live in payloads.
     #[getter]
     fn has_m(&self) -> bool {
         self.has_m
     }
 
+    /// WKB binary offset representation selected for admitted storage.
+    ///
+    /// Returns
+    /// -------
+    /// str
+    ///     ``'int32'`` for ``Binary``, ``'int64'`` for ``LargeBinary``, or
+    ///     ``'view'`` for ``BinaryView``. Native encodings report ``'int32'``.
     #[getter]
     fn wkb_offset_width(&self) -> &'static str {
         match self.wkb_offset_width {
@@ -1203,21 +1261,49 @@ pub(crate) struct GeoParquetColumnFrame {
 
 #[pymethods]
 impl GeoParquetColumnFrame {
+    /// Normalized CRS declared by GeoParquet column metadata.
+    ///
+    /// Returns
+    /// -------
+    /// str or None
+    ///     ``'OGC:CRS84'`` when the ``crs`` key is absent, ``None`` for an
+    ///     explicit JSON null, or the normalized CRS from a PROJJSON object.
     #[getter]
     fn crs(&self) -> Option<String> {
         self.crs.clone()
     }
 
+    /// Coordinate epoch declared by GeoParquet column metadata.
+    ///
+    /// Returns
+    /// -------
+    /// float or None
+    ///     A finite decimal year when ``epoch`` is numeric; ``None`` when the
+    ///     key is absent or explicitly null. A non-null epoch requires a CRS.
     #[getter]
     fn epoch(&self) -> Option<f64> {
         self.epoch
     }
 
+    /// Whether GeoParquet column metadata contained a ``crs`` key.
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     ``False`` means the key was absent and the CRS was defaulted to
+    ///     ``'OGC:CRS84'``; ``True`` includes an explicit JSON null.
     #[getter]
     fn crs_present(&self) -> bool {
         self.crs_present
     }
 
+    /// Whether GeoParquet column metadata contained an ``epoch`` key.
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     ``False`` means the epoch was omitted; ``True`` includes an
+    ///     explicit JSON null, which is distinct from omission.
     #[getter]
     fn epoch_present(&self) -> bool {
         self.epoch_present

@@ -618,6 +618,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // raised errors set real values per instance (`with_attrs`); hand-built
     // instances read None instead of AttributeError.
     let geometry = py.get_type::<GeometryError>();
+    geometry.setattr("category", py.None())?;
     geometry.setattr("param", py.None())?;
     geometry.setattr("value", py.None())?;
     geometry.setattr("operation", py.None())?;

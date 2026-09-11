@@ -17,6 +17,7 @@ from gometry._lib import (
     GeometryArray,
     GeometryError,
     ParseError,
+    _GeoParquetPhysicalLayout,
 )
 from gometry._optional import missing_optional_dependency
 from gometry._types import PyArrowTable, mapping_as_dict
@@ -580,7 +581,8 @@ def _validate_column_metadata(
         for key in ('crs', 'epoch', 'edges')
         if key in column_metadata
     }
-    crs, epoch = _parse_geoparquet_column_frame(frame_payload, column_name)
+    frame = _parse_geoparquet_column_frame(frame_payload, column_name)
+    crs, epoch = frame.crs, frame.epoch
     bbox = column_metadata.get('bbox')
     if bbox is not None:
         _validate_bbox(
@@ -620,7 +622,7 @@ def _admit_geometry_storage(
     encoding: str,
     column_name: str,
     field: Any | None = None,
-) -> Any:
+) -> _GeoParquetPhysicalLayout:
     """Return the one native physical-layout admission record."""
     from gometry._lib import _admit_geoparquet_geometry_storage
 
@@ -635,7 +637,7 @@ def _native_geoarrow_column(
     epoch: float | None,
     field: Any | None = None,
     column_name: str = 'geometry',
-    layout: Any | None = None,
+    layout: _GeoParquetPhysicalLayout | None = None,
     declared_epoch_present: bool = True,
 ) -> Any:
     from gometry._arrow import _extension_type_from_storage
@@ -697,7 +699,7 @@ def _decode_geometry_column(
     crs: str | None,
     epoch: float | None,
     field: Any | None = None,
-    layout: Any | None = None,
+    layout: _GeoParquetPhysicalLayout | None = None,
 ) -> GeometryArray[Geometry | None]:
     if encoding == 'geometrycollection':
         raise _metadata_error(
@@ -836,7 +838,7 @@ def _validate_declared_geometry_columns(
     schema: Any,
     metadata: Mapping[str, Any],
     *,
-    admitted_layouts: dict[str, Any] | None = None,
+    admitted_layouts: dict[str, _GeoParquetPhysicalLayout] | None = None,
 ) -> frozenset[str]:
     """Validate every geo.columns entry exists once and matches physical encoding.
 
@@ -919,7 +921,7 @@ def _validate_attribute_columns(
     metadata: Mapping[str, Any],
     columns: Iterable[str] | None,
     *,
-    admitted_layouts: dict[str, Any] | None = None,
+    admitted_layouts: dict[str, _GeoParquetPhysicalLayout] | None = None,
 ) -> list[str]:
     pa = _pyarrow()
     geometry_columns = _validate_declared_geometry_columns(
@@ -1075,7 +1077,7 @@ def from_geoparquet(
     )
     # Schema is known: validate columns online (bounded by finite attribute set).
     # Selected geometry is already a member of the declared geometry columns.
-    admitted_layouts: dict[str, Any] = {}
+    admitted_layouts: dict[str, _GeoParquetPhysicalLayout] = {}
     attribute_columns = _validate_attribute_columns(
         schema,
         geo_metadata,

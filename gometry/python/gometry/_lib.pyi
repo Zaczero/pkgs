@@ -410,6 +410,8 @@ class AccuracyWarning(UserWarning):
 class GeometryError(ValueError):
     """Base class for every error gometry raises about your data or parameters."""
 
+    category: Literal['layout', 'metadata'] | None
+    """GeoParquet admission category, or ``None`` for other geometry errors."""
     param: str | None
     """The offending parameter's name, for value-lane errors (else ``None``)."""
     value: float | None
@@ -16144,9 +16146,6 @@ def hausdorff_distance(
     projected CRS, coordinate units when CRS-free. Geographic Hausdorff
     distance supports point and linework operands only; filled polygon
     interiors require ``unit='planar'`` or a projected CRS.
-    Polygon operands are their filled closed regions, including interiors and
-    excluding holes. Mixed-dimensional collections use the union of their
-    members; zero-area polygon rings contribute their closed boundary only.
 
     Parameters
     ----------
@@ -16199,10 +16198,6 @@ def hausdorff_distance(
     >>> b = gm.LineString([(0, 1), (10, 3)])
     >>> gm.hausdorff_distance(a, b)
     3.0
-    >>> square = gm.box(0, 0, 10, 10)
-    >>> boundary = gm.LineString([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)])
-    >>> gm.hausdorff_distance(square, boundary)
-    5.0
     """
 
 @overload
@@ -17970,49 +17965,157 @@ def _parse_geoarrow_extension_metadata(
 ) -> tuple[str | None, float | None]:
     """Private Python entry: parse GeoArrow extension metadata bytes → (crs, epoch)."""
 
+@final
 class _GeoParquetColumnFrame:
-    """Native GeoParquet CRS/epoch declaration, retaining key presence."""
+    """GeoParquet column-level CRS/epoch/edges boundary (frame only — encoding,
+    geometry_types, orientation, and bbox stay in the Python reader).
+    """
 
     @property
-    def crs(self) -> str | None: ...
+    def crs(self) -> str | None:
+        """Normalized CRS declared by GeoParquet column metadata.
+
+        Returns
+        -------
+        str or None
+            ``'OGC:CRS84'`` when the ``crs`` key is absent, ``None`` for an
+            explicit JSON null, or the normalized CRS from a PROJJSON object.
+        """
 
     @property
-    def epoch(self) -> float | None: ...
+    def epoch(self) -> float | None:
+        """Coordinate epoch declared by GeoParquet column metadata.
+
+        Returns
+        -------
+        float or None
+            A finite decimal year when ``epoch`` is numeric; ``None`` when the
+            key is absent or explicitly null. A non-null epoch requires a CRS.
+        """
 
     @property
-    def crs_present(self) -> bool: ...
+    def crs_present(self) -> bool:
+        """Whether GeoParquet column metadata contained a ``crs`` key.
+
+        Returns
+        -------
+        bool
+            ``False`` means the key was absent and the CRS was defaulted to
+            ``'OGC:CRS84'``; ``True`` includes an explicit JSON null.
+        """
 
     @property
-    def epoch_present(self) -> bool: ...
+    def epoch_present(self) -> bool:
+        """Whether GeoParquet column metadata contained an ``epoch`` key.
+
+        Returns
+        -------
+        bool
+            ``False`` means the epoch was omitted; ``True`` includes an
+            explicit JSON null, which is distinct from omission.
+        """
 
     def __iter__(self) -> Iterator[str | float | None]: ...
 
+@final
 class _GeoParquetPhysicalLayout:
-    """Native physical-layout facts admitted from one GeoParquet field."""
+    """One native admission result for a GeoParquet geometry column.
+
+    The record is produced from the file schema before any materialized column
+    is decoded.  Its encoding, physical nesting, ordinate fields, and embedded
+    frame are immutable facts carried through the Python adapter; decoding must
+    not infer them again from a post-read PyArrow value.
+    """
 
     @property
-    def encoding(self) -> str: ...
+    def encoding(self) -> str:
+        """Canonical GeoParquet encoding label admitted for the field.
+
+        Returns
+        -------
+        str
+            ``'WKB'`` for binary storage, or the lower-case native kind label:
+            ``'point'``, ``'multipoint'``, ``'linestring'``,
+            ``'multilinestring'``, ``'polygon'``, or ``'multipolygon'``.
+        """
 
     @property
-    def has_extension(self) -> bool: ...
+    def has_extension(self) -> bool:
+        """Whether the field carried reconciled GeoArrow extension metadata.
+
+        Returns
+        -------
+        bool
+            ``True`` when extension metadata was found on the Arrow type or
+            field and reconciled; ``False`` for plain or untyped storage.
+        """
 
     @property
-    def embedded_crs(self) -> str | None: ...
+    def embedded_crs(self) -> str | None:
+        """Normalized CRS from the field's own GeoArrow extension metadata.
+
+        Returns
+        -------
+        str or None
+            The embedded CRS label when the extension declares one; ``None``
+            when the extension metadata omits a CRS. This is not the caller's
+            GeoParquet column declaration.
+        """
 
     @property
-    def embedded_epoch(self) -> float | None: ...
+    def embedded_epoch(self) -> float | None:
+        """Coordinate epoch from the field's own GeoArrow extension metadata.
+
+        Returns
+        -------
+        float or None
+            A finite decimal year when embedded metadata declares an epoch;
+            ``None`` when it omits one. This is not the caller's declaration.
+        """
 
     @property
-    def list_depth(self) -> int | None: ...
+    def list_depth(self) -> int | None:
+        """Native GeoArrow list levels above coordinate storage.
+
+        Returns
+        -------
+        int or None
+            The number of nested list levels above the coordinate struct or
+            interleaved coordinate list; ``None`` for WKB storage.
+        """
 
     @property
-    def has_z(self) -> bool: ...
+    def has_z(self) -> bool:
+        """Whether admitted native coordinate storage contains a Z ordinate field.
+
+        Returns
+        -------
+        bool
+            ``True`` when the terminal native coordinate storage has a Z field;
+            ``False`` for XY storage and WKB, whose dimensions live in payloads.
+        """
 
     @property
-    def has_m(self) -> bool: ...
+    def has_m(self) -> bool:
+        """Whether admitted native coordinate storage contains an M ordinate field.
+
+        Returns
+        -------
+        bool
+            ``True`` when the terminal native coordinate storage has an M field;
+            ``False`` for XY/Z storage and WKB, whose dimensions live in payloads.
+        """
 
     @property
-    def wkb_offset_width(self) -> str: ...
+    def wkb_offset_width(self) -> str:
+        """WKB binary offset representation selected for admitted storage.
+
+        Returns
+        -------
+        str
+            ``'int32'`` for ``Binary``, ``'int64'`` for ``LargeBinary``, or
+            ``'view'`` for ``BinaryView``. Native encodings report ``'int32'``.
+        """
 
     def __iter__(self) -> Iterator[bool | str | float | None]: ...
 
@@ -18035,7 +18138,9 @@ def _admit_geoparquet_geometry_storage(
 
     Dictionary-wrapped WKB is accepted. ExtensionType and Field metadata are
     reconciled together (name + frame) so raw-field frame metadata is never
-    discarded. The result is one immutable physical-layout admission record.
+    discarded. Returns one immutable ``_GeoParquetPhysicalLayout`` record whose
+    fields are consumed by decoding without re-inspecting the materialized
+    value.
     """
 
 def _from_geoparquet_arrow(
