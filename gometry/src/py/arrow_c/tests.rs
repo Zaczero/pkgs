@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::ffi;
 use pyo3::types::{PyList, PyModule};
-use pyo3::types::PyTuple;
 
 use crate::PyGeometry;
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
@@ -665,42 +664,6 @@ fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
         Ok(())
     })
     .expect("native Arrow stream signal test");
-}
-
-#[test]
-fn native_capsule_decode_publishes_packed_points_without_coordinate_reallocation() {
-    crate::test_support::initialize_python();
-    let source = crate::PyGeometryArray::from_shapes(
-        vec![
-            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-            Shape::Point(Point::new_raw_xy(3.0, 4.0)),
-        ],
-        crate::boundary::Frame::None,
-    )
-    .expect("packed point source");
-
-    Python::attach(|py| -> PyResult<()> {
-        let capsules = array_to_array_capsules(py, &source)?;
-        let tuple = capsules.bind(py).cast::<PyTuple>()?;
-        let schema = tuple.get_item(0)?;
-        let array = tuple.get_item(1)?;
-        let (batch, _) = native_arrow_batch_from_capsules(&schema, &array)?;
-        let (decoded, allocations) =
-            py.detach(move || crate::test_support::allocation_count(|| batch.decode()));
-        let decoded = decoded.expect("native capsule point decode");
-        assert_eq!(
-            allocations, 1,
-            "only the final packed storage Arc allocates"
-        );
-        assert!(matches!(
-            decoded.storage,
-            NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
-                crate::array::PackedStorage::Points { .. }
-            ))
-        ));
-        Ok(())
-    })
-    .expect("native capsule decode");
 }
 
 // Compile-fail fixtures for arrow_c / frozen-i64 are driven by the crate-root

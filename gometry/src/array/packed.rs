@@ -817,28 +817,7 @@ impl PyGeometryArray {
         layout: StorageLayout,
         source_rows: impl IntoIterator<Item = usize>,
     ) -> crate::error::Result<Self> {
-        // A selection of canonical nullable line/polygon storage already has
-        // present-only coordinates and one logical CSR window per source row.
-        // Keep that window as a view so Arrow can retain the source offset;
-        // re-compacting it would copy the same coordinate payload solely to
-        // rebase a contiguous selection.
-        let rows = if source.is_compact_nullable()
-            && matches!(layout, StorageLayout::LogicalRows)
-            && let Some(mask) = missing.as_ref()
-            && storage.len() == mask.len()
-            && matches!(
-                storage.as_ref(),
-                GeometryArrayStorage::Packed(
-                    PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }
-                )
-            ) {
-            ArrayRows::CompactNullable {
-                storage,
-                missing: mask.clone(),
-            }
-        } else {
-            Self::adopt_rows(storage, missing, layout)?
-        };
+        let rows = Self::adopt_rows(storage, missing, layout)?;
         let products = if rows.missing().is_some_and(|mask| mask.present_count() == 0) {
             prepared::RowProducts::fresh(rows.len())?
         } else {
