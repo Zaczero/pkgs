@@ -121,11 +121,18 @@ pub(super) fn delaunay_complex(
             )?);
         }
     }
-    let face_component = (0..triangles.len())
-        .map(|face| component_of_root[complex_root(&mut parents, face)])
-        .collect();
+    // The union-find storage has the same length and lifetime as the final
+    // face-component map. Compress every path before reusing it: once each
+    // parent points directly at a root, replacing it with the component id
+    // cannot change a later root lookup.
+    for face in 0..triangles.len() {
+        parents[face] = complex_root(&mut parents, face);
+    }
+    for face in 0..triangles.len() {
+        parents[face] = component_of_root[parents[face]];
+    }
     Ok(DelaunayComplex {
-        face_component,
+        face_component: parents,
         centers,
     })
 }
