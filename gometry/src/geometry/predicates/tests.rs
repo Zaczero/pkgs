@@ -411,4 +411,15 @@ mod convex_tests {
             assert_eq!(other.intersects(&base).unwrap(), expected);
         }
     }
+
+    #[test]
+    fn linework_repair_deduplicates_retraced_edges_within_one_ring() {
+        let retraced =
+            crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,2 0,2 2,0 2,0 0))").unwrap();
+        let repaired = retraced.repair(RepairMethod::Linework, false).unwrap();
+        assert_eq!(
+            crate::io::to_wkt(&repaired).unwrap(),
+            "POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"
+        );
+    }
 }

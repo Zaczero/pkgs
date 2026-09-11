@@ -1917,6 +1917,47 @@ mod tests {
     }
 
     #[test]
+    fn collection_boundary_contact_keeps_area_and_line_interior_distinct() {
+        let left = crate::io::parse_wkt(
+            "GEOMETRYCOLLECTION(LINESTRING(3 0,3 2),POINT(0 0),LINESTRING(1 1,3 1),POLYGON((0 0,2 0,2 2,0 2,0 0)),POLYGON((0 0,2 0,2 2,0 2,0 0)),POLYGON((0 0,2 0,2 2,0 2,0 0)),POLYGON((2 0,4 0,4 2,2 2,2 0)),LINESTRING(0 0,2 0),LINESTRING(0.5 0,1.5 0))",
+        )
+        .unwrap();
+        let right = crate::io::parse_wkt("GEOMETRYCOLLECTION(LINESTRING(2 1,3 1))").unwrap();
+        let left_plan = PreparedPlan::transient(&left).unwrap();
+        let right_plan = PreparedPlan::transient(&right).unwrap();
+        assert_eq!(
+            graph_relate_data(&left_plan, &right_plan).unwrap().text(),
+            "102FF1FF2"
+        );
+    }
+
+    #[test]
+    fn collapsed_linework_and_polygon_ring_keep_exact_lower_dimensions() {
+        let collapsed =
+            crate::io::parse_wkt("GEOMETRYCOLLECTION(POLYGON((0 0,1 0,0 0,1 0,0 0)))").unwrap();
+        let line = crate::io::parse_wkt("LINESTRING(0 0,1 0)").unwrap();
+        let left = PreparedPlan::transient(&collapsed).unwrap();
+        let right = PreparedPlan::transient(&line).unwrap();
+        assert_eq!(
+            graph_relate_data(&left, &right).unwrap().text(),
+            "10FFFFFF2"
+        );
+    }
+
+    #[test]
+    fn invalid_outlying_hole_boundary_remains_a_point_contact() {
+        let polygon =
+            crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0),(5 5,6 5,6 6,5 6,5 5))").unwrap();
+        let point = Shape::Point(Point::new_raw_xy(5.0, 5.0));
+        let left = PreparedPlan::transient(&polygon).unwrap();
+        let right = PreparedPlan::transient(&point).unwrap();
+        assert_eq!(
+            graph_relate_data(&left, &right).unwrap().text(),
+            "FF20F1FF2"
+        );
+    }
+
+    #[test]
     fn convex_relation_falls_back_for_ambiguous_or_unsupported_shapes() {
         let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
         let square4 = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));

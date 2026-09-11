@@ -28,6 +28,7 @@ use crate::geometry::{
     Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget, GeometryErrorKind,
     HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon, Result, Ring, Segment, Shape,
     XY, for_each_candidate_pair, same_point, segment_contact_exact, single_chain,
+    undirected_segment_edge_key,
 };
 use crate::try_reserve_vec;
 
@@ -1058,6 +1059,7 @@ pub(in crate::geometry) struct ExactSourceInventory {
     ring_count: usize,
     isolated: Vec<XY>,
     isolated_operands: Vec<u32>,
+    isolated_collapsed: Vec<bool>,
     line_boundaries: Vec<(u32, PointKey)>,
     invalid_areas: Vec<bool>,
 }
@@ -1080,6 +1082,7 @@ impl ExactSourceInventory {
             ring_count: staged.ring_count,
             isolated: staged.isolated,
             isolated_operands: staged.isolated_operands,
+            isolated_collapsed: staged.isolated_collapsed,
             line_boundaries: staged.line_boundaries,
             invalid_areas: staged.invalid_areas,
         })
@@ -1108,6 +1111,7 @@ impl ExactSourceInventory {
             ring_count: staged.ring_count,
             isolated: staged.isolated,
             isolated_operands: staged.isolated_operands,
+            isolated_collapsed: staged.isolated_collapsed,
             line_boundaries: staged.line_boundaries,
             invalid_areas: staged.invalid_areas,
         })
@@ -1130,6 +1134,7 @@ impl ExactSourceInventory {
             ring_count: staged.ring_count,
             isolated: staged.isolated,
             isolated_operands: staged.isolated_operands,
+            isolated_collapsed: staged.isolated_collapsed,
             line_boundaries: staged.line_boundaries,
             invalid_areas: staged.invalid_areas,
         })
@@ -1181,6 +1186,7 @@ impl ExactSourceInventory {
             ring_count: staged.ring_count,
             isolated: staged.isolated,
             isolated_operands: staged.isolated_operands,
+            isolated_collapsed: staged.isolated_collapsed,
             line_boundaries: staged.line_boundaries,
             invalid_areas: staged.invalid_areas,
         })
@@ -1222,13 +1228,15 @@ impl ExactSourceInventory {
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let cells = self.select_cells(
+        let winding_rings = self.linework_source_rings()?;
+        let cells = self.select_cells_with_winding_rings(
             partition,
             &topology,
             &edges,
             &global,
             crate::geometry::OverlayOp::Union,
             true,
+            &winding_rings,
         )?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
         plan.emit_xy_parts(partition, &topology)
@@ -1399,6 +1407,7 @@ impl ExactSourceInventory {
                 NodeId(node as u32),
                 partition,
                 &topology,
+                &edges,
                 &global,
                 &face_membership,
             );
@@ -1407,6 +1416,7 @@ impl ExactSourceInventory {
                 NodeId(node as u32),
                 partition,
                 &topology,
+                &edges,
                 &global,
                 &face_membership,
             );
@@ -1496,6 +1506,7 @@ impl ExactSourceInventory {
         node: NodeId,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
+        edges: &[u32],
         global: &GlobalFaces,
         memberships: &[bool],
     ) -> Loc {
@@ -1518,25 +1529,40 @@ impl ExactSourceInventory {
             }
         }
         let mut line = false;
+        let mut line_on_boundary = false;
+        let mut point = false;
         let mut boundary_line = false;
         for (span_index, span) in partition.spans.iter().enumerate() {
             if span.start != node && span.end != node {
                 continue;
             }
-            line |= partition.owners(span_index).iter().any(|&(source, _)| {
-                self.source_operands[source as usize] as usize == operand
-                    && self.source_rings[source as usize].is_none()
-            });
+            let span_line = self.line_support(partition, span_index, operand);
+            line |= span_line;
+            if span_line
+                && !self.polygon_rings[operand].is_empty()
+                && edges.iter().enumerate().find_map(|(slot, &edge)| {
+                    (edge as usize == span_index).then(|| {
+                        let left = global.walk_faces[topology.face_of[slot] as usize] as usize;
+                        let twin = topology.twins[slot] as usize;
+                        let right = global.walk_faces[topology.face_of[twin] as usize] as usize;
+                        memberships[left * self.operand_count() + operand]
+                            != memberships[right * self.operand_count() + operand]
+                    })
+                }) == Some(true)
+            {
+                line_on_boundary = true;
+            }
             boundary_line |= partition.owners(span_index).iter().any(|&(source, _)| {
                 self.source_operands[source as usize] as usize == operand
                     && self.source_boundaries[source as usize]
             });
         }
-        for &(point, source) in &partition.point_sources {
-            line |= point == node && self.source_operands[source as usize] as usize == operand;
+        for &(source_node, source) in &partition.point_sources {
+            point |=
+                source_node == node && self.source_operands[source as usize] as usize == operand;
         }
-        for (index, &point) in partition.point_nodes.iter().enumerate() {
-            line |= point == node && self.isolated_operands[index] as usize == operand;
+        for (index, &source_node) in partition.point_nodes.iter().enumerate() {
+            point |= source_node == node && self.isolated_operands[index] as usize == operand;
         }
         let boundary = self
             .line_boundaries
@@ -1551,13 +1577,15 @@ impl ExactSourceInventory {
             .count()
             % 2
             == 1;
-        if boundary || boundary_line {
+        if boundary_line {
             Loc::Boundary
         } else if all {
             Loc::Interior
-        } else if any {
+        } else if line && !boundary && !line_on_boundary {
+            Loc::Interior
+        } else if boundary || any {
             Loc::Boundary
-        } else if line {
+        } else if point {
             Loc::Interior
         } else {
             Loc::Exterior
@@ -1572,6 +1600,27 @@ impl ExactSourceInventory {
         global: &GlobalFaces,
         operation: crate::geometry::OverlayOp,
         odd: bool,
+    ) -> Result<ArealCells> {
+        self.select_cells_with_winding_rings(
+            partition,
+            topology,
+            edges,
+            global,
+            operation,
+            odd,
+            &self.source_rings,
+        )
+    }
+
+    fn select_cells_with_winding_rings(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+        operation: crate::geometry::OverlayOp,
+        odd: bool,
+        winding_rings: &[Option<u32>],
     ) -> Result<ArealCells> {
         let operands = self.operand_count();
         let mut face_membership = Vec::new();
@@ -1596,7 +1645,7 @@ impl ExactSourceInventory {
             topology,
             edges,
             global,
-            &self.source_rings,
+            winding_rings,
             self.ring_count,
             |face, winding| {
                 for operand in 0..operands {
@@ -1616,22 +1665,15 @@ impl ExactSourceInventory {
         // two-dimensional neighbour supplies downward closure, while the
         // later emission plan absorbs spans covered on both sides.
         for (span_index, span) in partition.spans.iter().enumerate() {
-            let mut membership = Vec::new();
-            try_reserve_vec(&mut membership, operands)?;
-            membership.resize(operands, false);
-            for &(source, _) in partition.owners(span_index) {
-                // A ring boundary is a one-cell support only when it bounds
-                // an occupied two-cell face. The face terms below provide
-                // that closure. `None` is reserved for genuine line support
-                // and collapsed rings, which remain line cells even without
-                // an occupied face (the collapsed-shell contract).
-                if self.line_support(
-                    partition,
-                    span_index,
-                    self.source_operands[source as usize] as usize,
-                ) {
-                    membership[self.source_operands[source as usize] as usize] = true;
-                }
+            let mut covered = Vec::new();
+            let mut line_support = Vec::new();
+            try_reserve_vec(&mut covered, operands)?;
+            try_reserve_vec(&mut line_support, operands)?;
+            covered.resize(operands, false);
+            line_support.resize(operands, false);
+            for operand in 0..operands {
+                line_support[operand] = self.line_support(partition, span_index, operand);
+                covered[operand] = line_support[operand];
             }
             for (slot, &edge) in edges.iter().enumerate() {
                 if edge as usize != span_index {
@@ -1641,11 +1683,21 @@ impl ExactSourceInventory {
                 let twin = topology.twins[slot] as usize;
                 let other = global.walk_faces[topology.face_of[twin] as usize] as usize;
                 for operand in 0..operands {
-                    membership[operand] |= face_membership[face * operands + operand]
+                    covered[operand] |= face_membership[face * operands + operand]
                         || face_membership[other * operands + operand];
                 }
             }
-            cells.spans[span_index] = select_operation(operation, &membership);
+            cells.spans[span_index] = match operation {
+                crate::geometry::OverlayOp::Intersection => covered.iter().all(|&value| value),
+                crate::geometry::OverlayOp::Union => line_support.iter().any(|&value| value),
+                crate::geometry::OverlayOp::Difference => {
+                    line_support.first().copied().unwrap_or(false)
+                        && covered.iter().skip(1).all(|&value| !value)
+                },
+                crate::geometry::OverlayOp::SymmetricDifference => {
+                    line_support.iter().filter(|&&value| value).count() % 2 == 1
+                },
+            };
             if cells.spans[span_index] {
                 cells.nodes[span.start.0 as usize] = true;
                 cells.nodes[span.end.0 as usize] = true;
@@ -1669,6 +1721,9 @@ impl ExactSourceInventory {
             }
         }
         for (index, &node) in partition.point_nodes.iter().enumerate() {
+            if self.isolated_collapsed[index] {
+                continue;
+            }
             let operand = self.isolated_operands[index] as usize;
             node_membership[node.0 as usize * operands + operand] = true;
         }
@@ -1702,6 +1757,27 @@ impl ExactSourceInventory {
             cells.nodes[node] |= select_operation(operation, membership);
         }
         Ok(cells)
+    }
+
+    fn linework_source_rings(&self) -> Result<Vec<Option<u32>>> {
+        let mut winding_rings = Vec::new();
+        try_reserve_vec(&mut winding_rings, self.source_rings.len())?;
+        winding_rings.extend_from_slice(&self.source_rings);
+        let mut seen = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        seen.try_reserve(self.source_rings.len())
+            .map_err(crate::error::Error::from)?;
+        for (unique, segment) in self.unique.iter().enumerate() {
+            let (start, end) = undirected_segment_edge_key(*segment);
+            for &(source, _) in self.provenance.owners(unique) {
+                let Some(ring) = self.source_rings[source as usize] else {
+                    continue;
+                };
+                if seen.insert((ring, start, end), ()).is_some() {
+                    winding_rings[source as usize] = None;
+                }
+            }
+        }
+        Ok(winding_rings)
     }
 
     fn operand_occupied(&self, winding: &[i64], operand: usize, odd: bool) -> bool {
@@ -1744,7 +1820,12 @@ impl ExactSourceInventory {
 pub(in crate::geometry) fn exact_point_location(shape: &Shape, point: Point) -> Option<Loc> {
     match shape {
         Shape::Polygon(polygon) => {
-            if polygon.contains_point(point) {
+            if polygon.rings().any(|ring| {
+                ring.segment_pairs()
+                    .any(|[start, end]| point_on_segment(point, start, end))
+            }) {
+                Some(Loc::Boundary)
+            } else if polygon.contains_point(point) {
                 Some(Loc::Interior)
             } else if polygon.covers_point(point) {
                 Some(Loc::Boundary)
@@ -1755,10 +1836,16 @@ pub(in crate::geometry) fn exact_point_location(shape: &Shape, point: Point) -> 
         Shape::MultiPolygon(polygons) => {
             let mut boundary = false;
             for polygon in polygons {
-                if polygon.contains_point(point) {
+                if polygon.rings().any(|ring| {
+                    ring.segment_pairs()
+                        .any(|[start, end]| point_on_segment(point, start, end))
+                }) {
+                    boundary = true;
+                } else if polygon.contains_point(point) {
                     return Some(Loc::Interior);
+                } else {
+                    boundary |= polygon.covers_point(point);
                 }
-                boundary |= polygon.covers_point(point);
             }
             Some(if boundary {
                 Loc::Boundary
@@ -1800,6 +1887,7 @@ struct StagedExactSources {
     ring_count: usize,
     isolated: Vec<XY>,
     isolated_operands: Vec<u32>,
+    isolated_collapsed: Vec<bool>,
     line_boundaries: Vec<(u32, PointKey)>,
     invalid_areas: Vec<bool>,
 }
@@ -1819,6 +1907,7 @@ impl StagedExactSources {
             ring_count: 0,
             isolated: Vec::new(),
             isolated_operands: Vec::new(),
+            isolated_collapsed: Vec::new(),
             line_boundaries: Vec::new(),
             invalid_areas: vec![false; operand_count],
         })
@@ -1829,15 +1918,19 @@ impl StagedExactSources {
             Shape::Point(point) => {
                 try_reserve_vec(&mut self.isolated, 1)?;
                 try_reserve_vec(&mut self.isolated_operands, 1)?;
+                try_reserve_vec(&mut self.isolated_collapsed, 1)?;
                 self.isolated.push(point.xy());
                 self.isolated_operands.push(operand);
+                self.isolated_collapsed.push(false);
             },
             Shape::MultiPoint(points) => {
                 for point in points.points() {
                     try_reserve_vec(&mut self.isolated, 1)?;
                     try_reserve_vec(&mut self.isolated_operands, 1)?;
+                    try_reserve_vec(&mut self.isolated_collapsed, 1)?;
                     self.isolated.push(point.xy());
                     self.isolated_operands.push(operand);
+                    self.isolated_collapsed.push(false);
                 }
             },
             Shape::LineString(line) => self.append_line(line, operand)?,
@@ -1863,6 +1956,10 @@ impl StagedExactSources {
     }
 
     fn append_line(&mut self, line: &LineSeq, operand: u32) -> Result<()> {
+        self.append_line_coords(line.as_coords(), operand, false)
+    }
+
+    fn append_line_coords(&mut self, line: &CoordSeq, operand: u32, collapsed: bool) -> Result<()> {
         let mut first = None;
         let mut last = None;
         for [start, end] in line.segment_pairs() {
@@ -1872,7 +1969,18 @@ impl StagedExactSources {
             }
             first.get_or_insert(start);
             last = Some(end);
-            self.push_segment(Segment { start, end }, operand, None, false, false)?;
+            self.push_segment(Segment { start, end }, operand, None, false, collapsed)?;
+        }
+        if first.is_none() {
+            for point in line.iter_coords() {
+                try_reserve_vec(&mut self.isolated, 1)?;
+                try_reserve_vec(&mut self.isolated_operands, 1)?;
+                try_reserve_vec(&mut self.isolated_collapsed, 1)?;
+                self.isolated.push(point.xy());
+                self.isolated_operands.push(operand);
+                self.isolated_collapsed.push(true);
+            }
+            return Ok(());
         }
         if let (Some(first), Some(last)) = (first, last)
             && !same_point(first, last)
@@ -1885,6 +1993,15 @@ impl StagedExactSources {
     }
 
     fn append_polygon(&mut self, polygon: &Polygon, operand: u32) -> Result<()> {
+        if polygon
+            .rings()
+            .all(|ring| crate::geometry::ring_is_collinear(ring.coords()))
+        {
+            for ring in polygon.rings() {
+                self.append_line_coords(ring.coords(), operand, true)?;
+            }
+            return Ok(());
+        }
         let first_ring = self.ring_count;
         for ring in polygon.rings() {
             let ring_id =

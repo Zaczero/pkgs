@@ -1949,6 +1949,22 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
+    fn mixed_symmetric_difference_keeps_line_support_outside_selected_area() {
+        let left = crate::io::parse_wkt(
+            "GEOMETRYCOLLECTION(LINESTRING(1 1,3 1),POLYGON((0 0,4 0,4 4,0 4,0 0)))",
+        )
+        .unwrap();
+        let right = crate::io::parse_wkt("POLYGON((2 -1,6 -1,6 5,2 5,2 -1))").unwrap();
+        let result = left
+            .symmetric_difference(&right, Strictness::Strict)
+            .unwrap();
+        assert_eq!(
+            crate::io::to_wkt(&result).unwrap(),
+            "GEOMETRYCOLLECTION (LINESTRING (2 1, 3 1), MULTIPOLYGON (((0 0, 2 0, 2 1, 2 4, 0 4, 0 0)), ((2 -1, 6 -1, 6 5, 2 5, 2 4, 4 4, 4 0, 2 0, 2 -1))))"
+        );
+    }
+
+    #[test]
     fn symmetric_difference_all_mixed_line_duplicates_leave_point() {
         let line = line(&[(-1.0, 0.0), (1.0, 0.0)]);
         let point_on_line = point(0.0, 0.0);
