@@ -334,8 +334,11 @@ impl PySpatialIndex {
     /// `sys.getsizeof` support: the wrapper plus the retained Rust-side
     /// index payload — packed or boxed row geometry coordinates, the immutable
     /// STR tree, overflow R-tree entries, frame metadata, and any built
-    /// geodesic cap cache. Shared buffers are reported as this index's
-    /// logical retained footprint.
+    /// geodesic cap cache. The overflow R-tree contributes occupied nodes
+    /// only: unused capacity reserved inside its child vectors is not counted,
+    /// so a mutated index's reported total is a lower bound on actual
+    /// retention. Shared buffers are reported as this index's logical retained
+    /// footprint.
     pub(crate) fn __sizeof__(&self) -> usize {
         self.total_size()
     }
