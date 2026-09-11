@@ -3405,15 +3405,12 @@ fn rounded_segment_covered_by_clip(
             }
         }
     }
-    if !interior_contact {
-        let midpoint = XY::new(
-            f64::midpoint(segment.start.x, segment.end.x),
-            f64::midpoint(segment.start.y, segment.end.y),
-        );
-        return Ok(point_covered_by_clip_xy(midpoint, rounded_rings));
-    }
     let start = exact::ExactPoint::from_xy(segment.start);
     let end = exact::ExactPoint::from_xy(segment.end);
+    if !interior_contact {
+        let midpoint = start.midpoint(&end);
+        return Ok(point_covered_by_clip(&midpoint, exact_rings));
+    }
     if !point_covered_by_clip(&start, exact_rings) || !point_covered_by_clip(&end, exact_rings) {
         return Ok(false);
     }
@@ -3961,6 +3958,63 @@ mod tests {
             )
             .unwrap()
         );
+        let slanted_edge_points = [
+            (2.949570888116326e-6, 1.7697425328697956e-6),
+            (3.0973519953936948e-6, 1.8584111972362169e-6),
+            (3.0e-6, 2.5e-6),
+        ];
+        let slanted_edge = cycle(&slanted_edge_points);
+        let slanted_edge_xy = cycle_xy(&slanted_edge_points);
+        let slanted_segment = Segment {
+            start: XY::new(2.949570888116328e-6, 1.7697425328697968e-6),
+            end: XY::new(3.0973519953936927e-6, 1.8584111972362156e-6),
+        };
+        let slanted_midpoint = XY::new(
+            f64::midpoint(slanted_segment.start.x, slanted_segment.end.x),
+            f64::midpoint(slanted_segment.start.y, slanted_segment.end.y),
+        );
+        assert_eq!(
+            exact::orient2d(
+                slanted_segment.start,
+                slanted_segment.end,
+                slanted_edge_xy[0],
+            ),
+            ExactSign::Zero
+        );
+        assert_eq!(
+            exact::orient2d(
+                slanted_segment.start,
+                slanted_segment.end,
+                slanted_edge_xy[1],
+            ),
+            ExactSign::Zero
+        );
+        assert_eq!(
+            exact::orient2d(
+                slanted_edge_xy[0],
+                slanted_edge_xy[1],
+                slanted_segment.start,
+            ),
+            ExactSign::Zero
+        );
+        assert_eq!(
+            exact::orient2d(slanted_edge_xy[0], slanted_edge_xy[1], slanted_segment.end,),
+            ExactSign::Zero
+        );
+        assert!(slanted_edge_xy[0].x < slanted_segment.start.x);
+        assert!(slanted_segment.end.x < slanted_edge_xy[1].x);
+        assert_ne!(
+            exact::orient2d(slanted_segment.start, slanted_segment.end, slanted_midpoint,),
+            ExactSign::Zero
+        );
+        let slanted_result = rounded_segment_covered_by_clip(
+            slanted_segment,
+            &[slanted_edge],
+            &[slanted_edge_xy],
+            &mut events,
+        )
+        .unwrap();
+        assert!(slanted_result);
         assert!(
             !rounded_segment_covered_by_clip(
                 Segment {
