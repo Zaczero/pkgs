@@ -425,10 +425,9 @@ mod convex_tests {
 
     #[test]
     fn repair_selection_keeps_linework_parity_distinct_from_structure() {
-        let overlap = crate::io::parse_wkt(
-            "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((2 2,6 2,6 6,2 6,2 2)))",
-        )
-        .unwrap();
+        let overlap =
+            crate::io::parse_wkt("MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((2 2,6 2,6 6,2 6,2 2)))")
+                .unwrap();
         let linework = overlap.repair(RepairMethod::Linework, false).unwrap();
         let structure = overlap.repair(RepairMethod::Structure, false).unwrap();
         assert_eq!(linework.geometry_type(), "MultiPolygon");

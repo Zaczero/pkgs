@@ -1215,9 +1215,27 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
         operation: crate::geometry::OverlayOp,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
+        self.overlay_parts_with_fill(partition, operation, false)
+    }
+
+    pub(in crate::geometry) fn structure_parts(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
+        self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union, true)
+    }
+
+    fn overlay_parts_with_fill(
+        &self,
+        partition: &ExactPartition<'_>,
+        operation: crate::geometry::OverlayOp,
+        structure: bool,
+    ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let cells = self.select_cells(partition, &topology, &edges, &global, operation, false)?;
+        let cells = self.select_cells(
+            partition, &topology, &edges, &global, operation, false, structure,
+        )?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
         plan.emit_xy_parts(partition, &topology)
     }
@@ -1236,6 +1254,7 @@ impl ExactSourceInventory {
             &global,
             crate::geometry::OverlayOp::Union,
             true,
+            false,
             &winding_rings,
         )?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
@@ -1473,7 +1492,7 @@ impl ExactSourceInventory {
             |face, winding| {
                 for operand in 0..operands {
                     memberships[face as usize * operands + operand] = !self.invalid_areas[operand]
-                        && self.operand_occupied(winding, operand, false);
+                        && self.operand_occupied(winding, operand, false, false);
                 }
                 Ok(())
             },
@@ -1628,6 +1647,7 @@ impl ExactSourceInventory {
         global: &GlobalFaces,
         operation: crate::geometry::OverlayOp,
         odd: bool,
+        structure: bool,
     ) -> Result<ArealCells> {
         self.select_cells_with_winding_rings(
             partition,
@@ -1636,6 +1656,7 @@ impl ExactSourceInventory {
             global,
             operation,
             odd,
+            structure,
             &self.source_rings,
         )
     }
@@ -1648,6 +1669,7 @@ impl ExactSourceInventory {
         global: &GlobalFaces,
         operation: crate::geometry::OverlayOp,
         odd: bool,
+        structure: bool,
         winding_rings: &[Option<u32>],
     ) -> Result<ArealCells> {
         let operands = self.operand_count();
@@ -1677,7 +1699,7 @@ impl ExactSourceInventory {
             self.ring_count,
             |face, winding| {
                 for operand in 0..operands {
-                    let occupied = self.operand_occupied(winding, operand, odd);
+                    let occupied = self.operand_occupied(winding, operand, odd, structure);
                     face_membership[face as usize * operands + operand] = occupied;
                 }
                 cells.faces[face as usize] = select_operation(
@@ -1808,7 +1830,13 @@ impl ExactSourceInventory {
         Ok(winding_rings)
     }
 
-    fn operand_occupied(&self, winding: &[i64], operand: usize, odd: bool) -> bool {
+    fn operand_occupied(
+        &self,
+        winding: &[i64],
+        operand: usize,
+        odd: bool,
+        structure: bool,
+    ) -> bool {
         if odd {
             let mut occupied = false;
             for rings in &self.polygon_rings[operand] {
@@ -1820,7 +1848,13 @@ impl ExactSourceInventory {
         }
         self.polygon_rings[operand].iter().any(|rings| {
             let mut rings = rings.clone();
-            let filled = |ring| winding[ring] != 0;
+            let filled = |ring| {
+                if self.invalid_areas[operand] && !structure {
+                    winding[ring] < 0
+                } else {
+                    winding[ring] != 0
+                }
+            };
             rings.next().is_some_and(filled) && !rings.any(filled)
         })
     }

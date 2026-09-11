@@ -4,9 +4,9 @@ use crate::error::Result;
 use crate::geometry::area::ring_area_sign;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    AreaSign, CoordSeq, Coordinates, HashMap, HashMapExt as _, HashSet, OverlayOp, Point, PointKey,
-    Polygon, RepairMethod, Ring, Shape, SharedSlice, XY, cmp_area_keys_then_closed,
-    polygon_parts_to_shape, ring_decision_area, same_point, wrap_index,
+    AreaSign, CoordSeq, Coordinates, HashMap, HashMapExt as _, HashSet, Point, PointKey, Polygon,
+    RepairMethod, Ring, Shape, SharedSlice, XY, cmp_area_keys_then_closed, polygon_parts_to_shape,
+    ring_decision_area, same_point, wrap_index,
 };
 ///
 /// `Linework` is even-odd parity over the DEDUPLICATED noded linework
@@ -26,7 +26,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             let (_, _, parts) = if method == RepairMethod::Linework {
                 inventory.repair_parts(&partition)?
             } else {
-                inventory.overlay_parts(&partition, OverlayOp::Union)?
+                inventory.structure_parts(&partition)?
             };
             parts
         },
