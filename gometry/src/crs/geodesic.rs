@@ -1,5 +1,5 @@
 //! Ellipsoidal geodesic math (geographiclib): inverse/direct/interpolate,
-//! area/length, certified segment distance and intersection, the geodesic LRS,
+//! area/length, segment distance and intersection, the geodesic LRS,
 //! and the `MetricModel` that decides planar-vs-geodesic. The geodesic instance
 //! cache (`with_geodesic`) reaches its thread-local storage in the parent via
 //! `super`.
@@ -106,7 +106,6 @@ thread_local! {
 mod bearing;
 mod bulk;
 mod cache;
-mod certified;
 mod distance;
 mod domain;
 mod ellipsoid_metric;

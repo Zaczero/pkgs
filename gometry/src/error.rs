@@ -58,7 +58,6 @@ enum ErrorStorage {
 static ALLOCATION_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Allocation);
 static ENTROPY_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Entropy);
 static SIZE_OVERFLOW_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::SizeOverflow);
-static NUMERICAL_INDETERMINACY_ERROR: ErrorKind = ErrorKind::NumericalIndeterminacy;
 static GEODESIC_EXPONENT_OVERFLOW_ERROR: ErrorKind =
     ErrorKind::Crs(CrsError::GeodesicExponentOverflow);
 
@@ -76,8 +75,6 @@ pub(crate) enum ErrorKind {
     Frame(#[from] FrameError),
     #[error(transparent)]
     Resource(#[from] ResourceError),
-    #[error("certified numerical result remains indeterminate under the supplied policy")]
-    NumericalIndeterminacy,
 }
 
 impl Error {
@@ -131,9 +128,6 @@ impl From<ErrorKind> for Error {
             },
             ErrorKind::Resource(ResourceError::SizeOverflow) => {
                 ErrorStorage::Static(&SIZE_OVERFLOW_ERROR)
-            },
-            ErrorKind::NumericalIndeterminacy => {
-                ErrorStorage::Static(&NUMERICAL_INDETERMINACY_ERROR)
             },
             ErrorKind::Crs(CrsError::GeodesicExponentOverflow) => {
                 ErrorStorage::Static(&GEODESIC_EXPONENT_OVERFLOW_ERROR)
@@ -212,12 +206,6 @@ mod tests {
         assert!(matches!(
             context.kind(),
             ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        let numerical: Error =
-            fail_allocations_after(0, || ErrorKind::NumericalIndeterminacy.into());
-        assert!(matches!(
-            numerical.kind(),
-            ErrorKind::NumericalIndeterminacy
         ));
         let exponent =
             fail_allocations_after(0, || Error::from(CrsError::GeodesicExponentOverflow));
