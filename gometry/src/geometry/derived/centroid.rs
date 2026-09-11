@@ -35,7 +35,7 @@ fn accumulate_ring_centroid(
     cg3.1 += sign * cgy;
 }
 
-fn finish_areal_centroid(area_sum2: f64, cg3: (f64, f64)) -> Option<(f64, f64)> {
+fn finish_areal_centroid(area_sum2: f64, cg3: (f64, f64)) -> Option<(f64, f64, f64)> {
     // Signed triangle-fan sums can cancel to -0.0 on a symmetric polygon; the
     // lineal/puntal paths happen to land on +0.0, so normalize here to keep the
     // +0.0 invariant uniform across centroid of every geometry type.
@@ -47,22 +47,22 @@ fn finish_areal_centroid(area_sum2: f64, cg3: (f64, f64)) -> Option<(f64, f64)> 
     if area_abs > 0.0 && !area_sum2.is_normal() {
         return None;
     }
-    match (area_abs > 0.0).then(|| {
-        (
-            canonicalize_zero(cg3.0 / 3.0 / area_sum2),
-            canonicalize_zero(cg3.1 / 3.0 / area_sum2),
-        )
-    }) {
-        Some((x, y)) if x.is_finite() && y.is_finite() => Some((x, y)),
-        Some(_) | None => None,
-    }
+    (area_abs > 0.0)
+        .then(|| {
+            (
+                area_abs / 2.0,
+                canonicalize_zero(cg3.0 / 3.0 / area_sum2),
+                canonicalize_zero(cg3.1 / 3.0 / area_sum2),
+            )
+        })
+        .filter(|(_, x, y)| x.is_finite() && y.is_finite())
 }
 
 /// Exact areal centroid over original stored coordinates.  This cold fallback
 /// avoids both shared-frame cancellation and a rounded ring-orientation gate.
 fn exact_areal_centroid(
     visit: impl Fn(&mut dyn FnMut(&[f64], &[f64], bool)),
-) -> Option<(f64, f64)> {
+) -> Option<(f64, f64, f64)> {
     let mut sums = ExactCentroidSums::zero();
     visit(&mut |xs, ys, hole| {
         let pairs = xs.len().saturating_sub(1);
@@ -72,7 +72,7 @@ fn exact_areal_centroid(
         }
         sums.merge_ring(&ring, hole);
     });
-    sums.finish()
+    sums.finish_with_area()
 }
 
 /// Column kernel for polygonal centroid (dimension-2 pass) over one polygon's
@@ -87,7 +87,7 @@ fn centroid_polygon_columns(
     ys: &[f64],
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
-) -> Option<(f64, f64)> {
+) -> Option<(f64, f64, f64)> {
     let exact = || {
         exact_areal_centroid(|visit| {
             for ring_index in rings.clone() {
@@ -465,19 +465,21 @@ pub(crate) fn centroid_polygon_row_columns(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
 ) -> Option<(f64, f64)> {
-    centroid_polygon_columns(xs, ys, ring_offsets, rings.clone()).or_else(|| {
-        centroid_polygon_lineal_columns(xs, ys, ring_offsets, rings.clone()).or_else(|| {
-            let start = ring_offsets[rings.start] as usize;
-            (start < xs.len()).then(|| (xs[start], ys[start]))
+    centroid_polygon_columns(xs, ys, ring_offsets, rings.clone())
+        .map(|(_, x, y)| (x, y))
+        .or_else(|| {
+            centroid_polygon_lineal_columns(xs, ys, ring_offsets, rings.clone()).or_else(|| {
+                let start = ring_offsets[rings.start] as usize;
+                (start < xs.len()).then(|| (xs[start], ys[start]))
+            })
         })
-    })
 }
 
 /// Single-polygon areal centroid (shell + holes). One classical JTS fan that
 /// also tracks extent; exact accumulation only when the fan rejects or extent is
 /// extreme. Ordinary mid-range polygons pay a single vertex pass (no separate
 /// pre-scan).
-fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64)> {
+fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64, f64)> {
     let exact = || {
         exact_areal_centroid(|visit| {
             polygon_rings(polygon, &mut |ring, hole| {
@@ -525,22 +527,36 @@ fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64)> {
     finish_areal_centroid(area_sum2, cg3).or_else(exact)
 }
 
-/// Neumaier compensated sum — used only on the cold stable-merge path when
-/// opposite-sign extremes cancel. Not the common-path accumulator (measured
-/// blanket Neumaier was +58–175% and was rejected).
-fn neumaier_sum(values: impl IntoIterator<Item = f64>) -> f64 {
-    let mut sum = 0.0_f64;
-    let mut correction = 0.0_f64;
-    for x in values {
-        let t = sum + x;
-        if sum.abs() >= x.abs() {
-            correction += (sum - t) + x;
+/// Streaming Neumaier accumulator for the cold stable-merge path. It keeps the
+/// established ordered summation without staging scaled X/Y contributions.
+#[derive(Default)]
+struct NeumaierSum {
+    sum: f64,
+    correction: f64,
+}
+
+impl NeumaierSum {
+    fn add(&mut self, value: f64) {
+        let next = self.sum + value;
+        if self.sum.abs() >= value.abs() {
+            self.correction += (self.sum - next) + value;
         } else {
-            correction += (x - t) + sum;
+            self.correction += (value - next) + self.sum;
         }
-        sum = t;
+        self.sum = next;
     }
-    sum + correction
+
+    fn total(self) -> f64 {
+        self.sum + self.correction
+    }
+}
+
+fn neumaier_sum(values: impl IntoIterator<Item = f64>) -> f64 {
+    let mut sum = NeumaierSum::default();
+    for value in values {
+        sum.add(value);
+    }
+    sum.total()
 }
 
 /// Area/length-weighted merge of component centroids. Ordinary mid-range
@@ -606,22 +622,22 @@ fn weighted_centroid_merge(parts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
     let inv_scale_x = 1.0 / scale_x;
     let inv_scale_y = 1.0 / scale_y;
     let mut w_sum = 0.0_f64;
-    let mut xs = Vec::with_capacity(parts.len());
-    let mut ys = Vec::with_capacity(parts.len());
+    let mut x_sum = NeumaierSum::default();
+    let mut y_sum = NeumaierSum::default();
     for &(w, cx, cy) in parts {
         if w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite() {
             let normalized = w / max_weight;
             w_sum += normalized;
-            xs.push(normalized * (cx * scale_x));
-            ys.push(normalized * (cy * scale_y));
+            x_sum.add(normalized * (cx * scale_x));
+            y_sum.add(normalized * (cy * scale_y));
         }
     }
     if w_sum <= 0.0 {
         return None;
     }
     Some((
-        canonicalize_zero((neumaier_sum(xs) / w_sum) * inv_scale_x),
-        canonicalize_zero((neumaier_sum(ys) / w_sum) * inv_scale_y),
+        canonicalize_zero((x_sum.total() / w_sum) * inv_scale_x),
+        canonicalize_zero((y_sum.total() / w_sum) * inv_scale_y),
     ))
 }
 
@@ -642,7 +658,7 @@ fn visit_areal_polygons(shape: &Shape, visit: &mut dyn FnMut(&Polygon)) {
     }
 }
 
-fn exact_areal_centroid_shape(shape: &Shape) -> Option<(f64, f64)> {
+fn exact_areal_centroid_shape(shape: &Shape) -> Option<(f64, f64, f64)> {
     exact_areal_centroid(|visit| {
         visit_areal_polygons(shape, &mut |polygon| {
             polygon_rings(polygon, &mut |ring, hole| {
@@ -654,62 +670,53 @@ fn exact_areal_centroid_shape(shape: &Shape) -> Option<(f64, f64)> {
     })
 }
 
-fn areal_has_unrepresentable_component(shape: &Shape) -> bool {
-    let mut found = false;
-    visit_areal_polygons(shape, &mut |polygon| {
-        found |= polygon.area().abs().is_infinite();
-    });
-    found
-}
-
 /// Dimension-2 centroid. Multi-polygon / multi-area collections compute each
 /// component's centroid in its own local frame, then area-weight merge —
 /// a single global triangle fan cancels across distant equal parts (N6).
-pub(crate) fn areal_centroid(shape: &Shape) -> Option<(f64, f64)> {
+fn areal_centroid_summary(shape: &Shape) -> Option<(f64, f64, f64)> {
     match shape {
         Shape::Polygon(polygon) => areal_centroid_polygon(polygon),
         Shape::MultiPolygon(polygons) => {
             if polygons.len() == 1 && !polygons.is_empty() {
                 return areal_centroid_polygon(&polygons[0]);
             }
-            if areal_has_unrepresentable_component(shape) {
-                return exact_areal_centroid_shape(shape);
-            }
             let mut parts = Vec::with_capacity(polygons.len());
+            let mut area = 0.0_f64;
             for polygon in polygons {
-                let area = polygon.area().abs();
-                if area > 0.0
-                    && area.is_finite()
-                    && let Some((cx, cy)) = areal_centroid_polygon(polygon)
-                {
-                    parts.push((area, cx, cy));
-                }
-            }
-            weighted_centroid_merge(&parts)
-        },
-        Shape::GeometryCollection(geometries) => {
-            if areal_has_unrepresentable_component(shape) {
-                return exact_areal_centroid_shape(shape);
-            }
-            let mut parts = Vec::new();
-            for geometry in geometries {
-                if let Some((cx, cy)) = areal_centroid(geometry) {
-                    let area = geometry.area().abs();
-                    if area > 0.0 && area.is_finite() {
-                        parts.push((area, cx, cy));
+                if let Some(part) = areal_centroid_polygon(polygon) {
+                    if part.0.is_infinite() {
+                        return exact_areal_centroid_shape(shape);
+                    }
+                    if part.0 > 0.0 && part.0.is_finite() {
+                        area += part.0;
+                        parts.push(part);
                     }
                 }
             }
-            if parts.is_empty() {
-                None
-            } else if parts.len() == 1 {
-                Some((parts[0].1, parts[0].2))
-            } else {
-                weighted_centroid_merge(&parts)
+            weighted_centroid_merge(&parts).map(|(x, y)| (area, x, y))
+        },
+        Shape::GeometryCollection(geometries) => {
+            let mut parts = Vec::new();
+            let mut area = 0.0_f64;
+            for geometry in geometries {
+                if let Some(part) = areal_centroid_summary(geometry) {
+                    if part.0.is_infinite() {
+                        return exact_areal_centroid_shape(shape);
+                    }
+                    if part.0 > 0.0 && part.0.is_finite() {
+                        area += part.0;
+                        parts.push(part);
+                    }
+                }
             }
+            weighted_centroid_merge(&parts).map(|(x, y)| (area, x, y))
         },
         _ => None,
     }
+}
+
+pub(crate) fn areal_centroid(shape: &Shape) -> Option<(f64, f64)> {
+    areal_centroid_summary(shape).map(|(_, x, y)| (x, y))
 }
 
 /// Per-component lineal centroid for a single coordinate run, returned with

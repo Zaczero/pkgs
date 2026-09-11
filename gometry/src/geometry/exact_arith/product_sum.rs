@@ -184,6 +184,13 @@ impl ExactCentroidSums {
             exact_centroid_quotient(&self.y, &area, area_sign)?,
         ))
     }
+
+    /// Finish the centroid together with the rounded absolute area used as
+    /// its component weight. Both values come from this one accumulation.
+    pub(crate) fn finish_with_area(&self) -> Option<(f64, f64, f64)> {
+        let (x, y) = self.finish()?;
+        Some((self.area.round_to_area().abs(), x, y))
+    }
 }
 
 /// Triple products share quantum 2^-3222. Four terms per moment edge over
