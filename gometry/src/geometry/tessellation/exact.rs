@@ -11,6 +11,8 @@
 )]
 
 use std::cmp::Ordering;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
 
 use crate::error::ResourceError;
 #[cfg(test)]
@@ -57,7 +59,7 @@ impl ExactSign {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::geometry) struct ExactDyadic {
     negative: bool,
-    limbs: Vec<u64>,
+    limbs: CompactLimbs,
     // Every operation in this fixed construction DAG remains far inside i64.
     // A stored binary64 contributes at most 1,074 exponent bits and the source
     // audit has fewer than twenty arithmetic levels, covered conservatively by
@@ -69,6 +71,180 @@ pub(in crate::geometry) struct ExactDyadic {
     // The same derivation keeps nonnegative alignment deltas inside usize on
     // the supported 64-bit targets, so exact ordering needs no error channel.
     exponent: i64,
+}
+
+/// Every observed value used at most one trimmed limb in ordinary Cartesian
+/// relation, overlay, and polygonize workloads. Two inline limbs also cover
+/// the untrimmed sum/product of two observed one-limb operands; larger exact
+/// values retain the old fallible heap representation.
+const INLINE_DYADIC_LIMBS: usize = 2;
+
+#[derive(Clone)]
+enum CompactLimbs {
+    Inline {
+        limbs: [u64; INLINE_DYADIC_LIMBS],
+        len: u8,
+    },
+    Heap(Vec<u64>),
+}
+
+impl fmt::Debug for CompactLimbs {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_list().entries(self.as_slice()).finish()
+    }
+}
+
+impl PartialEq for CompactLimbs {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for CompactLimbs {}
+
+impl CompactLimbs {
+    const fn zero() -> Self {
+        Self::Inline {
+            limbs: [0; INLINE_DYADIC_LIMBS],
+            len: 0,
+        }
+    }
+
+    const fn single(value: u64) -> Self {
+        Self::Inline {
+            limbs: [value; INLINE_DYADIC_LIMBS],
+            len: 1,
+        }
+    }
+
+    fn with_capacity(required: usize) -> Self {
+        if required <= INLINE_DYADIC_LIMBS {
+            Self::Inline {
+                limbs: [0; INLINE_DYADIC_LIMBS],
+                len: 0,
+            }
+        } else {
+            Self::Heap(Vec::with_capacity(required))
+        }
+    }
+
+    fn try_with_capacity(required: usize) -> Result<Self> {
+        if required <= INLINE_DYADIC_LIMBS {
+            return Ok(Self::Inline {
+                limbs: [0; INLINE_DYADIC_LIMBS],
+                len: 0,
+            });
+        }
+        let mut limbs = Vec::new();
+        try_reserve_vec(&mut limbs, required)?;
+        Ok(Self::Heap(limbs))
+    }
+
+    fn from_vec(limbs: Vec<u64>) -> Self {
+        if limbs.len() <= INLINE_DYADIC_LIMBS {
+            let mut inline = [0; INLINE_DYADIC_LIMBS];
+            inline[..limbs.len()].copy_from_slice(&limbs);
+            Self::Inline {
+                limbs: inline,
+                len: limbs.len() as u8,
+            }
+        } else {
+            Self::Heap(limbs)
+        }
+    }
+
+    fn as_slice(&self) -> &[u64] {
+        match self {
+            Self::Inline { limbs, len } => &limbs[..usize::from(*len)],
+            Self::Heap(limbs) => limbs,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u64] {
+        match self {
+            Self::Inline { limbs, len } => &mut limbs[..usize::from(*len)],
+            Self::Heap(limbs) => limbs,
+        }
+    }
+
+    const fn is_empty(&self) -> bool {
+        match self {
+            Self::Inline { len, .. } => *len == 0,
+            Self::Heap(limbs) => limbs.is_empty(),
+        }
+    }
+
+    fn push(&mut self, value: u64) {
+        match self {
+            Self::Inline { limbs, len } => {
+                let index = usize::from(*len);
+                assert!(
+                    index < INLINE_DYADIC_LIMBS,
+                    "inline dyadic capacity exceeded"
+                );
+                limbs[index] = value;
+                *len += 1;
+            },
+            Self::Heap(limbs) => limbs.push(value),
+        }
+    }
+
+    fn pop(&mut self) -> Option<u64> {
+        match self {
+            Self::Inline { limbs, len } => {
+                let index = usize::from(*len).checked_sub(1)?;
+                *len -= 1;
+                Some(limbs[index])
+            },
+            Self::Heap(limbs) => limbs.pop(),
+        }
+    }
+
+    fn remove_prefix(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        match self {
+            Self::Inline { limbs, len } => {
+                let length = usize::from(*len);
+                limbs.copy_within(count..length, 0);
+                limbs[length - count..length].fill(0);
+                *len -= count as u8;
+            },
+            Self::Heap(limbs) => {
+                limbs.drain(..count);
+            },
+        }
+    }
+
+    fn try_clone(&self) -> Result<Self> {
+        match self {
+            Self::Inline { limbs, len } => Ok(Self::Inline {
+                limbs: *limbs,
+                len: *len,
+            }),
+            Self::Heap(limbs) => {
+                let mut clone = Vec::new();
+                try_reserve_vec(&mut clone, limbs.len())?;
+                clone.extend_from_slice(limbs);
+                Ok(Self::from_vec(clone))
+            },
+        }
+    }
+}
+
+impl Deref for CompactLimbs {
+    type Target = [u64];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for CompactLimbs {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
 }
 
 /// An exact homogeneous line `a*x + b*y + c = 0` over stored binary64 input.
@@ -138,10 +314,10 @@ impl<'a> Aligned<'a> {
 }
 
 impl ExactDyadic {
-    const fn zero() -> Self {
+    fn zero() -> Self {
         Self {
             negative: false,
-            limbs: Vec::new(),
+            limbs: CompactLimbs::zero(),
             exponent: 0,
         }
     }
@@ -149,8 +325,22 @@ impl ExactDyadic {
     pub(in crate::geometry) fn one() -> Self {
         Self {
             negative: false,
-            limbs: vec![1],
+            limbs: CompactLimbs::single(1),
             exponent: 0,
+        }
+    }
+
+    /// Construct an adversarial exact value from its canonical limb sequence.
+    ///
+    /// Internal tests use this for exponent and multi-limb boundaries that
+    /// cannot be reached from one binary64 input. The storage chooses inline
+    /// or heap form without changing the supplied exact value.
+    #[cfg(test)]
+    pub(super) fn from_parts(negative: bool, limbs: Vec<u64>, exponent: i64) -> Self {
+        Self {
+            negative,
+            limbs: CompactLimbs::from_vec(limbs),
+            exponent,
         }
     }
 
@@ -169,7 +359,7 @@ impl ExactDyadic {
         };
         let mut value = Self {
             negative: bits >> 63 != 0,
-            limbs: vec![significand],
+            limbs: CompactLimbs::single(significand),
             exponent,
         };
         value.trim();
@@ -187,7 +377,7 @@ impl ExactDyadic {
         }
         let zero_words = self.limbs.iter().take_while(|&&limb| limb == 0).count();
         if zero_words != 0 {
-            self.limbs.drain(..zero_words);
+            self.limbs.remove_prefix(zero_words);
             self.exponent += 64 * zero_words as i64;
         }
         let zero_bits = self.limbs[0].trailing_zeros();
@@ -259,7 +449,7 @@ impl ExactDyadic {
         limbs.len() + shift / 64 + usize::from(!shift.is_multiple_of(64))
     }
 
-    fn write_sum_aligned(left: Aligned<'_>, right: Aligned<'_>, out: &mut Vec<u64>) {
+    fn write_sum_aligned(left: Aligned<'_>, right: Aligned<'_>, out: &mut CompactLimbs) {
         debug_assert!(out.is_empty());
         let length = left.len.max(right.len);
         let mut carry = 0_u128;
@@ -273,7 +463,7 @@ impl ExactDyadic {
         }
     }
 
-    fn write_diff_aligned(larger: Aligned<'_>, smaller: Aligned<'_>, out: &mut Vec<u64>) {
+    fn write_diff_aligned(larger: Aligned<'_>, smaller: Aligned<'_>, out: &mut CompactLimbs) {
         debug_assert!(out.is_empty());
         let mut borrow = 0_i128;
         for index in 0..larger.len {
@@ -290,31 +480,29 @@ impl ExactDyadic {
         debug_assert_eq!(borrow, 0);
     }
 
-    fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Vec<u64> {
+    fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> CompactLimbs {
         let length = left.len.max(right.len);
-        let mut result = Vec::with_capacity(length + 1);
+        let mut result = CompactLimbs::with_capacity(length + 1);
         Self::write_sum_aligned(left, right, &mut result);
         result
     }
 
-    fn subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> Vec<u64> {
-        let mut result = Vec::with_capacity(larger.len);
+    fn subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> CompactLimbs {
+        let mut result = CompactLimbs::with_capacity(larger.len);
         Self::write_diff_aligned(larger, smaller, &mut result);
         result
     }
 
-    fn try_add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Result<Vec<u64>> {
+    fn try_add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Result<CompactLimbs> {
         let length = left.len.max(right.len);
         let needed = length.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-        let mut result = Vec::new();
-        try_reserve_vec(&mut result, needed)?;
+        let mut result = CompactLimbs::try_with_capacity(needed)?;
         Self::write_sum_aligned(left, right, &mut result);
         Ok(result)
     }
 
-    fn try_subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> Result<Vec<u64>> {
-        let mut result = Vec::new();
-        try_reserve_vec(&mut result, larger.len)?;
+    fn try_subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> Result<CompactLimbs> {
+        let mut result = CompactLimbs::try_with_capacity(larger.len)?;
         Self::write_diff_aligned(larger, smaller, &mut result);
         Ok(result)
     }
@@ -450,7 +638,7 @@ impl ExactDyadic {
         ))
     }
 
-    fn write_product(short: &[u64], long: &[u64], out: &mut Vec<u64>) {
+    fn write_product(short: &[u64], long: &[u64], out: &mut CompactLimbs) {
         debug_assert!(out.is_empty());
         let mut carry = 0_u128;
         for &right in long {
@@ -480,7 +668,7 @@ impl ExactDyadic {
         } else {
             (&other.limbs, &self.limbs)
         };
-        let mut limbs: Vec<u64> = Vec::with_capacity(short.len() + long.len());
+        let mut limbs = CompactLimbs::with_capacity(short.len() + long.len());
         Self::write_product(short, long, &mut limbs);
         let mut result = Self {
             negative: self.negative != other.negative,
@@ -504,8 +692,7 @@ impl ExactDyadic {
             .len()
             .checked_add(long.len())
             .ok_or(ResourceError::SizeOverflow)?;
-        let mut limbs = Vec::new();
-        try_reserve_vec(&mut limbs, needed)?;
+        let mut limbs = CompactLimbs::try_with_capacity(needed)?;
         Self::write_product(short, long, &mut limbs);
         let mut result = Self {
             negative: self.negative != other.negative,
@@ -636,10 +823,10 @@ impl ExactDyadic {
         if other.is_zero() {
             return self.try_clone().map(Self::abs);
         }
-        if self.limbs == [1] && self.exponent == 0 {
+        if self.limbs.as_slice() == [1] && self.exponent == 0 {
             return self.try_clone().map(Self::abs);
         }
-        if other.limbs == [1] && other.exponent == 0 {
+        if other.limbs.as_slice() == [1] && other.exponent == 0 {
             return other.try_clone().map(Self::abs);
         }
         let mut left = Vec::new();
@@ -653,11 +840,12 @@ impl ExactDyadic {
             left = right;
             right = remainder;
         }
-        Ok(Self {
+        let value = Self {
             negative: false,
-            limbs: left,
+            limbs: CompactLimbs::from_vec(left),
             exponent: self.exponent.min(other.exponent),
-        })
+        };
+        Ok(value)
     }
 
     /// Divide two exact dyadics when the quotient is itself dyadic.
@@ -672,7 +860,7 @@ impl ExactDyadic {
         if self.is_zero() {
             return Ok(Self::zero());
         }
-        if divisor.limbs == [1] && divisor.exponent == 0 {
+        if divisor.limbs.as_slice() == [1] && divisor.exponent == 0 {
             return self.try_clone();
         }
         let (limbs, remainder) = Self::try_div_rem_unsigned(&self.limbs, &divisor.limbs)?;
@@ -682,14 +870,15 @@ impl ExactDyadic {
             )
             .into());
         }
-        Ok(Self {
+        let value = Self {
             negative: self.negative != divisor.negative,
-            limbs,
+            limbs: CompactLimbs::from_vec(limbs),
             exponent: self
                 .exponent
                 .checked_sub(divisor.exponent)
                 .ok_or(ResourceError::SizeOverflow)?,
-        })
+        };
+        Ok(value)
     }
 
     pub(in crate::geometry) fn try_from_f64(value: f64) -> Result<Self> {
@@ -705,8 +894,7 @@ impl ExactDyadic {
         } else {
             ((1_u64 << 52) | fraction, encoded_exponent - 1023 - 52)
         };
-        let mut limbs = Vec::new();
-        try_reserve_vec(&mut limbs, 1)?;
+        let mut limbs = CompactLimbs::try_with_capacity(1)?;
         limbs.push(significand);
         let mut value = Self {
             negative: bits >> 63 != 0,
@@ -718,14 +906,12 @@ impl ExactDyadic {
     }
 
     pub(in crate::geometry) fn try_clone(&self) -> Result<Self> {
-        let mut limbs = Vec::new();
-        try_reserve_vec(&mut limbs, self.limbs.len())?;
-        limbs.extend_from_slice(&self.limbs);
-        Ok(Self {
+        let value = Self {
             negative: self.negative,
-            limbs,
+            limbs: self.limbs.try_clone()?,
             exponent: self.exponent,
-        })
+        };
+        Ok(value)
     }
 
     pub(in crate::geometry) fn square(&self) -> Self {
@@ -3077,13 +3263,9 @@ mod tests {
             1.0_f64.to_bits()
         );
         assert_eq!(
-            round_ratio(&one, &ExactDyadic {
-                negative: false,
-                limbs: vec![1],
-                exponent: 1074
-            })
-            .unwrap()
-            .to_bits(),
+            round_ratio(&one, &ExactDyadic::from_parts(false, vec![1], 1074))
+                .unwrap()
+                .to_bits(),
             1
         );
         assert_eq!(
@@ -3092,16 +3274,10 @@ mod tests {
                 .to_bits(),
             f64::MAX.to_bits()
         );
-        let below_overflow = ExactDyadic::from_f64(f64::MAX).add(ExactDyadic {
-            negative: false,
-            limbs: vec![1],
-            exponent: 969,
-        });
-        let overflow_tie = ExactDyadic::from_f64(f64::MAX).add(ExactDyadic {
-            negative: false,
-            limbs: vec![1],
-            exponent: 970,
-        });
+        let below_overflow =
+            ExactDyadic::from_f64(f64::MAX).add(ExactDyadic::from_parts(false, vec![1], 969));
+        let overflow_tie =
+            ExactDyadic::from_f64(f64::MAX).add(ExactDyadic::from_parts(false, vec![1], 970));
         assert_eq!(
             round_ratio(&below_overflow, &one).unwrap().to_bits(),
             f64::MAX.to_bits()
@@ -3124,14 +3300,42 @@ mod tests {
                 .all(|value| value.is_zero() || value.limbs[0] & 1 == 1)
         );
 
-        let beyond_i32 = ExactDyadic {
-            negative: false,
-            limbs: vec![1],
-            exponent: i64::from(i32::MAX) + 1,
-        };
+        let beyond_i32 = ExactDyadic::from_parts(false, vec![1], i64::from(i32::MAX) + 1);
         assert_eq!(beyond_i32.square().exponent, 2 * (i64::from(i32::MAX) + 1));
         let bound = 1_127_u128 * (1_u128 << 20) * (GENERATED_ITEM_LIMIT as u128 + 1);
         assert!(bound < i64::MAX as u128);
+    }
+
+    #[test]
+    fn inline_and_spilled_dyadics_have_one_numeric_identity() {
+        let inline = ExactDyadic::from_parts(false, vec![1, 3], -211);
+        let spilled = ExactDyadic {
+            negative: false,
+            limbs: CompactLimbs::Heap(vec![1, 3]),
+            exponent: -211,
+        };
+        assert_eq!(inline, spilled);
+        assert_eq!(inline.cmp(&spilled), Ordering::Equal);
+        assert_eq!(inline.cmp_magnitude(&spilled), Ordering::Equal);
+        assert_eq!(
+            round_ratio(&inline, &ExactDyadic::one()).unwrap().to_bits(),
+            round_ratio(&spilled, &ExactDyadic::one())
+                .unwrap()
+                .to_bits()
+        );
+    }
+
+    #[test]
+    fn ordinary_one_limb_try_arithmetic_does_not_allocate() {
+        use crate::test_support::allocation_count;
+
+        let (_, allocations) = allocation_count(|| {
+            let left = ExactDyadic::try_from_f64(3.0).unwrap();
+            let right = ExactDyadic::try_from_f64(5.0).unwrap();
+            let sum = left.try_add(right).unwrap();
+            sum.try_product(&ExactDyadic::one()).unwrap()
+        });
+        assert_eq!(allocations, 0);
     }
 
     #[test]
@@ -3323,11 +3527,7 @@ mod tests {
                 .to_bits(),
             1
         );
-        let below_minimum = ExactDyadic {
-            negative: false,
-            limbs: vec![1],
-            exponent: -1075,
-        };
+        let below_minimum = ExactDyadic::from_parts(false, vec![1], -1075);
         assert_eq!(
             round_ratio(&below_minimum, &ExactDyadic::one())
                 .unwrap()
@@ -3427,11 +3627,7 @@ mod tests {
 
     #[test]
     fn nonzero_negative_ratio_underflow_retains_negative_zero() {
-        let tiny_negative = ExactDyadic {
-            negative: true,
-            limbs: vec![1],
-            exponent: -1075,
-        };
+        let tiny_negative = ExactDyadic::from_parts(true, vec![1], -1075);
         assert_eq!(
             round_ratio(&tiny_negative, &ExactDyadic::one())
                 .unwrap()
@@ -3540,11 +3736,7 @@ mod tests {
         let base =
             ExactPoint::homogeneous(ExactDyadic::from_f64(1.0), ExactDyadic::zero(), one.clone());
         let shifted = ExactPoint::homogeneous(
-            ExactDyadic::from_f64(1.0).add(ExactDyadic {
-                negative: false,
-                limbs: vec![1],
-                exponent: -1074,
-            }),
+            ExactDyadic::from_f64(1.0).add(ExactDyadic::from_parts(false, vec![1], -1074)),
             ExactDyadic::zero(),
             one,
         );
@@ -3738,19 +3930,11 @@ mod tests {
             (ExactDyadic::from_f64(f64::MAX), ExactDyadic::one()),
             (ExactDyadic::one(), ExactDyadic::from_f64(f64::MAX)),
             (
-                ExactDyadic {
-                    negative: false,
-                    limbs: vec![1, u64::MAX, 3, 7, 1],
-                    exponent: -211,
-                },
+                ExactDyadic::from_parts(false, vec![1, u64::MAX, 3, 7, 1], -211),
                 ExactDyadic::from_f64(3.0),
             ),
             (
-                ExactDyadic {
-                    negative: true,
-                    limbs: vec![1, 0, 0, 0, u64::MAX],
-                    exponent: 900,
-                },
+                ExactDyadic::from_parts(true, vec![1, 0, 0, 0, u64::MAX], 900),
                 ExactDyadic::one(),
             ),
         ];
