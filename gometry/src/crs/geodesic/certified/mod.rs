@@ -22,11 +22,17 @@ use crate::crs::CrsError;
 use crate::error::{Error, ErrorKind, ResourceError, Result};
 
 mod natural;
+mod sphere;
 #[cfg(test)]
 mod tests;
 mod trig;
 
 use natural::Magnitude;
+pub(crate) use sphere::{
+    Canonicalization, CertifiedBinary64, SphericalBranch, SphericalBranchIdentity,
+    SphericalGeodesic, SphericalInput, SphericalModel, SphericalMultiplicity, SphericalPoint,
+    classify_spherical_geodesic,
+};
 pub(crate) use trig::{
     AngleBracket, AngleBracketStatus, SineCosine, VectorSector, pi_bracket, sin_cos_degrees,
     sin_cos_radians, sin_cos_radians_enclosure, vector_angle_bracket,
