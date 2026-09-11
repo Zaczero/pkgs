@@ -22,15 +22,6 @@ enum SnapReferenceStorage {
     Indexed(SnapTree),
 }
 
-impl SnapReferenceStorage {
-    fn len(&self) -> usize {
-        match self {
-            Self::Linear(points) => points.len(),
-            Self::Indexed(tree) => tree.size(),
-        }
-    }
-}
-
 pub(crate) struct SnapReference {
     /// One reference representation: either build-ordered XY values or the
     /// same values in the spatial index, whose data is the source ordinal.
@@ -159,8 +150,10 @@ impl SnapReference {
         };
         let tolerance = self.tolerance;
         let limit = self.limit;
+        // Grow to the surviving candidates rather than the reference count:
+        // this runs once per source segment, and a tolerance window admits a
+        // handful of references out of the whole set.
         let mut candidates: Vec<(SegmentProjection, usize, Point)> = Vec::new();
-        crate::try_reserve_vec(&mut candidates, self.storage.len())?;
         let mut consider = |reference: XY, ordinal: usize| -> crate::error::Result<()> {
             // Skip if within tolerance of either endpoint, or farther than
             // tolerance from the open segment (honest distance, not squared).
@@ -177,7 +170,7 @@ impl SnapReference {
                 let mut point = projection.interpolate_point(start, end)?;
                 point.x = reference.x;
                 point.y = reference.y;
-                candidates.push((projection, ordinal, point));
+                crate::try_push_vec(&mut candidates, (projection, ordinal, point))?;
             }
             Ok(())
         };
@@ -1469,7 +1462,11 @@ mod snap_reference_tests {
 
     #[test]
     fn linear_snap_insertion_allocations_are_retryable() {
-        let points = line_reference_points(2);
+        // Only an off-segment reference outside both endpoint balls stages an
+        // inserted point, so this is the input that exercises the candidate
+        // and output allocations. Endpoint-coincident references are filtered
+        // before anything is retained, and that case allocates nothing.
+        let points = vec![XY::new(0.5, 0.2)];
         let reference = SnapReference::build(&points, 0.5).unwrap();
         let start = Point::new_raw_xy(0.0, 0.0);
         let end = Point::new_raw_xy(1.0, 0.0);
