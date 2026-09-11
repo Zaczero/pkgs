@@ -6488,13 +6488,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
     @overload
     def concat(
-        self: GeometryArray[_GeometryT_co], *others: GeometryArray[_GeometryOtherT]
+        self: GeometryArray[_GeometryT_co],
+        other: GeometryArray[_GeometryOtherT],
+        *others: GeometryArray[_GeometryOtherT],
     ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]: ...
     @overload
     def concat(
         self: GeometryArray[_GeometryT_co],
+        other: GeometryArray[_GeometryOtherT | None],
         *others: GeometryArray[_GeometryOtherT | None],
-    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT | None]:
+    ) -> GeometryArray[_GeometryT_co | _GeometryOtherT | None]: ...
+    @overload
+    def concat(
+        self: GeometryArray[_GeometryT_co],
+    ) -> GeometryArray[_GeometryT_co]:
         """Concatenate one or more arrays sharing this array's CRS and epoch.
 
         Parameters
