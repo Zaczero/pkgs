@@ -146,7 +146,7 @@ impl ExactDyadic {
         }
     }
 
-    fn one() -> Self {
+    pub(in crate::geometry) fn one() -> Self {
         Self {
             negative: false,
             limbs: vec![1],
@@ -220,14 +220,14 @@ impl ExactDyadic {
         }
     }
 
-    const fn neg(mut self) -> Self {
+    pub(in crate::geometry) const fn neg(mut self) -> Self {
         if !self.is_zero() {
             self.negative = !self.negative;
         }
         self
     }
 
-    const fn abs(mut self) -> Self {
+    pub(in crate::geometry) const fn abs(mut self) -> Self {
         self.negative = false;
         self
     }
@@ -514,6 +514,182 @@ impl ExactDyadic {
         };
         result.trim();
         Ok(result)
+    }
+
+    fn unsigned_bit_length(limbs: &[u64]) -> usize {
+        let Some(&high) = limbs.last() else {
+            return 0;
+        };
+        limbs.len().saturating_sub(1) * 64 + (64 - high.leading_zeros() as usize)
+    }
+
+    fn compare_unsigned(left: &[u64], right: &[u64]) -> Ordering {
+        let left_len = left.len();
+        let right_len = right.len();
+        match left_len.cmp(&right_len) {
+            Ordering::Equal => {},
+            order => return order,
+        }
+        for (&left, &right) in left.iter().rev().zip(right.iter().rev()) {
+            match left.cmp(&right) {
+                Ordering::Equal => {},
+                order => return order,
+            }
+        }
+        Ordering::Equal
+    }
+
+    fn subtract_unsigned_in_place(left: &mut [u64], right: &[u64]) {
+        let mut borrow = false;
+        for (index, value) in left.iter_mut().enumerate() {
+            let (difference, first_borrow) =
+                value.overflowing_sub(right.get(index).copied().unwrap_or(0));
+            let (difference, second_borrow) = difference.overflowing_sub(u64::from(borrow));
+            *value = difference;
+            borrow = first_borrow || second_borrow;
+        }
+        debug_assert!(!borrow);
+    }
+
+    fn shifted_unsigned(limbs: &[u64], shift: usize) -> Result<Vec<u64>> {
+        if limbs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let words = shift / 64;
+        let bits = shift % 64;
+        let length = limbs
+            .len()
+            .checked_add(words)
+            .and_then(|length| length.checked_add(usize::from(bits != 0)))
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut shifted = Vec::new();
+        try_reserve_vec(&mut shifted, length)?;
+        shifted.resize(length, 0);
+        for (index, &limb) in limbs.iter().enumerate() {
+            let target = index + words;
+            shifted[target] |= limb << bits;
+            if bits != 0 {
+                shifted[target + 1] |= limb >> (64 - bits);
+            }
+        }
+        while shifted.last() == Some(&0) {
+            shifted.pop();
+        }
+        Ok(shifted)
+    }
+
+    /// Divide two non-negative integers represented by little-endian limbs.
+    ///
+    /// The quotient is only needed for exact rational reduction, so this uses
+    /// shift/subtract long division instead of introducing a second arbitrary
+    /// precision dependency. Every result vector is fallibly reserved.
+    fn try_div_rem_unsigned(dividend: &[u64], divisor: &[u64]) -> Result<(Vec<u64>, Vec<u64>)> {
+        debug_assert!(!divisor.is_empty());
+        if dividend.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let dividend_bits = Self::unsigned_bit_length(dividend);
+        let divisor_bits = Self::unsigned_bit_length(divisor);
+        if dividend_bits < divisor_bits {
+            let mut remainder = Vec::new();
+            try_reserve_vec(&mut remainder, dividend.len())?;
+            remainder.extend_from_slice(dividend);
+            return Ok((Vec::new(), remainder));
+        }
+        let quotient_bits = dividend_bits - divisor_bits + 1;
+        let quotient_len = quotient_bits.div_ceil(64);
+        let mut quotient = Vec::new();
+        try_reserve_vec(&mut quotient, quotient_len)?;
+        quotient.resize(quotient_len, 0);
+        let mut remainder = Vec::new();
+        try_reserve_vec(&mut remainder, dividend.len())?;
+        remainder.extend_from_slice(dividend);
+        while Self::compare_unsigned(&remainder, divisor) != Ordering::Less {
+            let remainder_bits = Self::unsigned_bit_length(&remainder);
+            let mut shift = remainder_bits - divisor_bits;
+            let mut shifted = Self::shifted_unsigned(divisor, shift)?;
+            if Self::compare_unsigned(&remainder, &shifted) == Ordering::Less {
+                shift -= 1;
+                shifted = Self::shifted_unsigned(divisor, shift)?;
+            }
+            Self::subtract_unsigned_in_place(&mut remainder, &shifted);
+            while remainder.last() == Some(&0) {
+                remainder.pop();
+            }
+            quotient[shift / 64] |= 1_u64 << (shift % 64);
+        }
+        while quotient.last() == Some(&0) {
+            quotient.pop();
+        }
+        Ok((quotient, remainder))
+    }
+
+    /// Greatest common divisor in the exact dyadic domain.
+    ///
+    /// `trim` keeps each nonzero limb bank odd, so the common power-of-two
+    /// factor is the smaller exponent and the odd banks can use ordinary
+    /// integer Euclid. The result is positive and exact.
+    pub(in crate::geometry) fn try_gcd(&self, other: &Self) -> Result<Self> {
+        if self.is_zero() {
+            return other.try_clone().map(Self::abs);
+        }
+        if other.is_zero() {
+            return self.try_clone().map(Self::abs);
+        }
+        if self.limbs == [1] && self.exponent == 0 {
+            return self.try_clone().map(Self::abs);
+        }
+        if other.limbs == [1] && other.exponent == 0 {
+            return other.try_clone().map(Self::abs);
+        }
+        let mut left = Vec::new();
+        try_reserve_vec(&mut left, self.limbs.len())?;
+        left.extend_from_slice(&self.limbs);
+        let mut right = Vec::new();
+        try_reserve_vec(&mut right, other.limbs.len())?;
+        right.extend_from_slice(&other.limbs);
+        while !right.is_empty() {
+            let (_, remainder) = Self::try_div_rem_unsigned(&left, &right)?;
+            left = right;
+            right = remainder;
+        }
+        Ok(Self {
+            negative: false,
+            limbs: left,
+            exponent: self.exponent.min(other.exponent),
+        })
+    }
+
+    /// Divide two exact dyadics when the quotient is itself dyadic.
+    ///
+    /// Rational-area reduction only calls this with a common divisor, so a
+    /// nonzero remainder is an internal exactness failure rather than a
+    /// rounded result.
+    pub(in crate::geometry) fn try_exact_quotient(&self, divisor: &Self) -> Result<Self> {
+        if divisor.is_zero() {
+            return Err(crate::geometry::GeometryErrorKind::ExactRatioZeroDenominator.into());
+        }
+        if self.is_zero() {
+            return Ok(Self::zero());
+        }
+        if divisor.limbs == [1] && divisor.exponent == 0 {
+            return self.try_clone();
+        }
+        let (limbs, remainder) = Self::try_div_rem_unsigned(&self.limbs, &divisor.limbs)?;
+        if !remainder.is_empty() {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "exact dyadic quotient has a remainder".into(),
+            )
+            .into());
+        }
+        Ok(Self {
+            negative: self.negative != divisor.negative,
+            limbs,
+            exponent: self
+                .exponent
+                .checked_sub(divisor.exponent)
+                .ok_or(ResourceError::SizeOverflow)?,
+        })
     }
 
     pub(in crate::geometry) fn try_from_f64(value: f64) -> Result<Self> {

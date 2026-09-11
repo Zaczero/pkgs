@@ -1330,6 +1330,53 @@ impl ExactSourceInventory {
         })
     }
 
+    /// Measure the occupied Cartesian support without serializing rounded
+    /// boundary coordinates. Face selection follows the same stored-ring
+    /// winding fold as ordinary overlay; the selected homogeneous face
+    /// integrals are accumulated as one exact rational before final rounding.
+    pub(in crate::geometry) fn occupied_cartesian_area(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<f64> {
+        debug_assert_eq!(
+            self.operand_count(),
+            1,
+            "occupied area is an operation over one composed operand"
+        );
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let mut selected = Vec::new();
+        try_reserve_vec(&mut selected, global.count as usize)?;
+        selected.resize(global.count as usize, false);
+        partition.visit_face_windings(
+            &topology,
+            &edges,
+            &global,
+            &self.source_rings,
+            self.ring_count,
+            |face, winding| {
+                selected[face as usize] = self.operand_occupied(winding, 0, false, true);
+                Ok(())
+            },
+        )?;
+        let mut area = crate::geometry::ExactRationalArea::new()?;
+        for walk in 0..topology.face_starts.len().saturating_sub(1) {
+            if !selected[global.walk_faces[walk] as usize] {
+                continue;
+            }
+            let range =
+                topology.face_starts[walk] as usize..topology.face_starts[walk + 1] as usize;
+            for &slot in &topology.face_slots[range] {
+                let slot = slot as usize;
+                area.add_homogeneous_cross(
+                    partition.homogeneous(NodeId(topology.owners[slot]))?,
+                    partition.homogeneous(NodeId(topology.targets[slot]))?,
+                )?;
+            }
+        }
+        area.round_abs_half()
+    }
+
     /// Serialize the occupied Cartesian support from the same selected faces
     /// used by the exact fill selection. The caller may reuse this
     /// named owner for metrics whose conversion is not planar, such as the
@@ -2014,6 +2061,13 @@ impl ExactSourceInventory {
         }
         net != 0
     }
+}
+
+pub(crate) fn occupied_cartesian_area(shape: &Shape) -> Result<f64> {
+    let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+    let mut budget = ExpansionBudget::new("area", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    inventory.occupied_cartesian_area(&partition)
 }
 
 pub(crate) fn occupied_cartesian_support(shape: &Shape) -> Result<Shape> {
@@ -4970,6 +5024,31 @@ mod tests {
             let shape = crate::io::parse_wkt(wkt).expect("valid test WKT");
             let support = occupied_cartesian_support(&shape).expect("exact occupied support");
             assert_eq!(support.area(), expected, "{wkt}");
+        }
+    }
+
+    #[test]
+    fn occupied_area_owner_rounds_exact_selected_faces() {
+        let cases = [
+            ("POLYGON ((0 0,1 0,1 1,0 1,0 0,1 0,1 1,0 1,0 0))", 1.0),
+            ("POLYGON ((0 0,1 1,1 0,0 1,0 0))", 0.5),
+            (
+                "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((0.5 0,1.5 0,1.5 1,0.5 1,0.5 0)))",
+                1.5,
+            ),
+            ("POLYGON ((0 0,1 0,1 1,0 1,0 0),(3 0,4 0,4 1,3 1,3 0))", 1.0),
+            (
+                "POLYGON ((0 0,1 0,1 1,0 1,0 0),(-0.5 -0.5,1.5 -0.5,1.5 1.5,-0.5 1.5,-0.5 -0.5))",
+                0.0,
+            ),
+        ];
+        for (wkt, expected) in cases {
+            let shape = crate::io::parse_wkt(wkt).expect("valid test WKT");
+            assert_eq!(
+                occupied_cartesian_area(&shape).expect("exact occupied area"),
+                expected,
+                "{wkt}"
+            );
         }
     }
 

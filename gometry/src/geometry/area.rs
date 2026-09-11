@@ -3,11 +3,14 @@
 
 use std::simd::num::SimdFloat as _;
 
+use crate::error::Result;
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::expansion::{
     expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim,
 };
+use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio};
 use crate::geometry::types::{Coordinates, Point, XY};
 use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area, wrap_index};
 
@@ -18,6 +21,103 @@ pub(crate) struct AreaMeasure(f64);
 impl AreaMeasure {
     pub(crate) const fn get(self) -> f64 {
         self.0
+    }
+}
+
+/// Exact rational accumulator for areas of selected partition faces.
+///
+/// A constructed partition node is a rational point, not a binary64 point:
+/// its homogeneous coordinates are dyadic numerators and denominators. The
+/// selected-face cross products therefore form a rational sum. Keep that sum
+/// reduced after every term, then round its final absolute half-area once with
+/// the exact ratio owner. This is deliberately separate from [`ExactSum`],
+/// whose degree-two dyadic contract serves ring winding signs and source-ring
+/// magnitudes rather than rational face coordinates.
+pub(crate) struct ExactRationalArea {
+    numerator: ExactDyadic,
+    denominator: ExactDyadic,
+}
+
+impl ExactRationalArea {
+    pub(in crate::geometry) fn new() -> Result<Self> {
+        Ok(Self {
+            numerator: ExactDyadic::try_from_f64(0.0)?,
+            denominator: ExactDyadic::try_from_f64(1.0)?,
+        })
+    }
+
+    pub(in crate::geometry) fn add_fraction(
+        &mut self,
+        mut numerator: ExactDyadic,
+        mut denominator: ExactDyadic,
+    ) -> Result<()> {
+        if numerator.is_zero() {
+            return Ok(());
+        }
+        if denominator.is_zero() {
+            return Err(crate::geometry::GeometryErrorKind::ExactRatioZeroDenominator.into());
+        }
+        if denominator.sign() == ExactSign::Negative {
+            numerator = numerator.neg();
+            denominator = denominator.neg();
+        }
+
+        let common = self.denominator.try_gcd(&denominator)?;
+        let left_scale = self.denominator.try_exact_quotient(&common)?;
+        let right_scale = denominator.try_exact_quotient(&common)?;
+        let left = self.numerator.try_product(&right_scale)?;
+        let right = numerator.try_product(&left_scale)?;
+        let next_numerator = left.try_add(right)?;
+        let next_denominator = self.denominator.try_product(&right_scale)?;
+
+        // Keep the common denominator bounded by the least common multiple,
+        // rather than the product of every face denominator. This is the
+        // rational-sum contract: every update remains an exact reduced
+        // fraction, and only the final quotient is rounded.
+        let reduction = next_numerator
+            .try_clone()?
+            .abs()
+            .try_gcd(&next_denominator)?;
+        self.numerator = next_numerator.try_exact_quotient(&reduction)?;
+        self.denominator = next_denominator.try_exact_quotient(&reduction)?;
+        Ok(())
+    }
+
+    pub(in crate::geometry) fn add_homogeneous_cross(
+        &mut self,
+        left: [ExactDyadic; 3],
+        right: [ExactDyadic; 3],
+    ) -> Result<()> {
+        let forward = left[0].try_product(&right[1])?;
+        let reverse = left[1].try_product(&right[0])?;
+        let numerator = forward.try_subtract(reverse)?;
+        let denominator = left[2].try_product(&right[2])?;
+        self.add_fraction(numerator, denominator)
+    }
+
+    pub(in crate::geometry) fn round_abs_half(&self) -> Result<f64> {
+        let numerator = self.numerator.try_clone()?.abs();
+        let denominator = self
+            .denominator
+            .try_product(&ExactDyadic::try_from_f64(2.0)?)?;
+        match round_ratio(&numerator, &denominator) {
+            Ok(value) => Ok(value),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        crate::geometry::GeometryErrorKind::ExactCoordinateOutOfRange
+                    )
+                ) =>
+            {
+                // A scalar area uses IEEE binary64 overflow semantics. The
+                // shared ratio owner reports the same threshold as an
+                // unrepresentable coordinate, so translate only that
+                // magnitude-specific result to positive infinity.
+                Ok(f64::INFINITY)
+            },
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -1047,6 +1147,40 @@ pub(crate) fn cmp_area_keys_then_open_columns(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rational_area_accumulator_rounds_selected_fraction_once() {
+        let exact = |value| ExactDyadic::try_from_f64(value).expect("finite dyadic");
+        let mut area = ExactRationalArea::new().expect("one denominator");
+        area.add_homogeneous_cross([exact(0.0), exact(0.0), exact(1.0)], [
+            exact(1.0),
+            exact(0.0),
+            exact(1.0),
+        ])
+        .expect("first edge");
+        area.add_homogeneous_cross([exact(1.0), exact(0.0), exact(1.0)], [
+            exact(0.0),
+            exact(1.0),
+            exact(1.0),
+        ])
+        .expect("second edge");
+        area.add_homogeneous_cross([exact(0.0), exact(1.0), exact(1.0)], [
+            exact(0.0),
+            exact(0.0),
+            exact(1.0),
+        ])
+        .expect("third edge");
+        assert_eq!(area.round_abs_half().expect("rounded area"), 0.5);
+
+        let mut rational = ExactRationalArea::new().expect("one denominator");
+        rational
+            .add_fraction(exact(1.0), exact(3.0))
+            .expect("third");
+        rational
+            .add_fraction(exact(1.0), exact(6.0))
+            .expect("sixth");
+        assert_eq!(rational.round_abs_half().expect("rounded rational"), 0.25);
+    }
 
     #[test]
     fn near_collinear_ring_preserves_original_product_sum() {

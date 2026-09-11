@@ -31,7 +31,7 @@ pub(crate) use access::{
     simd_xy_map_f64, squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns,
 };
 pub(crate) use area::{
-    AreaSign, RingWinding, closed_columns_winding, cmp_area_keys_then_closed,
+    AreaSign, ExactRationalArea, RingWinding, closed_columns_winding, cmp_area_keys_then_closed,
     cmp_area_keys_then_open_columns, open_point_cycle_decision, open_point_cycle_winding,
     open_xy_cycle_decision, open_xy_cycle_magnitude, open_xy_cycle_sign, open_xy_cycle_winding,
     polygon_area_measure_columns, polygon_area_measure_with, ring_area_measure, ring_decision_area,
@@ -84,7 +84,7 @@ mod linear;
 mod linear_3d;
 mod ordinates;
 mod overlay;
-pub(crate) use overlay::{occupied_support_shape, overlay_all};
+pub(crate) use overlay::{occupied_cartesian_area, occupied_support_shape, overlay_all};
 pub(crate) mod packed_line_metrics;
 mod point_location;
 mod predicates;
