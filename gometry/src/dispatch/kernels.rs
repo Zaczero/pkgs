@@ -520,12 +520,20 @@ pub(crate) fn unary_densify(
 pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<f64> {
     let metric = ctx.metric.require_resolved(MetricOp::Area)?;
     match metric {
-        ResolvedMetric::Planar { to_metre } => Ok(scale_area(data.shape().area(), to_metre.get())),
+        ResolvedMetric::Planar { to_metre } => {
+            let area = if ctx.domain.is_geographic() {
+                crate::geometry::occupied_support_shape(data.shape(), ctx.domain)?.area()
+            } else {
+                crate::geometry::occupied_cartesian_area(data.shape())?
+            };
+            Ok(scale_area(area, to_metre.get()))
+        },
         ResolvedMetric::Geodesic(metric) => {
             crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
+            let support = crate::geometry::occupied_support_shape(data.shape(), ctx.domain)?;
             Ok(crate::crs::geodesic_shape_area(
                 &metric.geodesic,
-                data.shape(),
+                &support,
                 metric.frame,
             ))
         },

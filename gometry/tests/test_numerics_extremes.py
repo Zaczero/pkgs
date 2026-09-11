@@ -288,8 +288,10 @@ def test_finite_area_rescue_is_rotation_invariant_across_coordinate_magnitudes()
             gm.GeometryCollection([polygons[1], polygons[0]]),
         ):
             packed = gm.GeometryArray([aggregate])
-            assert aggregate.area == float(expected_area * 2)
-            assert float(packed.area[0]) == float(expected_area * 2)
+            # Multipart and collection operands are unions: these two entries
+            # have the same support, so a duplicate does not double-count it.
+            assert aggregate.area == float(expected_area)
+            assert float(packed.area[0]) == float(expected_area)
             for centroid in (aggregate.centroid(), packed.centroid()[0]):
                 _assert_close_to_stored_reference(float(centroid.x), expected_x)
                 _assert_close_to_stored_reference(float(centroid.y), expected_y)

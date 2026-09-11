@@ -130,9 +130,6 @@ pub(crate) fn try_unary_packed_f64(
     unit: Option<DistanceUnit>,
 ) -> Option<PyResult<Py<PyAny>>> {
     match op {
-        Operation::Metric(MetricOp::Area) => {
-            packed_f64_lane(py, array, array.area_unary_packed(py, unit, MetricOp::Area))
-        },
         Operation::Metric(MetricOp::Length) => packed_f64_lane(
             py,
             array,
