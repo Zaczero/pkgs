@@ -362,3 +362,272 @@ fn panicking_weight_callback_returns_cleared_leases() {
     assert!(arrangement_spares().points.is_empty());
     assert!(typed_spares::<i32>().edges.is_empty());
 }
+
+/// Connected square + full chord + hole + bridge. Occupancy from a reversible
+/// DFS on the real arrangement dual; points classified by actual face rings.
+#[test]
+fn connected_chord_bridge_dfs_undo_keeps_south_body() {
+    let shell = [
+        XY::new(0.0, 0.0),
+        XY::new(6.0, 0.0),
+        XY::new(6.0, 6.0),
+        XY::new(0.0, 6.0),
+        XY::new(0.0, 0.0),
+    ];
+    let hole = [
+        XY::new(2.0, 4.0),
+        XY::new(4.0, 4.0),
+        XY::new(4.0, 5.0),
+        XY::new(2.0, 5.0),
+        XY::new(2.0, 4.0),
+    ];
+    let mut raw: Vec<(Segment, [i32; 2])> = Vec::new();
+    for window in shell.windows(2) {
+        raw.push((
+            Segment {
+                start: window[0],
+                end: window[1],
+            },
+            [1, 0],
+        ));
+    }
+    for window in hole.windows(2) {
+        raw.push((
+            Segment {
+                start: window[0],
+                end: window[1],
+            },
+            [0, 1],
+        ));
+    }
+    raw.push((
+        Segment {
+            start: XY::new(0.0, 3.0),
+            end: XY::new(6.0, 3.0),
+        },
+        [0, 0],
+    ));
+    raw.push((
+        Segment {
+            start: XY::new(2.0, 3.0),
+            end: XY::new(2.0, 4.0),
+        },
+        [0, 0],
+    ));
+    let sources: Vec<Segment> = raw.iter().map(|entry| entry.0).collect();
+    let (atomic, provenance) =
+        crate::geometry::overlay::self_node_segments_sourced(sources).expect("noded sources");
+    let arrangement = Arrangement::<[i32; 2]>::build::<true>(&atomic, |piece| {
+        let mut weight = [0, 0];
+        for &(ordinal, reversed) in provenance.owners(piece) {
+            let unit = raw[ordinal as usize].1;
+            if reversed {
+                weight[0] -= unit[0];
+                weight[1] -= unit[1];
+            } else {
+                weight[0] += unit[0];
+                weight[1] += unit[1];
+            }
+        }
+        weight
+    });
+    assert_eq!(
+        arrangement.component_count, 1,
+        "chord and bridge must yield one vertex component, got {}",
+        arrangement.component_count
+    );
+    assert!(
+        arrangement.faces.iter().all(|face| !face.ring.is_empty()),
+        "need materialized face rings to locate queries"
+    );
+
+    let unbounded = unbounded_face_predecessor_of_minus_x(&arrangement);
+    let adj = dual_adjacency(&arrangement);
+    let undo = dfs_occupancy(&adj, unbounded, true);
+    let leak = dfs_occupancy(&adj, unbounded, false);
+
+    let body = XY::new(3.0, 1.0);
+    let in_hole = XY::new(3.0, 4.5);
+    let body_face = locate_face(&arrangement, unbounded, body);
+    let hole_face = locate_face(&arrangement, unbounded, in_hole);
+    assert_ne!(
+        body_face, unbounded,
+        "body point must sit in a bounded face"
+    );
+    assert_ne!(
+        hole_face, unbounded,
+        "hole point must sit in a bounded face"
+    );
+    assert_ne!(body_face, hole_face);
+
+    let ray_body = ring_occupied(&shell, &hole, body);
+    let ray_hole = ring_occupied(&shell, &hole, in_hole);
+    assert!(ray_body, "independent ring winding: south body occupied");
+    assert!(
+        !ray_hole,
+        "independent ring winding: hole not polygon-occupied"
+    );
+
+    assert!(
+        occupied(undo[body_face]),
+        "undo DFS must occupy south body; winding={:?}",
+        undo[body_face]
+    );
+    assert!(
+        !occupied(undo[hole_face]),
+        "undo DFS must leave hole unoccupied; winding={:?}",
+        undo[hole_face]
+    );
+    assert!(
+        !occupied(leak[body_face]),
+        "omit-undo must leak hole winding onto south body; winding={:?}",
+        leak[body_face]
+    );
+}
+
+fn occupied(winding: [i32; 2]) -> bool {
+    winding[0] != 0 && winding[1] == 0
+}
+
+fn ring_occupied(shell: &[XY], hole: &[XY], point: XY) -> bool {
+    winding_of(shell, point) != 0 && winding_of(hole, point) == 0
+}
+
+fn winding_of(ring: &[XY], point: XY) -> i32 {
+    let mut winding = 0;
+    for window in ring.windows(2) {
+        let (start, end) = (window[0], window[1]);
+        if (start.y > point.y) != (end.y > point.y)
+            && crate::geometry::ray_crossing_is_right(
+                start.x, start.y, end.x, end.y, point.x, point.y,
+            )
+        {
+            winding += if end.y > start.y { 1 } else { -1 };
+        }
+    }
+    winding
+}
+
+/// Left face of the CCW-fan slot whose wedge contains −x at the
+/// lexicographic-minimum vertex (`compare_departures` order, wrap last→first).
+fn unbounded_face_predecessor_of_minus_x(arrangement: &Arrangement<[i32; 2]>) -> usize {
+    let (vertex, origin) = arrangement
+        .points
+        .iter()
+        .copied()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y)))
+        .expect("arrangement has vertices");
+    let range = arrangement.starts[vertex] as usize..arrangement.starts[vertex + 1] as usize;
+    let mut outgoing: Vec<usize> = range.collect();
+    outgoing.sort_by(|&left, &right| {
+        compare_departures(
+            origin,
+            arrangement.points[arrangement.targets[left] as usize],
+            arrangement.targets[left],
+            arrangement.points[arrangement.targets[right] as usize],
+            arrangement.targets[right],
+        )
+    });
+    let minus_x = XY::new(origin.x - 1.0, origin.y);
+    let insert = outgoing.iter().position(|&slot| {
+        compare_departures(
+            origin,
+            minus_x,
+            u32::MAX,
+            arrangement.points[arrangement.targets[slot] as usize],
+            arrangement.targets[slot],
+        ) == std::cmp::Ordering::Less
+    });
+    let predecessor = match insert {
+        Some(0) | None => *outgoing.last().expect("degree ≥ 1"),
+        Some(index) => outgoing[index - 1],
+    };
+    arrangement.face_of[predecessor] as usize
+}
+
+fn dual_adjacency(arrangement: &Arrangement<[i32; 2]>) -> Vec<Vec<(usize, [i32; 2])>> {
+    let mut adj = vec![Vec::new(); arrangement.faces.len()];
+    for slot in 0..arrangement.targets.len() {
+        let twin = arrangement.twin_slot(slot);
+        if slot > twin {
+            continue;
+        }
+        let left = arrangement.face_of[slot] as usize;
+        let right = arrangement.face_of[twin] as usize;
+        if left == right {
+            continue;
+        }
+        let multiplicity = arrangement.typed.multiplicities[slot];
+        // L→R subtracts m; R→L adds m.
+        adj[left].push((right, [-multiplicity[0], -multiplicity[1]]));
+        adj[right].push((left, multiplicity));
+    }
+    let touches_hole: Vec<bool> = adj
+        .iter()
+        .map(|neighbors| neighbors.iter().any(|&(_, d)| d[1] != 0))
+        .collect();
+    for neighbors in &mut adj {
+        neighbors.sort_by_key(|&(neighbor, delta)| {
+            (!touches_hole[neighbor], -(delta[1].abs()), neighbor)
+        });
+    }
+    adj
+}
+
+fn dfs_occupancy(adj: &[Vec<(usize, [i32; 2])>], start: usize, undo: bool) -> Vec<[i32; 2]> {
+    let mut winding = [0, 0];
+    let mut seen = vec![None; adj.len()];
+    seen[start] = Some([0, 0]);
+    let mut stack: Vec<(usize, usize, Option<[i32; 2]>)> = vec![(start, 0, None)];
+    while let Some((face, next, incoming)) = stack.pop() {
+        if next == adj[face].len() {
+            if undo && let Some(delta) = incoming {
+                winding[0] -= delta[0];
+                winding[1] -= delta[1];
+            }
+            continue;
+        }
+        stack.push((face, next + 1, incoming));
+        let (neighbor, delta) = adj[face][next];
+        if seen[neighbor].is_some() {
+            continue;
+        }
+        winding[0] += delta[0];
+        winding[1] += delta[1];
+        seen[neighbor] = Some(winding);
+        stack.push((neighbor, 0, undo.then_some(delta)));
+    }
+    seen.into_iter()
+        .map(|entry| entry.expect("DFS reaches every face of the component"))
+        .collect()
+}
+
+fn locate_face(arrangement: &Arrangement<[i32; 2]>, unbounded: usize, point: XY) -> usize {
+    let mut best = None;
+    for (face, data) in arrangement.faces.iter().enumerate() {
+        if face == unbounded || data.ring.len() < 4 {
+            continue;
+        }
+        let ring = CoordSeq::try_from_xy(&data.ring).expect("face ring coordinates");
+        if ring_classify_point(&ring, point.point()) != RingClass::Interior {
+            continue;
+        }
+        let xs = data.ring.iter().map(|vertex| vertex.x);
+        let ys = data.ring.iter().map(|vertex| vertex.y);
+        let (minx, maxx) = (
+            xs.clone().fold(f64::INFINITY, f64::min),
+            xs.fold(f64::NEG_INFINITY, f64::max),
+        );
+        let (miny, maxy) = (
+            ys.clone().fold(f64::INFINITY, f64::min),
+            ys.fold(f64::NEG_INFINITY, f64::max),
+        );
+        let area = (maxx - minx) * (maxy - miny);
+        if best.is_none_or(|(_, previous)| area < previous) {
+            best = Some((face, area));
+        }
+    }
+    best.map(|(face, _)| face)
+        .expect("query lies in a bounded face ring")
+}
