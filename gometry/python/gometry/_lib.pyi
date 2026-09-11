@@ -16133,6 +16133,9 @@ def hausdorff_distance(
     projected CRS, coordinate units when CRS-free. Geographic Hausdorff
     distance supports point and linework operands only; filled polygon
     interiors require ``unit='planar'`` or a projected CRS.
+    Polygon operands are their filled closed regions, including interiors and
+    excluding holes. Mixed-dimensional collections use the union of their
+    members; zero-area polygon rings contribute their closed boundary only.
 
     Parameters
     ----------
@@ -16185,6 +16188,10 @@ def hausdorff_distance(
     >>> b = gm.LineString([(0, 1), (10, 3)])
     >>> gm.hausdorff_distance(a, b)
     3.0
+    >>> square = gm.box(0, 0, 10, 10)
+    >>> boundary = gm.LineString([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)])
+    >>> gm.hausdorff_distance(square, boundary)
+    5.0
     """
 
 @overload

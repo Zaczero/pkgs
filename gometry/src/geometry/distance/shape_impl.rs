@@ -351,7 +351,10 @@ impl Shape {
             return self.hausdorff_distance(&part);
         }
         if self.is_empty() || other.is_empty() {
-            return Ok(f64::INFINITY);
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "hausdorff_distance requires non-empty geometries",
+            )
+            .into());
         }
         if self.has_filled_area_parts() || other.has_filled_area_parts() {
             return filled_hausdorff_distance(self, other);

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from math import sqrt
 
+import pytest
+
 import gometry as gm
 
 
@@ -24,6 +26,15 @@ def test_filled_square_against_its_boundary_uses_the_inradius() -> None:
     assert gm.hausdorff_distance(square, boundary) == 1.0
 
 
+def test_point_inside_filled_square_has_zero_directed_contribution() -> None:
+    square = gm.box(2, 2, 8, 8)
+    point = gm.Point(5, 5)
+
+    # The public API is symmetric: the reverse direction is the square's
+    # distance to its point, while the point-to-square contribution is zero.
+    assert gm.hausdorff_distance(point, square) == sqrt(18.0)
+
+
 def test_parallel_target_ridge_is_exact() -> None:
     source = gm.box(-1, -1, 1, 1)
     target = gm.GeometryCollection(
@@ -34,3 +45,40 @@ def test_parallel_target_ridge_is_exact() -> None:
     )
 
     assert gm.hausdorff_distance(source, target) == 1.0
+
+
+def test_multiple_holes_and_hole_outside_source() -> None:
+    source = gm.box(0, 0, 10, 10)
+    target = gm.from_wkt(
+        "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), "
+        "(1 1, 3 1, 3 3, 1 3, 1 1), "
+        "(6 6, 9 6, 9 9, 6 9, 6 6))"
+    )
+    assert gm.hausdorff_distance(source, target) == 1.5
+
+    small_source = gm.box(0, 0, 1, 1)
+    # The small source is covered by the target; the symmetric result is
+    # therefore set by the target's farthest outer corner.
+    assert gm.hausdorff_distance(small_source, target) == sqrt(162.0)
+
+
+def test_mixed_dimension_collection_keeps_polygon_fill_and_point_union() -> None:
+    source = gm.GeometryCollection([gm.box(0, 0, 2, 2), gm.Point(10, 0)])
+    target = gm.Point(0, 0)
+
+    assert gm.hausdorff_distance(source, target) == 10.0
+
+
+def test_empty_operands_are_rejected() -> None:
+    empty = gm.from_wkt("POLYGON EMPTY")
+    point = gm.Point(0, 0)
+
+    with pytest.raises(gm.InvalidGeometryError, match="non-empty"):
+        gm.hausdorff_distance(empty, point)
+
+
+def test_zero_area_polygon_keeps_closed_boundary_semantics() -> None:
+    degenerate = gm.from_wkt("POLYGON ((0 0, 1 0, 2 0, 0 0))")
+    line = gm.LineString([(0, 0), (2, 0)])
+
+    assert gm.hausdorff_distance(degenerate, line) == 0.0

@@ -734,18 +734,12 @@ fn target_polygon_membership_zeros_a_strictly_interior_point() {
 
 #[test]
 fn segment_aware_hausdorff_empty_and_point_semantics() {
-    assert!(
-        line(vec![p(0.0, 0.0), p(1.0, 0.0)])
-            .hausdorff_distance(&Shape::empty_point())
-            .unwrap()
-            .is_infinite()
-    );
-    assert!(
-        Shape::empty_point()
-            .hausdorff_distance(&Shape::Point(p(0.0, 0.0)))
-            .unwrap()
-            .is_infinite()
-    );
+    line(vec![p(0.0, 0.0), p(1.0, 0.0)])
+        .hausdorff_distance(&Shape::empty_point())
+        .unwrap_err();
+    Shape::empty_point()
+        .hausdorff_distance(&Shape::Point(p(0.0, 0.0)))
+        .unwrap_err();
     assert_hausdorff_close(
         Shape::Point(p(0.0, 0.0))
             .hausdorff_distance(&Shape::Point(p(3.0, 4.0)))

@@ -506,6 +506,9 @@ An empty operand is total, not an error: `distance` returns `inf`, while
 (`(POINT EMPTY, POINT EMPTY)` and `LINESTRING EMPTY`), so a single empty row never
 aborts a vectorized call. `hausdorff_distance` is a similarity metric over
 non-empty supports and raises `InvalidGeometryError` for an empty operand.
+Its polygon operands are filled closed regions: interiors belong to the set
+and holes do not. A mixed-dimensional collection uses the union of its
+members; a zero-area polygon contributes only its closed ring boundary.
 When operands differ in dimensionality (an `XYZM` line
 and an `XY` point) the witnesses drop to the ordinates both carry.
 

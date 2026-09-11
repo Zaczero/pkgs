@@ -1152,6 +1152,65 @@ mod tests {
     }
 
     #[test]
+    fn multiple_target_holes_choose_the_largest_empty_circle() {
+        let source = polygon(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            &[],
+        );
+        let target = polygon(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            &[
+                &[(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)],
+                &[(6.0, 6.0), (9.0, 6.0), (9.0, 9.0), (6.0, 9.0), (6.0, 6.0)],
+            ],
+        );
+        assert_eq!(directed_filled_hausdorff(&source, &target).unwrap(), 1.5);
+        let small_source = polygon(
+            &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)],
+            &[],
+        );
+        assert_eq!(
+            directed_filled_hausdorff(&small_source, &target).unwrap(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn source_inside_target_hole_measures_to_the_hole_boundary() {
+        let source = polygon(
+            &[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0), (4.0, 4.0)],
+            &[],
+        );
+        let target = polygon(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            &[&[(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)]],
+        );
+        let query = HausdorffTarget::build(&target).unwrap();
+        assert_eq!(query.distance(XY::new(5.0, 5.0)).unwrap(), 3.0);
+        assert_eq!(query.distance(XY::new(4.0, 4.0)).unwrap(), 2.0);
+        assert!(source.area_covers_point(Point::new_raw_xy(5.0, 5.0)));
+        assert_eq!(directed_filled_hausdorff(&source, &target).unwrap(), 3.0);
+    }
+
+    #[test]
     fn triangle_site_triple_is_available_to_local_solver() {
         let source = polygon(&[(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (0.0, 0.0)], &[]);
         let target = Shape::LineString(
