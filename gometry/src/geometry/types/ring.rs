@@ -53,24 +53,11 @@ impl Ring {
     /// WKT/WKB, GeoArrow, and pickle all route here (via [`crate::io::admit_closed_ring`]
     /// or directly).
     pub(crate) fn closed_coordseq(coords: CoordSeq) -> Result<Self> {
-        if coords.len() < Self::MIN_VERTICES_OPEN {
-            return Err(GeometryErrorKind::RingTooShort(coords.len()).into());
-        }
-        let first = coords.point_at(0);
-        let last = coords.point_at(coords.len() - 1);
-        if same_active_position(first, last) {
-            if coords.len() < Self::MIN_VERTICES_CLOSED {
-                return Err(GeometryErrorKind::RingTooShort(coords.len()).into());
-            }
+        if !Self::closure_requires_append(&coords)? {
             return Ok(Self(coords));
         }
-        // XY closed / Z-or-M open: reject rather than invent a closing ordinate.
-        if same_point(first, last) {
-            return Err(GeometryErrorKind::message(
-                "polygon ring must be closed on all active ordinates",
-            ));
-        }
         // XY-open: silent-close (WKT/WKB/shapely/constructor convention).
+        let first = coords.point_at(0);
         let mut closed = CoordSeqBuilder::try_with_capacity(
             coords.axes(),
             coords
@@ -83,6 +70,30 @@ impl Ring {
         }
         closed.push(first)?;
         Ok(Self(closed.finish()?))
+    }
+
+    /// Check the shared parsed-ring closure policy without allocating a new
+    /// coordinate owner. `true` means the first vertex must be appended;
+    /// `false` means the supplied sequence is already a valid closed ring.
+    pub(crate) fn closure_requires_append(coords: &CoordSeq) -> Result<bool> {
+        if coords.len() < Self::MIN_VERTICES_OPEN {
+            return Err(GeometryErrorKind::RingTooShort(coords.len()).into());
+        }
+        let first = coords.point_at(0);
+        let last = coords.point_at(coords.len() - 1);
+        if same_active_position(first, last) {
+            if coords.len() < Self::MIN_VERTICES_CLOSED {
+                return Err(GeometryErrorKind::RingTooShort(coords.len()).into());
+            }
+            return Ok(false);
+        }
+        // XY closed / Z-or-M open: reject rather than invent a closing ordinate.
+        if same_point(first, last) {
+            return Err(GeometryErrorKind::message(
+                "polygon ring must be closed on all active ordinates",
+            ));
+        }
+        Ok(true)
     }
 
     /// Wrap a coordinate sequence that must already form a valid closed ring —

@@ -345,7 +345,20 @@ fn iter_detach_finalize(
     guard_epoch_frame(epoch, crs.as_ref())?;
     let array = rows.finish(Frame::new(crs, epoch)?)?;
     if let Some(mask) = crate::array::sparse_missing_mask(row_count, &missing_rows)? {
-        Ok(array.with_missing_mask(Some(mask))?)
+        // Streaming points retain only present coordinates, while line and
+        // polygon builders already carry one logical CSR window per row.
+        // Declare the point payload layout instead of asking mask adoption to
+        // infer it from its length.
+        if matches!(
+            array.storage(),
+            crate::array::GeometryArrayStorage::Packed(crate::array::PackedStorage::Points { .. })
+        ) {
+            Ok(crate::array::PyGeometryArray::scatter_present_rows(
+                &array, mask,
+            )?)
+        } else {
+            Ok(array.with_missing_mask(Some(mask))?)
+        }
     } else {
         Ok(array)
     }

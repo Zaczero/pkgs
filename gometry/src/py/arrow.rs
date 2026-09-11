@@ -13,9 +13,12 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyModule, PyTuple};
 
+use crate::array::{GeometryArrayStorage, PackedStorage};
 use crate::boundary::metadata::Frame;
+use crate::geometry::{CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder};
 use crate::py::arrow_c::{
     NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
+    NativeDecodedStorage,
 };
 use crate::py::geoarrow::GeometryEncoding;
 use crate::py::wire_crs::SridFrameAdmission;
@@ -154,14 +157,16 @@ pub(crate) fn reconcile_arrow_epoch(
     }
 }
 
-/// Accumulate decoded, producer-independent rows while retaining only native
-/// shapes and row metadata. Raw Arrow shells and buffers are never stored here.
+/// Accumulate producer-independent Arrow payloads and row metadata. Raw Arrow
+/// shells and buffers are never stored here. Homogeneous primitive batches
+/// remain packed until the final canonical array is published; unsupported or
+/// structurally non-packable batches use the explicit mixed lane.
 pub(crate) struct NativeArrowAccumulator {
     encoding: Option<GeometryEncoding>,
     wkb_offset_width: Option<WkbOffsetWidth>,
     crs: Option<Arc<String>>,
     epoch: Option<f64>,
-    shapes: Vec<crate::geometry::Shape>,
+    storage: Vec<NativeDecodedStorage>,
     srids: Vec<Option<u32>>,
     missing: Vec<usize>,
     length: usize,
@@ -174,7 +179,7 @@ impl NativeArrowAccumulator {
             wkb_offset_width: None,
             crs: None,
             epoch: None,
-            shapes: Vec::new(),
+            storage: Vec::new(),
             srids: Vec::new(),
             missing: Vec::new(),
             length: 0,
@@ -216,8 +221,9 @@ impl NativeArrowAccumulator {
     }
 
     pub(crate) fn push_decoded(&mut self, decoded: NativeDecodedBatch) -> PyResult<()> {
-        if decoded.shapes.len() != decoded.srids.len()
-            || decoded.shapes.len().saturating_add(decoded.missing.len()) != decoded.length
+        let payload_len = decoded.storage.len();
+        if (!decoded.srids.is_empty() && payload_len != decoded.srids.len())
+            || payload_len.checked_add(decoded.missing.len()) != Some(decoded.length)
         {
             return Err(geoarrow_parse_error(
                 "native Arrow decoder returned inconsistent row counts",
@@ -228,42 +234,46 @@ impl NativeArrowAccumulator {
             .checked_add(decoded.length)
             .ok_or_else(|| PyTypeError::new_err("Arrow row count overflows"))?;
         let NativeDecodedBatch {
-            mut shapes,
+            storage,
             mut srids,
-            mut missing,
+            missing,
             length: decoded_length,
         } = decoded;
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.shapes, shapes.len()) {
-            self.release_owned_rows();
-            drop((shapes, srids, missing));
-            return Err(error.into());
-        }
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.srids, srids.len()) {
-            self.release_owned_rows();
-            drop((shapes, srids, missing));
-            return Err(error.into());
-        }
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.missing, missing.len()) {
-            self.release_owned_rows();
-            drop((shapes, srids, missing));
-            return Err(error.into());
-        }
-        for local in missing.drain(..) {
+        for &local in &missing {
             if local >= decoded_length {
+                self.release_owned_rows();
+                drop((storage, srids, missing));
                 return Err(geoarrow_parse_error(
                     "native Arrow decoder returned an out-of-range missing row",
                 ));
             }
+        }
+        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.storage, 1) {
+            self.release_owned_rows();
+            drop((storage, srids, missing));
+            return Err(error.into());
+        }
+        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.srids, srids.len()) {
+            self.release_owned_rows();
+            drop((storage, srids, missing));
+            return Err(error.into());
+        }
+        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.missing, missing.len()) {
+            self.release_owned_rows();
+            drop((storage, srids, missing));
+            return Err(error.into());
+        }
+        for local in missing {
             self.missing.push(row_base + local);
         }
-        self.shapes.append(&mut shapes);
+        self.storage.push(storage);
         self.srids.append(&mut srids);
         self.length = new_length;
         Ok(())
     }
 
     fn release_owned_rows(&mut self) {
-        self.shapes = Vec::new();
+        self.storage = Vec::new();
         self.srids = Vec::new();
         self.missing = Vec::new();
     }
@@ -274,44 +284,278 @@ impl NativeArrowAccumulator {
         crs: Option<&Bound<'_, PyAny>>,
         epoch: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        let Self {
+            encoding,
+            crs: metadata_crs,
+            epoch: metadata_epoch,
+            storage,
+            srids,
+            missing: missing_rows,
+            length,
+            ..
+        } = self;
         let explicit = parse_crs(crs)?;
         // Resolve explicit-vs-metadata precedence before row-level EWKB SRIDs.
         let _resolved_metadata_crs =
-            reconcile_arrow_crs(self.crs.as_deref().map(String::as_str), crs)?;
+            reconcile_arrow_crs(metadata_crs.as_deref().map(String::as_str), crs)?;
         let mut frame = SridFrameAdmission::new(
             explicit,
-            self.crs.as_deref().map(String::as_str).map(crs_arc),
+            metadata_crs.as_deref().map(String::as_str).map(crs_arc),
         );
         let mut present = 0_usize;
-        let mut missing = self.missing.iter().copied().peekable();
-        for row in 0..self.length {
+        let has_srids = encoding == Some(GeometryEncoding::Wkb);
+        let mut missing = missing_rows.iter().copied().peekable();
+        for row in 0..length {
             if missing.peek() == Some(&row) {
                 missing.next();
                 continue;
             }
-            let srid = self.srids.get(present).copied().ok_or_else(|| {
-                geoarrow_parse_error("native Arrow decoder returned inconsistent row counts")
-            })?;
+            let srid = if has_srids {
+                srids.get(present).copied().ok_or_else(|| {
+                    geoarrow_parse_error("native Arrow decoder returned inconsistent row counts")
+                })?
+            } else {
+                None
+            };
             present += 1;
             frame
                 .admit_srid(srid, row, "Arrow import", "EWKB SRID")
                 .map_err(PyErr::from)?;
-            if let Some(storage_crs) = self.crs.as_deref().map(String::as_str) {
+            if let Some(storage_crs) = metadata_crs.as_deref().map(String::as_str) {
                 frame
                     .guard_storage_srid(srid, Some(storage_crs), row)
                     .map_err(PyErr::from)?;
             }
         }
-        debug_assert_eq!(present, self.srids.len());
+        if missing.peek().is_some() || (has_srids && present != srids.len()) {
+            return Err(geoarrow_parse_error(
+                "native Arrow decoder returned inconsistent row counts",
+            ));
+        }
         let crs = frame.finish().map_err(PyErr::from)?;
-        let epoch = reconcile_arrow_epoch(self.epoch, epoch)?;
+        let epoch = reconcile_arrow_epoch(metadata_epoch, epoch)?;
         let frame = Frame::new(crs, epoch)?;
-        let present = PyGeometryArray::from_shapes(self.shapes, frame)?;
-        let output = match crate::array::ValidityMask::from_sparse(self.length, &self.missing)? {
-            Some(mask) => present.with_missing_mask(Some(mask)),
-            None => Ok(present),
+        let storage = combine_native_storage(storage)?;
+        let missing = crate::array::ValidityMask::from_sparse(length, &missing_rows)?;
+        let output = PyGeometryArray::from_result_storage(
+            Arc::try_new(storage).map_err(crate::error::Error::from)?,
+            frame,
+            missing,
+            crate::array::StorageLayout::PresentOnly,
+            crate::array::ComputedCaches::fresh()?,
+        )?;
+        Ok(output.into_pyobject(py)?.into_any().unbind())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativePackedFamily {
+    Points(CoordinateAxes),
+    Lines(CoordinateAxes),
+    Polygons(CoordinateAxes),
+}
+
+fn native_packed_family(storage: &NativeDecodedStorage) -> Option<NativePackedFamily> {
+    let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(storage)) = storage else {
+        return None;
+    };
+    Some(match storage {
+        PackedStorage::Points { coords, row_map } if row_map.is_identity() => {
+            NativePackedFamily::Points(coords.axes())
+        },
+        PackedStorage::Lines {
+            coords, row_map, ..
+        } if row_map.is_identity() => NativePackedFamily::Lines(coords.axes()),
+        PackedStorage::Polygons {
+            coords, row_map, ..
+        } if row_map.is_identity() => NativePackedFamily::Polygons(coords.axes()),
+        _ => return None,
+    })
+}
+
+/// Join direct packed batches once, after stream/chunk admission has finished.
+/// A kind/axes mismatch or the packed i32 domain is a structural fallback to
+/// mixed shape storage; allocation and size errors remain native errors.
+fn combine_native_storage(
+    parts: Vec<NativeDecodedStorage>,
+) -> crate::error::Result<GeometryArrayStorage> {
+    let Some(first) = parts.first() else {
+        return Ok(GeometryArrayStorage::Mixed(Vec::new()));
+    };
+    if parts.len() == 1 {
+        return match parts.into_iter().next().expect("one part exists") {
+            NativeDecodedStorage::Packed(storage) => Ok(storage),
+            NativeDecodedStorage::Mixed(shapes) => Ok(GeometryArrayStorage::Mixed(shapes)),
         };
-        Ok(output?.into_pyobject(py)?.into_any().unbind())
+    }
+    let family = native_packed_family(first);
+    let all_same_packed = family.is_some()
+        && parts
+            .iter()
+            .all(|part| native_packed_family(part) == family);
+    if all_same_packed && let Some(storage) = combine_packed_parts(&parts)? {
+        return Ok(storage);
+    }
+    // The packed i32 domain is a structural limit. Re-open the parts as mixed
+    // rows below; no allocation failure is hidden by this branch.
+
+    let total = parts.iter().try_fold(0_usize, |total, part| {
+        total
+            .checked_add(part.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    let mut shapes = Vec::new();
+    crate::boundary::try_reserve_vec(&mut shapes, total)?;
+    for part in parts {
+        let mut part = part.into_shapes().map_err(|error| match error {
+            crate::py::arrow_c::NativeArrowDecodeError::Core(error) => error,
+            crate::py::arrow_c::NativeArrowDecodeError::GeoArrow(message) => {
+                crate::geometry::GeometryErrorKind::message(message)
+            },
+        })?;
+        shapes.append(&mut part);
+    }
+    Ok(GeometryArrayStorage::Mixed(shapes))
+}
+
+fn combine_packed_parts(
+    parts: &[NativeDecodedStorage],
+) -> crate::error::Result<Option<GeometryArrayStorage>> {
+    let family = native_packed_family(parts.first().expect("non-empty parts"))
+        .expect("packed parts have one family");
+    let mut total_rows = 0_usize;
+    let mut total_vertices = 0_usize;
+    let mut total_rings = 0_usize;
+    for part in parts {
+        let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(storage)) = part else {
+            unreachable!("packed parts have one family")
+        };
+        match storage {
+            PackedStorage::Points { coords, .. } => {
+                total_rows = total_rows
+                    .checked_add(coords.len())
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                total_vertices = total_rows;
+            },
+            PackedStorage::Lines {
+                coords, offsets, ..
+            } => {
+                total_rows = total_rows
+                    .checked_add(offsets.len().saturating_sub(1))
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                total_vertices = total_vertices
+                    .checked_add(coords.len())
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            },
+            PackedStorage::Polygons {
+                coords,
+                ring_offsets,
+                polygon_offsets,
+                ..
+            } => {
+                total_rows = total_rows
+                    .checked_add(polygon_offsets.len().saturating_sub(1))
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                total_rings = total_rings
+                    .checked_add(ring_offsets.len().saturating_sub(1))
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                total_vertices = total_vertices
+                    .checked_add(coords.len())
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            },
+        }
+    }
+    if total_vertices > i32::MAX as usize || total_rings > i32::MAX as usize {
+        return Ok(None);
+    }
+
+    match family {
+        NativePackedFamily::Points(axes) => {
+            let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
+            for part in parts {
+                let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(
+                    PackedStorage::Points { coords, .. },
+                )) = part
+                else {
+                    unreachable!("packed parts have one point family")
+                };
+                builder.extend_window(coords, 0..coords.len())?;
+            }
+            let coords = Arc::try_new(builder.finish()?).map_err(crate::error::Error::from)?;
+            Ok(Some(GeometryArrayStorage::Packed(PackedStorage::Points {
+                coords,
+                row_map: crate::array::RowSelection::Identity,
+            })))
+        },
+        NativePackedFamily::Lines(axes) => {
+            let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
+            let mut offsets = CsrOffsetBuilder::with_capacity(total_rows)?;
+            for part in parts {
+                let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(
+                    PackedStorage::Lines {
+                        coords: source,
+                        offsets: source_offsets,
+                        ..
+                    },
+                )) = part
+                else {
+                    unreachable!("packed parts have one line family")
+                };
+                for row in 0..source_offsets.len().saturating_sub(1) {
+                    let window = source_offsets[row] as usize..source_offsets[row + 1] as usize;
+                    builder.extend_window(source, window)?;
+                    offsets.push_end(builder.len(), i32::MAX as usize)?;
+                }
+            }
+            let coords = builder.finish()?;
+            let coord_len = coords.len();
+            Ok(Some(GeometryArrayStorage::Packed(PackedStorage::Lines {
+                coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                offsets: offsets.finish(coord_len)?,
+                row_map: crate::array::RowSelection::Identity,
+            })))
+        },
+        NativePackedFamily::Polygons(axes) => {
+            let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
+            let mut ring_offsets = CsrOffsetBuilder::with_capacity(total_rings)?;
+            let mut polygon_offsets = CsrOffsetBuilder::with_capacity(total_rows)?;
+            let mut rings = 0_usize;
+            for part in parts {
+                let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(
+                    PackedStorage::Polygons {
+                        coords: source,
+                        ring_offsets: source_ring_offsets,
+                        polygon_offsets: source_polygon_offsets,
+                        ..
+                    },
+                )) = part
+                else {
+                    unreachable!("packed parts have one polygon family")
+                };
+                for row in 0..source_polygon_offsets.len().saturating_sub(1) {
+                    let ring_start = source_polygon_offsets[row] as usize;
+                    let ring_end = source_polygon_offsets[row + 1] as usize;
+                    for ring in ring_start..ring_end {
+                        let window = source_ring_offsets[ring] as usize
+                            ..source_ring_offsets[ring + 1] as usize;
+                        builder.extend_window(source, window)?;
+                        ring_offsets.push_end(builder.len(), i32::MAX as usize)?;
+                        rings += 1;
+                    }
+                    polygon_offsets.push_end(rings, i32::MAX as usize)?;
+                }
+            }
+            let coords = builder.finish()?;
+            let coord_len = coords.len();
+            Ok(Some(GeometryArrayStorage::Packed(
+                PackedStorage::Polygons {
+                    coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                    ring_offsets: ring_offsets.finish(coord_len)?.cast_level(),
+                    polygon_offsets: polygon_offsets.finish(rings)?.cast_level(),
+                    row_map: crate::array::RowSelection::Identity,
+                },
+            )))
+        },
     }
 }
 

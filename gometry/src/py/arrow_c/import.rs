@@ -176,7 +176,8 @@ unsafe fn read_metadata_len(cursor: &mut *const u8) -> PyResult<usize> {
 }
 
 /// Stream import admits and decodes one batch before requesting the next.
-/// Only decoded shapes and row metadata survive across callbacks.
+/// Only canonical packed payloads (or explicit mixed rows) and row metadata
+/// survive across callbacks.
 pub(crate) fn import_stream(
     py: Python<'_>,
     stream: *mut ArrowArrayStream,

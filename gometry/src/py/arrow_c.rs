@@ -249,8 +249,8 @@ pub(crate) use export_plan::{describe_shapes, payload_events, reset_payload_even
 pub(crate) use import::{capsule_pointer, geometries_from_arrow_c, release_imported_stream};
 pub(crate) use native::{
     NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
-    native_arrow_batch_from_capsules, native_arrow_batch_from_capsules_with_classification,
-    native_arrow_batch_from_raw_array,
+    NativeDecodedStorage, native_arrow_batch_from_capsules,
+    native_arrow_batch_from_capsules_with_classification, native_arrow_batch_from_raw_array,
 };
 pub(crate) use release::{
     array_capsule_destructor, release_array, release_schema, release_stream,

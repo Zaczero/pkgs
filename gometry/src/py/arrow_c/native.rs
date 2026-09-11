@@ -43,7 +43,7 @@ use crate::py::arrow_c::{
 
 #[path = "native_decode.rs"]
 mod decode;
-pub(crate) use decode::{NativeArrowDecodeError, NativeDecodedBatch};
+pub(crate) use decode::{NativeArrowDecodeError, NativeDecodedBatch, NativeDecodedStorage};
 
 /// Arrow C Data Interface `null_count`: `-1` means unknown; known counts must
 /// not exceed the logical length.
@@ -2910,7 +2910,13 @@ mod layout_validation_tests {
             let decoded = decoded.expect("owned batch decoder");
             assert!(!detached);
             assert_eq!(decoded.length, 1);
-            assert_eq!(decoded.shapes.len(), 1);
+            assert_eq!(decoded.storage.len(), 1);
+            assert!(matches!(
+                decoded.storage,
+                NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
+                    crate::array::PackedStorage::Points { .. }
+                ))
+            ));
         });
     }
 }

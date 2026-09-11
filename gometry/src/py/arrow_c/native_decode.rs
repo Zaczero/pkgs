@@ -4,14 +4,14 @@
 //! entered.  The decoder therefore works only with `NativeNode` accessors and
 //! can run entirely inside `Python::detach`.
 
-use std::cell::OnceCell;
 use std::sync::Arc;
 
 use super::{ArrowFormat, NativeArrowBatch, NativeNode};
+use crate::array::{GeometryArrayStorage, PackedColumnBuilder, PackedStorage, RowSelection};
 use crate::geometry::{
-    CoordSeq, CoordWindow, CoordinateAxes, GeometryKind, HasM, HasZ, LineSeq, MOrdinate,
-    MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Shape, ZOrdinate,
-    column_all_finite,
+    CoordSeq, CoordSeqBuilder, CoordWindow, CoordinateAxes, CsrOffsetBuilder, GeometryKind,
+    LineSeq, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring,
+    Shape, SharedSlice, ZOrdinate, column_all_finite,
 };
 use crate::io;
 use crate::py::geoarrow::GeometryEncoding;
@@ -31,6 +31,12 @@ impl From<crate::error::Error> for NativeArrowDecodeError {
     }
 }
 
+impl From<crate::error::ResourceError> for NativeArrowDecodeError {
+    fn from(error: crate::error::ResourceError) -> Self {
+        Self::Core(error.into())
+    }
+}
+
 impl NativeArrowDecodeError {
     pub(crate) fn geoarrow(message: impl Into<String>) -> Self {
         Self::GeoArrow(message.into())
@@ -44,9 +50,44 @@ impl NativeArrowDecodeError {
     }
 }
 
+/// Native batch payload after Arrow admission. Packed payloads already use
+/// canonical columnar storage; mixed payloads are retained only for geometry
+/// encodings that the array storage cannot represent without changing their
+/// semantics (multipart and WKB rows, or primitive rows that are not packable).
+pub(crate) enum NativeDecodedStorage {
+    Packed(GeometryArrayStorage),
+    Mixed(Vec<Shape>),
+}
+
+impl NativeDecodedStorage {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Packed(storage) => storage.len(),
+            Self::Mixed(shapes) => shapes.len(),
+        }
+    }
+
+    /// Materialize a packed payload only when an explicit mixed fallback is
+    /// required. Packed rows are already canonical and normally never take
+    /// this route.
+    pub(crate) fn into_shapes(self) -> DecodeResult<Vec<Shape>> {
+        match self {
+            Self::Mixed(shapes) => Ok(shapes),
+            Self::Packed(storage) => {
+                let mut shapes = Vec::new();
+                reserve(&mut shapes, storage.len())?;
+                for shape in storage.iter_shapes() {
+                    push(&mut shapes, shape?.into_owned())?;
+                }
+                Ok(shapes)
+            },
+        }
+    }
+}
+
 pub(crate) struct NativeDecodedBatch {
     pub(crate) length: usize,
-    pub(crate) shapes: Vec<Shape>,
+    pub(crate) storage: NativeDecodedStorage,
     /// One entry per present shape, in logical row order.
     pub(crate) srids: Vec<Option<u32>>,
     /// Local logical row indexes whose outer geometry value is null.
@@ -60,7 +101,7 @@ pub(crate) fn decode_batch(batch: NativeArrowBatch) -> DecodeResult<NativeDecode
         node,
         classification,
     } = batch;
-    let mut decoded = match classification.encoding {
+    let decoded = match classification.encoding {
         GeometryEncoding::Point => decode_points(&node)?,
         GeometryEncoding::MultiPoint => decode_multipoints(&node)?,
         GeometryEncoding::LineString => decode_linestrings(&node)?,
@@ -74,15 +115,71 @@ pub(crate) fn decode_batch(batch: NativeArrowBatch) -> DecodeResult<NativeDecode
             },
         },
     };
-    if !matches!(classification.encoding, GeometryEncoding::Wkb) {
-        decoded.srids.clear();
-        reserve(&mut decoded.srids, decoded.shapes.len())?;
-        decoded.srids.resize(decoded.shapes.len(), None);
-    }
     Ok(decoded)
 }
 
+fn mixed_batch(length: usize, shapes: Vec<Shape>, missing: Vec<usize>) -> NativeDecodedBatch {
+    NativeDecodedBatch {
+        length,
+        storage: NativeDecodedStorage::Mixed(shapes),
+        srids: Vec::new(),
+        missing,
+    }
+}
+
+fn missing_rows(node: &NativeNode) -> DecodeResult<Vec<usize>> {
+    if node.effective_missing.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut missing = Vec::new();
+    reserve(&mut missing, node.length)?;
+    for row in 0..node.length {
+        if node.missing_at(row) {
+            push(&mut missing, row)?;
+        }
+    }
+    Ok(missing)
+}
+
 fn decode_points(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
+    let coordinates = NativeCoordinates::new(node)?;
+    let missing = missing_rows(node)?;
+    for row in 0..node.length {
+        if node.missing_at(row) {
+            continue;
+        }
+        if !coordinates.point_packable(row, row)? {
+            return decode_points_mixed(node);
+        }
+    }
+    let coords = if missing.is_empty() {
+        Arc::try_new(coordinates.coords().clone()).map_err(crate::error::Error::from)?
+    } else {
+        let mut builder = CoordSeqBuilder::try_with_capacity(
+            coordinates.axes(),
+            node.length.saturating_sub(missing.len()),
+        )?;
+        for row in 0..node.length {
+            if !node.missing_at(row) {
+                builder.push_at(coordinates.coords(), row)?;
+            }
+        }
+        Arc::try_new(builder.finish()?).map_err(crate::error::Error::from)?
+    };
+    Ok(NativeDecodedBatch {
+        length: node.length,
+        storage: NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(
+            PackedStorage::Points {
+                coords,
+                row_map: RowSelection::Identity,
+            },
+        )),
+        srids: Vec::new(),
+        missing,
+    })
+}
+
+fn decode_points_mixed(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let coordinates = NativeCoordinates::new(node)?;
     let mut shapes = Vec::new();
     let mut missing = Vec::new();
@@ -95,12 +192,7 @@ fn decode_points(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
         }
         push(&mut shapes, coordinates.point_shape(row, row)?)?;
     }
-    Ok(NativeDecodedBatch {
-        length: node.length,
-        shapes,
-        srids: Vec::new(),
-        missing,
-    })
+    Ok(mixed_batch(node.length, shapes, missing))
 }
 
 fn decode_multipoints(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
@@ -108,7 +200,41 @@ fn decode_multipoints(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
 }
 
 fn decode_linestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
-    decode_coordseq_rows(node, GeometryEncoding::LineString)
+    let values = node
+        .child(0)
+        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow geometry list child is missing"))?;
+    let coordinates = NativeCoordinates::new(values)?;
+    let missing = missing_rows(node)?;
+    let mut total_vertices = 0_usize;
+    for row in 0..node.length {
+        if node.missing_at(row) {
+            continue;
+        }
+        let range = list_range(node, row)?;
+        if range.is_empty() {
+            return decode_coordseq_rows(node, GeometryEncoding::LineString);
+        }
+        if range.len() < 2 {
+            // Let the established shape decoder retain the public geometry
+            // error for a one-coordinate line rather than turning a
+            // structural non-packability decision into a different error.
+            return decode_coordseq_rows(node, GeometryEncoding::LineString);
+        }
+        coordinates.ensure_range_valid(range.start, range.end, row)?;
+        total_vertices = total_vertices
+            .checked_add(range.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    }
+    if total_vertices > i32::MAX as usize {
+        return decode_coordseq_rows(node, GeometryEncoding::LineString);
+    }
+    let storage = packed_lines_storage(node, &coordinates, &missing, total_vertices)?;
+    Ok(NativeDecodedBatch {
+        length: node.length,
+        storage: NativeDecodedStorage::Packed(storage),
+        srids: Vec::new(),
+        missing,
+    })
 }
 
 fn decode_coordseq_rows(
@@ -152,7 +278,7 @@ fn decode_coordseq_rows(
     }
     Ok(NativeDecodedBatch {
         length: node.length,
-        shapes,
+        storage: NativeDecodedStorage::Mixed(shapes),
         srids: Vec::new(),
         missing,
     })
@@ -209,13 +335,73 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
     }
     Ok(NativeDecodedBatch {
         length: node.length,
-        shapes,
+        storage: NativeDecodedStorage::Mixed(shapes),
         srids: Vec::new(),
         missing,
     })
 }
 
 fn decode_polygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
+    let rings = node
+        .child(0)
+        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
+    let values = rings.child(0).ok_or_else(|| {
+        NativeArrowDecodeError::geoarrow("Arrow ring coordinate child is missing")
+    })?;
+    let coordinates = NativeCoordinates::new(values)?;
+    let missing = missing_rows(node)?;
+    let mut needs_rebuild = !missing.is_empty();
+    let mut total_vertices = 0_usize;
+    let mut ring_count = 0_usize;
+    for row in 0..node.length {
+        if node.missing_at(row) {
+            continue;
+        }
+        let range = list_range(node, row)?;
+        if range.is_empty() {
+            return decode_polygons_mixed(node);
+        }
+        for ring_index in range {
+            if rings.missing_at(ring_index) {
+                return Err(NativeArrowDecodeError::geoarrow(format!(
+                    "Arrow GeoArrow nested geometry values must not contain nulls; found null at index {ring_index}"
+                )));
+            }
+            let vertex_range = list_range(rings, ring_index)?;
+            let open = coordinates.ring_admission(vertex_range.clone(), row)?;
+            total_vertices = total_vertices
+                .checked_add(vertex_range.len())
+                .and_then(|total| total.checked_add(usize::from(open)))
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            ring_count = ring_count
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            needs_rebuild |= open;
+        }
+    }
+    // Packed CSR stores both vertex and ring ends as i32.  This is a
+    // structural packed-layout limit; preserve the established mixed fallback
+    // instead of treating it as an allocation failure.
+    if total_vertices > i32::MAX as usize || ring_count > i32::MAX as usize {
+        return decode_polygons_mixed(node);
+    }
+    let storage = packed_polygon_storage(
+        node,
+        &coordinates,
+        &missing,
+        needs_rebuild,
+        total_vertices,
+        ring_count,
+    )?;
+    Ok(NativeDecodedBatch {
+        length: node.length,
+        storage: NativeDecodedStorage::Packed(storage),
+        srids: Vec::new(),
+        missing,
+    })
+}
+
+fn decode_polygons_mixed(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let rings = node
         .child(0)
         .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
@@ -236,12 +422,113 @@ fn decode_polygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
         let shape = polygon_shape(&coordinates, rings, range, row)?;
         push(&mut shapes, shape)?;
     }
-    Ok(NativeDecodedBatch {
-        length: node.length,
-        shapes,
-        srids: Vec::new(),
-        missing,
-    })
+    Ok(mixed_batch(node.length, shapes, missing))
+}
+
+fn packed_lines_storage(
+    node: &NativeNode,
+    coordinates: &NativeCoordinates,
+    missing: &[usize],
+    total_vertices: usize,
+) -> DecodeResult<GeometryArrayStorage> {
+    if missing.is_empty() {
+        let mut offsets = CsrOffsetBuilder::with_capacity(node.length)?;
+        for row in 0..node.length {
+            let range = list_range(node, row)?;
+            offsets.push_end(range.end, i32::MAX as usize)?;
+        }
+        return Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords: Arc::try_new(coordinates.coords().clone())
+                .map_err(crate::error::Error::from)?,
+            offsets: offsets.finish(coordinates.coords().len())?,
+            row_map: RowSelection::Identity,
+        }));
+    }
+
+    let mut builder = PackedColumnBuilder::try_like(coordinates.coords(), total_vertices)?;
+    for row in 0..node.length {
+        if node.missing_at(row) {
+            continue;
+        }
+        let range = list_range(node, row)?;
+        builder.push_window(coordinates.coords(), range)?;
+    }
+    let (coords, offsets) = builder.finish(total_vertices)?;
+    Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
+        coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+        offsets,
+        row_map: RowSelection::Identity,
+    }))
+}
+
+fn packed_polygon_storage(
+    node: &NativeNode,
+    coordinates: &NativeCoordinates,
+    missing: &[usize],
+    needs_rebuild: bool,
+    total_vertices: usize,
+    ring_count: usize,
+) -> DecodeResult<GeometryArrayStorage> {
+    let present_rows = node.length - missing.len();
+    if missing.is_empty() && !needs_rebuild {
+        let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count)?;
+        let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows)?;
+        let mut rings = 0_usize;
+        for row in 0..node.length {
+            let range = list_range(node, row)?;
+            for ring_index in range {
+                let vertex_range = list_range(
+                    node.child(0).expect("polygon ring child was checked"),
+                    ring_index,
+                )?;
+                ring_offsets.push_end(vertex_range.end, i32::MAX as usize)?;
+                rings += 1;
+            }
+            polygon_offsets.push_end(rings, i32::MAX as usize)?;
+        }
+        return Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            coords: Arc::try_new(coordinates.coords().clone())
+                .map_err(crate::error::Error::from)?,
+            ring_offsets: ring_offsets
+                .finish(coordinates.coords().len())?
+                .cast_level(),
+            polygon_offsets: polygon_offsets.finish(rings)?.cast_level(),
+            row_map: RowSelection::Identity,
+        }));
+    }
+
+    let rings_node = node
+        .child(0)
+        .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
+    let mut builder = CoordSeqBuilder::try_with_capacity(coordinates.axes(), total_vertices)?;
+    let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count)?;
+    let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows)?;
+    let mut rings = 0_usize;
+    for row in 0..node.length {
+        if node.missing_at(row) {
+            continue;
+        }
+        let range = list_range(node, row)?;
+        for ring_index in range {
+            let vertex_range = list_range(rings_node, ring_index)?;
+            let open = coordinates.ring_admission(vertex_range.clone(), row)?;
+            builder.extend_window(coordinates.coords(), vertex_range.clone())?;
+            if open {
+                builder.push_at(coordinates.coords(), vertex_range.start)?;
+            }
+            ring_offsets.push_end(builder.len(), i32::MAX as usize)?;
+            rings += 1;
+        }
+        polygon_offsets.push_end(rings, i32::MAX as usize)?;
+    }
+    let coords = builder.finish()?;
+    let coord_len = coords.len();
+    Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+        coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+        ring_offsets: ring_offsets.finish(coord_len)?.cast_level(),
+        polygon_offsets: polygon_offsets.finish(rings)?.cast_level(),
+        row_map: RowSelection::Identity,
+    }))
 }
 
 fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
@@ -307,7 +594,7 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     }
     Ok(NativeDecodedBatch {
         length: node.length,
-        shapes,
+        storage: NativeDecodedStorage::Mixed(shapes),
         srids: Vec::new(),
         missing,
     })
@@ -335,23 +622,7 @@ fn polygon_shape(
         }
         let vertex_range = list_range(rings, ring_index)?;
         let coords = coordinates.coordseq(vertex_range.start, vertex_range.end, row)?;
-        let ring = io::admit_closed_ring(coords).map_err(|error| {
-            let message = error.to_string();
-            if let crate::error::ErrorKind::Geometry(
-                crate::geometry::GeometryErrorKind::RingTooShort(n),
-            ) = error.kind()
-            {
-                NativeArrowDecodeError::geoarrow(format!(
-                    "Arrow polygon rings require at least three coordinates, got {n}"
-                ))
-            } else if message.contains("closed on all active ordinates") {
-                NativeArrowDecodeError::geoarrow(
-                    "Arrow polygon ring must be closed on all active ordinates",
-                )
-            } else {
-                NativeArrowDecodeError::geoarrow(format!("Arrow polygon ring: {message}"))
-            }
-        })?;
+        let ring = io::admit_closed_ring(coords).map_err(arrow_ring_error)?;
         push(&mut shell_and_holes, ring)?;
     }
     let mut rings = shell_and_holes.into_iter();
@@ -390,7 +661,7 @@ fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     }
     Ok(NativeDecodedBatch {
         length: node.length,
-        shapes,
+        storage: NativeDecodedStorage::Mixed(shapes),
         srids,
         missing,
     })
@@ -453,7 +724,7 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
     }
     Ok(NativeDecodedBatch {
         length: node.length,
-        shapes,
+        storage: NativeDecodedStorage::Mixed(shapes),
         srids,
         missing,
     })
@@ -472,13 +743,8 @@ fn list_range(node: &NativeNode, index: usize) -> DecodeResult<std::ops::Range<u
 }
 
 struct NativeCoordinates {
-    x: Arc<Vec<f64>>,
-    y: Arc<Vec<f64>>,
-    z: Option<Arc<Vec<f64>>>,
-    m: Option<Arc<Vec<f64>>>,
+    coords: CoordSeq,
     validity: Option<Arc<Vec<bool>>>,
-    axes: CoordinateAxes,
-    full: OnceCell<CoordSeq>,
 }
 
 impl NativeCoordinates {
@@ -547,6 +813,15 @@ impl NativeCoordinates {
                 "Arrow coordinate columns have mismatched lengths",
             ));
         }
+        let coords = CoordSeq::from_shared_columns(
+            SharedSlice::from_arc_vec(Arc::clone(x_node.f64_values().expect("checked above"))),
+            SharedSlice::from_arc_vec(Arc::clone(y_node.f64_values().expect("checked above"))),
+            z.as_ref()
+                .map(|values| SharedSlice::from_arc_vec(Arc::clone(values))),
+            m.as_ref()
+                .map(|values| MColumn::Shared(SharedSlice::from_arc_vec(Arc::clone(values)))),
+        )
+        .map_err(NativeArrowDecodeError::from)?;
         let validity = combined_validity(node.length, |row| {
             node.missing_at(row)
                 || x_node.missing_at(row)
@@ -558,15 +833,7 @@ impl NativeCoordinates {
                     node.child(index).is_none_or(|child| child.missing_at(row))
                 })
         })?;
-        Ok(Self {
-            x: Arc::clone(x_node.f64_values().expect("checked above")),
-            y: Arc::clone(y_node.f64_values().expect("checked above")),
-            z: z.map(Arc::clone),
-            m: m.map(Arc::clone),
-            validity,
-            axes: CoordinateAxes::new(HasZ(z_index.is_some()), HasM(m_index.is_some())),
-            full: OnceCell::new(),
-        })
+        Ok(Self { coords, validity })
     }
 
     fn interleaved(node: &NativeNode, size: usize) -> DecodeResult<Self> {
@@ -624,23 +891,23 @@ impl NativeCoordinates {
             node.missing_at(row)
                 || (0..size).any(|offset| values_node.missing_at(row * size + offset))
         })?;
-        Ok(Self {
-            x: crate::py::arrow_c::try_arc_from_vec_native(xs)?,
-            y: crate::py::arrow_c::try_arc_from_vec_native(ys)?,
-            z: zs
-                .map(crate::py::arrow_c::try_arc_from_vec_native)
+        let coords = CoordSeq::from_shared_columns(
+            SharedSlice::try_from_vec(xs)?,
+            SharedSlice::try_from_vec(ys)?,
+            zs.map(SharedSlice::try_from_vec).transpose()?,
+            ms.map(|values| SharedSlice::try_from_vec(values).map(MColumn::Shared))
                 .transpose()?,
-            m: ms
-                .map(crate::py::arrow_c::try_arc_from_vec_native)
-                .transpose()?,
-            validity,
-            axes: CoordinateAxes::new(HasZ(has_z), HasM(has_m)),
-            full: OnceCell::new(),
-        })
+        )
+        .map_err(NativeArrowDecodeError::from)?;
+        Ok(Self { coords, validity })
     }
 
     const fn axes(&self) -> CoordinateAxes {
-        self.axes
+        self.coords.axes()
+    }
+
+    const fn coords(&self) -> &CoordSeq {
+        &self.coords
     }
 
     fn is_valid(&self, index: usize) -> bool {
@@ -652,7 +919,7 @@ impl NativeCoordinates {
     }
 
     fn point_shape(&self, index: usize, row: usize) -> DecodeResult<Shape> {
-        if index >= self.x.len() || index >= self.y.len() {
+        if index >= self.coords.len() {
             return Err(NativeArrowDecodeError::geoarrow(
                 "Arrow coordinate buffer is shorter than declared array length",
             ));
@@ -663,34 +930,48 @@ impl NativeCoordinates {
             )));
         }
         if self.empty_point_sentinel(index) {
-            return Ok(Shape::typed_empty(GeometryKind::Point, self.axes));
+            return Ok(Shape::typed_empty(GeometryKind::Point, self.axes()));
         }
         self.ensure_range_finite(index, index + 1)?;
         Ok(Shape::Point(
             Point::new_axes(
-                self.x[index],
-                self.y[index],
-                ZOrdinate(self.z.as_ref().map(|values| values[index])),
-                MOrdinate(self.m.as_ref().map(|values| values[index])),
+                self.coords.xs()[index],
+                self.coords.ys()[index],
+                ZOrdinate(self.coords.zs().map(|values| values[index])),
+                MOrdinate(self.coords.ms().map(|values| values[index])),
             )
             .map_err(NativeArrowDecodeError::from)?,
         ))
     }
 
+    fn point_packable(&self, index: usize, row: usize) -> DecodeResult<bool> {
+        if index >= self.coords.len() {
+            return Err(NativeArrowDecodeError::geoarrow(
+                "Arrow coordinate buffer is shorter than declared array length",
+            ));
+        }
+        if !self.is_valid(index) {
+            return Err(NativeArrowDecodeError::geoarrow(format!(
+                "Arrow geometry arrays require non-null geometry values; found null at index {row}"
+            )));
+        }
+        if self.empty_point_sentinel(index) {
+            return Ok(false);
+        }
+        self.ensure_range_finite(index, index + 1)?;
+        Ok(true)
+    }
+
     fn empty_point_sentinel(&self, index: usize) -> bool {
-        self.x[index].is_nan()
-            && self.y[index].is_nan()
-            && self.z.as_ref().is_none_or(|values| values[index].is_nan())
-            && self.m.as_ref().is_none_or(|values| values[index].is_nan())
+        let point = self.coords.point_at(index);
+        point.x.is_nan()
+            && point.y.is_nan()
+            && point.z().is_none_or(f64::is_nan)
+            && point.m().is_none_or(f64::is_nan)
     }
 
     fn coordseq(&self, start: usize, end: usize, row: usize) -> DecodeResult<CoordSeq> {
-        if end < start
-            || end > self.x.len()
-            || end > self.y.len()
-            || self.z.as_ref().is_some_and(|values| end > values.len())
-            || self.m.as_ref().is_some_and(|values| end > values.len())
-        {
+        if end < start || end > self.coords.len() {
             return Err(NativeArrowDecodeError::geoarrow(
                 "Arrow coordinate buffer is shorter than declared array length",
             ));
@@ -703,36 +984,47 @@ impl NativeCoordinates {
             }
         }
         self.ensure_range_finite(start, end)?;
-        if self.full.get().is_none() {
-            let x = crate::geometry::try_copy_slice(&self.x)?;
-            let y = crate::geometry::try_copy_slice(&self.y)?;
-            let z = self
-                .z
-                .as_ref()
-                .map(|values| crate::geometry::try_copy_slice(values))
-                .transpose()?;
-            let m = self
-                .m
-                .as_ref()
-                .map(|values| crate::geometry::try_copy_slice(values))
-                .transpose()?;
-            let full = CoordSeq::try_from_vecs(x, y, z, m).map_err(NativeArrowDecodeError::from)?;
-            let _ = self.full.set(full);
+        Ok(self
+            .coords
+            .view(CoordWindow::from_range(start..end, self.coords.len())))
+    }
+
+    fn ensure_range_valid(&self, start: usize, end: usize, row: usize) -> DecodeResult<()> {
+        if end < start || end > self.coords.len() {
+            return Err(NativeArrowDecodeError::geoarrow(
+                "Arrow coordinate buffer is shorter than declared array length",
+            ));
         }
-        let full = self.full.get().expect("coordinate sequence initialized");
-        Ok(full.view(CoordWindow::from_range(start..end, full.len())))
+        for index in start..end {
+            if !self.is_valid(index) {
+                return Err(NativeArrowDecodeError::geoarrow(format!(
+                    "Arrow geometry arrays require non-null geometry values; found null at index {row}"
+                )));
+            }
+        }
+        self.ensure_range_finite(start, end)
+    }
+
+    /// Validate one untrusted GeoArrow ring and report whether it needs the
+    /// boundary vertex appended by the shared ring-admission policy.
+    fn ring_admission(&self, range: std::ops::Range<usize>, row: usize) -> DecodeResult<bool> {
+        self.ensure_range_valid(range.start, range.end, row)?;
+        let coords = self
+            .coords
+            .view(CoordWindow::from_range(range.clone(), self.coords.len()));
+        Ring::closure_requires_append(&coords).map_err(arrow_ring_error)
     }
 
     fn ensure_range_finite(&self, start: usize, end: usize) -> DecodeResult<()> {
-        let finite = column_all_finite(&self.x[start..end])
-            && column_all_finite(&self.y[start..end])
+        let finite = column_all_finite(&self.coords.xs()[start..end])
+            && column_all_finite(&self.coords.ys()[start..end])
             && self
-                .z
-                .as_ref()
+                .coords
+                .zs()
                 .is_none_or(|values| column_all_finite(&values[start..end]))
             && self
-                .m
-                .as_ref()
+                .coords
+                .ms()
                 .is_none_or(|values| column_all_finite(&values[start..end]));
         if finite {
             Ok(())
@@ -741,6 +1033,23 @@ impl NativeCoordinates {
                 "Arrow coordinates must be finite",
             ))
         }
+    }
+}
+
+fn arrow_ring_error(error: crate::error::Error) -> NativeArrowDecodeError {
+    let message = error.to_string();
+    if let crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::RingTooShort(n)) =
+        error.kind()
+    {
+        NativeArrowDecodeError::geoarrow(format!(
+            "Arrow polygon rings require at least three coordinates, got {n}"
+        ))
+    } else if message.contains("closed on all active ordinates") {
+        NativeArrowDecodeError::geoarrow(
+            "Arrow polygon ring must be closed on all active ordinates",
+        )
+    } else {
+        NativeArrowDecodeError::geoarrow(format!("Arrow polygon ring: {message}"))
     }
 }
 
@@ -775,14 +1084,98 @@ mod tests {
     use pyo3::exceptions::PyMemoryError;
     use pyo3::prelude::Python;
 
-    use super::super::{OwnedBuffer, OwnedBufferSlots};
-    use super::{ArrowFormat, NativeCoordinates, NativeNode};
+    use super::super::{
+        NativeArrowBatch, NativeArrowClassification, OwnedBuffer, OwnedBufferSlots,
+    };
+    use super::{ArrowFormat, NativeDecodedStorage, NativeNode};
 
     #[test]
-    fn coordinate_materialization_allocation_failure_maps_to_memory_error() {
+    fn direct_point_decode_reuses_admitted_columns_and_retries_allocation_prefixes() {
         crate::test_support::initialize_python();
-        let leaf = |values| NativeNode {
-            length: 2,
+        fn make_batch() -> (NativeArrowBatch, Arc<Vec<f64>>) {
+            let x = Arc::new(vec![1.0, 2.0]);
+            let y = Arc::new(vec![3.0, 4.0]);
+            let leaf = |values: Arc<Vec<f64>>| NativeNode {
+                length: 2,
+                validity_offset: 0,
+                n_buffers: 2,
+                format: ArrowFormat::Float64,
+                buffers: OwnedBufferSlots::Dense(Arc::new(vec![
+                    Some(OwnedBuffer::Bytes(Arc::new(Vec::new()))),
+                    Some(OwnedBuffer::F64(values)),
+                ])),
+                children: Arc::new(Vec::new()),
+                schema_name: Arc::new(String::new()),
+                field_names: Arc::new(Vec::new()),
+                effective_missing: None,
+            };
+            let node = NativeNode {
+                length: 2,
+                validity_offset: 0,
+                n_buffers: 1,
+                format: ArrowFormat::Struct,
+                buffers: OwnedBufferSlots::Dense(Arc::new(vec![Some(OwnedBuffer::Bytes(
+                    Arc::new(Vec::new()),
+                ))])),
+                children: Arc::new(vec![leaf(Arc::clone(&x)), leaf(y)]),
+                schema_name: Arc::new(String::new()),
+                field_names: Arc::new(vec![String::from("x"), String::from("y")]),
+                effective_missing: None,
+            };
+            (
+                NativeArrowBatch {
+                    node,
+                    classification: NativeArrowClassification {
+                        encoding: crate::py::geoarrow::GeometryEncoding::Point,
+                        wkb_offset_width: crate::py::arrow::WkbOffsetWidth::Int32,
+                        crs: None,
+                        epoch: None,
+                    },
+                },
+                x,
+            )
+        }
+
+        let (batch, x) = make_batch();
+        let (decoded, allocations) = crate::test_support::allocation_count(|| batch.decode());
+        let decoded = decoded.expect("direct point decode");
+        let NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
+            crate::array::PackedStorage::Points { coords, .. },
+        )) = decoded.storage
+        else {
+            panic!("uniform point input must decode directly to packed storage")
+        };
+        let columns = coords.column_arcs();
+        assert!(Arc::ptr_eq(
+            &x,
+            &columns.xs.owner().expect("non-empty x owner")
+        ));
+        assert!(
+            allocations > 0,
+            "direct decode must have fallible allocations"
+        );
+
+        for allowed in 0..allocations {
+            let (batch, _) = make_batch();
+            let result = crate::test_support::fail_allocations_after(allowed, || batch.decode());
+            let error = match result {
+                Ok(_) => panic!("allocation prefix {allowed} should fail"),
+                Err(error) => error.into_py_err(),
+            };
+            Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
+            let (retry, _) = make_batch();
+            let retry = retry
+                .decode()
+                .expect("failed direct decode must be retryable");
+            assert_eq!(retry.length, 2);
+            assert_eq!(retry.storage.len(), 2);
+        }
+    }
+
+    fn f64_leaf(name: &str, values: Vec<f64>) -> NativeNode {
+        let length = values.len();
+        NativeNode {
+            length,
             validity_offset: 0,
             n_buffers: 2,
             format: ArrowFormat::Float64,
@@ -791,32 +1184,117 @@ mod tests {
                 Some(OwnedBuffer::F64(Arc::new(values))),
             ])),
             children: Arc::new(Vec::new()),
-            schema_name: Arc::new(String::new()),
+            schema_name: Arc::new(name.to_owned()),
             field_names: Arc::new(Vec::new()),
             effective_missing: None,
-        };
-        let node = NativeNode {
-            length: 2,
+        }
+    }
+
+    fn coordinate_struct(xs: Vec<f64>, ys: Vec<f64>) -> NativeNode {
+        assert_eq!(xs.len(), ys.len());
+        NativeNode {
+            length: xs.len(),
             validity_offset: 0,
             n_buffers: 1,
             format: ArrowFormat::Struct,
             buffers: OwnedBufferSlots::Dense(Arc::new(vec![Some(OwnedBuffer::Bytes(Arc::new(
                 Vec::new(),
             )))])),
-            children: Arc::new(vec![leaf(vec![1.0, 2.0]), leaf(vec![3.0, 4.0])]),
+            children: Arc::new(vec![f64_leaf("x", xs), f64_leaf("y", ys)]),
             schema_name: Arc::new(String::new()),
             field_names: Arc::new(vec![String::from("x"), String::from("y")]),
             effective_missing: None,
-        };
-        let coordinates = NativeCoordinates::new(&node).expect("struct coordinates");
+        }
+    }
 
-        let result =
-            crate::test_support::fail_allocations_after(0, || coordinates.coordseq(0, 2, 0));
-        let error = match result {
-            Ok(_) => panic!("coordinate copy allocation should fail"),
-            Err(error) => error,
+    fn list_node(offsets: &[i32], child: NativeNode, missing: Option<Vec<bool>>) -> NativeNode {
+        let mut bytes = Vec::new();
+        for offset in offsets {
+            bytes.extend_from_slice(&offset.to_le_bytes());
+        }
+        NativeNode {
+            length: offsets.len() - 1,
+            validity_offset: 0,
+            n_buffers: 2,
+            format: ArrowFormat::List,
+            buffers: OwnedBufferSlots::Dense(Arc::new(vec![
+                Some(OwnedBuffer::Bytes(Arc::new(Vec::new()))),
+                Some(OwnedBuffer::Bytes(Arc::new(bytes))),
+            ])),
+            children: Arc::new(vec![child]),
+            schema_name: Arc::new(String::new()),
+            field_names: Arc::new(Vec::new()),
+            effective_missing: missing.map(Arc::new),
+        }
+    }
+
+    fn classification(
+        encoding: crate::py::geoarrow::GeometryEncoding,
+    ) -> NativeArrowClassification {
+        NativeArrowClassification {
+            encoding,
+            wkb_offset_width: crate::py::arrow::WkbOffsetWidth::Int32,
+            crs: None,
+            epoch: None,
+        }
+    }
+
+    #[test]
+    fn direct_line_decode_builds_present_only_csr_for_hidden_parent_rows() {
+        let coordinates = coordinate_struct(vec![f64::NAN, f64::NAN, 2.0, 3.0, 4.0, 5.0], vec![
+            f64::NAN,
+            f64::NAN,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+        ]);
+        let node = list_node(&[0, 2, 4, 6], coordinates, Some(vec![true, false, false]));
+        let decoded = NativeArrowBatch {
+            node,
+            classification: classification(crate::py::geoarrow::GeometryEncoding::LineString),
+        }
+        .decode()
+        .expect("direct linestring decode");
+        let NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
+            crate::array::PackedStorage::Lines {
+                coords, offsets, ..
+            },
+        )) = decoded.storage
+        else {
+            panic!("uniform linestring input must decode directly to packed storage")
         };
-        let error = error.into_py_err();
-        Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
+        assert_eq!(decoded.missing, vec![0]);
+        assert_eq!(coords.xs(), &[2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(offsets.as_slice(), &[0, 2, 4]);
+    }
+
+    #[test]
+    fn direct_polygon_decode_builds_csr_columns_without_shape_rows() {
+        let coordinates =
+            coordinate_struct(vec![0.0, 1.0, 1.0, 0.0, 0.0], vec![0.0, 0.0, 1.0, 1.0, 0.0]);
+        let rings = list_node(&[0, 5], coordinates, None);
+        let node = list_node(&[0, 1], rings, None);
+        let decoded = NativeArrowBatch {
+            node,
+            classification: classification(crate::py::geoarrow::GeometryEncoding::Polygon),
+        }
+        .decode()
+        .expect("direct polygon decode");
+        let NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
+            crate::array::PackedStorage::Polygons {
+                coords,
+                ring_offsets,
+                polygon_offsets,
+                ..
+            },
+        )) = decoded.storage
+        else {
+            panic!("uniform polygon input must decode directly to packed storage")
+        };
+        assert!(decoded.missing.is_empty());
+        assert_eq!(coords.xs(), &[0.0, 1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(ring_offsets.as_slice(), &[0, 5]);
+        assert_eq!(polygon_offsets.as_slice(), &[0, 1]);
     }
 }

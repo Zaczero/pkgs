@@ -30,6 +30,19 @@ impl<T> SharedSlice<T> {
         })
     }
 
+    /// Adopt an already fallibly allocated vector without allocating another
+    /// owner. Empty vectors use the canonical no-owner representation.
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the Arrow decoder transfers its already fallibly allocated Arc<Vec> owner"
+    )]
+    pub(crate) fn from_arc_vec(owner: Arc<Vec<T>>) -> Self {
+        if owner.is_empty() {
+            return Self::empty();
+        }
+        Self { owner: Some(owner) }
+    }
+
     pub(crate) fn as_slice(&self) -> &[T] {
         self.owner.as_deref().map_or(&[], Vec::as_slice)
     }
