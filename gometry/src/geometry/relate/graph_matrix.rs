@@ -3410,4 +3410,29 @@ mod tests {
         .unwrap();
         assert_eq!(matrix.text(), "1F1F00102");
     }
+
+    #[test]
+    fn point_polygon_fast_path_matches_the_full_partition_oracle() {
+        let square = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
+        for (name, x, y, expected) in [
+            ("inside", 2.0, 2.0, "0F2FF1FF2"),
+            ("boundary", 4.0, 2.0, "FF20F1FF2"),
+            ("vertex", 0.0, 0.0, "FF20F1FF2"),
+            ("outside", 9.0, 9.0, "FF2FF10F2"),
+        ] {
+            let point = Shape::Point(crate::geometry::Point::new_raw_xy(x, y));
+            let left = PreparedPlan::transient(&square).unwrap();
+            let right = PreparedPlan::transient(&point).unwrap();
+            let forward = graph_relate_data(&left, &right).unwrap();
+            assert_eq!(forward.text(), expected, "{name} polygon-first");
+            let reverse = graph_relate_data(&right, &left).unwrap();
+            assert_eq!(
+                reverse.text(),
+                forward.transpose().text(),
+                "{name} point-first is the transpose"
+            );
+            let oracle = graph_relate_data_oracle(&left, &right).unwrap();
+            assert_eq!(oracle.text(), expected, "{name} full-partition oracle");
+        }
+    }
 }
