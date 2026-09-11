@@ -1,5 +1,9 @@
 use std::cmp::Ordering;
 
+use super::taylor::{
+    TaylorOptions, TaylorPhaseInterval, TaylorSource, TaylorSurface, evaluate as evaluate_taylor,
+    evaluate_enclosed as evaluate_taylor_enclosed,
+};
 use super::{
     Degree, Dyadic, Enclosure, ExactBinary64, PrecisionContext, PrecisionPolicy, RoundedBinary64,
     RoundingCell, Sign,
@@ -735,4 +739,197 @@ fn refinement_replays_original_inputs_instead_of_promoting_a_rounded_value() {
         .expect("replayed exact inputs");
     assert_eq!(replayed.exponent(), -1074);
     assert_eq!(replayed.significand_bits(), 1074);
+}
+
+fn taylor_context_at(bits: u32) -> PrecisionContext {
+    PrecisionContext::new(PrecisionPolicy::new(
+        bits,
+        bits,
+        50_000_000,
+        256 * 1024 * 1024,
+    ))
+    .expect("Taylor test policy")
+}
+
+fn taylor_source(
+    surface: TaylorSurface,
+    flattening: f64,
+    amplitude: f64,
+    phase: f64,
+    lower: f64,
+    upper: f64,
+) -> TaylorSource {
+    TaylorSource::from_f64(
+        surface,
+        flattening,
+        amplitude,
+        phase,
+        TaylorPhaseInterval::from_f64(lower, upper).expect("Taylor phase"),
+    )
+    .expect("Taylor source")
+}
+
+fn enclosure_width(value: &Enclosure, context: &mut PrecisionContext) -> Dyadic {
+    value
+        .hi()
+        .sub_scratch(value.lo(), context)
+        .expect("Taylor enclosure width")
+}
+
+#[test]
+fn graded_taylor_oblate_and_prolate_panels_cover_independent_bounds() {
+    let oblate = taylor_source(
+        TaylorSurface::Oblate,
+        0.999_999,
+        0.999_999,
+        -0.4,
+        0.75,
+        0.75,
+    );
+    let options = TaylorOptions::new(10.0, 32, 2_048, 58, true).expect("Taylor options");
+    let mut oblate_context = taylor_context_at(256);
+    assert_numerical(
+        evaluate_taylor(&oblate, options, &mut oblate_context)
+            .expect_err("availability budget for extreme oblate"),
+    );
+
+    for (surface, flattening, amplitude) in [(TaylorSurface::Prolate, -1.0e3, 0.8)] {
+        let source = taylor_source(surface, flattening, amplitude, -0.4, 0.75, 0.75);
+        let mut context = taylor_context_at(256);
+        let result = evaluate_taylor(&source, options, &mut context).expect("extreme Taylor case");
+        assert!(result.panels() > 0);
+        assert!(result.depth() <= 58);
+        assert!(result.q().lo() <= result.q().hi());
+        assert!(result.one_plus_reciprocal().lo() <= result.one_plus_reciprocal().hi());
+        let terminal = exact(0.75, &mut context);
+        let q_lower = if matches!(surface, TaylorSurface::Oblate) {
+            exact(1.0 - flattening, &mut context)
+        } else {
+            exact(1.0, &mut context)
+        };
+        let lower_integral = q_lower
+            .mul_scratch(&terminal, &mut context)
+            .expect("independent lower product");
+        let q_upper = if matches!(surface, TaylorSurface::Oblate) {
+            terminal
+        } else {
+            exact(1.0 - flattening, &mut context)
+                .mul_scratch(&terminal, &mut context)
+                .expect("independent upper product")
+        };
+        assert!(result.q().lo() <= &q_upper);
+        assert!(result.q().hi() >= &lower_integral);
+    }
+}
+
+#[test]
+fn graded_taylor_sphere_matches_exact_constant_integrals() {
+    let source = taylor_source(TaylorSurface::Oblate, 0.0, 0.0, -1.2, 0.75, 0.75);
+    let options = TaylorOptions::new(1.0e-2, 32, 2_048, 58, true).expect("sphere Taylor options");
+    let mut context = taylor_context_at(128);
+    let result = evaluate_taylor(&source, options, &mut context).expect("sphere Taylor case");
+    let length = exact(0.75, &mut context);
+    let half_length = length
+        .scale_pow2(-1, &mut context)
+        .expect("sphere reciprocal oracle");
+    assert!(result.q().lo() <= &length);
+    assert!(result.q().hi() >= &length);
+    assert!(result.one_plus_reciprocal().lo() <= &half_length);
+    assert!(result.one_plus_reciprocal().hi() >= &half_length);
+    let zero = Dyadic::zero();
+    let weighted = result
+        .weighted_reciprocal()
+        .expect("sphere weighted integral");
+    assert!(weighted.lo() <= &zero);
+    assert!(weighted.hi() >= &zero);
+}
+
+#[test]
+fn graded_taylor_handles_subnormal_flattening_and_pole_equator_limits() {
+    let cases = [
+        (TaylorSurface::Oblate, f64::from_bits(1), 0.5, -1.4),
+        (
+            TaylorSurface::Oblate,
+            0.2,
+            f64::from_bits(0x3FEF_FFFF_FFFF_FFFF),
+            0.0,
+        ),
+        (TaylorSurface::Prolate, -0.2, f64::from_bits(1), -1.5),
+        (TaylorSurface::Prolate, -0.2, 1.0, 1.5),
+    ];
+    for (surface, flattening, amplitude, phase) in cases {
+        let source = taylor_source(surface, flattening, amplitude, phase, 0.2, 0.2);
+        let options = TaylorOptions::new(1.0e-6, 32, 2_048, 58, true).expect("Taylor options");
+        let mut context = taylor_context_at(256);
+        let result =
+            evaluate_taylor(&source, options, &mut context).expect("pole/equator Taylor case");
+        assert!(result.q().lo() <= result.q().hi());
+        assert!(result.weighted_reciprocal().is_some());
+    }
+}
+
+#[test]
+fn graded_taylor_tail_is_present_in_the_published_enclosure() {
+    let source = taylor_source(TaylorSurface::Oblate, 0.2, 0.9, -0.3, 0.7, 0.7);
+    let options = TaylorOptions::new(1.0e-3, 10, 2_048, 58, true).expect("Taylor options");
+    let mut context = taylor_context_at(128);
+    let result =
+        evaluate_taylor(&source, options, &mut context).expect("tail-controlled Taylor case");
+    let width = enclosure_width(result.q(), &mut context);
+    assert!(result.tails().q() > &Dyadic::zero());
+    assert!(width >= *result.tails().q());
+    assert!(result.tails().weighted_reciprocal().is_some());
+}
+
+#[test]
+fn graded_taylor_replays_sources_and_strictly_narrows_with_precision() {
+    let source = taylor_source(TaylorSurface::Prolate, -0.15, 0.7, -0.6, 0.9, 0.9);
+    let options = TaylorOptions::new(1.0e-4, 16, 2_048, 58, true).expect("Taylor options");
+    let mut widths = Vec::new();
+    for bits in [64, 128, 256] {
+        let mut context = taylor_context_at(bits);
+        let result =
+            evaluate_taylor(&source, options, &mut context).expect("precision Taylor case");
+        widths.push(enclosure_width(result.q(), &mut context));
+    }
+    assert!(widths[0] > widths[1]);
+    assert!(widths[1] > widths[2]);
+}
+
+#[test]
+fn graded_taylor_terminal_strip_is_bounded_without_boundary_subdivision() {
+    let source = taylor_source(TaylorSurface::Oblate, 0.1, 0.8, -0.4, 0.0, 0.0);
+    let options = TaylorOptions::new(1.0e-5, 32, 2_048, 58, false).expect("Taylor options");
+    let mut context = taylor_context_at(128);
+    let lower = exact(0.6, &mut context);
+    let upper = exact(0.600_000_000_000_001, &mut context);
+    let terminal = Enclosure::new(lower, upper).expect("terminal phase enclosure");
+    let result = evaluate_taylor_enclosed(&source, &terminal, options, &mut context)
+        .expect("uncertain terminal Taylor case");
+    let strip = exact(0.000_000_000_000_001, &mut context);
+    assert!(enclosure_width(result.q(), &mut context) >= strip);
+}
+
+#[test]
+fn graded_taylor_budget_and_allocator_failures_remain_distinct() {
+    let source = taylor_source(TaylorSurface::Oblate, 0.2, 0.8, -0.2, 1.0, 1.0);
+    let budget_options = TaylorOptions::new(1.0e-4, 16, 1, 1, false).expect("budget options");
+    let mut budget_context = taylor_context_at(128);
+    let budget_error = evaluate_taylor(&source, budget_options, &mut budget_context)
+        .expect_err("panel budget exhaustion");
+    assert_numerical(budget_error);
+
+    let options = TaylorOptions::new(1.0e-4, 16, 2_048, 58, false).expect("allocation options");
+    let allocation_error = fail_allocations_after(0, || {
+        let mut context = taylor_context_at(128);
+        evaluate_taylor(&source, options, &mut context)
+    })
+    .expect_err("first Taylor scratch allocation should fail");
+    assert!(matches!(
+        allocation_error.kind(),
+        ErrorKind::Resource(ResourceError::Allocation)
+    ));
+    let mut context = taylor_context_at(128);
+    evaluate_taylor(&source, options, &mut context)
+        .expect("Taylor output should publish without allocator failure");
 }

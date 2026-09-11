@@ -23,6 +23,7 @@ use crate::error::{Error, ErrorKind, ResourceError, Result};
 
 mod natural;
 mod sphere;
+mod taylor;
 #[cfg(test)]
 mod tests;
 mod trig;
@@ -32,6 +33,11 @@ pub(crate) use sphere::{
     Canonicalization, CertifiedBinary64, SphericalBranch, SphericalBranchIdentity,
     SphericalGeodesic, SphericalInput, SphericalModel, SphericalMultiplicity, SphericalPoint,
     classify_spherical_geodesic,
+};
+pub(crate) use taylor::{
+    TaylorIntegrals, TaylorOptions, TaylorPhaseInterval, TaylorSource, TaylorSurface,
+    TaylorTailBounds, evaluate as evaluate_graded_taylor,
+    evaluate_enclosed as evaluate_graded_taylor_enclosed,
 };
 pub(crate) use trig::{
     AngleBracket, AngleBracketStatus, SineCosine, VectorSector, pi_bracket, sin_cos_degrees,
@@ -245,6 +251,38 @@ impl PrecisionContext {
         let required = additional - spare;
         let bytes = required
             .checked_mul(std::mem::size_of::<u64>())
+            .ok_or(ResourceError::SizeOverflow)?;
+        let used = self
+            .workspace_used
+            .checked_add(bytes)
+            .ok_or(ResourceError::SizeOverflow)?;
+        if used > self.policy.workspace_bytes {
+            return Err(numerical_indeterminacy());
+        }
+        vector
+            .try_reserve_exact(additional)
+            .map_err(|_| Error::from(ResourceError::Allocation))?;
+        self.workspace_used = used;
+        Ok(())
+    }
+
+    /// Reserve storage for evaluator-owned scratch while charging the
+    /// cumulative byte volume to this attempt.  The arithmetic substrate
+    /// uses [`Self::try_reserve_words`] for its limb vectors; graded
+    /// evaluators use this typed form for coefficient vectors so an allocator
+    /// refusal cannot be confused with a numerical budget exhaustion.
+    pub(crate) fn try_reserve_items<T>(
+        &mut self,
+        vector: &mut Vec<T>,
+        additional: usize,
+    ) -> Result<()> {
+        let spare = vector.capacity().saturating_sub(vector.len());
+        if additional <= spare {
+            return Ok(());
+        }
+        let required = additional - spare;
+        let bytes = required
+            .checked_mul(std::mem::size_of::<T>())
             .ok_or(ResourceError::SizeOverflow)?;
         let used = self
             .workspace_used
