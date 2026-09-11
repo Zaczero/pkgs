@@ -326,9 +326,10 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
 /// Examples
 /// --------
 /// >>> import gometry as gm
-/// >>> tiles = [gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)]
-/// >>> gm.coverage_union(tiles).normalize().to_wkt()
-/// 'POLYGON ((0 0, 1 0, 2 0, 2 1, 1 1, 0 1, 0 0))'
+/// >>> tiles = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
+/// >>> merged = gm.coverage_union(tiles)
+/// >>> (merged.geometry_type, round(merged.area, 6))
+/// ('Polygon', 2.0)
 #[pyfunction]
 pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
@@ -556,10 +557,16 @@ pub(crate) fn symmetric_difference_all(
 /// Examples
 /// --------
 /// >>> import gometry as gm
-/// >>> grid = [gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)]
+/// >>> grid = gm.GeometryArray([
+/// ...     gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+/// ...     gm.Polygon([(1, 0), (2, 0), (2, 1), (1, 1)]),
+/// ... ])
 /// >>> gm.coverage_is_valid(grid)
 /// True
-/// >>> gm.coverage_is_valid([gm.box(0, 0, 1.1, 1), gm.box(1, 0, 2, 1)])
+/// >>> gm.coverage_is_valid(gm.GeometryArray([
+/// ...     gm.Polygon([(0, 0), (1.1, 0), (1.1, 1), (0, 1)]),
+/// ...     gm.Polygon([(1, 0), (2, 0), (2, 1), (1, 1)]),
+/// ... ]))
 /// False
 #[pyfunction]
 #[pyo3(signature = (values, *, gap_width = 0.0))]
@@ -646,7 +653,9 @@ pub(crate) fn coverage_invalid_edges(
 /// method : {'vw', 'dp'}, default 'vw'
 ///     Importance criterion: ``'vw'`` is area-based (Visvalingam-Whyatt),
 ///     ``'dp'`` is distance-based (Douglas-Peucker). Both run under the same
-///     topology guard.
+///     topology guard. For coverage simplification, ``'dp'`` is a local
+///     importance criterion; it does not provide scalar Douglas-Peucker's
+///     original-span error contract.
 /// simplify_boundary : bool, default True
 ///     Also simplify exterior (unshared) boundaries; ``False`` pins them
 ///     and simplifies only the shared interfaces.
