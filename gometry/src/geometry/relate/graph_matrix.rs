@@ -123,7 +123,47 @@ fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
+    if let Some(matrix) = try_exact_areal_point_relate(left.shape(), right.shape())? {
+        return Ok(matrix);
+    }
     exact_cartesian_relate(left.shape(), right.shape())
+}
+
+fn try_exact_areal_point_relate(left: &Shape, right: &Shape) -> Result<Option<De9im>> {
+    let (areal, point, transpose) = match (left, right) {
+        (Shape::Point(point), Shape::Polygon(_) | Shape::MultiPolygon(_)) => (right, *point, true),
+        (Shape::Polygon(_) | Shape::MultiPolygon(_), Shape::Point(point)) => (left, *point, false),
+        _ => return Ok(None),
+    };
+    let mut polygons = Vec::new();
+    collect_areal_polygons(areal, &mut polygons);
+    if polygons.is_empty()
+        || !polygons
+            .iter()
+            .all(|polygon| polygon.rings().all(ring_is_sound))
+    {
+        return Ok(None);
+    }
+    let Some(location) = crate::geometry::overlay::exact_point_location(areal, point) else {
+        return Ok(None);
+    };
+    let mut matrix = De9im::empty_disjoint();
+    matrix.set_at_least(location, Loc::Interior, crate::geometry::Dimension::Point);
+    matrix.set_at_least(
+        Loc::Interior,
+        Loc::Exterior,
+        crate::geometry::Dimension::Surface,
+    );
+    matrix.set_at_least(
+        Loc::Boundary,
+        Loc::Exterior,
+        crate::geometry::Dimension::Curve,
+    );
+    Ok(Some(if transpose {
+        matrix.transpose()
+    } else {
+        matrix
+    }))
 }
 
 fn exact_cartesian_relate(left: &Shape, right: &Shape) -> Result<De9im> {
@@ -164,6 +204,9 @@ pub(crate) fn graph_relate_data_with_left_graph(
     _left_graph: &TopologyGraph,
     right: &PreparedPlan,
 ) -> Result<De9im> {
+    if let Some(matrix) = try_exact_areal_point_relate(left.shape(), right.shape())? {
+        return Ok(matrix);
+    }
     exact_cartesian_relate(left.shape(), right.shape())
 }
 
@@ -174,6 +217,9 @@ pub(crate) fn graph_relate_data_with_right_graph(
     right: &PreparedPlan,
     _right_graph: &TopologyGraph,
 ) -> Result<De9im> {
+    if let Some(matrix) = try_exact_areal_point_relate(left.shape(), right.shape())? {
+        return Ok(matrix);
+    }
     exact_cartesian_relate(left.shape(), right.shape())
 }
 

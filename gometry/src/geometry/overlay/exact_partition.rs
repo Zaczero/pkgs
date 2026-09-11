@@ -1737,6 +1737,59 @@ impl ExactSourceInventory {
     }
 }
 
+/// Exact point-cell certificate for a polygonal source. This is the cheap
+/// point specialization of the partition owner: ring membership is decided
+/// by the robust polygon predicates, so a full face embedding is unnecessary
+/// when the query has no one-dimensional source of its own.
+pub(in crate::geometry) fn exact_point_location(shape: &Shape, point: Point) -> Option<Loc> {
+    match shape {
+        Shape::Polygon(polygon) => {
+            if polygon.contains_point(point) {
+                Some(Loc::Interior)
+            } else if polygon.covers_point(point) {
+                Some(Loc::Boundary)
+            } else {
+                Some(Loc::Exterior)
+            }
+        },
+        Shape::MultiPolygon(polygons) => {
+            let mut boundary = false;
+            for polygon in polygons {
+                if polygon.contains_point(point) {
+                    return Some(Loc::Interior);
+                }
+                boundary |= polygon.covers_point(point);
+            }
+            Some(if boundary {
+                Loc::Boundary
+            } else {
+                Loc::Exterior
+            })
+        },
+        Shape::GeometryCollection(geometries) => {
+            let mut boundary = false;
+            let mut admitted = false;
+            for geometry in geometries {
+                let Some(location) = exact_point_location(geometry, point) else {
+                    continue;
+                };
+                admitted = true;
+                match location {
+                    Loc::Interior => return Some(Loc::Interior),
+                    Loc::Boundary => boundary = true,
+                    Loc::Exterior => {},
+                }
+            }
+            admitted.then_some(if boundary {
+                Loc::Boundary
+            } else {
+                Loc::Exterior
+            })
+        },
+        _ => None,
+    }
+}
+
 struct StagedExactSources {
     segments: Vec<Segment>,
     source_operands: Vec<u32>,
