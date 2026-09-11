@@ -229,6 +229,14 @@ impl NativeArrowAccumulator {
                 "native Arrow decoder returned inconsistent row counts",
             ));
         }
+        if decoded.length == 0 {
+            // Admission and decoding above still validate every batch,
+            // including offset-bearing empties. A genuinely zero-row batch
+            // carries no row metadata; drop it before retaining an empty part.
+            // Check the decoded length rather than storage length so a
+            // non-empty all-missing batch still retains its row metadata.
+            return Ok(());
+        }
         let row_base = self.length;
         let new_length = row_base
             .checked_add(decoded.length)
@@ -905,7 +913,27 @@ mod tests {
     use pyo3::prelude::*;
     use pyo3::types::PyDict;
 
-    use super::pyarrow_module;
+    use super::{NativeArrowAccumulator, NativeDecodedBatch, NativeDecodedStorage, pyarrow_module};
+
+    #[test]
+    fn empty_decoded_batch_is_not_retained() {
+        let decoded = NativeDecodedBatch {
+            length: 0,
+            storage: NativeDecodedStorage::Mixed(Vec::new()),
+            srids: Vec::new(),
+            missing: Vec::new(),
+        };
+        let mut accumulator = NativeArrowAccumulator::new();
+        let ((), allocations) = crate::test_support::allocation_count(|| {
+            accumulator
+                .push_decoded(decoded)
+                .expect("empty decoded batch should be accepted");
+        });
+        assert_eq!(allocations, 0);
+        assert!(accumulator.storage.is_empty());
+        assert_eq!(accumulator.storage.capacity(), 0);
+        assert_eq!(accumulator.length, 0);
+    }
 
     #[test]
     fn pyarrow_import_reclassifies_only_missing_root_module() {
