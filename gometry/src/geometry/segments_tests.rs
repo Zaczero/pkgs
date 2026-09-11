@@ -1112,11 +1112,11 @@ mod exact_projection_allocation_tests {
         ));
     }
 
-    fn prefix_sweep(run: impl Fn() -> crate::error::Result<()>) {
+    fn prefix_sweep(expected_allocations: usize, run: impl Fn() -> crate::error::Result<()>) {
         let ((), allocations) = allocation_count(|| run().unwrap());
-        if allocations == 0 {
-            return;
-        }
+        // Each caller locks its measured count so a change in either direction
+        // fails here instead of silently changing the failure sweep.
+        assert_eq!(allocations, expected_allocations);
         for allowed in 0..allocations {
             let error = fail_allocations_after(allowed, &run)
                 .expect_err("exact projection scratch must propagate allocation failure");
@@ -1132,7 +1132,7 @@ mod exact_projection_allocation_tests {
             end: XY::new(1.0, 0.0),
         };
         let point = XY::new(0.0, 0.0);
-        prefix_sweep(|| {
+        prefix_sweep(0, || {
             super::super::classify_segment_projection_exact(point, segment).map(|_| ())
         });
     }
@@ -1150,7 +1150,7 @@ mod exact_projection_allocation_tests {
             f64::from_bits(0xA018_FBE4_C3D7_9F2E),
             f64::from_bits(0x2039_6423_3D01_E367),
         );
-        prefix_sweep(|| {
+        prefix_sweep(5, || {
             segment_projection(point, segment).map(|projection| {
                 assert!(matches!(
                     projection,
@@ -1182,7 +1182,9 @@ mod exact_projection_allocation_tests {
             end: XY::new(2.0, 0.0),
         };
         let point = XY::new(1.0, 1.0);
-        prefix_sweep(|| super::super::exact_projection_terms(point, segment).map(|_| ()));
+        prefix_sweep(0, || {
+            super::super::exact_projection_terms(point, segment).map(|_| ())
+        });
     }
 
     #[test]
@@ -1192,7 +1194,7 @@ mod exact_projection_allocation_tests {
             end: XY::new(1.0, 1.0),
         };
         let point = XY::new(1.0, 1.0_f64.next_down());
-        prefix_sweep(|| {
+        prefix_sweep(1, || {
             super::super::classify_segment_projection_exact(point, segment).map(|classification| {
                 assert!(matches!(
                     classification,
@@ -1216,7 +1218,7 @@ mod exact_projection_allocation_tests {
                 .unwrap()
                 .uses_exact_ratio()
         );
-        prefix_sweep(|| {
+        prefix_sweep(2, || {
             selection.projection(point, segment).map(|projection| {
                 assert!(projection.uses_exact_ratio());
             })
@@ -1233,7 +1235,7 @@ mod exact_projection_allocation_tests {
         let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(-1.0)), MOrdinate(Some(-3.0)));
         let end = Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(5.0)), MOrdinate(Some(9.0)));
         let expected = projection.interpolate_point(start, end).unwrap();
-        prefix_sweep(|| projection.interpolate_point(start, end).map(|_| ()));
+        prefix_sweep(0, || projection.interpolate_point(start, end).map(|_| ()));
         assert_eq!(
             projection.interpolate_point(start, end).unwrap(),
             expected,
@@ -1289,7 +1291,7 @@ mod exact_projection_allocation_tests {
         ));
         let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(Some(3.0)));
         let end = Point::new_raw_axes(13.0, 13.0, ZOrdinate(Some(5.0)), MOrdinate(Some(9.0)));
-        prefix_sweep(|| projection.interpolate_point(start, end).map(|_| ()));
+        prefix_sweep(2, || projection.interpolate_point(start, end).map(|_| ()));
     }
 
     #[test]
@@ -1299,7 +1301,7 @@ mod exact_projection_allocation_tests {
             end: XY::new(1.0, 1.0),
         };
         let projection = segment_projection(XY::new(1.0, 1.0_f64.next_down()), segment).unwrap();
-        prefix_sweep(|| projection.interpolate_xy(segment).map(|_| ()));
+        prefix_sweep(0, || projection.interpolate_xy(segment).map(|_| ()));
     }
 
     #[test]
@@ -1309,6 +1311,6 @@ mod exact_projection_allocation_tests {
             end: XY::new(1e200 + 1.0, 0.0),
         };
         let point = XY::new(1e200 + 0.5, 1.0);
-        prefix_sweep(|| segment_projection(point, segment).map(|_| ()));
+        prefix_sweep(0, || segment_projection(point, segment).map(|_| ()));
     }
 }

@@ -3407,18 +3407,10 @@ mod tests {
         }
 
         let one = ExactDyadic::one();
-        let half_ulp_at_one = ExactDyadic {
-            negative: false,
-            limbs: vec![1],
-            exponent: -53,
-        };
+        let half_ulp_at_one = ExactDyadic::from_parts(false, vec![1], -53);
         let below_tie = one.clone().subtract(half_ulp_at_one.clone());
         let above_tie = one.clone().add(half_ulp_at_one);
-        let below_minimum_subnormal = ExactDyadic {
-            negative: false,
-            limbs: vec![1],
-            exponent: -1075,
-        };
+        let below_minimum_subnormal = ExactDyadic::from_parts(false, vec![1], -1075);
         let minimum_subnormal = ExactDyadic::from_f64(f64::from_bits(1));
 
         for (name, numerator, denominator) in [

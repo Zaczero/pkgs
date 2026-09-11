@@ -820,9 +820,9 @@ mod frame_cache_tests {
                 .line_interpolate_point_m_with(0.0, &PlanarMetric)
                 .expect("exact measured interpolation")
         });
-        if allocations == 0 {
-            return;
-        }
+        // Planar exact measured interpolation is intentionally allocation-free;
+        // lock zero so a future heap spill fails rather than weakening coverage.
+        assert_eq!(allocations, 0);
         for prefix in 0..allocations {
             let error = fail_allocations_after(prefix, || {
                 shape.line_interpolate_point_m_with(0.0, &PlanarMetric)
