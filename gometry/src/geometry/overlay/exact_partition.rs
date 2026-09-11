@@ -288,6 +288,27 @@ pub(in crate::geometry) struct ExactChainViews {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::geometry) struct ExactLineSource {
+    pub operand: u32,
+    pub reversed: bool,
+}
+
+#[derive(Debug)]
+pub(in crate::geometry) struct ExactLineEmission {
+    pub segments: Vec<Segment>,
+    owners: Vec<ExactLineSource>,
+    offsets: Vec<u32>,
+}
+
+impl ExactLineEmission {
+    pub(in crate::geometry) fn sources(&self, span: usize) -> &[ExactLineSource] {
+        let start = self.offsets[span] as usize;
+        let end = self.offsets[span + 1] as usize;
+        &self.owners[start..end]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum VisibilityHit {
     Node(NodeId),
     Span(u32),
@@ -1233,6 +1254,13 @@ impl ExactSourceInventory {
 
     pub(in crate::geometry) fn source_operands(&self) -> &[u32] {
         &self.source_operands
+    }
+
+    pub(in crate::geometry) fn line_emission(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<ExactLineEmission> {
+        partition.emit_lines(&self.source_operands)
     }
 
     fn operand_count(&self) -> usize {
@@ -2786,6 +2814,55 @@ impl<'a> ExactPartition<'a> {
             return Err(GeometryErrorKind::ExactUnexpectedContact { first, second }.into());
         }
         Ok(segments)
+    }
+
+    fn emit_lines(&self, source_operands: &[u32]) -> Result<ExactLineEmission> {
+        let mut items = Vec::new();
+        try_reserve_vec(&mut items, self.spans.len())?;
+        items.extend(self.spans.iter().map(|span| [span.start, span.end]));
+
+        let (topology, edge_of_slot) = self.local_topology()?;
+        let segments = self.round_incident_items(&items)?;
+
+        let mut departures = Vec::new();
+        try_reserve_vec(&mut departures, self.spans.len())?;
+        departures.resize(self.spans.len(), [u32::MAX; 2]);
+        for (slot, &span) in edge_of_slot.iter().enumerate() {
+            let span_index = span as usize;
+            let span = self.spans[span_index];
+            let slot = slot as u32;
+            if topology.owners[slot as usize] == span.start.0 {
+                departures[span_index][0] = slot;
+            } else {
+                debug_assert_eq!(topology.owners[slot as usize], span.end.0);
+                departures[span_index][1] = slot;
+            }
+        }
+        let mut darts = Vec::new();
+        try_reserve_vec(&mut darts, departures.len())?;
+        for [start, end] in departures {
+            debug_assert!(start != u32::MAX && end != u32::MAX);
+            darts.push([start, end]);
+        }
+        Self::check_emitted_fans(&topology, &darts, &segments)?;
+
+        let mut offsets = Vec::new();
+        try_reserve_vec(&mut offsets, self.spans.len().saturating_add(1))?;
+        offsets.push(0);
+        let mut owners = Vec::new();
+        for span_index in 0..self.spans.len() {
+            for &(source, reversed) in self.owners(span_index) {
+                let operand = source_operands[source as usize];
+                try_reserve_vec(&mut owners, 1)?;
+                owners.push(ExactLineSource { operand, reversed });
+            }
+            offsets.push(u32::try_from(owners.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        }
+        Ok(ExactLineEmission {
+            segments,
+            owners,
+            offsets,
+        })
     }
 
     fn check_emitted_fans(

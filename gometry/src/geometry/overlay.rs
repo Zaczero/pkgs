@@ -110,7 +110,7 @@ pub(crate) use clip::{
     line_parts_to_shape,
 };
 pub(in crate::geometry) use exact_partition::{
-    ExactChainView, ExactPartition, ExactSourceInventory, NodeId, certify_emitted_incidence,
+    ExactChainView, ExactPartition, ExactLineEmission, ExactSourceInventory, NodeId, certify_emitted_incidence,
     exact_point_location,
 };
 pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};

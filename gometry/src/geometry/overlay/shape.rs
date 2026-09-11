@@ -5,11 +5,12 @@
 use ahash::{HashMapExt as _, HashSetExt as _};
 
 use crate::error::Result;
-use crate::geometry::overlay::{OverlayOp, Strictness, merge_chains, overlay_all};
+use crate::geometry::overlay::{
+    ExactLineEmission, ExactSourceInventory, OverlayOp, Strictness, merge_chains, overlay_all,
+};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, PointKey,
-    Segment, Shape, TopologyDomain, TopologyGraph, carry_ordinates, segment_projection,
-    undirected_segment_edge_key,
+    Segment, Shape, TopologyDomain, carry_ordinates, undirected_segment_edge_key,
 };
 impl Shape {
     pub(crate) fn intersection(&self, other: &Self, strictness: Strictness) -> Result<Self> {
@@ -131,11 +132,14 @@ impl Shape {
     /// `MultiLineString` (GEOS/PostGIS `ST_Node`). Polygon boundaries are
     /// included; point-only input yields `MULTILINESTRING EMPTY`. Z/M is
     pub(crate) fn node(&self, strictness: Strictness) -> Result<Self> {
-        let graph = TopologyGraph::cartesian(self)?;
-        let noded = graph
-            .edges
+        let inventory = ExactSourceInventory::from_shapes(&[self])?;
+        let mut budget = crate::geometry::ExpansionBudget::new("node", "exact partition");
+        let partition = inventory.partition(&mut budget)?;
+        let emission = inventory.line_emission(&partition)?;
+        let noded = emission
+            .segments
             .iter()
-            .map(|edge| LineSeq::segment(edge.segment.start.point(), edge.segment.end.point()))
+            .map(|segment| LineSeq::segment(segment.start.point(), segment.end.point()))
             .collect::<Result<Vec<_>>>()?;
         let noded = Self::multi_line_string(self.axes(), noded)?;
         carry_ordinates(noded, &[self], "node", strictness.is_strict())
@@ -177,8 +181,11 @@ impl Shape {
         other
             .linework()
             .map_err(|_| GeometryErrorKind::LinealRequired)?;
-        let graph = TopologyGraph::cartesian_many(&[self, other])?;
-        let (same, opposite) = shared_paths_from_graph(&graph)?;
+        let inventory = ExactSourceInventory::from_shapes(&[self, other])?;
+        let mut budget = crate::geometry::ExpansionBudget::new("shared_paths", "exact partition");
+        let partition = inventory.partition(&mut budget)?;
+        let emission = inventory.line_emission(&partition)?;
+        let (same, opposite) = shared_paths_from_exact(&emission)?;
         let same = same
             .into_iter()
             .map(LineSeq::from_proven)
@@ -195,7 +202,7 @@ impl Shape {
     }
 }
 
-fn shared_paths_from_graph(graph: &TopologyGraph) -> Result<(Vec<CoordSeq>, Vec<CoordSeq>)> {
+fn shared_paths_from_exact(emission: &ExactLineEmission) -> Result<(Vec<CoordSeq>, Vec<CoordSeq>)> {
     let mut same = Vec::new();
     let mut opposite = Vec::new();
     let mut same_path_direction = HashMap::new();
@@ -203,14 +210,13 @@ fn shared_paths_from_graph(graph: &TopologyGraph) -> Result<(Vec<CoordSeq>, Vec<
     let mut same_keys = HashSet::new();
     let mut opposite_keys = HashSet::new();
 
-    for edge in &graph.edges {
+    for (index, &segment) in emission.segments.iter().enumerate() {
         let mut left_direction = None;
         let mut left_mask = 0_u8;
         let mut right_mask = 0_u8;
-        for &source_index in &edge.sources {
-            let source = &graph.source_edges[source_index as usize];
-            let direction = source_direction(edge.segment, source.segment)?;
-            match source.source_row {
+        for source in emission.sources(index) {
+            let direction = !source.reversed;
+            match source.operand {
                 0 => {
                     left_direction.get_or_insert(direction);
                     left_mask |= if direction { 1 } else { 2 };
@@ -230,13 +236,13 @@ fn shared_paths_from_graph(graph: &TopologyGraph) -> Result<(Vec<CoordSeq>, Vec<
         if !has_same_direction && !has_opposite_direction {
             continue;
         }
-        let key = undirected_segment_edge_key(edge.segment);
+        let key = undirected_segment_edge_key(segment);
         let segment = if left_direction {
-            edge.segment
+            segment
         } else {
             Segment {
-                start: edge.segment.end,
-                end: edge.segment.start,
+                start: segment.end,
+                end: segment.start,
             }
         };
         let line = CoordSeq::try_from_points(&[segment.start.point(), segment.end.point()])?;
@@ -266,12 +272,6 @@ fn shared_paths_from_graph(graph: &TopologyGraph) -> Result<(Vec<CoordSeq>, Vec<
         orient_shared_paths(merge_chains(&same)?, &same_path_direction)?,
         orient_shared_paths(merge_chains(&opposite)?, &opposite_path_direction)?,
     ))
-}
-
-fn source_direction(piece: Segment, source: Segment) -> Result<bool> {
-    let start = segment_projection(piece.start, source)?;
-    let end = segment_projection(piece.end, source)?;
-    Ok(end.cmp_along(&start)?.is_ge())
 }
 
 fn orient_shared_paths(
