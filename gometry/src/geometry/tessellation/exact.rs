@@ -2639,6 +2639,25 @@ pub(in crate::geometry) fn round_ratio(
     round_ratio_binary(numerator, denominator)
 }
 
+/// Return the tight binary64 interval containing an exact dyadic ratio.
+///
+/// `round_ratio` supplies the nearest binary64 value. Comparing that value
+/// back against the exact ratio identifies whether only its predecessor or
+/// successor is needed; the comparison itself remains exact, so the returned
+/// interval never uses a rounded value as a decision about the ratio.
+pub(in crate::geometry) fn outward_ratio_bounds(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+) -> Result<(f64, f64)> {
+    let rounded = round_ratio(numerator, denominator)?;
+    let rounded_exact = ExactDyadic::try_from_f64(rounded)?;
+    match try_compare_ratios(numerator, denominator, &rounded_exact, &ExactDyadic::one())? {
+        Ordering::Less => Ok((rounded.next_down(), rounded)),
+        Ordering::Equal => Ok((rounded, rounded)),
+        Ordering::Greater => Ok((rounded, rounded.next_up())),
+    }
+}
+
 /// Round `sqrt(numerator / denominator)` to nearest binary64, ties to even.
 ///
 /// The caller supplies exact nonnegative `numerator` and positive `denominator`.
@@ -3158,6 +3177,78 @@ mod tests {
         let two = ExactDyadic::from_f64(2.0);
         assert_eq!(round_ratio(&half, &two).unwrap(), 0.5);
         assert_eq!(round_ratio(&half.neg(), &two).unwrap(), -0.5);
+    }
+
+    #[test]
+    fn outward_ratio_bounds_contain_adversarial_exact_ratios() {
+        fn assert_contains(name: &str, numerator: &ExactDyadic, denominator: &ExactDyadic) {
+            let (lower, upper) = outward_ratio_bounds(numerator, denominator).unwrap();
+            assert!(
+                lower <= upper,
+                "{name}: invalid interval [{lower:?}, {upper:?}]"
+            );
+            let one = ExactDyadic::one();
+            let lower_exact = ExactDyadic::from_f64(lower);
+            let upper_exact = ExactDyadic::from_f64(upper);
+            assert_ne!(
+                try_compare_ratios(numerator, denominator, &lower_exact, &one).unwrap(),
+                Ordering::Less,
+                "{name}: ratio below lower bound"
+            );
+            assert_ne!(
+                try_compare_ratios(numerator, denominator, &upper_exact, &one).unwrap(),
+                Ordering::Greater,
+                "{name}: ratio above upper bound"
+            );
+        }
+
+        let one = ExactDyadic::one();
+        let half_ulp_at_one = ExactDyadic {
+            negative: false,
+            limbs: vec![1],
+            exponent: -53,
+        };
+        let below_tie = one.clone().subtract(half_ulp_at_one.clone());
+        let above_tie = one.clone().add(half_ulp_at_one);
+        let below_minimum_subnormal = ExactDyadic {
+            negative: false,
+            limbs: vec![1],
+            exponent: -1075,
+        };
+        let minimum_subnormal = ExactDyadic::from_f64(f64::from_bits(1));
+
+        for (name, numerator, denominator) in [
+            (
+                "negative nonrepresentable",
+                ExactDyadic::from_f64(-1.0),
+                ExactDyadic::from_f64(3.0),
+            ),
+            (
+                "negative exactly representable",
+                ExactDyadic::from_f64(-1.5),
+                one.clone(),
+            ),
+            (
+                "negative zero",
+                ExactDyadic::zero(),
+                ExactDyadic::from_f64(-3.0),
+            ),
+            (
+                "positive exactly representable",
+                ExactDyadic::from_f64(1.5),
+                one.clone(),
+            ),
+            ("below one midpoint", below_tie, one.clone()),
+            ("above one midpoint", above_tie, one.clone()),
+            ("minimum subnormal", minimum_subnormal, one.clone()),
+            (
+                "below minimum subnormal",
+                below_minimum_subnormal,
+                one.clone(),
+            ),
+        ] {
+            assert_contains(name, &numerator, &denominator);
+        }
     }
 
     #[test]

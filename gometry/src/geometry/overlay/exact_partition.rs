@@ -23,7 +23,9 @@ use crate::geometry::segments::{
     point_in_segment_envelope, point_on_segment, segment_envelopes_disjoint,
     stored_orientation_sign,
 };
-use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, try_compare_ratios};
+use crate::geometry::tessellation::exact::{
+    ExactDyadic, outward_ratio_bounds, round_ratio, try_compare_ratios,
+};
 use crate::geometry::{
     Bounds, Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget,
     GeometryErrorKind, HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon,
@@ -318,6 +320,88 @@ struct GlobalFaces {
     walk_faces: Vec<u32>,
     component_hosts: Vec<u32>,
     count: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RoundedExtent {
+    x_lo: f64,
+    x_hi: f64,
+    y_lo: f64,
+    y_hi: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct VisibilityEntry {
+    edge: u32,
+    extent: RoundedExtent,
+    prefix_y_hi: f64,
+}
+
+#[derive(Debug, Default)]
+struct VisibilityIndex {
+    entries: Vec<VisibilityEntry>,
+}
+
+impl VisibilityIndex {
+    fn build(partition: &ExactPartition<'_>) -> Result<Self> {
+        let mut entries = Vec::new();
+        try_reserve_vec(&mut entries, partition.spans.len())?;
+        for (edge, span) in partition.spans.iter().enumerate() {
+            let [ax, ay, aw] = partition.homogeneous(span.start)?;
+            let [bx, by, bw] = partition.homogeneous(span.end)?;
+            let (ax_lo, ax_hi) = outward_ratio_bounds(&ax, &aw)?;
+            let (ay_lo, ay_hi) = outward_ratio_bounds(&ay, &aw)?;
+            let (bx_lo, bx_hi) = outward_ratio_bounds(&bx, &bw)?;
+            let (by_lo, by_hi) = outward_ratio_bounds(&by, &bw)?;
+            entries.push(VisibilityEntry {
+                edge: u32::try_from(edge).map_err(|_| ResourceError::SizeOverflow)?,
+                extent: RoundedExtent {
+                    x_lo: ax_lo.min(bx_lo),
+                    x_hi: ax_hi.max(bx_hi),
+                    y_lo: ay_lo.min(by_lo),
+                    y_hi: ay_hi.max(by_hi),
+                },
+                prefix_y_hi: f64::NEG_INFINITY,
+            });
+        }
+        entries.sort_unstable_by(|left, right| {
+            left.extent
+                .y_lo
+                .total_cmp(&right.extent.y_lo)
+                .then_with(|| left.edge.cmp(&right.edge))
+        });
+        let mut prefix_y_hi = f64::NEG_INFINITY;
+        for entry in &mut entries {
+            prefix_y_hi = prefix_y_hi.max(entry.extent.y_hi);
+            entry.prefix_y_hi = prefix_y_hi;
+        }
+        Ok(Self { entries })
+    }
+
+    fn candidate_range(&self, query_y_lo: f64, query_y_hi: f64) -> Range<usize> {
+        let mut low = 0;
+        let mut high = self.entries.len();
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if self.entries[middle - 1].extent.y_lo <= query_y_hi {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        let end = low;
+        low = 0;
+        high = end;
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if self.entries[middle].prefix_y_hi < query_y_lo {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        low..end
+    }
 }
 
 struct PlannedChord {
@@ -1079,6 +1163,7 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     stored_points: Vec<Option<XY>>,
     protect_stored: bool,
     protect_all: bool,
+    visibility: VisibilityIndex,
 }
 
 /// Fallible Cartesian source inventory shared by overlay, relation, clipping,
@@ -3515,9 +3600,36 @@ impl<'a> ExactPartition<'a> {
     ) -> Result<Option<VisibilityHit>> {
         let component = topology.component_of[query.0 as usize];
         let [qx, qy, qw] = self.homogeneous(query)?;
-        let mut nearest: Option<(ExactDyadic, ExactDyadic, VisibilityHit)> = None;
-        for (edge, span) in self.spans.iter().enumerate() {
+        let (_, query_x_hi) = outward_ratio_bounds(&qx, &qw)?;
+        let (query_y_lo, query_y_hi) = outward_ratio_bounds(&qy, &qw)?;
+        let mut nearest: Option<(ExactDyadic, ExactDyadic, f64, VisibilityHit)> = None;
+        let candidate_range = self.visibility.candidate_range(query_y_lo, query_y_hi);
+        let mut candidates = Vec::new();
+        try_reserve_vec(&mut candidates, candidate_range.len())?;
+        candidates.extend_from_slice(&self.visibility.entries[candidate_range]);
+        // The exact path retained the first hit on an equal-x tie. Restore
+        // span order after the y-index walk so that tie handling is unchanged.
+        candidates.sort_unstable_by_key(|entry| entry.edge);
+        for entry in candidates {
+            let edge = entry.edge as usize;
+            let span = self.spans[edge];
             if topology.component_of[span.start.0 as usize] == component {
+                continue;
+            }
+            if query_y_hi < entry.extent.y_lo || query_y_lo > entry.extent.y_hi {
+                continue;
+            }
+            // The exact path rejects every contact at or right of the query.
+            // A lower extent bound at or beyond the query's upper enclosure
+            // proves that rejection without entering exact arithmetic.
+            if entry.extent.x_lo >= query_x_hi {
+                continue;
+            }
+            // A leftward ray keeps the greatest hit below the query. An extent
+            // entirely to its left cannot improve that exact nearest contact.
+            if let Some((_, _, nearest_x_lo, _)) = &nearest
+                && entry.extent.x_hi < *nearest_x_lo
+            {
                 continue;
             }
             let [ax, ay, aw] = self.homogeneous(span.start)?;
@@ -3545,19 +3657,20 @@ impl<'a> ExactPartition<'a> {
                 let w = dy.try_product(&qw)?;
                 let height = qy.try_clone()?.try_subtract(sy.try_product(&qw)?)?;
                 let x = sx.try_product(&w)?.try_add(dx.try_product(&height)?)?;
-                (x, w, VisibilityHit::Span(edge as u32))
+                (x, w, VisibilityHit::Span(entry.edge))
             };
             if try_compare_ratios(&x, &w, &qx, &qw)? != Ordering::Less {
                 continue;
             }
-            if let Some((nx, nw, _)) = &nearest
+            if let Some((nx, nw, ..)) = &nearest
                 && try_compare_ratios(&x, &w, nx, nw)? != Ordering::Greater
             {
                 continue;
             }
-            nearest = Some((x, w, hit));
+            let nearest_x_lo = outward_ratio_bounds(&x, &w)?.0;
+            nearest = Some((x, w, nearest_x_lo, hit));
         }
-        Ok(nearest.map(|(_, _, hit)| hit))
+        Ok(nearest.map(|(_, _, _, hit)| hit))
     }
 }
 
@@ -3935,7 +4048,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         }
     }
 
-    Ok(ExactPartition {
+    let mut partition = ExactPartition {
         unique,
         recipes,
         spans,
@@ -3946,7 +4059,10 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         stored_points,
         protect_stored: false,
         protect_all: false,
-    })
+        visibility: VisibilityIndex::default(),
+    };
+    partition.visibility = VisibilityIndex::build(&partition)?;
+    Ok(partition)
 }
 
 fn push_contact_cut(cuts: &mut Vec<SourceCut>, param: SourceParam, handle: u32) -> Result<()> {
