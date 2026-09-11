@@ -1,10 +1,9 @@
 use ahash::HashSetExt as _;
 
 use crate::error::Result;
-use crate::geometry::derived::monotone_chain_hull;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
-    CdtRefinement, Site, certified_delaunay, collect_sample_triangles,
+    CdtRefinement, CertifiedDelaunay, Site, certified_delaunay, collect_sample_triangles,
     constrained_triangle_vertices, earcut_polygon_with, line_boundary, multiline_boundary,
     rings_to_boundary, sample_weighted, snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel,
     weight_scale,
@@ -465,21 +464,21 @@ impl Shape {
         budget: &mut ExpansionBudget,
     ) -> Result<Vec<Self>> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let canonical = canonical_voronoi_sites(self.unique_xy_points(), tolerance);
-        if canonical.len() < 2 {
+        let (canonical, Some(mesh)) = self.prepare_voronoi(tolerance) else {
             return Ok(Vec::new());
-        }
-        let points: Vec<_> = canonical.iter().map(|site| site.point).collect();
-        if monotone_chain_hull(&points).len() < 3 {
+        };
+        if mesh.collinear_order().is_some() {
             return Err(GeometryErrorKind::voronoi(
                 "input points are collinear; Voronoi cells cannot be computed",
             ));
         }
-        Ok(voronoi_dcel::build(&canonical, boundary, budget, true)?
-            .into_polygons()
-            .into_iter()
-            .map(Self::Polygon)
-            .collect())
+        Ok(
+            voronoi_dcel::build(&canonical, boundary, budget, true, mesh)?
+                .into_polygons()
+                .into_iter()
+                .map(Self::Polygon)
+                .collect(),
+        )
     }
 
     pub fn voronoi_edges(
@@ -524,15 +523,13 @@ impl Shape {
         budget: &mut ExpansionBudget,
     ) -> Result<voronoi_dcel::EmbeddedEdges> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let canonical = canonical_voronoi_sites(self.unique_xy_points(), tolerance);
-        if canonical.len() < 2 {
+        let (canonical, Some(mesh)) = self.prepare_voronoi(tolerance) else {
             return voronoi_dcel::empty_packed_edges();
+        };
+        if mesh.collinear_order().is_none() {
+            return voronoi_dcel::build_edges(&canonical, boundary, budget, true, mesh);
         }
-        let points: Vec<_> = canonical.iter().map(|site| site.point).collect();
-        if monotone_chain_hull(&points).len() >= 3 {
-            return voronoi_dcel::build_edges(&canonical, boundary, budget, true);
-        }
-        voronoi_dcel::build_collinear_edges(&canonical, boundary, budget)
+        voronoi_dcel::build_collinear_edges(&canonical, boundary, budget, mesh)
     }
 
     pub fn boundary(&self) -> Result<Self> {
@@ -692,6 +689,20 @@ impl Shape {
             dangles: carry_diagnostic_rows(full.dangles)?,
             invalid_rings: carry_diagnostic_rows(full.invalid_rings)?,
         })
+    }
+}
+
+impl Shape {
+    fn voronoi_sites(&self, tolerance: f64) -> Vec<Site> {
+        let mut points = Vec::with_capacity(self.coord_count());
+        self.for_each_point(|point| points.push(point.to_xy()));
+        canonical_voronoi_sites(points, tolerance)
+    }
+
+    fn prepare_voronoi(&self, tolerance: f64) -> (Vec<Site>, Option<CertifiedDelaunay>) {
+        let sites = self.voronoi_sites(tolerance);
+        let mesh = (sites.len() >= 2).then(|| certified_delaunay(&sites));
+        (sites, mesh)
     }
 }
 
