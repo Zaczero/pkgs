@@ -2149,14 +2149,12 @@ mod tests {
             PointRowLayout::RowAligned,
         );
         let expected_row_aligned: Vec<_> = (0..65)
-            .map(|logical| {
-                (
-                    logical,
-                    (!missing.contains(&logical)).then_some(logical),
-                )
-            })
+            .map(|logical| (logical, (!missing.contains(&logical)).then_some(logical)))
             .collect();
-        assert_eq!(row_aligned.cursor().collect::<Vec<_>>(), expected_row_aligned);
+        assert_eq!(
+            row_aligned.cursor().collect::<Vec<_>>(),
+            expected_row_aligned
+        );
 
         let compact = PointRows::new(
             57,
@@ -2188,9 +2186,7 @@ mod tests {
             Vec::<(usize, Option<usize>)>::new()
         );
 
-        let all_missing = ValidityMask::from_vec(9, vec![true; 9])
-            .unwrap()
-            .unwrap();
+        let all_missing = ValidityMask::from_vec(9, vec![true; 9]).unwrap().unwrap();
         let row_aligned_missing = PointRows::new(
             9,
             RowSelectionRef::Identity,
@@ -2215,16 +2211,13 @@ mod tests {
         let dense_map = RowSelection::gather_checked_native(vec![4_usize, 1, 4, 0], 5)
             .unwrap()
             .unwrap();
-        let dense_gather = PointRows::new(
-            5,
-            dense_map.as_deref(),
-            None,
-            PointRowLayout::Dense,
-        );
-        assert_eq!(
-            dense_gather.cursor().collect::<Vec<_>>(),
-            [(0, Some(4)), (1, Some(1)), (2, Some(4)), (3, Some(0))]
-        );
+        let dense_gather = PointRows::new(5, dense_map.as_deref(), None, PointRowLayout::Dense);
+        assert_eq!(dense_gather.cursor().collect::<Vec<_>>(), [
+            (0, Some(4)),
+            (1, Some(1)),
+            (2, Some(4)),
+            (3, Some(0))
+        ]);
 
         let row_aligned_mask = ValidityMask::from_vec(4, vec![false, true, false, false])
             .unwrap()
@@ -2235,10 +2228,12 @@ mod tests {
             Some(&row_aligned_mask),
             PointRowLayout::RowAligned,
         );
-        assert_eq!(
-            row_aligned_gather.cursor().collect::<Vec<_>>(),
-            [(0, Some(4)), (1, None), (2, Some(4)), (3, Some(0))]
-        );
+        assert_eq!(row_aligned_gather.cursor().collect::<Vec<_>>(), [
+            (0, Some(4)),
+            (1, None),
+            (2, Some(4)),
+            (3, Some(0))
+        ]);
 
         let compact_map = RowSelection::gather_checked_native(vec![2_usize, 1, 2, 0], 3)
             .unwrap()
@@ -2249,10 +2244,12 @@ mod tests {
             Some(&row_aligned_mask),
             PointRowLayout::Compact,
         );
-        assert_eq!(
-            compact_gather.cursor().collect::<Vec<_>>(),
-            [(0, Some(2)), (1, None), (2, Some(1)), (3, Some(2))]
-        );
+        assert_eq!(compact_gather.cursor().collect::<Vec<_>>(), [
+            (0, Some(2)),
+            (1, None),
+            (2, Some(1)),
+            (3, Some(2))
+        ]);
 
         let dense_window = PointRows::new(
             8,
@@ -2260,16 +2257,13 @@ mod tests {
             None,
             PointRowLayout::Dense,
         );
-        assert_eq!(
-            dense_window.cursor().collect::<Vec<_>>(),
-            [
-                (0, Some(3)),
-                (1, Some(4)),
-                (2, Some(5)),
-                (3, Some(6)),
-                (4, Some(7))
-            ]
-        );
+        assert_eq!(dense_window.cursor().collect::<Vec<_>>(), [
+            (0, Some(3)),
+            (1, Some(4)),
+            (2, Some(5)),
+            (3, Some(6)),
+            (4, Some(7))
+        ]);
     }
 
     fn gathered_lines(rows: usize) -> GeometryArrayStorage {

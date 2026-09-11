@@ -246,10 +246,7 @@ pub(crate) fn validate_data_in_frame(
 
 /// Frame-aware simplicity. Non-crossing inputs keep the frozen handle's cached
 /// verdict; seam-crossing geographic inputs answer on normalized topology.
-pub(crate) fn is_simple_data_in_frame(
-    data: &PreparedPlan,
-    domain: TopologyDomain,
-) -> Result<bool> {
+pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, domain: TopologyDomain) -> Result<bool> {
     if data_needs_topology_split(data, domain)? {
         match try_topology_split(data.shape(), domain) {
             Ok(shape) => shape.is_simple(),
@@ -265,10 +262,7 @@ pub(crate) fn is_simple_data_in_frame(
 
 /// Frame-aware `is_ring`: closure is structural on the original line, while
 /// simplicity is evaluated on normalized seam topology.
-pub(crate) fn is_ring_data_in_frame(
-    data: &PreparedPlan,
-    domain: TopologyDomain,
-) -> Result<bool> {
+pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, domain: TopologyDomain) -> Result<bool> {
     if data_needs_topology_split(data, domain)? {
         if !data.shape().is_closed() {
             return Ok(false);

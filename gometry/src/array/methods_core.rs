@@ -1134,7 +1134,10 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn is_closed_unary_packed(&self) -> PyResult<Vec<bool>> {
-        if let Some(closed) = self.storage().lines_bool(|coords| Ok(line_is_closed(coords))) {
+        if let Some(closed) = self
+            .storage()
+            .lines_bool(|coords| Ok(line_is_closed(coords)))
+        {
             return Ok(closed?);
         }
         Ok(self
@@ -1156,7 +1159,9 @@ impl PyGeometryArray {
         if let Some(ccw) = self.storage().lines_bool(|coords| Ok(line_is_ccw(coords))) {
             return Ok(ccw?);
         }
-        Ok(self.storage().const_or_shape_bool(false, |shape| Ok(shape.is_ccw()))?)
+        Ok(self
+            .storage()
+            .const_or_shape_bool(false, |shape| Ok(shape.is_ccw()))?)
     }
 
     pub(crate) fn is_simple_unary_packed(&self) -> Option<PyResult<Vec<bool>>> {

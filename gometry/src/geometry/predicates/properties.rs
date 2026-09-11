@@ -45,9 +45,7 @@ impl Shape {
                 Ok(false)
             },
             Self::Point(_) | Self::Empty(..) => Ok(true),
-            Self::MultiPoint(points) => {
-                Ok(unique_xy_points(points).len() == points.coord_count())
-            },
+            Self::MultiPoint(points) => Ok(unique_xy_points(points).len() == points.coord_count()),
             Self::LineString(points) => line_is_simple(points),
             Self::MultiLineString(lines) => multiline_is_simple(lines),
             Self::Polygon(_) | Self::MultiPolygon(_) => Ok(self.validate()?.is_none()),

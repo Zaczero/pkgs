@@ -438,8 +438,8 @@ mod sweep_entry_scratch {
         operation: impl FnOnce() -> T + Send + 'static,
     ) -> T {
         std::thread::spawn(move || crate::test_support::fail_allocations_after(allowed, operation))
-        .join()
-        .expect("cold allocation-failure thread")
+            .join()
+            .expect("cold allocation-failure thread")
     }
 
     fn bounds_pairs(bounds: &[Bounds]) -> Vec<(usize, usize)> {
@@ -506,9 +506,7 @@ mod sweep_entry_scratch {
         let mut inner_failed = false;
         let flow = for_each_overlapping_bounds_pair(&bounds, |_, _| {
             let result = crate::test_support::fail_allocations_after(0, || {
-                for_each_candidate_pair(&segments, single_chain, |_, _| {
-                    ControlFlow::Continue(())
-                })
+                for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
             });
             inner_failed = result.is_err();
             ControlFlow::Break(())
@@ -576,6 +574,7 @@ mod sweep_entry_scratch {
             };
             assert_allocation(&error);
         }
-        let _ = for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(())).unwrap();
+        let _ =
+            for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(())).unwrap();
     }
 }

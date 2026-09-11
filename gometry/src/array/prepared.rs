@@ -60,45 +60,53 @@ impl RowProductOwner {
         self: &Arc<Self>,
         physical: usize,
     ) -> crate::error::Result<(Arc<Self>, usize, Arc<RowProductChunk>)> {
-        if let Some((owner, source_physical)) = self.aliases.get(&physical) {
-            return owner.cell(*source_physical);
-        }
+        let (owner, physical) = if let Some((owner, source_physical)) = self.aliases.get(&physical)
+        {
+            debug_assert!(!owner.aliases.contains_key(source_physical));
+            (owner, *source_physical)
+        } else {
+            (self, physical)
+        };
         let chunk_index = physical / ROWS_PER_CHUNK;
         let offset = physical % ROWS_PER_CHUNK;
         #[cfg(test)]
         DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
-        let mut chunks = self
+        let mut chunks = owner
             .chunks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(chunk) = chunks.get(&chunk_index) {
-            return Ok((Arc::clone(self), offset, Arc::clone(chunk)));
+            return Ok((Arc::clone(owner), offset, Arc::clone(chunk)));
         }
         let chunk = Arc::try_new(RowProductChunk::try_new()?).map_err(crate::error::Error::from)?;
         chunks.try_reserve(1).map_err(crate::error::Error::from)?;
         chunks.insert(chunk_index, Arc::clone(&chunk));
         drop(chunks);
-        Ok((Arc::clone(self), offset, chunk))
+        Ok((Arc::clone(owner), offset, chunk))
     }
 
     fn existing_cell(
         self: &Arc<Self>,
         physical: usize,
     ) -> Option<(Arc<Self>, usize, Arc<RowProductChunk>)> {
-        if let Some((owner, source_physical)) = self.aliases.get(&physical) {
-            return owner.existing_cell(*source_physical);
-        }
+        let (owner, physical) = if let Some((owner, source_physical)) = self.aliases.get(&physical)
+        {
+            debug_assert!(!owner.aliases.contains_key(source_physical));
+            (owner, *source_physical)
+        } else {
+            (self, physical)
+        };
         let chunk_index = physical / ROWS_PER_CHUNK;
         let offset = physical % ROWS_PER_CHUNK;
         #[cfg(test)]
         DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
-        let chunks = self
+        let chunks = owner
             .chunks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         chunks
             .get(&chunk_index)
-            .map(|chunk| (Arc::clone(self), offset, Arc::clone(chunk)))
+            .map(|chunk| (Arc::clone(owner), offset, Arc::clone(chunk)))
     }
 }
 
@@ -436,7 +444,12 @@ impl RowProducts {
             .try_reserve(unchanged_rows.len())
             .map_err(crate::error::Error::from)?;
         for &row in unchanged_rows {
-            aliases.insert(row, (Arc::clone(&source.owner), current.physical(row)));
+            let physical = current.physical(row);
+            if let Some((owner, source_physical)) = source.owner.aliases.get(&physical) {
+                aliases.insert(row, (Arc::clone(owner), *source_physical));
+            } else {
+                aliases.insert(row, (Arc::clone(&source.owner), physical));
+            }
         }
         Ok(Self {
             owner: Arc::try_new(RowProductOwner {
@@ -452,6 +465,18 @@ impl RowProducts {
     #[cfg(test)]
     pub(crate) fn shares_owner_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner) && self.selection == other.selection
+    }
+
+    #[cfg(test)]
+    fn alias_depth(&self, mut physical: usize) -> usize {
+        let mut owner = &self.owner;
+        let mut depth = 0;
+        while let Some((target, source_physical)) = owner.aliases.get(&physical) {
+            depth += 1;
+            owner = target;
+            physical = *source_physical;
+        }
+        depth
     }
 
     #[cfg(test)]
@@ -997,6 +1022,39 @@ mod frame_cache_row_tests {
                 &expected_plan
             ));
         }
+    }
+
+    #[test]
+    fn repeated_row_replacements_flatten_product_aliases() {
+        let root = RowProducts::fresh(1).unwrap();
+        let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(7.0, 11.0))));
+        let expected = root.prepared_plan(0, || Ok(Arc::clone(&shape))).unwrap();
+        let root_owner = Arc::clone(&root.owner);
+        let mut current = RowProducts::preserving_physical_rows(1, &root, &[0]).unwrap();
+        drop(root);
+        for _ in 1..64 {
+            let next = RowProducts::preserving_physical_rows(1, &current, &[0]).unwrap();
+            drop(current);
+            current = next;
+        }
+
+        RowProducts::reset_directory_resolution_count();
+        let actual = current
+            .cached_prepared_plan(0)
+            .expect("warmed product through final owner");
+        assert!(Arc::ptr_eq(&actual, &expected));
+        assert_eq!(RowProducts::directory_resolution_count(), 1);
+
+        let alias_owner = &current.owner.aliases.get(&0).expect("row alias").0;
+        assert_eq!(
+            (
+                current.alias_depth(0),
+                Arc::ptr_eq(alias_owner, &root_owner),
+                Arc::strong_count(&root_owner),
+                Arc::strong_count(alias_owner),
+            ),
+            (1, true, 2, 2),
+        );
     }
 
     #[test]

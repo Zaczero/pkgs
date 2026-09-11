@@ -2,11 +2,11 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::error::Result;
 use crate::geometry::segments::{
     PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,
     segment_envelopes_disjoint,
 };
-use crate::error::Result;
 use crate::geometry::{
     HashMap, HashMapExt as _, Orientation, PointKey, Segment, XY, dedup_consecutive_xy,
     for_each_candidate_pair, same_point, single_chain, undirected_segment_edge_key,
@@ -275,7 +275,10 @@ fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segmen
 
 /// Pass 1 of [`self_node_segments`]: collinear-overlap endpoint cuts only.
 pub(crate) fn collinear_overlap_pass(segments: &[Segment]) -> Result<Vec<Segment>> {
-    Ok(split_by_events(segments, collinear_overlap_events(segments)?))
+    Ok(split_by_events(
+        segments,
+        collinear_overlap_events(segments)?,
+    ))
 }
 
 /// The cut events of [`collinear_overlap_pass`].

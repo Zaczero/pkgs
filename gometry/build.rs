@@ -1,4 +1,7 @@
-#![allow(clippy::panic, reason = "a build script reports a missing input by panicking")]
+#![allow(
+    clippy::panic,
+    reason = "a build script reports a missing input by panicking"
+)]
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
@@ -12,8 +15,8 @@ fn main() {
     let profile_family = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_owned());
     let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".to_owned());
     let debug = env::var("DEBUG").unwrap_or_else(|_| "unknown".to_owned());
-    let debug_assertions = env::var("CARGO_CFG_DEBUG_ASSERTIONS")
-        .is_ok_and(|value| !value.is_empty());
+    let debug_assertions =
+        env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok_and(|value| !value.is_empty());
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned());
     let target_features = env::var("CARGO_CFG_TARGET_FEATURE")
         .map(|value| {

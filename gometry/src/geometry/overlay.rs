@@ -152,8 +152,8 @@ pub(crate) use clip::{
 };
 pub(crate) use exact_partition::exact_intersects_bounds;
 pub(in crate::geometry) use exact_partition::{
-    ExactChainView, ExactPartition, ExactLineEmission, ExactSourceInventory, NodeId, certify_emitted_incidence,
-    exact_point_location,
+    ExactChainView, ExactLineEmission, ExactPartition, ExactSourceInventory, NodeId,
+    certify_emitted_incidence, exact_point_location,
 };
 pub(crate) use exact_partition::{occupied_cartesian_area, occupied_cartesian_support};
 pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
