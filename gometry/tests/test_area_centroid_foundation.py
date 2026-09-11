@@ -220,24 +220,29 @@ def test_area_measures_occupied_support() -> None:
         [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)],
         holes=[[(-0.5, -0.5), (1.5, -0.5), (1.5, 1.5), (-0.5, 1.5), (-0.5, -0.5)]],
     )
+    collection_overlap = gm.GeometryCollection([gm.box(0, 0, 1, 1), gm.box(0, 0, 1, 1)])
 
     assert twice.area == 1.0
     assert bowtie.area == 0.5
     assert overlap.area == 1.5
     assert outside_hole.area == 1.0
     assert enclosing_hole.area == 0.0
+    assert collection_overlap.is_valid is True
+    assert collection_overlap.area == 1.0
     assert gm.GeometryArray([
         twice,
         bowtie,
         overlap,
         outside_hole,
         enclosing_hole,
+        collection_overlap,
     ]).area.tolist() == [
         1.0,
         0.5,
         1.5,
         1.0,
         0.0,
+        1.0,
     ]
 
 

@@ -181,6 +181,19 @@ pub(crate) use util::{
     unique_xy_points, wrap_index,
 };
 
+/// Algebraic area is equivalent to occupied Cartesian support for a validated
+/// non-collection operand. A geometry collection may contain overlapping valid
+/// polygon members, so its member-wise sum cannot use this admission.
+pub(crate) fn valid_cartesian_area(data: &PreparedPlan) -> Result<Option<f64>> {
+    if matches!(data.shape(), Shape::GeometryCollection(_)) {
+        return Ok(None);
+    }
+    if data.validate_cached()?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(data.shape().area()))
+}
+
 /// Which optional ordinate an edit replaces or clears.
 #[derive(Clone, Copy)]
 pub(crate) enum OrdinateAxis {
