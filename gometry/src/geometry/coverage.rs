@@ -3,11 +3,12 @@
 //! region without gaps or overlaps (parcels, admin boundaries — the
 //! GEOS/PostGIS "coverage" model; distinct from the DGGS cell coverages).
 //!
-//! The shared substrate is the EDGE MAP: every boundary segment of every
-//! row, keyed by its undirected endpoints. A segment that appears in two
-//! rows is a *matched* interface (exactly shared linework — the coverage
-//! contract); everything else is candidate exterior boundary, and the
-//! validator checks that it genuinely stays exterior to every other row.
+//! Validation stages an edge map: every boundary segment of every row, keyed
+//! by its undirected endpoints. A segment that appears in two rows is a
+//! *matched* interface (exactly shared linework — the coverage contract);
+//! everything else is candidate exterior boundary, and the validator checks
+//! that it genuinely stays exterior to every other row. Topology consumers
+//! then use the exact partition as their sole incidence owner.
 
 use std::cmp::Reverse;
 
