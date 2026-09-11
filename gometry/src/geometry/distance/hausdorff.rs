@@ -3,6 +3,7 @@
 mod algorithm;
 mod breakpoints;
 mod coverage;
+mod filled;
 mod kernel;
 mod quadratic;
 mod query;
@@ -30,6 +31,7 @@ pub(crate) use breakpoints::{
     point_envelope_dual_hull_len_for_test, sample_hausdorff_on_segment,
 };
 pub(crate) use coverage::segment_radius_coverage_certified;
+pub(crate) use filled::filled_hausdorff_distance;
 pub(crate) use kernel::{
     HausdorffTargetLike, directed_hausdorff_distance_squared_shapes,
     hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,

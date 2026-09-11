@@ -134,6 +134,24 @@ impl Shape {
         }
     }
 
+    /// Whether the shape contains a polygon with a nonzero exact signed-area
+    /// ring. A zero-area polygon still contributes its closed ring boundary,
+    /// but has no filled interior to search.
+    pub(crate) fn has_filled_area_parts(&self) -> bool {
+        match self {
+            Self::Polygon(polygon) => {
+                !crate::geometry::ring_winding(polygon.shell.coords()).is_degenerate()
+            },
+            Self::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
+                !crate::geometry::ring_winding(polygon.shell.coords()).is_degenerate()
+            }),
+            Self::GeometryCollection(geometries) => {
+                geometries.iter().any(Self::has_filled_area_parts)
+            },
+            _ => false,
+        }
+    }
+
     /// Boundary-inclusive point-in-AREA test: `covers_point` restricted to
     /// the polygon parts (1D/0D parts cannot contain a disjoint component).
     pub(crate) fn area_covers_point(&self, point: Point) -> bool {

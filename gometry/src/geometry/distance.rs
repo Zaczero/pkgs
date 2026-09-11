@@ -45,9 +45,10 @@ pub(crate) use geodesic_sweep::{
 };
 pub(crate) use hausdorff::{
     HausdorffFeature, HausdorffTarget, compact_hausdorff_params,
-    directed_hausdorff_distance_squared_shapes, hausdorff_distance_line_columns,
-    hausdorff_distance_line_columns_batch, push_equidistant_roots_on_interval,
-    push_point_on_line_breakpoint, push_segment_projection_breakpoints,
+    directed_hausdorff_distance_squared_shapes, filled_hausdorff_distance,
+    hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
+    push_equidistant_roots_on_interval, push_point_on_line_breakpoint,
+    push_segment_projection_breakpoints,
 };
 #[cfg(test)]
 pub(crate) use hausdorff::{

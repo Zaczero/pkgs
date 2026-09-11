@@ -2,11 +2,11 @@ use crate::geometry::distance::{
     GeodesicSweepCapsAccum, HausdorffFeature, HausdorffTarget, Result, any_parts_within,
     collect_geodesic_segments_into, collect_point_only_into, compact_hausdorff_params,
     directed_hausdorff_distance_squared_shapes, discrete_frechet_distance,
-    discrete_frechet_distance_with_scratch, ensure_geodesic_linework, geodesic_cap_streaming,
-    geodesic_capped_sweep, geodesic_capped_witness_sweep, geodesic_max_min_on_source_segment,
-    geodesic_min_distance_to_target, geodesic_scratch, geodesic_segments_cross_streaming,
-    min_parts_to_parts, push_equidistant_roots_on_interval, push_point_on_line_breakpoint,
-    push_segment_projection_breakpoints, squared_space_safe,
+    discrete_frechet_distance_with_scratch, ensure_geodesic_linework, filled_hausdorff_distance,
+    geodesic_cap_streaming, geodesic_capped_sweep, geodesic_capped_witness_sweep,
+    geodesic_max_min_on_source_segment, geodesic_min_distance_to_target, geodesic_scratch,
+    geodesic_segments_cross_streaming, min_parts_to_parts, push_equidistant_roots_on_interval,
+    push_point_on_line_breakpoint, push_segment_projection_breakpoints, squared_space_safe,
 };
 use crate::geometry::frame::SimilarityFrame;
 use crate::geometry::{
@@ -353,6 +353,9 @@ impl Shape {
         if self.is_empty() || other.is_empty() {
             return Ok(f64::INFINITY);
         }
+        if self.has_filled_area_parts() || other.has_filled_area_parts() {
+            return filled_hausdorff_distance(self, other);
+        }
         // A point pair is already the complete continuous Hausdorff problem.
         // Resolve it in source metric space before the squared kernel: a
         // subnormal squared separation underflows to zero, but the stored
@@ -594,6 +597,13 @@ fn robust_continuous_hausdorff(left: &Shape, right: &Shape) -> Result<f64> {
 
 pub(super) fn robust_directed_hausdorff(source: &Shape, target: &Shape) -> Result<f64> {
     let target = HausdorffTarget::build(target)?;
+    robust_directed_hausdorff_with_target(source, &target)
+}
+
+pub(super) fn robust_directed_hausdorff_with_target(
+    source: &Shape,
+    target: &HausdorffTarget,
+) -> Result<f64> {
     let distance = |point: XY| target.distance(point);
     let mut best = 0.0_f64;
     source.try_for_each_point(|point| {

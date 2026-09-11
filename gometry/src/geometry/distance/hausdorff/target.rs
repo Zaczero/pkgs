@@ -2,6 +2,8 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::ops::ControlFlow;
+
 #[cfg(test)]
 use crate::geometry::distance::hausdorff::EquidistantRootSink;
 #[cfg(not(test))]
@@ -26,8 +28,9 @@ pub(crate) struct HausdorffTarget {
     pub(crate) query: HausdorffLineworkQuery,
     pub(crate) points: Vec<Point>,
     pub(crate) features: Vec<HausdorffFeature>,
-    /// Filled area membership for polygonal targets. Boundary-only targets
-    /// leave this absent and retain their existing linework semantics.
+    /// Filled area membership is kept only for targets that contain a
+    /// nondegenerate polygon shell. Degenerate polygon rings remain ordinary
+    /// closed linework, so they need no second membership path.
     filled: Option<Shape>,
 }
 
@@ -46,7 +49,7 @@ pub(crate) const fn should_build_index(segment_count: usize, point_count: usize)
 impl HausdorffTarget {
     pub(crate) fn build(shape: &Shape) -> crate::error::Result<Self> {
         let points = shape.point_only_points()?;
-        let filled = shape.has_area_parts().then(|| shape.clone());
+        let filled = shape.has_filled_area_parts().then(|| shape.clone());
         Self::from_query(
             HausdorffLineworkQuery::from_shape(shape, false)?,
             points,
@@ -146,9 +149,10 @@ impl HausdorffTarget {
         Ok(best)
     }
 
-    /// Distance-space target query for guarded fallback paths. A direct
-    /// feature fold retains the exact point-to-segment owner when squared
-    /// space underflows or overflows.
+    /// Distance-space target query for the filled Hausdorff finisher. The
+    /// squared query remains the hot path for ordinary boundary sweeps; this
+    /// sibling preserves a finite answer when a coordinate range makes a
+    /// squared norm overflow or underflow.
     pub(crate) fn distance(&self, point: XY) -> crate::error::Result<f64> {
         let point = Point::new_raw_xy(point.x, point.y);
         if self
@@ -167,6 +171,99 @@ impl HausdorffTarget {
             best = best.min(candidate);
         }
         Ok(best)
+    }
+
+    pub(crate) fn has_filled_area(&self) -> bool {
+        self.filled.is_some()
+    }
+
+    pub(crate) fn filled_area_shape(&self) -> Option<&Shape> {
+        self.filled.as_ref()
+    }
+
+    pub(crate) fn feature_distance(
+        &self,
+        point: XY,
+        feature: HausdorffFeature,
+    ) -> crate::error::Result<f64> {
+        Ok(match feature {
+            HausdorffFeature::Point(target) => point_distance(point, target),
+            HausdorffFeature::Segment(segment) => {
+                point_segment_distance(Point::new_raw_xy(point.x, point.y), segment)?
+            },
+        })
+    }
+
+    /// Report target features whose boxes meet an expanded cell
+    /// neighbourhood. Indexed targets use the facet BVH; the flat path is
+    /// retained below the BVH crossover. A box hit is deliberately
+    /// conservative because the exact segment distance is still the local
+    /// solver's owner.
+    pub(crate) fn features_near_cell(
+        &self,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+        margin: f64,
+        out: &mut Vec<HausdorffFeature>,
+        stack: &mut Vec<u32>,
+    ) -> crate::error::Result<()> {
+        out.clear();
+        if !margin.is_finite() {
+            crate::boundary::try_reserve_vec(out, self.features.len())?;
+            out.extend_from_slice(&self.features);
+            return Ok(());
+        }
+        let min_x = min_x - margin;
+        let max_x = max_x + margin;
+        let min_y = min_y - margin;
+        let max_y = max_y + margin;
+        let overlaps = |segment: Segment| {
+            segment.start.x.min(segment.end.x) <= max_x
+                && segment.start.x.max(segment.end.x) >= min_x
+                && segment.start.y.min(segment.end.y) <= max_y
+                && segment.start.y.max(segment.end.y) >= min_y
+        };
+        if let Some(bvh) = &self.query.facet_bvh {
+            let probe = Segment {
+                start: XY::new(min_x, min_y),
+                end: XY::new(max_x, max_y),
+            };
+            let mut error = None;
+            let _ = bvh.for_each_segment_overlapping_with_stack(
+                &self.query.linework,
+                probe,
+                stack,
+                |segment| match crate::try_push_vec(out, HausdorffFeature::Segment(segment)) {
+                    Ok(()) => ControlFlow::Continue(()),
+                    Err(failure) => {
+                        error = Some(failure);
+                        ControlFlow::Break(())
+                    },
+                },
+            );
+            if let Some(error) = error {
+                return Err(error);
+            }
+        } else {
+            for &feature in &self.features {
+                if let HausdorffFeature::Segment(segment) = feature
+                    && overlaps(segment)
+                {
+                    crate::try_push_vec(out, feature)?;
+                }
+            }
+        }
+        for &feature in &self.features {
+            let HausdorffFeature::Point(point) = feature else {
+                continue;
+            };
+            if point.x >= min_x && point.x <= max_x && point.y >= min_y && point.y <= max_y {
+                crate::try_push_vec(out, feature)?;
+            }
+        }
+        Ok(())
     }
 }
 
