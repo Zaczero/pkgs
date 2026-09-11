@@ -199,7 +199,7 @@ fn is_numerical(error: &Error) -> bool {
 
 struct Prepared {
     surface: TaylorSurface,
-    phase: Dyadic,
+    phase: Enclosure,
     total_width: Dyadic,
     strip: Dyadic,
     amplitude_squared: Enclosure,
@@ -228,10 +228,10 @@ fn prepare(
         .into());
     }
 
-    let phase = source.initial_phase().exact(context)?;
+    let phase = source.initial_phase_enclosure(context)?;
     let four = Dyadic::from_i128(4, context)?;
     let negative_four = four.try_clone(context)?.negate();
-    if phase < negative_four || phase > four || upper < negative_four || upper > four {
+    if phase.lo() < &negative_four || phase.hi() > &four || upper < negative_four || upper > four {
         return Ok(None);
     }
     if lower > upper {
@@ -249,8 +249,8 @@ fn prepare(
     let strip = upper.sub_scratch(&total_width, context)?;
 
     let flattening = source.flattening().exact(context)?;
-    let amplitude = source.amplitude().exact(context)?;
-    if amplitude.sign() == Sign::Negative {
+    let amplitude = source.amplitude_enclosure(context)?;
+    if amplitude.lo().sign() == Sign::Negative {
         return Err(CrsError::message("graded Taylor amplitude must be nonnegative").into());
     }
 
@@ -278,13 +278,12 @@ fn prepare(
         _ => {},
     }
 
-    let amplitude_squared_exact = amplitude.mul_scratch(&amplitude, context)?;
-    if amplitude_squared_exact > one {
+    let amplitude_squared = amplitude.mul(&amplitude, context)?;
+    if amplitude_squared.hi() > &one {
         return Err(CrsError::message("graded Taylor amplitude must not exceed one").into());
     }
-    let complementary_squared_exact = one.sub_scratch(&amplitude_squared_exact, context)?;
-    let amplitude_squared = rounded_enclosure(&amplitude_squared_exact, context)?;
-    let complementary_squared = rounded_enclosure(&complementary_squared_exact, context)?;
+    let one_interval = Enclosure::exact(one.try_clone(context)?, context)?;
+    let complementary_squared = one_interval.sub(&amplitude_squared, context)?;
     if complementary_squared.lo().sign() == Sign::Negative
         || amplitude_squared.lo().sign() == Sign::Negative
         || amplitude_squared.hi() > &one
@@ -476,7 +475,7 @@ fn integrate_series(
 }
 
 fn cosine_power_integrals(
-    phase: &Dyadic,
+    phase: &Enclosure,
     total_width: &Dyadic,
     maximum_power: usize,
     context: &mut PrecisionContext,
@@ -491,7 +490,7 @@ fn cosine_power_integrals(
         return Ok(result);
     }
 
-    let start = sin_cos_radians(phase, context)?;
+    let start = super::sin_cos_radians_enclosure(phase, context)?;
     let offset = sin_cos_radians(total_width, context)?;
     let end = add_angles(&start, &offset, context)?;
     let mut previous = Enclosure::exact(total_width.try_clone(context)?, context)?;

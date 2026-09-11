@@ -185,6 +185,26 @@ pub(crate) struct CertifiedBinary64 {
 }
 
 impl CertifiedBinary64 {
+    pub(crate) fn from_enclosure(
+        enclosure: Enclosure,
+        context: &mut PrecisionContext,
+    ) -> Result<Self> {
+        let bits = match enclosure.rounding_cell(context)? {
+            RoundingCell::Unique(bits) => bits,
+            RoundingCell::Overflow => {
+                if enclosure.hi().sign() == Sign::Negative {
+                    (1_u64 << 63) | (0x7FF_u64 << 52)
+                } else {
+                    0x7FF_u64 << 52
+                }
+            },
+            RoundingCell::Indeterminate => {
+                return Err(super::numerical_indeterminacy_error());
+            },
+        };
+        Ok(Self { bits, enclosure })
+    }
+
     pub(crate) const fn bits(&self) -> u64 {
         self.bits
     }
@@ -776,16 +796,7 @@ fn publish_angle(angle: Enclosure, context: &mut PrecisionContext) -> Result<Cer
 }
 
 fn publish(enclosure: Enclosure, context: &mut PrecisionContext) -> Result<CertifiedBinary64> {
-    let bits = match enclosure.rounding_cell(context)? {
-        RoundingCell::Unique(bits) => bits,
-        // A distance is nonnegative, so a common positive overflow cell is the
-        // only overflow that can reach this publication boundary.
-        RoundingCell::Overflow => 0x7FF0_0000_0000_0000,
-        RoundingCell::Indeterminate => {
-            return Err(super::numerical_indeterminacy_error());
-        },
-    };
-    Ok(CertifiedBinary64 { bits, enclosure })
+    CertifiedBinary64::from_enclosure(enclosure, context)
 }
 
 #[cfg(test)]

@@ -60,12 +60,12 @@ impl TaylorPhaseInterval {
 ///
 /// `amplitude` is `A`; its complementary square `c² = 1 - A²` is derived
 /// inside the evaluator.  This is intentionally not a `(A, c)` pair.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct TaylorSource {
     surface: TaylorSurface,
     flattening: ExactBinary64,
-    amplitude: ExactBinary64,
-    initial_phase: ExactBinary64,
+    amplitude: TaylorArgument,
+    initial_phase: TaylorArgument,
     terminal: TaylorPhaseInterval,
 }
 
@@ -80,8 +80,8 @@ impl TaylorSource {
         Ok(Self {
             surface,
             flattening: ExactBinary64::from_f64(flattening)?,
-            amplitude: ExactBinary64::from_f64(amplitude)?,
-            initial_phase: ExactBinary64::from_f64(initial_phase)?,
+            amplitude: TaylorArgument::Exact(ExactBinary64::from_f64(amplitude)?),
+            initial_phase: TaylorArgument::Exact(ExactBinary64::from_f64(initial_phase)?),
             terminal,
         })
     }
@@ -96,8 +96,30 @@ impl TaylorSource {
         Self {
             surface,
             flattening,
-            amplitude,
-            initial_phase,
+            amplitude: TaylorArgument::Exact(amplitude),
+            initial_phase: TaylorArgument::Exact(initial_phase),
+            terminal,
+        }
+    }
+
+    /// Construct a source whose derived auxiliary-sphere amplitude and phase
+    /// remain certified enclosures instead of being rounded through binary64.
+    ///
+    /// The terminal token is retained for the ordinary source API; callers
+    /// with a derived terminal use [`evaluate_enclosed`] and supply its
+    /// enclosure separately.
+    pub(crate) fn from_enclosed_tokens(
+        surface: TaylorSurface,
+        flattening: ExactBinary64,
+        amplitude: Enclosure,
+        initial_phase: Enclosure,
+        terminal: TaylorPhaseInterval,
+    ) -> Self {
+        Self {
+            surface,
+            flattening,
+            amplitude: TaylorArgument::Enclosed(amplitude),
+            initial_phase: TaylorArgument::Enclosed(initial_phase),
             terminal,
         }
     }
@@ -110,17 +132,35 @@ impl TaylorSource {
         self.flattening
     }
 
-    pub(super) const fn amplitude(&self) -> ExactBinary64 {
-        self.amplitude
+    pub(super) fn amplitude_enclosure(
+        &self,
+        context: &mut PrecisionContext,
+    ) -> crate::error::Result<Enclosure> {
+        match &self.amplitude {
+            TaylorArgument::Exact(value) => Enclosure::exact(value.exact(context)?, context),
+            TaylorArgument::Enclosed(value) => value.try_clone(context),
+        }
     }
 
-    pub(super) const fn initial_phase(&self) -> ExactBinary64 {
-        self.initial_phase
+    pub(super) fn initial_phase_enclosure(
+        &self,
+        context: &mut PrecisionContext,
+    ) -> crate::error::Result<Enclosure> {
+        match &self.initial_phase {
+            TaylorArgument::Exact(value) => Enclosure::exact(value.exact(context)?, context),
+            TaylorArgument::Enclosed(value) => value.try_clone(context),
+        }
     }
 
     pub(super) const fn terminal(&self) -> &TaylorPhaseInterval {
         &self.terminal
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum TaylorArgument {
+    Exact(ExactBinary64),
+    Enclosed(Enclosure),
 }
 
 /// Explicit resource and accuracy limits for one Taylor attempt.
@@ -320,7 +360,7 @@ fn evaluate_with_endpoints(
     }
 
     let parameters = Parameters::from_source(source, context)?;
-    let phase = source.initial_phase.exact(context)?;
+    let phase = source.initial_phase_enclosure(context)?;
     validate_phase_inputs(&phase, &lower, &upper, context)?;
 
     let zero = Dyadic::zero();
@@ -329,7 +369,7 @@ fn evaluate_with_endpoints(
         return Err(CrsError::message("graded Taylor terminal phase interval is reversed").into());
     }
     let total_width = fixed_end.try_clone(context)?;
-    let initial = super::sin_cos_radians(&phase, context)?;
+    let initial = super::sin_cos_radians_enclosure(&phase, context)?;
     let target_for_result = target.try_clone(context)?;
 
     let mut evaluator = Evaluator {
@@ -439,14 +479,14 @@ fn source_target(options: &TaylorOptions, context: &mut PrecisionContext) -> Res
 }
 
 fn validate_phase_inputs(
-    phase: &Dyadic,
+    phase: &Enclosure,
     lower: &Dyadic,
     upper: &Dyadic,
     context: &mut PrecisionContext,
 ) -> Result<()> {
     let four = Dyadic::from_i128(4, context)?;
     let negative_four = four.try_clone(context)?.negate();
-    if phase < &negative_four || phase > &four {
+    if phase.lo() < &negative_four || phase.hi() > &four {
         return Err(CrsError::message("graded Taylor phase must be in [-4, 4] radians").into());
     }
     if upper < &negative_four || upper > &four {
@@ -479,16 +519,19 @@ impl Parameters {
         let one = Dyadic::one(context)?;
         let two = Dyadic::two(context)?;
         let flattening = source.flattening.exact(context)?;
-        let amplitude = source.amplitude.exact(context)?;
-        if amplitude.sign() == Sign::Negative {
+        let amplitude = source.amplitude_enclosure(context)?;
+        if amplitude.lo().sign() == Sign::Negative {
             return Err(CrsError::message("graded Taylor amplitude must be nonnegative").into());
         }
-        let amplitude_squared_exact = amplitude.mul_scratch(&amplitude, context)?;
-        if amplitude_squared_exact > one {
+        let amplitude_squared = amplitude.mul(&amplitude, context)?;
+        if amplitude_squared.hi() > &one {
             return Err(CrsError::message("graded Taylor amplitude must not exceed one").into());
         }
-        let complementary_squared_exact = one.sub_scratch(&amplitude_squared_exact, context)?;
-        let amplitude_squared = rounded_enclosure(&amplitude_squared_exact, context)?;
+        let one_interval = Enclosure::exact(one.try_clone(context)?, context)?;
+        let complementary_squared = one_interval.sub(&amplitude_squared, context)?;
+        if complementary_squared.lo().sign() == Sign::Negative {
+            return Err(numerical_indeterminacy());
+        }
 
         let d_exact = match source.surface {
             TaylorSurface::Oblate => {
@@ -518,28 +561,27 @@ impl Parameters {
         }
         let d = rounded_enclosure(&d_exact, context)?;
 
-        let (mu_exact, k_exact) = match source.surface {
+        let (mu, k) = match source.surface {
             TaylorSurface::Oblate => {
                 let eccentricity =
                     flattening.mul_scratch(&two.sub_scratch(&flattening, context)?, context)?;
                 (
-                    d_exact.mul_scratch(&d_exact, context)?,
-                    eccentricity.mul_scratch(&amplitude_squared_exact, context)?,
+                    Enclosure::exact(d_exact.mul_scratch(&d_exact, context)?, context)?,
+                    Enclosure::exact(eccentricity, context)?.mul(&amplitude_squared, context)?,
                 )
             },
             TaylorSurface::Prolate => {
                 let negative_flattening = flattening.try_clone(context)?.negate();
                 let h = negative_flattening
                     .mul_scratch(&two.sub_scratch(&flattening, context)?, context)?;
-                let complement_term = h.mul_scratch(&complementary_squared_exact, context)?;
+                let complement_term = Enclosure::exact(h.try_clone(context)?, context)?
+                    .mul(&complementary_squared, context)?;
                 (
-                    one.add_scratch(&complement_term, context)?,
-                    h.mul_scratch(&amplitude_squared_exact, context)?,
+                    one_interval.add(&complement_term, context)?,
+                    Enclosure::exact(h, context)?.mul(&amplitude_squared, context)?,
                 )
             },
         };
-        let mu = rounded_enclosure(&mu_exact, context)?;
-        let k = rounded_enclosure(&k_exact, context)?;
 
         // These are common real-path bounds for every feasible auxiliary
         // phase.  The prolate lower bound is sqrt(mu), while d is the upper
@@ -585,7 +627,7 @@ impl Parameters {
             ),
         };
 
-        let radius = if k_exact.is_zero() {
+        let radius = if k.lo().is_zero() && k.hi().is_zero() {
             one.scale_pow2(-2, context)?
         } else {
             let sqrt_k = k.sqrt(context)?;
@@ -601,7 +643,6 @@ impl Parameters {
         if radius.is_zero() {
             return Err(numerical_indeterminacy());
         }
-
         Ok(Self {
             surface: source.surface,
             amplitude_squared,

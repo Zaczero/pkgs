@@ -23,6 +23,7 @@ use crate::error::{Error, ErrorKind, ResourceError, Result};
 
 mod moment;
 mod natural;
+mod oblate;
 mod sphere;
 mod taylor;
 #[cfg(test)]
@@ -36,6 +37,11 @@ pub(crate) use moment::{
     evaluate_with_fallback as evaluate_graded_with_moments,
 };
 use natural::Magnitude;
+pub(crate) use oblate::{
+    OblateBranch, OblateBranchIdentity, OblateCanonicalization, OblateGeodesic, OblateInput,
+    OblateLongitudeDirection, OblateModel, OblateMultiplicity, OblatePoint,
+    classify_oblate_geodesic,
+};
 pub(crate) use sphere::{
     Canonicalization, CertifiedBinary64, SphericalBranch, SphericalBranchIdentity,
     SphericalGeodesic, SphericalInput, SphericalModel, SphericalMultiplicity, SphericalPoint,
