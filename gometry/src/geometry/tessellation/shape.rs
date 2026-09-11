@@ -6,14 +6,13 @@ use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
     CdtRefinement, Site, certified_delaunay, collect_sample_triangles,
     constrained_triangle_vertices, earcut_polygon_with, line_boundary, multiline_boundary,
-    polygonize_full, rings_to_boundary, sample_weighted, snap_sites, try_triangle_shape,
-    uniform_f64, voronoi_dcel, weight_scale,
+    rings_to_boundary, sample_weighted, snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel,
+    weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
     GeometryErrorKind, GeometryKind, HashSet, Point, PointKey, Polygon, PolygonizeFull, Ring,
-    Segment, Shape, TopologyGraph, VoronoiBoundary, axis_extent, carry_each, empty_geometry,
-    line_segments,
+    Segment, Shape, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
 };
 use crate::{NonNegative, try_push_vec, try_reserve_vec};
 
@@ -677,8 +676,7 @@ impl Shape {
         let mut budget = ExpansionBudget::new("polygonize_full", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
         let exact_polygons = inventory.linework_polygons(&mut partition, false)?;
-        let graph = TopologyGraph::cartesian_many(shapes)?;
-        let mut full = polygonize_full(&graph, shapes.len())?;
+        let mut full = inventory.polygonize_diagnostics(&partition)?;
         full.polygons = exact_polygons.into_iter().map(Shape::Polygon).collect();
         let carry_diagnostic_rows = |rows: Vec<Vec<Self>>| {
             rows.into_iter()

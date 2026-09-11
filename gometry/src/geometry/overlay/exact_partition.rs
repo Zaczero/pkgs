@@ -26,8 +26,8 @@ use crate::geometry::segments::{
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, try_compare_ratios};
 use crate::geometry::{
     Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget, GeometryErrorKind,
-    HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon, Result, Ring, Segment, Shape,
-    XY, for_each_candidate_pair, same_point, segment_contact_exact, single_chain,
+    HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon, PolygonizeFull, Result, Ring,
+    Segment, Shape, XY, for_each_candidate_pair, same_point, segment_contact_exact, single_chain,
     undirected_segment_edge_key,
 };
 use crate::try_reserve_vec;
@@ -1263,6 +1263,73 @@ impl ExactSourceInventory {
         partition.emit_lines(&self.source_operands)
     }
 
+    pub(in crate::geometry) fn polygonize_diagnostics(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<PolygonizeFull> {
+        let emission = self.line_emission(partition)?;
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let mut used = Vec::new();
+        try_reserve_vec(&mut used, partition.spans.len())?;
+        used.resize(partition.spans.len(), false);
+        for (slot, &span) in edges.iter().enumerate() {
+            used[span as usize] |= global.walk_faces[topology.face_of[slot] as usize] != 0;
+        }
+
+        let mut degree = Vec::new();
+        try_reserve_vec(&mut degree, partition.recipes.len())?;
+        degree.resize(partition.recipes.len(), 0_usize);
+        for span in &partition.spans {
+            degree[span.start.0 as usize] = degree[span.start.0 as usize].saturating_add(1);
+            degree[span.end.0 as usize] = degree[span.end.0 as usize].saturating_add(1);
+        }
+
+        let mut cuts = Vec::new();
+        let mut dangles = Vec::new();
+        let mut invalid_rings = Vec::new();
+        for rows in [&mut cuts, &mut dangles, &mut invalid_rings] {
+            try_reserve_vec(rows, self.polygon_rings.len())?;
+            rows.resize_with(self.polygon_rings.len(), Vec::new);
+        }
+
+        for (index, (span, &segment)) in partition.spans.iter().zip(&emission.segments).enumerate()
+        {
+            let owners = emission.sources(index);
+            let mut rows = Vec::new();
+            try_reserve_vec(&mut rows, owners.len())?;
+            for source in owners {
+                if !rows.contains(&source.operand) {
+                    rows.push(source.operand);
+                }
+            }
+            for row in rows {
+                let row = row as usize;
+                if owners.len() > 1 {
+                    invalid_rings[row].push(diagnostic_line(segment, true)?);
+                } else if used[index] {
+                    continue;
+                } else if degree[span.start.0 as usize] <= 1 || degree[span.end.0 as usize] <= 1 {
+                    dangles[row].push(diagnostic_line(segment, false)?);
+                } else {
+                    cuts[row].push(diagnostic_line(segment, false)?);
+                }
+            }
+        }
+        for rows in [&mut cuts, &mut dangles, &mut invalid_rings] {
+            for row in rows {
+                row.sort_unstable_by(compare_diagnostic_lines);
+            }
+        }
+
+        Ok(PolygonizeFull {
+            polygons: Vec::new(),
+            cuts,
+            dangles,
+            invalid_rings,
+        })
+    }
+
     fn operand_count(&self) -> usize {
         self.polygon_rings.len()
     }
@@ -1998,6 +2065,31 @@ pub(in crate::geometry) fn exact_point_location(shape: &Shape, point: Point) -> 
         },
         _ => None,
     }
+}
+
+fn diagnostic_line(segment: Segment, closed: bool) -> Result<Shape> {
+    let points = if closed {
+        [segment.start, segment.end, segment.start]
+    } else {
+        [segment.start, segment.end, segment.end]
+    };
+    let count = if closed { 3 } else { 2 };
+    Ok(Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_xy(&points[..count])?,
+    )))
+}
+
+fn compare_diagnostic_lines(left: &Shape, right: &Shape) -> Ordering {
+    let key = |shape: &Shape| {
+        let Shape::LineString(line) = shape else {
+            unreachable!("polygonize diagnostics are line strings")
+        };
+        (
+            PointKey::new(line.first().expect("diagnostic line has a start")),
+            PointKey::new(line.point_at(1)),
+        )
+    };
+    key(left).cmp(&key(right))
 }
 
 struct StagedExactSources {
