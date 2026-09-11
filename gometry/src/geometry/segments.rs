@@ -1829,6 +1829,31 @@ fn point_segment_metric_cancelled(
     })
 }
 
+pub(in crate::geometry) fn point_segment_distance_and_projection(
+    point: XY,
+    segment: Segment,
+) -> Result<(f64, SegmentProjection)> {
+    match point_segment_metric(point, segment)? {
+        PointSegmentMetric::Squared {
+            measurement_squared,
+            projection,
+            ..
+        } => {
+            let projection = match projection {
+                SelectionProjectionSource::Classified(classification) => {
+                    projection_from_classification(point, segment, classification)?
+                },
+                SelectionProjectionSource::Ready(projection) => projection,
+            };
+            Ok((measurement_squared.sqrt(), projection))
+        },
+        PointSegmentMetric::Projection(projection) => {
+            let distance = projection.continuum_distance(point, segment)?;
+            Ok((distance, projection))
+        },
+    }
+}
+
 /// Exact classification and squared-ratio rounding are a decline path. They
 /// stay out of the ordinary metric's frame so a certified endpoint/interior
 /// does not carry heap-backed dyadic state through the distance inner loop.

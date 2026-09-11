@@ -267,11 +267,12 @@ pub(in crate::geometry) use segments::try_sort_by;
 use segments::{
     CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SharedSpan, SquaredDistanceKey,
     interpolate_optional, interpolate_segment_point, nearest_points, orientation_xy,
-    point_pair_distance_key, point_segment_distance, point_segment_distance_key,
-    point_segment_distance_squared, point_segment_selection, ray_crossing_is_right,
-    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segment_projection, segments_intersect, shared_segment_part, try_point_distance_squared,
-    try_point_segment_distance_squared, undirected_edge_key, undirected_segment_edge_key,
+    point_pair_distance_key, point_segment_distance, point_segment_distance_and_projection,
+    point_segment_distance_key, point_segment_distance_squared, point_segment_selection,
+    ray_crossing_is_right, segment_contact_exact, segment_contact_point, segment_cross_point,
+    segment_envelopes_disjoint, segment_projection, segments_intersect, shared_segment_part,
+    try_point_distance_squared, try_point_segment_distance_squared, undirected_edge_key,
+    undirected_segment_edge_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).

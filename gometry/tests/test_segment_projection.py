@@ -609,6 +609,95 @@ def test_exact_ratio_survives_snap_ordering() -> None:
     assert tuple(map(tuple, snapped[0].coords)) == expected
 
 
+def test_snap_reference_storage_threshold_preserves_linear_output() -> None:
+    line = gm.LineString([(0.0, 0.0), (30.0, 0.0)])
+    linear_points = [(float(index), 0.0) for index in range(31)]
+    indexed_points = [*linear_points, (30.0, 10.0)]
+    linear = gm.snap(line, gm.MultiPoint(linear_points), 0.0)
+    indexed = gm.snap(line, gm.MultiPoint(indexed_points), 0.0)
+    expected = tuple(linear_points)
+    assert tuple(map(tuple, linear.coords)) == expected
+    assert tuple(map(tuple, indexed.coords)) == expected
+
+
+def test_snap_index_keeps_latest_reference_on_an_exact_distance_tie() -> None:
+    references = [(-1.0, 0.0), (1.0, 0.0)] + [
+        (10.0 + index, 10.0) for index in range(30)
+    ]
+    snapped = gm.snap(gm.Point(0.0, 0.0), gm.MultiPoint(references), 1.0)
+    assert tuple(snapped.coords[0]) == (1.0, 0.0)
+
+    reversed_references = [references[1], references[0], *references[2:]]
+    reversed_snapped = gm.snap(
+        gm.Point(0.0, 0.0), gm.MultiPoint(reversed_references), 1.0
+    )
+    assert tuple(reversed_snapped.coords[0]) == (-1.0, 0.0)
+
+
+def test_snap_index_full_scans_a_min_subnormal_tolerance() -> None:
+    minimum = 2.0**-1074
+    line = gm.LineString([(-1.0, 0.0), (1.0, 0.0)])
+    references = [(minimum, 0.0)] + [
+        (10.0 + index, 10.0) for index in range(31)
+    ]
+    snapped = gm.snap(line, gm.MultiPoint(references), minimum)
+    assert tuple(map(tuple, snapped.coords)) == ((-1.0, 0.0), (minimum, 0.0), (1.0, 0.0))
+
+
+def test_snap_index_full_scans_a_tolerance_whose_square_overflows() -> None:
+    references = [(1.0e307, 0.0)] + [
+        (1.0e307 + index * 1.0e306, 0.0) for index in range(1, 32)
+    ]
+    snapped = gm.snap(gm.Point(0.0, 0.0), gm.MultiPoint(references), 1.0e308)
+    assert tuple(snapped.coords[0]) == (1.0e307, 0.0)
+
+
+def test_snap_index_keeps_an_exact_segment_distance_boundary_candidate() -> None:
+    references = [(1.0, 1.0)] + [
+        (10.0 + index, 10.0) for index in range(31)
+    ]
+    line = gm.LineString([(0.0, 0.0), (2.0, 0.0)])
+    snapped = gm.snap(line, gm.MultiPoint(references), 1.0)
+    assert tuple(map(tuple, snapped.coords)) == ((0.0, 0.0), (1.0, 1.0), (2.0, 0.0))
+
+
+def test_snap_inserted_ordinates_use_a_zero_rounded_exact_projection_ratio() -> None:
+    extent = 2.0**1023
+    along = 2.0**-100
+    tolerance = 2.0**-101
+    line = gm.LineString(
+        [(0.0, 0.0), (extent, 0.0)],
+        z=[0.0, extent],
+        m=[0.0, extent],
+    )
+    references = gm.MultiPoint(
+        [(along, tolerance)] + [(10.0 + index, 10.0) for index in range(31)]
+    )
+    snapped = gm.snap(line, references, tolerance)
+    assert tuple(map(tuple, snapped.coords)) == (
+        (0.0, 0.0, 0.0, 0.0),
+        (along, tolerance, along, along),
+        (extent, 0.0, extent, extent),
+    )
+
+
+def test_snap_inserted_ordinates_use_a_one_rounded_exact_projection_ratio() -> None:
+    previous = math.nextafter(1.0, 0.0)
+    large = 2.0**1023
+    line = gm.LineString(
+        [(0.0, 0.0), (1.0, 1.0)],
+        z=[-large, large],
+        m=[-large, large],
+    )
+    snapped = gm.snap(line, gm.MultiPoint([(1.0, previous)]), 1.0e-16)
+    expected = math.nextafter(large, 0.0)
+    assert tuple(map(tuple, snapped.coords)) == (
+        (0.0, 0.0, -large, -large),
+        (1.0, previous, expected, expected),
+        (1.0, 1.0, large, large),
+    )
+
+
 @pytest.mark.parametrize('n', range(TRANSITION_LEFT - 8, TRANSITION_RIGHT + 9))
 @pytest.mark.parametrize('length_exponent', range(-24, -15))
 def test_projection_underflow_neighbourhood_matches_stored_double_reference(

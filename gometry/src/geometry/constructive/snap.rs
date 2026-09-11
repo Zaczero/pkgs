@@ -1,52 +1,72 @@
+use ahash::HashSetExt as _;
+
 use crate::NonNegative;
 use crate::geographic::GeographicFrame;
 use crate::geometry::constructive::Result;
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
-    GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, Polygon,
-    RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY, axis_pow2_scale,
-    bounds_distance_squared, dedup_consecutive_points, interpolate_f64, line_segments,
-    point_distance, point_segment_distance, points_dwithin, push_distinct_point,
+    GeometryKind, HashSet, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, PointKey,
+    Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY,
+    axis_pow2_scale, bounds_distance_squared, dedup_consecutive_points, interpolate_f64,
+    line_segments, point_distance, point_segment_distance_and_projection, points_dwithin,
     repair_shape_in_frame, same_point, same_topological_coordinate, scaled_residual,
-    segment_projection, validate_shape_in_frame,
+    validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
 
+type SnapTree = BulkRTree<rstar::primitives::GeomWithData<[f64; 2], usize>>;
+
+enum SnapReferenceStorage {
+    Linear(Vec<XY>),
+    Indexed(SnapTree),
+}
+
+impl SnapReferenceStorage {
+    fn len(&self) -> usize {
+        match self {
+            Self::Linear(points) => points.len(),
+            Self::Indexed(tree) => tree.size(),
+        }
+    }
+}
+
 pub(crate) struct SnapReference {
-    /// The reference vertices in build order (the brute scan's source; also the
-    /// tie-break ordinal = index). Always kept — the tree, when built, holds a
-    /// parallel copy keyed for spatial queries.
-    points: Box<[Point]>,
-    /// Spatial index, built only past [`SNAP_INDEX_MIN_POINTS`]; `None` selects
-    /// the linear scan over `points`.
-    tree: Option<BulkRTree<rstar::primitives::GeomWithData<[f64; 2], u32>>>,
+    /// One reference representation: either build-ordered XY values or the
+    /// same values in the spatial index, whose data is the source ordinal.
+    storage: SnapReferenceStorage,
     tolerance: f64,
-    /// `tolerance²`, `None` when it overflows — absurd-but-finite
-    /// tolerances fall back to distance-space comparison over every entry.
+    /// `tolerance²`; only a normal value enables the spatial candidate filter.
+    /// Underflowed and overflowing squares fall back to a full scan.
     limit: Option<f64>,
 }
 
 impl SnapReference {
-    pub(crate) fn build(reference_points: &[Point], tolerance: f64) -> Self {
+    pub(crate) fn build(reference_points: &[XY], tolerance: f64) -> crate::error::Result<Self> {
         let limit = tolerance * tolerance;
-        let tree = (reference_points.len() >= SNAP_INDEX_MIN_POINTS).then(|| {
-            BulkRTree::bulk_load_with_params(
-                reference_points
-                    .iter()
-                    .enumerate()
-                    .map(|(ordinal, point)| {
-                        rstar::primitives::GeomWithData::new([point.x, point.y], ordinal as u32)
-                    })
-                    .collect(),
-            )
-        });
-        Self {
-            points: reference_points.into(),
-            tree,
+        let storage = if reference_points.len() >= SNAP_INDEX_MIN_POINTS {
+            let mut entries = Vec::new();
+            crate::try_reserve_vec(&mut entries, reference_points.len())?;
+            for (ordinal, point) in reference_points.iter().enumerate() {
+                entries.push(rstar::primitives::GeomWithData::new(
+                    [point.x, point.y],
+                    ordinal,
+                ));
+            }
+            // RTree owns this vector after the dependency's infallible bulk
+            // build; caller-owned entry reservation remains fallible here.
+            SnapReferenceStorage::Indexed(BulkRTree::bulk_load_with_params(entries))
+        } else {
+            let mut points = Vec::new();
+            crate::try_reserve_vec(&mut points, reference_points.len())?;
+            points.extend_from_slice(reference_points);
+            SnapReferenceStorage::Linear(points)
+        };
+        Ok(Self {
+            storage,
             tolerance,
             limit: limit.is_finite().then_some(limit),
-        }
+        })
     }
 
     /// Snap one vertex: XY moves to the nearest in-tolerance reference
@@ -64,8 +84,8 @@ impl SnapReference {
     /// tolerance wins, and the LATEST reference (build order) wins exact
     /// ties — the linear scan's `<=` update rule, preserved exactly.
     fn nearest(&self, point: Point) -> Option<XY> {
-        let mut best: Option<(f64, u32, XY)> = None;
-        let mut consider = |distance: f64, ordinal: u32, position: XY| {
+        let mut best: Option<(f64, usize, XY)> = None;
+        let mut consider = |distance: f64, ordinal: usize, position: XY| {
             if best.is_none_or(|(leader, at, _)| {
                 distance < leader || (distance.to_bits() == leader.to_bits() && ordinal > at)
             }) {
@@ -74,7 +94,7 @@ impl SnapReference {
         };
         // The metric (squared when the limit is representable, else distance)
         // is uniform across candidates, so `best` is a valid argmin either way.
-        let mut test = |reference: XY, ordinal: u32| {
+        let mut test = |reference: XY, ordinal: usize| {
             // Honest dwithin — squared false-zero must not treat distinct
             // subnormals as within a zero (or tiny) tolerance.
             if points_dwithin(point, reference, self.tolerance) {
@@ -82,20 +102,32 @@ impl SnapReference {
                 consider(distance, ordinal, reference);
             }
         };
-        match (&self.tree, self.limit) {
-            // Indexed with an honest squared ball (limit > 0): pre-filter.
-            (Some(tree), Some(limit)) if limit > 0.0 => {
-                for candidate in tree.locate_within_distance([point.x, point.y], limit) {
-                    test(
-                        XY::new(candidate.geom()[0], candidate.geom()[1]),
-                        candidate.data,
-                    );
+        match (&self.storage, self.limit) {
+            // A normal squared tolerance selects the conservative AABB
+            // candidate filter; underflowed/overflowed squares full-scan.
+            (SnapReferenceStorage::Indexed(tree), Some(limit)) if limit.is_normal() => {
+                if let Some(window) =
+                    outward_padded_bounds(point.x, point.x, point.y, point.y, self.tolerance)
+                {
+                    for candidate in tree.locate_in_envelope_intersecting(window) {
+                        test(
+                            XY::new(candidate.geom()[0], candidate.geom()[1]),
+                            candidate.data,
+                        );
+                    }
+                } else {
+                    for candidate in tree.iter() {
+                        test(
+                            XY::new(candidate.geom()[0], candidate.geom()[1]),
+                            candidate.data,
+                        );
+                    }
                 }
             },
             // Zero/underflowed limit or non-finite tolerance²: full scan +
             // honest points_dwithin (cannot trust squared-space radius).
-            (Some(tree), _) => {
-                for candidate in tree {
+            (SnapReferenceStorage::Indexed(tree), _) => {
+                for candidate in tree.iter() {
                     test(
                         XY::new(candidate.geom()[0], candidate.geom()[1]),
                         candidate.data,
@@ -103,9 +135,9 @@ impl SnapReference {
                 }
             },
             // Brute: scan every reference vertex (small reference).
-            (None, _) => {
-                for (ordinal, reference) in self.points.iter().enumerate() {
-                    test(XY::new(reference.x, reference.y), ordinal as u32);
+            (SnapReferenceStorage::Linear(points), _) => {
+                for (ordinal, &reference) in points.iter().enumerate() {
+                    test(reference, ordinal);
                 }
             },
         }
@@ -127,18 +159,20 @@ impl SnapReference {
         };
         let tolerance = self.tolerance;
         let limit = self.limit;
-        let mut candidates: Vec<(SegmentProjection, u32, Point)> = Vec::new();
-        let mut consider = |reference: XY, ordinal: u32| -> crate::error::Result<()> {
-            let ref_pt = Point::new_raw_xy(reference.x, reference.y);
+        let mut candidates: Vec<(SegmentProjection, usize, Point)> = Vec::new();
+        crate::try_reserve_vec(&mut candidates, self.storage.len())?;
+        let mut consider = |reference: XY, ordinal: usize| -> crate::error::Result<()> {
             // Skip if within tolerance of either endpoint, or farther than
             // tolerance from the open segment (honest distance, not squared).
             if points_dwithin(reference, start, tolerance)
                 || points_dwithin(reference, end, tolerance)
-                || point_segment_distance(ref_pt, segment)? > tolerance
             {
                 return Ok(());
             }
-            let projection = segment_projection(ref_pt, segment)?;
+            let (distance, projection) = point_segment_distance_and_projection(reference, segment)?;
+            if distance > tolerance {
+                return Ok(());
+            }
             if !projection.is_start() && !projection.is_end() {
                 let mut point = projection.interpolate_point(start, end)?;
                 point.x = reference.x;
@@ -147,26 +181,31 @@ impl SnapReference {
             }
             Ok(())
         };
-        match &self.tree {
-            // Indexed + a finite limit: only vertices in the segment's
+        match (&self.storage, limit) {
+            // Indexed + a normal limit: only vertices in the segment's
             // tolerance-padded bbox can land inside (max-norm superset of the
             // euclidean ball). A non-finite limit still scans the whole tree.
-            Some(tree) if limit.is_some() => {
+            (SnapReferenceStorage::Indexed(tree), Some(limit)) if limit.is_normal() => {
                 let (lo_x, hi_x) = (start.x.min(end.x), start.x.max(end.x));
                 let (lo_y, hi_y) = (start.y.min(end.y), start.y.max(end.y));
-                let window = rstar::AABB::from_corners([lo_x - tolerance, lo_y - tolerance], [
-                    hi_x + tolerance,
-                    hi_y + tolerance,
-                ]);
-                for candidate in tree.locate_in_envelope_intersecting(window) {
-                    consider(
-                        XY::new(candidate.geom()[0], candidate.geom()[1]),
-                        candidate.data,
-                    )?;
+                if let Some(window) = outward_padded_bounds(lo_x, hi_x, lo_y, hi_y, tolerance) {
+                    for candidate in tree.locate_in_envelope_intersecting(window) {
+                        consider(
+                            XY::new(candidate.geom()[0], candidate.geom()[1]),
+                            candidate.data,
+                        )?;
+                    }
+                } else {
+                    for candidate in tree.iter() {
+                        consider(
+                            XY::new(candidate.geom()[0], candidate.geom()[1]),
+                            candidate.data,
+                        )?;
+                    }
                 }
             },
-            Some(tree) => {
-                for candidate in tree {
+            (SnapReferenceStorage::Indexed(tree), _) => {
+                for candidate in tree.iter() {
                     consider(
                         XY::new(candidate.geom()[0], candidate.geom()[1]),
                         candidate.data,
@@ -175,9 +214,9 @@ impl SnapReference {
             },
             // Brute: scan every reference vertex (small reference); `consider`
             // applies the exact tolerance/projection filter.
-            None => {
-                for (ordinal, reference) in self.points.iter().enumerate() {
-                    consider(XY::new(reference.x, reference.y), ordinal as u32)?;
+            (SnapReferenceStorage::Linear(points), _) => {
+                for (ordinal, &reference) in points.iter().enumerate() {
+                    consider(reference, ordinal)?;
                 }
             },
         }
@@ -191,18 +230,58 @@ impl SnapReference {
         // reference points (e.g. 0.5 and 0.5000000000005) even at tolerance 0.
         #[expect(clippy::float_cmp, reason = "exact projected-position identity")]
         candidates.dedup_by(|right, left| right.2.x == left.2.x && right.2.y == left.2.y);
-        Ok(candidates.into_iter().map(|(_, _, point)| point).collect())
+        let mut output = Vec::new();
+        crate::try_reserve_vec(&mut output, candidates.len())?;
+        for (_, _, point) in candidates {
+            output.push(point);
+        }
+        Ok(output)
     }
+}
+
+fn outward_padded_bounds(
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+    tolerance: f64,
+) -> Option<rstar::AABB<[f64; 2]>> {
+    let min_x = (min_x - tolerance).next_down();
+    let max_x = (max_x + tolerance).next_up();
+    let min_y = (min_y - tolerance).next_down();
+    let max_y = (max_y + tolerance).next_up();
+    [min_x, max_x, min_y, max_y]
+        .into_iter()
+        .all(f64::is_finite)
+        .then(|| rstar::AABB::from_corners([min_x, min_y], [max_x, max_y]))
+}
+
+fn try_unique_xy_points(shape: &Shape) -> crate::error::Result<Vec<XY>> {
+    let mut seen = HashSet::new();
+    seen.try_reserve(shape.coord_count())
+        .map_err(|_| crate::error::ResourceError::Allocation)?;
+    let mut points = Vec::new();
+    crate::try_reserve_vec(&mut points, shape.coord_count())?;
+    shape.try_for_each_point(|point| {
+        let point = point.xy();
+        if seen.insert(PointKey::new(point)) {
+            crate::try_push_vec(&mut points, point)?;
+        }
+        Ok::<_, crate::error::Error>(())
+    })?;
+    Ok(points)
 }
 
 pub(crate) fn snap_points_to_reference<C: Coordinates + ?Sized>(
     points: &C,
     reference: &SnapReference,
-) -> Vec<Point> {
-    points
-        .iter_coords()
-        .map(|point| reference.snap_point(point))
-        .collect()
+) -> crate::error::Result<Vec<Point>> {
+    let mut output = Vec::new();
+    crate::try_reserve_vec(&mut output, points.coord_count())?;
+    for point in points.iter_coords() {
+        output.push(reference.snap_point(point));
+    }
+    Ok(output)
 }
 
 pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
@@ -210,26 +289,34 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
     reference: &SnapReference,
 ) -> crate::error::Result<Vec<Point>> {
     if points.coord_count() < 2 {
-        return Ok(snap_points_to_reference(points, reference));
+        return snap_points_to_reference(points, reference);
     }
 
     let mut result = Vec::new();
     crate::try_reserve_vec(&mut result, points.coord_count())?;
-    push_distinct_point(&mut result, reference.snap_point(points.nth_coord(0)));
+    try_push_distinct_point(&mut result, reference.snap_point(points.nth_coord(0)))?;
 
     for [start, end] in points.segment_pairs() {
         for point in reference.insertions(start, end)? {
-            push_distinct_point(&mut result, point);
+            try_push_distinct_point(&mut result, point)?;
         }
-        push_distinct_point(&mut result, reference.snap_point(end));
+        try_push_distinct_point(&mut result, reference.snap_point(end))?;
     }
     if result.len() == 1 {
-        return Ok(vec![
-            reference.snap_point(points.nth_coord(0)),
-            reference.snap_point(points.nth_coord(points.coord_count() - 1)),
-        ]);
+        let mut endpoints = Vec::new();
+        crate::try_reserve_vec(&mut endpoints, 2)?;
+        endpoints.push(reference.snap_point(points.nth_coord(0)));
+        endpoints.push(reference.snap_point(points.nth_coord(points.coord_count() - 1)));
+        return Ok(endpoints);
     }
     Ok(result)
+}
+
+fn try_push_distinct_point(points: &mut Vec<Point>, point: Point) -> crate::error::Result<()> {
+    if points.last().is_none_or(|last| !same_point(*last, point)) {
+        crate::try_push_vec(points, point)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn snap_ring_to_reference<C: Coordinates + ?Sized>(
@@ -850,11 +937,11 @@ impl Shape {
         {
             return Ok(self.clone());
         }
-        let reference_points = reference.unique_xy_points();
+        let reference_points = try_unique_xy_points(reference)?;
         if reference_points.is_empty() {
             return Ok(self.clone());
         }
-        let engine = SnapReference::build(&reference_points, tolerance);
+        let engine = SnapReference::build(&reference_points, tolerance)?;
         Ok(match self {
             Self::Point(point) => Self::Point(engine.snap_point(*point)),
             Self::MultiPoint(points) => {
@@ -1213,5 +1300,202 @@ mod tests {
             planar_segmentize_steps(segment, 1.0),
             GENERATED_ITEM_LIMIT + 2
         );
+    }
+}
+
+#[cfg(test)]
+mod snap_reference_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::{MOrdinate, ZOrdinate};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn assert_allocation(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    fn prefix_sweep(run: impl Fn() -> crate::error::Result<()>) {
+        run().expect("unfaulted snap operation must succeed");
+        let ((), allocations) = allocation_count(|| run().unwrap());
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let result = fail_allocations_after(allowed, &run);
+            let Err(error) = result else {
+                panic!("snap operation unexpectedly succeeded at allocation prefix {allowed}");
+            };
+            assert_allocation(&error);
+        }
+        run().expect("snap caller-owned allocation must retry cleanly");
+    }
+
+    fn line_reference_points(count: usize) -> Vec<XY> {
+        (0..count).map(|index| XY::new(index as f64, 0.0)).collect()
+    }
+
+    #[test]
+    fn storage_threshold_keeps_linear_and_indexed_insertions_identical() {
+        let linear_points = line_reference_points(SNAP_INDEX_MIN_POINTS - 1);
+        let mut indexed_points = linear_points.clone();
+        indexed_points.push(XY::new(30.0, 10.0));
+        let linear = SnapReference::build(&linear_points, 0.5).unwrap();
+        let indexed = SnapReference::build(&indexed_points, 0.5).unwrap();
+        assert!(matches!(
+            &linear.storage,
+            SnapReferenceStorage::Linear(points) if points.len() == SNAP_INDEX_MIN_POINTS - 1
+        ));
+        assert!(matches!(
+            &indexed.storage,
+            SnapReferenceStorage::Indexed(tree) if tree.size() == SNAP_INDEX_MIN_POINTS
+        ));
+
+        let start = Point::new_raw_xy(0.0, 0.0);
+        let end = Point::new_raw_xy(30.0, 0.0);
+        assert_eq!(
+            linear.insertions(start, end).unwrap(),
+            indexed.insertions(start, end).unwrap()
+        );
+    }
+
+    #[test]
+    fn indexed_nearest_keeps_the_latest_source_ordinal_on_a_distance_tie() {
+        let mut points = vec![XY::new(-1.0, 0.0), XY::new(1.0, 0.0)];
+        points.extend(
+            (0..(SNAP_INDEX_MIN_POINTS - points.len()))
+                .map(|index| XY::new(10.0 + index as f64, 10.0)),
+        );
+        let reference = SnapReference::build(&points, 1.0).unwrap();
+        let source = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(7.0)), MOrdinate(Some(11.0)));
+        let snapped = reference.snap_point(source);
+        assert_eq!(snapped.x.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(snapped.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(snapped.z().unwrap().to_bits(), 7.0_f64.to_bits());
+        assert_eq!(snapped.m().unwrap().to_bits(), 11.0_f64.to_bits());
+    }
+
+    #[test]
+    fn indexed_insertion_keeps_a_boundary_candidate_after_outward_padding() {
+        let mut points = vec![XY::new(1.0, 1.0)];
+        points.extend(
+            (0..(SNAP_INDEX_MIN_POINTS - 1)).map(|index| XY::new(10.0 + index as f64, 10.0)),
+        );
+        let reference = SnapReference::build(&points, 1.0).unwrap();
+        let insertions = reference
+            .insertions(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(2.0, 0.0))
+            .unwrap();
+        assert_eq!(insertions.len(), 1);
+        assert_eq!(insertions[0].x.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(insertions[0].y.to_bits(), 1.0_f64.to_bits());
+    }
+
+    #[test]
+    fn indexed_nearest_full_scans_underflowed_and_overflowed_tolerance_squares() {
+        for tolerance in [f64::from_bits(1), 2.0_f64.powi(-600)] {
+            let mut tiny_points = vec![XY::new(tolerance, 0.0)];
+            tiny_points.extend(
+                (0..(SNAP_INDEX_MIN_POINTS - 1)).map(|index| XY::new(10.0 + index as f64, 10.0)),
+            );
+            let tiny_reference = SnapReference::build(&tiny_points, tolerance).unwrap();
+            assert_eq!(
+                tiny_reference
+                    .snap_point(Point::new_raw_xy(0.0, 0.0))
+                    .x
+                    .to_bits(),
+                tolerance.to_bits()
+            );
+        }
+
+        let mut huge_points = vec![XY::new(1.0e307, 0.0)];
+        huge_points.extend(
+            (1..SNAP_INDEX_MIN_POINTS).map(|index| XY::new(1.0e307 + index as f64 * 1.0e306, 0.0)),
+        );
+        let huge_reference = SnapReference::build(&huge_points, 1.0e308).unwrap();
+        assert_eq!(
+            huge_reference
+                .snap_point(Point::new_raw_xy(0.0, 0.0))
+                .x
+                .to_bits(),
+            1.0e307_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn inserted_source_ordinates_follow_zero_and_one_rounded_exact_ratios() {
+        let zero_t = 2.0_f64.powi(-100);
+        let zero_tolerance = 2.0_f64.powi(-101);
+        let extent = 2.0_f64.powi(1023);
+        let zero_source_start =
+            Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(0.0)));
+        let zero_source_end = Point::new_raw_axes(
+            extent,
+            0.0,
+            ZOrdinate(Some(extent)),
+            MOrdinate(Some(extent)),
+        );
+        let zero_reference =
+            SnapReference::build(&[XY::new(zero_t, zero_tolerance)], zero_tolerance).unwrap();
+        let zero_inserted = zero_reference
+            .insertions(zero_source_start, zero_source_end)
+            .unwrap();
+        assert_eq!(zero_inserted.len(), 1);
+        assert_eq!(zero_inserted[0].x.to_bits(), zero_t.to_bits());
+        assert_eq!(zero_inserted[0].y.to_bits(), zero_tolerance.to_bits());
+        assert_eq!(zero_inserted[0].z().unwrap().to_bits(), zero_t.to_bits());
+        assert_eq!(zero_inserted[0].m().unwrap().to_bits(), zero_t.to_bits());
+
+        let previous = 1.0_f64.next_down();
+        let large = 2.0_f64.powi(1023);
+        let one_source_start =
+            Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(-large)), MOrdinate(Some(-large)));
+        let one_source_end =
+            Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(large)), MOrdinate(Some(large)));
+        let one_reference = SnapReference::build(&[XY::new(1.0, previous)], 1.0e-16).unwrap();
+        let one_inserted = one_reference
+            .insertions(one_source_start, one_source_end)
+            .unwrap();
+        assert_eq!(one_inserted.len(), 1);
+        let expected = large.next_down().to_bits();
+        assert_eq!(one_inserted[0].z().unwrap().to_bits(), expected);
+        assert_eq!(one_inserted[0].m().unwrap().to_bits(), expected);
+    }
+
+    #[test]
+    fn linear_snap_reference_build_allocations_are_retryable() {
+        let points = line_reference_points(2);
+        prefix_sweep(|| SnapReference::build(&points, 0.5).map(|_| ()));
+    }
+
+    #[test]
+    fn linear_snap_insertion_allocations_are_retryable() {
+        let points = line_reference_points(2);
+        let reference = SnapReference::build(&points, 0.5).unwrap();
+        let start = Point::new_raw_xy(0.0, 0.0);
+        let end = Point::new_raw_xy(1.0, 0.0);
+        prefix_sweep(|| reference.insertions(start, end).map(|_| ()));
+    }
+
+    #[test]
+    fn linear_snap_point_output_allocations_are_retryable() {
+        let points = line_reference_points(2);
+        let reference = SnapReference::build(&points, 0.5).unwrap();
+        prefix_sweep(|| snap_points_to_reference(&points[..], &reference).map(|_| ()));
+    }
+
+    #[test]
+    fn shape_snap_reference_staging_allocations_are_retryable() {
+        let source = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(2.0, 0.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let reference = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+        prefix_sweep(|| source.snap(&reference, 1.0).map(|_| ()));
     }
 }
