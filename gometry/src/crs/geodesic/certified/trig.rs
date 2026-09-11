@@ -9,6 +9,10 @@ pub(crate) struct SineCosine {
 }
 
 impl SineCosine {
+    pub(super) const fn from_parts(sin: Enclosure, cos: Enclosure) -> Self {
+        Self { sin, cos }
+    }
+
     pub(crate) const fn sin(&self) -> &Enclosure {
         &self.sin
     }

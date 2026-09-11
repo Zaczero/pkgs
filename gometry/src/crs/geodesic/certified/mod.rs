@@ -21,6 +21,7 @@ use std::cmp::Ordering;
 use crate::crs::CrsError;
 use crate::error::{Error, ErrorKind, ResourceError, Result};
 
+mod moment;
 mod natural;
 mod sphere;
 mod taylor;
@@ -28,6 +29,12 @@ mod taylor;
 mod tests;
 mod trig;
 
+pub(crate) use moment::{
+    evaluate as evaluate_flattening_moments,
+    evaluate_enclosed as evaluate_flattening_moments_enclosed,
+    evaluate_enclosed_with_fallback as evaluate_graded_with_moments_enclosed,
+    evaluate_with_fallback as evaluate_graded_with_moments,
+};
 use natural::Magnitude;
 pub(crate) use sphere::{
     Canonicalization, CertifiedBinary64, SphericalBranch, SphericalBranchIdentity,
@@ -129,6 +136,7 @@ impl Default for PrecisionPolicy {
 /// Mutable state for one precision attempt.  A retry is made by retaining
 /// original [`ExactBinary64`] or [`Degree`] inputs and constructing a fresh
 /// context (or calling [`Self::refine`] before recomputing from those inputs).
+/// A same-precision alternative attempt can call [`Self::restart_attempt`].
 #[derive(Debug)]
 pub(crate) struct PrecisionContext {
     policy: PrecisionPolicy,
@@ -203,6 +211,17 @@ impl PrecisionContext {
         self.fuel_remaining = self.policy.arithmetic_fuel;
         self.workspace_used = 0;
         Ok(())
+    }
+
+    /// Start another evaluator attempt at the current precision.
+    ///
+    /// A fast-path evaluator may spend fuel or workspace before proving that
+    /// it is not applicable.  The complete evaluator then needs the same
+    /// per-attempt allowance rather than inheriting the abandoned candidate's
+    /// accounting.  This does not change the active precision.
+    pub(crate) fn restart_attempt(&mut self) {
+        self.fuel_remaining = self.policy.arithmetic_fuel;
+        self.workspace_used = 0;
     }
 
     fn step(&mut self, units: u64) -> Result<()> {
@@ -606,7 +625,7 @@ impl Dyadic {
         self.sub_with_limit(other, Some(context.active_precision_bits()), context)
     }
 
-    fn sub_scratch(&self, other: &Self, context: &mut PrecisionContext) -> Result<Self> {
+    pub(super) fn sub_scratch(&self, other: &Self, context: &mut PrecisionContext) -> Result<Self> {
         self.sub_with_limit(other, None, context)
     }
 
@@ -629,7 +648,7 @@ impl Dyadic {
         self.mul_with_limit(other, Some(context.active_precision_bits()), context)
     }
 
-    fn mul_scratch(&self, other: &Self, context: &mut PrecisionContext) -> Result<Self> {
+    pub(super) fn mul_scratch(&self, other: &Self, context: &mut PrecisionContext) -> Result<Self> {
         self.mul_with_limit(other, None, context)
     }
 
@@ -669,7 +688,11 @@ impl Dyadic {
     /// Round an exact scratch value to the active precision in a directed
     /// direction.  This is the only narrowing used for enclosure composition;
     /// exact ingress arithmetic continues to use [`Self::from_parts`] directly.
-    fn round_outward(&self, downward: bool, context: &mut PrecisionContext) -> Result<Self> {
+    pub(super) fn round_outward(
+        &self,
+        downward: bool,
+        context: &mut PrecisionContext,
+    ) -> Result<Self> {
         if self.is_zero() {
             return self.try_clone(context);
         }

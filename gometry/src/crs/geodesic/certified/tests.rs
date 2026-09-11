@@ -1,5 +1,8 @@
 use std::cmp::Ordering;
 
+use super::moment::{
+    evaluate as evaluate_moments, evaluate_with_fallback as evaluate_with_moment_fallback,
+};
 use super::taylor::{
     TaylorOptions, TaylorPhaseInterval, TaylorSource, TaylorSurface, evaluate as evaluate_taylor,
     evaluate_enclosed as evaluate_taylor_enclosed,
@@ -932,4 +935,294 @@ fn graded_taylor_budget_and_allocator_failures_remain_distinct() {
     let mut context = taylor_context_at(128);
     evaluate_taylor(&source, options, &mut context)
         .expect("Taylor output should publish without allocator failure");
+}
+
+fn enclosures_intersect(left: &Enclosure, right: &Enclosure) -> bool {
+    left.lo() <= right.hi() && right.lo() <= left.hi()
+}
+
+#[test]
+fn flattening_moments_intersect_the_complete_evaluator() {
+    let source = taylor_source(TaylorSurface::Oblate, 0.01, 0.8, -0.4, 0.75, 0.75);
+    let options = TaylorOptions::new(1.0e-4, 16, 2_048, 58, true).expect("moment options");
+    let mut moment_context = taylor_context_at(256);
+    let moments = evaluate_moments(&source, options, &mut moment_context)
+        .expect("moment attempt")
+        .expect("ordinary flattening should be admitted");
+    let mut taylor_context = taylor_context_at(256);
+    let complete =
+        evaluate_taylor(&source, options, &mut taylor_context).expect("complete Taylor result");
+
+    assert!(enclosures_intersect(moments.q(), complete.q()));
+    assert!(
+        enclosures_intersect(
+            moments.one_plus_reciprocal(),
+            complete.one_plus_reciprocal()
+        ),
+        "moment one-plus reciprocal = {:?}, Taylor = {:?}",
+        moments.one_plus_reciprocal(),
+        complete.one_plus_reciprocal()
+    );
+    assert!(enclosures_intersect(
+        moments
+            .weighted_reciprocal()
+            .expect("moment weighted integral"),
+        complete
+            .weighted_reciprocal()
+            .expect("Taylor weighted integral")
+    ));
+    assert!(moments.q().hi() > moments.q().lo());
+    assert!(moments.tails().q() > &Dyadic::zero());
+    assert!(
+        moments.degree() < complete.degree(),
+        "moment degree {} should beat Taylor degree {}",
+        moments.degree(),
+        complete.degree()
+    );
+    assert!(
+        moments.panels() < complete.panels(),
+        "moment panels {} should beat Taylor panels {}",
+        moments.panels(),
+        complete.panels()
+    );
+    assert_eq!(moments.panels(), 1);
+
+    let target = exact(1.0e-4, &mut moment_context);
+    assert!(enclosure_width(moments.q(), &mut moment_context) <= target);
+    assert!(enclosure_width(moments.one_plus_reciprocal(), &mut moment_context) <= target);
+    assert!(
+        enclosure_width(
+            moments
+                .weighted_reciprocal()
+                .expect("moment weighted width"),
+            &mut moment_context
+        ) <= target
+    );
+}
+
+#[test]
+fn flattening_moment_admission_rejects_the_first_outside_case() {
+    let options =
+        TaylorOptions::new(1.0e-4, 16, 2_048, 58, false).expect("moment admission options");
+    // These adjacent boundary-side values straddle the exact dyadic
+    // comparison with |f(2-f)| = 1/16; binary64 cannot represent the
+    // irrational root itself.
+    let inside = taylor_source(
+        TaylorSurface::Oblate,
+        0.031754163448145745,
+        0.8,
+        -0.4,
+        0.75,
+        0.75,
+    );
+    let outside = taylor_source(
+        TaylorSurface::Oblate,
+        0.03175416344814578,
+        0.8,
+        -0.4,
+        0.75,
+        0.75,
+    );
+    let outside_phase = taylor_source(TaylorSurface::Oblate, 0.03, 0.8, 4.0001, 0.75, 0.75);
+    let mut inside_context = taylor_context_at(256);
+    assert!(
+        evaluate_moments(&inside, options, &mut inside_context)
+            .expect("inside admission")
+            .is_some()
+    );
+    let mut outside_context = taylor_context_at(256);
+    assert!(
+        evaluate_moments(&outside, options, &mut outside_context)
+            .expect("outside admission")
+            .is_none()
+    );
+    let mut outside_phase_context = taylor_context_at(256);
+    assert!(
+        evaluate_moments(&outside_phase, options, &mut outside_phase_context)
+            .expect("outside phase admission")
+            .is_none()
+    );
+}
+
+#[test]
+fn flattening_moment_dispatch_replays_the_complete_path_after_decline() {
+    let source = taylor_source(TaylorSurface::Oblate, 0.2, 0.8, -0.4, 0.75, 0.75);
+    let options = TaylorOptions::new(1.0e-3, 16, 2_048, 58, true).expect("fallback options");
+    let mut fallback_context = taylor_context_at(256);
+    let fallback = evaluate_with_moment_fallback(&source, options, &mut fallback_context)
+        .expect("complete evaluator fallback");
+    let mut complete_context = taylor_context_at(256);
+    let complete =
+        evaluate_taylor(&source, options, &mut complete_context).expect("complete result");
+    assert!(enclosures_intersect(fallback.q(), complete.q()));
+    assert!(enclosures_intersect(
+        fallback.one_plus_reciprocal(),
+        complete.one_plus_reciprocal()
+    ));
+    assert!(enclosures_intersect(
+        fallback
+            .weighted_reciprocal()
+            .expect("fallback weighted integral"),
+        complete
+            .weighted_reciprocal()
+            .expect("complete weighted integral")
+    ));
+}
+
+#[test]
+fn flattening_moments_cover_prolate_sphere_and_coordinate_limits() {
+    let options = TaylorOptions::new(1.0e-5, 16, 2_048, 58, true).expect("limit moment options");
+    let cases = [
+        (
+            "prolate",
+            taylor_source(TaylorSurface::Prolate, -0.01, 0.8, -0.4, 0.75, 0.75),
+        ),
+        (
+            "sphere",
+            taylor_source(TaylorSurface::Oblate, 0.0, 0.0, -4.0, 0.75, 0.75),
+        ),
+        (
+            "pole",
+            taylor_source(TaylorSurface::Oblate, 0.01, 1.0, -4.0, 0.2, 0.2),
+        ),
+        (
+            "equator",
+            taylor_source(
+                TaylorSurface::Prolate,
+                -0.01,
+                f64::from_bits(1),
+                4.0,
+                0.2,
+                0.2,
+            ),
+        ),
+        (
+            "minimum flattening",
+            taylor_source(
+                TaylorSurface::Oblate,
+                f64::from_bits(1),
+                0.5,
+                -1.4,
+                0.2,
+                0.2,
+            ),
+        ),
+    ];
+
+    for (name, source) in cases {
+        let mut moment_context = taylor_context_at(256);
+        let moments = evaluate_moments(&source, options, &mut moment_context)
+            .unwrap_or_else(|error| panic!("{name} moment attempt: {error:?}"))
+            .unwrap_or_else(|| panic!("{name} should be admitted"));
+        let mut taylor_context = taylor_context_at(256);
+        let complete = evaluate_taylor(&source, options, &mut taylor_context)
+            .unwrap_or_else(|error| panic!("{name} Taylor attempt: {error:?}"));
+        assert!(
+            enclosures_intersect(moments.q(), complete.q()),
+            "{name} q intervals do not intersect"
+        );
+        assert!(
+            enclosures_intersect(
+                moments.one_plus_reciprocal(),
+                complete.one_plus_reciprocal()
+            ),
+            "{name} reciprocal intervals do not intersect"
+        );
+        assert!(
+            enclosures_intersect(
+                moments
+                    .weighted_reciprocal()
+                    .expect("moment weighted limit"),
+                complete
+                    .weighted_reciprocal()
+                    .expect("Taylor weighted limit")
+            ),
+            "{name} weighted intervals do not intersect"
+        );
+        if name == "sphere" {
+            let expected_q = exact(0.75, &mut moment_context);
+            let expected_reciprocal = exact(0.375, &mut moment_context);
+            assert_eq!(moments.q().lo(), &expected_q);
+            assert_eq!(moments.q().hi(), &expected_q);
+            assert_eq!(moments.one_plus_reciprocal().lo(), &expected_reciprocal);
+            assert_eq!(moments.one_plus_reciprocal().hi(), &expected_reciprocal);
+            assert!(
+                moments
+                    .weighted_reciprocal()
+                    .expect("sphere weighted moment")
+                    .lo()
+                    .is_zero()
+            );
+            assert!(
+                moments
+                    .weighted_reciprocal()
+                    .expect("sphere weighted moment")
+                    .hi()
+                    .is_zero()
+            );
+        }
+    }
+}
+
+#[test]
+fn flattening_moments_preserve_an_enclosed_terminal_strip() {
+    let source = taylor_source(TaylorSurface::Oblate, 0.01, 0.8, -0.4, 0.6, 0.6);
+    let options =
+        TaylorOptions::new(1.0e-2, 32, 2_048, 58, false).expect("enclosed moment options");
+    let mut context = taylor_context_at(256);
+    let lower = exact(0.6, &mut context);
+    let upper = exact(0.600000000000001, &mut context);
+    let terminal = Enclosure::new(lower, upper).expect("enclosed terminal");
+    let moments = super::moment::evaluate_enclosed(&source, &terminal, options, &mut context)
+        .expect("enclosed moment attempt")
+        .expect("enclosed terminal should be admitted");
+    let mut complete_context = taylor_context_at(256);
+    let complete = evaluate_taylor_enclosed(&source, &terminal, options, &mut complete_context)
+        .expect("enclosed Taylor result");
+    assert!(enclosures_intersect(moments.q(), complete.q()));
+    assert!(enclosures_intersect(
+        moments.one_plus_reciprocal(),
+        complete.one_plus_reciprocal()
+    ));
+    assert!(enclosure_width(moments.q(), &mut context) >= exact(1.0e-15, &mut context));
+}
+
+#[test]
+fn flattening_moment_enclosures_narrow_when_precision_increases() {
+    let source = taylor_source(TaylorSurface::Prolate, -0.01, 0.7, -0.6, 0.9, 0.9);
+    let options =
+        TaylorOptions::new(1.0e-4, 16, 2_048, 58, true).expect("precision moment options");
+    let mut widths = Vec::new();
+    for bits in [64, 128, 256] {
+        let mut context = taylor_context_at(bits);
+        let result = evaluate_moments(&source, options, &mut context)
+            .expect("moment precision attempt")
+            .expect("prolate moment input should be admitted");
+        widths.push(enclosure_width(result.q(), &mut context));
+    }
+    assert!(widths[0] > widths[1]);
+    assert!(widths[1] > widths[2]);
+}
+
+#[test]
+fn flattening_moment_budget_and_allocator_failures_remain_distinct() {
+    let source = taylor_source(TaylorSurface::Oblate, 0.01, 0.8, -0.4, 0.75, 0.75);
+    let exhausted =
+        TaylorOptions::new(1.0e-30, 0, 2_048, 58, false).expect("moment budget options");
+    let mut budget_context = taylor_context_at(256);
+    let budget_error = evaluate_moments(&source, exhausted, &mut budget_context)
+        .expect_err("moment degree budget should exhaust");
+    assert_numerical(budget_error);
+
+    let options =
+        TaylorOptions::new(1.0e-4, 16, 2_048, 58, false).expect("moment allocator options");
+    let allocation_error = fail_allocations_after(0, || {
+        let mut context = taylor_context_at(256);
+        evaluate_moments(&source, options, &mut context)
+    })
+    .expect_err("first moment scratch allocation should fail");
+    assert!(matches!(
+        allocation_error.kind(),
+        ErrorKind::Resource(ResourceError::Allocation)
+    ));
 }

@@ -46,6 +46,14 @@ impl TaylorPhaseInterval {
     pub(crate) const fn from_tokens(lower: ExactBinary64, upper: ExactBinary64) -> Self {
         Self { lower, upper }
     }
+
+    pub(super) const fn lower(&self) -> ExactBinary64 {
+        self.lower
+    }
+
+    pub(super) const fn upper(&self) -> ExactBinary64 {
+        self.upper
+    }
 }
 
 /// Original-source inputs for one feasible auxiliary-sphere family.
@@ -93,6 +101,26 @@ impl TaylorSource {
             terminal,
         }
     }
+
+    pub(super) const fn surface(&self) -> TaylorSurface {
+        self.surface
+    }
+
+    pub(super) const fn flattening(&self) -> ExactBinary64 {
+        self.flattening
+    }
+
+    pub(super) const fn amplitude(&self) -> ExactBinary64 {
+        self.amplitude
+    }
+
+    pub(super) const fn initial_phase(&self) -> ExactBinary64 {
+        self.initial_phase
+    }
+
+    pub(super) const fn terminal(&self) -> &TaylorPhaseInterval {
+        &self.terminal
+    }
 }
 
 /// Explicit resource and accuracy limits for one Taylor attempt.
@@ -135,6 +163,22 @@ impl TaylorOptions {
             include_reduced_length,
         )
     }
+
+    pub(super) const fn target(&self) -> ExactBinary64 {
+        self.target
+    }
+
+    pub(super) const fn max_degree(&self) -> usize {
+        self.max_degree
+    }
+
+    pub(super) const fn max_panels(&self) -> usize {
+        self.max_panels
+    }
+
+    pub(super) const fn include_reduced_length(&self) -> bool {
+        self.include_reduced_length
+    }
 }
 
 /// Certified integrals returned by one graded attempt.
@@ -150,6 +194,26 @@ pub(crate) struct TaylorIntegrals {
 }
 
 impl TaylorIntegrals {
+    pub(super) fn from_parts(
+        q: Enclosure,
+        reciprocal: Enclosure,
+        weighted_reciprocal: Option<Enclosure>,
+        tails: TaylorTailBounds,
+        panels: usize,
+        degree: usize,
+        depth: usize,
+    ) -> Self {
+        Self {
+            q,
+            reciprocal,
+            weighted_reciprocal,
+            tails,
+            panels,
+            degree,
+            depth,
+        }
+    }
+
     pub(crate) const fn q(&self) -> &Enclosure {
         &self.q
     }
@@ -189,6 +253,18 @@ pub(crate) struct TaylorTailBounds {
 }
 
 impl TaylorTailBounds {
+    pub(super) fn from_parts(
+        q: Dyadic,
+        reciprocal: Dyadic,
+        weighted_reciprocal: Option<Dyadic>,
+    ) -> Self {
+        Self {
+            q,
+            reciprocal,
+            weighted_reciprocal,
+        }
+    }
+
     pub(crate) const fn q(&self) -> &Dyadic {
         &self.q
     }
