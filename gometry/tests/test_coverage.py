@@ -407,6 +407,28 @@ def test_coverage_simplify_preserves_topology() -> None:
     assert all(z == 1.0 for geom in carried for z in geom.coords.z)
 
 
+def test_coverage_simplify_remains_valid_across_aggressive_tolerances() -> None:
+    """One exact chain decision stays shared across multipart rows."""
+    left = gm.from_wkt(
+        'POLYGON ((0 0, 1 0, 1.05 0.25, 0.95 0.5, 1.05 0.75, 1 1, 0 1, 0 0))'
+    )
+    right = gm.from_wkt(
+        'POLYGON ((1 0, 2 0, 2 1, 1 1, 1.05 0.75, 0.95 0.5, 1.05 0.25, 1 0))'
+    )
+    rows = [
+        gm.MultiPolygon([left, gm.box(10, 0, 11, 1)]),
+        right,
+        gm.box(11, 0, 12, 1),
+    ]
+    assert gm.coverage_is_valid(rows)
+    for tolerance in (0.0, 0.01, 0.1, 0.5, 1.0, 1.1, 2.0, 10.0, 100.0):
+        simplified = gm.coverage_simplify(rows, tolerance)
+        assert simplified.coverage_is_valid(), (
+            tolerance,
+            [geometry.to_wkt() for geometry in simplified],
+        )
+
+
 def test_coverage_simplify_matches_shapely_oracle() -> None:
     import shapely
 

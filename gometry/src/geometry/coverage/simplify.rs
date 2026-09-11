@@ -1,163 +1,64 @@
-use std::borrow::Cow;
 use std::collections::BinaryHeap;
 
 use crate::error::Result;
-use crate::geometry::coverage::{
-    AABB, CoverageRow, HashMap, HashMapExt as _, Reverse, edge_row_occurrences, valid_coverage_rows,
-};
+use crate::geometry::coverage::{AABB, HashMap, Reverse, valid_coverage_rows};
+use crate::geometry::overlay::{ExactChainView, ExactPartition, ExactSourceInventory, NodeId};
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, Orientation, Point, PointKey,
     Polygon, Ring, Segment, SegmentIndex, Shape, SimplifyMethod, XY, dedup_consecutive_points,
-    ordered_edge, orientation, same_point, same_topological_coordinate, segments_intersect,
+    line_segments, orientation, same_point, same_topological_coordinate, segment_contact_exact,
     undirected_segment_edge_key,
 };
 
 // --- Simplification ---------------------------------------------------------
 
-/// One maximal linework chain between coverage nodes: its vertex run and
-/// whether it is shared between rows (an interior interface) or exterior
-/// boundary.
+/// Exact chain coordinates plus the shared/exterior ownership class.
 struct Chain {
+    nodes: Vec<NodeId>,
+    spans: Vec<u32>,
     points: Vec<XY>,
+    source_segments: Vec<Segment>,
     shared: bool,
 }
 
-/// Decompose the coverage's unique linework into chains and a segment→chain
-/// lookup. Nodes are vertices of degree != 2 or where the shared/boundary
-/// class flips; a fully closed degree-2 ring becomes one cyclic chain pinned
-/// at its lexicographically smallest vertex.
-/// The coverage's unique linework as a vertex graph, classified shared vs
-/// exterior — the substrate the chain decomposition walks.
-struct LineworkGraph {
-    segment_class: HashMap<(PointKey, PointKey), (Segment, bool)>,
-    adjacency: HashMap<PointKey, Vec<PointKey>>,
-    points: HashMap<PointKey, XY>,
+/// A chain's retained original node indices and their source coordinates.
+struct SimplifiedChain {
+    points: Vec<XY>,
+    kept: Vec<usize>,
 }
 
-impl LineworkGraph {
-    fn build(rows: &[CoverageRow<'_>]) -> Self {
-        let occurrences = edge_row_occurrences(rows);
-        let mut graph = Self {
-            segment_class: HashMap::new(),
-            adjacency: HashMap::new(),
-            points: HashMap::new(),
-        };
-        for row in rows {
-            for &segment in &row.segments {
-                let key = undirected_segment_edge_key(segment);
-                if graph.segment_class.contains_key(&key) {
-                    continue;
-                }
-                let shared = occurrences[&key] == 2;
-                graph.segment_class.insert(key, (segment, shared));
-                let (a, b) = (PointKey::new(segment.start), PointKey::new(segment.end));
-                graph.points.insert(a, segment.start);
-                graph.points.insert(b, segment.end);
-                graph.adjacency.entry(a).or_default().push(b);
-                graph.adjacency.entry(b).or_default().push(a);
-            }
-        }
-        graph
+fn exact_chain(
+    partition: &ExactPartition<'_>,
+    view: ExactChainView,
+    source_spans: &[Vec<(u32, bool)>],
+    source_segments: &[Segment],
+) -> Result<Chain> {
+    let mut points = Vec::new();
+    crate::try_reserve_vec(&mut points, view.nodes.len())?;
+    for &node in &view.nodes {
+        points.push(partition.node_xy(node)?);
     }
-
-    /// Chain endpoints: degree != 2, or a shared/exterior class flip.
-    fn is_node(&self, key: PointKey) -> bool {
-        let neighbors = &self.adjacency[&key];
-        if neighbors.len() != 2 {
-            return true;
-        }
-        let class = |other: PointKey| self.segment_class[&ordered_edge(key, other)].1;
-        class(neighbors[0]) != class(neighbors[1])
-    }
-
-    /// The unique continuation of a degree-2 walk arriving at `at` from
-    /// `previous`.
-    fn step(&self, at: PointKey, previous: PointKey) -> PointKey {
-        self.adjacency[&at]
-            .iter()
-            .copied()
-            .find(|&n| n != previous)
-            .expect("degree-2 interior vertex")
-    }
-
-    /// The anchor of the chain containing `start -> end`: the nearest node
-    /// walking backwards, or — on a fully cyclic chain — its smallest
-    /// vertex, paired with the walk direction.
-    fn chain_anchor(&self, start: PointKey, end: PointKey) -> (PointKey, PointKey) {
-        if self.is_node(start) {
-            return (start, end);
-        }
-        let mut previous = end;
-        let mut cursor = start;
-        loop {
-            let next = self.step(cursor, previous);
-            previous = cursor;
-            cursor = next;
-            if self.is_node(cursor) || cursor == start {
-                break;
-            }
-        }
-        if cursor != start || self.is_node(cursor) {
-            return (cursor, previous);
-        }
-        // Cyclic chain: pin the smallest vertex as the anchor.
-        let mut ring = vec![start];
-        let mut prev = start;
-        let mut at = end;
-        while at != start {
-            ring.push(at);
-            let next = self.step(at, prev);
-            prev = at;
-            at = next;
-        }
-        let anchor = ring
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, key)| **key)
-            .map(|(index, _)| index)
-            .expect("non-empty ring");
-        ring.rotate_left(anchor);
-        (ring[0], ring[1])
-    }
-}
-
-fn coverage_chains(rows: &[CoverageRow<'_>]) -> (Vec<Chain>, HashMap<(PointKey, PointKey), usize>) {
-    let graph = LineworkGraph::build(rows);
-    let mut chains: Vec<Chain> = Vec::new();
-    let mut chain_of: HashMap<(PointKey, PointKey), usize> = HashMap::new();
-    // Deterministic seed order: sorted segment keys.
-    let mut keys: Vec<(PointKey, PointKey)> = graph.segment_class.keys().copied().collect();
-    keys.sort_unstable();
-    for key in keys {
-        if chain_of.contains_key(&key) {
+    let mut chain_source_segments = Vec::new();
+    for (source, segment) in source_segments.iter().enumerate() {
+        if same_point(segment.start, segment.end)
+            || !source_spans[source]
+                .iter()
+                .any(|&(span, _)| view.spans.contains(&span))
+            || chain_source_segments.iter().any(|prior| {
+                undirected_segment_edge_key(*prior) == undirected_segment_edge_key(*segment)
+            })
+        {
             continue;
         }
-        let (segment, shared) = graph.segment_class[&key];
-        let (origin, towards) =
-            graph.chain_anchor(PointKey::new(segment.start), PointKey::new(segment.end));
-        // Walk forward from the anchor, collecting the chain.
-        let mut run = vec![origin];
-        let mut prev = origin;
-        let mut at = towards;
-        loop {
-            run.push(at);
-            if graph.is_node(at) || at == origin {
-                break;
-            }
-            let next = graph.step(at, prev);
-            prev = at;
-            at = next;
-        }
-        let id = chains.len();
-        for &[start, end] in run.array_windows::<2>() {
-            chain_of.insert(ordered_edge(start, end), id);
-        }
-        chains.push(Chain {
-            points: run.iter().map(|key| graph.points[key]).collect(),
-            shared,
-        });
+        crate::try_push_vec(&mut chain_source_segments, *segment)?;
     }
-    (chains, chain_of)
+    Ok(Chain {
+        nodes: view.nodes,
+        spans: view.spans,
+        points,
+        source_segments: chain_source_segments,
+        shared: view.shared,
+    })
 }
 
 /// Simplify one chain with endpoints pinned and a global topology guard: a
@@ -174,11 +75,12 @@ fn simplify_chain_kept(
     tolerance: f64,
     method: SimplifyMethod,
     guard: &TopologyGuard<'_>,
+    chain_segments: &[Segment],
 ) -> Result<Vec<usize>> {
     match method {
         SimplifyMethod::Vw => {
             let area_tolerance = vw_area_tolerance(tolerance);
-            simplify_chain_guarded(
+            simplify_chain_guarded_with_segments(
                 count,
                 xy,
                 cyclic,
@@ -187,11 +89,12 @@ fn simplify_chain_kept(
                     Ok((area < area_tolerance).then_some(area))
                 },
                 guard,
+                chain_segments,
             )
         },
         SimplifyMethod::Dp => {
             let tolerance_sq = tolerance * tolerance;
-            simplify_chain_guarded(
+            simplify_chain_guarded_with_segments(
                 count,
                 xy,
                 cyclic,
@@ -209,6 +112,7 @@ fn simplify_chain_kept(
                     Ok((deviation_sq < tolerance_sq).then_some(deviation_sq))
                 },
                 guard,
+                chain_segments,
             )
         },
     }
@@ -232,6 +136,17 @@ pub(in crate::geometry) fn simplify_chain_guarded(
     cyclic: bool,
     candidate: &impl Fn(XY, XY, XY) -> Result<Option<f64>>,
     guard: &TopologyGuard<'_>,
+) -> Result<Vec<usize>> {
+    simplify_chain_guarded_with_segments(count, xy, cyclic, candidate, guard, &[])
+}
+
+pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
+    count: usize,
+    xy: impl Fn(usize) -> XY,
+    cyclic: bool,
+    candidate: &impl Fn(XY, XY, XY) -> Result<Option<f64>>,
+    guard: &TopologyGuard<'_>,
+    chain_segments: &[Segment],
 ) -> Result<Vec<usize>> {
     let floor = if cyclic { 4 } else { 2 };
     if count <= floor {
@@ -280,7 +195,7 @@ pub(in crate::geometry) fn simplify_chain_guarded(
             continue;
         }
         let (before, after) = (prev[index], next[index]);
-        if !guard.removal_is_safe(xy(before), xy(index), xy(after))? {
+        if !guard.removal_is_safe(xy(before), xy(index), xy(after), chain_segments)? {
             continue;
         }
         removed[index] = true;
@@ -395,6 +310,7 @@ impl<'a> TopologyGuard<'a> {
         prev: XY,
         vertex: XY,
         next: XY,
+        chain_segments: &[Segment],
     ) -> Result<bool> {
         // Exact-collinear interior vertex: the shortcut occupies precisely
         // the union of the two original segments — the linework's point set
@@ -408,25 +324,44 @@ impl<'a> TopologyGuard<'a> {
         {
             return Ok(true);
         }
-        // No crossing of the shortcut with any segment that does not share
-        // one of its endpoints.
+        // The contact guard and the swept-region guard below are separate:
+        // the first preserves the embedding against linework contacts, while
+        // the second preserves the ownership of vertices inside the region
+        // between the old two-edge path and this shortcut.
         let shortcut = Segment {
             start: prev,
             end: next,
         };
-        let crossing = self
+        let contact = self
             .segment_index()?
             .intersecting_candidates(shortcut)
             .any(|entry| {
-                let touches_endpoint = [entry.segment.start, entry.segment.end]
-                    .into_iter()
-                    .any(|p| same_point(p, prev) || same_point(p, next) || same_point(p, vertex));
-                !touches_endpoint && segments_intersect(shortcut, entry.segment)
+                if chain_segments.iter().any(|segment| {
+                    undirected_segment_edge_key(*segment)
+                        == undirected_segment_edge_key(entry.segment)
+                }) {
+                    return false;
+                }
+                match segment_contact_exact(shortcut, entry.segment) {
+                    crate::geometry::Contact::Disjoint => false,
+                    crate::geometry::Contact::Cross { .. } => true,
+                    crate::geometry::Contact::Touch { point } => {
+                        !same_point(point, prev) && !same_point(point, next)
+                    },
+                    crate::geometry::Contact::Collinear { span } => {
+                        !same_point(span.start, span.end)
+                            || (!same_point(span.start, prev) && !same_point(span.start, next))
+                    },
+                }
             });
-        if crossing {
+        if contact {
             return Ok(false);
         }
-        // No foreign vertex strictly inside the swept triangle.
+        // No foreign vertex strictly inside the swept triangle. On the
+        // original valid linework, a segment entering this region would have
+        // to cross one of its two original sides (already an invalid source
+        // contact) or have an endpoint in the region. Thus these two guards
+        // together certify the replacement without a dynamic spatial graph.
         let (min_x, max_x) = (
             prev.x.min(vertex.x).min(next.x),
             prev.x.max(vertex.x).max(next.x),
@@ -458,11 +393,168 @@ fn point_in_triangle(point: XY, a: XY, b: XY, c: XY) -> bool {
     clockwise || counter
 }
 
+#[derive(Clone, Copy)]
+struct SourceAtom {
+    span: u32,
+    reversed: bool,
+}
+
+fn source_ordinals_for_ring(
+    ring: &CoordSeq,
+    source_segments: &[Segment],
+    cursor: &mut usize,
+) -> Result<Vec<u32>> {
+    let mut ordinals = Vec::new();
+    for segment in line_segments(ring).filter(|segment| !same_point(segment.start, segment.end)) {
+        let ordinal = (*cursor..source_segments.len()).find(|&index| {
+            let source = source_segments[index];
+            same_point(source.start, segment.start) && same_point(source.end, segment.end)
+        });
+        let Some(ordinal) = ordinal else {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage source ring is absent from the exact inventory".into(),
+            )
+            .into());
+        };
+        *cursor = ordinal + 1;
+        crate::try_push_vec(&mut ordinals, ordinal as u32)?;
+    }
+    Ok(ordinals)
+}
+
+fn source_run_nodes(partition: &ExactPartition<'_>, run: &[SourceAtom]) -> Result<Vec<NodeId>> {
+    let Some(&first) = run.first() else {
+        return Ok(Vec::new());
+    };
+    let first_span = partition.spans[first.span as usize];
+    let first_node = if first.reversed {
+        first_span.end
+    } else {
+        first_span.start
+    };
+    let mut nodes = Vec::new();
+    crate::try_reserve_vec(&mut nodes, run.len() + 1)?;
+    nodes.push(first_node);
+    let mut current = first_node;
+    for &atom in run {
+        let span = partition.spans[atom.span as usize];
+        let (start, end) = if atom.reversed {
+            (span.end, span.start)
+        } else {
+            (span.start, span.end)
+        };
+        if start != current {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage source atoms are not contiguous in ring order".into(),
+            )
+            .into());
+        }
+        nodes.push(end);
+        current = end;
+    }
+    Ok(nodes)
+}
+
+fn chain_run_indices(
+    chain: &Chain,
+    run: &[SourceAtom],
+    run_nodes: &[NodeId],
+) -> Result<Option<Vec<usize>>> {
+    let count = chain.spans.len();
+    if run.is_empty() || run.len() > count {
+        return Ok(None);
+    }
+    let cyclic = chain.nodes.first() == chain.nodes.last();
+    let matches = |start: usize, forward: bool| -> Result<Option<Vec<usize>>> {
+        for index in 0..run.len() {
+            let (span_index, node_index) = if cyclic {
+                if forward {
+                    ((start + index) % count, (start + index) % count)
+                } else {
+                    (
+                        (start + count - 1 - index) % count,
+                        (start + count - index) % count,
+                    )
+                }
+            } else if forward {
+                (start + index, start + index)
+            } else {
+                (start - 1 - index, start - index)
+            };
+            if chain.spans[span_index] != run[index].span
+                || chain.nodes[node_index] != run_nodes[index]
+            {
+                return Ok(None);
+            }
+        }
+        let mut indices = Vec::new();
+        crate::try_reserve_vec(&mut indices, run.len() + 1)?;
+        for index in 0..=run.len() {
+            let node_index = if cyclic {
+                if forward {
+                    (start + index) % count
+                } else {
+                    (start + count - index) % count
+                }
+            } else if forward {
+                start + index
+            } else {
+                start - index
+            };
+            indices.push(node_index);
+        }
+        Ok(Some(indices))
+    };
+
+    if cyclic {
+        for start in 0..count {
+            if let Some(indices) = matches(start, true)? {
+                return Ok(Some(indices));
+            }
+            if let Some(indices) = matches(start, false)? {
+                return Ok(Some(indices));
+            }
+        }
+    } else {
+        for start in 0..count.saturating_sub(run.len() - 1) {
+            if let Some(indices) = matches(start, true)? {
+                return Ok(Some(indices));
+            }
+        }
+        for start in run.len()..=count {
+            if let Some(indices) = matches(start, false)? {
+                return Ok(Some(indices));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn replacement_for_chain_run(
+    partition: &ExactPartition<'_>,
+    chain: &Chain,
+    simplified: &SimplifiedChain,
+    run: &[SourceAtom],
+) -> Result<Vec<XY>> {
+    let run_nodes = source_run_nodes(partition, run)?;
+    let indices = chain_run_indices(chain, run, &run_nodes)?.ok_or_else(|| {
+        GeometryErrorKind::Invalid("coverage source run is absent from its exact chain".into())
+    })?;
+    let mut replacement = Vec::new();
+    crate::try_reserve_vec(&mut replacement, indices.len())?;
+    for (position, &index) in indices.iter().enumerate() {
+        if position == indices.len() - 1 || simplified.kept.contains(&index) {
+            replacement.push(chain.points[index]);
+        }
+    }
+    Ok(replacement)
+}
+
 /// Simplify a valid polygonal coverage's boundaries, preserving topology.
 ///
-/// Shared interfaces are simplified ONCE and spliced into both sides, so
-/// neighbors keep vector-identical linework. `simplify_boundary` controls
-/// whether exterior (unshared) edges simplify too.
+/// Shared interfaces are derived from exact partition incidence, simplified
+/// once, and replayed to every source owner. `simplify_boundary` controls
+/// whether exterior (unshared) chains simplify too.
 pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     tolerance: f64,
@@ -477,24 +569,44 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
     if same_topological_coordinate(tolerance, 0.0) {
         return Ok(prepared.iter().map(|row| row.shape.clone()).collect());
     }
-    let (chains, chain_of) = coverage_chains(&prepared);
 
     let mut all_segments = Vec::new();
     for row in &prepared {
         crate::try_reserve_vec(&mut all_segments, row.segments.len())?;
         all_segments.extend(row.segments.iter().copied());
     }
+    let source_refs: Vec<&Shape> = prepared.iter().map(|row| row.shape).collect();
+    let inventory = ExactSourceInventory::from_shapes(&source_refs)?;
+    let mut budget = crate::geometry::ExpansionBudget::new("coverage_simplify", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let views = partition.coverage_chain_views(inventory.source_operands())?;
+    let source_spans = partition.source_span_views(inventory.source_segments())?;
+    let mut chains = Vec::new();
+    crate::try_reserve_vec(&mut chains, views.chains.len())?;
+    for view in views.chains {
+        chains.push(exact_chain(
+            &partition,
+            view,
+            &source_spans,
+            inventory.source_segments(),
+        )?);
+    }
     let guard = TopologyGuard::new(
         &all_segments,
         TopologyGuard::try_vertex_cloud(
-            chains.iter().flat_map(|chain| chain.points.iter().copied()),
+            all_segments
+                .iter()
+                .flat_map(|segment| [segment.start, segment.end]),
         )?,
     );
-    let simplified: Vec<Cow<'_, [XY]>> = chains
+    let simplified: Vec<SimplifiedChain> = chains
         .iter()
         .map(|chain| {
             if !simplify_boundary && !chain.shared {
-                return Ok(Cow::Borrowed(chain.points.as_slice()));
+                return Ok(SimplifiedChain {
+                    kept: identity_indices(chain.points.len())?,
+                    points: chain.points.clone(),
+                });
             }
             let cyclic = chain.points.len() > 1
                 && same_point(chain.points[0], *chain.points.last().expect("non-empty"));
@@ -505,40 +617,56 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
                 tolerance,
                 method,
                 &guard,
+                &chain.source_segments,
             )?;
-            if kept.len() == chain.points.len() {
-                return Ok(Cow::Borrowed(chain.points.as_slice()));
-            }
             let mut points = Vec::new();
             crate::try_reserve_vec(&mut points, kept.len())?;
             points.extend(kept.iter().map(|&index| chain.points[index]));
-            Ok(Cow::Owned(points))
+            Ok(SimplifiedChain { points, kept })
         })
         .collect::<Result<Vec<_>>>()?;
 
+    let mut source_cursor = 0;
     prepared
         .iter()
-        .map(|row| rebuild_row(row.shape, &chain_of, &simplified))
+        .map(|row| {
+            rebuild_row(
+                row.shape,
+                &mut source_cursor,
+                inventory.source_segments(),
+                &source_spans,
+                &views.chain_of_span,
+                &chains,
+                &simplified,
+                &partition,
+            )
+        })
         .collect()
 }
 
 /// Rebuild one row's polygons by splicing simplified chains into each ring.
 fn rebuild_row(
     shape: &Shape,
-    chain_of: &HashMap<(PointKey, PointKey), usize>,
-    simplified: &[Cow<'_, [XY]>],
+    source_cursor: &mut usize,
+    source_segments: &[Segment],
+    source_spans: &[Vec<(u32, bool)>],
+    chain_of_span: &[u32],
+    chains: &[Chain],
+    simplified: &[SimplifiedChain],
+    partition: &ExactPartition<'_>,
 ) -> Result<Shape> {
-    let rebuild_ring = |ring: &CoordSeq| -> Vec<Point> {
+    let mut rebuild_ring = |ring: &CoordSeq| -> Result<Vec<Point>> {
         let original: Vec<Point> = ring.iter_coords().collect();
+        let source_ordinals = source_ordinals_for_ring(ring, source_segments, source_cursor)?;
         if original.len() < 4 {
-            return original;
+            return Ok(original);
         }
         // Match collect_polygon_segments: elide stutter vertices so chain
-        // lookups never probe zero-length edges absent from the linework graph.
+        // lookups never probe zero-length edges absent from the exact partition.
         let mut open: Vec<Point> = original[..original.len() - 1].to_vec();
         dedup_consecutive_points(&mut open);
         if open.len() < 3 {
-            return original;
+            return Ok(original);
         }
         let source_point_by_key: HashMap<PointKey, Point> = open
             .iter()
@@ -549,62 +677,61 @@ fn rebuild_row(
             source_point_by_key
                 .get(&PointKey::new(point))
                 .copied()
-                .expect("coverage_simplify keeps only source vertices")
+                .unwrap_or_else(|| Point::new_raw_xy(point.x, point.y))
         };
-        let n = open.len();
-        // Rotate the walk to start at a chain boundary so every chain is
-        // traversed in one contiguous run.
-        let chain_at = |i: usize| {
-            chain_of[&ordered_edge(PointKey::new(open[i]), PointKey::new(open[(i + 1) % n]))]
-        };
-        let start = (0..n)
-            .find(|&i| chain_at((i + n - 1) % n) != chain_at(i))
+        let mut atoms = Vec::new();
+        for &ordinal in &source_ordinals {
+            let source = source_spans.get(ordinal as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage source ordinal is out of range".into())
+            })?;
+            if source.is_empty() {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage source segment has no exact atom".into(),
+                )
+                .into());
+            }
+            for &(span, reversed) in source {
+                crate::try_push_vec(&mut atoms, SourceAtom { span, reversed })?;
+            }
+        }
+        let chain_at = |index: usize| chain_of_span[atoms[index].span as usize] as usize;
+        let count = atoms.len();
+        let start = (0..count)
+            .find(|&index| chain_at((index + count - 1) % count) != chain_at(index))
             .unwrap_or(0);
         let mut out: Vec<Point> = Vec::new();
-        let mut i = 0;
-        while i < n {
-            let here = (start + i) % n;
+        let mut consumed = 0;
+        while consumed < count {
+            let here = (start + consumed) % count;
             let id = chain_at(here);
-            // The run of this chain along the ring.
             let mut len = 1;
-            while len < n && chain_at((start + i + len) % n) == id {
+            while len < count && chain_at((start + consumed + len) % count) == id {
                 len += 1;
             }
-            let run_start = open[here].xy();
-            let replacement = &simplified[id];
-            let forward = same_point(replacement[0], run_start);
-            // Splice all but the final point (the next run repeats it).
-            if forward {
-                out.extend(
-                    replacement[..replacement.len() - 1]
-                        .iter()
-                        .copied()
-                        .map(source_point),
-                );
-            } else {
-                out.extend(
-                    replacement
-                        .iter()
-                        .rev()
-                        .take(replacement.len() - 1)
-                        .copied()
-                        .map(source_point),
-                );
+            let mut run = Vec::new();
+            crate::try_reserve_vec(&mut run, len)?;
+            for offset in 0..len {
+                run.push(atoms[(start + consumed + offset) % count]);
             }
-            i += len;
+            let replacement =
+                replacement_for_chain_run(partition, &chains[id], &simplified[id], &run)?;
+            for &point in replacement.iter().take(replacement.len().saturating_sub(1)) {
+                out.push(source_point(point));
+            }
+            consumed += len;
         }
         if let Some(&first) = out.first() {
             out.push(first);
         }
-        out
+        Ok(out)
     };
     match shape {
-        Shape::Polygon(polygon) => Ok(Shape::Polygon(rebuild_polygon(polygon, &rebuild_ring)?)),
+        Shape::Polygon(polygon) => Ok(Shape::Polygon(rebuild_polygon(polygon, &mut rebuild_ring)?)),
         Shape::MultiPolygon(polygons) => Shape::multi_polygon(
             polygons.axes(),
             polygons
                 .iter()
-                .map(|polygon| rebuild_polygon(polygon, &rebuild_ring))
+                .map(|polygon| rebuild_polygon(polygon, &mut rebuild_ring))
                 .collect::<Result<Vec<_>>>()?,
         ),
         other => Ok(other.clone()),
@@ -613,17 +740,17 @@ fn rebuild_row(
 
 fn rebuild_polygon(
     polygon: &Polygon,
-    rebuild_ring: &impl Fn(&CoordSeq) -> Vec<Point>,
+    rebuild_ring: &mut impl FnMut(&CoordSeq) -> Result<Vec<Point>>,
 ) -> Result<Polygon> {
     Polygon::new(
         Ring::from_closed(CoordSeq::try_from_points(&rebuild_ring(
             polygon.shell.coords(),
-        ))?),
+        )?)?),
         polygon
             .holes
             .iter()
             .map(|hole| {
-                CoordSeq::try_from_points(&rebuild_ring(hole.coords())).map(Ring::from_closed)
+                CoordSeq::try_from_points(&rebuild_ring(hole.coords())?).map(Ring::from_closed)
             })
             .collect::<Result<Vec<_>>>()?,
     )

@@ -26,5 +26,5 @@ pub(in crate::geometry) use simplify::{TopologyGuard, simplify_chain_guarded, tr
 pub(crate) use simplify::{vw_area_tolerance, *};
 pub(crate) use validate::{
     CoverageRow, coverage_invalid_edges, coverage_invalid_segments_prepared, coverage_is_valid,
-    coverage_rows, edge_row_occurrences, valid_coverage_rows,
+    coverage_rows, valid_coverage_rows,
 };

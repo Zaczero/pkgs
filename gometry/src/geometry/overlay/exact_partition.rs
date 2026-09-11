@@ -268,6 +268,25 @@ pub(in crate::geometry) struct ExactSpan {
     pub unique: u32,
 }
 
+/// One maximal walk over exact spans, cut at an incidence junction or at a
+/// change in the caller's ownership class. `nodes` contains the span
+/// endpoints in walk order; a cyclic walk repeats its first node at the end.
+#[derive(Debug)]
+pub(in crate::geometry) struct ExactChainView {
+    pub nodes: Vec<NodeId>,
+    pub spans: Vec<u32>,
+    pub shared: bool,
+}
+
+/// Exact incidence views used by coverage consumers. `chain_of_span` maps
+/// every partition span to the one chain that owns its simplification
+/// decision.
+#[derive(Debug)]
+pub(in crate::geometry) struct ExactChainViews {
+    pub chains: Vec<ExactChainView>,
+    pub chain_of_span: Vec<u32>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum VisibilityHit {
     Node(NodeId),
@@ -1049,6 +1068,7 @@ pub(in crate::geometry) struct ExactPartition<'a> {
 /// them to one unique edge. Ring identity and operand identity therefore stay
 /// available for winding and set-operation selection after noding.
 pub(in crate::geometry) struct ExactSourceInventory {
+    source_segments: Vec<Segment>,
     unique: Vec<Segment>,
     provenance: SegmentProvenance,
     source_operands: Vec<u32>,
@@ -1072,6 +1092,7 @@ impl ExactSourceInventory {
         }
         let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
         Ok(Self {
+            source_segments: staged.segments,
             unique,
             provenance,
             source_operands: staged.source_operands,
@@ -1101,6 +1122,7 @@ impl ExactSourceInventory {
         }
         let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
         Ok(Self {
+            source_segments: staged.segments,
             unique,
             provenance,
             source_operands: staged.source_operands,
@@ -1124,6 +1146,7 @@ impl ExactSourceInventory {
         }
         let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
         Ok(Self {
+            source_segments: staged.segments,
             unique,
             provenance,
             source_operands: staged.source_operands,
@@ -1176,6 +1199,7 @@ impl ExactSourceInventory {
         }
         let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
         Ok(Self {
+            source_segments: staged.segments,
             unique,
             provenance,
             source_operands: staged.source_operands,
@@ -1201,6 +1225,14 @@ impl ExactSourceInventory {
         partition.protect_stored = self.polygon_rings.iter().all(Vec::is_empty);
         partition.protect_all = partition.protect_stored;
         Ok(partition)
+    }
+
+    pub(in crate::geometry) fn source_segments(&self) -> &[Segment] {
+        &self.source_segments
+    }
+
+    pub(in crate::geometry) fn source_operands(&self) -> &[u32] {
+        &self.source_operands
     }
 
     fn operand_count(&self) -> usize {
@@ -2355,9 +2387,292 @@ fn cycle_contains_node(
     Ok(inside)
 }
 
+fn next_incident_span(
+    topology: &IndexedTopology,
+    edge_of_slot: &[u32],
+    node: NodeId,
+    incoming: u32,
+) -> Option<u32> {
+    let range =
+        topology.starts[node.0 as usize] as usize..topology.starts[node.0 as usize + 1] as usize;
+    edge_of_slot[range]
+        .iter()
+        .copied()
+        .find(|&span| span != incoming)
+}
+
+fn walk_exact_chain(
+    topology: &IndexedTopology,
+    edge_of_slot: &[u32],
+    spans: &[ExactSpan],
+    node_pin: &[bool],
+    visited: &mut [bool],
+    origin: NodeId,
+    first: u32,
+) -> Result<(Vec<NodeId>, Vec<u32>)> {
+    let mut nodes = Vec::new();
+    try_reserve_vec(&mut nodes, 2)?;
+    nodes.push(origin);
+    let mut chain_spans = Vec::new();
+    try_reserve_vec(&mut chain_spans, 1)?;
+    let mut current = origin;
+    let mut span_id = first;
+    loop {
+        let span_index = span_id as usize;
+        if visited[span_index] {
+            return Err(
+                GeometryErrorKind::Invalid("exact chain walk revisited a span".into()).into(),
+            );
+        }
+        visited[span_index] = true;
+        let span = spans[span_index];
+        let target = if span.start == current {
+            span.end
+        } else if span.end == current {
+            span.start
+        } else {
+            return Err(GeometryErrorKind::Invalid(
+                "exact chain span is detached from its walk".into(),
+            )
+            .into());
+        };
+        try_reserve_vec(&mut chain_spans, 1)?;
+        chain_spans.push(span_id);
+        try_reserve_vec(&mut nodes, 1)?;
+        nodes.push(target);
+        if node_pin[target.0 as usize] || target == origin {
+            break;
+        }
+        span_id = next_incident_span(topology, edge_of_slot, target, span_id).ok_or_else(|| {
+            GeometryErrorKind::Invalid("exact chain has no degree-two continuation".into())
+        })?;
+        current = target;
+    }
+    Ok((nodes, chain_spans))
+}
+
 impl<'a> ExactPartition<'a> {
     pub(in crate::geometry) const fn unique(&self) -> &'a [Segment] {
         self.unique
+    }
+
+    pub(in crate::geometry) fn node_xy(&self, node: NodeId) -> Result<XY> {
+        Ok(match self.recipe(node) {
+            NodeRecipe::Stored(key) => {
+                self.stored_points[node.0 as usize].unwrap_or_else(|| key.xy())
+            },
+            NodeRecipe::Constructed { .. } => {
+                let [x, y, w] = self.homogeneous(node)?;
+                let x = round_ratio(&x, &w)?;
+                let y = round_ratio(&y, &w)?;
+                XY::new(
+                    if x == 0.0 { 0.0 } else { x },
+                    if y == 0.0 { 0.0 } else { y },
+                )
+            },
+        })
+    }
+
+    pub(in crate::geometry) fn stored_node(&self, point: XY) -> Option<NodeId> {
+        let key = PointKey::new(point);
+        self.recipes
+            .iter()
+            .position(|recipe| matches!(recipe, NodeRecipe::Stored(candidate) if *candidate == key))
+            .map(|node| NodeId(node as u32))
+    }
+
+    /// Return each source segment's exact atomic span run in source direction.
+    ///
+    /// The partition provenance is the only source-to-atom relation here.
+    /// Ordering the inherited atoms from the stored source endpoint gives
+    /// callers a view of the source spelling without rebuilding a coordinate
+    /// graph.
+    pub(in crate::geometry) fn source_span_views(
+        &self,
+        source_segments: &[Segment],
+    ) -> Result<Vec<Vec<(u32, bool)>>> {
+        let mut views = Vec::new();
+        try_reserve_vec(&mut views, source_segments.len())?;
+        views.resize_with(source_segments.len(), Vec::new);
+        for (span, owners) in self.provenance.iter().enumerate() {
+            for &(source, reversed) in owners {
+                let view = views.get_mut(source as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact partition provenance references an unknown source".into(),
+                    )
+                })?;
+                try_reserve_vec(view, 1)?;
+                view.push((span as u32, reversed));
+            }
+        }
+        for (source, segment) in source_segments.iter().enumerate() {
+            if views[source].len() < 2 {
+                continue;
+            }
+            let start = self.stored_node(segment.start).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "exact partition source endpoint has no stored node".into(),
+                )
+            })?;
+            let end = self.stored_node(segment.end).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "exact partition source endpoint has no stored node".into(),
+                )
+            })?;
+            let mut remaining = std::mem::take(&mut views[source]);
+            let mut ordered = Vec::new();
+            try_reserve_vec(&mut ordered, remaining.len())?;
+            let mut current = start;
+            while !remaining.is_empty() {
+                let index = remaining.iter().position(|&(span, reversed)| {
+                    let span = self.spans[span as usize];
+                    if reversed {
+                        span.end == current
+                    } else {
+                        span.start == current
+                    }
+                });
+                let Some(index) = index else {
+                    return Err(GeometryErrorKind::Invalid(
+                        "exact partition source atoms are not a contiguous run".into(),
+                    )
+                    .into());
+                };
+                let (span_id, reversed) = remaining.swap_remove(index);
+                let span = self.spans[span_id as usize];
+                current = if reversed { span.start } else { span.end };
+                ordered.push((span_id, reversed));
+            }
+            if current != end {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact partition source atoms do not reach their endpoint".into(),
+                )
+                .into());
+            }
+            views[source] = ordered;
+        }
+        Ok(views)
+    }
+
+    /// Build maximal chain views directly from exact span incidence.
+    ///
+    /// `source_operands` maps the partition's source ordinals to coverage row
+    /// identities. An atom is shared only when its exact provenance names two
+    /// distinct rows. A chain ends at every non-degree-two node and wherever
+    /// that shared/exterior class changes.
+    pub(in crate::geometry) fn coverage_chain_views(
+        &self,
+        source_operands: &[u32],
+    ) -> Result<ExactChainViews> {
+        let (topology, edge_of_slot) = self.local_topology()?;
+        let mut shared_by_span = Vec::new();
+        try_reserve_vec(&mut shared_by_span, self.spans.len())?;
+        for owners in self.provenance.iter() {
+            let mut first = None;
+            let mut second = None;
+            let mut count = 0;
+            for &(source, _) in owners {
+                let operand = *source_operands.get(source as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact partition provenance references an unknown source".into(),
+                    )
+                })?;
+                if Some(operand) == first || Some(operand) == second {
+                    continue;
+                }
+                if first.is_none() {
+                    first = Some(operand);
+                } else if second.is_none() {
+                    second = Some(operand);
+                }
+                count += 1;
+            }
+            shared_by_span.push(count == 2);
+        }
+
+        let mut node_pin = Vec::new();
+        try_reserve_vec(&mut node_pin, self.recipes.len())?;
+        node_pin.resize(self.recipes.len(), false);
+        for (node, range) in topology.starts.windows(2).enumerate() {
+            let slots = range[0] as usize..range[1] as usize;
+            node_pin[node] = slots.len() != 2
+                || shared_by_span[edge_of_slot[slots.start] as usize]
+                    != shared_by_span[edge_of_slot[slots.start + 1] as usize];
+        }
+
+        let mut visited = Vec::new();
+        try_reserve_vec(&mut visited, self.spans.len())?;
+        visited.resize(self.spans.len(), false);
+        let mut chain_of_span = Vec::new();
+        try_reserve_vec(&mut chain_of_span, self.spans.len())?;
+        chain_of_span.resize(self.spans.len(), u32::MAX);
+        let mut chains = Vec::new();
+        try_reserve_vec(&mut chains, self.spans.len())?;
+
+        for seed in 0..self.spans.len() {
+            if visited[seed] {
+                continue;
+            }
+            let span = self.spans[seed];
+            let (origin, first) = if node_pin[span.start.0 as usize] {
+                if node_pin[span.end.0 as usize]
+                    && self.compare_nodes(span.end, span.start)? == Ordering::Less
+                {
+                    (span.end, seed as u32)
+                } else {
+                    (span.start, seed as u32)
+                }
+            } else if node_pin[span.end.0 as usize] {
+                (span.end, seed as u32)
+            } else {
+                (span.start, seed as u32)
+            };
+            let (mut nodes, mut spans) = walk_exact_chain(
+                &topology,
+                &edge_of_slot,
+                &self.spans,
+                &node_pin,
+                &mut visited,
+                origin,
+                first,
+            )?;
+            if !node_pin[origin.0 as usize] {
+                let count = spans.len();
+                let mut minimum = 0;
+                for index in 1..count {
+                    if self.compare_nodes(nodes[index], nodes[minimum])? == Ordering::Less {
+                        minimum = index;
+                    }
+                }
+                nodes[..count].rotate_left(minimum);
+                nodes[count] = nodes[0];
+                spans.rotate_left(minimum);
+                if self.compare_nodes(nodes[1], nodes[count - 1])? == Ordering::Greater {
+                    nodes[1..count].reverse();
+                    spans.reverse();
+                }
+            }
+            let shared = shared_by_span[seed];
+            debug_assert!(
+                spans
+                    .iter()
+                    .all(|&span| shared_by_span[span as usize] == shared)
+            );
+            let chain = u32::try_from(chains.len()).map_err(|_| ResourceError::SizeOverflow)?;
+            for &span in &spans {
+                chain_of_span[span as usize] = chain;
+            }
+            try_reserve_vec(&mut chains, 1)?;
+            chains.push(ExactChainView {
+                nodes,
+                spans,
+                shared,
+            });
+        }
+        Ok(ExactChainViews {
+            chains,
+            chain_of_span,
+        })
     }
 
     pub(in crate::geometry) fn recipe(&self, node: NodeId) -> &NodeRecipe {
@@ -2399,20 +2714,7 @@ impl<'a> ExactPartition<'a> {
         let mut coordinates = Vec::new();
         try_reserve_vec(&mut coordinates, nodes.len())?;
         for &node in nodes {
-            coordinates.push(match self.recipe(node) {
-                NodeRecipe::Stored(key) => {
-                    self.stored_points[node.0 as usize].unwrap_or_else(|| key.xy())
-                },
-                NodeRecipe::Constructed { .. } => {
-                    let [x, y, w] = self.homogeneous(node)?;
-                    let x = round_ratio(&x, &w)?;
-                    let y = round_ratio(&y, &w)?;
-                    XY::new(
-                        if x == 0.0 { 0.0 } else { x },
-                        if y == 0.0 { 0.0 } else { y },
-                    )
-                },
-            });
+            coordinates.push(self.node_xy(node)?);
         }
         Ok(coordinates)
     }
