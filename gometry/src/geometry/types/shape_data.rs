@@ -208,9 +208,6 @@ pub struct ShapeData {
 /// inapplicable areal tester.
 #[derive(Default)]
 struct TopologyPlan {
-    cartesian_graph: OnceLock<Box<crate::geometry::topology::TopologyGraph>>,
-    #[cfg(test)]
-    cartesian_graph_accesses: AtomicUsize,
     validity: OnceLock<Option<Box<ValidationIssue>>>,
     simplicity: OnceLock<bool>,
     antimeridian_crossing: OnceLock<bool>,
@@ -319,30 +316,6 @@ impl PreparedPlan {
                 Box::try_new(MetricPlan::default()).map_err(crate::error::Error::from)
             })
             .map(Box::as_ref)
-    }
-
-    pub(crate) fn topology_graph(&self) -> Result<&crate::geometry::TopologyGraph> {
-        let topology = self.topology()?;
-        #[cfg(test)]
-        topology
-            .cartesian_graph_accesses
-            .fetch_add(1, Ordering::Relaxed);
-        topology
-            .cartesian_graph
-            .get_or_try_init(|| {
-                Box::try_new(crate::geometry::topology::TopologyGraph::cartesian(
-                    self.shape(),
-                )?)
-                .map_err(crate::error::Error::from)
-            })
-            .map(Box::as_ref)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn topology_graph_accesses(&self) -> usize {
-        self.topology.get().map_or(0, |topology| {
-            topology.cartesian_graph_accesses.load(Ordering::Relaxed)
-        })
     }
 
     pub(crate) fn validate_cached(&self) -> Result<Option<&ValidationIssue>> {
@@ -539,9 +512,7 @@ impl HeapSize for ShapeData {
 
 impl HeapSize for TopologyPlan {
     fn heap_bytes(&self) -> usize {
-        self.cartesian_graph.heap_bytes()
-            + self.validity.heap_bytes()
-            + self.point_tester.heap_bytes()
+        self.validity.heap_bytes() + self.point_tester.heap_bytes()
     }
 }
 
@@ -655,32 +626,6 @@ mod footprint_tests {
         let _ = data.distance_parts().unwrap();
         assert!(data.metric.get().is_some());
         assert!(data.retained_heap_bytes() > cold);
-    }
-
-    #[test]
-    fn cold_topology_sidecar_allocation_failure_is_retryable() {
-        use crate::error::{ErrorKind, ResourceError};
-        use crate::test_support::fail_allocations_after;
-
-        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
-        assert!(plan.topology.get().is_none());
-        assert_eq!(plan.topology_graph_accesses(), 0);
-        let error = match fail_allocations_after(0, || plan.topology_graph()) {
-            Ok(_) => panic!("topology graph allocation unexpectedly succeeded"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert!(plan.topology.get().is_none());
-        let first = plan.topology_graph().expect("retry after rejection") as *const _;
-        let second = plan.topology_graph().expect("cached topology graph") as *const _;
-        assert_eq!(first, second);
-        assert!(std::ptr::eq(
-            plan.topology.get().expect("published sidecar").as_ref(),
-            plan.topology.get().expect("reused sidecar").as_ref()
-        ));
     }
 
     #[test]

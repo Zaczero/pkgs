@@ -16,12 +16,12 @@ use std::sync::Arc;
 
 use crate::HeapSize;
 use crate::error::Result;
-use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 #[cfg(test)]
-use crate::geometry::topology::TopologyLocation;
+use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
+use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    Bounds, CoordSeq, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape, SharedSlice,
-    ring_edge_membership, xy_bounds_columns,
+    Bounds, CoordSeq, Coordinates as _, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape,
+    SharedSlice, ring_edge_membership, same_point, xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
@@ -309,10 +309,59 @@ impl HeapSize for PolygonPointIndex {
 /// Batched point-membership tester for a fixed shape: polygonal shapes get a
 /// hierarchical Y-stabbing plan (parts → shell/holes → edges); everything else
 /// falls through to the point kernels.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Generic carries the topology graph in place; boxing it would add a heap hop on the non-indexed fallback"
-)]
+pub(crate) struct ExactPointTester {
+    shape: Shape,
+}
+
+impl ExactPointTester {
+    #[cfg(test)]
+    fn contains_point(&self, point: Point) -> bool {
+        exact_contains_point(&self.shape, point)
+    }
+
+    fn covers_point(&self, point: Point) -> bool {
+        exact_covers_point(&self.shape, point)
+    }
+}
+
+#[cfg(test)]
+fn exact_contains_point(shape: &Shape, point: Point) -> bool {
+    match shape {
+        Shape::Point(value) => same_point(*value, point),
+        Shape::MultiPoint(points) => points.iter().any(|value| same_point(value, point)),
+        Shape::LineString(line) => line_contains_point(line, point),
+        Shape::MultiLineString(lines) => multiline_contains_point(lines, point),
+        Shape::Polygon(polygon) => polygon.contains_point(point),
+        Shape::MultiPolygon(polygons) => {
+            polygons.iter().any(|polygon| polygon.contains_point(point))
+        },
+        Shape::GeometryCollection(geometries) => geometries
+            .iter()
+            .any(|geometry| exact_contains_point(geometry, point)),
+        Shape::Empty(..) => false,
+    }
+}
+
+fn exact_covers_point(shape: &Shape, point: Point) -> bool {
+    match shape {
+        Shape::Point(value) => same_point(*value, point),
+        Shape::MultiPoint(points) => points.iter().any(|value| same_point(value, point)),
+        Shape::LineString(line) => line
+            .segment_pairs()
+            .any(|[start, end]| crate::geometry::point_on_segment(point, start, end)),
+        Shape::MultiLineString(lines) => lines.iter().any(|line| {
+            line.segment_pairs()
+                .any(|[start, end]| crate::geometry::point_on_segment(point, start, end))
+        }),
+        Shape::Polygon(polygon) => polygon.covers_point(point),
+        Shape::MultiPolygon(polygons) => polygons.iter().any(|polygon| polygon.covers_point(point)),
+        Shape::GeometryCollection(geometries) => geometries
+            .iter()
+            .any(|geometry| exact_covers_point(geometry, point)),
+        Shape::Empty(..) => false,
+    }
+}
+
 pub(crate) enum PointBatchTester {
     /// Single polygon — no multipolygon Y-index indirection.
     Polygon {
@@ -323,7 +372,7 @@ pub(crate) enum PointBatchTester {
     MultiPolygon {
         parts: YStabbingIndex<PolygonPointIndex>,
     },
-    Generic(crate::geometry::TopologyGraph),
+    Generic(ExactPointTester),
 }
 
 impl PointBatchTester {
@@ -342,9 +391,9 @@ impl PointBatchTester {
         match shape {
             Shape::Polygon(polygon) => Self::from_polygon(polygon),
             Shape::MultiPolygon(polygons) => Self::from_multipolygon(polygons),
-            _ => Ok(Self::Generic(crate::geometry::TopologyGraph::cartesian(
-                shape,
-            )?)),
+            _ => Ok(Self::Generic(ExactPointTester {
+                shape: shape.clone(),
+            })),
         }
     }
 
@@ -394,7 +443,7 @@ impl PointBatchTester {
                 });
                 hit
             },
-            Self::Generic(graph) => graph.locate_point(point.xy()) == TopologyLocation::Interior,
+            Self::Generic(tester) => tester.contains_point(point),
         }
     }
 
@@ -414,7 +463,7 @@ impl PointBatchTester {
                 });
                 hit
             },
-            Self::Generic(graph) => graph.covers_point(point.xy()),
+            Self::Generic(tester) => tester.covers_point(point),
         }
     }
 
@@ -462,7 +511,7 @@ impl HeapSize for PointBatchTester {
         match self {
             Self::Polygon { index: polygon } => polygon.heap_bytes(),
             Self::MultiPolygon { parts } => parts.heap_bytes(),
-            Self::Generic(graph) => graph.heap_bytes(),
+            Self::Generic(tester) => tester.shape.heap_bytes(),
         }
     }
 }

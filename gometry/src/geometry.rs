@@ -150,7 +150,8 @@ pub(crate) use ordinates::{
 };
 use ordinates::{carry_each, carry_ordinates};
 pub(crate) use overlay::{
-    OverlayOp, Strictness, empty_shape_for_dimension_with_axes, rect_polygon,
+    OverlayOp, Strictness, empty_shape_for_dimension_with_axes, exact_intersects_bounds,
+    rect_polygon,
 };
 use overlay::{
     binary_areal_overlay, clip_multipoint_columns, clip_polygonal, clipped_line_parts,
@@ -250,8 +251,7 @@ pub(crate) use relate::{
     De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, admitted_bounds_are_sound,
     graph_intersects_bounds, graph_relate_data, graph_relate_data_geographic,
     graph_relate_data_geographic_with_left_graph, graph_relate_data_geographic_with_right_graph,
-    graph_relate_data_with_left_graph, graph_relate_data_with_right_graph, graph_relate_shapes,
-    is_axis_aligned_rectangle, line_scalar_prefers_direct_polygon_relate,
+    graph_relate_shapes, is_axis_aligned_rectangle, line_scalar_prefers_direct_polygon_relate,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_between, candidate_pairs_over_staged_runs,

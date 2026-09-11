@@ -21,8 +21,7 @@ pub(crate) use de9im::{De9im, Loc};
 pub(crate) use graph_matrix::{
     GeographicPrepared, admitted_bounds_are_sound, graph_intersects_bounds, graph_relate_data,
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
-    graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
-    graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
+    graph_relate_data_geographic_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
     line_scalar_prefers_direct_polygon_relate, ring_is_sound,
 };
 pub(crate) use interval::{De9imInterval, OperandShape};

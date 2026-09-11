@@ -25,10 +25,10 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, try_compare_ratios};
 use crate::geometry::{
-    Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget, GeometryErrorKind,
-    HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon, PolygonizeFull, Result, Ring,
-    Segment, Shape, XY, for_each_candidate_pair, same_point, segment_contact_exact, single_chain,
-    undirected_segment_edge_key,
+    Bounds, Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget,
+    GeometryErrorKind, HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon,
+    PolygonizeFull, Result, Ring, Segment, Shape, XY, for_each_candidate_pair, same_point,
+    segment_contact_exact, single_chain, undirected_segment_edge_key,
 };
 use crate::try_reserve_vec;
 
@@ -2067,6 +2067,50 @@ pub(in crate::geometry) fn exact_point_location(shape: &Shape, point: Point) -> 
     }
 }
 
+pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<bool> {
+    let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+    let mut budget = ExpansionBudget::new("intersects", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    if bounds.corners().into_iter().any(|[x, y]| {
+        exact_point_location(shape, Point::new_raw_xy(x, y))
+            .is_some_and(|location| location != Loc::Exterior)
+    }) {
+        return Ok(true);
+    }
+    for index in 0..partition.recipes.len() {
+        if partition.node_in_bounds(NodeId(index as u32), bounds)? {
+            return Ok(true);
+        }
+    }
+    let corners = bounds.corners();
+    let rectangle = [
+        Segment {
+            start: XY::new(corners[0][0], corners[0][1]),
+            end: XY::new(corners[1][0], corners[1][1]),
+        },
+        Segment {
+            start: XY::new(corners[1][0], corners[1][1]),
+            end: XY::new(corners[2][0], corners[2][1]),
+        },
+        Segment {
+            start: XY::new(corners[2][0], corners[2][1]),
+            end: XY::new(corners[3][0], corners[3][1]),
+        },
+        Segment {
+            start: XY::new(corners[3][0], corners[3][1]),
+            end: XY::new(corners[0][0], corners[0][1]),
+        },
+    ];
+    Ok(inventory.unique.iter().any(|&segment| {
+        bounds.contains_xy(segment.start)
+            || bounds.contains_xy(segment.end)
+            || rectangle
+                .iter()
+                .copied()
+                .any(|candidate| segment_contact_exact(segment, candidate) != Contact::Disjoint)
+    }))
+}
+
 fn diagnostic_line(segment: Segment, closed: bool) -> Result<Shape> {
     let points = if closed {
         [segment.start, segment.end, segment.start]
@@ -2828,6 +2872,19 @@ impl<'a> ExactPartition<'a> {
                 ])
             },
         }
+    }
+
+    fn node_in_bounds(&self, node: NodeId, bounds: Bounds) -> Result<bool> {
+        let [x, y, w] = self.homogeneous(node)?;
+        let one = ExactDyadic::try_from_f64(1.0)?;
+        let minx = ExactDyadic::try_from_f64(bounds.minx())?;
+        let miny = ExactDyadic::try_from_f64(bounds.miny())?;
+        let maxx = ExactDyadic::try_from_f64(bounds.maxx())?;
+        let maxy = ExactDyadic::try_from_f64(bounds.maxy())?;
+        Ok(try_compare_ratios(&x, &w, &minx, &one)? != Ordering::Less
+            && try_compare_ratios(&x, &w, &maxx, &one)? != Ordering::Greater
+            && try_compare_ratios(&y, &w, &miny, &one)? != Ordering::Less
+            && try_compare_ratios(&y, &w, &maxy, &one)? != Ordering::Greater)
     }
 
     fn round_nodes(&self, nodes: &[NodeId]) -> Result<Vec<XY>> {

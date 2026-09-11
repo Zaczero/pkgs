@@ -174,10 +174,8 @@ fn exact_cartesian_relate(left: &Shape, right: &Shape) -> Result<De9im> {
     inventory.relate(&partition)
 }
 
-/// The source-graph relation path, retained as the complete fallback and the
-/// direct folds' test oracle. Tests must reach the graph THROUGH this, never
-/// through `graph_relate_data`, which now admits the direct engines first and
-/// would compare an engine with itself.
+/// The source-graph relation path retained as the complete test oracle.
+#[cfg(test)]
 pub(crate) fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
     if let Some(matrix) = try_areal_relate(left.shape(), right.shape())? {
         return Ok(matrix);
@@ -185,42 +183,20 @@ pub(crate) fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan
     graph_relate_data_fallback(left, right)
 }
 
-/// Compute a Cartesian relation from source graphs, resolving only the graphs
-/// needed by a point specialization.
+/// Compute a Cartesian relation from source graphs for the test oracle.
+#[cfg(test)]
 fn graph_relate_data_fallback(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
     if let Some(point) = shape_point(right.shape()) {
-        return Ok(graph_relate_to_point(left.topology_graph()?, point));
+        let graph = TopologyGraph::cartesian(left.shape())?;
+        return Ok(graph_relate_to_point(&graph, point));
     }
     if let Some(point) = shape_point(left.shape()) {
-        return Ok(graph_relate_to_point(right.topology_graph()?, point).transpose());
+        let graph = TopologyGraph::cartesian(right.shape())?;
+        return Ok(graph_relate_to_point(&graph, point).transpose());
     }
-    graph_relate(left.topology_graph()?, right.topology_graph()?)
-}
-
-/// Compute a Cartesian relation while reusing the left operand's resolved
-/// graph. The right graph remains lazy so direct pairs do no graph work.
-pub(crate) fn graph_relate_data_with_left_graph(
-    left: &PreparedPlan,
-    _left_graph: &TopologyGraph,
-    right: &PreparedPlan,
-) -> Result<De9im> {
-    if let Some(matrix) = try_exact_areal_point_relate(left.shape(), right.shape())? {
-        return Ok(matrix);
-    }
-    exact_cartesian_relate(left.shape(), right.shape())
-}
-
-/// Compute a Cartesian relation while reusing the right operand's resolved
-/// graph. The left graph remains lazy so direct pairs do no graph work.
-pub(crate) fn graph_relate_data_with_right_graph(
-    left: &PreparedPlan,
-    right: &PreparedPlan,
-    _right_graph: &TopologyGraph,
-) -> Result<De9im> {
-    if let Some(matrix) = try_exact_areal_point_relate(left.shape(), right.shape())? {
-        return Ok(matrix);
-    }
-    exact_cartesian_relate(left.shape(), right.shape())
+    let left_graph = TopologyGraph::cartesian(left.shape())?;
+    let right_graph = TopologyGraph::cartesian(right.shape())?;
+    graph_relate(&left_graph, &right_graph)
 }
 
 #[expect(
@@ -1677,21 +1653,11 @@ mod tests {
             "{name}: prepared dispatch"
         );
         assert_eq!(
-            line_plan.topology_graph_accesses(),
-            0,
-            "{name}: line graph avoided"
-        );
-        assert_eq!(
             graph_relate_data(&reverse_line_plan, &reverse_polygon_plan)
                 .unwrap()
                 .0,
             reverse.0,
             "{name}: reverse prepared dispatch"
-        );
-        assert_eq!(
-            reverse_line_plan.topology_graph_accesses(),
-            0,
-            "{name}: reverse line graph avoided"
         );
         assert_eq!(
             graph_relate_shapes(polygon, line).unwrap().0,
@@ -2389,7 +2355,7 @@ mod tests {
     }
 
     #[test]
-    fn areal_oracle_does_not_build_graphs_for_direct_relation() {
+    fn areal_oracle_matches_exact_relation() {
         let left = PreparedPlan::new(Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0))).unwrap();
         let right = PreparedPlan::new(Shape::Polygon(rectangle(1.0, 1.0, 2.0, 2.0))).unwrap();
 
@@ -2397,30 +2363,20 @@ mod tests {
             graph_relate_data_oracle(&left, &right).unwrap().text(),
             "212FF1FF2"
         );
-        assert_eq!(left.topology_graph_accesses(), 0);
-        assert_eq!(right.topology_graph_accesses(), 0);
     }
 
     #[test]
-    fn cartesian_point_fallback_builds_only_the_nonpoint_graph() {
+    fn cartesian_point_oracle_matches_exact_relation() {
         let area = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
         let point = Shape::Point(Point::new_raw_xy(1.0, 1.0));
 
         let left = PreparedPlan::new(area.clone()).unwrap();
         let right = PreparedPlan::new(point.clone()).unwrap();
         graph_relate_data_oracle(&left, &right).unwrap();
-        assert_eq!(left.topology_graph_accesses(), 1);
-        assert_eq!(right.topology_graph_accesses(), 0);
 
         let left = PreparedPlan::new(point).unwrap();
         let right = PreparedPlan::new(area).unwrap();
         graph_relate_data(&left, &right).unwrap();
-        assert_eq!(left.topology_graph_accesses(), 0);
-        assert_eq!(
-            right.topology_graph_accesses(),
-            0,
-            "ExactPartition relation does not construct a rounded topology graph"
-        );
     }
 
     #[test]

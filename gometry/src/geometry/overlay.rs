@@ -109,6 +109,7 @@ pub(crate) use clip::{
     clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
     line_parts_to_shape,
 };
+pub(crate) use exact_partition::exact_intersects_bounds;
 pub(in crate::geometry) use exact_partition::{
     ExactChainView, ExactPartition, ExactLineEmission, ExactSourceInventory, NodeId, certify_emitted_incidence,
     exact_point_location,

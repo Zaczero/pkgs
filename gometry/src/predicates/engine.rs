@@ -3,8 +3,8 @@
 //! Every surface that evaluates a named predicate — free functions, `Geometry`
 //! and `GeometryArray` methods, `PreparedGeometry`, the spatial index refine
 //! loop, and `join` — reads its facts from [`Predicate::spec`] and projects the
-//! complete matrix produced by the graph relation owner. Batch and scalar
-//! surfaces therefore cannot drift in predicate semantics.
+//! complete matrix produced by the domain's topology relation owner. Batch and
+//! scalar surfaces therefore cannot drift in predicate semantics.
 
 #![allow(clippy::similar_names, reason = "bounds are named by axis and extreme")]
 use std::cell::OnceCell;
@@ -19,16 +19,6 @@ pub(crate) enum PreparedTopologyPair<'a> {
     Cartesian {
         left: &'a PreparedPlan,
         right: &'a PreparedPlan,
-    },
-    CartesianLeftGraph {
-        left: &'a PreparedPlan,
-        right: &'a PreparedPlan,
-        left_graph: &'a crate::geometry::TopologyGraph,
-    },
-    CartesianRightGraph {
-        left: &'a PreparedPlan,
-        right: &'a PreparedPlan,
-        right_graph: &'a crate::geometry::TopologyGraph,
     },
     Geographic {
         left: GeographicPrepared<'a>,
@@ -89,38 +79,13 @@ impl<'a> PreparedTopologyPair<'a> {
                 GateOperand::from_prepared(&left),
                 GateOperand::from_prepared(&right),
             )),
-            Self::CartesianLeftGraph { .. }
-            | Self::CartesianRightGraph { .. }
-            | Self::GeographicLeftGraph { .. }
-            | Self::GeographicRightGraph { .. } => None,
-        }
-    }
-
-    /// Both plans of a Cartesian pair, whichever graphs it carries.
-    const fn cartesian_plans(&self) -> Option<(&'a PreparedPlan, &'a PreparedPlan)> {
-        match *self {
-            Self::Cartesian { left, right }
-            | Self::CartesianLeftGraph { left, right, .. }
-            | Self::CartesianRightGraph { left, right, .. } => Some((left, right)),
-            Self::Geographic { .. }
-            | Self::GeographicLeftGraph { .. }
-            | Self::GeographicRightGraph { .. } => None,
+            Self::GeographicLeftGraph { .. } | Self::GeographicRightGraph { .. } => None,
         }
     }
 
     pub(crate) fn relate(self) -> crate::error::Result<crate::geometry::De9im> {
         match self {
             Self::Cartesian { left, right } => graph_relate_data(left, right),
-            Self::CartesianLeftGraph {
-                left,
-                right,
-                left_graph,
-            } => crate::geometry::graph_relate_data_with_left_graph(left, left_graph, right),
-            Self::CartesianRightGraph {
-                left,
-                right,
-                right_graph,
-            } => crate::geometry::graph_relate_data_with_right_graph(left, right, right_graph),
             Self::Geographic { left, right } => {
                 crate::geometry::graph_relate_data_geographic(left, right)
             },
@@ -531,7 +496,6 @@ pub(crate) fn scalar_vs_shapes<'a>(
     let scalar_bounds = scalar.bounds();
     let element_bounds = array.and_then(PyGeometryArray::existing_element_bounds);
     let row_is_missing = |index: usize| array.is_some_and(|array| array.is_row_missing(index));
-    let scalar_cartesian_graph = OnceCell::new();
     let mut row_operation = array.map(PyGeometryArray::row_operation);
     match domain {
         TopologyDomain::Cartesian => {
@@ -570,12 +534,10 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     if !crate::geometry::is_axis_aligned_rectangle(shape, bounds) {
                         return Ok(None);
                     }
-                    let scalar_graph =
-                        scalar_cartesian_graph.get_or_try_init(|| scalar.topology_graph())?;
-                    Ok(Some(crate::geometry::graph_intersects_bounds(
-                        scalar_graph,
+                    Ok(Some(crate::geometry::exact_intersects_bounds(
+                        scalar.shape(),
                         bounds,
-                    )))
+                    )?))
                 })
             };
             elements
@@ -603,19 +565,15 @@ pub(crate) fn scalar_vs_shapes<'a>(
                             }?;
                             return Ok(predicate_matrix_value(spec, matrix));
                         }
-                        let scalar_graph =
-                            scalar_cartesian_graph.get_or_try_init(|| scalar.topology_graph())?;
                         let operands = if scalar_is_left {
-                            PreparedTopologyPair::CartesianLeftGraph {
+                            PreparedTopologyPair::Cartesian {
                                 left: scalar,
                                 right: &element,
-                                left_graph: scalar_graph,
                             }
                         } else {
-                            PreparedTopologyPair::CartesianRightGraph {
+                            PreparedTopologyPair::Cartesian {
                                 left: &element,
                                 right: scalar,
-                                right_graph: scalar_graph,
                             }
                         };
                         topology_scalar_pair(spec, operands)
@@ -751,13 +709,6 @@ pub(crate) fn topology_scalar_pair(
     {
         return Ok(verdict);
     }
-    // Cartesian relation cells are owned by ExactPartition. Prepared/scalar
-    // and array lanes deliberately share the same matrix route rather than
-    // selecting a direct rounded-coordinate predicate kernel.
-    if let Some((left, right)) = operands.cartesian_plans() {
-        let _ = (left, right);
-        return Ok(predicate_matrix_value(spec, operands.relate()?));
-    }
     Ok(predicate_matrix_value(spec, operands.relate()?))
 }
 
@@ -774,10 +725,6 @@ pub(crate) fn topology_scalar_pattern(
         && let Some(verdict) = pattern_bounds_gate(pattern, &left, &right)?
     {
         return Ok(verdict);
-    }
-    if let Some((left, right)) = operands.cartesian_plans() {
-        let _ = (left, right);
-        return Ok(operands.relate()?.matches(pattern));
     }
     Ok(operands.relate()?.matches(pattern))
 }
@@ -1039,8 +986,6 @@ mod tests {
             .expect("fixture admits"),
             [false]
         );
-        assert_eq!(cartesian.topology_graph_accesses(), 0);
-
         let geographic = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let geographic_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
@@ -1062,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn admitted_scalar_rows_reuse_one_query_graph() {
+    fn admitted_scalar_rows_use_exact_membership() {
         let rows = [line((-1.0, 0.5), (3.0, 0.5)), line((-1.0, 1.5), (3.0, 1.5))];
         let cartesian = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let cartesian_cache = crate::geometry::FrameDependentCaches::default();
@@ -1081,8 +1026,6 @@ mod tests {
             .expect("fixture admits"),
             [true, true]
         );
-        assert_eq!(cartesian.topology_graph_accesses(), 1);
-
         let line_scalar = PreparedPlan::new(line((-1.0, 1.0), (3.0, 1.0))).unwrap();
         let polygon_rows = [rectangle(0.0, 0.0, 2.0, 2.0)];
         for scalar_is_left in [true, false] {
@@ -1103,8 +1046,6 @@ mod tests {
                 [true]
             );
         }
-        assert_eq!(line_scalar.topology_graph_accesses(), 0);
-
         let geographic = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0)).unwrap();
         let geographic_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
