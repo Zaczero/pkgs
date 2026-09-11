@@ -752,13 +752,14 @@ pub(crate) fn xy_bounds_columns(xs: &[f64], ys: &[f64]) -> [f64; 4] {
 /// columns: the SIGNED triangle-fan accumulators `(Σ 2·area, Σ 2·area·(ax +
 /// x_i + x_{i+1}), Σ 2·area·(ay + y_i + y_{i+1}))` — signed cross products
 /// about the anchor; the caller applies the ring's CW/CCW shell/hole sign and
-/// the final `/3/area` divides. The SIMD twin of [`shoelace_measure_columns`]
-/// for the area centroid: same offset-by-one column shape, three lane
-/// accumulators instead of one. Zero-padded tail edges contribute exactly `0`
-/// (the base-relative cross product `(-ax)(-ay) − (-ax)(-ay)` cancels). Small
-/// rings take an algebraic scalar fold (measurement); large rings reduce in
-/// plain SIMD lanes. Centroid is measurement arithmetic, so lane order is not
-/// part of the contract (matching `area`).
+/// the final `/3/area` divides. This is the centroid counterpart of the
+/// packed polygon shoelace owner [`crate::geometry::polygon_area_measure_columns`]:
+/// same offset-by-one column shape, three lane accumulators instead of one.
+/// Zero-padded tail edges contribute exactly `0` (the base-relative cross
+/// product `(-ax)(-ay) − (-ax)(-ay)` cancels). Small rings take an algebraic
+/// scalar fold (measurement); large rings reduce in plain SIMD lanes. Centroid
+/// is measurement arithmetic, so lane order is not part of the contract
+/// (matching `area`).
 /// Ordinary (world-frame) ring centroid sums. Bit-identical on typical input.
 /// Extreme rings may return non-finite moments; the areal centroid drivers
 /// then re-accumulate with one shared local scale so multi-ring weights stay

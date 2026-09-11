@@ -121,18 +121,6 @@ impl ExactRationalArea {
     }
 }
 
-/// Signed measurement accumulator — no `Ord`/`PartialEq<f64>`/`Deref` so
-/// `> 0.0` / `== 0.0` outside this module is a compile error.
-#[derive(Clone, Copy, Debug)]
-#[repr(transparent)]
-pub(crate) struct SignedAreaMeasure(f64);
-
-impl SignedAreaMeasure {
-    const fn new(value: f64) -> Self {
-        Self(value)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AreaSign {
     Negative,
@@ -280,79 +268,6 @@ fn exact_ring_area_sum_local(
         area = expansion_sum(&area, &expansion_sum(&forward, &reverse));
     }
     Some(estimate(&area))
-}
-
-/// Axis residual extent for scale selection. Prefer the finite `|x - origin|`
-/// span; when subtraction overflows, fall back to `max(|x|, |origin|)` so a
-/// power-of-two scale still maps `x*s - origin*s` into a normal range.
-///
-/// The span pass is one branchless max chain that LLVM vectorizes: comparing
-/// against infinity rejects a NaN residual as well, so the overflow flag is a
-/// lane-wise OR rather than a branch, and the `|x|` fallback span is computed
-/// only on the overflow path that reads it. This runs inside every exact ring
-/// area sign, which is why it is written for the vector unit.
-fn axis_extent_for_scale(
-    values: impl IntoIterator<Item = f64> + Clone,
-    origin: f64,
-) -> (f64, bool) {
-    let mut max_delta = 0.0_f64;
-    let mut overflow = false;
-    for x in values.clone() {
-        let d = (x - origin).abs();
-        let finite = d < f64::INFINITY;
-        max_delta = max_delta.max(if finite { d } else { 0.0 });
-        overflow |= !finite;
-    }
-    if overflow {
-        let max_abs = values
-            .into_iter()
-            .fold(origin.abs(), |extent, x| extent.max(x.abs()));
-        return (max_abs, true);
-    }
-    (max_delta, false)
-}
-
-/// The power-of-two frame a ring's cross terms are evaluated in.
-#[derive(Clone, Copy)]
-struct RingFrame {
-    ox: f64,
-    oy: f64,
-    sx: f64,
-    sy: f64,
-}
-
-/// Scale/origin for the area-measurement path without column allocation.
-/// Returns `(ox, oy, sx, sy)` with `sx == 0.0` for a fully-collapsed ring
-/// (both axes zero). Per-axis positive power-of-two scales preserve sign of
-/// the shoelace cross product while keeping each edge term normal.
-fn ring_normalize_params(xs: &[f64], ys: &[f64]) -> RingFrame {
-    if xs.is_empty() {
-        return RingFrame {
-            ox: 0.0,
-            oy: 0.0,
-            sx: 0.0,
-            sy: 0.0,
-        };
-    }
-    let ox = xs[0];
-    let oy = ys[0];
-    let (max_dx, overflow_x) = axis_extent_for_scale(xs.iter().copied(), ox);
-    let (max_dy, overflow_y) = axis_extent_for_scale(ys.iter().copied(), oy);
-    let residuals_finite = !overflow_x && !overflow_y;
-    if residuals_finite && max_dx == 0.0 && max_dy == 0.0 {
-        return RingFrame {
-            ox,
-            oy,
-            sx: 0.0,
-            sy: 0.0,
-        };
-    }
-    RingFrame {
-        ox,
-        oy,
-        sx: axis_pow2_scale(max_dx),
-        sy: axis_pow2_scale(max_dy),
-    }
 }
 
 /// The exact area sign of a CLOSED ring stored as columns, whose edges are the
@@ -509,108 +424,6 @@ fn exact_open_point_sign(points: &[Point]) -> AreaSign {
 /// (measured: scalar ties to ~64 verts, SIMD wins 15–25% at 256+). Centralized
 /// in [`crossover`].
 const SHOELACE_SIMD_MIN: usize = crossover::OFFSET_PAIR_MEASURE;
-
-pub(crate) fn shoelace_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> SignedAreaMeasure {
-    // Translation-invariant origin shift: products become O(ring_extent²)
-    // instead of O(coord²), so large absolute coordinates (e.g. UTM) no longer
-    // cancel catastrophic intermediate cross-products. Algebraically identical
-    // on a closed ring (ox/oy terms telescope); sign is preserved.
-    if pairs == 0 {
-        return SignedAreaMeasure::new(0.0);
-    }
-    let ox = xs[0];
-    let oy = ys[0];
-    let value = shoelace_shifted(xs, ys, pairs, ox, oy, 1.0, 1.0);
-    if value.is_finite()
-        && value != 0.0
-        && !shoelace_shifted_needs_exact(xs, ys, pairs, ox, oy, 1.0, 1.0, value)
-    {
-        return SignedAreaMeasure::new(value);
-    }
-    // A finite rounded result is not necessarily a measured result: exact
-    // product tails can hold a representable area, or can show that a nonzero
-    // approximation has lost every reliable bit. This expansion is the
-    // magnitude fallback for this framed shoelace path.
-    if value.is_finite() {
-        if let Some(exact) = exact_half_area_measure_columns(xs, ys, pairs) {
-            return SignedAreaMeasure::new(exact);
-        }
-        return SignedAreaMeasure::new(closed_ring_sum_columns(xs, ys, pairs).round_to_area());
-    }
-    // Extreme-but-finite rescue: scale each axis independently, form residuals
-    // as `x*sx - origin_x*sx` / `y*sy - origin_y*sy` (never subtract then
-    // scale — that overflows on `±1e308`), then divide in two steps. An
-    // isotropic scale makes a valid huge-X/tiny-Y rectangle evaluate as
-    // `0 * inf`; per-axis scaling keeps both residual columns normal.
-    // Ordinary inputs never enter here (finite above).
-    let mut max_abs_x = 0.0_f64;
-    let mut max_abs_y = 0.0_f64;
-    for (&x, &y) in xs[..=pairs].iter().zip(&ys[..=pairs]) {
-        max_abs_x = max_abs_x.max(x.abs());
-        max_abs_y = max_abs_y.max(y.abs());
-    }
-    if !(max_abs_x.is_finite() && max_abs_y.is_finite()) {
-        return SignedAreaMeasure::new(value);
-    }
-    let sx = axis_pow2_scale(max_abs_x);
-    let sy = axis_pow2_scale(max_abs_y);
-    let scaled = shoelace_shifted(xs, ys, pairs, ox, oy, sx, sy);
-    if scaled.is_finite() && !shoelace_shifted_needs_exact(xs, ys, pairs, ox, oy, sx, sy, scaled) {
-        SignedAreaMeasure::new(unscale_area(scaled, sx, sy))
-    } else {
-        exact_half_area_measure_columns(xs, ys, pairs).map_or_else(
-            || SignedAreaMeasure::new(closed_ring_sum_columns(xs, ys, pairs).round_to_area()),
-            SignedAreaMeasure::new,
-        )
-    }
-}
-
-/// Exact-expansion signed half-area for the rare finite-zero measurement
-/// fallback. Its power-of-two frame is undone in one exponent operation, so a
-/// normal final result never passes through a lossy subnormal intermediate.
-fn exact_half_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> Option<f64> {
-    exact_cycle_area_measure_columns(xs, ys, pairs, |index| (index, index + 1))
-}
-
-/// Framed exact expansion for closed rings and open cycles. A product outside
-/// its binary64 residual domain returns `None`; the caller uses the original
-/// coordinate [`ExactSum`] owner instead.
-///
-/// Callers differ only in their final edge (`n - 1 → 0` for an open cycle),
-/// never in the normalization or accumulation that establishes magnitude.
-/// Keeping that distinction as data prevents a fast helper, a topology owner,
-/// and a preflight from gradually adopting incompatible loss rules.
-fn exact_cycle_area_measure_columns(
-    xs: &[f64],
-    ys: &[f64],
-    edge_count: usize,
-    edge_at: impl FnMut(usize) -> (usize, usize),
-) -> Option<f64> {
-    let RingFrame { ox, oy, sx, sy } = ring_normalize_params(xs, ys);
-    if sx == 0.0 {
-        return Some(0.0);
-    }
-    let mut expansion = vec![0.0];
-    let mut edge_at = edge_at;
-    for edge in 0..edge_count {
-        let (start, end) = edge_at(edge);
-        // Keep the product and subtraction tails from the affine frame.  A
-        // rounded `scaled_residual` here would make this supposedly exact
-        // owner disagree with the polygon fallback on thin rotated cycles.
-        let x0 = exact_scaled_residual(xs[start], ox, sx)?;
-        let y0 = exact_scaled_residual(ys[start], oy, sy)?;
-        let x1 = exact_scaled_residual(xs[end], ox, sx)?;
-        let y1 = exact_scaled_residual(ys[end], oy, sy)?;
-        let forward = expansion_product(&x0, &y1)?;
-        let mut reverse = expansion_product(&y0, &x1)?;
-        for term in &mut reverse {
-            *term = -*term;
-        }
-        let cross = expansion_sum(&forward, &reverse);
-        expansion = expansion_sum(&expansion, &cross);
-    }
-    Some(unscale_area(estimate(&expansion) / 2.0, sx, sy))
-}
 
 /// Origin-shifted, optionally per-axis-scaled shoelace half-sum / 2.
 /// Unit scales keep the ordinary path bit-identical. Non-unit scales form
@@ -1400,14 +1213,17 @@ mod tests {
     }
 
     #[test]
-    fn shoelace_measure_preserves_extreme_semantic_values() {
+    fn packed_polygon_measure_preserves_extreme_semantic_values() {
         let mixed_xs = [0.0, f64::from_bits(1), 2.0_f64.powi(-20), 0.0];
         let mixed_ys = [0.0, f64::from_bits(2), 2.0_f64.powi(-20), 0.0];
-        assert_eq!(shoelace_measure_columns(&mixed_xs, &mixed_ys, 3).0, 0.0);
+        assert_eq!(
+            polygon_area_measure_columns(&mixed_xs, &mixed_ys, &[0, 4], 0..1),
+            0.0
+        );
 
         let huge_xs = [0.0, 1e300, 1e300, 0.0, 0.0];
         let huge_ys = [0.0, 0.0, 1e300, 1e300, 0.0];
-        let huge = shoelace_measure_columns(&huge_xs, &huge_ys, 4).0;
+        let huge = polygon_area_measure_columns(&huge_xs, &huge_ys, &[0, 5], 0..1);
         assert!(huge.is_infinite() && huge.is_sign_positive());
     }
 
