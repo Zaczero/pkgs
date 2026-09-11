@@ -510,7 +510,13 @@ fn atan_nonnegative(value: &Enclosure, context: &mut PrecisionContext) -> Result
     if value.lo() >= &half && value.hi() <= &one {
         return atan_half_to_one(value, context);
     }
-    if value.lo() > &one {
+    // Every recursive reduction strictly decreases the interval's
+    // arctangent range.  Splits at half and one are entered only when the
+    // split point is a strict interior point; the reciprocal identity also
+    // owns the exact-one boundary (`[1, b]` becomes `[1/b, 1]`) instead of
+    // reproducing `[1, b]`.  The remaining exact boundaries are handled by
+    // the non-recursive series and half-to-one branches above.
+    if value.lo() >= &one {
         let reciprocal = Enclosure::exact(one.try_clone(context)?, context)?.div(value, context)?;
         let small = atan_nonnegative(&reciprocal, context)?;
         return super::pi_bracket(context)?
@@ -518,8 +524,9 @@ fn atan_nonnegative(value: &Enclosure, context: &mut PrecisionContext) -> Result
             .sub(&small, context);
     }
     if value.hi() > &one {
-        // The reciprocal branch includes the exact one endpoint.  Splitting
-        // there keeps both recursive intervals in a single reduction range.
+        // The lower branch ends at one; the inclusive reciprocal guard above
+        // ensures the upper branch cannot call this split with the same
+        // `[1, b]` interval.
         let lower = Enclosure::new(value.lo().try_clone(context)?, one.try_clone(context)?)
             .ok_or_else(super::numerical_indeterminacy_error)?;
         let upper = Enclosure::new(one.try_clone(context)?, value.hi().try_clone(context)?)
@@ -805,6 +812,28 @@ mod tests {
             .expect("enclosure width")
     }
 
+    fn assert_contains_rational_bounds(
+        value: &Enclosure,
+        lower_numerator: i128,
+        upper_numerator: i128,
+        denominator: i128,
+        context: &mut PrecisionContext,
+    ) {
+        let denominator = Dyadic::from_i128(denominator, context).expect("oracle denominator");
+        let lower = Dyadic::from_i128(lower_numerator, context).expect("oracle lower");
+        let upper = Dyadic::from_i128(upper_numerator, context).expect("oracle upper");
+        let lower_product = value
+            .lo()
+            .mul_scratch(&denominator, context)
+            .expect("lower oracle product");
+        let upper_product = value
+            .hi()
+            .mul_scratch(&denominator, context)
+            .expect("upper oracle product");
+        assert!(lower_product < lower);
+        assert!(upper_product > upper);
+    }
+
     fn input(start: (f64, f64), end: (f64, f64)) -> SphericalInput {
         SphericalInput::from_f64(start, end, 6_378_137.0).expect("spherical input")
     }
@@ -943,6 +972,107 @@ mod tests {
         assert_eq!(azimuths[1], azimuths[2]);
         assert!(distance_widths[0] > distance_widths[1]);
         assert!(distance_widths[1] > distance_widths[2]);
+    }
+
+    #[test]
+    fn equator_forty_five_degree_distance_terminates() {
+        let result = classify((0.0, 0.0), (45.0, 0.0), 128).expect("quarter-turn branch");
+        assert_eq!(result.branch(), SphericalBranch::UniqueMinorArc);
+        assert_unique(result.distance());
+    }
+
+    #[test]
+    fn atan_reduction_terminates_at_zero_half_one_straddle_and_above_one() {
+        const DENOMINATOR: i128 = 1_000_000_000_000_000_000_000;
+        const ATAN_HALF_LOWER: i128 = 463_647_609_000_806_116_214;
+        const ATAN_HALF_UPPER: i128 = 463_647_609_000_806_116_215;
+        const ATAN_ONE_LOWER: i128 = 785_398_163_397_448_309_615;
+        const ATAN_ONE_UPPER: i128 = 785_398_163_397_448_309_616;
+        const ATAN_TWO_LOWER: i128 = 1_107_148_717_794_090_503_017;
+        const ATAN_TWO_UPPER: i128 = 1_107_148_717_794_090_503_018;
+
+        let mut zero_context = context_at(128);
+        let zero = Enclosure::exact(Dyadic::zero(), &mut zero_context).expect("zero interval");
+        let zero_angle = atan_nonnegative(&zero, &mut zero_context).expect("atan zero");
+        assert!(zero_angle.lo().is_zero());
+        assert!(zero_angle.hi().is_zero());
+
+        let mut half_context = context_at(64);
+        let half = Dyadic::one(&mut half_context)
+            .expect("one")
+            .scale_pow2(-1, &mut half_context)
+            .expect("half");
+        let half_interval = Enclosure::exact(half, &mut half_context).expect("half interval");
+        let half_angle = atan_nonnegative(&half_interval, &mut half_context).expect("atan half");
+        assert_contains_rational_bounds(
+            &half_angle,
+            ATAN_HALF_LOWER,
+            ATAN_HALF_UPPER,
+            DENOMINATOR,
+            &mut context_at(256),
+        );
+
+        let mut one_context = context_at(64);
+        let one = Dyadic::one(&mut one_context).expect("one");
+        let one_interval = Enclosure::exact(one, &mut one_context).expect("one interval");
+        let one_angle = atan_nonnegative(&one_interval, &mut one_context).expect("atan one");
+        assert_contains_rational_bounds(
+            &one_angle,
+            ATAN_ONE_LOWER,
+            ATAN_ONE_UPPER,
+            DENOMINATOR,
+            &mut context_at(256),
+        );
+
+        let mut straddling_context = context_at(128);
+        let half = Dyadic::one(&mut straddling_context)
+            .expect("one")
+            .scale_pow2(-1, &mut straddling_context)
+            .expect("half");
+        let two = Dyadic::from_i128(2, &mut straddling_context).expect("two");
+        let straddling = Enclosure::new(half, two).expect("interval straddling one");
+        let straddling_angle =
+            atan_nonnegative(&straddling, &mut straddling_context).expect("atan straddling one");
+        assert!(straddling_angle.lo() <= straddling_angle.hi());
+        assert_contains_rational_bounds(
+            &straddling_angle,
+            ATAN_HALF_LOWER,
+            ATAN_TWO_UPPER,
+            DENOMINATOR,
+            &mut context_at(256),
+        );
+
+        let mut below_one_context = context_at(128);
+        let zero = Dyadic::zero();
+        let one = Dyadic::one(&mut below_one_context).expect("one");
+        let below_one = Enclosure::new(zero, one).expect("interval below one");
+        let below_one_angle =
+            atan_nonnegative(&below_one, &mut below_one_context).expect("atan interval below one");
+        assert!(below_one_angle.lo() <= &Dyadic::zero());
+        let mut below_one_verify = context_at(256);
+        let one_upper = Dyadic::from_i128(ATAN_ONE_UPPER, &mut below_one_verify)
+            .expect("atan one upper oracle");
+        let denominator =
+            Dyadic::from_i128(DENOMINATOR, &mut below_one_verify).expect("atan one denominator");
+        assert!(
+            below_one_angle
+                .hi()
+                .mul_scratch(&denominator, &mut below_one_verify)
+                .expect("below-one upper product")
+                > one_upper
+        );
+
+        let mut above_context = context_at(64);
+        let two = Dyadic::from_i128(2, &mut above_context).expect("two");
+        let above_interval = Enclosure::exact(two, &mut above_context).expect("above-one interval");
+        let above_angle = atan_nonnegative(&above_interval, &mut above_context).expect("atan two");
+        assert_contains_rational_bounds(
+            &above_angle,
+            ATAN_TWO_LOWER,
+            ATAN_TWO_UPPER,
+            DENOMINATOR,
+            &mut context_at(256),
+        );
     }
 
     #[test]
