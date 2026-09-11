@@ -145,8 +145,8 @@ pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetri
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
 use linear::{normalize_line_distance, push_distinct_point};
 pub(crate) use ordinates::{
-    carry_direct_overlay_ordinates, carry_direct_point_ordinates, carry_direct_points_ordinates,
-    carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
+    carry_direct_point_ordinates, carry_direct_points_ordinates, carry_overlay_ordinates,
+    carry_overlay_ordinates_from_graph,
 };
 use ordinates::{carry_each, carry_ordinates};
 pub(crate) use overlay::{
@@ -155,7 +155,7 @@ pub(crate) use overlay::{
 };
 use overlay::{
     binary_areal_overlay, clip_multipoint_columns, clip_polygonal, clipped_line_parts,
-    clipped_linestring, line_parts_to_shape, polygon_parts_to_shape, self_node_segments,
+    clipped_linestring, line_parts_to_shape, polygon_parts_to_shape,
 };
 #[doc(hidden)]
 pub(crate) use packed_line_metrics::PackedLineColumnView;
@@ -267,7 +267,7 @@ pub(crate) use relate::{
     graph_relate_shapes, is_axis_aligned_rectangle, line_scalar_prefers_direct_polygon_relate,
 };
 pub(in crate::geometry) use segment_index::{
-    MonotoneRun, candidate_pairs_between, candidate_pairs_over_staged_runs,
+    MonotoneRun, candidate_pairs_over_staged_runs,
     for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
     for_each_overlapping_bounds_pair, sign_of, single_chain,
 };

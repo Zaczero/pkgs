@@ -15,9 +15,9 @@ use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
     GeometryErrorKind, GeometryKind, HashMap, HashMapExt as _, HashSet, Point, PointBatchTester,
     PointKey, Segment, SegmentIndex, Shape, TopologyDomain, TopologyGraph, XY,
-    carry_direct_overlay_ordinates, carry_direct_points_ordinates, carry_overlay_ordinates,
-    carry_overlay_ordinates_from_graph, clean_union, column_all_finite, ordered_edge,
-    point_on_segment, relate, same_point, segment_midpoint, shell_is_convex,
+    carry_direct_points_ordinates, carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
+    clean_union, column_all_finite, ordered_edge, point_on_segment, relate, same_point,
+    segment_midpoint, shell_is_convex,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -354,22 +354,6 @@ fn overlay_admitted(
     } else {
         carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
     }
-}
-
-/// The tail every graph-free lane shares: the empty-result kind, canonical
-/// ordering, and Z/M carried straight from the input vertices and segments.
-fn finish_direct_overlay(
-    shape: &Shape,
-    inputs: &[&Shape],
-    op: OverlayOp,
-    strict: bool,
-) -> Result<Shape> {
-    let shape = if shape.is_empty() {
-        empty_nary_overlay_shape(inputs, op)
-    } else {
-        shape.normalize()?
-    };
-    carry_direct_overlay_ordinates(shape, inputs, op, strict)
 }
 
 #[derive(Clone, Copy)]

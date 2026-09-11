@@ -37,6 +37,7 @@ use crate::try_reserve_vec;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(in crate::geometry) struct NodeId(pub u32);
 
+#[cfg(test)]
 struct ArealSources {
     segments: Vec<Segment>,
     source_rings: Vec<Option<u32>>,
@@ -120,6 +121,7 @@ impl ArealCells {
     }
 }
 
+#[cfg(test)]
 impl ArealSources {
     fn new(polygons: &[impl AsRef<Polygon>]) -> Result<Self> {
         let mut sources = Self {
@@ -1699,7 +1701,7 @@ impl ExactSourceInventory {
                 Dimension::Surface,
             );
         }
-        for (span_index, span) in partition.spans.iter().enumerate() {
+        for (span_index, _span) in partition.spans.iter().enumerate() {
             let left = self.span_location(
                 0,
                 span_index,
@@ -2775,10 +2777,6 @@ fn walk_exact_chain(
 }
 
 impl<'a> ExactPartition<'a> {
-    pub(in crate::geometry) const fn unique(&self) -> &'a [Segment] {
-        self.unique
-    }
-
     pub(in crate::geometry) fn node_xy(&self, node: NodeId) -> Result<XY> {
         Ok(match self.recipe(node) {
             NodeRecipe::Stored(key) => {

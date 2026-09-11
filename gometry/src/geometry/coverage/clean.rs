@@ -12,10 +12,12 @@ use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::self_node_segments;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, OverlayOp, PointKey, Polygon,
-    Ring, Segment, SegmentIndex, Shape, XY, carry_overlay_ordinates, face_interior_point,
-    line_segments, point_distance, polygon_parts_to_shape, ring_area_measure,
+    Segment, SegmentIndex, Shape, XY, carry_overlay_ordinates, face_interior_point, line_segments,
+    point_distance, polygon_parts_to_shape, ring_area_measure,
     ring_contains_interior, undirected_segment_edge_key,
 };
+#[cfg(test)]
+use crate::geometry::Ring;
 
 // --- Cleaning ----------------------------------------------------------------
 
@@ -360,6 +362,7 @@ fn boxes_at_point(
 /// arrangement into disjoint regions: each face becomes a polygon whose
 /// holes are its DIRECT child faces. Components never partially overlap
 /// (all crossings were noded), so containment is strict nesting.
+#[cfg(test)]
 fn arrangement_regions(faces: &[Vec<XY>]) -> Result<Vec<Polygon>> {
     // Sort by |area| descending so a child's direct parent is the smallest
     // containing face seen after it.
@@ -610,6 +613,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
 /// over: after edge cancellation, only depth-0 regions (and their holes) are
 /// real — a region nested inside a HOLE is depth 2 and stays separate, which
 /// `arrangement_regions` already encodes as its own polygon.
+#[cfg(test)]
 fn top_level_regions(parts: Vec<Polygon>) -> Vec<Polygon> {
     // `arrangement_regions` returns every face as a polygon with its direct
     // children as holes; a face that IS someone's hole is also returned
@@ -645,6 +649,7 @@ fn top_level_regions(parts: Vec<Polygon>) -> Vec<Polygon> {
 
 /// Axis-aligned envelope of a ring's XY coordinates (`None` if empty) — the
 /// bbox pre-filter input shared by the coverage nesting scans.
+#[cfg(test)]
 fn xy_bounds(points: &[XY]) -> Option<Bounds> {
     let (first, rest) = points.split_first()?;
     let mut bounds = Bounds::from_xy(*first);

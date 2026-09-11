@@ -18,6 +18,7 @@ pub(crate) struct LoopCut {
 /// buffers touched: noding events, crossing groups, and every structural
 /// bail. Returns the cuts ordered per ordinal exactly like
 /// `split_segment_at`, plus the group count.
+#[cfg(test)]
 pub(crate) fn single_loop_cuts(
     segments: &[Segment],
 ) -> crate::error::Result<Option<(Vec<LoopCut>, u32)>> {
@@ -160,6 +161,7 @@ pub(crate) fn positional_loop_cuts(
 /// first-encounter order — exactly the general dedup's assignment over the
 /// atomic chain — filling `points` (pooled) and returning the cut flag per
 /// id plus the atomic pieces as id pairs.
+#[cfg(test)]
 pub(crate) fn single_loop_pieces(
     segments: &[Segment],
     cuts: &[LoopCut],

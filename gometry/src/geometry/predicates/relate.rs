@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 use crate::HeapSize;
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment, Shape, XY,
-    candidate_pairs_between, candidate_pairs_over_staged_runs, same_point, sign_of,
+    candidate_pairs_over_staged_runs, same_point, sign_of,
 };
 /// Flat XY linework staged for the candidate kernel: one segment column,
 /// a parallel chain-id column (the kernel's run-break identities), and
@@ -159,38 +159,6 @@ impl LineworkChains {
         candidate_pairs_over_staged_runs(&self.segments, &self.runs, || self.bounds, &mut visit)
     }
 
-    /// Every candidate pair between this staging and `other`, as
-    /// `visit(self_ordinal, other_ordinal)`, from one sweep over both run
-    /// sets. Neither staging is rebuilt.
-    pub(crate) fn for_each_pair_with(
-        &self,
-        other: &Self,
-        mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> crate::error::Result<ControlFlow<()>> {
-        let (a, b) = (self.segments.len(), other.segments.len());
-        if a.min(b) == 0 {
-            return Ok(ControlFlow::Continue(()));
-        }
-        if a * b < 32 {
-            for left in 0..a {
-                for right in 0..b {
-                    if let ControlFlow::Break(()) = visit(left, right) {
-                        return Ok(ControlFlow::Break(()));
-                    }
-                }
-            }
-            return Ok(ControlFlow::Continue(()));
-        }
-        let mut bounds = self.bounds;
-        bounds.include_bounds(other.bounds);
-        candidate_pairs_between(
-            (&self.segments, &self.runs),
-            (&other.segments, &other.runs),
-            bounds,
-            &mut visit,
-        )
-    }
-
     /// Stage every linework chain of `shape` (lines, ring linework of
     /// polygons, recursively through collections) with a distinct line id
     /// per part, so the adjacency rules read across exactly like
@@ -225,31 +193,6 @@ impl LineworkChains {
             Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => {},
         }
         Ok(())
-    }
-
-    pub(crate) const fn line_count(&self) -> usize {
-        self.spans.len()
-    }
-
-    /// The segment ordinals of one staged line, or `None` when nothing of it
-    /// survived staging.
-    pub(crate) fn line_span(&self, line: usize) -> Option<std::ops::Range<usize>> {
-        let span = &self.spans[line];
-        (span.count > 0).then(|| span.first as usize..(span.first + span.count) as usize)
-    }
-
-    /// The two ends of an OPEN staged line — its OGC boundary candidates —
-    /// or `None` for a closed one, whose ends cancel. Read off the staged
-    /// segments, so a duplicated first or last vertex elided at staging still
-    /// yields the source coordinate.
-    pub(crate) fn line_ends(&self, line: usize) -> Option<(XY, XY)> {
-        let span = &self.spans[line];
-        if span.closed || span.count == 0 {
-            return None;
-        }
-        let first = span.first as usize;
-        let last = first + span.count as usize - 1;
-        Some((self.segments[first].start, self.segments[last].end))
     }
 
     /// The semantic per-segment view, composed on demand.

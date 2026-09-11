@@ -353,37 +353,6 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     })
 }
 
-/// Outside-winding seeds for every arrangement component: per operand,
-/// the winding of all loops OUTSIDE the probe's component, by ONE
-/// rightward-ray R-tree query over the input segment soup. The crossing
-/// rule is additive per segment over closed loops, so the soup answers
-/// every loop at once and the box-pruned per-loop scans disappear — the
-/// dense dissolve cascade was raycasting its merged blob's full shell
-/// for THOUSANDS of component probes (the profiled 59% of an 8k-star
-/// union). Own-component segments are skipped: the probe is one of the
-/// component's own vertices, where its own winding is undefined (and
-/// other components' loops cannot pass through it, so the seed is
-/// constant across the component).
-pub(in crate::geometry) fn outside_winding_seeds(
-    segments: &[Segment],
-    segment_operand: &[u32],
-    segment_loop: &[u32],
-    loop_component: &[u32],
-    probes: &[XY],
-) -> Result<Vec<[i32; 2]>> {
-    let mut ranges = Vec::new();
-    let mut boxes = Vec::new();
-    outside_winding_seeds_with_scratch(
-        segments,
-        segment_operand,
-        segment_loop,
-        loop_component,
-        probes,
-        &mut ranges,
-        &mut boxes,
-    )
-}
-
 fn outside_winding_seeds_with_scratch(
     segments: &[Segment],
     segment_operand: &[u32],

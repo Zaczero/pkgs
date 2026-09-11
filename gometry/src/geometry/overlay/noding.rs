@@ -55,6 +55,7 @@ impl SegmentProvenance {
 
     /// True when every unique edge has exactly one forward owner (identity
     /// multiplicity — expand is a no-op).
+    #[cfg(test)]
     fn all_single_forward(&self) -> bool {
         self.entries.len() == self.len() && self.entries.iter().all(|&(_, reversed)| !reversed)
     }
@@ -139,6 +140,7 @@ pub(crate) fn dedup_undirected_segments_sourced(
 /// consumers ([`Arrangement::new`], even-odd repair) keep directed multiplicity:
 /// same-direction stacks accumulate, opposite directions on a shared edge
 /// cancel. Noding runs on the unique undirected set (O(U²)); expansion is O(E).
+#[cfg(test)]
 fn expand_directed_atoms(
     atomic: Vec<Segment>,
     unique_sources: &[u32],
@@ -194,6 +196,7 @@ fn expand_provenance_to_atoms(
 /// callers that re-enter below a floor). Unique input stays linear: dedup is
 /// one HashMap + two flat vecs, then noding on U = E. Duplicate-rich input
 /// nodes O(U²) and re-expands directed multiplicity for unit-weight consumers.
+#[cfg(test)]
 pub(crate) fn self_node_segments(segments: &[Segment]) -> Result<Vec<Segment>> {
     if segments.is_empty() {
         return Ok(Vec::new());
@@ -213,6 +216,7 @@ pub(crate) fn self_node_segments(segments: &[Segment]) -> Result<Vec<Segment>> {
 }
 
 /// Node a pre-deduped segment set (collinear-overlap pre-pass + full pass).
+#[cfg(test)]
 fn self_node_segments_unique(segments: &[Segment]) -> Result<Vec<Segment>> {
     // Collinear OVERLAPS need a pre-pass: splitting them at each other's
     // endpoints first (exact points) makes coincident strokes
@@ -274,6 +278,7 @@ fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segmen
 }
 
 /// Pass 1 of [`self_node_segments`]: collinear-overlap endpoint cuts only.
+#[cfg(test)]
 pub(crate) fn collinear_overlap_pass(segments: &[Segment]) -> Result<Vec<Segment>> {
     Ok(split_by_events(
         segments,
@@ -343,6 +348,7 @@ fn push_collinear_overlap_cuts(
 /// The main pass of [`self_node_segments`]: full pairwise interior cuts,
 /// also reporting whether any collinear OVERLAP pair was seen (the trigger
 /// for the exactness pre-pass).
+#[cfg(test)]
 pub(crate) fn full_noding_pass(segments: &[Segment]) -> Result<(Vec<Segment>, bool)> {
     let NodingScan {
         events,
@@ -359,15 +365,6 @@ pub(in crate::geometry) struct NodingScan {
     /// A collinear pair shared more than a point — an interior overlap, or two
     /// identical segments.
     pub(in crate::geometry) overlaps_found: bool,
-    /// Two segments that are not consecutive in the pool met at a shared
-    /// endpoint: a vertex a dissolve would treat as a junction. Consecutive
-    /// segments share their chaining vertex by construction and are not
-    /// counted, whether or not they belong to one chain.
-    pub(in crate::geometry) junctions_found: bool,
-    /// Every cut that is an endpoint of another segment landing on the cut
-    /// segment's interior, as `(cut ordinal, point, landing ordinal)` — the
-    /// events among `events` that a vertex reaches.
-    pub(in crate::geometry) touches: Vec<(u32, XY, u32)>,
 }
 
 /// The cut events of [`full_noding_pass`], plus what else the sweep saw.
@@ -377,8 +374,6 @@ pub(in crate::geometry) struct NodingScan {
 pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<NodingScan> {
     let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
     let mut overlaps_found = false;
-    let mut junctions_found = false;
-    let mut touches: Vec<(u32, XY, u32)> = Vec::new();
     // L1-aware sweep: large pools take the monotone-run path, avoiding the flat
     // SweepEntry sort that exceeds L1 at ~1 K segments (the arrangement noding
     // behind union/difference fallback, symmetric_difference, intersection,
@@ -405,7 +400,6 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
         // A shared endpoint between segments that are not consecutive is a
         // junction whatever else the pair does — collinear pairs meeting end
         // to end included.
-        junctions_found |= shares_endpoint && right != left + 1;
         let collinear = orientations.right_start == Orientation::Collinear
             && orientations.right_end == Orientation::Collinear;
         if collinear {
@@ -422,13 +416,9 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
             return std::ops::ControlFlow::Continue(());
         }
         if let Some(point) = segment_cross_point_with_orientations(a, b, orientations) {
-            for (target, segment, other) in [(left, a, right), (right, b, left)] {
+            for (target, segment) in [(left, a), (right, b)] {
                 if !same_point(point, segment.start) && !same_point(point, segment.end) {
                     events.push((target as u32, point));
-                    let landing = segments[other];
-                    if same_point(point, landing.start) || same_point(point, landing.end) {
-                        touches.push((target as u32, point, other as u32));
-                    }
                 }
             }
         }
@@ -437,14 +427,13 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
     Ok(NodingScan {
         events,
         overlaps_found,
-        junctions_found,
-        touches,
     })
 }
 
 /// Split every segment at its collected `(ordinal, cut)` events — the
 /// shared tail of both noding passes (the splitter sorts and dedups cuts
 /// per segment).
+#[cfg(test)]
 pub(crate) fn split_by_events(segments: &[Segment], mut events: Vec<(u32, XY)>) -> Vec<Segment> {
     events.sort_unstable_by_key(|&(ordinal, _)| ordinal);
     let mut atomic = Vec::with_capacity(segments.len() + events.len());

@@ -2,21 +2,27 @@ use crate::boundary::geographic::invalid_lonlat_error;
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
-use crate::geometry::convex_contact::ConvexRelation;
+#[cfg(test)]
+use crate::geometry::convex_contact::{self, ConvexRelation};
 #[cfg(test)]
 use crate::geometry::predicates;
 use crate::geometry::relate::{
-    De9im, Loc, line_has_nonzero_segment, polygon_has_nondegenerate_area,
+    De9im, Loc, polygon_has_nondegenerate_area,
 };
+#[cfg(test)]
+use crate::geometry::relate::line_has_nonzero_segment;
 use crate::geometry::topology::{
     AreaSupport, TopologyDomain, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
     TopologySpace,
 };
 use crate::geometry::{
-    Bounds, Contact, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, PointKey, Polygon,
-    PreparedPlan, Ring, Segment, SegmentProjection, Shape, XY, convex_contact, line_segments,
-    overlay, same_point, segment_contact_exact, segment_midpoint, segment_projection,
-    segments_intersect, topology,
+    Bounds, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, PointKey, Polygon, PreparedPlan,
+    Ring, Segment, Shape, XY, overlay, same_point, segments_intersect, topology,
+};
+#[cfg(test)]
+use crate::geometry::{
+    Contact, SegmentProjection, line_segments, segment_contact_exact, segment_midpoint,
+    segment_projection,
 };
 
 #[derive(Clone, Copy)]
@@ -318,6 +324,7 @@ fn try_areal_relate_in(left: &Shape, right: &Shape, space: TopologySpace) -> Opt
         .flatten()
 }
 
+#[cfg(test)]
 fn try_cartesian_areal_relate(left: &Shape, right: &Shape) -> Result<Option<De9im>> {
     Ok(match try_convex_relate(left, right) {
         Some(matrix) => Some(matrix),
@@ -336,6 +343,7 @@ pub(crate) const fn line_scalar_prefers_direct_polygon_relate(scalar: &Shape, ro
     matches!((scalar, row), (Shape::LineString(_), Shape::Polygon(_)))
 }
 
+#[cfg(test)]
 pub(super) fn try_cartesian_polygon_line_relate(
     left: &PreparedPlan,
     right: &PreparedPlan,
@@ -343,6 +351,7 @@ pub(super) fn try_cartesian_polygon_line_relate(
     try_cartesian_polygon_line_relate_with_graphs(left, right, None, None)
 }
 
+#[cfg(test)]
 fn try_cartesian_polygon_line_relate_with_graphs(
     left: &PreparedPlan,
     right: &PreparedPlan,
@@ -374,6 +383,7 @@ fn try_cartesian_polygon_line_relate_with_graphs(
     })
 }
 
+#[cfg(test)]
 fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> Result<De9im> {
     let mut matrix = De9im::empty_disjoint();
     // A bounded nondegenerate polygon leaves a two-dimensional complement on
@@ -559,6 +569,7 @@ fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> Result<De9im> 
     Ok(matrix)
 }
 
+#[cfg(test)]
 fn toggle_line_boundary(
     boundaries: &mut HashMap<TopologyKey, XY>,
     graph: &TopologyGraph,
@@ -570,6 +581,7 @@ fn toggle_line_boundary(
     }
 }
 
+#[cfg(test)]
 fn try_convex_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     let (Shape::Polygon(left), Shape::Polygon(right)) = (left, right) else {
         return None;

@@ -6,17 +6,22 @@
 //! overlap, or any gate failure returns `None` so the caller falls back to the
 //! general noding path.
 
-use crate::geometry::predicates::{
-    RingClass, ring_classify_point, shell_is_convex, shell_is_strictly_convex,
-};
+#[cfg(test)]
+use crate::geometry::predicates::{RingClass, ring_classify_point, shell_is_strictly_convex};
+use crate::geometry::predicates::shell_is_convex;
 use crate::geometry::segments::{Contact, segment_contact_exact, segment_envelopes_disjoint};
-use crate::geometry::topology::{Operand, OperandPool, OrientedRing, build_operand_pool};
-use crate::geometry::{Bounds, Polygon, Segment, XY, wrap_index};
+use crate::geometry::topology::{Operand, OperandPool, OrientedRing};
+#[cfg(test)]
+use crate::geometry::topology::build_operand_pool;
+use crate::geometry::{Bounds, Segment, XY, wrap_index};
+#[cfg(test)]
+use crate::geometry::Polygon;
 
 /// Complete relation classes that can be derived for two strict convex
 /// shells without constructing an arrangement. Any boundary touch, collinear
 /// overlap, or uncertain admission returns `None` instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub(super) enum ConvexRelation {
     Disjoint,
     ProperCrossing,
@@ -27,6 +32,7 @@ pub(super) enum ConvexRelation {
 /// Classify two eligible convex shells using exact boundary contacts and
 /// point membership. The existing convex contact walk owns segment pairing;
 /// this function only turns its clean result into a relation class.
+#[cfg(test)]
 pub(super) fn try_classify(left: &Polygon, right: &Polygon) -> Option<ConvexRelation> {
     if !left.holes.is_empty()
         || !right.holes.is_empty()

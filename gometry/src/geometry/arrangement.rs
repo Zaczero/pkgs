@@ -20,10 +20,9 @@ mod walk;
 mod winding;
 
 pub(crate) use indexed::{IndexedTopology, IndexedTopologyScratch};
-pub(crate) use loop_ops::{
-    order_single_loop_rows, positional_loop_cuts, positional_loop_pieces, single_loop_cuts,
-    single_loop_pieces,
-};
+pub(crate) use loop_ops::{order_single_loop_rows, positional_loop_cuts, positional_loop_pieces};
+#[cfg(test)]
+pub(crate) use loop_ops::{single_loop_cuts, single_loop_pieces};
 pub(crate) use walk::{
     build_csr, compare_departures, dedup_vertices_and_edges, sort_rows_counterclockwise,
     split_ring_at_pinches,

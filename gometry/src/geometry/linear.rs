@@ -332,10 +332,12 @@ impl Shape {
 
     /// Sub-line between measures `m0` and `m1` along this geometry's M
     /// ordinate.
+    #[cfg(test)]
     pub(crate) fn line_substring_m(&self, range: MeasureRange) -> Result<Self> {
         self.line_substring_m_with(range, &PlanarMetric)
     }
 
+    #[cfg(test)]
     pub(crate) fn line_substring_m_with<M: SegmentMetric>(
         &self,
         range: MeasureRange,

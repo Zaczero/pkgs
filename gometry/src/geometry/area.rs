@@ -637,6 +637,7 @@ fn unsigned_area(sum: &ExactSum) -> AreaMeasure {
     AreaMeasure(sum.round_to_area().abs())
 }
 
+#[cfg(test)]
 pub(crate) fn ring_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaMeasure {
     unsigned_area(&closed_ring_sum_columns(xs, ys, pairs))
 }

@@ -51,6 +51,7 @@ impl<T> SharedSlice<T> {
         self.as_slice().len()
     }
 
+    #[cfg(test)]
     pub(crate) fn capacity(&self) -> usize {
         self.owner.as_deref().map_or(0, Vec::capacity)
     }
@@ -63,6 +64,7 @@ impl<T> SharedSlice<T> {
         clippy::rc_buffer,
         reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
     )]
+    #[cfg(test)]
     pub(crate) fn owner(&self) -> Option<Arc<Vec<T>>> {
         self.owner.clone()
     }

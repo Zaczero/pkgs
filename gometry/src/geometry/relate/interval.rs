@@ -13,6 +13,7 @@
 //! Soundness rests on monotonicity: `lo` only rises, `hi` only falls, and
 //! `lo <= hi` throughout, so a literal's verdict never flips once given.
 
+#[cfg(test)]
 use super::De9im;
 use super::de9im::Loc;
 use crate::geometry::{CompiledPattern, Dimension};
@@ -26,6 +27,7 @@ enum Cell {
 }
 
 impl Cell {
+    #[cfg(test)]
     const fn ascii(self) -> u8 {
         match self {
             Self::Empty => b'F',
@@ -116,6 +118,7 @@ impl De9imInterval {
 
     /// Rows and columns swapped, on both bounds — the interval of the pair
     /// in the other order.
+    #[cfg(test)]
     pub(crate) const fn transpose(&self) -> Self {
         const fn swap(cells: [Cell; 9]) -> [Cell; 9] {
             let m = cells;
@@ -127,11 +130,13 @@ impl De9imInterval {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn is_decided(&self) -> bool {
         self.lo == self.hi
     }
 
     /// The matrix, once every cell is decided.
+    #[cfg(test)]
     pub(crate) fn matrix(&self) -> Option<De9im> {
         self.is_decided().then(|| De9im(self.lo.map(Cell::ascii)))
     }
@@ -185,6 +190,7 @@ impl De9imInterval {
     }
 
     /// A disjunction of patterns.
+    #[cfg(test)]
     pub(crate) fn any_pattern(&self, patterns: &[CompiledPattern]) -> Option<bool> {
         let mut open = false;
         for &pattern in patterns {
@@ -202,6 +208,7 @@ impl De9imInterval {
     clippy::panic,
     reason = "named DE-9IM patterns are string literals; a misspelling is a programming error"
 )]
+#[cfg(test)]
 const fn named_pattern(pattern: &str) -> CompiledPattern {
     match CompiledPattern::new(pattern) {
         Some(compiled) => compiled,
@@ -214,6 +221,7 @@ const fn named_pattern(pattern: &str) -> CompiledPattern {
 /// already knows. These are the OGC definitions `De9im`'s `is_*` methods
 /// implement on a decided matrix, spelled as patterns so the interval
 /// evaluator can decide them early.
+#[cfg(test)]
 pub(crate) fn predicate_verdict(
     interval: &De9imInterval,
     predicate: crate::predicates::Predicate,

@@ -33,6 +33,7 @@ impl CompiledPattern {
 
     /// The pattern that asks of the transposed pair what `self` asks of this
     /// one: rows and columns swapped.
+    #[cfg(test)]
     pub(crate) const fn transpose(self) -> Self {
         let p = self.cells;
         Self {

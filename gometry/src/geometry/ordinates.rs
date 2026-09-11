@@ -357,23 +357,6 @@ pub(crate) fn carry_direct_points_ordinates(
     })
 }
 
-/// Carry ordinates for an overlay assembled without a topology graph: the
-/// sources are the inputs' own vertices and segments, so a crossing or a
-/// split vertex resolves by interpolation along the segment it lies on.
-pub(crate) fn carry_direct_overlay_ordinates(
-    output: Shape,
-    inputs: &[&Shape],
-    operation: OverlayOp,
-    strict: bool,
-) -> Result<Shape> {
-    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
-        return Ok(output);
-    }
-    let source = OrdinateSource::build_direct(inputs);
-    let declared_axes = overlay::overlay_declared_axes(inputs, operation);
-    carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
-}
-
 fn resolve_copied_point_ordinates(
     point: Point,
     inputs: &[&Shape],

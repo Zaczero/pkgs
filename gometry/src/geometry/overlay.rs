@@ -142,8 +142,7 @@ mod shape;
 
 pub(in crate::geometry) use areal::{binary_areal_overlay, build_areal_arrangement};
 pub(crate) use assembly::{
-    build_certified_overlay_shape, build_overlay_shape, build_overlay_shape_from_chains,
-    dedup_points, merge_chain_edges, merge_chains,
+    build_certified_overlay_shape, build_overlay_shape, dedup_points, merge_chains,
 };
 pub(super) use clip::polygon_parts_to_shape;
 pub(crate) use clip::{
@@ -160,7 +159,9 @@ pub(crate) use exact_partition::{
 pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
 pub(in crate::geometry) use nary::{overlay_all_geographic_from, overlay_view_error};
 pub(in crate::geometry) use noding::{NodingScan, full_noding_events};
-pub(crate) use noding::{self_node_segments, self_node_segments_sourced};
+#[cfg(test)]
+pub(crate) use noding::self_node_segments;
+pub(crate) use noding::self_node_segments_sourced;
 pub(crate) use rect::rect_polygon;
 #[cfg(test)]
 mod tests;

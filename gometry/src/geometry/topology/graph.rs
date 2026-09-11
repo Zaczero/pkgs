@@ -329,6 +329,7 @@ impl TopologyGraph {
     /// The index only supplies envelope candidates; callers still own the
     /// exact segment-contact test. The callback receives the stable graph edge
     /// ordinal so a caller can retain per-edge contact coverage.
+    #[cfg(test)]
     pub(crate) fn for_each_area_boundary_candidate(
         &self,
         segment: Segment,

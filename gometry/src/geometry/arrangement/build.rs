@@ -1,11 +1,13 @@
 use super::walk::arrangement_faces;
 use crate::geometry::arrangement::{
-    Arrangement, ArrangementSpares, Face, TypedSpares, WindingWeight, arrangement_spares,
+    Arrangement, ArrangementSpares, TypedSpares, WindingWeight, arrangement_spares,
     build_csr, dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts,
-    positional_loop_pieces, region_spares, single_loop_cuts, single_loop_pieces,
-    sort_rows_counterclockwise, split_ring_at_pinches, typed_spares,
+    positional_loop_pieces, region_spares, sort_rows_counterclockwise, split_ring_at_pinches,
+    typed_spares,
 };
 use crate::geometry::{HashMap, PointKey, Segment, XY, arrangement, wrap_index};
+#[cfg(test)]
+use crate::geometry::arrangement::Face;
 
 impl Arrangement<i32> {
     /// Build from noded directed segments with unit weights. Coincident
@@ -14,6 +16,7 @@ impl Arrangement<i32> {
     /// collected — region consumers walk boundaries through
     /// [`Arrangement::region_rings`]; use [`Arrangement::new_with_rings`]
     /// to materialize every face's ring.
+    #[cfg(test)]
     pub(crate) fn new(segments: &[Segment]) -> Self {
         Self::weighted(segments, |_| 1)
     }
@@ -84,6 +87,7 @@ impl Arrangement<i32> {
     /// The vertex-key map is left EMPTY — `component_of_point` must not be
     /// called on a fast-path arrangement (single-loop consumers seed their
     /// one component with `[0]`, never by probe).
+    #[cfg(test)]
     pub(crate) fn from_single_loop(segments: &[Segment]) -> crate::error::Result<Option<Self>> {
         let n = segments.len();
         let Some((cuts, group_count)) = single_loop_cuts(segments)? else {
@@ -163,6 +167,9 @@ impl Arrangement<i32> {
         Ok(Some(Self::finish_topology::<false>(ids, spares, typed)))
     }
 }
+
+#[cfg(test)]
+use crate::geometry::arrangement::{single_loop_cuts, single_loop_pieces};
 
 impl<W: WindingWeight> Arrangement<W> {
     /// Positional MULTI-LOOP constructor — [`Arrangement::from_single_loop`]'s
@@ -352,6 +359,7 @@ impl<W: WindingWeight> Arrangement<W> {
 
     /// Mutable face access — lets consumers `take` the rings they keep
     /// instead of cloning them out.
+    #[cfg(test)]
     pub(crate) fn faces_mut(&mut self) -> &mut [Face] {
         &mut self.faces
     }
@@ -426,12 +434,14 @@ impl<W: WindingWeight> Arrangement<W> {
     }
 
     /// One arbitrary vertex per component — the seed-probe locations.
+    #[cfg(test)]
     pub(crate) fn component_probes(&self) -> Vec<XY> {
         let mut points = Vec::new();
         self.component_probes_into(&mut points);
         points
     }
 
+    #[cfg(test)]
     pub(crate) fn component_probes_into(&self, points: &mut Vec<XY>) {
         let mut probes = vec![None; self.component_count as usize];
         self.component_probes_from_slots(points, &mut probes);

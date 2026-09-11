@@ -3,7 +3,7 @@ use std::simd::num::SimdFloat as _;
 
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    CoordSeq, Coordinates, HashMap, HashMapExt as _, Ordering, Point, PointKey, PointSetIndex,
+    CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex,
     Polygon, REDUCE_LANES, ReduceSimd, SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape,
     VertexProvenance, XY, point_distance, point_distance_squared, point_in_ccw_triangle,
     point_segment_distance, ring_winding, same_point, segment_projection, simd_mask_any,
@@ -13,6 +13,7 @@ use crate::geometry::{
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles): the
 /// closed remainder is the linework whose even-odd parity is well-defined.
+#[cfg(test)]
 pub(crate) fn prune_dangles(segments: &mut Vec<Segment>) {
     if segments.is_empty() {
         return;
