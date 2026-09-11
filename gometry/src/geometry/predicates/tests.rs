@@ -422,4 +422,27 @@ mod convex_tests {
             "POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"
         );
     }
+
+    #[test]
+    fn repair_selection_keeps_linework_parity_distinct_from_structure() {
+        let overlap = crate::io::parse_wkt(
+            "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((2 2,6 2,6 6,2 6,2 2)))",
+        )
+        .unwrap();
+        let linework = overlap.repair(RepairMethod::Linework, false).unwrap();
+        let structure = overlap.repair(RepairMethod::Structure, false).unwrap();
+        assert_eq!(linework.geometry_type(), "MultiPolygon");
+        assert_eq!(linework.area(), 24.0);
+        assert_eq!(structure.geometry_type(), "Polygon");
+        assert_eq!(structure.area(), 28.0);
+
+        let nested = crate::io::parse_wkt(
+            "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2),(4 4,6 4,6 6,4 6,4 4))",
+        )
+        .unwrap();
+        assert_eq!(
+            nested.repair(RepairMethod::Linework, false).unwrap().area(),
+            68.0
+        );
+    }
 }

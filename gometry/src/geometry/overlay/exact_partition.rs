@@ -1244,9 +1244,11 @@ impl ExactSourceInventory {
 
     pub(in crate::geometry) fn linework_polygons(
         &self,
-        partition: &ExactPartition<'_>,
+        partition: &mut ExactPartition<'_>,
         build_area: bool,
     ) -> Result<Vec<Polygon>> {
+        partition.protect_stored = true;
+        partition.protect_all = true;
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         let mut cycles: Vec<Vec<Vec<NodeId>>> = Vec::new();
@@ -1292,13 +1294,39 @@ impl ExactSourceInventory {
                 if other == face {
                     continue;
                 }
-                if let Some(cycle) = cycles[other].first()
-                    && cycle_contains_node(partition, cycle, sample)?
-                {
+                let mut contained = false;
+                for cycle in &cycles[other] {
+                    let inside = cycle_contains_node(partition, cycle, sample)?;
+                    if inside {
+                        contained = true;
+                        break;
+                    }
+                }
+                if contained {
                     depth += 1;
                 }
             }
             selected[face] = !build_area || depth % 2 == 0;
+        }
+        if !build_area {
+            let mut polygons = Vec::new();
+            try_reserve_vec(&mut polygons, global.count as usize)?;
+            for face in 1..global.count as usize {
+                if samples[face].is_none() {
+                    continue;
+                }
+                let mut faces = vec![false; global.count as usize];
+                faces[face] = true;
+                let cells = ArealCells {
+                    faces,
+                    spans: vec![false; partition.spans.len()],
+                    nodes: vec![false; partition.recipes.len()],
+                };
+                let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
+                let (_, _, mut parts) = plan.emit_xy_parts(partition, &topology)?;
+                polygons.append(&mut parts);
+            }
+            return Ok(polygons);
         }
         let cells = ArealCells {
             faces: selected,
@@ -1781,17 +1809,18 @@ impl ExactSourceInventory {
     }
 
     fn operand_occupied(&self, winding: &[i64], operand: usize, odd: bool) -> bool {
+        if odd {
+            let mut occupied = false;
+            for rings in &self.polygon_rings[operand] {
+                for ring in rings.clone() {
+                    occupied ^= winding[ring as usize] % 2 != 0;
+                }
+            }
+            return occupied;
+        }
         self.polygon_rings[operand].iter().any(|rings| {
             let mut rings = rings.clone();
-            let filled = |ring| {
-                if odd {
-                    winding[ring] % 2 != 0
-                } else if self.invalid_areas[operand] {
-                    winding[ring] < 0
-                } else {
-                    winding[ring] != 0
-                }
-            };
+            let filled = |ring| winding[ring] != 0;
             rings.next().is_some_and(filled) && !rings.any(filled)
         })
     }
@@ -2256,10 +2285,20 @@ fn cycle_contains_node(
         let dy = by.try_product(&aw)?.try_subtract(ay.try_product(&bw)?)?;
         let qx_rel = qx.try_product(&aw)?.try_subtract(ax.try_product(&qw)?)?;
         let qy_rel = qy.try_product(&aw)?.try_subtract(ay.try_product(&qw)?)?;
-        let orientation = dx
+        let mut orientation = dx
             .try_product(&qy_rel)?
             .try_subtract(dy.try_product(&qx_rel)?)?
             .sign();
+        if matches!(
+            (bw.sign(), qw.sign()),
+            (ExactSign::Negative, ExactSign::Positive) | (ExactSign::Positive, ExactSign::Negative)
+        ) {
+            orientation = match orientation {
+                ExactSign::Negative => ExactSign::Positive,
+                ExactSign::Zero => ExactSign::Zero,
+                ExactSign::Positive => ExactSign::Negative,
+            };
+        }
         if orientation == ExactSign::Zero
             && try_compare_ratios(&qx, &qw, &ax, &aw)? != Ordering::Less
             && try_compare_ratios(&qx, &qw, &bx, &bw)? != Ordering::Greater
@@ -2268,12 +2307,14 @@ fn cycle_contains_node(
         {
             return Ok(false);
         }
-        if y_a == Ordering::Equal || y_b == Ordering::Equal || y_a == y_b {
+        let a_is_below = y_a != Ordering::Greater;
+        let b_is_below = y_b != Ordering::Greater;
+        if a_is_below == b_is_below {
             continue;
         }
-        let crosses_right = (y_a == Ordering::Less && orientation == ExactSign::Negative)
-            || (y_b == Ordering::Less && orientation == ExactSign::Positive);
-        if crosses_right {
+        let crosses_left = (a_is_below && orientation == ExactSign::Negative)
+            || (b_is_below && orientation == ExactSign::Positive);
+        if crosses_left {
             inside = !inside;
         }
     }
@@ -4373,6 +4414,41 @@ mod tests {
 
     fn run(segments: &[Segment]) -> Case {
         Case::from_segments(segments)
+    }
+
+    #[test]
+    fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
+        let crossing = [
+            seg(0.0, 0.0, 2.0, 2.0),
+            seg(0.0, 2.0, 2.0, 0.0),
+            seg(0.0, 0.0, 2.0, 0.0),
+            seg(2.0, 0.0, 2.0, 2.0),
+            seg(2.0, 2.0, 0.0, 2.0),
+            seg(0.0, 2.0, 0.0, 0.0),
+        ];
+        let inventory = ExactSourceInventory::from_segments(&crossing).unwrap();
+        let mut budget = ExpansionBudget::new("polygonize", "partition");
+        let mut partition = inventory.partition(&mut budget).unwrap();
+        let faces = inventory.linework_polygons(&mut partition, false).unwrap();
+        assert_eq!(faces.len(), 4);
+        assert_eq!(faces.iter().map(Polygon::area).sum::<f64>(), 4.0);
+
+        let disconnected = [
+            seg(0.0, 0.0, 2.0, 2.0),
+            seg(2.0, 2.0, 0.0, 2.0),
+            seg(0.0, 2.0, 2.0, 0.0),
+            seg(2.0, 0.0, 0.0, 0.0),
+            seg(5.0, 0.0, 6.0, 0.0),
+            seg(6.0, 0.0, 6.0, 1.0),
+            seg(6.0, 1.0, 5.0, 1.0),
+            seg(5.0, 1.0, 5.0, 0.0),
+        ];
+        let inventory = ExactSourceInventory::from_segments(&disconnected).unwrap();
+        let mut budget = ExpansionBudget::new("build_area", "partition");
+        let mut partition = inventory.partition(&mut budget).unwrap();
+        let parts = inventory.linework_polygons(&mut partition, true).unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts.iter().map(Polygon::area).sum::<f64>(), 3.0);
     }
 
     #[test]

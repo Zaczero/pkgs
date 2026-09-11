@@ -605,9 +605,9 @@ impl Shape {
     pub fn polygonize_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
         let inventory = ExactSourceInventory::from_shapes(shapes)?;
         let mut budget = ExpansionBudget::new("polygonize", "exact partition");
-        let partition = inventory.partition(&mut budget)?;
+        let mut partition = inventory.partition(&mut budget)?;
         let polygons = inventory
-            .linework_polygons(&partition, false)?
+            .linework_polygons(&mut partition, false)?
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -625,9 +625,9 @@ impl Shape {
     pub fn build_area_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
         let inventory = ExactSourceInventory::from_shapes(shapes)?;
         let mut budget = ExpansionBudget::new("build_area", "exact partition");
-        let partition = inventory.partition(&mut budget)?;
+        let mut partition = inventory.partition(&mut budget)?;
         let polygons = inventory
-            .linework_polygons(&partition, true)?
+            .linework_polygons(&mut partition, true)?
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -675,8 +675,8 @@ impl Shape {
     pub fn polygonize_full_all(shapes: &[&Self], strict: bool) -> Result<PolygonizeFull> {
         let inventory = ExactSourceInventory::from_shapes(shapes)?;
         let mut budget = ExpansionBudget::new("polygonize_full", "exact partition");
-        let partition = inventory.partition(&mut budget)?;
-        let exact_polygons = inventory.linework_polygons(&partition, false)?;
+        let mut partition = inventory.partition(&mut budget)?;
+        let exact_polygons = inventory.linework_polygons(&mut partition, false)?;
         let graph = TopologyGraph::cartesian_many(shapes)?;
         let mut full = polygonize_full(&graph, shapes.len())?;
         full.polygons = exact_polygons.into_iter().map(Shape::Polygon).collect();

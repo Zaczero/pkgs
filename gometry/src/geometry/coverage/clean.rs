@@ -81,8 +81,8 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     let shape_refs: Vec<&Shape> = snapped.iter().collect();
     let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
-    let partition = inventory.partition(&mut budget)?;
-    let regions = inventory.linework_polygons(&partition, false)?;
+    let mut partition = inventory.partition(&mut budget)?;
+    let regions = inventory.linework_polygons(&mut partition, false)?;
 
     let per_row = assign_regions(&prepared, regions, gap_width, overlaps)?;
     per_row.into_iter().map(dissolve_regions).collect()
@@ -473,8 +473,8 @@ fn dissolve_edge_incidences(
     survivors.sort_by_key(|segment| undirected_segment_edge_key(*segment));
     let inventory = ExactSourceInventory::from_segments(&survivors)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_union", "exact partition");
-    let partition = inventory.partition(&mut budget)?;
-    let parts = inventory.linework_polygons(&partition, true)?;
+    let mut partition = inventory.partition(&mut budget)?;
+    let parts = inventory.linework_polygons(&mut partition, true)?;
     polygon_parts_to_shape(parts)
 }
 

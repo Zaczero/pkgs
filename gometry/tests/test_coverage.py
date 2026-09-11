@@ -245,14 +245,14 @@ def test_coverage_union_all_empty_members_use_declared_union_axes() -> None:
             assert result.area == 0.0
 
 
-def test_coverage_union_does_not_bypass_invalid_shape_fallback() -> None:
-    """Rows admitted by the legacy coverage validator keep the old dissolve path."""
+def test_coverage_union_uses_exact_closed_support_for_invalid_polygon_rows() -> None:
+    """Exact coverage dissolve uses a polygon's closed shell support."""
     bowtie = gm.from_wkt('POLYGON ((0 0, 2 2, 0 2, 2 0, 0 0))')
     disjoint = gm.box(5, 0, 6, 1)
     assert gm.coverage_is_valid([bowtie, disjoint])
     result = gm.coverage_union([bowtie, disjoint])
-    assert result.geometry_type == 'Polygon'
-    assert result.area == pytest.approx(1.0)
+    assert result.geometry_type == 'MultiPolygon'
+    assert result.area == pytest.approx(3.0)
 
 
 def test_coverage_union_matches_shapely_oracle() -> None:
