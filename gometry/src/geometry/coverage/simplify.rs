@@ -23,7 +23,6 @@ struct Chain {
 
 /// A chain's retained original node indices and their source coordinates.
 struct SimplifiedChain {
-    points: Vec<XY>,
     kept: Vec<usize>,
 }
 
@@ -336,10 +335,25 @@ impl<'a> TopologyGuard<'a> {
             .segment_index()?
             .intersecting_candidates(shortcut)
             .any(|entry| {
-                if chain_segments.iter().any(|segment| {
-                    undirected_segment_edge_key(*segment)
-                        == undirected_segment_edge_key(entry.segment)
-                }) {
+                let chain_segment = if chain_segments.is_empty() {
+                    // The public scalar simplifier has no shared-chain
+                    // provenance. Preserve its established local-endpoint
+                    // exemption; coverage callers always provide the exact
+                    // source segment view above.
+                    [entry.segment.start, entry.segment.end]
+                        .into_iter()
+                        .any(|point| {
+                            same_point(point, prev)
+                                || same_point(point, vertex)
+                                || same_point(point, next)
+                        })
+                } else {
+                    chain_segments.iter().any(|segment| {
+                        undirected_segment_edge_key(*segment)
+                            == undirected_segment_edge_key(entry.segment)
+                    })
+                };
+                if chain_segment {
                     return false;
                 }
                 match segment_contact_exact(shortcut, entry.segment) {
@@ -605,7 +619,6 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
             if !simplify_boundary && !chain.shared {
                 return Ok(SimplifiedChain {
                     kept: identity_indices(chain.points.len())?,
-                    points: chain.points.clone(),
                 });
             }
             let cyclic = chain.points.len() > 1
@@ -619,10 +632,7 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
                 &guard,
                 &chain.source_segments,
             )?;
-            let mut points = Vec::new();
-            crate::try_reserve_vec(&mut points, kept.len())?;
-            points.extend(kept.iter().map(|&index| chain.points[index]));
-            Ok(SimplifiedChain { points, kept })
+            Ok(SimplifiedChain { kept })
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -760,7 +770,7 @@ fn rebuild_polygon(
 mod guarded_scratch_tests {
     use super::{TopologyGuard, simplify_chain_guarded};
     use crate::error::{ErrorKind, ResourceError};
-    use crate::geometry::XY;
+    use crate::geometry::{Segment, XY};
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn dummy_guard() -> TopologyGuard<'static> {
@@ -834,5 +844,32 @@ mod guarded_scratch_tests {
         assert_eq!(cyclic.first().copied(), Some(0));
         assert_eq!(cyclic.last().copied(), Some(5));
         assert_eq!(cyclic.len(), 4);
+    }
+
+    #[test]
+    fn coverage_contact_guard_rejects_a_foreign_collinear_collapse() {
+        let previous = XY::new(0.0, 0.0);
+        let vertex = XY::new(1.0, 1.0);
+        let next = XY::new(2.0, 0.0);
+        let chain_segments = [
+            Segment {
+                start: previous,
+                end: vertex,
+            },
+            Segment {
+                start: vertex,
+                end: next,
+            },
+        ];
+        let segments = [chain_segments[0], chain_segments[1], Segment {
+            start: previous,
+            end: next,
+        }];
+        let guard = TopologyGuard::new(&segments, Vec::new());
+        assert!(
+            !guard
+                .removal_is_safe(previous, vertex, next, &chain_segments)
+                .unwrap()
+        );
     }
 }
