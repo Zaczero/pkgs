@@ -71,16 +71,14 @@ pub(crate) fn exact_geometry_array<'a>(value: &'a Bound<'_, PyAny>) -> Option<&'
         .map(pyo3::Bound::get)
 }
 
-/// The ONLY way to obtain both operand storages of a Many×Many broadcast:
-/// runs strict broadcasting (LENGTH FIRST so the length error wins, then frame
-/// compatibility) and returns both storage Arcs cloned. Making this the sole
-/// producer of the zipped pair means the strict-broadcast check is unskippable
-/// and silent zip-truncation of unequal-length arrays cannot recur.
-pub(crate) fn paired_arrays(
+/// Validate the structural contract for a Many×Many broadcast. Length is
+/// checked before frame compatibility so the error does not depend on any
+/// storage or metric work.
+pub(crate) fn validate_paired_arrays(
     left: &PyGeometryArray,
     right: &PyGeometryArray,
     operation: &str,
-) -> PyResult<(Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>)> {
+) -> PyResult<()> {
     ensure_same_len(left.len(), right.len())?;
     Frame::compatible_parts(
         left.crs_ref(),
@@ -89,6 +87,18 @@ pub(crate) fn paired_arrays(
         right.epoch(),
         operation,
     )?;
+    Ok(())
+}
+
+/// The canonical producer of both operand storages for a Many×Many broadcast.
+/// Callers that only need structural validation use [`validate_paired_arrays`]
+/// instead, avoiding cloned handles that cannot participate in the operation.
+pub(crate) fn paired_arrays(
+    left: &PyGeometryArray,
+    right: &PyGeometryArray,
+    operation: &str,
+) -> PyResult<(Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>)> {
+    validate_paired_arrays(left, right, operation)?;
     Ok((
         Arc::clone(left.storage_arc()),
         Arc::clone(right.storage_arc()),

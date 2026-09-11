@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::sync::Arc;
 
 use crate::HeapSize;
@@ -6,6 +8,26 @@ use crate::array::{
     CoordSeq, CsrOffsetColumn, GeometryKind, Point, PolygonLevel, RingLevel, Shape, ShapeRow,
 };
 use crate::geometry::{CoordWindow, LineSeq, SharedSlice};
+
+#[cfg(test)]
+std::thread_local! {
+    static SHAPE_ITER_MATERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_shape_iter_materializations() {
+    SHAPE_ITER_MATERIALIZATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn shape_iter_materializations() -> usize {
+    SHAPE_ITER_MATERIALIZATIONS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn record_shape_iter_materialization() {
+    SHAPE_ITER_MATERIALIZATIONS.with(|count| count.set(count.get() + 1));
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckedPhysicalRows {
@@ -687,7 +709,10 @@ impl<'a> Iterator for ShapesIter<'a> {
     type Item = crate::error::Result<std::borrow::Cow<'a, Shape>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.rows.next()? {
+        let row = self.rows.next()?;
+        #[cfg(test)]
+        record_shape_iter_materialization();
+        match row {
             PhysicalRow::Mixed(shape) => Some(Ok(std::borrow::Cow::Borrowed(shape))),
             PhysicalRow::Point(point) => Some(Ok(std::borrow::Cow::Owned(Shape::Point(point)))),
             PhysicalRow::Line(coords, window) => {

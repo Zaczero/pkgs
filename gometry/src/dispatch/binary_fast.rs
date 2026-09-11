@@ -6,16 +6,14 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::broadcast::{
-    FrechetMode, GeometryInput, HausdorffMode, SimilarityMode, SimilarityOp, array_crs_distances,
-    array_crs_dwithin, array_crs_metric_float, classify_input, predicate_pairwise_arrays,
-    predicate_scalar_vs_array,
+    GeometryInput, SimilarityOp, array_crs_distances, array_crs_dwithin, classify_input,
+    predicate_pairwise_arrays, predicate_scalar_vs_array,
 };
 use crate::crs::{MetricModel, ResolvedMetric};
 use crate::dispatch::binary::{
     BinaryArrayFastPath, NoBinaryFastPath, dispatch_binary, dispatch_binary_geometry,
 };
 use crate::dispatch::kernels;
-use crate::dispatch::metric::CachelessRowContext;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::{GeometryKind, PreparedPlan};
 use crate::predicates::engine::Predicate;
@@ -294,17 +292,7 @@ pub(crate) fn dispatch_hausdorff_distance(
     densify: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    dispatch_similarity_metric::<HausdorffMode, _, _, _>(
-        py,
-        left,
-        right,
-        densify,
-        unit,
-        SimilarityOp::Hausdorff { densify: None },
-        kernels::binary_hausdorff_distance,
-        crate::metric_hausdorff_densified,
-        crate::geometry::hausdorff_distance_line_columns,
-    )
+    dispatch_similarity_metric(py, left, right, densify, unit, SimilarityOp::hausdorff())
 }
 
 /// Fréchet-distance free-function dispatch through the spine.
@@ -315,105 +303,34 @@ pub(crate) fn dispatch_frechet_distance(
     densify: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    dispatch_similarity_metric::<FrechetMode, _, _, _>(
-        py,
-        left,
-        right,
-        densify,
-        unit,
-        SimilarityOp::Frechet { densify: None },
-        kernels::binary_frechet_distance,
-        crate::metric_frechet_densified,
-        |left_xs, left_ys, right_xs, right_ys| {
-            Ok(crate::geometry::frechet_distance_line_columns(
-                left_xs, left_ys, right_xs, right_ys,
-            ))
-        },
-    )
+    dispatch_similarity_metric(py, left, right, densify, unit, SimilarityOp::frechet())
 }
 
-fn dispatch_similarity_metric<M, ScalarKernel, PerDensifyKernel, PackedLineKernel>(
+fn dispatch_similarity_metric(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     densify: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
     op: SimilarityOp,
-    scalar_kernel: ScalarKernel,
-    per_densify_kernel: PerDensifyKernel,
-    packed_line_kernel: PackedLineKernel,
-) -> PyResult<Py<PyAny>>
-where
-    M: SimilarityMode,
-    ScalarKernel: Fn(
-            &PreparedPlan,
-            &PreparedPlan,
-            &CachelessRowContext<'_>,
-            Option<f64>,
-        ) -> crate::error::Result<f64>
-        + Copy
-        + Send
-        + Sync,
-    PerDensifyKernel: Fn(
-            &MetricModel,
-            &crate::geometry::Shape,
-            &crate::geometry::Shape,
-            Option<f64>,
-        ) -> crate::error::Result<f64>
-        + Copy
-        + Send
-        + Sync,
-    PackedLineKernel:
-        Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<f64> + Copy + Send + Sync,
-{
+) -> PyResult<Py<PyAny>> {
     let left_array = crate::broadcast::exact_geometry_array(left);
     let right_array = crate::broadcast::exact_geometry_array(right);
     let Some((len, side)) = similarity_array_side(left_array, right_array) else {
-        let operation = op.with_densify(parse_scalar_densify(densify)?);
+        let operation = op.with_scalar_densify(SimilarityOp::parse_scalar_densify(densify)?);
+        let metric_op = operation.metric_op();
         return dispatch_binary(
             py,
             left,
             right,
-            Operation::Metric(operation.metric_op()).name(),
-            Operation::Metric(operation.metric_op()).resolver_with_unit(unit),
+            Operation::Metric(metric_op).name(),
+            Operation::Metric(metric_op).resolver_with_unit(unit),
             &NoBinaryFastPath,
-            move |left, right, ctx| scalar_kernel(left, right, ctx, operation.densify()),
+            move |left, right, ctx| operation.eval_scalar(left, right, ctx),
         );
     };
-    let densify = crate::OptionalDensifyParam::parse(densify, len)?;
-    let operation = op.with_densify(densify.as_scalar_densify());
-    dispatch_similarity_array_lane::<M>(
-        py,
-        side,
-        left,
-        right,
-        &densify,
-        unit,
-        operation,
-        per_densify_kernel,
-        move |py, array, other, operation| {
-            similarity_array_lane::<M, _, _>(
-                py,
-                array,
-                other,
-                unit,
-                operation,
-                operation.densify().is_none().then_some(packed_line_kernel),
-                per_densify_kernel,
-            )
-        },
-    )
-}
-
-fn parse_scalar_densify(densify: Option<&Bound<'_, PyAny>>) -> PyResult<Option<f64>> {
-    let Some(value) = densify else {
-        return Ok(None);
-    };
-    if value.is_none() {
-        return Ok(None);
-    }
-    let param = crate::F64Param::parse(value, "densify", 1)?;
-    crate::validate_densify(Some(param.get(0)))
+    let operation = op.parse_array_densify(densify, len)?;
+    dispatch_similarity_array_lane(py, side, left, right, operation, unit)
 }
 
 #[derive(Clone, Copy)]
@@ -440,107 +357,56 @@ fn similarity_array_side<'a>(
 /// densified kernel, and the scalar lane that runs the packed column kernels —
 /// everything else (per-element vs scalar branch, the array-operand flip when
 /// the array is the right operand) is identical.
-fn dispatch_similarity_array_lane<M: SimilarityMode>(
+fn dispatch_similarity_array_lane(
     py: Python<'_>,
     side: SimilarityArraySide<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
-    densify: &crate::OptionalDensifyParam,
-    unit: Option<DistanceUnit>,
     operation: SimilarityOp,
-    per_densify_kernel: impl Fn(
-        &MetricModel,
-        &crate::geometry::Shape,
-        &crate::geometry::Shape,
-        Option<f64>,
-    ) -> crate::error::Result<f64>
-    + Send
-    + Sync,
-    scalar_lane: impl Fn(
-        Python<'_>,
-        &crate::PyGeometryArray,
-        &Bound<'_, PyAny>,
-        SimilarityOp,
-    ) -> PyResult<Py<PyAny>>,
+    unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    if densify.is_per_element() {
+    if operation.is_per_element() {
         return match side {
             SimilarityArraySide::Left(array) => {
                 crate::broadcast::array_crs_similarity_metric_per_densify(
-                    py,
-                    array,
-                    right,
-                    operation.metric_op(),
-                    unit,
-                    densify,
-                    per_densify_kernel,
+                    py, array, right, operation, unit,
                 )
             },
             SimilarityArraySide::Both(array, other) => {
                 let _ = other.len();
                 crate::broadcast::array_crs_similarity_metric_per_densify(
-                    py,
-                    array,
-                    right,
-                    operation.metric_op(),
-                    unit,
-                    densify,
-                    per_densify_kernel,
+                    py, array, right, operation, unit,
                 )
             },
             SimilarityArraySide::Right(array) => {
                 crate::broadcast::array_crs_similarity_metric_per_densify(
-                    py,
-                    array,
-                    left,
-                    operation.metric_op(),
-                    unit,
-                    densify,
-                    per_densify_kernel,
+                    py, array, left, operation, unit,
                 )
             },
         };
     }
     match side {
-        SimilarityArraySide::Left(array) => scalar_lane(py, array, right, operation),
+        SimilarityArraySide::Left(array) => {
+            similarity_array_lane(py, array, right, operation, unit)
+        },
         SimilarityArraySide::Both(array, other) => {
             let _ = other.len();
-            scalar_lane(py, array, right, operation)
+            similarity_array_lane(py, array, right, operation, unit)
         },
-        SimilarityArraySide::Right(array) => scalar_lane(py, array, left, operation),
+        SimilarityArraySide::Right(array) => {
+            similarity_array_lane(py, array, left, operation, unit)
+        },
     }
 }
 
-fn similarity_array_lane<M, P, K>(
+fn similarity_array_lane(
     py: Python<'_>,
     array: &crate::PyGeometryArray,
     other: &Bound<'_, PyAny>,
-    unit: Option<DistanceUnit>,
     operation: SimilarityOp,
-    packed_planar_lines: Option<P>,
-    kernel: K,
-) -> PyResult<Py<PyAny>>
-where
-    M: SimilarityMode,
-    P: Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<f64> + Send + Sync,
-    K: Fn(
-            &MetricModel,
-            &crate::geometry::Shape,
-            &crate::geometry::Shape,
-            Option<f64>,
-        ) -> crate::error::Result<f64>
-        + Send
-        + Sync,
-{
-    array_crs_metric_float::<M, _, _>(
-        py,
-        array,
-        other,
-        operation,
-        unit,
-        packed_planar_lines,
-        move |model, a, b| kernel(model, a, b, operation.densify()),
-    )
+    unit: Option<DistanceUnit>,
+) -> PyResult<Py<PyAny>> {
+    crate::broadcast::array_crs_metric_float(py, array, other, operation, unit)
 }
 
 #[cfg(test)]
@@ -548,8 +414,12 @@ mod tests {
     use pyo3::prelude::*;
 
     use crate::PyGeometry;
+    use crate::array::{
+        PyGeometryArray, ValidityMask, reset_shape_iter_materializations,
+        shape_iter_materializations,
+    };
     use crate::boundary::{Frame, crs_arc_static};
-    use crate::geometry::{Point, Shape};
+    use crate::geometry::{LineSeq, Point, Shape};
     use crate::predicates::engine::Predicate;
     use crate::py::errors::InvalidGeometryError;
 
@@ -614,6 +484,51 @@ mod tests {
                 "{message}"
             );
             assert!(!message.contains("geographic shape"), "{message}");
+        });
+    }
+
+    #[test]
+    fn similarity_many_skips_shape_materialization_for_missing_rows() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let point = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+            let line = Shape::LineString(
+                LineSeq::try_new(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(1.0, 1.0),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap(),
+            );
+            let left = PyGeometryArray::from_shapes(vec![point.clone(), line.clone()], Frame::None)
+                .unwrap()
+                .with_missing_mask(Some(
+                    ValidityMask::from_vec(2, vec![false, true])
+                        .unwrap()
+                        .expect("one missing row"),
+                ))
+                .unwrap();
+            let right = PyGeometryArray::from_shapes(vec![point, line], Frame::None).unwrap();
+            let left = Bound::new(py, left).unwrap().into_any();
+            let right = Bound::new(py, right).unwrap().into_any();
+
+            reset_shape_iter_materializations();
+            let result = super::dispatch_hausdorff_distance(py, &left, &right, None, None)
+                .expect("masked pair is a valid Hausdorff broadcast");
+            let values = result
+                .bind(py)
+                .extract::<Vec<f64>>()
+                .expect("Hausdorff returns a float array");
+
+            assert_eq!(values[0], 0.0);
+            assert!(values[1].is_nan());
+            assert_eq!(
+                shape_iter_materializations(),
+                0,
+                "missing rows must not enter the shape-materializing iterator"
+            );
         });
     }
 }

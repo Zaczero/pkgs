@@ -1,14 +1,14 @@
 use geographiclib_rs::Geodesic;
 
-use super::distance::geodesic_frechet_dp;
+use super::distance::{geodesic_frechet_dp, geodesic_frechet_dp_with_scratch};
 use super::lower_bound::{LowerBoundKernel, exact_auxiliary_sphere_bound};
 use super::segment::geodesic_segment_minimum;
 use super::{EllipsoidMetric, GEODESIC_LINE_CACHE, geodesic_counters};
 use crate::error::Result;
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{
-    CoordSeq, Coordinates, FrameDependentCaches, GeodesicMetric, GeodesicSegment, LineSeq, Point,
-    PreparedPlan, Shape, XY,
+    CoordSeq, Coordinates, FrameDependentCaches, FrechetDpScratch, GeodesicMetric, GeodesicSegment,
+    LineSeq, Point, PreparedPlan, Shape, XY,
 };
 
 fn p(x: f64, y: f64) -> Point {
@@ -582,4 +582,26 @@ fn banded_geodesic_frechet_matches_full_dp_bit_for_bit() {
     let mut reversed = base(5);
     reversed.reverse();
     check("5x5_reversed", base(5), reversed);
+}
+
+#[test]
+fn geodesic_frechet_reuses_supplied_rolling_workspace() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let short = (0..7)
+        .map(|index| p(f64::from(index), f64::from(index).sin()))
+        .collect::<Vec<_>>();
+    let long = (0..11)
+        .map(|index| p(f64::from(index), f64::from(index).cos()))
+        .collect::<Vec<_>>();
+    let mut scratch = FrechetDpScratch::default();
+
+    let first = geodesic_frechet_dp_with_scratch(&metric, &short, &long, &mut scratch);
+    let capacity = scratch.geodesic_capacity();
+    let second = geodesic_frechet_dp_with_scratch(&metric, &short, &long, &mut scratch);
+
+    assert!(capacity.0 >= short.len());
+    assert!(capacity.1 >= short.len());
+    assert_eq!(first.to_bits(), second.to_bits());
+    assert_eq!(scratch.geodesic_capacity(), capacity);
 }

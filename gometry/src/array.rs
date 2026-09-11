@@ -418,3 +418,5 @@ pub(crate) use storage_types::{
     packed_polygons_coord_len, packed_polygons_ring_len, physical_row, point_logical_len,
     polygon_logical_len, polygon_rings_range, row_map_is_identity, row_selection_from_logical_rows,
 };
+#[cfg(test)]
+pub(crate) use storage_types::{reset_shape_iter_materializations, shape_iter_materializations};

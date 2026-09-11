@@ -153,11 +153,12 @@ pub(crate) fn geodesic_hausdorff_at(
 /// The geodesic sibling of `Shape::frechet_distance`. The coupling DP mirrors
 /// the planar discrete-Fréchet kernel exactly but couples on true Karney
 /// distances, with band pruning around a greedy coupling upper bound.
-pub(crate) fn geodesic_frechet_at(
+pub(crate) fn geodesic_frechet_at_with_scratch(
     crs: &str,
     a: &Shape,
     b: &Shape,
     state: &RuntimeState,
+    scratch: &mut crate::geometry::FrechetDpScratch,
 ) -> Result<f64> {
     // Public metric dispatch handles empty shapes before selecting this arm,
     // so the geodesic and planar public lanes share the infinity sentinel.
@@ -166,9 +167,9 @@ pub(crate) fn geodesic_frechet_at(
     let right = b.single_linework()?;
     with_ellipsoid_metric_at(crs, &[a, b], state, |metric| {
         let distance = if left.coord_count() <= right.coord_count() {
-            geodesic_frechet_dp(metric, left, right)
+            geodesic_frechet_dp_with_scratch(metric, left, right, scratch)
         } else {
-            geodesic_frechet_dp(metric, right, left)
+            geodesic_frechet_dp_with_scratch(metric, right, left, scratch)
         };
         finite(distance, GeodesicCalculation::FrechetDistance)
     })
@@ -217,10 +218,21 @@ pub(crate) fn geodesic_frechet_greedy_ub<S: Coordinates + ?Sized, L: Coordinates
 /// the distance). Mirrors [`frechet_dp_columns`] in the geometry layer: band
 /// pruning around [`geodesic_frechet_greedy_ub`], bit-identical to the full
 /// table.
+#[cfg(test)]
 pub(crate) fn geodesic_frechet_dp<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
     metric: &EllipsoidMetric<'_>,
     short: &S,
     long: &L,
+) -> f64 {
+    let mut scratch = crate::geometry::FrechetDpScratch::default();
+    geodesic_frechet_dp_with_scratch(metric, short, long, &mut scratch)
+}
+
+pub(crate) fn geodesic_frechet_dp_with_scratch<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
+    metric: &EllipsoidMetric<'_>,
+    short: &S,
+    long: &L,
+    scratch: &mut crate::geometry::FrechetDpScratch,
 ) -> f64 {
     const INF: f64 = f64::INFINITY;
     let width = short.coord_count();
@@ -229,8 +241,9 @@ pub(crate) fn geodesic_frechet_dp<S: Coordinates + ?Sized, L: Coordinates + ?Siz
     }
     let distance = |p: Point, q: Point| metric.segment_length(p, q);
     let ub = geodesic_frechet_greedy_ub(metric, short, long);
-    let mut previous = vec![INF; width];
-    let mut current = vec![INF; width];
+    let (mut previous, mut current) = scratch.geodesic_buffers(width);
+    previous[..width].fill(INF);
+    current[..width].fill(INF);
 
     let first_long = long.nth_coord(0);
     let mut running = 0.0_f64;

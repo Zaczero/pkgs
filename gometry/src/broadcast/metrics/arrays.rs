@@ -34,27 +34,21 @@ fn float64_array_mask_missing(
     mask_missing(&mut values, missing, f64::NAN);
     float64_array(py, values)
 }
-/// CRS-aware array float metric used by the spine-routed Hausdorff/Fréchet lanes.
+/// CRS-aware array float metric used by the spine-routed Hausdorff/Fréchet
+/// lanes. The operation owns both the metric identity and its densify shape;
+/// row traversal only supplies the logical row's value.
 #[expect(
     clippy::too_many_lines,
     reason = "scalar/array operand dispatch plus packed-line batch and per-pair lanes"
 )]
-pub(crate) fn array_crs_metric_float<M, P, K>(
+pub(crate) fn array_crs_metric_float(
     py: Python<'_>,
     array: &PyGeometryArray,
     other: &Bound<'_, PyAny>,
     operation: SimilarityOp,
     unit: Option<DistanceUnit>,
-    packed_planar_lines: Option<P>,
-    kernel: K,
-) -> PyResult<Py<PyAny>>
-where
-    M: crate::broadcast::metrics::SimilarityMode,
-    P: Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<f64> + Send + Sync,
-    K: Fn(&crs::MetricModel, &Shape, &Shape) -> crate::error::Result<f64> + Send + Sync,
-{
-    let densify = operation.densify();
-    let operation_name = M::OP.name();
+) -> PyResult<Py<PyAny>> {
+    let operation_name = operation.metric_op().name();
     match classify_required(other)? {
         GeometryInput::One(right) => {
             Frame::compatible_parts(
@@ -64,64 +58,29 @@ where
                 right.epoch(),
                 operation_name,
             )?;
-            let model = resolve_metric(array.crs_str(), unit, M::OP)?;
-            if array.is_compact_nullable() {
-                let array = array.clone();
-                let right = Arc::clone(&right.shape);
-                return float64_array(
-                    py,
-                    py.detach(move || {
-                        let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
-                        array
-                            .row_operation()
-                            .rows_with_missing(|| f64::NAN)
-                            .map(|row| match row {
-                                crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                                crate::array::ArrayRow::Present(row) => {
-                                    row.row().try_with_shape(|shape| {
-                                        M::eval(
-                                            &model,
-                                            shape,
-                                            right.shape(),
-                                            densify,
-                                            &mut frechet_scratch,
-                                            &kernel,
-                                        )
-                                    })
-                                },
-                            })
-                            .collect_rows()
-                    })
-                    .map_err(rows_err)?,
-                );
-            }
-            let lefts = Arc::clone(array.storage_arc());
+            let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
+            let left = array.clone();
             let right = Arc::clone(&right.shape);
-            let missing = array.missing().cloned();
             float64_array(
                 py,
                 py.detach(move || {
-                    let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
-                    lefts
-                        .iter_rows()
-                        .enumerate()
-                        .map(|(row_index, row)| {
-                            if missing
-                                .as_ref()
-                                .is_some_and(|mask| mask.is_missing(row_index))
-                            {
-                                return Ok(f64::NAN);
-                            }
-                            row.try_with_shape(|left| {
-                                M::eval(
-                                    &model,
-                                    left,
-                                    right.shape(),
-                                    densify,
-                                    &mut frechet_scratch,
-                                    &kernel,
-                                )
-                            })
+                    let mut scratch = crate::geometry::FrechetDpScratch::default();
+                    left.row_operation()
+                        .rows_with_missing(|| f64::NAN)
+                        .map(|row| match row {
+                            ArrayRow::Missing { value, .. } => Ok(value),
+                            ArrayRow::Present(row) => {
+                                let logical = row.logical();
+                                row.row().try_with_shape(|left| {
+                                    operation.eval_shapes(
+                                        &model,
+                                        left,
+                                        right.shape(),
+                                        operation.densify_at(logical),
+                                        &mut scratch,
+                                    )
+                                })
+                            },
                         })
                         .collect_rows()
                 })
@@ -130,54 +89,22 @@ where
         },
         GeometryInput::Many(right) => {
             let (lefts, rights) = paired_arrays(array, right, operation_name)?;
-            let model = resolve_metric(array.crs_str(), unit, M::OP)?;
+            let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             let missing = crate::array::missing::union_pair(array.missing(), right.missing())?;
-            if array.is_compact_nullable() || right.is_compact_nullable() {
-                let left = array.clone();
-                let right = right.clone();
-                return float64_array(
-                    py,
-                    py.detach(move || {
-                        let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
-                        left.row_operation()
-                            .rows_with_missing(|| f64::NAN)
-                            .zip(right.row_operation().rows_with_missing(|| f64::NAN))
-                            .map(|(left, right)| match (left, right) {
-                                (
-                                    crate::array::ArrayRow::Present(left),
-                                    crate::array::ArrayRow::Present(right),
-                                ) => left.row().try_with_shape(|left| {
-                                    right.row().try_with_shape(|right| {
-                                        M::eval(
-                                            &model,
-                                            left,
-                                            right,
-                                            densify,
-                                            &mut frechet_scratch,
-                                            &kernel,
-                                        )
-                                    })
-                                }),
-                                _ => Ok(f64::NAN),
-                            })
-                            .collect_rows()
-                    })
-                    .map_err(rows_err)?,
-                );
-            }
             if Arc::ptr_eq(&lefts, &rights)
                 && let Some(values) =
-                    M::try_same_storage_identity(&model, &lefts, missing.as_ref())?
+                    operation.try_same_storage_identity(&model, &lefts, missing.as_ref())?
             {
                 return float64_array_mask_missing(py, values, missing.as_ref());
             }
             if let crs::MetricModel::Planar { to_metre } = &model
+                && operation.scalar_densify().is_none()
                 && let (Some(left_lines), Some(right_lines)) =
                     (lefts.line_rows(), rights.line_rows())
                 && left_lines.is_packed_pair(&right_lines)
             {
-                let has_empty_line = M::has_empty_line(&left_lines, &right_lines);
-                if densify.is_none() && missing.is_none() && !has_empty_line {
+                let has_empty_line = operation.has_empty_line(&left_lines, &right_lines);
+                if missing.is_none() && !has_empty_line {
                     let len = left_lines.len();
                     let scale = to_metre.get();
                     return float64_array(
@@ -188,76 +115,74 @@ where
                             let left_view = left_lines.packed_column_view().expect("checked above");
                             let right_view =
                                 right_lines.packed_column_view().expect("checked above");
-                            M::packed_batch(left_view, right_view, len, scale)
+                            operation.packed_batch(left_view, right_view, len, scale)
                         })?,
                     );
                 }
-                if let Some(line_kernel) = packed_planar_lines {
-                    return float64_array(
-                        py,
-                        py.detach(move || {
-                            let left_lines = lefts.line_rows().expect("checked above");
-                            let right_lines = rights.line_rows().expect("checked above");
-                            (0..left_lines.len())
-                                .map(|index| {
-                                    if missing.as_ref().is_some_and(|mask| mask.is_missing(index)) {
-                                        return Ok(f64::NAN);
-                                    }
-                                    let (left_xs, left_ys) = left_lines.row_xy(index);
-                                    let (right_xs, right_ys) = right_lines.row_xy(index);
-                                    if std::ptr::eq(left_xs.as_ptr(), right_xs.as_ptr())
-                                        && std::ptr::eq(left_ys.as_ptr(), right_ys.as_ptr())
-                                        && left_xs.len() == right_xs.len()
-                                    {
-                                        if left_xs.is_empty()
-                                            && let Some(value) = M::identical_empty(
-                                                &line_kernel,
-                                                left_xs,
-                                                left_ys,
-                                                right_xs,
-                                                right_ys,
-                                                to_metre.get(),
-                                            )
-                                        {
-                                            return value;
-                                        }
-                                        return Ok(if left_xs.is_empty() {
-                                            f64::INFINITY
-                                        } else {
-                                            0.0
-                                        });
-                                    }
-                                    line_kernel(left_xs, left_ys, right_xs, right_ys)
-                                        .map(|value| value * to_metre.get())
-                                })
-                                .collect_rows()
-                        })
-                        .map_err(rows_err)?,
-                    );
-                }
+                let operation = operation;
+                return float64_array(
+                    py,
+                    py.detach(move || {
+                        let left_lines = lefts.line_rows().expect("checked above");
+                        let right_lines = rights.line_rows().expect("checked above");
+                        (0..left_lines.len())
+                            .map(|index| {
+                                if missing.as_ref().is_some_and(|mask| mask.is_missing(index)) {
+                                    return Ok(f64::NAN);
+                                }
+                                let (left_xs, left_ys) = left_lines.row_xy(index);
+                                let (right_xs, right_ys) = right_lines.row_xy(index);
+                                if std::ptr::eq(left_xs.as_ptr(), right_xs.as_ptr())
+                                    && std::ptr::eq(left_ys.as_ptr(), right_ys.as_ptr())
+                                    && left_xs.len() == right_xs.len()
+                                    && let Some(value) = operation.identical_window_value(
+                                        left_xs,
+                                        left_ys,
+                                        right_xs,
+                                        right_ys,
+                                        to_metre.get(),
+                                    )
+                                {
+                                    return value;
+                                }
+                                operation.packed_value(
+                                    left_xs,
+                                    left_ys,
+                                    right_xs,
+                                    right_ys,
+                                    to_metre.get(),
+                                )
+                            })
+                            .collect_rows()
+                    })
+                    .map_err(rows_err)?,
+                );
             }
+            let left = array.clone();
+            let right = right.clone();
             float64_array(
                 py,
                 py.detach(move || {
-                    let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
-                    lefts
-                        .iter_shapes()
-                        .zip(rights.iter_shapes())
-                        .enumerate()
-                        .map(|(row, (left, right))| {
-                            if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
-                                return Ok(f64::NAN);
-                            }
-                            let left = left?;
-                            let right = right?;
-                            M::eval(
-                                &model,
-                                &left,
-                                &right,
-                                densify,
-                                &mut frechet_scratch,
-                                &kernel,
-                            )
+                    let mut scratch = crate::geometry::FrechetDpScratch::default();
+                    left.row_operation()
+                        .rows_with_missing(|| f64::NAN)
+                        .zip(right.row_operation().rows_with_missing(|| f64::NAN))
+                        .map(|(left, right)| match (left, right) {
+                            (ArrayRow::Present(left), ArrayRow::Present(right)) => {
+                                let logical = left.logical();
+                                left.row().try_with_shape(|left| {
+                                    right.row().try_with_shape(|right| {
+                                        operation.eval_shapes(
+                                            &model,
+                                            left,
+                                            right,
+                                            operation.densify_at(logical),
+                                            &mut scratch,
+                                        )
+                                    })
+                                })
+                            },
+                            _ => Ok(f64::NAN),
                         })
                         .collect_rows()
                 })

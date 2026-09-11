@@ -7,8 +7,8 @@ use pyo3::types::PyAny;
 use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
 use crate::broadcast::metrics::{
     Bound, CoordinateAxes, Crs, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryInput,
-    GeometryKind, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData, classify_input,
-    crs, geometry_type_err,
+    GeometryKind, Point, PyGeometry, PyResult, Shape, ShapeData, classify_input, crs,
+    geometry_type_err,
 };
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
@@ -62,11 +62,11 @@ fn metric_densified(
     a: &Shape,
     b: &Shape,
     densify: Option<f64>,
-    kernel: impl Fn(&crs::MetricModel, &Shape, &Shape) -> crate::error::Result<f64>,
+    kernel: impl FnOnce(&crs::MetricModel, &Shape, &Shape) -> crate::error::Result<f64>,
 ) -> crate::error::Result<f64> {
-    densify.map_or_else(
-        || kernel(model, a, b),
-        |fraction| match model {
+    match densify {
+        None => kernel(model, a, b),
+        Some(fraction) => match model {
             crs::MetricModel::Planar { .. } => {
                 let a = a.densified(fraction)?;
                 let b = b.densified(fraction)?;
@@ -99,7 +99,7 @@ fn metric_densified(
                 kernel(model, &a, &b)
             },
         },
-    )
+    }
 }
 
 pub(crate) fn geodesic_point_columns_to_shape_values(
@@ -660,17 +660,6 @@ pub(crate) fn require_nonempty_hausdorff(shape: &Shape) -> crate::error::Result<
     Ok(())
 }
 
-/// CRS-aware discrete Fréchet distance (planar/native or explicit SI, or
-/// geodesic).
-pub(crate) fn metric_frechet(
-    model: &crs::MetricModel,
-    a: &Shape,
-    b: &Shape,
-) -> crate::error::Result<f64> {
-    let mut scratch = crate::geometry::FrechetDpScratch::default();
-    metric_frechet_with_scratch(model, a, b, &mut scratch)
-}
-
 pub(crate) fn metric_frechet_with_scratch(
     model: &crs::MetricModel,
     a: &Shape,
@@ -698,11 +687,14 @@ pub(crate) fn metric_frechet_with_scratch(
         a.single_linework()?;
         return Ok(0.0);
     }
-    dispatch_metric_model(
-        model,
-        |to_metre| Ok(a.frechet_distance_with_scratch(b, scratch)? * to_metre),
-        |crs, _, state| crs::geodesic_frechet_at(crs, a, b, state),
-    )
+    match model {
+        crs::MetricModel::Planar { to_metre } => {
+            Ok(a.frechet_distance_with_scratch(b, scratch)? * to_metre.get())
+        },
+        crs::MetricModel::Geodesic { crs, state, .. } => {
+            crs::geodesic_frechet_at_with_scratch(crs, a, b, state, scratch)
+        },
+    }
 }
 
 /// [`metric_hausdorff`] over `densify`-refined operands: each segment gains
@@ -717,21 +709,6 @@ pub(crate) fn metric_hausdorff_densified(
     densify: Option<f64>,
 ) -> crate::error::Result<f64> {
     metric_densified(model, a, b, densify, metric_hausdorff)
-}
-
-/// [`metric_frechet`] over `densify`-refined operands. Each segment gains
-/// evenly spaced vertices before the discrete Fréchet sweep; `None` measures
-/// the original vertices only.
-pub(crate) fn metric_frechet_densified(
-    model: &crs::MetricModel,
-    a: &Shape,
-    b: &Shape,
-    densify: Option<f64>,
-) -> crate::error::Result<f64> {
-    metric_densified(model, a, b, densify, |model, a, b| {
-        charge_frechet_dp(a, b)?;
-        metric_frechet(model, a, b)
-    })
 }
 
 /// The discrete Fréchet DP is `n · m` cells, so `densify` amplifies
@@ -755,76 +732,10 @@ pub(crate) fn metric_frechet_densified_with_scratch(
     densify: Option<f64>,
     scratch: &mut crate::geometry::FrechetDpScratch,
 ) -> crate::error::Result<f64> {
-    match densify {
-        None => metric_frechet_with_scratch(model, a, b, scratch),
-        Some(fraction) => match model {
-            crs::MetricModel::Planar { .. } => {
-                let a = a.densified(fraction)?;
-                let b = b.densified(fraction)?;
-                charge_frechet_dp(&a, &b)?;
-                metric_frechet_with_scratch(model, &a, &b, scratch)
-            },
-            crs::MetricModel::Geodesic { .. } => metric_frechet_densified(model, a, b, densify),
-        },
-    }
-}
-
-/// Boundary validation for the ``densify=`` fraction: finite and in
-/// `(0, 1]`, or `None` for the plain vertex metric.
-pub(crate) fn validate_densify(densify: Option<f64>) -> PyResult<Option<f64>> {
-    if let Some(fraction) = densify
-        && !(fraction.is_finite() && fraction > 0.0 && fraction <= 1.0)
-    {
-        return Err(crate::py::errors::GeometryError::new_err(format!(
-            "densify must be in (0, 1], got {fraction}"
-        )));
-    }
-    Ok(densify)
-}
-
-/// Optional per-row ``densify=`` lane for array Hausdorff/Fréchet (scalar
-/// broadcast or one fraction per geometry).
-#[derive(Clone, Debug)]
-pub(crate) enum OptionalDensifyParam {
-    None,
-    Scalar(f64),
-    PerElement(Box<[f64]>),
-}
-
-impl OptionalDensifyParam {
-    pub(crate) fn parse(value: Option<&Bound<'_, PyAny>>, len: usize) -> PyResult<Self> {
-        let Some(value) = value else {
-            return Ok(Self::None);
-        };
-        if value.is_none() {
-            return Ok(Self::None);
-        }
-        let param = crate::F64Param::parse(value, "densify", len)?;
-        param.try_validate(|fraction| validate_densify(Some(fraction)).map(|_| ()))?;
-        Ok(match param {
-            crate::F64Param::Scalar(fraction) => Self::Scalar(fraction),
-            crate::F64Param::PerElement(fractions) => Self::PerElement(fractions),
-        })
-    }
-
-    pub(crate) const fn is_per_element(&self) -> bool {
-        matches!(self, Self::PerElement(_))
-    }
-
-    pub(crate) const fn as_scalar_densify(&self) -> Option<f64> {
-        match self {
-            Self::Scalar(fraction) => Some(*fraction),
-            Self::None | Self::PerElement(_) => None,
-        }
-    }
-
-    pub(crate) fn at(&self, row: usize) -> Option<f64> {
-        match self {
-            Self::None => None,
-            Self::Scalar(fraction) => Some(*fraction),
-            Self::PerElement(fractions) => Some(fractions[row]),
-        }
-    }
+    metric_densified(model, a, b, densify, |model, a, b| {
+        charge_frechet_dp(a, b)?;
+        metric_frechet_with_scratch(model, a, b, scratch)
+    })
 }
 
 /// CRS-aware nearest points (one per geometry). Returns coordinates in the

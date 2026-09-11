@@ -141,6 +141,8 @@ pub(crate) fn frechet_greedy_ub_squared(
 pub(crate) struct FrechetDpScratch {
     previous: Vec<f64>,
     current: Vec<f64>,
+    geodesic_previous: Vec<f64>,
+    geodesic_current: Vec<f64>,
 }
 
 impl FrechetDpScratch {
@@ -148,6 +150,8 @@ impl FrechetDpScratch {
         Self {
             previous: Vec::new(),
             current: Vec::new(),
+            geodesic_previous: Vec::new(),
+            geodesic_current: Vec::new(),
         }
     }
 
@@ -157,17 +161,41 @@ impl FrechetDpScratch {
             self.current.resize(width, f64::INFINITY);
         }
     }
+
+    pub(crate) fn geodesic_buffers(&mut self, width: usize) -> (&mut Vec<f64>, &mut Vec<f64>) {
+        if self.geodesic_previous.len() < width {
+            self.geodesic_previous.resize(width, f64::INFINITY);
+            self.geodesic_current.resize(width, f64::INFINITY);
+        }
+        (&mut self.geodesic_previous, &mut self.geodesic_current)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn geodesic_capacity(&self) -> (usize, usize) {
+        (
+            self.geodesic_previous.capacity(),
+            self.geodesic_current.capacity(),
+        )
+    }
 }
 
 impl crate::scratch_pool::RetainScratch for FrechetDpScratch {
     fn clear_for_reuse(&mut self) {
         self.previous.clear();
         self.current.clear();
+        self.geodesic_previous.clear();
+        self.geodesic_current.clear();
     }
 
     fn retained_bytes(&self) -> usize {
         crate::scratch_pool::flat_vec_retained_bytes(&self.previous)
             .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.current))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.geodesic_previous,
+            ))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.geodesic_current,
+            ))
     }
 }
 
@@ -210,7 +238,9 @@ pub(crate) fn frechet_dp_columns_with_dp_scratch(
 ) -> f64 {
     let width = short_xs.len();
     scratch.ensure_capacity(width);
-    let FrechetDpScratch { previous, current } = scratch;
+    let FrechetDpScratch {
+        previous, current, ..
+    } = scratch;
     frechet_dp_columns_with_scratch(
         short_xs,
         short_ys,

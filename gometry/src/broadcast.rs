@@ -34,19 +34,17 @@ mod input;
 pub(crate) use input::{
     GeometryInput, classify_input, classify_required, coerce_geometry, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, expected_geometry_or_array_for,
-    paired_arrays, paired_arrays_len, parse_wkb_geometry,
+    paired_arrays, paired_arrays_len, parse_wkb_geometry, validate_paired_arrays,
 };
 mod metrics;
 pub(crate) use metrics::{
-    DistanceUnit, FrechetMode, HausdorffMode, LonLatPointsError, OptionalDensifyParam,
-    SimilarityMode, SimilarityOp, array_crs_distances, array_crs_dwithin,
+    DistanceUnit, LonLatPointsError, SimilarityOp, array_crs_distances, array_crs_dwithin,
     array_crs_dwithin_per_element, array_crs_metric_float, array_crs_similarity_metric_per_densify,
     crs_metric_binary_geometry_broadcast, lonlat_nonempty_shapes, lonlat_points, lonlat_shape,
-    lonlat_shape_under, metric_frechet_densified, metric_hausdorff_densified,
-    metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_nearest_points, metric_shortest_line, pair_distance_geodesic, pair_distance_planar,
-    pair_dwithin_geodesic, pair_dwithin_planar, require_point, resolve_metric, resolve_metric_3d,
-    validate_densify,
+    lonlat_shape_under, metric_maximum_inscribed_radius, metric_minimum_clearance,
+    metric_minimum_clearance_line, metric_nearest_points, metric_shortest_line,
+    pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
+    require_point, resolve_metric, resolve_metric_3d,
 };
 mod predicates;
 pub(crate) use predicates::{

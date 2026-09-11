@@ -15,10 +15,10 @@ use crate::numeric::Positive;
 use crate::{
     F64Param, I64Param, line_interpolate_shape, line_interpolate_shape_m, line_substring_shape,
     line_substring_shape_m, metric_concave_hull, metric_constructive_shape,
-    metric_constructive_shape_budgeted, metric_frechet_densified, metric_hausdorff_densified,
-    metric_interpolate_m, metric_maximum_inscribed_circle, metric_maximum_inscribed_radius,
-    metric_minimum_bounding_circle, metric_minimum_bounding_radius, metric_minimum_clearance,
-    metric_minimum_clearance_line, metric_optional_constructive_shape,
+    metric_constructive_shape_budgeted, metric_interpolate_m, metric_maximum_inscribed_circle,
+    metric_maximum_inscribed_radius, metric_minimum_bounding_circle,
+    metric_minimum_bounding_radius, metric_minimum_clearance, metric_minimum_clearance_line,
+    metric_optional_constructive_shape,
 };
 
 fn scale_length(value: f64, to_metre: f64) -> f64 {
@@ -835,28 +835,6 @@ pub(crate) fn binary_distance_3d(
         return Ok(f64::NAN);
     }
     Ok(scale_length(left.distance_3d(right)?, to_metre))
-}
-
-/// Hausdorff-distance kernel shared by the spine-routed free function.
-pub(crate) fn binary_hausdorff_distance(
-    left: &PreparedPlan,
-    right: &PreparedPlan,
-    ctx: &CachelessRowContext<'_>,
-    densify: Option<f64>,
-) -> Result<f64> {
-    let model = ctx.metric.require_model(MetricOp::HausdorffDistance)?;
-    metric_hausdorff_densified(model, left.shape(), right.shape(), densify)
-}
-
-/// Fréchet-distance kernel shared by the spine-routed free function.
-pub(crate) fn binary_frechet_distance(
-    left: &PreparedPlan,
-    right: &PreparedPlan,
-    ctx: &CachelessRowContext<'_>,
-    densify: Option<f64>,
-) -> Result<f64> {
-    let model = ctx.metric.require_model(MetricOp::FrechetDistance)?;
-    metric_frechet_densified(model, left.shape(), right.shape(), densify)
 }
 
 fn linref_point_lane(result: Result<Shape>, array_lane: bool) -> Result<Shape> {

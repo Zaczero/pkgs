@@ -130,7 +130,7 @@ pub(crate) use bulk::{
 };
 pub(crate) use cache::{with_geodesic, with_geodesic_at, with_geodesic_cache_at};
 pub(crate) use distance::{
-    geodesic_frechet_at, geodesic_hausdorff_at, geodesic_point_distances,
+    geodesic_frechet_at_with_scratch, geodesic_hausdorff_at, geodesic_point_distances,
     geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,
     geodesic_point_pair_dwithin_one,
 };
