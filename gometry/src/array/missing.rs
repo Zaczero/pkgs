@@ -255,16 +255,25 @@ impl HeapSize for ValidityMask {
 pub(crate) struct MissingIter<'a> {
     bytes: &'a [u8],
     byte: usize,
-    bit: u8,
+    bits: u8,
+    bits_left: u8,
     remaining: usize,
 }
 
 impl<'a> MissingIter<'a> {
     fn new(mask: &'a ValidityMask) -> Self {
+        let byte = mask.bit_offset / 8;
+        let bit = (mask.bit_offset % 8) as u8;
+        let (bits, bits_left) = if mask.len == 0 {
+            (0, 0)
+        } else {
+            (mask.bytes[byte] >> bit, 8 - bit)
+        };
         Self {
             bytes: &mask.bytes,
-            byte: mask.bit_offset / 8,
-            bit: (mask.bit_offset % 8) as u8,
+            byte,
+            bits,
+            bits_left,
             remaining: mask.len,
         }
     }
@@ -277,13 +286,15 @@ impl Iterator for MissingIter<'_> {
         if self.remaining == 0 {
             return None;
         }
-        let missing = self.bytes[self.byte] & (1 << self.bit) == 0;
-        self.remaining -= 1;
-        self.bit += 1;
-        if self.bit == 8 {
-            self.bit = 0;
+        if self.bits_left == 0 {
             self.byte += 1;
+            self.bits = self.bytes[self.byte];
+            self.bits_left = 8;
         }
+        let missing = self.bits & 1 == 0;
+        self.bits >>= 1;
+        self.bits_left -= 1;
+        self.remaining -= 1;
         Some(missing)
     }
 

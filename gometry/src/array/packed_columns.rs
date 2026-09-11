@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::array::missing::ValidityCursor;
+use crate::array::missing::MissingIter;
 #[cfg(test)]
 use crate::array::packed_column_kernels;
 use crate::array::{
@@ -99,7 +99,8 @@ impl<'a> PointRows<'a> {
             remaining: self.logical_len,
             row_map: self.row_map,
             layout: self.layout,
-            validity: self.missing.map(ValidityMask::cursor),
+            validity: self.missing.map(ValidityMask::iter),
+            present: 0,
         }
     }
 }
@@ -109,7 +110,8 @@ pub(crate) struct PointRowCursor<'a> {
     remaining: usize,
     row_map: RowSelectionRef<'a>,
     layout: PointRowLayout,
-    validity: Option<ValidityCursor<'a>>,
+    validity: Option<MissingIter<'a>>,
+    present: usize,
 }
 
 impl Iterator for PointRowCursor<'_> {
@@ -124,16 +126,18 @@ impl Iterator for PointRowCursor<'_> {
         self.remaining -= 1;
         let physical = match &mut self.validity {
             Some(validity) => {
-                let (validity_logical, present) =
-                    validity.next().expect("point validity length is exact");
-                debug_assert_eq!(validity_logical, logical);
-                present.map(|present| {
-                    self.row_map.physical(if self.layout.is_compact() {
+                let missing = validity.next().expect("point validity length is exact");
+                if missing {
+                    None
+                } else {
+                    let present = self.present;
+                    self.present += 1;
+                    Some(self.row_map.physical(if self.layout.is_compact() {
                         present
                     } else {
                         logical
-                    })
-                })
+                    }))
+                }
             },
             None => Some(self.row_map.physical(logical)),
         };
@@ -2127,6 +2131,145 @@ mod tests {
             (1, None),
             (2, Some(1))
         ]);
+    }
+
+    #[test]
+    fn point_row_cursor_decodes_non_byte_aligned_validity_windows() {
+        let parent = ValidityMask::from_sparse(80, &[4, 7, 11, 19, 27, 32, 40, 63, 72])
+            .unwrap()
+            .unwrap();
+        let window = parent.window(3, 65).expect("window contains missing rows");
+        assert_eq!(window.arrow_bitmap().1, 3);
+        let missing = [1_usize, 4, 8, 16, 24, 29, 37, 60];
+
+        let row_aligned = PointRows::new(
+            65,
+            RowSelectionRef::Identity,
+            Some(&window),
+            PointRowLayout::RowAligned,
+        );
+        let expected_row_aligned: Vec<_> = (0..65)
+            .map(|logical| {
+                (
+                    logical,
+                    (!missing.contains(&logical)).then_some(logical),
+                )
+            })
+            .collect();
+        assert_eq!(row_aligned.cursor().collect::<Vec<_>>(), expected_row_aligned);
+
+        let compact = PointRows::new(
+            57,
+            RowSelectionRef::Identity,
+            Some(&window),
+            PointRowLayout::Compact,
+        );
+        let mut present = 0;
+        let expected_compact: Vec<_> = (0..65)
+            .map(|logical| {
+                if missing.contains(&logical) {
+                    (logical, None)
+                } else {
+                    let physical = present;
+                    present += 1;
+                    (logical, Some(physical))
+                }
+            })
+            .collect();
+        assert_eq!(compact.cursor().collect::<Vec<_>>(), expected_compact);
+        assert_eq!(present, compact.present_count());
+    }
+
+    #[test]
+    fn point_row_cursor_preserves_selection_order_for_empty_and_gathered_rows() {
+        let empty = PointRows::new(0, RowSelectionRef::Identity, None, PointRowLayout::Dense);
+        assert_eq!(
+            empty.cursor().collect::<Vec<_>>(),
+            Vec::<(usize, Option<usize>)>::new()
+        );
+
+        let all_missing = ValidityMask::from_vec(9, vec![true; 9])
+            .unwrap()
+            .unwrap();
+        let row_aligned_missing = PointRows::new(
+            9,
+            RowSelectionRef::Identity,
+            Some(&all_missing),
+            PointRowLayout::RowAligned,
+        );
+        assert_eq!(
+            row_aligned_missing.cursor().collect::<Vec<_>>(),
+            (0..9).map(|logical| (logical, None)).collect::<Vec<_>>()
+        );
+        let compact_missing = PointRows::new(
+            0,
+            RowSelectionRef::Identity,
+            Some(&all_missing),
+            PointRowLayout::Compact,
+        );
+        assert_eq!(
+            compact_missing.cursor().collect::<Vec<_>>(),
+            (0..9).map(|logical| (logical, None)).collect::<Vec<_>>()
+        );
+
+        let dense_map = RowSelection::gather_checked_native(vec![4_usize, 1, 4, 0], 5)
+            .unwrap()
+            .unwrap();
+        let dense_gather = PointRows::new(
+            5,
+            dense_map.as_deref(),
+            None,
+            PointRowLayout::Dense,
+        );
+        assert_eq!(
+            dense_gather.cursor().collect::<Vec<_>>(),
+            [(0, Some(4)), (1, Some(1)), (2, Some(4)), (3, Some(0))]
+        );
+
+        let row_aligned_mask = ValidityMask::from_vec(4, vec![false, true, false, false])
+            .unwrap()
+            .unwrap();
+        let row_aligned_gather = PointRows::new(
+            5,
+            dense_map.as_deref(),
+            Some(&row_aligned_mask),
+            PointRowLayout::RowAligned,
+        );
+        assert_eq!(
+            row_aligned_gather.cursor().collect::<Vec<_>>(),
+            [(0, Some(4)), (1, None), (2, Some(4)), (3, Some(0))]
+        );
+
+        let compact_map = RowSelection::gather_checked_native(vec![2_usize, 1, 2, 0], 3)
+            .unwrap()
+            .unwrap();
+        let compact_gather = PointRows::new(
+            3,
+            compact_map.as_deref(),
+            Some(&row_aligned_mask),
+            PointRowLayout::Compact,
+        );
+        assert_eq!(
+            compact_gather.cursor().collect::<Vec<_>>(),
+            [(0, Some(2)), (1, None), (2, Some(1)), (3, Some(2))]
+        );
+
+        let dense_window = PointRows::new(
+            8,
+            RowSelectionRef::Window { start: 3, len: 5 },
+            None,
+            PointRowLayout::Dense,
+        );
+        assert_eq!(
+            dense_window.cursor().collect::<Vec<_>>(),
+            [
+                (0, Some(3)),
+                (1, Some(4)),
+                (2, Some(5)),
+                (3, Some(6)),
+                (4, Some(7))
+            ]
+        );
     }
 
     fn gathered_lines(rows: usize) -> GeometryArrayStorage {
