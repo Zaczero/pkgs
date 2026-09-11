@@ -519,7 +519,9 @@ impl HeapSize for PointBatchTester {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordWindow, MultiPolygon, SharedSlice, XY, ring_classify_point};
+    use crate::geometry::{
+        CoordWindow, LineSeq, MultiPolygon, SharedSlice, XY, ring_classify_point,
+    };
     use crate::{CoordSeq, Ring};
 
     fn closed_ring(pts: &[(f64, f64)]) -> Ring {
@@ -861,5 +863,19 @@ mod tests {
                 shape.covers_point(point).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn generic_point_tester_uses_exact_source_incidence() {
+        let line = Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(2.0, 2.0)]).unwrap(),
+        ));
+        let tester = PointBatchTester::new(&line).unwrap();
+
+        assert!(tester.covers_point(Point::new_raw_xy(1.0, 1.0)));
+        assert!(tester.covers_point(Point::new_raw_xy(0.0, 0.0)));
+        assert!(!tester.covers_point(Point::new_raw_xy(1.0, 1.1)));
+        assert!(!tester.contains_point(Point::new_raw_xy(0.0, 0.0)));
+        assert!(tester.contains_point(Point::new_raw_xy(1.0, 1.0)));
     }
 }

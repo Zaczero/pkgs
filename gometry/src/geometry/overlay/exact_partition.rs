@@ -6628,4 +6628,23 @@ mod tests {
             crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge { .. })
         ));
     }
+
+    #[test]
+    fn rectangle_intersection_uses_exact_source_contacts() {
+        let crossing = Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_xy(&[XY::new(-1.0, 0.5), XY::new(2.0, 0.5)]).unwrap(),
+        ));
+        let bounds = Bounds::new_raw(0.0, 0.0, 1.0, 1.0);
+        assert!(exact_intersects_bounds(&crossing, bounds).unwrap());
+
+        let touching = Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_xy(&[XY::new(-1.0, 0.0), XY::new(0.0, 0.0)]).unwrap(),
+        ));
+        assert!(exact_intersects_bounds(&touching, bounds).unwrap());
+
+        let disjoint = Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_xy(&[XY::new(2.0, 2.0), XY::new(3.0, 3.0)]).unwrap(),
+        ));
+        assert!(!exact_intersects_bounds(&disjoint, bounds).unwrap());
+    }
 }
