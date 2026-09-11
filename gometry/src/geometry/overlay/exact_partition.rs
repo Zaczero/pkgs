@@ -1330,6 +1330,19 @@ impl ExactSourceInventory {
         })
     }
 
+    /// Serialize the occupied Cartesian support from the same selected faces
+    /// used by the exact fill selection. The caller may reuse this
+    /// named owner for metrics whose conversion is not planar, such as the
+    /// geographic area metric.
+    pub(in crate::geometry) fn occupied_cartesian_support(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<Shape> {
+        let (points, lines, polygons) =
+            self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union, true)?;
+        crate::geometry::overlay::build_certified_overlay_shape(points, lines, polygons)
+    }
+
     fn operand_count(&self) -> usize {
         self.polygon_rings.len()
     }
@@ -2001,6 +2014,13 @@ impl ExactSourceInventory {
         }
         net != 0
     }
+}
+
+pub(crate) fn occupied_cartesian_support(shape: &Shape) -> Result<Shape> {
+    let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+    let mut budget = ExpansionBudget::new("area", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    inventory.occupied_cartesian_support(&partition)
 }
 
 /// Exact point-cell certificate for a polygonal source. This is the cheap
@@ -4928,6 +4948,28 @@ mod tests {
         ] {
             assert_eq!(sources.occupied(&windings, false), nonzero, "{windings:?}");
             assert_eq!(sources.occupied(&windings, true), parity, "{windings:?}");
+        }
+    }
+
+    #[test]
+    fn occupied_support_owner_composes_stored_rings_and_parts() {
+        let cases = [
+            ("POLYGON ((0 0,1 0,1 1,0 1,0 0,1 0,1 1,0 1,0 0))", 1.0),
+            ("POLYGON ((0 0,1 1,1 0,0 1,0 0))", 0.5),
+            (
+                "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((0.5 0,1.5 0,1.5 1,0.5 1,0.5 0)))",
+                1.5,
+            ),
+            ("POLYGON ((0 0,1 0,1 1,0 1,0 0),(3 0,4 0,4 1,3 1,3 0))", 1.0),
+            (
+                "POLYGON ((0 0,1 0,1 1,0 1,0 0),(-0.5 -0.5,1.5 -0.5,1.5 1.5,-0.5 1.5,-0.5 -0.5))",
+                0.0,
+            ),
+        ];
+        for (wkt, expected) in cases {
+            let shape = crate::io::parse_wkt(wkt).expect("valid test WKT");
+            let support = occupied_cartesian_support(&shape).expect("exact occupied support");
+            assert_eq!(support.area(), expected, "{wkt}");
         }
     }
 

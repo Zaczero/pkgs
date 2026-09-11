@@ -58,7 +58,7 @@ pub(super) fn overlay_all_line_oracle(
         sources.sort_unstable_by(crate::geometry::compare_shapes);
     }
     let refs = sources.iter().collect::<Vec<_>>();
-    let shape = assemble_overlay(OverlayInputs::Cartesian(&refs), op, false)?;
+    let shape = assemble_overlay(OverlayInputs::Cartesian(&refs), op, false, false)?;
     let shape = if shape.is_empty() {
         empty_nary_overlay_shape(&refs, op)
     } else {
@@ -89,6 +89,7 @@ pub(super) fn binary_intersection_joint_graph(
     let shape = assemble_joint_graph_overlay(
         OverlayInputs::Cartesian(&refs),
         OverlayOp::Intersection,
+        false,
         false,
     )?;
     let shape = if shape.is_empty() {
@@ -172,6 +173,22 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
         op,
         strictness,
         bounds_certificates,
+        false,
+    )
+}
+
+pub(crate) fn occupied_geographic_support(
+    shape: &Shape,
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Shape> {
+    let originals = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
+        .map_err(overlay_view_error)?;
+    overlay_admitted(
+        OverlayInputs::Geographic(&originals),
+        OverlayOp::Union,
+        Strictness::Lenient,
+        false,
+        true,
     )
 }
 
@@ -180,6 +197,7 @@ fn overlay_admitted(
     op: OverlayOp,
     strictness: crate::geometry::Strictness,
     bounds_certificates: bool,
+    force_graph: bool,
 ) -> Result<Shape> {
     let domain = originals.domain();
     let bounds_facts = match originals {
@@ -290,6 +308,7 @@ fn overlay_admitted(
             None
         };
     let disjoint_bounds = components.is_some();
+    let raw_polygon_loops_eligible = bounds_facts.raw_polygon_loops_eligible && !force_graph;
     let convex_shape = if !disjoint_bounds
         && domain == TopologyDomain::Cartesian
         && originals.len() == 2
@@ -310,12 +329,7 @@ fn overlay_admitted(
     };
     let (shape, line_graph) = if let Some(components) = components {
         (
-            assemble_components_overlay(
-                staged,
-                &components,
-                op,
-                bounds_facts.raw_polygon_loops_eligible,
-            )?,
+            assemble_components_overlay(staged, &components, op, raw_polygon_loops_eligible)?,
             None,
         )
     } else if let Some(shape) = convex_shape {
@@ -324,7 +338,7 @@ fn overlay_admitted(
         (shape, Some(graph))
     } else {
         (
-            assemble_overlay(staged, op, bounds_facts.raw_polygon_loops_eligible)?,
+            assemble_overlay(staged, op, raw_polygon_loops_eligible, force_graph)?,
             None,
         )
     };
@@ -877,6 +891,7 @@ fn assemble_overlay(
     inputs: OverlayInputs<'_, '_>,
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
+    source_membership: bool,
 ) -> Result<Shape> {
     // `raw_polygon_loops_eligible` already means: a union, of operands with no
     // point or line support, whose raw coordinate bounds are sound. Such a
@@ -933,7 +948,7 @@ fn assemble_overlay(
             return build_overlay_shape(Vec::new(), &[], &polygons);
         }
     }
-    assemble_joint_graph_overlay(inputs, op, raw_polygon_loops_eligible)
+    assemble_joint_graph_overlay(inputs, op, raw_polygon_loops_eligible, source_membership)
 }
 
 /// Mixed-dimensional overlay from joint noding and per-operand membership.
@@ -941,6 +956,7 @@ fn assemble_joint_graph_overlay(
     inputs: OverlayInputs<'_, '_>,
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
+    source_membership: bool,
 ) -> Result<Shape> {
     let graph = match inputs {
         OverlayInputs::Cartesian(shapes) => TopologyGraph::cartesian_many(shapes),
@@ -957,7 +973,13 @@ fn assemble_joint_graph_overlay(
             .map(|view| TopologyGraph::geographic(*view))
             .collect::<Result<_>>()?,
     };
-    let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible)?;
+    let polygons = overlay_polygons(
+        &graph,
+        &source_graphs,
+        op,
+        raw_polygon_loops_eligible,
+        source_membership,
+    )?;
     // Overlay edges and candidate points are numerous for high-resolution
     // boundaries; prepare the retained polygons once instead of rescanning
     // every output ring for each candidate.
@@ -1002,6 +1024,7 @@ fn assemble_components_overlay(
                     OverlayInputs::Cartesian(&subset),
                     op,
                     raw_polygon_loops_eligible,
+                    false,
                 )?
             },
             OverlayInputs::Geographic(noded) => {
@@ -1010,6 +1033,7 @@ fn assemble_components_overlay(
                     OverlayInputs::Geographic(&subset),
                     op,
                     raw_polygon_loops_eligible,
+                    false,
                 )?
             },
         };
@@ -1072,6 +1096,7 @@ fn overlay_polygons(
     sources: &[TopologyGraph],
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
+    source_membership: bool,
 ) -> Result<Vec<crate::geometry::Polygon>> {
     if raw_polygon_loops_eligible {
         let loops = source_polygon_loops(sources);
@@ -1130,8 +1155,12 @@ fn overlay_polygons(
                 .iter()
                 .enumerate()
                 .map(|(source_row, source)| {
-                    face_area_side(&face.ring, graph, source_row as u32, &edge_by_endpoints)
-                        .unwrap_or_else(|| source.contains_area_interior(probe))
+                    if source_membership {
+                        source.contains_area_interior(probe)
+                    } else {
+                        face_area_side(&face.ring, graph, source_row as u32, &edge_by_endpoints)
+                            .unwrap_or_else(|| source.contains_area_interior(probe))
+                    }
                 })
                 .collect();
             i32::from(keep_area_face(&area_membership, op))

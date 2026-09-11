@@ -76,6 +76,47 @@ impl OverlayOp {
     }
 }
 
+/// Build one occupied-support shape for a metric or moment consumer.
+///
+/// Cartesian inputs use the exact incidence partition directly. Geographic
+/// inputs retain the geographic graph's seam and pole quotient; this wrapper
+/// changes only the selected region, leaving the metric conversion to its
+/// owner.
+pub(crate) fn occupied_support_shape(
+    shape: &Shape,
+    domain: TopologyDomain,
+) -> crate::error::Result<Shape> {
+    match domain {
+        TopologyDomain::Cartesian => occupied_cartesian_support(shape),
+        TopologyDomain::Geographic(frame) => {
+            if matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_))
+                && crate::geometry::validate_shape_in_frame(shape, domain)?.is_none()
+            {
+                // A frame-valid polygon already carries exactly one
+                // shell/hole support per part. In particular, polar caps
+                // cannot be reconstructed by a chart arrangement without
+                // losing the quotient's implicit pole closure.
+                return Ok(shape.clone());
+            }
+            if let Some(bounds) = shape.bounds()
+                && crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+                    Some(shape),
+                    bounds,
+                    frame,
+                )
+            {
+                // A canonical, non-seam, non-polar geographic shape has one
+                // chart with the same incidences as Cartesian longitude and
+                // latitude. The exact partition is therefore equivalent to
+                // the geographic quotient on this certified chart.
+                occupied_cartesian_support(shape)
+            } else {
+                nary::occupied_geographic_support(shape, frame)
+            }
+        },
+    }
+}
+
 /// Coordinate axes an empty overlay declares. Non-empty results resolve each
 /// axis from contributing source values; an empty has no vertices to resolve,
 /// so it retains the operation's full declared source layout instead.
@@ -110,6 +151,7 @@ pub(crate) use clip::{
     line_parts_to_shape,
 };
 pub(crate) use exact_partition::exact_intersects_bounds;
+pub(crate) use exact_partition::occupied_cartesian_support;
 pub(in crate::geometry) use exact_partition::{
     ExactChainView, ExactPartition, ExactLineEmission, ExactSourceInventory, NodeId, certify_emitted_incidence,
     exact_point_location,

@@ -84,7 +84,7 @@ mod linear;
 mod linear_3d;
 mod ordinates;
 mod overlay;
-pub(crate) use overlay::overlay_all;
+pub(crate) use overlay::{occupied_support_shape, overlay_all};
 pub(crate) mod packed_line_metrics;
 mod point_location;
 mod predicates;
