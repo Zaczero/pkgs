@@ -3242,7 +3242,6 @@ pub(super) fn build(
     if combinatorial_dual
         && sites.len() >= 3
         && normal_or_zero
-        && std::env::var_os("GOMETRY_VORO_REFERENCE").is_none()
         && matches!(
             boundary,
             VoronoiBoundary::Envelope | VoronoiBoundary::Padded

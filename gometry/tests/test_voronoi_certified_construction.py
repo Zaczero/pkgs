@@ -45,7 +45,9 @@ def _normalized_edges(
     return tuple(sorted(normalized))
 
 
-def _outcome(points: list[tuple[float, float]], clip: str) -> tuple[str, object]:
+def _outcome(
+    points: list[tuple[float, float]], clip: gm.Geometry | str
+) -> tuple[str, object]:
     # Cells are byte-identical between the lanes. Edges are the same segments,
     # but each lane orders and directs its list by its own construction (the
     # subdivision walk versus the dual's lexicographic canon), so they compare
@@ -66,8 +68,40 @@ def _outcome(points: list[tuple[float, float]], clip: str) -> tuple[str, object]
         return ('error', str(error))
 
 
-def _reference_cases() -> list[tuple[str, list[tuple[float, float]], str]]:
-    # The dual branch is selected only above five normal sites. One random
+def _rectangle_clip(points: list[tuple[float, float]], mode: str) -> gm.Geometry:
+    source = gm.MultiPoint(points)
+    bounds = source.bounds
+    assert bounds is not None
+    min_x, min_y, max_x, max_y = bounds
+    if mode == 'envelope':
+        return gm.box(min_x, min_y, max_x, max_y)
+
+    assert mode == 'padded'
+    span = max(
+        Fraction(max_x) - Fraction(min_x),
+        Fraction(max_y) - Fraction(min_y),
+    )
+    half = span / 2
+
+    def outward(base: float, add: bool) -> float:
+        exact = Fraction(base) + (half if add else -half)
+        rounded = float(exact)
+        if add and Fraction(rounded) < exact:
+            rounded = math.nextafter(rounded, math.inf)
+        elif not add and Fraction(rounded) > exact:
+            rounded = math.nextafter(rounded, -math.inf)
+        return rounded
+
+    return gm.box(
+        outward(min_x, False),
+        outward(min_y, False),
+        outward(max_x, True),
+        outward(max_y, True),
+    )
+
+
+def _differential_cases() -> list[tuple[str, list[tuple[float, float]], str]]:
+    # The dual branch is selected for at least three normal sites. One random
     # Frozen coordinates from the prior random six-site case cover both finite
     # boundary spellings; a cocircular case keeps the exact tie topology
     # without replaying production-scale inputs.
@@ -115,7 +149,7 @@ def _reference_cases() -> list[tuple[str, list[tuple[float, float]], str]]:
     ]
 
 
-REFERENCE_CASES = _reference_cases()
+DIFFERENTIAL_CASES = _differential_cases()
 
 PERMUTATION_FAMILIES: list[tuple[str, tuple[tuple[float, float], ...]]] = [
     (
@@ -143,39 +177,39 @@ PERMUTATION_FAMILIES: list[tuple[str, tuple[tuple[float, float], ...]]] = [
 
 
 # One case per branch rather than one for the old production-scale sweep. The
-# case id names the input that diverged and keeps the dual/reference comparison
+# case id names the input that diverged and keeps the named/polygon comparison
 # independently reportable under xdist.
 @pytest.mark.parametrize(
     ('points', 'clip'),
-    [pytest.param(points, clip, id=label) for label, points, clip in REFERENCE_CASES],
+    [
+        pytest.param(points, clip, id=label)
+        for label, points, clip in DIFFERENTIAL_CASES
+    ],
 )
-def test_combinatorial_dual_is_byte_identical_to_live_reference(
-    monkeypatch: pytest.MonkeyPatch,
+def test_combinatorial_dual_is_byte_identical_to_explicit_rectangle(
     points: list[tuple[float, float]],
     clip: str,
 ) -> None:
-    monkeypatch.setenv('GOMETRY_VORO_REFERENCE', '1')
-    reference = _outcome(points, clip)
-    monkeypatch.delenv('GOMETRY_VORO_REFERENCE')
-    assert _outcome(points, clip) == reference
+    named = _outcome(points, clip)
+    explicit = _outcome(points, _rectangle_clip(points, clip))
+    assert named == explicit
 
 
 @pytest.mark.parametrize(
     'family',
     [pytest.param(family, id=label) for label, family in PERMUTATION_FAMILIES],
 )
-def test_voronoi_is_byte_identical_to_the_reference_under_representative_site_orders(
-    monkeypatch: pytest.MonkeyPatch,
+def test_voronoi_is_byte_identical_to_explicit_rectangle_under_representative_site_orders(
     family: tuple[tuple[float, float], ...],
 ) -> None:
     # Original, cyclic shift, and reverse cover order direction and a changed
     # insertion start without replaying all n! equivalent permutations.
     orders = (family, family[1:] + family[:1], family[::-1])
-    monkeypatch.setenv('GOMETRY_VORO_REFERENCE', '1')
-    reference = tuple(_outcome(list(order), 'envelope') for order in orders)
-    monkeypatch.delenv('GOMETRY_VORO_REFERENCE')
-    dual = tuple(_outcome(list(order), 'envelope') for order in orders)
-    assert dual == reference
+    assert all(
+        _outcome(list(order), 'envelope')
+        == _outcome(list(order), _rectangle_clip(list(order), 'envelope'))
+        for order in orders
+    )
 
 
 def _assert_topological_partition(

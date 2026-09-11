@@ -115,10 +115,7 @@ def test_named_and_explicit_equal_envelopes_are_byte_identical(
         assert gm.equals_identical(left, right)
 
 
-def test_integer_site_sweep_polygons_and_edges_share_vertex_bits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv('GOMETRY_VORO_REFERENCE', raising=False)
+def test_integer_site_sweep_polygons_and_edges_share_vertex_bits() -> None:
     for count, order in _swept_orders():
         source = gm.MultiPoint(order)
         polygon_vertices = _vertex_bits(source.voronoi_polygons(clip='envelope'))
@@ -131,10 +128,7 @@ def test_integer_site_sweep_polygons_and_edges_share_vertex_bits(
         ), (count, order)
 
 
-def test_integer_site_sweep_emits_only_positive_zero(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv('GOMETRY_VORO_REFERENCE', raising=False)
+def test_integer_site_sweep_emits_only_positive_zero() -> None:
     for count, order in _swept_orders():
         source = gm.MultiPoint(order)
         for vertices in (
@@ -150,25 +144,23 @@ def test_integer_site_sweep_emits_only_positive_zero(
             ), (count, order)
 
 
-def test_integer_site_sweep_default_and_arrangement_are_byte_identical(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_integer_site_sweep_named_and_explicit_clips_are_byte_identical() -> None:
     for count, order in _swept_orders():
         source = gm.MultiPoint(order)
-        monkeypatch.delenv('GOMETRY_VORO_REFERENCE', raising=False)
-        default = _wkb_signature(source.voronoi_polygons(clip='envelope'))
-        monkeypatch.setenv('GOMETRY_VORO_REFERENCE', '1')
-        arrangement = _wkb_signature(source.voronoi_polygons(clip='envelope'))
+        bounds = source.bounds
+        assert bounds is not None
+        named = _wkb_signature(source.voronoi_polygons(clip='envelope'))
+        explicit = _wkb_signature(
+            source.voronoi_polygons(clip=gm.box(*bounds)),
+        )
 
-        assert default == arrangement, (count, order)
+        assert named == explicit, (count, order)
 
 
 @pytest.mark.parametrize('count', range(5, 13))
 def test_integer_site_sweep_default_lane_is_permutation_deterministic(
-    monkeypatch: pytest.MonkeyPatch,
     count: int,
 ) -> None:
-    monkeypatch.delenv('GOMETRY_VORO_REFERENCE', raising=False)
     signatures = {
         _wkb_signature(gm.MultiPoint(order).voronoi_polygons(clip='envelope'))
         for order in _orders(SITES[:count])
@@ -178,14 +170,14 @@ def test_integer_site_sweep_default_lane_is_permutation_deterministic(
 
 
 @pytest.mark.parametrize('count', range(5, 13))
-def test_integer_site_sweep_arrangement_lane_is_permutation_deterministic(
-    monkeypatch: pytest.MonkeyPatch,
+def test_integer_site_sweep_explicit_polygon_lane_is_permutation_deterministic(
     count: int,
 ) -> None:
-    monkeypatch.setenv('GOMETRY_VORO_REFERENCE', '1')
-    signatures = {
-        _wkb_signature(gm.MultiPoint(order).voronoi_polygons(clip='envelope'))
-        for order in _orders(SITES[:count])
-    }
+    signatures = set()
+    for order in _orders(SITES[:count]):
+        source = gm.MultiPoint(order)
+        bounds = source.bounds
+        assert bounds is not None
+        signatures.add(_wkb_signature(source.voronoi_polygons(clip=gm.box(*bounds))))
 
     assert len(signatures) == 1, (count, len(signatures))
