@@ -717,6 +717,22 @@ fn segment_aware_hausdorff_matches_brute_oracle_on_fixtures() {
 }
 
 #[test]
+fn target_polygon_membership_zeros_a_strictly_interior_point() {
+    let source = Shape::Point(p(1.0, 1.0));
+    let target = polygon(vec![
+        p(0.0, 0.0),
+        p(2.0, 0.0),
+        p(2.0, 2.0),
+        p(0.0, 2.0),
+        p(0.0, 0.0),
+    ]);
+    assert_eq!(
+        directed_hausdorff_distance_squared_shapes(&source, &target).unwrap(),
+        0.0
+    );
+}
+
+#[test]
 fn segment_aware_hausdorff_empty_and_point_semantics() {
     assert!(
         line(vec![p(0.0, 0.0), p(1.0, 0.0)])

@@ -14,7 +14,8 @@ use crate::geometry::distance::hausdorff::{
 };
 use crate::geometry::facet_bvh::packed_index_count;
 use crate::geometry::{
-    Point, Segment, Shape, XY, point_distance_squared, point_segment_distance_squared,
+    Point, Segment, Shape, XY, point_distance, point_distance_squared, point_segment_distance,
+    point_segment_distance_squared,
 };
 /// Directed Hausdorff targets with at most this many vertices skip spatial
 /// indexes and use a linear segment scan plus stack-local breakpoint buffers.
@@ -25,6 +26,9 @@ pub(crate) struct HausdorffTarget {
     pub(crate) query: HausdorffLineworkQuery,
     pub(crate) points: Vec<Point>,
     pub(crate) features: Vec<HausdorffFeature>,
+    /// Filled area membership for polygonal targets. Boundary-only targets
+    /// leave this absent and retain their existing linework semantics.
+    filled: Option<Shape>,
 }
 
 #[cfg(test)]
@@ -42,13 +46,19 @@ pub(crate) const fn should_build_index(segment_count: usize, point_count: usize)
 impl HausdorffTarget {
     pub(crate) fn build(shape: &Shape) -> crate::error::Result<Self> {
         let points = shape.point_only_points()?;
-        Self::from_query(HausdorffLineworkQuery::from_shape(shape, false)?, points)
+        let filled = shape.has_area_parts().then(|| shape.clone());
+        Self::from_query(
+            HausdorffLineworkQuery::from_shape(shape, false)?,
+            points,
+            filled,
+        )
     }
 
     pub(crate) fn from_xy_columns(xs: &[f64], ys: &[f64]) -> crate::error::Result<Self> {
         Self::from_query(
             HausdorffLineworkQuery::from_open_xy_columns(xs, ys, false)?,
             Vec::new(),
+            None,
         )
     }
 
@@ -76,11 +86,16 @@ impl HausdorffTarget {
         Self::from_query(
             HausdorffLineworkQuery::from_open_xy_columns(&xs, &ys, force_bvh).unwrap(),
             points,
+            None,
         )
         .expect("test linework query is valid")
     }
 
-    fn from_query(query: HausdorffLineworkQuery, points: Vec<Point>) -> crate::error::Result<Self> {
+    fn from_query(
+        query: HausdorffLineworkQuery,
+        points: Vec<Point>,
+        filled: Option<Shape>,
+    ) -> crate::error::Result<Self> {
         let mut features = Vec::new();
         let count = packed_index_count(query.linework.segment_count(), points.len())?;
         crate::boundary::try_reserve_vec(&mut features, count)?;
@@ -104,6 +119,7 @@ impl HausdorffTarget {
             query,
             points,
             features,
+            filled,
         })
     }
 
@@ -116,9 +132,39 @@ impl HausdorffTarget {
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
     pub(crate) fn distance_squared(&self, point: XY) -> crate::error::Result<f64> {
+        if self
+            .filled
+            .as_ref()
+            .is_some_and(|shape| shape.area_covers_point(Point::new_raw_xy(point.x, point.y)))
+        {
+            return Ok(0.0);
+        }
         let mut best = self.linework_distance_squared(point)?;
         for &target in &self.points {
             best = best.min(point_distance_squared(point, target.xy()));
+        }
+        Ok(best)
+    }
+
+    /// Distance-space target query for guarded fallback paths. A direct
+    /// feature fold retains the exact point-to-segment owner when squared
+    /// space underflows or overflows.
+    pub(crate) fn distance(&self, point: XY) -> crate::error::Result<f64> {
+        let point = Point::new_raw_xy(point.x, point.y);
+        if self
+            .filled
+            .as_ref()
+            .is_some_and(|shape| shape.area_covers_point(point))
+        {
+            return Ok(0.0);
+        }
+        let mut best = f64::INFINITY;
+        for &feature in &self.features {
+            let candidate = match feature {
+                HausdorffFeature::Point(target) => point_distance(point, target),
+                HausdorffFeature::Segment(segment) => point_segment_distance(point, segment)?,
+            };
+            best = best.min(candidate);
         }
         Ok(best)
     }

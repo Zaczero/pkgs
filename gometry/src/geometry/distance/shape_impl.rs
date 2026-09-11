@@ -594,19 +594,7 @@ fn robust_continuous_hausdorff(left: &Shape, right: &Shape) -> Result<f64> {
 
 pub(super) fn robust_directed_hausdorff(source: &Shape, target: &Shape) -> Result<f64> {
     let target = HausdorffTarget::build(target)?;
-    let distance = |point: XY| -> Result<f64> {
-        let mut best = f64::INFINITY;
-        for feature in &target.features {
-            let candidate = match *feature {
-                HausdorffFeature::Point(other) => point_distance(point, other),
-                HausdorffFeature::Segment(segment) => {
-                    robust_point_segment_distance(point, segment)?
-                },
-            };
-            best = best.min(candidate);
-        }
-        Ok(best)
-    };
+    let distance = |point: XY| target.distance(point);
     let mut best = 0.0_f64;
     source.try_for_each_point(|point| {
         best = best.max(distance(point.xy())?);
