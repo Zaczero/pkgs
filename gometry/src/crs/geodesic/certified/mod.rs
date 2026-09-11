@@ -11,6 +11,10 @@
     dead_code,
     reason = "this private arithmetic spine is consumed by later certified geodesic layers"
 )]
+#![expect(
+    unused_imports,
+    reason = "the private certified re-exports are the interface for later geodesic layers"
+)]
 
 use std::cmp::Ordering;
 
@@ -20,8 +24,13 @@ use crate::error::{Error, ErrorKind, ResourceError, Result};
 mod natural;
 #[cfg(test)]
 mod tests;
+mod trig;
 
 use natural::Magnitude;
+pub(crate) use trig::{
+    AngleBracket, AngleBracketStatus, SineCosine, VectorSector, pi_bracket, sin_cos_degrees,
+    sin_cos_radians, sin_cos_radians_enclosure, vector_angle_bracket,
+};
 
 fn numerical_indeterminacy() -> Error {
     ErrorKind::NumericalIndeterminacy.into()
