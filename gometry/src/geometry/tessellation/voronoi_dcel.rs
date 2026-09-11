@@ -2757,6 +2757,81 @@ fn marked_site_candidates(
     Ok(candidates)
 }
 
+fn fan_target(subdivision: &ExactSubdivision, edge: EdgeId, vertex: VertexId) -> VertexId {
+    let endpoints = subdivision.edges[edge.0 as usize].endpoints;
+    if endpoints[0] == vertex {
+        endpoints[1]
+    } else {
+        endpoints[0]
+    }
+}
+
+fn rounded_fan_angle_cmp(origin: XY, left: XY, right: XY) -> Result<Ordering> {
+    let half = |target: XY| target.y > origin.y || (target.y == origin.y && target.x >= origin.x);
+    match (half(left), half(right)) {
+        (true, false) => Ok(Ordering::Less),
+        (false, true) => Ok(Ordering::Greater),
+        _ => match exact::orient2d(origin, left, right) {
+            ExactSign::Positive => Ok(Ordering::Less),
+            ExactSign::Negative => Ok(Ordering::Greater),
+            ExactSign::Zero => Err(voronoi_error(
+                "rounded Voronoi fan contains an angular tie",
+            )),
+        },
+    }
+}
+
+fn sort_fan(
+    vertex: VertexId,
+    incident: &[EdgeId],
+    rounded: bool,
+    subdivision: &ExactSubdivision,
+    exact_to_embedded: &[Option<EmbeddedVertexId>],
+    points: &[XY],
+    order: &mut Vec<EdgeId>,
+) -> Result<()> {
+    let embedded_point = |vertex: VertexId| -> Result<XY> {
+        let embedded = exact_to_embedded[vertex.0 as usize]
+            .ok_or_else(|| voronoi_error("live edge has a non-live endpoint"))?;
+        Ok(points[embedded.0 as usize])
+    };
+    let exact_origin = &subdivision.vertices[vertex.0 as usize].point;
+    let rounded_origin = rounded.then(|| embedded_point(vertex)).transpose()?;
+    let compare = |left: EdgeId, right: EdgeId| -> Result<Ordering> {
+        let left = fan_target(subdivision, left, vertex);
+        let right = fan_target(subdivision, right, vertex);
+        if let Some(origin) = rounded_origin {
+            rounded_fan_angle_cmp(origin, embedded_point(left)?, embedded_point(right)?)
+        } else {
+            exact::angle_ccw_cmp(
+                exact_origin,
+                &subdivision.vertices[left.0 as usize].point,
+                &subdivision.vertices[right.0 as usize].point,
+            )
+        }
+    };
+
+    order.clear();
+    order.extend_from_slice(incident);
+    for index in 1..order.len() {
+        let mut cursor = index;
+        while cursor > 0 && compare(order[cursor], order[cursor - 1])? == Ordering::Less {
+            order.swap(cursor, cursor - 1);
+            cursor -= 1;
+        }
+    }
+    for pair in order.windows(2) {
+        compare(pair[0], pair[1])?;
+    }
+    if order.len() > 1 {
+        compare(*order.last().unwrap(), order[0])?;
+    }
+    if let Some((least, _)) = order.iter().enumerate().min_by_key(|(_, edge)| *edge) {
+        order.rotate_left(least);
+    }
+    Ok(())
+}
+
 fn embed(
     subdivision: &ExactSubdivision,
     parts: Vec<ExactCellPart>,
@@ -2959,6 +3034,8 @@ fn embed(
             *cursor += 1;
         }
     }
+    let mut exact_order = Vec::new();
+    let mut rounded_order = Vec::new();
     for vertex_index in 0..subdivision.vertices.len() {
         let vertex = VertexId(vertex_index as u32);
         if !live[vertex_index] {
@@ -2966,57 +3043,25 @@ fn embed(
         }
         let incident =
             &incident_edges[incidence_offsets[vertex_index]..incidence_offsets[vertex_index + 1]];
-        let sort_fan = |rounded: bool| -> Result<Vec<EdgeId>> {
-            let origin = if rounded {
-                rounded_exact(vertex)?
-            } else {
-                subdivision.vertices[vertex_index].point.clone()
-            };
-            let mut rays: Vec<_> = incident
-                .iter()
-                .map(|edge_id| {
-                    let edge = &subdivision.edges[edge_id.0 as usize];
-                    let target = if edge.endpoints[0] == vertex {
-                        edge.endpoints[1]
-                    } else {
-                        edge.endpoints[0]
-                    };
-                    let point = if rounded {
-                        rounded_exact(target)?
-                    } else {
-                        subdivision.vertices[target.0 as usize].point.clone()
-                    };
-                    Ok((*edge_id, point))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            // Vertex degree is small, and a fallible insertion sort keeps an exact
-            // angular tie from being disguised as `Ordering::Equal` inside an
-            // infallible standard-library comparator.
-            for index in 1..rays.len() {
-                let mut cursor = index;
-                while cursor > 0
-                    && exact::angle_ccw_cmp(&origin, &rays[cursor].1, &rays[cursor - 1].1)?
-                        == Ordering::Less
-                {
-                    rays.swap(cursor, cursor - 1);
-                    cursor -= 1;
-                }
-            }
-            for pair in rays.windows(2) {
-                exact::angle_ccw_cmp(&origin, &pair[0].1, &pair[1].1)
-                    .map_err(|_| voronoi_error("rounded Voronoi fan contains an angular tie"))?;
-            }
-            if rays.len() > 1 {
-                exact::angle_ccw_cmp(&origin, &rays.last().unwrap().1, &rays[0].1)
-                    .map_err(|_| voronoi_error("rounded Voronoi fan contains an angular tie"))?;
-            }
-            let mut order: Vec<_> = rays.into_iter().map(|ray| ray.0).collect();
-            if let Some((least, _)) = order.iter().enumerate().min_by_key(|(_, edge)| *edge) {
-                order.rotate_left(least);
-            }
-            Ok(order)
-        };
-        if sort_fan(false)? != sort_fan(true)? {
+        sort_fan(
+            vertex,
+            incident,
+            false,
+            subdivision,
+            &exact_to_embedded,
+            &points,
+            &mut exact_order,
+        )?;
+        sort_fan(
+            vertex,
+            incident,
+            true,
+            subdivision,
+            &exact_to_embedded,
+            &points,
+            &mut rounded_order,
+        )?;
+        if exact_order != rounded_order {
             return Err(embedding_failure());
         }
     }
@@ -3611,6 +3656,33 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn rounded_fan_order_matches_exact_stored_points() {
+        let points = [
+            XY::new(-1.0, -0.0),
+            XY::new(1.0, -0.0),
+            XY::new(0.0, 1.0),
+            XY::new(-1.0, 0.0),
+            XY::new(0.0, -1.0),
+        ];
+        for origin in points {
+            for left in points {
+                for right in points {
+                    let actual = rounded_fan_angle_cmp(origin, left, right);
+                    let exact = exact::angle_ccw_cmp(
+                        &exact::ExactPoint::from_xy(origin),
+                        &exact::ExactPoint::from_xy(left),
+                        &exact::ExactPoint::from_xy(right),
+                    );
+                    assert_eq!(actual.is_err(), exact.is_err());
+                    if let (Ok(actual), Ok(exact)) = (actual, exact) {
+                        assert_eq!(actual, exact);
+                    }
+                }
+            }
+        }
+    }
 
     fn cycle(points: &[(f64, f64)]) -> Vec<exact::ExactPoint> {
         points
