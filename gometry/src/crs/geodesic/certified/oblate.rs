@@ -451,6 +451,11 @@ fn find_root(data: &CanonicalData, context: &mut PrecisionContext) -> Result<Enc
         return Enclosure::exact(candidate, context);
     }
 
+    let search_upper = candidate_evaluation.sign == SampleSign::Negative;
+    if let Some(bracket) = local_bracket(data, &candidate, search_upper, context)? {
+        return bisect_root(data, bracket.0, bracket.1, context);
+    }
+
     let (lower, upper) = match (v_sign, candidate_evaluation.sign) {
         (Sign::Positive, SampleSign::Positive) => (Dyadic::zero(), candidate),
         (Sign::Negative, SampleSign::Negative) => {
@@ -466,6 +471,55 @@ fn find_root(data: &CanonicalData, context: &mut PrecisionContext) -> Result<Enc
         _ => return Err(numerical_indeterminacy_error()),
     };
     bisect_root(data, lower, upper, context)
+}
+
+/// Search a small, certified neighbourhood of the ordinary candidate before
+/// falling back to the full feasible component.  The candidate only supplies
+/// the centre; the returned endpoints are accepted only after this module
+/// proves opposite residual signs.
+fn local_bracket(
+    data: &CanonicalData,
+    candidate: &Dyadic,
+    search_upper: bool,
+    context: &mut PrecisionContext,
+) -> Result<Option<(Dyadic, Dyadic)>> {
+    // The first probe is several binary64 ulps wide at radian scale.  The
+    // geometric expansion remains bounded and the final bisection still
+    // proves the publication cell from its own residuals.
+    context.restart_attempt();
+    let upper_bound = if search_upper {
+        Some(pi_bracket(context)?.lo().try_clone(context)?)
+    } else {
+        None
+    };
+    for exponent in [48_i64, 44, 40, 36, 32, 28, 24, 20, 16, 12, 8] {
+        context.restart_attempt();
+        let offset = Dyadic::one(context)?.scale_pow2(-exponent, context)?;
+        let probe = if search_upper {
+            candidate.add_scratch(&offset, context)?
+        } else {
+            candidate.sub_scratch(&offset, context)?
+        };
+        if (!search_upper && probe.sign() != Sign::Positive)
+            || (search_upper && upper_bound.as_ref().is_some_and(|bound| probe >= *bound))
+        {
+            continue;
+        }
+        let sample = sample_at(data, &probe, context)?;
+        if sample.sign == SampleSign::Infeasible {
+            continue;
+        }
+        match (search_upper, sample.sign) {
+            (true, SampleSign::Positive) => {
+                return Ok(Some((candidate.try_clone(context)?, probe)));
+            },
+            (false, SampleSign::Negative) => {
+                return Ok(Some((probe, candidate.try_clone(context)?)));
+            },
+            _ => {},
+        }
+    }
+    Ok(None)
 }
 
 fn candidate_alpha(data: &CanonicalData, context: &mut PrecisionContext) -> Result<Dyadic> {
@@ -594,7 +648,7 @@ fn bisect_root(
     mut upper: Dyadic,
     context: &mut PrecisionContext,
 ) -> Result<Enclosure> {
-    let target_bits = context.active_precision_bits().saturating_sub(32).min(112);
+    let target_bits = context.active_precision_bits().saturating_sub(32).min(80);
     let target = Dyadic::one(context)?.scale_pow2(-i64::from(target_bits), context)?;
     for _ in 0..MAX_ROOT_STEPS {
         context.restart_attempt();
@@ -1017,7 +1071,7 @@ fn integration_options(
     include_reduced_length: bool,
 ) -> Result<TaylorOptions> {
     let bits = context.active_precision_bits();
-    let target_limit = if include_reduced_length { 64 } else { 96 };
+    let target_limit = if include_reduced_length { 64 } else { 80 };
     let target_bits = bits.saturating_sub(32).min(target_limit);
     let target = binary64_power_of_two(
         -i32::try_from(target_bits).map_err(|_| numerical_indeterminacy_error())?,
