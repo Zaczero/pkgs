@@ -47,6 +47,14 @@ pub(super) fn dedup_consecutive(coords: Vec<Point>) -> Vec<Point> {
 /// closed input ring re-joins its trailing piece onto the leading one so
 /// every returned piece starts and ends on the seam.
 pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
+    segment_coords_with_precision(points, true)
+}
+
+pub(crate) fn segment_coords_exact(points: &[Point]) -> Vec<Vec<Point>> {
+    segment_coords_with_precision(points, false)
+}
+
+fn segment_coords_with_precision(points: &[Point], rounded_latitude: bool) -> Vec<Vec<Point>> {
     let mut coords = points.to_vec();
     resolve_seam_aliases(&mut coords);
     let coords = dedup_consecutive(coords);
@@ -57,12 +65,12 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
         let delta = end.x - start.x;
         if delta > 180.0 && delta != 360.0 {
             // Westward exit: close on -180, reopen on 180.
-            let (west, east) = crossing_points(start, end);
+            let (west, east) = crossing_points(start, end, rounded_latitude);
             piece.push(west);
             pieces.push(std::mem::replace(&mut piece, vec![east]));
         } else if -delta > 180.0 && -delta != 360.0 {
             // Eastward exit: close on 180, reopen on -180.
-            let (west, east) = crossing_points(end, start);
+            let (west, east) = crossing_points(end, start, rounded_latitude);
             piece.push(east);
             pieces.push(std::mem::replace(&mut piece, vec![west]));
         }
@@ -85,15 +93,16 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
 
 /// The pair of seam points `((-180, lat), (180, lat))` for a segment from
 /// `west` (the side whose longitude is near +17x) to `east`. The latitude is
-/// computed from the great-circle intersection and rounded to 7 decimals;
-/// Z/M are interpolated along the great circle.
-fn crossing_points(west: Point, east: Point) -> (Point, Point) {
+/// computed from the great-circle intersection; Z/M are interpolated along
+/// the great circle. The topology chart asks for the rounded form, while an
+/// explicit split may retain the represented crossing.
+fn crossing_points(west: Point, east: Point, rounded_latitude: bool) -> (Point, Point) {
     let (latitude, fraction) = if west.x.abs() == 180.0 {
         (west.y, 0.0)
     } else if east.x.abs() == 180.0 {
         (east.y, 1.0)
     } else {
-        crossing_latitude_great_circle(west, east)
+        crossing_latitude_great_circle(west, east, rounded_latitude)
     };
     let z = interpolate_optional(west.z(), east.z(), fraction);
     let m = interpolate_optional(west.m(), east.m(), fraction);
@@ -137,6 +146,7 @@ pub(crate) fn crossing_latitude_in_frame(
     let (latitude, _) = crossing_latitude_great_circle(
         Point::new_raw_xy(start.x * longitude_scale, start.y * latitude_scale),
         Point::new_raw_xy(end.x * longitude_scale, end.y * latitude_scale),
+        true,
     );
     latitude / latitude_scale
 }
@@ -162,11 +172,11 @@ fn norm(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }
 
-/// Great-circle crossing latitude (degrees, rounded to 7 decimals) and the
-/// along-arc fraction of the crossing for Z/M interpolation. The plane
+/// Great-circle crossing latitude (degrees) and the along-arc fraction of the
+/// crossing for Z/M interpolation. The plane
 /// through both points crossed with the meridian plane `-Y` lands in the XZ
 /// plane; the segment direction guarantees the antimeridian (x <= 0) branch.
-fn crossing_latitude_great_circle(start: Point, end: Point) -> (f64, f64) {
+fn crossing_latitude_great_circle(start: Point, end: Point, rounded_latitude: bool) -> (f64, f64) {
     let p1 = unit_sphere(start);
     let p2 = unit_sphere(end);
     let n1 = cross(p1, p2);
@@ -175,7 +185,12 @@ fn crossing_latitude_great_circle(start: Point, end: Point) -> (f64, f64) {
     let length = norm(intersection);
     debug_assert!(intersection[0] <= 0.0, "crossing is on the antimeridian");
     // `+ 0.0` canonicalizes a negative-zero crossing latitude.
-    let latitude = ((intersection[2] / length).asin().to_degrees() * 1e7).round() / 1e7 + 0.0;
+    let latitude = (intersection[2] / length).asin().to_degrees();
+    let latitude = if rounded_latitude {
+        (latitude * 1e7).round() / 1e7
+    } else {
+        latitude
+    } + 0.0;
     let crossing = [
         intersection[0] / length,
         intersection[1] / length,

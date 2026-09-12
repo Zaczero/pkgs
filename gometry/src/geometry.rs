@@ -56,8 +56,8 @@ pub(crate) use antimeridian::{
     geographic_crossing, geographic_crossing_bounds,
     geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
     is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
-    self_intersections_in_frame, split_geographic_view, topology_domain,
-    unary_antimeridian_derived, validate_data_in_frame, validate_shape_in_frame,
+    self_intersections_in_frame, topology_domain, unary_antimeridian_derived,
+    validate_data_in_frame, validate_shape_in_frame,
 };
 mod arrangement;
 mod bvh_code;

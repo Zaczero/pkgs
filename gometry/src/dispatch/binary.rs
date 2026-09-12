@@ -767,7 +767,7 @@ fn split_operand_arc_for_topology(
         && crate::geometry::crosses_antimeridian_in_frame(plan.shape(), frame)
     {
         Arc::try_new(PreparedPlan::new(ShapeData::from(
-            plan.shape().split_antimeridian_in_frame(frame)?,
+            plan.shape().split_antimeridian_in_frame_exact(frame)?,
         ))?)
         .map_err(crate::error::Error::from)
     } else {
@@ -798,14 +798,14 @@ where
         };
         let left_split = if left_crosses {
             Some(PreparedPlan::new(ShapeData::from(
-                left.shape().split_antimeridian_in_frame(frame)?,
+                left.shape().split_antimeridian_in_frame_exact(frame)?,
             ))?)
         } else {
             None
         };
         let right_split = if right_crosses {
             Some(PreparedPlan::new(ShapeData::from(
-                right.shape().split_antimeridian_in_frame(frame)?,
+                right.shape().split_antimeridian_in_frame_exact(frame)?,
             ))?)
         } else {
             None

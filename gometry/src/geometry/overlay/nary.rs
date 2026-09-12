@@ -10,6 +10,7 @@ use crate::geometry::overlay::{
     ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
     build_overlay_shape, dedup_points, overlay_declared_axes,
 };
+use crate::geometry::predicates::ring_classify_point;
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
@@ -58,7 +59,7 @@ pub(super) fn overlay_all_line_oracle(
         sources.sort_unstable_by(crate::geometry::compare_shapes);
     }
     let refs = sources.iter().collect::<Vec<_>>();
-    let shape = assemble_overlay(OverlayInputs::Cartesian(&refs), op, false, false)?;
+    let shape = assemble_overlay(OverlayInputs::Cartesian(&refs), op, false)?;
     let shape = if shape.is_empty() {
         empty_nary_overlay_shape(&refs, op)
     } else {
@@ -89,7 +90,6 @@ pub(super) fn binary_intersection_joint_graph(
     let shape = assemble_joint_graph_overlay(
         OverlayInputs::Cartesian(&refs),
         OverlayOp::Intersection,
-        false,
         false,
     )?;
     let shape = if shape.is_empty() {
@@ -236,7 +236,9 @@ fn overlay_admitted(
                 .map_err(crate::error::Error::from)?;
             for view in originals.views() {
                 let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
-                    crate::geometry::split_geographic_view(*view)?.normalize()?
+                    view.shape()
+                        .split_antimeridian_in_frame_exact(frame)?
+                        .normalize()?
                 } else {
                     view.shape().normalize()?
                 };
@@ -338,7 +340,7 @@ fn overlay_admitted(
         (shape, Some(graph))
     } else {
         (
-            assemble_overlay(staged, op, raw_polygon_loops_eligible, force_graph)?,
+            assemble_overlay(staged, op, raw_polygon_loops_eligible)?,
             None,
         )
     };
@@ -875,7 +877,6 @@ fn assemble_overlay(
     inputs: OverlayInputs<'_, '_>,
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
-    source_membership: bool,
 ) -> Result<Shape> {
     // `raw_polygon_loops_eligible` already means: a union, of operands with no
     // point or line support, whose raw coordinate bounds are sound. Such a
@@ -932,15 +933,14 @@ fn assemble_overlay(
             return build_overlay_shape(Vec::new(), &[], &polygons);
         }
     }
-    assemble_joint_graph_overlay(inputs, op, raw_polygon_loops_eligible, source_membership)
+    assemble_joint_graph_overlay(inputs, op, raw_polygon_loops_eligible)
 }
 
-/// Mixed-dimensional overlay from joint noding and per-operand membership.
+/// Mixed-dimensional overlay from joint noding and exact face-side membership.
 fn assemble_joint_graph_overlay(
     inputs: OverlayInputs<'_, '_>,
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
-    source_membership: bool,
 ) -> Result<Shape> {
     let graph = match inputs {
         OverlayInputs::Cartesian(shapes) => TopologyGraph::cartesian_many(shapes),
@@ -957,13 +957,7 @@ fn assemble_joint_graph_overlay(
             .map(|view| TopologyGraph::geographic(*view))
             .collect::<Result<_>>()?,
     };
-    let polygons = overlay_polygons(
-        &graph,
-        &source_graphs,
-        op,
-        raw_polygon_loops_eligible,
-        source_membership,
-    )?;
+    let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible)?;
     // Overlay edges and candidate points are numerous for high-resolution
     // boundaries; prepare the retained polygons once instead of rescanning
     // every output ring for each candidate.
@@ -1008,7 +1002,6 @@ fn assemble_components_overlay(
                     OverlayInputs::Cartesian(&subset),
                     op,
                     raw_polygon_loops_eligible,
-                    false,
                 )?
             },
             OverlayInputs::Geographic(noded) => {
@@ -1017,7 +1010,6 @@ fn assemble_components_overlay(
                     OverlayInputs::Geographic(&subset),
                     op,
                     raw_polygon_loops_eligible,
-                    false,
                 )?
             },
         };
@@ -1080,7 +1072,6 @@ fn overlay_polygons(
     sources: &[TopologyGraph],
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
-    source_membership: bool,
 ) -> Result<Vec<crate::geometry::Polygon>> {
     if raw_polygon_loops_eligible {
         let loops = source_polygon_loops(sources);
@@ -1133,23 +1124,25 @@ fn overlay_polygons(
         .iter()
         .map(|face| {
             let Some(probe) = face_probe(face.ring.as_slice(), face.area_sign) else {
-                return 0;
+                if face.ring.len() < 4 || face.area_sign == AreaSign::Zero {
+                    return Ok(0);
+                }
+                return Err(GeometryErrorKind::Invalid(
+                    "nondegenerate overlay face has no interior probe".into(),
+                )
+                .into());
             };
             let area_membership: Vec<bool> = sources
                 .iter()
                 .enumerate()
                 .map(|(source_row, source)| {
-                    if source_membership {
-                        source.contains_area_interior(probe)
-                    } else {
-                        face_area_side(&face.ring, graph, source_row as u32, &edge_by_endpoints)
-                            .unwrap_or_else(|| source.contains_area_interior(probe))
-                    }
+                    face_area_side(&face.ring, graph, source_row as u32, &edge_by_endpoints)
+                        .unwrap_or_else(|| source.contains_area_interior(probe))
                 })
                 .collect();
-            i32::from(keep_area_face(&area_membership, op))
+            Ok(i32::from(keep_area_face(&area_membership, op)))
         })
-        .collect();
+        .collect::<Result<_>>()?;
     let regions = crate::geometry::assemble_region_polygons(
         arrangement.region_rings(&selected, |keep| keep != 0),
     )?;
@@ -1385,6 +1378,9 @@ fn face_probe(ring: &[XY], sign: AreaSign) -> Option<XY> {
     // Probe just to the left of an edge, which is the side represented by the
     // face walk. Sampling the side rather than the ring centroid keeps nested
     // disconnected cycles in distinct arrangement faces.
+    // The probe is accepted only after an exact ring classification confirms
+    // that it is on the represented side; a finite point on the wrong side
+    // would silently answer membership for a neighboring face.
     let start = ring[0];
     let end = ring[1];
     let coordinate_scale = start
@@ -1405,13 +1401,31 @@ fn face_probe(ring: &[XY], sign: AreaSign) -> Option<XY> {
     let midpoint = XY::new(f64::midpoint(start.x, end.x), f64::midpoint(start.y, end.y));
     let normal_x = -dy / length;
     let normal_y = dx / length;
-    let mut offset = (coordinate_scale * 1e-7 * length).max(f64::from_bits(1));
+    // A short edge at a large coordinate can round every smaller offset back
+    // onto the edge. Start at one coordinate-scale ULP so halving has a
+    // representable point to test.
+    let mut offset = (coordinate_scale * 1e-7 * length)
+        .max(coordinate_scale * f64::EPSILON)
+        .max(f64::from_bits(1));
     loop {
         let probe = XY::new(
             midpoint.x + normal_x * offset,
             midpoint.y + normal_y * offset,
         );
-        if probe.x.is_finite() && probe.y.is_finite() {
+        if !probe.x.is_finite() || !probe.y.is_finite() {
+            offset *= 0.5;
+            if offset == 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let class = ring_classify_point(ring, probe.point());
+        let lies_in_face = match sign {
+            AreaSign::Negative => class == crate::geometry::RingClass::Exterior,
+            AreaSign::Zero => false,
+            AreaSign::Positive => class == crate::geometry::RingClass::Interior,
+        };
+        if lies_in_face {
             return Some(probe);
         }
         offset *= 0.5;
