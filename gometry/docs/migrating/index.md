@@ -421,7 +421,7 @@ GeoPandas) remain adjacent; gometry is the geometry engine they use.
 | `geographiclib` | geodesic & rhumb solutions | [`gm.rhumb_distance(point, other)`][gometry.rhumb_distance]; use `path='rhumb'` with [`gm.bearing`][gometry.bearing], `point.destination`, or [`gm.point_between`][gometry.point_between] for constant-bearing navigation. |
 | `pyclipper` | polygon buffer / offset / clip | `Geometry.buffer`, [`Geometry.offset_curve`][gometry.Geometry.offset_curve], [`Geometry.clip_by_rect`][gometry.Geometry.clip_by_rect], the overlay ops |
 | `pygeohash` family | geohash encode/decode | [`gm.GeohashCell`][gometry.GeohashCell], [`cell.polygon`][gometry.Cell.polygon], [`gm.geohash_cover(geom, ...)`][gometry.geohash_cover] |
-| `haversine` | point-to-point distance | [`gm.distance(a, b)`][gometry.distance] on a geographic CRS ([exact geodesic](https://geographiclib.sourceforge.io/), not the haversine sphere) |
+| `haversine` | point-to-point distance | [`gm.distance(a, b)`][gometry.distance] on a geographic CRS ([ellipsoidal geodesic](https://geographiclib.sourceforge.io/), not the haversine sphere) |
 | `polyline` | Google encoded polyline | [`gm.from_polyline`][gometry.from_polyline], [`Geometry.to_polyline`][gometry.Geometry.to_polyline] |
 | `mercantile` | XYZ tiles / quadkeys | [`gm.Tile`][gometry.Tile], [`gm.tile_cover(geom, ...)`][gometry.tile_cover] |
 | `s2sphere` | S2 cells & coverings | `gm.s2_*`, [`gm.s2_cover(geom, ...)`][gometry.s2_cover] |

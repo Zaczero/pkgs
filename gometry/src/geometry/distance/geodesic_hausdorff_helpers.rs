@@ -3,6 +3,12 @@ use std::collections::BinaryHeap;
 
 use crate::error::Result;
 use crate::geometry::{GeodesicMetric, GeodesicSegment, Point};
+
+/// Maximum branch-and-bound gap for the geodesic Hausdorff extremum.
+///
+/// One centimetre keeps the returned extremum within a useful metric
+/// resolution without making the outer Lipschitz search chase flat plateaus
+/// to binary64 argument resolution.
 pub(crate) const GEODESIC_HAUSDORFF_TOLERANCE: f64 = 0.01;
 
 pub(crate) fn geodesic_min_distance_to_target(
@@ -27,6 +33,17 @@ pub(crate) fn geodesic_min_distance_to_target(
         }
     }
     for &segment in target_edges {
+        if prune_at.is_finite()
+            && cmin > prune_at
+            && metric
+                .point_to_segment_sample_below(point, segment, prune_at)?
+                .is_some()
+        {
+            // The caller only needs to know that this source position cannot
+            // raise its standing maximum. Returning the ceiling avoids a
+            // second full point-to-segment refinement.
+            return Ok(prune_at);
+        }
         let distance = metric.point_to_segment(point, segment, cmin)?;
         if distance < cmin {
             cmin = distance;
@@ -87,7 +104,7 @@ pub(crate) fn geodesic_max_min_on_source_segment(
         let middle = f64::midpoint(interval.left, interval.right);
         if !(middle > interval.left && middle < interval.right) {
             return Err(crate::crs::CrsError::message(
-                "geodesic Hausdorff proof interval cannot be subdivided",
+                "geodesic Hausdorff refinement reached floating-point resolution before its tolerance was met; split the input linework",
             ));
         }
         let middle_value = min_at(middle, cmax.max(best))?;

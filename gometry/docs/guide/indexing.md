@@ -1,5 +1,5 @@
 ---
-description: gometry spatial indexing — candidates (bbox prefilter) vs query (exact refine), nearest with units, and joins for many-to-many work.
+description: gometry spatial indexing — candidates (bbox prefilter) vs query predicate refinement, nearest with units, and joins for many-to-many work.
 ---
 
 # Spatial indexing & joins
@@ -186,8 +186,9 @@ print("nearest 2 indices (closest first):", ids.tolist())
 ```
 
 Geographic nearest queries use a sound lower bound on geodesic distance for
-candidate pruning before exact distance evaluation. The returned ordering is
-exact; the number of evaluations depends on the data and query.
+candidate pruning before refined distance evaluation. The returned ordering
+uses those refined geodesic distances; the number of evaluations depends on
+the data and query.
 
 - `max_distance=` caps the search radius.
 - `return_distance=True` returns `(indices, distances)` for a scalar query or

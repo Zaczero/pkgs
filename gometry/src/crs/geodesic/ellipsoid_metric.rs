@@ -4,8 +4,9 @@ use crate::crs::geodesic;
 use crate::crs::geodesic::{
     DirectGeodesic, IntersectSolver, InverseGeodesic as _, LowerBoundKernel,
     cached_lower_bound_kernel, checked_geodesic_segment, geodesic_foot_on_segment,
-    geodesic_locate_on_segment, geodesic_point_to_segment, geodesic_point_within_segment,
-    geodesic_segment_intersection_with_solver, interpolate_optional_ordinate,
+    geodesic_locate_on_segment, geodesic_point_segment_sample_below, geodesic_point_to_segment,
+    geodesic_point_within_segment, geodesic_segment_intersection_with_solver,
+    interpolate_optional_ordinate,
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
@@ -174,6 +175,20 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         limit: f64,
     ) -> crate::error::Result<bool> {
         geodesic_point_within_segment(
+            self.geodesic,
+            self.to_geodesic_point(point),
+            self.to_geodesic_segment(segment),
+            limit,
+        )
+    }
+
+    fn point_to_segment_sample_below(
+        &self,
+        point: Point,
+        segment: GeodesicSegment,
+        limit: f64,
+    ) -> crate::error::Result<Option<f64>> {
+        geodesic_point_segment_sample_below(
             self.geodesic,
             self.to_geodesic_point(point),
             self.to_geodesic_segment(segment),

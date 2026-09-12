@@ -1013,6 +1013,22 @@ pub trait GeodesicMetric {
         limit: f64,
     ) -> Result<bool>;
 
+    /// Return an attained point-to-segment distance at or below `limit`
+    /// without proving the negative case. Callers use this only when they
+    /// already have a ceiling that makes the exact distance unnecessary.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
+    fn point_to_segment_sample_below(
+        &self,
+        _point: Point,
+        _segment: GeodesicSegment,
+        _limit: f64,
+    ) -> Result<Option<f64>> {
+        Ok(None)
+    }
+
     /// Whether the selected shortest geodesic segments `a`–`b` and `c`–`d`
     /// intersect on the ellipsoid.
     fn segments_cross(&self, a: Point, b: Point, c: Point, d: Point) -> Result<bool>;

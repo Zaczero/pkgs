@@ -165,6 +165,6 @@ pub(crate) use nearest_lrs::{
 };
 use segment::{
     IntersectSolver, checked_geodesic_segment, geodesic_foot_on_segment,
-    geodesic_locate_on_segment, geodesic_point_to_segment, geodesic_point_within_segment,
-    geodesic_segment_intersection_with_solver,
+    geodesic_locate_on_segment, geodesic_point_segment_sample_below, geodesic_point_to_segment,
+    geodesic_point_within_segment, geodesic_segment_intersection_with_solver,
 };

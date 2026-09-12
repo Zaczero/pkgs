@@ -19,10 +19,12 @@ use crate::geometry::{
     GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, ZOrdinate, same_point,
 };
 
-const POINT_SEGMENT_TOLERANCE_METRES: f64 = 1e-3;
 const POINT_SEGMENT_BOUND_ROUNDING_SLACK_METRES: f64 = 1e-6;
 const POINT_SEGMENT_CONTACT_TOLERANCE_METRES: f64 = 1e-6;
 const POINT_SEGMENT_CONTACT_ANGLE_TOLERANCE_RADIANS: f64 = 1e-12;
+const POINT_SEGMENT_COARSE_INTERVALS: usize = 8;
+const POINT_SEGMENT_LINE_CAPS: u64 =
+    caps::LATITUDE | caps::LONGITUDE | caps::AZIMUTH | caps::DISTANCE_IN;
 const INTERSECT_LINE_OUTMASK: u64 =
     caps::LATITUDE | caps::LONGITUDE | caps::AZIMUTH | caps::REDUCEDLENGTH | caps::GEODESICSCALE;
 
@@ -130,8 +132,8 @@ pub(crate) fn geodesic_segment_intersection_with_solver(
 }
 
 /// Geodesic distance from `point` to the selected shortest geodesic segment.
-/// The interval lower bound is the one-dimensional 1-Lipschitz certificate;
-/// no derivative or unimodality assumption is used.
+/// The interval lower bound is the one-dimensional 1-Lipschitz pruning bound.
+/// It does not select the emitted metric or witness.
 #[expect(
     clippy::large_types_passed_by_value,
     reason = "the segment is handed on by value to the kernel that consumes it"
@@ -149,12 +151,11 @@ pub(crate) fn geodesic_point_to_segment(
     clippy::large_types_passed_by_value,
     reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
 )]
-/// Certify whether `point` is within `limit` metres of `segment`.
+/// Test whether `point` is within `limit` metres of `segment`.
 ///
-/// The distance-valued kernel may stop within its reporting tolerance once it
-/// cannot improve `best`; that is appropriate for minimization, but not for a
-/// threshold predicate. This path refines every live 1-Lipschitz interval and
-/// returns `false` only when the interval lower bounds all exceed `limit`.
+/// The distance-valued kernel returns a distance and witness refined on the
+/// along-track argument. A threshold predicate uses that same minimum so its
+/// answer cannot inherit an objective tolerance.
 pub(crate) fn geodesic_point_within_segment(
     geodesic: &Geodesic,
     point: Point,
@@ -170,10 +171,7 @@ pub(crate) fn geodesic_point_within_segment(
     if limit.is_infinite() {
         return Ok(limit.is_sign_positive());
     }
-    if !segment.length.is_finite() || segment.length < 0.0 {
-        return Err(CrsError::message("geodesic segment length is not finite"));
-    }
-    if point_on_geodesic_segment(geodesic, point, segment).is_some() {
+    if geodesic_point_segment_sample_below(geodesic, point, segment, limit)?.is_some() {
         return Ok(true);
     }
     if limit == 0.0 {
@@ -181,7 +179,28 @@ pub(crate) fn geodesic_point_within_segment(
         // exact contact test above, every non-contact point is outside.
         return Ok(false);
     }
-    let line = cached_geodesic_line(geodesic, segment);
+    Ok(geodesic_segment_minimum(geodesic, point, segment, f64::INFINITY)?.distance <= limit)
+}
+
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the segment is an owned Copy snapshot consumed by the geodesic sampling kernel"
+)]
+pub(crate) fn geodesic_point_segment_sample_below(
+    geodesic: &Geodesic,
+    point: Point,
+    segment: GeodesicSegment,
+    limit: f64,
+) -> Result<Option<f64>> {
+    if !segment.length.is_finite() || segment.length < 0.0 {
+        return Err(CrsError::message("geodesic segment length is not finite"));
+    }
+    if point_on_geodesic_segment(geodesic, point, segment).is_some() {
+        return Ok(Some(0.0));
+    }
+    if !(limit.is_finite() && limit > 0.0) {
+        return Ok(None);
+    }
     let left_value = inverse_distance(geodesic, point.x, point.y, segment.start.x, segment.start.y);
     let right_value = if segment.length == 0.0 {
         left_value
@@ -190,64 +209,25 @@ pub(crate) fn geodesic_point_within_segment(
     };
     ensure_finite_distance(left_value)?;
     ensure_finite_distance(right_value)?;
-    if left_value <= limit || right_value <= limit {
-        return Ok(true);
+    if left_value <= limit {
+        return Ok(Some(left_value));
+    }
+    if right_value <= limit {
+        return Ok(Some(right_value));
     }
     if segment.length == 0.0 {
-        return Ok(false);
+        return Ok(None);
     }
-    let initial = Interval {
-        lower: interval_lower_bound(left_value, right_value, segment.length),
-        left: 0.0,
-        right: segment.length,
-        left_value,
-        right_value,
-    };
-    if initial.lower > limit {
-        return Ok(false);
-    }
-    let mut live = BinaryHeap::from([initial]);
-    while let Some(interval) = live.pop() {
-        if interval.lower > limit {
-            return Ok(false);
-        }
-        let middle = f64::midpoint(interval.left, interval.right);
-        if !(middle > interval.left && middle < interval.right) {
-            return Err(CrsError::message(
-                "geodesic dwithin proof interval cannot be subdivided",
-            ));
-        }
-        let middle_value = line_distance(geodesic, &line, point, middle)?;
-        ensure_finite_distance(middle_value)?;
-        if middle_value <= limit {
-            return Ok(true);
-        }
-        let left = Interval {
-            lower: interval_lower_bound(interval.left_value, middle_value, middle - interval.left),
-            left: interval.left,
-            right: middle,
-            left_value: interval.left_value,
-            right_value: middle_value,
-        };
-        let right = Interval {
-            lower: interval_lower_bound(
-                middle_value,
-                interval.right_value,
-                interval.right - middle,
-            ),
-            left: middle,
-            right: interval.right,
-            left_value: middle_value,
-            right_value: interval.right_value,
-        };
-        if left.lower <= limit {
-            live.push(left);
-        }
-        if right.lower <= limit {
-            live.push(right);
+    let line = cached_point_segment_line(geodesic, segment);
+    for index in 1..POINT_SEGMENT_COARSE_INTERVALS {
+        let along = segment.length * index as f64 / POINT_SEGMENT_COARSE_INTERVALS as f64;
+        let distance = line_distance(geodesic, &line, point, along)?;
+        ensure_finite_distance(distance)?;
+        if distance <= limit {
+            return Ok(Some(distance));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 #[expect(
@@ -290,13 +270,33 @@ pub(crate) fn geodesic_foot_on_segment(
     reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
 )]
 pub(crate) fn cached_geodesic_line(geodesic: &Geodesic, segment: GeodesicSegment) -> GeodesicLine {
+    cached_geodesic_line_with_caps(geodesic, segment, GEODESIC_LINE_CAPS)
+}
+
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the segment is a hot Copy snapshot used to key and build the cached line"
+)]
+fn cached_point_segment_line(geodesic: &Geodesic, segment: GeodesicSegment) -> GeodesicLine {
+    cached_geodesic_line_with_caps(geodesic, segment, POINT_SEGMENT_LINE_CAPS)
+}
+
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the segment is a hot Copy snapshot used to key and build the cached line"
+)]
+fn cached_geodesic_line_with_caps(
+    geodesic: &Geodesic,
+    segment: GeodesicSegment,
+    caps: u64,
+) -> GeodesicLine {
     let key = GeodesicLineKey {
         semi_major_bits: geodesic.a.to_bits(),
         flattening_bits: geodesic.f.to_bits(),
         start_lon_bits: segment.start.x.to_bits(),
         start_lat_bits: segment.start.y.to_bits(),
         azimuth_bits: segment.azimuth0.to_bits(),
-        caps: GEODESIC_LINE_CAPS,
+        caps,
     };
     GEODESIC_LINE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -315,7 +315,7 @@ pub(crate) fn cached_geodesic_line(geodesic: &Geodesic, segment: GeodesicSegment
             segment.start.y,
             segment.start.x,
             segment.azimuth0,
-            Some(GEODESIC_LINE_CAPS),
+            Some(caps),
             None,
             None,
         );
@@ -386,7 +386,7 @@ pub(crate) fn geodesic_segment_minimum(
             along,
         });
     }
-    let line = cached_geodesic_line(geodesic, segment);
+    let line = cached_point_segment_line(geodesic, segment);
     let left_value = inverse_distance(geodesic, point.x, point.y, segment.start.x, segment.start.y);
     let right_value = if segment.length == 0.0 {
         left_value
@@ -420,40 +420,32 @@ pub(crate) fn geodesic_segment_minimum(
     if initial.lower >= best {
         return Ok(minimum);
     }
+
+    if let Some(refined) = refine_stationary_point(geodesic, &line, point, segment.length, minimum)?
+    {
+        return Ok(refined);
+    }
+
     let mut live = BinaryHeap::from([initial]);
     while let Some(interval) = live.pop() {
-        if minimum.distance - interval.lower <= POINT_SEGMENT_TOLERANCE_METRES {
-            break;
+        // A binary64 argument bracket with no representable midpoint is
+        // resolved for the argument owner. Keep other live intervals in the
+        // heap; their bounds may still contain a lower global minimum.
+        if interval_contains(interval, minimum.along)
+            && !can_subdivide(interval.left, interval.right)
+        {
+            continue;
         }
-        // The heap is ordered by lower bound, so this interval's bound is the
-        // smallest still live: no unexplored arc can reach below `best`, and
-        // `best` is the caller's standing minimum. Any value at or above it is
-        // discarded by the caller, and one below it has already been proved
-        // within tolerance by the discard rule. Bounding entry alone left the
-        // search refining a minimum nobody would read.
-        //
-        // Like the tolerance break above, this leaves arcs unexplored, so the
-        // reported `along` is the smallest among sampled positions attaining
-        // the minimum rather than the smallest attaining it anywhere. That is
-        // the witness contract both exits have always had.
         if interval.lower >= best {
             break;
         }
         let middle = f64::midpoint(interval.left, interval.right);
         if !(middle > interval.left && middle < interval.right) {
-            return Err(CrsError::message(
-                "geodesic point-to-segment proof interval cannot be subdivided",
-            ));
+            continue;
         }
         let middle_value = line_distance(geodesic, &line, point, middle)?;
         ensure_finite_distance(middle_value)?;
-        update_minimum(
-            &mut minimum,
-            middle_value,
-            middle,
-            segment.length,
-            POINT_SEGMENT_TOLERANCE_METRES,
-        );
+        update_minimum(&mut minimum, middle_value, middle);
 
         let left = Interval {
             lower: interval_lower_bound(interval.left_value, middle_value, middle - interval.left),
@@ -473,14 +465,134 @@ pub(crate) fn geodesic_segment_minimum(
             left_value: middle_value,
             right_value: interval.right_value,
         };
-        if left.lower < minimum.distance - POINT_SEGMENT_TOLERANCE_METRES {
+        if left.lower < minimum.distance {
             live.push(left);
         }
-        if right.lower < minimum.distance - POINT_SEGMENT_TOLERANCE_METRES {
+        if right.lower < minimum.distance {
             live.push(right);
         }
     }
     Ok(minimum)
+}
+
+fn refine_stationary_point(
+    geodesic: &Geodesic,
+    line: &GeodesicLine,
+    point: Point,
+    segment_length: f64,
+    endpoint_minimum: GeodesicSegmentMinimum,
+) -> Result<Option<GeodesicSegmentMinimum>> {
+    let left = line_distance_and_slope(geodesic, line, point, 0.0)?;
+    let right = line_distance_and_slope(geodesic, line, point, segment_length)?;
+    if !(left.1.is_finite() && right.1.is_finite()) {
+        return Ok(None);
+    }
+
+    // Endpoint signs are not sufficient on a long geographic segment: the
+    // distance can cross a cut locus and have an interior minimum even when
+    // the derivative signs at the two endpoints do not bracket it. Search a
+    // small fixed grid for every sign change before handing unusual cases to
+    // the Lipschitz branch-and-bound fallback. Keep the best grid sample too:
+    // a monotone interval with a clamped minimum should not enter the
+    // expensive global fallback.
+    let mut previous = (0.0, left);
+    let mut candidate = None;
+    let mut coarse_minimum = endpoint_minimum;
+    let mut coarse_minimum_is_endpoint = true;
+    for index in 1..=POINT_SEGMENT_COARSE_INTERVALS {
+        let at_endpoint = index == POINT_SEGMENT_COARSE_INTERVALS;
+        let along = if at_endpoint {
+            segment_length
+        } else {
+            segment_length * index as f64 / POINT_SEGMENT_COARSE_INTERVALS as f64
+        };
+        let current = line_distance_and_slope(geodesic, line, point, along)?;
+        if current.0 < coarse_minimum.distance {
+            coarse_minimum = GeodesicSegmentMinimum {
+                distance: current.0,
+                along,
+            };
+            coarse_minimum_is_endpoint = at_endpoint;
+        }
+        if previous.1.1 < 0.0 && current.1 > 0.0 {
+            let refined = refine_stationary_bracket(
+                geodesic,
+                line,
+                point,
+                previous.0,
+                previous.1.1,
+                along,
+                current.1,
+            )?;
+            let replace = candidate
+                .as_ref()
+                .is_none_or(|incumbent: &GeodesicSegmentMinimum| {
+                    refined.distance < incumbent.distance
+                });
+            if replace {
+                candidate = Some(refined);
+            }
+        }
+        previous = (along, current);
+    }
+    let candidate = candidate.filter(|refined| refined.distance < endpoint_minimum.distance);
+    Ok(match candidate {
+        Some(refined) if refined.distance <= coarse_minimum.distance => Some(refined),
+        None if coarse_minimum_is_endpoint => Some(endpoint_minimum),
+        _ => None,
+    })
+}
+
+fn refine_stationary_bracket(
+    geodesic: &Geodesic,
+    line: &GeodesicLine,
+    point: Point,
+    mut left: f64,
+    mut left_slope: f64,
+    mut right: f64,
+    mut right_slope: f64,
+) -> Result<GeodesicSegmentMinimum> {
+    let mut stationary = None;
+    while can_subdivide(left, right) {
+        let middle = stationary_trial(left, left_slope, right, right_slope);
+        let middle_value_slope = line_distance_and_slope(geodesic, line, point, middle)?;
+        ensure_finite_distance(middle_value_slope.0)?;
+        if middle_value_slope.1 < 0.0 {
+            left = middle;
+            left_slope = middle_value_slope.1;
+        } else if middle_value_slope.1 > 0.0 {
+            right = middle;
+            right_slope = middle_value_slope.1;
+        } else {
+            stationary = Some((middle_value_slope.0, middle));
+            break;
+        }
+    }
+    if let Some((distance, along)) = stationary {
+        return Ok(GeodesicSegmentMinimum { distance, along });
+    }
+    let along = if left_slope.abs() <= right_slope.abs() {
+        left
+    } else {
+        right
+    };
+    let distance = line_distance_and_slope(geodesic, line, point, along)?.0;
+    ensure_finite_distance(distance)?;
+    Ok(GeodesicSegmentMinimum { distance, along })
+}
+
+fn stationary_trial(left: f64, left_slope: f64, right: f64, right_slope: f64) -> f64 {
+    let middle = f64::midpoint(left, right);
+    let denominator = right_slope - left_slope;
+    if denominator == 0.0 || !denominator.is_finite() {
+        return middle;
+    }
+    let secant = left - left_slope * (right - left) / denominator;
+    if secant > left && secant < right {
+        secant
+    } else {
+        middle
+    }
 }
 
 fn line_distance(
@@ -496,6 +608,30 @@ fn line_distance(
         ));
     }
     Ok(inverse_distance(geodesic, point.x, point.y, lon, lat))
+}
+
+fn line_distance_and_slope(
+    geodesic: &Geodesic,
+    line: &GeodesicLine,
+    point: Point,
+    along: f64,
+) -> Result<(f64, f64)> {
+    let (_, lat, lon, azimuth, ..) = line._gen_position(false, along, GEODESIC_LINE_OUTMASK);
+    if !(lat.is_finite() && lon.is_finite() && azimuth.is_finite()) {
+        return Err(CrsError::message(
+            "geodesic line evaluation produced a non-finite position",
+        ));
+    }
+    let (distance, query_azimuth, ..): (f64, f64, f64, f64) =
+        geodesic.inverse(lat, lon, point.y, point.x);
+    if !(distance.is_finite() && query_azimuth.is_finite()) {
+        return Err(CrsError::message(
+            "geodesic line evaluation produced a non-finite distance",
+        ));
+    }
+    let (angle, correction) = angle_difference(azimuth, query_azimuth);
+    let slope = -(angle.to_radians() + correction.to_radians()).cos();
+    Ok((distance, slope))
 }
 
 fn ensure_finite_distance(distance: f64) -> Result<()> {
@@ -560,31 +696,26 @@ fn same_geodesic_vertex(left: Point, right: Point) -> bool {
         || (left.y == right.y && (left.y.abs() == 90.0 || (left.x - right.x).abs() == 360.0))
 }
 
+fn can_subdivide(left: f64, right: f64) -> bool {
+    let middle = f64::midpoint(left, right);
+    middle > left && middle < right
+}
+
+fn interval_contains(interval: Interval, along: f64) -> bool {
+    interval.left <= along && along <= interval.right
+}
+
 fn interval_lower_bound(left: f64, right: f64, width: f64) -> f64 {
     (0.5 * (left + right - width) - POINT_SEGMENT_BOUND_ROUNDING_SLACK_METRES)
         .next_down()
         .max(0.0)
 }
 
-fn update_minimum(
-    minimum: &mut GeodesicSegmentMinimum,
-    distance: f64,
-    along: f64,
-    segment_length: f64,
-    tolerance: f64,
-) {
+fn update_minimum(minimum: &mut GeodesicSegmentMinimum, distance: f64, along: f64) {
     // Endpoint distances are exact candidates for a clamped projection. Do
-    // not let a nearby interior sample replace a strictly farther endpoint
-    // merely because the search's interior tie tolerance covers the gap.
-    let interior_tie = minimum.along > 0.0
-        && minimum.along < segment_length
-        && along > 0.0
-        && along < segment_length
-        && (distance - minimum.distance).abs() <= tolerance
-        && along < minimum.along;
+    // not let a nearby interior sample replace a strictly farther endpoint.
     if distance < minimum.distance
         || (distance.to_bits() == minimum.distance.to_bits() && along < minimum.along)
-        || interior_tie
     {
         minimum.distance = distance;
         minimum.along = along;
@@ -610,7 +741,7 @@ pub(crate) fn geodesic_segment_witness_at(
         segment.end
     } else {
         let fraction = along / segment.length;
-        let line = cached_geodesic_line(geodesic, segment);
+        let line = cached_point_segment_line(geodesic, segment);
         let (_, lat, lon, ..) = line._gen_position(false, along, GEODESIC_LINE_OUTMASK);
         if !(lat.is_finite() && lon.is_finite()) {
             return Err(CrsError::message(

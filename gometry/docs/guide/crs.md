@@ -35,7 +35,7 @@ construction operate on stored coordinates.
 
 | Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
-| **Exact geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian; pairwise distance operations use points and linework on geographic CRSs |
+| **Geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian; pairwise distance operations use points and linework on geographic CRSs |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
 | **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into chart pieces. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `max_length` and distances follow the CRS metric; `fraction=` is unitless; original vertices are retained |
@@ -318,6 +318,31 @@ Filled `Polygon` and `MultiPolygon` interiors are unsupported and raise
 `CRSError`. Use `polygon.boundary()` for its geodesic boundary linework,
 `unit='planar'` for coordinate-space areal distance, or reproject to a suitable
 projected CRS.
+
+### Geographic point-to-segment accuracy
+
+Point-to-linework distance and its nearest-feature witness use a binary64
+along-track search. The search refines the argument bracket until another
+representable midpoint is unavailable, then evaluates the reported distance
+and witness at that same argument. Rounding in the underlying point-to-point
+inverse still contributes to the result; the search does not provide a
+per-call error certificate.
+`dwithin` compares the refined distance inclusively with the supplied radius;
+it does not widen that radius by the search's pruning slack.
+
+As a measured scope rather than a universal bound, the WGS 84 validation sweep
+used equatorial segments of `0.25°`, `1°`, `5°`, `10°`, and `30°`, with query
+latitudes from `1e-9°` through `20°`. Across its 35 cases, the returned
+distance was no more than `1.8e-16 m` above the independently exhibited
+midpoint, the recomputed distance to the returned witness matched the reported
+value bit-for-bit, and the largest along-track difference from the midpoint
+was `4.7e-10 m`. GeographicLib's inverse-distance accuracy statement applies
+to each inverse solution; it does not extend this measured point-to-segment
+search or its nearest witness.
+Geodesic Hausdorff refinement uses a `0.01 m` interval gap. In the three
+analytic WGS 84 line-versus-two-point cases used for validation, its shortfall
+from the exhibited source midpoint was `0.33–0.53 cm`; this is measured
+algorithm scope, not a per-call bound.
 
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a

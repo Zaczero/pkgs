@@ -95,7 +95,7 @@ fn auxiliary_unit_uses_native_xy_conversion_and_raw_zero_semantics() {
 }
 
 #[test]
-fn geodesic_point_segment_is_globally_certified() {
+fn geodesic_point_segment_keeps_clamped_endpoint() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let point = p(-102.230_290_366_388_32, 77.320_571_012_858_38);
@@ -106,7 +106,7 @@ fn geodesic_point_segment_is_globally_certified() {
         )
         .expect("fixture segment is unique");
     let actual = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY)
-        .expect("proof should close");
+        .expect("point-to-segment search should close");
     assert!((actual.distance - 2_809_179.208_891_459).abs() <= 1e-3);
     assert_eq!(actual.along.to_bits(), segment.length.to_bits());
 }
@@ -137,7 +137,45 @@ fn geodesic_line_cache_reuses_directed_segment_lines() {
 }
 
 #[test]
-fn geodesic_point_to_segment_threshold_is_inclusive_and_certified() {
+fn geodesic_point_segment_distance_is_attained_at_refined_argument() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let segment_lengths = [0.25, 1.0, 5.0, 10.0, 30.0];
+    let latitudes = [1e-9, 1e-7, 1e-5, 1e-4, 1e-2, 1.0, 20.0];
+
+    for segment_length in segment_lengths {
+        let segment = metric
+            .make_segment(p(0.0, 0.0), p(segment_length, 0.0))
+            .expect("equatorial segment is unique");
+        let exhibited = p(segment_length / 2.0, 0.0);
+        for latitude in latitudes {
+            let query = p(segment_length / 2.0, latitude);
+            let witness = metric
+                .point_segment_witness(query, segment, f64::INFINITY)
+                .expect("point-to-segment refinement should close");
+            let exhibited_distance = metric.segment_length(query, exhibited);
+            let witness_distance = metric.segment_length(query, witness.foot);
+            let rounding_floor =
+                32.0 * f64::EPSILON * exhibited_distance.max(witness_distance).max(1.0);
+
+            assert!(
+                witness.distance <= exhibited_distance + rounding_floor,
+                "segment {segment_length} latitude {latitude}: {} > {}",
+                witness.distance,
+                exhibited_distance
+            );
+            assert!(
+                (witness.distance - witness_distance).abs() <= rounding_floor,
+                "segment {segment_length} latitude {latitude}: reported {} is not attained by {}",
+                witness.distance,
+                witness_distance
+            );
+        }
+    }
+}
+
+#[test]
+fn geodesic_point_to_segment_threshold_is_inclusive() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let segment = metric
@@ -147,17 +185,17 @@ fn geodesic_point_to_segment_threshold_is_inclusive_and_certified() {
     let on_segment = p(0.0, 0.0);
     let on_segment_distance = metric
         .point_to_segment(on_segment, segment, f64::INFINITY)
-        .expect("point-to-segment proof should close");
+        .expect("point-to-segment search should close");
     assert!(
         metric
             .point_to_segment_within(on_segment, segment, 0.0)
-            .expect("threshold proof should close"),
+            .expect("threshold check should close"),
         "sampled on-segment distance: {on_segment_distance}"
     );
     assert!(
         !metric
             .point_to_segment_within(p(0.0, 1.0), segment, 0.0)
-            .expect("threshold proof should close")
+            .expect("threshold check should close")
     );
 }
 

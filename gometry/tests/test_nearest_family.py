@@ -425,16 +425,90 @@ class TestGeodesic:
         assert not gm.dwithin(query, line, 0.0)
         assert gm.nearest_points(query, line)[1].to_wkt() == endpoint.to_wkt()
 
+    @pytest.mark.parametrize(
+        'delta',
+        [1.0e-12, 1.0e-11, 1.0e-9],
+        ids=['one-trillionth-degree', 'ten-trillionths-degree', 'one-billionth-degree'],
+    )
+    def test_positive_geodesic_dwithin_refines_near_endpoint(self, delta: float) -> None:
+        line = gm.LineString([(0.0, 0.0), (5.0, 0.0)], crs=4326)
+        endpoint = gm.Point(5.0, 0.0, crs=4326)
+        query = gm.Point(5.0 + delta, 0.0, crs=4326)
+        endpoint_distance = gm.distance(query, endpoint)
+
+        assert endpoint_distance > 0.0
+        assert not gm.dwithin(query, line, 0.0)
+        assert not gm.dwithin(query, line, 1.0e-9)
+        assert not gm.dwithin(query, line, min(1.0e-7, endpoint_distance / 2.0))
+        assert not gm.dwithin(query, line, math.nextafter(endpoint_distance, 0.0))
+        assert gm.dwithin(query, line, endpoint_distance)
+
+    def test_geodesic_dwithin_rejects_a_point_1000_001_metres_beyond_radius(self) -> None:
+        line = gm.LineString([(0.0, 0.0), (5.0, 0.0)], crs=4326)
+        endpoint = gm.Point(5.0, 0.0, crs=4326)
+        query = endpoint.destination(90.0, 1000.001)
+        endpoint_distance = gm.distance(query, endpoint)
+
+        assert endpoint_distance > 1000.0
+        assert gm.distance(query, line) == endpoint_distance
+        assert not gm.dwithin(query, line, 1000.0)
+        assert gm.dwithin(query, line, endpoint_distance)
+
+    @pytest.mark.parametrize(
+        'segment_length',
+        [0.25, 1.0, 5.0, 10.0, 30.0],
+        ids=['quarter-degree', 'one-degree', 'five-degrees', 'ten-degrees', 'thirty-degrees'],
+    )
+    def test_geodesic_point_segment_sweep_is_attained(
+        self, segment_length: float
+    ) -> None:
+        line = gm.LineString(
+            [(0.0, 0.0), (segment_length, 0.0)], crs=4326
+        )
+        exhibited = gm.Point(segment_length / 2.0, 0.0, crs=4326)
+
+        for latitude in (1.0e-9, 1.0e-7, 1.0e-5, 1.0e-4, 1.0e-2, 1.0, 20.0):
+            query = gm.Point(segment_length / 2.0, latitude, crs=4326)
+            distance = gm.distance(query, line)
+            exhibited_distance = gm.distance(query, exhibited)
+            _, witness = gm.nearest_points(query, line)
+            witness_distance = gm.distance(query, witness)
+            rounding_floor = 32.0 * math.ulp(
+                max(distance, exhibited_distance, witness_distance, 1.0)
+            )
+
+            assert distance <= exhibited_distance + rounding_floor
+            assert abs(distance - witness_distance) <= rounding_floor
+
+    @pytest.mark.parametrize(
+        ('first_target', 'second_target', 'argmax'),
+        [(1.0, 8.0, 4.5), (0.3, 7.1, 3.7), (1.7, 9.3, 5.5)],
+        ids=['midpoint-4_5', 'midpoint-3_7', 'midpoint-5_5'],
+    )
+    def test_geodesic_hausdorff_extremum_is_bounded_and_attained(
+        self, first_target: float, second_target: float, argmax: float
+    ) -> None:
+        source = gm.LineString([(0.0, 0.0), (10.0, 0.0)], crs=4326)
+        target = gm.MultiPoint(
+            [(first_target, 0.0), (second_target, 0.0)], crs=4326
+        )
+
+        reported = gm.hausdorff_distance(source, target)
+        exhibited = gm.distance(gm.Point(argmax, 0.0, crs=4326), target)
+        rounding_floor = 32.0 * math.ulp(max(reported, exhibited, 1.0))
+
+        assert reported <= exhibited + rounding_floor
+        assert exhibited - reported <= 1.0e-2 + rounding_floor
+
     def test_point_to_line_geodesic(self) -> None:
         point = gm.Point(0.5, 0.5, crs=4326)
         line = gm.LineString([(0, 0), (10, 0)], crs=4326)
         line_geom = gm.shortest_line(point, line)
         ends = _endpoints(line_geom)
         assert ends[0] == pytest.approx((0.5, 0.5))
-        # The closest point on the ellipsoidal stored edge is close to, but not
-        # exactly, the planar longitude projection.
-        assert ends[1][0] == pytest.approx(0.5, abs=2e-4)
-        assert ends[1][0] != pytest.approx(0.5, abs=1e-6)
+        # The equator is a geodesic, and the query's perpendicular meridian
+        # meets it at the same longitude as the query.
+        assert ends[1][0] == pytest.approx(0.5, abs=1e-12)
         assert ends[1][1] == pytest.approx(0.0, abs=1e-06)
         assert gm.distance(point, line) == pytest.approx(55287.15, rel=0.0001)
 
