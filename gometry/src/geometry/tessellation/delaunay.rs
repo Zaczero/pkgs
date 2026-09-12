@@ -102,7 +102,20 @@ fn validate_refinement_request(area: f64, refinement: CdtRefinement) -> Result<(
         // the common shell/hole frame and its exact fallback. Summing a second
         // per-ring approximation here made cyclic rotations disagree about
         // the same max-area admission.
-        let minimum_faces = (area.abs() / max_area.get()).ceil() as usize;
+        let minimum_faces = (area.abs() / max_area.get()).ceil();
+        if !minimum_faces.is_finite() || minimum_faces > (GENERATED_ITEM_LIMIT / 4) as f64 {
+            // The quotient is either non-finite or already beyond the
+            // generated-output cap; report the bound before converting it to
+            // usize or multiplying the face estimate.
+            return Err(GeometryErrorKind::GeneratedOutputTooLarge {
+                operation: "triangulate",
+                parameter: "max_area",
+                produced: GENERATED_ITEM_LIMIT + 1,
+                limit: GENERATED_ITEM_LIMIT,
+            }
+            .into());
+        }
+        let minimum_faces = minimum_faces as usize;
         ExpansionBudget::product("triangulate", "max_area", minimum_faces, 4)?;
     }
     Ok(())

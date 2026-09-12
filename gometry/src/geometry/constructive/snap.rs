@@ -371,6 +371,39 @@ pub(crate) fn segmentize_points_budgeted(
     placement: SegmentPlacement<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
+    segmentize_points_budgeted_with_verification(
+        points,
+        max_segment_length,
+        placement,
+        budget,
+        true,
+    )
+}
+
+pub(crate) fn segmentize_points_budgeted_without_output_verification(
+    points: &CoordSeq,
+    max_segment_length: f64,
+    placement: SegmentPlacement<'_>,
+    budget: &mut ExpansionBudget,
+) -> Result<CoordSeq> {
+    // Array callers validate the completed batch after its shared budget has
+    // admitted every row; scalar callers use the verified entry point above.
+    segmentize_points_budgeted_with_verification(
+        points,
+        max_segment_length,
+        placement,
+        budget,
+        false,
+    )
+}
+
+fn segmentize_points_budgeted_with_verification(
+    points: &CoordSeq,
+    max_segment_length: f64,
+    placement: SegmentPlacement<'_>,
+    budget: &mut ExpansionBudget,
+    verify_output: bool,
+) -> Result<CoordSeq> {
     if points.len() < 2 {
         return Ok(points.clone());
     }
@@ -404,7 +437,9 @@ pub(crate) fn segmentize_points_budgeted(
         |segment| Ok(planar_segmentize_steps(segment, max_segment_length)),
         budget,
     )?;
-    verify_planar_segmentize_output(&output, max_segment_length)?;
+    if verify_output {
+        verify_planar_segmentize_output(&output, max_segment_length)?;
+    }
     Ok(output)
 }
 
@@ -483,6 +518,27 @@ fn verify_planar_segmentize_output(points: &CoordSeq, max_segment_length: f64) -
         }
     }
     Ok(())
+}
+
+pub(crate) fn verify_planar_segmentize_shape(shape: &Shape, max_segment_length: f64) -> Result<()> {
+    match shape {
+        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => Ok(()),
+        Shape::LineString(line) => verify_planar_segmentize_output(line, max_segment_length),
+        Shape::MultiLineString(lines) => lines
+            .iter()
+            .try_for_each(|line| verify_planar_segmentize_output(line, max_segment_length)),
+        Shape::Polygon(polygon) => polygon.rings().try_for_each(|ring| {
+            verify_planar_segmentize_output(ring.coords(), max_segment_length)
+        }),
+        Shape::MultiPolygon(polygons) => polygons.iter().try_for_each(|polygon| {
+            polygon.rings().try_for_each(|ring| {
+                verify_planar_segmentize_output(ring.coords(), max_segment_length)
+            })
+        }),
+        Shape::GeometryCollection(geometries) => geometries
+            .iter()
+            .try_for_each(|geometry| verify_planar_segmentize_shape(geometry, max_segment_length)),
+    }
 }
 
 /// Insert `ceil(1 / fraction) - 1` evenly spaced vertices into every segment

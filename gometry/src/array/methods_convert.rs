@@ -1,10 +1,10 @@
 use crate::array::packed_columns::{LineColumns, PolygonColumns};
 use crate::array::{
     Arc, Bounds, ComputedCaches, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec,
-    PackedColumnError, PackedColumns, PackedStorage, PyGeometryArray, PyResult, Python, Result,
-    RowSelection, Shape, StorageLayout, clip_lines_packed_xy, geometry, reverse_coord_windows,
-    subdivide_line_columns, subdivide_polygon_columns, validate_densify_fraction,
-    validate_max_segment_length,
+    PackedColumnError, PackedColumns, PackedStorage, PyErr, PyGeometryArray, PyResult, Python,
+    Result, RowSelection, Shape, StorageLayout, clip_lines_packed_xy, geometry, note_array_row,
+    reverse_coord_windows, subdivide_line_columns, subdivide_polygon_columns,
+    validate_densify_fraction, validate_max_segment_length,
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{ExpansionBudget, TopologyDomain};
@@ -65,7 +65,7 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         let for_columns = geodesic;
         let for_shapes = geodesic;
-        self.subdivide_unary_packed(
+        let result = self.subdivide_unary_packed(
             "segmentize",
             "max_segment_length",
             max_segment_length,
@@ -78,7 +78,7 @@ impl PyGeometryArray {
                         points.ys(),
                     )?;
                 }
-                crate::geometry::segmentize_points_budgeted(
+                crate::geometry::segmentize_points_budgeted_without_output_verification(
                     points,
                     length / to_metre,
                     for_columns.as_ref().map_or(
@@ -94,7 +94,7 @@ impl PyGeometryArray {
                 if let Some((_, frame)) = for_shapes {
                     crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
                 }
-                shape.segmentize_budgeted(
+                shape.segmentize_budgeted_without_output_verification(
                     length / to_metre,
                     for_shapes.as_ref().map_or(
                         crate::geometry::SegmentPlacement::Planar,
@@ -105,7 +105,21 @@ impl PyGeometryArray {
                     budget,
                 )
             },
-        )
+        )?;
+        // A row can fail the binary64 max-length audit even while its own
+        // generated count fits. Let the operation-wide budget inspect every
+        // row first, so a batch that exceeds the cap reports that refusal.
+        if geodesic.is_none() {
+            for row_result in result.present_shape_rows() {
+                let (row, shape) = row_result.map_err(PyErr::from)?;
+                crate::geometry::verify_planar_segmentize_shape(
+                    &shape,
+                    max_segment_length.get(row) / to_metre,
+                )
+                .map_err(|error| note_array_row(error.into(), row))?;
+            }
+        }
+        Ok(result)
     }
 
     #[expect(
