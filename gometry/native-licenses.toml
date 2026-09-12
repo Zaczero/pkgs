@@ -41,3 +41,10 @@ version   = "1.3.2"
 license   = "Zlib"
 homepage  = "https://zlib.net"
 copyright = "Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler"
+
+[[component]]
+name        = "SQLite"
+version     = "3.50.2"
+license     = "blessing"
+homepage    = "https://sqlite.org"
+notice-file = "native/notices/sqlite-blessing.md"
