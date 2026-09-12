@@ -116,20 +116,6 @@ impl De9imInterval {
         self.hi[index(row, col)] = self.lo[index(row, col)];
     }
 
-    /// Rows and columns swapped, on both bounds — the interval of the pair
-    /// in the other order.
-    #[cfg(test)]
-    pub(crate) const fn transpose(&self) -> Self {
-        const fn swap(cells: [Cell; 9]) -> [Cell; 9] {
-            let m = cells;
-            [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]
-        }
-        Self {
-            lo: swap(self.lo),
-            hi: swap(self.hi),
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn is_decided(&self) -> bool {
         self.lo == self.hi
@@ -421,7 +407,7 @@ mod tests {
                         }
                         assert_eq!(
                             predicate_verdict(&interval, predicate, left.interior, right.interior),
-                            Some(crate::predicates::predicate_matrix_value(
+                            Some(crate::predicates::engine::predicate_matrix_value(
                                 &spec_of(predicate),
                                 matrix
                             )),

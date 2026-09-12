@@ -324,28 +324,6 @@ impl TopologyGraph {
             .for_each_area_interior(&self.area_support, point, visit)
     }
 
-    /// Visit indexed polygon-boundary candidates for one query segment.
-    ///
-    /// The index only supplies envelope candidates; callers still own the
-    /// exact segment-contact test. The callback receives the stable graph edge
-    /// ordinal so a caller can retain per-edge contact coverage.
-    #[cfg(test)]
-    pub(crate) fn for_each_area_boundary_candidate(
-        &self,
-        segment: Segment,
-        mut visit: impl FnMut(usize, Segment) -> crate::error::Result<()>,
-    ) -> crate::error::Result<()> {
-        for candidate in self.support.edge_index.intersecting_candidates(segment) {
-            let Some(edge) = self.edges.get(candidate.ordinal) else {
-                continue;
-            };
-            if edge.is_boundary {
-                visit(candidate.ordinal, edge.segment)?;
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) const fn has_area_interior(&self) -> bool {
         self.support.area.has_area()
     }

@@ -11,7 +11,7 @@ use crate::geometry::coverage::{
 };
 use crate::geometry::overlay::ExactSourceInventory;
 #[cfg(test)]
-use crate::geometry::self_node_segments;
+use crate::geometry::overlay::self_node_segments;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, OverlayOp, PointKey, Polygon,
     Segment, SegmentIndex, Shape, XY, carry_overlay_ordinates, face_interior_point, line_segments,
@@ -607,44 +607,6 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
         OverlayOp::Union,
         false,
     )
-}
-
-/// Drop regions that sit inside another region's hole-free interior twice
-/// over: after edge cancellation, only depth-0 regions (and their holes) are
-/// real — a region nested inside a HOLE is depth 2 and stays separate, which
-/// `arrangement_regions` already encodes as its own polygon.
-#[cfg(test)]
-fn top_level_regions(parts: Vec<Polygon>) -> Vec<Polygon> {
-    // `arrangement_regions` returns every face as a polygon with its direct
-    // children as holes; a face that IS someone's hole is also returned
-    // standalone. Keep faces at even nesting depth: those are real area.
-    let shells: Vec<Vec<XY>> = parts
-        .iter()
-        .map(|part| part.shell.coords().iter_coords().map(|p| p.xy()).collect())
-        .collect();
-    let probes: Vec<XY> = shells
-        .iter()
-        .map(|shell| face_interior_point(shell))
-        .collect();
-    // R-tree point-stabbing (mirrors `arrangement_regions`): each region's
-    // nesting depth = how many OTHER shells contain its probe. The tree yields
-    // only shells whose envelope covers the probe, collapsing the O(n²)
-    // all-shells scan to near-linear on flat (non-nested) coverages — the
-    // common case, where every region's depth is 0.
-    let boxes: Vec<Option<Bounds>> = shells.iter().map(|shell| xy_bounds(shell)).collect();
-    let tree = bbox_rtree(&boxes);
-    parts
-        .into_iter()
-        .enumerate()
-        .filter(|&(index, _)| {
-            let probe = probes[index];
-            let depth = boxes_at_point(&tree, probe.x, probe.y)
-                .filter(|&other| other != index && ring_contains_interior(&shells[other], probe))
-                .count();
-            depth % 2 == 0
-        })
-        .map(|(_, part)| part)
-        .collect()
 }
 
 /// Axis-aligned envelope of a ring's XY coordinates (`None` if empty) — the

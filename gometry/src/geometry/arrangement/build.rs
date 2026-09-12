@@ -432,20 +432,6 @@ impl<W: WindingWeight> Arrangement<W> {
         windings
     }
 
-    /// One arbitrary vertex per component — the seed-probe locations.
-    #[cfg(test)]
-    pub(crate) fn component_probes(&self) -> Vec<XY> {
-        let mut points = Vec::new();
-        self.component_probes_into(&mut points);
-        points
-    }
-
-    #[cfg(test)]
-    pub(crate) fn component_probes_into(&self, points: &mut Vec<XY>) {
-        let mut probes = vec![None; self.component_count as usize];
-        self.component_probes_from_slots(points, &mut probes);
-    }
-
     pub(crate) fn component_probes_from_slots(
         &self,
         points: &mut Vec<XY>,

@@ -2097,7 +2097,7 @@ impl ExactSourceInventory {
                 let Some(ring) = self.source_rings[source as usize] else {
                     continue;
                 };
-                if seen.insert((ring, start, end)) {
+                if !seen.insert((ring, start, end)) {
                     winding_rings[source as usize] = None;
                 }
             }
@@ -5398,7 +5398,7 @@ mod tests {
             seg(0.5, 0.0, 0.5, rn_sixth),
         ]);
         let partition = case.partition();
-        assert_eq!(partition.unique().len(), 3);
+        assert_eq!(partition.unique.len(), 3);
         assert_eq!(partition.recipes.len(), 7);
         assert_eq!(partition.spans.len(), 5);
         assert_eq!(constructed_count(&partition), 1);
