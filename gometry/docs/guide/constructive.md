@@ -152,16 +152,14 @@ print(panels(
 ```
 
 !!! note "Overlay guards your CRS"
-    Overlay and [`union_all`][gometry.union_all] reject inputs with **conflicting** CRS metadata
-    rather than silently dropping it or stamping a wrong CRS on the result.
-    Reproject both operands to a common CRS first — see the [CRS, units & measurement](crs.md).
+    Overlay and [`union_all`][gometry.union_all] reject inputs with
+    **conflicting** CRS metadata. Reproject both operands to a common CRS first —
+    see the [CRS, units & measurement](crs.md).
 
 ### Dissolving many geometries: `union_all`
 
-Unioning a list pairwise grows intermediate results and can accumulate
-floating-point fuzz. [`union_all`][gometry.union_all] aggregates the entire
-sequence; strictly disjoint inputs can be assembled independently, while
-inputs that can meet use one joint overlay construction:
+[`union_all`][gometry.union_all] aggregates the entire sequence in one
+construction, avoiding the repeated intermediate rounding of a pairwise loop:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -183,8 +181,7 @@ shortcut applies only when every input is seam-free, pole-free, and has canonica
 longitude bounds; otherwise the geographic topology path is used.
 
 !!! note "`union_all([])` raises"
-    An empty sequence has no CRS, no dimensionality, and no natural identity
-    element, so `union_all([])` raises instead of selecting default metadata.
+    `union_all([])` raises because an empty sequence has no geometry metadata.
     Filter the sequence or branch on emptiness before aggregation.
 
 ## Simplify and offset
@@ -342,10 +339,9 @@ positive tolerance only when you need an explicit error bound; array methods
 also accept one tolerance per row.
 
 For CRS-free and projected planar input, a positive-radius
-`maximum_inscribed_circle` returns a contained 64-vertex `Polygon`, or raises
-`GeometryError` when finite-coordinate rounding cannot represent that contained
-result without changing the requested center or radius. Empty
-polygonal input returns `POLYGON EMPTY`. A zero-radius result returns a finite
+`maximum_inscribed_circle` returns a contained 64-vertex `Polygon`. It raises
+`GeometryError` when finite coordinates cannot emit that contained result.
+Empty polygonal input returns `POLYGON EMPTY`. A zero-radius result returns a finite
 `Point` only when its center is covered by the source; otherwise it raises
 `GeometryError`. Geographic results retain the documented local-projection
 approximation.

@@ -37,11 +37,10 @@ print("built:", bowtie.geometry_type, "| valid:", bowtie.validate().valid)
 
 ```
 
-Topological validation performs spatial work whose cost depends on geometry
-structure, and constructors do not run it on every call. The same invalid geometry also arrives
-from the outside — parsing foreign data with [`gm.from_wkt`][gometry.from_wkt],
-[`gm.from_wkb`][gometry.from_wkb], or [`gm.from_geojson`][gometry.from_geojson],
-which accept what they are given. Either way, you **detect** invalidity with
+Constructors and parsers can admit structurally valid but topologically invalid
+geometry. Foreign data can arrive through [`gm.from_wkt`][gometry.from_wkt],
+[`gm.from_wkb`][gometry.from_wkb], or [`gm.from_geojson`][gometry.from_geojson].
+Either way, you **detect** invalidity with
 [`validate()`][gometry.Geometry.validate] and **fix** it with [`repair()`][gometry.Geometry.repair].
 
 Cosmetic noise that does *not* change the shape is, by contrast, **valid**: a

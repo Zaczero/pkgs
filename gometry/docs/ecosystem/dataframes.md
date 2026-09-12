@@ -112,9 +112,8 @@ back = geometry.to_geopandas()
 print(type(back).__name__, len(back), back.crs)
 ```
 
-This boundary copies because Shapely and gometry own different geometry
-representations. Use the pandas extension path when native shared storage is
-the goal.
+This boundary copies. Use the pandas extension path when native shared storage
+is the goal.
 
 ## Import behavior
 

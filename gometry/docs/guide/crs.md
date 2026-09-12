@@ -314,10 +314,10 @@ Geographic pairwise metrics — [`distance`][gometry.distance],
 [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance],
 [`nearest_points`][gometry.nearest_points], and
 [`shortest_line`][gometry.shortest_line] — support point and linework operands.
-Filled `Polygon` and `MultiPolygon` interiors raise `CRSError` because a
-geodesic point-in-polygon certificate is not implemented. Use
-`polygon.boundary()` for its geodesic boundary linework, `unit='planar'` for
-coordinate-space areal distance, or reproject to a suitable projected CRS.
+Filled `Polygon` and `MultiPolygon` interiors are unsupported and raise
+`CRSError`. Use `polygon.boundary()` for its geodesic boundary linework,
+`unit='planar'` for coordinate-space areal distance, or reproject to a suitable
+projected CRS.
 
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a
