@@ -60,8 +60,6 @@ fn source_inputs_sha256(manifest_dir: &Path) -> String {
         .expect("gometry manifest has no workspace directory");
     let mut files = Vec::new();
     for (logical, path) in [
-        ("Cargo.toml", workspace_dir.join("Cargo.toml")),
-        ("Cargo.lock", workspace_dir.join("Cargo.lock")),
         (
             "rust-toolchain.toml",
             workspace_dir.join("rust-toolchain.toml"),
@@ -71,16 +69,11 @@ fn source_inputs_sha256(manifest_dir: &Path) -> String {
     ] {
         files.push((logical.to_owned(), path));
     }
-    let pyproject = if manifest_dir.join("pyproject.toml").is_file() {
-        manifest_dir.join("pyproject.toml")
-    } else {
-        workspace_dir.join("pyproject.toml")
-    };
-    files.push(("pyproject.toml".to_owned(), pyproject));
-    let config = workspace_dir.join(".cargo/config.toml");
-    if config.is_file() {
-        files.push((".cargo/config.toml".to_owned(), config));
-    }
+    // Maturin normalizes the workspace manifest and pyproject.toml, omits the
+    // checkout-only Cargo config, and prunes unrelated workspace packages from
+    // Cargo.lock when it builds from an sdist. Hash only inputs preserved
+    // byte-for-byte across both checkout and sdist builds; dependency
+    // resolution is checked separately against the archived lock.
     for directory in ["src", "native"] {
         collect_files(
             &manifest_dir.join(directory),

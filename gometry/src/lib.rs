@@ -198,7 +198,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     let build_info = PyDict::new(m.py());
     build_info.set_item("schema_version", 1)?;
-    build_info.set_item("source_inputs_format", "sha256-path-nul-content-nul-v1")?;
+    build_info.set_item("source_inputs_format", "sha256-path-nul-content-nul-v3")?;
     build_info.set_item(
         "source_inputs_sha256",
         env!("GOMETRY_BUILD_SOURCE_INPUTS_SHA256"),

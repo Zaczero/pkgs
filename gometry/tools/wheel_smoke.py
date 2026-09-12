@@ -26,7 +26,7 @@ import textwrap
 import tomllib
 import venv
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 MONOREPO = ROOT.parent
@@ -53,21 +53,57 @@ ABSOLUTE_BUILD_PATH = re.compile(
     r'(?i)(?:/home/[^/\s]+/|/Users/[^/\s]+/|/tmp/|/private/tmp/|'
     r'/var/folders/|[a-z]:\\(?:Users|Temp)\\)'
 )
+# These are named Rust test fixtures, not build roots. Keep this exception
+# narrower than the general temporary-path check.
+NON_BUILD_PATH_PREFIXES = ('/tmp/gometry-crs-',)  # noqa: S108
 
 
 def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, env=env, check=True)
 
 
+def _rust_target_triple() -> str:
+    configured = os.environ.get('CARGO_BUILD_TARGET', '').strip()
+    if (
+        configured
+        and '-' in configured
+        and '/' not in configured
+        and '\\' not in configured
+    ):
+        return configured
+    result = subprocess.run(
+        ['rustc', '-vV'],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    host = next(
+        (
+            line.removeprefix('host: ').strip()
+            for line in result.stdout.splitlines()
+            if line.startswith('host: ')
+        ),
+        '',
+    )
+    if not host:
+        raise AssertionError('rustc -vV did not report a host target')
+    return host
+
+
 def release_build_env() -> dict[str, str]:
     env = os.environ.copy()
     env.pop('RUSTC_WRAPPER', None)
     env.pop('NIX_LDFLAGS', None)
-    env.pop('MATURIN_PEP517_ARGS', None)
-    # The Nix compiler wrapper otherwise injects this workstation's closure
-    # paths into ELF RUNPATH. manylinux repair does not need the variable, but
-    # setting it is harmless and makes local release artifacts equally clean.
+    # The developer shell may select `dev` through this variable. The published
+    # wheel uses the distribution profile instead of inheriting that override
+    # or falling through to maturin's unstripped local `release` profile.
+    env['MATURIN_PEP517_ARGS'] = '--profile release-dist'
+    # Nix's target-specific linker wrapper otherwise injects this workstation's
+    # closure paths into ELF RUNPATH. Keep the unsuffixed spelling for older
+    # wrappers, and set the spelling consumed by current target wrappers.
     env['NIX_DONT_SET_RPATH'] = '1'
+    target = _rust_target_triple()
+    env[f'NIX_DONT_SET_RPATH_{target.replace("-", "_")}'] = '1'
     env.setdefault('CARGO_TARGET_DIR', str(ROOT / 'target'))
     return env
 
@@ -123,7 +159,12 @@ def _is_text_member(name: str) -> bool:
 def _content_leaks(members: dict[str, str]) -> list[str]:
     leaks: list[str] = []
     for name, value in members.items():
-        if match := ABSOLUTE_BUILD_PATH.search(value):
+        for match in ABSOLUTE_BUILD_PATH.finditer(value):
+            if any(
+                value.startswith(prefix, match.start())
+                for prefix in NON_BUILD_PATH_PREFIXES
+            ):
+                continue
             leaks.append(f'{name}: absolute build path {match.group(0)!r}')
     return leaks
 
@@ -316,6 +357,25 @@ def inspect_libtiff_sdist(path: Path, expected: set[str] | None = None) -> None:
         inspect_libtiff_sdist_members(archive.getnames(), path, expected)
 
 
+def _extract_sdist(archive: tarfile.TarFile, destination: Path) -> None:
+    if sys.version_info >= (3, 12):
+        archive.extractall(destination, filter='data')
+        return
+    for member in archive.getmembers():
+        posix_path = PurePosixPath(member.name)
+        windows_path = PureWindowsPath(member.name)
+        if (
+            posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or '..' in posix_path.parts
+        ):
+            raise AssertionError(f'sdist contains unsafe member path: {member.name!r}')
+        if not (member.isdir() or member.isfile()):
+            raise AssertionError(f'sdist contains unsupported member: {member.name!r}')
+        archive.extract(member, destination)
+
+
 def inspect_libtiff_sdist_members(
     names: list[str], path: Path, expected: set[str] | None = None
 ) -> None:
@@ -354,7 +414,7 @@ def verify_sdist_dependency_sources(path: Path) -> None:
     with tempfile.TemporaryDirectory(prefix='gometry-sdist-') as tmp:
         extracted = Path(tmp)
         with tarfile.open(path) as archive:
-            archive.extractall(extracted, filter='data')
+            _extract_sdist(archive, extracted)
         roots = [item for item in extracted.iterdir() if item.is_dir()]
         if len(roots) != 1:
             raise AssertionError(f'expected one extracted sdist root, found {roots!r}')

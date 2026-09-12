@@ -27,7 +27,7 @@ BUILD_INPUT_PATHS = (
     'Cargo.toml',
     'Cargo.lock',
 )
-SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v1'
+SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v3'
 BUILD_INFO_SCHEMA_VERSION = 1
 BUILD_INFO_KEYS = {
     'schema_version',
@@ -83,21 +83,12 @@ def _git_build_inputs_dirty() -> bool | None:
 
 
 def _source_inputs_digest() -> str | None:
-    """Digest the deterministic inputs Cargo can receive in a checkout or sdist."""
+    """Digest inputs preserved byte-for-byte between checkout and sdist builds."""
     files: list[tuple[str, Path]] = [
-        ('Cargo.toml', REPO_ROOT / 'Cargo.toml'),
-        ('Cargo.lock', REPO_ROOT / 'Cargo.lock'),
         ('rust-toolchain.toml', REPO_ROOT / 'rust-toolchain.toml'),
         ('gometry/Cargo.toml', GOMETRY_ROOT / 'Cargo.toml'),
         ('gometry/build.rs', GOMETRY_ROOT / 'build.rs'),
     ]
-    pyproject = GOMETRY_ROOT / 'pyproject.toml'
-    if not pyproject.is_file():
-        pyproject = REPO_ROOT / 'pyproject.toml'
-    files.append(('pyproject.toml', pyproject))
-    config = REPO_ROOT / '.cargo' / 'config.toml'
-    if config.is_file():
-        files.append(('.cargo/config.toml', config))
     for directory in ('src', 'native'):
         root = GOMETRY_ROOT / directory
         if not root.is_dir():
