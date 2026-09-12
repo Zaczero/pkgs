@@ -127,6 +127,39 @@ def test_same_crs_unequal_epochs_use_a_real_plan_on_every_transform_surface() ->
         assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
 
+def test_operation_at_dynamic_epoch_matches_transform_epoch_admission() -> None:
+    source, target = 7912, 9989
+    point = (10.0, 40.0, 100.0)
+    expected_error = (
+        'CRS transform "EPSG:7912" -> "EPSG:9989" failed: '
+        'transform requires a coordinate epoch; pass epoch= or source_epoch='
+    )
+
+    with pytest.raises(gm.TransformError) as operation_error:
+        gm.CRS(source).operation(target, at=point)
+    assert str(operation_error.value) == expected_error
+
+    with pytest.raises(gm.TransformError) as transform_error:
+        gm.crs_transform(source, target, *point)
+    assert str(transform_error.value) == expected_error
+
+    operations = [
+        gm.CRS(source).operation(target, at=(*point, 0.0)),
+        gm.CRS(source).operation(target, at=(*point, 2020.0)),
+        gm.CRS(source).operation(target, at=point, source_epoch=2020.0),
+    ]
+    assert all(operation['source'] == 'EPSG:7912' for operation in operations)
+    assert all(operation['target'] == 'EPSG:9989' for operation in operations)
+    assert all(operation['name'] == 'pipeline' for operation in operations)
+    assert operations[0]['definition'] == operations[1]['definition']
+    assert operations[1]['definition'] == operations[2]['definition']
+
+    for kwargs in ({'t': 0.0}, {'t': 2020.0}, {'source_epoch': 2020.0}):
+        transformed = gm.crs_transform(source, target, *point, **kwargs)
+        assert len(transformed) == 3
+        assert all(math.isfinite(value) for value in transformed)
+
+
 def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     json.loads(gm.CRS(4326).to_projjson())
     operation = gm.CRS(4326).operation(3857)

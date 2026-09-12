@@ -15,7 +15,7 @@ use crate::crs::{
     operation_info_from_pj, preserve_resource_error, proj_context_error_message,
     proj_transform_error, ptr,
 };
-use crate::error::Result;
+use crate::error::{ErrorKind, Result};
 
 /// Preserve PROJ's structured coordinate-domain errno while retaining its
 /// existing rendered error message for every other transform failure.
@@ -111,53 +111,27 @@ impl ProjPipeline {
         if !x.is_finite() || !y.is_finite() {
             return Err(GeometryErrorKind::NonFiniteCoordinate.into());
         }
-        super::record_transform_engine(false);
-        self.context.clear_diagnostic();
-        let mut x = x;
-        let mut y = y;
-        let mut epoch = epoch;
-        // SAFETY: DOC-LANE. The one-element x/y lanes and optional one-element
-        // time lane are Rust-owned and live for this synchronous call; absent
-        // time is represented by a null pointer and zero count.
-        unsafe {
-            let transform = self.transform.as_ptr();
-            proj_sys::proj_errno_reset(transform);
-            let stride = std::mem::size_of::<f64>();
-            let (t_ptr, t_stride, t_count) =
-                epoch.as_mut().map_or((ptr::null_mut(), 0, 0), |epoch| {
-                    (std::ptr::from_mut(epoch), stride, 1)
-                });
-            let transformed = proj_sys::proj_trans_generic(
-                transform,
-                direction.to_proj(),
-                &raw mut x,
-                stride,
-                1,
-                &raw mut y,
-                stride,
-                1,
-                ptr::null_mut(),
-                0,
-                0,
-                t_ptr,
-                t_stride,
-                t_count,
-            );
-            let error = proj_sys::proj_errno(transform);
-            if let Some(message) = self.context.take_diagnostic() {
-                execution.record_diagnostic(message);
-            }
-            if transformed == 1
-                && x.is_finite()
-                && y.is_finite()
-                && epoch.is_none_or(f64::is_finite)
+        let mut x_lane = [x];
+        let mut y_lane = [y];
+        let mut t_lane = epoch.map(|epoch| [epoch]);
+        match self.transform_lanes(
+            &mut x_lane,
+            &mut y_lane,
+            None,
+            t_lane.as_mut().map(<[f64; 1]>::as_mut_slice),
+            direction,
+            execution,
+        ) {
+            Ok(()) => Ok(Some((x_lane[0], y_lane[0]))),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Geometry(GeometryErrorKind::ProjectionDomain(_))
+                ) =>
             {
-                return Ok(Some((x, y)));
-            }
-            if error == proj_sys::PROJ_ERR_COORD_TRANSFM_OUTSIDE_PROJECTION_DOMAIN as i32 {
-                return Ok(None);
-            }
-            Err(GeometryErrorKind::projection(proj_transform_error(error)))
+                Ok(None)
+            },
+            Err(error) => Err(error),
         }
     }
 
@@ -308,29 +282,22 @@ impl ProjPipeline {
         t: Option<f64>,
         execution: &TransformExecution,
     ) -> Result<OperationInfo> {
-        self.context.clear_diagnostic();
+        let mut x_lane = [x];
+        let mut y_lane = [y];
+        let mut z_lane = z.map(|z| [z]);
+        let mut t_lane = t.or(source_epoch).map(|t| [t]);
+        if t_lane.is_none() {
+            self.require_epoch_lane()?;
+        }
+        self.transform_lanes(
+            &mut x_lane,
+            &mut y_lane,
+            z_lane.as_mut().map(<[f64; 1]>::as_mut_slice),
+            t_lane.as_mut().map(<[f64; 1]>::as_mut_slice),
+            ProjDirection::Forward,
+            execution,
+        )?;
         let transform = self.transform.as_ptr();
-        // SAFETY: DOC-H. Typed self owners; proj_trans takes coordinates by
-        // value; returned last-used operation is uniquely owned when non-null.
-        // No Python callback.
-        unsafe {
-            proj_sys::proj_errno_reset(transform);
-            let output = proj_sys::proj_trans(
-                transform,
-                ProjDirection::Forward.to_proj(),
-                proj_sys::proj_coord(x, y, z.unwrap_or(0.0), t.unwrap_or(0.0)),
-            );
-            let error = proj_sys::proj_errno(transform);
-            if error != 0 || !output.v[0].is_finite() || !output.v[1].is_finite() {
-                if let Some(message) = self.context.take_diagnostic() {
-                    execution.record_diagnostic(message);
-                }
-                return Err(map_proj_transform_error(error));
-            }
-        }
-        if let Some(message) = self.context.take_diagnostic() {
-            execution.record_diagnostic(message);
-        }
         // SAFETY: DOC-H. Live transform; returns uniquely owned PJ or null.
         let operation = unsafe { proj_sys::proj_trans_get_last_used_operation(transform) };
         // SAFETY: non-null is uniquely owned.
@@ -432,4 +399,45 @@ fn first_nonfinite_coordinate(
             || z.is_some_and(|z| !z[index].is_finite())
             || t.is_some_and(|t| !t[if t.len() == 1 { 0 } else { index }].is_finite())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_info_at_rejects_nonfinite_optional_output() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let pipeline = ProjPipeline::from_definition_with_state(
+            "+proj=pipeline +step +proj=affine +s33=1e308",
+            &state,
+        )
+        .unwrap();
+        let execution = TransformExecution::default();
+
+        let result = pipeline.operation_info_at(
+            "source".to_owned(),
+            "target".to_owned(),
+            None,
+            None,
+            1.0,
+            2.0,
+            Some(10.0),
+            None,
+            &execution,
+        );
+
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Geometry(
+                        GeometryErrorKind::Projection(_)
+                            | GeometryErrorKind::ProjectionDomain(_),
+                    )
+                )
+        ));
+    }
 }
