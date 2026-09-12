@@ -186,7 +186,10 @@ def test_extension_array_take_allow_fill_custom_fill_from_empty_source() -> None
     taken = data.take([-1, -1], allow_fill=True, fill_value=fill)
 
     assert taken.isna().tolist() == [False, False]
-    assert taken.geometry_array.to_wkt() == ['POINT (9 9)', 'POINT (9 9)']
+    assert taken.geometry_array.to_wkt(drop_epoch=True) == [
+        'POINT (9 9)',
+        'POINT (9 9)',
+    ]
     assert taken.geometry_array.crs == source.crs
     assert taken.geometry_array.epoch == source.epoch
 
