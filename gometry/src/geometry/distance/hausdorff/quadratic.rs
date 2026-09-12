@@ -1,8 +1,8 @@
 use crate::geometry::distance::hausdorff::{
     EquidistantRootSink, HausdorffFeature, hausdorff_feature_distance_squared_at,
 };
-use crate::geometry::exact_arith::{two_product, two_sum};
-use crate::geometry::{Segment, axis_pow2_scale};
+use crate::geometry::exact_arith::{floor_binary_exponent, two_product, two_sum};
+use crate::geometry::{Segment, scale_by_power_of_two};
 
 /// Squared-distance quadratic `Q(t) = a·t² + b·t + c` on a fixed regime
 /// interval.
@@ -98,6 +98,10 @@ pub(crate) fn push_equidistant_roots_quadratic(
     }
 }
 
+#[expect(
+    clippy::many_single_char_names,
+    reason = "quadratic coefficients and exponent-frame notation"
+)]
 pub(crate) fn quadratic_roots(a: f64, b: f64, c: f64) -> [Option<f64>; 2] {
     if !a.is_finite() || !b.is_finite() || !c.is_finite() {
         return [None, None];
@@ -112,30 +116,68 @@ pub(crate) fn quadratic_roots(a: f64, b: f64, c: f64) -> [Option<f64>; 2] {
         };
     }
 
-    // Algebraically, a positive power-of-two scale leaves the polynomial
-    // roots and discriminant sign unchanged. The established range frame keeps
-    // fourth-power products representable without ordinary-case divisions.
-    let coefficient_scale = axis_pow2_scale(a.abs().max(b.abs()).max(c.abs()));
-    let (a, b, c) = (
-        a * coefficient_scale,
-        b * coefficient_scale,
-        c * coefficient_scale,
-    );
-    let discriminant = compensated_product_difference(b, b, 2.0 * a, 2.0 * c);
+    if c == 0.0 {
+        if b == 0.0 {
+            return [Some(0.0), None];
+        }
+        let other = -b / a;
+        return if other == 0.0 {
+            [Some(0.0), None]
+        } else {
+            [Some(0.0), Some(other)]
+        };
+    }
+
+    let (ma, ea) = coefficient_parts(a);
+    let (mc, ec) = coefficient_parts(c);
+    let (mb, eb) = if b == 0.0 {
+        (0.0, None)
+    } else {
+        let (mantissa, exponent) = coefficient_parts(b);
+        (mantissa, Some(exponent))
+    };
+    let mut k = ceil_divide_by_two(ea + ec) + 1;
+    if let Some(eb) = eb {
+        k = k.max(eb);
+    }
+    let bs = eb.map_or(0.0, |eb| scale_by_power_of_two(mb, eb - k));
+    let delta = ea + ec + 2 - 2 * k;
+    debug_assert!(delta <= 0);
+    let first_delta = delta.div_euclid(2);
+    let second_delta = delta - first_delta;
+    let z = scale_by_power_of_two(ma, first_delta);
+    let w = scale_by_power_of_two(mc, second_delta);
+    let discriminant = compensated_product_difference(bs, bs, z, w);
     if !discriminant.is_finite() || discriminant < 0.0 {
         return [None, None];
     }
     if discriminant == 0.0 {
-        return [Some(-0.5 * (b / a)), None];
+        let qscaled = -0.5 * bs;
+        if qscaled == 0.0 {
+            return [Some(0.0), None];
+        }
+        return [Some(scale_by_power_of_two(qscaled / ma, k - ea)), None];
     }
     let sqrt_discriminant = discriminant.sqrt();
     // q/a and c/q avoid the cancellation in (-b + sqrt(discriminant)) / 2a.
-    let q = -0.5 * (b + sqrt_discriminant.copysign(b));
-    if q == 0.0 {
+    let qscaled = -0.5 * (bs + sqrt_discriminant.copysign(b));
+    if qscaled == 0.0 {
         [None, None]
     } else {
-        [Some(q / a), Some(c / q)]
+        [
+            Some(scale_by_power_of_two(qscaled / ma, k - ea)),
+            Some(scale_by_power_of_two(mc / qscaled, ec - k)),
+        ]
     }
+}
+
+fn coefficient_parts(value: f64) -> (f64, i32) {
+    let exponent = floor_binary_exponent(value.abs());
+    (scale_by_power_of_two(value, -exponent), exponent)
+}
+
+fn ceil_divide_by_two(value: i32) -> i32 {
+    value.div_euclid(2) + i32::from(value.rem_euclid(2) != 0)
 }
 
 fn compensated_product_difference(x: f64, y: f64, z: f64, w: f64) -> f64 {
@@ -300,6 +342,42 @@ mod tests {
         // Use the same machine-relative allowance as the independent
         // polynomial evaluation, rather than an absolute coordinate scale.
         assert!(quadratic_residual(left.coefficients(), root).abs() <= 32.0 * f64::EPSILON * scale);
+    }
+
+    #[test]
+    fn zero_constant_recovers_zero_and_the_linear_root() {
+        let roots = quadratic_roots(1.0, -1.0e-200, 0.0);
+        let root_bits = roots
+            .into_iter()
+            .flatten()
+            .map(|root| root.to_bits())
+            .collect::<Vec<_>>();
+
+        assert_eq!(root_bits.len(), 2);
+        assert!(root_bits.contains(&0.0_f64.to_bits()));
+        assert!(root_bits.contains(&1.0e-200_f64.to_bits()));
+    }
+
+    #[test]
+    fn exponent_carriage_preserves_a_negative_subnormal_discriminant() {
+        let b = -f64::from_bits(2.0_f64.powi(-536).to_bits() - 1);
+        let roots = quadratic_roots(1.0, b, f64::from_bits(1));
+
+        assert_eq!(roots, [None, None]);
+    }
+
+    #[test]
+    fn exponent_carriage_keeps_two_positive_subnormal_discriminant_roots() {
+        let b = -f64::from_bits(2.0_f64.powi(-536).to_bits() + 1);
+        let roots = quadratic_roots(1.0, b, f64::from_bits(1));
+        let root_bits = roots
+            .into_iter()
+            .flatten()
+            .map(|root| root.to_bits())
+            .collect::<Vec<_>>();
+
+        assert_eq!(root_bits.len(), 2);
+        assert_ne!(root_bits[0], root_bits[1]);
     }
 
     #[test]
