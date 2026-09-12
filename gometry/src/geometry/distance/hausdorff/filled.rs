@@ -603,47 +603,47 @@ impl FilledSearch<'_> {
         origin: XY,
     ) -> Result<()> {
         let local_cell = relative_cell(cell, origin);
-        if let (Site::Point(left), Site::Point(right)) = (first, second) {
-            let equality = point_equality(left, right);
-            match third {
-                Site::Point(third) => {
-                    if let Some(point) = intersect_lines(equality, point_equality(left, third))
-                        && point_in_cell(point, local_cell)
-                    {
-                        self.consider_local_candidate(point, first, origin)?;
-                    }
-                },
-                Site::Line(line) => {
-                    for point in point_line_roots(equality, left, line) {
-                        if point_in_cell(point, local_cell) {
-                            self.consider_local_candidate(point, first, origin)?;
-                        }
-                    }
-                },
-            }
-            return Ok(());
-        }
-        if let (Site::Line(left), Site::Line(right)) = (first, second) {
-            for equality in line_equality(left, right) {
-                match third {
-                    Site::Point(point) => {
-                        for point in point_line_roots(equality, point, left) {
-                            if point_in_cell(point, local_cell) {
-                                self.consider_local_candidate(point, first, origin)?;
-                            }
-                        }
-                    },
-                    Site::Line(line) => {
-                        for other in line_equality(line, left) {
-                            if let Some(point) = intersect_lines(equality, other)
-                                && point_in_cell(point, local_cell)
-                            {
-                                self.consider_local_candidate(point, first, origin)?;
-                            }
-                        }
-                    },
+        match (first, second, third) {
+            (Site::Point(left), Site::Point(right), Site::Point(third)) => {
+                let equality = point_equality(left, right);
+                if let Some(point) = intersect_lines(equality, point_equality(left, third))
+                    && point_in_cell(point, local_cell)
+                {
+                    self.consider_local_candidate(point, Site::Point(left), origin)?;
                 }
-            }
+            },
+            (Site::Point(left), Site::Point(right), Site::Line(line))
+            | (Site::Point(left), Site::Line(line), Site::Point(right))
+            | (Site::Line(line), Site::Point(left), Site::Point(right)) => {
+                let equality = point_equality(left, right);
+                for point in point_line_roots(equality, left, line) {
+                    if point_in_cell(point, local_cell) {
+                        self.consider_local_candidate(point, Site::Point(left), origin)?;
+                    }
+                }
+            },
+            (Site::Point(point), Site::Line(left), Site::Line(right))
+            | (Site::Line(left), Site::Point(point), Site::Line(right))
+            | (Site::Line(left), Site::Line(right), Site::Point(point)) => {
+                for equality in line_equality(left, right) {
+                    for point in point_line_roots(equality, point, left) {
+                        if point_in_cell(point, local_cell) {
+                            self.consider_local_candidate(point, Site::Line(left), origin)?;
+                        }
+                    }
+                }
+            },
+            (Site::Line(left), Site::Line(right), Site::Line(third)) => {
+                for equality in line_equality(left, right) {
+                    for other in line_equality(third, left) {
+                        if let Some(point) = intersect_lines(equality, other)
+                            && point_in_cell(point, local_cell)
+                        {
+                            self.consider_local_candidate(point, Site::Line(left), origin)?;
+                        }
+                    }
+                }
+            },
         }
         Ok(())
     }
@@ -1196,12 +1196,8 @@ fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
         return vec![-b / (2.0 * a)];
     }
     let root = discriminant.sqrt();
-    let q = -0.5 * (b + b.copysign(root));
-    if q == 0.0 {
-        vec![(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)]
-    } else {
-        vec![q / a, c / q]
-    }
+    let q = -0.5 * (b + root.copysign(b));
+    vec![q / a, c / q]
 }
 
 fn line_cell_candidates(line: Linear, cell: FilledCell) -> Vec<XY> {
