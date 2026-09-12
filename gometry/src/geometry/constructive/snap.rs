@@ -8,7 +8,7 @@ use crate::geometry::{
     GeometryKind, HashSet, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, PointKey,
     Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY,
     axis_pow2_scale, bounds_distance_squared, dedup_consecutive_points,
-    interpolate_f64_correctly_rounded, line_segments, point_distance,
+    interpolate_subdivision_ordinate, line_segments, point_distance,
     point_segment_distance_and_projection, points_dwithin, repair_shape_in_frame, same_point,
     same_topological_coordinate, scaled_residual, validate_shape_in_frame,
 };
@@ -830,7 +830,7 @@ impl<'a> SubdivisionColumns<'a> {
     ) {
         let (start, end) = (column[segment_index], column[segment_index + 1]);
         for step in 1..steps {
-            let value = interpolate_f64_correctly_rounded(start, end, step as f64 / steps as f64);
+            let value = interpolate_subdivision_ordinate(start, end, step as f64 / steps as f64);
             output.push(if value.is_finite() {
                 value
             } else if step * 2 <= steps {
@@ -859,7 +859,7 @@ fn emit_geodesic_plan(
     for step in 1..steps {
         let fraction = step as f64 / steps as f64;
         let (mut longitude, mut latitude) = if equatorial {
-            (interpolate_f64_correctly_rounded(x0, x1, fraction), 0.0)
+            (interpolate_subdivision_ordinate(x0, x1, fraction), 0.0)
         } else {
             let info = crate::crs::geodesic_interpolate_on_line_const::<false, true>(
                 geodesic,

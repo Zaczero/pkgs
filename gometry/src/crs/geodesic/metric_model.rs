@@ -315,9 +315,8 @@ pub(crate) fn planar_to_metre(
         CrsError::metric_units(crs, message)
     })?;
     let unit_value = unit.get();
-    // These are declared coordinate-system units, not measured quantities:
-    // accepting a near match would silently replace a custom axis factor with
-    // the first axis's factor.
+    // Axis factors are declarations, so approximate equality would silently
+    // substitute the first axis's factor for a distinct one.
     if horizontal.iter().any(|factor| *factor != unit_value) {
         return fail("X and Y axes use different linear units; results would not be uniform");
     }
@@ -375,8 +374,6 @@ pub(crate) fn ensure_3d_metric_at(
     };
     let unit = ensure_positive_finite_linear_unit(factors[0], fail)?;
     let unit_value = unit.get();
-    // A tolerance here would make a near-metre custom axis look like metres
-    // (and can substitute the first axis's factor for the declared one).
     if factors.iter().any(|factor| *factor != unit_value) {
         return Err(fail(
             "axis units differ (e.g. meter vs foot); use one consistent linear unit",

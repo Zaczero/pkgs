@@ -2202,17 +2202,15 @@ pub(crate) fn interpolate_f64(start: f64, end: f64, fraction: f64) -> f64 {
     (start * scale * (1.0 - fraction) + end * scale * fraction) / scale
 }
 
-/// Affine interpolation for emitted subdivision vertices. The error-free
-/// two-sum difference proves when `end - start` is exact; in that common case
-/// an FMA rounds the affine expression once. If the difference is inexact, the
-/// existing double-double accumulator handles that less common path; extreme
-/// intermediates still retain the bounded convex fallback. This keeps the
-/// double-double path off the ordinary translated-coordinate path.
+/// Interpolation for emitted subdivision ordinates. The error-free two-sum
+/// difference identifies the common case where one FMA avoids an extra
+/// product/add rounding; an existing double-double path handles an inexact
+/// difference. Both retain the convex finite-range fallback for extremes.
 #[expect(
     clippy::float_cmp,
     reason = "zero and one endpoints and an exact two-sum residual are deliberate"
 )]
-pub(crate) fn interpolate_f64_correctly_rounded(start: f64, end: f64, fraction: f64) -> f64 {
+pub(crate) fn interpolate_subdivision_ordinate(start: f64, end: f64, fraction: f64) -> f64 {
     if fraction == 0.0 {
         return start;
     }

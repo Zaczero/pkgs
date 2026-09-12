@@ -76,17 +76,21 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
             .expect("three candidates")
     }
 
-    // Unit frame: translate to the bounds midpoint, scale by the half-extent
-    // (per-point `max/2 - min/2` stays finite even when the full extent
-    // overflows). Original input vertices are kept aside for the support.
+    // Unit frame: translate to the bounds midpoint, then derive the extent
+    // from finite distances to that midpoint. Halving both extrema first can
+    // underflow at the smallest scale (`±s / 2` is zero); midpoint distances
+    // retain a nonzero extent even there. Original input vertices are kept
+    // aside for the support.
     let bounds = Bounds::from_points(points.iter().copied());
     let mid = Point::new_raw_xy(
         f64::midpoint(bounds.minx(), bounds.maxx()),
         f64::midpoint(bounds.miny(), bounds.maxy()),
     );
-    let half_extent =
-        (bounds.maxx() / 2.0 - bounds.minx() / 2.0).max(bounds.maxy() / 2.0 - bounds.miny() / 2.0);
-    let scale = if half_extent > 0.0 { half_extent } else { 1.0 };
+    let extent = (bounds.maxx() - mid.x)
+        .max(mid.x - bounds.minx())
+        .max(bounds.maxy() - mid.y)
+        .max(mid.y - bounds.miny());
+    let scale = if extent > 0.0 { extent } else { 1.0 };
     let originals = points;
     let mut points = points
         .iter()

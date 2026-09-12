@@ -188,8 +188,8 @@ def test_planar_segmentize_rounding_retry_keeps_emitted_chords_within_limit(
     assert max(chords) <= maximum
 
 
-def test_planar_segmentize_rounds_vertices_at_their_exact_parameters() -> None:
-    """Each inserted coordinate is the rounded affine point at its fraction."""
+def test_planar_segmentize_translated_unit_vertices_are_rounded() -> None:
+    """Unit-spaced vertices on a translated segment keep their affine values."""
     start = 1_000_000_000.0
     end = start + 7.0
     result = gm.LineString([(start, 0.0), (end, 0.0)]).segmentize(1.0)

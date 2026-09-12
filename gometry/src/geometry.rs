@@ -294,7 +294,7 @@ pub(crate) use segments::{
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
 pub(crate) use segments::{
-    interpolate_f64, interpolate_f64_correctly_rounded, interpolate_fraction,
+    interpolate_f64, interpolate_fraction, interpolate_subdivision_ordinate,
 };
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
