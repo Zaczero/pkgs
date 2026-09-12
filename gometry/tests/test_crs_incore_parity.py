@@ -590,6 +590,30 @@ def test_aea_poles_accept_roundoff_but_reject_real_overshoot() -> None:
             )
 
 
+@pytest.mark.parametrize(
+    'latitude',
+    [89.98, 89.981942232, 89.99, 89.999, 89.9999, 89.99999, 89.999999, 90.0,
+     -89.98, -89.99, -89.999, -89.9999, -89.99999, -89.999999, -90.0],
+)
+def test_bundled_proj_aea_keeps_cross_datum_pole_approach(
+    latitude: float,
+) -> None:
+    gm.crs_clear_cache()
+    projected = gm.crs_transform(WGS84, NAD83_CONUS_ALBERS, -96.0, latitude)
+    assert last_transform_engine() == 'proj'
+    recovered = gm.crs_transform(NAD83_CONUS_ALBERS, WGS84, *projected)
+    assert last_transform_engine() == 'proj'
+    assert recovered[1] == pytest.approx(latitude, abs=1.0e-6)
+    if abs(latitude) == 90.0:
+        assert recovered[1] == latitude
+
+
+@pytest.mark.parametrize('northing', [1.0e7, 5.0e7, 1.0e9])
+def test_bundled_proj_aea_rejects_outside_projected_domain(northing: float) -> None:
+    with pytest.raises(gm.TransformError, match='projection'):
+        gm.crs_transform(NAD83_CONUS_ALBERS, WGS84, 0.0, northing)
+
+
 @pytest.mark.parametrize('target', ['EPSG:2229', 'EPSG:2263', 'EPSG:2272', 'EPSG:2276'])
 def test_additional_non_metre_pairs_match_pyproj_in_core(target: str) -> None:
     lon, lat = _pick_test_lonlat(NAD83, target) or (-100.0, 40.0)

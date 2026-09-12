@@ -102,12 +102,21 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     let source_root = out_path.join("PROJSRC/proj");
     archive.unpack(&source_root)?;
     let source_dir = source_root.join(format!("proj-{MINIMUM_PROJ_VERSION}"));
-    let mercator_override =
-        PathBuf::from(format!("PROJSRC/patches/proj-{MINIMUM_PROJ_VERSION}/merc.cpp"));
-    fs::copy(
-        mercator_override,
-        source_dir.join("src/projections/merc.cpp"),
-    )?;
+    let patch_dir = PathBuf::from(format!("PROJSRC/patches/proj-{MINIMUM_PROJ_VERSION}"));
+    for projection in ["aea.cpp", "merc.cpp"] {
+        let patch_path = patch_dir.join(projection);
+        if !patch_path.is_file() {
+            return Err(format!(
+                "bundled PROJ {MINIMUM_PROJ_VERSION} requires a reviewed source override at {}",
+                patch_path.display()
+            )
+            .into());
+        }
+        fs::copy(
+            patch_path,
+            source_dir.join("src/projections").join(projection),
+        )?;
+    }
     let mut config = cmake::Config::new(source_dir);
     config.define("BUILD_SHARED_LIBS", "OFF");
     config.define("BUILD_TESTING", "OFF");

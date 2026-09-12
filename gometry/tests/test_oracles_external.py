@@ -494,6 +494,60 @@ def test_raw_crs_apply_matches_pyproj_pipeline_oracle() -> None:
     assert inverse_ts == pytest.approx(inverse_expected[3])
 
 
+def test_bundled_aea_validates_apex_before_zero_radius_shortcut() -> None:
+    invalid_apex = (
+        '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 '
+        '+lon_0=-96 +ellps=GRS80'
+    )
+    with pytest.raises(gm.TransformError, match='projection'):
+        gm.crs_apply(invalid_apex, 0.0, 9928937.004248787, direction='inverse')
+
+    polar = '+proj=aea +lat_0=90 +lat_1=90 +lat_2=90 +lon_0=0 +ellps=GRS80'
+    assert gm.crs_apply(polar, 0.0, 0.0, direction='inverse') == pytest.approx(
+        (0.0, math.pi / 2.0), abs=1.0e-15
+    )
+
+
+@pytest.mark.parametrize(
+    ('operation', 'expected_northing'),
+    [
+        (
+            '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 '
+            '+lon_0=-96 +R=6371000',
+            1892300.4087848007,
+        ),
+        (
+            '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 '
+            '+lon_0=-96 +a=7000000 +rf=10',
+            1826866.9650963421,
+        ),
+    ],
+    ids=['sphere', 'strong-flattening'],
+)
+def test_bundled_aea_keeps_sphere_and_strong_flattening_paths(
+    operation: str, expected_northing: float
+) -> None:
+    longitude = math.radians(-96.0)
+    latitude = math.radians(40.0)
+    projected = gm.crs_apply(operation, longitude, latitude)
+    assert projected == pytest.approx((0.0, expected_northing), abs=1.0e-9)
+    assert gm.crs_apply(operation, *projected, direction='inverse') == pytest.approx(
+        (longitude, latitude), abs=1.0e-14
+    )
+
+
+def test_bundled_aea_strong_flattening_bracket_matches_high_precision_endpoint() -> None:
+    operation = (
+        '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 '
+        '+lon_0=-96 +a=7000000 +rf=10'
+    )
+    projected = gm.crs_apply(operation, -2.0, math.radians(-89.9999))
+    recovered = gm.crs_apply(operation, *projected, direction='inverse')
+    # Independent 100-digit mpmath q inversion of these exact binary64
+    # projected coordinates.
+    assert recovered[1] == pytest.approx(-1.570794581068056, abs=3.0e-10)
+
+
 def test_affine_transforms_match_shapely_affinity_oracle() -> None:
     from shapely import get_coordinates
     from shapely.affinity import rotate, scale, translate

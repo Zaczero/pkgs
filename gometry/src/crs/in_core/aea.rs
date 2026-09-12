@@ -170,16 +170,7 @@ impl ProjectionKernel for Aea {
         let mut xx = x / s.a;
         let mut yy = s.rho0 - y / s.a;
         let mut rho = xx.hypot(yy);
-        if rho == 0.0 {
-            return Ok((
-                0.0,
-                if s.n > 0.0 {
-                    std::f64::consts::FRAC_PI_2
-                } else {
-                    -std::f64::consts::FRAC_PI_2
-                },
-            ));
-        }
+        let zero_radius = rho == 0.0;
         if s.n < 0.0 {
             rho = -rho;
             xx = -xx;
@@ -203,7 +194,12 @@ impl ProjectionKernel for Aea {
         } else {
             s.auth.inverse_beta(ratio.asin())
         };
-        Ok((adjlon(xx.atan2(yy) / s.n), phi))
+        let longitude = if zero_radius {
+            0.0
+        } else {
+            adjlon(xx.atan2(yy) / s.n)
+        };
+        Ok((longitude, phi))
     }
 }
 pub(super) fn admit(
@@ -211,4 +207,38 @@ pub(super) fn admit(
     e: Ellipsoid,
 ) -> Option<Projected<Aea>> {
     admit_projection::<Aea>(op, e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inverse_validates_the_cone_apex_before_accepting_zero_radius() {
+        let ellipsoid = Ellipsoid::from_a_f(6_378_137.0, 1.0 / 298.257_222_101);
+        let setup = Aea::setup(ellipsoid, AeaParams {
+            lat_0: 23.0,
+            lat_1: 29.5,
+            lat_2: 45.5,
+        })
+        .unwrap();
+        let apex_y = setup.a * setup.rho0;
+        Aea::inverse_unframed(&setup, 0.0, apex_y).unwrap_err();
+    }
+
+    #[test]
+    fn inverse_accepts_a_valid_polar_cone_apex() {
+        let ellipsoid = Ellipsoid::from_a_f(6_378_137.0, 1.0 / 298.257_222_101);
+        for latitude in [90.0, -90.0] {
+            let setup = Aea::setup(ellipsoid, AeaParams {
+                lat_0: latitude,
+                lat_1: latitude,
+                lat_2: latitude,
+            })
+            .unwrap();
+            let actual = Aea::inverse_unframed(&setup, 0.0, setup.a * setup.rho0).unwrap();
+            assert_eq!(actual.0, 0.0);
+            assert_eq!(actual.1, latitude.to_radians());
+        }
+    }
 }
