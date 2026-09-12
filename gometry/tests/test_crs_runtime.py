@@ -8,6 +8,7 @@ import errno
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import gometry as gm
@@ -233,15 +234,29 @@ print('ok')
 @pytest.mark.skipif(sys.platform != 'linux', reason='non-UTF-8 TMPDIR uses POSIX fs encoding')
 def test_crs_runtime_nonutf8_tmpdir_keeps_missing_grid_warning(tmp_path: Path) -> None:
     """A non-UTF-8 TMPDIR must keep missing-grid AccuracyWarning with no leftover."""
-    raw = os.fsencode(tmp_path) + b'/tmp-\xff-proj'
+    prefix = b'gometry-nonutf8-\xff-'
     try:
-        os.mkdir(raw)
+        temporary = tempfile.TemporaryDirectory(
+            prefix=prefix, dir=os.fsencode(tmp_path)
+        )
     except OSError as error:
-        if error.errno == errno.EILSEQ:
-            pytest.skip('host filesystem rejects non-UTF-8 directory names')
-        raise
-    tmpdir = os.fsdecode(raw)
-    code = """
+        if error.errno != errno.EILSEQ:
+            raise
+        try:
+            temporary = tempfile.TemporaryDirectory(
+                prefix=prefix, dir=os.fsencode('/dev/shm')
+            )
+        except OSError as fallback_error:
+            if fallback_error.errno in {errno.EILSEQ, errno.ENOENT}:
+                pytest.skip(
+                    'no available Linux filesystem accepts non-UTF-8 '
+                    'temporary directory names'
+                )
+            raise
+    with temporary as raw:
+        assert isinstance(raw, bytes)
+        tmpdir = os.fsdecode(raw)
+        code = """
 import os
 import warnings
 from pathlib import Path
@@ -264,11 +279,11 @@ if not warned:
     raise SystemExit('missing AccuracyWarning')
 print('ok')
 """
-    completed = _run_isolated_child(code, tmpdir)
-    assert completed.returncode == 0, completed.stderr
-    assert 'ok' in completed.stdout
-    leftover = list(Path(os.fsdecode(raw)).glob('gometry-proj-*'))
-    assert leftover == []
+        completed = _run_isolated_child(code, tmpdir)
+        assert completed.returncode == 0, completed.stderr
+        assert 'ok' in completed.stdout
+        leftover = list(Path(tmpdir).glob('gometry-proj-*'))
+        assert leftover == []
 
 
 def test_crs_runtime_tmerc_ignores_hostile_proj_ini(

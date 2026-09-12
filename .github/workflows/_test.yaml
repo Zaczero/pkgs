@@ -91,7 +91,7 @@ jobs:
             -r "$RUNNER_TEMP/embedded-requirements.txt"
           echo "PYTHONPATH=$RUNNER_TEMP/embedded-deps" >> "$GITHUB_ENV"
 
-      # Practical behavior only — no clippy/fmt/lint gates in CI.
+      # Rust behavior tests only; source-quality checks run through tools/check.py.
       - name: Test Rust debug
         shell: bash
         run: |

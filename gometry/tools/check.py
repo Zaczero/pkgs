@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run gometry's environment-invariant source and documentation checks."""
+"""Run gometry's source, documentation, and Rust lint checks."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ CHECKS: tuple[tuple[str, ...], ...] = (
     ('tools/gates/_check_doctest_types.py',),
     ('tools/gates/_check_examples.py',),
     ('tools/docs/check_nav.py',),
+    ('cargo', 'clippy', '--all-targets', '--locked', '-p', 'gometry'),
 )
 
 
@@ -37,10 +39,18 @@ def main() -> int:
     for arguments in CHECKS:
         label = ' '.join(arguments)
         print(f'\n==> {label}', flush=True)
+        command = list(arguments)
+        environment = None
+        if arguments[0] == 'cargo':
+            environment = os.environ.copy()
+            environment.setdefault('PYO3_PYTHON', sys.executable)
+        else:
+            command.insert(0, sys.executable)
         result = subprocess.run(
-            [sys.executable, *arguments],
+            command,
             cwd=ROOT,
             check=False,
+            env=environment,
         )
         if result.returncode:
             failed.append(label)

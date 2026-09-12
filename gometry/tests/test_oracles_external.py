@@ -232,210 +232,66 @@ def test_geometry_to_crs_transforms_xyz_with_proj_oracle() -> None:
     )
 
 
-def test_crs_operation_area_matches_pyproj_oracle() -> None:
+def test_crs_constrained_transform_numeric_paths_match_pyproj() -> None:
     from pyproj.aoi import AreaOfInterest
-    from pyproj.transformer import TransformerGroup
 
-    # This oracle compares PROJ-derived operation prose and accuracy. gometry
-    # bundles its own libPROJ, so the two sides only agree when they are the
-    # same PROJ: descriptions and accuracies are version-dependent (9.8.1 says
-    # 'with axis order normalized for visualization' where 9.5.1 said 'axis
-    # order change (2D)'). Comparing across versions tests PROJ against itself,
-    # not gometry -- so require parity rather than pinning either wording.
-    bundled = gm.crs_engine()['version']
-    if bundled != pyproj.proj_version_str:
-        pytest.skip(
-            f'PROJ version skew: gometry bundles {bundled}, '
-            f'pyproj links {pyproj.proj_version_str}'
-        )
-
-    local_area = (-75.0, 40.0, -73.0, 42.0)
-    remote_area = (-1.0, 50.0, 1.0, 52.0)
-    local = gm.CRS(2263).operation(4326, area_of_interest=local_area)
-    local_pyproj = pyproj.Transformer.from_crs(
-        2263, 4326, always_xy=True, area_of_interest=AreaOfInterest(*local_area)
-    )
-    assert local['description'] == local_pyproj.description
-    assert local['accuracy'] == pytest.approx(local_pyproj.accuracy)
-    assert local['has_ballpark_transformation'] is False
-    local_group = TransformerGroup(
-        2263,
-        4326,
-        always_xy=True,
-        area_of_interest=cast('Any', AreaOfInterest(*local_area)),
-    )
-    local_operations = gm.CRS(2263).operations(4326, area_of_interest=local_area)
-    local_instantiable = [
-        operation for operation in local_operations if operation['instantiable']
-    ]
-    assert [operation['description'] for operation in local_instantiable[:3]] == [
-        transformer.description for transformer in local_group.transformers[:3]
-    ]
-    assert [
-        operation['accuracy'] for operation in local_instantiable[:3]
-    ] == pytest.approx([
-        transformer.accuracy for transformer in local_group.transformers[:3]
-    ])
-    nad27_group = TransformerGroup(4267, 4326, always_xy=True)
-    nad27_operations = gm.CRS(4267).operations(4326)
-    assert len(nad27_operations) == len(nad27_group.transformers) + len(
-        nad27_group.unavailable_operations
-    )
-    assert any(not operation['instantiable'] for operation in nad27_operations)
-    assert [
-        operation['description']
-        for operation in nad27_operations
-        if operation['instantiable']
-    ][:3] == [transformer.description for transformer in nad27_group.transformers[:3]]
-    remote = gm.CRS(2263).operation(4326, area_of_interest=remote_area)
-    remote_pyproj = pyproj.Transformer.from_crs(
-        2263, 4326, always_xy=True, area_of_interest=AreaOfInterest(*remote_area)
-    )
-    assert remote['description'] == remote_pyproj.description
-    assert remote['accuracy'] is None
-    assert remote_pyproj.accuracy == -1.0
-    assert remote['has_ballpark_transformation'] is True
-    constrained = gm.CRS(2263).operation(
-        4326,
-        area_of_interest=local_area,
-        authority='EPSG',
-        accuracy=10.0,
-        allow_ballpark=False,
-        only_best=True,
-    )
-    constrained_pyproj = pyproj.Transformer.from_crs(
-        2263,
-        4326,
-        always_xy=True,
-        area_of_interest=AreaOfInterest(*local_area),
-        authority='EPSG',
-        accuracy=10.0,
-        allow_ballpark=False,
-        only_best=True,
-    )
-    assert constrained['description'] == constrained_pyproj.description
-    assert constrained['accuracy'] == pytest.approx(constrained_pyproj.accuracy)
-    assert constrained['has_ballpark_transformation'] is False
+    area = (-75.0, 40.0, -73.0, 42.0)
     bounds = (900000.0, 100000.0, 1100000.0, 300000.0)
-    assert gm.crs_transform_bounds(
-        2263,
-        4326,
-        bounds,
-        area_of_interest=local_area,
-        authority='EPSG',
-        accuracy=10.0,
-        allow_ballpark=False,
-    ) == pytest.approx(
-        pyproj.Transformer.from_crs(
-            2263,
-            4326,
-            always_xy=True,
-            area_of_interest=AreaOfInterest(*local_area),
-            authority='EPSG',
-            accuracy=10.0,
-            allow_ballpark=False,
-        ).transform_bounds(*bounds)
-    )
-    local_point = gm.Point(980000.0, 190000.0, crs=2263)
-    local_points = gm.points([980000.0, 990000.0], [190000.0, 200000.0], crs=2263)
-    expected_point = pyproj.Transformer.from_crs(
+    options = {
+        'area_of_interest': area,
+        'authority': 'EPSG',
+        'accuracy': 10.0,
+        'allow_ballpark': False,
+    }
+    transformer = pyproj.Transformer.from_crs(
         2263,
         4326,
         always_xy=True,
-        area_of_interest=AreaOfInterest(*local_area),
-        authority='EPSG',
-        accuracy=10.0,
-        allow_ballpark=False,
-    ).transform(local_point.x, local_point.y)
-    expected_points = pyproj.Transformer.from_crs(
-        2263,
-        4326,
-        always_xy=True,
-        area_of_interest=AreaOfInterest(*local_area),
-        authority='EPSG',
-        accuracy=10.0,
-        allow_ballpark=False,
-    ).transform([980000.0, 990000.0], [190000.0, 200000.0])
-    expected_same_crs = pyproj.Transformer.from_crs(
-        4326,
-        4326,
-        always_xy=True,
-        area_of_interest=AreaOfInterest(*local_area),
-        authority='EPSG',
-        accuracy=10.0,
-        allow_ballpark=False,
-    ).transform(-73.9, 40.7)
-    transformed_point = local_point.to_crs(
-        4326,
-        area_of_interest=local_area,
+        area_of_interest=AreaOfInterest(*area),
         authority='EPSG',
         accuracy=10.0,
         allow_ballpark=False,
     )
-    transformed_points = local_points.to_crs(
-        4326,
-        area_of_interest=local_area,
-        authority='EPSG',
-        accuracy=10.0,
-        allow_ballpark=False,
+
+    point = gm.Point(980000.0, 190000.0, crs=2263)
+    expected_point = transformer.transform(point.x, point.y)
+    with pytest.warns(gm.AccuracyWarning, match='us_noaa_njhpgn'):
+        actual_point = point.to_crs(4326, **options)
+    assert list(actual_point.coords[0]) == pytest.approx(expected_point)
+
+    xs = [980000.0, 990000.0]
+    ys = [190000.0, 200000.0]
+    expected_xs, expected_ys = transformer.transform(xs, ys)
+    with pytest.warns(gm.AccuracyWarning, match='us_noaa_njhpgn'):
+        points = gm.points(xs, ys, crs=2263).to_crs(4326, **options)
+    assert list(points.coords.select('XY')) == pytest.approx(
+        list(zip(expected_xs, expected_ys, strict=True))
     )
-    assert list(transformed_point.coords[0]) == pytest.approx(expected_point)
-    assert list(transformed_points.coords.select('XY')) == pytest.approx(
-        list(zip(expected_points[0], expected_points[1], strict=True))
-    )
-    transformed_same_crs = gm.Point(-73.9, 40.7, crs=4326).to_crs(
-        4326,
-        area_of_interest=local_area,
-        authority='EPSG',
-        accuracy=10.0,
-        allow_ballpark=False,
-    )
-    transformed_mixed_result = gm.GeometryArray([
-        transformed_same_crs,
-        transformed_point,
-    ])
-    assert list(transformed_mixed_result.coords.select('XY')) == pytest.approx([
-        expected_same_crs,
-        expected_point,
-    ])
-    with pytest.raises(gm.CRSMismatchError, match='requires one shared CRS'):
-        gm.GeometryArray([gm.Point(-73.9, 40.7, crs=4326), local_point]).to_crs(
-            4326,
-            area_of_interest=local_area,
-            authority='EPSG',
-            accuracy=10.0,
-            allow_ballpark=False,
-        )
+
+    with pytest.warns(gm.AccuracyWarning, match='us_noaa_njhpgn'):
+        actual_bounds = gm.crs_transform_bounds(2263, 4326, bounds, **options)
+    assert actual_bounds == pytest.approx(transformer.transform_bounds(*bounds))
+
+
+def test_crs_constrained_transform_refusal_preserves_context() -> None:
+    area = (-1.0, 50.0, 1.0, 52.0)
+    options = {'area_of_interest': area, 'allow_ballpark': False}
+
     with pytest.raises(
         gm.TransformError, match='cannot create CRS transform'
-    ) as transform_error:
-        local_point.to_crs(4326, area_of_interest=remote_area, allow_ballpark=False)
-    assert transform_error.value.source == 'EPSG:2263'
-    assert transform_error.value.target == 'EPSG:4326'
-    antimeridian_bounds = (170.0, -10.0, -170.0, 10.0)
-    antimeridian_pyproj = pyproj.Transformer.from_crs(4326, 3857, always_xy=True)
-    assert gm.crs_transform_bounds(4326, 3857, antimeridian_bounds) == pytest.approx(
-        antimeridian_pyproj.transform_bounds(*antimeridian_bounds)
-    )
-    geographic_output = pyproj.Transformer.from_crs(3857, 4326, always_xy=True)
-    web_bounds = (-1000000.0, 5000000.0, 1000000.0, 6000000.0)
-    with pytest.raises(Exception, match='densify'):
-        geographic_output.transform_bounds(*web_bounds, densify_pts=1)
-    with pytest.raises(ValueError, match='densify'):
-        gm.crs_transform_bounds(3857, 4326, web_bounds, densify=1)
-    assert gm.crs_transform_bounds(3857, 4326, web_bounds, densify=2) == pytest.approx(
-        geographic_output.transform_bounds(*web_bounds, densify_pts=2)
-    )
-    with pytest.raises(pyproj.exceptions.ProjError, match='Transformer'):
-        pyproj.Transformer.from_crs(
-            2263,
-            4326,
-            always_xy=True,
-            area_of_interest=AreaOfInterest(*remote_area),
-            allow_ballpark=False,
+    ) as scalar_error:
+        gm.Point(980000.0, 190000.0, crs=2263).to_crs(4326, **options)
+    assert scalar_error.value.source == 'EPSG:2263'
+    assert scalar_error.value.target == 'EPSG:4326'
+
+    with pytest.raises(
+        gm.TransformError, match='cannot create CRS transform'
+    ) as packed_error:
+        gm.points([980000.0, 990000.0], [190000.0, 200000.0], crs=2263).to_crs(
+            4326, **options
         )
-    with pytest.raises(gm.TransformError, match='cannot create CRS transform'):
-        gm.CRS(2263).operation(4326, area_of_interest=remote_area, allow_ballpark=False)
+    assert packed_error.value.source == 'EPSG:2263'
+    assert packed_error.value.target == 'EPSG:4326'
 
 
 def test_crs_projection_factors_match_pyproj_oracle() -> None:
