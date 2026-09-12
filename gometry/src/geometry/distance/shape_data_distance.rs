@@ -480,7 +480,7 @@ impl PreparedPlan {
         let (left, right) = (self.shape(), other.shape());
         // Two axis-aligned rectangles each equal their bounding box, so
         // overlapping bounds is already the exact answer — the box/tile/
-        // envelope fast path (GEOS special-cases rectangles the same way).
+        // envelope fast path.
         if crate::geometry::is_axis_aligned_rectangle(left, left_bounds)
             && crate::geometry::is_axis_aligned_rectangle(right, right_bounds)
         {

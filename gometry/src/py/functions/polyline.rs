@@ -36,8 +36,8 @@ pub(crate) fn polyline_precision_factor(precision: i32) -> PyResult<f64> {
     Ok(10_f64.powi(precision))
 }
 
-/// Scale one ordinate like the reference implementation: `Math.round`
-/// (half toward +infinity), not Rust's half-away-from-zero.
+/// Scale one ordinate with the format's `Math.round` rule (half toward
+/// +infinity), not Rust's half-away-from-zero.
 fn scale(value: f64, factor: f64) -> i64 {
     (value * factor + 0.5).floor() as i64
 }

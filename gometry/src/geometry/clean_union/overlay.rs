@@ -58,8 +58,8 @@ pub(crate) fn clean_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     let Some(mut contacts) = collect_boundary_contacts(&pool, op)? else {
         return Ok(None);
     };
-    // No crosses or shared runs ⟹ disjoint/nested/touch-only; upstream
-    // shortcuts or the exact engine own those.
+    // No crosses or shared runs ⟹ disjoint/nested/touch-only; the transverse
+    // shortcut has no work to do and the exact engine owns those cases.
     if !contacts.has_cross && !contacts.has_shared {
         return Ok(None);
     }
@@ -70,12 +70,10 @@ pub(crate) fn clean_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     let arc_cap = pool.segments.len() + 2 * cut_count;
 
     // `symmetric_difference` is two clean DIFFERENCEs reassembled SEPARATELY —
-    // it cannot share the single-pass walk (the a−b and b−a pieces meet at every
-    // crossing, so one combined arc walk would pinch). Measured 2026-06-17: this
-    // two-pass chained reassembly (≈2.2× a single union) is ~2× FASTER than
-    // bailing to the arrangement XOR path (the DCEL/face build outweighs two
-    // lightweight chained walks), so it is the better of the two available
-    // approaches — the residual vs GEOS's unified single-pass XOR stays here.
+    // it cannot share the single-pass walk because the a−b and b−a pieces meet
+    // at every crossing, so one combined arc walk would pinch. If either
+    // difference needs a case outside the clean path, the exact arrangement
+    // remains responsible for the whole operation.
     if op == OverlayOp::SymmetricDifference && !contacts.has_shared {
         return symmetric_difference_shape(&pool, &mut contacts, arc_cap);
     }

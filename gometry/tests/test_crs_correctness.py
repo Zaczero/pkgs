@@ -1,7 +1,8 @@
-"""Regression tests pinning the CRS/metric correctness-completeness pass.
+"""Regression tests pinning the CRS and metric correctness-completeness pass.
 
-Each test documents one fix we must never reintroduce. Geodesic expectations are
-derived by running gometry and cross-checked against ``pyproj.Geod`` where natural.
+Each test documents one fix we must never reintroduce. Geodesic measurements
+use ``pyproj.Geod`` as an independent check where a direct comparison is
+available.
 """
 
 from __future__ import annotations

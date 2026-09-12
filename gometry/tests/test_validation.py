@@ -542,9 +542,9 @@ def test_self_intersections_reports_every_nonsimple_node() -> None:
 
 
 def test_repeated_consecutive_vertices_are_removable_redundancy() -> None:
-    """A duplicate consecutive vertex is stutter, not topology: valid/simple and
-    behaviourally identical to the deduped geometry across every op (matching
-    GEOS/Shapely), while a ring that stutters to nothing stays invalid.
+    """A duplicate consecutive vertex is stutter, not topology: valid/simple
+    and behaviourally identical to the deduped geometry across every
+    operation, while a ring that stutters to nothing stays invalid.
     """
     shapely = pytest.importorskip('shapely')
     dup = gm.from_wkt('POLYGON ((0 0, 0 0, 4 0, 4 4, 0 4, 0 0))')
@@ -580,10 +580,9 @@ def test_repeated_consecutive_vertices_are_removable_redundancy() -> None:
     assert not gm.from_wkt('POLYGON ((0 0, 4 0, 4 0, 0 0))').is_valid
 
 
-def test_validity_matches_geos_semantics_with_witnesses() -> None:
-    """The indexed validity kernel: GEOS-agreeing verdicts (including the
-    interior-disconnection class geo's validation missed entirely) and a
-    witness location on every issue.
+def test_validity_reports_indexed_witnesses() -> None:
+    """The indexed validity kernel reports each issue with a witness location,
+    including disconnected interiors.
     """
     disconnected = gm.from_wkt(
         'POLYGON ((0 0, 8 0, 8 8, 0 8, 0 0), (0 4, 4 2, 8 4, 4 6, 0 4))'

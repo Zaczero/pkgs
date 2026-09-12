@@ -215,18 +215,15 @@ pub(crate) fn ring_contains_interior<C: Coordinates + ?Sized>(
 
 // ---- Indexed polygonal validity -------------------------------------------
 //
-// Replaces geo's `check_validation` for polygons/multipolygons, whose
-// segment-pair scan is UNINDEXED (measured: 90% of a 1.29 s `is_valid` on a
-// 16k-vertex ring inside geo's `Line::intersects`). One indexed pass over
+// One indexed pass over
 // every ring segment classifies all interacting pairs: same-ring pairs use
 // the simplicity rule, cross-ring pairs are crossings (invalid), collinear
 // overlaps (invalid), or point touches. Touch nodes then settle the two
 // hard verdicts pairwise scans miss: WEDGE INTERLEAVING (a ring passing
 // through a shared vertex is a crossing even though no segment interiors
 // meet) and INTERIOR CONNECTIVITY (a cycle in the rings-and-touch-points
-// graph pinches off part of the interior — the GEOS "interior is
-// disconnected" class geo does not detect at all). Witness locations ride
-// on every issue.
+// graph pinches off part of the interior). Witness locations ride on every
+// issue.
 
 /// One ring's local directions away from a touch point, per participating
 /// ring — accumulated across the pair scan, settled in the post-pass.

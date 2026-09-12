@@ -1,9 +1,4 @@
-"""split_antimeridian — port of the JOSS ``antimeridian`` algorithm.
-
-Oracle values are hardcoded from the upstream test fixtures
-(gadomski/antimeridian, ``tests/data/output/spherical``); the kernel was
-differential-tested against all of them at port time.
-"""
+"""split_antimeridian — geographic seam and pole-closure contract tests."""
 
 import math
 from typing import cast
@@ -11,6 +6,27 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
+
+
+def _great_circle_crossing_latitude(
+    start: tuple[float, float], end: tuple[float, float]
+) -> float:
+    """Return the antimeridian crossing latitude from the plane equation."""
+    if start[0] > end[0]:
+        start, end = end, start
+
+    longitude_1, latitude_1 = map(math.radians, start)
+    longitude_2, latitude_2 = map(math.radians, end)
+    normal_x = math.cos(latitude_1) * math.sin(longitude_1) * math.sin(
+        latitude_2
+    ) - math.sin(latitude_1) * math.cos(latitude_2) * math.sin(longitude_2)
+    normal_z = (
+        math.cos(latitude_1)
+        * math.cos(latitude_2)
+        * math.sin(longitude_2 - longitude_1)
+    )
+    vertical = normal_x if normal_z >= 0.0 else -normal_x
+    return math.degrees(math.atan2(vertical, abs(normal_z)))
 
 
 def test_split_antimeridian_lines_and_seam_latitudes() -> None:
@@ -68,7 +84,7 @@ def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
     assert not seam_union.is_empty
 
 
-def test_split_antimeridian_polygons_match_upstream_oracles() -> None:
+def test_split_antimeridian_polygons_use_great_circle_crossings() -> None:
     box = gm.Polygon([(170, 40), (-170, 40), (-170, 50), (170, 50)], crs=4326)
     parts = gm.parts(box.split_antimeridian())
     assert [part.geometry_type for part in parts] == ['Polygon', 'Polygon']
@@ -78,7 +94,11 @@ def test_split_antimeridian_polygons_match_upstream_oracles() -> None:
         for x, y in cast('gm.Polygon', part).exterior.coords
         if abs(x) == 180.0
     })
-    assert seam_lats == [40.4324611, 50.431313]
+    expected_latitudes = sorted(
+        round(_great_circle_crossing_latitude((170.0, latitude), (-170.0, latitude)), 7)
+        for latitude in (40.0, 50.0)
+    )
+    assert seam_lats == expected_latitudes
     ring = [(-45, 40), (45, 40), (135, 40), (-135, 40)]
     capped = gm.Polygon(ring).split_antimeridian()
     assert capped.geometry_type == 'Polygon'

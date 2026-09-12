@@ -222,9 +222,9 @@ fn try_overlapping_bounds_sweep(
 /// beyond a chained shared vertex, each unordered pair at most once, as
 /// `visit(i, j)` with `i < j` in input order. Below the pair-count
 /// crossover every pair is visited; above it the segments decompose into
-/// MONOTONE CHAINS (the JTS design): within one chain NO pair is visited
-/// — non-adjacent in-chain segments cannot touch at all, and adjacent
-/// ones share exactly their one chaining vertex (monotonicity rules out
+/// Monotone chains: within one chain NO pair is visited — non-adjacent
+/// in-chain segments cannot touch at all, and adjacent ones share exactly
+/// their one chaining vertex (monotonicity rules out
 /// backtracks and collinear overlaps, which always BREAK the chain and
 /// surface as chain-pair contacts). Chain pairs come from a
 /// sweep-and-prune pass over the chain envelopes (banded across the

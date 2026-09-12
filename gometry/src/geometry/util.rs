@@ -291,11 +291,10 @@ pub(crate) fn point_equals_exact<const Z: bool, const M: bool>(
         && (!M || optional_coord_within(left.m(), right.m(), tolerance))
 }
 
-/// Per-ordinate equality within `tolerance` (JTS `Coordinate.equals2D` /
-/// Shapely `equals_exact` semantics: `|left - right| <= tolerance`). At the
-/// `tolerance == 0.0` default this reduces to exact equality while still
-/// treating `+0.0`/`-0.0` as equal and matching non-finite ordinates by bits
-/// (so `inf == inf`, which the difference form would turn into `NaN`).
+/// Per-ordinate equality within `tolerance` (`|left - right| <= tolerance`).
+/// At the `tolerance == 0.0` default this reduces to exact equality while
+/// still treating `+0.0`/`-0.0` as equal and matching non-finite ordinates by
+/// bits (so `inf == inf`, which the difference form would turn into `NaN`).
 pub(crate) fn coord_within(left: f64, right: f64, tolerance: f64) -> bool {
     same_topological_coordinate(left, right) || (left - right).abs() <= tolerance
 }

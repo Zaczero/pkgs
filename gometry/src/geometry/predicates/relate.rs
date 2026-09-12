@@ -82,8 +82,8 @@ impl LineworkChains {
         // Zero-length segments — the stutter that repeated CONSECUTIVE vertices
         // make — are removable redundancy, not topology, so they are ELIDED
         // here: `A-B-B-C` stages as `A-B-C`. Simplicity/validity therefore never
-        // mistake a duplicate vertex for a self-intersection (matching the whole
-        // GEOS/JTS/PostGIS ecosystem), while every real interaction — bowties,
+        // mistake a duplicate vertex for a self-intersection, while every real
+        // interaction — bowties,
         // spikes, non-adjacent touches, collinear overlaps, cross-part contact —
         // is built from non-degenerate segments and stays staged. Adjacency and
         // the closed-ring wrap read the STAGED ordinal/count below, so the real

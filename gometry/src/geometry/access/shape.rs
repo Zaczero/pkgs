@@ -458,9 +458,8 @@ impl Shape {
     pub fn exterior(&self) -> Option<Self> {
         match self {
             Self::Polygon(polygon) => Some(Self::LineString(polygon.shell.as_line())),
-            // `POLYGON EMPTY` has an (empty) shell, mirroring Shapely's
-            // `Polygon().exterior == LINEARRING EMPTY`; the shell carries the
-            // empty polygon's declared axes.
+            // `POLYGON EMPTY` has an empty shell; the shell carries the empty
+            // polygon's declared axes.
             Self::Empty(GeometryKind::Polygon, axes) => {
                 Some(Self::typed_empty(GeometryKind::LineString, *axes))
             },

@@ -123,7 +123,7 @@ def test_collection_of_empty_members_is_empty() -> None:
 
 
 def test_empty_geometry_predicate_matrix() -> None:
-    """Every broadcast path follows the same GEOS-style EMPTY policy."""
+    """Every broadcast path follows the same empty-geometry policy."""
     empty = gm.from_wkt('POLYGON EMPTY')
     box = gm.box(0, 0, 1, 1)
     falsy = [

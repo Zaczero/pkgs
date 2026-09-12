@@ -31,8 +31,7 @@ impl PreparedPlan {
         // The argmin sweeps run in squared space (no hypot rescue), so
         // extreme-coordinate operands take the brute path alongside
         // mixed-ordinate linework. Tie identity (which of several equally
-        // near pairs is returned) is deliberately unspecified, like
-        // shapely's.
+        // near pairs is returned) is deliberately unspecified.
         if !self_parts.linework.uniform_ordinates()
             || !other_parts.linework.uniform_ordinates()
             || !squared_space_safe(self_parts)

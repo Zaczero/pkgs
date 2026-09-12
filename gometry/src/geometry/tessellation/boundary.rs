@@ -33,8 +33,8 @@ pub(crate) fn line_boundary<C: Coordinates + ?Sized>(
     empty_axes: CoordinateAxes,
 ) -> crate::error::Result<Shape> {
     // A line's boundary is always a `MultiPoint` — empty when the line is
-    // closed (mod-2 rule, matching GEOS/PostGIS) — so the type contract is
-    // stable for callers.
+    // closed under the mod-2 rule — so the type contract is stable for
+    // callers.
     match (points.first_coord(), points.last_coord()) {
         (Some(start), Some(end)) if points.coord_count() > 1 && !same_point(start, end) => Ok(
             Shape::multi_point(start.axes, CoordSeq::try_from_points(&[start, end])?),

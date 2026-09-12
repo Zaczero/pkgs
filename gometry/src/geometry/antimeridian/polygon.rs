@@ -123,11 +123,10 @@ impl Shape {
     /// (which only re-tries on *invalid* output) never corrects. Non-areal and
     /// non-crossing geometries behave exactly as [`Self::split_antimeridian`].
     ///
-    /// Contract: each part must genuinely touch the forced pole — the closure
-    /// follows the upstream `force_*_pole` seam semantics, which assume the
-    /// regular seam topology of a single pole-touching ring (verified across S2
-    /// polar cells at every level). Forcing the wrong pole, or a ring that does
-    /// not reach the forced pole, is caller error and yields garbage.
+    /// Contract: each part must genuinely touch the forced pole. The closure
+    /// assumes the regular seam topology of a single pole-touching ring.
+    /// Forcing the wrong pole, or a ring that does not reach the forced pole,
+    /// is caller error and yields garbage.
     pub fn split_antimeridian_over_pole(&self, north: bool) -> Result<Self> {
         let closure = if north {
             PoleClosure::North
@@ -383,12 +382,11 @@ fn ring_is_ccw(coords: &[Point]) -> bool {
     }
 }
 
-/// Split one polygon into its seam-following parts (upstream
-/// `fix_polygon_to_list` with silent winding fixes). `preferred` forces the
-/// pole-closure direction (caller knows which pole the ring encircles); `Auto`
-/// infers it and retries the other direction only if the inference is invalid.
-/// Z/M is rejected only when a pole cap actually survives into the output (see
-/// [`reject_fabricated_pole_ordinates`]).
+/// Split one polygon into its seam-following parts with silent winding fixes.
+/// `preferred` forces the pole-closure direction (the caller knows which pole
+/// the ring encircles); `Auto` infers it and retries the other direction only
+/// if the inference is invalid. Z/M is rejected only when a pole cap actually
+/// survives into the output (see [`reject_fabricated_pole_ordinates`]).
 fn split_polygon(
     source: &Shape,
     polygon: &Polygon,
@@ -484,11 +482,10 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     {
         return Ok(polygons);
     }
-    // The automatic closure picked a pole that self-intersects the ring —
-    // the case upstream grew `force_*` flags for. Try each direction; a
-    // unique valid candidate wins, a tie is genuinely ambiguous, and when
-    // nothing is valid the input itself was broken. Never return the known-
-    // invalid automatic candidate as a plausible geometry.
+    // The automatic closure picked a pole that self-intersects the ring.
+    // Try each direction; a unique valid candidate wins, a tie is genuinely
+    // ambiguous, and when nothing is valid the input itself was broken. Never
+    // return the known-invalid automatic candidate as a plausible geometry.
     let mut valid = Vec::new();
     for closure in [PoleClosure::North, PoleClosure::South] {
         let (forced, _) = extend_over_poles(segments.clone(), closure)?;
@@ -537,9 +534,8 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
             "no ring could be stitched along the seam",
         ));
     }
-    // A single non-CCW result encloses both poles: represent it as the
-    // world rectangle with the ring as a hole (upstream's pole-covering
-    // wrap).
+    // A single non-CCW result encloses both poles: represent it as the world
+    // rectangle with the ring as a hole.
     if shells.len() == 1 && !ring_is_ccw(&shells[0]) {
         // The fabricated world rectangle carries the ring's axes so shell and
         // hole stay axis-consistent (a measured/3D pole wrap is rejected
@@ -568,9 +564,8 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
             Vec::new(),
         )?);
     }
-    // Assign each non-crossing hole to the part that contains it. (The
-    // upstream loop accidentally overwrites earlier holes that land in the
-    // same part — accumulating them all is the deliberate difference.)
+    // Assign each non-crossing hole to the part that contains it. Accumulate
+    // every hole assigned to the same part.
     let candidate_shapes = polygons
         .iter()
         .cloned()
@@ -621,8 +616,7 @@ fn close_ring(mut coords: Vec<Point>) -> Vec<Point> {
 }
 
 /// Which pole a stitched ring may close over: inferred from the seam
-/// latitudes, or forced when the inference is ambiguous (the internal
-/// replacement for upstream's public `force_*` flags).
+/// latitudes, or forced when the inference is ambiguous.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PoleClosure {
     Auto,
@@ -630,11 +624,10 @@ enum PoleClosure {
     South,
 }
 
-/// Upstream `extend_over_poles`: a seam end with no seam start between it
-/// and the pole closes over that pole; implying both poles under `Auto`
-/// means the winding was inverted, so the original segments come back
-/// reversed (the silent `fix_winding=True` behavior). Returns the segments
-/// and whether any pole closure was applied.
+/// A seam end with no seam start between it and the pole closes over that pole.
+/// Implying both poles under `Auto` means the winding was inverted, so the
+/// original segments come back reversed. Returns the segments and whether any
+/// pole closure was applied.
 fn extend_over_poles(
     mut segments: Vec<Vec<Point>>,
     closure: PoleClosure,
@@ -675,8 +668,7 @@ fn extend_over_poles(
             && right_end.is_none()
             && left_start.is_none_or(|start| latitude > start)
         {
-            // Forced north from the west side: cap and reverse (upstream's
-            // `force_north_pole` branch).
+            // Forced north from the west side: cap and reverse.
             over_north = true;
             let like = *segments[index].last().expect("segments are non-empty");
             segments[index].push(pole_vertex(like, -180.0, 90.0)?);
@@ -691,8 +683,7 @@ fn extend_over_poles(
     }
     if let Some((index, latitude)) = right_end {
         if closure == PoleClosure::South && right_start.is_none_or(|start| latitude < start) {
-            // Forced south from the east side: cap and reverse (upstream's
-            // `force_south_pole` branch).
+            // Forced south from the east side: cap and reverse.
             over_south = true;
             let like = *segments[index].last().expect("segments are non-empty");
             segments[index].push(pole_vertex(like, 180.0, -90.0)?);
@@ -726,9 +717,9 @@ fn is_self_closing(segment: &[Point]) -> bool {
     start.x == end.x && ((is_right && start.y > end.y) || (!is_right && start.y < end.y))
 }
 
-/// Upstream `build_polygons`, iteratively: pop a segment, find the closest
-/// seam start toward the pole on the same side (donut clause included),
-/// join and repeat; a segment with no candidate closes on itself.
+/// Build polygons iteratively: pop a segment, find the closest seam start
+/// toward the pole on the same side (including the donut clause), join and
+/// repeat; a segment with no candidate closes on itself.
 fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
     let mut rings = Vec::new();
     while let Some(mut segment) = segments.pop() {

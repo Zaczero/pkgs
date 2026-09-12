@@ -55,7 +55,7 @@ impl PackedLineColumnView<'_> {
 /// Identity distance for two CSR windows that share the same coordinate slice.
 ///
 /// `empty_value` is the metric value when both windows are empty. Fréchet uses
-/// `∞` on its identity fast lane; Hausdorff rejects empty supports upstream.
+/// `∞` on its identity fast lane; Hausdorff rejects empty supports.
 pub(crate) fn packed_line_same_window_value(
     left_xs: &[f64],
     left_ys: &[f64],

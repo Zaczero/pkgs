@@ -56,7 +56,7 @@ impl Ring {
         if !Self::closure_requires_append(&coords)? {
             return Ok(Self(coords));
         }
-        // XY-open: silent-close (WKT/WKB/shapely/constructor convention).
+        // XY-open: silently append the first point to close the ring.
         let first = coords.point_at(0);
         let mut closed = CoordSeqBuilder::try_with_capacity(
             coords.axes(),

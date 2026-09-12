@@ -79,9 +79,8 @@ pub(crate) fn compare_point_slices<A: Coordinates + ?Sized, B: Coordinates + ?Si
     left: &A,
     right: &B,
 ) -> Ordering {
-    // Plain lexicographic order — pointwise, then shorter-first — the
-    // Python tuple/string intuition. One comparator backs every canonical
-    // sort; deliberately NOT GEOS's count-major legacy order.
+    // Plain lexicographic order — pointwise, then shorter-first — gives every
+    // canonical sort one total comparator.
     std::iter::zip(left.iter_coords(), right.iter_coords())
         .map(|(left, right)| compare_points(&left, &right))
         .find(|order| *order != Ordering::Equal)

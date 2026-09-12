@@ -212,10 +212,10 @@ impl Shape {
         Ok(graph_relate_shapes(self, other)?.is_equal_topo())
     }
 
-    /// Coordinate equality within `tolerance` (per-ordinate `|Δ| ≤ tolerance`,
-    /// JTS/Shapely `equals_exact` semantics): the structure must match and
-    /// every paired ordinate must agree to `tolerance`. `tolerance == 0.0`
-    /// is exact. CRS/epoch are ignored here — that is the job of `==`.
+    /// Coordinate equality within `tolerance` (per-ordinate `|Δ| ≤ tolerance`):
+    /// the structure must match and every paired ordinate must agree to
+    /// `tolerance`. `tolerance == 0.0` is exact. CRS/epoch are ignored here —
+    /// that is the job of `==`.
     pub fn equals_exact(
         &self,
         other: &Self,

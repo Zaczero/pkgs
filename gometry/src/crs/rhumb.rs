@@ -59,10 +59,9 @@ impl RhumbCalculation {
     }
 }
 
-/// The rectifying series is GeographicLib's order-6 expansion, documented
-/// as full `f64` accuracy for `|f| <= 1/150` — far beyond every Earth
-/// ellipsoid. Steeper ellipsoids would need the exact elliptic-integral
-/// path, which no EPSG geographic CRS requires.
+/// The order-6 rectifying series is admitted for oblate ellipsoids with
+/// `|f| <= 1/150`. Other ellipsoid shapes and flattenings are rejected before
+/// the series coefficients are built.
 const MAX_FLATTENING: f64 = 1.0 / 150.0;
 
 /// Rhumb working constants for one ellipsoid: eccentricity, rectifying

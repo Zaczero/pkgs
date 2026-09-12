@@ -1796,9 +1796,9 @@ mod tests {
             // interior along the ring, no boundary (a closed curve has none).
             // The former `F12F0F212` claimed a two-dimensional interior (IE=2)
             // and a point-sized boundary at once, which is neither reading.
-            // GEOS answers `212F1F2F2`, asserting two 2D interiors meet, which
-            // a zero-area set cannot do. `degenerate_polygon_relates_as_its_own_linework`
-            // pins the equivalence.
+            // A zero-area set cannot have a two-dimensional interior.
+            // `degenerate_polygon_relates_as_its_own_linework` pins the
+            // equivalence.
             ("collapsed", &collapsed, &square, "F1FFFF212"),
             ("nonstrict", &nonstrict, &far, "FF2FF1212"),
             ("right edge apex", &square4, &right_edge_apex, "212F01FF2"),
@@ -3191,7 +3191,7 @@ mod tests {
         // B doubles back over itself and its own noding splits the segment it
         // shares with A at the crossing; A's unsplit copy is then cut at the
         // same computed point. The pieces are one piece with two owners, and
-        // the shared stretch is II at a curve — GEOS agrees.
+        // the shared stretch is II at a curve.
         let line = |points: &[(f64, f64)]| {
             let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
             Shape::LineString(LineSeq::try_new(CoordSeq::try_from_xy(&xy).unwrap()).unwrap())

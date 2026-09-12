@@ -1933,19 +1933,13 @@ pub(super) enum ExactDistanceWitness {
 /// Distance measures the continuum, while emitted nearest/shortest-line points
 /// are faithful stored witnesses and candidate selection is exact. Their
 /// stored-point distance may differ in the last ulps because the exact foot is
-/// not representable. On the UTM regression, gometry's continuum distance is
-/// correctly rounded to `0.7411226985789381` while its stored witness measures
-/// `0.7411226987304141`; Shapely reports the same continuum value and a stored
-/// witness distance of `0.7411226987502236`.
+/// not representable. The continuum distance and the distance of the emitted
+/// stored witness are therefore distinct quantities.
 ///
 /// The emitted interior witness is not necessarily the globally closest
-/// representable point: a 4,000-sample audit found 47 of 1,256 interior
-/// projections with a closer diagonal one-ULP neighbour, but only by ~1e-18
-/// relative, below distance resolution. Evidence ledger SHA-256:
-/// `7618c21623b59ce1714251f4f2ea3abd607413185e143312e8b8ea7a6aa80685`.
-/// The rounded squared value is therefore only an interval filter. Disjoint
-/// intervals decide cheaply; every overlap goes to the stored-dyadic owner,
-/// never to a bare floating-point `<`.
+/// representable point. The rounded squared value is therefore only an
+/// interval filter. Disjoint intervals decide cheaply; every overlap goes to
+/// the stored-dyadic owner, never to a bare floating-point `<`.
 #[derive(Clone, Copy)]
 pub(super) struct SquaredDistanceKey {
     filter: SquaredDistanceFilter,

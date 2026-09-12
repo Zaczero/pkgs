@@ -392,8 +392,7 @@ pub(crate) fn offset_segment(start: Point, end: Point, distance: f64) -> Option<
     })
 }
 
-/// The default miter limit, in offset widths from the vertex (the
-/// GEOS/JTS default).
+/// The default miter limit, in offset widths from the vertex.
 ///
 /// A near-reversal turn otherwise sends the miter intersection toward
 /// infinity. Raw offsets bevel an over-limit join; styled miter walks clip
@@ -403,8 +402,8 @@ pub(crate) const DEFAULT_MITER_LIMIT: f64 = 5.0;
 /// One join between consecutive offset segments: the miter intersection
 /// when it stays within [`DEFAULT_MITER_LIMIT`] offset widths of the vertex,
 /// otherwise the bevel — the two raw offset endpoints joined by a straight
-/// edge (the GEOS/JTS limited-miter shape; collapsing to a midpoint would
-/// pull the strip inside the offset distance).
+/// edge. Collapsing to a midpoint would pull the strip inside the offset
+/// distance.
 pub(crate) enum OffsetJoin {
     Miter(Point),
     Bevel { incoming: Point, outgoing: Point },

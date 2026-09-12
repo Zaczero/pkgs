@@ -772,10 +772,9 @@ impl Polygon {
     }
 
     fn normalize(&self) -> Result<Self> {
-        // Canonical winding follows RFC 7946 (GeoJSON): exterior CCW,
-        // holes CW — the modern convention, deliberately not GEOS's
-        // CW-shell legacy. Rings rotate min-vertex-first; holes sort
-        // ascending like every other canonical sequence.
+        // Canonical winding follows RFC 7946 (GeoJSON): exterior CCW, holes
+        // CW. Rings rotate min-vertex-first; holes sort ascending like every
+        // other canonical sequence.
         let mut holes = self
             .holes
             .iter()

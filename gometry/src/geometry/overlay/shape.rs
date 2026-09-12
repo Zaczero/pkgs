@@ -150,9 +150,8 @@ impl Shape {
             Self::LineString(_) => self.clone(),
             Self::MultiLineString(lines) => {
                 // Dissolve the component lines into maximal chains at degree-2
-                // nodes, splitting every Y/T/X junction (degree `>= 3`) — the
-                // JTS LineMerger contract, shared verbatim with the overlay line
-                // sink via [`merge_chains`].
+                // nodes, splitting every Y/T/X junction (degree `>= 3`). The
+                // overlay line sink uses the same [`merge_chains`] rule.
                 let chains = merge_chains(
                     &lines
                         .iter()

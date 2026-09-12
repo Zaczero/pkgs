@@ -381,7 +381,7 @@ def test_polygon_boundary_contact_intersections_dissolve_to_maximal_lines() -> N
     Only ``intersection`` emits the lower-dimensional contact;
     union/difference/symmetric_difference stay areal. The contact linework is
     dissolved into maximal chains (split only at genuine degree->=3 junctions),
-    not the per-edge fragments GEOS leaks — see
+    not one fragment per noded edge — see
     ``test_overlay_lines_dissolve_to_maximal_chains``.
     """
     a = gm.box(0, 0, 1, 1)
@@ -417,7 +417,7 @@ def test_overlay_lines_dissolve_to_maximal_chains() -> None:
     Regression for fragmenting a result into one ``LineString`` per noded
     segment. Overlays node linework at every mutual intersection; the result is
     then reassembled into maximal lines, split only at genuine degree->=3
-    junctions — cleaner than the per-edge arrangement GEOS leaks.
+    junctions — rather than one result per noded edge.
     """
     bent = gm.LineString([(-2, 5), (-1, 8), (0, 11)])
     assert gm.equals(gm.difference(bent, gm.LineString([(0, 5), (-3, 0)])), bent)
@@ -453,7 +453,7 @@ def test_line_merge_dissolves_only_degree_two_nodes() -> None:
 
     Regression for a greedy endpoint merge that fused two arms straight through
     a degree->=3 junction (and missed ``+0.0``/``-0.0`` joints by comparing raw
-    bits). The JTS LineMerger contract keeps all junction arms separate.
+    bits). Junction arms remain separate.
     """
     y = gm.from_wkt('MULTILINESTRING ((0 0, 1 1), (1 1, 2 0), (1 1, 1 2))').line_merge()
     assert y.geometry_type == 'MultiLineString'

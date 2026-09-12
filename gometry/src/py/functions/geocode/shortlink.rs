@@ -103,7 +103,7 @@ pub(super) fn shortlink_decode(code: &str) -> PyResult<(f64, f64, u8)> {
     // Zoom is implied by the code length: 3 bits per character minus the
     // `-` padding. Encode always emits at least 3 characters (zoom 0), so a
     // shorter code cannot name a real zoom level — reject it rather than
-    // report upstream Ruby's nonsense negative zoom.
+    // underflowing the decoded zoom.
     let zoom = z - 8 - z_offset.rem_euclid(3);
     let Ok(zoom) = u8::try_from(zoom) else {
         return Err(crate::py::errors::parse_error(

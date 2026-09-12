@@ -683,7 +683,7 @@ def test_normalize_is_the_smallest_presentation() -> None:
     presentation — one comparator (pointwise, then shorter-first), parts
     ascending, lines by smaller direction, closed lines by smallest
     rotation, polygon rings min-vertex-first with RFC 7946 winding.
-    Deliberately NOT GEOS's normalized form (descending order, CW shells).
+    This is an ascending representation with counter-clockwise shells.
     """
     cases = [
         ('MULTIPOINT ((2 2), (0 0), (1 1))', 'MULTIPOINT ((0 0), (1 1), (2 2))'),

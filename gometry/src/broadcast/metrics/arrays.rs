@@ -547,8 +547,7 @@ pub(crate) fn array_crs_distances(
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             // Planar packed × packed: pure column zip — one guarded-sqrt distance
             // per pair (`hypot` is a libm call at every x86-64 level), no
-            // per-pair `Shape` wrapping, GIL released (shapely's vectorized C
-            // loop is the bar here).
+            // per-pair `Shape` wrapping, and the GIL is released.
             // Resolve the geodesic ellipsoid ONCE for the whole array pair (the
             // per-pair kernel re-resolved the CRS for every row).
             let resolved = crs::ResolvedMetric::from_model(&model)?;

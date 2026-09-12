@@ -53,8 +53,9 @@ impl Shape {
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         let distance = Finite::try_new("distance", distance)?.get();
-        // Buffering any empty geometry yields the empty polygon (Shapely
-        // semantics); short-circuit before handing geo-rs an empty input.
+        // Buffering any empty geometry yields the operation's typed empty
+        // polygon; short-circuit before handing the empty input to the
+        // constructive route.
         if self.is_empty() {
             return Ok(Self::empty_polygon());
         }
@@ -88,7 +89,7 @@ impl Shape {
         // shared arrangement. Non-positive distances annihilate
         // puntal/lineal input exactly, and `buffer(0)` of polygonal input
         // is the winding selection of the unmoved rings — the d -> 0
-        // limit (the valid region; one lobe of a bowtie, like GEOS).
+        // limit of the valid region, including the selected lobe of a bowtie.
         // `None` means the polygonal input has degenerate (zero-area) rings,
         // which have no interior to expand or erode.
         if let Some(result) =
@@ -99,9 +100,8 @@ impl Shape {
         // A zero-area polygon IS its boundary linework: reinterpret its rings
         // as lines and buffer those. A positive distance strokes them into
         // capsules (a single coincident-point ring becomes a disk); a
-        // non-positive distance annihilates them, matching the empty erosion
-        // of a region with no interior. This is the principled native answer
-        // for inputs GEOS itself flags `invalid` and resolves the same way.
+        // non-positive distance annihilates them, because a region with no
+        // interior has nothing to erode.
         let linework = degenerate_polygonal_as_linework(self)?;
         Ok(linework
             .winding_route(distance, cap_style, rule, quadrant_segments, budget)?
@@ -142,8 +142,7 @@ impl Shape {
                     quadrant_segments,
                     budget,
                 ),
-                // Non-positive distances annihilate puntal/lineal input
-                // exactly (GEOS semantics).
+                // Non-positive distances annihilate puntal/lineal input.
                 _ => Ok(Some(Self::empty_polygon())),
             };
         }

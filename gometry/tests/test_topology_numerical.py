@@ -72,8 +72,8 @@ def test_relate_antimeridian_seam_matches_contains() -> None:
     )
     pt = gm.Point(-180.0, 5.0, crs=4326)
     assert gm.contains(poly, pt) is True
-    # Interior point-in-polygon DE-9IM (shapely/JTS); must not collapse to the
-    # fabricated-seam boundary pattern FF20F1FF2.
+    # Interior point-in-polygon DE-9IM must not collapse to the fabricated-seam
+    # boundary pattern FF20F1FF2.
     assert gm.relate(poly, pt) == '0F2FF1FF2'
     # Transpose for (point, container): 0F2FF1FF2ᵀ = 0FFFFF212.
     assert gm.relate(pt, poly) == '0FFFFF212'

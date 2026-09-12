@@ -68,9 +68,8 @@ fn geometric_ordinate_cmp(left: f64, right: f64) -> Ordering {
 
 /// Andrew's monotone chain over the input vertices: lexicographic XY sort,
 /// exact XY dedup, then lower+upper chains with ROBUST orientation turns
-/// (collinear vertices pop — the strict-hull convention GEOS and geo
-/// share). Returns open CCW hull indices into `points`; 1-2 distinct
-/// points pass through for the degenerate reductions.
+/// (collinear vertices pop). Returns open CCW hull indices into `points`;
+/// 1-2 distinct points pass through for the degenerate reductions.
 pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<usize> {
     let mut ids: Vec<usize> = (0..points.len()).collect();
     akl_toussaint_filter(points, &mut ids);

@@ -56,9 +56,9 @@ impl Shape {
     /// proper linework self-crossings, non-adjacent touches, the endpoints
     /// of collinear overlaps (spikes and backtracks), and duplicate
     /// point-atom coordinates. Legal adjacent shared vertices, ring closures,
-    /// and removable REPEATED CONSECUTIVE vertices (zero-length stutter, elided
-    /// as redundancy like GEOS/JTS) are never reported, so for point/lineal
-    /// input the result is non-empty exactly when
+    /// and removable REPEATED CONSECUTIVE vertices (zero-length stutter) are
+    /// never reported, so for point/lineal input the result is non-empty
+    /// exactly when
     /// [`is_simple`](Self::is_simple) is `false`. Areal input diagnoses
     /// its rings' linework (polygon simplicity itself is validity-based);
     /// collections are diagnosed recursively (their `is_simple` is always

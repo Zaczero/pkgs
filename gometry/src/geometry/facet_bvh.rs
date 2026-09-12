@@ -1,8 +1,7 @@
 //! Packed facet BVH — the vertex-sweep distance engine.
 //!
 //! Linework segments are grouped into *facets* of up to [`FACET_SEGMENTS`]
-//! consecutive segments (the GEOS `IndexedFacetDistance` grouping, sized to the
-//! SIMD lane count), and a flat binary AABB tree over the facets drives
+//! consecutive segments, and a flat binary AABB tree over the facets drives
 //! branch-and-bound point probes. The exact point-vs-facet kernel evaluates
 //! all eight segment distances in one vector op.
 //!

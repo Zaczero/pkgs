@@ -514,9 +514,9 @@ def test_de9im_reviewer_correctness_cases_match_shapely() -> None:
     ]
     # A polygon that encloses nothing IS its linework, and gometry relates it
     # that way: the ring below has collapsed to a single point, so it answers
-    # exactly as POINT (0 0) does. GEOS instead keeps a two-dimensional
-    # interior for it (IE=2), which a single point cannot have, so this pair is
-    # a deliberate divergence rather than a parity case.
+    # exactly as POINT (0 0) does. A zero-area set cannot have a
+    # two-dimensional interior, so this pair is deliberately kept outside the
+    # ordinary differential cases.
     degenerate = ('POLYGON ((0 0, 0 0, 0 0, 0 0))', 'LINESTRING (0 0, 1 0)')
     assert gm.relate(gm.from_wkt(degenerate[0]), gm.from_wkt(degenerate[1])) == 'F0FFFF102'
     assert gm.relate(gm.from_wkt('POINT (0 0)'), gm.from_wkt(degenerate[1])) == 'F0FFFF102'

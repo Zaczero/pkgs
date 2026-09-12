@@ -26,10 +26,10 @@ pub(crate) enum WalkJoin {
     Miter { point: XY },
     /// Outside turn, miter rule past the limit: the spike clipped flat
     /// between `entry` (on the incoming carrier) and `exit` (on the
-    /// outgoing) at `limit * distance` from the vertex — the GEOS
-    /// limited-miter shape, continuous in the corner angle (a bevel
+    /// outgoing) at `limit * distance` from the vertex. This keeps the
+    /// limited-miter construction continuous in the corner angle; a bevel
     /// fallback would jump discontinuously as a corner sharpens past the
-    /// threshold).
+    /// threshold.
     MiterCut { entry: XY, exit: XY },
     /// Inside turn whose offset edges meet within their extents: the
     /// crossing, with its parameters along the incoming (`t_in`) and
@@ -61,8 +61,8 @@ impl WalkJoin {
 }
 
 /// The outside-turn join rule of an offset walk — the style axis of the
-/// engine. Inside turns are style-independent (crossings/excursions
-/// resolved by the winding selection), exactly as in GEOS.
+/// engine. Inside turns are style-independent; crossings and excursions are
+/// resolved by the winding selection.
 #[derive(Clone, Copy)]
 pub(crate) enum WalkJoinRule {
     Arc,

@@ -107,7 +107,7 @@ def _try_wkt(coords: list[tuple[float, ...]]) -> tuple[str, Any]:
 
 
 def _hand_wkb_polygon(coords: list[tuple[float, ...]]) -> bytes:
-    """ISO WKB polygon with one ring — admits open / Z-open payloads shapely rejects."""
+    """ISO WKB polygon with one ring, including open and Z-open payloads."""
     ndim = len(coords[0])
     # ISO type codes: XY=3, XYZ=1003, XYM=2003, XYZM=3003
     type_code = {2: 3, 3: 1003, 4: 3003}[ndim]

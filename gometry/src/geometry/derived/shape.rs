@@ -44,15 +44,13 @@ impl Shape {
 
     pub fn centroid(&self) -> Result<Self> {
         // The centroid is always a point; an empty geometry has the empty point
-        // as its centroid (Shapely semantics). Own kernel — the JTS/GEOS
-        // dimensional cascade: the HIGHEST nonzero dimension present wins,
-        // areal (polygons) over lineal (lines + polygon boundaries) over points.
-        // Each dimension is a focused pass evaluated LAZILY in cascade order, so
-        // a normal nonzero-area polygon runs only the cheap triangle fold and
-        // never pays the lineal pass's per-edge `sqrt` (which `finish` would
-        // discard). The per-dimension sums are independent, so this is
-        // bit-identical to one interleaved pass (WKT-parity with shapely is
-        // oracle-tested), with no per-call geo-rs conversion.
+        // as its centroid. The highest nonzero dimension present wins: areal
+        // (polygons) over lineal (lines and polygon boundaries) over points.
+        // Each dimension is a focused pass evaluated lazily in cascade order,
+        // so a normal nonzero-area polygon runs only the triangle fold and
+        // never pays the lineal pass's per-edge `sqrt` that its result would
+        // discard. The per-dimension sums are independent and require no
+        // per-call geometry conversion.
         if self.is_empty() {
             return Ok(Self::empty_point());
         }
@@ -66,17 +64,15 @@ impl Shape {
     }
 
     /// A representative point guaranteed to lie *on* the geometry — for a
-    /// polygon an interior point (GEOS/Shapely `point_on_surface` semantics),
-    /// not a boundary vertex. Empty geometries yield an empty geometry.
+    /// polygon an interior point, not a boundary vertex. Empty geometries
+    /// yield an empty geometry.
     pub fn point_on_surface(&self) -> Result<Self> {
         if self.is_empty() {
             return Ok(Self::empty_point());
         }
-        // Polygonal input takes the own scanline kernel: geo's
-        // `interior_point` pays a full geometry conversion plus per-call
-        // allocation machinery (measured 1.5 us per small box, 8x
-        // shapely); one half-open chord scan at the bbox bisector is a
-        // few hundred ns and needs no conversion.
+        // Polygonal input takes the own scanline kernel: one half-open chord
+        // scan at the bbox bisector is enough to find a representative without
+        // converting the geometry or allocating per edge.
         let polygonal = match self {
             Self::Polygon(polygon) => polygonal_surface_point(std::iter::once(polygon))?,
             Self::MultiPolygon(polygons) => polygonal_surface_point(polygons.as_slice().iter())?,
@@ -97,7 +93,7 @@ impl Shape {
                 lineal_surface_point(lines.iter().map(LineSeq::as_coords))
             },
             // Mixed/nested collections and degenerate polygons (whose interior
-            // the scanline could not find) fall to the JTS dimensional
+            // the scanline could not find) fall to the same dimensional
             // cascade: highest dimension first, areal degeneracy down to its
             // boundary linework and vertices.
             _ => collection_surface_point(std::slice::from_ref(self))?,
@@ -120,10 +116,10 @@ impl Shape {
             return Ok(empty_geometry());
         }
         // Native monotone chain over first-seen XY vertices (robust
-        // orientation turns, collinear vertices dropped — the GEOS/strict
-        // convention). Degenerate hulls reduce to Point/LineString like
-        // every degenerate polygon. Surviving vertices are copies of those
-        // source points, including Z/M and signed-zero spelling.
+        // orientation turns, collinear vertices dropped). Degenerate hulls
+        // reduce to Point/LineString like every degenerate polygon. Surviving
+        // vertices are copies of those source points, including Z/M and
+        // signed-zero spelling.
         let points = self.first_seen_xy_vertices();
         let hull: Vec<Point> = monotone_chain_hull(&points)
             .into_iter()
@@ -181,8 +177,7 @@ impl Shape {
                 Ok(Self::Point(polylabel_point(self, tolerance)?))
             },
             // The representative point of any empty polygonal input is the
-            // empty point, matching Shapely's
-            // `point_on_surface(POLYGON EMPTY) == POINT EMPTY`.
+            // empty point.
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
                 Ok(Self::empty_point())
             },
@@ -207,9 +202,6 @@ impl Shape {
         let radius = (center.x - support.x).hypot(center.y - support.y);
         if radius == 0.0 {
             // A single distinct vertex: the degenerate circle is that point.
-            // (Consistent for any all-coincident input — unlike GEOS, which
-            // returns the point for a `Point` yet an empty for a coincident
-            // `MultiPoint`.)
             return Ok(Self::Point(center));
         }
         // The buffer emitter places vertices on the requested radius, so using

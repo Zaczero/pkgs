@@ -270,8 +270,7 @@ impl ShapeData {
     /// Envelope (bounding-box polygon) built from the cached bounds, so a
     /// prior `bounds`/`envelope` call makes this free. Inherent method that
     /// shadows the `Deref`→[`Shape::envelope`], which would otherwise rescan
-    /// every coordinate on each call. Mirrors GEOS, which caches the
-    /// geometry envelope rather than recomputing it.
+    /// every coordinate on each call.
     pub fn envelope(&self) -> crate::error::Result<Shape> {
         // `envelope` produces boxes → `POLYGON EMPTY` for empty input (the
         // output-type convention), matching `Shape::envelope`. A non-empty

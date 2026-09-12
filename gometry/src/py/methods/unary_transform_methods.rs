@@ -109,8 +109,7 @@ distance : float
     Offset; sign selects the side. CRS-aware: geodesic meters on a geographic
     CRS, native units on a projected one, coordinate units otherwise. The result is the RAW parallel
     curve: where the input folds back within ``distance`` the curve can
-    self-intersect (GEOS trims such curls away); ``buffer(side=...)``
-    gives the trimmed area instead.
+    self-intersect; ``buffer(side=...)`` gives the trimmed area instead.
 ", r"
 
 Returns
@@ -125,8 +124,8 @@ distance : float or sequence of float
     CRS, native units on a projected one, coordinate units otherwise — a scalar applies to every
     geometry, or pass one value per geometry. The result is the RAW
     parallel curve: where the input folds back within ``distance`` the
-    curve can self-intersect (GEOS trims such curls away);
-    ``buffer(side=...)`` gives the trimmed area instead.
+    curve can self-intersect; ``buffer(side=...)`` gives the trimmed area
+    instead.
 ", r"
 
 Returns

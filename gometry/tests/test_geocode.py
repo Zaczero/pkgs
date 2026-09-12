@@ -36,8 +36,8 @@ def test_pluscode_encodes_canonical_vectors() -> None:
     assert gm.pluscode_encode(
         gm.GeometryArray([gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=4326)])
     ) == ['6FG22222+22', '6FH32222+22']
-    # Validation: even short lengths only, 2..=15 (the reference silently
-    # clamps oversized lengths; gometry validates instead).
+    # Validation: even short lengths only, 2..=15; invalid lengths are
+    # rejected instead of clamped.
     with pytest.raises(gm.GeometryError, match='must be even'):
         gm.pluscode_encode(0, 0, length=5)
     with pytest.raises(gm.GeometryError, match='between 2 and 15'):
@@ -180,7 +180,7 @@ def test_osm_shortlink_round_trips() -> None:
     with pytest.raises(gm.ParseError, match='empty'):
         gm.osm_shortlink_location('---')
     # A code too short to name a real zoom level is rejected, not returned
-    # as upstream Ruby's nonsense negative zoom.
+    # as an invalid negative zoom.
     with pytest.raises(gm.ParseError, match='too short'):
         gm.osm_shortlink_location('A')
     assert isinstance(zoom, int)

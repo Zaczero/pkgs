@@ -468,10 +468,11 @@ def test_geographic_densified_hausdorff_uses_geodesic_path() -> None:
 
 
 def test_repair_matches_geos_make_valid_oracle() -> None:
-    """The linework fill rule is even-odd over the DEDUPLICATED noded
-    linework — exactly GEOS make_valid: keyholes cancel to donuts, a fully
-    retraced ring still encloses its area, and curated self-intersecting
-    polygons agree to the last drop of area.
+    """Repair fill rules are checked against a Shapely differential oracle.
+
+    ``linework`` uses even-odd parity over deduplicated noded linework, while
+    ``structure`` uses each ring's nonzero signed winding. Collapsed rings
+    enclose nothing and drop out of either fold.
     """
     import shapely
 

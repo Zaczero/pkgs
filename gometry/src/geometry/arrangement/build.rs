@@ -472,9 +472,8 @@ impl<W: WindingWeight> Arrangement<W> {
     /// lobes, or a hole touching its shell: no single local successor
     /// rule resolves both), so every emitted walk is split at repeated
     /// vertices into SIMPLE rings, whose shoelace sign then classifies
-    /// shell vs hole (the JTS maximal-to-minimal edge-ring resolution).
-    /// Shells come out counter-clockwise, holes clockwise — rings are
-    /// closed (first point repeated).
+    /// shell versus hole. Shells come out counter-clockwise, holes clockwise —
+    /// rings are closed (first point repeated).
     pub(crate) fn region_rings(&self, windings: &[W], keep: impl Fn(W) -> bool) -> Vec<Vec<XY>> {
         // A half-edge is on the kept region's boundary iff its left face is
         // kept and its twin's (right) face is not.

@@ -747,7 +747,7 @@ def test_empty_result_typing_regression() -> None:
 
 def test_validity_repeated_vertices_regression() -> None:
     """Repeated consecutive vertices are removable redundancy (valid/simple,
-    matching the whole ecosystem); only genuine defects are invalid.
+    while genuine defects remain invalid.
     """
     dup_poly = 'POLYGON ((0 0, 0 0, 4 0, 4 4, 0 4, 0 0))'
     clean_poly = 'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))'
@@ -767,8 +767,8 @@ def test_validity_repeated_vertices_regression() -> None:
 
 
 def test_minimum_bounding_circle_polygon_regression() -> None:
-    """minimum_bounding_circle returns the circle POLYGON (spec/ecosystem), with
-    consistent degenerate handling that improves on GEOS.
+    """minimum_bounding_circle returns a circle POLYGON with consistent
+    handling for empty and coincident inputs.
     """
     circle = gm.from_wkt(
         'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))'
@@ -790,7 +790,7 @@ def test_minimum_bounding_circle_polygon_regression() -> None:
 
 def test_simplify_never_yields_invalid_polygon_regression() -> None:
     """simplify(preserve_topology=False) must never leak a degenerate invalid
-    polygon — a collapsed shell is POLYGON EMPTY (matching Shapely).
+    polygon — a collapsed shell is POLYGON EMPTY.
     """
     sliver = 'POLYGON ((0 0, 4 0, 4 0.01, 0 0))'
     for method in ('dp', 'vw'):

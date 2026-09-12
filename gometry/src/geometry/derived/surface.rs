@@ -253,10 +253,10 @@ fn gather_surface_components<'a>(
 }
 
 /// Interior point of an arbitrary (possibly nested, mixed, or degenerate)
-/// collection: JTS's dimensional cascade — the highest present dimension
-/// wins, areal degeneracy falls through to its boundary linework, then to its
-/// vertices. Reused for bare degenerate polygons too (via `from_ref`), which
-/// the scanline kernel leaves to this boundary path.
+/// collection: the highest present dimension wins, areal degeneracy falls
+/// through to its boundary linework, then to its vertices. Reused for bare
+/// degenerate polygons too (via `from_ref`), which the scanline kernel leaves
+/// to this boundary path.
 pub(crate) fn collection_surface_point(parts: &[Shape]) -> Result<Option<Point>> {
     let mut polygons: Vec<&Polygon> = Vec::new();
     let mut lines: Vec<&CoordSeq> = Vec::new();

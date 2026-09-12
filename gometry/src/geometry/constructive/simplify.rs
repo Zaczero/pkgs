@@ -730,8 +730,7 @@ impl Shape {
                 // Without the topology guard, raw DP can collapse a polygon ring
                 // below its three distinct corners (a sliver) — a degenerate
                 // INVALID polygon. Drop collapsed areal rings so a vanished
-                // polygon is `POLYGON EMPTY` (matching Shapely), never an
-                // invalid 2-vertex ring.
+                // polygon is `POLYGON EMPTY`, never an invalid 2-vertex ring.
                 if !preserve_topology {
                     return raw.dropping_collapsed_rings();
                 }

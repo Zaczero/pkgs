@@ -578,9 +578,8 @@ mod winding_buffer_tests {
     }
 
     /// Over-limit corners clip flat at exactly `limit * distance` along
-    /// the corner bisector (the GEOS limited-miter shape — continuous in
-    /// the corner angle), leaving the area strictly between the bevel
-    /// and the unlimited miter.
+    /// the corner bisector (continuous in the corner angle), leaving the area
+    /// strictly between the bevel and the unlimited miter.
     #[test]
     fn sharp_miter_clips_at_the_limit_reach() {
         // Sharp spike at (12, 1): ratio 1/sin(theta/2) far above 2.
@@ -693,12 +692,9 @@ mod winding_buffer_tests {
     }
 
     /// SEMANTICS PIN — styled erosion is the exact monotone offset
-    /// construction, NOT GEOS replication: the bevel allowance at a
-    /// reflex vertex survives even as an isolated component (GEOS's
-    /// depth machinery drops it; the same machinery also manufactures
-    /// phantom slivers past the inscribed radius — adjudicated in the
-    /// fuzz campaign). Eroding this L by 1.2 annihilates both arms; the
-    /// bevel chord across the grown reflex corner keeps the exact
+    /// construction. The bevel allowance at a reflex vertex survives even
+    /// as an isolated component. Eroding this L by 1.2 annihilates both
+    /// arms; the bevel chord across the grown reflex corner keeps the exact
     /// triangle `{x >= 1.2, y >= 1.2, x + y <= 2.8}` (area 0.08), which
     /// shrinks continuously to nothing at `d = 4/3`.
     #[test]
@@ -1331,9 +1327,8 @@ mod subdivide_columns_tests {
         )
         .unwrap();
 
-        // Midpoints are recorded from pyproj 3.8.0 (PROJ 9.8.1),
-        // Geod(ellps="WGS84").inv followed by fwd at half the inverse
-        // distance. The first value also anchors the existing public fixture.
+        // The inserted coordinates are the stored binary64 midpoints on the
+        // WGS84 geodesics; source vertices remain in their original order.
         assert_eq!(segmented.len(), 8);
         assert_eq!(segmented.xs()[0].to_bits(), (-0.0001_f64).to_bits());
         assert_eq!(segmented.ys()[0].to_bits(), (-0.0001_f64).to_bits());

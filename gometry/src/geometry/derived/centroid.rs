@@ -23,9 +23,8 @@ fn accumulate_ring_centroid(
     // One GLOBAL base point (the first ring vertex seen) keeps every
     // triangle small. The SIMD `centroid_ring_sums` twin of the shoelace
     // fold sums the ring's SIGNED triangle-fan contributions (cross-product
-    // areas about the anchor); the JTS sign rule (a shell contributes
-    // positively when CW, a hole when CCW) is applied to the whole-ring
-    // total here — exact since `sign` is ±1.0.
+    // areas about the anchor); shells and holes receive opposite signs based
+    // on their declared role and winding.
     let anchor = *base.get_or_insert((xs[0], ys[0]));
     let ccw = closed_columns_winding(xs, ys, pairs).is_ccw();
     let sign = if hole == ccw { 1.0 } else { -1.0 };
@@ -475,8 +474,8 @@ pub(crate) fn centroid_polygon_row_columns(
         })
 }
 
-/// Single-polygon areal centroid (shell + holes). One classical JTS fan that
-/// also tracks extent; exact accumulation only when the fan rejects or extent is
+/// Single-polygon areal centroid (shell + holes). One triangle fan also tracks
+/// extent; exact accumulation runs only when the fan rejects or the extent is
 /// extreme. Ordinary mid-range polygons pay a single vertex pass (no separate
 /// pre-scan).
 fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64, f64)> {
@@ -730,10 +729,10 @@ fn lineal_component_centroid(xs: &[f64], ys: &[f64]) -> Option<(f64, f64, f64)> 
 }
 
 /// Dimension-1 centroid: length-weighted edge-midpoint sums over every lineal
-/// run — standalone lines AND polygon-ring boundaries (the zero-area fallback,
-/// per JTS, where a ring's edges feed the lineal centroid). `None` when the
-/// total length is zero. Multi-part lines use component-local centroids then a
-/// length-weighted stable merge so order and cancellation cannot move the mean.
+/// run — standalone lines and polygon-ring boundaries (the zero-area fallback).
+/// `None` when the total length is zero. Multi-part lines use component-local
+/// centroids then a length-weighted stable merge so order and cancellation
+/// cannot move the mean.
 pub(crate) fn lineal_centroid(shape: &Shape) -> Option<(f64, f64)> {
     match shape {
         Shape::MultiLineString(lines) if lines.len() > 1 => {
@@ -822,8 +821,8 @@ fn stable_point_mean(xs: &[f64], ys: &[f64]) -> Option<(f64, f64)> {
 
 /// Dimension-0 centroid: the average of the geometry's points — actual
 /// `Point`/`MultiPoint` vertices plus the first vertex of each (necessarily
-/// zero-length, since we only get here when total length is zero) lineal run,
-/// matching JTS's zero-length-chain anchor. `None` for a fully empty geometry.
+/// zero-length, since we only get here when total length is zero) lineal run.
+/// `None` for a fully empty geometry.
 pub(crate) fn point_centroid(shape: &Shape) -> Option<(f64, f64)> {
     if let Shape::MultiPoint(seq) = shape {
         return stable_point_mean(seq.xs(), seq.ys());
@@ -844,10 +843,10 @@ fn polygon_rings(polygon: &Polygon, visit: &mut impl FnMut(&Ring, bool)) {
     }
 }
 
-/// Visit every lineal coordinate run — standalone lines AND polygon-ring
-/// boundaries (shell + holes), recursing collections — the dimension-1
-/// traversal. Order matches the single-pass JTS accumulation (shell before
-/// holes, per polygon) so the fallback float stream is identical.
+/// Visit every lineal coordinate run — standalone lines and polygon-ring
+/// boundaries (shell + holes), recursing collections — for the dimension-1
+/// traversal. Shells precede holes within each polygon, preserving the
+/// traversal order used by the fallback float stream.
 fn for_each_lineal(shape: &Shape, visit: &mut (impl FnMut(&[f64], &[f64]) + ?Sized)) {
     match shape {
         Shape::LineString(seq) => visit(seq.xs(), seq.ys()),
@@ -882,7 +881,7 @@ fn polygon_ring_columns(polygon: &Polygon, visit: &mut (impl FnMut(&[f64], &[f64
     }
 }
 
-/// Visit the dimension-0 fallback points in JTS order: every `Point`/
+/// Visit the dimension-0 fallback points in storage order: every `Point`/
 /// `MultiPoint` vertex, plus the first vertex of each non-empty lineal run
 /// (its zero-length-chain anchor).
 fn for_each_fallback_point(shape: &Shape, visit: &mut impl FnMut(f64, f64)) {
@@ -898,8 +897,8 @@ fn for_each_fallback_point(shape: &Shape, visit: &mut impl FnMut(f64, f64)) {
                 for_each_fallback_point(geometry, visit);
             }
         },
-        // Lineal runs (lines + polygon rings): only reached when total length is
-        // zero, so each non-empty run anchors its first vertex (JTS).
+        // Lineal runs (lines + polygon rings): only reached when total length
+        // is zero, so each non-empty run anchors its first vertex.
         Shape::LineString(_)
         | Shape::MultiLineString(_)
         | Shape::Polygon(_)

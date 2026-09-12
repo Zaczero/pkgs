@@ -84,9 +84,9 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
 }
 
 /// The pair of seam points `((-180, lat), (180, lat))` for a segment from
-/// `west` (the side whose longitude is near +17x) to `east` — upstream's
-/// `crossing_latitude` with the great-circle formula, rounded to 7
-/// decimals, plus Z/M interpolated along the great circle.
+/// `west` (the side whose longitude is near +17x) to `east`. The latitude is
+/// computed from the great-circle intersection and rounded to 7 decimals;
+/// Z/M are interpolated along the great circle.
 fn crossing_points(west: Point, east: Point) -> (Point, Point) {
     let (latitude, fraction) = if west.x.abs() == 180.0 {
         (west.y, 0.0)
@@ -162,11 +162,10 @@ fn norm(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }
 
-/// Great-circle crossing latitude (degrees, rounded to 7 decimals like
-/// upstream) and the along-arc fraction of the crossing for Z/M
-/// interpolation. The plane through both points crossed with the meridian
-/// plane `-Y` lands in the XZ plane; the segment direction guarantees the
-/// antimeridian (x <= 0) branch.
+/// Great-circle crossing latitude (degrees, rounded to 7 decimals) and the
+/// along-arc fraction of the crossing for Z/M interpolation. The plane
+/// through both points crossed with the meridian plane `-Y` lands in the XZ
+/// plane; the segment direction guarantees the antimeridian (x <= 0) branch.
 fn crossing_latitude_great_circle(start: Point, end: Point) -> (f64, f64) {
     let p1 = unit_sphere(start);
     let p2 = unit_sphere(end);

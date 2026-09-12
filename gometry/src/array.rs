@@ -319,9 +319,8 @@ pub struct PyGeometryArray {
     pub(crate) frame: Frame,
     /// Lazy per-element bounding boxes, shared across clones — built once from
     /// the packed columns when explicitly required and reused by every
-    /// predicate refutation, mirroring shapely's per-geometry envelope cache
-    /// (the array is frozen, never stale). `Arc<OnceLock>` so cloning the handle
-    /// shares the cache.
+    /// predicate refutation. The array is frozen, so the cache cannot become
+    /// stale. `Arc<OnceLock>` makes cloning the handle share the cache.
     pub(crate) bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
     /// Lazy array-wide aggregate bounds (including the geographic antimeridian
     /// fold when the frame is geographic). Same lifecycle as `bounds_cache`:

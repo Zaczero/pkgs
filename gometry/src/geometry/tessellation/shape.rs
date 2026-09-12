@@ -210,8 +210,7 @@ impl Shape {
         // The "is this face inside the polygon?" filter runs once per triangle
         // (~one per vertex), so build the hierarchical `PointBatchTester` ONCE
         // and reuse it: an uncached `contains_point` per face is an
-        // O(faces x edges) brute sweep that dominated large inputs (8x slower
-        // than GEOS at 800 verts).
+        // O(faces x edges) brute sweep that dominates large inputs.
         let vertices = self.constrained_delaunay_vertices_budgeted(refinement, budget)?;
         let shapes = vertices
             .as_chunks::<4>()
