@@ -501,8 +501,8 @@ impl From<Error> for PyErr {
                 | C::GeodesicUnits { crs, .. } => {
                     with_attrs(CRSError::new_err(message), &[("crs", Attr::Str(crs))])
                 },
-                C::GeodesicExponentOverflow => CRSError::new_err(message),
-                C::Create { .. }
+                C::GeodesicExponentOverflow
+                | C::Create { .. }
                 | C::Export { .. }
                 | C::Identify { .. }
                 | C::EmptyGeometry
@@ -712,5 +712,4 @@ mod tests {
             drop(error);
         });
     }
-
 }

@@ -7,15 +7,15 @@
 //! general noding path.
 
 #[cfg(test)]
-use crate::geometry::predicates::{RingClass, ring_classify_point, shell_is_strictly_convex};
+use crate::geometry::Polygon;
 use crate::geometry::predicates::shell_is_convex;
+#[cfg(test)]
+use crate::geometry::predicates::{RingClass, ring_classify_point, shell_is_strictly_convex};
 use crate::geometry::segments::{Contact, segment_contact_exact, segment_envelopes_disjoint};
-use crate::geometry::topology::{Operand, OperandPool, OrientedRing};
 #[cfg(test)]
 use crate::geometry::topology::build_operand_pool;
+use crate::geometry::topology::{Operand, OperandPool, OrientedRing};
 use crate::geometry::{Bounds, Segment, XY, wrap_index};
-#[cfg(test)]
-use crate::geometry::Polygon;
 
 /// Complete relation classes that can be derived for two strict convex
 /// shells without constructing an arrangement. Any boundary touch, collinear

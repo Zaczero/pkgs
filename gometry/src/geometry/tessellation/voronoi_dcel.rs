@@ -27,6 +27,7 @@ use rstar::AABB;
 use crate::error::Result;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::overlay::certify_emitted_incidence;
 use crate::geometry::tessellation::{
     CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, delaunay_complex, exact,
 };
@@ -3009,8 +3010,7 @@ fn embed(
             budget,
         )?;
     }
-    crate::geometry::overlay::certify_emitted_incidence(&emitted_incidence)
-        .map_err(|_| embedding_failure())?;
+    certify_emitted_incidence(&emitted_incidence).map_err(|_| embedding_failure())?;
     budget.add(live_edge_ids.len().saturating_mul(2))?;
     let mut incidence_offsets = vec![0_usize; subdivision.vertices.len() + 1];
     for &edge_id in &live_edge_ids {
@@ -3272,7 +3272,7 @@ pub(super) fn build(
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     combinatorial_dual: bool,
-    mesh: CertifiedDelaunay,
+    mesh: &CertifiedDelaunay,
 ) -> Result<EmbeddedVoronoi> {
     if sites
         .iter()
@@ -3301,7 +3301,7 @@ pub(super) fn build(
             "collinear sites require the exact one-dimensional lane",
         ));
     }
-    let complex = delaunay_complex(&mesh, sites)?;
+    let complex = delaunay_complex(mesh, sites)?;
     let primal_edges = mesh.primal_edges();
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), budget)?;
     let rect = clip_rectangle(&clip)?;
@@ -3322,7 +3322,7 @@ pub(super) fn build_edges(
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     combinatorial_dual: bool,
-    mesh: CertifiedDelaunay,
+    mesh: &CertifiedDelaunay,
 ) -> Result<EmbeddedEdges> {
     Ok(build(sites, boundary, budget, combinatorial_dual, mesh)?.into_edges())
 }
@@ -3371,11 +3371,11 @@ fn rounded_segment_covered_by_clip(
     exact_rings: &[Vec<exact::ExactPoint>],
     rounded_rings: &[Vec<XY>],
     events: &mut Vec<exact::ExactPoint>,
-) -> Result<bool> {
+) -> bool {
     if !point_covered_by_clip_xy(segment.start, rounded_rings)
         || !point_covered_by_clip_xy(segment.end, rounded_rings)
     {
-        return Ok(false);
+        return false;
     }
     let mut interior_contact = false;
     for ring in rounded_rings {
@@ -3392,7 +3392,7 @@ fn rounded_segment_covered_by_clip(
                 && segment_start != segment_end
                 && edge_start != edge_end
             {
-                return Ok(false);
+                return false;
             }
             if (point_on_segment_xy(edge[0], segment.start, segment.end)
                 && edge[0] != segment.start
@@ -3409,10 +3409,10 @@ fn rounded_segment_covered_by_clip(
     let end = exact::ExactPoint::from_xy(segment.end);
     if !interior_contact {
         let midpoint = start.midpoint(&end);
-        return Ok(point_covered_by_clip(&midpoint, exact_rings));
+        return point_covered_by_clip(&midpoint, exact_rings);
     }
     if !point_covered_by_clip(&start, exact_rings) || !point_covered_by_clip(&end, exact_rings) {
-        return Ok(false);
+        return false;
     }
     events.clear();
     events.extend([start.clone(), end.clone()]);
@@ -3439,17 +3439,17 @@ fn rounded_segment_covered_by_clip(
             continue;
         }
         if !point_covered_by_clip(&pair[0].midpoint(&pair[1]), exact_rings) {
-            return Ok(false);
+            return false;
         }
     }
-    Ok(true)
+    true
 }
 
 pub(super) fn build_collinear_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
-    mesh: CertifiedDelaunay,
+    mesh: &CertifiedDelaunay,
 ) -> Result<EmbeddedEdges> {
     let order = mesh
         .collinear_order()
@@ -3730,7 +3730,7 @@ pub(super) fn build_collinear_edges(
                 &comparison_rings,
                 &comparison_rounded_rings,
                 &mut events,
-            )? {
+            ) {
                 return Err(embedding_failure());
             }
         }
@@ -3757,7 +3757,7 @@ mod tests {
                 &sites,
                 VoronoiBoundary::Envelope,
                 &mut dual_budget,
-                certified_delaunay(&sites),
+                &certified_delaunay(&sites),
             );
             let mut legacy_budget = ExpansionBudget::new("test", "subnormal legacy");
             let legacy = build(
@@ -3864,54 +3864,42 @@ mod tests {
         let hole = cycle(&hole_points);
         let hole_xy = cycle_xy(&hole_points);
         let mut events = Vec::new();
-        assert!(
-            rounded_segment_covered_by_clip(
-                Segment {
-                    start: XY::new(0.0, 0.0),
-                    end: XY::new(4.0, 0.0),
-                },
-                &[rectangle.clone()],
-                &[rectangle_xy.clone()],
-                &mut events,
-            )
-            .unwrap()
-        );
-        assert!(
-            rounded_segment_covered_by_clip(
-                Segment {
-                    start: XY::new(0.5, 0.5),
-                    end: XY::new(3.5, 3.5),
-                },
-                &[rectangle.clone()],
-                &[rectangle_xy.clone()],
-                &mut events,
-            )
-            .unwrap()
-        );
-        assert!(
-            !rounded_segment_covered_by_clip(
-                Segment {
-                    start: XY::new(0.5, 2.0),
-                    end: XY::new(3.5, 2.0),
-                },
-                &[rectangle.clone(), hole.clone()],
-                &[rectangle_xy.clone(), hole_xy.clone()],
-                &mut events,
-            )
-            .unwrap()
-        );
-        assert!(
-            rounded_segment_covered_by_clip(
-                Segment {
-                    start: XY::new(1.0, 1.0),
-                    end: XY::new(3.0, 1.0),
-                },
-                &[rectangle.clone(), hole],
-                &[rectangle_xy.clone(), hole_xy],
-                &mut events,
-            )
-            .unwrap()
-        );
+        assert!(rounded_segment_covered_by_clip(
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(4.0, 0.0),
+            },
+            &[rectangle.clone()],
+            &[rectangle_xy.clone()],
+            &mut events,
+        ));
+        assert!(rounded_segment_covered_by_clip(
+            Segment {
+                start: XY::new(0.5, 0.5),
+                end: XY::new(3.5, 3.5),
+            },
+            &[rectangle.clone()],
+            &[rectangle_xy.clone()],
+            &mut events,
+        ));
+        assert!(!rounded_segment_covered_by_clip(
+            Segment {
+                start: XY::new(0.5, 2.0),
+                end: XY::new(3.5, 2.0),
+            },
+            &[rectangle.clone(), hole.clone()],
+            &[rectangle_xy.clone(), hole_xy.clone()],
+            &mut events,
+        ));
+        assert!(rounded_segment_covered_by_clip(
+            Segment {
+                start: XY::new(1.0, 1.0),
+                end: XY::new(3.0, 1.0),
+            },
+            &[rectangle.clone(), hole],
+            &[rectangle_xy.clone(), hole_xy],
+            &mut events,
+        ));
         let concave_points = [
             (0.0, 0.0),
             (4.0, 0.0),
@@ -3924,18 +3912,15 @@ mod tests {
         ];
         let concave = cycle(&concave_points);
         let concave_xy = cycle_xy(&concave_points);
-        assert!(
-            !rounded_segment_covered_by_clip(
-                Segment {
-                    start: XY::new(0.5, 3.5),
-                    end: XY::new(3.5, 3.5),
-                },
-                &[concave],
-                &[concave_xy],
-                &mut events,
-            )
-            .unwrap()
-        );
+        assert!(!rounded_segment_covered_by_clip(
+            Segment {
+                start: XY::new(0.5, 3.5),
+                end: XY::new(3.5, 3.5),
+            },
+            &[concave],
+            &[concave_xy],
+            &mut events,
+        ));
         let l_shape_points = [
             (0.0, 0.0),
             (4.0, 0.0),
@@ -3946,18 +3931,15 @@ mod tests {
         ];
         let l_shape = cycle(&l_shape_points);
         let l_shape_xy = cycle_xy(&l_shape_points);
-        assert!(
-            !rounded_segment_covered_by_clip(
-                Segment {
-                    start: XY::new(4.0, 1.0),
-                    end: XY::new(1.0, 4.0),
-                },
-                &[l_shape],
-                &[l_shape_xy],
-                &mut events,
-            )
-            .unwrap()
-        );
+        assert!(!rounded_segment_covered_by_clip(
+            Segment {
+                start: XY::new(4.0, 1.0),
+                end: XY::new(1.0, 4.0),
+            },
+            &[l_shape],
+            &[l_shape_xy],
+            &mut events,
+        ));
         let slanted_edge_points = [
             (2.949570888116326e-6, 1.7697425328697956e-6),
             (3.0973519953936948e-6, 1.8584111972362169e-6),
@@ -4012,21 +3994,17 @@ mod tests {
             &[slanted_edge],
             &[slanted_edge_xy],
             &mut events,
-        )
-        .unwrap();
-        assert!(slanted_result);
-        assert!(
-            !rounded_segment_covered_by_clip(
-                Segment {
-                    start: XY::new(-1.0, 2.0),
-                    end: XY::new(2.0, 2.0),
-                },
-                &[rectangle],
-                &[rectangle_xy],
-                &mut events,
-            )
-            .unwrap()
         );
+        assert!(slanted_result);
+        assert!(!rounded_segment_covered_by_clip(
+            Segment {
+                start: XY::new(-1.0, 2.0),
+                end: XY::new(2.0, 2.0),
+            },
+            &[rectangle],
+            &[rectangle_xy],
+            &mut events,
+        ));
     }
 
     fn validates(cycles: &[Vec<exact::ExactPoint>]) -> bool {
@@ -4156,7 +4134,7 @@ mod tests {
             VoronoiBoundary::Padded,
             &mut budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap();
         assert_eq!(diagram.polygons.len(), sites.len());
@@ -4184,7 +4162,7 @@ mod tests {
             VoronoiBoundary::Envelope,
             &mut budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap();
         assert_eq!(diagram.polygons.len(), sites.len());
@@ -4384,7 +4362,7 @@ mod tests {
             VoronoiBoundary::Envelope,
             &mut budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         ) {
             Ok(_) => panic!("colliding exact vertices unexpectedly embedded"),
             Err(error) => error,
@@ -4690,7 +4668,7 @@ mod tests {
             VoronoiBoundary::Polygon(&polygon),
             &mut budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap();
         let (coords, offsets) = packed.clone().into_line_column().unwrap();
@@ -4723,7 +4701,7 @@ mod tests {
             VoronoiBoundary::Polygon(&polygon),
             &mut budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap()
         .into_line_seqs()
@@ -4856,7 +4834,7 @@ mod tests {
             VoronoiBoundary::Polygon(&clip),
             &mut budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         ) {
             Ok(_) => {
                 panic!("colliding exact vertices unexpectedly embedded on the edges-only path")
@@ -5245,7 +5223,7 @@ mod tests {
             &sites,
             VoronoiBoundary::Polygon(&clip),
             &mut budget,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap()
         .into_line_seqs()
@@ -5304,7 +5282,7 @@ mod tests {
                 &sites,
                 VoronoiBoundary::Envelope,
                 &mut budget,
-                certified_delaunay(&sites),
+                &certified_delaunay(&sites),
             )
             .unwrap()
             .into_line_seqs()
@@ -5328,7 +5306,7 @@ mod tests {
             &sites,
             VoronoiBoundary::Envelope,
             &mut budget,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap()
         .into_line_seqs()
@@ -6876,7 +6854,7 @@ pub(super) fn dual_build(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
-    mesh: CertifiedDelaunay,
+    mesh: &CertifiedDelaunay,
 ) -> Result<EmbeddedVoronoi> {
     let clip = normalize_clip(sites, boundary, budget)?;
     if mesh.collinear_order().is_some() {
@@ -6884,7 +6862,7 @@ pub(super) fn dual_build(
             "collinear sites require the exact one-dimensional lane",
         ));
     }
-    let complex = delaunay_complex(&mesh, sites)?;
-    let rings = dual_build_rings(sites, &mesh, complex, &clip, budget)?;
+    let complex = delaunay_complex(mesh, sites)?;
+    let rings = dual_build_rings(sites, mesh, complex, &clip, budget)?;
     dual_embed(&rings, &clip, sites, budget)
 }

@@ -77,7 +77,7 @@ impl SimilarityOp {
         }
     }
 
-    pub(crate) fn scalar_densify(&self) -> Option<f64> {
+    pub(crate) const fn scalar_densify(&self) -> Option<f64> {
         match self {
             Self::Hausdorff { densify } | Self::Frechet { densify } => match densify {
                 SimilarityDensify::Scalar(fraction) => Some(*fraction),
@@ -224,6 +224,10 @@ impl SimilarityOp {
         Ok(value * scale)
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "None distinguishes an ordinary window from the empty-window result, whose Result carries the operation-specific value or error"
+    )]
     pub(crate) fn identical_window_value(
         &self,
         left_xs: &[f64],
@@ -238,8 +242,7 @@ impl SimilarityOp {
         match self {
             Self::Hausdorff { .. } => Some(Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty geometries",
-            )
-            .into())),
+            ))),
             Self::Frechet { .. } => Some(Ok(f64::INFINITY * scale)),
         }
     }
@@ -291,7 +294,6 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
             )?;
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             let right = Arc::clone(&right.shape);
-            let operation = operation;
             float64_array(
                 py,
                 py.detach(move || {
@@ -324,7 +326,6 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             let left = array.clone();
             let right = right.clone();
-            let operation = operation;
             float64_array(
                 py,
                 py.detach(move || {

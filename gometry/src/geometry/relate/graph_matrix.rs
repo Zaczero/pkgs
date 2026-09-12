@@ -4,13 +4,12 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
 #[cfg(test)]
 use crate::geometry::convex_contact::{self, ConvexRelation};
+use crate::geometry::overlay::{ExactSourceInventory, exact_point_location};
 #[cfg(test)]
 use crate::geometry::predicates;
-use crate::geometry::relate::{
-    De9im, Loc, polygon_has_nondegenerate_area,
-};
 #[cfg(test)]
 use crate::geometry::relate::line_has_nonzero_segment;
+use crate::geometry::relate::{De9im, Loc, polygon_has_nondegenerate_area};
 use crate::geometry::topology::{
     AreaSupport, TopologyDomain, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
     TopologySpace,
@@ -129,17 +128,17 @@ fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    if let Some(matrix) = try_exact_areal_point_relate(left.shape(), right.shape())? {
+    if let Some(matrix) = try_exact_areal_point_relate(left.shape(), right.shape()) {
         return Ok(matrix);
     }
     exact_cartesian_relate(left.shape(), right.shape())
 }
 
-fn try_exact_areal_point_relate(left: &Shape, right: &Shape) -> Result<Option<De9im>> {
+fn try_exact_areal_point_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     let (areal, point, transpose) = match (left, right) {
         (Shape::Point(point), Shape::Polygon(_) | Shape::MultiPolygon(_)) => (right, *point, true),
         (Shape::Polygon(_) | Shape::MultiPolygon(_), Shape::Point(point)) => (left, *point, false),
-        _ => return Ok(None),
+        _ => return None,
     };
     let mut polygons = Vec::new();
     collect_areal_polygons(areal, &mut polygons);
@@ -148,11 +147,9 @@ fn try_exact_areal_point_relate(left: &Shape, right: &Shape) -> Result<Option<De
             .iter()
             .all(|polygon| polygon.rings().all(ring_is_sound))
     {
-        return Ok(None);
+        return None;
     }
-    let Some(location) = crate::geometry::overlay::exact_point_location(areal, point) else {
-        return Ok(None);
-    };
+    let location = exact_point_location(areal, point)?;
     let mut matrix = De9im::empty_disjoint();
     matrix.set_at_least(location, Loc::Interior, crate::geometry::Dimension::Point);
     matrix.set_at_least(
@@ -165,16 +162,16 @@ fn try_exact_areal_point_relate(left: &Shape, right: &Shape) -> Result<Option<De
         Loc::Exterior,
         crate::geometry::Dimension::Curve,
     );
-    Ok(Some(if transpose {
+    Some(if transpose {
         matrix.transpose()
     } else {
         matrix
-    }))
+    })
 }
 
 fn exact_cartesian_relate(left: &Shape, right: &Shape) -> Result<De9im> {
     let inputs = [left, right];
-    let inventory = crate::geometry::overlay::ExactSourceInventory::from_shapes(&inputs)?;
+    let inventory = ExactSourceInventory::from_shapes(&inputs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("relate", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     inventory.relate(&partition)
@@ -1217,10 +1214,9 @@ struct EdgeLabel {
     right: Option<TopologyLocation>,
 }
 
-fn pair_edges(
-    left: &TopologyGraph,
-    right: &TopologyGraph,
-) -> crate::error::Result<(Vec<(Segment, EdgeLabel)>, HashMap<PointKey, EdgeLabel>)> {
+type PairedEdges = (Vec<(Segment, EdgeLabel)>, HashMap<PointKey, EdgeLabel>);
+
+fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Result<PairedEdges> {
     if left.edges.is_empty() || right.edges.is_empty() {
         let (graph, left_present) = if left.edges.is_empty() {
             (right, false)

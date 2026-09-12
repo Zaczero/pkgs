@@ -83,6 +83,10 @@ impl ExactRationalArea {
         Ok(())
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the three-coordinate homogeneous carrier is a small Copy value; borrowing it adds indirection to the exact accumulation kernel"
+    )]
     pub(in crate::geometry) fn add_homogeneous_cross(
         &mut self,
         left: [ExactDyadic; 3],

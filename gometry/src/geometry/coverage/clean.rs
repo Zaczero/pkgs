@@ -2,6 +2,8 @@ use ahash::HashSetExt as _;
 
 use crate::error::Result;
 #[cfg(test)]
+use crate::geometry::Ring;
+#[cfg(test)]
 use crate::geometry::coverage::minimal_positive_face_rings;
 use crate::geometry::coverage::{
     AABB, CoverageRow, HashMap, HashMapExt as _, HashSet, RTreeObject,
@@ -13,11 +15,9 @@ use crate::geometry::self_node_segments;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, OverlayOp, PointKey, Polygon,
     Segment, SegmentIndex, Shape, XY, carry_overlay_ordinates, face_interior_point, line_segments,
-    point_distance, polygon_parts_to_shape, ring_area_measure,
-    ring_contains_interior, undirected_segment_edge_key,
+    point_distance, polygon_parts_to_shape, ring_area_measure, ring_contains_interior,
+    undirected_segment_edge_key,
 };
-#[cfg(test)]
-use crate::geometry::Ring;
 
 // --- Cleaning ----------------------------------------------------------------
 

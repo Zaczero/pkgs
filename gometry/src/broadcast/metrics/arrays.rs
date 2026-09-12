@@ -119,7 +119,6 @@ pub(crate) fn array_crs_metric_float(
                         })?,
                     );
                 }
-                let operation = operation;
                 return float64_array(
                     py,
                     py.detach(move || {

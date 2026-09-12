@@ -267,9 +267,9 @@ pub(crate) use relate::{
     graph_relate_shapes, is_axis_aligned_rectangle, line_scalar_prefers_direct_polygon_relate,
 };
 pub(in crate::geometry) use segment_index::{
-    MonotoneRun, candidate_pairs_over_staged_runs,
-    for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
+    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 pub(crate) use segments::clip_segment;

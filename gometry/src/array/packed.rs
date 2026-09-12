@@ -340,16 +340,14 @@ impl PyGeometryArray {
             if self.missing().is_some() {
                 return Err(crate::geometry::GeometryErrorKind::message(
                     "cannot clear an existing GeometryArray missing mask",
-                )
-                .into());
+                ));
             }
             return Ok(self);
         };
         if mask.len() != self.len() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "missing mask length must match array length",
-            )
-            .into());
+            ));
         }
         if self.missing() == Some(&mask) {
             return Ok(self);
@@ -359,8 +357,7 @@ impl PyGeometryArray {
                 if present.is_some() && self.is_row_missing(row) {
                     return Err(crate::geometry::GeometryErrorKind::message(
                         "a compact nullable array cannot unmask an existing row",
-                    )
-                    .into());
+                    ));
                 }
             }
             let mut present_rows = Vec::new();
@@ -424,14 +421,12 @@ impl PyGeometryArray {
         if present.missing().is_some() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "present-only scatter input must be dense",
-            )
-            .into());
+            ));
         }
         if present.len() != mask.present_count() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "present-row array length must match missing mask present count",
-            )
-            .into());
+            ));
         }
         Self::from_result_storage(
             Arc::clone(present.storage_arc()),
@@ -464,14 +459,12 @@ impl PyGeometryArray {
         else {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "logical nullable point storage requires packed points",
-            )
-            .into());
+            ));
         };
         if storage.len() != mask.len() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "logical nullable payload length must match the missing mask",
-            )
-            .into());
+            ));
         }
         let mut builder =
             PointColumnBuilder::try_with_capacity(coords.axes(), mask.present_count())?;
@@ -493,8 +486,7 @@ impl PyGeometryArray {
         if storage.len() != mask.len() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "logical nullable payload length must match the missing mask",
-            )
-            .into());
+            ));
         }
         let mut present_rows = Vec::new();
         crate::boundary::try_reserve_vec(&mut present_rows, mask.present_count())?;
@@ -543,8 +535,7 @@ impl PyGeometryArray {
             },
             GeometryArrayStorage::Mixed(_) => Err(crate::geometry::GeometryErrorKind::message(
                 "logical nullable mixed storage cannot use packed compaction",
-            )
-            .into()),
+            )),
         }
     }
 
@@ -558,8 +549,7 @@ impl PyGeometryArray {
         if storage.len() != mask.present_count() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "present-only payload length must match the mask present count",
-            )
-            .into());
+            ));
         }
         match storage {
             GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
@@ -677,8 +667,7 @@ impl PyGeometryArray {
             },
             GeometryArrayStorage::Mixed(_) => Err(crate::geometry::GeometryErrorKind::message(
                 "present-only mixed storage requires row scattering",
-            )
-            .into()),
+            )),
         }
     }
 
@@ -689,14 +678,12 @@ impl PyGeometryArray {
         let GeometryArrayStorage::Mixed(shapes) = storage else {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "mixed row scattering requires mixed storage",
-            )
-            .into());
+            ));
         };
         if shapes.len() != mask.present_count() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "present-only payload length must match the mask present count",
-            )
-            .into());
+            ));
         }
         let mut rows = Vec::new();
         crate::boundary::try_reserve_vec(&mut rows, mask.len())?;
@@ -729,8 +716,7 @@ impl PyGeometryArray {
                 if storage.len() != mask.len() {
                     return Err(crate::geometry::GeometryErrorKind::message(
                         "logical nullable payload length must match the missing mask",
-                    )
-                    .into());
+                    ));
                 }
                 match storage.as_ref() {
                     GeometryArrayStorage::Mixed(_) => Ok(ArrayRows::new(storage, Some(mask))),
@@ -825,11 +811,11 @@ impl PyGeometryArray {
         };
         let caches = ComputedCaches::fresh()?;
         Ok(Self {
+            rows,
             frame,
             bounds_cache: caches.bounds_cache,
             total_bounds_cache: caches.total_bounds_cache,
             row_products: products,
-            rows,
         })
     }
 
@@ -861,11 +847,11 @@ impl PyGeometryArray {
         };
         let caches = ComputedCaches::fresh()?;
         Ok(Self {
+            rows,
             frame,
             bounds_cache: caches.bounds_cache,
             total_bounds_cache: caches.total_bounds_cache,
             row_products: products,
-            rows,
         })
     }
 

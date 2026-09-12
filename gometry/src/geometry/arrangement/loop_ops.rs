@@ -69,7 +69,6 @@ pub(crate) fn positional_loop_cuts(
     let crate::geometry::overlay::NodingScan {
         mut events,
         overlaps_found,
-        ..
     } = crate::geometry::overlay::full_noding_events(segments)?;
     if overlaps_found {
         // Collinear overlaps take the exactness pre-pass — general path.

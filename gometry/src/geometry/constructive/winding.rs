@@ -631,7 +631,7 @@ pub(crate) fn stroke_loops(
 fn circle_step_count(quadrant_segments: std::num::NonZeroU32) -> Result<usize> {
     (quadrant_segments.get() as usize)
         .checked_mul(4)
-        .ok_or(crate::error::ResourceError::SizeOverflow.into())
+        .ok_or_else(|| crate::error::ResourceError::SizeOverflow.into())
 }
 
 pub(crate) fn circle_loop(
@@ -976,6 +976,10 @@ pub(crate) fn raw_stroke_loop(
     Ok(Some(((xs, ys), clean && real_clean)))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the stroke emitter receives one immutable plan per side plus the output sink; bundling them would obscure the two-sided walk"
+)]
 fn emit_stroke_loop<S: WalkSink>(
     right_plan: &WalkPlan<'_>,
     left_plan: &WalkPlan<'_>,

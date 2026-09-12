@@ -753,22 +753,21 @@ impl<'a> PolylabelField<'a> {
                 }
                 best
             };
-            let distance = match self.bvh.as_ref() {
-                Some(bvh) => bvh.min_point_distance_with_stack_framed(
+            let distance = if let Some(bvh) = self.bvh.as_ref() {
+                bvh.min_point_distance_with_stack_framed(
                     linework,
                     point,
                     frame,
                     &mut self.stack,
                     bound,
                     &mut refine,
-                )?,
-                None => {
-                    let mut best = f64::INFINITY;
-                    linework.for_each_segment(|segment| {
-                        best = best.min(framed_metric_nearest_on_segment(frame, point, segment).1);
-                    });
-                    best
-                },
+                )?
+            } else {
+                let mut best = f64::INFINITY;
+                linework.for_each_segment(|segment| {
+                    best = best.min(framed_metric_nearest_on_segment(frame, point, segment).1);
+                });
+                best
             };
             return Ok(distance);
         }

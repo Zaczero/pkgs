@@ -473,7 +473,7 @@ impl Shape {
             ));
         }
         Ok(
-            voronoi_dcel::build(&canonical, boundary, budget, true, mesh)?
+            voronoi_dcel::build(&canonical, boundary, budget, true, &mesh)?
                 .into_polygons()
                 .into_iter()
                 .map(Self::Polygon)
@@ -527,9 +527,9 @@ impl Shape {
             return voronoi_dcel::empty_packed_edges();
         };
         if mesh.collinear_order().is_none() {
-            return voronoi_dcel::build_edges(&canonical, boundary, budget, true, mesh);
+            return voronoi_dcel::build_edges(&canonical, boundary, budget, true, &mesh);
         }
-        voronoi_dcel::build_collinear_edges(&canonical, boundary, budget, mesh)
+        voronoi_dcel::build_collinear_edges(&canonical, boundary, budget, &mesh)
     }
 
     pub fn boundary(&self) -> Result<Self> {

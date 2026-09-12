@@ -272,7 +272,10 @@ impl<'a> TopologyGuard<'a> {
     ///
     /// `vertex_cloud` is the guard's required XY index payload, gathered by
     /// walking original carriers once. Construction does not allocate.
-    pub(in crate::geometry) fn new(segments: &'a [Segment], vertex_cloud: Vec<[f64; 2]>) -> Self {
+    pub(in crate::geometry) const fn new(
+        segments: &'a [Segment],
+        vertex_cloud: Vec<[f64; 2]>,
+    ) -> Self {
         Self {
             segments,
             segment_index: std::cell::OnceCell::new(),

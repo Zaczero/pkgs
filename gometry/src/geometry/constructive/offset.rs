@@ -347,9 +347,10 @@ fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
         push_distinct_point(&mut result, segments[segments.len() - 1].end);
     }
 
-    match result.len() >= 2 {
-        true => RawOffset::Value(result),
-        false => RawOffset::Empty,
+    if result.len() >= 2 {
+        RawOffset::Value(result)
+    } else {
+        RawOffset::Empty
     }
 }
 
@@ -489,10 +490,6 @@ pub(crate) enum MiterConstruction {
     Unusable,
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn miter_join(
     incoming: Segment,
     outgoing: Segment,

@@ -163,7 +163,7 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
         for left in 0..count {
             for right in (left + 1)..count {
                 if bounds[left].intersects(bounds[right])
-                    && let ControlFlow::Break(()) = visit(left, right)
+                    && visit(left, right) == ControlFlow::Break(())
                 {
                     return Ok(ControlFlow::Break(()));
                 }
@@ -284,7 +284,7 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs(
     if count < SWEEP_MIN_ITEMS {
         for left in 0..count {
             for right in (left + 1)..count {
-                if let ControlFlow::Break(()) = visit(left, right) {
+                if visit(left, right) == ControlFlow::Break(()) {
                     return Ok(ControlFlow::Break(()));
                 }
             }
@@ -645,10 +645,9 @@ fn try_banded_windows(
                     && right.cross_min <= left.cross_max
                     && right.cross_max >= left.cross_min
                     && band_of(left.cross_min).max(band_of(right.cross_min)) == band
+                    && visit_ordered(left, right, visit) == ControlFlow::Break(())
                 {
-                    if let ControlFlow::Break(()) = visit_ordered(left, right, visit) {
-                        return Ok(ControlFlow::Break(()));
-                    }
+                    return Ok(ControlFlow::Break(()));
                 }
             }
         }

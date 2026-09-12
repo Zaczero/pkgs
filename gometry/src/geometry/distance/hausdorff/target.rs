@@ -173,11 +173,11 @@ impl HausdorffTarget {
         Ok(best)
     }
 
-    pub(crate) fn has_filled_area(&self) -> bool {
+    pub(crate) const fn has_filled_area(&self) -> bool {
         self.filled.is_some()
     }
 
-    pub(crate) fn filled_area_shape(&self) -> Option<&Shape> {
+    pub(crate) const fn filled_area_shape(&self) -> Option<&Shape> {
         self.filled.as_ref()
     }
 

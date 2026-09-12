@@ -229,33 +229,41 @@ impl PreparedPlan {
         // Local min to linework: squared (SQUARED=true) or distance space.
         let mut min_linework = |squared: bool| -> Result<f64> {
             if squared {
-                match bvh {
-                    None => parts.linework.min_points_distance::<true>(
-                        std::iter::once((point.x, point.y)),
-                        f64::INFINITY,
-                    ),
-                    Some(bvh) => bvh.min_point_distance_with_stack::<true>(
-                        &parts.linework,
-                        point.x,
-                        point.y,
-                        stack,
-                        f64::INFINITY,
-                    ),
-                }
+                bvh.map_or_else(
+                    || {
+                        parts.linework.min_points_distance::<true>(
+                            std::iter::once((point.x, point.y)),
+                            f64::INFINITY,
+                        )
+                    },
+                    |bvh| {
+                        bvh.min_point_distance_with_stack::<true>(
+                            &parts.linework,
+                            point.x,
+                            point.y,
+                            stack,
+                            f64::INFINITY,
+                        )
+                    },
+                )
             } else {
-                match bvh {
-                    None => parts.linework.min_points_distance::<false>(
-                        std::iter::once((point.x, point.y)),
-                        f64::INFINITY,
-                    ),
-                    Some(bvh) => bvh.min_point_distance_with_stack::<false>(
-                        &parts.linework,
-                        point.x,
-                        point.y,
-                        stack,
-                        f64::INFINITY,
-                    ),
-                }
+                bvh.map_or_else(
+                    || {
+                        parts.linework.min_points_distance::<false>(
+                            std::iter::once((point.x, point.y)),
+                            f64::INFINITY,
+                        )
+                    },
+                    |bvh| {
+                        bvh.min_point_distance_with_stack::<false>(
+                            &parts.linework,
+                            point.x,
+                            point.y,
+                            stack,
+                            f64::INFINITY,
+                        )
+                    },
+                )
             }
         };
         let mut best = if safe {

@@ -16,8 +16,9 @@ use std::mem;
 use std::ops::{ControlFlow, Range};
 
 use crate::error::ResourceError;
-use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
+use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch, compare_departures};
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::overlay::build_certified_overlay_shape;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
     point_in_segment_envelope, point_on_segment, segment_envelopes_disjoint,
@@ -28,7 +29,7 @@ use crate::geometry::tessellation::exact::{
 };
 use crate::geometry::{
     Bounds, Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget,
-    GeometryErrorKind, HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon,
+    GeometryErrorKind, HashMap, HashMapExt as _, HashSet, LineSeq, Loc, Point, PointKey, Polygon,
     PolygonizeFull, Result, Ring, Segment, Shape, XY, for_each_candidate_pair, same_point,
     segment_contact_exact, single_chain, undirected_segment_edge_key,
 };
@@ -61,7 +62,7 @@ impl ArealCells {
         global: &GlobalFaces,
     ) -> Result<BoundaryPlan> {
         let (lines, points) = self.lower_dimensions(partition, topology, edges, global)?;
-        let mut plan = global.boundary_plan(lines, topology, edges, partition, &self.faces)?;
+        let mut plan = global.boundary_plan(&lines, topology, edges, partition, &self.faces)?;
         try_reserve_vec(&mut plan.points, points.len())?;
         for node in points {
             let index = node.0 as usize;
@@ -257,7 +258,7 @@ pub(in crate::geometry) enum NodeRecipe {
 }
 
 impl NodeRecipe {
-    fn stored_key(&self) -> Option<PointKey> {
+    const fn stored_key(&self) -> Option<PointKey> {
         match self {
             Self::Stored(key) => Some(*key),
             Self::Constructed { .. } => None,
@@ -629,10 +630,10 @@ impl BoundaryPlan {
             let incoming_upper = upper(incoming)?;
             // At the exact leftmost vertex both rays point right. The fan's
             // angular cut is +x, so a lower outgoing ray precedes an upper one.
-            let is_shell = if outgoing_upper != incoming_upper {
-                !outgoing_upper
-            } else {
+            let is_shell = if outgoing_upper == incoming_upper {
                 outgoing < incoming
+            } else {
+                !outgoing_upper
             };
             // Each bounded occupied face has one outer cycle; its other
             // cycles bound holes, even when they touch that outer cycle.
@@ -685,6 +686,10 @@ impl BoundaryPlan {
 
     // Incidence and cyclic order fix each connected embedding up to its exterior.
     // Fixing that face and the hosts of disconnected components fixes the global faces.
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact rounded coordinates are ordered by their stored binary64 values to keep emitted topology deterministic"
+    )]
     fn check_global_faces(
         &self,
         partition: &ExactPartition<'_>,
@@ -763,14 +768,10 @@ impl BoundaryPlan {
                 if chosen.is_none()
                     || (upper && !has_upper)
                     || (upper == has_upper && {
-                        let (prior_target, prior_point) = chosen.unwrap();
-                        crate::geometry::arrangement::compare_departures(
-                            point,
-                            prior_point,
-                            prior_target,
-                            target_point,
-                            target,
-                        ) == Ordering::Less
+                        let (prior_target, prior_point) = chosen
+                            .expect("a selected departure exists before comparing the next one");
+                        compare_departures(point, prior_point, prior_target, target_point, target)
+                            == Ordering::Less
                     })
                 {
                     chosen = Some((target, target_point));
@@ -778,7 +779,7 @@ impl BoundaryPlan {
                     has_upper = upper;
                 }
             }
-            let exterior = exterior.unwrap();
+            let exterior = exterior.expect("a component root has an incident emitted edge");
             winding.fill(0);
             // Other components supply closed face-boundary chains. Their winding
             // identifies the host without a ray-intersection coordinate or noder.
@@ -888,7 +889,7 @@ fn emitted_pair_preserves_incidence(left: [(NodeId, XY); 2], right: [(NodeId, XY
 impl GlobalFaces {
     fn boundary_plan(
         &self,
-        lines: Vec<u32>,
+        lines: &[u32],
         topology: &IndexedTopology,
         edges: &[u32],
         partition: &ExactPartition<'_>,
@@ -898,7 +899,7 @@ impl GlobalFaces {
         let mut retained = Vec::new();
         try_reserve_vec(&mut retained, partition.spans.len())?;
         retained.resize(partition.spans.len(), false);
-        for &span in &lines {
+        for &span in lines {
             retained[span as usize] = true;
         }
         for walk in &walks {
@@ -992,7 +993,9 @@ impl GlobalFaces {
             for (index, &slot) in walk.iter().enumerate() {
                 let chord = make_chord(slot)?;
                 if index > 0 && can_join(walk[index - 1], slot)? {
-                    let previous: &mut PlannedChord = chords.last_mut().unwrap();
+                    let previous: &mut PlannedChord = chords
+                        .last_mut()
+                        .expect("a joined chord has a preceding planned chord");
                     previous.sources.end = chord.sources.end;
                 } else {
                     chords.push(chord);
@@ -1005,7 +1008,7 @@ impl GlobalFaces {
         let mut line_remaining = Vec::new();
         try_reserve_vec(&mut line_remaining, partition.spans.len())?;
         line_remaining.resize(partition.spans.len(), false);
-        for &span in &lines {
+        for &span in lines {
             line_remaining[span as usize] = true;
         }
         let continuation = |slot: u32, remaining: &[bool]| -> Result<Option<u32>> {
@@ -1019,7 +1022,7 @@ impl GlobalFaces {
             }
             Ok(None)
         };
-        for &span in &lines {
+        for &span in lines {
             if !line_remaining[span as usize] {
                 continue;
             }
@@ -1394,11 +1397,11 @@ impl ExactSourceInventory {
                 let row = row as usize;
                 if owners.len() > 1 {
                     invalid_rings[row].push(diagnostic_line(segment, true)?);
-                } else if used[index] {
-                    continue;
-                } else if degree[span.start.0 as usize] <= 1 || degree[span.end.0 as usize] <= 1 {
+                } else if !used[index]
+                    && (degree[span.start.0 as usize] <= 1 || degree[span.end.0 as usize] <= 1)
+                {
                     dangles[row].push(diagnostic_line(segment, false)?);
-                } else {
+                } else if !used[index] {
                     cuts[row].push(diagnostic_line(segment, false)?);
                 }
             }
@@ -1474,10 +1477,10 @@ impl ExactSourceInventory {
     ) -> Result<Shape> {
         let (points, lines, polygons) =
             self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union, true)?;
-        crate::geometry::overlay::build_certified_overlay_shape(points, lines, polygons)
+        build_certified_overlay_shape(points, lines, polygons)
     }
 
-    fn operand_count(&self) -> usize {
+    const fn operand_count(&self) -> usize {
         self.polygon_rings.len()
     }
 
@@ -1583,12 +1586,12 @@ impl ExactSourceInventory {
                 continue;
             };
             let mut depth = 0;
-            for other in 1..global.count as usize {
+            for (other, other_cycles) in cycles.iter().enumerate().skip(1) {
                 if other == face {
                     continue;
                 }
                 let mut contained = false;
-                for cycle in &cycles[other] {
+                for cycle in other_cycles {
                     let inside = cycle_contains_node(partition, cycle, sample)?;
                     if inside {
                         contained = true;
@@ -1900,9 +1903,7 @@ impl ExactSourceInventory {
             == 1;
         if boundary_line {
             Loc::Boundary
-        } else if all {
-            Loc::Interior
-        } else if line && !boundary && !line_on_boundary {
+        } else if all || (line && !boundary && !line_on_boundary) {
             Loc::Interior
         } else if boundary || any {
             Loc::Boundary
@@ -2087,7 +2088,7 @@ impl ExactSourceInventory {
         let mut winding_rings = Vec::new();
         try_reserve_vec(&mut winding_rings, self.source_rings.len())?;
         winding_rings.extend_from_slice(&self.source_rings);
-        let mut seen = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        let mut seen = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
         seen.try_reserve(self.source_rings.len())
             .map_err(crate::error::Error::from)?;
         for (unique, segment) in self.unique.iter().enumerate() {
@@ -2096,7 +2097,7 @@ impl ExactSourceInventory {
                 let Some(ring) = self.source_rings[source as usize] else {
                     continue;
                 };
-                if seen.insert((ring, start, end), ()).is_some() {
+                if seen.insert((ring, start, end)) {
                     winding_rings[source as usize] = None;
                 }
             }
@@ -2115,7 +2116,7 @@ impl ExactSourceInventory {
             let mut occupied = false;
             for rings in &self.polygon_rings[operand] {
                 for ring in rings.clone() {
-                    occupied ^= winding[ring as usize] % 2 != 0;
+                    occupied ^= winding[ring] % 2 != 0;
                 }
             }
             return occupied;
@@ -2366,7 +2367,7 @@ impl StagedExactSources {
                 }
             },
             Shape::GeometryCollection(geometries) => {
-                for geometry in geometries.iter() {
+                for geometry in geometries {
                     self.append_shape(geometry, operand)?;
                 }
             },
@@ -2776,7 +2777,7 @@ fn walk_exact_chain(
     Ok((nodes, chain_spans))
 }
 
-impl<'a> ExactPartition<'a> {
+impl ExactPartition<'_> {
     pub(in crate::geometry) fn node_xy(&self, node: NodeId) -> Result<XY> {
         Ok(match self.recipe(node) {
             NodeRecipe::Stored(key) => {
@@ -3200,29 +3201,21 @@ impl<'a> ExactPartition<'a> {
                 first.get_or_insert((origin, current));
                 if let Some((last_target, last_point)) = previous {
                     descents += usize::from(
-                        crate::geometry::arrangement::compare_departures(
-                            origin,
-                            last_point,
-                            last_target,
-                            point,
-                            target,
-                        ) == Ordering::Greater,
+                        compare_departures(origin, last_point, last_target, point, target)
+                            == Ordering::Greater,
                     );
                 }
                 previous = Some(current);
                 count += 1;
             }
             if count > 2 {
-                let (origin, (first_target, first_point)) = first.unwrap();
-                let (last_target, last_point) = previous.unwrap();
+                let (origin, (first_target, first_point)) =
+                    first.expect("a node with multiple emitted darts has a first dart");
+                let (last_target, last_point) =
+                    previous.expect("a node with multiple emitted darts has a last dart");
                 descents += usize::from(
-                    crate::geometry::arrangement::compare_departures(
-                        origin,
-                        last_point,
-                        last_target,
-                        first_point,
-                        first_target,
-                    ) == Ordering::Greater,
+                    compare_departures(origin, last_point, last_target, first_point, first_target)
+                        == Ordering::Greater,
                 );
                 // A cyclically sorted sequence crosses the positive-x cut once.
                 if descents != 1 {
@@ -3255,6 +3248,10 @@ impl<'a> ExactPartition<'a> {
         }
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact rounded coordinates are ordered by their stored binary64 values to keep emitted topology deterministic"
+    )]
     fn compare_departures(&self, origin: NodeId, left: usize, right: usize) -> Result<Ordering> {
         let departure = |index: usize| {
             let span = self.spans[index];
@@ -3421,7 +3418,7 @@ impl<'a> ExactPartition<'a> {
             if upper != has_upper {
                 continue;
             }
-            let prior = chosen.unwrap();
+            let prior = chosen.expect("a departure was selected before comparing its successor");
             if self.compare_departures(root, edges[prior] as usize, edges[slot] as usize)?
                 == Ordering::Less
             {
@@ -4619,7 +4616,7 @@ mod tests {
             let faces = partition.global_faces(&topology, &edges).unwrap();
             let plan = faces
                 .boundary_plan(
-                    (0..partition.spans.len() as u32).collect(),
+                    &(0..partition.spans.len() as u32).collect::<Vec<_>>(),
                     &topology,
                     &edges,
                     &partition,
@@ -4678,7 +4675,7 @@ mod tests {
                 Vec::new()
             };
             let plan = faces
-                .boundary_plan(lines, &topology, &edges, &partition, &[false, true])
+                .boundary_plan(&lines, &topology, &edges, &partition, &[false, true])
                 .unwrap();
             assert_eq!(plan.walks.len(), 1);
             assert_eq!(plan.source_darts.len(), if attach_line { 6 } else { 5 });
@@ -5929,7 +5926,7 @@ mod tests {
         let mut occupied = vec![false; 3];
         occupied[host as usize] = true;
         let plan = faces
-            .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
+            .boundary_plan(&Vec::new(), &topology, &edges, &partition, &occupied)
             .unwrap();
         assert_eq!(plan.face_quotient, [0, 1, 2]);
         assert_eq!(
@@ -5995,7 +5992,7 @@ mod tests {
             assert_eq!(actual, expected);
         }
         let empty = faces
-            .boundary_plan(Vec::new(), &topology, &edges, &partition, &[false; 3])
+            .boundary_plan(&Vec::new(), &topology, &edges, &partition, &[false; 3])
             .unwrap();
         assert!(empty.walks.is_empty());
         assert!(empty.source_darts.is_empty());
@@ -6026,7 +6023,7 @@ mod tests {
         let mut occupied = vec![false; faces.count as usize];
         occupied[host as usize] = true;
         let plan = faces
-            .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
+            .boundary_plan(&Vec::new(), &topology, &edges, &partition, &occupied)
             .unwrap();
         let mut lengths: Vec<_> = plan.walks.iter().map(Vec::len).collect();
         lengths.sort_unstable();
@@ -6075,7 +6072,7 @@ mod tests {
             let faces = partition.global_faces(&topology, &edges).unwrap();
             let occupied: Vec<_> = (0..faces.count).map(|face| face != 0).collect();
             let plan = faces
-                .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
+                .boundary_plan(&Vec::new(), &topology, &edges, &partition, &occupied)
                 .unwrap();
             let polygons = plan.polygon_walks(&partition, &topology).unwrap();
             assert_eq!(polygons.len(), 1);
@@ -6255,7 +6252,7 @@ mod tests {
             .map(|face| face == outer_interior || (face != 0 && face != island_host))
             .collect();
         let plan = faces
-            .boundary_plan(Vec::new(), &topology, &edges, &partition, &occupied)
+            .boundary_plan(&Vec::new(), &topology, &edges, &partition, &occupied)
             .unwrap();
         let polygons = plan.polygon_walks(&partition, &topology).unwrap();
         let mut ring_counts: Vec<_> = polygons.iter().map(Vec::len).collect();
@@ -6329,7 +6326,7 @@ mod tests {
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
         let plan = faces
-            .boundary_plan(Vec::new(), &topology, &edges, &partition, &[
+            .boundary_plan(&Vec::new(), &topology, &edges, &partition, &[
                 false, true, true,
             ])
             .unwrap();
@@ -6377,7 +6374,7 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         let plan = faces
-            .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, &partition, &[false])
+            .boundary_plan(&vec![0, 1, 2, 3], &topology, &edges, &partition, &[false])
             .unwrap();
         let segments = plan.round_items(&partition, &topology).unwrap();
         let rotated: Vec<_> = segments
@@ -6547,7 +6544,7 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         let plan = faces
-            .boundary_plan(vec![0, 1, 2, 3], &topology, &edges, &partition, &[
+            .boundary_plan(&vec![0, 1, 2, 3], &topology, &edges, &partition, &[
                 false, false,
             ])
             .unwrap();
@@ -6569,7 +6566,7 @@ mod tests {
         );
         assert_eq!(plan.face_quotient, [0, 1]);
         let open = faces
-            .boundary_plan(vec![0, 1, 2], &topology, &edges, &partition, &[
+            .boundary_plan(&vec![0, 1, 2], &topology, &edges, &partition, &[
                 false, false,
             ])
             .unwrap();
@@ -6598,7 +6595,7 @@ mod tests {
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
         let plan = faces
-            .boundary_plan(Vec::new(), &topology, &edges, &partition, &[
+            .boundary_plan(&Vec::new(), &topology, &edges, &partition, &[
                 false, true, true,
             ])
             .unwrap();

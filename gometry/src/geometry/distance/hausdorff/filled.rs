@@ -8,6 +8,12 @@
 //! small line/point-site solver finishes the localized problem without
 //! refining a flat medial-axis ridge to the last bit.
 
+#![allow(
+    clippy::float_cmp,
+    clippy::large_types_passed_by_value,
+    reason = "boundary certificates require exact binary64 coordinate equality, and the Copy site snapshots stay by value in the hot local solver"
+)]
+
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -148,10 +154,10 @@ fn directed_filled_hausdorff(source: &Shape, target: &Shape) -> Result<f64> {
 fn convex_target_directed_distance(source: &Shape, target: &Shape) -> Result<f64> {
     let mut best = 0.0_f64;
     source.try_for_each_point(|point| {
-        let mut distance = f64::INFINITY;
-        if target.area_covers_point(point) {
-            distance = 0.0;
+        let distance = if target.area_covers_point(point) {
+            0.0
         } else {
+            let mut distance = f64::INFINITY;
             target.try_for_each_vertex_pair(|start, end| {
                 distance = distance.min(point_segment_distance(point.xy(), Segment {
                     start: start.xy(),
@@ -165,7 +171,8 @@ fn convex_target_directed_distance(source: &Shape, target: &Shape) -> Result<f64
                     Ok::<(), crate::error::Error>(())
                 })?;
             }
-        }
+            distance
+        };
         best = best.max(distance);
         Ok::<(), crate::error::Error>(())
     })?;
@@ -186,7 +193,7 @@ fn convex_target(shape: &Shape) -> bool {
 }
 
 /// Return the target shape retained for area-membership proofs.
-fn target_shape(target: &HausdorffTarget) -> &Shape {
+const fn target_shape(target: &HausdorffTarget) -> &Shape {
     target
         .filled_area_shape()
         .expect("area certificate only runs for a filled target")
@@ -524,10 +531,10 @@ impl FilledSearch<'_> {
             // each interval is the representative plateau witness.
             let mut points = line_cell_candidates(line, local_cell);
             self.source.for_each_segment(|segment| {
-                if let Some(point) = segment_line_intersection(segment, line, origin) {
-                    if point_in_cell(point, local_cell) {
-                        points.push(point);
-                    }
+                if let Some(point) = segment_line_intersection(segment, line, origin)
+                    && point_in_cell(point, local_cell)
+                {
+                    points.push(point);
                 }
             });
             for point in source_vertices_projected_to_line(self.source, line, origin, local_cell) {
@@ -558,10 +565,10 @@ impl FilledSearch<'_> {
             let equality = point_equality(left, right);
             match third {
                 Site::Point(third) => {
-                    if let Some(point) = intersect_lines(equality, point_equality(left, third)) {
-                        if point_in_cell(point, local_cell) {
-                            self.consider_local_candidate(point, first, origin)?;
-                        }
+                    if let Some(point) = intersect_lines(equality, point_equality(left, third))
+                        && point_in_cell(point, local_cell)
+                    {
+                        self.consider_local_candidate(point, first, origin)?;
                     }
                 },
                 Site::Line(line) => {
@@ -586,10 +593,10 @@ impl FilledSearch<'_> {
                     },
                     Site::Line(line) => {
                         for other in line_equality(line, left) {
-                            if let Some(point) = intersect_lines(equality, other) {
-                                if point_in_cell(point, local_cell) {
-                                    self.consider_local_candidate(point, first, origin)?;
-                                }
+                            if let Some(point) = intersect_lines(equality, other)
+                                && point_in_cell(point, local_cell)
+                            {
+                                self.consider_local_candidate(point, first, origin)?;
                             }
                         }
                     },
@@ -601,7 +608,7 @@ impl FilledSearch<'_> {
 }
 
 fn filled_bounds(shape: &Shape) -> Option<Bounds> {
-    fn merge(mut left: Option<Bounds>, right: Option<Bounds>) -> Option<Bounds> {
+    const fn merge(mut left: Option<Bounds>, right: Option<Bounds>) -> Option<Bounds> {
         if let Some(right) = right {
             if let Some(left_bounds) = &mut left {
                 left_bounds.include_bounds(right);
@@ -629,7 +636,7 @@ fn filled_bounds(shape: &Shape) -> Option<Bounds> {
     }
 }
 
-fn cell_corners(cell: FilledCell) -> [XY; 4] {
+const fn cell_corners(cell: FilledCell) -> [XY; 4] {
     [
         XY::new(cell.min_x, cell.min_y),
         XY::new(cell.max_x, cell.min_y),
@@ -638,7 +645,7 @@ fn cell_corners(cell: FilledCell) -> [XY; 4] {
     ]
 }
 
-fn cell_center(cell: FilledCell) -> XY {
+const fn cell_center(cell: FilledCell) -> XY {
     XY::new(
         f64::midpoint(cell.min_x, cell.max_x),
         f64::midpoint(cell.min_y, cell.max_y),
@@ -1002,7 +1009,7 @@ fn parallel_segment_pair_upper_bound(
         corners.iter().all(|&corner| {
             let parameter = ((corner.x - segment.start.x) * dx + (corner.y - segment.start.y) * dy)
                 / denominator;
-            parameter >= 0.0 && parameter <= 1.0
+            (0.0..=1.0).contains(&parameter)
         })
     };
     if !projection_covered(left) || !projection_covered(right) {
@@ -1029,7 +1036,7 @@ fn parallel_segment_pair_upper_bound(
     let ridge = Linear {
         a: left_line.a,
         b: left_line.b,
-        c: 0.5 * (left_line.c + right_line.c),
+        c: f64::midpoint(left_line.c, right_line.c),
     };
     let mut bound: f64 = 0.0;
     for corner in corners {

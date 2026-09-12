@@ -261,7 +261,6 @@ fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segmen
     let NodingScan {
         events,
         overlaps_found,
-        ..
     } = full_noding_events(segments)?;
     if !overlaps_found {
         return Ok(split_by_events_sourced(segments, events));

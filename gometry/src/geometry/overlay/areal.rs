@@ -279,41 +279,40 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     // and the global edge sort the general path pays. `None` (repeats,
     // T-junctions, collinear overlaps, cross-loop vertex coincidence)
     // falls back to the exact general oracle.
-    let mut arrangement =
-        match Arrangement::<[i32; 2]>::from_loops(&segments, &loop_ranges, |loop_id| {
+    let mut arrangement = if let Some(arrangement) =
+        Arrangement::<[i32; 2]>::from_loops(&segments, &loop_ranges, |loop_id| {
             if loop_operand[loop_id] == 0 {
                 [1, 0]
             } else {
                 [0, 1]
             }
         })? {
-            Some(arrangement) => arrangement,
-            None => {
-                let (atomic, sources) = self_node_segments_sourced(segments.iter().copied())?;
-                // Multi-source provenance: sum every original ordinal's unit weight,
-                // flipping sign when that ordinal owned the reverse of the noded
-                // representative. Exact undirected dedup keeps `atomic` unique-sized
-                // so stacked multiparts never re-expand into O(E) weighted pieces.
-                Arrangement::<[i32; 2]>::weighted(&atomic, |piece| {
-                    let mut weight = [0_i32, 0_i32];
-                    for &(ordinal, reversed) in &sources[piece] {
-                        let unit = if tags[ordinal as usize] == 0 {
-                            [1, 0]
-                        } else {
-                            [0, 1]
-                        };
-                        if reversed {
-                            weight[0] -= unit[0];
-                            weight[1] -= unit[1];
-                        } else {
-                            weight[0] += unit[0];
-                            weight[1] += unit[1];
-                        }
-                    }
-                    weight
-                })
-            },
-        };
+        arrangement
+    } else {
+        let (atomic, sources) = self_node_segments_sourced(segments.iter().copied())?;
+        // Multi-source provenance: sum every original ordinal's unit weight,
+        // flipping sign when that ordinal owned the reverse of the noded
+        // representative. Exact undirected dedup keeps `atomic` unique-sized
+        // so stacked multiparts never re-expand into O(E) weighted pieces.
+        Arrangement::<[i32; 2]>::weighted(&atomic, |piece| {
+            let mut weight = [0_i32, 0_i32];
+            for &(ordinal, reversed) in &sources[piece] {
+                let unit = if tags[ordinal as usize] == 0 {
+                    [1, 0]
+                } else {
+                    [0, 1]
+                };
+                if reversed {
+                    weight[0] -= unit[0];
+                    weight[1] -= unit[1];
+                } else {
+                    weight[0] += unit[0];
+                    weight[1] += unit[1];
+                }
+            }
+            weight
+        })
+    };
     // Outside-winding seed per component and per operand: every loop
     // lives in exactly one component, and loops of other components
     // cannot pass through it (see `winding_region`).

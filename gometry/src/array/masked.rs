@@ -77,8 +77,7 @@ impl PyGeometryArray {
             Some(_) if present.missing().is_some() => {
                 Err(crate::geometry::GeometryErrorKind::message(
                     "already-masked result does not match the source missing mask",
-                )
-                .into())
+                ))
             },
             Some(mask) => Self::scatter_present_rows(&present, mask.clone()),
         }

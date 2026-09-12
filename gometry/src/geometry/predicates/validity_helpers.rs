@@ -3,8 +3,8 @@ use std::simd::num::SimdFloat as _;
 
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex,
-    Polygon, REDUCE_LANES, ReduceSimd, SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape,
+    CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex, Polygon,
+    REDUCE_LANES, ReduceSimd, SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape,
     VertexProvenance, XY, point_distance, point_distance_squared, point_in_ccw_triangle,
     point_segment_distance, ring_winding, same_point, segment_projection, simd_mask_any,
     squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,

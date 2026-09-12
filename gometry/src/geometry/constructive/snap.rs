@@ -107,7 +107,7 @@ impl SnapReference {
                         );
                     }
                 } else {
-                    for candidate in tree.iter() {
+                    for candidate in tree {
                         test(
                             XY::new(candidate.geom()[0], candidate.geom()[1]),
                             candidate.data,
@@ -118,7 +118,7 @@ impl SnapReference {
             // Zero/underflowed limit or non-finite tolerance²: full scan +
             // honest points_dwithin (cannot trust squared-space radius).
             (SnapReferenceStorage::Indexed(tree), _) => {
-                for candidate in tree.iter() {
+                for candidate in tree {
                     test(
                         XY::new(candidate.geom()[0], candidate.geom()[1]),
                         candidate.data,
@@ -189,7 +189,7 @@ impl SnapReference {
                         )?;
                     }
                 } else {
-                    for candidate in tree.iter() {
+                    for candidate in tree {
                         consider(
                             XY::new(candidate.geom()[0], candidate.geom()[1]),
                             candidate.data,
@@ -198,7 +198,7 @@ impl SnapReference {
                 }
             },
             (SnapReferenceStorage::Indexed(tree), _) => {
-                for candidate in tree.iter() {
+                for candidate in tree {
                     consider(
                         XY::new(candidate.geom()[0], candidate.geom()[1]),
                         candidate.data,
@@ -475,7 +475,10 @@ fn verify_planar_segmentize_output(points: &CoordSeq, max_segment_length: f64) -
         return Ok(());
     }
     for segment in line_segments(points) {
-        if !(point_distance(segment.start, segment.end) <= max_segment_length) {
+        if point_distance(segment.start, segment.end)
+            .partial_cmp(&max_segment_length)
+            .is_none_or(std::cmp::Ordering::is_gt)
+        {
             return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
         }
     }
@@ -672,7 +675,7 @@ impl SubdivisionCount {
     fn generated(&self, input_len: usize) -> Result<usize> {
         self.emitted
             .checked_sub(input_len)
-            .ok_or(crate::error::ResourceError::SizeOverflow.into())
+            .ok_or_else(|| crate::error::ResourceError::SizeOverflow.into())
     }
 }
 

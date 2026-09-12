@@ -1,13 +1,12 @@
 use super::walk::arrangement_faces;
-use crate::geometry::arrangement::{
-    Arrangement, ArrangementSpares, TypedSpares, WindingWeight, arrangement_spares,
-    build_csr, dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts,
-    positional_loop_pieces, region_spares, sort_rows_counterclockwise, split_ring_at_pinches,
-    typed_spares,
-};
-use crate::geometry::{HashMap, PointKey, Segment, XY, arrangement, wrap_index};
 #[cfg(test)]
 use crate::geometry::arrangement::Face;
+use crate::geometry::arrangement::{
+    Arrangement, ArrangementSpares, TypedSpares, WindingWeight, arrangement_spares, build_csr,
+    dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts, positional_loop_pieces,
+    region_spares, sort_rows_counterclockwise, split_ring_at_pinches, typed_spares,
+};
+use crate::geometry::{HashMap, PointKey, Segment, XY, arrangement, wrap_index};
 
 impl Arrangement<i32> {
     /// Build from noded directed segments with unit weights. Coincident

@@ -158,10 +158,10 @@ pub(crate) use exact_partition::{
 };
 pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
 pub(in crate::geometry) use nary::{overlay_all_geographic_from, overlay_view_error};
-pub(in crate::geometry) use noding::{NodingScan, full_noding_events};
 #[cfg(test)]
 pub(crate) use noding::self_node_segments;
 pub(crate) use noding::self_node_segments_sourced;
+pub(in crate::geometry) use noding::{NodingScan, full_noding_events};
 pub(crate) use rect::rect_polygon;
 #[cfg(test)]
 mod tests;

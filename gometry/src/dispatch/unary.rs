@@ -119,8 +119,7 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
         | Operation::IsRing
         | Operation::Bounds
         | Operation::ClipByRect
-        | Operation::Metric(MetricOp::Area)
-        | Operation::Metric(MetricOp::LineInterpolate | MetricOp::LineSubstring) => {
+        | Operation::Metric(MetricOp::Area | MetricOp::LineInterpolate | MetricOp::LineSubstring) => {
             UnaryRowMode::Prepared
         },
         _ => UnaryRowMode::ShapeOnly,

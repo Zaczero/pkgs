@@ -353,8 +353,7 @@ impl Shape {
         if self.is_empty() || other.is_empty() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty geometries",
-            )
-            .into());
+            ));
         }
         if self.has_filled_area_parts() || other.has_filled_area_parts() {
             return filled_hausdorff_distance(self, other);
@@ -416,7 +415,7 @@ impl Shape {
         // unrelated squared witness there.  It is exact in source distance
         // space and therefore cannot be pre-empted by that witness.
         if let (Some(left), Some(right)) = (linework_as_segment(self), linework_as_segment(other)) {
-            return Ok(hausdorff_between_segments(left, right)?);
+            return hausdorff_between_segments(left, right);
         }
         if let Some(distance) = hausdorff_segment_graph(self, other)? {
             return Ok(distance);
@@ -530,7 +529,7 @@ fn hausdorff_continuous_framed(left: &Shape, right: &Shape) -> Result<f64> {
     if let (Some(left_segment), Some(right_segment)) =
         (linework_as_segment(left), linework_as_segment(right))
     {
-        return Ok(hausdorff_between_segments(left_segment, right_segment)?);
+        return hausdorff_between_segments(left_segment, right_segment);
     }
     // Likewise, the maximum nearest-endpoint distance of a segment whose two
     // endpoints are the target is its true midpoint radius. This is a closed
@@ -856,7 +855,7 @@ fn hausdorff_segment_graph(baseline: &Shape, graph: &Shape) -> Result<Option<f64
         return Ok(None);
     }
     let mut best = 0.0_f64;
-    for point in graph.iter() {
+    for point in graph {
         best = best.max(robust_point_segment_distance(point.xy(), baseline)?);
     }
     Ok(Some(best))
@@ -1194,7 +1193,7 @@ fn hausdorff_shared_baseline(left: &Shape, right: &Shape) -> Result<Option<f64>>
         return Ok(None);
     }
     let mut best = 0.0_f64;
-    for point in line.iter() {
+    for point in line {
         best = best.max(point_segment_distance(point.xy(), baseline)?);
     }
     Ok(Some(best))

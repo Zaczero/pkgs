@@ -254,13 +254,11 @@ impl ConstrainedMesh {
             }
             let [a, b, c] = self.mesh.triangle(t);
             let (pa, pb, pc) = (xy(a, points), xy(b, points), xy(c, points));
-            let center = match circumcenter(pa, pb, pc)? {
-                Some(center) => center,
-                // No finite binary64 can represent this center. Ruppert can
-                // still make progress with the explicitly chosen longest-edge
-                // midpoint; this is not a recovery for construction errors.
-                None => longest_edge_midpoint(pa, pb, pc),
-            };
+            // No finite binary64 can represent this center. Ruppert can
+            // still make progress with the explicitly chosen longest-edge
+            // midpoint; this is not a recovery for construction errors.
+            let center =
+                circumcenter(pa, pb, pc)?.unwrap_or_else(|| longest_edge_midpoint(pa, pb, pc));
             // Ruppert: a constraint whose diametral circle holds the center is
             // split at its midpoint instead, and so is any constraint, or the
             // hull, that the walk toward the center would have to cross: a

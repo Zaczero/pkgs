@@ -241,7 +241,7 @@ pub(crate) fn geodesic_frechet_dp_with_scratch<S: Coordinates + ?Sized, L: Coord
     }
     let distance = |p: Point, q: Point| metric.segment_length(p, q);
     let ub = geodesic_frechet_greedy_ub(metric, short, long);
-    let (mut previous, mut current) = scratch.geodesic_buffers(width);
+    let (previous, current) = scratch.geodesic_buffers(width);
     previous[..width].fill(INF);
     current[..width].fill(INF);
 
@@ -299,7 +299,7 @@ pub(crate) fn geodesic_frechet_dp_with_scratch<S: Coordinates + ?Sized, L: Coord
             usize::MAX,
             "the optimal coupling keeps each row live"
         );
-        std::mem::swap(&mut previous, &mut current);
+        std::mem::swap(previous, current);
         (prev_lo, prev_hi) = (cur_lo, cur_hi);
     }
     if prev_hi == width - 1 {

@@ -1481,6 +1481,10 @@ impl RawJsonToPy<'_, '_> {
         let map = values;
         let mut values = Vec::new();
         crate::try_reserve_vec(&mut values, map.len())?;
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "the entries are sorted by key immediately before they are published"
+        )]
         for value in map {
             crate::try_push(&mut values, value)?;
         }

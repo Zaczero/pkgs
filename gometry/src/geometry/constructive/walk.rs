@@ -520,7 +520,7 @@ impl<'a> WalkPlan<'a> {
             let w = self.points[source as usize];
             match self.joins.get(edge) {
                 Some(WalkJoin::Cross { point, .. } | WalkJoin::Miter { point }) => {
-                    sink.push(point.x, point.y, source)?
+                    sink.push(point.x, point.y, source)?;
                 },
                 Some(WalkJoin::MiterCut { entry, exit }) => {
                     sink.push(entry.x, entry.y, source)?;
@@ -638,7 +638,7 @@ pub(in crate::geometry) fn winding_region(
     let inventory = crate::geometry::overlay::ExactSourceInventory::from_raw_loops(loops)?;
     let mut budget = crate::geometry::ExpansionBudget::new("winding_region", "exact partition");
     let partition = inventory.partition(&mut budget)?;
-    return inventory.winding_polygons(&partition, |winding| keep(winding as i32));
+    inventory.winding_polygons(&partition, |winding| keep(winding as i32))
 }
 
 /// Temporary shell owner used while nesting boundary rings. Line coverage is a
