@@ -637,8 +637,8 @@ mod tests {
     use pyo3::exceptions::{PyMemoryError, PyOverflowError};
     use pyo3::prelude::*;
 
-    use super::{GeometryError, native_memory_error, native_overflow_error};
-    use crate::error::{Error, ErrorKind, ResourceError};
+    use super::{native_memory_error, native_overflow_error};
+    use crate::error::{Error, ResourceError};
     use crate::test_support::fail_allocations_after;
 
     #[test]

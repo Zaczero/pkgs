@@ -1,6 +1,8 @@
 use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdFloat as _;
 
+use ahash::HashMapExt as _;
+
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
     CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex, Polygon,

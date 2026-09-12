@@ -3765,7 +3765,7 @@ mod tests {
                 VoronoiBoundary::Envelope,
                 &mut legacy_budget,
                 false,
-                certified_delaunay(&sites),
+                &certified_delaunay(&sites),
             );
 
             match (admitted, dual, legacy) {
@@ -5007,7 +5007,7 @@ mod tests {
             VoronoiBoundary::Polygon(&polygon),
             &mut budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap();
     }
@@ -5022,7 +5022,7 @@ mod tests {
             VoronoiBoundary::Envelope,
             &mut envelope_budget,
             false,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap();
         let polygon = Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new()).unwrap();
@@ -5032,7 +5032,7 @@ mod tests {
             VoronoiBoundary::Polygon(&polygon),
             &mut polygon_budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap();
     }
@@ -5333,7 +5333,7 @@ mod tests {
             VoronoiBoundary::Polygon(&clip),
             &mut budget,
             true,
-            certified_delaunay(&sites),
+            &certified_delaunay(&sites),
         )
         .unwrap();
         assert!(!diagram.into_edges().into_line_seqs().unwrap().is_empty());
@@ -5816,7 +5816,7 @@ mod convex_cell_certificate {
                 VoronoiBoundary::Envelope,
                 &mut budget,
                 true,
-                certified_delaunay(&sites),
+                &certified_delaunay(&sites),
             )
             .unwrap_or_else(|error| panic!("scale {scale:e}: {error:?}"))
             .into_polygons();
