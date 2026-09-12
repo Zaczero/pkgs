@@ -1,5 +1,5 @@
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::path::PathBuf;
 
 use flate2::read::GzDecoder;
@@ -99,9 +99,16 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     let tar_gz = File::open(path)?;
     let tar = GzDecoder::new(tar_gz);
     let mut archive = Archive::new(tar);
-    archive.unpack(out_path.join("PROJSRC/proj"))?;
-    let mut config =
-        cmake::Config::new(out_path.join(format!("PROJSRC/proj/proj-{MINIMUM_PROJ_VERSION}")));
+    let source_root = out_path.join("PROJSRC/proj");
+    archive.unpack(&source_root)?;
+    let source_dir = source_root.join(format!("proj-{MINIMUM_PROJ_VERSION}"));
+    let mercator_override =
+        PathBuf::from(format!("PROJSRC/patches/proj-{MINIMUM_PROJ_VERSION}/merc.cpp"));
+    fs::copy(
+        mercator_override,
+        source_dir.join("src/projections/merc.cpp"),
+    )?;
+    let mut config = cmake::Config::new(source_dir);
     config.define("BUILD_SHARED_LIBS", "OFF");
     config.define("BUILD_TESTING", "OFF");
     config.define("BUILD_CCT", "OFF");

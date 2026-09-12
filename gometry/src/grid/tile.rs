@@ -17,30 +17,30 @@
 
 use std::f64::consts::PI;
 
-use crate::boundary::geographic::{WEB_MERCATOR_MAX_LATITUDE, normalized_geographic_pole};
+use crate::boundary::geographic::normalized_geographic_pole;
 use crate::curves::{morton_deinterleave, morton_interleave};
 use crate::geometry::{Bounds, Point, Shape};
 
 pub(crate) const TILE_MAX_ZOOM: u8 = 29;
 
-/// The Web Mercator latitude domain edge.
-pub(crate) const TILE_MAX_LATITUDE: f64 = WEB_MERCATOR_MAX_LATITUDE;
+/// The latitude edge of the square Web Mercator tile grid.
+pub(crate) const TILE_MAX_LATITUDE: f64 = 85.051_128_779_806_6;
 
-/// Whether `lat` lies inside the Web Mercator / slippy-tile domain.
+/// Whether `lat` lies inside the square Web Mercator / slippy-tile grid.
 pub(crate) fn latitude_in_tile_domain(lat: f64) -> bool {
     (-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&lat)
 }
 
 /// Reject a tile-covering geometry whose any non-polar vertex latitude is
 /// outside ±[`TILE_MAX_LATITUDE`]. Tile coverings cannot represent latitudes
-/// past the Web Mercator edge; silently clipping (identical cell counts for
-/// ±84 vs ±89.9) is the defect this gate closes. A physical pole is the one
+/// past the square Web Mercator tile-grid edge; silently clipping (identical
+/// cell counts for ±84 vs ±89.9) is the defect this gate closes. A physical pole is the one
 /// admitted exception: the rectangular coverer's geographic authority can
 /// classify a pole-touching source without representing the pole as a tile
 /// point. Matches the point/tile_cells path for every non-polar coordinate.
 ///
-/// Returns the first out-of-domain latitude, or `Ok(())` when every vertex is
-/// in domain (or the shape has no vertices).
+/// Returns the first latitude outside the square tile grid, or `Ok(())` when
+/// every vertex is in the grid (or the shape has no vertices).
 pub(crate) fn ensure_cover_shape_in_tile_domain(shape: &Shape) -> Result<(), f64> {
     let mut bad = None;
     shape.for_each_point(|point: Point| {
@@ -132,12 +132,12 @@ impl Tile {
         Some(Self { z, x, y })
     }
 
-    /// The tile containing a lon/lat point inside the Web Mercator domain.
+    /// The tile containing a lon/lat point inside the square Web Mercator tile grid.
     ///
     /// Returns `None` when `lat` is outside ±[`TILE_MAX_LATITUDE`] (about
-    /// ±85.05112878°). Out-of-domain latitudes are rejected rather than
-    /// silently clamped — callers that need a typed error raise at the
-    /// boundary; mercantile-style clamp is not offered.
+    /// ±85.05112878°). Latitudes outside the square tile grid are rejected
+    /// rather than silently clamped — callers that need a typed error raise at
+    /// the boundary; mercantile-style clamp is not offered.
     pub(crate) fn from_lonlat(lon: f64, lat: f64, zoom: u8) -> Option<Self> {
         let (lon, lat) = super::canonical_lonlat(lon, lat);
         if !latitude_in_tile_domain(lat) {

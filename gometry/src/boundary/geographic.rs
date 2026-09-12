@@ -67,9 +67,6 @@ pub(crate) fn normalize_accepted_geographic_latitudes(shape: &Shape) -> Shape {
         .expect("geographic latitude normalization is an infallible finite-coordinate map")
 }
 
-/// Web Mercator latitude domain edge (EPSG:3857 and slippy-map tiles).
-pub(crate) const WEB_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_779_806_6;
-
 /// Earth's authalic radius in meters — the sphere model the H3 backend uses
 /// for cell areas, shared by the S2 cell area so the two grids compare.
 pub(crate) const EARTH_AUTHALIC_RADIUS_M: f64 = 6_371_007.180_918_475;

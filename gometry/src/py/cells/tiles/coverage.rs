@@ -70,8 +70,8 @@ pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult
 ///     If the geometry, zoom, ``cell_rule``, or ``max_cells`` is invalid, or
 ///     if the returned coverage would exceed ``max_cells``.
 /// InvalidGeometryError
-///     If the geometry is empty or any non-polar latitude is outside the Web
-///     Mercator domain (±85.05112878 degrees).
+///     If the geometry is empty or any non-polar latitude is outside the square
+///     Web Mercator tile grid (±85.05112878 degrees).
 ///
 /// Examples
 /// --------

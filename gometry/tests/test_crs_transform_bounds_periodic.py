@@ -26,7 +26,7 @@ NEAR_GREENWICH_WGS84 = (
 
 def _web_y(latitude: float) -> float:
     radians = math.radians(latitude)
-    return WEB_RADIUS * math.log(math.tan(math.pi / 4.0 + radians / 2.0))
+    return WEB_RADIUS * math.asinh(math.tan(radians))
 
 
 @pytest.mark.parametrize(
@@ -70,6 +70,34 @@ def test_geographic_target_uses_minimal_wrapped_cover(
     )
     assert transformed == pytest.approx((179.0, -1.0, -179.0, 1.0))
     assert transformed[0] > transformed[2]
+    assert gm.crs_cache_info()['last_transform_engine'] == engine
+
+
+@pytest.mark.parametrize(
+    'options, engine', [({}, 'in_core'), ({'authority': 'EPSG'}, 'proj')]
+)
+def test_web_mercator_bounds_exclude_unrepresentable_target_poles(
+    options: dict[str, Any], engine: str
+) -> None:
+    half_extent = 100.0
+    expected_latitude = math.degrees(math.atan(math.sinh(half_extent / WEB_RADIUS)))
+    transformed = gm.crs_transform_bounds(
+        3857,
+        4326,
+        (-half_extent, -half_extent, half_extent, half_extent),
+        densify=2,
+        **options,
+    )
+    assert transformed == pytest.approx(
+        (
+            -math.degrees(half_extent / WEB_RADIUS),
+            -expected_latitude,
+            math.degrees(half_extent / WEB_RADIUS),
+            expected_latitude,
+        ),
+        abs=1e-12,
+    )
+    assert -90.0 < transformed[1] < transformed[3] < 90.0
     assert gm.crs_cache_info()['last_transform_engine'] == engine
 
 

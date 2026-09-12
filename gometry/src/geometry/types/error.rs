@@ -34,8 +34,6 @@ pub enum GeometryErrorKind {
         value: f64,
         message: Box<str>,
     },
-    #[error("latitude {0:e} is outside the Web Mercator domain (|latitude| <= 85.05113)")]
-    WebMercatorLatitude(f64),
     #[error("projection failed: {0}")]
     Projection(Box<str>),
     #[error("projection failed: {0}")]

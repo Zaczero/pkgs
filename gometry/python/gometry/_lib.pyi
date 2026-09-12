@@ -20032,8 +20032,8 @@ def tile_cover(
         If the geometry, zoom, ``cell_rule``, or ``max_cells`` is invalid, or
         if the returned coverage would exceed ``max_cells``.
     InvalidGeometryError
-        If the geometry is empty or any non-polar latitude is outside the Web
-        Mercator domain (±85.05112878 degrees).
+        If the geometry is empty or any non-polar latitude is outside the square
+        Web Mercator tile grid (±85.05112878 degrees).
 
     Examples
     --------
@@ -20069,7 +20069,7 @@ def tile_cells(
     lat : float or sequence of float, optional
         WGS84 latitude per row when ``values`` supplies longitudes. Scalars
         broadcast numpy-style; at least one coordinate column must be sequence of float.
-        Latitudes outside the Web Mercator domain (±85.051129°) raise
+        Latitudes outside the square Web Mercator tile grid (±85.051129°) raise
         ``InvalidGeometryError`` (no silent clamp).
 
     zoom : int or sequence of int
@@ -20091,7 +20091,7 @@ def tile_cells(
         different lengths.
     InvalidGeometryError
         If coordinates are non-finite or leave the lon/lat domain, or a
-        latitude is outside the Web Mercator domain (±85.051129°).
+        latitude is outside the square Web Mercator tile grid (±85.051129°).
 
     See Also
     --------

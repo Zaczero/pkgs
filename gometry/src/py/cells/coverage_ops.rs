@@ -278,7 +278,7 @@ impl From<GridCoverError> for PyErr {
             GridCoverError::Budget(error) => cover_budget_err(error),
             GridCoverError::Empty(label) => empty_coverage_err(label),
             GridCoverError::TileLatitude(lat) => InvalidGeometryError::new_err(format!(
-                "latitude {lat} is outside the Web Mercator domain ±85.05112878 degrees"
+                "latitude {lat} is outside the square Web Mercator tile grid ±85.05112878 degrees"
             )),
             GridCoverError::Geographic(diagnostic) => {
                 let message = diagnostic.to_string();

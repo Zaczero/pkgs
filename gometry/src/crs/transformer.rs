@@ -546,9 +546,7 @@ impl TransformPlan {
 fn in_core_pole_domain_miss(error: &crate::error::Error) -> bool {
     matches!(
         error.kind(),
-        ErrorKind::Geometry(
-            GeometryErrorKind::WebMercatorLatitude(_) | GeometryErrorKind::ProjectionDomain(_),
-        )
+        ErrorKind::Geometry(GeometryErrorKind::ProjectionDomain(_),)
     )
 }
 

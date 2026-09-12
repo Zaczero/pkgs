@@ -584,9 +584,9 @@ token lookup alone is not the answer. Cell-set methods operate on the returned
 and `CellArray` adds the set operations (`cells.compact()` /
 `cells.uncompact(depth)`) while H3 vertex/edge arrays expose only their valid
 topological surfaces. `Tile` keeps the quadkey constructor
-(`gm.Tile('0313102310')`). Tiles reject latitudes outside the Web Mercator
-domain (±85.0511°), the limit where the projection stays finite; they do not
-clamp coordinates.
+(`gm.Tile('0313102310')`). Tiles reject latitudes outside the square Web Mercator
+tile grid (±85.0511°), a representational extent distinct from the finite
+projection domain; they do not clamp coordinates.
 
 ## Aggregate by cell, then refine
 

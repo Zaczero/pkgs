@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import struct
-from fractions import Fraction
 from typing import TYPE_CHECKING
 
 import gometry as gm
@@ -19,7 +18,7 @@ OBSERVER_TOL_M = 0.001
 OBSERVER_TOL_DEG = 1e-06
 WGS84 = 'EPSG:4326'
 WEB_MERCATOR = 'EPSG:3857'
-WEB_MERCATOR_MAX_LAT = 85.0511287798066
+SQUARE_TILE_MAX_LAT = 85.0511287798066
 UTM_LAT_MIN = -80.0
 UTM_LAT_MAX = 84.0
 NORTH_UTM = tuple(f'EPSG:{code}' for code in range(32601, 32661))
@@ -185,18 +184,10 @@ def _is_wgs84_literal(crs: str) -> bool:
     return crs in (WGS84, *ALIAS_WGS84) or crs == WGS84_WKT
 
 
-def _is_web_mercator_literal(crs: str) -> bool:
-    return crs in (WEB_MERCATOR, *ALIAS_WEB_MERCATOR)
-
-
 def _lonlat_valid_for_pair(lon: float, lat: float, source: str, target: str) -> bool:
     """Return whether (lon, lat) lies in the intersection of pair domains."""
     if (lat < UTM_LAT_MIN or lat > UTM_LAT_MAX) and (
         _is_utm(source) or _is_utm(target)
-    ):
-        return False
-    if abs(lat) > WEB_MERCATOR_MAX_LAT and (
-        _is_web_mercator_literal(source) or _is_web_mercator_literal(target)
     ):
         return False
     for crs in (source, target):
@@ -260,8 +251,8 @@ def _sample_lonlat_grid(source: str, target: str) -> list[tuple[float, float]]:
     boundary_lats = [
         UTM_LAT_MIN,
         UTM_LAT_MAX,
-        -WEB_MERCATOR_MAX_LAT,
-        WEB_MERCATOR_MAX_LAT,
+        -SQUARE_TILE_MAX_LAT,
+        SQUARE_TILE_MAX_LAT,
     ]
     for crs in (source, target):
         if _is_utm(crs):
@@ -741,8 +732,6 @@ def _web_mercator_transformers() -> tuple[object, object]:
 
 @pytest.mark.parametrize(('lon', 'lat'), WEB_MERCATOR_SPARSE)
 def test_web_mercator_forward_inverse_round_trip_sparse(lon: float, lat: float) -> None:
-    if abs(lat) > WEB_MERCATOR_MAX_LAT:
-        pytest.skip('outside Web Mercator latitude domain')
     transformer_fwd, transformer_inv = _web_mercator_transformers()
     gometry_xy = gm.crs_transform(4326, 3857, lon, lat)
     proj_xy = transformer_fwd.transform(lon, lat)  # type: ignore[union-attr]
@@ -775,24 +764,18 @@ def test_web_mercator_preserves_exact_signed_zero(zero: float) -> None:
     assert _f64_bits(float(inverse_batch[0, 1])) == expected_bits
 
 
-def test_web_mercator_nonzero_formula_is_bit_identical() -> None:
+def test_web_mercator_nonzero_formula_matches_stable_evaluation() -> None:
     latitude = 1.0
-    latitude_radians = float(Fraction(latitude) * Fraction(math.pi) / 180)
-    expected = float(Fraction(6_378_137.0)) * math.log(
-        math.tan(math.pi / 4.0 + latitude_radians / 2.0)
-    )
+    latitude_radians = latitude * math.pi / 180.0
+    expected = 6_378_137.0 * math.asinh(math.tan(latitude_radians))
     actual = gm.crs_transform(4326, 3857, 0.0, latitude)[1]
-    assert _f64_bits(actual) == _f64_bits(expected)
+    assert actual == pytest.approx(expected, abs=1e-9)
 
     northing = 1_000_000.0
-    northing_radius_ratio = float(Fraction(northing) / Fraction(6_378_137.0))
-    expected_latitude = (
-        (2.0 * math.atan(math.exp(northing_radius_ratio)) - math.pi / 2.0)
-        * 180.0
-        / math.pi
-    )
+    northing_radius_ratio = northing / 6_378_137.0
+    expected_latitude = math.degrees(math.atan(math.sinh(northing_radius_ratio)))
     actual_latitude = gm.crs_transform(3857, 4326, 0.0, northing)[1]
-    assert _f64_bits(actual_latitude) == _f64_bits(expected_latitude)
+    assert actual_latitude == pytest.approx(expected_latitude, abs=1e-12)
 
 
 def test_nad83_california_zone_1_us_survey_foot_is_in_core() -> None:

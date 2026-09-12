@@ -22,7 +22,7 @@ use crate::py::errors::InvalidGeometryError;
 /// lat : float or sequence of float, optional
 ///     WGS84 latitude per row when ``values`` supplies longitudes. Scalars
 ///     broadcast numpy-style; at least one coordinate column must be sequence of float.
-///     Latitudes outside the Web Mercator domain (±85.051129°) raise
+///     Latitudes outside the square Web Mercator tile grid (±85.051129°) raise
 ///     ``InvalidGeometryError`` (no silent clamp).
 ///
 /// zoom : int or sequence of int
@@ -44,7 +44,7 @@ use crate::py::errors::InvalidGeometryError;
 ///     different lengths.
 /// InvalidGeometryError
 ///     If coordinates are non-finite or leave the lon/lat domain, or a
-///     latitude is outside the Web Mercator domain (±85.051129°).
+///     latitude is outside the square Web Mercator tile grid (±85.051129°).
 ///
 /// See Also
 /// --------
@@ -79,7 +79,7 @@ pub(super) fn tile_cells(
         |lon, lat, zoom| {
             let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
                 InvalidGeometryError::new_err(format!(
-                    "latitude {lat} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees"
+                    "latitude {lat} is outside the square Web Mercator tile grid ±{TILE_MAX_LATITUDE} degrees"
                 ))
             })?;
             Ok(PyTile { cell })
@@ -125,13 +125,13 @@ pub(super) fn tile_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyTile> {
     let bounds = query.bounds;
     if !(-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&bounds.miny()) {
         return Err(InvalidGeometryError::new_err(format!(
-            "latitude {} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees",
+            "latitude {} is outside the square Web Mercator tile grid ±{TILE_MAX_LATITUDE} degrees",
             bounds.miny()
         )));
     }
     if !(-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&bounds.maxy()) {
         return Err(InvalidGeometryError::new_err(format!(
-            "latitude {} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees",
+            "latitude {} is outside the square Web Mercator tile grid ±{TILE_MAX_LATITUDE} degrees",
             bounds.maxy()
         )));
     }
@@ -142,7 +142,7 @@ pub(super) fn tile_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyTile> {
     let mut cell =
         Tile::from_lonlat(bounds.minx(), bounds.miny(), TILE_MAX_ZOOM).ok_or_else(|| {
             InvalidGeometryError::new_err(format!(
-                "latitude {} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees",
+                "latitude {} is outside the square Web Mercator tile grid ±{TILE_MAX_LATITUDE} degrees",
                 bounds.miny()
             ))
         })?;

@@ -228,7 +228,7 @@ pub(crate) fn construct_tile(
             let zoom = parse_tile_zoom(zoom)?;
             let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
                 crate::py::errors::InvalidGeometryError::new_err(format!(
-                    "latitude {lat} is outside the Web Mercator domain ±{max} degrees",
+                    "latitude {lat} is outside the square Web Mercator tile grid ±{max} degrees",
                     max = crate::grid::tile::TILE_MAX_LATITUDE
                 ))
             })?;
@@ -255,7 +255,7 @@ pub(crate) fn construct_tile(
     let zoom = parse_tile_zoom(zoom)?;
     let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
         crate::py::errors::InvalidGeometryError::new_err(format!(
-            "latitude {lat} is outside the Web Mercator domain ±{max} degrees",
+            "latitude {lat} is outside the square Web Mercator tile grid ±{max} degrees",
             max = crate::grid::tile::TILE_MAX_LATITUDE
         ))
     })?;

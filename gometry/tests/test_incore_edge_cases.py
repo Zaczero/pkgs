@@ -15,7 +15,8 @@ ROUND_TRIP_TOL_M = 1e-06
 ROUND_TRIP_TOL_DEG = 1e-06
 WGS84 = 'EPSG:4326'
 WEB_MERCATOR = 'EPSG:3857'
-WEB_MERCATOR_MAX_LAT = 85.0511287798066
+SQUARE_TILE_MAX_LAT = 85.0511287798066
+WEB_MERCATOR_RADIUS = 6_378_137.0
 UTM_LAT_MIN = -80.0
 UTM_LAT_MAX = 84.0
 GAUSS_KRUGER_GEO = 'EPSG:4314'
@@ -296,8 +297,8 @@ WEB_MERC_PARITY_CASES: list[tuple[float, float, str]] = [
     (0.0, 0.0, 'equator_prime_meridian'),
     (180.0, 0.0, 'lon_180'),
     (-180.0, 0.0, 'lon_minus_180'),
-    (45.0, WEB_MERCATOR_MAX_LAT, 'lat_exact_north_cap'),
-    (-45.0, -WEB_MERCATOR_MAX_LAT, 'lat_exact_south_cap'),
+    (45.0, SQUARE_TILE_MAX_LAT, 'lat_exact_north_tile_edge'),
+    (-45.0, -SQUARE_TILE_MAX_LAT, 'lat_exact_south_tile_edge'),
 ]
 
 
@@ -314,19 +315,164 @@ def test_web_mercator_parity_vs_pyproj(lon: float, lat: float, label: str) -> No
     _round_trip(WGS84, WEB_MERCATOR, lon, lat)
 
 
-@pytest.mark.parametrize('sign', [1.0, -1.0])
-def test_web_mercator_just_beyond_cap_raises_intentionally(sign: float) -> None:
-    lat = math.nextafter(sign * WEB_MERCATOR_MAX_LAT, sign * 90.0)
-    ref_xy = _pyproj_fwd(WGS84, WEB_MERCATOR, 0.0, lat)
-    assert all(math.isfinite(v) for v in ref_xy)
-    with pytest.raises(gm.TransformError, match='Web Mercator'):
-        gm.crs_transform(WGS84, WEB_MERCATOR, 0.0, lat)
+@pytest.mark.parametrize('authority', [None, 'EPSG'], ids=['default', 'authority'])
+@pytest.mark.parametrize(
+    'lat',
+    [
+        86.0,
+        -86.0,
+        89.99,
+        -89.99,
+        math.nextafter(90.0, 0.0),
+        math.nextafter(-90.0, 0.0),
+    ],
+    ids=[
+        'north_86',
+        'south_86',
+        'north_89_99',
+        'south_89_99',
+        'north_adjacent',
+        'south_adjacent',
+    ],
+)
+def test_web_mercator_accepts_finite_latitudes_to_the_pole(
+    lat: float, authority: str | None
+) -> None:
+    expected_y = WEB_MERCATOR_RADIUS * math.asinh(math.tan(math.radians(lat)))
+    actual = gm.crs_transform(
+        WGS84,
+        WEB_MERCATOR,
+        0.0,
+        lat,
+        authority=authority,
+    )
+    assert actual[0] == 0.0
+    assert actual[1] == pytest.approx(expected_y, abs=ABS_TOL_M)
+    assert all(math.isfinite(value) for value in actual)
+
+    expected_lat = math.degrees(math.atan(math.sinh(expected_y / WEB_MERCATOR_RADIUS)))
+    recovered = gm.crs_transform(
+        WEB_MERCATOR,
+        WGS84,
+        0.0,
+        actual[1],
+        authority=authority,
+    )
+    assert recovered[0] == 0.0
+    assert recovered[1] == pytest.approx(expected_lat, abs=ABS_TOL_DEG)
+
+
+@pytest.mark.parametrize('authority', [None, 'EPSG'], ids=['default', 'authority'])
+def test_web_mercator_accepts_packed_latitudes_above_square_tile_edge(
+    authority: str | None,
+) -> None:
+    longitudes = np.array([0.0, 10.0, -10.0])
+    latitudes = np.array([86.0, 89.99, -89.99])
+    actual = gm.crs_transform(
+        WGS84,
+        WEB_MERCATOR,
+        longitudes,
+        latitudes,
+        authority=authority,
+    )
+    expected_y = np.array([
+        WEB_MERCATOR_RADIUS * math.asinh(math.tan(math.radians(lat)))
+        for lat in latitudes
+    ])
+    assert actual.shape == (3, 2)
+    assert actual[:, 0] == pytest.approx(
+        longitudes * WEB_MERCATOR_RADIUS * math.pi / 180.0
+    )
+    assert actual[:, 1] == pytest.approx(expected_y, abs=ABS_TOL_M)
+
+
+@pytest.mark.parametrize('authority', [None, 'EPSG'], ids=['default', 'authority'])
+def test_web_mercator_accepts_shapes_above_square_tile_edge(
+    authority: str | None,
+) -> None:
+    points = gm.GeometryArray([
+        gm.Point(0.0, 86.0, crs=WGS84),
+        gm.Point(10.0, 89.99, crs=WGS84),
+        gm.Point(-10.0, -89.99, crs=WGS84),
+    ])
+    transformed = points.to_crs(WEB_MERCATOR, authority=authority)
+    coordinates = gm.get_coordinates(transformed)
+    expected_y = [
+        WEB_MERCATOR_RADIUS * math.asinh(math.tan(math.radians(lat)))
+        for lat in (86.0, 89.99, -89.99)
+    ]
+    assert [row[0][1] for row in coordinates] == pytest.approx(
+        expected_y, abs=ABS_TOL_M
+    )
+
+
+@pytest.mark.parametrize('authority', [None, 'EPSG'], ids=['default', 'authority'])
+@pytest.mark.parametrize(
+    'lat',
+    [
+        90.0,
+        -90.0,
+        math.nextafter(90.0, math.inf),
+        math.nextafter(-90.0, -math.inf),
+    ],
+    ids=['north_pole', 'south_pole', 'north_beyond', 'south_beyond'],
+)
+def test_web_mercator_rejects_poles_and_out_of_domain_latitudes(
+    lat: float, authority: str | None
+) -> None:
+    with pytest.raises(gm.TransformError):
+        gm.crs_transform(WGS84, WEB_MERCATOR, 0.0, lat, authority=authority)
+
+
+def test_web_mercator_inverse_enormous_finite_northing_reaches_limiting_latitude() -> (
+    None
+):
+    enormous = float.fromhex('0x1.fffffffffffffp+1023')
+    for northing in (enormous, -enormous):
+        for authority in (None, 'EPSG'):
+            result = gm.crs_transform(
+                WEB_MERCATOR,
+                WGS84,
+                0.0,
+                northing,
+                authority=authority,
+            )
+            assert result == pytest.approx(
+                (0.0, math.copysign(90.0, northing)), abs=ABS_TOL_DEG
+            )
+
+
+@pytest.mark.parametrize(
+    'lat',
+    [math.nextafter(90.0, 0.0), math.nextafter(-90.0, 0.0)],
+    ids=['north_adjacent', 'south_adjacent'],
+)
+def test_ellipsoidal_mercator_accepts_adjacent_latitudes_but_rejects_poles(
+    lat: float,
+) -> None:
+    radius = 6_378_137.0
+    eccentricity = math.sqrt(2.0 / 298.257223563 - (1.0 / 298.257223563) ** 2)
+    latitude_radians = math.radians(lat)
+    sine = math.sin(latitude_radians)
+    cosine = math.cos(latitude_radians)
+    expected_y = radius * (
+        math.asinh(sine / cosine) - eccentricity * math.atanh(eccentricity * sine)
+    )
+    actual = gm.crs_transform(WGS84, 'EPSG:3395', 0.0, lat, authority='EPSG')
+    assert actual[0] == 0.0
+    assert actual[1] == pytest.approx(expected_y, abs=ABS_TOL_M)
+    assert all(math.isfinite(value) for value in actual)
+
+    with pytest.raises(gm.TransformError):
+        gm.crs_transform(
+            WGS84, 'EPSG:3395', 0.0, math.copysign(90.0, lat), authority='EPSG'
+        )
 
 
 def test_web_mercator_keeps_xy_order_and_does_not_clamp_cap() -> None:
     lon = 12.5
-    x, y = gm.crs_transform(WGS84, WEB_MERCATOR, lon, WEB_MERCATOR_MAX_LAT)
-    expected_x, expected_y = _pyproj_fwd(WGS84, WEB_MERCATOR, lon, WEB_MERCATOR_MAX_LAT)
+    x, y = gm.crs_transform(WGS84, WEB_MERCATOR, lon, SQUARE_TILE_MAX_LAT)
+    expected_x, expected_y = _pyproj_fwd(WGS84, WEB_MERCATOR, lon, SQUARE_TILE_MAX_LAT)
     assert x == pytest.approx(expected_x, abs=ABS_TOL_M)
     assert y == pytest.approx(expected_y, abs=ABS_TOL_M)
     assert abs(y) > abs(x)
@@ -452,7 +598,7 @@ EDGE_CASE_COUNTS = {
     'polar_stereo_parity': len(POLAR_STEREO_PARITY_CASES)
     + len(POLAR_STEREO_FAMILIES)
     + 4,
-    'web_mercator_parity': len(WEB_MERC_PARITY_CASES) + 2,
+    'web_mercator_parity': len(WEB_MERC_PARITY_CASES) + 12 + 2 + 2 + 8 + 4 + 2 + 1,
     'cross_cutting': 12,
     'intentional_gometry_differs': 3,
 }

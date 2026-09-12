@@ -452,9 +452,7 @@ impl From<Error> for PyErr {
                 ]),
                 // In-core projection failures → TransformError; an
                 // unsupported projected CRS is a CRS problem.
-                G::WebMercatorLatitude(_) | G::Projection(_) | G::ProjectionDomain(_) => {
-                    TransformError::new_err(message)
-                },
+                G::Projection(_) | G::ProjectionDomain(_) => TransformError::new_err(message),
                 // Structural and content rule violations → InvalidGeometryError.
                 G::NonFiniteCoordinate
                 | G::CoordinateLength(..)

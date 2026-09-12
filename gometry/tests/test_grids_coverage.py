@@ -3,7 +3,6 @@
 import gometry as gm
 import pytest
 
-
 COVER_CASES = [
     (gm.h3_cover, {'resolution': 2}, 'H3'),
     (gm.s2_cover, {'level': 3}, 'S2'),
@@ -60,9 +59,9 @@ def test_array_later_row_invalid_latitude_after_successful_row(cover, depth) -> 
         cover(gm.GeometryArray([first, later], crs=4326), max_cells=None, **depth)
 
 
-def test_tile_cover_rejects_latitude_outside_web_mercator() -> None:
+def test_tile_cover_rejects_latitude_outside_square_web_mercator_grid() -> None:
     point = gm.Point(0, 86, crs=4326)
-    with pytest.raises(gm.InvalidGeometryError, match='Web Mercator domain'):
+    with pytest.raises(gm.InvalidGeometryError, match='square Web Mercator tile grid'):
         gm.tile_cover(point, zoom=3)
 
 
@@ -441,5 +440,5 @@ def test_tile_cover_still_rejects_nonpolar_mercator_overflow(
 ) -> None:
     kwargs = {} if crs is None else {'crs': crs}
     source = gm.box(*bounds, **kwargs)
-    with pytest.raises(gm.InvalidGeometryError, match='Web Mercator'):
+    with pytest.raises(gm.InvalidGeometryError, match='square Web Mercator tile grid'):
         gm.tile_cover(source, zoom=4)

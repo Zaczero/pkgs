@@ -190,8 +190,8 @@ def test_epoch_without_crs_is_a_crs_error_not_a_mismatch() -> None:
 
 
 def test_transform_error_on_transform_failures() -> None:
-    with pytest.raises(errors.TransformError, match='Web Mercator') as excinfo:
-        gm.Point(0, 89.9, crs=4326).to_crs(3857)
+    with pytest.raises(errors.TransformError, match='finite Web Mercator') as excinfo:
+        gm.Point(0, 90.0, crs=4326).to_crs(3857)
     assert excinfo.value.source is None
     assert excinfo.value.target is None
 
@@ -386,12 +386,11 @@ def test_unknown_token_suggestions_keep_public_error_shape() -> None:
     assert 'did you mean' not in str(empty.value)
 
 
-def test_web_mercator_latitude_message_avoids_long_default_float() -> None:
+def test_web_mercator_projection_domain_error_has_transform_type() -> None:
     with pytest.raises(errors.TransformError) as excinfo:
         gm.Point(1e30, 1e30, crs=4326).to_crs(3857)
     message = str(excinfo.value)
-    assert 'Web Mercator' in message
-    # Default `{}` dump of 1e30 is a 31-digit mantissa run; :e keeps it compact.
+    assert 'finite Web Mercator projection domain' in message
     assert '1000000000000000' not in message
     assert 'e30' in message.lower() or 'e+30' in message.lower()
 

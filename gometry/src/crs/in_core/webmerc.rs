@@ -4,7 +4,6 @@
 )]
 //! WGS84 Web Mercator (EPSG:3857) — spherical closed-form formulas.
 
-use crate::boundary::geographic::WEB_MERCATOR_MAX_LATITUDE;
 use crate::crs::in_core::kernel::{DEG_TO_RAD, Ellipsoid, ProjectionKernel, RAD_TO_DEG};
 use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, ProjectionFrame, Requirement,
@@ -38,22 +37,13 @@ pub(super) fn raw_forward_batch_indexed(
     x: &mut [f64],
     y: &mut [f64],
 ) -> std::result::Result<(), TransformFailure> {
-    const METRES_PER_DEGREE: f64 = WEB_MERCATOR_RADIUS * DEG_TO_RAD;
     for (index, (lon, lat)) in std::iter::zip(x, y).enumerate() {
-        let lat_rad = *lat * DEG_TO_RAD;
-        let lat_deg = lat_rad * RAD_TO_DEG;
-        if !(-WEB_MERCATOR_MAX_LATITUDE..=WEB_MERCATOR_MAX_LATITUDE).contains(&lat_deg) {
-            return Err(TransformFailure::at(
-                GeometryErrorKind::WebMercatorLatitude(lat_deg).into(),
-                index,
-            ));
-        }
-        let out_y = if lat_rad == 0.0 {
-            lat_rad
-        } else {
-            WEB_MERCATOR_RADIUS * ((std::f64::consts::FRAC_PI_4 + lat_rad / 2.0).tan()).ln()
-        };
-        let out_x = *lon * METRES_PER_DEGREE;
+        let (out_x, out_y) = forward_unframed_setup(
+            WGS84_WEB_MERCATOR.setup,
+            *lon * DEG_TO_RAD,
+            *lat * DEG_TO_RAD,
+        )
+        .map_err(|error| TransformFailure::at(error, index))?;
         if !out_x.is_finite() || !out_y.is_finite() {
             return Err(TransformFailure::at(
                 GeometryErrorKind::NonFiniteCoordinate.into(),
@@ -69,14 +59,9 @@ pub(super) fn raw_inverse_batch_indexed(
     x: &mut [f64],
     y: &mut [f64],
 ) -> std::result::Result<(), TransformFailure> {
-    const METRES_PER_DEGREE: f64 = WEB_MERCATOR_RADIUS * DEG_TO_RAD;
     for (index, (lon, lat)) in std::iter::zip(x, y).enumerate() {
-        let out_lon = *lon / METRES_PER_DEGREE;
-        let lat_rad = if *lat == 0.0 {
-            *lat
-        } else {
-            2.0 * (*lat / WEB_MERCATOR_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2
-        };
+        let (out_lon_rad, lat_rad) = inverse_unframed_setup(WGS84_WEB_MERCATOR.setup, *lon, *lat);
+        let out_lon = out_lon_rad * RAD_TO_DEG;
         let out_lat = lat_rad * RAD_TO_DEG;
         if !out_lon.is_finite() || !out_lat.is_finite() {
             return Err(TransformFailure::at(
@@ -90,15 +75,20 @@ pub(super) fn raw_inverse_batch_indexed(
 }
 
 fn forward_unframed_setup(setup: Setup, lam_rad: f64, lat_rad: f64) -> Result<(f64, f64)> {
-    let lat_deg = lat_rad * RAD_TO_DEG;
-    if !(-WEB_MERCATOR_MAX_LATITUDE..=WEB_MERCATOR_MAX_LATITUDE).contains(&lat_deg) {
-        return Err(GeometryErrorKind::WebMercatorLatitude(lat_deg).into());
+    if !lat_rad.is_finite() {
+        return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+    }
+    if lat_rad.abs() >= std::f64::consts::FRAC_PI_2 {
+        let latitude_deg = lat_rad * RAD_TO_DEG;
+        return Err(GeometryErrorKind::projection_domain(format!(
+            "latitude {latitude_deg:e} is outside the finite Web Mercator projection domain"
+        )));
     }
     let x = setup.radius * lam_rad;
     let y = if lat_rad == 0.0 {
         lat_rad
     } else {
-        setup.radius * ((std::f64::consts::FRAC_PI_4 + lat_rad / 2.0).tan()).ln()
+        setup.radius * lat_rad.tan().asinh()
     };
     if !x.is_finite() || !y.is_finite() {
         return Err(GeometryErrorKind::NonFiniteCoordinate.into());
@@ -111,7 +101,7 @@ fn inverse_unframed_setup(setup: Setup, x: f64, y: f64) -> (f64, f64) {
     let lat_rad = if y == 0.0 {
         y
     } else {
-        2.0 * (y * setup.inv_radius).exp().atan() - std::f64::consts::FRAC_PI_2
+        (y * setup.inv_radius).sinh().atan()
     };
     (lam_rad, lat_rad)
 }
@@ -174,4 +164,23 @@ pub(super) fn admit(
     ellipsoid: Ellipsoid,
 ) -> Option<Projected<WebMerc>> {
     admit_projection::<WebMerc>(operation, ellipsoid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorKind;
+
+    #[test]
+    fn projection_poles_are_typed_domain_errors() {
+        for latitude in [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
+            let error = WGS84_WEB_MERCATOR
+                .forward_xy(0.0, latitude * RAD_TO_DEG)
+                .expect_err("projection poles must not produce finite coordinates");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Geometry(GeometryErrorKind::ProjectionDomain(_))
+            ));
+        }
+    }
 }
