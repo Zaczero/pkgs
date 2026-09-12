@@ -4,6 +4,7 @@ import gometry as gm
 import pytest
 import shapely
 from gometry._types import CapStyle, JoinStyle
+from tests.test_kernel_parity_snapshot import INPUT_BUILDERS
 
 
 def _buffer_oracle_fixtures() -> list[tuple[str, str]]:
@@ -212,9 +213,9 @@ def _exterior_vertices(geometry: gm.Geometry) -> list[tuple[float, float]]:
         ),
         pytest.param(
             'random_line_1',
-            'LINESTRING (-1.6232852254132093 -3.9750482382849253, -2.0868296731887934 -2.701470335107945, -3.260565417678661 -2.023813687234678, -4.595288459416237 -2.2591613711008387, -5.466467053378228 -3.297391590246214, -5.466467053378228 -4.652704886323636, -4.5952884594162375 -5.690935105469011, -3.260565417678662 -5.9262827894166165, -2.0868296731887943 -5.248626141461906)',
+            INPUT_BUILDERS['random_line_1']().to_wkt(),
             1.0,
-            id='line-random-line-1',
+            id='line-random-line-1-closed',
         ),
         pytest.param(
             'concave_notch',

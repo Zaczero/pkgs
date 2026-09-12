@@ -6,13 +6,13 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::constructive::{
     Result, WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop,
-    emit_cap, extend_cleaned, raw_offset_loop, strict_cycle, winding_region,
+    emit_cap, extend_cleaned, materialize_walk, raw_offset_loop, strict_cycle, winding_region,
 };
 use crate::geometry::{
     BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, HashSet, LineSeq,
     MultiPoint, Orientation, Point, Polygon, Ring, Shape, canonical_f64_bits, column_all_finite,
     dedup_consecutive_points, line_is_simple, orientation, polygon_parts_to_shape, ring_winding,
-    shell_is_convex,
+    same_point, shell_is_convex,
 };
 
 /// A polygon encloses no interior when every ring has zero signed area — it
@@ -614,6 +614,21 @@ pub(crate) fn stroke_loops(
             } else {
                 chain
             };
+            if chain.len() >= 3 && same_point(chain[0], chain[chain.len() - 1]) {
+                let Some((right, left, clean)) = raw_closed_stroke_loops(
+                    &chain[..chain.len() - 1],
+                    distance,
+                    rule,
+                    quadrant_segments,
+                    budget,
+                )?
+                else {
+                    return Ok(None);
+                };
+                crate::try_push_vec(loops, right)?;
+                crate::try_push_vec(loops, left)?;
+                return Ok(Some(clean));
+            }
             let Some((columns, clean)) =
                 raw_stroke_loop(chain, distance, cap_style, rule, quadrant_segments, budget)?
             else {
@@ -895,6 +910,45 @@ pub(crate) fn collinear_extent(chain: &[Point]) -> Option<[Point; 2]> {
         .iter()
         .max_by(|left, right| projection(left).total_cmp(&projection(right)))?;
     Some([lo, hi])
+}
+
+/// Two cyclic offset loops around a closed line. A closed line has no caps:
+/// its forward and reversed walks meet at the source's first vertex through
+/// their own cyclic joins, and the winding arrangement combines the outer
+/// and inner loops into the stroke region.
+pub(crate) fn raw_closed_stroke_loops(
+    chain: &[Point],
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: std::num::NonZeroU32,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<(LoopColumns, LoopColumns, bool)>> {
+    let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments.get());
+    let Some(right_plan) = WalkPlan::new(chain, true, distance, rule)? else {
+        return Ok(None);
+    };
+    let mut backward = Vec::new();
+    crate::try_reserve_vec(&mut backward, chain.len())?;
+    backward.push(chain[0]);
+    backward.extend(chain[1..].iter().rev().copied());
+    let Some(left_plan) = WalkPlan::new(&backward, true, distance, rule)? else {
+        return Ok(None);
+    };
+    let Some(right_columns) = materialize_walk(&right_plan, step_angle, false, budget, true)?
+    else {
+        return Ok(None);
+    };
+    let Some(left_columns) = materialize_walk(&left_plan, step_angle, false, budget, true)? else {
+        return Ok(None);
+    };
+    let (right_xs, right_ys, _) = right_columns.into_columns();
+    let (left_xs, left_ys, _) = left_columns.into_columns();
+    let clean = right_plan
+        .joins
+        .iter()
+        .chain(&left_plan.joins)
+        .all(|join| !matches!(join, WalkJoin::Excursion));
+    Ok(Some(((right_xs, right_ys), (left_xs, left_ys), clean)))
 }
 
 /// One closed raw stroke loop around an open chain (see
