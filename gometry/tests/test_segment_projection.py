@@ -405,7 +405,7 @@ def test_generated_nonmonotone_keys_keep_the_exactly_closer_interior_witness() -
             assert tuple(shortest.coords[0 if indexed_is_left else 1]) == witness
 
 
-def test_faithful_witness_contract_keeps_case_a_closer_point() -> None:
+def test_faithful_witness_contract_publishes_correctly_rounded_foot() -> None:
     dx = float.fromhex('0x1.3632375862748p-510')
     dy = float.fromhex('0x1.0fbf19953ae0ap-511')
     point_xy = (
@@ -415,7 +415,7 @@ def test_faithful_witness_contract_keeps_case_a_closer_point() -> None:
     line = gm.LineString([(0.0, 0.0), (dx, dy)])
     reverse = gm.LineString([(dx, dy), (0.0, 0.0)])
     point = gm.Point(*point_xy)
-    shipped = (
+    rounded_parameter_foot = (
         float.fromhex('0x1.05d33a16aa5d1p-510'),
         float.fromhex('0x1.cabe086eeb4f9p-512'),
     )
@@ -423,19 +423,25 @@ def test_faithful_witness_contract_keeps_case_a_closer_point() -> None:
         float.fromhex('0x1.05d33a16aa5d2p-510'),
         float.fromhex('0x1.cabe086eeb4f9p-512'),
     )
-    assert _exact_distance_squared(point_xy, shipped) < _exact_distance_squared(
-        point_xy, correctly_rounded_foot
-    )
+    _, independently_rounded_foot, _ = _exact_projection((0.0, 0.0), (dx, dy), point_xy)
+    assert independently_rounded_foot == correctly_rounded_foot
+    # The rounded-parameter interpolation is closer as a stored point, but it
+    # is not the correctly rounded exact foot. Public point publication uses
+    # the exact stored-input ratio for every ordinate.
+    assert _exact_distance_squared(
+        point_xy, rounded_parameter_foot
+    ) < _exact_distance_squared(point_xy, correctly_rounded_foot)
     for left, right, line_is_left in ((line, point, True), (point, line, False)):
         nearest = gm.nearest_points(left, right)
-        assert _coords(nearest[0 if line_is_left else 1]) == shipped
+        assert _coords(nearest[0 if line_is_left else 1]) == correctly_rounded_foot
         shortest = gm.shortest_line(left, right)
-        assert tuple(shortest.coords[0 if line_is_left else 1]) == shipped
+        assert (
+            tuple(shortest.coords[0 if line_is_left else 1]) == correctly_rounded_foot
+        )
     assert _coords(gm.nearest_points(reverse, point)[0]) == correctly_rounded_foot
 
-    # Both direction-dependent faithful spellings are candidates. Exact
-    # selection must choose the forward lerp, which Fraction proves closer;
-    # treating reversed ideal supports as identical keeps the farther first.
+    # Reversed supports and duplicated carriers must publish the same exact
+    # foot, regardless of the direction-dependent rounded-parameter spelling.
     far_segments = [
         [(100.0 + index, 100.0), (100.0 + index, 101.0)] for index in range(64)
     ]
@@ -448,9 +454,14 @@ def test_faithful_witness_contract_keeps_case_a_closer_point() -> None:
             (point, carrier, False),
         ):
             nearest = gm.nearest_points(left, right)
-            assert _coords(nearest[0 if carrier_is_left else 1]) == shipped
+            assert (
+                _coords(nearest[0 if carrier_is_left else 1]) == correctly_rounded_foot
+            )
             shortest = gm.shortest_line(left, right)
-            assert tuple(shortest.coords[0 if carrier_is_left else 1]) == shipped
+            assert (
+                tuple(shortest.coords[0 if carrier_is_left else 1])
+                == correctly_rounded_foot
+            )
     assert gm.distance(line, point).hex() == '0x1.9c38bb13b0b5fp-508'
 
 

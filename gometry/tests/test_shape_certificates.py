@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal, localcontext
 from fractions import Fraction
 
 import gometry as gm
@@ -65,7 +66,14 @@ def test_manufactured_normal_residual_falls_back_to_source_distance(
 def test_small_target_root_capacity_is_proved_at_ordinary_scale() -> None:
     source = gm.LineString([(-1, 0), (3, -3), (-5, -1), (2, -2), (0, -2)])
     target = gm.LineString([(2, -2), (-5, -4)])
-    expected = 2.910427500435995
+    # The target endpoint (-5, -4) is farthest from the source. Its nearest
+    # source feature is (3, -3)--(-5, -1), whose exact squared distance is
+    # 144/17. Decimal rounds the exact square root independently of gometry's
+    # squared-distance and root path.
+    expected = 2.9104275004359956
+    with localcontext() as context:
+        context.prec = 100
+        assert expected == float((Decimal(144) / Decimal(17)).sqrt())
     assert _carrier_results(source, target) == [expected] * 5
     assert _carrier_results(target, source) == [expected] * 5
 
