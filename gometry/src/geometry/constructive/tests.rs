@@ -1245,14 +1245,9 @@ mod subdivide_columns_tests {
             Point::new(adjacent, 0.0).unwrap(),
         ])
         .unwrap();
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
-        let error = segmentize_points_budgeted(
-            &line,
-            2.0_f64.powi(-54),
-            crate::geometry::SegmentPlacement::Planar,
-            &mut budget,
-        )
-        .unwrap_err();
+        let error = Shape::LineString(LineSeq::from_proven(line))
+            .segmentize(2.0_f64.powi(-54))
+            .unwrap_err();
 
         assert!(matches!(
             error.kind(),

@@ -26,8 +26,7 @@ pub(crate) use snap::densify_points_budgeted;
 pub(crate) use snap::{
     SegmentPlacement, SnapReference, densify_points_budgeted_with_placement,
     remove_repeated_line_points, remove_repeated_points, segmentize_points_budgeted,
-    segmentize_points_budgeted_without_output_verification, snap_ring_to_reference,
-    verify_planar_segmentize_shape,
+    snap_ring_to_reference, verify_planar_segmentize_output, verify_planar_segmentize_shape,
 };
 pub(crate) use walk::{
     WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop, emit_cap,

@@ -6,7 +6,7 @@ use crate::NonNegative;
 use crate::geometry::constructive::{
     Result, SegmentPlacement, decimal_scale, normalized_line, quantize_column_simd,
     remove_repeated_line_points, remove_repeated_points, segmentize_points_budgeted,
-    segmentize_points_budgeted_without_output_verification, snap_column_simd, split,
+    snap_column_simd, split,
 };
 use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::overlay::{OverlayOp, overlay_all_geographic_from, overlay_view_error};
@@ -432,31 +432,8 @@ impl LineSeq {
         placement: SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
-        self.segmentize_with_output_verification(max_segment_length, placement, budget, true)
-    }
-
-    fn segmentize_without_output_verification(
-        &self,
-        max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
-        budget: &mut ExpansionBudget,
-    ) -> Result<Self> {
-        self.segmentize_with_output_verification(max_segment_length, placement, budget, false)
-    }
-
-    fn segmentize_with_output_verification(
-        &self,
-        max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
-        budget: &mut ExpansionBudget,
-        verify_output: bool,
-    ) -> Result<Self> {
-        let segmentize = if verify_output {
-            segmentize_points_budgeted
-        } else {
-            segmentize_points_budgeted_without_output_verification
-        };
-        segmentize(self, max_segment_length, placement, budget).map(Self::from_proven)
+        segmentize_points_budgeted(self, max_segment_length, placement, budget)
+            .map(Self::from_proven)
     }
 }
 
@@ -1257,7 +1234,10 @@ impl Shape {
     /// [`SegmentPlacement`] first and use [`Self::segmentize_budgeted`].
     pub fn segmentize(&self, max_segment_length: f64) -> Result<Self> {
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
-        self.segmentize_budgeted(max_segment_length, SegmentPlacement::Planar, &mut budget)
+        let output =
+            self.segmentize_budgeted(max_segment_length, SegmentPlacement::Planar, &mut budget)?;
+        crate::geometry::verify_planar_segmentize_shape(&output, max_segment_length)?;
+        Ok(output)
     }
 
     pub(crate) fn segmentize_budgeted(
@@ -1266,78 +1246,28 @@ impl Shape {
         placement: SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
-        self.segmentize_budgeted_with_output_verification(
-            max_segment_length,
-            placement,
-            budget,
-            true,
-        )
-    }
-
-    pub(crate) fn segmentize_budgeted_without_output_verification(
-        &self,
-        max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
-        budget: &mut ExpansionBudget,
-    ) -> Result<Self> {
-        self.segmentize_budgeted_with_output_verification(
-            max_segment_length,
-            placement,
-            budget,
-            false,
-        )
-    }
-
-    fn segmentize_budgeted_with_output_verification(
-        &self,
-        max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
-        budget: &mut ExpansionBudget,
-        verify_output: bool,
-    ) -> Result<Self> {
-        let segmentize_line = if verify_output {
-            LineSeq::segmentize
-        } else {
-            LineSeq::segmentize_without_output_verification
-        };
-        let segmentize_polygon = if verify_output {
-            Polygon::segmentize_budgeted
-        } else {
-            Polygon::segmentize_budgeted_without_output_verification
-        };
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
-            Self::LineString(points) => Self::LineString(segmentize_line(
-                points,
-                max_segment_length,
-                placement,
-                budget,
-            )?),
+            Self::LineString(points) => {
+                Self::LineString(points.segmentize(max_segment_length, placement, budget)?)
+            },
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    segmentize_line(line, max_segment_length, placement, budget)
+                    line.segmentize(max_segment_length, placement, budget)
                 })?)
             },
-            Self::Polygon(polygon) => Self::Polygon(segmentize_polygon(
-                polygon,
-                max_segment_length,
-                placement,
-                budget,
-            )?),
+            Self::Polygon(polygon) => {
+                Self::Polygon(polygon.segmentize_budgeted(max_segment_length, placement, budget)?)
+            },
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    segmentize_polygon(polygon, max_segment_length, placement, budget)
+                    polygon.segmentize_budgeted(max_segment_length, placement, budget)
                 })?)
             },
             Self::GeometryCollection(geometries) => {
                 Self::GeometryCollection(geometries.try_map_members(|geometry| {
-                    geometry.segmentize_budgeted_with_output_verification(
-                        max_segment_length,
-                        placement,
-                        budget,
-                        verify_output,
-                    )
+                    geometry.segmentize_budgeted(max_segment_length, placement, budget)
                 })?)
             },
             Self::Empty(..) => self.clone(),

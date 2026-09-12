@@ -115,9 +115,8 @@ pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use constructive::vw_keep;
 pub(crate) use constructive::{
     DEFAULT_MITER_LIMIT, SegmentPlacement, affine_about_origin_ordinate,
-    densify_points_budgeted_with_placement, rdp_keep, segmentize_points_budgeted,
-    segmentize_points_budgeted_without_output_verification, stable_affine_xy, stable_snap_ordinate,
-    verify_planar_segmentize_shape,
+    densify_points_budgeted_with_placement, rdp_keep, segmentize_points_budgeted, stable_affine_xy,
+    stable_snap_ordinate, verify_planar_segmentize_output, verify_planar_segmentize_shape,
 };
 use constructive::{
     SnapReference, assemble_region_polygons, decimal_scale, orient_ring, quantize_to_scale,
@@ -733,41 +732,9 @@ impl Polygon {
         placement: SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
-        self.segmentize_budgeted_with_output_verification(
-            max_segment_length,
-            placement,
-            budget,
-            true,
-        )
-    }
-
-    pub(crate) fn segmentize_budgeted_without_output_verification(
-        &self,
-        max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
-        budget: &mut ExpansionBudget,
-    ) -> Result<Self> {
-        self.segmentize_budgeted_with_output_verification(
-            max_segment_length,
-            placement,
-            budget,
-            false,
-        )
-    }
-
-    fn segmentize_budgeted_with_output_verification(
-        &self,
-        max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
-        budget: &mut ExpansionBudget,
-        verify_output: bool,
-    ) -> Result<Self> {
-        let segmentize = if verify_output {
-            segmentize_points_budgeted
-        } else {
-            segmentize_points_budgeted_without_output_verification
-        };
-        self.try_map_ring_seqs(|ring| segmentize(ring, max_segment_length, placement, budget))
+        self.try_map_ring_seqs(|ring| {
+            segmentize_points_budgeted(ring, max_segment_length, placement, budget)
+        })
     }
 
     fn densified_budgeted_with_placement(

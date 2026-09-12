@@ -371,39 +371,6 @@ pub(crate) fn segmentize_points_budgeted(
     placement: SegmentPlacement<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
-    segmentize_points_budgeted_with_verification(
-        points,
-        max_segment_length,
-        placement,
-        budget,
-        true,
-    )
-}
-
-pub(crate) fn segmentize_points_budgeted_without_output_verification(
-    points: &CoordSeq,
-    max_segment_length: f64,
-    placement: SegmentPlacement<'_>,
-    budget: &mut ExpansionBudget,
-) -> Result<CoordSeq> {
-    // Array callers validate the completed batch after its shared budget has
-    // admitted every row; scalar callers use the verified entry point above.
-    segmentize_points_budgeted_with_verification(
-        points,
-        max_segment_length,
-        placement,
-        budget,
-        false,
-    )
-}
-
-fn segmentize_points_budgeted_with_verification(
-    points: &CoordSeq,
-    max_segment_length: f64,
-    placement: SegmentPlacement<'_>,
-    budget: &mut ExpansionBudget,
-    verify_output: bool,
-) -> Result<CoordSeq> {
     if points.len() < 2 {
         return Ok(points.clone());
     }
@@ -437,9 +404,6 @@ fn segmentize_points_budgeted_with_verification(
         |segment| Ok(planar_segmentize_steps(segment, max_segment_length)),
         budget,
     )?;
-    if verify_output {
-        verify_planar_segmentize_output(&output, max_segment_length)?;
-    }
     Ok(output)
 }
 
@@ -505,7 +469,10 @@ fn planar_segmentize_steps(segment: Segment, max_segment_length: f64) -> usize {
 /// coordinates that the emitter actually stores. Audit the resulting chain so
 /// the public maximum-length promise is about every emitted chord, including
 /// source-to-source chords that can survive as repeated interior points.
-fn verify_planar_segmentize_output(points: &CoordSeq, max_segment_length: f64) -> Result<()> {
+pub(crate) fn verify_planar_segmentize_output(
+    points: &CoordSeq,
+    max_segment_length: f64,
+) -> Result<()> {
     if !max_segment_length.is_finite() || max_segment_length <= 0.0 {
         return Ok(());
     }

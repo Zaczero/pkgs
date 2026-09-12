@@ -487,11 +487,15 @@ pub(crate) fn unary_segmentize(
         // Projected: `to_metre` is 1.0 for the CRS's own units and the axis
         // factor under `unit='meters'`, so a metre input divides into
         // coordinate units the same way `buffer`'s distance does.
-        ResolvedMetric::Planar { to_metre } => data.shape().segmentize_budgeted(
-            length / to_metre.get(),
-            crate::geometry::SegmentPlacement::Planar,
-            &mut budget,
-        ),
+        ResolvedMetric::Planar { to_metre } => {
+            let output = data.shape().segmentize_budgeted(
+                length / to_metre.get(),
+                crate::geometry::SegmentPlacement::Planar,
+                &mut budget,
+            )?;
+            crate::geometry::verify_planar_segmentize_shape(&output, length / to_metre.get())?;
+            Ok(output)
+        },
     }
 }
 
