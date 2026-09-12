@@ -174,3 +174,94 @@ def test_buffer_high_resolution_no_panic_on_extreme_coordinates() -> None:
         for quadrant_segments in (8, 64):
             result = geometry.buffer(1.0, quadrant_segments=quadrant_segments)
             assert result is not None
+
+
+# Direct circle vertices are within roundoff of the distance locus.  The exact
+# arrangement can retain one noding intersection between a cap and a join;
+# GEOS at this resolution is 0.0045854168 from the locus on that vertex, so
+# this tolerance covers the independent representation while rejecting the
+# deep interior vertices produced by the regression.
+BUFFER_LOCUS_TOLERANCE = 5e-3
+BUFFER_GENERATED_VERTEX_TOLERANCE = 1e-9
+BUFFER_AREA_RELATIVE_TOLERANCE = 1e-4
+
+
+def _exterior_vertices(geometry: gm.Geometry) -> list[tuple[float, float]]:
+    parsed = shapely.from_wkt(geometry.to_wkt())
+    if parsed.geom_type == 'Polygon':
+        polygons = [parsed]
+    elif parsed.geom_type == 'MultiPolygon':
+        polygons = list(parsed.geoms)
+    else:
+        polygons = []
+    return [
+        (x, y)
+        for polygon in polygons
+        for x, y in polygon.exterior.coords
+    ]
+
+
+@pytest.mark.parametrize(
+    ('name', 'wkt', 'distance'),
+    [
+        pytest.param(
+            'sharp_reflex',
+            'LINESTRING (0 0, 5 0, 0.5 1)',
+            1.0,
+            id='line-sharp-reflex',
+        ),
+        pytest.param(
+            'random_line_1',
+            'LINESTRING (-1.6232852254132093 -3.9750482382849253, -2.0868296731887934 -2.701470335107945, -3.260565417678661 -2.023813687234678, -4.595288459416237 -2.2591613711008387, -5.466467053378228 -3.297391590246214, -5.466467053378228 -4.652704886323636, -4.5952884594162375 -5.690935105469011, -3.260565417678662 -5.9262827894166165, -2.0868296731887943 -5.248626141461906)',
+            1.0,
+            id='line-random-line-1',
+        ),
+        pytest.param(
+            'concave_notch',
+            'POLYGON ((0 0, 10 0, 10 10, 6 10, 5 1, 4 10, 0 10, 0 0))',
+            1.0,
+            id='polygon-concave-notch',
+        ),
+        pytest.param(
+            'concave_notch_erosion',
+            'POLYGON ((0 0, 10 0, 10 10, 6 10, 5 1, 4 10, 0 10, 0 0))',
+            -1.0,
+            id='polygon-negative-distance',
+        ),
+    ],
+)
+def test_round_buffer_boundary_vertices_follow_the_source_locus(
+    name: str,
+    wkt: str,
+    distance: float,
+) -> None:
+    """Round buffer vertices stay at the requested distance from the source."""
+    geometry = gm.from_wkt(wkt)
+    source = shapely.from_wkt(wkt)
+    result = geometry.buffer(distance, quadrant_segments=8)
+    vertices = _exterior_vertices(result)
+    assert vertices, f'{name} produced no exterior vertices'
+    locus = source if source.geom_type == 'LineString' else source.boundary
+    errors = [
+        abs(locus.distance(shapely.Point(x, y)) - abs(distance))
+        for x, y in vertices
+    ]
+    assert max(errors) <= BUFFER_LOCUS_TOLERANCE, (
+        f'{name}: max distance-locus error {max(errors)} at '
+        f'{vertices[errors.index(max(errors))]}'
+    )
+    assert sum(
+        error > BUFFER_GENERATED_VERTEX_TOLERANCE for error in errors
+    ) <= 1, f'{name}: more than one non-generated noding vertex left the locus'
+
+    reference = shapely.buffer(
+        source,
+        distance,
+        quad_segs=8,
+        cap_style='round',
+        join_style='round',
+    )
+    assert result.area == pytest.approx(
+        reference.area,
+        rel=BUFFER_AREA_RELATIVE_TOLERANCE,
+    )

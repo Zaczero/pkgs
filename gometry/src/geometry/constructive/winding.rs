@@ -929,7 +929,9 @@ pub(crate) fn raw_stroke_loop(
         return Ok(None);
     };
     let (enx, eny) = right_plan.last_normal();
-    let (snx, sny) = left_plan.first_normal();
+    // The reversed walk's final edge is the source's first edge; its normal
+    // closes the start cap on the left side of the original chain.
+    let (snx, sny) = left_plan.last_normal();
 
     let (clean, count_len) = {
         let mut count_only = WalkCount::budgeted(budget);

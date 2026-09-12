@@ -421,13 +421,6 @@ impl<'a> WalkPlan<'a> {
         Ok(Some(plan))
     }
 
-    pub(crate) fn first_normal(&self) -> (f64, f64) {
-        self.normals
-            .first()
-            .copied()
-            .expect("a walk plan has at least one edge")
-    }
-
     pub(crate) fn last_normal(&self) -> (f64, f64) {
         self.normals
             .last()
