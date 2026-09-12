@@ -34,6 +34,13 @@ pub(in crate::crs) struct Setup {
     a: f64,
 }
 
+// `qs` is formed from a subtraction, a square, and several divisions. The
+// EPSG AEA catalogue reaches eight binary64 epsilons of endpoint overshoot;
+// twice that leaves headroom for the final ratio division. This is an
+// overshoot allowance only; an interior ratio, however close to one, is still
+// evaluated rather than classified as a pole.
+const DOMAIN_ROUNDING: f64 = 16.0 * f64::EPSILON;
+
 const fn set_lat_0(p: &mut AeaParams, v: f64) -> bool {
     set_finite(&mut p.lat_0, v)
 }
@@ -155,6 +162,10 @@ impl ProjectionKernel for Aea {
             Err(GeometryErrorKind::NonFiniteCoordinate.into())
         }
     }
+    #[expect(
+        clippy::float_cmp,
+        reason = "only exact clamped endpoints denote the projection poles"
+    )]
     fn inverse_unframed(s: &Setup, x: f64, y: f64) -> Result<(f64, f64)> {
         let mut xx = x / s.a;
         let mut yy = s.rho0 - y / s.a;
@@ -175,17 +186,22 @@ impl ProjectionKernel for Aea {
             yy = -yy;
         }
         let qs = (s.c - (rho / s.dd).powi(2)) / s.n;
-        let phi = if (s.auth.qp - qs.abs()).abs() > 1e-7 {
-            if qs.abs() > s.auth.qp {
-                return Err(GeometryErrorKind::projection_domain(
-                    "coordinate is outside the Albers Equal Area domain",
-                ));
-            }
-            s.auth.inverse_beta((qs / s.auth.qp).asin())
-        } else if qs < 0.0 {
+        let ratio = qs / s.auth.qp;
+        if !ratio.is_finite() || ratio.abs() > 1.0 + DOMAIN_ROUNDING {
+            return Err(GeometryErrorKind::projection_domain(
+                "coordinate is outside the Albers Equal Area domain",
+            ));
+        }
+        let ratio = ratio.clamp(-1.0, 1.0);
+        // The authalic series leaves a tiny endpoint residual because
+        // sin(k*pi) is not zero in binary64. A clamped endpoint is the pole,
+        // so preserve that exact geographic coordinate.
+        let phi = if ratio == 1.0 {
+            std::f64::consts::FRAC_PI_2
+        } else if ratio == -1.0 {
             -std::f64::consts::FRAC_PI_2
         } else {
-            std::f64::consts::FRAC_PI_2
+            s.auth.inverse_beta(ratio.asin())
         };
         Ok((adjlon(xx.atan2(yy) / s.n), phi))
     }

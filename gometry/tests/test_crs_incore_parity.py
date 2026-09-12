@@ -50,6 +50,7 @@ GAUSS_KRUGER_GEO = 'EPSG:4314'
 GAUSS_KRUGER_PROJ = 'EPSG:31467'
 NAD83 = 'EPSG:4269'
 NAD83_SPCS_TM = 'EPSG:32145'
+NAD83_CONUS_ALBERS = 'EPSG:5070'
 RGF93_GEO = 'EPSG:4171'
 LAMBERT_93 = 'EPSG:2154'
 NAD83_2011 = 'EPSG:6318'
@@ -518,6 +519,84 @@ def test_aea_southern_negative_n_inverse_branch_matches_pyproj() -> None:
     gm.crs_clear_cache()
     _assert_pair_parity_both_directions(source, target, 174.0, -41.0)
     assert last_transform_engine() == 'in_core'
+
+
+AEA_GEOD = pyproj.Geod(a=6378137.0, rf=298.257222101)
+AEA_ROUND_TRIP_LATITUDES = (
+    -90.0,
+    -89.999999,
+    -89.99999,
+    -89.9999,
+    -89.999,
+    -89.995,
+    -89.99,
+    -89.985,
+    -89.982,
+    -89.981942232,
+    -89.98,
+    -80.0,
+    -45.0,
+    0.0,
+    45.0,
+    80.0,
+    89.98,
+    89.981942232,
+    89.982,
+    89.985,
+    89.99,
+    89.995,
+    89.999,
+    89.9999,
+    89.99999,
+    89.999999,
+    90.0,
+)
+
+
+@pytest.mark.parametrize('longitude', [-180.0, -96.0, 0.0, 179.999])
+@pytest.mark.parametrize('latitude', AEA_ROUND_TRIP_LATITUDES)
+def test_aea_round_trip_keeps_coordinates_through_pole_approach(
+    longitude: float, latitude: float
+) -> None:
+    # Keep both legs on the in-core path; 4326<->5070 also includes a datum
+    # operation and intentionally exercises PROJ instead.
+    projected = gm.crs_transform(NAD83, NAD83_CONUS_ALBERS, longitude, latitude)
+    recovered = gm.crs_transform(NAD83_CONUS_ALBERS, NAD83, *projected)
+    assert last_transform_engine() == 'in_core'
+    _, _, error_m = AEA_GEOD.inv(longitude, latitude, *recovered)
+    # Near the pole the projected radial coordinate is quadratic in the
+    # latitude gap; at the closest samples its binary64 ulp permits
+    # centimetres to a decimetre of inverse error. The bound covers that
+    # conditioning while remaining far below the former kilometre-scale
+    # collapse.
+    assert error_m <= 0.2, (
+        f'AEA round-trip error {error_m} m at ({longitude}, {latitude}) '
+        f'-> {recovered}'
+    )
+
+
+def test_aea_round_trip_keeps_the_named_near_pole_latitude() -> None:
+    projected = gm.crs_transform(NAD83, NAD83_CONUS_ALBERS, -96.0, 89.99)
+    recovered = gm.crs_transform(NAD83_CONUS_ALBERS, NAD83, *projected)
+    assert recovered[1] == pytest.approx(89.99, abs=1.0e-9)
+
+
+def test_aea_poles_accept_roundoff_but_reject_real_overshoot() -> None:
+    for latitude in (90.0, -90.0):
+        projected = gm.crs_transform(NAD83, NAD83_CONUS_ALBERS, -96.0, latitude)
+        recovered = gm.crs_transform(NAD83_CONUS_ALBERS, NAD83, *projected)
+        _, _, error_m = AEA_GEOD.inv(-96.0, latitude, *recovered)
+        assert error_m <= 1.0e-9, (latitude, projected, recovered, error_m)
+
+    north_pole = gm.crs_transform(NAD83, NAD83_CONUS_ALBERS, -96.0, 90.0)
+    for radial_offset in (0.1, 1.0):
+        with pytest.raises(gm.TransformError, match='projection'):
+            gm.crs_transform(
+                NAD83_CONUS_ALBERS,
+                NAD83,
+                north_pole[0],
+                north_pole[1] + radial_offset,
+            )
 
 
 @pytest.mark.parametrize('target', ['EPSG:2229', 'EPSG:2263', 'EPSG:2272', 'EPSG:2276'])
