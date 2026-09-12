@@ -525,6 +525,41 @@ def test_crossing_polygon_concrete_contains_and_intersects() -> None:
     assert not gm.intersects(poly, gm.box(-10, 40, 10, 50, crs=4326))
 
 
+@pytest.mark.parametrize(
+    ("height", "longitude", "latitude", "expected"),
+    [
+        pytest.param(12.0, 175.0, 12.05, True, id="north-bulge-interior"),
+        pytest.param(12.0, 175.0, 12.2, False, id="north-bulge-exterior"),
+        pytest.param(12.0, -185.0, 12.05, True, id="north-negative-alias"),
+        pytest.param(12.0, 535.0, 12.05, True, id="north-positive-alias"),
+        pytest.param(-12.0, 175.0, -12.05, True, id="south-bulge-interior"),
+        pytest.param(-12.0, 175.0, -12.2, False, id="south-bulge-exterior"),
+        pytest.param(-12.0, -185.0, -12.05, True, id="south-negative-alias"),
+        pytest.param(-12.0, 535.0, -12.05, True, id="south-positive-alias"),
+    ],
+)
+def test_crossing_polygon_bulge_predicates_match_split(
+    height: float, longitude: float, latitude: float, expected: bool
+) -> None:
+    polygon = gm.Polygon(
+        [
+            (170.0, 0.0),
+            (-170.0, 0.0),
+            (-170.0, height),
+            (170.0, height),
+            (170.0, 0.0),
+        ],
+        crs=4326,
+    )
+    split = polygon.split_antimeridian()
+    point = gm.Point(longitude, latitude, crs=4326)
+
+    assert gm.contains(polygon, point) == expected
+    assert gm.intersects(polygon, point) == expected
+    assert gm.contains(split, point) == expected
+    assert gm.intersects(split, point) == expected
+
+
 def test_crossing_polygon_contains_broadcast_agrees() -> None:
     poly = _crossing_band_polygon()
     pt = gm.Point(175, 45, crs=4326)

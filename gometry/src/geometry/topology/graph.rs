@@ -774,18 +774,20 @@ impl AreaMembership {
                             polygon: polygon as u32,
                             min_x: shell.min_x,
                             max_x: shell.max_x,
+                            // Great-circle seam vertices can bow beyond the
+                            // source ring's vertex latitude extrema.
                             y_min: if shell.south_pole {
                                 -shell.pole
                             } else {
-                                shell.south
+                                shell.min_y
                             },
                             y_max: if shell.north_pole {
                                 shell.pole
                             } else {
-                                shell.north
+                                shell.max_y
                             },
-                            chart_south: shell.south,
-                            chart_north: shell.north,
+                            chart_south: shell.min_y,
+                            chart_north: shell.max_y,
                             north_pole: shell.north_pole,
                             south_pole: shell.south_pole,
                             full_band: shell.full_band,
