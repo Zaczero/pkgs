@@ -80,8 +80,6 @@ impl HausdorffQuadratic {
     }
 }
 
-pub(crate) const HAUSDORFF_QUADRATIC_EPS: f64 = 1e-15;
-
 pub(crate) fn push_equidistant_roots_quadratic(
     left: HausdorffQuadratic,
     right: HausdorffQuadratic,
@@ -95,28 +93,47 @@ pub(crate) fn push_equidistant_roots_quadratic(
     if !a.is_finite() || !b.is_finite() || !c.is_finite() {
         return;
     }
-    if a.abs() < HAUSDORFF_QUADRATIC_EPS {
-        if b.abs() < HAUSDORFF_QUADRATIC_EPS {
+    // The rounded coefficient polynomial is degenerate only at exact zero;
+    // a proximity band would change its roots.
+    if a == 0.0 {
+        if b == 0.0 {
             return;
         }
         let t = -c / b;
-        if t.is_finite() && t >= ta - HAUSDORFF_QUADRATIC_EPS && t <= tb + HAUSDORFF_QUADRATIC_EPS {
-            roots.push_root(t.clamp(ta, tb));
+        if t.is_finite() && t >= ta && t <= tb {
+            roots.push_root(t);
         }
         return;
     }
+    // A positive common scale preserves the roots and discriminant sign while
+    // keeping the fourth-power products in the binary64 range.
+    let coefficient_scale = a.abs().max(b.abs()).max(c.abs());
+    let (a, b, c) = (
+        a / coefficient_scale,
+        b / coefficient_scale,
+        c / coefficient_scale,
+    );
     let disc = b * b - 4.0 * a * c;
-    if disc < -1e-20 {
+    if !disc.is_finite() || disc < 0.0 {
         return;
     }
-    let sqrt_disc = if disc <= 0.0 { 0.0 } else { disc.sqrt() };
-    let inv_2a = 0.5 / a;
-    for root in [(-b - sqrt_disc) * inv_2a, (-b + sqrt_disc) * inv_2a] {
-        if root.is_finite()
-            && root >= ta - HAUSDORFF_QUADRATIC_EPS
-            && root <= tb + HAUSDORFF_QUADRATIC_EPS
-        {
-            roots.push_root(root.clamp(ta, tb));
+    let sqrt_disc = disc.sqrt();
+    let roots_to_check = if disc == 0.0 {
+        [Some(-0.5 * (b / a)), None]
+    } else {
+        // Both roots use the non-cancelling q form.  Splitting the halves
+        // avoids overflowing the sum when b and sqrt_disc are both near
+        // the largest finite binary64 value.
+        let q = -0.5 * b - 0.5 * sqrt_disc.copysign(b);
+        if q == 0.0 {
+            [None, None]
+        } else {
+            [Some(q / a), Some(c / q)]
+        }
+    };
+    for root in roots_to_check.into_iter().flatten() {
+        if root.is_finite() && root >= ta && root <= tb {
+            roots.push_root(root);
         }
     }
 }
@@ -159,7 +176,7 @@ pub(crate) fn push_equidistant_root_bisect(
 ) -> crate::error::Result<()> {
     let mut fa = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, ta, left)?
         - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, ta, right)?;
-    let fb = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, tb, left)?
+    let mut fb = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, tb, left)?
         - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, tb, right)?;
     if !fa.is_finite() || !fb.is_finite() {
         return Ok(());
@@ -177,11 +194,14 @@ pub(crate) fn push_equidistant_root_bisect(
     }
     let mut lo = ta;
     let mut hi = tb;
-    for _ in 0..64 {
+    while can_subdivide(lo, hi) {
         let mid = f64::midpoint(lo, hi);
         let fm = hausdorff_feature_distance_squared_at(ax, ay, dx, dy, mid, left)?
             - hausdorff_feature_distance_squared_at(ax, ay, dx, dy, mid, right)?;
-        if fm == 0.0 || hi - lo <= 1e-15 {
+        if !fm.is_finite() {
+            return Ok(());
+        }
+        if fm == 0.0 {
             roots.push_root(mid);
             return Ok(());
         }
@@ -190,8 +210,137 @@ pub(crate) fn push_equidistant_root_bisect(
             fa = fm;
         } else {
             hi = mid;
+            fb = fm;
         }
     }
-    roots.push_root(f64::midpoint(lo, hi));
+    // No representable parameter remains between the bracket endpoints.
+    // Keep the endpoint with the smaller evaluated distance difference.
+    roots.push_root(if fa.abs() <= fb.abs() { lo } else { hi });
     Ok(())
+}
+
+fn can_subdivide(left: f64, right: f64) -> bool {
+    let middle = f64::midpoint(left, right);
+    middle > left && middle < right
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::XY;
+
+    fn zero_quadratic() -> HausdorffQuadratic {
+        HausdorffQuadratic {
+            a: 0.0,
+            b: 0.0,
+            c: 0.0,
+        }
+    }
+
+    fn quadratic_residual((a, b, c): (f64, f64, f64), root: f64) -> f64 {
+        a * root * root + b * root + c
+    }
+
+    #[test]
+    fn stable_formula_retains_both_ill_conditioned_roots() {
+        let left = HausdorffQuadratic {
+            a: 1.0,
+            b: 1.0e16,
+            c: 1.0,
+        };
+        let mut roots = Vec::new();
+        push_equidistant_roots_quadratic(left, zero_quadratic(), -1.0e17, 0.0, &mut roots);
+
+        assert_eq!(roots.len(), 2);
+        for root in roots {
+            let residual = quadratic_residual(left.coefficients(), root).abs();
+            let scale = (left.a * root * root).abs() + (left.b * root).abs() + left.c.abs();
+            // The independent polynomial evaluation has three products and
+            // two additions; allow their accumulated machine-relative error.
+            assert!(
+                residual <= 32.0 * f64::EPSILON * scale,
+                "root={root:?}, residual={residual:?}, scale={scale:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn small_scale_quadratic_is_not_treated_as_constant() {
+        let left = HausdorffQuadratic {
+            a: 5.0e-16,
+            b: 0.0,
+            c: -1.0e-16,
+        };
+        let mut roots = Vec::new();
+        push_equidistant_roots_quadratic(left, zero_quadratic(), 0.0, 1.0, &mut roots);
+
+        assert_eq!(roots.len(), 1);
+        let root = roots[0];
+        assert!(root > 0.0 && root < 1.0);
+        let scale = (left.a * root * root).abs() + left.c.abs();
+        // Use the same machine-relative allowance as the independent
+        // polynomial evaluation, rather than an absolute coordinate scale.
+        assert!(quadratic_residual(left.coefficients(), root).abs() <= 32.0 * f64::EPSILON * scale);
+    }
+
+    #[test]
+    fn negative_discriminant_is_not_snapped_to_a_root() {
+        let left = HausdorffQuadratic {
+            a: 1.0e-10,
+            b: 2.0e-10,
+            c: 1.0e-10 * (1.0 + f64::EPSILON),
+        };
+        let mut roots = Vec::new();
+        push_equidistant_roots_quadratic(left, zero_quadratic(), -2.0, 0.0, &mut roots);
+
+        assert!(roots.is_empty());
+    }
+
+    #[test]
+    fn interval_membership_does_not_clamp_an_outside_root() {
+        let outside = 1.0_f64.next_up();
+        let left = HausdorffQuadratic {
+            a: 0.0,
+            b: 1.0,
+            c: -outside,
+        };
+        let mut roots = Vec::new();
+        push_equidistant_roots_quadratic(left, zero_quadratic(), 0.0, 1.0, &mut roots);
+
+        assert!(roots.is_empty());
+    }
+
+    #[test]
+    fn bisection_refines_until_adjacent_parameters() {
+        let left = HausdorffFeature::Point(XY::new(0.0, 0.0));
+        let right = HausdorffFeature::Point(XY::new(1.0, 0.3));
+        let mut roots = Vec::new();
+        push_equidistant_root_bisect(0.0, 0.0, 1.0, 0.0, 0.0, 1.0, left, right, &mut roots)
+            .expect("point distances are finite");
+
+        assert_eq!(roots.len(), 1);
+        let root = roots[0];
+        let difference = |t| {
+            hausdorff_feature_distance_squared_at(0.0, 0.0, 1.0, 0.0, t, left).unwrap()
+                - hausdorff_feature_distance_squared_at(0.0, 0.0, 1.0, 0.0, t, right).unwrap()
+        };
+        let left_distance =
+            hausdorff_feature_distance_squared_at(0.0, 0.0, 1.0, 0.0, root, left).unwrap();
+        let right_distance =
+            hausdorff_feature_distance_squared_at(0.0, 0.0, 1.0, 0.0, root, right).unwrap();
+        let distance_scale = left_distance.max(right_distance);
+        // Two squared-distance evaluations and their subtraction contribute
+        // only machine-relative error to this equidistance oracle.
+        assert!(
+            (left_distance - right_distance).abs() <= 4.0 * f64::EPSILON * distance_scale,
+            "root={root:?}, left={left_distance:?}, right={right_distance:?}"
+        );
+        assert!(
+            difference(root.next_down()).is_sign_negative()
+                && difference(root.next_up()).is_sign_positive(),
+            "root={root:?}, below={}, above={}",
+            difference(root.next_down()),
+            difference(root.next_up())
+        );
+    }
 }
