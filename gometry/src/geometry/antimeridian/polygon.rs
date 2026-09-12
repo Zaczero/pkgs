@@ -4,7 +4,7 @@ use crate::geographic::{
     RingTurn, ScalarGeographicView,
 };
 use crate::geometry::antimeridian::{
-    collect_points, dedup_consecutive, resolve_seam_aliases, segment_coords, segment_coords_exact,
+    collect_points, dedup_consecutive, resolve_seam_aliases, segment_coords,
 };
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MOrdinate,
@@ -21,11 +21,6 @@ impl Shape {
         split_geographic_view(view)
     }
 
-    pub(crate) fn split_antimeridian_in_frame_exact(&self, frame: GeographicFrame) -> Result<Self> {
-        let view = ScalarGeographicView::try_new(frame, self).map_err(split_view_error)?;
-        split_geographic_view_exact(view)
-    }
-
     pub fn split_antimeridian(&self) -> Result<Self> {
         let degrees =
             crate::geographic::AngularFactor::try_new("angular unit", std::f64::consts::PI / 180.0)
@@ -40,11 +35,11 @@ impl Shape {
     /// own seam sign), with great-circle crossing latitudes and automatic
     /// pole closure. Geometries that do not cross are returned unchanged.
     /// The caller supplies an already-admitted canonical operation chart.
-    fn split_antimeridian_chart_with_precision(&self, exact_crossings: bool) -> Result<Self> {
+    fn split_antimeridian_chart(&self) -> Result<Self> {
         match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Ok(self.clone()),
             Self::LineString(points) => {
-                let pieces = seam_segments(&collect_points(points), exact_crossings);
+                let pieces = segment_coords(&collect_points(points));
                 if pieces.is_empty() {
                     Ok(self.clone())
                 } else {
@@ -67,7 +62,7 @@ impl Shape {
                         MultiMember::Empty => split.push(MultiMember::Empty),
                         MultiMember::Value(index) => {
                             let line = &lines.as_slice()[index];
-                            let pieces = seam_segments(&collect_points(line), exact_crossings);
+                            let pieces = segment_coords(&collect_points(line));
                             if pieces.is_empty() {
                                 split.push(MultiMember::Value(line.clone()));
                             } else {
@@ -88,7 +83,7 @@ impl Shape {
                 )?))
             },
             Self::Polygon(polygon) => {
-                let polygons = split_polygon(self, polygon, PoleClosure::Auto, exact_crossings)?;
+                let polygons = split_polygon(self, polygon, PoleClosure::Auto)?;
                 Ok(Self::narrow_polygons(polygon.axes(), polygons)?)
             },
             Self::MultiPolygon(polygons) => {
@@ -102,7 +97,6 @@ impl Shape {
                                     self,
                                     &polygons.as_slice()[index],
                                     PoleClosure::Auto,
-                                    exact_crossings,
                                 )?
                                 .into_iter()
                                 .map(MultiMember::Value),
@@ -115,11 +109,9 @@ impl Shape {
                     split,
                 )?))
             },
-            Self::GeometryCollection(geometries) => {
-                Ok(Self::GeometryCollection(geometries.try_map_members(
-                    |member| member.split_antimeridian_chart_with_precision(exact_crossings),
-                )?))
-            },
+            Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
+                geometries.try_map_members(|member| member.split_antimeridian_chart())?,
+            )),
         }
     }
 
@@ -143,7 +135,7 @@ impl Shape {
         };
         match self {
             Self::Polygon(polygon) => {
-                let polygons = split_polygon(self, polygon, closure, false)?;
+                let polygons = split_polygon(self, polygon, closure)?;
                 Ok(Self::narrow_polygons(polygon.axes(), polygons)?)
             },
             Self::MultiPolygon(polygons) => {
@@ -153,7 +145,7 @@ impl Shape {
                         MultiMember::Empty => split.push(MultiMember::Empty),
                         MultiMember::Value(index) => {
                             split.extend(
-                                split_polygon(self, &polygons.as_slice()[index], closure, false)?
+                                split_polygon(self, &polygons.as_slice()[index], closure)?
                                     .into_iter()
                                     .map(MultiMember::Value),
                             );
@@ -179,14 +171,6 @@ fn split_view_error(error: GeographicViewError) -> crate::error::Error {
     }
 }
 
-fn seam_segments(points: &[Point], exact_crossings: bool) -> Vec<Vec<Point>> {
-    if exact_crossings {
-        segment_coords_exact(points)
-    } else {
-        segment_coords(points)
-    }
-}
-
 fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
     let frame = view.frame();
     let mut canonical = true;
@@ -202,20 +186,6 @@ fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
 }
 
 pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
-    split_geographic_view_with_precision(view, false)
-}
-
-pub(crate) fn split_geographic_view_exact(view: ScalarGeographicView<'_>) -> Result<Shape> {
-    split_geographic_view_with_precision(
-        view,
-        shape_needs_exact_overlay_crossings(view.shape(), view.frame()),
-    )
-}
-
-fn split_geographic_view_with_precision(
-    view: ScalarGeographicView<'_>,
-    exact_crossings: bool,
-) -> Result<Shape> {
     let frame = view.frame();
     let canonical = source_longitudes_are_canonical(view);
     if frame == GeographicFrame::crs84() && canonical && !view.shape().crosses_antimeridian() {
@@ -227,7 +197,7 @@ fn split_geographic_view_with_precision(
     if canonical && !chart.crosses_antimeridian() {
         return Ok(view.shape().clone());
     }
-    let split = chart.split_antimeridian_chart_with_precision(exact_crossings)?;
+    let split = chart.split_antimeridian_chart()?;
     split.map_xy_with(|x, y| {
         let latitude = if y == 90.0 {
             frame.pole()
@@ -237,51 +207,6 @@ fn split_geographic_view_with_precision(
             y / latitude_scale
         };
         Ok((x / longitude_scale, latitude))
-    })
-}
-
-fn shape_needs_exact_overlay_crossings(shape: &Shape, frame: GeographicFrame) -> bool {
-    match shape {
-        Shape::Polygon(polygon) => polygon_needs_exact_overlay_crossings(polygon, frame),
-        Shape::MultiPolygon(polygons) => polygons
-            .iter()
-            .any(|polygon| polygon_needs_exact_overlay_crossings(polygon, frame)),
-        Shape::GeometryCollection(geometries) => geometries
-            .iter()
-            .any(|geometry| shape_needs_exact_overlay_crossings(geometry, frame)),
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Empty(..) => false,
-    }
-}
-
-fn polygon_needs_exact_overlay_crossings(polygon: &Polygon, frame: GeographicFrame) -> bool {
-    let axis = frame.longitude();
-    polygon.rings().any(|ring| {
-        let (min_y, max_y) = ring
-            .iter_coords()
-            .map(|point| point.y)
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), y| {
-                (min.min(y), max.max(y))
-            });
-        let max_piece_length = ring
-            .segment_pairs()
-            .filter_map(|[start, end]| {
-                let raw_delta = (end.x - start.x).abs();
-                if raw_delta <= axis.half_period() || raw_delta >= axis.period() {
-                    return None;
-                }
-                let shortest = axis
-                    .shortest_edge(start.x, end.x)
-                    .expect("validated geographic longitude")
-                    .delta(axis)
-                    .abs();
-                Some(shortest * 0.5)
-            })
-            .fold(0.0, f64::max);
-        max_piece_length > 0.0 && max_y - min_y <= 1e-7 * max_piece_length
     })
 }
 
@@ -466,18 +391,13 @@ fn split_polygon(
     source: &Shape,
     polygon: &Polygon,
     preferred: PoleClosure,
-    exact_crossings: bool,
 ) -> Result<Vec<Polygon>> {
-    let polygons = split_polygon_inner(polygon, preferred, exact_crossings)?;
+    let polygons = split_polygon_inner(polygon, preferred)?;
     reject_fabricated_pole_ordinates(source, &polygons)?;
     Ok(polygons)
 }
 
-fn split_polygon_inner(
-    polygon: &Polygon,
-    preferred: PoleClosure,
-    exact_crossings: bool,
-) -> Result<Vec<Polygon>> {
+fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<Polygon>> {
     // Split crossing holes as independent areal operands, then subtract them
     // from the split shell.  Treating shell and hole seam fragments as one
     // undifferentiated stitching pool works for ordinary crossings, but it
@@ -489,7 +409,7 @@ fn split_polygon_inner(
     let mut crossing_holes = Vec::new();
     let mut stationary_holes = Vec::new();
     for hole in polygon.holes.iter() {
-        if seam_segments(&collect_points(hole.coords()), exact_crossings).is_empty() {
+        if segment_coords(&collect_points(hole.coords())).is_empty() {
             stationary_holes.push(hole.clone());
         } else {
             crossing_holes.push(hole.clone());
@@ -498,7 +418,7 @@ fn split_polygon_inner(
     if !crossing_holes.is_empty() {
         let axes = polygon.shell.coords().axes();
         let shell_only = Polygon::new(polygon.shell.clone(), stationary_holes)?;
-        let shell_parts = split_polygon_inner(&shell_only, preferred, exact_crossings)?;
+        let shell_parts = split_polygon_inner(&shell_only, preferred)?;
         let mut result = shape_from_polygons(shell_parts, axes)?;
         for hole in crossing_holes {
             let hole_axes = hole.coords().axes();
@@ -509,11 +429,7 @@ fn split_polygon_inner(
                 (false, true) => PoleClosure::South,
                 _ => PoleClosure::Auto,
             };
-            let hole_parts = split_polygon_inner(
-                &Polygon::new(hole, Vec::new())?,
-                hole_closure,
-                exact_crossings,
-            )?;
+            let hole_parts = split_polygon_inner(&Polygon::new(hole, Vec::new())?, hole_closure)?;
             let hole_shape = shape_from_polygons(hole_parts, hole_axes)?;
             result = result.difference(&hole_shape, Strictness::Strict)?;
         }
@@ -523,14 +439,14 @@ fn split_polygon_inner(
     let mut exterior = collect_points(polygon.shell.coords());
     resolve_seam_aliases(&mut exterior);
     let exterior = dedup_consecutive(exterior);
-    let mut segments = seam_segments(&exterior, exact_crossings);
+    let mut segments = segment_coords(&exterior);
     if segments.is_empty() {
         return Ok(vec![polygon.clone()]);
     }
     let mut kept_holes: Vec<&Ring> = Vec::new();
     for hole in polygon.holes.iter() {
         let coords = collect_points(hole.coords());
-        let hole_segments = seam_segments(&coords, exact_crossings);
+        let hole_segments = segment_coords(&coords);
         if hole_segments.is_empty() {
             kept_holes.push(hole);
         } else {
@@ -546,7 +462,7 @@ fn split_polygon_inner(
                 .collect();
             if ring_is_ccw(&unwrapped) {
                 let reversed: Vec<Point> = coords.into_iter().rev().collect();
-                segments.extend(seam_segments(&reversed, exact_crossings));
+                segments.extend(segment_coords(&reversed));
             } else {
                 segments.extend(hole_segments);
             }

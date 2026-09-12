@@ -237,7 +237,7 @@ fn overlay_admitted(
             for view in originals.views() {
                 let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
                     view.shape()
-                        .split_antimeridian_in_frame_exact(frame)?
+                        .split_antimeridian_in_frame(frame)?
                         .normalize()?
                 } else {
                     view.shape().normalize()?

@@ -27,7 +27,7 @@ pub(crate) use crs::{
     topology_domain,
 };
 use linestring::{collect_points, dedup_consecutive, resolve_seam_aliases};
-pub(crate) use linestring::{crossing_latitude_in_frame, segment_coords, segment_coords_exact};
+pub(crate) use linestring::{crossing_latitude_in_frame, segment_coords};
 pub(crate) use normalize::{
     DerivedPointStrategy, geographic_crossing_bounds,
     geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,

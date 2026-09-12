@@ -766,6 +766,33 @@ def test_crossing_polygon_geodesic_area_close_to_split_parts_sum() -> None:
     assert poly.area == pytest.approx(part_total, rel=0.001)
 
 
+@pytest.mark.parametrize(
+    "base_latitude",
+    [
+        pytest.param(0.0, id="equator"),
+        pytest.param(40.0, id="mid-latitude"),
+    ],
+)
+def test_thin_crossing_band_area_survives_public_split(base_latitude: float) -> None:
+    height = 1e-8
+    polygon = gm.Polygon(
+        [
+            (170.0, base_latitude),
+            (-170.0, base_latitude),
+            (-170.0, base_latitude + height),
+            (170.0, base_latitude + height),
+            (170.0, base_latitude),
+        ],
+        crs=4326,
+    )
+    split = polygon.split_antimeridian()
+
+    # The geodesic ring-area kernel has a pre-existing residual below 5.3e-5
+    # relative on this band; 1e-4 leaves a tight margin while rejecting the
+    # former half-area result by more than three orders of magnitude.
+    assert split.area == pytest.approx(polygon.area, rel=1e-4)
+
+
 def test_spatial_index_handles_crossing_geographic() -> None:
     poly = _crossing_band_polygon()
     idx = gm.SpatialIndex(
