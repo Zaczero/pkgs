@@ -374,6 +374,57 @@ class TestSurfaceConsistency:
 class TestGeodesic:
     """Geographic CRS produces geodesic witnesses; planar override escapes."""
 
+    @pytest.mark.parametrize(
+        'longitude',
+        [0.0, 5.0, 2.5, 1.0, 3.7],
+        ids=[
+            'start-endpoint',
+            'end-endpoint',
+            'mid-interior',
+            'early-interior',
+            'late-interior',
+        ],
+    )
+    def test_exact_geodesic_segment_contacts_survive_endpoint_guard(
+        self, longitude: float
+    ) -> None:
+        line = gm.LineString([(0.0, 0.0), (5.0, 0.0)], crs=4326)
+        query = gm.Point(longitude, 0.0, crs=4326)
+
+        assert gm.distance(query, line) == 0.0
+        assert gm.dwithin(query, line, 0.0)
+        assert gm.nearest_points(query, line)[1].to_wkt() == query.to_wkt()
+
+    def test_point_to_line_geodesic_clamps_to_endpoint_without_tie_drift(self) -> None:
+        query = gm.Point(6.0, 3.0, crs=4326)
+        line = gm.LineString([(0.0, 0.0), (5.0, 0.0)], crs=4326)
+        endpoint = gm.Point(5.0, 0.0, crs=4326)
+
+        # The equator is a geodesic, and the perpendicular meridian through
+        # (6, 3) meets its supporting line at longitude 6, beyond the finite
+        # [0, 5] segment. The endpoint is consequently the exact nearest
+        # feature, not a point just inside the endpoint.
+        first, second = gm.nearest_points(query, line)
+        assert first.to_wkt() == query.to_wkt()
+        assert second.to_wkt() == endpoint.to_wkt()
+        assert gm.distance(query, line) == gm.distance(query, endpoint)
+        assert gm.shortest_line(query, line).to_wkt() == 'LINESTRING (6 3, 5 0)'
+        assert line.line_locate(query) == line.length
+
+    def test_point_near_geodesic_endpoint_is_not_fabricated_contact(self) -> None:
+        line = gm.LineString([(0.0, 0.0), (5.0, 0.0)], crs=4326)
+        endpoint = gm.Point(5.0, 0.0, crs=4326)
+        query = gm.Point(5.0, 1.0e-12, crs=4326)
+
+        # The query is just north of the equator, not on it. Its distance to
+        # the endpoint is positive, so a contact tolerance must not return the
+        # query itself as a point on the finite segment.
+        endpoint_distance = gm.distance(query, endpoint)
+        assert endpoint_distance > 0.0
+        assert gm.distance(query, line) == endpoint_distance
+        assert not gm.dwithin(query, line, 0.0)
+        assert gm.nearest_points(query, line)[1].to_wkt() == endpoint.to_wkt()
+
     def test_point_to_line_geodesic(self) -> None:
         point = gm.Point(0.5, 0.5, crs=4326)
         line = gm.LineString([(0, 0), (10, 0)], crs=4326)

@@ -15,7 +15,9 @@ use crate::crs::geodesic::{
     GeodesicLineKey, inverse_distance,
 };
 use crate::error::Result;
-use crate::geometry::{GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, ZOrdinate};
+use crate::geometry::{
+    GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, ZOrdinate, same_point,
+};
 
 const POINT_SEGMENT_TOLERANCE_METRES: f64 = 1e-3;
 const POINT_SEGMENT_BOUND_ROUNDING_SLACK_METRES: f64 = 1e-6;
@@ -173,6 +175,11 @@ pub(crate) fn geodesic_point_within_segment(
     }
     if point_on_geodesic_segment(geodesic, point, segment).is_some() {
         return Ok(true);
+    }
+    if limit == 0.0 {
+        // A zero-radius query has no interval width to prove: after the
+        // exact contact test above, every non-contact point is outside.
+        return Ok(false);
     }
     let line = cached_geodesic_line(geodesic, segment);
     let left_value = inverse_distance(geodesic, point.x, point.y, segment.start.x, segment.start.y);
@@ -444,6 +451,7 @@ pub(crate) fn geodesic_segment_minimum(
             &mut minimum,
             middle_value,
             middle,
+            segment.length,
             POINT_SEGMENT_TOLERANCE_METRES,
         );
 
@@ -509,18 +517,47 @@ fn point_on_geodesic_segment(
     point: Point,
     segment: GeodesicSegment,
 ) -> Option<f64> {
+    if same_geodesic_vertex(point, segment.start) {
+        return Some(0.0);
+    }
+    if same_geodesic_vertex(point, segment.end) {
+        return Some(segment.length);
+    }
     let (from_start, start_azimuth, ..): (f64, f64, f64, f64) =
         geodesic.inverse(segment.start.y, segment.start.x, point.y, point.x);
     let (to_end, ..): (f64, f64, f64, f64) =
         geodesic.inverse(point.y, point.x, segment.end.y, segment.end.x);
-    (from_start.is_finite()
+    let on_segment = from_start.is_finite()
         && to_end.is_finite()
         && from_start >= 0.0
         && from_start <= segment.length
         && (from_start + to_end - segment.length).abs() <= POINT_SEGMENT_CONTACT_TOLERANCE_METRES
         && angle_difference_radians(segment.azimuth0, start_azimuth).abs()
-            <= POINT_SEGMENT_CONTACT_ANGLE_TOLERANCE_RADIANS)
-        .then_some(from_start)
+            <= POINT_SEGMENT_CONTACT_ANGLE_TOLERANCE_RADIANS;
+    if !on_segment {
+        return None;
+    }
+    // A point whose along-track result rounds to an endpoint is only a
+    // topological contact when its stored coordinates are that endpoint.
+    // Otherwise the nearest feature is still the endpoint, and returning the
+    // query itself would fabricate a point on the segment from the contact
+    // tolerances.
+    if from_start == 0.0 {
+        return same_point(point, segment.start).then_some(0.0);
+    }
+    if from_start.to_bits() == segment.length.to_bits() {
+        return same_point(point, segment.end).then_some(segment.length);
+    }
+    Some(from_start)
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "geographic endpoint aliases are exact pole or period identities, never near-coordinate contacts"
+)]
+fn same_geodesic_vertex(left: Point, right: Point) -> bool {
+    same_point(left, right)
+        || (left.y == right.y && (left.y.abs() == 90.0 || (left.x - right.x).abs() == 360.0))
 }
 
 fn interval_lower_bound(left: f64, right: f64, width: f64) -> f64 {
@@ -529,9 +566,25 @@ fn interval_lower_bound(left: f64, right: f64, width: f64) -> f64 {
         .max(0.0)
 }
 
-fn update_minimum(minimum: &mut GeodesicSegmentMinimum, distance: f64, along: f64, tolerance: f64) {
-    if distance < minimum.distance - tolerance
-        || ((distance - minimum.distance).abs() <= tolerance && along < minimum.along)
+fn update_minimum(
+    minimum: &mut GeodesicSegmentMinimum,
+    distance: f64,
+    along: f64,
+    segment_length: f64,
+    tolerance: f64,
+) {
+    // Endpoint distances are exact candidates for a clamped projection. Do
+    // not let a nearby interior sample replace a strictly farther endpoint
+    // merely because the search's interior tie tolerance covers the gap.
+    let interior_tie = minimum.along > 0.0
+        && minimum.along < segment_length
+        && along > 0.0
+        && along < segment_length
+        && (distance - minimum.distance).abs() <= tolerance
+        && along < minimum.along;
+    if distance < minimum.distance
+        || (distance.to_bits() == minimum.distance.to_bits() && along < minimum.along)
+        || interior_tie
     {
         minimum.distance = distance;
         minimum.along = along;

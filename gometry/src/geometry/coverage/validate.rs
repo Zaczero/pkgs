@@ -366,11 +366,23 @@ pub(crate) fn segment_offends_row(
     // (or a full scan); only pay when gap_width is active.
     if gap_width > 0.0 {
         let near = |point: XY| -> Result<bool> {
+            let limit_squared = gap_width * gap_width;
+            if !limit_squared.is_normal() {
+                // Squared space cannot represent a small (or very large)
+                // tolerance faithfully. In distance space the same
+                // point-to-segment test retains endpoint-governed gaps
+                // instead of treating a positive separation as zero.
+                for &candidate in &other.segments {
+                    let distance = crate::geometry::point_segment_distance(point, candidate)?;
+                    if distance > 0.0 && distance < gap_width {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
             Ok(other
                 .index()?
-                .nearest_segment_if(point.point(), gap_width * gap_width, |_, distance| {
-                    distance > 0.0
-                })?
+                .nearest_segment_if(point.point(), limit_squared, |_, distance| distance > 0.0)?
                 .is_some())
         };
         if near(midpoint.into())? || near(segment.start)? || near(segment.end)? {

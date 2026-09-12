@@ -6,8 +6,8 @@ use crate::geometry::overlay::{ExactChainView, ExactPartition, ExactSourceInvent
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, Orientation, Point, PointKey,
     Polygon, Ring, Segment, SegmentIndex, Shape, SimplifyMethod, XY, dedup_consecutive_points,
-    line_segments, orientation, same_point, same_topological_coordinate, segment_contact_exact,
-    undirected_segment_edge_key,
+    line_segments, orientation, point_segment_distance, same_point, same_topological_coordinate,
+    segment_contact_exact, undirected_segment_edge_key,
 };
 
 // --- Simplification ---------------------------------------------------------
@@ -92,23 +92,22 @@ fn simplify_chain_kept(
             )
         },
         SimplifyMethod::Dp => {
-            let tolerance_sq = tolerance * tolerance;
             simplify_chain_guarded_with_segments(
                 count,
                 xy,
                 cyclic,
                 &|prev, vertex, next| {
-                    // Squared perpendicular deviation of `vertex` from the
-                    // `prev`-`next` chord; importance orders smallest first.
-                    let (p, v, n) = (prev, vertex, next);
-                    let base_sq = (n.x - p.x).powi(2) + (n.y - p.y).powi(2);
-                    let deviation_sq = if base_sq == 0.0 {
-                        (v.x - p.x).powi(2) + (v.y - p.y).powi(2)
-                    } else {
-                        let cross = (n.x - p.x) * (v.y - p.y) - (n.y - p.y) * (v.x - p.x);
-                        cross * cross / base_sq
-                    };
-                    Ok((deviation_sq < tolerance_sq).then_some(deviation_sq))
+                    // Point-to-segment deviation of `vertex` from the finite
+                    // `prev`-`next` shortcut; importance orders smallest
+                    // first. The shortcut is a segment, not its supporting
+                    // line, so a projection past either endpoint must be
+                    // measured to that endpoint. Distance space also keeps
+                    // tiny tolerances from collapsing when squared.
+                    let deviation = point_segment_distance(vertex, Segment {
+                        start: prev,
+                        end: next,
+                    })?;
+                    Ok((deviation < tolerance).then_some(deviation))
                 },
                 guard,
                 chain_segments,
@@ -118,13 +117,13 @@ fn simplify_chain_kept(
 }
 
 /// Guarded greedy simplification of one chain, generic over the importance
-/// criterion (chord deviation for Douglas-Peucker, effective triangle area
-/// for Visvalingam-Whyatt): `candidate` scores a removable vertex from its
-/// two neighbors, `None` once it must survive. The guard is probed lazily
-/// in importance order — the first safe candidate IS the minimum safe one,
-/// so each round pays O(failures + 1) guard queries instead of guarding
-/// every candidate. Endpoints (and a cyclic chain's anchor/closure) are
-/// pinned; cyclic chains keep at least a triangle.
+/// criterion (finite-shortcut deviation for Douglas-Peucker, effective
+/// triangle area for Visvalingam-Whyatt): `candidate` scores a removable
+/// vertex from its two neighbors, `None` once it must survive. The guard is
+/// probed lazily in importance order — the first safe candidate IS the
+/// minimum safe one, so each round pays O(failures + 1) guard queries instead
+/// of guarding every candidate. Endpoints (and a cyclic chain's anchor/closure)
+/// are pinned; cyclic chains keep at least a triangle.
 ///
 /// `xy` is random-access original XY (borrowed columns or an index slice).
 /// Survivors are original indices so the caller can select from the source

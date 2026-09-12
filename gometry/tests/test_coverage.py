@@ -2,6 +2,8 @@
 and cleaning (the GEOS/PostGIS coverage model over a GeometryArray).
 """
 
+import math
+
 import gometry as gm
 import pytest
 
@@ -46,6 +48,17 @@ def test_coverage_is_valid_verdicts() -> None:
         gm.coverage_is_valid([gm.Point(0, 0)])
     with pytest.raises(gm.GeometryError, match='gap_width'):
         grid.coverage_is_valid(gap_width=-1)
+
+
+def test_coverage_is_valid_keeps_subnormal_gap_width_in_distance_space() -> None:
+    scale = 1.0e-162
+    rows = gm.GeometryArray([
+        gm.box(0.0, 0.0, scale, scale),
+        gm.box(2.0 * scale, 0.0, 3.0 * scale, scale),
+    ])
+
+    assert rows.coverage_is_valid()
+    assert not rows.coverage_is_valid(gap_width=1.1 * scale)
 
 
 def test_coverage_free_functions_accept_geometry_array() -> None:
@@ -427,6 +440,23 @@ def test_coverage_simplify_remains_valid_across_aggressive_tolerances() -> None:
             tolerance,
             [geometry.to_wkt() for geometry in simplified],
         )
+
+
+def test_coverage_dp_keeps_vertex_when_shortcut_projection_clamps() -> None:
+    """DP measures a removable vertex to the finite shortcut segment."""
+    polygon = gm.from_wkt(
+        'POLYGON ((0 0, 6 3, 5 0, 25 -5, 0 -5, 0 0))'
+    )
+    vertex = gm.Point(6, 3)
+    tolerance = 3.1
+
+    # The projection of (6, 3) onto the supporting line of (0, 0)-(5, 0)
+    # is (6, 0), past the shortcut's endpoint. Its finite-segment distance
+    # is therefore the witnessed endpoint distance sqrt(10), above tolerance.
+    assert math.sqrt(10.0) > tolerance
+    simplified = gm.coverage_simplify([polygon], tolerance, method='dp')[0]
+
+    assert gm.covers(simplified.boundary(), vertex)
 
 
 def test_coverage_simplify_matches_shapely_oracle() -> None:
