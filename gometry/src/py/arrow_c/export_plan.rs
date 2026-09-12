@@ -76,7 +76,7 @@ impl<'a> SchemaDescription<'a> {
             Some(Cow::Owned(value)) => Some(value),
             Some(Cow::Borrowed(value)) => {
                 Some(crate::boundary::try_string_from_str(value).map_err(
-                    |_| -> NativeArrowExportError {
+                    |()| -> NativeArrowExportError {
                         crate::error::Error::from(crate::error::ResourceError::Allocation).into()
                     },
                 )?)
@@ -90,6 +90,10 @@ impl<'a> SchemaDescription<'a> {
         })
     }
 
+    #[expect(
+        clippy::match_same_arms,
+        reason = "MultiLineString and Polygon intentionally share a two-level list schema while the encoding remains distinct in extension metadata"
+    )]
     pub(crate) fn materialize_schema(&self) -> NativeArrowExportResult<SchemaNode> {
         let storage = match self.layout.encoding {
             GeometryEncoding::Point => coordinate_schema(self.layout.axes, self.nullable),
@@ -254,10 +258,10 @@ pub(crate) fn materialize_schema_plan(
         .map_err(|error| pyo3::Python::attach(|py| error.into_py_err(py)))
 }
 
-pub(crate) fn describe_geometry_array<'a>(
-    array: &'a PyGeometryArray,
+pub(crate) fn describe_geometry_array(
+    array: &PyGeometryArray,
     encoding: ArrowEncoding,
-) -> NativeArrowExportResult<SchemaDescription<'a>> {
+) -> SchemaDescription<'_> {
     let layout = match encoding {
         ArrowEncoding::Auto => match array.storage() {
             GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) => GeometrySchema {
@@ -281,51 +285,40 @@ pub(crate) fn describe_geometry_array<'a>(
             axes: CoordinateAxes::XY,
         },
     };
-    Ok(SchemaDescription::borrowed(
-        layout,
-        array.crs_str(),
-        array.epoch(),
-    ))
+    SchemaDescription::borrowed(layout, array.crs_str(), array.epoch())
 }
 
 #[cfg(test)]
 pub(crate) fn describe_shapes<'a>(
-    shapes: &'a [Shape],
+    shapes: &[Shape],
     crs: Option<&'a str>,
     epoch: Option<f64>,
-) -> NativeArrowExportResult<SchemaDescription<'a>> {
-    Ok(SchemaDescription::borrowed(
-        describe_shape_iter(shapes.iter()),
-        crs,
-        epoch,
-    ))
+) -> SchemaDescription<'a> {
+    SchemaDescription::borrowed(describe_shape_iter(shapes.iter()), crs, epoch)
 }
 
 pub(crate) fn describe_shape<'a>(
-    shape: &'a Shape,
+    shape: &Shape,
     crs: Option<&'a str>,
     epoch: Option<f64>,
-) -> NativeArrowExportResult<SchemaDescription<'a>> {
-    Ok(SchemaDescription::borrowed(
-        describe_shape_iter(std::iter::once(shape)),
-        crs,
-        epoch,
-    ))
+) -> SchemaDescription<'a> {
+    SchemaDescription::borrowed(describe_shape_iter(std::iter::once(shape)), crs, epoch)
 }
 
 pub(crate) fn plan_geometry_array(
     array: &PyGeometryArray,
     encoding: ArrowEncoding,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let schema = describe_geometry_array(array, encoding)?.into_owned()?;
+    let schema = describe_geometry_array(array, encoding).into_owned()?;
     #[cfg(test)]
     record_payload_builder();
+    let storage = match encoding {
+        ArrowEncoding::Auto => plan_geometry_array_auto(array, schema.layout)?,
+        ArrowEncoding::Wkb => plan_geometry_array_wkb(array)?,
+    };
     let mut plan = ArrowExportPlan {
-        storage: match encoding {
-            ArrowEncoding::Auto => plan_geometry_array_auto(array, schema.layout)?,
-            ArrowEncoding::Wkb => plan_geometry_array_wkb(array)?,
-        },
         schema,
+        storage,
         validity: None,
     };
     if let Some(mask) = array.missing() {
@@ -1045,7 +1038,7 @@ mod tests {
     fn borrowed_schema_crs_copy_reports_allocation_failure() {
         let shapes = vec![Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0))];
         let crs = "EPSG:4326".to_owned();
-        let description = describe_shapes(&shapes, Some(&crs), None).unwrap();
+        let description = describe_shapes(&shapes, Some(&crs), None);
         let error =
             crate::test_support::fail_allocations_after(0, || description.clone().into_owned())
                 .expect_err("borrowed CRS copy must use the fallible allocator path");

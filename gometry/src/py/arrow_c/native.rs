@@ -806,12 +806,28 @@ struct NativeNode {
     n_buffers: usize,
     format: ArrowFormat,
     buffers: OwnedBufferSlots,
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     children: Arc<Vec<NativeNode>>,
     /// This node's own schema field name (used by fixed-size-list dimensions).
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
+    )]
     schema_name: Arc<String>,
     /// Field names for struct children (empty otherwise).
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     field_names: Arc<Vec<String>>,
     /// Combined ancestor + self missing mask (`true` = null).
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     effective_missing: Option<Arc<Vec<bool>>>,
 }
 
@@ -822,6 +838,10 @@ struct NativeNode {
 pub(crate) struct NativeArrowClassification {
     pub(crate) encoding: crate::py::geoarrow::GeometryEncoding,
     pub(crate) wkb_offset_width: WkbOffsetWidth,
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
+    )]
     pub(crate) crs: Option<Arc<String>>,
     pub(crate) epoch: Option<f64>,
 }
@@ -894,6 +914,10 @@ impl NativeNode {
         }
     }
 
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     fn f64_values(&self) -> Option<&Arc<Vec<f64>>> {
         match self.buffers.get(1) {
             Some(OwnedBuffer::F64(values)) => Some(values),
@@ -939,6 +963,10 @@ impl NativeNode {
 
 /// Recursively snapshot one array node and its children while the array shell
 /// is live; formats come from the already-owned schema tree.
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+)]
 fn build_owned_node_admitted(
     validated: &mut CaptureLayout,
     schema: &AdmittedArrowSchema,
@@ -1055,6 +1083,10 @@ fn build_owned_node_admitted(
 /// and fixed-size lists expand it through their declared width.  Child-own
 /// nulls merge later via [`merge_owned_row_missing`] after the child has been
 /// snapshotted — never through producer memory.
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+)]
 fn project_ancestor_missing(
     parent: &CaptureLayout,
     parent_buffers: &OwnedBufferSlots,
@@ -1176,6 +1208,10 @@ fn project_ancestor_missing(
 
 /// OR this node's owned validity nulls into an ancestor missing mask.
 /// Runs only after [`snapshot_native_buffers`] so content is owned.
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+)]
 fn merge_owned_row_missing(
     array: &CaptureLayout,
     buffers: &OwnedBufferSlots,
@@ -1255,7 +1291,15 @@ fn owned_or_raw_row_valid(
 /// LE bytes **and** materializing a second `Arc<Vec<f64>>`.
 #[derive(Clone)]
 enum OwnedBuffer {
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     Bytes(Arc<Vec<u8>>),
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     F64(Arc<Vec<f64>>),
 }
 
@@ -1266,6 +1310,10 @@ enum OwnedBuffer {
 /// admission proportional to selected descriptors, not `n_buffers`.
 #[derive(Clone)]
 enum OwnedBufferSlots {
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     Dense(Arc<Vec<Option<OwnedBuffer>>>),
     BinaryView {
         validity: OwnedBuffer,
@@ -1600,6 +1648,10 @@ fn validate_binary_view_prefixes(
     Ok(())
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+)]
 fn owned_f64_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<Vec<f64>>> {
     if !bytes.len().is_multiple_of(8) {
         return Err(PyTypeError::new_err(
@@ -2172,9 +2224,8 @@ mod layout_validation_tests {
         let result = crate::test_support::fail_allocations_after(0, || unsafe {
             MovedArrowShell::take(&raw mut array)
         });
-        let error = match result {
-            Ok(_) => panic!("moved-shell allocation should have been rejected"),
-            Err(error) => error,
+        let Err(error) = result else {
+            panic!("moved-shell allocation should have been rejected");
         };
         Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
         assert!(
@@ -2211,9 +2262,8 @@ mod layout_validation_tests {
                 snapshot_one_buffer_range(layout, 1, 0, std::mem::size_of::<f64>())
             })
         });
-        let error = match result {
-            Ok(_) => panic!("foreign snapshot allocation should have been rejected"),
-            Err(error) => error,
+        let Err(error) = result else {
+            panic!("foreign snapshot allocation should have been rejected");
         };
         Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
         assert_eq!(

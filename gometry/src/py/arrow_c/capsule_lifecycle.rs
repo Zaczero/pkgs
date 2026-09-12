@@ -171,7 +171,7 @@ pub(crate) fn geometry_to_schema_capsule(
     let node = py
         .detach(move || {
             let description =
-                crate::py::arrow_c::describe_shape(shape.shape(), frame.crs_str(), frame.epoch())?;
+                crate::py::arrow_c::describe_shape(shape.shape(), frame.crs_str(), frame.epoch());
             description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;
@@ -193,7 +193,7 @@ pub(crate) fn array_to_schema_capsule(
             let description = crate::py::arrow_c::describe_geometry_array(
                 &array,
                 crate::py::arrow::ArrowEncoding::Auto,
-            )?;
+            );
             description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;

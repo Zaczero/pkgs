@@ -9,6 +9,7 @@ use pyo3::types::{PyList, PyModule};
 
 use crate::PyGeometry;
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
+use crate::py::arrow::ArrowEncoding;
 use crate::py::arrow_c::capsule_lifecycle::stream_from_export;
 use crate::py::arrow_c::*;
 
@@ -64,8 +65,7 @@ fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
 }
 
 fn exported_array(array: &PyGeometryArray) -> ExportedArray {
-    let plan = plan_geometry_array(array, crate::py::arrow::ArrowEncoding::Auto)
-        .expect("test array export plan");
+    let plan = plan_geometry_array(array, ArrowEncoding::Auto).expect("test array export plan");
     materialize_export_plan(prepare_export_plan(plan).expect("test array export schema"))
         .expect("test array export")
 }
@@ -480,6 +480,7 @@ fn schema_only_uses_borrowed_description_without_payload_work() {
             reset_payload_events();
             reset_schema_release_callbacks();
             let full = exported_array(array);
+            // SAFETY: the export owns this schema until `full` is dropped.
             let full_schema = unsafe { schema_snapshot(full.schema.as_ref()) };
             let events = payload_events();
             assert!(events.0 > 0, "full export must plan payloads");
@@ -503,7 +504,7 @@ fn schema_description_epoch_publication_releases_guards_and_retries() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let shapes = vec![crate::io::parse_wkt("POINT ZM (1 2 3 4)").unwrap()];
-    let description = describe_shapes(&shapes, None, Some(2020.0)).unwrap();
+    let description = describe_shapes(&shapes, None, Some(2020.0));
     let node_count = schema_node_count(&description.materialize_schema().unwrap());
     let (result, allocations) = crate::test_support::allocation_count(|| {
         let node = description.materialize_schema()?;
@@ -536,7 +537,7 @@ fn crs_schema_tree_publication_releases_guards_after_proj_export() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let shapes = vec![crate::io::parse_wkt("POINT ZM (1 2 3 4)").unwrap()];
     let crs = "EPSG:4326".to_owned();
-    let description = describe_shapes(&shapes, Some(&crs), None).unwrap();
+    let description = describe_shapes(&shapes, Some(&crs), None);
     // PROJ's CRS export/cache boundary is outside this allocator test: build
     // the actual description and its CRS metadata first, then inject failures
     // only while publishing the native schema tree that retains those bytes.

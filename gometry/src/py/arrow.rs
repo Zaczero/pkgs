@@ -164,6 +164,10 @@ pub(crate) fn reconcile_arrow_epoch(
 pub(crate) struct NativeArrowAccumulator {
     encoding: Option<GeometryEncoding>,
     wkb_offset_width: Option<WkbOffsetWidth>,
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
+    )]
     crs: Option<Arc<String>>,
     epoch: Option<f64>,
     storage: Vec<NativeDecodedStorage>,

@@ -140,14 +140,11 @@ pub(crate) unsafe fn schema_metadata_pairs_owned(
 }
 
 fn copy_metadata_bytes(bytes: &[u8], retained: &mut OwnedMetadataPairs) -> PyResult<Box<[u8]>> {
-    let mut output = match Box::<[u8]>::try_new_uninit_slice(bytes.len()) {
-        Ok(output) => output,
-        Err(_) => {
-            // Drop already-copied metadata before constructing the native
-            // exception so the allocation failure remains recoverable.
-            *retained = Vec::new();
-            return Err(crate::py::errors::native_memory_error());
-        },
+    let Ok(mut output) = Box::<[u8]>::try_new_uninit_slice(bytes.len()) else {
+        // Drop already-copied metadata before constructing the native
+        // exception so the allocation failure remains recoverable.
+        *retained = Vec::new();
+        return Err(crate::py::errors::native_memory_error());
     };
     for (slot, &byte) in output.iter_mut().zip(bytes) {
         slot.write(byte);

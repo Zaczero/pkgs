@@ -46,7 +46,7 @@ impl GeoParquetPhysicalLayout {
         NativeArrowClassification::new(self.encoding, self.wkb_offset_width, crs, epoch)
     }
 
-    fn native(
+    const fn native(
         encoding: GeometryEncoding,
         has_extension: bool,
         embedded_crs: Option<String>,
@@ -67,7 +67,7 @@ impl GeoParquetPhysicalLayout {
         }
     }
 
-    fn wkb(
+    const fn wkb(
         has_extension: bool,
         embedded_crs: Option<String>,
         embedded_epoch: Option<f64>,
@@ -97,7 +97,7 @@ impl GeoParquetPhysicalLayout {
     ///     ``'point'``, ``'multipoint'``, ``'linestring'``,
     ///     ``'multilinestring'``, ``'polygon'``, or ``'multipolygon'``.
     #[getter]
-    fn encoding(&self) -> &'static str {
+    const fn encoding(&self) -> &'static str {
         match self.encoding {
             GeometryEncoding::Point => "point",
             GeometryEncoding::MultiPoint => "multipoint",
@@ -117,7 +117,7 @@ impl GeoParquetPhysicalLayout {
     ///     ``True`` when extension metadata was found on the Arrow type or
     ///     field and reconciled; ``False`` for plain or untyped storage.
     #[getter]
-    fn has_extension(&self) -> bool {
+    const fn has_extension(&self) -> bool {
         self.has_extension
     }
 
@@ -142,7 +142,7 @@ impl GeoParquetPhysicalLayout {
     ///     A finite decimal year when embedded metadata declares an epoch;
     ///     ``None`` when it omits one. This is not the caller's declaration.
     #[getter]
-    fn embedded_epoch(&self) -> Option<f64> {
+    const fn embedded_epoch(&self) -> Option<f64> {
         self.embedded_epoch
     }
 
@@ -154,7 +154,7 @@ impl GeoParquetPhysicalLayout {
     ///     The number of nested list levels above the coordinate struct or
     ///     interleaved coordinate list; ``None`` for WKB storage.
     #[getter]
-    fn list_depth(&self) -> Option<u8> {
+    const fn list_depth(&self) -> Option<u8> {
         self.list_depth
     }
 
@@ -166,7 +166,7 @@ impl GeoParquetPhysicalLayout {
     ///     ``True`` when the terminal native coordinate storage has a Z field;
     ///     ``False`` for XY storage and WKB, whose dimensions live in payloads.
     #[getter]
-    fn has_z(&self) -> bool {
+    const fn has_z(&self) -> bool {
         self.has_z
     }
 
@@ -178,7 +178,7 @@ impl GeoParquetPhysicalLayout {
     ///     ``True`` when the terminal native coordinate storage has an M field;
     ///     ``False`` for XY/Z storage and WKB, whose dimensions live in payloads.
     #[getter]
-    fn has_m(&self) -> bool {
+    const fn has_m(&self) -> bool {
         self.has_m
     }
 
@@ -190,7 +190,7 @@ impl GeoParquetPhysicalLayout {
     ///     ``'int32'`` for ``Binary``, ``'int64'`` for ``LargeBinary``, or
     ///     ``'view'`` for ``BinaryView``. Native encodings report ``'int32'``.
     #[getter]
-    fn wkb_offset_width(&self) -> &'static str {
+    const fn wkb_offset_width(&self) -> &'static str {
         match self.wkb_offset_width {
             WkbOffsetWidth::Int32 => "int32",
             WkbOffsetWidth::Int64 => "int64",
@@ -1182,23 +1182,21 @@ fn geoarrow_native_layout(
     if arrow_type_is_fixed_size_list(pa, &current)? {
         ensure_pyarrow_interleaved_coords(pa, &current)?;
         let list_size: i32 = current.getattr("list_size")?.extract()?;
-        let has_z;
-        let has_m;
-        if list_size == 2 {
-            has_z = false;
-            has_m = false;
+        let (has_z, has_m) = if list_size == 2 {
+            (false, false)
         } else if list_size == 4 {
-            has_z = true;
-            has_m = true;
+            (true, true)
         } else {
             let name = current
                 .getattr("value_field")
                 .ok()
                 .and_then(|field| field.getattr("name").ok())
                 .and_then(|name| name.extract::<String>().ok());
-            has_z = name.as_deref() != Some("xym");
-            has_m = name.as_deref() == Some("xym");
-        }
+            (
+                name.as_deref() != Some("xym"),
+                name.as_deref() == Some("xym"),
+            )
+        };
         return Ok(Some((depth, has_z, has_m)));
     }
     let is_struct = if types.hasattr("is_struct")? {
@@ -1281,7 +1279,7 @@ impl GeoParquetColumnFrame {
     ///     A finite decimal year when ``epoch`` is numeric; ``None`` when the
     ///     key is absent or explicitly null. A non-null epoch requires a CRS.
     #[getter]
-    fn epoch(&self) -> Option<f64> {
+    const fn epoch(&self) -> Option<f64> {
         self.epoch
     }
 
@@ -1293,7 +1291,7 @@ impl GeoParquetColumnFrame {
     ///     ``False`` means the key was absent and the CRS was defaulted to
     ///     ``'OGC:CRS84'``; ``True`` includes an explicit JSON null.
     #[getter]
-    fn crs_present(&self) -> bool {
+    const fn crs_present(&self) -> bool {
         self.crs_present
     }
 
@@ -1305,7 +1303,7 @@ impl GeoParquetColumnFrame {
     ///     ``False`` means the epoch was omitted; ``True`` includes an
     ///     explicit JSON null, which is distinct from omission.
     #[getter]
-    fn epoch_present(&self) -> bool {
+    const fn epoch_present(&self) -> bool {
         self.epoch_present
     }
 

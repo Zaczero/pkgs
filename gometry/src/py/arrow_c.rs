@@ -47,20 +47,36 @@ pub(crate) type NativeArrowExportResult<T> = std::result::Result<T, NativeArrowE
 /// `Arc::from(Vec)` uses the infallible allocation path. Arrow admission owns
 /// producer data before it can release the foreign shell, so an allocator
 /// refusal here must remain a catchable Python `MemoryError`.
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+)]
 pub(crate) fn try_arc_from_vec<T>(values: Vec<T>) -> PyResult<Arc<Vec<T>>> {
     try_arc_from_vec_native(values).map_err(PyErr::from)
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+)]
 pub(crate) fn try_arc_from_vec_native<T>(values: Vec<T>) -> crate::error::Result<Arc<Vec<T>>> {
     Arc::try_new(values).map_err(crate::error::Error::from)
 }
 
 /// Publish an owned string only after both its bytes and shared allocation
 /// have succeeded.
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
+)]
 pub(crate) fn try_arc_from_string(value: String) -> PyResult<Arc<String>> {
     Arc::try_new(value).map_err(|_| errors::native_memory_error())
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
+)]
 pub(crate) fn try_arc_from_str(value: &str) -> PyResult<Arc<String>> {
     let value =
         crate::boundary::try_string_from_str(value).map_err(|()| errors::native_memory_error())?;

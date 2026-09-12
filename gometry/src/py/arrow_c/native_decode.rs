@@ -744,6 +744,10 @@ fn list_range(node: &NativeNode, index: usize) -> DecodeResult<std::ops::Range<u
 
 struct NativeCoordinates {
     coords: CoordSeq,
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     validity: Option<Arc<Vec<bool>>>,
 }
 
@@ -1011,7 +1015,7 @@ impl NativeCoordinates {
         self.ensure_range_valid(range.start, range.end, row)?;
         let coords = self
             .coords
-            .view(CoordWindow::from_range(range.clone(), self.coords.len()));
+            .view(CoordWindow::from_range(range, self.coords.len()));
         Ring::closure_requires_append(&coords).map_err(arrow_ring_error)
     }
 
@@ -1053,6 +1057,10 @@ fn arrow_ring_error(error: crate::error::Error) -> NativeArrowDecodeError {
     }
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+)]
 fn combined_validity(
     length: usize,
     missing: impl Fn(usize) -> bool,
@@ -1091,7 +1099,10 @@ mod tests {
 
     #[test]
     fn direct_point_decode_reuses_admitted_columns_and_retries_allocation_prefixes() {
-        crate::test_support::initialize_python();
+        #[expect(
+            clippy::rc_buffer,
+            reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+        )]
         fn make_batch() -> (NativeArrowBatch, Arc<Vec<f64>>) {
             let x = Arc::new(vec![1.0, 2.0]);
             let y = Arc::new(vec![3.0, 4.0]);
@@ -1136,6 +1147,7 @@ mod tests {
             )
         }
 
+        crate::test_support::initialize_python();
         let (batch, x) = make_batch();
         let (decoded, allocations) = crate::test_support::allocation_count(|| batch.decode());
         let decoded = decoded.expect("direct point decode");

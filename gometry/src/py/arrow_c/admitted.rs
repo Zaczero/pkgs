@@ -103,10 +103,22 @@ impl<T: ArrowReleaseSlot> Drop for MovedArrowShell<T> {
 /// Owned schema tree — no producer pointers after capture.
 #[derive(Clone, Debug)]
 pub(crate) struct AdmittedArrowSchema {
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
+    )]
     pub(crate) format: Arc<String>,
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
+    )]
     pub(crate) name: Arc<String>,
     pub(crate) metadata: Arc<OwnedMetadataPairs>,
     pub(crate) dictionary_present: bool,
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
+    )]
     pub(crate) children: Arc<Vec<AdmittedArrowSchema>>,
 }
 
@@ -412,6 +424,10 @@ fn shallow_child_looks_like_geometry(child: &AdmittedArrowSchema) -> PyResult<bo
     Ok(matches!(child.format(), "z" | "Z" | "vz"))
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
+)]
 fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<String>> {
     if ptr.is_null() {
         return Err(PyTypeError::new_err(format!("{what} is null")));
