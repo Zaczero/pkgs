@@ -597,7 +597,7 @@ pub(super) fn build_box_shape(
             }
             // `box` names a lat/lon rectangle, so its horizontal edges are
             // parallels rather than one long geodesic between corners. Add
-            // the minimum number of equal longitude chords at the calibrated
+            // the minimum number of equal-longitude chords at the documented
             // angular limit.
             if let Some(crs) = crs
                 && (-180.0..=180.0).contains(&minx)

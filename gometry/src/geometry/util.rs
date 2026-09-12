@@ -40,11 +40,14 @@ pub(crate) fn bounds_to_shape(bounds: Bounds) -> crate::error::Result<Shape> {
     Ok(Shape::Polygon(rect_polygon(bounds)?))
 }
 
-/// Build a geographic rectangle whose horizontal sides follow parallels.
+/// Build a geographic rectangle whose horizontal sides approximate parallels.
 pub(crate) fn geographic_bounds_to_shape(
     bounds: Bounds,
     frame: crate::geographic::GeographicFrame,
 ) -> crate::error::Result<Shape> {
+    // Geographic box parallels use equal-longitude geodesic chords at this
+    // angular spacing; the resulting metric fidelity is documented in the
+    // geographic CRS guide.
     const MAX_CHORD_RADIANS: f64 = 0.247;
     if same_topological_coordinate(bounds.minx(), bounds.maxx()) {
         return bounds_to_shape(bounds);

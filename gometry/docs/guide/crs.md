@@ -310,6 +310,32 @@ that intended algorithm** before construction — ordinary densify interpolates 
 stored edge model and does not synthesize a rhumb route. Split or otherwise
 disambiguate antipodal and antimeridian-sensitive paths.
 
+### Geographic box boundary fidelity
+
+For a geographic [`gm.box`][gometry.box] using ordinary non-wrapping bounds
+with positive width and height, the horizontal sides use equal-longitude
+vertices rather than one geodesic between the corners. The constructor sets
+the interval count to
+`ceil(Δλ / 0.247)` after converting the longitude span to radians, so each
+stored horizontal chord spans at most `0.247` radians (about `14.152°`).
+`gm.length` sums the shortest ellipsoidal geodesic between adjacent vertices;
+it therefore measures this stored chordal boundary, not the mathematical
+constant-latitude parallels named by the box bounds.
+
+The reference parallel length in the comparison below is
+`N(φ) cos(φ) Δλ`, where `N(φ) = a / sqrt(1 - e² sin²φ)` is the WGS 84
+prime-vertical radius (`a` is the semi-major axis and `e` the eccentricity);
+the angular values are in radians.
+
+For example, `gm.box(0, 44, 90, 45, crs=4326)` uses seven intervals on each
+horizontal side. On its northern side, the stored chords total
+`7,088,754.286 m`, while the WGS 84 parallel over the same 90° span is
+`7,096,215.158 m`; the stored boundary is therefore `7,460.872 m`
+(`0.105139%`) shorter. This is a measured example, not a per-call error
+bound. If a closer approximation is required, provide more intermediate
+vertices when constructing the polygon; `gm.length` will still measure the
+resulting stored chords.
+
 Geographic pairwise metrics — [`distance`][gometry.distance],
 [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance],
 [`nearest_points`][gometry.nearest_points], and
