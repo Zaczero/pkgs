@@ -161,6 +161,32 @@ def test_segmentize_budget_charges_realized_output() -> None:
     assert '16000000' in msg or '16_000_000' in msg or 'exceeding the limit' in msg
 
 
+@pytest.mark.parametrize(
+    ('endpoint', 'maximum'),
+    [
+        ((3.0, 4.0), 1.0),
+        ((3.0, 4.0), 0.5),
+        ((3.0, 4.0), 0.25),
+        ((5.0, 12.0), 1.0),
+        ((8.0, 15.0), 1.0),
+        ((1.0, 1.0), 0.5),
+        ((2.0, 3.0), 0.5),
+        ((3.0, 4.0), 2.5),
+    ],
+)
+def test_planar_segmentize_rounding_retry_keeps_emitted_chords_within_limit(
+    endpoint: tuple[float, float], maximum: float
+) -> None:
+    line = gm.LineString([(0.0, 0.0), endpoint])
+    result = line.segmentize(maximum)
+    chords = [
+        math.hypot(right[0] - left[0], right[1] - left[1])
+        for left, right in pairwise(result.coords)
+    ]
+    assert chords
+    assert max(chords) <= maximum
+
+
 def test_planar_segmentize_scales_opposing_extreme_endpoints_scalar_and_array() -> None:
     line = gm.LineString([(-1e308, 0.0), (1e308, 0.0)])
     expected = [(-1e308, 0.0), (0.0, 0.0), (1e308, 0.0)]

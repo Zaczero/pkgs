@@ -287,13 +287,14 @@ positional `max_length` when every output segment must be no longer than that
 distance, or pass `fraction=` to split every input segment into equal pieces
 (`fraction=0.25` produces four pieces). Both preserve the represented shape and
 only raise vertex density. See [CRS, units & measurement](crs.md) for the
-`max_length` metric. The `max_length` path audits the emitted binary64 chords;
-when rounding makes the endpoint-preserving output unable to satisfy the bound,
-it raises `GeometryError` instead of moving an original vertex. `fraction=` has
-no unit and cannot be combined with `unit=`. A request that would generate more
-than **16,000,000** output items is refused with a
-[`GeometryError`][gometry.GeometryError] whose message
-names the operation, produced count, limit, and controlling parameter:
+`max_length` metric. The `max_length` path guarantees that no output segment
+exceeds the requested distance and preserves every original vertex. When
+binary64 rounding would otherwise break that guarantee, it emits additional
+vertices so the result still satisfies the maximum. `fraction=` has no unit
+and cannot be combined with `unit=`. A request that would generate more than
+**16,000,000** output items is refused with a
+[`GeometryError`][gometry.GeometryError] whose message names the operation,
+produced count, limit, and controlling parameter:
 
 ```python exec="on" html="true"
 from _figures import panels, with_vertices

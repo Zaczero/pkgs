@@ -398,12 +398,59 @@ pub(crate) fn segmentize_points_budgeted(
             budget,
         );
     }
-    let output = subdivide_columns(
-        points,
-        SegmentPlacement::Planar,
-        |segment| Ok(planar_segmentize_steps(segment, max_segment_length)),
-        budget,
-    )?;
+    segmentize_planar_candidate(points, max_segment_length, budget)
+}
+
+fn segmentize_planar_candidate(
+    points: &CoordSeq,
+    max_segment_length: f64,
+    budget: &mut ExpansionBudget,
+) -> Result<CoordSeq> {
+    // One extra piece supplies slack for a count that landed exactly on the
+    // requested limit. If that candidate still cannot satisfy the strict
+    // bound, the owning post-pass preserves its unrepresentable error.
+    const MAX_REPRESENTABILITY_RETRIES: usize = 1;
+    let mut steps = collect_steps(points, |_, segment| {
+        Ok(planar_segmentize_steps(segment, max_segment_length))
+    })?;
+    let mut last = None;
+    for retry in 0..=MAX_REPRESENTABILITY_RETRIES {
+        let (output, generated) = subdivide_columns_from_steps_uncommitted(
+            points,
+            SubdivisionEmission::Planar,
+            &steps,
+            budget,
+        )?;
+        match verify_planar_segmentize_output(&output, max_segment_length) {
+            Ok(()) => {
+                budget.add(generated)?;
+                return Ok(output);
+            },
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
+                        operation: "segmentize"
+                    })
+                ) =>
+            {
+                last = Some((output, generated));
+            },
+            Err(error) => return Err(error),
+        }
+        if retry == MAX_REPRESENTABILITY_RETRIES {
+            break;
+        }
+        for (step, segment) in steps.iter_mut().zip(line_segments(points)) {
+            if !same_point(segment.start, segment.end) {
+                *step = step
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            }
+        }
+    }
+    let (output, generated) = last.expect("segmentize always emits a planar candidate");
+    budget.add(generated)?;
     Ok(output)
 }
 
@@ -919,6 +966,18 @@ fn subdivide_columns_from_steps<'a>(
     steps: &[usize],
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
+    let (output, generated) =
+        subdivide_columns_from_steps_uncommitted(points, emission, steps, budget)?;
+    budget.add(generated)?;
+    Ok(output)
+}
+
+fn subdivide_columns_from_steps_uncommitted<'a>(
+    points: &'a CoordSeq,
+    emission: SubdivisionEmission<'a>,
+    steps: &[usize],
+    budget: &ExpansionBudget,
+) -> Result<(CoordSeq, usize)> {
     let count = points.len();
     let mut count_sink = SubdivisionCount { emitted: 0 };
     emit_subdivision(steps, &mut count_sink)?;
@@ -931,14 +990,13 @@ fn subdivide_columns_from_steps<'a>(
         // Nothing subdivides (every segment already satisfies the bound —
         // the common case once data is denser than the requested length):
         // the input IS the output, share it.
-        return Ok(points.clone());
+        return Ok((points.clone(), 0));
     }
     let mut output = SubdivisionColumns::new(points, emission, total)?;
     emit_subdivision(steps, &mut output)?;
     output.emission.assert_exhausted();
     let output = output.finish()?;
-    budget.add(generated)?;
-    Ok(output)
+    Ok((output, generated))
 }
 
 impl Shape {
