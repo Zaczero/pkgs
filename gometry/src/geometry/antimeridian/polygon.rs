@@ -32,8 +32,8 @@ impl Shape {
 
     /// Split at the antimeridian: parts that cross ±180 come back as
     /// multiple parts whose edges follow the seam (each side keeping its
-    /// own seam sign), with great-circle crossing latitudes and automatic
-    /// pole closure. Geometries that do not cross are returned unchanged.
+    /// own seam sign), with affine chart crossings and automatic pole closure.
+    /// Geometries that do not cross are returned unchanged.
     /// The caller supplies an already-admitted canonical operation chart.
     fn split_antimeridian_chart(&self) -> Result<Self> {
         match self {

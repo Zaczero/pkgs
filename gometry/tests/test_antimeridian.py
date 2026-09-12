@@ -8,27 +8,6 @@ import numpy as np
 import pytest
 
 
-def _great_circle_crossing_latitude(
-    start: tuple[float, float], end: tuple[float, float]
-) -> float:
-    """Return the antimeridian crossing latitude from the plane equation."""
-    if start[0] > end[0]:
-        start, end = end, start
-
-    longitude_1, latitude_1 = map(math.radians, start)
-    longitude_2, latitude_2 = map(math.radians, end)
-    normal_x = math.cos(latitude_1) * math.sin(longitude_1) * math.sin(
-        latitude_2
-    ) - math.sin(latitude_1) * math.cos(latitude_2) * math.sin(longitude_2)
-    normal_z = (
-        math.cos(latitude_1)
-        * math.cos(latitude_2)
-        * math.sin(longitude_2 - longitude_1)
-    )
-    vertical = normal_x if normal_z >= 0.0 else -normal_x
-    return math.degrees(math.atan2(vertical, abs(normal_z)))
-
-
 def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     line = gm.LineString([(170, -10), (-170, 10)], crs=4326)
     split = line.split_antimeridian()
@@ -47,6 +26,33 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     east, west = (list(part.coords) for part in gm.parts(measured))
     assert east[-1] == (180.0, 0.0, 15.0, 2.0)
     assert west[0] == (-180.0, 0.0, 15.0, 2.0)
+    for line, expected in (
+        (
+            gm.LineString(
+                [(170.0, 10.0), (-150.0, 30.0)],
+                z=[10.0, 50.0],
+                m=[1.0, 5.0],
+                crs=4326,
+            ),
+            (15.0, 20.0, 2.0),
+        ),
+        (
+            gm.LineString(
+                [(-150.0, 30.0), (170.0, 10.0)],
+                z=[50.0, 10.0],
+                m=[5.0, 1.0],
+                crs=4326,
+            ),
+            (15.0, 20.0, 2.0),
+        ),
+    ):
+        seam = [
+            coordinate[1:]
+            for part in gm.parts(line.split_antimeridian())
+            for coordinate in part.coords
+            if abs(coordinate[0]) == 180.0
+        ]
+        assert seam == [expected, expected]
 
 
 def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
@@ -84,21 +90,17 @@ def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
     assert not seam_union.is_empty
 
 
-def test_split_antimeridian_polygons_use_great_circle_crossings() -> None:
+def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     box = gm.Polygon([(170, 40), (-170, 40), (-170, 50), (170, 50)], crs=4326)
     parts = gm.parts(box.split_antimeridian())
     assert [part.geometry_type for part in parts] == ['Polygon', 'Polygon']
     seam_lats = sorted({
-        round(y, 7)
+        y
         for part in parts
         for x, y in cast('gm.Polygon', part).exterior.coords
         if abs(x) == 180.0
     })
-    expected_latitudes = sorted(
-        round(_great_circle_crossing_latitude((170.0, latitude), (-170.0, latitude)), 7)
-        for latitude in (40.0, 50.0)
-    )
-    assert seam_lats == expected_latitudes
+    assert seam_lats == [40.0, 50.0]
     ring = [(-45, 40), (45, 40), (135, 40), (-135, 40)]
     capped = gm.Polygon(ring).split_antimeridian()
     assert capped.geometry_type == 'Polygon'
@@ -335,6 +337,52 @@ _RADIAN_CRS = (
     [4326, _RADIAN_CRS, 4807],
     ids=['degree', 'radian', 'grad'],
 )
+def test_split_antimeridian_affine_fraction_uses_native_units(
+    crs: int | str,
+) -> None:
+    scale = math.degrees(cast('float', gm.CRS(crs).axes[0]['unit_conversion_factor']))
+    for coordinates, z, m in (
+        ([(170.0, 10.0), (-150.0, 30.0)], [10.0, 50.0], [1.0, 5.0]),
+        ([(-150.0, 30.0), (170.0, 10.0)], [50.0, 10.0], [5.0, 1.0]),
+    ):
+        line = gm.LineString(
+            [(longitude / scale, latitude / scale) for longitude, latitude in coordinates],
+            z=z,
+            m=m,
+            crs=crs,
+        )
+        seam = [
+            coordinate
+            for part in gm.parts(line.split_antimeridian())
+            for coordinate in part.coords
+            if abs(coordinate[0] * scale) == 180.0
+        ]
+        assert len(seam) == 2
+        assert all(coordinate[1] * scale == pytest.approx(15.0) for coordinate in seam)
+        assert all(coordinate[2:] == (20.0, 2.0) for coordinate in seam)
+    rotation = 360.0 / scale
+    polygon = gm.Polygon(
+        [
+            (longitude / scale + rotation, latitude / scale)
+            for longitude, latitude in (
+                (170.0, 0.0),
+                (-170.0, 0.0),
+                (-170.0, 12.0),
+                (170.0, 12.0),
+            )
+        ],
+        crs=crs,
+    )
+    point = gm.Point(175.0 / scale + rotation, 6.0 / scale, crs=crs)
+    assert gm.contains(polygon, point)
+    assert gm.contains(polygon.split_antimeridian(), point)
+
+
+@pytest.mark.parametrize(
+    'crs',
+    [4326, _RADIAN_CRS, 4807],
+    ids=['degree', 'radian', 'grad'],
+)
 @pytest.mark.parametrize('north', [False, True], ids=['south', 'north'])
 def test_split_antimeridian_normalizes_only_admitted_pole_ulp_in_chart(
     crs: int | str, *, north: bool
@@ -396,15 +444,14 @@ def test_split_antimeridian_review_regressions() -> None:
 
 
 def test_split_antimeridian_force_south_pole_closure() -> None:
-    """Southern seam-crossing ring extends past the input via pole closure."""
+    """Southern seam-crossing ring closes over its pole in the chart."""
     ring = [(-45, -40), (45, -40), (135, -40), (-135, -40)]
     capped = gm.Polygon(ring, crs=4326).split_antimeridian()
     assert capped.geometry_type == 'Polygon'
     assert not capped.is_empty
     coords = list(cast('gm.Polygon', capped).exterior.coords)
     seam_lats = {round(y, 7) for x, y in coords if abs(x) == 180.0}
-    assert seam_lats
-    assert min(seam_lats) < -40.0
+    assert seam_lats == {-40.0, 90.0}
     again = capped.split_antimeridian()
     assert again.to_wkt() == capped.to_wkt()
 
@@ -526,20 +573,22 @@ def test_crossing_polygon_concrete_contains_and_intersects() -> None:
 
 
 @pytest.mark.parametrize(
-    ("height", "longitude", "latitude", "expected"),
+    ("height", "longitude"),
     [
-        pytest.param(12.0, 175.0, 12.05, True, id="north-bulge-interior"),
-        pytest.param(12.0, 175.0, 12.2, False, id="north-bulge-exterior"),
-        pytest.param(12.0, -185.0, 12.05, True, id="north-negative-alias"),
-        pytest.param(12.0, 535.0, 12.05, True, id="north-positive-alias"),
-        pytest.param(-12.0, 175.0, -12.05, True, id="south-bulge-interior"),
-        pytest.param(-12.0, 175.0, -12.2, False, id="south-bulge-exterior"),
-        pytest.param(-12.0, -185.0, -12.05, True, id="south-negative-alias"),
-        pytest.param(-12.0, 535.0, -12.05, True, id="south-positive-alias"),
+        pytest.param(12.0, 175.0, id="north"),
+        pytest.param(12.0, -185.0, id="north-negative-alias"),
+        pytest.param(12.0, 535.0, id="north-positive-alias"),
+        pytest.param(12.0, 180.0, id="north-positive-seam"),
+        pytest.param(12.0, -180.0, id="north-negative-seam"),
+        pytest.param(-12.0, 175.0, id="south"),
+        pytest.param(-12.0, -185.0, id="south-negative-alias"),
+        pytest.param(-12.0, 535.0, id="south-positive-alias"),
+        pytest.param(-12.0, 180.0, id="south-positive-seam"),
+        pytest.param(-12.0, -180.0, id="south-negative-seam"),
     ],
 )
-def test_crossing_polygon_bulge_predicates_match_split(
-    height: float, longitude: float, latitude: float, expected: bool
+def test_crossing_polygon_chart_predicates_match_split(
+    height: float, longitude: float
 ) -> None:
     polygon = gm.Polygon(
         [
@@ -552,12 +601,58 @@ def test_crossing_polygon_bulge_predicates_match_split(
         crs=4326,
     )
     split = polygon.split_antimeridian()
-    point = gm.Point(longitude, latitude, crs=4326)
+    for latitude, contains, intersects in (
+        (math.copysign(11.95, height), True, True),
+        (height, False, True),
+        (math.copysign(12.05, height), False, False),
+    ):
+        point = gm.Point(longitude, latitude, crs=4326)
+        assert gm.contains(polygon, point) is contains
+        assert gm.intersects(polygon, point) is intersects
+        assert gm.contains(split, point) is contains
+        assert gm.intersects(split, point) is intersects
 
-    assert gm.contains(polygon, point) == expected
-    assert gm.intersects(polygon, point) == expected
-    assert gm.contains(split, point) == expected
-    assert gm.intersects(split, point) == expected
+
+def test_split_antimeridian_is_invariant_under_longitude_rotation() -> None:
+    coordinates = [(170.0, 0.0), (-170.0, 0.0), (-170.0, 12.0), (170.0, 12.0)]
+    expected = gm.Polygon(coordinates, crs=4326).split_antimeridian()
+    for rotation in (-360.0, 360.0, 720.0):
+        rotated = gm.Polygon(
+            [(longitude + rotation, latitude) for longitude, latitude in coordinates],
+            crs=4326,
+        )
+        point = gm.Point(175.0 + rotation, 6.0, crs=4326)
+        assert gm.contains(rotated, point)
+        assert gm.intersects(rotated, point)
+        split = rotated.split_antimeridian()
+        assert gm.contains(split, point)
+        assert gm.intersects(split, point)
+        assert gm.equals(split, expected)
+
+
+def test_split_antimeridian_preserves_straight_chart_under_longitude_rotation() -> None:
+    crossing = gm.Polygon(
+        [(170.0, 0.0), (-170.0, 0.0), (-170.0, 12.0), (170.0, 12.0)],
+        crs=4326,
+    )
+    ordinary = gm.Polygon(
+        [(100.0, 0.0), (120.0, 0.0), (120.0, 12.0), (100.0, 12.0)],
+        crs=4326,
+    )
+    crossing_split = crossing.split_antimeridian()
+    for latitude, contains, intersects in (
+        (11.95, True, True),
+        (12.0, False, True),
+        (12.05, False, False),
+    ):
+        seam_point = gm.Point(175.0, latitude, crs=4326)
+        rotated_point = gm.Point(105.0, latitude, crs=4326)
+        assert gm.contains(crossing, seam_point) is contains
+        assert gm.intersects(crossing, seam_point) is intersects
+        assert gm.contains(crossing_split, seam_point) is contains
+        assert gm.intersects(crossing_split, seam_point) is intersects
+        assert gm.contains(ordinary, rotated_point) is contains
+        assert gm.intersects(ordinary, rotated_point) is intersects
 
 
 def test_crossing_polygon_contains_broadcast_agrees() -> None:
@@ -794,13 +889,6 @@ def test_nad83_crossing_polygon_predicates_match_split_form() -> None:
     )
 
 
-def test_crossing_polygon_geodesic_area_close_to_split_parts_sum() -> None:
-    poly = _crossing_band_polygon()
-    split = poly.split_antimeridian()
-    part_total = sum(part.area for part in gm.parts(split))
-    assert poly.area == pytest.approx(part_total, rel=0.001)
-
-
 @pytest.mark.parametrize(
     "base_latitude",
     [
@@ -808,7 +896,9 @@ def test_crossing_polygon_geodesic_area_close_to_split_parts_sum() -> None:
         pytest.param(40.0, id="mid-latitude"),
     ],
 )
-def test_thin_crossing_band_area_survives_public_split(base_latitude: float) -> None:
+def test_thin_crossing_band_split_preserves_chart_area_and_support(
+    base_latitude: float,
+) -> None:
     height = 1e-8
     polygon = gm.Polygon(
         [
@@ -821,11 +911,28 @@ def test_thin_crossing_band_area_survives_public_split(base_latitude: float) -> 
         crs=4326,
     )
     split = polygon.split_antimeridian()
+    parts = list(gm.parts(split))
+    unwrapped_width = 20.0
+    # The analytic rectangle uses the stored binary64 endpoint height, not
+    # the decimal request that may round at a nonzero base latitude.
+    represented_height = (base_latitude + height) - base_latitude
+    expected_piece_area = unwrapped_width * represented_height / 2.0
 
-    # The geodesic ring-area kernel has a pre-existing residual below 5.3e-5
-    # relative on this band; 1e-4 leaves a tight margin while rejecting the
-    # former half-area result by more than three orders of magnitude.
-    assert split.area == pytest.approx(polygon.area, rel=1e-4)
+    assert len(parts) == 2
+    assert gm.area(parts[0], unit='planar') == expected_piece_area
+    assert gm.area(parts[1], unit='planar') == expected_piece_area
+    assert gm.area(split, unit='planar') == unwrapped_width * represented_height
+    assert polygon.bounds == (170.0, base_latitude, -170.0, base_latitude + height)
+    assert split.bounds == (
+        -180.0,
+        base_latitude,
+        180.0,
+        base_latitude + height,
+    )
+    for longitude in (175.0, -175.0, 180.0, -180.0):
+        point = gm.Point(longitude, base_latitude + height / 2.0, crs=4326)
+        assert gm.contains(polygon, point)
+        assert gm.contains(split, point)
 
 
 def test_spatial_index_handles_crossing_geographic() -> None:

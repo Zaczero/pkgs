@@ -29,7 +29,9 @@ into a few families rather than one exception-free slogan. The first family is
 the only one that computes geodesic measures. Topology remains a coordinate-plane
 X/Y operation: in a geographic CRS it resolves longitude aliases, seam spellings,
 and pole longitudes in the CRS-native frame before construction, and is not a
-geodesic operation. Metric constructive operations use CRS-native distance
+geodesic operation. A seam split uses straight edges in an unwrapped
+longitude/latitude chart; it does not construct geodesic edges. Metric
+constructive operations use CRS-native distance
 inputs but can construct in a local projection. Coordinate edits and planar
 construction operate on stored coordinates.
 
@@ -37,7 +39,7 @@ construction operate on stored coordinates.
 |---|---|---|
 | **Geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian; pairwise distance operations use points and linework on geographic CRSs |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
-| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into chart pieces. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
+| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `max_length` and distances follow the CRS metric; `fraction=` is unitless; original vertices are retained |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay | operate on stored XY; may need local projection or [`split_antimeridian`][gometry.Geometry.split_antimeridian] |
@@ -738,8 +740,10 @@ predicates, relate, overlay,
 spatial index, [`PreparedGeometry`][gometry.PreparedGeometry], and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 [`validate`][gometry.Geometry.validate], [`require`][gometry.require], [`self_intersections`][gometry.Geometry.self_intersections], [`repair`][gometry.Geometry.repair], and
 [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — **auto-split-normalize**
-seam-crossing input at their chokepoints. Geodesic measures (`distance`,
-[`length`][gometry.length], [`area`][gometry.area], …) take the short way across the seam. The **stay-planar**
+seam-crossing input at their chokepoints. A seam split is coordinate-planar:
+it inserts affine crossing vertices into straight edges in the unwrapped
+longitude/latitude chart. Geodesic measures (`distance`,
+[`length`][gometry.length], [`area`][gometry.area], …) take the short way across the seam and still interpret each stored edge from its endpoints on the CRS ellipsoid, so inserting chart vertices does not promise geodesic area or length conservation. The **stay-planar**
 constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
 [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay) do **not** auto-split; call
 [`split_antimeridian`][gometry.Geometry.split_antimeridian] first on crossing

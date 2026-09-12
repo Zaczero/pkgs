@@ -56,14 +56,14 @@ fn cover_s2_component(
         (
             component
                 .split_antimeridian()
-                .map_err(|_| S2ComponentCoverError::Allocation)?,
+                .map_err(S2ComponentCoverError::Preparation)?,
             WorkingShapeRelation::AntimeridianSplit,
         )
     } else {
         (component.clone(), WorkingShapeRelation::Identity)
     };
     let affine = GeographicCoverageSource::from_validated(component, SphericalGridTarget::S2)
-        .map_err(|_| S2ComponentCoverError::Allocation)?;
+        .map_err(S2ComponentCoverError::Preparation)?;
     Coverer {
         min_level,
         max_level,

@@ -1,11 +1,10 @@
 //! `split_antimeridian`: split geometries that cross the ±180 meridian into
 //! multipart geometries with seam-following edges.
 //!
-//! The stitching phase derives from the JOSS-reviewed `antimeridian` algorithm
-//! (gadomski/antimeridian): walk canonical chart segments, split on jumps over
-//! 180 degrees at the great-circle crossing latitude, stitch polygon
+//! The stitching phase walks canonical unwrapped chart segments, splits on
+//! jumps over 180 degrees at the affine chart seam crossing, stitches polygon
 //! fragments back together along the seam (closest-start search toward the
-//! pole), close over a pole when a seam search runs off the end, and keep
+//! pole), closes over a pole when a seam search runs off the end, and keeps
 //! ring winding canonical. The public path fixes winding silently, selects
 //! pole closure automatically or through its explicit pole operation, uses
 //! exact seam identity, and interpolates Z/M at seam vertices.

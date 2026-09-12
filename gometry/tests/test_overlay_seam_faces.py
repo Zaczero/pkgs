@@ -30,13 +30,16 @@ def _thin_seam_polygon(west: float, east: float, height: float) -> gm.Polygon:
         pytest.param(170.0, -170.0, 1e-8, id="twenty-degree-below-probe-step"),
     ],
 )
-def test_thin_seam_faces_conserve_area_below_probe_step(
+def test_thin_seam_faces_keep_source_support_below_probe_step(
     west: float, east: float, height: float
 ) -> None:
     polygon = _thin_seam_polygon(west, east, height)
-    collection = gm.GeometryCollection([polygon], crs=4326)
+    union = gm.union_all([polygon])
 
-    assert collection.area == pytest.approx(polygon.area, rel=1e-4)
+    assert union.bounds == polygon.bounds
+    for longitude in ((west + 180.0) / 2.0, (east - 180.0) / 2.0):
+        assert gm.contains(union, gm.Point(longitude, height / 2.0, crs=4326))
+    assert not gm.contains(union, gm.Point(0.0, height / 2.0, crs=4326))
 
 
 def test_thin_seam_union_keeps_exclusions_and_disjoint_area() -> None:
@@ -44,7 +47,8 @@ def test_thin_seam_union_keeps_exclusions_and_disjoint_area() -> None:
     far = gm.box(0.0, 40.0, 1.0, 41.0, crs=4326)
     union = gm.union_all([thin, far])
 
-    assert union.area - far.area == pytest.approx(thin.area, rel=1e-4)
+    assert gm.contains(union, gm.Point(175.0, 0.5e-6, crs=4326))
+    assert gm.contains(union, gm.Point(-175.0, 0.5e-6, crs=4326))
     assert not gm.contains(union, gm.Point(0.5, 0.5, crs=4326))
 
     holed = gm.Polygon(

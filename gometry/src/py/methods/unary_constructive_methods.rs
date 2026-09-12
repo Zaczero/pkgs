@@ -922,12 +922,15 @@ method_doc! {
     doc_split_antimeridian;
     body: r"Split at the antimeridian. Parts that cross come back as multiple parts
 whose edges follow the seam — each side keeping its own seam sign — so the
-result renders and computes correctly in lon/lat tools (the JOSS
-``antimeridian`` algorithm). Crossings split at the great-circle latitude; a
-ring running off the seam closes over its pole automatically. Geometries
-that do not cross are returned unchanged. A split ``LineString`` becomes a
-``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like
-repair. Seam vertices interpolate Z/M.";
+result remains a coordinate-planar longitude/latitude chart for topology.
+Crossings are affine subdivisions of unwrapped straight chart edges; a ring
+running off the seam closes over its pole automatically. Geometries that do
+not cross are returned unchanged. A split ``LineString`` becomes a
+``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
+Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
+geodesic metrics still interpret each stored edge from its endpoints on the
+CRS ellipsoid, so this operation does not promise geodesic area or length
+conservation.";
     scalar: r"
 
 Returns

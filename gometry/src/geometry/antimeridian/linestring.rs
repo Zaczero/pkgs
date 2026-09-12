@@ -1,4 +1,6 @@
-use crate::geometry::{Coordinates, MOrdinate, Point, ZOrdinate, interpolate_optional, same_point};
+use crate::geometry::{
+    Coordinates, MOrdinate, Point, ZOrdinate, interpolate_subdivision_ordinate, same_point,
+};
 
 pub(super) fn collect_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     points.iter_coords().collect()
@@ -83,20 +85,18 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
     pieces
 }
 
-/// The pair of seam points `((-180, lat), (180, lat))` for a segment from
-/// `west` (the side whose longitude is near +17x) to `east`. The latitude is
-/// computed from the great-circle intersection; Z/M are interpolated along
-/// the great circle.
+/// The pair of seam points `((-180, lat), (180, lat))` for an ordered
+/// unwrapped chart segment from the lower longitude `west` to the higher
+/// longitude `east`. Latitude and Z/M are interpolated at the same affine
+/// fraction along that chart segment.
 fn crossing_points(west: Point, east: Point) -> (Point, Point) {
-    let (latitude, fraction) = if west.x.abs() == 180.0 {
-        (west.y, 0.0)
-    } else if east.x.abs() == 180.0 {
-        (east.y, 1.0)
-    } else {
-        crossing_latitude_great_circle(west, east)
+    let (latitude, fraction) = crossing_latitude_and_fraction(west, east);
+    let interpolate_ordinate = |start: Option<f64>, end: Option<f64>| match (start, end) {
+        (Some(start), Some(end)) => Some(interpolate_subdivision_ordinate(start, end, fraction)),
+        _ => None,
     };
-    let z = interpolate_optional(west.z(), east.z(), fraction);
-    let m = interpolate_optional(west.m(), east.m(), fraction);
+    let z = interpolate_ordinate(west.z(), east.z());
+    let m = interpolate_ordinate(west.m(), east.m());
     let make = |lon: f64| {
         Point::new_axes(lon, latitude, ZOrdinate(z), MOrdinate(m))
             .expect("seam coordinates are finite")
@@ -127,66 +127,42 @@ pub(crate) fn crossing_latitude_in_frame(
     if start_longitude == end_longitude {
         return start.y;
     }
-    let (start, end) = if start_longitude < end_longitude {
-        (start, end)
-    } else {
-        (end, start)
-    };
     let longitude_scale = axis.unit().radians_per_unit().to_degrees();
     let latitude_scale = frame.latitude_unit().radians_per_unit().to_degrees();
-    let (latitude, _) = crossing_latitude_great_circle(
-        Point::new_raw_xy(start.x * longitude_scale, start.y * latitude_scale),
-        Point::new_raw_xy(end.x * longitude_scale, end.y * latitude_scale),
-    );
+    let (west, east) = if start_longitude < end_longitude {
+        (
+            Point::new_raw_xy(start_longitude * longitude_scale, start.y * latitude_scale),
+            Point::new_raw_xy(end_longitude * longitude_scale, end.y * latitude_scale),
+        )
+    } else {
+        (
+            Point::new_raw_xy(end_longitude * longitude_scale, end.y * latitude_scale),
+            Point::new_raw_xy(start_longitude * longitude_scale, start.y * latitude_scale),
+        )
+    };
+    let (latitude, _) = crossing_latitude_and_fraction(west, east);
     latitude / latitude_scale
 }
 
-fn unit_sphere(point: Point) -> [f64; 3] {
-    let (lon, lat) = (point.x.to_radians(), point.y.to_radians());
-    [lon.cos() * lat.cos(), lon.sin() * lat.cos(), lat.sin()]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn norm(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
-
-/// Great-circle crossing latitude (degrees) and the along-arc fraction of the
-/// crossing for Z/M interpolation. The plane
-/// through both points crossed with the meridian plane `-Y` lands in the XZ
-/// plane; the segment direction guarantees the antimeridian (x <= 0) branch.
-fn crossing_latitude_great_circle(start: Point, end: Point) -> (f64, f64) {
-    let p1 = unit_sphere(start);
-    let p2 = unit_sphere(end);
-    let n1 = cross(p1, p2);
-    // cross(n1, (0, -1, 0)) spelled out.
-    let intersection = [n1[2], 0.0, -n1[0]];
-    let length = norm(intersection);
-    debug_assert!(intersection[0] <= 0.0, "crossing is on the antimeridian");
+/// Return the seam latitude and affine fraction for an ordered chart segment.
+///
+/// The endpoints are canonical chart longitudes, with `west` below `east`.
+/// A seam endpoint remains the exact source ordinate; otherwise the crossing
+/// fraction is the linear distance from `west` to −180 over the full
+/// unwrapped interval.
+fn crossing_latitude_and_fraction(west: Point, east: Point) -> (f64, f64) {
+    if west.x.abs() == 180.0 {
+        return (west.y, 0.0);
+    }
+    if east.x.abs() == 180.0 {
+        return (east.y, 1.0);
+    }
+    let west_distance = west.x + 180.0;
+    let east_distance = 180.0 - east.x;
+    let fraction = west_distance / (west_distance + east_distance);
     // `+ 0.0` canonicalizes a negative-zero crossing latitude.
-    let latitude = (intersection[2] / length).asin().to_degrees() + 0.0;
-    let crossing = [
-        intersection[0] / length,
-        intersection[1] / length,
-        intersection[2] / length,
-    ];
-    let arc = |a: [f64; 3], b: [f64; 3]| norm(cross(a, b)).atan2(dot(a, b));
-    let total = arc(p1, p2);
-    let fraction = if total > 0.0 {
-        (arc(p1, crossing) / total).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (latitude, fraction)
+    (
+        interpolate_subdivision_ordinate(west.y, east.y, fraction) + 0.0,
+        fraction,
+    )
 }

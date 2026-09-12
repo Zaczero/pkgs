@@ -774,8 +774,8 @@ impl AreaMembership {
                             polygon: polygon as u32,
                             min_x: shell.min_x,
                             max_x: shell.max_x,
-                            // Great-circle seam vertices can bow beyond the
-                            // source ring's vertex latitude extrema.
+                            // Chart seam vertices can extend beyond the source
+                            // ring's vertex latitude extrema.
                             y_min: if shell.south_pole {
                                 -shell.pole
                             } else {

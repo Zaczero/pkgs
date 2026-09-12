@@ -67,8 +67,8 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Wgs84DefaultCrs {
 }
 
 pub(crate) fn require_antimeridian_crs(crs: Option<&str>) -> PyResult<()> {
-    // Same frame contract as `split_antimeridian`: any geographic (degree)
-    // CRS or CRS-free lon/lat; a projected frame has no antimeridian.
+    // Same frame contract as `split_antimeridian`: any geographic CRS or
+    // CRS-free lon/lat; a projected frame has no antimeridian.
     if crs.is_some()
         && matches!(
             crate::crs::metric_model(crs)?,
