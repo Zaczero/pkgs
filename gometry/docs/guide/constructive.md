@@ -48,13 +48,16 @@ print(before_after(
 
 ### Controlling the shape of the buffer
 
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `quadrant_segments` | `8` | segments per quarter-circle; higher = rounder, more vertices |
-| `cap_style` | `'round'` | end-cap of open lines: `'round'`, `'flat'`, `'square'` |
-| `join_style` | `'round'` | corner style: `'round'`, `'miter'`, `'bevel'` |
-| `miter_limit` | `5.0` | with `join_style='miter'`, clip spikes when the miter would exceed `limit × distance` |
-| `side` | `'both'` | stroke side for linework: `'both'`, `'left'`, or `'right'` |
+The canonical [`buffer` API reference][gometry.Geometry.buffer] owns the
+current defaults and accepted values. The options control:
+
+| Parameter | Effect |
+|-----------|---------|
+| `quadrant_segments` | segments per quarter-circle; higher = rounder, more vertices |
+| `cap_style` | end-cap of open lines: `'round'`, `'flat'`, `'square'` |
+| `join_style` | corner style: `'round'`, `'miter'`, `'bevel'` |
+| `miter_limit` | with `join_style='miter'`, clip spikes when the miter would exceed `limit × distance` |
+| `side` | stroke side for linework: `'both'`, `'left'`, or `'right'` |
 
 A round cap adds a half-disc at each line end; a flat cap stops dead at the
 endpoint.
@@ -290,7 +293,10 @@ only raise vertex density. See [CRS, units & measurement](crs.md) for the
 `max_length` metric. The `max_length` path audits the emitted binary64 chords;
 when rounding makes the endpoint-preserving output unable to satisfy the bound,
 it raises `GeometryError` instead of moving an original vertex. `fraction=` has
-no unit and cannot be combined with `unit=`:
+no unit and cannot be combined with `unit=`. A request that would generate more
+than **16,000,000** output items is refused with a
+[`GeometryError`][gometry.GeometryError] whose message
+names the operation, produced count, limit, and controlling parameter:
 
 ```python exec="on" html="true"
 from _figures import panels, with_vertices
@@ -424,7 +430,7 @@ returns only that circle's radius. On arrays, the radius method returns a
 read-only `float64` NumPy column.
 
 !!! note "Choose the triangulation"
-    `method='constrained'` accepts `refine`, `min_angle`, and `max_area` for
+    `method='constrained'` accepts `min_angle` and `max_area` for
     constrained refinement; `method='earcut'` is the direct polygon-interior
     triangulation; `method='delaunay'` needs only the input vertices.
     [`voronoi_edges`][gometry.Geometry.voronoi_edges] returns the cell boundaries
@@ -434,9 +440,13 @@ read-only `float64` NumPy column.
     [`Groups`][gometry.Groups].
     [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize] is row-wise and returns
     [`Groups`][gometry.Groups]; pass the array directly to either free function to opt into one
-    pooled graph. CDT
-    `min_angle`/`max_area` refinement targets are best-effort on degenerate or
-    sliver inputs; the result is still a valid conforming triangulation.
+    pooled graph. Constrained
+    `min_angle`/`max_area` refinement is bounded at 16,000,000 generated
+    vertices. A request whose estimated work exceeds that limit, or whose
+    quality cannot be satisfied within it, raises a
+    [`GeometryError`][gometry.GeometryError] naming the limit rather than
+    returning an unconstrained result; relax the refinement targets when that
+    happens.
 
 ## Z and M through constructive ops
 

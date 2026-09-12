@@ -1,5 +1,5 @@
 ---
-description: A blazing-fast geospatial engine for Python, written in Rust. Geometry, geodesy, CRS, and H3/S2 grids with no GEOS, GDAL, or system PROJ to install.
+description: A geospatial engine for Python, written in Rust. Geometry, geodesy, CRS, and H3/S2 grids with no GEOS, GDAL, or system PROJ to install.
 hide:
   - navigation
   - toc
@@ -11,11 +11,12 @@ hide:
 
 # One engine, one mental model
 
-A **blazing-fast** geospatial engine for Python, written in Rust. gometry replaces the
+A geospatial engine for Python, written in Rust. gometry replaces the
 day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coherent
 package — no GEOS, no GDAL, no system PROJ.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }
+[Installation](get-started/installation.md){ .md-button }
 [User guide](guide/index.md){ .md-button }
 
 </div>
@@ -56,7 +57,7 @@ frame's own answer, which at this latitude Web Mercator inflates 2.3 times.
 
     [:octicons-arrow-right-24: Measurement & the CRS](guide/crs.md)
 
--   :material-flash:{ .lg .middle } **Rust-fast, vectorized**
+-   :material-flash:{ .lg .middle } **Native, vectorized**
 
     ---
 
@@ -90,11 +91,13 @@ longitude and latitude values remain in the CRS's native angular units; the peri
 seam, pole, and prime meridian come from that same frame. Pass
 `unit='meters'` for forced SI, or reproject with [`geom.to_crs(...)`][gometry.Geometry.to_crs] to change the frame.
 
-### Fast without awkwardness
+### Batched without hidden loops
 
-The hot paths are Rust. Predicates, overlay, buffering, geodesics, and coverage run as
-batched kernels over packed, GeoArrow-compatible buffers — so a million-point [`contains`][gometry.contains]
-is one call, not a Python loop. Grid `cover` factories materialize typed cell arrays;
+Geometry kernels are implemented in Rust. Predicates, overlay, buffering, geodesics,
+and coverage run as
+batched kernels over packed, GeoArrow-compatible buffers, so bulk
+[`contains`][gometry.contains] work is one call rather than a Python loop. Grid
+`cover` factories materialize typed cell arrays;
 use free geometry predicates for exact source checks.
 
 ### Declare, transform, refine
@@ -140,3 +143,6 @@ spelling, documented and searchable in the migration guide.
     <small>Signatures and behavior grouped by concept</small>
   </a>
 </nav>
+
+For questions, bug reports, and security disclosures, see
+[Support](about/support.md) and the [issue tracker](https://github.com/Zaczero/pkgs/issues).

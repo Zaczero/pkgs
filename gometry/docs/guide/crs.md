@@ -549,7 +549,7 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
 
 ## Picking a projected CRS automatically
 
-When you want *planar* measurement — for speed, or because a downstream tool wants
+When you want *planar* measurement — because a downstream tool wants
 projected coordinates — reproject to a CRS whose units are meters. Call
 [`geom.estimate_local_crs()`][gometry.Geometry.estimate_local_crs] on the geometry
 or array whose full extent must fit. It prefers a datum-aware

@@ -5,12 +5,12 @@
 <h1 align="center">gometry</h1>
 
 <p align="center">
-  <strong>Blazing-fast geospatial engine for Python</strong>, written in Rust.<br>
+  <strong>Geospatial engine for Python</strong>, written in Rust.<br>
   One package for geometry, CRS, geodesy, grids, and spatial indexing.
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/p/gometry"><img src="https://shields.monicz.dev/pypi/pyversions/gometry" alt="PyPI - Python Version"></a>
+  <a href="https://pypi.org/project/gometry/"><img src="https://shields.monicz.dev/pypi/pyversions/gometry" alt="PyPI - Python Version"></a>
   <a href="https://liberapay.com/Zaczero/"><img src="https://shields.monicz.dev/liberapay/patrons/Zaczero?logo=liberapay&amp;label=Patrons" alt="Liberapay Patrons"></a>
   <a href="https://github.com/sponsors/Zaczero"><img src="https://shields.monicz.dev/github/sponsors/Zaczero?logo=github&amp;label=Sponsors&amp;color=%23db61a2" alt="GitHub Sponsors"></a>
 </p>
@@ -37,14 +37,14 @@
 - **Vectorized in Rust** — predicates, overlays, buffering, geodesics, and
   coverage run as batched kernels over packed buffers and return NumPy arrays.
   The same names work on a `Geometry` or on a Rust-owned `GeometryArray`
-- **Interchange without conversion** — [GeoArrow](https://geoarrow.org/) packed
-  arrays for homogeneous XY/XYZ/XYM/XYZM geometries, WKB fallback for mixed
-  types, and WKT/WKB/EWKB/GeoJSON codecs
+- **Interchange across typed boundaries** — [GeoArrow](https://geoarrow.org/)
+  packed arrays for homogeneous XY/XYZ/XYM/XYZM geometries, WKB fallback for
+  mixed types, and WKT/WKB/EWKB/GeoJSON codecs
 - **Grids and indexes on one geometry type** — H3, S2, geohash, and XYZ tiles
   share a typed `CellArray`; spatial indexes keep bounding-box `candidates`
   separate from exact `query`
-- **Millimetre-accurate geodesics** on the ellipsoid, with coordinate-epoch
-  support and `unit='planar'` / `unit='meters'` overrides
+- **Ellipsoidal geodesics** with coordinate-epoch support and
+  `unit='planar'` / `unit='meters'` overrides
 - **Typed** — stubs, narrowed signatures, public cross-grid protocols, and a
   structured exception hierarchy
 - **Apache-2.0 OR MIT** · **Python ≥ 3.11**
@@ -53,8 +53,9 @@
 
 One `area` call, two answers: the geometry carries `crs=4326`, so it measures in
 geodesic **square metres**, and `unit='planar'` drops to raw coordinate units.
-Likewise, `buffer(500)` on a geographic CRS treats `500` as metres through its
-metric behavior.
+Likewise, `buffer(500)` on a geographic CRS treats `500` as metres through a
+bounded local-projection approximation; see the
+[buffer and CRS guide](https://gometry.monicz.dev/guide/crs/).
 
 ```python
 import gometry as gm

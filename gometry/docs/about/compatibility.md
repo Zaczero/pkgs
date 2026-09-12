@@ -9,6 +9,11 @@ GDAL, or PROJ. Incompatible public removals wait for a major release.
 
 ## Runtime and platform matrix
 
+The rows below are the package metadata's declared runtime targets. A published
+wheel or a successful source build is the evidence that a particular target is
+installable; this table does not promise a wheel for every target on every
+release.
+
 | Surface | Supported |
 | --- | --- |
 | CPython | 3.11 or newer |
@@ -26,8 +31,10 @@ source-build prerequisites.
 ## Optional integration matrix
 
 Optional dependencies are not imported by `import gometry`. Minimum package
-requirements come from the published package metadata. Each adapter defines its
-copy, CRS, epoch, missing-row, and loss behavior.
+requirements come from the published package metadata. The table names the
+supported entry points and known boundary differences; it is not a drop-in
+compatibility claim for the listed ecosystems. Each adapter defines its copy,
+CRS, epoch, missing-row, and loss behavior.
 
 | Boundary | Extra and minimum dependency | Supported entry points | Important boundary behavior |
 | --- | --- | --- | --- |

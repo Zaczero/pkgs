@@ -14,7 +14,7 @@ and are not reproduced here.
 
 ## Producing a run
 
-```bash
+```bash title="template: replace <run-id> with the identifier printed by the first command"
 uv run python benches/drivers/bench.py --profile release
 uv run python benches/drivers/bench.py --analyze target/bench/results/<run-id>/run.json
 ```
