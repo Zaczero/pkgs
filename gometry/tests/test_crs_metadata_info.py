@@ -4,6 +4,7 @@ runtime config, cache info, and the PROJ authority metadata surface.
 
 import json
 import math
+import re
 from typing import Any, cast
 
 import gometry as gm
@@ -803,9 +804,7 @@ def test_utm_catalog_matches_the_named_datum_prefix() -> None:
     nad83 = names('NAD83')
     assert 'NAD83 / UTM zone 18N' in nad83
     assert all(name.startswith('NAD83 / UTM zone ') for name in nad83)
-    assert not any(
-        'HARN' in name or 'CSRS' in name or '2011' in name for name in nad83
-    )
+    assert not any('HARN' in name or 'CSRS' in name or '2011' in name for name in nad83)
 
     csrs = names('NAD83(CSRS)')
     assert 'NAD83(CSRS) / UTM zone 18N' in csrs
@@ -1002,65 +1001,76 @@ def test_crs_operations_dict_cache_isolation() -> None:
     assert gm.CRS(4326).operation(3857) == cold_op
 
 
-def _bundled_proj_db_src():
-    """Locate the generated proj.db matching the bundled runtime."""
-    import os
-    import sqlite3
-    from pathlib import Path
-
-    engine = gm.crs_engine()
-    expected = engine['database_metadata']
-    search_path = engine['search_path']
-    if not isinstance(search_path, str) or not search_path:
-        pytest.fail(
-            f'bundled PROJ did not expose a non-empty search path: {search_path!r}'
-        )
-    candidates = [
-        Path(path).resolve() / 'proj.db'
-        for path in search_path.split(os.pathsep)
-        if path
-    ]
-    identity_keys = (
-        'PROJ.VERSION',
-        'DATABASE.LAYOUT.VERSION.MAJOR',
-        'DATABASE.LAYOUT.VERSION.MINOR',
-    )
-    for candidate in candidates:
-        if not candidate.is_file():
-            continue
-        try:
-            con = sqlite3.connect(candidate.as_uri() + '?mode=ro', uri=True)
-            try:
-                metadata = dict(con.execute('SELECT key, value FROM metadata'))
-            finally:
-                con.close()
-        except sqlite3.Error:
-            continue
-        if all(metadata.get(key) == expected[key] for key in identity_keys):
-            return candidate
-    pytest.fail(
-        f'no generated proj-sys proj.db in runtime search path {search_path!r} '
-        f'matches bundled PROJ {engine["version"]} metadata; '
-        'build gometry before this test'
-    )
+_EMBEDDED_PROJ_DB_URI = re.compile(
+    r'file:/proj\.db\?immutable=1&ptr=(?P<ptr>[0-9]+)&'
+    r'sz=(?P<size>[0-9]+)&max=(?P<max_size>[0-9]+)&vfs=(?P<vfs>[^&]+)\Z'
+)
 
 
-def _copy_proj_db_with_4326_name(src, dest_dir, name: str):
+def _copy_proj_db_with_4326_name(dest_dir, name: str):
+    """Copy the executing PROJ database and mutate its WGS 84 row."""
+    import ctypes
     import shutil
     import sqlite3
     from pathlib import Path
+    from urllib.parse import unquote, urlsplit
 
+    engine = gm.crs_engine()
+    expected = engine['database_metadata']
+    database_path = engine['database_path']
+    if not isinstance(database_path, str) or not database_path:
+        pytest.fail(f'bundled PROJ did not expose a database path: {database_path!r}')
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     db = dest_dir / 'proj.db'
-    shutil.copy(src, db)
+    if database_path.startswith('file:/proj.db?'):
+        match = _EMBEDDED_PROJ_DB_URI.fullmatch(database_path)
+        if match is None or match['size'] != match['max_size']:
+            pytest.fail(f'unsupported embedded PROJ database URI: {database_path!r}')
+        pointer = int(match['ptr'])
+        size = int(match['size'])
+        if pointer <= 0 or size <= 0:
+            pytest.fail(
+                f'embedded PROJ database URI has invalid pointer/size: '
+                f'{database_path!r}'
+            )
+        # PROJ 9.6.2's factory.cpp builds this immutable URI from its own
+        # static pj_get_embedded_proj_db buffer; copy that trusted buffer now.
+        try:
+            payload = ctypes.string_at(pointer, size)
+        except (OverflowError, ValueError) as error:
+            pytest.fail(f'could not copy embedded PROJ database: {error}')
+        db.write_bytes(payload)
+    else:
+        parsed = urlsplit(database_path)
+        if parsed.scheme == 'file':
+            if (
+                parsed.netloc not in ('', 'localhost')
+                or parsed.query
+                or parsed.fragment
+            ):
+                pytest.fail(f'unsupported PROJ database URI: {database_path!r}')
+            source = Path(unquote(parsed.path))
+        else:
+            source = Path(database_path)
+        if not source.is_file():
+            pytest.fail(f'PROJ database path is not a readable file: {database_path!r}')
+        shutil.copyfile(source, db)
     con = sqlite3.connect(db)
-    con.execute(
-        "UPDATE geodetic_crs SET name=? WHERE code=4326 AND auth_name='EPSG'",
-        (name,),
-    )
-    con.commit()
-    con.close()
+    try:
+        metadata = dict(con.execute('SELECT key, value FROM metadata'))
+        if any(metadata.get(key) != value for key, value in expected.items()):
+            pytest.fail(
+                f'copied PROJ database metadata does not match executing '
+                f'PROJ {engine["version"]}: {metadata!r}'
+            )
+        con.execute(
+            "UPDATE geodetic_crs SET name=? WHERE code=4326 AND auth_name='EPSG'",
+            (name,),
+        )
+        con.commit()
+    finally:
+        con.close()
     return dest_dir
 
 
@@ -1069,9 +1079,8 @@ def test_crs_receiver_info_invalidates_on_configure_only() -> None:
     import shutil
     import tempfile
 
-    src = _bundled_proj_db_src()
     with tempfile.TemporaryDirectory() as tmp:
-        path = _copy_proj_db_with_4326_name(src, tmp, 'STALE_CONFIGURE_ONLY')
+        path = _copy_proj_db_with_4326_name(tmp, 'STALE_CONFIGURE_ONLY')
         crs = gm.CRS(4326)
         geom_crs = gm.Point(1.0, 2.0, crs=4326).crs
         assert crs.info['name'] == 'WGS 84'
@@ -1109,9 +1118,8 @@ def test_crs_receiver_info_invalidates_on_clear_only() -> None:
     import tempfile
     from pathlib import Path
 
-    src = _bundled_proj_db_src()
     with tempfile.TemporaryDirectory() as tmp:
-        path = _copy_proj_db_with_4326_name(src, tmp, 'STALE_CLEAR_A')
+        path = _copy_proj_db_with_4326_name(tmp, 'STALE_CLEAR_A')
         try:
             gm.crs_configure(search_paths=str(path))
             crs = gm.CRS(4326)
@@ -1139,11 +1147,10 @@ def test_crs_receiver_info_invalidates_on_reconfigure() -> None:
     import tempfile
     from pathlib import Path
 
-    src = _bundled_proj_db_src()
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        path_a = _copy_proj_db_with_4326_name(src, tmp_path / 'a', 'STALE_PATH_A')
-        path_b = _copy_proj_db_with_4326_name(src, tmp_path / 'b', 'STALE_PATH_B')
+        path_a = _copy_proj_db_with_4326_name(tmp_path / 'a', 'STALE_PATH_A')
+        path_b = _copy_proj_db_with_4326_name(tmp_path / 'b', 'STALE_PATH_B')
         try:
             gm.crs_configure(search_paths=str(path_a))
             crs = gm.CRS(4326)

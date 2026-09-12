@@ -112,6 +112,12 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     config.define("BUILD_PROJINFO", "OFF");
     config.define("BUILD_PROJSYNC", "OFF");
     config.define("ENABLE_CURL", "OFF");
+    // CMake invokes the native compilers itself, so pass Cargo's canonical
+    // source/build remaps through to the C and C++ objects it produces.
+    configure_path_remapping(&mut config);
+    // The static build embeds PROJ's resources. Do not retain the temporary
+    // install prefix as a dead filesystem fallback in the extension.
+    config.define("EMBED_PROJ_DATA_PATH", "OFF");
 
     // we check here whether or not these variables are set by cargo
     // if they are set, `libsqlite3-sys` was built with the bundled feature
@@ -195,4 +201,29 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     }
 
     Ok(proj.join("include"))
+}
+
+fn configure_path_remapping(config: &mut cmake::Config) {
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        return;
+    }
+    if let Some(remap) = env::var_os("CARGO_TRIM_PATHS_REMAP") {
+        for pair in env::split_paths(&remap).filter(|pair| !pair.as_os_str().is_empty()) {
+            add_file_prefix_map(config, pair.display());
+        }
+    }
+    if let Some(sqlite_include) = env::var_os("DEP_SQLITE3_INCLUDE") {
+        add_file_prefix_map(
+            config,
+            format!(
+                "{}=/cargo/libsqlite3",
+                PathBuf::from(sqlite_include).display()
+            ),
+        );
+    }
+}
+
+fn add_file_prefix_map(config: &mut cmake::Config, mapping: impl std::fmt::Display) {
+    let flag = format!("-ffile-prefix-map={mapping}");
+    config.cflag(&flag).cxxflag(&flag);
 }

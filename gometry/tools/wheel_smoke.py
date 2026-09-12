@@ -26,7 +26,12 @@ import textwrap
 import tomllib
 import venv
 import zipfile
+from itertools import chain
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 MONOREPO = ROOT.parent
@@ -50,9 +55,10 @@ TEXT_SUFFIXES = frozenset({
     '.yml',
 })
 ABSOLUTE_BUILD_PATH = re.compile(
-    r'(?i)(?:/home/[^/\s]+/|/Users/[^/\s]+/|/tmp/|/private/tmp/|'
-    r'/var/folders/|[a-z]:\\(?:Users|Temp)\\)'
+    r'(?i)(?:/home/[^/\s]+/|/Users/[^/\s]+/|/nix/store/|/tmp/|'
+    r'/private/tmp/|/var/folders/|[a-z]:\\(?:Users|Temp)\\)'
 )
+PRINTABLE_STRING = re.compile(rb'[\x20-\x7e]{4,}')
 # These are named Rust test fixtures, not build roots. Keep this exception
 # narrower than the general temporary-path check.
 NON_BUILD_PATH_PREFIXES = ('/tmp/gometry-crs-',)  # noqa: S108
@@ -156,9 +162,22 @@ def _is_text_member(name: str) -> bool:
     }
 
 
-def _content_leaks(members: dict[str, str]) -> list[str]:
+def _printable_strings(value: bytes) -> Iterator[str]:
+    for match in PRINTABLE_STRING.finditer(value):
+        yield match.group().decode('ascii')
+
+
+def _content_leaks(
+    members: dict[str, str],
+    binary_members: dict[str, bytes] | None = None,
+) -> list[str]:
     leaks: list[str] = []
-    for name, value in members.items():
+    binary_values = (
+        (name, value)
+        for name, payload in (binary_members or {}).items()
+        for value in _printable_strings(payload)
+    )
+    for name, value in chain(members.items(), binary_values):
         for match in ABSOLUTE_BUILD_PATH.finditer(value):
             if any(
                 value.startswith(prefix, match.start())
@@ -465,6 +484,7 @@ def verify_sdist_dependency_sources(path: Path) -> None:
 
 
 def inspect_wheel(path: Path) -> str:
+    extension_suffixes = ('.so', '.pyd', '.dylib')
     with zipfile.ZipFile(path) as wheel:
         names = set(wheel.namelist())
         text_members = {
@@ -472,13 +492,14 @@ def inspect_wheel(path: Path) -> str:
             for name in names
             if _is_text_member(name)
         }
+        binary_members = {
+            name: wheel.read(name)
+            for name in names
+            if name.startswith('gometry/_lib') and name.endswith(extension_suffixes)
+        }
     package = {name for name in names if name.startswith('gometry/')}
     dist_info = {name for name in names if '.dist-info/' in name}
-    extension_suffixes = ('.so', '.pyd', '.dylib')
-    has_extension = any(
-        name.startswith('gometry/_lib') and name.endswith(extension_suffixes)
-        for name in package
-    )
+    has_extension = bool(binary_members)
     required = {'gometry/_lib.pyi', 'gometry/py.typed'}
     missing = sorted(required - names)
     required_licenses = {
@@ -518,8 +539,8 @@ def inspect_wheel(path: Path) -> str:
         raise AssertionError(
             f'wheel contains generated Python bytecode: {generated_members[:20]}'
         )
-    if leaks := _content_leaks(text_members):
-        raise AssertionError(f'wheel metadata leaks absolute build paths: {leaks}')
+    if leaks := _content_leaks(text_members, binary_members):
+        raise AssertionError(f'wheel contents leak absolute build paths: {leaks}')
     if pth_files and not package:
         raise AssertionError(f'wheel is .pth-only: {pth_files}')
     metadata_names = [name for name in dist_info if name.endswith('/METADATA')]
