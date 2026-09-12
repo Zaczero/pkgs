@@ -345,6 +345,13 @@ fn write_geojson_polygons<const INCLUDE_Z: bool>(out: &mut String, polygons: &[P
 }
 
 fn write_geojson_number(out: &mut String, value: f64) {
+    // The shortest formatter canonicalizes both zero spellings to ``0``, which
+    // drops the sign bit. Spell it with a fraction: readers that infer number
+    // types parse bare ``-0`` as an integer zero and lose the sign again.
+    if value.to_bits() == (-0.0_f64).to_bits() {
+        out.push_str("-0.0");
+        return;
+    }
     let mut buffer = zmij::Buffer::new();
     out.push_str(buffer.format_finite(value));
 }

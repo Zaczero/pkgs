@@ -179,7 +179,9 @@ fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
         let native = coordinate.native().x;
         let wrapped = coordinate.longitude().get();
         let positive_seam = native.to_bits() == frame.longitude().half_period().to_bits();
-        canonical &= positive_seam || native.to_bits() == wrapped.to_bits();
+        let ordinary_identity = native.to_bits() == wrapped.to_bits()
+            || (native.to_bits() == (-0.0_f64).to_bits() && wrapped.to_bits() == 0.0_f64.to_bits());
+        canonical &= positive_seam || ordinary_identity;
     });
     canonical
 }
