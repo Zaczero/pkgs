@@ -600,11 +600,13 @@ pub(super) fn build_box_shape(
             // the minimum number of equal-longitude chords at the documented
             // angular limit.
             if let Some(crs) = crs
-                && (-180.0..=180.0).contains(&minx)
-                && (-180.0..=180.0).contains(&maxx)
-                && (-90.0..=90.0).contains(&miny)
-                && (-90.0..=90.0).contains(&maxy)
                 && let Some(frame) = crs::info(crs).map_err(PyErr::from)?.geographic_frame()
+                && (-frame.longitude().half_period()..=frame.longitude().half_period())
+                    .contains(&minx)
+                && (-frame.longitude().half_period()..=frame.longitude().half_period())
+                    .contains(&maxx)
+                && (-frame.pole()..=frame.pole()).contains(&miny)
+                && (-frame.pole()..=frame.pole()).contains(&maxy)
                 && minx < maxx
                 && miny < maxy
             {

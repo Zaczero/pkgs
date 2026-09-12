@@ -27,6 +27,41 @@ RADIAN_CRS = (
 )
 
 
+def _angular_frame_parameters(crs: object) -> tuple[float, float, float]:
+    info = gm.CRS(crs)
+    longitude_factor = float(info.axes[0]['unit_conversion_factor'])
+    latitude_factor = float(info.axes[1]['unit_conversion_factor'])
+    prime_meridian = info.prime_meridian
+    prime_meridian_radians = (
+        0.0
+        if prime_meridian is None
+        else float(prime_meridian['longitude'])
+        * float(prime_meridian['unit_conversion_factor'])
+    )
+    return longitude_factor, latitude_factor, prime_meridian_radians
+
+
+def _native_box_bounds(
+    crs: object, physical_bounds: tuple[float, float, float, float]
+) -> tuple[float, float, float, float]:
+    longitude_factor, latitude_factor, prime_meridian = _angular_frame_parameters(crs)
+    minx, miny, maxx, maxy = physical_bounds
+    return (
+        (math.radians(minx) - prime_meridian) / longitude_factor,
+        math.radians(miny) / latitude_factor,
+        (math.radians(maxx) - prime_meridian) / longitude_factor,
+        math.radians(maxy) / latitude_factor,
+    )
+
+
+def _physical_coordinates(box: gm.Geometry, crs: object) -> list[tuple[float, float]]:
+    longitude_factor, latitude_factor, prime_meridian = _angular_frame_parameters(crs)
+    return [
+        (float(x) * longitude_factor + prime_meridian, float(y) * latitude_factor)
+        for x, y in gm.get_coordinates(box).tolist()
+    ]
+
+
 def test_huge_coordinate_distance_is_panic_free() -> None:
     """Huge-but-finite coordinates return a finite distance, never a PanicException."""
     huge = gm.LineString([(-1e308, 0), (1e308, 0)])
@@ -597,6 +632,56 @@ def test_non_degree_geographic_crs_uses_native_units_for_geodesic_metrics() -> N
     assert gm.distance(gm.Point(0, 0, crs=4807), gm.Point(1, 0, crs=4807)) == pytest.approx(
         100189.3, rel=1e-6
     )
+
+
+@pytest.mark.parametrize(
+    ('physical_bounds', 'grad_latitude_above_90', 'grad_longitude_above_180'),
+    [
+        pytest.param(
+            (0.0, 84.0, 90.0, 85.0),
+            True,
+            False,
+            id='grad-latitude-above-90',
+        ),
+        pytest.param(
+            (2.33722917, 40.0, 173.33722917, 45.0),
+            False,
+            True,
+            id='grad-longitude-above-180',
+        ),
+    ],
+)
+def test_geographic_box_subdivision_uses_native_angular_ranges(
+    physical_bounds: tuple[float, float, float, float],
+    grad_latitude_above_90: bool,
+    grad_longitude_above_180: bool,
+) -> None:
+    """Equivalent angular frames retain the same stored physical box geometry."""
+    crss = (4326, RADIAN_CRS, 4807)
+    native_bounds = [_native_box_bounds(crs, physical_bounds) for crs in crss]
+    grad_bounds = native_bounds[-1]
+    if grad_latitude_above_90:
+        assert grad_bounds[1] > 90.0
+    if grad_longitude_above_180:
+        assert grad_bounds[2] > 180.0
+
+    boxes = [gm.box(*bounds, crs=crs) for crs, bounds in zip(crss, native_bounds, strict=True)]
+    for box, bounds in zip(boxes, native_bounds, strict=True):
+        assert box.bounds == bounds
+
+    reference = _physical_coordinates(boxes[0], crss[0])
+    assert len(reference) > 5
+    for box, crs in zip(boxes[1:], crss[1:], strict=True):
+        actual = _physical_coordinates(box, crs)
+        assert len(actual) == len(reference)
+        for actual_point, reference_point in zip(actual, reference, strict=True):
+            # Conversion round-trips are compared within a few binary64 ulps
+            # at unit scale; this is not a geometry-fidelity tolerance.
+            assert actual_point == pytest.approx(
+                reference_point,
+                rel=0.0,
+                abs=8.0 * math.ulp(1.0),
+            )
 
 
 def test_bound_geographic_crs_uses_its_typed_frame_for_metrics() -> None:

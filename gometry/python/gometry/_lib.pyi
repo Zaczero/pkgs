@@ -14069,9 +14069,11 @@ def box(
     crs : str or int, optional
         CRS label (EPSG code, authority string, or WKT); attached as metadata,
         coordinates are not transformed.
-        With a geographic CRS, horizontal sides are constant-latitude parallels
-        in the CRS-native angular coordinates, not corner-to-corner geodesics.
-        Material departures are tessellated with equal longitude chords.
+        With a geographic CRS, horizontal sides approximate constant-latitude
+        parallels in the CRS-native angular coordinates using equal-longitude
+        chord vertices, rather than corner-to-corner geodesics. See the
+        [CRS, units & measurement guide](https://gometry.monicz.dev/guide/crs/)
+        for the native-range scope and measured fidelity of this approximation.
 
     wrap : {'split'}, optional
         Antimeridian handling for geographic (EPSG:4326) boxes. ``'split'``
@@ -14212,9 +14214,11 @@ def boxes(
         broadcast numpy-style.
 
     crs : str or int, optional
-        CRS applied to every box. With a geographic CRS, horizontal
-        sides follow latitude parallels; material departures are tessellated
-        with equal longitude chords.
+        CRS applied to every box. With a geographic CRS, horizontal sides
+        approximate constant-latitude parallels in the CRS-native angular
+        coordinates using equal-longitude chord vertices. See the
+        [CRS, units & measurement guide](https://gometry.monicz.dev/guide/crs/)
+        for the native-range scope and measured fidelity of this approximation.
 
     wrap : {'split'}, optional
         Antimeridian handling for geographic (EPSG:4326) boxes — same as `box`.

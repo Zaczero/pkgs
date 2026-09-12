@@ -310,32 +310,6 @@ that intended algorithm** before construction — ordinary densify interpolates 
 stored edge model and does not synthesize a rhumb route. Split or otherwise
 disambiguate antipodal and antimeridian-sensitive paths.
 
-### Geographic box boundary fidelity
-
-For a geographic [`gm.box`][gometry.box] using ordinary non-wrapping bounds
-with positive width and height, the horizontal sides use equal-longitude
-vertices rather than one geodesic between the corners. The constructor sets
-the interval count to
-`ceil(Δλ / 0.247)` after converting the longitude span to radians, so each
-stored horizontal chord spans at most `0.247` radians (about `14.152°`).
-`gm.length` sums the shortest ellipsoidal geodesic between adjacent vertices;
-it therefore measures this stored chordal boundary, not the mathematical
-constant-latitude parallels named by the box bounds.
-
-The reference parallel length in the comparison below is
-`N(φ) cos(φ) Δλ`, where `N(φ) = a / sqrt(1 - e² sin²φ)` is the WGS 84
-prime-vertical radius (`a` is the semi-major axis and `e` the eccentricity);
-the angular values are in radians.
-
-For example, `gm.box(0, 44, 90, 45, crs=4326)` uses seven intervals on each
-horizontal side. On its northern side, the stored chords total
-`7,088,754.286 m`, while the WGS 84 parallel over the same 90° span is
-`7,096,215.158 m`; the stored boundary is therefore `7,460.872 m`
-(`0.105139%`) shorter. This is a measured example, not a per-call error
-bound. If a closer approximation is required, provide more intermediate
-vertices when constructing the polygon; `gm.length` will still measure the
-resulting stored chords.
-
 Geographic pairwise metrics — [`distance`][gometry.distance],
 [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance],
 [`nearest_points`][gometry.nearest_points], and
@@ -344,6 +318,65 @@ Filled `Polygon` and `MultiPolygon` interiors are unsupported and raise
 `CRSError`. Use `polygon.boundary()` for its geodesic boundary linework,
 `unit='planar'` for coordinate-space areal distance, or reproject to a suitable
 projected CRS.
+
+### Geographic box boundary fidelity
+
+For ordinary native-range, non-wrapping geographic [`gm.box`][gometry.box]
+calls with positive width and height, the horizontal sides use equal-longitude
+vertices rather than one geodesic between the corners. The constructor
+converts the longitude span to radians and sets the interval count to
+`ceil(Δλ / 0.247)`, so each stored horizontal chord spans at most `0.247`
+radians (about `14.152°`). The `wrap='split'` path remains the separate
+EPSG:4326 seam-splitting constructor.
+`gm.length` sums the shortest ellipsoidal geodesic between adjacent vertices;
+it therefore measures this stored chordal boundary, not the mathematical
+constant-latitude parallels named by the box bounds.
+
+The reference parallel length in the example below is
+`N(φ) cos(φ) Δλ`, where
+`N(φ) = a / sqrt(1 - e² sin²φ)` is the WGS 84 prime-vertical radius (`a` is the
+semi-major axis and `e` the eccentricity); the angular values are in radians.
+
+```python exec="on" source="block" result="text"
+import math
+
+import gometry as gm
+
+minx, miny, maxx, maxy = 0.0, 44.0, 90.0, 45.0
+box = gm.box(minx, miny, maxx, maxy, crs=4326)
+crs = gm.CRS(4326)
+coordinates = gm.get_coordinates(box).tolist()
+north_latitude = max(point[1] for point in coordinates)
+north = [point for point in coordinates if point[1] == north_latitude]
+chord_length = sum(
+    crs.geodesic_inverse(
+        left[0], left[1], right[0], right[1]
+    )["distance"]
+    for left, right in zip(north, north[1:])
+)
+ellipsoid = crs.ellipsoid
+a = ellipsoid["semi_major_metre"]
+flattening = 1.0 / ellipsoid["inverse_flattening"]
+eccentricity_squared = flattening * (2.0 - flattening)
+latitude = math.radians(north_latitude)
+longitude_span = math.radians(maxx - minx)
+parallel_length = (
+    a
+    / math.sqrt(1.0 - eccentricity_squared * math.sin(latitude) ** 2)
+    * math.cos(latitude)
+    * longitude_span
+)
+shortfall = parallel_length - chord_length
+print(f"northern-side chord intervals: {len(north) - 1}")
+print(f"northern-side chord length: {chord_length:,.3f} m")
+print(f"WGS 84 parallel reference: {parallel_length:,.3f} m")
+print(f"shortfall: {shortfall:,.3f} m ({shortfall / parallel_length * 100.0:.6f}%)")
+
+```
+
+This measured example is not a per-call error bound. If a closer approximation
+is required, provide more intermediate vertices when constructing the polygon;
+`gm.length` will still measure the resulting stored chords.
 
 ### Geographic point-to-segment accuracy
 
