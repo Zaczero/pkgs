@@ -11,7 +11,7 @@
 //! linear-referencing, and predicate modules.
 
 use crate::error::{ErrorKind, Result};
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::exact_arith::{ExactSign, two_sum};
 use crate::geometry::tessellation::exact::{
     ExactDyadic, round_ratio, round_sqrt_ratio, try_compare_ratios,
 };
@@ -2190,10 +2190,6 @@ pub(crate) fn lerp_point(start: Point, end: Point, fraction: f64) -> Point {
 /// The convex form keeps the result bounded by `max(|start|, |end|)` for
 /// `fraction` in `[0, 1]`, avoiding the `end - start` overflow class, and is
 /// exact at the endpoints (`fraction` 0 → `start`, 1 → `end`).
-/// Plain mul+add, NOT `mul_add`: scalar `mul_add` on the portable baseline
-/// (no FMA target feature) is a libm `fma` CALL per ordinate — the dominant
-/// cost of interpolation-heavy kernels. Fused rounding buys nothing here;
-/// every documented property above holds for the unfused form.
 pub(crate) fn interpolate_f64(start: f64, end: f64, fraction: f64) -> f64 {
     let value = start * (1.0 - fraction) + end * fraction;
     if value.is_finite() || !start.is_finite() || !end.is_finite() {
@@ -2204,6 +2200,33 @@ pub(crate) fn interpolate_f64(start: f64, end: f64, fraction: f64) -> f64 {
     // direct two products overflow with opposite signs.
     let scale = axis_pow2_scale(start.abs().max(end.abs()));
     (start * scale * (1.0 - fraction) + end * scale * fraction) / scale
+}
+
+/// Affine interpolation for emitted subdivision vertices. The error-free
+/// two-sum difference proves when `end - start` is exact; in that common case
+/// an FMA rounds the affine expression once. If the difference is inexact, the
+/// existing double-double accumulator handles that less common path; extreme
+/// intermediates still retain the bounded convex fallback. This keeps the
+/// double-double path off the ordinary translated-coordinate path.
+#[expect(
+    clippy::float_cmp,
+    reason = "zero and one endpoints and an exact two-sum residual are deliberate"
+)]
+pub(crate) fn interpolate_f64_correctly_rounded(start: f64, end: f64, fraction: f64) -> f64 {
+    if fraction == 0.0 {
+        return start;
+    }
+    if fraction == 1.0 {
+        return end;
+    }
+    let (difference, residual) = two_sum(end, -start);
+    if difference.is_finite() && residual == 0.0 {
+        let value = fraction.mul_add(difference, start);
+        if value.is_finite() {
+            return value;
+        }
+    }
+    dd_interpolate(start, end, (fraction, 0.0))
 }
 
 /// Fraction for a finite interpolation interval. Keep the established

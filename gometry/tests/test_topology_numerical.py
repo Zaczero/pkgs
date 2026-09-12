@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from itertools import pairwise
 
 import gometry as gm
@@ -185,6 +186,36 @@ def test_planar_segmentize_rounding_retry_keeps_emitted_chords_within_limit(
     ]
     assert chords
     assert max(chords) <= maximum
+
+
+def test_planar_segmentize_rounds_vertices_at_their_exact_parameters() -> None:
+    """Each inserted coordinate is the rounded affine point at its fraction."""
+    start = 1_000_000_000.0
+    end = start + 7.0
+    result = gm.LineString([(start, 0.0), (end, 0.0)]).segmentize(1.0)
+
+    expected = [
+        float(
+            Fraction.from_float(start) * Fraction(7 - step, 7)
+            + Fraction.from_float(end) * Fraction(step, 7)
+        )
+        for step in range(8)
+    ]
+    assert len(result.coords) == 8
+    assert [x for x, _ in result.coords] == expected
+    assert all(y == 0.0 for _, y in result.coords)
+
+
+def test_planar_segmentize_keeps_the_required_extra_piece_for_three_four_five() -> None:
+    """Correct vertex placement must not turn the strict bound into five pieces."""
+    result = gm.LineString([(0.0, 0.0), (3.0, 4.0)]).segmentize(1.0)
+    chords = [
+        math.hypot(right[0] - left[0], right[1] - left[1])
+        for left, right in pairwise(result.coords)
+    ]
+
+    assert len(result.coords) == 7
+    assert max(chords) <= 1.0
 
 
 def test_planar_segmentize_scales_opposing_extreme_endpoints_scalar_and_array() -> None:

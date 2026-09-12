@@ -303,6 +303,19 @@ def test_minimum_bounding_radius_is_crs_aware_with_planar_escape() -> None:
     ))
 
 
+def test_minimum_bounding_radius_does_not_accept_relative_containment_slack() -> None:
+    """A point just outside a diameter must participate in the exact circle."""
+    delta = 2.5e-13
+    points = gm.MultiPoint([(-1.0, 0.0), (1.0, 0.0), (0.0, 1.0 + delta)])
+
+    # The exact triangle circumcenter has y =
+    # ((1 + delta)**2 - 1) / (2 * (1 + delta)), so its circumradius is
+    # sqrt(1 + y**2), which rounds to 1.0 in binary64. A relative containment
+    # tolerance of 1e-12 instead accepts the third point inside the diameter
+    # and reports its distance from the diameter midpoint, 1 + delta.
+    assert points.minimum_bounding_radius() == 1.0
+
+
 def test_geographic_concave_hull_preserves_selected_input_vertices_exactly() -> None:
     line = gm.LineString(
         [

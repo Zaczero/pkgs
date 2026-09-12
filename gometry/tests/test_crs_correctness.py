@@ -25,6 +25,16 @@ RADIAN_CRS = (
     'PRIMEM["Greenwich",0],UNIT["radian",1],'
     'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
 )
+NEAR_UNIFORM_ENGCRS = """ENGCRS["Near-uniform custom",
+ EDATUM["Custom datum"],
+ CS[Cartesian,2],
+ AXIS["easting (X)",east,ORDER[1],LENGTHUNIT["metre",1]],
+ AXIS["northing (Y)",north,ORDER[2],LENGTHUNIT["custom",1.0000000005]]]"""
+UNIFORM_CUSTOM_ENGCRS = """ENGCRS["Uniform custom",
+ EDATUM["Custom datum"],
+ CS[Cartesian,2],
+ AXIS["easting (X)",east,ORDER[1],LENGTHUNIT["custom",1.0000000005]],
+ AXIS["northing (Y)",north,ORDER[2],LENGTHUNIT["custom",1.0000000005]]]"""
 
 
 def _angular_frame_parameters(crs: object) -> tuple[float, float, float]:
@@ -180,6 +190,24 @@ def test_foot_crs_default_metrics_are_native_units() -> None:
     assert distance_m == pytest.approx(10.0 * FOOT_UNIT_M)
     assert gm.dwithin(a, b, distance_m, unit='meters')
     assert not gm.dwithin(a, b, distance_m * 0.999, unit='meters')
+
+
+def test_custom_near_uniform_axes_are_not_substituted_for_metric_units() -> None:
+    """A near-equal but distinct axis factor must not be replaced by X's."""
+    uniform_a = gm.Point(1_000_000_000.0, 0.0, crs=UNIFORM_CUSTOM_ENGCRS)
+    uniform_b = gm.Point(2_000_000_000.0, 0.0, crs=UNIFORM_CUSTOM_ENGCRS)
+    assert gm.distance(uniform_a, uniform_b, unit='meters') == 1_000_000_000.5
+
+    northing_a = gm.Point(0.0, 1_000_000_000.0, crs=NEAR_UNIFORM_ENGCRS)
+    northing_b = gm.Point(0.0, 2_000_000_000.0, crs=NEAR_UNIFORM_ENGCRS)
+
+    with pytest.raises(gm.CRSError, match='different linear units'):
+        gm.distance(northing_a, northing_b, unit='meters')
+    with pytest.raises(gm.CRSError, match='axis units differ'):
+        gm.distance_3d(
+            gm.Point(0.0, 1_000_000_000.0, z=0.0, crs=NEAR_UNIFORM_ENGCRS),
+            gm.Point(0.0, 2_000_000_000.0, z=0.0, crs=NEAR_UNIFORM_ENGCRS),
+        )
 
 
 def test_foot_crs_default_distance_parameters_are_native_units() -> None:

@@ -282,6 +282,10 @@ pub(crate) fn metric_model_meters_at(
 /// linear axis factor. The X and Y axes must share one linear (length) unit;
 /// angular or non-uniform axes are rejected so explicit meter metrics are
 /// honestly SI.
+#[expect(
+    clippy::float_cmp,
+    reason = "unit conversion factors are exact CRS declarations, not approximate measurements"
+)]
 pub(crate) fn planar_to_metre(
     crs: &str,
     info: &CrsInfo,
@@ -311,10 +315,10 @@ pub(crate) fn planar_to_metre(
         CrsError::metric_units(crs, message)
     })?;
     let unit_value = unit.get();
-    if horizontal
-        .iter()
-        .any(|factor| (factor - unit_value).abs() > 1e-9)
-    {
+    // These are declared coordinate-system units, not measured quantities:
+    // accepting a near match would silently replace a custom axis factor with
+    // the first axis's factor.
+    if horizontal.iter().any(|factor| *factor != unit_value) {
         return fail("X and Y axes use different linear units; results would not be uniform");
     }
     Ok(unit)
@@ -351,6 +355,10 @@ pub(crate) fn ensure_3d_metric(crs: Option<&str>) -> Result<PositiveFiniteScale>
     ensure_3d_metric_at(Some(crs), &state)
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "unit conversion factors are exact CRS declarations, not approximate measurements"
+)]
 pub(crate) fn ensure_3d_metric_at(
     crs: Option<&str>,
     state: &crate::crs::RuntimeState,
@@ -367,10 +375,9 @@ pub(crate) fn ensure_3d_metric_at(
     };
     let unit = ensure_positive_finite_linear_unit(factors[0], fail)?;
     let unit_value = unit.get();
-    if factors
-        .iter()
-        .any(|factor| (factor - unit_value).abs() > 1e-9)
-    {
+    // A tolerance here would make a near-metre custom axis look like metres
+    // (and can substitute the first axis's factor for the declared one).
+    if factors.iter().any(|factor| *factor != unit_value) {
         return Err(fail(
             "axis units differ (e.g. meter vs foot); use one consistent linear unit",
         ));

@@ -39,12 +39,11 @@ impl PartialOrd for PolylabelCell {
 /// distance). The kernel runs in a unit frame — coordinates translated to the
 /// bounds midpoint and scaled by the half-extent — so squared terms can
 /// neither overflow (`1e155`-scale inputs) nor flush collinearity tests to
-/// zero (subnormal-scale inputs); containment tests use a scale-free relative
-/// epsilon.
+/// zero (subnormal-scale inputs); containment tests use the ordinary
+/// binary64 squared-distance comparison without scale-dependent slack.
 pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
     fn contains(center: Point, radius_sq: f64, point: Point) -> bool {
-        crate::geometry::segments::point_distance_squared(center, point)
-            <= radius_sq * (1.0 + 1e-12) + f64::MIN_POSITIVE
+        crate::geometry::segments::point_distance_squared(center, point) <= radius_sq
     }
     fn from_two(a: Point, b: Point) -> (Point, f64) {
         let center = Point::new_raw_xy(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
