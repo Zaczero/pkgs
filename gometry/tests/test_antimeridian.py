@@ -102,12 +102,14 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     })
     assert seam_lats == [40.0, 50.0]
     ring = [(-45, 40), (45, 40), (135, 40), (-135, 40)]
-    capped = gm.Polygon(ring).split_antimeridian()
+    source_cap = gm.Polygon(ring, crs=4326)
+    capped = source_cap.split_antimeridian()
     assert capped.geometry_type == 'Polygon'
     coords = list(cast('gm.Polygon', capped).exterior.coords)
     assert (180.0, 90.0) in coords
     assert (-180.0, 90.0) in coords
-    assert gm.contains(capped, gm.Point(0, 89.9))
+    assert gm.contains(source_cap, gm.Point(0, 89, crs=4326))
+    assert gm.contains(capped, gm.Point(0, 89.9, crs=4326))
     both = gm.from_geojson(
         '{"type": "Polygon", "coordinates": [[[100, 60], [175, 65], [-175, 65], [-120, 0], [-170, -85], [175, -85], [0, -68], [-90, 0], [-90, 80], [0, 85], [100, 60]]]}'
     ).split_antimeridian()
@@ -118,13 +120,21 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     assert canonical.to_wkt() == seam_ring.to_wkt()
     again = canonical.split_antimeridian()
     assert again.to_wkt() == canonical.to_wkt()
-    donut = gm.from_geojson(
+    donut_source = gm.from_geojson(
         '{"type": "Polygon", "coordinates": [[[170, 40], [-170, 40], [-170, 60], [170, 60], [170, 40]],[[175, 45], [-175, 45], [-175, 55], [175, 55], [175, 45]]]}',
         crs=4326,
-    ).split_antimeridian()
+    )
+    donut = donut_source.split_antimeridian()
     assert donut.geometry_type == 'MultiPolygon'
     halves = gm.parts(donut)
     assert len(halves) == 2
+    for point, expected in (
+        (gm.Point(172, 57, crs=4326), True),
+        (gm.Point(-172, 57, crs=4326), True),
+        (gm.Point(179, 50, crs=4326), False),
+    ):
+        assert gm.contains(donut_source, point) is expected
+        assert gm.contains(donut, point) is expected
     assert any(gm.contains(part, gm.Point(172, 57, crs=4326)) for part in halves)
     assert any(gm.contains(part, gm.Point(-172, 57, crs=4326)) for part in halves)
     assert not any(gm.contains(part, gm.Point(179, 50, crs=4326)) for part in halves)
@@ -317,11 +327,14 @@ def test_split_antimeridian_exact_world_band_and_xy_pole() -> None:
     split = band.split_antimeridian()
     assert split.to_wkt() == 'POLYGON ((-180 -30, 180 -30, 180 30, -180 30, -180 -30))'
     for longitude in (-179, 0, 179):
-        assert gm.contains(split.set_crs(None), gm.Point(longitude, 0))
+        point = gm.Point(longitude, 0, crs=4326)
+        assert gm.contains(band, point)
+        assert gm.contains(split, point)
     assert split.split_antimeridian().to_wkt() == split.to_wkt()
 
     cap = gm.Polygon([(-45, 40), (45, 40), (135, 40), (-135, 40)], crs=4326)
     fixed = cap.split_antimeridian()
+    assert gm.contains(cap, gm.Point(0, 89, crs=4326))
     assert gm.contains(fixed.set_crs(None), gm.Point(0, 89))
 
 
@@ -443,27 +456,79 @@ def test_split_antimeridian_review_regressions() -> None:
     assert swath.split_antimeridian().geometry_type in ('Polygon', 'MultiPolygon')
 
 
-def test_split_antimeridian_force_south_pole_closure() -> None:
-    """Southern seam-crossing ring closes over its pole in the chart."""
+def test_split_antimeridian_preserves_south_pole_ownership() -> None:
+    """A south-owned ring keeps its cap when seam edges have equal latitudes."""
     ring = [(-45, -40), (45, -40), (135, -40), (-135, -40)]
-    capped = gm.Polygon(ring, crs=4326).split_antimeridian()
-    assert capped.geometry_type == 'Polygon'
-    assert not capped.is_empty
-    coords = list(cast('gm.Polygon', capped).exterior.coords)
-    seam_lats = {round(y, 7) for x, y in coords if abs(x) == 180.0}
-    assert seam_lats == {-40.0, 90.0}
-    again = capped.split_antimeridian()
-    assert again.to_wkt() == capped.to_wkt()
+    source = gm.Polygon(ring, crs=4326)
+    split = source.split_antimeridian()
+    coords = list(cast('gm.Polygon', split).exterior.coords)
+    seam_lats = {y for x, y in coords if abs(x) == 180.0}
+
+    assert -90.0 in seam_lats
+    assert 90.0 not in seam_lats
+    for longitude in (0.0, 90.0, -90.0, 179.0, -179.0):
+        for latitude in (-89.0, -60.0):
+            point = gm.Point(longitude, latitude, crs=4326)
+            assert gm.contains(source, point)
+            assert gm.contains(split, point)
+            assert gm.intersects(source, point)
+            assert gm.intersects(split, point)
+        for latitude in (-39.0, 0.0, 60.0, 89.0):
+            point = gm.Point(longitude, latitude, crs=4326)
+            assert not gm.contains(source, point)
+            assert not gm.contains(split, point)
+            assert not gm.intersects(source, point)
+            assert not gm.intersects(split, point)
+    assert split.split_antimeridian().to_wkt() == split.to_wkt()
+
+
+def test_split_antimeridian_preserves_north_pole_ownership() -> None:
+    """A north-owned ring keeps its cap when seam edges have equal latitudes."""
+    ring = [(-45, 40), (45, 40), (135, 40), (-135, 40)]
+    source = gm.Polygon(ring, crs=4326)
+    split = source.split_antimeridian()
+    coords = list(cast('gm.Polygon', split).exterior.coords)
+    seam_lats = {y for x, y in coords if abs(x) == 180.0}
+
+    assert 90.0 in seam_lats
+    assert -90.0 not in seam_lats
+    for longitude in (0.0, 90.0, -90.0, 179.0, -179.0):
+        for latitude in (89.0, 60.0):
+            point = gm.Point(longitude, latitude, crs=4326)
+            assert gm.contains(source, point)
+            assert gm.contains(split, point)
+            assert gm.intersects(source, point)
+            assert gm.intersects(split, point)
+        for latitude in (39.0, 0.0, -60.0, -89.0):
+            point = gm.Point(longitude, latitude, crs=4326)
+            assert not gm.contains(source, point)
+            assert not gm.contains(split, point)
+            assert not gm.intersects(source, point)
+            assert not gm.intersects(split, point)
+    assert split.split_antimeridian().to_wkt() == split.to_wkt()
 
 
 def test_split_antimeridian_both_poles_reverse_winding() -> None:
     """Inverted winding that implies both poles reverses segments instead of capping."""
-    inverted = gm.from_geojson(
+    source = gm.from_geojson(
         '{"type": "Polygon", "coordinates": [[[100, -60], [175, -65], [-175, -65], [-120, 0], [-170, 85], [175, 85], [0, 68], [-90, 0], [-90, -80], [0, -85], [100, -60]]]}'
     )
-    split = inverted.split_antimeridian()
+    split = source.split_antimeridian()
     assert split.geometry_type in ('Polygon', 'MultiPolygon')
     assert not split.is_empty
+    for longitude, latitude, contains, intersects in (
+        (0.0, 0.0, True, True),
+        (90.0, 0.0, True, True),
+        (-90.0, 0.0, False, True),
+        (-90.0, 30.0, False, False),
+        (0.0, 89.0, False, False),
+        (0.0, -89.0, False, False),
+    ):
+        point = gm.Point(longitude, latitude, crs=4326)
+        assert gm.contains(source, point) is contains
+        assert gm.contains(split, point) is contains
+        assert gm.intersects(source, point) is intersects
+        assert gm.intersects(split, point) is intersects
     again = split.split_antimeridian()
     assert again.to_wkt() == split.to_wkt()
 
@@ -477,7 +542,17 @@ def test_split_antimeridian_crs84_canonical_identity_and_full_turn_rewrite() -> 
         [(-180, -90), (180, -90), (180, 90), (-180, 90), (-180, -90)],
         crs=4326,
     )
-    assert world.split_antimeridian().to_wkt() == world.to_wkt()
+    split_world = world.split_antimeridian()
+    assert split_world.to_wkt() == world.to_wkt()
+    for point in (
+        gm.Point(0.0, 0.0, crs=4326),
+        gm.Point(179.0, 0.0, crs=4326),
+        gm.Point(-179.0, 0.0, crs=4326),
+    ):
+        assert gm.contains(world, point)
+        assert gm.contains(split_world, point)
+        assert gm.intersects(world, point)
+        assert gm.intersects(split_world, point)
     with_holes = gm.Polygon(
         [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
         holes=[[(2, 2), (4, 2), (4, 4), (2, 4), (2, 2)]],
@@ -506,6 +581,14 @@ def test_split_antimeridian_full_longitude_band() -> None:
     assert split.geometry_type == 'MultiPolygon'
     assert not split.is_empty
     assert len(gm.parts(split)) == 2
+    for longitude in (175.0, -175.0):
+        point = gm.Point(longitude, 0.0, crs=4326)
+        assert gm.contains(band, point)
+        assert gm.contains(split, point)
+    for latitude in (40.0, -40.0):
+        point = gm.Point(175.0, latitude, crs=4326)
+        assert not gm.contains(band, point)
+        assert not gm.contains(split, point)
     assert any(
         gm.contains(part, gm.Point(175, 0, crs=4326)) for part in gm.parts(split)
     )
@@ -1113,14 +1196,19 @@ def test_polar_annulus_split_membership_bounds_and_index() -> None:
         for latitude, expected in ((89.0, False), (75.0, True), (65.0, False)):
             point = gm.Point(longitude, latitude, crs=4326)
             assert gm.contains(annulus, point) is expected
+            assert gm.contains(split, point) is expected
             assert gm.contains_xy(annulus, longitude, latitude) is expected
-            assert gm.contains_xy(annulus, longitude, latitude) is expected
+            assert gm.contains_xy(split, longitude, latitude) is expected
         for latitude in (70.0, 80.0):
             point = gm.Point(longitude, latitude, crs=4326)
             assert not gm.contains(annulus, point)
+            assert not gm.contains(split, point)
             assert gm.intersects(annulus, point)
+            assert gm.intersects(split, point)
             assert not gm.contains_xy(annulus, longitude, latitude)
+            assert not gm.contains_xy(split, longitude, latitude)
             assert gm.intersects_xy(annulus, longitude, latitude)
+            assert gm.intersects_xy(split, longitude, latitude)
 
     index = gm.SpatialIndex([cap, annulus])
     assert list(index.query(gm.Point(180, 89, crs=4326), predicate='intersects')) == [0]

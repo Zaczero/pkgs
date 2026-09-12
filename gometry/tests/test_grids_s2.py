@@ -683,11 +683,19 @@ def test_s2_cover_normalizes_raw_crossing_polygon_like_s2sphere() -> None:
         [(179.0, -1.0), (-179.0, -1.0), (-179.0, 1.0), (179.0, 1.0)],
         crs=4326,
     )
+    split = seam.split_antimeridian()
     coverage = gm.s2_cover(seam, level=8)
     assert len(coverage) == 64
     assert all(abs(cell.center.x) > 170 for cell in coverage)
-    assert gm.contains(seam, gm.Point(179.5, 0.0, crs=4326))
-    assert not gm.contains(seam, gm.Point(0.0, 0.0, crs=4326))
+    for point, expected in (
+        (gm.Point(179.5, 0.0, crs=4326), True),
+        (gm.Point(-179.5, 0.0, crs=4326), True),
+        (gm.Point(0.0, 0.0, crs=4326), False),
+    ):
+        assert gm.contains(seam, point) is expected
+        assert gm.contains(split, point) is expected
+        assert gm.intersects(seam, point) is expected
+        assert gm.intersects(split, point) is expected
 
 
 def test_s2_bounding_cell_point_aggregates_use_bbox_path() -> None:

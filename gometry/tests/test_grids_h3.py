@@ -1249,6 +1249,13 @@ def test_h3_cover_raw_antimeridian_polygon() -> None:
         [(179.0, -5.0), (-179.0, -5.0), (-179.0, 5.0), (179.0, 5.0)],
         crs=4326,
     )
+    split = source.split_antimeridian()
+    for longitude, expected in ((179.5, True), (-179.5, True), (0.0, False)):
+        point = gm.Point(longitude, 0.0, crs=4326)
+        assert gm.contains(source, point) is expected
+        assert gm.contains(split, point) is expected
+        assert gm.intersects(source, point) is expected
+        assert gm.intersects(split, point) is expected
     actual = _assert_h3_cover_universe_equal(source, 2, expected_counts=(9, 0, 4, 10))
     extra_bbox_only = gm.H3Cell(0x827FB7FFFFFFFFF)
     assert int(extra_bbox_only) not in actual['overlap']

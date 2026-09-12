@@ -392,6 +392,10 @@ fn split_polygon(
     polygon: &Polygon,
     preferred: PoleClosure,
 ) -> Result<Vec<Polygon>> {
+    let preferred = match preferred {
+        PoleClosure::Auto => pole_closure_for_ring(&polygon.shell),
+        closure => closure,
+    };
     let polygons = split_polygon_inner(polygon, preferred)?;
     reject_fabricated_pole_ordinates(source, &polygons)?;
     Ok(polygons)
@@ -422,13 +426,7 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
         let mut result = shape_from_polygons(shell_parts, axes)?;
         for hole in crossing_holes {
             let hole_axes = hole.coords().axes();
-            let north = ring_encloses_pole(&hole, true);
-            let south = ring_encloses_pole(&hole, false);
-            let hole_closure = match (north, south) {
-                (true, false) => PoleClosure::North,
-                (false, true) => PoleClosure::South,
-                _ => PoleClosure::Auto,
-            };
+            let hole_closure = pole_closure_for_ring(&hole);
             let hole_parts = split_polygon_inner(&Polygon::new(hole, Vec::new())?, hole_closure)?;
             let hole_shape = shape_from_polygons(hole_parts, hole_axes)?;
             result = result.difference(&hole_shape, Strictness::Strict)?;
@@ -507,6 +505,18 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
         Err(_) => Err(GeometryErrorKind::antimeridian_split_failed(
             "pole closure is ambiguous: both directions produce valid rings",
         )),
+    }
+}
+
+/// Resolve pole ownership from the admitted source ring before chart stitching.
+fn pole_closure_for_ring(ring: &Ring) -> PoleClosure {
+    match (
+        ring_encloses_pole(ring, true),
+        ring_encloses_pole(ring, false),
+    ) {
+        (true, false) => PoleClosure::North,
+        (false, true) => PoleClosure::South,
+        _ => PoleClosure::Auto,
     }
 }
 
