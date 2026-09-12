@@ -845,7 +845,10 @@ impl PyGeometryArray {
                 .map_err(PyErr::from)?;
 
         if let Some(packed) = Self::concat_packed_many(arrays)? {
-            return Ok(packed.with_missing_mask(merged_mask)?);
+            return Ok(match merged_mask {
+                None => packed,
+                Some(mask) => Self::scatter_present_rows(&packed, mask)?,
+            });
         }
 
         let mut shapes = crate::try_vec_with_capacity(total_rows)?;
@@ -870,15 +873,14 @@ impl PyGeometryArray {
             (other.len(), other.missing()),
         ])
         .map_err(PyErr::from)?;
-        let compact_inputs = self.is_compact_nullable() || other.is_compact_nullable();
         let merged = self.concat_pair_dense(other)?;
-        Ok(if compact_inputs {
-            match merged_mask {
-                None => merged,
-                Some(mask) => Self::scatter_present_rows(&merged, mask)?,
-            }
-        } else {
-            merged.with_missing_mask(merged_mask)?
+        // `concat_pair_dense` walks present rows, so its output has one
+        // physical row per present mask bit rather than one row per logical
+        // input row. Reattach the merged mask through the present-only
+        // constructor; `with_missing_mask` is for row-aligned payloads.
+        Ok(match merged_mask {
+            None => merged,
+            Some(mask) => Self::scatter_present_rows(&merged, mask)?,
         })
     }
 

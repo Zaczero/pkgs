@@ -2,7 +2,7 @@
 
 use crate::array::{
     CoordSeq, CoordinateAxes, Frame, GeometryKind, Polygon, PolygonLevel, PyGeometryArray, Ring,
-    RingLevel, Shape,
+    RingLevel, Shape, StorageLayout,
 };
 use crate::error::ErrorKind;
 use crate::geometry::types::ensure_coordseq_vertex_capacity;
@@ -259,6 +259,38 @@ impl StreamingShapes {
             Self::Lines(builder) => builder.finish(frame),
             Self::Polygons(builder) => builder.finish(frame),
             Self::Shapes { shapes, .. } => Ok(PyGeometryArray::from_shapes(shapes, frame)?),
+        }
+    }
+
+    /// Finish a streamed batch with the producer's declared nullable layout.
+    ///
+    /// Point rows and demoted shape rows omit missing payload entries, while
+    /// line/polygon CSR builders and row-aligned shape rows retain one payload
+    /// window or placeholder per logical row. Keep that distinction explicit
+    /// instead of deriving it from a payload length that can coincide with a
+    /// mask length.
+    pub(crate) fn finish_with_missing_mask(
+        self,
+        frame: Frame,
+        mask: crate::array::ValidityMask,
+    ) -> crate::error::Result<PyGeometryArray> {
+        let layout = match &self {
+            Self::Points(_)
+            | Self::Shapes {
+                row_aligned: false, ..
+            } => StorageLayout::PresentOnly,
+            Self::Empty
+            | Self::LeadingMissing(_)
+            | Self::Lines(_)
+            | Self::Polygons(_)
+            | Self::Shapes {
+                row_aligned: true, ..
+            } => StorageLayout::LogicalRows,
+        };
+        let array = self.finish(frame)?;
+        match layout {
+            StorageLayout::LogicalRows => array.with_missing_mask(Some(mask)),
+            StorageLayout::PresentOnly => PyGeometryArray::scatter_present_rows(&array, mask),
         }
     }
 }

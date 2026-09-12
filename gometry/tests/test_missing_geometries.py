@@ -180,6 +180,34 @@ def test_compact_point_logical_rows_survive_gather_concat_and_kernels() -> None:
     assert rows.geometry_type == ['Point', None, 'Point', 'Point']
 
 
+def test_concat_mixed_missing_and_empty_point_preserves_logical_rows() -> None:
+    rows = gm.GeometryArray([
+        gm.Point(1.0, 1.0),
+        None,
+        gm.Point(),
+        gm.Point(3.0, 3.0),
+    ])
+    expected = [
+        'POINT (1 1)',
+        None,
+        'POINT EMPTY',
+        'POINT (3 3)',
+    ]
+
+    cases = (
+        (rows, expected + expected),
+        (rows[[3, 0]], expected + ['POINT (3 3)', 'POINT (1 1)']),
+        (rows[1:4], expected + [None, 'POINT EMPTY', 'POINT (3 3)']),
+    )
+    for other, expected_wkt in cases:
+        result = rows.concat(other)
+        assert len(result) == len(expected_wkt)
+        assert result.is_missing.tolist() == [
+            value is None for value in expected_wkt
+        ]
+        assert result.to_wkt() == expected_wkt
+
+
 def test_geometry_item_consumers_handle_missing_rows_by_contract() -> None:
     geom = gm.Point(0.0, 0.0)
     message = 'contains missing geometries'

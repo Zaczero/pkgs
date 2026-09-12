@@ -535,9 +535,11 @@ fn decode_features_text(
         crate::try_push_vec(&mut side_rows, (row.properties, row.id))?;
     }
     let row_count = side_rows.len();
-    let geometries = shapes
-        .finish(Frame::new(crs, epoch)?)?
-        .with_missing_mask(crate::array::sparse_missing_mask(row_count, &missing_rows)?)?;
+    let frame = Frame::new(crs, epoch)?;
+    let geometries = match crate::array::sparse_missing_mask(row_count, &missing_rows)? {
+        Some(mask) => shapes.finish_with_missing_mask(frame, mask)?,
+        None => shapes.finish(frame)?,
+    };
     Ok(TextFeatureOutput {
         geometries,
         side_rows,
@@ -966,8 +968,11 @@ fn build_features(
         crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
     }
     let result = py.detach(move || -> crate::error::Result<PyGeometryArray> {
-        let array = shapes.finish(Frame::new(crs, epoch)?);
-        array?.with_missing_mask(crate::array::sparse_missing_mask(row_count, &missing_rows)?)
+        let frame = Frame::new(crs, epoch)?;
+        match crate::array::sparse_missing_mask(row_count, &missing_rows)? {
+            Some(mask) => shapes.finish_with_missing_mask(frame, mask),
+            None => shapes.finish(frame),
+        }
     });
     let geometries = match result {
         Ok(geometries) => geometries,

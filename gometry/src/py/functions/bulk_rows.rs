@@ -343,33 +343,10 @@ fn iter_detach_finalize(
     };
     let epoch = explicit_epoch.or(first_epoch);
     guard_epoch_frame(epoch, crs.as_ref())?;
-    let array = rows.finish(Frame::new(crs, epoch)?)?;
-    if let Some(mask) = crate::array::sparse_missing_mask(row_count, &missing_rows)? {
-        apply_stream_missing_mask(array, mask)
-    } else {
-        Ok(array)
-    }
-}
-
-/// Apply a logical-row mask to streamed output.
-///
-/// Packed points retain only present coordinates, while line and polygon
-/// builders already carry one logical CSR window per row. Scatter the former
-/// before attaching its full-length mask instead of asking mask adoption to
-/// infer a physical payload length.
-fn apply_stream_missing_mask(
-    array: PyGeometryArray,
-    mask: crate::array::ValidityMask,
-) -> crate::error::Result<PyGeometryArray> {
-    if matches!(
-        array.storage(),
-        crate::array::GeometryArrayStorage::Packed(crate::array::PackedStorage::Points { .. })
-    ) {
-        Ok(crate::array::PyGeometryArray::scatter_present_rows(
-            &array, mask,
-        )?)
-    } else {
-        Ok(array.with_missing_mask(Some(mask))?)
+    let frame = Frame::new(crs, epoch)?;
+    match crate::array::sparse_missing_mask(row_count, &missing_rows)? {
+        Some(mask) => rows.finish_with_missing_mask(frame, mask),
+        None => rows.finish(frame),
     }
 }
 
@@ -774,10 +751,9 @@ fn item_detach_finalize(
 ) -> crate::error::Result<PyGeometryArray> {
     let crs = frame.finish()?;
     guard_epoch_frame(epoch, crs.as_ref())?;
-    let array = rows.finish(Frame::new(crs, epoch)?)?;
-    if let Some(mask) = crate::array::sparse_missing_mask(row_count, &missing_rows)? {
-        apply_stream_missing_mask(array, mask)
-    } else {
-        Ok(array)
+    let frame = Frame::new(crs, epoch)?;
+    match crate::array::sparse_missing_mask(row_count, &missing_rows)? {
+        Some(mask) => rows.finish_with_missing_mask(frame, mask),
+        None => rows.finish(frame),
     }
 }
