@@ -3437,11 +3437,7 @@ mod tests {
             ("below one midpoint", below_tie, one.clone()),
             ("above one midpoint", above_tie, one.clone()),
             ("minimum subnormal", minimum_subnormal, one.clone()),
-            (
-                "below minimum subnormal",
-                below_minimum_subnormal,
-                one.clone(),
-            ),
+            ("below minimum subnormal", below_minimum_subnormal, one),
         ] {
             assert_contains(name, &numerator, &denominator);
         }
@@ -3460,7 +3456,7 @@ mod tests {
             .product(&ExactDyadic::from_f64(0.5));
         let quarter_gap = one_up
             .clone()
-            .subtract(one.clone())
+            .subtract(one)
             .product(&ExactDyadic::from_f64(0.25));
         assert_eq!(
             round_ratio(
@@ -3484,7 +3480,7 @@ mod tests {
             1.0_f64.to_bits()
         );
         assert_eq!(
-            round_ratio(&midpoint.clone().neg(), &ExactDyadic::one())
+            round_ratio(&midpoint.neg(), &ExactDyadic::one())
                 .unwrap()
                 .to_bits(),
             (-1.0_f64).to_bits()
@@ -3494,7 +3490,7 @@ mod tests {
         let even_upper_f64 = one_up_twice_f64;
         let even_upper = ExactDyadic::from_f64(even_upper_f64);
         let odd_midpoint = odd_lower
-            .add(even_upper.clone())
+            .add(even_upper)
             .product(&ExactDyadic::from_f64(0.5));
         assert_eq!(
             round_ratio(&odd_midpoint, &ExactDyadic::one())

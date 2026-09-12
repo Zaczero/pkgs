@@ -3941,15 +3941,15 @@ mod tests {
             &mut events,
         ));
         let slanted_edge_points = [
-            (2.949570888116326e-6, 1.7697425328697956e-6),
-            (3.0973519953936948e-6, 1.8584111972362169e-6),
+            (2.949_570_888_116_326e-6, 1.769_742_532_869_795_6e-6),
+            (3.097_351_995_393_694_8e-6, 1.858_411_197_236_216_9e-6),
             (3.0e-6, 2.5e-6),
         ];
         let slanted_edge = cycle(&slanted_edge_points);
         let slanted_edge_xy = cycle_xy(&slanted_edge_points);
         let slanted_segment = Segment {
-            start: XY::new(2.949570888116328e-6, 1.7697425328697968e-6),
-            end: XY::new(3.0973519953936927e-6, 1.8584111972362156e-6),
+            start: XY::new(2.949_570_888_116_328e-6, 1.769_742_532_869_796_8e-6),
+            end: XY::new(3.097_351_995_393_692_7e-6, 1.858_411_197_236_215_6e-6),
         };
         let slanted_midpoint = XY::new(
             f64::midpoint(slanted_segment.start.x, slanted_segment.end.x),

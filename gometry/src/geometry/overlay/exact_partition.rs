@@ -4836,7 +4836,7 @@ mod tests {
             .unwrap();
         assert_eq!(rounded[0], XY::new(3.0, 1.0));
         assert_eq!(rounded[1].x, 1.0);
-        assert_eq!(rounded[1].y.to_bits(), 0x3FD5555555555555);
+        assert_eq!(rounded[1].y.to_bits(), 0x3FD5_5555_5555_5555);
         assert_eq!(rounded[2], XY::new(3.0, 1.0));
         assert!(partition.round_nodes(&[]).unwrap().is_empty());
     }

@@ -190,10 +190,6 @@ impl De9imInterval {
     }
 }
 
-#[expect(
-    clippy::panic,
-    reason = "named DE-9IM patterns are string literals; a misspelling is a programming error"
-)]
 #[cfg(test)]
 const fn named_pattern(pattern: &str) -> CompiledPattern {
     match CompiledPattern::new(pattern) {
