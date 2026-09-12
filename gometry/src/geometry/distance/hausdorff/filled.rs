@@ -17,7 +17,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use super::{HausdorffFeature, HausdorffTarget};
+use super::{HausdorffFeature, HausdorffTarget, quadratic_roots};
 use crate::error::Result;
 use crate::geometry::predicates::shell_is_convex;
 use crate::geometry::{
@@ -616,7 +616,7 @@ impl FilledSearch<'_> {
             | (Site::Point(left), Site::Line(line), Site::Point(right))
             | (Site::Line(line), Site::Point(left), Site::Point(right)) => {
                 let equality = point_equality(left, right);
-                for point in point_line_roots(equality, left, line) {
+                for point in point_line_roots(equality, left, line).into_iter().flatten() {
                     if point_in_cell(point, local_cell) {
                         self.consider_local_candidate(point, Site::Point(left), origin)?;
                     }
@@ -626,7 +626,10 @@ impl FilledSearch<'_> {
             | (Site::Line(left), Site::Point(point), Site::Line(right))
             | (Site::Line(left), Site::Line(right), Site::Point(point)) => {
                 for equality in line_equality(left, right) {
-                    for point in point_line_roots(equality, point, left) {
+                    for point in point_line_roots(equality, point, left)
+                        .into_iter()
+                        .flatten()
+                    {
                         if point_in_cell(point, local_cell) {
                             self.consider_local_candidate(point, Site::Line(left), origin)?;
                         }
@@ -1153,10 +1156,10 @@ fn intersect_lines(left: Linear, right: Linear) -> Option<XY> {
     (x.is_finite() && y.is_finite()).then_some(XY::new(x, y))
 }
 
-fn point_line_roots(equality: Linear, point: XY, line: LineSite) -> Vec<XY> {
+fn point_line_roots(equality: Linear, point: XY, line: LineSite) -> [Option<XY>; 2] {
     let denominator = equality.a * equality.a + equality.b * equality.b;
     if denominator == 0.0 || !denominator.is_finite() {
-        return Vec::new();
+        return [None, None];
     }
     let base = XY::new(
         -equality.a * equality.c / denominator,
@@ -1171,33 +1174,20 @@ fn point_line_roots(equality: Linear, point: XY, line: LineSite) -> Vec<XY> {
     let qa = direction.x * direction.x + direction.y * direction.y - ld * ld;
     let qb = 2.0 * (vx * direction.x + vy * direction.y - lv * ld);
     let qc = vx * vx + vy * vy - lv * lv;
-    let mut roots = Vec::with_capacity(2);
-    for parameter in quadratic_roots(qa, qb, qc) {
+    let mut roots = [None; 2];
+    for (index, parameter) in quadratic_roots(qa, qb, qc).into_iter().enumerate() {
+        let Some(parameter) = parameter else {
+            continue;
+        };
         let point = XY::new(
             base.x + parameter * direction.x,
             base.y + parameter * direction.y,
         );
         if point.x.is_finite() && point.y.is_finite() {
-            roots.push(point);
+            roots[index] = Some(point);
         }
     }
     roots
-}
-
-fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
-    if a == 0.0 {
-        return if b == 0.0 { Vec::new() } else { vec![-c / b] };
-    }
-    let discriminant = b * b - 4.0 * a * c;
-    if discriminant < 0.0 || !discriminant.is_finite() {
-        return Vec::new();
-    }
-    if discriminant == 0.0 {
-        return vec![-b / (2.0 * a)];
-    }
-    let root = discriminant.sqrt();
-    let q = -0.5 * (b + root.copysign(b));
-    vec![q / a, c / q]
 }
 
 fn line_cell_candidates(line: Linear, cell: FilledCell) -> Vec<XY> {

@@ -1,7 +1,8 @@
-use crate::geometry::Segment;
 use crate::geometry::distance::hausdorff::{
     EquidistantRootSink, HausdorffFeature, hausdorff_feature_distance_squared_at,
 };
+use crate::geometry::exact_arith::{two_product, two_sum};
+use crate::geometry::{Segment, axis_pow2_scale};
 
 /// Squared-distance quadratic `Q(t) = a·t² + b·t + c` on a fixed regime
 /// interval.
@@ -87,55 +88,63 @@ pub(crate) fn push_equidistant_roots_quadratic(
     tb: f64,
     roots: &mut impl EquidistantRootSink,
 ) {
-    let a = left.a - right.a;
-    let b = left.b - right.b;
-    let c = left.c - right.c;
-    if !a.is_finite() || !b.is_finite() || !c.is_finite() {
-        return;
-    }
-    // The rounded coefficient polynomial is degenerate only at exact zero;
-    // a proximity band would change its roots.
-    if a == 0.0 {
-        if b == 0.0 {
-            return;
-        }
-        let t = -c / b;
-        if t.is_finite() && t >= ta && t <= tb {
-            roots.push_root(t);
-        }
-        return;
-    }
-    // A positive common scale preserves the roots and discriminant sign while
-    // keeping the fourth-power products in the binary64 range.
-    let coefficient_scale = a.abs().max(b.abs()).max(c.abs());
-    let (a, b, c) = (
-        a / coefficient_scale,
-        b / coefficient_scale,
-        c / coefficient_scale,
-    );
-    let disc = b * b - 4.0 * a * c;
-    if !disc.is_finite() || disc < 0.0 {
-        return;
-    }
-    let sqrt_disc = disc.sqrt();
-    let roots_to_check = if disc == 0.0 {
-        [Some(-0.5 * (b / a)), None]
-    } else {
-        // Both roots use the non-cancelling q form.  Splitting the halves
-        // avoids overflowing the sum when b and sqrt_disc are both near
-        // the largest finite binary64 value.
-        let q = -0.5 * b - 0.5 * sqrt_disc.copysign(b);
-        if q == 0.0 {
-            [None, None]
-        } else {
-            [Some(q / a), Some(c / q)]
-        }
-    };
-    for root in roots_to_check.into_iter().flatten() {
+    for root in quadratic_roots(left.a - right.a, left.b - right.b, left.c - right.c)
+        .into_iter()
+        .flatten()
+    {
         if root.is_finite() && root >= ta && root <= tb {
             roots.push_root(root);
         }
     }
+}
+
+pub(crate) fn quadratic_roots(a: f64, b: f64, c: f64) -> [Option<f64>; 2] {
+    if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+        return [None, None];
+    }
+    // The rounded coefficient polynomial is degenerate only at exact zero;
+    // a proximity band would change its roots.
+    if a == 0.0 {
+        return if b == 0.0 {
+            [None, None]
+        } else {
+            [Some(-c / b), None]
+        };
+    }
+
+    // Algebraically, a positive power-of-two scale leaves the polynomial
+    // roots and discriminant sign unchanged. The established range frame keeps
+    // fourth-power products representable without ordinary-case divisions.
+    let coefficient_scale = axis_pow2_scale(a.abs().max(b.abs()).max(c.abs()));
+    let (a, b, c) = (
+        a * coefficient_scale,
+        b * coefficient_scale,
+        c * coefficient_scale,
+    );
+    let discriminant = compensated_product_difference(b, b, 2.0 * a, 2.0 * c);
+    if !discriminant.is_finite() || discriminant < 0.0 {
+        return [None, None];
+    }
+    if discriminant == 0.0 {
+        return [Some(-0.5 * (b / a)), None];
+    }
+    let sqrt_discriminant = discriminant.sqrt();
+    // q/a and c/q avoid the cancellation in (-b + sqrt(discriminant)) / 2a.
+    let q = -0.5 * (b + sqrt_discriminant.copysign(b));
+    if q == 0.0 {
+        [None, None]
+    } else {
+        [Some(q / a), Some(c / q)]
+    }
+}
+
+fn compensated_product_difference(x: f64, y: f64, z: f64, w: f64) -> f64 {
+    // This is the no-FMA error-free-transform form of the compensated
+    // x*y - z*w expression; scalar mul_add is a libm call on x86-64-v2.
+    let (xy, xy_error) = two_product(x, y);
+    let (zw, zw_error) = two_product(z, w);
+    let (difference, difference_error) = two_sum(xy, -zw);
+    difference + (difference_error + (xy_error - zw_error))
 }
 
 pub(crate) fn push_equidistant_roots_on_interval(
@@ -245,13 +254,23 @@ mod tests {
     fn stable_formula_retains_both_ill_conditioned_roots() {
         let left = HausdorffQuadratic {
             a: 1.0,
-            b: 1.0e16,
-            c: 1.0,
+            b: -0.5,
+            c: 1.0e-20,
         };
         let mut roots = Vec::new();
-        push_equidistant_roots_quadratic(left, zero_quadratic(), -1.0e17, 0.0, &mut roots);
+        push_equidistant_roots_quadratic(left, zero_quadratic(), 0.0, 1.0, &mut roots);
 
         assert_eq!(roots.len(), 2);
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.to_bits() == 2.0e-20_f64.to_bits()),
+            "small root missing: {roots:?}"
+        );
+        assert!(
+            roots.iter().any(|root| root.to_bits() == 0.5_f64.to_bits()),
+            "large root missing: {roots:?}"
+        );
         for root in roots {
             let residual = quadratic_residual(left.coefficients(), root).abs();
             let scale = (left.a * root * root).abs() + (left.b * root).abs() + left.c.abs();
@@ -297,6 +316,42 @@ mod tests {
     }
 
     #[test]
+    fn near_double_positive_discriminant_keeps_both_roots() {
+        // These stored coefficients have exact D = 2^-106, with roots 0.5
+        // and 0.4999999999999999.
+        let left = HausdorffQuadratic {
+            a: 1.0,
+            b: -0.999_999_999_999_999_9,
+            c: 0.249_999_999_999_999_94,
+        };
+        let mut roots = Vec::new();
+        push_equidistant_roots_quadratic(left, zero_quadratic(), 0.0, 1.0, &mut roots);
+        let root_bits = roots
+            .into_iter()
+            .map(|root| root.to_bits())
+            .collect::<Vec<_>>();
+
+        assert_eq!(root_bits.len(), 2);
+        assert!(root_bits.contains(&0.5_f64.to_bits()));
+        assert!(root_bits.contains(&0.499_999_999_999_999_9_f64.to_bits()));
+    }
+
+    #[test]
+    fn near_double_negative_discriminant_does_not_invent_a_root() {
+        // The exact discriminant is
+        // -4503599627370495/40564819207303340847894502572032.
+        let left = HausdorffQuadratic {
+            a: 0.999_999_999_999_999_9,
+            b: -1.0,
+            c: 0.250_000_000_000_000_06,
+        };
+        let mut roots = Vec::new();
+        push_equidistant_roots_quadratic(left, zero_quadratic(), 0.0, 1.0, &mut roots);
+
+        assert!(roots.is_empty());
+    }
+
+    #[test]
     fn interval_membership_does_not_clamp_an_outside_root() {
         let outside = 1.0_f64.next_up();
         let left = HausdorffQuadratic {
@@ -320,6 +375,11 @@ mod tests {
 
         assert_eq!(roots.len(), 1);
         let root = roots[0];
+        // For stored y = 0.3 = 5404319552844595 / 2^54, exact real
+        // arithmetic gives x = (1 + y^2) / 2; its nearest binary64 value
+        // for this fixed case is 0.545. This does not assert a universal
+        // claim about which adjacent endpoint a bisection should return.
+        assert_eq!(root.to_bits(), 0.545_f64.to_bits());
         let difference = |t| {
             hausdorff_feature_distance_squared_at(0.0, 0.0, 1.0, 0.0, t, left).unwrap()
                 - hausdorff_feature_distance_squared_at(0.0, 0.0, 1.0, 0.0, t, right).unwrap()

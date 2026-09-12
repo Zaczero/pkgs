@@ -41,7 +41,9 @@ pub(crate) use kernel::{
     hausdorff_distance_4v_exact, hausdorff_distance_4v_fused,
     hausdorff_distance_squared_line_columns,
 };
-pub(crate) use quadratic::{HausdorffQuadratic, push_equidistant_roots_on_interval};
+pub(crate) use quadratic::{
+    HausdorffQuadratic, push_equidistant_roots_on_interval, quadratic_roots,
+};
 pub(crate) use query::{
     HausdorffLineworkQuery, HausdorffProbeResult, hausdorff_segment_tight_upper_bound_squared,
     stats,
