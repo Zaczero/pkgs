@@ -2,6 +2,8 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::cmp::Ordering;
+
 use ahash::HashSetExt as _;
 
 use crate::geometry::constructive::{
@@ -1052,10 +1054,11 @@ fn emit_stroke_loop<S: WalkSink>(
 ) -> Result<bool> {
     // Forward (right) side, end cap, backward (left) side, start cap.
     let right_clean = stroke_side(right_plan, step_angle, sink)?;
-    emit_cap(
+    emit_cap_with_peer(
         end,
         enx,
         eny,
+        start,
         distance,
         cap_style,
         step_angle,
@@ -1063,7 +1066,9 @@ fn emit_stroke_loop<S: WalkSink>(
         sink,
     )?;
     let left_clean = stroke_side(left_plan, step_angle, sink)?;
-    emit_cap(start, snx, sny, distance, cap_style, step_angle, 0, sink)?;
+    emit_cap_with_peer(
+        start, snx, sny, end, distance, cap_style, step_angle, 0, sink,
+    )?;
     Ok(right_clean && left_clean)
 }
 
@@ -1125,6 +1130,173 @@ pub(crate) fn emit_arc<S: WalkSink>(
             center.y + distance * sin_theta,
             source,
         )?;
+    }
+    Ok(())
+}
+
+/// Emit a round cap with the exact intersections of its circle and the other
+/// endpoint's cap circle included as noding vertices. Chord-only arcs can
+/// otherwise cross at an interior point of two chords, which is inside both
+/// circles even though the true circle intersection is on both loci.
+fn emit_cap_with_peer<S: WalkSink>(
+    tip: Point,
+    nx: f64,
+    ny: f64,
+    peer: Point,
+    distance: f64,
+    cap_style: BufferCapStyle,
+    step_angle: f64,
+    source: u32,
+    sink: &mut S,
+) -> Result<()> {
+    if !matches!(cap_style, BufferCapStyle::Round) {
+        return emit_cap(tip, nx, ny, distance, cap_style, step_angle, source, sink);
+    }
+    let from_angle = ny.atan2(nx);
+    let breaks = cap_circle_intersections(tip, peer, distance.abs(), from_angle);
+    if breaks.iter().all(Option::is_none) {
+        return emit_cap(tip, nx, ny, distance, cap_style, step_angle, source, sink);
+    }
+    emit_arc_with_breaks(
+        tip,
+        from_angle,
+        std::f64::consts::PI,
+        distance,
+        step_angle,
+        source,
+        &breaks,
+        sink,
+    )
+}
+
+/// Return the circle-circle intersections that lie strictly inside this cap's
+/// semicircle. The centers are canonicalized before construction so the same
+/// point bits are supplied to both caps when they share an intersection.
+fn cap_circle_intersections(
+    center: Point,
+    peer: Point,
+    radius: f64,
+    from_angle: f64,
+) -> [Option<(f64, Point)>; 2] {
+    let mut result = [None, None];
+    if !radius.is_finite() || radius <= 0.0 {
+        return result;
+    }
+    let (first, second) = match center.x.total_cmp(&peer.x) {
+        Ordering::Less => (center, peer),
+        Ordering::Equal if center.y.total_cmp(&peer.y).is_le() => (center, peer),
+        _ => (peer, center),
+    };
+    let (dx, dy) = (second.x - first.x, second.y - first.y);
+    let separation = dx.hypot(dy);
+    let half = separation * 0.5;
+    if !separation.is_finite() || !half.is_finite() || half >= radius {
+        return result;
+    }
+    let height = (radius - half).sqrt() * (radius + half).sqrt();
+    if !height.is_finite() || height == 0.0 {
+        return result;
+    }
+    let midpoint = Point::new_raw_xy(first.x + dx * 0.5, first.y + dy * 0.5);
+    let (px, py) = (-dy / separation, dx / separation);
+    let candidates = [
+        Point::new_raw_xy(midpoint.x + px * height, midpoint.y + py * height),
+        Point::new_raw_xy(midpoint.x - px * height, midpoint.y - py * height),
+    ];
+    let mut count = 0;
+    for point in candidates {
+        let offset = ((point.y - center.y).atan2(point.x - center.x) - from_angle)
+            .rem_euclid(std::f64::consts::TAU);
+        if offset <= 1e-12 || offset >= std::f64::consts::PI - 1e-12 {
+            continue;
+        }
+        result[count] = Some((offset, point));
+        count += 1;
+        if count == result.len() {
+            break;
+        }
+    }
+    if count == 2 {
+        let left = result[0].map(|(offset, _)| offset);
+        let right = result[1].map(|(offset, _)| offset);
+        if let (Some(left), Some(right)) = (left, right)
+            && right < left
+        {
+            result.swap(0, 1);
+        }
+    }
+    result
+}
+
+/// Emit an arc whose interior contains exact circle intersections. Ordinary
+/// arcs stay on the recurrence fast path; this bounded path only subdivides
+/// the few cap intervals that contain an endpoint-circle crossing.
+fn emit_arc_with_breaks<S: WalkSink>(
+    center: Point,
+    mut from_angle: f64,
+    mut sweep: f64,
+    distance: f64,
+    step_angle: f64,
+    source: u32,
+    breaks: &[Option<(f64, Point)>; 2],
+    sink: &mut S,
+) -> Result<()> {
+    if sweep < 0.0 {
+        sweep += std::f64::consts::TAU;
+    }
+    let mut angles = [0.0; 4];
+    let mut exact = [None; 4];
+    let mut count = 2;
+    angles[1] = sweep;
+    for &(offset, point) in breaks.iter().flatten() {
+        if offset > 0.0 && offset < sweep {
+            angles[count] = offset;
+            exact[count] = Some(point);
+            count += 1;
+        }
+    }
+    for left in 0..count {
+        for right in left + 1..count {
+            if angles[right] < angles[left] {
+                angles.swap(left, right);
+                exact.swap(left, right);
+            }
+        }
+    }
+    let mut unique = 1;
+    for index in 1..count {
+        if angles[index] - angles[unique - 1] <= 1e-12 {
+            if exact[unique - 1].is_none() {
+                exact[unique - 1] = exact[index];
+            }
+            continue;
+        }
+        angles[unique] = angles[index];
+        exact[unique] = exact[index];
+        unique += 1;
+    }
+    from_angle += angles[0];
+    for interval in 0..unique - 1 {
+        let span = angles[interval + 1] - angles[interval];
+        let steps = (span / step_angle).ceil() as usize;
+        for step in 1..=steps {
+            if interval + 1 == unique - 1 && step == steps {
+                continue;
+            }
+            if step == steps
+                && let Some(point) = exact[interval + 1]
+            {
+                sink.push(point.x, point.y, source)?;
+                continue;
+            }
+            let theta = from_angle + angles[interval] + span * step as f64 / steps as f64;
+            let (sin_theta, cos_theta) = theta.sin_cos();
+            sink.push(
+                center.x + distance * cos_theta,
+                center.y + distance * sin_theta,
+                source,
+            )?;
+        }
     }
     Ok(())
 }

@@ -177,13 +177,11 @@ def test_buffer_high_resolution_no_panic_on_extreme_coordinates() -> None:
             assert result is not None
 
 
-# Direct circle vertices are within roundoff of the distance locus.  The exact
-# arrangement can retain one noding intersection between a cap and a join;
-# GEOS at this resolution is 0.0045854168 from the locus on that vertex, so
-# this tolerance covers the independent representation while rejecting the
-# deep interior vertices produced by the regression.
-BUFFER_LOCUS_TOLERANCE = 5e-3
-BUFFER_GENERATED_VERTEX_TOLERANCE = 1e-9
+# Arc vertices are emitted as center plus radius times a unit direction, and
+# cap-circle crossings are inserted analytically before chord noding. Binary64
+# construction error is therefore the only expected locus residual.
+BUFFER_LOCUS_TOLERANCE = 1e-9
+BUFFER_GENERATED_VERTEX_TOLERANCE = BUFFER_LOCUS_TOLERANCE
 BUFFER_AREA_RELATIVE_TOLERANCE = 1e-4
 
 
@@ -253,7 +251,7 @@ def test_round_buffer_boundary_vertices_follow_the_source_locus(
     )
     assert sum(
         error > BUFFER_GENERATED_VERTEX_TOLERANCE for error in errors
-    ) <= 1, f'{name}: more than one non-generated noding vertex left the locus'
+    ) == 0, f'{name}: a boundary vertex left the distance locus'
 
     reference = shapely.buffer(
         source,
