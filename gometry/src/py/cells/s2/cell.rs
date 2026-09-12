@@ -180,12 +180,18 @@ pub(crate) fn s2_cell_id(cell: &Bound<'_, PyAny>) -> PyResult<CellId> {
 /// Which pole a cell's lon/lat boundary touches (`Some(true)` north,
 /// `Some(false)` south, `None` away from both) — drives forced antimeridian
 /// closure so a polar cell dissolves over the pole it actually contains.
+///
+/// The comparison is exact because a cell reaches a pole exactly or not at
+/// all: S2 places both poles at face centres, so a boundary that touches one
+/// carries a vertex at precisely ±90 degrees. A tolerance admits nothing the
+/// exact test misses and instead closes near-pole cells over a pole they stop
+/// short of — from level 27 the polar cell's own neighbours fall within
+/// 1e-6 degrees of it.
 pub(crate) fn cell_pole_side(boundary: &Shape) -> Option<bool> {
-    const EPS: f64 = 1e-6;
     let bounds = boundary.bounds()?;
-    if bounds.maxy() >= 90.0 - EPS {
+    if bounds.maxy() >= 90.0 {
         Some(true)
-    } else if bounds.miny() <= -90.0 + EPS {
+    } else if bounds.miny() <= -90.0 {
         Some(false)
     } else {
         None

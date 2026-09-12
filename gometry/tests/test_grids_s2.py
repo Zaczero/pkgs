@@ -260,6 +260,29 @@ def test_s2_pole_touching_sources_keep_every_pole_owner() -> None:
             )
 
 
+def test_s2_dissolve_closes_over_a_pole_only_when_the_cell_reaches_it() -> None:
+    """Pole closure follows the cell boundary rather than a proximity band.
+
+    Cell classification admitted any boundary within 1e-6 degrees — 11 cm — of
+    a pole and forced antimeridian closure over it. From level 27 the polar
+    cell's own seam-crossing neighbours fall inside that band while stopping
+    short of the pole, so their dissolved outline gained a 90-degree vertex the
+    cell never reaches while the same cell's direct boundary did not. A cell
+    reaches a pole exactly or not at all, so both directions are asserted here.
+    """
+    pole = gm.Point(0.0, 90.0, crs=4326)
+    reaching = gm.S2Cell('5aaaaaaaaab')
+    short = gm.S2Cell('5aaaaaaaaaaaaa9')
+
+    assert reaching.polygon.bounds[3] == 90.0
+    assert short.polygon.bounds[3] < 90.0
+    assert 90.0 - short.polygon.bounds[3] < 1.0e-6
+
+    assert gm.covers(gm.CellArray([reaching]).to_polygon(), pole)
+    assert not gm.covers(gm.CellArray([short]).to_polygon(), pole)
+    assert not gm.covers(short.polygon, pole)
+
+
 def _s2_pole_shape_family(latitude: float, longitude: float) -> dict[str, gm.Geometry]:
     """Every grid carrier of one physical pole, including one-member wrappers."""
     near = 80.0 if latitude > 0.0 else -80.0
