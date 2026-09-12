@@ -21,12 +21,14 @@ use super::{HausdorffFeature, HausdorffTarget};
 use crate::error::Result;
 use crate::geometry::predicates::shell_is_convex;
 use crate::geometry::{
-    Bounds, Coordinates as _, Orientation, Point, Segment, Shape, XY, orientation, point_distance,
-    point_segment_distance, ring_winding,
+    Bounds, Coordinates as _, Orientation, Point, RectContact, Segment, Shape, XY, orientation,
+    point_distance, point_on_segment, point_segment_distance, ring_winding, segment_cross_point,
+    segment_vs_rect,
 };
 
 const MAX_REFINEMENT_DEPTH: u8 = 48;
 const GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT: usize = 32;
+const EXTENDED_GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT: usize = 64;
 const PRELOCAL_SITE_LIMIT: usize = 24;
 
 #[derive(Clone, Copy, Debug)]
@@ -138,10 +140,16 @@ fn directed_filled_hausdorff(source: &Shape, target: &Shape) -> Result<f64> {
     let Some(bounds) = filled_bounds(source) else {
         return Ok(best);
     };
+    let search_bounds = if target.has_filled_area() {
+        source_minus_target_bounds(source, target_shape(&target), bounds)?
+    } else {
+        bounds
+    };
     let mut search = FilledSearch {
         source,
         target: &target,
         source_bounds: bounds,
+        search_bounds,
         best,
         neighborhood: Vec::new(),
         bvh_stack: Vec::new(),
@@ -203,6 +211,7 @@ struct FilledSearch<'a> {
     source: &'a Shape,
     target: &'a HausdorffTarget,
     source_bounds: Bounds,
+    search_bounds: Bounds,
     best: f64,
     neighborhood: Vec<HausdorffFeature>,
     bvh_stack: Vec<u32>,
@@ -211,23 +220,28 @@ struct FilledSearch<'a> {
 impl FilledSearch<'_> {
     fn run(&mut self) -> Result<()> {
         let cell = self.make_cell(
-            self.source_bounds.minx(),
-            self.source_bounds.maxx(),
-            self.source_bounds.miny(),
-            self.source_bounds.maxy(),
+            self.search_bounds.minx(),
+            self.search_bounds.maxx(),
+            self.search_bounds.miny(),
+            self.search_bounds.maxy(),
             0,
         )?;
         let mut cells = BinaryHeap::new();
         if !self.cell_may_contain_source(cell) {
             return Ok(());
         }
-        // Small targets have a bounded site set. Enumerating their complete
-        // local Voronoi candidates over the source envelope is cheaper and
-        // stronger than refining every cell around a polygon whose target is
-        // only linework. Large targets use the queue below to localize first.
-        if self.target.features.len() <= GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT {
+        // Small targets have a bounded site set. A localized source-minus-
+        // target envelope is also a complete local problem, so keep all of
+        // its support sites and avoid paying for a queue that only localizes
+        // the already certified domain. Other large targets use the queue
+        // below to localize first.
+        let localized_global_solve = self.target.features.len()
+            <= EXTENDED_GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT
+            && self.search_bounds != self.source_bounds;
+        if self.target.features.len() <= GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT || localized_global_solve
+        {
             self.probe_cell(cell)?;
-            self.solve_local(cell)?;
+            self.solve_local(cell, localized_global_solve)?;
             return Ok(());
         }
         cells.push(cell);
@@ -237,7 +251,7 @@ impl FilledSearch<'_> {
                 continue;
             }
             self.probe_cell(cell)?;
-            self.solve_local(cell)?;
+            self.solve_local(cell, false)?;
             if cell.upper <= self.best.next_up() {
                 continue;
             }
@@ -264,23 +278,27 @@ impl FilledSearch<'_> {
             ] {
                 let child =
                     self.make_cell(min_x, max_x, min_y, max_y, cell.depth.saturating_add(1))?;
-                if self.cell_may_contain_source(child) && child.upper > self.best.next_up() {
-                    cells.push(child);
+                if !self.cell_may_contain_source(child) {
+                    continue;
                 }
+                if child.upper <= self.best.next_up() {
+                    continue;
+                }
+                cells.push(child);
             }
         }
         Ok(())
     }
 
     fn make_cell(
-        &self,
+        &mut self,
         min_x: f64,
         max_x: f64,
         min_y: f64,
         max_y: f64,
         depth: u8,
     ) -> Result<FilledCell> {
-        if self.cell_is_filled(min_x, max_x, min_y, max_y) {
+        if self.cell_is_filled(min_x, max_x, min_y, max_y)? {
             return Ok(FilledCell {
                 min_x,
                 max_x,
@@ -295,11 +313,26 @@ impl FilledSearch<'_> {
         // taking the maximum of either convex distance independently. This
         // is the certificate that makes rectangular medial-axis plateaus
         // terminate.
-        for (left_index, &left) in self.target.features.iter().enumerate() {
+        // A pair can improve the current bound only when both supports are
+        // close enough to the cell to participate in that improvement. The
+        // BVH/box neighbourhood is conservative for that question; a
+        // support omitted by it is farther than the current bound everywhere
+        // in the cell, and its pair cannot improve the individual
+        // feature-envelope bound already computed above.
+        self.target.features_near_cell(
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            next_up(upper),
+            &mut self.neighborhood,
+            &mut self.bvh_stack,
+        )?;
+        for (left_index, &left) in self.neighborhood.iter().enumerate() {
             let HausdorffFeature::Segment(left) = left else {
                 continue;
             };
-            for &right in &self.target.features[(left_index + 1)..] {
+            for &right in self.neighborhood.iter().skip(left_index + 1) {
                 let HausdorffFeature::Segment(right) = right else {
                     continue;
                 };
@@ -310,38 +343,46 @@ impl FilledSearch<'_> {
                 }
             }
         }
-        Ok(FilledCell {
+        let cell = FilledCell {
             min_x,
             max_x,
             min_y,
             max_y,
             upper: next_up(upper),
             depth,
-        })
+        };
+        Ok(cell)
     }
 
-    /// A covered center plus no target boundary box crossing certifies that
-    /// the whole cell is in the target's filled area. This turns the common
-    /// "large source inside a larger polygon" case into a zero-cost prune
-    /// without assuming that corner probes alone characterize a holed or
+    /// A covered center plus no target boundary entering the cell interior
+    /// certifies that the whole cell is in the target's filled area. This turns
+    /// the common "large source inside a larger polygon" case into a zero-cost
+    /// prune without assuming that corner probes alone characterize a holed or
     /// concave region.
-    fn cell_is_filled(&self, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> bool {
+    fn cell_is_filled(&mut self, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> Result<bool> {
         let Some(shape) = self.target.filled_area_shape() else {
-            return false;
+            return Ok(false);
         };
         let center = Point::new_raw_xy(f64::midpoint(min_x, max_x), f64::midpoint(min_y, max_y));
         if !shape.area_covers_point(center) {
-            return false;
+            return Ok(false);
         }
-        !self.target.features.iter().any(|feature| {
+        let rectangle = Bounds::new_raw(min_x, min_y, max_x, max_y);
+        self.target.features_near_cell(
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            0.0,
+            &mut self.neighborhood,
+            &mut self.bvh_stack,
+        )?;
+        Ok(!self.neighborhood.iter().any(|feature| {
             let HausdorffFeature::Segment(segment) = *feature else {
                 return false;
             };
-            segment.start.x.min(segment.end.x) <= max_x
-                && segment.start.x.max(segment.end.x) >= min_x
-                && segment.start.y.min(segment.end.y) <= max_y
-                && segment.start.y.max(segment.end.y) >= min_y
-        })
+            segment_vs_rect(segment, rectangle) == RectContact::Open
+        }))
     }
 
     fn cell_may_contain_source(&self, cell: FilledCell) -> bool {
@@ -365,25 +406,16 @@ impl FilledSearch<'_> {
             return true;
         }
         // If no probe is inside, an intersecting source boundary is the only
-        // way an area can cross the cell. A bbox test is intentionally
-        // conservative; false positives cost refinement, never correctness.
+        // way an area can cross the cell. Use exact segment-cell contact
+        // rather than the segment's box: a diagonal segment's box can cover a
+        // large rectangle without the source touching most of it.
         let mut possible = false;
+        let rectangle = Bounds::new_raw(cell.min_x, cell.min_y, cell.max_x, cell.max_y);
         self.source.for_each_segment(|segment| {
             if possible {
                 return;
             }
-            let (min_x, max_x) = (
-                segment.start.x.min(segment.end.x),
-                segment.start.x.max(segment.end.x),
-            );
-            let (min_y, max_y) = (
-                segment.start.y.min(segment.end.y),
-                segment.start.y.max(segment.end.y),
-            );
-            possible = max_x >= cell.min_x
-                && min_x <= cell.max_x
-                && max_y >= cell.min_y
-                && min_y <= cell.max_y;
+            possible = segment_vs_rect(segment, rectangle) != RectContact::None;
         });
         possible
     }
@@ -424,7 +456,7 @@ impl FilledSearch<'_> {
         self.consider(world_point(origin, point))
     }
 
-    fn solve_local(&mut self, cell: FilledCell) -> Result<()> {
+    fn solve_local(&mut self, cell: FilledCell, complete: bool) -> Result<()> {
         let origin = cell_center(cell);
         self.target.features_near_cell(
             cell.min_x,
@@ -440,7 +472,7 @@ impl FilledSearch<'_> {
             .max(self.source_bounds.maxy() - self.source_bounds.miny());
         let cell_span = (cell.max_x - cell.min_x).max(cell.max_y - cell.min_y);
         let include_segment_endpoints =
-            self.target.features.len() <= 32 || cell_span <= source_span / 8.0;
+            complete || self.target.features.len() <= 32 || cell_span <= source_span / 8.0;
         for &feature in &self.neighborhood {
             match feature {
                 HausdorffFeature::Point(point) => {
@@ -479,14 +511,24 @@ impl FilledSearch<'_> {
             Site::Point(point) => point_to_cell_distance(point, cell, origin) <= cell.upper,
             Site::Line(line) => line_to_cell_distance(line, cell, origin) <= cell.upper,
         });
-        if cell.depth < 3
-            && self.target.features.len() > GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT
-            && sites.len() > PRELOCAL_SITE_LIMIT
-        {
-            sites.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
-            sites.truncate(PRELOCAL_SITE_LIMIT);
+        let mut unique_sites = Vec::with_capacity(sites.len());
+        for (distance, site) in sites {
+            if !unique_sites
+                .iter()
+                .any(|(_, candidate)| same_site(*candidate, site))
+            {
+                unique_sites.push((distance, site));
+            }
         }
-        let sites: Vec<Site> = sites.into_iter().map(|(_, site)| site).collect();
+        if !complete
+            && cell.depth < 3
+            && self.target.features.len() > GLOBAL_LOCAL_SOLVE_FEATURE_LIMIT
+            && unique_sites.len() > PRELOCAL_SITE_LIMIT
+        {
+            unique_sites.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
+            unique_sites.truncate(PRELOCAL_SITE_LIMIT);
+        }
+        let sites: Vec<Site> = unique_sites.into_iter().map(|(_, site)| site).collect();
 
         for point in cell_corners(cell)
             .into_iter()
@@ -634,6 +676,278 @@ fn filled_bounds(shape: &Shape) -> Option<Bounds> {
             .fold(None, |bounds, next| merge(bounds, Some(next))),
         _ => None,
     }
+}
+
+/// Return a conservative envelope for the unexamined interior of `source`
+/// outside a filled `target`.  The source boundary has already been solved by
+/// the continuous linework kernel, so a shared boundary contact that has no
+/// nearby difference face need not enlarge this interior search. The extrema
+/// of the remaining polygon difference occur at a source vertex outside the
+/// target, a target-boundary vertex inside the source, or a source/target
+/// boundary crossing. Crossings use the shared robust placement path, and the
+/// resulting envelope is expanded by one representable coordinate on every
+/// side before it is used as a search root.
+///
+/// A missing or numerically unplaceable candidate is deliberately not treated
+/// as an empty difference: the full source envelope is the sound fallback.
+fn source_minus_target_bounds(source: &Shape, target: &Shape, fallback: Bounds) -> Result<Bounds> {
+    let source_segments = collect_segments(source)?;
+    let target_segments = collect_segments(target)?;
+    let mut candidates = None;
+    let mut uncertain = false;
+
+    source.for_each_point(|point| {
+        if !target.area_covers_point(point) && !include_search_point(&mut candidates, point.xy()) {
+            uncertain = true;
+        }
+    });
+    target.for_each_point(|point| {
+        if area_strictly_covers_point(source, point.xy())
+            && !include_search_point(&mut candidates, point.xy())
+        {
+            uncertain = true;
+        }
+    });
+
+    for &left in &source_segments {
+        if uncertain {
+            break;
+        }
+        for &right in &target_segments {
+            if !segment_is_finite(left) || !segment_is_finite(right) {
+                uncertain = true;
+                break;
+            }
+            if strictly_crosses(left, right) {
+                if let Some(point) = segment_cross_point(left, right) {
+                    if !include_search_point(&mut candidates, point) {
+                        uncertain = true;
+                    }
+                } else {
+                    uncertain = true;
+                }
+                continue;
+            }
+            for point in [left.start, left.end, right.start, right.end] {
+                if point_on_segment(point, left.start, left.end)
+                    && point_on_segment(point, right.start, right.end)
+                {
+                    match difference_at_contact(
+                        source,
+                        target,
+                        &source_segments,
+                        &target_segments,
+                        point,
+                    )? {
+                        Some(true) => {
+                            if !include_search_point(&mut candidates, point) {
+                                uncertain = true;
+                            }
+                        },
+                        Some(false) => {},
+                        None => uncertain = true,
+                    }
+                }
+            }
+        }
+    }
+
+    if uncertain {
+        return Ok(fallback);
+    }
+    let Some(bounds) = candidates else {
+        return Ok(fallback);
+    };
+    let expanded = Bounds::new_raw(
+        bounds.minx().next_down(),
+        bounds.miny().next_down(),
+        bounds.maxx().next_up(),
+        bounds.maxy().next_up(),
+    );
+    if expanded.minx().is_finite()
+        && expanded.miny().is_finite()
+        && expanded.maxx().is_finite()
+        && expanded.maxy().is_finite()
+    {
+        Ok(expanded)
+    } else {
+        Ok(fallback)
+    }
+}
+
+fn collect_segments(shape: &Shape) -> Result<Vec<Segment>> {
+    let mut segments = Vec::new();
+    shape.try_for_each_vertex_pair(|start, end| {
+        crate::try_push_vec(&mut segments, Segment {
+            start: start.xy(),
+            end: end.xy(),
+        })
+    })?;
+    Ok(segments)
+}
+
+const fn include_search_point(bounds: &mut Option<Bounds>, point: XY) -> bool {
+    if !point.x.is_finite() || !point.y.is_finite() {
+        return false;
+    }
+    if let Some(bounds) = bounds {
+        bounds.include_xy(point);
+    } else {
+        *bounds = Some(Bounds::new_raw(point.x, point.y, point.x, point.y));
+    }
+    true
+}
+
+/// Whether a boundary contact has a nearby source point outside the target.
+/// The incident rays partition a small neighbourhood of the contact into
+/// faces; probing one point in each face distinguishes a genuine difference
+/// boundary from a shared boundary that only touches.
+fn difference_at_contact(
+    source: &Shape,
+    target: &Shape,
+    source_segments: &[Segment],
+    target_segments: &[Segment],
+    point: XY,
+) -> Result<Option<bool>> {
+    let mut rays = Vec::new();
+    for &segment in source_segments.iter().chain(target_segments) {
+        if !point_on_segment(point, segment.start, segment.end) {
+            continue;
+        }
+        let mut add_ray = |endpoint: XY| -> Result<()> {
+            let dx = endpoint.x - point.x;
+            let dy = endpoint.y - point.y;
+            let length = dx.hypot(dy);
+            if length == 0.0 || !length.is_finite() {
+                return Ok(());
+            }
+            let ray = XY::new(dx / length, dy / length);
+            if !rays.iter().any(|candidate| same_xy(*candidate, ray)) {
+                crate::try_push_vec(&mut rays, ray)?;
+            }
+            Ok(())
+        };
+        add_ray(segment.start)?;
+        add_ray(segment.end)?;
+    }
+    if rays.len() < 2 {
+        return Ok(None);
+    }
+
+    let mut clearance = f64::INFINITY;
+    for &segment in source_segments.iter().chain(target_segments) {
+        if !point_on_segment(point, segment.start, segment.end) {
+            clearance = clearance.min(point_segment_distance(
+                Point::new_raw_xy(point.x, point.y),
+                segment,
+            )?);
+        }
+    }
+    let ray_length = source_segments
+        .iter()
+        .chain(target_segments)
+        .filter(|segment| point_on_segment(point, segment.start, segment.end))
+        .map(|segment| {
+            (segment.start.x - point.x)
+                .hypot(segment.start.y - point.y)
+                .min((segment.end.x - point.x).hypot(segment.end.y - point.y))
+        })
+        .filter(|length| length.is_finite() && *length > 0.0)
+        .fold(f64::INFINITY, f64::min);
+    let radius = 0.25
+        * if clearance.is_finite() {
+            clearance.min(ray_length)
+        } else {
+            ray_length
+        };
+    if !radius.is_finite() || radius <= 0.0 {
+        return Ok(None);
+    }
+
+    rays.sort_unstable_by(|left, right| left.y.atan2(left.x).total_cmp(&right.y.atan2(right.x)));
+    let mut face_count = 0;
+    for (index, &left) in rays.iter().enumerate() {
+        let right = rays[(index + 1) % rays.len()];
+        let mut right_angle = right.y.atan2(right.x);
+        let left_angle = left.y.atan2(left.x);
+        if right_angle <= left_angle {
+            right_angle += std::f64::consts::TAU;
+        }
+        let angle = f64::midpoint(left_angle, right_angle);
+        let probe = XY::new(
+            point.x + radius * angle.cos(),
+            point.y + radius * angle.sin(),
+        );
+        if !probe.x.is_finite() || !probe.y.is_finite() {
+            return Ok(None);
+        }
+        face_count += 1;
+        if source.area_covers_point(Point::new_raw_xy(probe.x, probe.y))
+            && !target.area_covers_point(Point::new_raw_xy(probe.x, probe.y))
+        {
+            return Ok(Some(true));
+        }
+    }
+    if face_count > 0 {
+        Ok(Some(false))
+    } else {
+        Ok(None)
+    }
+}
+
+const fn same_xy(left: XY, right: XY) -> bool {
+    left.x.to_bits() == right.x.to_bits() && left.y.to_bits() == right.y.to_bits()
+}
+
+const fn same_site(left: Site, right: Site) -> bool {
+    match (left, right) {
+        (Site::Point(left), Site::Point(right)) => same_xy(left, right),
+        (Site::Line(left), Site::Line(right)) => {
+            (same_xy(left.segment.start, right.segment.start)
+                && same_xy(left.segment.end, right.segment.end))
+                || (same_xy(left.segment.start, right.segment.end)
+                    && same_xy(left.segment.end, right.segment.start))
+        },
+        _ => false,
+    }
+}
+
+fn area_strictly_covers_point(shape: &Shape, point: XY) -> bool {
+    if !shape.area_covers_point(Point::new_raw_xy(point.x, point.y)) {
+        return false;
+    }
+    let mut boundary = false;
+    shape.for_each_segment(|segment| {
+        if !boundary && point_on_segment(point, segment.start, segment.end) {
+            boundary = true;
+        }
+    });
+    !boundary
+}
+
+const fn segment_is_finite(segment: Segment) -> bool {
+    segment.start.x.is_finite()
+        && segment.start.y.is_finite()
+        && segment.end.x.is_finite()
+        && segment.end.y.is_finite()
+}
+
+fn strictly_crosses(left: Segment, right: Segment) -> bool {
+    const fn opposite(left: Orientation, right: Orientation) -> bool {
+        matches!(
+            (left, right),
+            (Orientation::CounterClockwise, Orientation::Clockwise)
+                | (Orientation::Clockwise, Orientation::CounterClockwise)
+        )
+    }
+
+    opposite(
+        orientation(left.start, left.end, right.start),
+        orientation(left.start, left.end, right.end),
+    ) && opposite(
+        orientation(right.start, right.end, left.start),
+        orientation(right.start, right.end, left.end),
+    )
 }
 
 const fn cell_corners(cell: FilledCell) -> [XY; 4] {
@@ -982,6 +1296,14 @@ fn cell_feature_upper_bound(
         }
         upper = upper.min(feature_upper);
     }
+    // The distance to a closed set is 1-Lipschitz.  A center query plus the
+    // cell radius is therefore another admissible upper bound.  Unlike the
+    // corner envelope above, it observes that a covered center has zero
+    // distance to a filled target, which closes cells straddling its boundary
+    // without constructing a rounded source-minus-target domain.
+    let center = XY::new(f64::midpoint(min_x, max_x), f64::midpoint(min_y, max_y));
+    let radius = 0.5 * (max_x - min_x).hypot(max_y - min_y);
+    upper = upper.min(next_up(target.distance(center)? + radius));
     Ok(upper)
 }
 
@@ -1239,12 +1561,13 @@ mod tests {
             source: &source,
             target: &query,
             source_bounds: bounds,
+            search_bounds: bounds,
             best: 0.0,
             neighborhood: Vec::new(),
             bvh_stack: Vec::new(),
         };
         let cell = search.make_cell(0.0, 10.0, 0.0, 10.0, 0).unwrap();
-        search.solve_local(cell).unwrap();
+        search.solve_local(cell, false).unwrap();
         assert!(search.best > 2.0, "local best={}", search.best);
         assert!(search.best < 4.0, "local best={}", search.best);
     }

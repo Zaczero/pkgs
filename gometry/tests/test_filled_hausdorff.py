@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from math import sqrt
+from math import isfinite, sqrt
+from pathlib import Path
 
 import pytest
 
@@ -82,3 +83,11 @@ def test_zero_area_polygon_keeps_closed_boundary_semantics() -> None:
     line = gm.LineString([(0, 0), (2, 0)])
 
     assert gm.hausdorff_distance(degenerate, line) == 0.0
+
+
+def test_near_degenerate_filled_polygon_hausdorff_terminates() -> None:
+    fixtures = Path(__file__).with_name("fixtures")
+    left = gm.from_wkt((fixtures / "hausdorff_stall_left.wkt").read_text())
+    right = gm.from_wkt((fixtures / "hausdorff_stall_right.wkt").read_text())
+
+    assert isfinite(gm.hausdorff_distance(left, right))
