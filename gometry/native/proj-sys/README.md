@@ -18,6 +18,11 @@ Builds do not fetch source or transformation grids from the network. The
 `tiff` feature enables user-supplied PROJ GeoTIFF transformation grids; it is
 not a gometry raster API.
 
+Gometry's bundled target also contains a private 9.6.2 context constructor. It
+starts from PROJ's native defaults instead of cloning the process default, so
+the gometry CRS layer does not need a per-context `proj.ini`. The constructor
+is deliberately unavailable to system/pkg-config builds.
+
 **This is a
 [`*-sys`](https://doc.rust-lang.org/cargo/reference/build-scripts.html#-sys-packages)
 crate; you shouldn't use its API directly.** See the

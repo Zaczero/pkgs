@@ -45,3 +45,17 @@ include!("bindings_docs-rs.rs");
 
 #[cfg(all(not(feature = "nobuild"), not(feature = "buildtime_bindgen")))]
 include!("bundled_bindings.rs");
+
+#[cfg(bundled_build)]
+unsafe extern "C" {
+    /// Create a fresh context with the bundled PROJ defaults.
+    ///
+    /// This private entry point is available only for the bundled build. It
+    /// intentionally bypasses PROJ's process default context.
+    ///
+    /// # Safety
+    ///
+    /// The returned pointer is uniquely owned when non-null and must be
+    /// released with `proj_context_destroy` exactly once.
+    pub fn gometry_proj_context_create() -> *mut PJ_CONTEXT;
+}

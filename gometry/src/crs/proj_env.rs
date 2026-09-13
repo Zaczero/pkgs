@@ -1,8 +1,9 @@
 //! libPROJ environment hooks for [`super::context`].
 //!
-//! Production wires create/destroy/config to bundled PROJ. Compile-fail
-//! fixtures stub this module so `context.rs` can be `#[path]`-included under
-//! bare `rustc` without pulling `proj-sys` or the rest of the CRS tree.
+//! Production wires a fresh private context constructor plus destroy/config to
+//! bundled PROJ. Compile-fail fixtures stub this module so `context.rs` can be
+//! `#[path]`-included under bare `rustc` without pulling `proj-sys` or the rest
+//! of the CRS tree.
 
 use crate::crs::runtime::apply_runtime_config;
 use crate::crs::{CrsError, ProjContext, RuntimeState};
@@ -20,7 +21,7 @@ pub(super) type EnvResult<T> = Result<T>;
 /// the creating thread) into [`ProjContext`] before any fallible work.
 pub(super) unsafe fn context_create() -> *mut ContextRaw {
     // SAFETY: no pointer inputs; returns null or uniquely owned context.
-    unsafe { proj_sys::proj_context_create() }
+    unsafe { proj_sys::gometry_proj_context_create() }
 }
 
 /// # Safety

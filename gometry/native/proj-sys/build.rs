@@ -12,6 +12,11 @@ fn main() {} // Skip the build script on docs.rs
 
 #[cfg(not(feature = "nobuild"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=PROJSRC/proj-9.6.2.tar.gz");
+    for source in ["aea.cpp", "merc.cpp", "gometry_proj_context.cpp"] {
+        println!("cargo:rerun-if-changed=PROJSRC/patches/proj-9.6.2/{source}");
+    }
     let include_path = if cfg!(feature = "bundled_proj") {
         eprintln!("feature flags specified source build");
         build_from_source()?
@@ -103,8 +108,12 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     archive.unpack(&source_root)?;
     let source_dir = source_root.join(format!("proj-{MINIMUM_PROJ_VERSION}"));
     let patch_dir = PathBuf::from(format!("PROJSRC/patches/proj-{MINIMUM_PROJ_VERSION}"));
-    for projection in ["aea.cpp", "merc.cpp"] {
-        let patch_path = patch_dir.join(projection);
+    for (source, destination) in [
+        ("aea.cpp", "src/projections/aea.cpp"),
+        ("merc.cpp", "src/projections/merc.cpp"),
+        ("gometry_proj_context.cpp", "src/gometry_proj_context.cpp"),
+    ] {
+        let patch_path = patch_dir.join(source);
         if !patch_path.is_file() {
             return Err(format!(
                 "bundled PROJ {MINIMUM_PROJ_VERSION} requires a reviewed source override at {}",
@@ -112,11 +121,22 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
             )
             .into());
         }
-        fs::copy(
-            patch_path,
-            source_dir.join("src/projections").join(projection),
-        )?;
+        fs::copy(patch_path, source_dir.join(destination))?;
     }
+    let source_list = source_dir.join("src/lib_proj.cmake");
+    let source_list_contents = fs::read_to_string(&source_list)?;
+    let source_list_marker = "  ctx.cpp\n";
+    let source_list_replacement = "  ctx.cpp\n  gometry_proj_context.cpp\n";
+    if source_list_contents.matches(source_list_marker).count() != 1 {
+        return Err(format!(
+            "bundled PROJ {MINIMUM_PROJ_VERSION} source list has an unexpected ctx.cpp entry"
+        )
+        .into());
+    }
+    fs::write(
+        source_list,
+        source_list_contents.replacen(source_list_marker, source_list_replacement, 1),
+    )?;
     let mut config = cmake::Config::new(source_dir);
     config.define("BUILD_SHARED_LIBS", "OFF");
     config.define("BUILD_TESTING", "OFF");

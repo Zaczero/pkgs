@@ -4,11 +4,9 @@ runtime config, cache info, and the PROJ authority metadata surface.
 
 from __future__ import annotations
 
-import errno
-import os
+import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import gometry as gm
@@ -47,6 +45,7 @@ def _isolated_child_env(tmpdir: str) -> dict[str, str]:
     return {
         'TMPDIR': tmpdir,
         'PYTHONPATH': _GOMETRY_PYTHON,
+        'PYTHONDONTWRITEBYTECODE': '1',
     }
 
 
@@ -217,90 +216,70 @@ print('ok')
 
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='RLIMIT_FSIZE is a Linux write limit')
-def test_crs_runtime_partial_write_removes_directory(tmp_path: Path) -> None:
-    """A failed proj.ini write must not leave gometry-proj-* under TMPDIR."""
+def test_crs_runtime_does_not_use_tmpdir_for_configuration(tmp_path: Path) -> None:
+    """CRS operation succeeds without a usable temporary directory or writes."""
+    unavailable = tmp_path / 'does-not-exist'
     code = """
 import os
 import resource
-import signal
-from pathlib import Path
-import gometry as gm
-signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
-resource.setrlimit(resource.RLIMIT_FSIZE, (64, 64))
-tmp = Path(os.environ['TMPDIR'])
-try:
-    gm.crs_info(4326)
-except gm.CRSError as error:
-    message = str(error)
-    if 'could not create gometry PROJ configuration' not in message:
-        raise SystemExit('unexpected CRSError ' + message)
-else:
-    raise SystemExit('write did not fail under RLIMIT_FSIZE')
-leftover = list(tmp.glob('gometry-proj-*'))
-print('leftover', len(leftover))
-if leftover:
-    raise SystemExit('leftover ' + repr([str(path) for path in leftover]))
-print('ok')
-"""
-    completed = _run_isolated_child(code, str(tmp_path))
-    assert completed.returncode == 0, completed.stderr
-    assert 'ok' in completed.stdout
-    assert list(tmp_path.glob('gometry-proj-*')) == []
-
-
-@pytest.mark.skipif(sys.platform != 'linux', reason='non-UTF-8 TMPDIR uses POSIX fs encoding')
-def test_crs_runtime_nonutf8_tmpdir_keeps_missing_grid_warning(tmp_path: Path) -> None:
-    """A non-UTF-8 TMPDIR must keep missing-grid AccuracyWarning with no leftover."""
-    prefix = b'gometry-nonutf8-\xff-'
-    try:
-        temporary = tempfile.TemporaryDirectory(
-            prefix=prefix, dir=os.fsencode(tmp_path)
-        )
-    except OSError as error:
-        if error.errno != errno.EILSEQ:
-            raise
-        try:
-            temporary = tempfile.TemporaryDirectory(
-                prefix=prefix, dir=os.fsencode('/dev/shm')
-            )
-        except OSError as fallback_error:
-            if fallback_error.errno in {errno.EILSEQ, errno.ENOENT}:
-                pytest.skip(
-                    'no available Linux filesystem accepts non-UTF-8 '
-                    'temporary directory names'
-                )
-            raise
-    with temporary as raw:
-        assert isinstance(raw, bytes)
-        tmpdir = os.fsdecode(raw)
-        code = """
-import os
 import warnings
 from pathlib import Path
 import gometry as gm
+resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
 tmp = Path(os.environ['TMPDIR'])
+if tmp.exists():
+    raise SystemExit('TMPDIR unexpectedly exists')
 with warnings.catch_warnings(record=True) as seen:
     warnings.simplefilter('always')
     gm.crs_transform(4267, 4326, -104.0, 40.0)
-warned = any(
+if not any(
     issubclass(item.category, gm.AccuracyWarning)
-    and 'us_noaa_conus' in str(item.message)
+    and 'us_noaa_conus.tif' in str(item.message)
     for item in seen
-)
-leftover = list(tmp.glob('gometry-proj-*'))
-print('warned', warned)
-print('leftover', len(leftover))
-if leftover:
-    raise SystemExit('leftover ' + repr([str(path) for path in leftover]))
-if not warned:
-    raise SystemExit('missing AccuracyWarning')
+):
+    raise SystemExit('missing missing-grid warning')
+if tmp.exists():
+    raise SystemExit('TMPDIR was created')
 print('ok')
 """
-        completed = _run_isolated_child(code, tmpdir)
-        assert completed.returncode == 0, completed.stderr
-        assert 'ok' in completed.stdout
-        leftover = list(Path(tmpdir).glob('gometry-proj-*'))
-        assert leftover == []
+    completed = _run_isolated_child(code, str(unavailable))
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == 'ok'
+    assert not unavailable.exists()
+
+
+def test_crs_runtime_empty_paths_use_bare_lookup_not_proj_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty configured list keeps cwd lookup but excludes PROJ_DATA."""
+    current = tmp_path / 'current'
+    ambient = tmp_path / 'ambient'
+    current.mkdir()
+    ambient.mkdir()
+    grid_name = 'us_noaa_conus.tif'
+    fixture = Path(__file__).with_name('fixtures') / grid_name
+    shutil.copyfile(fixture, current / grid_name)
+    shutil.copyfile(fixture, ambient / grid_name)
+    original = gm.crs_config()
+    try:
+        gm.crs_reset()
+        monkeypatch.chdir(current)
+        monkeypatch.setenv('PROJ_DATA', str(ambient))
+        gm.crs_clear_cache()
+        assert gm.crs_grid(grid_name)['available'] is True
+        (current / grid_name).unlink()
+        gm.crs_clear_cache()
+        assert gm.crs_grid(grid_name)['available'] is False
+    finally:
+        gm.crs_reset()
+        if original != {'search_paths': None, 'user_writable_directory': None}:
+            assert (
+                gm.crs_configure(
+                    search_paths=original['search_paths'],
+                    user_writable_directory=original['user_writable_directory'],
+                )
+                == original
+            )
 
 
 def test_crs_runtime_tmerc_ignores_hostile_proj_ini(
@@ -315,6 +294,9 @@ def test_crs_runtime_tmerc_ignores_hostile_proj_ini(
     (tmp_path / 'proj.ini').write_text(_HOSTILE_INI)
     try:
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv('PROJ_NETWORK', 'ON')
+        monkeypatch.setenv('PROJ_NETWORK_ENDPOINT', 'https://invalid.example/')
+        monkeypatch.setenv('PROJ_ONLY_BEST_DEFAULT', 'ON')
         assert _proj_tmerc_xy(_GRS80_TMERC) == poder
         with pytest.warns(gm.AccuracyWarning, match='us_noaa_conus'):
             gm.crs_transform(4267, 4326, -104.0, 40.0)

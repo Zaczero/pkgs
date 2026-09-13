@@ -4,10 +4,6 @@
 //! `&str`/`RuntimeConfig` API; the raw-pointer context mutators stay private in
 //! the parent `crs` module, reached via `use super::*`; re-exported at `crs`.
 
-use std::io::Write as _;
-#[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use smol_str::SmolStr;
@@ -20,110 +16,7 @@ use crate::crs::{
 };
 use crate::error::Result;
 
-const PROJ_INI: &str = "[general]\nnetwork = off\ncdn_endpoint = https://cdn.proj.org\ncache_enabled = on\ncache_size_MB = 300\ncache_ttl_sec = 86400\ntmerc_default_algo = poder_engsager\n";
 const MAX_PROJ_DIAGNOSTIC_BYTES: usize = 4096;
-
-struct IsolatedProjIni {
-    directory: Option<PathBuf>,
-}
-
-impl IsolatedProjIni {
-    fn create() -> Result<Self> {
-        let temp = std::env::temp_dir();
-        let mut random = [0_u8; 16];
-        getrandom::fill(&mut random).map_err(|error| {
-            CrsError::invalid(format!(
-                "could not create gometry PROJ configuration: {error}"
-            ))
-        })?;
-        let nonce = u128::from_ne_bytes(random);
-        let pid = std::process::id();
-        for sequence in 0..128_u32 {
-            let directory = temp.join(format!("gometry-proj-{pid}-{nonce:032x}-{sequence}"));
-            let mut builder = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            builder.mode(0o700);
-            match builder.create(&directory) {
-                Ok(()) => {
-                    let isolated = Self {
-                        directory: Some(directory),
-                    };
-                    isolated.write_ini()?;
-                    return Ok(isolated);
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
-                Err(error) => {
-                    return Err(CrsError::invalid(format!(
-                        "could not create gometry PROJ configuration: {error}"
-                    )));
-                },
-            }
-        }
-        Err(CrsError::invalid(
-            "could not create gometry PROJ configuration: could not allocate a private temporary directory",
-        ))
-    }
-
-    fn write_ini(&self) -> Result<()> {
-        let ini = self.path().join("proj.ini");
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options.open(&ini).map_err(|error| {
-            CrsError::invalid(format!(
-                "could not create gometry PROJ configuration: {error}"
-            ))
-        })?;
-        file.write_all(PROJ_INI.as_bytes()).map_err(|error| {
-            CrsError::invalid(format!(
-                "could not create gometry PROJ configuration: {error}"
-            ))
-        })
-    }
-
-    fn path(&self) -> &Path {
-        self.directory
-            .as_deref()
-            .expect("PROJ configuration directory already closed")
-    }
-
-    fn close(mut self) -> Result<()> {
-        let directory = self.path();
-        std::fs::remove_dir_all(directory).map_err(|error| {
-            CrsError::invalid(format!(
-                "could not remove gometry PROJ configuration: {error}"
-            ))
-        })?;
-        self.directory = None;
-        Ok(())
-    }
-}
-
-impl Drop for IsolatedProjIni {
-    fn drop(&mut self) {
-        if let Some(directory) = self.directory.take() {
-            let _ = std::fs::remove_dir_all(&directory);
-        }
-    }
-}
-
-fn path_cstring(path: &Path) -> Result<std::ffi::CString> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-        cstring(path.as_os_str().as_bytes())
-    }
-    #[cfg(not(unix))]
-    {
-        let Some(text) = path.to_str() else {
-            return Err(CrsError::invalid(
-                "could not create gometry PROJ configuration: temporary directory path is not valid Unicode",
-            ));
-        };
-        cstring(text)
-    }
-}
 
 unsafe extern "C" fn capture_proj_diagnostic(
     app_data: *mut std::ffi::c_void,
@@ -152,6 +45,14 @@ unsafe extern "C" fn capture_proj_diagnostic(
     // context that registered this callback. PROJ invokes it synchronously.
     let diagnostic = unsafe { &*(app_data.cast::<ProjDiagnostic>()) };
     diagnostic.store(message);
+}
+
+const unsafe extern "C" fn bare_resource(
+    _context: *mut proj_sys::PJ_CONTEXT,
+    name: *const c_char,
+    _user_data: *mut std::ffi::c_void,
+) -> *const c_char {
+    name
 }
 
 pub(crate) fn normalize(value: &str) -> Result<String> {
@@ -414,11 +315,10 @@ pub(crate) fn runtime_state_snapshot() -> Result<Arc<RuntimeState>> {
 /// typed context. Callers wrap the context in [`ProjContext`] *before* this
 /// so error/panic paths never need a manual `proj_context_destroy`.
 pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig) -> Result<()> {
-    let isolated = IsolatedProjIni::create()?;
     // SAFETY: DOC-H. Typed live context on the creating thread. PROJ copies
-    // search paths / directory into context-owned storage; temporary
-    // CString/pointer vectors need only outlive each call. PROJ invokes no
-    // Python callback.
+    // search paths / directory into context-owned storage; CString/pointer
+    // vectors need only outlive each call. The bare finder returns the
+    // caller-owned resource name, which PROJ consumes synchronously.
     unsafe {
         proj_sys::proj_log_func(
             context.as_ptr(),
@@ -428,12 +328,6 @@ pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig
         // Missing-best-grid diagnostics are emitted at DEBUG. TRACE would add
         // unrelated per-step chatter; TELL is a query sentinel, not a level.
         proj_sys::proj_log_level(context.as_ptr(), proj_sys::PJ_LOG_LEVEL_PJ_LOG_DEBUG);
-        // Load proj.ini before caller paths: set_search_paths does not reload it.
-        let isolation = path_cstring(isolated.path())?;
-        let isolation_ptrs = [isolation.as_ptr()];
-        proj_sys::proj_context_set_search_paths(context.as_ptr(), 1, isolation_ptrs.as_ptr());
-        proj_sys::proj_context_set_enable_network(context.as_ptr(), 0);
-        isolated.close()?;
         let values = config
             .search_paths
             .clone()
@@ -446,7 +340,14 @@ pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig
             .chain(config.user_writable_directory.clone())
             .map(cstring)
             .collect::<Result<Vec<_>>>()?;
-        if !values.is_empty() {
+        if values.is_empty() {
+            proj_sys::proj_context_set_file_finder(
+                context.as_ptr(),
+                Some(bare_resource),
+                std::ptr::null_mut(),
+            );
+        } else {
+            proj_sys::proj_context_set_file_finder(context.as_ptr(), None, std::ptr::null_mut());
             let pointers = values
                 .iter()
                 .map(|value| value.as_ptr())
