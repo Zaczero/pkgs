@@ -198,7 +198,7 @@ impl Shape {
                 "hausdorff_distance requires non-empty geometries",
             ));
         }
-        if self.has_filled_area_parts() || other.has_filled_area_parts() {
+        if self.has_area_parts() || other.has_area_parts() {
             return filled_hausdorff_distance(self, other);
         }
         // A point pair is already the complete continuous Hausdorff problem.

@@ -4,6 +4,7 @@ use std::collections::BinaryHeap;
 use crate::geometry::{
     CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, Strictness,
 };
+use crate::grid::CoverError;
 use crate::grid::affine_source::{
     GeographicCoverageSource, SphericalGridTarget, WorkingShapeRelation,
 };
@@ -11,12 +12,14 @@ use crate::grid::coverer::CellClass;
 use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::{CellId, Face};
 use crate::grid::s2::coverer::{
-    AffineRectClass, CoverContext, CoverRule, Coverer, Covering, certified_rect_windows, classify,
+    AffineRectClass, CoverContext, CoverRule, CoverStats, Coverer, Covering,
+    certified_rect_windows, classify,
 };
 use crate::grid::s2::projection::MAX_LEVEL;
 use crate::grid::spherical_arc::{
     CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
 };
+use crate::test_support::{allocation_count, fail_allocations_after};
 
 /// Independent reference coverer: classifies each cell with gometry's
 /// general native DE-9IM relate engine (a DIFFERENT code path from the
@@ -159,7 +162,10 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
         cells.push((id, interior));
     }
     cells.sort_unstable_by_key(|(id, _)| *id);
-    Covering { cells }
+    Covering {
+        cells,
+        stats: CoverStats::default(),
+    }
 }
 
 fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
@@ -294,8 +300,47 @@ fn fixed(level: u8) -> Coverer {
     }
 }
 
+fn assert_s2_allocation_prefixes(source: &Shape, coverer: Coverer, rule: CoverRule) {
+    let affine = GeographicCoverageSource::new(source, SphericalGridTarget::S2)
+        .expect("test source carrier allocates");
+    let ctx = CoverContext::prepare(source, &affine, WorkingShapeRelation::Identity)
+        .expect("cover context");
+    let expected = coverer
+        .cover_prepared(&ctx, rule)
+        .expect("unrestricted cover");
+    let (_, allocations) = allocation_count(|| {
+        coverer
+            .cover_prepared(&ctx, rule)
+            .expect("count unrestricted cover")
+    });
+    assert!(allocations > 0, "fixture must allocate during traversal");
+
+    for prefix in 0..allocations {
+        let failed = fail_allocations_after(prefix, || coverer.cover_prepared(&ctx, rule));
+        let error = failed.expect_err("every allocation prefix must fail the cover");
+        let CoverError::Preparation(error) = error else {
+            panic!("allocation failure changed into a non-resource error: {error:?}");
+        };
+        assert!(
+            matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+            ),
+            "unexpected allocation error: {error:?}"
+        );
+        let retry = coverer
+            .cover_prepared(&ctx, rule)
+            .expect("retry after allocation failure");
+        assert_eq!(
+            retry.outer(),
+            expected.outer(),
+            "allocation prefix {prefix}"
+        );
+    }
+}
+
 #[test]
-fn productive_cache_is_isolated_between_sources() {
+fn productive_state_is_isolated_between_sources() {
     let line = Shape::LineString(
         LineSeq::try_new(
             CoordSeq::try_from_points(&[
@@ -323,6 +368,195 @@ fn productive_cache_is_isolated_between_sources() {
         .cover_identity(&point)
         .expect("point has one level-zero owner");
     assert_eq!(covering.outer(), vec![face]);
+}
+
+#[test]
+fn adaptive_productivity_reuses_nested_certificates() {
+    let source = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-50.0, -40.0),
+                Point::new_raw_xy(50.0, -40.0),
+            ])
+            .unwrap(),
+        )
+        .expect("fixture line is valid"),
+    );
+    let covering = Coverer {
+        min_level: 0,
+        max_level: 8,
+        level_mod: 1,
+        max_cells: None,
+        target_cells: 8,
+    }
+    .cover_identity_for_rule(&source, CoverRule::Within)
+    .expect("line within cover is empty but valid");
+    let stats = covering.stats();
+
+    assert!(covering.outer().is_empty());
+    assert_eq!(stats.raw_classify_calls, 1334, "{stats:?}");
+    assert!(stats.productive_path_reuses > 0, "{stats:?}");
+    assert!(stats.productive_path_hits > 0, "{stats:?}");
+    assert!(stats.raw_classify_calls > 0, "{stats:?}");
+    assert_eq!(stats.visited_unique_candidates, stats.raw_classify_calls);
+    assert!(stats.unique_local_point_probes > 0, "{stats:?}");
+    assert!(stats.local_duplicate_hits > 0, "{stats:?}");
+    assert!(stats.carried_certificate_hits > stats.productive_path_reuses);
+    assert_eq!(stats.carried_certificate_hits, 1328, "{stats:?}");
+    assert!(stats.certificate_storage_peak > 0, "{stats:?}");
+    assert!(stats.certificate_storage_peak < 162, "{stats:?}");
+    assert_eq!(stats.retained_map_entries, 0, "{stats:?}");
+    assert!(
+        stats.unique_local_point_probes <= stats.raw_classify_calls * 5,
+        "{stats:?}"
+    );
+    let overlap = Coverer {
+        min_level: 0,
+        max_level: 8,
+        level_mod: 1,
+        max_cells: None,
+        target_cells: 8,
+    }
+    .cover_identity(&source)
+    .expect("line overlap cover");
+    assert!(
+        overlap.stats().visible_queue_peak > 0,
+        "{:?}",
+        overlap.stats()
+    );
+}
+
+#[test]
+fn fixed_within_drops_invisible_terminals_without_accumulating_them() {
+    let source = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-50.0, -40.0),
+                Point::new_raw_xy(50.0, -40.0),
+            ])
+            .unwrap(),
+        )
+        .expect("fixture line is valid"),
+    );
+    let covering = Coverer {
+        min_level: 8,
+        max_level: 8,
+        level_mod: 1,
+        max_cells: None,
+        target_cells: 8,
+    }
+    .cover_identity_for_rule(&source, CoverRule::Within)
+    .expect("fixed line within cover is empty but valid");
+    let stats = covering.stats();
+
+    assert!(covering.outer().is_empty());
+    assert_eq!(stats.raw_classify_calls, 1334, "{stats:?}");
+    assert_eq!(stats.local_duplicate_hits, 645, "{stats:?}");
+    assert!(
+        stats.invisible_stack_peak <= 4,
+        "invisible terminals accumulated: {stats:?}"
+    );
+    assert!(stats.certificate_storage_peak > 0, "{stats:?}");
+    assert!(stats.certificate_storage_peak <= 64, "{stats:?}");
+    assert_eq!(stats.retained_map_entries, 0, "{stats:?}");
+}
+
+#[test]
+fn s2_traversal_allocations_are_native_and_retryable() {
+    let point = Shape::Point(Point::new_raw_xy(-50.0, -40.0));
+    let polygon = box_shape(10.0, 20.0, 12.0, 22.0);
+
+    // These cases exercise the initial frontier, a finite fan, nested
+    // productivity batches, visible queue growth, invisible DFS, and final
+    // cell publication. Every allocation prefix is rejected and then retried
+    // against the untouched output oracle.
+    assert_s2_allocation_prefixes(&polygon, fixed(8), CoverRule::Overlap);
+    assert_s2_allocation_prefixes(&point, fixed(8), CoverRule::Within);
+    assert_s2_allocation_prefixes(
+        &point,
+        Coverer {
+            min_level: 0,
+            max_level: 8,
+            level_mod: 1,
+            max_cells: None,
+            target_cells: 8,
+        },
+        CoverRule::Within,
+    );
+    assert_s2_allocation_prefixes(
+        &point,
+        Coverer {
+            min_level: 0,
+            max_level: 8,
+            level_mod: 1,
+            max_cells: None,
+            target_cells: 8,
+        },
+        CoverRule::Overlap,
+    );
+}
+
+#[test]
+fn adaptive_level_mod_values_keep_emitted_levels_conforming() {
+    let source = box_shape(10.0, 20.0, 12.0, 22.0);
+    for level_mod in 1..=3 {
+        let covering = Coverer {
+            min_level: 2,
+            max_level: 8,
+            level_mod,
+            max_cells: None,
+            target_cells: 64,
+        }
+        .cover_identity(&source)
+        .unwrap_or_else(|_| panic!("level_mod {level_mod}"));
+        assert!(
+            covering
+                .outer()
+                .iter()
+                .all(|id| (id.level() - 2) % level_mod == 0),
+            "level_mod {level_mod}: {:?}",
+            covering.outer()
+        );
+    }
+}
+
+#[test]
+fn bowtie_polygon_keeps_both_filled_lobes_in_s2_cover() {
+    let shell = [
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(2.0, 2.0),
+        Point::new_raw_xy(0.0, 2.0),
+        Point::new_raw_xy(2.0, 0.0),
+        Point::new_raw_xy(0.0, 0.0),
+    ];
+    let source = Shape::Polygon(
+        Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+            Vec::new(),
+        )
+        .unwrap(),
+    );
+    let left_lobe = Point::new_raw_xy(0.5, 1.5);
+    let right_lobe = Point::new_raw_xy(1.5, 0.5);
+    assert!(source.covers_point(left_lobe).unwrap());
+    assert!(source.covers_point(right_lobe).unwrap());
+
+    let covering = fixed(8).cover_identity(&source).expect("bowtie cover");
+    let outer = covering.outer();
+    assert!(
+        outer.contains(
+            &CellId::from_lonlat(left_lobe.x, left_lobe.y)
+                .parent(8)
+                .unwrap()
+        )
+    );
+    assert!(
+        outer.contains(
+            &CellId::from_lonlat(right_lobe.x, right_lobe.y)
+                .parent(8)
+                .unwrap()
+        )
+    );
 }
 
 #[test]

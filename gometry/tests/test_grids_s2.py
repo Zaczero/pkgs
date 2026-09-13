@@ -943,6 +943,31 @@ def test_s2_cover_within_polar_and_antimeridian_honors_source_geometry() -> None
     assert b_within <= b_overlap
 
 
+def test_s2_within_line_drops_invisible_candidates_at_every_level_mod() -> None:
+    line = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
+    for level_mod in (1, 2, 3):
+        assert not gm.s2_cover(
+            line,
+            cell_rule='within',
+            min_level=0,
+            max_level=9,
+            level_mod=level_mod,
+            max_cells=None,
+        )
+    assert gm.s2_cover(line, level=8, cell_rule='overlap')
+
+
+def test_s2_bowtie_cover_keeps_both_filled_lobes() -> None:
+    bowtie = gm.Polygon(
+        [(0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0), (0.0, 0.0)],
+        crs=4326,
+    )
+    covering = gm.s2_cover(bowtie, level=8)
+    for longitude, latitude in ((0.5, 1.5), (1.5, 0.5)):
+        owner = gm.S2Cell(longitude, latitude, level=8)
+        assert any(cell.contains(owner) for cell in covering)
+
+
 def test_s2_set_utilities_mirror_h3() -> None:
     parent = gm.S2Cell(21.0, 52.0, level=8)
     child = parent.children(10)[0]

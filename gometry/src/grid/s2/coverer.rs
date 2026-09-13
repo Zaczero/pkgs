@@ -29,12 +29,10 @@
 //! bound is interior to the source — so `within` keeps genuine full-longitude
 //! polar interior cells.
 
-use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
 
-use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::{Bounds, Point, PointBatchTester, Shape, same_point};
 use crate::grid::affine_source::{
     GeographicCoverageSource, RectClass as AffineRectClass, SphericalGridTarget,
@@ -49,6 +47,9 @@ use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
 };
 use crate::grid::{CoverBudgetExceeded, CoverError, ensure_cover_budget};
+
+#[cfg(test)]
+const S2_LEVEL_COUNT: usize = MAX_LEVEL as usize + 1;
 
 /// Level budget for a covering. `min_level <= max_level`; emitted levels
 /// satisfy `(level - min_level) % level_mod == 0`; `target_cells` guides
@@ -80,6 +81,8 @@ pub(crate) enum CoverRule {
 #[derive(Clone, Debug)]
 pub(crate) struct Covering {
     cells: Vec<(CellId, bool)>,
+    #[cfg(test)]
+    stats: CoverStats,
 }
 
 impl Covering {
@@ -102,6 +105,304 @@ impl Covering {
             .filter_map(|(id, interior)| interior.then_some(*id))
             .collect()
     }
+
+    #[cfg(test)]
+    const fn stats(&self) -> CoverStats {
+        self.stats
+    }
+}
+
+/// Per-cover observations used by the native traversal tests.
+///
+/// The counters are test-only fields so production covers retain no diagnostic
+/// state.  The operation still passes one zero-sized counter value through the
+/// traversal in non-test builds, keeping the instrumentation seam at the
+/// operation boundary rather than in global state. `visited_unique_candidates`
+/// is derived from raw classifications: the traversal's only repeated
+/// candidate observations are explicit carried-certificate hits.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CoverStats {
+    #[cfg(test)]
+    raw_classify_calls: usize,
+    #[cfg(test)]
+    classifications_by_level: [usize; S2_LEVEL_COUNT],
+    #[cfg(test)]
+    visited_unique_candidates: usize,
+    #[cfg(test)]
+    unique_local_point_probes: usize,
+    #[cfg(test)]
+    local_duplicate_hits: usize,
+    #[cfg(test)]
+    carried_certificate_hits: usize,
+    #[cfg(test)]
+    carried_certificates_by_level: [usize; S2_LEVEL_COUNT],
+    #[cfg(test)]
+    productive_path_reuses: usize,
+    #[cfg(test)]
+    productive_path_reuses_by_level: [usize; S2_LEVEL_COUNT],
+    #[cfg(test)]
+    productive_path_hits: usize,
+    #[cfg(test)]
+    visible_queue_peak: usize,
+    #[cfg(test)]
+    invisible_stack_peak: usize,
+    #[cfg(test)]
+    certificate_storage_peak: usize,
+    #[cfg(test)]
+    retained_map_entries: usize,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the counter mutates in test builds and is intentionally zero-sized in production"
+    )
+)]
+impl CoverStats {
+    #[inline]
+    const fn raw_classify(&mut self, level: u8) {
+        #[cfg(not(test))]
+        let _ = level;
+        #[cfg(test)]
+        {
+            self.raw_classify_calls += 1;
+            self.classifications_by_level[level as usize] += 1;
+            self.visited_unique_candidates += 1;
+        }
+    }
+
+    #[inline]
+    const fn unique_local_point_probe(&mut self) {
+        #[cfg(test)]
+        {
+            self.unique_local_point_probes += 1;
+        }
+    }
+
+    #[inline]
+    const fn local_duplicate_hit(&mut self) {
+        #[cfg(test)]
+        {
+            self.local_duplicate_hits += 1;
+        }
+    }
+
+    #[inline]
+    const fn carried_certificate_hit(&mut self, level: u8) {
+        #[cfg(not(test))]
+        let _ = level;
+        #[cfg(test)]
+        {
+            self.carried_certificate_hits += 1;
+            self.carried_certificates_by_level[level as usize] += 1;
+        }
+    }
+
+    #[inline]
+    const fn productive_path_reuse(&mut self, level: u8) {
+        #[cfg(not(test))]
+        let _ = level;
+        #[cfg(test)]
+        {
+            self.productive_path_reuses += 1;
+            self.productive_path_reuses_by_level[level as usize] += 1;
+        }
+    }
+
+    #[inline]
+    const fn productive_path_hit(&mut self) {
+        #[cfg(test)]
+        {
+            self.productive_path_hits += 1;
+        }
+    }
+
+    #[inline]
+    const fn visible_queue_peak(&mut self, len: usize) {
+        #[cfg(not(test))]
+        let _ = len;
+        #[cfg(test)]
+        {
+            if len > self.visible_queue_peak {
+                self.visible_queue_peak = len;
+            }
+        }
+    }
+
+    #[inline]
+    const fn invisible_stack_peak(&mut self, len: usize) {
+        #[cfg(not(test))]
+        let _ = len;
+        #[cfg(test)]
+        {
+            if len > self.invisible_stack_peak {
+                self.invisible_stack_peak = len;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[inline]
+    const fn certificate_storage_peak(&mut self, len: usize) {
+        if len > self.certificate_storage_peak {
+            self.certificate_storage_peak = len;
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "certificate accounting walks runtime frontier storage"
+        )
+    )]
+    fn observe_candidate(&mut self, candidate: &Candidate) {
+        #[cfg(not(test))]
+        let _ = candidate;
+        #[cfg(test)]
+        self.certificate_storage_peak(candidate.certificate_storage());
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "certificate accounting walks runtime batch storage"
+        )
+    )]
+    fn observe_batch(&mut self, candidates: &[Candidate]) {
+        #[cfg(not(test))]
+        let _ = candidates;
+        #[cfg(test)]
+        self.certificate_storage_peak(candidates.iter().map(Candidate::certificate_storage).sum());
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "certificate accounting walks runtime frontier storage"
+        )
+    )]
+    fn observe_frontier(
+        &mut self,
+        dfs: &[Candidate],
+        queue: &BinaryHeap<(Reverse<u8>, CellId, Candidate)>,
+        invisible: &[Candidate],
+        staged: &[Candidate],
+    ) {
+        #[cfg(not(test))]
+        let _ = (dfs, queue, invisible, staged);
+        #[cfg(test)]
+        self.certificate_storage_peak(
+            dfs.iter()
+                .chain(queue.iter().map(|(_, _, candidate)| candidate))
+                .chain(invisible)
+                .chain(staged)
+                .map(Candidate::certificate_storage)
+                .sum(),
+        );
+    }
+}
+
+/// One classified S2 candidate.  The membership facts are carried with the
+/// candidate so visibility never has to ask the source tester a second time.
+#[derive(Clone, Copy, Debug)]
+struct CandidateCertificate {
+    id: CellId,
+    class: CellClass,
+    membership: Option<PointMembership>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PointMembership {
+    vertices: [bool; 4],
+    center: bool,
+}
+
+/// Certificates for every child in one parent-local fan. The successful
+/// branch carries its own nested batches; siblings retain only their already
+/// classified candidate certificate until their own productivity is needed.
+#[derive(Clone, Debug)]
+struct CertificateBatch {
+    candidates: Vec<Candidate>,
+}
+
+impl CertificateBatch {
+    #[cfg(test)]
+    fn certificate_storage(&self) -> usize {
+        self.candidates
+            .iter()
+            .map(Candidate::certificate_storage)
+            .sum()
+    }
+}
+
+/// A candidate's productivity state. `Terminal` covers an interior candidate
+/// or a boundary candidate at the last permitted level. `Children` carries a
+/// finite fan whose certificates were already paid while proving that at
+/// least one descendant is productive.
+#[derive(Clone, Debug)]
+enum Productivity {
+    Terminal,
+    Children(CertificateBatch),
+}
+
+impl Productivity {
+    #[cfg(test)]
+    fn certificate_storage(&self) -> usize {
+        match self {
+            Self::Terminal => 0,
+            Self::Children(batch) => batch.certificate_storage(),
+        }
+    }
+}
+
+/// A frontier candidate may carry the finite sibling batch returned while
+/// establishing that it has a terminal descendant. `Some` means productivity
+/// is known; `None` means it is unknown.
+#[derive(Clone, Debug)]
+struct Candidate {
+    certificate: CandidateCertificate,
+    productivity: Option<Productivity>,
+}
+
+impl Candidate {
+    const fn new(certificate: CandidateCertificate) -> Self {
+        Self {
+            certificate,
+            productivity: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn certificate_storage(&self) -> usize {
+        1 + self
+            .productivity
+            .as_ref()
+            .map_or(0, Productivity::certificate_storage)
+    }
+}
+
+impl PartialEq for Candidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.certificate.id == other.certificate.id
+    }
+}
+
+impl Eq for Candidate {}
+
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Candidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.certificate.id.cmp(&other.certificate.id)
+    }
 }
 
 /// The prepared classification context: built once per covering, reused by
@@ -122,17 +423,6 @@ struct CoverContext<'a> {
     /// uncertain inputs.
     affine: &'a GeographicCoverageSource,
     corroborate: bool,
-    /// Candidate classification is a pure function of the source and cell.
-    /// Productivity probes look deep into a subtree before adaptive descent
-    /// later visits the same cells, so retain those expensive results for the
-    /// lifetime of one cover instead of re-running the polygon classifiers.
-    classes: RefCell<HashMap<CellId, CellClass>>,
-    /// Successful descendant probes are followed again by adaptive descent.
-    /// Retain the witness path so that proof is paid once.
-    productive: RefCell<HashMap<CellId, bool>>,
-    /// Adjacent S2 cells share vertices. Polygon membership at those exact
-    /// coordinates is source-invariant, so classify each shared point once.
-    point_membership: RefCell<HashMap<(u64, u64), bool>>,
 }
 
 impl Coverer {
@@ -184,55 +474,80 @@ impl Coverer {
     ) -> Result<Covering, CoverError> {
         debug_assert_eq!(affine.target(), SphericalGridTarget::S2);
         let ctx = CoverContext::prepare(working, affine, relation)?;
+        self.cover_prepared(&ctx, rule)
+    }
+
+    fn cover_prepared(
+        &self,
+        ctx: &CoverContext<'_>,
+        rule: CoverRule,
+    ) -> Result<Covering, CoverError> {
+        let mut stats = CoverStats::default();
         // E = emitted cells; Q = visible phase-2 emissions. Non-visible
         // candidates use depth-first scratch and never consume max_cells.
         let mut cells: Vec<(CellId, bool)> = Vec::new();
+        crate::try_reserve_vec(&mut cells, 1)?;
         // Visible phase-2 frontier (candidates already at/above min_level).
-        let mut queue: BinaryHeap<(Reverse<u8>, CellId, CellClass)> = BinaryHeap::new();
+        let mut queue: BinaryHeap<(Reverse<u8>, CellId, Candidate)> = BinaryHeap::new();
+        crate::try_reserve_heap(&mut queue, 6)?;
         // Non-visible boundary candidates can still have visible descendants.
         // Keep them depth-first so scratch scales with depth/fanout, not the
         // number of discarded candidates.
-        let mut hidden: Vec<(u8, CellId, CellClass)> = Vec::with_capacity(3 * MAX_LEVEL as usize);
+        let mut invisible: Vec<Candidate> = Vec::new();
+        crate::try_reserve_vec(&mut invisible, 3 * MAX_LEVEL as usize)?;
         // Phase-1 DFS stack: unresolved candidates still below min_level.
         // Fail-open Boundary entries may later classify Outside — do not
         // charge them until proven productive.
-        let mut dfs: Vec<(u8, CellId, CellClass)> = Vec::with_capacity(6 + 3 * MAX_LEVEL as usize);
+        let mut dfs: Vec<Candidate> = Vec::new();
+        crate::try_reserve_vec(&mut dfs, 6 + 3 * MAX_LEVEL as usize)?;
         // Reusable staging buffer for 4/16/64 target descendants.
-        let mut staged: Vec<(CellId, CellClass)> = Vec::with_capacity(64);
-        // Scratch for productivity probes (must not alias `staged`).
-        let mut scratch: Vec<(CellId, CellClass)> = Vec::with_capacity(64);
+        let mut staged: Vec<Candidate> = Vec::new();
+        crate::try_reserve_vec(&mut staged, 64)?;
 
         self.seed_faces(
-            &ctx,
+            ctx,
             rule,
             &cells,
             &mut dfs,
             &mut queue,
-            &mut hidden,
-            &mut scratch,
+            &mut invisible,
+            &mut stats,
+        )?;
+        self.drain_invisible(
+            ctx,
+            rule,
+            &mut cells,
+            &mut queue,
+            &mut invisible,
+            &mut staged,
+            &mut stats,
         )?;
         self.force_min_level(
-            &ctx,
+            ctx,
             rule,
             &mut cells,
             &mut dfs,
             &mut queue,
-            &mut hidden,
+            &mut invisible,
             &mut staged,
-            &mut scratch,
+            &mut stats,
         )?;
         self.adaptive_emit(
-            &ctx,
+            ctx,
             rule,
             &mut cells,
             &mut queue,
-            &mut hidden,
+            &mut invisible,
             &mut staged,
-            &mut scratch,
+            &mut stats,
         )?;
 
         cells.sort_unstable_by_key(|(id, _)| *id);
-        Ok(Covering { cells })
+        Ok(Covering {
+            cells,
+            #[cfg(test)]
+            stats,
+        })
     }
 
     #[cfg(test)]
@@ -259,23 +574,27 @@ impl Coverer {
         ctx: &CoverContext<'_>,
         rule: CoverRule,
         cells: &[(CellId, bool)],
-        dfs: &mut Vec<(u8, CellId, CellClass)>,
-        queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
-        hidden: &mut Vec<(u8, CellId, CellClass)>,
-        scratch: &mut Vec<(CellId, CellClass)>,
-    ) -> Result<(), CoverBudgetExceeded> {
+        dfs: &mut Vec<Candidate>,
+        queue: &mut BinaryHeap<(Reverse<u8>, CellId, Candidate)>,
+        invisible: &mut Vec<Candidate>,
+        stats: &mut CoverStats,
+    ) -> Result<(), CoverError> {
         for face in Face::ALL {
             let id = CellId::from_face(face);
-            match classify(ctx, id) {
+            let mut candidate = classify_one(ctx, id, stats)?;
+            match candidate.certificate.class {
                 CellClass::Outside => {},
-                class => {
+                _class => {
                     if self.min_level == 0 {
                         // Only charge proven-productive faces (fail-open may
                         // prune entirely under adaptive max_level).
-                        if !is_productive(ctx, id, 0, class, self, scratch) {
+                        let Some(productivity) =
+                            productive_state(ctx, candidate.certificate, self, stats)?
+                        else {
                             continue;
-                        }
-                        let visible = is_visible(ctx, rule, id, class);
+                        };
+                        candidate.productivity = Some(productivity);
+                        let visible = is_visible(rule, candidate.certificate);
                         ensure_cover_budget(
                             cells
                                 .len()
@@ -284,14 +603,25 @@ impl Coverer {
                             self.hard_budget(),
                         )?;
                         if visible {
-                            queue.push((Reverse(0), id, class));
+                            crate::try_push_heap(
+                                queue,
+                                (
+                                    Reverse(candidate.certificate.id.level()),
+                                    candidate.certificate.id,
+                                    candidate,
+                                ),
+                            )?;
+                            stats.visible_queue_peak(queue.len());
+                            stats.observe_frontier(dfs, queue, invisible, &[]);
                         } else {
-                            hidden.push((0, id, class));
+                            crate::try_push_vec(invisible, candidate)?;
+                            stats.invisible_stack_peak(invisible.len());
+                            stats.observe_frontier(dfs, queue, invisible, &[]);
                         }
                     } else {
                         // Below min_level: unresolved — resolve depth-first
                         // without charging the transient frontier.
-                        dfs.push((0, id, class));
+                        crate::try_push_vec(dfs, candidate)?;
                     }
                 },
             }
@@ -310,31 +640,45 @@ impl Coverer {
         ctx: &CoverContext<'_>,
         rule: CoverRule,
         cells: &mut Vec<(CellId, bool)>,
-        dfs: &mut Vec<(u8, CellId, CellClass)>,
-        queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
-        hidden: &mut Vec<(u8, CellId, CellClass)>,
-        staged: &mut Vec<(CellId, CellClass)>,
-        scratch: &mut Vec<(CellId, CellClass)>,
-    ) -> Result<(), CoverBudgetExceeded> {
-        while let Some((level, id, class)) = dfs.pop() {
-            debug_assert!(level < self.min_level);
+        dfs: &mut Vec<Candidate>,
+        queue: &mut BinaryHeap<(Reverse<u8>, CellId, Candidate)>,
+        invisible: &mut Vec<Candidate>,
+        staged: &mut Vec<Candidate>,
+        stats: &mut CoverStats,
+    ) -> Result<(), CoverError> {
+        while let Some(candidate) = dfs.pop() {
+            let certificate = candidate.certificate;
+            debug_assert!(certificate.id.level() < self.min_level);
             // Proven base: emitted + phase-2 queue (not the unresolved DFS).
             let proven = cells.len() + queue.len();
-            match class {
+            match certificate.class {
                 CellClass::Outside => unreachable!("Outside never enters the frontier"),
                 CellClass::Interior => {
-                    emit_interior_descendants(self, id, level, proven, cells)?;
+                    emit_interior_descendants(
+                        self,
+                        certificate.id,
+                        certificate.id.level(),
+                        proven,
+                        cells,
+                    )?;
                     debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
                 },
                 CellClass::Boundary => {
-                    stage_children_at(ctx, id, level + 1, staged);
-                    let child_level = level + 1;
+                    stage_children_at(
+                        ctx,
+                        certificate.id,
+                        certificate.id.level() + 1,
+                        None,
+                        staged,
+                        stats,
+                    )?;
+                    let child_level = certificate.id.level() + 1;
                     if child_level >= self.min_level {
                         // Drop fail-open children that resolve to Outside
                         // before charging the phase-2 queue.
-                        retain_productive(ctx, child_level, staged, self, scratch);
-                        for &(child, child_class) in &*staged {
-                            let visible = is_visible(ctx, rule, child, child_class);
+                        retain_productive(ctx, staged, self, stats)?;
+                        for child in staged.drain(..) {
+                            let visible = is_visible(rule, child.certificate);
                             ensure_cover_budget(
                                 cells
                                     .len()
@@ -343,15 +687,31 @@ impl Coverer {
                                 self.hard_budget(),
                             )?;
                             if visible {
-                                queue.push((Reverse(child_level), child, child_class));
+                                crate::try_push_heap(
+                                    queue,
+                                    (
+                                        Reverse(child.certificate.id.level()),
+                                        child.certificate.id,
+                                        child,
+                                    ),
+                                )?;
+                                stats.visible_queue_peak(queue.len());
+                                stats.observe_frontier(dfs, queue, invisible, &[]);
                             } else {
-                                hidden.push((child_level, child, child_class));
+                                crate::try_push_vec(invisible, child)?;
+                                stats.invisible_stack_peak(invisible.len());
+                                stats.observe_frontier(dfs, queue, invisible, &[]);
                             }
                         }
+                        // Preserve the old hidden LIFO order, but only for
+                        // this finite fan. No min-level candidate survives
+                        // into a global phase-two hidden list.
+                        self.drain_invisible(ctx, rule, cells, queue, invisible, staged, stats)?;
                     } else {
-                        for &(child, child_class) in &*staged {
-                            dfs.push((child_level, child, child_class));
-                        }
+                        staged.retain(|child| child.certificate.class != CellClass::Outside);
+                        crate::try_reserve_vec(dfs, staged.len())?;
+                        dfs.append(staged);
+                        stats.observe_frontier(dfs, queue, invisible, staged);
                     }
                 },
             }
@@ -370,57 +730,123 @@ impl Coverer {
         ctx: &CoverContext<'_>,
         rule: CoverRule,
         cells: &mut Vec<(CellId, bool)>,
-        queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
-        hidden: &mut Vec<(u8, CellId, CellClass)>,
-        staged: &mut Vec<(CellId, CellClass)>,
-        scratch: &mut Vec<(CellId, CellClass)>,
-    ) -> Result<(), CoverBudgetExceeded> {
+        queue: &mut BinaryHeap<(Reverse<u8>, CellId, Candidate)>,
+        invisible: &mut Vec<Candidate>,
+        staged: &mut Vec<Candidate>,
+        stats: &mut CoverStats,
+    ) -> Result<(), CoverError> {
         loop {
-            let (level, id, class, visible) = if let Some((level, id, class)) = hidden.pop() {
-                (level, id, class, false)
-            } else if let Some((Reverse(level), id, class)) = queue.pop() {
-                (level, id, class, true)
+            let (candidate, visible) = if let Some(candidate) = invisible.pop() {
+                (candidate, false)
+            } else if let Some((Reverse(_), _, candidate)) = queue.pop() {
+                (candidate, true)
             } else {
                 break;
             };
-            debug_assert!(level >= self.min_level);
-            let can_refine = self.can_refine(level, class);
-            if can_refine {
-                let target = level + self.level_mod;
-                stage_children_at(ctx, id, target, staged);
-                retain_productive(ctx, target, staged, self, scratch);
-                if staged.is_empty() {
-                    // Fail-open parent pruned entirely — not an emission.
-                    continue;
-                }
-                let staged_visible = staged
-                    .iter()
-                    .filter(|&&(child, child_class)| is_visible(ctx, rule, child, child_class))
-                    .count();
-                let base = cells.len() + queue.len();
-                let projected = base.saturating_add(staged_visible);
-                let fits_target = projected <= self.target_budget();
-                let fits_hard = self.hard_budget().is_none_or(|limit| projected <= limit);
-                if fits_target && fits_hard {
-                    for &(child, child_class) in &*staged {
-                        let child_visible = is_visible(ctx, rule, child, child_class);
-                        if child_visible {
-                            queue.push((Reverse(target), child, child_class));
-                        } else {
-                            hidden.push((target, child, child_class));
-                        }
-                    }
-                    continue;
-                }
-                // Optional split does not fit — emit the conforming parent
-                // (never below min_level; F7 purity preserved).
+            debug_assert!(candidate.certificate.id.level() >= self.min_level);
+            self.process_adaptive_candidate(
+                ctx, rule, cells, queue, invisible, staged, candidate, visible, stats,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Process invisible candidates immediately in DFS order. The stack holds
+    /// at most the current refinement fan plus its ancestor siblings; it never
+    /// becomes a second result-sized frontier.
+    fn drain_invisible(
+        self,
+        ctx: &CoverContext<'_>,
+        rule: CoverRule,
+        cells: &mut Vec<(CellId, bool)>,
+        queue: &mut BinaryHeap<(Reverse<u8>, CellId, Candidate)>,
+        invisible: &mut Vec<Candidate>,
+        staged: &mut Vec<Candidate>,
+        stats: &mut CoverStats,
+    ) -> Result<(), CoverError> {
+        while let Some(candidate) = invisible.pop() {
+            self.process_adaptive_candidate(
+                ctx, rule, cells, queue, invisible, staged, candidate, false, stats,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Refine a visible or invisible candidate. Its parent-local certificate
+    /// batch is consumed by `stage_children_at`, so the adaptive descent does
+    /// not classify the finite fan a second time.
+    fn process_adaptive_candidate(
+        self,
+        ctx: &CoverContext<'_>,
+        rule: CoverRule,
+        cells: &mut Vec<(CellId, bool)>,
+        queue: &mut BinaryHeap<(Reverse<u8>, CellId, Candidate)>,
+        invisible: &mut Vec<Candidate>,
+        staged: &mut Vec<Candidate>,
+        mut candidate: Candidate,
+        visible: bool,
+        stats: &mut CoverStats,
+    ) -> Result<(), CoverError> {
+        let certificate = candidate.certificate;
+        if self.can_refine(certificate.id.level(), certificate.class) {
+            let target = certificate.id.level() + self.level_mod;
+            stage_children_at(
+                ctx,
+                certificate.id,
+                target,
+                candidate.productivity.take(),
+                staged,
+                stats,
+            )?;
+            retain_productive(ctx, staged, self, stats)?;
+            if staged.is_empty() {
+                // Fail-open parent pruned entirely — not an emission.
+                return Ok(());
             }
-            // Emit at this level (interior, max-level boundary, or unaffordable split).
-            if visible {
-                let projected = cells.len().saturating_add(queue.len()).saturating_add(1);
+            let staged_visible = staged
+                .iter()
+                .filter(|child| is_visible(rule, child.certificate))
+                .count();
+            let base = cells.len() + queue.len();
+            let projected = base.saturating_add(staged_visible);
+            let fits_target = projected <= self.target_budget();
+            let fits_hard = self.hard_budget().is_none_or(|limit| projected <= limit);
+            if fits_target && fits_hard {
+                // Validate the projected visible frontier once before making
+                // any push. Invisible descendants remain outside the budget.
                 ensure_cover_budget(projected, self.hard_budget())?;
-                cells.push((id, class == CellClass::Interior));
+                for child in staged.drain(..) {
+                    if is_visible(rule, child.certificate) {
+                        crate::try_push_heap(
+                            queue,
+                            (
+                                Reverse(child.certificate.id.level()),
+                                child.certificate.id,
+                                child,
+                            ),
+                        )?;
+                        stats.visible_queue_peak(queue.len());
+                        stats.observe_frontier(&[], queue, invisible, &[]);
+                    } else {
+                        crate::try_push_vec(invisible, child)?;
+                        stats.invisible_stack_peak(invisible.len());
+                        stats.observe_frontier(&[], queue, invisible, &[]);
+                    }
+                }
+                return Ok(());
             }
+            // Optional split does not fit — emit the conforming parent
+            // (never below min_level; F7 purity preserved).
+        }
+        // Emit at this level (interior, max-level boundary, or unaffordable
+        // split). Invisible terminal candidates drop immediately.
+        if visible {
+            let projected = cells.len().saturating_add(queue.len()).saturating_add(1);
+            ensure_cover_budget(projected, self.hard_budget())?;
+            crate::try_push_vec(
+                cells,
+                (certificate.id, certificate.class == CellClass::Interior),
+            )?;
         }
         Ok(())
     }
@@ -436,85 +862,78 @@ impl Coverer {
 /// Keep only children that will emit ≥1 terminal under this coverer.
 fn retain_productive(
     ctx: &CoverContext<'_>,
-    level: u8,
-    staged: &mut Vec<(CellId, CellClass)>,
+    staged: &mut Vec<Candidate>,
     coverer: Coverer,
-    scratch: &mut Vec<(CellId, CellClass)>,
-) {
-    staged.retain(|&(id, class)| is_productive(ctx, id, level, class, coverer, scratch));
-}
-
-/// Whether `id` yields ≥1 final emission (Interior/terminal Boundary, or a
-/// refinable Boundary with a productive descendant). Fail-open Boundary that
-/// classifies Outside at every deeper level returns false.
-fn is_productive(
-    ctx: &CoverContext<'_>,
-    id: CellId,
-    level: u8,
-    class: CellClass,
-    coverer: Coverer,
-    scratch: &mut Vec<(CellId, CellClass)>,
-) -> bool {
-    if let Some(productive) = ctx.productive.borrow().get(&id).copied() {
-        return productive;
-    }
-    match class {
-        CellClass::Outside => {
-            ctx.productive.borrow_mut().insert(id, false);
-            false
-        },
-        CellClass::Interior => {
-            ctx.productive.borrow_mut().insert(id, true);
-            true
-        },
-        CellClass::Boundary => {
-            if !coverer.can_refine(level, class) {
-                ctx.productive.borrow_mut().insert(id, true);
-                return true;
-            }
-            // DFS until a terminal emission is found, or the whole branch is Outside.
-            let mut stack = vec![(level, id)];
-            while let Some((lvl, cell)) = stack.pop() {
-                let target = lvl + coverer.level_mod;
-                stage_children_at(ctx, cell, target, scratch);
-                for &(child, child_class) in scratch.iter() {
-                    match child_class {
-                        CellClass::Outside => {},
-                        CellClass::Interior => {
-                            cache_productive_path(ctx, child, target, level, coverer.level_mod);
-                            return true;
-                        },
-                        CellClass::Boundary => {
-                            if !coverer.can_refine(target, child_class) {
-                                cache_productive_path(ctx, child, target, level, coverer.level_mod);
-                                return true;
-                            }
-                            stack.push((target, child));
-                        },
-                    }
-                }
-            }
-            ctx.productive.borrow_mut().insert(id, false);
-            false
-        },
-    }
-}
-
-fn cache_productive_path(
-    ctx: &CoverContext<'_>,
-    leaf: CellId,
-    leaf_level: u8,
-    root_level: u8,
-    level_mod: u8,
-) {
-    let mut productive = ctx.productive.borrow_mut();
-    let mut level = leaf_level;
-    loop {
-        productive.insert(leaf.parent(level).expect("ancestor level"), true);
-        if level == root_level {
-            break;
+    stats: &mut CoverStats,
+) -> Result<(), CoverError> {
+    let mut index = 0;
+    while index < staged.len() {
+        if staged[index].certificate.class == CellClass::Outside {
+            staged.remove(index);
+            continue;
         }
-        level -= level_mod;
+        if staged[index].productivity.is_some() {
+            stats.productive_path_hit();
+            index += 1;
+            continue;
+        }
+        let certificate = staged[index].certificate;
+        let Some(productivity) = productive_state(ctx, certificate, coverer, stats)? else {
+            staged.remove(index);
+            continue;
+        };
+        staged[index].productivity = Some(productivity);
+        stats.observe_candidate(&staged[index]);
+        index += 1;
+    }
+    Ok(())
+}
+
+/// Find one already-classified branch that yields a final emission, retaining
+/// the finite sibling batch needed by the later adaptive descent.
+///
+/// The returned state is deliberately a finite certificate batch, not a
+/// global cell-result memo. Nested successful children carry their own batch.
+fn productive_state(
+    ctx: &CoverContext<'_>,
+    root: CandidateCertificate,
+    coverer: Coverer,
+    stats: &mut CoverStats,
+) -> Result<Option<Productivity>, CoverError> {
+    match root.class {
+        CellClass::Outside => Ok(None),
+        CellClass::Interior => Ok(Some(Productivity::Terminal)),
+        CellClass::Boundary => {
+            if !coverer.can_refine(root.id.level(), root.class) {
+                return Ok(Some(Productivity::Terminal));
+            }
+            let target = root.id.level() + coverer.level_mod;
+            let mut children = Vec::new();
+            crate::try_reserve_vec(&mut children, fan_size(root.id.level(), target))?;
+            stage_children_at(ctx, root.id, target, None, &mut children, stats)?;
+            for index in 0..children.len() {
+                let child_certificate = children[index].certificate;
+                if child_certificate.class == CellClass::Interior
+                    || !coverer.can_refine(child_certificate.id.level(), child_certificate.class)
+                {
+                    children[index].productivity = Some(Productivity::Terminal);
+                    stats.observe_batch(&children);
+                    return Ok(Some(Productivity::Children(CertificateBatch {
+                        candidates: children,
+                    })));
+                }
+                let Some(productivity) = productive_state(ctx, child_certificate, coverer, stats)?
+                else {
+                    continue;
+                };
+                children[index].productivity = Some(productivity);
+                stats.observe_batch(&children);
+                return Ok(Some(Productivity::Children(CertificateBatch {
+                    candidates: children,
+                })));
+            }
+            Ok(None)
+        },
     }
 }
 
@@ -531,23 +950,10 @@ impl<'a> CoverContext<'a> {
         Ok(Self {
             tester,
             rects: NativeRectClassifier::new_with_area_tester(source, shared_area_tester)?,
-            point_leaves: closed_point_leaves(source),
+            point_leaves: closed_point_leaves(source)?,
             affine,
             corroborate: affine.s2_needs_corroboration(relation),
-            classes: RefCell::new(HashMap::new()),
-            productive: RefCell::new(HashMap::new()),
-            point_membership: RefCell::new(HashMap::new()),
         })
-    }
-
-    fn covers_point(&self, point: Point) -> bool {
-        let key = (point.x.to_bits(), point.y.to_bits());
-        if let Some(covered) = self.point_membership.borrow().get(&key).copied() {
-            return covered;
-        }
-        let covered = self.tester.covers_point(point);
-        self.point_membership.borrow_mut().insert(key, covered);
-        covered
     }
 }
 
@@ -557,39 +963,64 @@ impl<'a> CoverContext<'a> {
 /// normalization. Empty linework represents the same point set as
 /// `Point`, so it deliberately enters this exact owner path too; a nonzero
 /// segment stays on the general certificate traversal.
-fn closed_point_leaves(source: &Shape) -> Option<Vec<CellId>> {
+fn closed_point_leaves(source: &Shape) -> crate::error::Result<Option<Vec<CellId>>> {
     let mut has_nonzero_segment = false;
     source.for_each_segment(|segment| {
         has_nonzero_segment |= !same_point(segment.start, segment.end);
     });
     if has_nonzero_segment {
-        return None;
+        return Ok(None);
     }
 
     let mut leaves = Vec::new();
+    let mut error = None;
     source.for_each_point(|point| {
+        if error.is_some() {
+            return;
+        }
         let xyz = super::projection::lonlat_to_closed_owner_point(point.x, point.y);
         let leaf = CellId::from_point(xyz);
-        leaves.push(leaf);
+        push_closed_point_leaf(&mut leaves, &mut error, leaf);
         for neighbor in leaf.edge_neighbors() {
+            if error.is_some() {
+                return;
+            }
             if Cell::from_id(neighbor).contains_point(xyz) {
-                leaves.push(neighbor);
+                push_closed_point_leaf(&mut leaves, &mut error, neighbor);
                 // A corner can meet a diagonal leaf as well.  Discover it
                 // from an admitted edge neighbour; this is positive-only and
                 // never invents an owner from a proxy-negative result.
                 for diagonal in neighbor.edge_neighbors() {
+                    if error.is_some() {
+                        return;
+                    }
                     if diagonal != leaf && Cell::from_id(diagonal).contains_point(xyz) {
-                        leaves.push(diagonal);
+                        push_closed_point_leaf(&mut leaves, &mut error, diagonal);
                     }
                 }
             }
         }
     });
-    (!leaves.is_empty()).then(|| {
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok((!leaves.is_empty()).then(|| {
         leaves.sort_unstable();
         leaves.dedup();
         leaves
-    })
+    }))
+}
+
+fn push_closed_point_leaf(
+    leaves: &mut Vec<CellId>,
+    error: &mut Option<crate::error::Error>,
+    leaf: CellId,
+) {
+    if error.is_none()
+        && let Err(value) = crate::try_push_vec(leaves, leaf)
+    {
+        *error = Some(value);
+    }
 }
 
 /// Bulk-emit interior `min_level` descendants after preflighting `4^Δ`.
@@ -599,26 +1030,27 @@ fn emit_interior_descendants(
     level: u8,
     base: usize,
     cells: &mut Vec<(CellId, bool)>,
-) -> Result<(), CoverBudgetExceeded> {
+) -> Result<(), CoverError> {
     // Required terminals: exactly 4^(min_level - level). Preflight the
     // projected count before enumerating so a tiny budget never walks a
     // multi-million child range.
     if let Some(n) = interior_multiplicity(level, coverer.min_level) {
         ensure_cover_budget(base.saturating_add(n), coverer.hard_budget())?;
-        cells.reserve(n);
+        crate::try_reserve_vec(cells, n)?;
     } else if let Some(limit) = coverer.hard_budget() {
         // Shift overflow ⇒ larger than any finite usize budget.
-        return Err(CoverBudgetExceeded::new(limit));
+        return Err(CoverBudgetExceeded::new(limit).into());
     }
     let end = id.child_end_at(coverer.min_level);
     let mut cursor = id.child_begin_at(coverer.min_level);
     while cursor != end {
-        cells.push((cursor, true));
+        crate::try_push_vec(cells, (cursor, true))?;
         cursor = cursor.next();
     }
     // Unlimited path: still honor a finite budget if set mid-enumeration
     // (defensive; preflight covers the finite case).
-    ensure_cover_budget(cells.len(), coverer.hard_budget())
+    ensure_cover_budget(cells.len(), coverer.hard_budget())?;
+    Ok(())
 }
 
 /// `4^(min_level - level)` interior terminals, or `None` on overflow.
@@ -631,25 +1063,282 @@ fn interior_multiplicity(level: u8, min_level: u8) -> Option<usize> {
     1_usize.checked_shl(shift)
 }
 
-/// Classify every non-Outside descendant of `id` at exactly `target` level
-/// into `out` (cleared first). Used for 4-way immediate children and for
-/// `level_mod` 16/64 fanouts.
+/// Number of descendants in one supported 1/2/3-level fan.
+fn fan_size(parent_level: u8, target: u8) -> usize {
+    debug_assert!(target > parent_level);
+    let shift = 2 * u32::from(target - parent_level);
+    1_usize
+        .checked_shl(shift)
+        .expect("S2 fan depth is limited to three levels")
+}
+
+/// Classify every descendant of `id` at exactly `target` level into `out`.
+/// The finite fan owns its probe set: adjacent fans may repeat a point, but no
+/// point result survives this call.
 fn stage_children_at(
     ctx: &CoverContext<'_>,
     id: CellId,
     target: u8,
-    out: &mut Vec<(CellId, CellClass)>,
-) {
-    out.clear();
+    reuse: Option<Productivity>,
+    out: &mut Vec<Candidate>,
+    stats: &mut CoverStats,
+) -> Result<(), CoverError> {
+    let reuse = reuse.and_then(|productivity| match productivity {
+        Productivity::Terminal => {
+            debug_assert!(false, "terminal productivity cannot refine");
+            None
+        },
+        Productivity::Children(batch) => {
+            debug_assert!(batch.candidates.iter().all(|candidate| {
+                let child = candidate.certificate.id;
+                child.level() == target && id.range_min() <= child && child <= id.range_max()
+            }));
+            Some(batch.candidates)
+        },
+    });
     let end = id.child_end_at(target);
     let mut cursor = id.child_begin_at(target);
-    while cursor != end {
-        match classify(ctx, cursor) {
-            CellClass::Outside => {},
-            class => out.push((cursor, class)),
+    let ids = std::iter::from_fn(|| {
+        (cursor != end).then(|| {
+            let current = cursor;
+            cursor = cursor.next();
+            current
+        })
+    });
+    classify_ids(
+        ctx,
+        ids,
+        target,
+        fan_size(id.level(), target),
+        reuse,
+        out,
+        stats,
+    )?;
+    stats.observe_batch(out);
+    Ok(())
+}
+
+fn classify_one(
+    ctx: &CoverContext<'_>,
+    id: CellId,
+    stats: &mut CoverStats,
+) -> Result<Candidate, CoverError> {
+    let mut out = Vec::new();
+    crate::try_reserve_vec(&mut out, 1)?;
+    classify_ids(
+        ctx,
+        std::iter::once(id),
+        id.level(),
+        1,
+        None,
+        &mut out,
+        stats,
+    )?;
+    Ok(out.pop().expect("one candidate was classified"))
+}
+
+/// The native test helper retains its old scalar shape while the traversal
+/// consumes the full certificate.
+#[cfg(test)]
+fn classify(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
+    let mut stats = CoverStats::default();
+    classify_one(ctx, id, &mut stats)
+        .expect("test candidate classification")
+        .certificate
+        .class
+}
+
+struct LocalProbe {
+    point: Point,
+    covered: Option<bool>,
+}
+
+struct PendingCandidate {
+    id: CellId,
+    cell: Cell,
+    rect: super::cell::LatLngRect,
+    affine: Option<AffineRectClass>,
+    probe_indices: [usize; 5],
+    membership_known: bool,
+    reused: Option<Candidate>,
+}
+
+fn local_probe_index(
+    probes: &mut Vec<LocalProbe>,
+    point: Point,
+    known: Option<bool>,
+    stats: &mut CoverStats,
+) -> Result<usize, CoverError> {
+    if let Some(index) = probes.iter().position(|probe| {
+        probe.point.x.to_bits() == point.x.to_bits() && probe.point.y.to_bits() == point.y.to_bits()
+    }) {
+        stats.local_duplicate_hit();
+        if let Some(known) = known {
+            if let Some(existing) = probes[index].covered {
+                debug_assert_eq!(
+                    existing, known,
+                    "local probe {:?} has conflicting carried membership",
+                    probes[index].point
+                );
+            } else {
+                probes[index].covered = Some(known);
+            }
         }
-        cursor = cursor.next();
+        return Ok(index);
     }
+    crate::try_push_vec(probes, LocalProbe {
+        point,
+        covered: known,
+    })?;
+    Ok(probes.len() - 1)
+}
+
+/// Classify a finite fan after its local point probes have been deduplicated.
+/// `reuse` contains the parent-local fan found while proving productivity;
+/// consuming it here reuses every certificate in that finite batch.
+fn classify_ids(
+    ctx: &CoverContext<'_>,
+    ids: impl IntoIterator<Item = CellId>,
+    level: u8,
+    fan_capacity: usize,
+    reuse: Option<Vec<Candidate>>,
+    out: &mut Vec<Candidate>,
+    stats: &mut CoverStats,
+) -> Result<(), CoverError> {
+    out.clear();
+    if out.capacity() < fan_capacity {
+        crate::try_reserve_vec(out, fan_capacity - out.capacity())?;
+    }
+    let mut reuse = reuse;
+    let mut probes = Vec::new();
+    crate::try_reserve_vec(&mut probes, fan_capacity.saturating_mul(5))?;
+    let mut pending = Vec::new();
+    crate::try_reserve_vec(&mut pending, fan_capacity)?;
+
+    for id in ids {
+        let cell = Cell::from_id(id);
+        debug_assert_eq!(id.level(), level);
+        let vertices = cell.vertices_lonlat();
+        let rect = cell.rect_bound(&vertices);
+        let points = [
+            vertices[0],
+            vertices[1],
+            vertices[2],
+            vertices[3],
+            cell.center_lonlat(),
+        ];
+        let reused = reuse.as_mut().and_then(|candidates| {
+            candidates
+                .iter()
+                .position(|candidate| candidate.certificate.id == id)
+                .map(|index| candidates.swap_remove(index))
+        });
+        if reused.is_some() {
+            let level = id.level();
+            stats.carried_certificate_hit(level);
+            if reused
+                .as_ref()
+                .is_some_and(|candidate| candidate.productivity.is_some())
+            {
+                stats.productive_path_reuse(level);
+            }
+        }
+        let affine = (reused.is_none() && ctx.point_leaves.is_none())
+            .then(|| ctx.affine.classify_rect(certified_rect_windows(rect)));
+        let mut probe_indices = [0_usize; 5];
+        let known_membership = reused
+            .as_ref()
+            .and_then(|candidate| candidate.certificate.membership);
+        let probe_count = if known_membership.is_some()
+            || (reused.is_none() && affine.is_none_or(|class| class != AffineRectClass::Outside))
+        {
+            if ctx.point_leaves.is_some() && reused.is_none() {
+                1
+            } else {
+                5
+            }
+        } else {
+            0
+        };
+        let probe_order = if probe_count == 1 && ctx.point_leaves.is_some() && reused.is_none() {
+            [4, usize::MAX, usize::MAX, usize::MAX, usize::MAX]
+        } else {
+            [0, 1, 2, 3, 4]
+        };
+        for &index in &probe_order[..probe_count] {
+            let known = known_membership.map(|membership| {
+                if index < 4 {
+                    membership.vertices[index]
+                } else {
+                    membership.center
+                }
+            });
+            probe_indices[index] = local_probe_index(&mut probes, points[index], known, stats)?;
+        }
+        crate::try_push_vec(&mut pending, PendingCandidate {
+            id,
+            cell,
+            rect,
+            affine,
+            probe_indices,
+            membership_known: probe_count != 0,
+            reused,
+        })?;
+    }
+    debug_assert!(
+        reuse.is_none_or(|candidates| candidates.is_empty()),
+        "certificate batch did not belong to the staged descendant fan"
+    );
+
+    for probe in &mut probes {
+        if probe.covered.is_none() {
+            probe.covered = Some(ctx.tester.covers_point(probe.point));
+            stats.unique_local_point_probe();
+        }
+    }
+
+    for pending in pending {
+        if let Some(candidate) = pending.reused {
+            crate::try_push_vec(out, candidate)?;
+            continue;
+        }
+        let mut membership = PointMembership {
+            vertices: [false; 4],
+            center: false,
+        };
+        for index in 0..5 {
+            let Some(covered) = probes
+                .get(pending.probe_indices[index])
+                .and_then(|probe| probe.covered)
+            else {
+                continue;
+            };
+            if index < 4 {
+                membership.vertices[index] = covered;
+            } else {
+                membership.center = covered;
+            }
+        }
+        let membership = pending.membership_known.then_some(membership);
+        let class = classify_candidate(
+            ctx,
+            pending.id,
+            pending.cell,
+            pending.rect,
+            pending.affine,
+            membership,
+            stats,
+        );
+        crate::try_push_vec(
+            out,
+            Candidate::new(CandidateCertificate {
+                id: pending.id,
+                class,
+                membership,
+            }),
+        )?;
+    }
+    Ok(())
 }
 
 fn debug_assert_budget(emitted: usize, frontier: usize, max_cells: Option<usize>) {
@@ -661,29 +1350,30 @@ fn debug_assert_budget(emitted: usize, frontier: usize, max_cells: Option<usize>
     }
 }
 
-fn is_visible(ctx: &CoverContext<'_>, rule: CoverRule, id: CellId, class: CellClass) -> bool {
+fn is_visible(rule: CoverRule, candidate: CandidateCertificate) -> bool {
     match rule {
         CoverRule::Overlap => true,
-        CoverRule::Within => class == CellClass::Interior,
+        CoverRule::Within => candidate.class == CellClass::Interior,
         CoverRule::Center => {
-            class == CellClass::Interior || ctx.covers_point(Cell::from_id(id).center_lonlat())
+            candidate.class == CellClass::Interior
+                || candidate
+                    .membership
+                    .is_some_and(|membership| membership.center)
         },
     }
 }
 
-/// Classify one candidate cell against the source (decode once, stage the
-/// gates cheap-to-expensive).
-fn classify(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
-    if let Some(class) = ctx.classes.borrow().get(&id).copied() {
-        return class;
-    }
-    let class = classify_uncached(ctx, id);
-    ctx.classes.borrow_mut().insert(id, class);
-    class
-}
-
-/// Run the candidate classifier once; [`classify`] owns per-cover reuse.
-fn classify_uncached(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
+/// Classify one candidate after the fan has paid its local membership probes.
+fn classify_candidate(
+    ctx: &CoverContext<'_>,
+    id: CellId,
+    cell: Cell,
+    rect: super::cell::LatLngRect,
+    affine: Option<AffineRectClass>,
+    membership: Option<PointMembership>,
+    stats: &mut CoverStats,
+) -> CellClass {
+    stats.raw_classify(id.level());
     if let Some(leaves) = &ctx.point_leaves {
         let from = leaves.partition_point(|&leaf| leaf < id.range_min());
         return if leaves.get(from).is_some_and(|&leaf| leaf <= id.range_max()) {
@@ -692,21 +1382,21 @@ fn classify_uncached(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
             CellClass::Outside
         };
     }
-    let cell = Cell::from_id(id);
-    let vertices = cell.vertices_lonlat();
-    let rect = cell.rect_bound(&vertices);
     // The unsplit periodic authority owns the only candidate negative. A
     // charted source window may refine a retained candidate below, but an
     // internal seam cut can never prune a subtree.
-    if ctx.affine.classify_rect(certified_rect_windows(rect)) == AffineRectClass::Outside {
+    let affine = affine.expect("non-point candidate carries its affine class");
+    if affine == AffineRectClass::Outside {
         return CellClass::Outside;
     }
+    let membership = membership.expect("non-outside candidate carries point facts");
     let proposed = {
-        let covered = vertices
+        let covered = membership
+            .vertices
             .iter()
-            .filter(|vertex| ctx.covers_point(**vertex))
+            .filter(|&&covered| covered)
             .count();
-        let center_hit = covered < 4 && ctx.covers_point(cell.center_lonlat());
+        let center_hit = covered < 4 && membership.center;
         // Seam-crossing: planar Outside is unsound → fail-open Boundary.
         // Polar full-lng (pole closure): vertices away from the pole cannot
         // establish an Outside result for a cell whose closed bound deliberately
@@ -755,7 +1445,7 @@ fn classify_uncached(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
     }
     merge_certified_rect(
         proposed,
-        ctx.affine.classify_rect(certified_rect_windows(rect)),
+        affine,
         ctx.affine.s2_raw_owner_descends_from(cell),
     )
 }

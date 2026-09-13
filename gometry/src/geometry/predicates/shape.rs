@@ -124,30 +124,14 @@ impl Shape {
         }
     }
 
-    /// Whether any part carries area (polygon parts, recursively through
-    /// collections) — gates the representative-containment phase.
+    /// Whether any part is structurally polygonal, recursively through
+    /// collections. Ring winding is deliberately not consulted: a
+    /// self-crossing shell can have zero signed area while enclosing filled
+    /// lobes.
     pub(crate) fn has_area_parts(&self) -> bool {
         match self {
             Self::Polygon(_) | Self::MultiPolygon(_) => true,
             Self::GeometryCollection(geometries) => geometries.iter().any(Self::has_area_parts),
-            _ => false,
-        }
-    }
-
-    /// Whether the shape contains a polygon with a nonzero exact signed-area
-    /// ring. A zero-area polygon still contributes its closed ring boundary,
-    /// but has no filled interior to search.
-    pub(crate) fn has_filled_area_parts(&self) -> bool {
-        match self {
-            Self::Polygon(polygon) => {
-                !crate::geometry::ring_winding(polygon.shell.coords()).is_degenerate()
-            },
-            Self::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
-                !crate::geometry::ring_winding(polygon.shell.coords()).is_degenerate()
-            }),
-            Self::GeometryCollection(geometries) => {
-                geometries.iter().any(Self::has_filled_area_parts)
-            },
             _ => false,
         }
     }

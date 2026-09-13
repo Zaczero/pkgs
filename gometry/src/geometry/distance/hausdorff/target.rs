@@ -28,9 +28,9 @@ pub(crate) struct HausdorffTarget {
     pub(crate) query: HausdorffLineworkQuery,
     pub(crate) points: Vec<Point>,
     pub(crate) features: Vec<HausdorffFeature>,
-    /// Filled area membership is kept only for targets that contain a
-    /// nondegenerate polygon shell. Degenerate polygon rings remain ordinary
-    /// closed linework, so they need no second membership path.
+    /// Filled area membership is kept for every structurally polygonal target.
+    /// Ring area is not a safe discriminator: a self-crossing shell can have
+    /// zero signed area while still enclosing filled lobes.
     filled: Option<Shape>,
 }
 
@@ -49,7 +49,7 @@ pub(crate) const fn should_build_index(segment_count: usize, point_count: usize)
 impl HausdorffTarget {
     pub(crate) fn build(shape: &Shape) -> crate::error::Result<Self> {
         let points = shape.point_only_points()?;
-        let filled = shape.has_filled_area_parts().then(|| shape.clone());
+        let filled = shape.has_area_parts().then(|| shape.clone());
         Self::from_query(
             HausdorffLineworkQuery::from_shape(shape, false)?,
             points,

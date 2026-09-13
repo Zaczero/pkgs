@@ -120,7 +120,7 @@ fn directed_filled_hausdorff(source: &Shape, target: &Shape) -> Result<f64> {
         super::super::shape_impl::robust_directed_hausdorff_with_target(source, &target)?
     };
 
-    if !source.has_filled_area_parts() {
+    if !source.has_area_parts() {
         return Ok(best);
     }
     // Distance to a closed convex target is convex. Its maximum over every
@@ -1404,7 +1404,7 @@ mod tests {
             &[(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)],
             &[],
         );
-        assert!(source.has_filled_area_parts());
+        assert!(source.has_area_parts());
         let target = polygon(
             &[(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)],
             &[&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]],
@@ -1415,6 +1415,17 @@ mod tests {
         assert_eq!(directed_filled_hausdorff(&source, &target).unwrap(), 2.0);
         assert_eq!(directed_filled_hausdorff(&target, &source).unwrap(), 0.0);
         assert_eq!(filled_hausdorff_distance(&source, &target).unwrap(), 2.0);
+    }
+
+    #[test]
+    fn zero_signed_bowtie_retains_structural_filled_support() {
+        let source = polygon(
+            &[(0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0), (0.0, 0.0)],
+            &[],
+        );
+        assert!(source.has_area_parts());
+        assert!(source.area_covers_point(Point::new_raw_xy(0.5, 1.5)));
+        assert!(HausdorffTarget::build(&source).unwrap().has_filled_area());
     }
 
     #[test]
