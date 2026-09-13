@@ -362,10 +362,11 @@ impl PySpatialIndex {
         };
         let mut products = self.rows.operation();
         let mut live = Vec::new();
+        crate::try_reserve_vec(&mut live, self.rows.len())?;
         for entry in self.live_entries() {
             let data = products.prepared(entry.idx)?;
             let cache = products.frame_cache(entry.idx)?;
-            live.push((entry.idx, data, cache));
+            try_push_vec(&mut live, (entry.idx, data, cache))?;
         }
         let built = match crs::with_ellipsoid_metric_at(crs, &[], runtime_state, |ellipsoid| {
             Ok(GeodesicRowCaps::from_live_handles(
@@ -389,7 +390,15 @@ impl PySpatialIndex {
                 }),
             ))
         }) {
-            Ok(Ok(Some(caps))) => Some(Arc::new(caps)),
+            Ok(Ok(Some(caps))) => {
+                if let Ok(caps) = Arc::try_new(caps) {
+                    Some(caps)
+                } else {
+                    drop(products);
+                    drop(cache);
+                    return Err(native_memory_error());
+                }
+            },
             Ok(Ok(None)) | Err(_) => None,
             Ok(Err(())) => {
                 drop(products);
@@ -803,27 +812,31 @@ impl PySpatialIndex {
         let domain = self.domain()?;
         let mut builder =
             CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
-        let mut queries = Vec::with_capacity(points.len());
+        let mut queries = Vec::new();
+        crate::try_reserve_vec(&mut queries, points.len())?;
         let mut query_rows = array.row_operation();
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask.is_missing(row)) {
                 let end = builder.len();
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
-                queries.push(None);
+                try_push_vec(&mut queries, None)?;
                 continue;
             }
             let row_start = builder.len();
             self.collect_point_candidates(point, builder.values_mut())?;
             let end = builder.len();
             builder.push_end(end).map_err(pyo3::PyErr::from)?;
-            queries.push(if end > row_start {
-                Some((
-                    PreparedPlan::new(ShapeData::new(Shape::Point(point)))?,
-                    query_rows.frame_cache(row)?,
-                ))
-            } else {
-                None
-            });
+            try_push_vec(
+                &mut queries,
+                if end > row_start {
+                    Some((
+                        PreparedPlan::new(ShapeData::new(Shape::Point(point)))?,
+                        query_rows.frame_cache(row)?,
+                    ))
+                } else {
+                    None
+                },
+            )?;
         }
         let (mut ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
         if ids.is_empty() {

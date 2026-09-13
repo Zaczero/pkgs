@@ -2,9 +2,7 @@
 //! the operation's input vertices and segments (`carry_ordinates`/`carry_each`
 //! and the `OrdinateSource` lookup), shared by overlay and decomposition.
 
-use rstar::{AABB, RTree, RTreeObject};
-
-use crate::collections::{HashMap, HashMapExt as _};
+use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geometry::topology::TopologyGraph;
 use crate::geometry::{
@@ -13,6 +11,7 @@ use crate::geometry::{
     point_on_segment, point_segment_distance_and_projection, same_point,
     scaled_residual, segment_projection,
 };
+use crate::{try_push_vec, try_reserve_vec};
 
 /// Z/M lookup table built from an operation's input vertices and segments,
 /// used to restore ordinates on XY-only geometry-engine output. Exact vertex
@@ -23,11 +22,6 @@ use crate::geometry::{
 pub(super) struct OrdinateSource {
     vertices: HashMap<PointKey, Vec<Point>>,
     segments: Vec<(Point, Point)>,
-    /// Lazy R-tree over `segments` for the miss path: engine-jittered output
-    /// vertices miss the exact-match map and would otherwise scan every Z/M
-    /// source segment per vertex (measured: 34 ms of a 35 ms Z union).
-    /// Built only when a miss occurs.
-    segment_tree: std::cell::OnceCell<RTree<SegmentEnvelope>>,
     /// Scale-aware slack for the segment stage: the boolean engine snaps
     /// coordinates to a grid proportional to the input EXTENT, and the
     /// crossing of two snapped segments lands up to ~extent x 2^-29 from
@@ -42,96 +36,77 @@ pub(super) struct OrdinateSource {
 /// The engine-snap allowance relative to the inputs' coordinate magnitude.
 const OVERLAY_SNAP_RELATIVE: f64 = 1.0 / (1_u64 << 28) as f64;
 
-/// One source segment's acceptance envelope (bbox padded by its own
-/// relative on-segment epsilon) plus its input position for order-stable
-/// candidate testing.
-struct SegmentEnvelope {
-    index: usize,
-    envelope: AABB<[f64; 2]>,
-}
-
-impl RTreeObject for SegmentEnvelope {
-    type Envelope = AABB<[f64; 2]>;
-
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
-    }
-}
-
 impl OrdinateSource {
-    fn new(inputs: &[&Shape]) -> Self {
+    fn new(inputs: &[&Shape]) -> Result<Self> {
         // Upper bound: every input vertex carries ordinates (the common
         // case — XYZ/XYM inputs are usually uniformly dimensioned).
-        let total_coords: usize = inputs.iter().map(|shape| shape.coord_count()).sum();
-        Self {
-            vertices: HashMap::with_capacity(total_coords),
-            segments: Vec::with_capacity(total_coords),
-            segment_tree: std::cell::OnceCell::new(),
+        let total_coords = inputs.iter().try_fold(0_usize, |count, shape| {
+            count
+                .checked_add(shape.coord_count())
+                .ok_or(crate::error::ResourceError::SizeOverflow)
+        })?;
+        let mut vertices =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        vertices
+            .try_reserve(total_coords)
+            .map_err(crate::error::Error::from)?;
+        let mut segments = Vec::new();
+        try_reserve_vec(&mut segments, total_coords)?;
+        Ok(Self {
+            vertices,
+            segments,
             tolerance: ordinate_tolerance(inputs),
-        }
+        })
     }
 
-    fn add_source_edge(&mut self, start: Point, end: Point) {
-        add_vertex(&mut self.vertices, start);
-        add_vertex(&mut self.vertices, end);
+    fn add_source_edge(&mut self, start: Point, end: Point) -> Result<()> {
+        add_vertex(&mut self.vertices, start)?;
+        add_vertex(&mut self.vertices, end)?;
         if start.z().is_some() || start.m().is_some() || end.z().is_some() || end.m().is_some() {
-            self.segments.push(canonical_segment(start, end));
+            try_push_vec(&mut self.segments, canonical_segment(start, end))?;
         }
+        Ok(())
     }
 
-    fn build_direct(inputs: &[&Shape]) -> Self {
-        let mut result = Self::new(inputs);
+    fn build_direct(inputs: &[&Shape]) -> Result<Self> {
+        let mut result = Self::new(inputs)?;
         for shape in inputs {
-            if matches!(shape, Shape::Point(_) | Shape::MultiPoint(_)) {
-                shape.for_each_point(|point| add_vertex(&mut result.vertices, point));
+            match shape {
+                Shape::Point(point) => add_vertex(&mut result.vertices, *point)?,
+                Shape::MultiPoint(points) => {
+                    for point in points.points() {
+                        add_vertex(&mut result.vertices, point)?;
+                    }
+                },
+                _ => {},
             }
             if !(shape.has_z() || shape.has_m()) {
                 continue;
             }
-            shape.for_each_vertex_pair(|start, end| {
+            shape.try_for_each_vertex_pair(|start, end| {
                 if !same_point(start, end) {
-                    result.add_source_edge(start, end);
+                    result.add_source_edge(start, end)?;
                 }
-            });
+                Ok::<(), crate::error::Error>(())
+            })?;
         }
-        result
+        Ok(result)
     }
 
-    fn build_from_graph(graph: &TopologyGraph, inputs: &[&Shape]) -> Self {
-        let mut result = Self::new(inputs);
+    fn build_from_graph(graph: &TopologyGraph, inputs: &[&Shape]) -> Result<Self> {
+        let mut result = Self::new(inputs)?;
         for source in &graph.source_points {
-            add_vertex(&mut result.vertices, source.point);
+            add_vertex(&mut result.vertices, source.point)?;
         }
         for source in &graph.source_edges {
             if inputs
                 .get(source.source_row as usize)
                 .is_some_and(|shape| shape.has_z() || shape.has_m())
             {
-                result.add_source_edge(source.start, source.end);
+                result.add_source_edge(source.start, source.end)?;
             }
         }
-        result
-    }
-
-    fn segment_tree(&self) -> &RTree<SegmentEnvelope> {
-        self.segment_tree.get_or_init(|| {
-            RTree::bulk_load(
-                self.segments
-                    .iter()
-                    .enumerate()
-                    .map(|(index, &(start, end))| {
-                        let pad = ON_SEGMENT_EPSILON * point_distance(start, end);
-                        SegmentEnvelope {
-                            index,
-                            envelope: AABB::from_corners(
-                                [start.x.min(end.x) - pad, start.y.min(end.y) - pad],
-                                [start.x.max(end.x) + pad, start.y.max(end.y) + pad],
-                            ),
-                        }
-                    })
-                    .collect(),
-            )
-        })
+        Ok(result)
     }
 
     /// Resolve each axis independently. A missing source value is not a zero,
@@ -162,12 +137,19 @@ impl OrdinateSource {
             return Ok((z.value(), m.value()));
         }
         let pad = self.tolerance;
-        let query = AABB::from_corners([point.x - pad, point.y - pad], [
-            point.x + pad,
-            point.y + pad,
-        ]);
-        for entry in self.segment_tree().locate_in_envelope_intersecting(query) {
-            let (start, end) = self.segments[entry.index];
+        for &(start, end) in &self.segments {
+            let segment_pad = ON_SEGMENT_EPSILON * point_distance(start, end);
+            let min_x = start.x.min(end.x) - segment_pad;
+            let max_x = start.x.max(end.x) + segment_pad;
+            let min_y = start.y.min(end.y) - segment_pad;
+            let max_y = start.y.max(end.y) + segment_pad;
+            if point.x < min_x - pad
+                || point.x > max_x + pad
+                || point.y < min_y - pad
+                || point.y > max_y + pad
+            {
+                continue;
+            }
             if let Some(resolved) = segment_ordinate_at(start, end, point, self.tolerance)? {
                 // Exact endpoint candidates are already represented by the
                 // vertex table. Interior source edges still contribute when a
@@ -205,11 +187,14 @@ impl AxisValue {
     }
 }
 
-fn add_vertex(vertices: &mut HashMap<PointKey, Vec<Point>>, point: Point) {
-    vertices
-        .entry(PointKey::new(point))
-        .or_default()
-        .push(point);
+fn add_vertex(vertices: &mut HashMap<PointKey, Vec<Point>>, point: Point) -> Result<()> {
+    let key = PointKey::new(point);
+    if let Some(values) = vertices.get_mut(&key) {
+        return try_push_vec(values, point);
+    }
+    vertices.try_reserve(1).map_err(crate::error::Error::from)?;
+    let values = vertices.entry(key).or_default();
+    try_push_vec(values, point)
 }
 
 fn canonical_segment(start: Point, end: Point) -> (Point, Point) {
@@ -334,7 +319,7 @@ pub(super) fn carry_ordinates(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
     }
-    let source = OrdinateSource::build_direct(inputs);
+    let source = OrdinateSource::build_direct(inputs)?;
     carry_or_degrade(
         &output,
         &source,
@@ -357,7 +342,7 @@ pub(crate) fn carry_overlay_ordinates(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
     }
-    let source = OrdinateSource::build_direct(inputs);
+    let source = OrdinateSource::build_direct(inputs)?;
     let declared_axes = overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }
@@ -372,7 +357,7 @@ pub(crate) fn carry_overlay_ordinates_from_graph(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
     }
-    let source = OrdinateSource::build_from_graph(graph, inputs);
+    let source = OrdinateSource::build_from_graph(graph, inputs)?;
     let declared_axes = overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }
@@ -388,14 +373,19 @@ pub(super) fn carry_each(
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(outputs);
     }
-    let source = OrdinateSource::build_direct(inputs);
+    let source = OrdinateSource::build_direct(inputs)?;
     let declared_axes = inputs
         .iter()
         .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
-    outputs
-        .iter()
-        .map(|output| carry_or_degrade(output, &source, declared_axes, operation, strict))
-        .collect()
+    let mut carried = Vec::new();
+    try_reserve_vec(&mut carried, outputs.len())?;
+    for output in &outputs {
+        try_push_vec(
+            &mut carried,
+            carry_or_degrade(output, &source, declared_axes, operation, strict)?,
+        )?;
+    }
+    Ok(carried)
 }
 
 /// Source every vertex's Z/M from `source`; strict internal verification raises

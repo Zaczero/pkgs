@@ -525,7 +525,11 @@ impl Shape {
         match self {
             Self::Point(point) => crate::try_push_vec(out, *point),
             Self::MultiPoint(points) => {
-                crate::boundary::try_reserve_vec(out, out.len() + points.coord_count())?;
+                let additional = out
+                    .len()
+                    .checked_add(points.coord_count())
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                crate::boundary::try_reserve_vec(out, additional)?;
                 for point in points {
                     crate::try_push_vec(out, point)?;
                 }
@@ -581,7 +585,11 @@ impl Shape {
 
     fn splitter_points(&self) -> Result<Vec<Point>> {
         match self {
-            Self::Point(point) => Ok(vec![*point]),
+            Self::Point(point) => {
+                let mut points = Vec::new();
+                crate::try_push_vec(&mut points, *point)?;
+                Ok(points)
+            },
             Self::MultiPoint(points) => points.try_to_vec(),
             // `POINT EMPTY` is point-like but contributes no split locations.
             Self::Empty(GeometryKind::Point, _) => Ok(Vec::new()),
@@ -710,11 +718,12 @@ impl Polygon {
         E: From<crate::error::Error>,
     {
         let shell = Ring::from_closed(transform(self.shell.coords())?);
-        let holes = self
-            .holes
-            .iter()
-            .map(|hole| Ok(Ring::from_closed(transform(hole.coords())?)))
-            .collect::<Result<Vec<_>, E>>()?;
+        let mut holes = Vec::new();
+        crate::try_reserve_vec(&mut holes, self.holes.len()).map_err(E::from)?;
+        for hole in self.holes.iter() {
+            crate::try_push_vec(&mut holes, Ring::from_closed(transform(hole.coords())?))
+                .map_err(E::from)?;
+        }
         let holes = SharedSlice::try_from_vec(holes).map_err(E::from)?;
         Ok(Self { shell, holes })
     }
@@ -756,11 +765,11 @@ impl Polygon {
 
     fn orient(&self, exterior_cw: bool) -> Result<Self> {
         let shell = constructive::oriented_ring(&self.shell, exterior_cw)?;
-        let holes = self
-            .holes
-            .iter()
-            .map(|hole| constructive::oriented_ring(hole, !exterior_cw))
-            .collect::<Result<Vec<_>>>()?;
+        let mut holes = Vec::new();
+        crate::try_reserve_vec(&mut holes, self.holes.len())?;
+        for hole in self.holes.iter() {
+            crate::try_push_vec(&mut holes, constructive::oriented_ring(hole, !exterior_cw)?)?;
+        }
         Self::new(shell, holes)
     }
 
@@ -768,13 +777,14 @@ impl Polygon {
         // Canonical winding follows RFC 7946 (GeoJSON): exterior CCW, holes
         // CW. Rings rotate min-vertex-first; holes sort ascending like every
         // other canonical sequence.
-        let mut holes = self
-            .holes
-            .iter()
-            .map(|hole| {
-                constructive::canonical_ring_seq(hole.coords(), true).map(Ring::from_closed)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut holes = Vec::new();
+        crate::try_reserve_vec(&mut holes, self.holes.len())?;
+        for hole in self.holes.iter() {
+            crate::try_push_vec(
+                &mut holes,
+                Ring::from_closed(constructive::canonical_ring_seq(hole.coords(), true)?),
+            )?;
+        }
         holes.sort_by(compare_point_slices);
         Self::new(
             Ring::from_closed(constructive::canonical_ring_seq(
@@ -808,7 +818,11 @@ impl Polygon {
         F: Fn(Point) -> Result<Point> + ?Sized,
     {
         self.try_map_ring_seqs(|ring| {
-            let points = ring.iter().map(transform).collect::<Result<Vec<_>>>()?;
+            let mut points = Vec::new();
+            crate::try_reserve_vec(&mut points, ring.len())?;
+            for point in ring {
+                crate::try_push_vec(&mut points, transform(point)?)?;
+            }
             CoordSeq::try_from_points(&points)
         })
     }

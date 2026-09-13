@@ -13,6 +13,7 @@ use crate::geometry::{
     Bounds, CompiledPattern, GeographicPrepared, Loc, PreparedPlan, Shape, TopologyDomain,
     cartesian_point_location, graph_relate_data, line_scalar_prefers_direct_polygon_relate,
 };
+use crate::try_push_vec;
 
 #[derive(Clone, Copy)]
 pub(crate) enum PreparedTopologyPair<'a> {
@@ -512,142 +513,147 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     )?))
                 })
             };
-            elements
-                .map(|(index, row)| {
-                    let mut evaluate = || -> crate::error::Result<bool> {
-                        if row_is_missing(index) {
-                            return Ok(false);
-                        }
-                        let Some(row) = row else { return Ok(false) };
-                        if let Some(verdict) = gate(index, row)? {
-                            return Ok(verdict);
-                        }
-                        let element = row_operation.as_mut().map_or_else(
-                            || crate::array::PreparedRow::transient(row),
-                            |operation| operation.prepared_at(index, row),
-                        )?;
-                        if line_scalar_prefers_direct_polygon_relate(
-                            scalar.shape(),
-                            element.shape(),
-                        ) {
-                            let matrix = if scalar_is_left {
-                                graph_relate_data(scalar, &element)
-                            } else {
-                                graph_relate_data(&element, scalar)
-                            }?;
-                            return Ok(predicate_matrix_value(spec, matrix));
-                        }
-                        let operands = if scalar_is_left {
-                            PreparedTopologyPair::Cartesian {
-                                left: scalar,
-                                right: &element,
-                            }
+            let mut results = Vec::new();
+            for (index, row) in elements {
+                let mut evaluate = || -> crate::error::Result<bool> {
+                    if row_is_missing(index) {
+                        return Ok(false);
+                    }
+                    let Some(row) = row else { return Ok(false) };
+                    if let Some(verdict) = gate(index, row)? {
+                        return Ok(verdict);
+                    }
+                    let element = row_operation.as_mut().map_or_else(
+                        || crate::array::PreparedRow::transient(row),
+                        |operation| operation.prepared_at(index, row),
+                    )?;
+                    if line_scalar_prefers_direct_polygon_relate(scalar.shape(), element.shape()) {
+                        let matrix = if scalar_is_left {
+                            graph_relate_data(scalar, &element)
                         } else {
-                            PreparedTopologyPair::Cartesian {
-                                left: &element,
-                                right: scalar,
-                            }
-                        };
-                        topology_scalar_pair(spec, operands)
+                            graph_relate_data(&element, scalar)
+                        }?;
+                        return Ok(predicate_matrix_value(spec, matrix));
+                    }
+                    let operands = if scalar_is_left {
+                        PreparedTopologyPair::Cartesian {
+                            left: scalar,
+                            right: &element,
+                        }
+                    } else {
+                        PreparedTopologyPair::Cartesian {
+                            left: &element,
+                            right: scalar,
+                        }
                     };
-                    evaluate().map_err(|error| (index, error))
-                })
-                .collect()
+                    topology_scalar_pair(spec, operands)
+                };
+                try_push_vec(&mut results, evaluate().map_err(|error| (index, error))?)
+                    .map_err(|error| (index, error))?;
+            }
+            Ok(results)
         },
         TopologyDomain::Geographic(frame) => {
             let (scalar_kind, _) = row_kind_empty(ShapeRow::Shape(scalar.shape()));
             let scalar_prepared = OnceCell::new();
             let scalar_geographic_graph = OnceCell::new();
-            elements
-                .map(|(index, row)| {
-                    if row_is_missing(index) {
-                        return Ok(false);
-                    }
-                    let Some(row) = row else {
-                        return Ok(false);
-                    };
-                    let (row_kind, _) = row_kind_empty(row);
-                    let (left_kind, right_kind) = if scalar_is_left {
-                        (scalar_kind, row_kind)
-                    } else {
-                        (row_kind, scalar_kind)
-                    };
-                    if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind) {
-                        return Ok(verdict);
-                    }
-                    let element = row_operation
-                        .as_mut()
-                        .map_or_else(
-                            || crate::array::PreparedRow::transient(row),
-                            |operation| operation.prepared_at(index, row),
+            let mut results = Vec::new();
+            for (index, row) in elements {
+                if row_is_missing(index) {
+                    try_push_vec(&mut results, false).map_err(|error| (index, error))?;
+                    continue;
+                }
+                let Some(row) = row else {
+                    try_push_vec(&mut results, false).map_err(|error| (index, error))?;
+                    continue;
+                };
+                let (row_kind, _) = row_kind_empty(row);
+                let (left_kind, right_kind) = if scalar_is_left {
+                    (scalar_kind, row_kind)
+                } else {
+                    (row_kind, scalar_kind)
+                };
+                if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind) {
+                    try_push_vec(&mut results, verdict).map_err(|error| (index, error))?;
+                    continue;
+                }
+                let element = row_operation
+                    .as_mut()
+                    .map_or_else(
+                        || crate::array::PreparedRow::transient(row),
+                        |operation| operation.prepared_at(index, row),
+                    )
+                    .map_err(|error| (index, error))?;
+                let transient_cache = crate::geometry::FrameDependentCaches::default();
+                let row_cache = row_operation
+                    .as_mut()
+                    .map(|operation| operation.frame_cache(index))
+                    .transpose()
+                    .map_err(|error| (index, error))?;
+                let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
+                let element_prepared = GeographicPrepared::try_new(&element, element_cache, frame)
+                    .map_err(|error| (index, error))?;
+                let prepared = *scalar_prepared
+                    .get_or_try_init(|| GeographicPrepared::try_new(scalar, scalar_cache, frame))
+                    .map_err(|error| (index, error))?;
+                let scalar_operand = GateOperand::from_prepared(&prepared);
+                let row_operand = GateOperand::from_prepared(&element_prepared);
+                let (left, right) = if scalar_is_left {
+                    (scalar_operand, row_operand)
+                } else {
+                    (row_operand, scalar_operand)
+                };
+                if let Some(verdict) = spec
+                    .pre_topology(left, right)
+                    .map_err(|error| (index, error))?
+                {
+                    try_push_vec(&mut results, verdict).map_err(|error| (index, error))?;
+                    continue;
+                }
+                if spec.predicate == Predicate::Intersects
+                    && left.bounds_are_sound()
+                    && right.bounds_are_sound()
+                {
+                    let rectangle = element_prepared.plan().shape();
+                    if let Some(bounds) = rectangle.bounds()
+                        && crate::geometry::is_axis_aligned_rectangle(rectangle, bounds)
+                    {
+                        let scalar_graph = scalar_geographic_graph
+                            .get_or_try_init(|| prepared.graph())
+                            .map_err(|error| (index, error))?
+                            .as_ref();
+                        try_push_vec(
+                            &mut results,
+                            crate::geometry::graph_intersects_bounds(scalar_graph, bounds),
                         )
                         .map_err(|error| (index, error))?;
-                    let transient_cache = crate::geometry::FrameDependentCaches::default();
-                    let row_cache = row_operation
-                        .as_mut()
-                        .map(|operation| operation.frame_cache(index))
-                        .transpose()
-                        .map_err(|error| (index, error))?;
-                    let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
-                    let element_prepared =
-                        GeographicPrepared::try_new(&element, element_cache, frame)
-                            .map_err(|error| (index, error))?;
-                    let prepared = *scalar_prepared
-                        .get_or_try_init(|| {
-                            GeographicPrepared::try_new(scalar, scalar_cache, frame)
-                        })
-                        .map_err(|error| (index, error))?;
-                    let scalar_operand = GateOperand::from_prepared(&prepared);
-                    let row_operand = GateOperand::from_prepared(&element_prepared);
-                    let (left, right) = if scalar_is_left {
-                        (scalar_operand, row_operand)
-                    } else {
-                        (row_operand, scalar_operand)
-                    };
-                    if let Some(verdict) = spec
-                        .pre_topology(left, right)
-                        .map_err(|error| (index, error))?
-                    {
-                        return Ok(verdict);
+                        continue;
                     }
-                    if spec.predicate == Predicate::Intersects
-                        && left.bounds_are_sound()
-                        && right.bounds_are_sound()
-                    {
-                        let rectangle = element_prepared.plan().shape();
-                        if let Some(bounds) = rectangle.bounds()
-                            && crate::geometry::is_axis_aligned_rectangle(rectangle, bounds)
-                        {
-                            let scalar_graph = scalar_geographic_graph
-                                .get_or_try_init(|| prepared.graph())
-                                .map_err(|error| (index, error))?
-                                .as_ref();
-                            return Ok(crate::geometry::graph_intersects_bounds(
-                                scalar_graph,
-                                bounds,
-                            ));
-                        }
+                }
+                let scalar_graph = scalar_geographic_graph
+                    .get_or_try_init(|| prepared.graph())
+                    .map_err(|error| (index, error))?
+                    .as_ref();
+                let operands = if scalar_is_left {
+                    PreparedTopologyPair::GeographicLeftGraph {
+                        left: scalar,
+                        right: element_prepared,
+                        left_graph: scalar_graph,
                     }
-                    let scalar_graph = scalar_geographic_graph
-                        .get_or_try_init(|| prepared.graph())
-                        .map_err(|error| (index, error))?
-                        .as_ref();
-                    let operands = if scalar_is_left {
-                        PreparedTopologyPair::GeographicLeftGraph {
-                            left: scalar,
-                            right: element_prepared,
-                            left_graph: scalar_graph,
-                        }
-                    } else {
-                        PreparedTopologyPair::GeographicRightGraph {
-                            left: element_prepared,
-                            right: scalar,
-                            right_graph: scalar_graph,
-                        }
-                    };
-                    topology_scalar_pair(spec, operands).map_err(|error| (index, error))
-                })
-                .collect()
+                } else {
+                    PreparedTopologyPair::GeographicRightGraph {
+                        left: element_prepared,
+                        right: scalar,
+                        right_graph: scalar_graph,
+                    }
+                };
+                try_push_vec(
+                    &mut results,
+                    topology_scalar_pair(spec, operands).map_err(|error| (index, error))?,
+                )
+                .map_err(|error| (index, error))?;
+            }
+            Ok(results)
         },
     }
 }

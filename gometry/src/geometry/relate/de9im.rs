@@ -1,7 +1,7 @@
 use crate::geometry::{CompiledPattern, Dimension};
 
 /// (`II IB IE / BI BB BE / EI EB EE`, `A` rows × `B` columns).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct De9im(pub [u8; 9]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

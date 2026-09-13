@@ -2783,3 +2783,227 @@ fn overlay_output_rings_carry_no_collinear_nodes() {
         "POLYGON ((0 0, 4 0, 4 4, 3 4, 3 1, 1 1, 1 4, 0 4, 0 0))"
     );
 }
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn assert_allocation_prefixes<T>(operation: impl Fn() -> Result<T>, name: &str)
+    where
+        T: std::fmt::Debug + Eq,
+    {
+        operation()
+            .unwrap_or_else(|error| panic!("{name} failed during allocator warm-up: {error:?}"));
+        let (expected, allocations) = allocation_count(&operation);
+        let expected = expected
+            .unwrap_or_else(|error| panic!("{name} failed without allocation refusal: {error:?}"));
+        assert!(allocations > 0, "{name} must allocate");
+        for prefix in 0..allocations {
+            let result = fail_allocations_after(prefix, &operation);
+            let Err(error) = result else {
+                panic!("{name} unexpectedly succeeded at allocation prefix {prefix}");
+            };
+            assert!(
+                matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation)),
+                "{name} returned the wrong error at allocation prefix {prefix}: {error:?}"
+            );
+            let retry = operation().unwrap_or_else(|error| {
+                panic!("{name} did not retry after allocation prefix {prefix}: {error:?}")
+            });
+            assert_eq!(retry, expected, "{name} at allocation prefix {prefix}");
+        }
+    }
+
+    fn square(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
+        let points = [
+            Point::new_raw_xy(minx, miny),
+            Point::new_raw_xy(maxx, miny),
+            Point::new_raw_xy(maxx, maxy),
+            Point::new_raw_xy(minx, maxy),
+            Point::new_raw_xy(minx, miny),
+        ];
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn zm_square(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
+        let points = [
+            (minx, miny),
+            (maxx, miny),
+            (maxx, maxy),
+            (minx, maxy),
+            (minx, miny),
+        ]
+        .into_iter()
+        .map(|(x, y)| Point::new_axes(x, y, ZOrdinate(Some(x + y)), MOrdinate(Some(x - y))))
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn native_overlay_allocation_prefixes_are_retryable() {
+        let left = square(0.0, 0.0, 4.0, 4.0);
+        let right = square(2.0, 2.0, 6.0, 6.0);
+        assert_allocation_prefixes(
+            || {
+                overlay_all(
+                    &[&left, &right],
+                    TopologyDomain::Cartesian,
+                    OverlayOp::Union,
+                    Strictness::Lenient,
+                )
+            },
+            "native overlay",
+        );
+    }
+
+    #[test]
+    fn exact_relation_allocation_prefixes_are_retryable() {
+        let left = square(0.0, 0.0, 4.0, 4.0);
+        let right = square(2.0, 2.0, 6.0, 6.0);
+        assert_allocation_prefixes(|| graph_relate_shapes(&left, &right), "exact relation");
+    }
+
+    #[test]
+    fn staged_exact_sources_allocation_prefixes_are_retryable() {
+        let left = square(0.0, 0.0, 4.0, 4.0);
+        let right = square(2.0, 2.0, 6.0, 6.0);
+        assert_allocation_prefixes(
+            || {
+                let inventory = ExactSourceInventory::from_shapes(&[&left, &right])?;
+                let mut budget = ExpansionBudget::new("allocation test", "staged sources");
+                let partition = inventory.partition(&mut budget)?;
+                inventory.relate(&partition)
+            },
+            "staged exact sources",
+        );
+    }
+
+    #[test]
+    fn repair_allocation_prefixes_are_retryable() {
+        let invalid = crate::io::parse_wkt("POLYGON ((0 0,2 2,0 2,2 0,0 0))").unwrap();
+        assert_allocation_prefixes(
+            || invalid.repair(RepairMethod::Linework, false),
+            "linework repair",
+        );
+    }
+
+    #[test]
+    fn scalar_and_prepared_point_location_allocation_prefixes_are_retryable() {
+        let polygon =
+            crate::io::parse_wkt("POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2))")
+                .unwrap();
+        let query = Point::new_raw_xy(1.0, 1.0);
+        assert_allocation_prefixes(
+            || cartesian_point_location(&polygon, query),
+            "scalar point location",
+        );
+        let tester = PointBatchTester::new(&polygon).unwrap();
+        assert_allocation_prefixes(|| tester.covers_point(query), "prepared point location");
+    }
+
+    #[test]
+    fn point_index_construction_and_query_allocation_prefixes_are_retryable() {
+        let polygon = {
+            let mut points = Vec::new();
+            for index in 0..40 {
+                let angle = f64::from(index) * std::f64::consts::TAU / 40.0;
+                points.push(Point::new_raw_xy(angle.cos(), angle.sin()));
+            }
+            points.push(points[0]);
+            Shape::Polygon(
+                Polygon::new(
+                    Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                    Vec::new(),
+                )
+                .unwrap(),
+            )
+        };
+        let query = Point::new_raw_xy(0.0, 0.0);
+        assert_allocation_prefixes(
+            || PointBatchTester::new(&polygon).and_then(|tester| tester.covers_point(query)),
+            "point index construction and query",
+        );
+    }
+
+    #[test]
+    fn strict_ordinate_publication_allocation_prefixes_are_retryable() {
+        let left = zm_square(0.0, 0.0, 4.0, 4.0);
+        let right = zm_square(2.0, 2.0, 6.0, 6.0);
+        assert_allocation_prefixes(
+            || left.union(&right, Strictness::Strict),
+            "strict Z/M publication",
+        );
+    }
+
+    #[test]
+    fn support_empty_allocation_prefixes_are_retryable() {
+        let cancelled =
+            crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,0 2,2 2,2 0,0 0))").unwrap();
+        assert_allocation_prefixes(
+            || crate::geometry::cartesian_support_nonempty(&cancelled),
+            "support-empty classification",
+        );
+    }
+
+    #[test]
+    fn exact_face_masks_and_multiple_polygon_emission_are_retryable() {
+        let segments = [
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(2.0, 2.0),
+            },
+            Segment {
+                start: XY::new(2.0, 2.0),
+                end: XY::new(0.0, 2.0),
+            },
+            Segment {
+                start: XY::new(0.0, 2.0),
+                end: XY::new(2.0, 0.0),
+            },
+            Segment {
+                start: XY::new(2.0, 0.0),
+                end: XY::new(0.0, 0.0),
+            },
+            Segment {
+                start: XY::new(5.0, 0.0),
+                end: XY::new(6.0, 0.0),
+            },
+            Segment {
+                start: XY::new(6.0, 0.0),
+                end: XY::new(6.0, 1.0),
+            },
+            Segment {
+                start: XY::new(6.0, 1.0),
+                end: XY::new(5.0, 1.0),
+            },
+            Segment {
+                start: XY::new(5.0, 1.0),
+                end: XY::new(5.0, 0.0),
+            },
+        ];
+        let inventory = ExactSourceInventory::from_segments(&segments).unwrap();
+        assert_allocation_prefixes(
+            || {
+                let mut budget = ExpansionBudget::new("allocation test", "exact partition");
+                let mut partition = inventory.partition(&mut budget)?;
+                inventory.linework_polygons(&mut partition, true)
+            },
+            "exact face masks and multiple polygon emission",
+        );
+    }
+}

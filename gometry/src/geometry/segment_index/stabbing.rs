@@ -41,21 +41,6 @@ const DENSE_REF_FACTOR: usize = 16;
 /// Sentinel child / root for the flat interval tree.
 const NIL: u32 = u32::MAX;
 
-/// One indexed item's envelope, carrying its position in `items`.
-#[derive(Clone, Debug)]
-pub(crate) struct EnvelopeEntry {
-    index: u32,
-    envelope: rstar::AABB<[f64; 2]>,
-}
-
-impl rstar::RTreeObject for EnvelopeEntry {
-    type Envelope = rstar::AABB<[f64; 2]>;
-
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
-    }
-}
-
 /// One node of a centered (median-of-sorted-lo) interval tree.
 #[derive(Clone, Debug)]
 struct ITreeNode {
@@ -98,16 +83,10 @@ pub(crate) struct YStabbingIndex<T> {
     /// Closed X-span per item, stored beside the Y-span so a point query can
     /// reject a candidate without touching the item. Overlapping Y-bands are
     /// the common case, not the exception — a row of boxes, a country's
-    /// islands, a coverage — so the Y-tree alone hands back everything and the
-    /// X-envelope is what makes the query sublinear.
+    /// islands, a coverage — so point queries apply this second coordinate
+    /// filter after the fallible Y plan.
     x_spans: Vec<(f64, f64)>,
     plan: YPlan,
-    /// A 2-D envelope tree, built when the Y-plan fell through to an interval
-    /// tree — meaning the Y-spans overlap enough that a stabbing walk hands
-    /// back most of the set for every probe — and the domain has a usable X
-    /// extent. A row of adjacent boxes, a coverage, a country's parts: only an
-    /// index that discriminates on X too keeps a point query sublinear.
-    envelopes: Option<crate::geometry::BulkRTree<EnvelopeEntry>>,
 }
 
 impl<T> YStabbingIndex<T> {
@@ -133,13 +112,11 @@ impl<T> YStabbingIndex<T> {
             x_spans.push((min_x, max_x));
         }
         let plan = choose_plan(&spans)?;
-        let envelopes = build_envelope_tree(&plan, &spans, &x_spans)?;
         Ok(Self {
             items,
             spans,
             x_spans,
             plan,
-            envelopes,
         })
     }
 
@@ -218,15 +195,6 @@ impl<T> YStabbingIndex<T> {
         mut visit: impl FnMut(usize) -> std::ops::ControlFlow<B>,
     ) -> Option<B> {
         use std::ops::ControlFlow;
-        if let Some(envelopes) = &self.envelopes {
-            let probe = rstar::AABB::from_point([x, y]);
-            for entry in envelopes.locate_in_envelope_intersecting(probe) {
-                if let ControlFlow::Break(b) = visit(entry.index as usize) {
-                    return Some(b);
-                }
-            }
-            return None;
-        }
         self.for_each_at_y_indexed(y, |item_index| {
             let (min_x, max_x) = self.x_spans[item_index];
             if x < min_x || x > max_x {
@@ -449,10 +417,6 @@ impl<T: HeapSize> HeapSize for YStabbingIndex<T> {
                 } => band_offsets.heap_bytes() + band_items.heap_bytes(),
                 YPlan::IntervalTree { nodes, .. } => nodes.heap_bytes(),
             }
-            + self
-                .envelopes
-                .as_ref()
-                .map_or(0, super::bulk_rtree_heap_bytes)
     }
 }
 
@@ -519,39 +483,6 @@ fn try_dense_sizing(spans: &[(f64, f64)]) -> Option<(f64, f64, std::num::NonZero
     ))
 }
 
-/// A 2-D envelope tree for the case the Y-only plans cannot serve: heavy
-/// Y-overlap (which is what selects [`YPlan::IntervalTree`]) plus a finite X
-/// extent. Domains whose X is periodic pass an infinite span and stay on the
-/// Y walk, which is what their own filter expects.
-fn build_envelope_tree(
-    plan: &YPlan,
-    spans: &[(f64, f64)],
-    x_spans: &[(f64, f64)],
-) -> Result<Option<crate::geometry::BulkRTree<EnvelopeEntry>>> {
-    if !matches!(plan, YPlan::IntervalTree { .. }) {
-        return Ok(None);
-    }
-    let mut entries = Vec::new();
-    crate::try_reserve_vec(&mut entries, spans.len())?;
-    for (index, (&(min_y, max_y), &(min_x, max_x))) in std::iter::zip(spans, x_spans).enumerate() {
-        if min_y > max_y {
-            // The empty-item sentinel. It matches no probe, so leaving it out
-            // of the tree is the answer rather than a reason to abandon one.
-            continue;
-        }
-        if !min_x.is_finite() || !max_x.is_finite() {
-            return Ok(None);
-        }
-        entries.push(EnvelopeEntry {
-            index: index as u32,
-            envelope: rstar::AABB::from_corners([min_x, min_y], [max_x, max_y]),
-        });
-    }
-    Ok(Some(crate::geometry::BulkRTree::bulk_load_with_params(
-        entries,
-    )))
-}
-
 fn choose_plan(spans: &[(f64, f64)]) -> Result<YPlan> {
     let n = spans.len();
     if n > u32::MAX as usize {
@@ -575,10 +506,13 @@ fn build_dense(
 ) -> Result<YPlan> {
     let n = spans.len();
     let band_count_value = band_count.get();
+    let offset_count = band_count_value
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
     // Two-pass CSR with checked counts (sizing already proved fit).
     let mut band_offsets = Vec::new();
-    crate::try_reserve_vec(&mut band_offsets, band_count_value + 1)?;
-    band_offsets.resize(band_count_value + 1, 0_u32);
+    crate::try_reserve_vec(&mut band_offsets, offset_count)?;
+    band_offsets.resize(offset_count, 0_u32);
     for &(lo, hi) in spans {
         let b0 = band_of(lo, min_y, inv_band_height, band_count_value);
         let b1 = band_of(hi, min_y, inv_band_height, band_count_value);
@@ -912,7 +846,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(index.plan_kind(), "linear");
-        assert!(index.envelopes.is_none());
         assert_eq!(
             index.heap_bytes(),
             index.items.heap_bytes() + index.spans.heap_bytes() + index.x_spans.heap_bytes()
@@ -924,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn heap_bytes_includes_nonempty_envelope_tree() {
+    fn interval_plan_keeps_x_filter_after_y_indexing() {
         let n = 64_u32;
         let finite = YStabbingIndex::build((0..n).collect(), |&i| {
             let x = f64::from(i);
@@ -937,17 +870,19 @@ mod tests {
         .unwrap();
         assert_eq!(finite.plan_kind(), "tree");
         assert_eq!(infinite.plan_kind(), "tree");
-        assert!(infinite.envelopes.is_none());
-        let tree = finite
-            .envelopes
-            .as_ref()
-            .expect("finite X builds an envelope tree");
-        assert!(
-            !tree.root().children().is_empty(),
-            "envelope tree must occupy used child slots"
-        );
-        let envelope_bytes = super::super::bulk_rtree_heap_bytes(tree);
-        assert!(envelope_bytes > 0, "nonempty tree must report used slots");
-        assert_eq!(finite.heap_bytes() - infinite.heap_bytes(), envelope_bytes);
+        let mut finite_hits = Vec::new();
+        finite.for_each_at_point(0.5, 500.0, |item| {
+            finite_hits.push(*item);
+            std::ops::ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(finite_hits, [0]);
+        let mut infinite_hits = Vec::new();
+        infinite.for_each_at_point(0.5, 500.0, |item| {
+            infinite_hits.push(*item);
+            std::ops::ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(infinite_hits.len(), n as usize);
+        assert_eq!(infinite_hits.first(), Some(&0));
+        assert_eq!(infinite_hits.last(), Some(&(n - 1)));
     }
 }

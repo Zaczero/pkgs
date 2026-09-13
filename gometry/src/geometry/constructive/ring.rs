@@ -11,27 +11,44 @@ use crate::geometry::{
     scale_by_power_of_two, simd_map_f64, topology_coordinate_bits_simd, try_simd_map_f64,
     wrap_index,
 };
-pub(crate) fn normalized_line<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
-    let forward: Vec<Point> = points.iter_coords().collect();
+use crate::{try_push_vec, try_reserve_vec};
+
+pub(crate) fn normalized_line<C: Coordinates + ?Sized>(points: &C) -> Result<Vec<Point>> {
+    let mut forward = Vec::new();
+    try_reserve_vec(&mut forward, points.coord_count())?;
+    for point in points.iter_coords() {
+        try_push_vec(&mut forward, point)?;
+    }
     // A CLOSED line canonicalizes to the lexicographically smallest of all
     // its presentations (every rotation, both directions) — a pure minimum
     // over the orbit: total for self-intersecting rings, no orientation
     // predicate. Open lines pick the smaller of their two directions; the
     // same "smallest presentation" principle, one comparator.
     if forward.len() > 2 && same_point(forward[0], forward[forward.len() - 1]) {
-        let backward = rotate_ring_min_first(reversed_points(&forward));
-        let forward = rotate_ring_min_first(forward);
-        return if compare_point_slices(&backward, &forward) == Ordering::Less {
-            backward
-        } else {
-            forward
-        };
+        let mut reversed = Vec::new();
+        try_reserve_vec(&mut reversed, forward.len())?;
+        for &point in forward.iter().rev() {
+            try_push_vec(&mut reversed, point)?;
+        }
+        let backward = rotate_ring_min_first_fallible(reversed)?;
+        let forward = rotate_ring_min_first_fallible(forward)?;
+        return Ok(
+            if compare_point_slices(&backward, &forward) == Ordering::Less {
+                backward
+            } else {
+                forward
+            },
+        );
     }
-    let backward = reversed_points(&forward);
+    let mut backward = Vec::new();
+    try_reserve_vec(&mut backward, forward.len())?;
+    for &point in forward.iter().rev() {
+        try_push_vec(&mut backward, point)?;
+    }
     if compare_point_slices(&backward, &forward) == Ordering::Less {
-        backward
+        Ok(backward)
     } else {
-        forward
+        Ok(forward)
     }
 }
 
@@ -51,10 +68,6 @@ pub(in crate::geometry) fn oriented_ring(ring: &Ring, clockwise: bool) -> Result
     } else {
         Ok(ring.clone())
     }
-}
-
-pub(crate) fn canonical_ring<C: Coordinates + ?Sized>(points: &C, clockwise: bool) -> Vec<Point> {
-    rotate_ring_min_first(orient_ring(points, clockwise))
 }
 
 #[cfg(test)]
@@ -235,36 +248,43 @@ pub(in crate::geometry) fn canonical_ring_seq(
         }
     }
     if duplicate_min {
-        return CoordSeq::try_from_points(&canonical_ring(ring, clockwise));
+        return CoordSeq::try_from_points(&try_canonical_ring(ring, clockwise)?);
     }
     // After reversal the ring still starts at the min vertex; the walk
     // direction flips. Emit per ordinate column in two contiguous chunks.
-    let rotate = |column: &[f64]| -> Vec<f64> {
-        let mut output = Vec::with_capacity(count);
+    let rotate = |column: &[f64]| -> Result<Vec<f64>> {
+        let mut output = Vec::new();
+        try_reserve_vec(&mut output, count)?;
         if reverse {
-            output.extend(column[..=start].iter().rev());
-            output.extend(column[start + 1..unique].iter().rev());
+            for &value in column[..=start].iter().rev() {
+                try_push_vec(&mut output, value)?;
+            }
+            for &value in column[start + 1..unique].iter().rev() {
+                try_push_vec(&mut output, value)?;
+            }
         } else {
-            output.extend_from_slice(&column[start..unique]);
-            output.extend_from_slice(&column[..start]);
+            for &value in &column[start..unique] {
+                try_push_vec(&mut output, value)?;
+            }
+            for &value in &column[..start] {
+                try_push_vec(&mut output, value)?;
+            }
         }
         if closed {
-            output.push(output[0]);
+            let first = output[0];
+            try_push_vec(&mut output, first)?;
         }
-        output
+        Ok(output)
     };
     CoordSeq::try_from_vecs(
-        rotate(ring.xs()),
-        rotate(ring.ys()),
-        ring.zs().map(rotate),
-        ring.ms().map(rotate),
+        rotate(ring.xs())?,
+        rotate(ring.ys())?,
+        ring.zs().map(rotate).transpose()?,
+        ring.ms().map(rotate).transpose()?,
     )
 }
 
-/// Rotate a (closed or open) ring's unique vertices so the minimum one
-/// leads, preserving the closure point — the rotation half of
-/// [`canonical_ring`], shared by closed-`LineString` normalization.
-pub(crate) fn rotate_ring_min_first(points: Vec<Point>) -> Vec<Point> {
+fn rotate_ring_min_first_fallible(mut points: Vec<Point>) -> Result<Vec<Point>> {
     let closed = points.len() > 1 && same_point(points[0], points[points.len() - 1]);
     let unique_len = if closed {
         points.len() - 1
@@ -272,7 +292,7 @@ pub(crate) fn rotate_ring_min_first(points: Vec<Point>) -> Vec<Point> {
         points.len()
     };
     if unique_len <= 1 {
-        return points;
+        return Ok(points);
     }
 
     let start = (1..unique_len).fold(0, |best, candidate| {
@@ -282,13 +302,35 @@ pub(crate) fn rotate_ring_min_first(points: Vec<Point>) -> Vec<Point> {
             best
         }
     });
-    let mut output = (0..unique_len)
-        .map(|offset| points[wrap_index(start + offset, unique_len)])
-        .collect::<Vec<_>>();
-    if closed {
-        output.push(output[0]);
+    let mut output = Vec::new();
+    let output_len = unique_len
+        .checked_add(usize::from(closed))
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    try_reserve_vec(&mut output, output_len)?;
+    for offset in 0..unique_len {
+        try_push_vec(&mut output, points[wrap_index(start + offset, unique_len)])?;
     }
-    output
+    if closed {
+        let first = output[0];
+        try_push_vec(&mut output, first)?;
+    }
+    points.clear();
+    Ok(output)
+}
+
+fn try_canonical_ring<C: Coordinates + ?Sized>(points: &C, clockwise: bool) -> Result<Vec<Point>> {
+    let mut oriented = Vec::new();
+    try_reserve_vec(&mut oriented, points.coord_count())?;
+    if ring_winding(points).reverse_for_clockwise(clockwise) {
+        for point in points.iter_coords().rev() {
+            try_push_vec(&mut oriented, point)?;
+        }
+    } else {
+        for point in points.iter_coords() {
+            try_push_vec(&mut oriented, point)?;
+        }
+    }
+    rotate_ring_min_first_fallible(oriented)
 }
 
 pub(crate) fn compare_ring_rotation(

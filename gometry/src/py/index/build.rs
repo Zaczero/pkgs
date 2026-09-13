@@ -188,7 +188,9 @@ pub(crate) fn build_spatial_index(
     values: &Bound<'_, PyAny>,
 ) -> PyResult<PySpatialIndex> {
     if let Some(geometry) = exact_geometry(values) {
-        return spatial_index(vec![geometry.clone()]);
+        let mut items = Vec::new();
+        crate::try_push(&mut items, geometry.clone())?;
+        return spatial_index(items);
     }
     if let Some(array) = exact_geometry_array(values) {
         let array = array.clone();
@@ -388,7 +390,9 @@ mod ownership_tests {
     use super::*;
     use crate::HeapSize;
     use crate::boundary::Frame;
+    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{Bounds, CoordSeq, CsrOffsetColumn, Point, PolygonLevel, RingLevel};
+    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn points() -> PyGeometryArray {
         PyGeometryArray::packed_points(
@@ -654,5 +658,51 @@ mod ownership_tests {
             restored.rows.heap_bytes(),
             HeapSize::heap_bytes(&restored.rows)
         );
+    }
+
+    #[test]
+    fn static_index_build_and_query_reject_each_allocation_prefix() {
+        let entries = [
+            IndexEntry {
+                idx: 0,
+                envelope: AABB::from_point([0.0, 0.0]),
+            },
+            IndexEntry {
+                idx: 1,
+                envelope: AABB::from_point([10.0, 10.0]),
+            },
+        ];
+        let query = AABB::from_point([0.0, 0.0]);
+        let run = || -> crate::error::Result<Vec<usize>> {
+            let mut owned_entries = Vec::new();
+            for entry in entries {
+                crate::try_push_vec(&mut owned_entries, entry)?;
+            }
+            let tree = StaticStrTree::build_dense(owned_entries)?;
+            let mut matches = Vec::new();
+            tree.each_intersecting(&[1, 1], &query, |index| {
+                crate::try_push_vec(&mut matches, index)
+            })?;
+            Ok(matches)
+        };
+
+        let expected = run().expect("unrestricted static index query");
+        let (_, allocations) = allocation_count(run);
+        assert!(allocations > 0, "static index construction must allocate");
+        for prefix in 0..allocations {
+            let result = fail_allocations_after(prefix, run);
+            let Err(error) = result else {
+                panic!("static index query succeeded at allocation prefix {prefix}");
+            };
+            assert!(
+                matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation)),
+                "unexpected static index allocation error: {error:?}"
+            );
+            assert_eq!(
+                run().expect("static index query retry"),
+                expected,
+                "allocation prefix {prefix}"
+            );
+        }
     }
 }

@@ -1105,7 +1105,8 @@ impl PySpatialIndex {
         };
         if removed {
             if handle >= self.bulk.initial_len() {
-                debug_assert!(self.rows.mark_removed(handle));
+                let marked = self.rows.mark_removed(handle);
+                debug_assert!(marked);
             }
             if non_prunable {
                 debug_assert!(self.non_prunable_live > 0);

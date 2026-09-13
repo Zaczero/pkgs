@@ -1,5 +1,8 @@
+#[cfg(test)]
+use ahash::HashMapExt as _;
+
 use crate::boundary::geographic::invalid_lonlat_error;
-use crate::collections::{HashSet, HashSetExt as _};
+use crate::collections::HashSet;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
 #[cfg(test)]
@@ -15,9 +18,10 @@ use crate::geometry::topology::{
     TopologySpace,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, PointKey, Polygon, PreparedPlan,
-    Ring, Segment, Shape, XY, overlay, same_point, segments_intersect, topology,
+    Bounds, CoordSeq, Coordinates as _, HashMap, PointKey, Polygon, PreparedPlan, Ring, Segment,
+    Shape, XY, overlay, same_point, segments_intersect, topology,
 };
+use crate::{try_push_vec, try_reserve_vec};
 
 #[derive(Clone, Copy)]
 pub(crate) struct GeographicPrepared<'a> {
@@ -380,8 +384,8 @@ fn try_areal_relate_geographic(
 pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Result<Option<De9im>> {
     let mut left_polygons = Vec::new();
     let mut right_polygons = Vec::new();
-    if collect_areal_polygons(left, &mut left_polygons).is_none()
-        || collect_areal_polygons(right, &mut right_polygons).is_none()
+    if collect_areal_polygons(left, &mut left_polygons)?.is_none()
+        || collect_areal_polygons(right, &mut right_polygons)?.is_none()
         || left_polygons.is_empty()
         || right_polygons.is_empty()
     {
@@ -443,13 +447,15 @@ pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Result<Option<De9
 pub(super) fn collect_areal_polygons<'a>(
     shape: &'a Shape,
     polygons: &mut Vec<&'a Polygon>,
-) -> Option<()> {
+) -> Result<Option<()>> {
     let first = polygons.len();
-    collect_polygons(shape, polygons)?;
-    polygons[first..]
+    if collect_polygons(shape, polygons)?.is_none() {
+        return Ok(None);
+    }
+    Ok(polygons[first..]
         .iter()
         .all(|polygon| polygon.rings().all(ring_is_sound))
-        .then_some(())
+        .then_some(()))
 }
 
 /// Every polygon of an areal shape, structurally, or `None` when the shape
@@ -457,27 +463,31 @@ pub(super) fn collect_areal_polygons<'a>(
 pub(crate) fn collect_polygons<'a>(
     shape: &'a Shape,
     polygons: &mut Vec<&'a Polygon>,
-) -> Option<()> {
+) -> Result<Option<()>> {
     match shape {
         Shape::Polygon(polygon) => {
-            polygons.push(polygon);
-            Some(())
+            try_push_vec(polygons, polygon)?;
+            Ok(Some(()))
         },
         Shape::MultiPolygon(parts) => {
-            polygons.extend(parts.iter());
-            Some(())
+            for polygon in parts.iter() {
+                try_push_vec(polygons, polygon)?;
+            }
+            Ok(Some(()))
         },
         Shape::GeometryCollection(parts) => {
             for part in parts {
-                collect_polygons(part, polygons)?;
+                if collect_polygons(part, polygons)?.is_none() {
+                    return Ok(None);
+                }
             }
-            Some(())
+            Ok(Some(()))
         },
         Shape::Point(_)
         | Shape::MultiPoint(_)
         | Shape::LineString(_)
         | Shape::MultiLineString(_)
-        | Shape::Empty(..) => None,
+        | Shape::Empty(..) => Ok(None),
     }
 }
 
@@ -651,10 +661,26 @@ fn graph_relate_with_node_cells(
     let (edges, hints) = pair_edges(left, right)?;
     add_edge_cells(&mut matrix, left, right, &edges);
 
-    let mut nodes = Vec::with_capacity(left.nodes.len() + right.nodes.len() + edges.len() * 2);
-    let mut seen = HashSet::new();
-    let mut node_owners = HashMap::new();
-    let mut transient = HashSet::new();
+    let node_capacity = left
+        .nodes
+        .len()
+        .checked_add(right.nodes.len())
+        .and_then(|count| count.checked_add(edges.len().checked_mul(2)?))
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut nodes = Vec::new();
+    try_reserve_vec(&mut nodes, node_capacity)?;
+    let mut seen = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
+    seen.try_reserve(node_capacity)
+        .map_err(crate::error::Error::from)?;
+    let mut node_owners =
+        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    node_owners
+        .try_reserve(node_capacity)
+        .map_err(crate::error::Error::from)?;
+    let mut transient = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
+    transient
+        .try_reserve(node_capacity)
+        .map_err(crate::error::Error::from)?;
     for node in left.nodes.iter().chain(right.nodes.iter()) {
         push_node(
             &mut nodes,
@@ -664,7 +690,7 @@ fn graph_relate_with_node_cells(
             node.point,
             left,
             right,
-        );
+        )?;
     }
     for (segment, _) in &edges {
         push_node(
@@ -675,7 +701,7 @@ fn graph_relate_with_node_cells(
             segment.start,
             left,
             right,
-        );
+        )?;
         push_node(
             &mut nodes,
             &mut seen,
@@ -684,7 +710,7 @@ fn graph_relate_with_node_cells(
             segment.end,
             left,
             right,
-        );
+        )?;
     }
     add_nodes(&mut matrix, left, right, &nodes, &node_owners, &hints);
     suppress_lineal_overlap_artifacts(&mut matrix, left, right);
@@ -775,8 +801,8 @@ fn graph_relate_to_point(graph: &TopologyGraph, point: XY) -> De9im {
 }
 
 fn add_face_cells(matrix: &mut De9im, left: &TopologyGraph, right: &TopologyGraph) -> Result<()> {
-    let left_polygons = area_polygons(left);
-    let right_polygons = area_polygons(right);
+    let left_polygons = area_polygons(left)?;
+    let right_polygons = area_polygons(right)?;
     if left.effective_dimension == Some(crate::geometry::Dimension::Surface)
         && left_polygons.is_empty()
     {
@@ -909,28 +935,29 @@ fn chart_area_polygons(
     anchor: f64,
     period: f64,
 ) -> crate::error::Result<Vec<Polygon>> {
-    graph
+    let mut polygons = Vec::new();
+    try_reserve_vec(&mut polygons, graph.area_support.len())?;
+    for support in graph
         .area_support
         .iter()
         .filter(|support| polygon_has_nondegenerate_area(support.source()))
-        .map(|support| {
-            let (support_shell, support_holes) = support.geographic_rings();
-            let shell_center = ring_center(&support_shell.points);
-            let shift = chart_shift(anchor, shell_center, period);
-            let Some(shell) = chart_ring(&support_shell.points, shift)? else {
-                return Ok(None);
-            };
-            let holes = support_holes
-                .iter()
-                .map(|hole| chart_ring(&hole.points, shift))
-                .collect::<crate::error::Result<Vec<_>>>()?
-                .into_iter()
-                .flatten()
-                .collect();
-            Ok(Some(Polygon::new(shell, holes)?))
-        })
-        .collect::<crate::error::Result<Vec<_>>>()
-        .map(|polygons| polygons.into_iter().flatten().collect())
+    {
+        let (support_shell, support_holes) = support.geographic_rings();
+        let shell_center = ring_center(&support_shell.points);
+        let shift = chart_shift(anchor, shell_center, period);
+        let Some(shell) = chart_ring(&support_shell.points, shift)? else {
+            continue;
+        };
+        let mut holes = Vec::new();
+        try_reserve_vec(&mut holes, support_holes.len())?;
+        for hole in support_holes {
+            if let Some(hole) = chart_ring(&hole.points, shift)? {
+                try_push_vec(&mut holes, hole)?;
+            }
+        }
+        try_push_vec(&mut polygons, Polygon::new(shell, holes)?)?;
+    }
+    Ok(polygons)
 }
 
 fn ring_center(points: &[XY]) -> f64 {
@@ -950,20 +977,29 @@ fn chart_ring(points: &[XY], shift: f64) -> crate::error::Result<Option<Ring>> {
     if points.len() < 3 {
         return Ok(None);
     }
-    let mut coords: Vec<_> = points
-        .iter()
-        .map(|point| XY::new(point.x + shift, point.y).point())
-        .collect();
-    coords.push(coords[0]);
+    let coordinate_count = points
+        .len()
+        .checked_add(1)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut coords = Vec::new();
+    try_reserve_vec(&mut coords, coordinate_count)?;
+    for point in points {
+        try_push_vec(&mut coords, XY::new(point.x + shift, point.y).point())?;
+    }
+    let first = coords[0];
+    try_push_vec(&mut coords, first)?;
     Ok(Some(Ring::from_closed(CoordSeq::try_from_points(&coords)?)))
 }
 
-fn area_polygons(graph: &TopologyGraph) -> Vec<&AreaSupport> {
-    graph
-        .area_support
-        .iter()
-        .filter(|support| polygon_has_nondegenerate_area(support.source()))
-        .collect()
+fn area_polygons(graph: &TopologyGraph) -> Result<Vec<&AreaSupport>> {
+    let mut polygons = Vec::new();
+    try_reserve_vec(&mut polygons, graph.area_support.len())?;
+    for support in &graph.area_support {
+        if polygon_has_nondegenerate_area(support.source()) {
+            try_push_vec(&mut polygons, support)?;
+        }
+    }
+    Ok(polygons)
 }
 
 #[derive(Clone, Copy)]
@@ -981,8 +1017,17 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
         } else {
             (left, true)
         };
-        let mut edges = Vec::with_capacity(graph.edges.len());
-        let mut hints = HashMap::with_capacity(graph.edges.len() * 2);
+        let mut edges = Vec::new();
+        try_reserve_vec(&mut edges, graph.edges.len())?;
+        let hint_capacity = graph
+            .edges
+            .len()
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut hints = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        hints
+            .try_reserve(hint_capacity)
+            .map_err(crate::error::Error::from)?;
         for edge in &graph.edges {
             let location = edge_location(edge);
             let label = if left_present {
@@ -1008,7 +1053,7 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
                 };
                 merge_location(slot, location);
             }
-            edges.push((edge.segment, label));
+            try_push_vec(&mut edges, (edge.segment, label))?;
         }
         return Ok((edges, hints));
     }
@@ -1019,32 +1064,46 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
             .map(|edge| edge.segment)
             .chain(right.edges.iter().map(|edge| edge.segment)),
     )?;
-    if atomic.len() == left.edges.len() + right.edges.len()
+    if atomic.len()
+        == left
+            .edges
+            .len()
+            .checked_add(right.edges.len())
+            .ok_or(ResourceError::SizeOverflow)?
         && provenance.iter().all(|owners| owners.len() == 1)
     {
-        let edges = atomic
-            .into_iter()
-            .zip(provenance.iter())
-            .map(|(segment, owners)| {
-                let owner = owners[0].0 as usize;
-                let label = if owner < split {
-                    EdgeLabel {
-                        left: Some(edge_location(&left.edges[owner])),
-                        right: None,
-                    }
-                } else {
-                    EdgeLabel {
-                        left: None,
-                        right: Some(edge_location(&right.edges[owner - split])),
-                    }
-                };
-                (segment, label)
-            })
-            .collect();
-        return Ok((edges, HashMap::new()));
+        let mut edges = Vec::new();
+        try_reserve_vec(&mut edges, atomic.len())?;
+        for (segment, owners) in atomic.into_iter().zip(provenance.iter()) {
+            let owner = owners[0].0 as usize;
+            let label = if owner < split {
+                EdgeLabel {
+                    left: Some(edge_location(&left.edges[owner])),
+                    right: None,
+                }
+            } else {
+                EdgeLabel {
+                    left: None,
+                    right: Some(edge_location(&right.edges[owner - split])),
+                }
+            };
+            try_push_vec(&mut edges, (segment, label))?;
+        }
+        let hints = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        return Ok((edges, hints));
     }
-    let mut by_segment = HashMap::with_capacity(atomic.len());
-    let mut hints = HashMap::with_capacity(atomic.len());
+    let mut by_segment = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    by_segment
+        .try_reserve(atomic.len())
+        .map_err(crate::error::Error::from)?;
+    let hint_capacity = atomic
+        .len()
+        .checked_mul(2)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut hints = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    hints
+        .try_reserve(hint_capacity)
+        .map_err(crate::error::Error::from)?;
     for (segment, owners) in atomic.into_iter().zip(provenance.iter()) {
         if same_point(segment.start, segment.end) {
             continue;
@@ -1096,7 +1155,12 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
             },
         }
     }
-    Ok((by_segment.into_values().collect(), hints))
+    let mut edges = Vec::new();
+    try_reserve_vec(&mut edges, by_segment.len())?;
+    for edge in by_segment.into_values() {
+        try_push_vec(&mut edges, edge)?;
+    }
+    Ok((edges, hints))
 }
 
 const fn edge_location(edge: &topology::TopologyEdge) -> TopologyLocation {
@@ -1174,7 +1238,7 @@ fn push_node(
     point: XY,
     left: &TopologyGraph,
     right: &TopologyGraph,
-) {
+) -> Result<()> {
     let token = left
         .node_for(point)
         .map(NodeToken::Left)
@@ -1182,15 +1246,16 @@ fn push_node(
     let Some(token) = token else {
         // Both graphs share a quotient, so one key decides transient equality.
         if !transient.insert(left.key(point)) {
-            return;
+            return Ok(());
         }
-        nodes.push(point);
-        return;
+        try_push_vec(nodes, point)?;
+        return Ok(());
     };
     if seen.insert(token) {
         owners.insert(left.key(point), token);
-        nodes.push(point);
+        try_push_vec(nodes, point)?;
     }
+    Ok(())
 }
 
 fn add_node_cells(

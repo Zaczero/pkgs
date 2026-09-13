@@ -165,6 +165,16 @@ impl<'a> SourceSupport<'a> {
             .iter()
             .any(|&candidate| same_point(candidate, query));
         let mut collapsed_points = Vec::new();
+        let collapsed_capacity = self
+            .rings
+            .iter()
+            .filter(|ring| ring.kind == RingKind::Collapsed)
+            .try_fold(0_usize, |count, ring| {
+                count
+                    .checked_add(segment_count(ring.xs, ring.ys))
+                    .ok_or(crate::error::ResourceError::SizeOverflow)
+            })?;
+        try_reserve_vec(&mut collapsed_points, collapsed_capacity)?;
         let mut rays = Vec::new();
         try_reserve_vec(&mut rays, self.ray_capacity()?)?;
         for (ring_id, ring) in self.rings.iter().enumerate() {
