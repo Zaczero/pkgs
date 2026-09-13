@@ -219,6 +219,8 @@ pub(crate) fn ellipsoid_shape_at(
     crs: &str,
     state: &crate::crs::RuntimeState,
 ) -> Result<EllipsoidShape> {
+    // Production callers enter through the cached geodesic, whose single
+    // validation owner admits the supported series domain before this adapter.
     with_geodesic_at(crs, state, |geodesic| {
         EllipsoidShape::new(geodesic.a, geodesic.f)
     })

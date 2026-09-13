@@ -10,6 +10,99 @@ import gometry as gm
 import pytest
 
 
+def _custom_geographic_crs(flattening: float) -> str:
+    return f'+proj=longlat +a=6378137 +f={flattening:.17g} +type=crs'
+
+
+@pytest.mark.parametrize(
+    'flattening',
+    [0.0, 0.02],
+    ids=['sphere', 'oblate-boundary'],
+)
+def test_geodesic_series_domain_boundaries_reach_each_metric_path(
+    flattening: float,
+) -> None:
+    crs = _custom_geographic_crs(flattening)
+    geodesic = gm.CRS(crs)
+    assert geodesic.ellipsoid is not None
+    assert float(geodesic.ellipsoid['inverse_flattening']) == pytest.approx(
+        0.0 if flattening == 0.0 else 50.0
+    )
+    inverse = geodesic.geodesic_inverse(0.0, 0.0, 1.0, 0.0)
+    assert float(inverse['distance']) > 0.0
+    direct = geodesic.geodesic_direct(
+        0.0, 0.0, 90.0, float(inverse['distance'])
+    )
+    assert float(direct['longitude']) == pytest.approx(1.0)
+    assert float(direct['latitude']) == pytest.approx(0.0)
+
+    start = gm.Point(0.0, 0.0, crs=crs)
+    end = gm.Point(1.0, 0.0, crs=crs)
+    line = gm.LineString([(0.0, 0.0), (1.0, 0.0)], crs=crs)
+    crossing = gm.LineString([(0.5, -1.0), (0.5, 1.0)], crs=crs)
+
+    assert gm.distance(start, end) == pytest.approx(float(inverse['distance']))
+    assert gm.distance(start, line) == 0.0
+    assert gm.dwithin(start, line, 0.0)
+    assert gm.intersects(line, crossing)
+    assert gm.nearest_points(start, line)[0].to_wkt() == start.to_wkt()
+    assert gm.hausdorff_distance(start, end) == pytest.approx(
+        float(inverse['distance'])
+    )
+
+
+@pytest.mark.parametrize(
+    'flattening',
+    [
+        math.nextafter(0.02, math.inf),
+        0.1,
+        0.9,
+    ],
+    ids=['oblate-adjacent', 'wide-oblate', 'wide-oblate-extreme'],
+)
+def test_geodesic_series_domain_rejection_is_shared_across_entry_points(
+    flattening: float,
+) -> None:
+    crs = _custom_geographic_crs(flattening)
+    expected = r'order-six binary64 series domain \|f\| <= 0\.02'
+    geodesic = gm.CRS(crs)
+    start = gm.Point(0.0, 0.0, crs=crs)
+    end = gm.Point(1.0, 0.0, crs=crs)
+    line = gm.LineString([(0.0, 0.0), (1.0, 0.0)], crs=crs)
+    crossing = gm.LineString([(0.5, -1.0), (0.5, 1.0)], crs=crs)
+    far_line = gm.LineString([(0.0, 2.0), (1.0, 2.0)], crs=crs)
+    operations = [
+        ('inverse', lambda: geodesic.geodesic_inverse(0.0, 0.0, 1.0, 0.0)),
+        (
+            'direct',
+            lambda: geodesic.geodesic_direct(0.0, 0.0, 90.0, 1000.0),
+        ),
+        (
+            'interpolate',
+            lambda: geodesic.geodesic_interpolate(
+                0.0, 0.0, 1.0, 0.0, 0.5, normalized=True
+            ),
+        ),
+        ('line length', lambda: line.length),
+        ('distance', lambda: gm.distance(start, end)),
+        ('dwithin', lambda: gm.dwithin(line, far_line, 1.0)),
+        # The public overlay `intersection` is topology-only. A crossing
+        # distance forces the geodesic segment-intersection owner.
+        ('segment intersection', lambda: gm.distance(line, crossing)),
+        ('nearest', lambda: gm.nearest_points(line, far_line)),
+        ('hausdorff', lambda: gm.hausdorff_distance(line, far_line)),
+    ]
+
+    messages = []
+    for name, operation in operations:
+        with pytest.raises(gm.CRSError, match=expected) as error:
+            operation()
+        messages.append((name, str(error.value)))
+
+    message = messages[0][1]
+    assert all(operation_message == message for _, operation_message in messages)
+
+
 def test_geodesic_distance_and_area_use_wgs84_ellipsoid() -> None:
     start = gm.Point(0, 0, crs=4326)
     end = gm.Point(1, 0, crs=4326)

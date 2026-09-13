@@ -207,11 +207,6 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         c: Point,
         d: Point,
     ) -> crate::error::Result<Option<(Point, Point)>> {
-        if !(-0.25..=0.2).contains(&self.geodesic.f) {
-            return Err(crate::crs::CrsError::message(
-                "geodesic segment intersection is supported only for flattening in [-1/4, 1/5]",
-            ));
-        }
         let first = geodesic::checked_geodesic_segment(
             self.geodesic,
             self.to_geodesic_point(a),

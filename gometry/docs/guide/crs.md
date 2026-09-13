@@ -380,6 +380,22 @@ This measured example is not a per-call error bound. If a closer approximation
 is required, provide more intermediate vertices when constructing the polygon;
 `gm.length` will still measure the resulting stored chords.
 
+### Geographic geodesic numerical domain
+
+Geographic inverse, direct, interpolation, linework distance, nearest-point,
+intersection, and Hausdorff operations use the pinned order-six binary64
+series backend. For a CRS that PROJ resolves to an ellipsoid, its semi-major
+axis and `b = a(1 - f)` must be positive and finite, and its flattening must
+be within the ordinary supported domain `|f| <= 0.02`. A CRS outside that
+domain raises `CRSError` before the geodesic object is constructed. Exact
+elliptic support is not shipped for wider flattenings.
+
+The [GeographicLib geodesic documentation](https://geographiclib.sourceforge.io/html/python/interface.html)
+identifies `f ∈ [-1/50, 1/50]` as the full-accuracy series range and reports an
+approximate maximum distance error of `30 nm` at `|f| = 0.02`. gometry's
+admission is an ordinary backend domain, not a per-call certificate for
+composite algorithms.
+
 ### Geographic point-to-segment accuracy
 
 Point-to-linework distance and its nearest-feature witness use a binary64

@@ -251,22 +251,6 @@ fn geodesic_segment_intersection_returns_on_curve_witnesses() {
 }
 
 #[test]
-fn geodesic_segment_intersection_accepts_flattening_boundaries() {
-    for flattening in [-0.25, 0.2] {
-        let geodesic = Geodesic::new(6_378_137.0, flattening);
-        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-        metric
-            .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
-            .unwrap();
-    }
-    let outside = Geodesic::new(6_378_137.0, 0.200_000_000_1);
-    let metric = EllipsoidMetric::for_crs84_geometry_test(&outside);
-    metric
-        .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
-        .unwrap_err();
-}
-
-#[test]
 fn geodesic_segment_rejects_nonunique_shortest_endpoints() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
