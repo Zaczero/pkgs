@@ -2,7 +2,10 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use crate::error::Result;
-use crate::geometry::{GeodesicMetric, GeodesicSegment, Point};
+use crate::geometry::{
+    GeodesicMetric, GeodesicSegment, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
+    GeodesicSegmentScratch, GeodesicWitnessNeed, Point,
+};
 
 /// Maximum branch-and-bound gap for the geodesic Hausdorff extremum.
 ///
@@ -17,6 +20,7 @@ pub(crate) fn geodesic_min_distance_to_target(
     target_points: &[Point],
     metric: &impl GeodesicMetric,
     prune_at: f64,
+    scratch: &mut GeodesicSegmentScratch,
 ) -> Result<f64> {
     let mut cmin = f64::INFINITY;
     for &target in target_points {
@@ -33,20 +37,19 @@ pub(crate) fn geodesic_min_distance_to_target(
         }
     }
     for &segment in target_edges {
-        if prune_at.is_finite()
-            && cmin > prune_at
-            && metric
-                .point_to_segment_sample_below(point, segment, prune_at)?
-                .is_some()
+        let result = metric.point_segment_query(
+            point,
+            segment,
+            GeodesicSegmentQuery::Minimum {
+                cutoff: cmin,
+                witness: GeodesicWitnessNeed::No,
+            },
+            scratch,
+        )?;
+        if let GeodesicSegmentQueryResult::Attained { minimum, .. } = result
+            && minimum.distance < cmin
         {
-            // The caller only needs to know that this source position cannot
-            // raise its standing maximum. Returning the ceiling avoids a
-            // second full point-to-segment refinement.
-            return Ok(prune_at);
-        }
-        let distance = metric.point_to_segment(point, segment, cmin)?;
-        if distance < cmin {
-            cmin = distance;
+            cmin = minimum.distance;
         }
         if cmin <= prune_at {
             return Ok(cmin);
@@ -65,6 +68,7 @@ pub(crate) fn geodesic_max_min_on_source_segment(
     target_points: &[Point],
     metric: &impl GeodesicMetric,
     cmax: f64,
+    scratch: &mut GeodesicSegmentScratch,
 ) -> Result<f64> {
     if target_edges.is_empty() && target_points.is_empty() {
         return Ok(f64::INFINITY);
@@ -76,16 +80,24 @@ pub(crate) fn geodesic_max_min_on_source_segment(
             target_points,
             metric,
             cmax,
+            scratch,
         );
     }
     // The prune bound is the standing maximum, not the caller's alone: a
     // sample whose nearest-target distance is already below a maximum found
     // on this segment cannot raise it either, and the nearest-target search
     // is what dominates the sweep.
-    let min_at = |along: f64, prune_at: f64| -> Result<f64> {
+    let mut min_at = |along: f64, prune_at: f64| -> Result<f64> {
         let fraction = (along / segment.length).clamp(0.0, 1.0);
         let point = metric.interpolate(segment.start, segment.end, fraction);
-        geodesic_min_distance_to_target(point, target_edges, target_points, metric, prune_at)
+        geodesic_min_distance_to_target(
+            point,
+            target_edges,
+            target_points,
+            metric,
+            prune_at,
+            scratch,
+        )
     };
     let left_value = min_at(0.0, cmax)?;
     let right_value = min_at(segment.length, cmax.max(left_value))?;

@@ -11,8 +11,11 @@
 use crate::HeapSize;
 use crate::collections::HashMap;
 use crate::error::{ResourceError, Result};
+use crate::geometry::distance::geodesic_threshold_hit;
 use crate::geometry::{
-    BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, HashMapExt as _, Point,
+    BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentQuery,
+    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicThresholdCompletion,
+    GeodesicWitnessNeed, HashMapExt as _, Point,
 };
 
 const GEODESIC_LEAF_SEGMENTS: usize = 8;
@@ -220,6 +223,7 @@ impl GeodesicFacetBvh {
         parts: &GeodesicParts,
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
+        segment_scratch: &mut GeodesicSegmentScratch,
         mut best: f64,
     ) -> Result<f64> {
         stack.clear();
@@ -238,7 +242,18 @@ impl GeodesicFacetBvh {
                         let bound = metric.point_distance_lower_bound(point, segment.start)
                             - segment.length;
                         if bound <= best {
-                            best = best.min(metric.point_to_segment(point, segment, best)?);
+                            let result = metric.point_segment_query(
+                                point,
+                                segment,
+                                GeodesicSegmentQuery::Minimum {
+                                    cutoff: best,
+                                    witness: GeodesicWitnessNeed::No,
+                                },
+                                segment_scratch,
+                            )?;
+                            if let GeodesicSegmentQueryResult::Attained { minimum, .. } = result {
+                                best = best.min(minimum.distance);
+                            }
                         }
                     }
                 },
@@ -255,6 +270,10 @@ impl GeodesicFacetBvh {
         Ok(best)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the BVH traversal keeps node order, segment scratch, witness order, and tie state explicit at one hot call boundary"
+    )]
     pub(super) fn witness_point(
         &self,
         vertex: Point,
@@ -262,6 +281,7 @@ impl GeodesicFacetBvh {
         parts: &GeodesicParts,
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
+        segment_scratch: &mut GeodesicSegmentScratch,
         mut best: Option<GeodesicWitnessCandidate>,
         order_offset: usize,
         swapped: bool,
@@ -290,12 +310,26 @@ impl GeodesicFacetBvh {
                         if bound > best_distance {
                             continue;
                         }
-                        let witness =
-                            metric.point_segment_witness(vertex, segment, best_distance)?;
+                        let result = metric.point_segment_query(
+                            vertex,
+                            segment,
+                            GeodesicSegmentQuery::Minimum {
+                                cutoff: best_distance,
+                                witness: GeodesicWitnessNeed::Yes,
+                            },
+                            segment_scratch,
+                        )?;
+                        let GeodesicSegmentQueryResult::Attained {
+                            minimum,
+                            foot: Some(target),
+                        } = result
+                        else {
+                            continue;
+                        };
                         let candidate = GeodesicWitnessCandidate {
                             probe: vertex,
-                            target: witness.foot,
-                            distance: witness.distance,
+                            target,
+                            distance: minimum.distance,
                             order,
                             swapped,
                         };
@@ -341,6 +375,7 @@ impl GeodesicFacetBvh {
         parts: &GeodesicParts,
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
+        segment_scratch: &mut GeodesicSegmentScratch,
         limit: f64,
     ) -> Result<bool> {
         stack.clear();
@@ -358,9 +393,27 @@ impl GeodesicFacetBvh {
                         let segment = parts.segments[edge_index];
                         let bound = metric.point_distance_lower_bound(point, segment.start)
                             - segment.length;
-                        if bound <= limit
-                            && metric.point_to_segment_within(point, segment, limit)?
-                        {
+                        if bound > limit {
+                            continue;
+                        }
+                        let result = metric.point_segment_query(
+                            point,
+                            segment,
+                            GeodesicSegmentQuery::Threshold {
+                                limit,
+                                completion: GeodesicThresholdCompletion::Complete,
+                                witness: GeodesicWitnessNeed::No,
+                            },
+                            segment_scratch,
+                        )?;
+                        if geodesic_threshold_hit(
+                            result,
+                            point,
+                            segment,
+                            metric,
+                            limit,
+                            segment_scratch,
+                        )? {
                             return Ok(true);
                         }
                     }

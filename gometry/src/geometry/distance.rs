@@ -41,7 +41,7 @@ pub(in crate::geometry) use geodesic_sweep::GeodesicSweepCaps;
 pub(crate) use geodesic_sweep::{
     CapGroup, GeodesicSweepCapsAccum, RowProbe, geodesic_capped_dwithin_with_parts,
     geodesic_capped_sweep, geodesic_capped_sweep_with_parts, geodesic_capped_witness_sweep,
-    geodesic_witness_sweep_with_parts,
+    geodesic_threshold_hit, geodesic_witness_sweep_with_parts,
 };
 pub(crate) use hausdorff::{
     HausdorffFeature, HausdorffTarget, compact_hausdorff_params,

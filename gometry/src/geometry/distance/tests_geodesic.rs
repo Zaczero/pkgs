@@ -22,8 +22,8 @@ use crate::geometry::distance::{
     geodesic_min_distance_to_target, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicParts, MOrdinate, Point, PreparedPlan, Shape,
-    ZOrdinate,
+    FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicSegmentScratch, MOrdinate, Point,
+    PreparedPlan, Shape, ZOrdinate,
 };
 
 fn fresh_bvh_parts(template: &GeodesicParts) -> GeodesicParts {
@@ -69,11 +69,18 @@ fn brute_geodesic_directed_hausdorff(
         .expect("unique test segments");
     let mut target_points = Vec::new();
     target.collect_points_into(&mut target_points).unwrap();
+    let mut segment_scratch = GeodesicSegmentScratch::default();
     let mut cmax = 0.0_f64;
     source.for_each_point(|point| {
-        let cmin =
-            geodesic_min_distance_to_target(point, &target_edges, &target_points, metric, cmax)
-                .expect("point-to-segment proof should close");
+        let cmin = geodesic_min_distance_to_target(
+            point,
+            &target_edges,
+            &target_points,
+            metric,
+            cmax,
+            &mut segment_scratch,
+        )
+        .expect("point-to-segment query should close");
         if cmin > cmax {
             cmax = cmin;
         }
@@ -81,9 +88,15 @@ fn brute_geodesic_directed_hausdorff(
     source.for_each_vertex_pair(|start, end| {
         for fraction in SAMPLE_FRACTIONS {
             let point = metric.interpolate(start, end, fraction);
-            let cmin =
-                geodesic_min_distance_to_target(point, &target_edges, &target_points, metric, cmax)
-                    .expect("point-to-segment proof should close");
+            let cmin = geodesic_min_distance_to_target(
+                point,
+                &target_edges,
+                &target_points,
+                metric,
+                cmax,
+                &mut segment_scratch,
+            )
+            .expect("point-to-segment query should close");
             if cmin > cmax {
                 cmax = cmin;
             }
@@ -156,6 +169,7 @@ fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
         let mut target_edges = Vec::new();
         collect_geodesic_segments_into(&target, metric, &mut target_edges)?;
         let target_points = target.points_vec().unwrap();
+        let mut segment_scratch = GeodesicSegmentScratch::default();
 
         let source_to_target = super::shape_impl::geodesic_directed_hausdorff_distance(
             &source_points,
@@ -163,6 +177,7 @@ fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
             &target_edges,
             &target_points,
             metric,
+            &mut segment_scratch,
         )?;
         let source_vertices_only =
             brute_geodesic_directed_hausdorff(&multipoint(source_points), &target, metric);
@@ -209,12 +224,14 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
             );
             let vertices = probes.points_vec().unwrap();
             let mut rows = Vec::new();
+            let mut segment_scratch = GeodesicSegmentScratch::default();
             let expected_distance = geodesic_capped_sweep_with_parts(
                 &vertices,
                 &target_parts,
                 metric,
                 f64::INFINITY,
                 &mut rows,
+                &mut segment_scratch,
             )?;
             let actual_distance =
                 geodesic_sweep_with_parts(&vertices, &target_parts, metric, f64::INFINITY)?;
@@ -236,6 +253,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                     metric,
                     limit,
                     &mut rows,
+                    &mut segment_scratch,
                 )?;
                 let actual =
                     geodesic_dwithin_sweep_with_parts(&vertices, &target_parts, metric, limit)?;
@@ -250,6 +268,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                 0,
                 false,
                 &mut rows,
+                &mut segment_scratch,
             )?;
             let actual_witness = geodesic_witness_sweep_with_parts(
                 &vertices,
@@ -326,12 +345,14 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
             );
             let vertices = [probe];
             let mut rows = Vec::new();
+            let mut segment_scratch = GeodesicSegmentScratch::default();
             let expected_distance = geodesic_capped_sweep_with_parts(
                 &vertices,
                 &target_parts,
                 metric,
                 f64::INFINITY,
                 &mut rows,
+                &mut segment_scratch,
             )?;
             let actual_distance =
                 geodesic_sweep_with_parts(&vertices, &target_parts, metric, f64::INFINITY)?;
@@ -353,6 +374,7 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
                     metric,
                     limit,
                     &mut rows,
+                    &mut segment_scratch,
                 )?;
                 let actual =
                     geodesic_dwithin_sweep_with_parts(&vertices, &target_parts, metric, limit)?;
@@ -367,6 +389,7 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
                 0,
                 false,
                 &mut rows,
+                &mut segment_scratch,
             )?;
             let actual_witness = geodesic_witness_sweep_with_parts(
                 &vertices,

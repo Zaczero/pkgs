@@ -275,6 +275,85 @@ fn full_edges(shape: &Shape, metric: &impl GeodesicMetric) -> Vec<GeodesicSegmen
     edges
 }
 
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "test helper consumes the owned geodesic segment snapshot"
+)]
+fn point_segment_distance_value(
+    metric: &impl GeodesicMetric,
+    probe: Point,
+    segment: GeodesicSegment,
+    cutoff: f64,
+) -> f64 {
+    let mut scratch = GeodesicSegmentScratch::default();
+    match metric
+        .point_segment_query(
+            probe,
+            segment,
+            GeodesicSegmentQuery::Minimum {
+                cutoff,
+                witness: GeodesicWitnessNeed::No,
+            },
+            &mut scratch,
+        )
+        .expect("point-to-segment query should succeed")
+    {
+        GeodesicSegmentQueryResult::Attained {
+            minimum,
+            foot: None,
+        } => minimum.distance,
+        GeodesicSegmentQueryResult::Attained { foot: Some(_), .. } => {
+            panic!("distance query unexpectedly materialized a witness")
+        },
+        GeodesicSegmentQueryResult::Excluded { .. } => {
+            panic!("unbounded minimum query was unexpectedly excluded")
+        },
+        GeodesicSegmentQueryResult::ThresholdOutside { .. }
+        | GeodesicSegmentQueryResult::ThresholdUnresolved => {
+            panic!("minimum query returned a threshold outcome")
+        },
+    }
+}
+
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "test helper consumes the owned geodesic segment snapshot"
+)]
+fn geodesic_segment_witness(
+    metric: &impl GeodesicMetric,
+    probe: Point,
+    segment: GeodesicSegment,
+) -> (f64, Point, f64) {
+    let mut scratch = GeodesicSegmentScratch::default();
+    match metric
+        .point_segment_query(
+            probe,
+            segment,
+            GeodesicSegmentQuery::Minimum {
+                cutoff: f64::INFINITY,
+                witness: GeodesicWitnessNeed::Yes,
+            },
+            &mut scratch,
+        )
+        .expect("point-to-segment query should succeed")
+    {
+        GeodesicSegmentQueryResult::Attained {
+            minimum,
+            foot: Some(foot),
+        } => (minimum.distance, foot, minimum.along),
+        GeodesicSegmentQueryResult::Attained { foot: None, .. } => {
+            panic!("witness query did not materialize a foot")
+        },
+        GeodesicSegmentQueryResult::Excluded { .. } => {
+            panic!("unpruned witness query was unexpectedly excluded")
+        },
+        GeodesicSegmentQueryResult::ThresholdOutside { .. }
+        | GeodesicSegmentQueryResult::ThresholdUnresolved => {
+            panic!("minimum query returned a threshold outcome")
+        },
+    }
+}
+
 pub(super) fn brute_geodesic_distance(
     left: &Shape,
     right: &Shape,
@@ -321,11 +400,8 @@ fn brute_directed_geodesic_distance(
 ) -> f64 {
     for &probe in probes {
         for &segment in target_edges {
-            best = best.min(
-                metric
-                    .point_to_segment(probe, segment, f64::INFINITY)
-                    .expect("point-to-segment proof should close"),
-            );
+            let distance = point_segment_distance_value(metric, probe, segment, f64::INFINITY);
+            best = best.min(distance);
         }
         for &target in target_points {
             best = best.min(metric.segment_length(probe, target));
@@ -386,12 +462,10 @@ pub(super) fn brute_geodesic_nearest_points(
     let mut pair: Option<(Point, Point)> = None;
     for &probe in &left_points {
         for &segment in &right_edges {
-            let witness = metric
-                .point_segment_witness(probe, segment, best)
-                .expect("point-to-segment proof should close");
-            if witness.distance < best {
-                best = witness.distance;
-                pair = Some((probe, witness.foot));
+            let (distance, foot, _) = geodesic_segment_witness(metric, probe, segment);
+            if distance < best {
+                best = distance;
+                pair = Some((probe, foot));
             }
         }
         for &target in &right_point_only {
@@ -404,12 +478,10 @@ pub(super) fn brute_geodesic_nearest_points(
     }
     for &probe in &right_points {
         for &segment in &left_edges {
-            let witness = metric
-                .point_segment_witness(probe, segment, best)
-                .expect("point-to-segment proof should close");
-            if witness.distance < best {
-                best = witness.distance;
-                pair = Some((witness.foot, probe));
+            let (distance, foot, _) = geodesic_segment_witness(metric, probe, segment);
+            if distance < best {
+                best = distance;
+                pair = Some((foot, probe));
             }
         }
         for &target in &left_point_only {

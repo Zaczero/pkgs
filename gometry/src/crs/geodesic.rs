@@ -27,20 +27,36 @@ const GEODESIC_LINE_OUTMASK: u64 =
 const GEODESIC_LINE_CACHE_CAPACITY: usize = 4096;
 const REDUCED_LAT_TABLE_CELLS: usize = 8192;
 const REDUCED_LAT_MIN_ONE_MINUS_F: f64 = 0.9;
+/// Relative allowance reserved for the admitted binary64 geodesic backend.
+pub(crate) const GEODESIC_BACKEND_RELATIVE_FLOOR: f64 = 8.7e-12;
 
 #[cfg(test)]
-mod geodesic_counters {
+pub(crate) mod geodesic_counters {
     use std::cell::Cell;
 
     #[derive(Clone, Copy, Debug, Default)]
-    pub(super) struct Snapshot {
+    pub(crate) struct Snapshot {
         pub line_cache_hits: u64,
         pub line_cache_misses: u64,
+        pub segment_queries: u64,
+        pub segment_value_evaluations: u64,
+        pub segment_derivative_evaluations: u64,
+        pub segment_interval_pops: u64,
+        pub segment_interval_splits: u64,
+        pub segment_convex_closures: u64,
+        pub segment_derivative_declines: u64,
     }
 
     thread_local! {
         static LINE_CACHE_HITS: Cell<u64> = const { Cell::new(0) };
         static LINE_CACHE_MISSES: Cell<u64> = const { Cell::new(0) };
+        static SEGMENT_QUERIES: Cell<u64> = const { Cell::new(0) };
+        static SEGMENT_VALUE_EVALUATIONS: Cell<u64> = const { Cell::new(0) };
+        static SEGMENT_DERIVATIVE_EVALUATIONS: Cell<u64> = const { Cell::new(0) };
+        static SEGMENT_INTERVAL_POPS: Cell<u64> = const { Cell::new(0) };
+        static SEGMENT_INTERVAL_SPLITS: Cell<u64> = const { Cell::new(0) };
+        static SEGMENT_CONVEX_CLOSURES: Cell<u64> = const { Cell::new(0) };
+        static SEGMENT_DERIVATIVE_DECLINES: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(super) fn line_cache_hit() {
@@ -51,15 +67,57 @@ mod geodesic_counters {
         LINE_CACHE_MISSES.set(LINE_CACHE_MISSES.get() + 1);
     }
 
-    pub(super) fn reset() {
-        LINE_CACHE_HITS.set(0);
-        LINE_CACHE_MISSES.set(0);
+    pub(super) fn segment_query() {
+        SEGMENT_QUERIES.set(SEGMENT_QUERIES.get() + 1);
     }
 
-    pub(super) fn snapshot() -> Snapshot {
+    pub(super) fn segment_value_evaluation() {
+        SEGMENT_VALUE_EVALUATIONS.set(SEGMENT_VALUE_EVALUATIONS.get() + 1);
+    }
+
+    pub(super) fn segment_derivative_evaluation() {
+        SEGMENT_DERIVATIVE_EVALUATIONS.set(SEGMENT_DERIVATIVE_EVALUATIONS.get() + 1);
+    }
+
+    pub(super) fn segment_interval_pop() {
+        SEGMENT_INTERVAL_POPS.set(SEGMENT_INTERVAL_POPS.get() + 1);
+    }
+
+    pub(super) fn segment_interval_split() {
+        SEGMENT_INTERVAL_SPLITS.set(SEGMENT_INTERVAL_SPLITS.get() + 1);
+    }
+
+    pub(super) fn segment_convex_closure() {
+        SEGMENT_CONVEX_CLOSURES.set(SEGMENT_CONVEX_CLOSURES.get() + 1);
+    }
+
+    pub(super) fn segment_derivative_decline() {
+        SEGMENT_DERIVATIVE_DECLINES.set(SEGMENT_DERIVATIVE_DECLINES.get() + 1);
+    }
+
+    pub(crate) fn reset() {
+        LINE_CACHE_HITS.set(0);
+        LINE_CACHE_MISSES.set(0);
+        SEGMENT_QUERIES.set(0);
+        SEGMENT_VALUE_EVALUATIONS.set(0);
+        SEGMENT_DERIVATIVE_EVALUATIONS.set(0);
+        SEGMENT_INTERVAL_POPS.set(0);
+        SEGMENT_INTERVAL_SPLITS.set(0);
+        SEGMENT_CONVEX_CLOSURES.set(0);
+        SEGMENT_DERIVATIVE_DECLINES.set(0);
+    }
+
+    pub(crate) fn snapshot() -> Snapshot {
         Snapshot {
             line_cache_hits: LINE_CACHE_HITS.get(),
             line_cache_misses: LINE_CACHE_MISSES.get(),
+            segment_queries: SEGMENT_QUERIES.get(),
+            segment_value_evaluations: SEGMENT_VALUE_EVALUATIONS.get(),
+            segment_derivative_evaluations: SEGMENT_DERIVATIVE_EVALUATIONS.get(),
+            segment_interval_pops: SEGMENT_INTERVAL_POPS.get(),
+            segment_interval_splits: SEGMENT_INTERVAL_SPLITS.get(),
+            segment_convex_closures: SEGMENT_CONVEX_CLOSURES.get(),
+            segment_derivative_declines: SEGMENT_DERIVATIVE_DECLINES.get(),
         }
     }
 }
@@ -164,7 +222,6 @@ pub(crate) use nearest_lrs::{
     with_geodesic_erased_at,
 };
 use segment::{
-    IntersectSolver, checked_geodesic_segment, geodesic_foot_on_segment,
-    geodesic_locate_on_segment, geodesic_point_segment_sample_below, geodesic_point_to_segment,
-    geodesic_point_within_segment, geodesic_segment_intersection_with_solver,
+    IntersectSolver, checked_geodesic_segment, geodesic_point_segment_query,
+    geodesic_segment_intersection_with_solver,
 };

@@ -268,12 +268,25 @@ pub(crate) fn geodesic_sweep_with_parts(
     let scratch = &mut *scratch;
     if let Some(bvh) = target_parts.geodesic_bvh(metric)? {
         for &vertex in vertices {
-            best =
-                bvh.min_point_distance(vertex, target_parts, metric, &mut scratch.stack, best)?;
+            best = bvh.min_point_distance(
+                vertex,
+                target_parts,
+                metric,
+                &mut scratch.stack,
+                &mut scratch.segment,
+                best,
+            )?;
         }
         Ok(best)
     } else {
-        geodesic_capped_sweep_with_parts(vertices, target_parts, metric, best, &mut scratch.rows)
+        geodesic_capped_sweep_with_parts(
+            vertices,
+            target_parts,
+            metric,
+            best,
+            &mut scratch.rows,
+            &mut scratch.segment,
+        )
     }
 }
 
@@ -305,7 +318,14 @@ pub(crate) fn geodesic_point_distance_with_parts_and_scratch(
 ) -> Result<f64> {
     if let Some(bvh) = bvh {
         let stack = stack.unwrap_or(&mut scratch.stack);
-        bvh.min_point_distance(point, target_parts, metric, stack, f64::INFINITY)
+        bvh.min_point_distance(
+            point,
+            target_parts,
+            metric,
+            stack,
+            &mut scratch.segment,
+            f64::INFINITY,
+        )
     } else {
         geodesic_capped_sweep_with_parts(
             std::slice::from_ref(&point),
@@ -313,6 +333,7 @@ pub(crate) fn geodesic_point_distance_with_parts_and_scratch(
             metric,
             f64::INFINITY,
             &mut scratch.rows,
+            &mut scratch.segment,
         )
     }
 }
@@ -330,7 +351,14 @@ pub(crate) fn geodesic_dwithin_sweep_with_parts(
             if found {
                 return Ok(true);
             }
-            bvh.dwithin_point(vertex, target_parts, metric, &mut scratch.stack, distance)
+            bvh.dwithin_point(
+                vertex,
+                target_parts,
+                metric,
+                &mut scratch.stack,
+                &mut scratch.segment,
+                distance,
+            )
         })
     } else {
         geodesic_capped_dwithin_with_parts(
@@ -339,6 +367,7 @@ pub(crate) fn geodesic_dwithin_sweep_with_parts(
             metric,
             distance,
             &mut scratch.rows,
+            &mut scratch.segment,
         )
     }
 }
@@ -374,7 +403,14 @@ pub(crate) fn geodesic_point_dwithin_with_parts_and_scratch(
 ) -> Result<bool> {
     if let Some(bvh) = bvh {
         let stack = stack.unwrap_or(&mut scratch.stack);
-        bvh.dwithin_point(point, target_parts, metric, stack, distance)
+        bvh.dwithin_point(
+            point,
+            target_parts,
+            metric,
+            stack,
+            &mut scratch.segment,
+            distance,
+        )
     } else {
         geodesic_capped_dwithin_with_parts(
             std::slice::from_ref(&point),
@@ -382,6 +418,7 @@ pub(crate) fn geodesic_point_dwithin_with_parts_and_scratch(
             metric,
             distance,
             &mut scratch.rows,
+            &mut scratch.segment,
         )
     }
 }

@@ -494,6 +494,7 @@ impl MeasuredLineIndex {
     fn locate<M: SegmentMetric>(&self, point: Point, metric: &M) -> Result<f64> {
         let mut best_distance = f64::INFINITY;
         let mut best_measure = self.first.m().unwrap_or(0.0);
+        let mut segment_scratch = crate::geometry::GeodesicSegmentScratch::default();
         let mut previous = None;
         for part in &self.parts {
             for end in part {
@@ -506,8 +507,18 @@ impl MeasuredLineIndex {
                 } else {
                     0.0
                 };
-                let (distance, measure) =
-                    metric.locate_with_measure(point, start, end, length, best_distance)?;
+                let Some((distance, measure)) = metric.locate_with_measure(
+                    point,
+                    start,
+                    end,
+                    length,
+                    best_distance,
+                    &mut segment_scratch,
+                )?
+                else {
+                    previous = Some(end);
+                    continue;
+                };
                 if distance < best_distance {
                     best_distance = distance;
                     best_measure = measure;

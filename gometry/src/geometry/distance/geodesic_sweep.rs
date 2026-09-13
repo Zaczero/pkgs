@@ -2,8 +2,9 @@ use crate::error::Result;
 use crate::geometry::distance::geodesic_scratch;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
 use crate::geometry::{
-    GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
-    GeodesicWitnessCandidate, Point, geodesic_witness_is_better, witness_refine_limit,
+    GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentQuery,
+    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicWitnessCandidate,
+    GeodesicWitnessNeed, Point, geodesic_witness_is_better, witness_refine_limit,
 };
 pub(crate) const GEODESIC_CAP_GROUP: usize = 16;
 
@@ -195,11 +196,21 @@ pub(crate) fn geodesic_capped_sweep(
     best: f64,
     cap_groups: &mut Vec<CapGroup>,
     rows: &mut Vec<RowProbe>,
+    segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<f64> {
     let Some(caps) = geodesic_sweep_caps_into(segments, point_only, metric, cap_groups) else {
         return Ok(best);
     };
-    geodesic_capped_distance_sweep_core(vertices, segments, point_only, caps, metric, best, rows)
+    geodesic_capped_distance_sweep_core(
+        vertices,
+        segments,
+        point_only,
+        caps,
+        metric,
+        best,
+        rows,
+        segment_scratch,
+    )
 }
 
 pub(crate) fn geodesic_capped_sweep_with_parts(
@@ -208,6 +219,7 @@ pub(crate) fn geodesic_capped_sweep_with_parts(
     metric: &impl GeodesicMetric,
     best: f64,
     rows: &mut Vec<RowProbe>,
+    segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<f64> {
     let Some(caps) = target_parts.caps.as_ref() else {
         return Ok(best);
@@ -220,6 +232,7 @@ pub(crate) fn geodesic_capped_sweep_with_parts(
         metric,
         best,
         rows,
+        segment_scratch,
     )
 }
 
@@ -231,6 +244,7 @@ fn geodesic_capped_distance_sweep_core(
     metric: &impl GeodesicMetric,
     mut best: f64,
     rows: &mut Vec<RowProbe>,
+    segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<f64> {
     geodesic_ordered_rows_into(vertices, caps, metric, false, rows);
     for &RowProbe {
@@ -261,7 +275,18 @@ fn geodesic_capped_distance_sweep_core(
                 if bound > best {
                     continue;
                 }
-                best = best.min(metric.point_to_segment(vertex, segment, best)?);
+                let result = metric.point_segment_query(
+                    vertex,
+                    segment,
+                    GeodesicSegmentQuery::Minimum {
+                        cutoff: best,
+                        witness: GeodesicWitnessNeed::No,
+                    },
+                    segment_scratch,
+                )?;
+                if let GeodesicSegmentQueryResult::Attained { minimum, .. } = result {
+                    best = best.min(minimum.distance);
+                }
             }
         }
         for &point in point_only {
@@ -280,6 +305,7 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
     metric: &impl GeodesicMetric,
     distance: f64,
     rows: &mut Vec<RowProbe>,
+    segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<bool> {
     let Some(caps) = target_parts.caps.as_ref() else {
         return Ok(false);
@@ -315,7 +341,24 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
                 if bound > distance {
                     continue;
                 }
-                if metric.point_to_segment_within(vertex, segment, distance)? {
+                let result = metric.point_segment_query(
+                    vertex,
+                    segment,
+                    GeodesicSegmentQuery::Threshold {
+                        limit: distance,
+                        completion: crate::geometry::GeodesicThresholdCompletion::Complete,
+                        witness: GeodesicWitnessNeed::No,
+                    },
+                    segment_scratch,
+                )?;
+                if geodesic_threshold_hit(
+                    result,
+                    vertex,
+                    segment,
+                    metric,
+                    distance,
+                    segment_scratch,
+                )? {
                     return Ok(true);
                 }
             }
@@ -334,6 +377,50 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
 
 #[expect(
     clippy::large_types_passed_by_value,
+    reason = "the owned result is consumed once to preserve its typed branch semantics"
+)]
+pub(crate) fn geodesic_threshold_hit(
+    result: GeodesicSegmentQueryResult,
+    point: Point,
+    segment: GeodesicSegment,
+    metric: &impl GeodesicMetric,
+    limit: f64,
+    scratch: &mut GeodesicSegmentScratch,
+) -> Result<bool> {
+    match result {
+        GeodesicSegmentQueryResult::Attained { minimum, .. } => Ok(minimum.distance <= limit),
+        GeodesicSegmentQueryResult::ThresholdOutside { .. } => Ok(false),
+        GeodesicSegmentQueryResult::ThresholdUnresolved => {
+            let result = metric.point_segment_query(
+                point,
+                segment,
+                GeodesicSegmentQuery::Minimum {
+                    cutoff: f64::INFINITY,
+                    witness: GeodesicWitnessNeed::No,
+                },
+                scratch,
+            )?;
+            match result {
+                GeodesicSegmentQueryResult::Attained { minimum, .. } => {
+                    Ok(minimum.distance <= limit)
+                },
+                GeodesicSegmentQueryResult::Excluded { .. } => {
+                    unreachable!("unbounded minimum query was excluded")
+                },
+                GeodesicSegmentQueryResult::ThresholdOutside { .. }
+                | GeodesicSegmentQueryResult::ThresholdUnresolved => {
+                    unreachable!("minimum query returned a threshold outcome")
+                },
+            }
+        },
+        GeodesicSegmentQueryResult::Excluded { .. } => {
+            unreachable!("threshold query returned a minimum exclusion")
+        },
+    }
+}
+
+#[expect(
+    clippy::large_types_passed_by_value,
     reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
 )]
 pub(crate) fn geodesic_capped_witness_sweep(
@@ -346,6 +433,7 @@ pub(crate) fn geodesic_capped_witness_sweep(
     swapped: bool,
     cap_groups: &mut Vec<CapGroup>,
     rows: &mut Vec<RowProbe>,
+    segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<Option<GeodesicWitnessCandidate>> {
     let Some(caps) = geodesic_sweep_caps_into(segments, point_only, metric, cap_groups) else {
         return Ok(best);
@@ -360,6 +448,7 @@ pub(crate) fn geodesic_capped_witness_sweep(
         order_offset,
         swapped,
         rows,
+        segment_scratch,
     )
 }
 
@@ -375,6 +464,7 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
     order_offset: usize,
     swapped: bool,
     rows: &mut Vec<RowProbe>,
+    segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<Option<GeodesicWitnessCandidate>> {
     let Some(caps) = target_parts.caps.as_ref() else {
         return Ok(best);
@@ -389,6 +479,7 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
         order_offset,
         swapped,
         rows,
+        segment_scratch,
     )
 }
 
@@ -402,6 +493,7 @@ fn geodesic_capped_witness_sweep_core(
     order_offset: usize,
     swapped: bool,
     rows: &mut Vec<RowProbe>,
+    segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<Option<GeodesicWitnessCandidate>> {
     geodesic_ordered_rows_into(vertices, caps, metric, true, rows);
     let width = segments.len() + point_only.len();
@@ -442,11 +534,26 @@ fn geodesic_capped_witness_sweep_core(
                 if bound > best_distance {
                     continue;
                 }
-                let witness = metric.point_segment_witness(vertex, segment, best_distance)?;
+                let result = metric.point_segment_query(
+                    vertex,
+                    segment,
+                    GeodesicSegmentQuery::Minimum {
+                        cutoff: best_distance,
+                        witness: GeodesicWitnessNeed::Yes,
+                    },
+                    segment_scratch,
+                )?;
+                let GeodesicSegmentQueryResult::Attained {
+                    minimum,
+                    foot: Some(target),
+                } = result
+                else {
+                    continue;
+                };
                 let candidate = GeodesicWitnessCandidate {
                     probe: vertex,
-                    target: witness.foot,
-                    distance: witness.distance,
+                    target,
+                    distance: minimum.distance,
                     order,
                     swapped,
                 };
@@ -462,15 +569,10 @@ fn geodesic_capped_witness_sweep_core(
                 continue;
             }
             let distance = metric.segment_length(vertex, point);
-            let witness = GeodesicSegmentWitness {
-                distance,
-                foot: point,
-                along: 0.0,
-            };
             let candidate = GeodesicWitnessCandidate {
                 probe: vertex,
-                target: witness.foot,
-                distance: witness.distance,
+                target: point,
+                distance,
                 order,
                 swapped,
             };
@@ -506,6 +608,7 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
                 target_parts,
                 metric,
                 &mut scratch.stack,
+                &mut scratch.segment,
                 best,
                 order_offset,
                 swapped,
@@ -522,6 +625,7 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
             order_offset,
             swapped,
             &mut scratch.rows,
+            &mut scratch.segment,
         )
     }
 }

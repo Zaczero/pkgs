@@ -13,9 +13,11 @@
 use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::{
-    CoordSeq, Coordinates as _, GeodesicMetric, GeometryErrorKind, LineSeq, MeasureRange, Ordering,
-    Point, Segment, SegmentProjection, Shape, interpolate_f64, lerp_point, linework_first_point,
-    normalize_line_distance, point_distance, push_distinct_point, segment_projection,
+    CoordSeq, Coordinates as _, GeodesicMetric, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
+    GeodesicSegmentScratch, GeodesicWitnessNeed, GeometryErrorKind, LineSeq, MeasureRange,
+    Ordering, Point, Segment, SegmentProjection, Shape, interpolate_f64, lerp_point,
+    linework_first_point, normalize_line_distance, point_distance, push_distinct_point,
+    segment_projection,
 };
 
 /// Per-segment measurement for the linear-referencing engine.
@@ -41,11 +43,12 @@ pub(crate) trait SegmentMetric {
         0.0
     }
 
-    /// `(distance to probe, along-segment offset of the projection)`.
+    /// `(distance to probe, along-segment offset of the projection)`, or
+    /// `None` when the segment is excluded by the running bound.
     /// `length` is the segment's cached metric length and `best` the running
-    /// minimum distance: metrics with expensive refinement (geodesic
-    /// may return any distance `>= best` once a cheap bound
-    /// proves the segment cannot improve on it.
+    /// minimum distance. Metrics with expensive refinement (geodesic)
+    /// may return `None` once a cheap bound proves the segment cannot improve
+    /// on it.
     fn locate(
         &self,
         probe: Point,
@@ -53,7 +56,8 @@ pub(crate) trait SegmentMetric {
         end: Point,
         length: f64,
         best: f64,
-    ) -> Result<(f64, f64)>;
+        scratch: &mut GeodesicSegmentScratch,
+    ) -> Result<Option<(f64, f64)>>;
 
     /// Locate a probe and return the interpolated M value at its foot. Planar
     /// metrics override this to retain certified projection ratios that may be
@@ -65,17 +69,20 @@ pub(crate) trait SegmentMetric {
         end: Point,
         length: f64,
         best: f64,
-    ) -> Result<(f64, f64)> {
-        let (distance, along) = self.locate(probe, start, end, length, best)?;
+        scratch: &mut GeodesicSegmentScratch,
+    ) -> Result<Option<(f64, f64)>> {
+        let Some((distance, along)) = self.locate(probe, start, end, length, best, scratch)? else {
+            return Ok(None);
+        };
         let fraction = if length == 0.0 {
             0.0
         } else {
             (along / length).clamp(0.0, 1.0)
         };
-        Ok((
+        Ok(Some((
             distance,
             interpolate_f64(start.m().unwrap_or(0.0), end.m().unwrap_or(0.0), fraction),
-        ))
+        )))
     }
 }
 
@@ -103,9 +110,10 @@ impl SegmentMetric for PlanarMetric {
         end: Point,
         length: f64,
         _best: f64,
-    ) -> Result<(f64, f64)> {
+        _scratch: &mut GeodesicSegmentScratch,
+    ) -> Result<Option<(f64, f64)>> {
         let (distance, projection) = planar_projection(probe, start, end)?;
-        Ok((distance, projection.scale(length)?))
+        Ok(Some((distance, projection.scale(length)?)))
     }
 
     fn locate_with_measure(
@@ -115,14 +123,15 @@ impl SegmentMetric for PlanarMetric {
         end: Point,
         _length: f64,
         _best: f64,
-    ) -> Result<(f64, f64)> {
+        _scratch: &mut GeodesicSegmentScratch,
+    ) -> Result<Option<(f64, f64)>> {
         let (distance, projection) = planar_projection(probe, start, end)?;
         // Keep the certified projection ratio until measure interpolation;
         // converting a subnormal ratio to along-distance and back loses it.
-        Ok((
+        Ok(Some((
             distance,
             projection.interpolate_point(start, end)?.m().unwrap_or(0.0),
-        ))
+        )))
     }
 }
 
@@ -191,8 +200,27 @@ impl<M: GeodesicMetric> SegmentMetric for M {
         end: Point,
         _length: f64,
         best: f64,
-    ) -> Result<(f64, f64)> {
-        self.locate_on_segment(probe, self.make_segment(start, end)?, best)
+        scratch: &mut GeodesicSegmentScratch,
+    ) -> Result<Option<(f64, f64)>> {
+        let result = self.point_segment_query(
+            probe,
+            self.make_segment(start, end)?,
+            GeodesicSegmentQuery::Minimum {
+                cutoff: best,
+                witness: GeodesicWitnessNeed::No,
+            },
+            scratch,
+        )?;
+        match result {
+            GeodesicSegmentQueryResult::Attained { minimum, .. } => {
+                Ok(Some((minimum.distance, minimum.along)))
+            },
+            GeodesicSegmentQueryResult::Excluded { .. } => Ok(None),
+            GeodesicSegmentQueryResult::ThresholdOutside { .. }
+            | GeodesicSegmentQueryResult::ThresholdUnresolved => {
+                unreachable!("minimum query returned a threshold outcome")
+            },
+        }
     }
 }
 
@@ -483,6 +511,7 @@ impl LineIndex {
         }
         let mut best_distance = f64::INFINITY;
         let mut best_offset = 0.0;
+        let mut segment_scratch = GeodesicSegmentScratch::default();
         if M::ORDERED_LOCATE {
             // Refine in cheap-bound order with early termination: once the
             // (ascending) bound cannot beat the best, neither can anything
@@ -544,8 +573,17 @@ impl LineIndex {
                 let segment = self.segments[index as usize];
                 let offset = self.prefix[index as usize];
                 let length = self.prefix[index as usize + 1] - offset;
-                let (distance, along) =
-                    metric.locate(probe, segment.start, segment.end, length, best_distance)?;
+                let Some((distance, along)) = metric.locate(
+                    probe,
+                    segment.start,
+                    segment.end,
+                    length,
+                    best_distance,
+                    &mut segment_scratch,
+                )?
+                else {
+                    continue;
+                };
                 #[expect(clippy::float_cmp, reason = "tie-break preserves first-wins order")]
                 let tie = distance == best_distance && index < best_index;
                 if distance < best_distance || tie {
@@ -559,8 +597,17 @@ impl LineIndex {
                 std::iter::zip(&self.segments, &self.prefix).enumerate()
             {
                 let length = self.prefix[index + 1] - offset;
-                let (distance, along) =
-                    metric.locate(probe, segment.start, segment.end, length, best_distance)?;
+                let Some((distance, along)) = metric.locate(
+                    probe,
+                    segment.start,
+                    segment.end,
+                    length,
+                    best_distance,
+                    &mut segment_scratch,
+                )?
+                else {
+                    continue;
+                };
                 if distance < best_distance {
                     best_distance = distance;
                     best_offset = offset + along;

@@ -115,19 +115,18 @@ impl Shape {
     /// bow outside their lon/lat envelope). `None` for empty shapes. The
     /// spatial index's geodesic row caps and the capped sweeps below share
     /// this bound.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
-    )]
-    pub fn geodesic_cap(&self, metric: &impl GeodesicMetric) -> Result<Option<(Point, f64)>> {
+    pub(crate) fn geodesic_cap(
+        &self,
+        metric: &impl GeodesicMetric,
+    ) -> Result<Option<(Point, f64)>> {
         geodesic_cap_streaming(self, metric)
     }
 
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
-    )]
-    pub fn geodesic_distance(&self, other: &Self, metric: &impl GeodesicMetric) -> Result<f64> {
+    pub(crate) fn geodesic_distance(
+        &self,
+        other: &Self,
+        metric: &impl GeodesicMetric,
+    ) -> Result<f64> {
         ensure_geodesic_linework(self, metric)?;
         ensure_geodesic_linework(other, metric)?;
         // Point pairs reduce to ONE Karney inverse (`segment_length` IS the
@@ -164,6 +163,7 @@ impl Shape {
             best,
             &mut scratch.cap_groups,
             &mut scratch.rows,
+            &mut scratch.segment,
         )?;
         best = geodesic_capped_sweep(
             &scratch.right_points,
@@ -173,6 +173,7 @@ impl Shape {
             best,
             &mut scratch.cap_groups,
             &mut scratch.rows,
+            &mut scratch.segment,
         )?;
         Ok(best)
     }
@@ -182,11 +183,7 @@ impl Shape {
     /// sweep takes the linework max-min over source vertices and source
     /// segment interiors, with a 1-Lipschitz branch-and-bound certificate and
     /// target pruning via auxiliary-sphere bounds.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
-    )]
-    pub fn geodesic_hausdorff_distance(
+    pub(crate) fn geodesic_hausdorff_distance(
         &self,
         other: &Self,
         metric: &impl GeodesicMetric,
@@ -208,6 +205,7 @@ impl Shape {
             &scratch.right_edges,
             &scratch.right_points,
             metric,
+            &mut scratch.segment,
         )?
         .max(geodesic_directed_hausdorff_distance(
             &scratch.right_points,
@@ -215,6 +213,7 @@ impl Shape {
             &scratch.left_edges,
             &scratch.left_points,
             metric,
+            &mut scratch.segment,
         )?))
     }
 
@@ -224,11 +223,7 @@ impl Shape {
     /// both directed vertex-to-segment witness sweeps run, carrying the
     /// running best so the metric can prune segments that cannot improve it.
     /// `None` only when an operand is empty.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
-    )]
-    pub fn geodesic_nearest_points(
+    pub(crate) fn geodesic_nearest_points(
         &self,
         other: &Self,
         metric: &impl GeodesicMetric,
@@ -274,6 +269,7 @@ impl Shape {
             false,
             &mut scratch.cap_groups,
             &mut scratch.rows,
+            &mut scratch.segment,
         )?;
         let best = geodesic_capped_witness_sweep(
             &scratch.right_points,
@@ -285,6 +281,7 @@ impl Shape {
             true,
             &mut scratch.cap_groups,
             &mut scratch.rows,
+            &mut scratch.segment,
         )?;
         Ok(best.map(|candidate| {
             if candidate.swapped {
@@ -478,18 +475,31 @@ pub(super) fn geodesic_directed_hausdorff_distance(
     target_edges: &[GeodesicSegment],
     target_points: &[Point],
     metric: &impl GeodesicMetric,
+    segment_scratch: &mut crate::geometry::GeodesicSegmentScratch,
 ) -> Result<f64> {
     let mut cmax = 0.0_f64;
     for &point in source_points {
-        let cmin =
-            geodesic_min_distance_to_target(point, target_edges, target_points, metric, cmax)?;
+        let cmin = geodesic_min_distance_to_target(
+            point,
+            target_edges,
+            target_points,
+            metric,
+            cmax,
+            segment_scratch,
+        )?;
         if cmin > cmax {
             cmax = cmin;
         }
     }
     for &segment in source_edges {
-        let value =
-            geodesic_max_min_on_source_segment(segment, target_edges, target_points, metric, cmax)?;
+        let value = geodesic_max_min_on_source_segment(
+            segment,
+            target_edges,
+            target_points,
+            metric,
+            cmax,
+            segment_scratch,
+        )?;
         if value > cmax {
             cmax = value;
         }

@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::collections::BinaryHeap;
 use std::fmt;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -936,28 +937,126 @@ impl fmt::Debug for ShapeData {
     }
 }
 
-/// The nearest point on a geodesic segment to a probe.
-///
-/// Carries the minimum distance, the witness `foot` (materialized on the
-/// ellipsoid, correct across the antimeridian and poles), and the along-track
-/// `along` (meters from the segment start). The shared result behind geodesic
-/// nearest-points, clearance, and linear referencing.
+/// Operation requested from the geodesic point-to-segment owner.
 #[derive(Clone, Copy, Debug)]
-pub struct GeodesicSegmentWitness {
-    /// Minimum geodesic distance (meters) from the probe to the segment.
-    pub distance: f64,
-    /// The nearest point on the segment — the perpendicular foot, or the nearer
-    /// endpoint when the foot falls outside the segment. Carries Z/M
-    /// interpolated along the segment (the endpoint's, at an endpoint).
-    pub foot: Point,
-    /// Along-track distance (meters) from the segment start to `foot`.
-    pub along: f64,
+pub(crate) enum GeodesicSegmentQuery {
+    /// Return an attained minimum only when it is strictly below `cutoff`.
+    Minimum {
+        cutoff: f64,
+        witness: GeodesicWitnessNeed,
+    },
+    /// Return an attained threshold hit. `Complete` also searches for a
+    /// complete outside proof; either mode may return `ThresholdUnresolved`.
+    Threshold {
+        limit: f64,
+        completion: GeodesicThresholdCompletion,
+        witness: GeodesicWitnessNeed,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GeodesicWitnessNeed {
+    No,
+    Yes,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GeodesicThresholdCompletion {
+    Complete,
+    Probe,
+}
+
+/// Attained point-to-segment minimum in the segment's along-track parameter.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GeodesicSegmentMinimum {
+    pub(crate) distance: f64,
+    pub(crate) along: f64,
+}
+
+/// Typed result of a point-to-segment query.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GeodesicSegmentQueryResult {
+    /// An attained value, with an optional actual foot when requested.
+    Attained {
+        minimum: GeodesicSegmentMinimum,
+        foot: Option<Point>,
+    },
+    /// A pruning fact, never a metric value.
+    Excluded { lower_bound: f64 },
+    /// A complete proof that the segment is outside a threshold.
+    ThresholdOutside { lower_bound: f64 },
+    /// No threshold decision was established; never treat this as outside.
+    ThresholdUnresolved,
+}
+
+/// Reusable inner branch-and-bound frontier for one geodesic operation.
+pub(crate) struct GeodesicSegmentScratch {
+    pub(crate) inner: BinaryHeap<GeodesicInnerInterval>,
+}
+
+impl GeodesicSegmentScratch {
+    pub(crate) const fn new() -> Self {
+        Self {
+            inner: BinaryHeap::new(),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.inner
+            .capacity()
+            .saturating_mul(std::mem::size_of::<GeodesicInnerInterval>())
+    }
+}
+
+impl Default for GeodesicSegmentScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GeodesicInnerInterval {
+    pub(crate) lower: f64,
+    pub(crate) left: f64,
+    pub(crate) right: f64,
+    pub(crate) left_value: f64,
+    pub(crate) right_value: f64,
+}
+
+impl PartialEq for GeodesicInnerInterval {
+    fn eq(&self, other: &Self) -> bool {
+        self.lower.to_bits() == other.lower.to_bits()
+            && self.left.to_bits() == other.left.to_bits()
+            && self.right.to_bits() == other.right.to_bits()
+    }
+}
+
+impl Eq for GeodesicInnerInterval {}
+
+impl PartialOrd for GeodesicInnerInterval {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for GeodesicInnerInterval {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .lower
+            .total_cmp(&self.lower)
+            .then_with(|| other.left.total_cmp(&self.left))
+            .then_with(|| other.right.total_cmp(&self.right))
+    }
 }
 
 /// Ellipsoidal distance primitive injected into [`Shape::geodesic_distance`] so
 /// the geometry layer stays free of any CRS/ellipsoid dependency. Implemented
 /// in `crs.rs` over a `geographiclib` `Geodesic`.
-pub trait GeodesicMetric {
+pub(crate) trait GeodesicMetric {
     /// Runtime generation used to namespace CRS-dependent prepared state.
     /// Geometry-only test metrics use the default zero generation.
     fn runtime_generation(&self) -> u64 {
@@ -988,46 +1087,18 @@ pub trait GeodesicMetric {
     /// segment.
     fn make_segment(&self, start: Point, end: Point) -> Result<GeodesicSegment>;
 
-    /// Geodesic distance (meters) from `point` to the geodesic segment `a`–`b`
-    /// (or to `a` when degenerate). `best` is the smallest distance found so
-    /// far: implementations may skip expensive along-track refinement and
-    /// return any value `>= best` once a cheap lower bound proves the segment
-    /// cannot improve on it.
+    /// Run the shared point-to-segment query owner.
     #[expect(
         clippy::large_types_passed_by_value,
         reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
     )]
-    fn point_to_segment(&self, point: Point, segment: GeodesicSegment, best: f64) -> Result<f64>;
-
-    /// Whether the distance from `point` to `segment` is at most `limit`.
-    /// Implementations return `false` only after proving the whole segment is
-    /// outside the threshold.
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
-    fn point_to_segment_within(
+    fn point_segment_query(
         &self,
         point: Point,
         segment: GeodesicSegment,
-        limit: f64,
-    ) -> Result<bool>;
-
-    /// Return an attained point-to-segment distance at or below `limit`
-    /// without proving the negative case. Callers use this only when they
-    /// already have a ceiling that makes the exact distance unnecessary.
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
-    fn point_to_segment_sample_below(
-        &self,
-        _point: Point,
-        _segment: GeodesicSegment,
-        _limit: f64,
-    ) -> Result<Option<f64>> {
-        Ok(None)
-    }
+        query: GeodesicSegmentQuery,
+        scratch: &mut GeodesicSegmentScratch,
+    ) -> Result<GeodesicSegmentQueryResult>;
 
     /// Whether the selected shortest geodesic segments `a`–`b` and `c`–`d`
     /// intersect on the ellipsoid.
@@ -1049,40 +1120,6 @@ pub trait GeodesicMetric {
     /// The point a `fraction` of the geodesic length along `a`→`b`, with Z and
     /// M interpolated linearly by `fraction`.
     fn interpolate(&self, a: Point, b: Point, fraction: f64) -> Point;
-
-    /// `(min geodesic distance, along-track meters from a)` for the foot of
-    /// `point` on segment `a`–`b` — the geodesic linear-referencing primitive.
-    /// `(distance, along-track offset)` of `point`'s nearest position on the
-    /// geodesic segment `a`–`b`. `best` is the smallest distance found so
-    /// far: implementations may skip the expensive along-track refinement
-    /// and return any distance `>= best` once a cheap lower bound proves the
-    /// segment cannot improve on it.
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
-    fn locate_on_segment(
-        &self,
-        point: Point,
-        segment: GeodesicSegment,
-        best: f64,
-    ) -> Result<(f64, f64)>;
-
-    /// The full nearest-point witness of `point` on segment `a`–`b`: distance,
-    /// the foot point on the ellipsoid (carrying interpolated Z/M), and the
-    /// along-track offset. `best` enables the same lower-bound pruning as
-    /// [`point_to_segment`](Self::point_to_segment). Drives geodesic
-    /// `nearest_points`/`shortest_line` and `minimum_clearance`.
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
-    fn point_segment_witness(
-        &self,
-        point: Point,
-        segment: GeodesicSegment,
-        best: f64,
-    ) -> Result<GeodesicSegmentWitness>;
 
     /// A cheap (no-inverse) lower bound on the geodesic distance between two
     /// points — the auxiliary-sphere reduced-latitude bound. Drives the

@@ -3,14 +3,13 @@ use geographiclib_rs::Geodesic;
 use crate::crs::geodesic;
 use crate::crs::geodesic::{
     DirectGeodesic, IntersectSolver, InverseGeodesic as _, LowerBoundKernel,
-    cached_lower_bound_kernel, checked_geodesic_segment, geodesic_foot_on_segment,
-    geodesic_locate_on_segment, geodesic_point_segment_sample_below, geodesic_point_to_segment,
-    geodesic_point_within_segment, geodesic_segment_intersection_with_solver,
-    interpolate_optional_ordinate,
+    cached_lower_bound_kernel, checked_geodesic_segment, geodesic_point_segment_query,
+    geodesic_segment_intersection_with_solver, interpolate_optional_ordinate,
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    GeodesicMetric, GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, XY, ZOrdinate,
+    GeodesicMetric, GeodesicSegment, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
+    GeodesicSegmentScratch, MOrdinate, Point, XY, ZOrdinate,
 };
 
 pub(crate) fn inverse_distance(
@@ -154,46 +153,35 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         Ok(segment)
     }
 
-    fn point_to_segment(
+    fn point_segment_query(
         &self,
         point: Point,
         segment: GeodesicSegment,
-        best: f64,
-    ) -> crate::error::Result<f64> {
-        geodesic_point_to_segment(
+        query: GeodesicSegmentQuery,
+        scratch: &mut GeodesicSegmentScratch,
+    ) -> crate::error::Result<GeodesicSegmentQueryResult> {
+        let result = geodesic_point_segment_query(
             self.geodesic,
             self.to_geodesic_point(point),
             self.to_geodesic_segment(segment),
-            best,
-        )
-    }
-
-    fn point_to_segment_within(
-        &self,
-        point: Point,
-        segment: GeodesicSegment,
-        limit: f64,
-    ) -> crate::error::Result<bool> {
-        geodesic_point_within_segment(
-            self.geodesic,
-            self.to_geodesic_point(point),
-            self.to_geodesic_segment(segment),
-            limit,
-        )
-    }
-
-    fn point_to_segment_sample_below(
-        &self,
-        point: Point,
-        segment: GeodesicSegment,
-        limit: f64,
-    ) -> crate::error::Result<Option<f64>> {
-        geodesic_point_segment_sample_below(
-            self.geodesic,
-            self.to_geodesic_point(point),
-            self.to_geodesic_segment(segment),
-            limit,
-        )
+            query,
+            scratch,
+        )?;
+        Ok(match result {
+            GeodesicSegmentQueryResult::Attained { minimum, foot } => {
+                GeodesicSegmentQueryResult::Attained {
+                    minimum,
+                    foot: foot.map(|foot| {
+                        self.frame
+                            .point_from_geodesic(foot)
+                            .expect("geodesic witness is finite")
+                    }),
+                }
+            },
+            GeodesicSegmentQueryResult::Excluded { .. }
+            | GeodesicSegmentQueryResult::ThresholdOutside { .. }
+            | GeodesicSegmentQueryResult::ThresholdUnresolved => result,
+        })
     }
 
     fn segments_cross(&self, a: Point, b: Point, c: Point, d: Point) -> crate::error::Result<bool> {
@@ -290,41 +278,6 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         self.frame
             .point_from_geodesic(point)
             .expect("geodesic interpolation is finite")
-    }
-
-    fn locate_on_segment(
-        &self,
-        point: Point,
-        segment: GeodesicSegment,
-        best: f64,
-    ) -> crate::error::Result<(f64, f64)> {
-        geodesic_locate_on_segment(
-            self.geodesic,
-            self.to_geodesic_point(point),
-            self.to_geodesic_segment(segment),
-            best,
-        )
-    }
-
-    fn point_segment_witness(
-        &self,
-        point: Point,
-        segment: GeodesicSegment,
-        best: f64,
-    ) -> crate::error::Result<GeodesicSegmentWitness> {
-        let witness = geodesic_foot_on_segment(
-            self.geodesic,
-            self.to_geodesic_point(point),
-            self.to_geodesic_segment(segment),
-            best,
-        )?;
-        Ok(GeodesicSegmentWitness {
-            foot: self
-                .frame
-                .point_from_geodesic(witness.foot)
-                .expect("geodesic witness is finite"),
-            ..witness
-        })
     }
 
     fn point_distance_lower_bound(&self, a: Point, b: Point) -> f64 {

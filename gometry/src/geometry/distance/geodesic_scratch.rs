@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::geometry::distance::{CapGroup, RowProbe};
-use crate::geometry::{GeodesicMetric, GeodesicSegment, Point, Shape};
+use crate::geometry::{GeodesicMetric, GeodesicSegment, GeodesicSegmentScratch, Point, Shape};
 #[derive(Default)]
 pub(crate) struct GeodesicScratch {
     pub(crate) left_points: Vec<Point>,
@@ -12,6 +12,7 @@ pub(crate) struct GeodesicScratch {
     pub(crate) cap_groups: Vec<CapGroup>,
     pub(crate) rows: Vec<RowProbe>,
     pub(crate) stack: Vec<u32>,
+    pub(crate) segment: GeodesicSegmentScratch,
 }
 
 impl GeodesicScratch {
@@ -26,6 +27,7 @@ impl GeodesicScratch {
             cap_groups: Vec::new(),
             rows: Vec::new(),
             stack: Vec::new(),
+            segment: GeodesicSegmentScratch::new(),
         }
     }
 }
@@ -41,6 +43,7 @@ impl crate::scratch_pool::RetainScratch for GeodesicScratch {
         self.cap_groups.clear();
         self.rows.clear();
         self.stack.clear();
+        self.segment.clear();
     }
 
     fn retained_bytes(&self) -> usize {
@@ -65,6 +68,7 @@ impl crate::scratch_pool::RetainScratch for GeodesicScratch {
             ))
             .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.rows))
             .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.stack))
+            .saturating_add(self.segment.retained_bytes())
     }
 }
 
