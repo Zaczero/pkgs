@@ -126,7 +126,7 @@ jobs:
         if: needs.detect.outputs.release-package == 'gometry'
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
-          toolchain: nightly
+          toolchain: ${{ needs.test.outputs.rust-toolchain }}
           cache-key: gometry-release
           cache-on-failure: false
           cache-save-if: false

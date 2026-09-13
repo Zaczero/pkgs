@@ -6,6 +6,10 @@ on:
       package:
         required: true
         type: string
+    outputs:
+      rust-toolchain:
+        description: The package-selected Rust toolchain channel
+        value: ${{ jobs.resolve.outputs.rust-toolchain }}
 
 permissions:
   actions: write
@@ -358,6 +362,99 @@ jobs:
           python3 gometry/tools/wheel_smoke.py \
             --verify-source "${sdists[0]}" source/gometry-source-manifest.json
 
+      - name: Export staged gometry source identity
+        if: inputs.package == 'gometry'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - source/gometry-source-manifest.json >> "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding='utf-8') as stream:
+              manifest = json.load(stream)
+          source = manifest["sdist"]
+          for key, value in {
+              "GOMETRY_SMOKE_EXPECTED_VERSION": source["version"],
+              "GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256": manifest["source_inputs_sha256"],
+              "GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256": manifest["native_source_inputs_sha256"],
+          }.items():
+              print(f"{key}={value}")
+          PY
+
+      - name: Configure gometry portable release target
+        if: inputs.package == 'gometry'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS:$RUNNER_ARCH" in
+            Linux:X64) target=x86_64-unknown-linux-gnu ;;
+            Linux:ARM64) target=aarch64-unknown-linux-gnu ;;
+            macOS:X64) target=x86_64-apple-darwin ;;
+            macOS:ARM64) target=aarch64-apple-darwin ;;
+            Windows:X64) target=x86_64-pc-windows-msvc ;;
+            Windows:ARM64) target=aarch64-pc-windows-msvc ;;
+            *) echo "unsupported gometry release runner: $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          python3 - "$target" "$RUNNER_OS" >> "$GITHUB_ENV" <<'PY'
+          import os
+          import shlex
+          import sys
+          sys.path.insert(0, "gometry/tools")
+          import wheel_smoke
+
+          target, runner_os = sys.argv[1:]
+          policy = wheel_smoke.release_target_policy(target)
+          flags = {
+              "RUSTFLAGS": wheel_smoke._flag_text(policy["rustflags"]),
+              "CFLAGS": wheel_smoke._flag_text(policy["cflags"]),
+              "CXXFLAGS": wheel_smoke._flag_text(policy["cxxflags"]),
+          }
+          for key, value in {
+              "GOMETRY_RELEASE_TARGET": policy["target"],
+              "GOMETRY_RELEASE_TARGET_POLICY": policy["target_policy"],
+              "GOMETRY_RELEASE_RUSTFLAGS": flags["RUSTFLAGS"],
+              "GOMETRY_RELEASE_CFLAGS": flags["CFLAGS"],
+              "GOMETRY_RELEASE_CXXFLAGS": flags["CXXFLAGS"],
+              "GOMETRY_SMOKE_EXPECTED_TARGET": policy["target"],
+              "GOMETRY_SMOKE_EXPECTED_ARCHITECTURE": policy["architecture"],
+          }.items():
+              print(f"{key}={value}")
+
+          assignments = [
+              f"{key}={shlex.quote(value)}"
+              for key, value in {
+                  "RUSTFLAGS": flags["RUSTFLAGS"],
+                  f"CFLAGS_{target.replace('-', '_')}": flags["CFLAGS"],
+                  f"CXXFLAGS_{target.replace('-', '_')}": flags["CXXFLAGS"],
+                  "CPPFLAGS": "",
+                  "TARGET_CFLAGS": "",
+                  "TARGET_CXXFLAGS": "",
+                  "HOST_CFLAGS": "",
+                  "HOST_CXXFLAGS": "",
+                  "CMAKE_ARGS": "",
+                  "GOMETRY_RELEASE_TARGET": policy["target"],
+                  "GOMETRY_RELEASE_TARGET_POLICY": policy["target_policy"],
+                  "GOMETRY_SMOKE_EXPECTED_VERSION": os.environ["GOMETRY_SMOKE_EXPECTED_VERSION"],
+                  "GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256": os.environ["GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256"],
+                  "GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256": os.environ["GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256"],
+                  "GOMETRY_SMOKE_EXPECTED_TARGET": policy["target"],
+                  "GOMETRY_SMOKE_EXPECTED_ARCHITECTURE": policy["architecture"],
+              }.items()
+          ]
+          environment = " ".join(assignments)
+          if runner_os == "Linux":
+              print(f"GOMETRY_CIBW_RELEASE_ENV={environment}")
+          elif runner_os == "macOS":
+              print(
+                  "CIBW_ENVIRONMENT_MACOS="
+                  + 'MACOSX_DEPLOYMENT_TARGET="11.0" '
+                  + environment
+              )
+          else:
+              print(f"CIBW_ENVIRONMENT_WINDOWS={environment}")
+          PY
+
       - name: Plan gometry wheels
         if: inputs.package == 'gometry'
         shell: bash
@@ -406,9 +503,13 @@ jobs:
           if [ "$SCCACHE_GHA_RW_MODE" = READ_WRITE ]; then
             test_command+=" && /opt/sccache/sccache --show-stats"
           fi
+          gometry_environment=""
+          if [ "$PACKAGE" = gometry ]; then
+            gometry_environment=" $GOMETRY_CIBW_RELEASE_ENV"
+          fi
           {
             printf '%s\n' "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $sccache_dir:/opt/sccache:ro"
-            printf '%s\n' "CIBW_ENVIRONMENT_LINUX=PATH=\"\$HOME/.cargo/bin:\$PATH\" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+            printf '%s\n' "CIBW_ENVIRONMENT_LINUX=PATH=\"\$HOME/.cargo/bin:\$PATH\" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH$gometry_environment"
             printf '%s\n' "CIBW_TEST_COMMAND=$test_command"
           } >> "$GITHUB_ENV"
 

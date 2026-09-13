@@ -27,19 +27,30 @@ BUILD_INPUT_PATHS = (
     'Cargo.toml',
     'Cargo.lock',
 )
-SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v3'
-BUILD_INFO_SCHEMA_VERSION = 1
+SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v4'
+BUILD_INFO_SCHEMA_VERSION = 3
 BUILD_INFO_KEYS = {
     'schema_version',
     'source_inputs_format',
     'source_inputs_sha256',
+    'native_source_inputs_format',
+    'native_source_inputs_sha256',
     'profile_family',
     'opt_level',
-    'debug',
     'debug_assertions',
     'target',
+    'target_arch',
     'target_features',
 }
+
+
+def _is_hidden_native_path(relative: str) -> bool:
+    parts = Path(relative).parts
+    return (
+        len(parts) >= 3
+        and parts[:2] == ('gometry', 'native')
+        and any(part.startswith('.') for part in parts[2:])
+    )
 
 
 def selected_cpu_governor(
@@ -82,22 +93,34 @@ def _git_build_inputs_dirty() -> bool | None:
     return bool(result)
 
 
-def _source_inputs_digest() -> str | None:
-    """Digest inputs preserved byte-for-byte between checkout and sdist builds."""
-    files: list[tuple[str, Path]] = [
-        ('rust-toolchain.toml', REPO_ROOT / 'rust-toolchain.toml'),
-        ('gometry/Cargo.toml', GOMETRY_ROOT / 'Cargo.toml'),
-        ('gometry/build.rs', GOMETRY_ROOT / 'build.rs'),
-    ]
-    for directory in ('src', 'native'):
+def _source_input_files(
+    *, native_only: bool = False
+) -> list[tuple[str, Path]] | None:
+    files: list[tuple[str, Path]] = []
+    if not native_only:
+        files.extend([
+            ('gometry/rust-toolchain.toml', GOMETRY_ROOT / 'rust-toolchain.toml'),
+            ('gometry/Cargo.toml', GOMETRY_ROOT / 'Cargo.toml'),
+            ('gometry/build.rs', GOMETRY_ROOT / 'build.rs'),
+        ])
+    for directory in ('native',) if native_only else ('src', 'native'):
         root = GOMETRY_ROOT / directory
         if not root.is_dir():
             return None
         for path in root.rglob('*'):
-            if '.git' in path.parts or not path.is_file():
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            if _is_hidden_native_path(relative) or not path.is_file():
                 continue
             files.append((f'gometry/{path.relative_to(GOMETRY_ROOT)}', path))
     files.sort(key=lambda item: item[0])
+    return files
+
+
+def _digest_source_input_files(
+    files: list[tuple[str, Path]] | None,
+) -> str | None:
+    if files is None:
+        return None
     digest = hashlib.sha256()
     for name, path in files:
         try:
@@ -109,6 +132,16 @@ def _source_inputs_digest() -> str | None:
         digest.update(payload)
         digest.update(b'\0')
     return digest.hexdigest()
+
+
+def _source_inputs_digest() -> str | None:
+    """Digest inputs preserved byte-for-byte between checkout and sdist builds."""
+    return _digest_source_input_files(_source_input_files())
+
+
+def _native_source_inputs_digest() -> str | None:
+    """Digest native source inputs preserved byte-for-byte in the sdist."""
+    return _digest_source_input_files(_source_input_files(native_only=True))
 
 
 def _uv_lock_identity() -> dict[str, Any]:
@@ -346,13 +379,19 @@ def _rustc_host_target() -> str | None:
 
 
 def _build_info_failures(
-    build_info: Any, source_inputs_sha256: str | None, rustc_host_target: str | None
+    build_info: Any,
+    source_inputs_sha256: str | None,
+    rustc_host_target: str | None,
+    native_source_inputs_sha256: str | None = None,
 ) -> list[str]:
     if not isinstance(build_info, dict):
         return ['loaded gometry extension has no private build-info record']
     missing = sorted(BUILD_INFO_KEYS - build_info.keys())
     if missing:
         return ['gometry extension build-info is missing: ' + ', '.join(missing)]
+    extra = sorted(build_info.keys() - BUILD_INFO_KEYS)
+    if extra:
+        return ['gometry extension build-info has unexpected fields: ' + ', '.join(extra)]
     failures: list[str] = []
     if build_info['schema_version'] != BUILD_INFO_SCHEMA_VERSION:
         failures.append(
@@ -371,6 +410,22 @@ def _build_info_failures(
             'loaded gometry extension is stale: embedded source-input identity '
             f'{build_info["source_inputs_sha256"]!r} != current {source_inputs_sha256!r}'
         )
+    if build_info['native_source_inputs_format'] != SOURCE_INPUTS_FORMAT:
+        failures.append(
+            'gometry extension uses an unsupported native source-input identity format: '
+            f'{build_info["native_source_inputs_format"]!r}'
+        )
+    if not isinstance(build_info['native_source_inputs_sha256'], str):
+        failures.append('gometry extension native source-input digest is malformed')
+    elif (
+        native_source_inputs_sha256 is not None
+        and build_info['native_source_inputs_sha256'] != native_source_inputs_sha256
+    ):
+        failures.append(
+            'loaded gometry extension has a stale native source-input identity: '
+            f'{build_info["native_source_inputs_sha256"]!r} != '
+            f'current {native_source_inputs_sha256!r}'
+        )
     if build_info['profile_family'] != 'release':
         failures.append(
             'loaded gometry extension is not a release-family build: '
@@ -381,8 +436,6 @@ def _build_info_failures(
             'loaded gometry extension has unexpected optimization level: '
             f'{build_info["opt_level"]!r}'
         )
-    if not isinstance(build_info['debug'], bool):
-        failures.append('gometry extension debug-info flag is malformed')
     if build_info['debug_assertions'] is not False:
         failures.append('loaded gometry extension has debug assertions enabled')
     if rustc_host_target is None:
@@ -394,6 +447,8 @@ def _build_info_failures(
         )
     if not isinstance(build_info['target_features'], str):
         failures.append('gometry extension target features are malformed')
+    if not isinstance(build_info['target_arch'], str) or not build_info['target_arch']:
+        failures.append('gometry extension target architecture is malformed')
     return failures
 
 
@@ -913,6 +968,7 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
             extension.get('build_info'),
             metadata['source_inputs_sha256'],
             rustc_host_target,
+            _native_source_inputs_digest(),
         )
     )
     non_performance = {

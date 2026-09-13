@@ -21,7 +21,9 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -63,10 +65,21 @@ H3_GIT_REV = '2b5bde491449c776cb9c1ae305a5f826f6d8e968'
 H3_SOURCE = f'git+https://github.com/Zaczero/h3o.git?rev={H3_GIT_REV}#{H3_GIT_REV}'
 REGISTRY_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
 MATURIN_VERSION = '1.14.1'
+RELEASE_PROFILE = 'release-dist'
+RELEASE_MATURIN_ARGS = f'--locked --profile {RELEASE_PROFILE}'
+SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v4'
+BUILD_INFO_SCHEMA_VERSION = 3
 SOURCE_MANIFEST_NAME = 'gometry-source-manifest.json'
 RUNNER_RECEIPT_NAME = 'gometry-wheel-receipt.json'
 RELEASE_MANIFEST_NAME = 'gometry-release-manifest.json'
 SMOKE_GRID_ENV = 'GOMETRY_SMOKE_GRID'
+SMOKE_EXPECTED_SOURCE_INPUTS_ENV = 'GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256'
+SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_ENV = (
+    'GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256'
+)
+SMOKE_EXPECTED_VERSION_ENV = 'GOMETRY_SMOKE_EXPECTED_VERSION'
+SMOKE_EXPECTED_TARGET_ENV = 'GOMETRY_SMOKE_EXPECTED_TARGET'
+SMOKE_EXPECTED_ARCHITECTURE_ENV = 'GOMETRY_SMOKE_EXPECTED_ARCHITECTURE'
 TEXT_SUFFIXES = frozenset({
     '.json',
     '.lock',
@@ -90,15 +103,21 @@ NON_BUILD_PATH_PREFIXES = ('/tmp/gometry-crs-',)  # noqa: S108
 SOURCE_TOOL_MEMBERS = frozenset({'tools/wheel_smoke.py'})
 IDENTIFIER = re.compile(r'^(?P<python>[A-Za-z0-9]+)-(?P<platform>.+)$')
 HEX_DIGEST = re.compile(r'^[0-9a-f]{64}$')
-STANDALONE_MATURIN_OMISSIONS = frozenset({
-    'gometry/native/libtiff-sys/libtiff/.clang-format',
-    'gometry/native/libtiff-sys/libtiff/.git-blame-ignore-revs',
-    'gometry/native/libtiff-sys/libtiff/.gitattributes',
-    'gometry/native/libtiff-sys/libtiff/.gitignore',
-    'gometry/native/libtiff-sys/libtiff/.gitlab-ci.yml',
-    'gometry/native/libtiff-sys/libtiff/.pre-commit-config.yaml',
-    'gometry/native/libtiff-sys/libtiff/doc/_static/.gitignore',
-})
+RUNNER_TARGETS = {
+    'ubuntu-latest': 'x86_64-unknown-linux-gnu',
+    'ubuntu-24.04-arm': 'aarch64-unknown-linux-gnu',
+    'windows-latest': 'x86_64-pc-windows-msvc',
+    'windows-11-arm': 'aarch64-pc-windows-msvc',
+    'macos-15-intel': 'x86_64-apple-darwin',
+    'macos-15': 'aarch64-apple-darwin',
+}
+RELEASE_ENV_VARS = (
+    'GOMETRY_RELEASE_TARGET',
+    'GOMETRY_RELEASE_TARGET_POLICY',
+    'GOMETRY_RELEASE_RUSTFLAGS',
+    'GOMETRY_RELEASE_CFLAGS',
+    'GOMETRY_RELEASE_CXXFLAGS',
+)
 
 
 def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
@@ -175,10 +194,23 @@ def _git_revision() -> str:
     return result.stdout.strip()
 
 
-def _tool_version(command: list[str]) -> str:
+def _source_date_epoch() -> str | None:
+    result = subprocess.run(
+        ['git', 'show', '-s', '--format=%ct', 'HEAD'],
+        cwd=MONOREPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value.isdigit() else None
+
+
+def _tool_version(command: list[str], *, env: Mapping[str, str] | None = None) -> str:
     result = subprocess.run(
         command,
         cwd=ROOT,
+        env=env,
         check=False,
         capture_output=True,
         text=True,
@@ -186,6 +218,231 @@ def _tool_version(command: list[str]) -> str:
     if result.returncode:
         return ''
     return result.stdout.strip().splitlines()[0] if result.stdout.strip() else ''
+
+
+def _package_toolchain_channel(root: Path = ROOT) -> str:
+    path = root / 'rust-toolchain.toml'
+    try:
+        value = tomllib.loads(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise AssertionError(
+            f'cannot read package Rust toolchain {path}: {error}'
+        ) from error
+    toolchain = value.get('toolchain')
+    channel = toolchain.get('channel') if isinstance(toolchain, dict) else None
+    if not isinstance(channel, str) or not channel:
+        raise AssertionError(f'package Rust toolchain has no channel: {path}')
+    return channel
+
+
+def _target_architecture(target: str) -> str:
+    architecture = target.split('-', 1)[0].lower()
+    if architecture in {'x86_64', 'amd64'}:
+        return 'x86_64'
+    if architecture in {'aarch64', 'arm64'}:
+        return 'arm64'
+    return architecture
+
+
+def release_target_policy(target: str) -> dict[str, Any]:
+    """Return the release compiler policy for one Rust target triple.
+
+    Rust's target-cpu is the authoritative x86 baseline. Native compilers use
+    the equivalent generic ``-march`` spelling where that is meaningful;
+    MSVC's x64 default and every non-x86 target retain the compiler default.
+    """
+    if (
+        not isinstance(target, str)
+        or not target
+        or '-' not in target
+        or '/' in target
+        or '\\' in target
+    ):
+        raise AssertionError(f'invalid Rust target triple: {target!r}')
+    architecture = _target_architecture(target)
+    rustflags: list[str] = []
+    cflags: list[str] = []
+    cxxflags: list[str] = []
+    if architecture == 'x86_64':
+        rustflags = ['-C', 'target-cpu=x86-64']
+        if not target.endswith('-msvc'):
+            cflags = ['-march=x86-64']
+            cxxflags = ['-march=x86-64']
+            target_policy = 'generic-x86-64'
+        else:
+            target_policy = 'compiler-default-x86-64'
+    elif architecture == 'arm64':
+        target_policy = 'compiler-default-arm64'
+    else:
+        target_policy = f'compiler-default-{architecture}'
+    return {
+        'target': target,
+        'architecture': architecture,
+        'target_policy': target_policy,
+        'rustflags': rustflags,
+        'cflags': cflags,
+        'cxxflags': cxxflags,
+    }
+
+
+def _flag_text(flags: Sequence[str]) -> str:
+    return shlex.join(list(flags))
+
+
+def _effective_release_policy(target: str | None = None) -> dict[str, Any]:
+    present = [name for name in RELEASE_ENV_VARS if name in os.environ]
+    if present and len(present) != len(RELEASE_ENV_VARS):
+        missing = sorted(set(RELEASE_ENV_VARS) - set(present))
+        raise AssertionError(
+            'release identity environment is partial; missing ' + ', '.join(missing)
+        )
+    selected = (
+        target
+        or os.environ.get('GOMETRY_RELEASE_TARGET', '').strip()
+        or _rust_target_triple()
+    )
+    policy = release_target_policy(selected)
+    observed = {
+        'target': os.environ.get('GOMETRY_RELEASE_TARGET'),
+        'target_policy': os.environ.get('GOMETRY_RELEASE_TARGET_POLICY'),
+        'rustflags': os.environ.get('GOMETRY_RELEASE_RUSTFLAGS'),
+        'cflags': os.environ.get('GOMETRY_RELEASE_CFLAGS'),
+        'cxxflags': os.environ.get('GOMETRY_RELEASE_CXXFLAGS'),
+    }
+    unsuffixed = {
+        'cflags': os.environ.get('CFLAGS'),
+        'cxxflags': os.environ.get('CXXFLAGS'),
+    }
+    expected_flags = {
+        key: _flag_text(policy[key]) for key in ('rustflags', 'cflags', 'cxxflags')
+    }
+    if observed['target'] is not None and observed['target'] != policy['target']:
+        raise AssertionError(
+            f'GOMETRY_RELEASE_TARGET disagrees with target policy: '
+            f'{observed["target"]!r} != {policy["target"]!r}'
+        )
+    if (
+        observed['target_policy'] is not None
+        and observed['target_policy'] != policy['target_policy']
+    ):
+        raise AssertionError(
+            'GOMETRY_RELEASE_TARGET_POLICY disagrees with target policy: '
+            f'{observed["target_policy"]!r} != {policy["target_policy"]!r}'
+        )
+    for key, expected in expected_flags.items():
+        value = observed[key]
+        if value is not None and value != expected:
+            raise AssertionError(
+                f'GOMETRY_RELEASE_{key.upper()} disagrees with target policy: '
+                f'{value!r} != {expected!r}'
+            )
+    for key, value in unsuffixed.items():
+        expected = expected_flags[key]
+        if value is not None and value != expected:
+            raise AssertionError(
+                f'{key.upper()} disagrees with target policy: '
+                f'{value!r} != {expected!r}'
+            )
+    target_suffix = policy['target'].replace('-', '_')
+    for key, prefix in (('cflags', 'CFLAGS'), ('cxxflags', 'CXXFLAGS')):
+        value = os.environ.get(f'{prefix}_{target_suffix}')
+        if value is not None and value != expected_flags[key]:
+            raise AssertionError(
+                f'{prefix}_{target_suffix} disagrees with target policy: '
+                f'{value!r} != {expected_flags[key]!r}'
+            )
+    return policy
+
+
+def _is_hidden_native_path(relative: str) -> bool:
+    parts = PurePosixPath(relative).parts
+    native_index = next(
+        (
+            index
+            for index in range(len(parts) - 1)
+            if parts[index:index + 2] == ('gometry', 'native')
+        ),
+        None,
+    )
+    return (
+        native_index is not None
+        and any(part.startswith('.') for part in parts[native_index + 2:])
+    )
+
+
+def _has_hidden_component(relative: str) -> bool:
+    return any(part.startswith('.') for part in PurePosixPath(relative).parts)
+
+
+def _source_input_records(
+    root: Path,
+) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]]]:
+    fixed = [
+        ('gometry/rust-toolchain.toml', root / 'rust-toolchain.toml'),
+        ('gometry/Cargo.toml', root / 'Cargo.toml'),
+        ('gometry/build.rs', root / 'build.rs'),
+    ]
+    source_files: list[tuple[str, Path]] = []
+    _collect_source_files(root / 'src', 'gometry/src', source_files)
+    native_files: list[tuple[str, Path]] = []
+    _collect_source_files(
+        root / 'native',
+        'gometry/native',
+        native_files,
+        skip_hidden_native=True,
+    )
+    return [*fixed, *source_files, *native_files], native_files
+
+
+def _collect_source_files(
+    root: Path,
+    logical_root: str,
+    files: list[tuple[str, Path]],
+    *,
+    skip_hidden_native: bool = False,
+) -> None:
+    try:
+        entries = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError as error:
+        raise AssertionError(
+            f'cannot read build input directory {root}: {error}'
+        ) from error
+    for path in entries:
+        logical = f'{logical_root}/{path.name}'
+        if skip_hidden_native and _is_hidden_native_path(logical):
+            continue
+        if path.is_dir():
+            _collect_source_files(
+                path,
+                logical,
+                files,
+                skip_hidden_native=skip_hidden_native,
+            )
+        elif path.is_file():
+            files.append((logical, path))
+
+
+def _digest_source_files(files: Sequence[tuple[str, Path]]) -> str:
+    digest = hashlib.sha256()
+    for logical, path in sorted(files, key=lambda item: item[0]):
+        try:
+            payload = path.read_bytes()
+        except OSError as error:
+            raise AssertionError(f'cannot read build input {path}: {error}') from error
+        digest.update(logical.encode('utf-8'))
+        digest.update(b'\0')
+        digest.update(payload)
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def source_input_digests(root: Path = ROOT) -> dict[str, str]:
+    """Match the source and native digests emitted by ``gometry/build.rs``."""
+    files, native_files = _source_input_records(root)
+    return {
+        'source_inputs_sha256': _digest_source_files(files),
+        'native_source_inputs_sha256': _digest_source_files(native_files),
+    }
 
 
 def _rust_target_triple() -> str:
@@ -216,19 +473,72 @@ def _rust_target_triple() -> str:
     return host
 
 
-def release_build_env() -> dict[str, str]:
+def release_build_env(*, target: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.pop('RUSTC_WRAPPER', None)
     env.pop('NIX_LDFLAGS', None)
-    # The developer shell may select `dev` through this variable. The published
-    # wheel uses the distribution profile instead of inheriting that override
-    # or falling through to maturin's unstripped local `release` profile.
-    env['MATURIN_PEP517_ARGS'] = '--locked --profile release-dist'
+    # Cargo's environment flags have precedence over target-specific config.
+    # Replace, rather than append to, inherited values so a developer's
+    # x86-64-v2 setting cannot enter a distribution build and arm64 cannot
+    # inherit an x86 setting from the host.
+    for variable in (
+        'RUSTFLAGS',
+        'CARGO_ENCODED_RUSTFLAGS',
+        'CFLAGS',
+        'CXXFLAGS',
+        'CPPFLAGS',
+        'TARGET_CFLAGS',
+        'TARGET_CXXFLAGS',
+        'HOST_CFLAGS',
+        'HOST_CXXFLAGS',
+        'CMAKE_C_FLAGS',
+        'CMAKE_CXX_FLAGS',
+        'CMAKE_C_FLAGS_RELEASE',
+        'CMAKE_CXX_FLAGS_RELEASE',
+        'CMAKE_ARGS',
+    ):
+        env.pop(variable, None)
+    env.pop('GOMETRY_RELEASE_SOURCE_COMMIT', None)
+    env.pop('GOMETRY_RELEASE_PROFILE', None)
+    for variable in list(env):
+        if variable.startswith(('CFLAGS_', 'CXXFLAGS_')):
+            env.pop(variable)
+    # The developer shell may select `dev` through MATURIN_PEP517_ARGS. The
+    # published wheel uses the distribution profile instead of inheriting that
+    # override or falling through to maturin's unstripped local `release` profile.
+    env['MATURIN_PEP517_ARGS'] = RELEASE_MATURIN_ARGS
+    if source_date_epoch := _source_date_epoch():
+        env['SOURCE_DATE_EPOCH'] = source_date_epoch
     # Nix's target-specific linker wrapper otherwise injects this workstation's
     # closure paths into ELF RUNPATH. Keep the unsuffixed spelling for older
     # wrappers, and set the spelling consumed by current target wrappers.
     env['NIX_DONT_SET_RPATH'] = '1'
-    target = _rust_target_triple()
+    target = target or _rust_target_triple()
+    policy = release_target_policy(target)
+    env['RUSTUP_TOOLCHAIN'] = _package_toolchain_channel()
+    env['GOMETRY_RELEASE_TARGET'] = policy['target']
+    env['GOMETRY_RELEASE_TARGET_POLICY'] = policy['target_policy']
+    for key, variable, prefix in (
+        ('rustflags', 'GOMETRY_RELEASE_RUSTFLAGS', None),
+        ('cflags', 'GOMETRY_RELEASE_CFLAGS', 'CFLAGS'),
+        ('cxxflags', 'GOMETRY_RELEASE_CXXFLAGS', 'CXXFLAGS'),
+    ):
+        value = _flag_text(policy[key])
+        env[variable] = value
+        if prefix is None:
+            if value:
+                env['RUSTFLAGS'] = value
+            else:
+                env.pop('RUSTFLAGS', None)
+        else:
+            # The native build owners apply this value to CMake when the
+            # unsuffixed variable is absent. The target-specific spelling is
+            # consumed by cc-based dependencies such as zlib and SQLite.
+            env.pop(prefix, None)
+            target_variable = f'{prefix}_{target.replace("-", "_")}'
+            env.pop(target_variable, None)
+            if value:
+                env[target_variable] = value
     env[f'NIX_DONT_SET_RPATH_{target.replace("-", "_")}'] = '1'
     env.setdefault('CARGO_TARGET_DIR', str(ROOT / 'target'))
     return env
@@ -255,7 +565,7 @@ def _run_maturin_sdist(out_dir: Path, *, cwd: Path = ROOT) -> None:
 def build_wheel_from_sdist(sdist: Path, out_dir: Path, *, env: dict[str, str]) -> Path:
     sdist_version = inspect_sdist(
         sdist,
-        expected_libtiff=final_libtiff_source_members(),
+        expected_libtiff=libtiff_source_members(),
     )
     evidence = verify_sdist_dependency_sources(sdist, require_normalized=True)
     if evidence['preimage_lock_sha256'] != evidence['normalized_lock_sha256']:
@@ -358,20 +668,27 @@ def _source_tree_files(root: Path) -> dict[str, bytes]:
 def _compare_restage_trees(bootstrap: Path, final: Path) -> None:
     before = _source_tree_files(bootstrap)
     after = _source_tree_files(final)
+    if admitted_hidden := sorted(
+        relative for relative in after if _is_hidden_native_path(relative)
+    ):
+        raise AssertionError(
+            'maturin restaging admitted hidden native files: '
+            f'{admitted_hidden[:20]}'
+        )
     changed = sorted(
         relative
         for relative in set(before) & set(after)
         if before[relative] != after[relative]
         and relative not in {'Cargo.lock', 'PKG-INFO'}
+        and not _is_hidden_native_path(relative)
     )
     # Maturin's second pass sees the extracted source as a non-git tree and
-    # consequently omits this observed set of submodule dotfiles. They are
-    # packaging metadata, not build inputs; every other source removal/addition
-    # is a restaging defect.
+    # consequently omits hidden submodule metadata. It is not a build input;
+    # every other source removal/addition is a restaging defect.
     removed = sorted(
         relative
         for relative in set(before) - set(after)
-        if relative not in STANDALONE_MATURIN_OMISSIONS
+        if not _is_hidden_native_path(relative)
     )
     added = sorted(set(after) - set(before))
     if changed or removed or added:
@@ -393,13 +710,19 @@ def _source_manifest(
     sdist: Path,
     prepared_hashes: Mapping[str, str],
     evidence: Mapping[str, Any],
+    source_digests: Mapping[str, str],
 ) -> dict[str, Any]:
     required = evidence['required_sources']
+    toolchain_env = release_build_env()
     return {
-        'schema': 1,
+        'schema': 2,
         'kind': 'gometry-source-manifest',
         'package': 'gometry',
         'commit': _git_revision(),
+        'source_inputs_format': SOURCE_INPUTS_FORMAT,
+        'source_inputs_sha256': source_digests['source_inputs_sha256'],
+        'native_source_inputs_format': SOURCE_INPUTS_FORMAT,
+        'native_source_inputs_sha256': source_digests['native_source_inputs_sha256'],
         'prepared_inputs': {
             'identity_sha256': _prepared_input_identity(prepared_hashes),
             'files': dict(sorted(prepared_hashes.items())),
@@ -416,10 +739,11 @@ def _source_manifest(
             'required_sources': required,
         },
         'toolchain': {
+            'channel': _package_toolchain_channel(),
             'maturin': MATURIN_VERSION,
-            'cargo': _tool_version(['cargo', '--version']),
-            'rustc': _tool_version(['rustc', '--version']),
-            'maturin_pep517_args': '--locked --profile release-dist',
+            'cargo': _tool_version(['cargo', '--version'], env=toolchain_env),
+            'rustc': _tool_version(['rustc', '--version'], env=toolchain_env),
+            'maturin_pep517_args': RELEASE_MATURIN_ARGS,
         },
     }
 
@@ -439,13 +763,14 @@ def stage_sdist(out_dir: Path) -> Path:
     try:
         verify_libtiff_checkout()
         prepared_hashes = _prepare_source_outputs()
+        source_digests = source_input_digests()
         with tempfile.TemporaryDirectory(prefix='gometry-sdist-stage-') as temporary:
             temporary_root = Path(temporary)
             bootstrap_dir = temporary_root / 'bootstrap'
             final_dir = temporary_root / 'final'
             _run_maturin_sdist(bootstrap_dir)
             bootstrap = _single_sdist(bootstrap_dir, label='bootstrap')
-            inspect_sdist(bootstrap)
+            inspect_sdist(bootstrap, allow_hidden_native=True)
             with tempfile.TemporaryDirectory(
                 prefix='gometry-sdist-bootstrap-'
             ) as extracted_tmp:
@@ -459,6 +784,12 @@ def stage_sdist(out_dir: Path) -> Path:
                     )
                 root = roots[0]
                 evidence = _verify_extracted_sdist(root, require_normalized=False)
+                if {key: evidence[key] for key in source_digests} != dict(
+                    source_digests
+                ):
+                    raise AssertionError(
+                        'bootstrap sdist source-input identity differs from checkout'
+                    )
                 normalized_lock = evidence['normalized_lock_bytes']
                 if not isinstance(normalized_lock, bytes):
                     raise TypeError('Cargo lock normalization did not return bytes')
@@ -466,7 +797,7 @@ def stage_sdist(out_dir: Path) -> Path:
                 _verify_locked_sdist(root, expected_lock=normalized_lock)
                 _run_maturin_sdist(final_dir, cwd=root)
                 final = _single_sdist(final_dir, label='final')
-                inspect_sdist(final, expected_libtiff=final_libtiff_source_members())
+                inspect_sdist(final, expected_libtiff=libtiff_source_members())
                 with tempfile.TemporaryDirectory(
                     prefix='gometry-sdist-final-'
                 ) as final_tmp:
@@ -492,10 +823,17 @@ def stage_sdist(out_dir: Path) -> Path:
                         raise AssertionError(
                             'final sdist Cargo.lock hash changed during restaging'
                         )
+                    if {key: final_evidence[key] for key in source_digests} != dict(
+                        source_digests
+                    ):
+                        raise AssertionError(
+                            'final sdist source-input identity differs from checkout'
+                        )
                     manifest = _source_manifest(
                         sdist=final,
                         prepared_hashes=prepared_hashes,
                         evidence=evidence,
+                        source_digests=source_digests,
                     )
             destination = out_dir / final.name
             shutil.copyfile(final, destination)
@@ -551,7 +889,9 @@ def _content_leaks(
 
 def native_notice_markers() -> list[tuple[str, str, str]]:
     """Component name, license ID, and full pinned notice text."""
-    spec = importlib.util.spec_from_file_location('gometry_license_generator', LICENSE_SCRIPT)
+    spec = importlib.util.spec_from_file_location(
+        'gometry_license_generator', LICENSE_SCRIPT
+    )
     if spec is None or spec.loader is None:
         raise AssertionError(f'could not load license generator {LICENSE_SCRIPT}')
     generator = importlib.util.module_from_spec(spec)
@@ -561,8 +901,7 @@ def native_notice_markers() -> list[tuple[str, str, str]]:
     except SystemExit as error:
         raise AssertionError(str(error)) from error
     return [
-        (component['name'], component['license'], text)
-        for component, text in entries
+        (component['name'], component['license'], text) for component, text in entries
     ]
 
 
@@ -646,11 +985,23 @@ def verify_libtiff_checkout() -> None:
         )
 
 
-def inspect_sdist(path: Path, *, expected_libtiff: set[str] | None = None) -> str:
+def inspect_sdist(
+    path: Path,
+    *,
+    expected_libtiff: set[str] | None = None,
+    allow_hidden_native: bool = False,
+) -> str:
     with tarfile.open(path) as archive:
         names = archive.getnames()
         if len(names) != len(set(names)):
             raise AssertionError(f'sdist contains duplicate members: {path}')
+        if (
+            not allow_hidden_native
+            and (hidden := sorted(name for name in names if _is_hidden_native_path(name)))
+        ):
+            raise AssertionError(
+                f'sdist contains hidden native metadata files: {hidden[:20]}'
+            )
         text_members: dict[str, str] = {}
         for member in archive.getmembers():
             if not member.isfile() or not _is_text_member(member.name):
@@ -659,7 +1010,12 @@ def inspect_sdist(path: Path, *, expected_libtiff: set[str] | None = None) -> st
             if stream is None:
                 raise AssertionError(f'sdist member could not be read: {member.name}')
             text_members[member.name] = stream.read().decode('utf-8', errors='ignore')
-    inspect_libtiff_sdist_members(names, path, expected_libtiff)
+    inspect_libtiff_sdist_members(
+        names,
+        path,
+        expected_libtiff,
+        allow_hidden_native=allow_hidden_native,
+    )
     root = f'gometry-{path.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
     required = {
         f'{root}/LICENSE-APACHE.md',
@@ -668,6 +1024,7 @@ def inspect_sdist(path: Path, *, expected_libtiff: set[str] | None = None) -> st
         f'{root}/Cargo.lock',
         f'{root}/pyproject.toml',
         f'{root}/rust-toolchain.toml',
+        f'{root}/gometry/rust-toolchain.toml',
         f'{root}/tools/wheel_smoke.py',
         f'{root}/gometry/native/libtiff-sys/libtiff/CMakeLists.txt',
         f'{root}/gometry/native/libtiff-sys/libtiff/libtiff/tif_lzw.c',
@@ -702,6 +1059,22 @@ def inspect_sdist(path: Path, *, expected_libtiff: set[str] | None = None) -> st
         raise AssertionError(
             f'sdist Maturin config duplicates root release policy: {forbidden}'
         )
+    try:
+        package_toolchain = tomllib.loads(
+            text_members[f'{root}/gometry/rust-toolchain.toml']
+        )
+    except tomllib.TOMLDecodeError as error:
+        raise AssertionError('sdist package rust-toolchain.toml is invalid') from error
+    channel = (
+        package_toolchain.get('toolchain', {}).get('channel')
+        if isinstance(package_toolchain.get('toolchain'), dict)
+        else None
+    )
+    if channel != _package_toolchain_channel():
+        raise AssertionError(
+            'sdist package Rust toolchain channel is not the dated release pin: '
+            f'{channel!r}'
+        )
     forbidden_parts = {'site', 'dev', '__pycache__'}
     suspect = [
         name
@@ -726,15 +1099,8 @@ def libtiff_source_members() -> set[str]:
     return {
         path.relative_to(LIBTIFF).as_posix()
         for path in LIBTIFF.rglob('*')
-        if path.is_file() and '.git' not in path.parts
-    }
-
-
-def final_libtiff_source_members() -> set[str]:
-    return libtiff_source_members() - {
-        Path(relative).relative_to('gometry/native/libtiff-sys/libtiff').as_posix()
-        for relative in STANDALONE_MATURIN_OMISSIONS
-        if relative.startswith('gometry/native/libtiff-sys/libtiff/')
+        if path.is_file()
+        and not _has_hidden_component(path.relative_to(LIBTIFF).as_posix())
     }
 
 
@@ -763,7 +1129,11 @@ def _extract_sdist(archive: tarfile.TarFile, destination: Path) -> None:
 
 
 def inspect_libtiff_sdist_members(
-    names: list[str], path: Path, expected: set[str] | None = None
+    names: list[str],
+    path: Path,
+    expected: set[str] | None = None,
+    *,
+    allow_hidden_native: bool = False,
 ) -> None:
     root = f'gometry-{path.name.removeprefix("gometry-").removesuffix(".tar.gz")}'
     prefix = f'{root}/gometry/native/libtiff-sys/libtiff/'
@@ -779,6 +1149,10 @@ def inspect_libtiff_sdist_members(
         if not member or path.is_absolute() or '..' in path.parts:
             raise AssertionError(f'sdist contains invalid libtiff path: {member!r}')
     actual = set(members)
+    if allow_hidden_native:
+        actual = {
+            member for member in actual if not _has_hidden_component(member)
+        }
     expected = libtiff_source_members() if expected is None else expected
     if actual != expected:
         raise AssertionError(
@@ -1000,6 +1374,7 @@ def _verify_extracted_sdist(root: Path, *, require_normalized: bool) -> dict[str
             'sdist Cargo.lock is not normalized: '
             f'{_sha256_bytes(preimage_bytes)} != {_sha256_bytes(normalized_bytes)}'
         )
+    source_digests = source_input_digests(root / 'gometry')
     return {
         'preimage_lock_bytes': preimage_bytes,
         'preimage_lock_sha256': _sha256_bytes(preimage_bytes),
@@ -1007,6 +1382,7 @@ def _verify_extracted_sdist(root: Path, *, require_normalized: bool) -> dict[str
         'normalized_lock_sha256': _sha256_bytes(normalized_bytes),
         'metadata': metadata,
         'required_sources': required_sources,
+        **source_digests,
     }
 
 
@@ -1021,11 +1397,13 @@ def _verify_locked_sdist(root: Path, *, expected_lock: bytes) -> dict[str, Any]:
     after = lock_path.read_bytes()
     if after != before:
         raise AssertionError('cargo metadata --locked mutated Cargo.lock')
+    source_digests = source_input_digests(root / 'gometry')
     return {
         'normalized_lock_bytes': after,
         'normalized_lock_sha256': _sha256_bytes(after),
         'metadata': metadata,
         'required_sources': _required_source_records(metadata, root=root),
+        **source_digests,
     }
 
 
@@ -1051,6 +1429,230 @@ def verify_sdist_dependency_sources(
             **evidence,
             'locked_metadata': locked['metadata'],
         }
+
+
+def _unpack_native(
+    fmt: str, payload: bytes, offset: int, artifact: Path
+) -> tuple[Any, ...]:
+    size = struct.calcsize(fmt)
+    if offset < 0 or offset + size > len(payload):
+        raise AssertionError(
+            f'{artifact} native extension has a truncated inspectable header'
+        )
+    return struct.unpack_from(fmt, payload, offset)
+
+
+def _native_name(payload: bytes) -> str:
+    return payload.split(b'\0', 1)[0].decode('ascii', errors='replace')
+
+
+def _elf_sections(payload: bytes, artifact: Path) -> list[str]:
+    if len(payload) < 16:
+        raise AssertionError(f'{artifact} native ELF header is truncated')
+    elf_class = payload[4]
+    data_encoding = payload[5]
+    byte_order = {
+        (1, 1): '<',
+        (1, 2): '>',
+        (2, 1): '<',
+        (2, 2): '>',
+    }.get((elf_class, data_encoding))
+    if byte_order is None:
+        raise AssertionError(f'{artifact} native ELF header is unsupported')
+    if elf_class == 2:
+        section_offset = _unpack_native(f'{byte_order}Q', payload, 40, artifact)[0]
+        section_entry_size = _unpack_native(f'{byte_order}H', payload, 58, artifact)[0]
+        section_count = _unpack_native(f'{byte_order}H', payload, 60, artifact)[0]
+        section_strings = _unpack_native(f'{byte_order}H', payload, 62, artifact)[0]
+        section_format = f'{byte_order}IIQQQQIIQQ'
+    else:
+        section_offset = _unpack_native(f'{byte_order}I', payload, 32, artifact)[0]
+        section_entry_size = _unpack_native(f'{byte_order}H', payload, 46, artifact)[0]
+        section_count = _unpack_native(f'{byte_order}H', payload, 48, artifact)[0]
+        section_strings = _unpack_native(f'{byte_order}H', payload, 50, artifact)[0]
+        section_format = f'{byte_order}IIIIIIIIII'
+    minimum_entry_size = struct.calcsize(section_format)
+    if section_offset == 0 or section_entry_size < minimum_entry_size:
+        raise AssertionError(
+            f'{artifact} native ELF has no inspectable section table'
+        )
+    first = _unpack_native(
+        section_format,
+        payload,
+        section_offset,
+        artifact,
+    )
+    if section_count == 0:
+        section_count = first[5]
+    if section_strings == 0xFFFF:
+        section_strings = first[6]
+    if section_strings >= section_count:
+        raise AssertionError(f'{artifact} native ELF section strings are invalid')
+    section_headers = [
+        _unpack_native(
+            section_format,
+            payload,
+            section_offset + index * section_entry_size,
+            artifact,
+        )
+        for index in range(section_count)
+    ]
+    string_header = section_headers[section_strings]
+    string_offset = string_header[4]
+    string_size = string_header[5]
+    if string_offset + string_size > len(payload):
+        raise AssertionError(f'{artifact} native ELF strings are truncated')
+    strings = payload[string_offset:string_offset + string_size]
+    names: list[str] = []
+    for header in section_headers:
+        name_offset = header[0]
+        if name_offset >= len(strings):
+            raise AssertionError(f'{artifact} native ELF section name is invalid')
+        names.append(_native_name(strings[name_offset:]))
+    return names
+
+
+def _macho_sections(payload: bytes, artifact: Path) -> list[str]:
+    magic = payload[:4]
+    thin = {
+        b'\xce\xfa\xed\xfe': ('<', 32),
+        b'\xfe\xed\xfa\xce': ('>', 32),
+        b'\xcf\xfa\xed\xfe': ('<', 64),
+        b'\xfe\xed\xfa\xcf': ('>', 64),
+    }
+    if magic in thin:
+        endian, bits = thin[magic]
+        header_size = 32 if bits == 64 else 28
+        command_count = _unpack_native(f'{endian}I', payload, 16, artifact)[0]
+        command_size = _unpack_native(f'{endian}I', payload, 20, artifact)[0]
+        command_end = header_size + command_size
+        if command_end > len(payload):
+            raise AssertionError(f'{artifact} native Mach-O commands are truncated')
+        sections: list[str] = []
+        cursor = header_size
+        segment_command = 0x19 if bits == 64 else 0x1
+        integer = f'{endian}I'
+        for _ in range(command_count):
+            command, size = _unpack_native(f'{endian}II', payload, cursor, artifact)
+            if size < 8 or cursor + size > command_end:
+                raise AssertionError(f'{artifact} native Mach-O command is invalid')
+            if command == segment_command:
+                segment_name = _native_name(payload[cursor + 8:cursor + 24])
+                section_count_offset = cursor + (64 if bits == 64 else 48)
+                section_start = cursor + (72 if bits == 64 else 56)
+                section_size = 80 if bits == 64 else 68
+                section_count = _unpack_native(
+                    integer, payload, section_count_offset, artifact
+                )[0]
+                if segment_name == '__DWARF':
+                    sections.append('__DWARF')
+                for index in range(section_count):
+                    section_offset = section_start + index * section_size
+                    if section_offset + section_size > cursor + size:
+                        raise AssertionError(
+                            f'{artifact} native Mach-O sections are truncated'
+                        )
+                    sections.append(_native_name(payload[section_offset:section_offset + 16]))
+            cursor += size
+        return sections
+    fat = {
+        b'\xca\xfe\xba\xbe': ('>', 20),
+        b'\xbe\xba\xfe\xca': ('<', 20),
+        b'\xca\xfe\xba\xbf': ('>', 32),
+        b'\xbf\xba\xfe\xca': ('<', 32),
+    }
+    if magic not in fat:
+        raise AssertionError(f'{artifact} native Mach-O header is unsupported')
+    endian, entry_size = fat[magic]
+    integer = f'{endian}I'
+    archive_count = _unpack_native(integer, payload, 4, artifact)[0]
+    sections = []
+    for index in range(archive_count):
+        entry_offset = 8 + index * entry_size
+        if entry_size == 20:
+            slice_offset, slice_size = _unpack_native(
+                f'{endian}IIIII', payload, entry_offset, artifact
+            )[2:4]
+        else:
+            slice_offset, slice_size = _unpack_native(
+                f'{endian}IIQQII', payload, entry_offset, artifact
+            )[2:4]
+        if slice_offset + slice_size > len(payload):
+            raise AssertionError(f'{artifact} native Mach-O slice is truncated')
+        sections.extend(
+            _macho_sections(payload[slice_offset:slice_offset + slice_size], artifact)
+        )
+    return sections
+
+
+def _pe_sections(payload: bytes, artifact: Path) -> list[str]:
+    if len(payload) < 64:
+        raise AssertionError(f'{artifact} native PE header is truncated')
+    signature_offset = _unpack_native('<I', payload, 0x3C, artifact)[0]
+    signature = _unpack_native('4s', payload, signature_offset, artifact)[0]
+    if signature != b'PE\0\0':
+        raise AssertionError(f'{artifact} native PE signature is invalid')
+    coff = signature_offset + 4
+    section_count = _unpack_native('<H', payload, coff + 2, artifact)[0]
+    optional_size = _unpack_native('<H', payload, coff + 16, artifact)[0]
+    optional = coff + 20
+    optional_magic = _unpack_native('<H', payload, optional, artifact)[0]
+    directory_offset = {0x10B: 96, 0x20B: 112}.get(optional_magic)
+    if directory_offset is None:
+        raise AssertionError(f'{artifact} native PE optional header is unsupported')
+    debug_directory = _unpack_native(
+        '<II',
+        payload,
+        optional + directory_offset + 6 * 8,
+        artifact,
+    )
+    if debug_directory[1]:
+        raise AssertionError(f'{artifact} native extension contains PE debug data')
+    sections_start = optional + optional_size
+    return [
+        _native_name(
+            _unpack_native('8s', payload, sections_start + index * 40, artifact)[0]
+        )
+        for index in range(section_count)
+    ]
+
+
+def _verify_native_debug_sections(payload: bytes, artifact: Path) -> None:
+    if payload.startswith(b'\x7fELF'):
+        sections = _elf_sections(payload, artifact)
+        format_name = 'ELF'
+        debug = (
+            lambda name: name.startswith(('.debug', '.zdebug'))
+            or name in {'.gnu_debugdata', '.gnu_debuglink', '.gdb_index'}
+        )
+    elif payload[:4] in {
+        b'\xce\xfa\xed\xfe',
+        b'\xfe\xed\xfa\xce',
+        b'\xcf\xfa\xed\xfe',
+        b'\xfe\xed\xfa\xcf',
+        b'\xca\xfe\xba\xbe',
+        b'\xbe\xba\xfe\xca',
+        b'\xca\xfe\xba\xbf',
+        b'\xbf\xba\xfe\xca',
+    }:
+        sections = _macho_sections(payload, artifact)
+        format_name = 'Mach-O'
+        debug = lambda name: name == '__DWARF' or name.startswith(
+            ('__debug', '__zdebug')
+        )
+    elif payload.startswith(b'MZ'):
+        sections = _pe_sections(payload, artifact)
+        format_name = 'PE'
+        debug = lambda name: name.startswith('.debug')
+    else:
+        raise AssertionError(
+            f'{artifact} native extension format has no inspectable debug sections'
+        )
+    if forbidden := sorted(name for name in sections if debug(name)):
+        raise AssertionError(
+            f'{artifact} native {format_name} extension contains debug sections: '
+            f'{forbidden[:20]}'
+        )
 
 
 def inspect_wheel(path: Path) -> str:
@@ -1089,6 +1691,10 @@ def inspect_wheel(path: Path) -> str:
     )
     if not has_extension:
         raise AssertionError('wheel does not contain gometry/_lib native extension')
+    # Cargo cannot identify release-dist from PROFILE; the native artifact's
+    # absence of debug sections is the inspectable publication property.
+    for name, payload in binary_members.items():
+        _verify_native_debug_sections(payload, Path(f'{path}!{name}'))
     if missing:
         raise AssertionError(f'wheel missing required files: {missing}')
     if missing_licenses := sorted(required_licenses - bundled_licenses):
@@ -1104,6 +1710,12 @@ def inspect_wheel(path: Path) -> str:
         raise AssertionError(
             f'wheel contains generated Python bytecode: {generated_members[:20]}'
         )
+    if any(
+        forbidden in payload
+        for payload in binary_members.values()
+        for forbidden in (b'x86-64-v2', b'x86_64-v2')
+    ):
+        raise AssertionError('wheel native extension contains an x86-64-v2 marker')
     if leaks := _content_leaks(text_members, binary_members):
         raise AssertionError(f'wheel contents leak absolute build paths: {leaks}')
     if pth_files and not package:
@@ -1139,6 +1751,51 @@ def _wheel_tags(path: Path) -> list[str]:
     if not tags:
         raise AssertionError(f'wheel has no WHEEL Tag records: {path}')
     return tags
+
+
+def _platform_architecture(platform_tag: str) -> str:
+    normalized = platform_tag.replace('-', '_').lower()
+    if normalized.endswith(('_x86_64', '_amd64')):
+        return 'x86_64'
+    if normalized.endswith(('_aarch64', '_arm64')):
+        return 'arm64'
+    if normalized.endswith(('_i686', '_x86')):
+        return 'x86'
+    return normalized.rsplit('_', 1)[-1]
+
+
+def _wheel_architecture(path: Path) -> str:
+    architectures = {
+        _platform_architecture(tag.split('-', 2)[2])
+        for tag in _wheel_tags(path)
+        if len(tag.split('-', 2)) == 3
+    }
+    if len(architectures) != 1:
+        raise AssertionError(
+            f'wheel has no unique architecture identity: {path}: {architectures}'
+        )
+    return next(iter(architectures))
+
+
+def _wheel_target_compatible(path: Path, target: str) -> bool:
+    target = target.lower()
+    for tag in _wheel_tags(path):
+        parts = tag.split('-', 2)
+        if len(parts) != 3:
+            continue
+        platform_tag = parts[2].replace('-', '_').lower()
+        if platform_tag.startswith(('manylinux_', 'musllinux_')):
+            if '-linux-' not in target:
+                return False
+            if platform_tag.startswith('musllinux_') != ('-linux-musl' in target):
+                return False
+        elif platform_tag.startswith('macosx_'):
+            if not target.endswith('-apple-darwin'):
+                return False
+        elif platform_tag.startswith('win_'):
+            if '-windows-' not in target:
+                return False
+    return True
 
 
 def _platform_matches(identifier: str, wheel_platform: str) -> bool:
@@ -1225,6 +1882,76 @@ def _match_wheels_to_identifiers(
     return {identifier: values[0] for identifier, values in matches.items()}
 
 
+def _receipt_build_identity(wheels: Sequence[Path]) -> dict[str, Any]:
+    policy = _effective_release_policy()
+    for wheel in wheels:
+        actual_architecture = _wheel_architecture(wheel)
+        if actual_architecture != policy['architecture']:
+            raise AssertionError(
+                f'wheel architecture does not match release target: '
+                f'{wheel.name}: {actual_architecture} != {policy["architecture"]}'
+            )
+        if not _wheel_target_compatible(wheel, policy['target']):
+            raise AssertionError(
+                f'wheel target does not match release target: '
+                f'{wheel.name}: {policy["target"]}'
+            )
+    return {
+        'target': policy['target'],
+        'architecture': policy['architecture'],
+        'target_policy': policy['target_policy'],
+        'rustflags': list(policy['rustflags']),
+        'cflags': list(policy['cflags']),
+        'cxxflags': list(policy['cxxflags']),
+    }
+
+
+def _validate_build_identity(
+    value: Any, *, field: str = 'build', strict: bool = False
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f'{field} identity is not an object')
+    expected_fields = {
+        'target',
+        'architecture',
+        'target_policy',
+        'rustflags',
+        'cflags',
+        'cxxflags',
+    }
+    if strict and set(value) != expected_fields:
+        raise AssertionError(f'{field} identity fields are not exact')
+    target = value.get('target')
+    if not isinstance(target, str):
+        raise TypeError(f'{field}.target is malformed')
+    expected = release_target_policy(target)
+    if (
+        value.get('architecture') != expected['architecture']
+        or value.get('target_policy') != expected['target_policy']
+        or value.get('rustflags') != expected['rustflags']
+        or value.get('cflags') != expected['cflags']
+        or value.get('cxxflags') != expected['cxxflags']
+    ):
+        raise AssertionError(f'{field} release flags are not target policy')
+    return {
+        'target': expected['target'],
+        'architecture': expected['architecture'],
+        'target_policy': expected['target_policy'],
+        'rustflags': list(expected['rustflags']),
+        'cflags': list(expected['cflags']),
+        'cxxflags': list(expected['cxxflags']),
+    }
+
+
+def _validate_runner_target(runner: str, build: Mapping[str, Any]) -> None:
+    expected = RUNNER_TARGETS.get(runner)
+    if expected is not None and build['target'] != expected:
+        raise AssertionError(
+            f'runner {runner!r} has an unexpected release target: '
+            f'{build["target"]!r} != {expected!r}'
+        )
+
+
 def _validate_manifest_strings(value: Any, *, field: str = 'manifest') -> None:
     if isinstance(value, str):
         if ABSOLUTE_BUILD_PATH.search(value):
@@ -1250,6 +1977,105 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _validate_source_identity(value: Any, *, field: str = 'source') -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f'{field} identity is not an object')
+    expected_fields = {
+        'commit',
+        'filename',
+        'sha256',
+        'version',
+        'source_inputs_format',
+        'source_inputs_sha256',
+        'native_source_inputs_format',
+        'native_source_inputs_sha256',
+        'cargo',
+        'toolchain',
+    }
+    if set(value) != expected_fields:
+        raise AssertionError(
+            f'{field} identity fields are not exact: '
+            f'{sorted(set(value) ^ expected_fields)}'
+        )
+    commit = value.get('commit')
+    if not isinstance(commit, str) or re.fullmatch(r'[0-9a-f]{40,64}', commit) is None:
+        raise AssertionError(f'{field} identity has no reviewed source commit')
+    filename = value.get('filename')
+    digest = value.get('sha256')
+    version = value.get('version')
+    if (
+        not isinstance(filename, str)
+        or Path(filename).name != filename
+        or not filename.endswith('.tar.gz')
+        or not isinstance(digest, str)
+        or HEX_DIGEST.fullmatch(digest) is None
+        or not isinstance(version, str)
+        or not version
+    ):
+        raise AssertionError(f'{field} sdist identity is malformed')
+    for key in (
+        'source_inputs_sha256',
+        'native_source_inputs_sha256',
+    ):
+        value_digest = value.get(key)
+        if (
+            not isinstance(value_digest, str)
+            or HEX_DIGEST.fullmatch(value_digest) is None
+        ):
+            raise AssertionError(f'{field} has an invalid {key}')
+    if value.get('source_inputs_format') != SOURCE_INPUTS_FORMAT:
+        raise AssertionError(f'{field} has an unsupported source-input format')
+    if value.get('native_source_inputs_format') != SOURCE_INPUTS_FORMAT:
+        raise AssertionError(f'{field} has an unsupported native source-input format')
+    cargo = value.get('cargo')
+    if not isinstance(cargo, dict):
+        raise TypeError(f'{field} Cargo identity is missing')
+    for key in ('lock_preimage_sha256', 'lock_normalized_sha256'):
+        lock_digest = cargo.get(key)
+        if (
+            not isinstance(lock_digest, str)
+            or HEX_DIGEST.fullmatch(lock_digest) is None
+        ):
+            raise AssertionError(f'{field}.cargo has an invalid {key}')
+    required = cargo.get('required_sources')
+    if (
+        not isinstance(required, list)
+        or not required
+        or not all(isinstance(record, dict) for record in required)
+    ):
+        raise AssertionError(f'{field}.cargo required source identity is malformed')
+    toolchain = value.get('toolchain')
+    if not isinstance(toolchain, dict):
+        raise TypeError(f'{field} toolchain identity is missing')
+    if toolchain.get('channel') != _package_toolchain_channel():
+        raise AssertionError(f'{field} toolchain channel is not the dated release pin')
+    if toolchain.get('maturin') != MATURIN_VERSION:
+        raise AssertionError(f'{field} maturin identity is not pinned')
+    if toolchain.get('maturin_pep517_args') != RELEASE_MATURIN_ARGS:
+        raise AssertionError(f'{field} Maturin release profile is not pinned')
+    for key in ('cargo', 'rustc'):
+        tool = toolchain.get(key)
+        if not isinstance(tool, str) or not tool:
+            raise AssertionError(f'{field}.toolchain has no {key} identity')
+    return value
+
+
+def _source_identity(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    sdist = manifest['sdist']
+    return {
+        'commit': manifest['commit'],
+        'filename': sdist['filename'],
+        'sha256': sdist['sha256'],
+        'version': sdist['version'],
+        'source_inputs_format': manifest['source_inputs_format'],
+        'source_inputs_sha256': manifest['source_inputs_sha256'],
+        'native_source_inputs_format': manifest['native_source_inputs_format'],
+        'native_source_inputs_sha256': manifest['native_source_inputs_sha256'],
+        'cargo': manifest['cargo'],
+        'toolchain': manifest['toolchain'],
+    }
+
+
 def validate_source_manifest(sdist: Path, manifest_path: Path) -> dict[str, Any]:
     if (
         manifest_path.parent != sdist.parent
@@ -1257,7 +2083,7 @@ def validate_source_manifest(sdist: Path, manifest_path: Path) -> dict[str, Any]
     ):
         raise AssertionError('source manifest must be the sibling canonical manifest')
     manifest = _load_json(manifest_path)
-    if manifest.get('schema') != 1 or manifest.get('kind') != 'gometry-source-manifest':
+    if manifest.get('schema') != 2 or manifest.get('kind') != 'gometry-source-manifest':
         raise AssertionError(f'unsupported gometry source manifest: {manifest_path}')
     if manifest.get('package') != 'gometry':
         raise AssertionError(f'source manifest is not for gometry: {manifest_path}')
@@ -1278,6 +2104,24 @@ def validate_source_manifest(sdist: Path, manifest_path: Path) -> dict[str, Any]
     actual = sha256_file(sdist)
     if actual != expected:
         raise AssertionError(f'sdist SHA-256 mismatch: {actual} != {expected}')
+    if source.get('version') != source.get('filename', '').removeprefix(
+        'gometry-'
+    ).removesuffix('.tar.gz'):
+        raise AssertionError(
+            'source manifest sdist version does not match its filename'
+        )
+    _validate_source_identity({
+        'commit': manifest.get('commit'),
+        'filename': source.get('filename'),
+        'sha256': source.get('sha256'),
+        'version': source.get('version'),
+        'source_inputs_format': manifest.get('source_inputs_format'),
+        'source_inputs_sha256': manifest.get('source_inputs_sha256'),
+        'native_source_inputs_format': manifest.get('native_source_inputs_format'),
+        'native_source_inputs_sha256': manifest.get('native_source_inputs_sha256'),
+        'cargo': manifest.get('cargo'),
+        'toolchain': manifest.get('toolchain'),
+    })
     cargo = manifest.get('cargo')
     if not isinstance(cargo, dict):
         raise TypeError('source manifest has no cargo evidence')
@@ -1308,21 +2152,6 @@ def validate_source_manifest(sdist: Path, manifest_path: Path) -> dict[str, Any]
         raise AssertionError(
             'source manifest generated output hashes do not match inputs'
         )
-    commit = manifest.get('commit')
-    if not isinstance(commit, str) or re.fullmatch(r'[0-9a-f]{40,64}', commit) is None:
-        raise AssertionError('source manifest has no source commit')
-    required = cargo.get('required_sources')
-    if not isinstance(required, list) or not required:
-        raise AssertionError('source manifest has no required Cargo sources')
-    toolchain = manifest.get('toolchain')
-    if (
-        not isinstance(toolchain, dict)
-        or toolchain.get('maturin') != MATURIN_VERSION
-        or toolchain.get('maturin_pep517_args') != '--locked --profile release-dist'
-        or not isinstance(toolchain.get('cargo'), str)
-        or not isinstance(toolchain.get('rustc'), str)
-    ):
-        raise AssertionError('source manifest toolchain evidence is incomplete')
     return manifest
 
 
@@ -1340,6 +2169,9 @@ def verify_source_artifact(sdist: Path, manifest_path: Path) -> dict[str, Any]:
         })
         if len(roots) != 1:
             raise AssertionError(f'source sdist has no unique root: {sdist}')
+        package_root = Path(roots[0]) / 'gometry'
+        if f'{package_root.as_posix()}/Cargo.toml' not in member_names:
+            raise AssertionError('source sdist has no unique gometry package root')
         for relative, expected in prepared.items():
             member = archive.extractfile(f'{roots[0]}/{relative}')
             if member is None:
@@ -1358,6 +2190,11 @@ def verify_source_artifact(sdist: Path, manifest_path: Path) -> dict[str, Any]:
         or cargo['required_sources'] != evidence['required_sources']
     ):
         raise AssertionError('source manifest Cargo evidence does not match the sdist')
+    for key in ('source_inputs_sha256', 'native_source_inputs_sha256'):
+        if manifest[key] != evidence[key]:
+            raise AssertionError(
+                f'source manifest {key} does not match the sdist build inputs'
+            )
     return manifest
 
 
@@ -1387,13 +2224,56 @@ def _smoke_grid(destination: Path) -> Path:
     return path
 
 
-def smoke_installed() -> None:
+def _package_version(root: Path = ROOT) -> str:
+    try:
+        cargo = tomllib.loads((root / 'Cargo.toml').read_text(encoding='utf-8'))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise AssertionError(f'cannot read package Cargo.toml: {error}') from error
+    package = cargo.get('package')
+    version = package.get('version') if isinstance(package, dict) else None
+    if not isinstance(version, str) or not version:
+        raise AssertionError(
+            f'package Cargo.toml has no version: {root / "Cargo.toml"}'
+        )
+    return version
+
+
+def _smoke_environment(
+    *, expected_source_manifest: Path | None = None
+) -> dict[str, str]:
+    if expected_source_manifest is not None:
+        source_manifest = validate_source_manifest(
+            _source_sdist_from_manifest(expected_source_manifest),
+            expected_source_manifest,
+        )
+        expected_source_inputs = source_manifest['source_inputs_sha256']
+        expected_native_inputs = source_manifest['native_source_inputs_sha256']
+        expected_version = source_manifest['sdist']['version']
+    else:
+        digests = source_input_digests()
+        expected_source_inputs = digests['source_inputs_sha256']
+        expected_native_inputs = digests['native_source_inputs_sha256']
+        expected_version = _package_version()
+    policy = _effective_release_policy()
+    values = {
+        SMOKE_EXPECTED_SOURCE_INPUTS_ENV: expected_source_inputs,
+        SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_ENV: expected_native_inputs,
+        SMOKE_EXPECTED_VERSION_ENV: expected_version,
+        SMOKE_EXPECTED_TARGET_ENV: policy['target'],
+        SMOKE_EXPECTED_ARCHITECTURE_ENV: policy['architecture'],
+    }
+    env = os.environ.copy()
+    env.update(values)
+    return env
+
+
+def smoke_installed(*, expected_source_manifest: Path | None = None) -> None:
     with tempfile.TemporaryDirectory(prefix='gometry-installed-smoke-') as tmp:
         temporary = Path(tmp)
         neutral = temporary / 'neutral'
         neutral.mkdir()
         grid = _smoke_grid(temporary / 'grid')
-        env = os.environ.copy()
+        env = _smoke_environment(expected_source_manifest=expected_source_manifest)
         env.pop('PYTHONPATH', None)
         env.pop('PYTHONHOME', None)
         env[SMOKE_GRID_ENV] = str(grid)
@@ -1421,6 +2301,7 @@ def write_runner_receipt(
         _source_sdist_from_manifest(source_manifest_path),
         source_manifest_path,
     )
+    build_identity = _receipt_build_identity(wheels)
     records = []
     for identifier in identifiers:
         wheel = matches[identifier]
@@ -1435,13 +2316,12 @@ def write_runner_receipt(
     if receipt_path.parent != wheel_dir:
         raise AssertionError('wheel receipt must be a sibling of the wheel archives')
     value = {
-        'schema': 1,
+        'schema': 2,
         'kind': 'gometry-wheel-receipt',
+        'profile': RELEASE_PROFILE,
         'runner': runner or os.environ.get('GOMETRY_BUILD_RUNNER', 'local'),
-        'source': {
-            'filename': source_manifest['sdist']['filename'],
-            'sha256': source_manifest['sdist']['sha256'],
-        },
+        'source': _source_identity(source_manifest),
+        'build': build_identity,
         'planned_identifiers': identifiers,
         'wheels': records,
     }
@@ -1479,8 +2359,10 @@ def validate_runner_receipt(
     inspect_archives: bool = True,
 ) -> dict[str, Any]:
     receipt = _load_json(receipt_path)
-    if receipt.get('schema') != 1 or receipt.get('kind') != 'gometry-wheel-receipt':
+    if receipt.get('schema') != 2 or receipt.get('kind') != 'gometry-wheel-receipt':
         raise AssertionError(f'unsupported gometry wheel receipt: {receipt_path}')
+    if receipt.get('profile') != RELEASE_PROFILE:
+        raise AssertionError(f'wheel receipt profile is not {RELEASE_PROFILE}: {receipt_path}')
     runner = receipt.get('runner')
     if not isinstance(runner, str) or not runner:
         raise AssertionError(f'wheel receipt has no runner: {receipt_path}')
@@ -1488,14 +2370,15 @@ def validate_runner_receipt(
         _source_sdist_from_manifest(source_manifest_path), source_manifest_path
     )
     source = receipt.get('source')
-    expected_source = source_manifest['sdist']
-    if (
-        not isinstance(source, dict)
-        or source.get('filename') != expected_source['filename']
-    ):
-        raise AssertionError(f'wheel receipt source filename mismatch: {receipt_path}')
-    if source.get('sha256') != expected_source['sha256']:
-        raise AssertionError(f'wheel receipt source SHA-256 mismatch: {receipt_path}')
+    expected_source = _source_identity(source_manifest)
+    if source != expected_source:
+        raise AssertionError(f'wheel receipt source identity mismatch: {receipt_path}')
+    build = _validate_build_identity(
+        receipt.get('build'),
+        field='wheel receipt build',
+        strict=True,
+    )
+    _validate_runner_target(runner, build)
     identifiers = receipt.get('planned_identifiers')
     wheels = receipt.get('wheels')
     if not isinstance(identifiers, list) or not all(
@@ -1551,6 +2434,12 @@ def validate_runner_receipt(
             raise AssertionError(f'wheel receipt filename mismatch for {identifier}')
         if item['sha256'] != sha256_file(wheel):
             raise AssertionError(f'wheel SHA-256 mismatch for {wheel.name}')
+        if _wheel_architecture(wheel) != build['architecture']:
+            raise AssertionError(
+                f'wheel receipt architecture mismatch for {wheel.name}'
+            )
+        if not _wheel_target_compatible(wheel, build['target']):
+            raise AssertionError(f'wheel receipt target mismatch for {wheel.name}')
         if inspect_archives:
             inspect_wheel(wheel)
     return receipt
@@ -1663,15 +2552,19 @@ def assemble_release(
                 'filename': filename,
                 'sha256': item['sha256'],
                 'runner': runner,
+                'target': receipt['build']['target'],
+                'architecture': receipt['build']['architecture'],
+                'target_policy': receipt['build']['target_policy'],
+                'rustflags': receipt['build']['rustflags'],
+                'cflags': receipt['build']['cflags'],
+                'cxxflags': receipt['build']['cxxflags'],
             })
     manifest = {
-        'schema': 1,
+        'schema': 2,
         'kind': 'gometry-release-manifest',
         'package': 'gometry',
-        'source': {
-            'filename': source_manifest['sdist']['filename'],
-            'sha256': source_manifest['sdist']['sha256'],
-        },
+        'profile': RELEASE_PROFILE,
+        'source': _source_identity(source_manifest),
         'expected_runners': expected,
         'wheels': wheels,
     }
@@ -1694,12 +2587,16 @@ def validate_release_manifest(
         raise AssertionError('release manifest must be the sibling canonical manifest')
     manifest = _load_json(manifest_path)
     if (
-        manifest.get('schema') != 1
+        manifest.get('schema') != 2
         or manifest.get('kind') != 'gometry-release-manifest'
     ):
         raise AssertionError(f'unsupported gometry release manifest: {manifest_path}')
     if manifest.get('package') != 'gometry':
         raise AssertionError(f'release manifest is not for gometry: {manifest_path}')
+    if manifest.get('profile') != RELEASE_PROFILE:
+        raise AssertionError(
+            f'release manifest profile is not {RELEASE_PROFILE}: {manifest_path}'
+        )
     runners = manifest.get('expected_runners')
     if not isinstance(runners, list) or not all(
         isinstance(runner, str) and runner for runner in runners
@@ -1711,19 +2608,12 @@ def validate_release_manifest(
         raise AssertionError(
             'release manifest expected runner set does not match resolve output'
         )
-    source = manifest.get('source')
-    if not isinstance(source, dict):
-        raise TypeError('release manifest has no source distribution')
-    source_filename = source.get('filename')
-    source_digest = source.get('sha256')
-    if (
-        not isinstance(source_filename, str)
-        or not isinstance(source_digest, str)
-        or HEX_DIGEST.fullmatch(source_digest) is None
-        or Path(source_filename).name != source_filename
-        or not source_filename.endswith('.tar.gz')
-    ):
-        raise AssertionError('release manifest source identity is malformed')
+    source = _validate_source_identity(
+        manifest.get('source'),
+        field='release source',
+    )
+    source_filename = source['filename']
+    source_digest = source['sha256']
     wheels = manifest.get('wheels')
     if not isinstance(wheels, list) or not wheels:
         raise AssertionError('release manifest has no wheels')
@@ -1755,6 +2645,12 @@ def validate_release_manifest(
             raise AssertionError(
                 f'release manifest names an unexpected runner: {runner}'
             )
+        build = _validate_build_identity(item, field=f'release wheel {filename}')
+        _validate_runner_target(runner, build)
+        if build['target'] != item.get('target'):
+            raise AssertionError(
+                f'release wheel target identity is malformed: {filename}'
+            )
         filenames.add(filename)
         seen_identifiers.add(identifier)
         seen_runners.add(runner)
@@ -1767,6 +2663,10 @@ def validate_release_manifest(
             raise AssertionError(
                 f'release wheel does not match its build identifier: {filename} / {identifier}'
             )
+        if _wheel_architecture(path) != build['architecture']:
+            raise AssertionError(f'release wheel architecture mismatch: {filename}')
+        if not _wheel_target_compatible(path, build['target']):
+            raise AssertionError(f'release wheel target mismatch: {filename}')
         inspect_wheel(path)
     if seen_runners != set(runners):
         raise AssertionError(
@@ -1778,8 +2678,27 @@ def validate_release_manifest(
         raise AssertionError(f'release sdist is missing: {sdist}')
     if sha256_file(sdist) != source_digest:
         raise AssertionError(f'release sdist SHA-256 mismatch: {source_filename}')
-    inspect_sdist(sdist, expected_libtiff=final_libtiff_source_members())
-    actual_files = {path.name for path in distribution_dir.iterdir() if path.is_file()}
+    sdist_version = inspect_sdist(
+        sdist,
+        expected_libtiff=libtiff_source_members(),
+    )
+    if sdist_version != source['version']:
+        raise AssertionError(
+            'release manifest sdist version does not match its archive'
+        )
+    evidence = verify_sdist_dependency_sources(sdist, require_normalized=True)
+    if (
+        evidence['source_inputs_sha256'] != source['source_inputs_sha256']
+        or evidence['native_source_inputs_sha256']
+        != source['native_source_inputs_sha256']
+        or evidence['normalized_lock_sha256']
+        != source['cargo']['lock_normalized_sha256']
+        or evidence['required_sources'] != source['cargo']['required_sources']
+    ):
+        raise AssertionError(
+            'release manifest source identity does not match its sdist'
+        )
+    actual_files = {path.name for path in distribution_dir.iterdir()}
     expected_files = filenames | {manifest_path.name}
     if actual_files != expected_files:
         raise AssertionError(
@@ -1794,16 +2713,73 @@ SMOKE = r"""
 import importlib.metadata
 import json
 import os
+import platform
 from pathlib import Path
 import sys
 import sysconfig
 
 import numpy as np
 import gometry as gm
+import gometry._lib as lib
 
 distribution_version = importlib.metadata.version('gometry')
+metadata = importlib.metadata.metadata('gometry')
+assert metadata['Name'].lower() == 'gometry'
 assert gm.__version__ == distribution_version
 assert distribution_version and distribution_version[0].isdigit()
+assert distribution_version == os.environ['GOMETRY_SMOKE_EXPECTED_VERSION']
+
+build_info = getattr(lib, '__build_info__', None)
+assert isinstance(build_info, dict)
+expected_build_info_fields = {
+    'schema_version',
+    'source_inputs_format',
+    'source_inputs_sha256',
+    'native_source_inputs_format',
+    'native_source_inputs_sha256',
+    'profile_family',
+    'opt_level',
+    'debug_assertions',
+    'target',
+    'target_arch',
+    'target_features',
+}
+assert set(build_info) == expected_build_info_fields, set(build_info)
+expected_build_info = {
+    'schema_version': 3,
+    'source_inputs_format': 'sha256-path-nul-content-nul-v4',
+    'source_inputs_sha256': os.environ['GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256'],
+    'native_source_inputs_format': 'sha256-path-nul-content-nul-v4',
+    'native_source_inputs_sha256': os.environ[
+        'GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256'
+    ],
+    'profile_family': 'release',
+    'opt_level': '3',
+    'debug_assertions': False,
+    'target': os.environ['GOMETRY_SMOKE_EXPECTED_TARGET'],
+    'target_arch': os.environ['GOMETRY_SMOKE_EXPECTED_ARCHITECTURE'],
+}
+for key, expected in expected_build_info.items():
+    assert build_info.get(key) == expected, (key, build_info.get(key), expected)
+target_features = build_info.get('target_features')
+assert isinstance(target_features, str)
+if expected_build_info['target_arch'] == 'x86_64':
+    forbidden_features = {
+        'avx', 'avx2', 'bmi1', 'bmi2', 'fma', 'popcnt', 'sse4.1', 'sse4.2'
+    }
+    assert not forbidden_features.intersection(
+        set(target_features.split(','))
+    ), target_features
+
+machine = platform.machine().lower()
+machine_architecture = (
+    'x86_64' if machine in {'x86_64', 'amd64'} else
+    'arm64' if machine in {'aarch64', 'arm64'} else machine
+)
+assert machine_architecture == expected_build_info['target_arch']
+extension_suffix = sysconfig.get_config_var('EXT_SUFFIX')
+assert isinstance(extension_suffix, str) and extension_suffix
+assert str(Path(lib.__file__)).endswith(extension_suffix)
 
 if sysconfig.get_config_var('Py_GIL_DISABLED'):
     assert not sys._is_gil_enabled(), 'gometry re-enabled the GIL'
@@ -1858,7 +2834,7 @@ assert bounds.flags.writeable is False
 """
 
 
-def smoke_install(wheel: Path) -> None:
+def smoke_install(wheel: Path, *, expected_source_manifest: Path | None = None) -> None:
     with tempfile.TemporaryDirectory(prefix='gometry-wheel-smoke-') as tmp:
         temporary = Path(tmp)
         venv_dir = temporary / 'venv'
@@ -1868,7 +2844,7 @@ def smoke_install(wheel: Path) -> None:
         neutral = temporary / 'neutral'
         neutral.mkdir()
         grid = _smoke_grid(temporary / 'grid')
-        env = os.environ.copy()
+        env = _smoke_environment(expected_source_manifest=expected_source_manifest)
         env.pop('PYTHONPATH', None)
         env.pop('PYTHONHOME', None)
         env[SMOKE_GRID_ENV] = str(grid)
@@ -1961,16 +2937,27 @@ def main() -> int:
         metavar='JSON',
         help='JSON array of expected runners for --assemble-release',
     )
+    parser.add_argument(
+        '--expected-source-manifest',
+        type=Path,
+        metavar='JSON',
+        help='staged source manifest whose identity the installed smoke must load',
+    )
     args = parser.parse_args()
     if args.installed:
-        smoke_installed()
+        expected_source_manifest = (
+            args.expected_source_manifest.resolve()
+            if args.expected_source_manifest is not None
+            else None
+        )
+        smoke_installed(expected_source_manifest=expected_source_manifest)
         print('installed wheel smoke OK')
         return 0
     if args.inspect:
         for path in args.inspect:
             path = path.resolve()
             if path.name.endswith('.tar.gz'):
-                inspect_sdist(path, expected_libtiff=final_libtiff_source_members())
+                inspect_sdist(path, expected_libtiff=libtiff_source_members())
                 verify_sdist_dependency_sources(path)
                 print(f'artifact inspection OK: {path.name}')
                 continue
@@ -1980,7 +2967,12 @@ def main() -> int:
     if args.smoke_wheel:
         wheel = args.smoke_wheel.resolve()
         inspect_wheel(wheel)
-        smoke_install(wheel)
+        expected_source_manifest = (
+            args.expected_source_manifest.resolve()
+            if args.expected_source_manifest is not None
+            else None
+        )
+        smoke_install(wheel, expected_source_manifest=expected_source_manifest)
         print(f'wheel smoke OK: {wheel.name}')
         return 0
     if args.smoke_sdist:
@@ -2006,7 +2998,7 @@ def main() -> int:
     if args.verify_source:
         sdist, manifest = (path.resolve() for path in args.verify_source)
         verify_source_artifact(sdist, manifest)
-        inspect_sdist(sdist, expected_libtiff=final_libtiff_source_members())
+        inspect_sdist(sdist, expected_libtiff=libtiff_source_members())
         print(f'source artifact verification OK: {sdist.name}')
         return 0
     if args.write_wheel_receipt:

@@ -193,6 +193,7 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
         // version that results in linker errors
         config.profile("Release");
     }
+    configure_release_native_flags(&mut config);
 
     let proj = config.build();
     // Tell cargo to tell rustc to link libproj, and where to find it
@@ -262,4 +263,40 @@ fn configure_path_remapping(config: &mut cmake::Config) {
 fn add_file_prefix_map(config: &mut cmake::Config, mapping: impl std::fmt::Display) {
     let flag = format!("-ffile-prefix-map={mapping}");
     config.cflag(&flag).cxxflag(&flag);
+}
+
+fn configure_release_native_flags(config: &mut cmake::Config) {
+    if let Some(flags) = release_native_flags("CFLAGS") {
+        if env::var_os("CFLAGS").is_none() && !flags.is_empty() {
+            config.cflag(&flags);
+        }
+    }
+    if let Some(flags) = release_native_flags("CXXFLAGS") {
+        if env::var_os("CXXFLAGS").is_none() && !flags.is_empty() {
+            config.cxxflag(&flags);
+        }
+    }
+}
+
+fn release_native_flags(name: &str) -> Option<String> {
+    let declared_name = format!("GOMETRY_RELEASE_{name}");
+    println!("cargo:rerun-if-env-changed={declared_name}");
+    println!("cargo:rerun-if-env-changed={name}");
+    let target_suffix = env::var("TARGET").unwrap_or_default().replace('-', "_");
+    let target_name = format!("{name}_{target_suffix}");
+    println!("cargo:rerun-if-env-changed={target_name}");
+    let declared = env::var_os(&declared_name)?;
+    let declared = declared.to_string_lossy().into_owned();
+    for ambient_name in [name.to_owned(), target_name] {
+        if let Some(ambient) = env::var_os(&ambient_name) {
+            let ambient = ambient.to_string_lossy();
+            if ambient != declared {
+                panic!(
+                    "release native flags disagree: {declared_name}={declared:?}, \
+                     {ambient_name}={ambient:?}"
+                );
+            }
+        }
+    }
+    Some(declared)
 }

@@ -196,20 +196,31 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // value keeps Python import off the importlib.metadata filesystem path.
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     let build_info = PyDict::new(m.py());
-    build_info.set_item("schema_version", 1)?;
-    build_info.set_item("source_inputs_format", "sha256-path-nul-content-nul-v3")?;
+    build_info.set_item("schema_version", 3)?;
+    build_info.set_item(
+        "source_inputs_format",
+        env!("GOMETRY_BUILD_SOURCE_INPUTS_FORMAT"),
+    )?;
     build_info.set_item(
         "source_inputs_sha256",
         env!("GOMETRY_BUILD_SOURCE_INPUTS_SHA256"),
     )?;
+    build_info.set_item(
+        "native_source_inputs_format",
+        env!("GOMETRY_BUILD_NATIVE_SOURCE_INPUTS_FORMAT"),
+    )?;
+    build_info.set_item(
+        "native_source_inputs_sha256",
+        env!("GOMETRY_BUILD_NATIVE_SOURCE_INPUTS_SHA256"),
+    )?;
     build_info.set_item("profile_family", env!("GOMETRY_BUILD_PROFILE_FAMILY"))?;
     build_info.set_item("opt_level", env!("GOMETRY_BUILD_OPT_LEVEL"))?;
-    build_info.set_item("debug", env!("GOMETRY_BUILD_DEBUG") == "true")?;
     build_info.set_item(
         "debug_assertions",
         env!("GOMETRY_BUILD_DEBUG_ASSERTIONS") == "true",
     )?;
     build_info.set_item("target", env!("GOMETRY_BUILD_TARGET"))?;
+    build_info.set_item("target_arch", env!("GOMETRY_BUILD_TARGET_ARCH"))?;
     build_info.set_item("target_features", env!("GOMETRY_BUILD_TARGET_FEATURES"))?;
     m.add("__build_info__", build_info)?;
     add_classes!(m;

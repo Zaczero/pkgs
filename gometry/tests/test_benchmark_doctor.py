@@ -5,10 +5,14 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.util
+import json
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
+
+from tests._support import GOMETRY_ROOT, load_tool
 
 _DRIVERS = Path(__file__).resolve().parents[1] / 'benches' / 'drivers'
 if str(_DRIVERS) not in sys.path:
@@ -16,17 +20,26 @@ if str(_DRIVERS) not in sys.path:
 
 import bench_doctor as doctor  # noqa: E402
 
+wheel_smoke = load_tool(
+    'wheel_smoke',
+    GOMETRY_ROOT / 'tools' / 'wheel_smoke.py',
+)
+
 
 def _release_build_info(source_inputs_sha256: str) -> dict[str, object]:
+    native_source_inputs_sha256 = doctor._native_source_inputs_digest()
+    assert native_source_inputs_sha256
     return {
         'schema_version': doctor.BUILD_INFO_SCHEMA_VERSION,
         'source_inputs_format': doctor.SOURCE_INPUTS_FORMAT,
         'source_inputs_sha256': source_inputs_sha256,
+        'native_source_inputs_format': doctor.SOURCE_INPUTS_FORMAT,
+        'native_source_inputs_sha256': native_source_inputs_sha256,
         'profile_family': 'release',
         'opt_level': '3',
-        'debug': False,
         'debug_assertions': False,
         'target': doctor._rustc_host_target(),
+        'target_arch': 'x86_64',
         'target_features': 'sse2',
     }
 
@@ -38,6 +51,7 @@ def test_source_identity_and_effective_release_facts_pass() -> None:
         _release_build_info(source_inputs_sha256),
         source_inputs_sha256,
         doctor._rustc_host_target(),
+        doctor._native_source_inputs_digest(),
     ) == []
 
 
@@ -57,7 +71,7 @@ def test_source_identity_mutation_rejects_without_rebuild() -> None:
     [
         ('profile_family', 'debug', 'release-family'),
         ('opt_level', '0', 'optimization level'),
-        ('debug', 'true', 'debug-info flag'),
+        ('debug', True, 'unexpected fields'),
         ('debug_assertions', True, 'debug assertions'),
         ('target', 'wrong-target', 'targets'),
     ],
@@ -83,7 +97,17 @@ def test_private_runtime_build_info_matches_current_source() -> None:
     build_info = lib.__build_info__
     assert isinstance(build_info, dict)
     assert '__build_info__' not in lib.__all__
+    assert not {
+        'source_commit',
+        'debug',
+        'release_target_policy',
+        'release_rustflags',
+        'release_cflags',
+        'release_cxxflags',
+        'gil_used',
+    }.intersection(build_info)
     assert build_info['source_inputs_sha256'] == doctor._source_inputs_digest()
+    assert build_info['native_source_inputs_sha256'] == doctor._native_source_inputs_digest()
     extension = doctor._extension_identity()
     path = Path(extension['path'])
     assert extension['sha256'] == hashlib.sha256(path.read_bytes()).hexdigest()
@@ -237,3 +261,257 @@ def test_installed_native_identity_keeps_real_engine_ownership_bounded() -> None
             owned_paths = {item['path'] for item in identity['native_libraries']}
             assert set(engine_paths) <= owned_paths
             assert identity['native_library_status'] == 'identified'
+
+
+def test_native_identity_walkers_drop_hidden_metadata_and_preserve_visible_inputs(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    (package / 'src').mkdir(parents=True)
+    (package / 'native' / 'visible').mkdir(parents=True)
+    (package / 'Cargo.toml').write_text('[package]\nname = "gometry"\n')
+    (package / 'build.rs').write_text('fn main() {}\n')
+    (package / 'rust-toolchain.toml').write_text('[toolchain]\nchannel = "nightly"\n')
+    (package / 'src' / 'lib.rs').write_text('')
+    (package / 'native' / 'visible' / 'input.c').write_text('')
+    for relative in (
+        'native/.git',
+        'native/libtiff/.clang-format',
+        'native/libtiff/doc/_static/.gitignore',
+    ):
+        path = package / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('metadata\n')
+
+    files, native = wheel_smoke._source_input_records(package)
+    assert any(name == 'gometry/native/visible/input.c' for name, _ in native)
+    assert not any(
+        wheel_smoke._is_hidden_native_path(name) for name, _ in files
+    )
+    before = wheel_smoke.source_input_digests(package)
+    (package / 'native' / '.git').write_text('changed metadata\n')
+    after = wheel_smoke.source_input_digests(package)
+    assert before == after
+
+    bootstrap = tmp_path / 'bootstrap'
+    final = tmp_path / 'final'
+    bootstrap_native = bootstrap / 'gometry' / 'native'
+    final_native = final / 'gometry' / 'native'
+    bootstrap_native.mkdir(parents=True)
+    final_native.mkdir(parents=True)
+    (bootstrap_native / '.git').write_text('metadata\n')
+    (bootstrap_native / 'input.c').write_text('input\n')
+    (final_native / 'input.c').write_text('input\n')
+    wheel_smoke._compare_restage_trees(bootstrap, final)
+
+    (final_native / '.git').write_text('admitted metadata\n')
+    with pytest.raises(AssertionError, match='hidden native files'):
+        wheel_smoke._compare_restage_trees(bootstrap, final)
+
+
+@pytest.mark.parametrize(
+    ('target', 'policy', 'rustflags', 'cflags'),
+    [
+        (
+            'x86_64-unknown-linux-gnu',
+            'generic-x86-64',
+            '-C target-cpu=x86-64',
+            '-march=x86-64',
+        ),
+        (
+            'aarch64-unknown-linux-gnu',
+            'compiler-default-arm64',
+            '',
+            '',
+        ),
+    ],
+)
+def test_effective_release_policy_has_no_architecture_crossing(
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    policy: str,
+    rustflags: str,
+    cflags: str,
+) -> None:
+    release_values = {
+        'GOMETRY_RELEASE_TARGET': target,
+        'GOMETRY_RELEASE_TARGET_POLICY': policy,
+        'GOMETRY_RELEASE_RUSTFLAGS': rustflags,
+        'GOMETRY_RELEASE_CFLAGS': cflags,
+        'GOMETRY_RELEASE_CXXFLAGS': cflags,
+    }
+    for name, value in release_values.items():
+        monkeypatch.setenv(name, value)
+    if target.startswith('x86_64'):
+        monkeypatch.setenv('CFLAGS', '-march=native')
+        with pytest.raises(AssertionError, match='CFLAGS disagrees'):
+            wheel_smoke._effective_release_policy(target)
+        monkeypatch.setenv('CFLAGS', cflags)
+        target_suffix = target.replace('-', '_')
+        for prefix in ('CFLAGS', 'CXXFLAGS'):
+            name = f'{prefix}_{target_suffix}'
+            monkeypatch.setenv(name, '-march=native')
+            with pytest.raises(AssertionError, match=f'{name} disagrees'):
+                wheel_smoke._effective_release_policy(target)
+            monkeypatch.setenv(name, cflags)
+    assert wheel_smoke._effective_release_policy(target)['target'] == target
+
+
+def test_partial_release_identity_environment_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in wheel_smoke.RELEASE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        'GOMETRY_RELEASE_TARGET',
+        'x86_64-unknown-linux-gnu',
+    )
+    with pytest.raises(AssertionError, match='environment is partial'):
+        wheel_smoke._effective_release_policy()
+
+
+def test_release_build_env_does_not_embed_profile_or_source_declarations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv('GOMETRY_RELEASE_PROFILE', raising=False)
+    monkeypatch.delenv('GOMETRY_RELEASE_SOURCE_COMMIT', raising=False)
+    environment = wheel_smoke.release_build_env(
+        target='x86_64-unknown-linux-gnu'
+    )
+    assert environment['MATURIN_PEP517_ARGS'] == '--locked --profile release-dist'
+    assert 'GOMETRY_RELEASE_PROFILE' not in environment
+    assert 'GOMETRY_RELEASE_SOURCE_COMMIT' not in environment
+
+
+def _identity_source_manifest(tmp_path: Path) -> Path:
+    source_dir = tmp_path / 'source'
+    source_dir.mkdir()
+    sdist = source_dir / 'gometry-1.0.0.tar.gz'
+    sdist.write_bytes(b'sdist')
+    prepared = {'README.md': hashlib.sha256(b'readme').hexdigest()}
+    value = {
+        'schema': 2,
+        'kind': 'gometry-source-manifest',
+        'package': 'gometry',
+        'commit': '0' * 40,
+        'source_inputs_format': wheel_smoke.SOURCE_INPUTS_FORMAT,
+        'source_inputs_sha256': '1' * 64,
+        'native_source_inputs_format': wheel_smoke.SOURCE_INPUTS_FORMAT,
+        'native_source_inputs_sha256': '2' * 64,
+        'prepared_inputs': {
+            'identity_sha256': wheel_smoke._prepared_input_identity(prepared),
+            'files': prepared,
+        },
+        'generated_output_hashes': prepared,
+        'sdist': {
+            'filename': sdist.name,
+            'sha256': hashlib.sha256(b'sdist').hexdigest(),
+            'version': '1.0.0',
+        },
+        'cargo': {
+            'lock_preimage_sha256': '3' * 64,
+            'lock_normalized_sha256': '4' * 64,
+            'required_sources': [{}],
+        },
+        'toolchain': {
+            'channel': wheel_smoke._package_toolchain_channel(),
+            'maturin': wheel_smoke.MATURIN_VERSION,
+            'maturin_pep517_args': '--locked --profile release-dist',
+            'cargo': 'cargo 1.100.0-nightly',
+            'rustc': 'rustc 1.100.0-nightly',
+        },
+    }
+    path = source_dir / wheel_smoke.SOURCE_MANIFEST_NAME
+    path.write_text(json.dumps(value), encoding='utf-8')
+    return path
+
+
+def _identity_wheel(path: Path) -> None:
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr(
+            'gometry-1.0.0.dist-info/WHEEL',
+            'Wheel-Version: 1.0\n'
+            'Tag: cp314-cp314-manylinux_2_17_x86_64\n',
+        )
+
+
+def _identity_receipt(source_manifest: Path, wheel: Path) -> Path:
+    manifest = json.loads(source_manifest.read_text(encoding='utf-8'))
+    build = wheel_smoke.release_target_policy('x86_64-unknown-linux-gnu')
+    receipt = {
+        'schema': 2,
+        'kind': 'gometry-wheel-receipt',
+        'profile': wheel_smoke.RELEASE_PROFILE,
+        'runner': 'ubuntu-latest',
+        'source': wheel_smoke._source_identity(manifest),
+        'build': build,
+        'planned_identifiers': ['cp314-manylinux_x86_64'],
+        'wheels': [{
+            'identifier': 'cp314-manylinux_x86_64',
+            'filename': wheel.name,
+            'sha256': wheel_smoke.sha256_file(wheel),
+        }],
+    }
+    path = wheel.parent / wheel_smoke.RUNNER_RECEIPT_NAME
+    path.write_text(json.dumps(receipt), encoding='utf-8')
+    return path
+
+
+def test_receipt_identity_mutations_are_rejected(tmp_path: Path) -> None:
+    source_manifest = _identity_source_manifest(tmp_path)
+    wheel_dir = tmp_path / 'wheels'
+    wheel_dir.mkdir()
+    wheel = wheel_dir / 'gometry-1.0.0-cp314-cp314-manylinux_2_17_x86_64.whl'
+    _identity_wheel(wheel)
+    receipt = _identity_receipt(source_manifest, wheel)
+    wheel_smoke.validate_runner_receipt(
+        receipt,
+        wheel_dir,
+        source_manifest,
+        inspect_archives=False,
+    )
+
+    value = json.loads(receipt.read_text(encoding='utf-8'))
+    value['build']['rustflags'] = ['-C', 'target-cpu=x86-64-v2']
+    receipt.write_text(json.dumps(value), encoding='utf-8')
+    with pytest.raises(AssertionError, match='release flags'):
+        wheel_smoke.validate_runner_receipt(
+            receipt,
+            wheel_dir,
+            source_manifest,
+            inspect_archives=False,
+        )
+
+    value = json.loads(_identity_receipt(source_manifest, wheel).read_text())
+    value['profile'] = 'release'
+    receipt.write_text(json.dumps(value), encoding='utf-8')
+    with pytest.raises(AssertionError, match='profile'):
+        wheel_smoke.validate_runner_receipt(
+            receipt,
+            wheel_dir,
+            source_manifest,
+            inspect_archives=False,
+        )
+
+    value = json.loads(_identity_receipt(source_manifest, wheel).read_text())
+    value['source']['native_source_inputs_sha256'] = '5' * 64
+    receipt.write_text(json.dumps(value), encoding='utf-8')
+    with pytest.raises(AssertionError, match='source identity'):
+        wheel_smoke.validate_runner_receipt(
+            receipt,
+            wheel_dir,
+            source_manifest,
+            inspect_archives=False,
+        )
+
+
+def test_identifier_mapping_rejects_ambiguous_wheels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wheels = [Path('one.whl'), Path('two.whl')]
+    monkeypatch.setattr(wheel_smoke, '_wheel_matches_identifier', lambda *_: True)
+    with pytest.raises(AssertionError, match='one-to-one'):
+        wheel_smoke._match_wheels_to_identifiers(
+            wheels,
+            ['cp314-manylinux_x86_64', 'cp314-manylinux_2_17_x86_64'],
+        )
