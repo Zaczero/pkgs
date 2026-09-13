@@ -650,7 +650,7 @@ impl ShellCoverageIndex {
         })
     }
 
-    fn covers_xy(&self, x: f64, y: f64) -> bool {
+    fn covers_xy(&self, x: f64, y: f64) -> Result<bool> {
         self.point_index.covers_point(Point::new_raw_xy(x, y))
     }
 
@@ -663,8 +663,10 @@ impl ShellCoverageIndex {
         if points.len() < 2 {
             return Ok(true);
         }
-        if points.iter().any(|point| !self.covers_xy(point.x, point.y)) {
-            return Ok(false);
+        for point in points {
+            if !self.covers_xy(point.x, point.y)? {
+                return Ok(false);
+            }
         }
         for [start, end] in points.array_windows::<2>() {
             let segment = Segment {
@@ -702,7 +704,7 @@ impl ShellCoverageIndex {
                     start: previous_point,
                     end: *point,
                 });
-                if !self.covers_xy(midpoint.x, midpoint.y) {
+                if !self.covers_xy(midpoint.x, midpoint.y)? {
                     return Ok(false);
                 }
                 previous_projection = projection;

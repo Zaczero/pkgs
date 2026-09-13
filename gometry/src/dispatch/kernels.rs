@@ -527,8 +527,6 @@ pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
         ResolvedMetric::Planar { to_metre } => {
             let area = if ctx.domain.is_geographic() {
                 crate::geometry::occupied_support_shape(data.shape(), ctx.domain)?.area()
-            } else if let Some(area) = crate::geometry::valid_cartesian_area(data)? {
-                area
             } else {
                 crate::geometry::occupied_cartesian_area(data.shape())?
             };

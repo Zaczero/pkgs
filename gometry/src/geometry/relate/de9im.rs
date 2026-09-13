@@ -4,7 +4,7 @@ use crate::geometry::{CompiledPattern, Dimension};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct De9im(pub [u8; 9]);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Loc {
     Interior = 0,
     Boundary = 1,

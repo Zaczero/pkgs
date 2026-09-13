@@ -76,10 +76,10 @@ crate::tokens::token_enum! {
 
 crate::tokens::token_enum! {
     /// Geometry repair strategy (see [`BufferCapStyle`]). `Linework` nodes all
-    /// boundary linework and reassembles regions by even-odd parity (every
-    /// input edge participates); `Structure` rebuilds each ring's enclosed
-    /// area and recombines them as shells-minus-holes, discarding collapsed
-    /// components.
+    /// boundary linework and selects each stored ring by its original directed
+    /// winding modulo two; `Structure` rebuilds each ring's nonzero-winding
+    /// enclosed area. Both compose polygon shells minus their holes before
+    /// producing valid polygon output.
     pub enum RepairMethod("repair method", param = "method") {
         Linework = "linework",
         Structure = "structure",

@@ -77,22 +77,6 @@ impl PySpatialIndex {
         Ok(())
     }
 
-    /// Append every live handle whose envelope is contained in `query`.
-    pub(crate) fn collect_contained(
-        &self,
-        query: &AABB<[f64; 2]>,
-        out: &mut Vec<usize>,
-    ) -> PyResult<()> {
-        let start = out.len();
-        self.bulk
-            .each_contained(&self.rows.live, query, |idx| try_push_vec(out, idx))?;
-        for entry in self.overflow.locate_in_envelope(*query) {
-            try_push_vec(out, entry.idx)?;
-        }
-        dedup_row_ids(out, start);
-        Ok(())
-    }
-
     /// Append every live handle whose envelope lies within squared distance
     /// `max_distance_2` of `point`.
     pub(crate) fn collect_within_distance_2(
@@ -575,7 +559,7 @@ impl PySpatialIndex {
         query_bounds: Option<Bounds>,
         pruner_point: Option<Point>,
         query_cap: Option<(Point, f64)>,
-        predicate: Option<IndexPredicate>,
+        _predicate: Option<IndexPredicate>,
         distance: Option<NonNegative>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
@@ -585,7 +569,6 @@ impl PySpatialIndex {
             query_bounds,
             pruner_point,
             query_cap,
-            predicate,
             distance,
             distance_model,
             out,
@@ -599,7 +582,6 @@ impl PySpatialIndex {
         query_bounds: Option<Bounds>,
         pruner_point: Option<Point>,
         query_cap: Option<(Point, f64)>,
-        predicate: Option<IndexPredicate>,
         distance: Option<NonNegative>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
@@ -670,16 +652,7 @@ impl PySpatialIndex {
             return Ok(());
         }
         let query_envelope = bounds_envelope(query_bounds);
-        let containment = matches!(
-            predicate,
-            Some(IndexPredicate::Topological(predicate))
-                if predicate.spec().index_envelope == Some(IndexEnvelope::ContainedInQuery)
-        );
-        if containment {
-            self.collect_contained(&query_envelope, out)?;
-        } else {
-            self.collect_intersecting(&query_envelope, out)?;
-        }
+        self.collect_intersecting(&query_envelope, out)?;
         Ok(())
     }
 
@@ -991,13 +964,15 @@ impl PySpatialIndex {
         policy: IndexEnvelope,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
+        if matches!(self.domain()?, crate::geometry::TopologyDomain::Cartesian)
+            && !crate::geometry::cartesian_support_nonempty(shape)?
+        {
+            return Ok(());
+        }
         let start = out.len();
         let cover = index_envelopes(shape, bounds, self.domain()?)?;
         for envelope in cover.windows(policy) {
-            match policy {
-                IndexEnvelope::ContainedInQuery => self.collect_contained(envelope, out)?,
-                IndexEnvelope::Intersecting => self.collect_intersecting(envelope, out)?,
-            }
+            self.collect_intersecting(envelope, out)?;
         }
         dedup_row_ids(out, start);
         Ok(())
@@ -1503,7 +1478,7 @@ mod tests {
     use super::*;
     use crate::array::BoundsSeed;
     use crate::geometry::{CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel};
-    use crate::py::index::spatial_index;
+    use crate::py::index::{Frame, spatial_index};
     use crate::test_support::fail_allocations_after;
 
     #[test]
@@ -1611,5 +1586,24 @@ mod tests {
             fail_allocations_after(0, || plan.row(&index, row, BoundsSeed::Value(Some(bounds))))
                 .expect("seeded projected candidate preparation must not allocate");
         assert_eq!(prepared.bounds, Some(bounds));
+    }
+    #[test]
+    fn empty_cartesian_query_has_no_index_matches() {
+        pyo3::Python::initialize();
+        let item = PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
+            Frame::None,
+        )
+        .unwrap();
+        let index = spatial_index(vec![item]).unwrap();
+        let query = PreparedPlan::new(ShapeData::new(Shape::empty_polygon())).expect("empty query");
+        let matches = index
+            .topological_matches(
+                &query,
+                &crate::geometry::FrameDependentCaches::default(),
+                Predicate::Intersects,
+            )
+            .unwrap();
+        assert!(matches.is_empty());
     }
 }

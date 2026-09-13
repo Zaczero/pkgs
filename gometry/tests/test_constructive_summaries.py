@@ -494,23 +494,28 @@ def test_overlay_detects_collinear_overlap_with_self_intersecting_operand() -> N
     assert gm.symmetric_difference(a, b).length == pytest.approx(b.length - a.length)
 
 
-def test_overlay_drops_degenerate_zero_length_lines() -> None:
-    """A zero-length ``LineString`` carries no linework: it vanishes from results.
+def test_overlay_preserves_zero_length_line_point_support() -> None:
+    """A zero-length ``LineString`` contributes its point support to results.
 
-    Emitting an awkward zero-length ``LineString`` (start == end) is worse than
-    an empty/absent line, so overlay drops it and ``line_merge`` ignores it.
+    The point remains a valid lower-dimensional result, while ``line_merge``
+    ignores the zero-length member when joining genuine linework.
     """
     degenerate = gm.LineString([(8, 1), (8, 1)])
     out = gm.difference(degenerate, gm.box(0, 3, 4, 7))
-    assert out.is_empty and out.geometry_type == 'LineString'
-    assert gm.difference(degenerate, gm.LineString([(0, 0), (1, 1)])).is_empty
-    assert gm.equals(gm.union(degenerate, gm.box(0, 3, 4, 7)), gm.box(0, 3, 4, 7))
+    assert gm.equals(out, gm.Point(8, 1))
     assert gm.equals(
-        gm.symmetric_difference(degenerate, gm.box(0, 3, 4, 7)), gm.box(0, 3, 4, 7)
+        gm.difference(degenerate, gm.LineString([(0, 0), (1, 1)])),
+        gm.Point(8, 1),
+    )
+    expected_union = gm.GeometryCollection([gm.Point(8, 1), gm.box(0, 3, 4, 7)])
+    assert gm.equals(gm.union(degenerate, gm.box(0, 3, 4, 7)), expected_union)
+    assert gm.equals(
+        gm.symmetric_difference(degenerate, gm.box(0, 3, 4, 7)), expected_union
     )
     mixed = gm.from_wkt('MULTILINESTRING ((8 1, 8 1), (0 0, 2 0))')
     assert gm.equals(
-        gm.difference(mixed, gm.box(20, 20, 30, 30)), gm.LineString([(0, 0), (2, 0)])
+        gm.difference(mixed, gm.box(20, 20, 30, 30)),
+        gm.GeometryCollection([gm.Point(8, 1), gm.LineString([(0, 0), (2, 0)])]),
     )
     merged = gm.from_wkt(
         'MULTILINESTRING ((5 5, 5 5), (0 0, 1 1), (1 1, 2 2))'

@@ -185,9 +185,17 @@ fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
     }
     let covered = vertices
         .iter()
-        .filter(|vertex| ctx.tester.covers_point(**vertex))
+        .filter(|vertex| {
+            ctx.tester
+                .covers_point(**vertex)
+                .expect("test source admits")
+        })
         .count();
-    let center_hit = covered < 4 && ctx.tester.covers_point(cell.center_lonlat());
+    let center_hit = covered < 4
+        && ctx
+            .tester
+            .covers_point(cell.center_lonlat())
+            .expect("test source admits");
     if rect.crosses_seam() || rect.is_full_lng() {
         // Mirror production: fail-open Boundary for outer, but certify
         // Interior when every positive-width lon window is covered.
@@ -287,7 +295,7 @@ fn classify_with_native(source: &Shape, id: CellId) -> CellClass {
     let affine = GeographicCoverageSource::new(source, SphericalGridTarget::S2)
         .expect("test source carrier allocates");
     let ctx = CoverContext::prepare(source, &affine, WorkingShapeRelation::Identity).unwrap();
-    classify(&ctx, id)
+    classify(&ctx, id).expect("test source admits")
 }
 
 fn fixed(level: u8) -> Coverer {
@@ -783,7 +791,7 @@ fn split_working_window_cannot_prune_the_retained_seam_owner() {
     );
     let ctx =
         CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
-    assert_eq!(classify(&ctx, owner), CellClass::Boundary);
+    assert_eq!(classify(&ctx, owner).unwrap(), CellClass::Boundary);
     let covering = fixed(10)
         .cover(&working, &affine, WorkingShapeRelation::AntimeridianSplit)
         .expect("the regression line has a small fixed-level cover");
@@ -840,7 +848,7 @@ fn split_seam_carrier_can_exclude_the_far_sheet() {
     );
     let ctx =
         CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
-    assert_eq!(classify(&ctx, far_seam), CellClass::Outside);
+    assert_eq!(classify(&ctx, far_seam).unwrap(), CellClass::Outside);
     assert_eq!(
         fixed(8)
             .cover(&working, &affine, WorkingShapeRelation::AntimeridianSplit)
@@ -887,7 +895,7 @@ fn sub_ulp_seam_sheet_can_certify_retained_authority_interior() {
     );
     let ctx =
         CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
-    assert_eq!(classify(&ctx, id), CellClass::Interior);
+    assert_eq!(classify(&ctx, id).unwrap(), CellClass::Interior);
 }
 
 #[test]
@@ -909,7 +917,7 @@ fn polar_cap_affine_certificate_prunes_the_south() {
         "the south cell owns no retained cap endpoint"
     );
     assert_eq!(
-        classify(&ctx, id),
+        classify(&ctx, id).unwrap(),
         CellClass::Outside,
         "a corroborated polar cap still prunes its disjoint S2 subtree"
     );

@@ -223,10 +223,11 @@ are carried through the rebuild.
 Parameters
 ----------
 method : {'linework', 'structure'}, default linework
-    Repair strategy: ``linework`` nodes all boundary linework and
-    reassembles regions by even-odd parity, keeping every input edge;
-    ``structure`` rebuilds each ring's enclosed area and recombines them
-    as shells minus holes, discarding collapsed components.
+    Repair strategy: ``linework`` nodes all boundary linework and selects
+    regions from each original ring occurrence's winding modulo two before
+    recombining each polygon's shell minus its holes; distinct polygon members
+    are unioned. ``structure`` rebuilds each ring's nonzero-winding enclosed
+    area and recombines it as shells minus holes.
 
     Z/M are carried at vertices traceable to the input; a rebuild that needs
     unsourceable vertices returns the mathematically natural XY result.";

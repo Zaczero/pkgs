@@ -14,8 +14,8 @@ use crate::geometry::{
     wrap_index,
 };
 
-/// Iteratively remove segments with a degree-1 endpoint (dangles): the
-/// closed remainder is the linework whose even-odd parity is well-defined.
+/// Iteratively remove segments with a degree-1 endpoint (dangles) from the
+/// reference linework used by the validity tests.
 #[cfg(test)]
 pub(crate) fn prune_dangles(segments: &mut Vec<Segment>) {
     if segments.is_empty() {

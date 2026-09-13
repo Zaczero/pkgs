@@ -249,26 +249,30 @@ pub(crate) fn build_overlay_shape(
 /// already performed dimensional absorption, so any further coverage test here
 /// would be a second topology owner.
 pub(crate) fn build_certified_overlay_shape(
+    points: Vec<Point>,
+    lines: Vec<CoordSeq>,
+    polygons: Vec<Polygon>,
+) -> crate::error::Result<Shape> {
+    build_certified_overlay_shape_with_axes(points, lines, polygons, CoordinateAxes::XY)
+}
+
+pub(crate) fn build_certified_overlay_shape_with_axes(
     mut points: Vec<Point>,
     mut lines: Vec<CoordSeq>,
     mut polygons: Vec<Polygon>,
+    axes: CoordinateAxes,
 ) -> crate::error::Result<Shape> {
     points.sort_by(crate::geometry::compare_points);
     lines.sort_by(crate::geometry::compare_point_slices);
     polygons.sort_by(crate::geometry::compare_polygons);
     let point_part = (!points.is_empty())
-        .then(|| Shape::narrow_points(CoordinateAxes::XY, points))
+        .then(|| Shape::narrow_points(axes, points))
         .transpose()?;
     let line_part = (!lines.is_empty())
-        .then(|| {
-            Shape::narrow_lines(
-                CoordinateAxes::XY,
-                lines.into_iter().map(LineSeq::from_proven).collect(),
-            )
-        })
+        .then(|| Shape::narrow_lines(axes, lines.into_iter().map(LineSeq::from_proven).collect()))
         .transpose()?;
     let polygon_part = (!polygons.is_empty())
-        .then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons))
+        .then(|| Shape::narrow_polygons(axes, polygons))
         .transpose()?;
     let mut parts = Vec::new();
     try_reserve_vec(&mut parts, 3)?;

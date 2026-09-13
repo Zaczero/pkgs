@@ -14,6 +14,7 @@
 
 use std::sync::{Arc, OnceLock};
 
+use crate::error::Result;
 use crate::geometry::{
     Bounds, CoordSeq, Point, PointBatchTester, Polygon, PreparedPlan, RectContact, Segment,
     SegmentIndex, Shape, Strictness, XY, bounds_to_shape, graph_intersects_bounds, line_segments,
@@ -131,14 +132,14 @@ impl<'a> GeographicCandidateClassifier<'a> {
         })
     }
 
-    fn classify_bounds(&self, bounds: Bounds) -> RectClass {
-        let working = self.working.classify_bounds(bounds);
+    fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass> {
+        let working = self.working.classify_bounds(bounds)?;
         let candidate = self.authority.classify_rect(rectangle_windows(bounds));
-        match (candidate, working) {
+        Ok(match (candidate, working) {
             (AffineRectClass::Outside, RectClass::Outside) => RectClass::Outside,
             (AffineRectClass::Interior, RectClass::Interior) => RectClass::Interior,
             _ => RectClass::Boundary,
-        }
+        })
     }
 
     /// Refine a provisional rectangle against the source-owned geographic
@@ -262,26 +263,26 @@ impl NativeRectClassifier {
     /// Classify a closed lon/lat rectangle against the source. Polygonal
     /// area may certify `Interior`; lineal and point components can only
     /// make an otherwise outside rectangle `Boundary`.
-    pub(crate) fn classify_bounds(&self, bounds: Bounds) -> RectClass {
+    pub(crate) fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass> {
         let Some(source_bounds) = self.source_bounds else {
-            return RectClass::Outside;
+            return Ok(RectClass::Outside);
         };
         if !bounds.intersects(source_bounds) {
-            return RectClass::Outside;
+            return Ok(RectClass::Outside);
         }
 
         if let Some(area) = &self.area {
-            match area.classify_bounds(bounds) {
-                RectClass::Interior => return RectClass::Interior,
-                RectClass::Boundary => return RectClass::Boundary,
+            match area.classify_bounds(bounds)? {
+                RectClass::Interior => return Ok(RectClass::Interior),
+                RectClass::Boundary => return Ok(RectClass::Boundary),
                 RectClass::Outside => {},
             }
         }
 
         if self.line_intersects(bounds) || self.point_intersects(bounds) {
-            RectClass::Boundary
+            Ok(RectClass::Boundary)
         } else {
-            RectClass::Outside
+            Ok(RectClass::Outside)
         }
     }
 
@@ -306,19 +307,19 @@ impl NativeRectClassifier {
 }
 
 impl AreaRectClassifier {
-    fn classify_bounds(&self, bounds: Bounds) -> RectClass {
+    fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass> {
         let Some(area_bounds) = self.bounds else {
-            return RectClass::Outside;
+            return Ok(RectClass::Outside);
         };
         if !bounds.intersects(area_bounds) {
-            return RectClass::Outside;
+            return Ok(RectClass::Outside);
         }
 
         let mut touches_closed = false;
         let probe = rect_probe(bounds);
         for entry in self.boundary_index.intersecting_candidates(probe) {
             match segment_vs_rect(entry.segment, bounds) {
-                RectContact::Open => return RectClass::Boundary,
+                RectContact::Open => return Ok(RectClass::Boundary),
                 RectContact::Closed => touches_closed = true,
                 RectContact::None => {},
             }
@@ -327,12 +328,12 @@ impl AreaRectClassifier {
             f64::midpoint(bounds.minx(), bounds.maxx()),
             f64::midpoint(bounds.miny(), bounds.maxy()),
         );
-        if self.tester.covers_point(center) {
-            RectClass::Interior
+        if self.tester.covers_point(center)? {
+            Ok(RectClass::Interior)
         } else if touches_closed {
-            RectClass::Boundary
+            Ok(RectClass::Boundary)
         } else {
-            RectClass::Outside
+            Ok(RectClass::Outside)
         }
     }
 }
@@ -491,7 +492,7 @@ pub(crate) fn cover<C: RectCell>(
         let Some((cell, bounds)) = boundary.pop() else {
             break;
         };
-        match classifier.classify_bounds(bounds) {
+        match classifier.classify_bounds(bounds)? {
             RectClass::Outside => {},
             RectClass::Interior => {
                 if cell.depth() >= target_depth {
@@ -939,7 +940,10 @@ mod tests {
         .unwrap();
         let bounds = geohash::Geohash::parse("7").unwrap().bounds();
 
-        assert_eq!(classifier.classify_bounds(bounds), RectClass::Boundary);
+        assert_eq!(
+            classifier.classify_bounds(bounds).unwrap(),
+            RectClass::Boundary
+        );
         assert_eq!(
             classifier
                 .authority_graph()

@@ -9,12 +9,12 @@ use crate::geometry::{
     polygon_parts_to_shape, ring_decision_area, same_point, wrap_index,
 };
 ///
-/// `Linework` is even-odd parity over the deduplicated noded linework, so a
-/// same-ring retraced edge counts once. `Structure` is each ring's
-/// nonzero-signed-winding enclosed area, so a many-wound shell fills every
-/// region it winds around. Both methods recombine the selected regions as
-/// union(shells) − union(holes). Collapsed rings enclose nothing and drop out
-/// of either fold.
+/// `Linework` is the original stored ring's directed winding modulo two on the
+/// exact noded partition, so opposite occurrences cancel and duplicate
+/// occurrences retain their multiplicity. `Structure` is each ring's
+/// nonzero-signed-winding enclosed area. Both methods recombine selected
+/// regions as union(shells) − union(holes); collapsed rings contribute their
+/// closed line support to the exact source fold before polygon repair.
 pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Result<Shape> {
     let area: Vec<Polygon> = match method {
         RepairMethod::Linework | RepairMethod::Structure => {

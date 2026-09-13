@@ -135,14 +135,7 @@ impl Shape {
         let inventory = ExactSourceInventory::from_shapes(&[self])?;
         let mut budget = crate::geometry::ExpansionBudget::new("node", "exact partition");
         let partition = inventory.partition(&mut budget)?;
-        let emission = inventory.line_emission(&partition)?;
-        let noded = emission
-            .segments
-            .iter()
-            .map(|segment| LineSeq::segment(segment.start.point(), segment.end.point()))
-            .collect::<Result<Vec<_>>>()?;
-        let noded = Self::multi_line_string(self.axes(), noded)?;
-        carry_ordinates(noded, &[self], "node", strictness.is_strict())
+        inventory.node_shape(&partition, self.axes(), strictness.is_strict())
     }
 
     pub fn line_merge(&self) -> Result<Self> {

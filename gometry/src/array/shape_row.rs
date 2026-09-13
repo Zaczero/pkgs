@@ -120,12 +120,7 @@ impl<'a> ShapeRow<'a> {
     fn point_membership<const BOUNDARY: bool>(self, point: Point) -> crate::error::Result<bool> {
         match self {
             Self::Rings(coords, ring_offsets, start, end) => {
-                Ok(polygon_row_point_membership::<BOUNDARY>(
-                    coords,
-                    ring_offsets,
-                    start..end,
-                    point,
-                ))
+                polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, start..end, point)
             },
             _ => self.try_with_shape(|shape| {
                 if BOUNDARY {

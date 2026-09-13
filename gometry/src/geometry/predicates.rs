@@ -14,8 +14,8 @@ mod validate;
 mod validity_helpers;
 
 pub(crate) use membership::{
-    RingClass, RingEdgeMembership, TouchDirections, line_contains_point, multiline_contains_point,
-    ring_classify_point, ring_contains_interior, ring_edge_membership, ring_label,
+    RingClass, RingEdgeMembership, TouchDirections, ring_classify_point, ring_contains_interior,
+    ring_edge_membership, ring_label,
 };
 pub(in crate::geometry) use membership::{
     multi_polygon_members_issue, polygon_rings_issue, polygon_row_point_membership,

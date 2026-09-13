@@ -4,7 +4,7 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
 #[cfg(test)]
 use crate::geometry::convex_contact::{self, ConvexRelation};
-use crate::geometry::overlay::{ExactSourceInventory, exact_point_location};
+use crate::geometry::overlay::ExactSourceInventory;
 #[cfg(test)]
 use crate::geometry::predicates;
 #[cfg(test)]
@@ -123,45 +123,7 @@ fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    if let Some(matrix) = try_exact_areal_point_relate(left.shape(), right.shape()) {
-        return Ok(matrix);
-    }
     exact_cartesian_relate(left.shape(), right.shape())
-}
-
-fn try_exact_areal_point_relate(left: &Shape, right: &Shape) -> Option<De9im> {
-    let (areal, point, transpose) = match (left, right) {
-        (Shape::Point(point), Shape::Polygon(_) | Shape::MultiPolygon(_)) => (right, *point, true),
-        (Shape::Polygon(_) | Shape::MultiPolygon(_), Shape::Point(point)) => (left, *point, false),
-        _ => return None,
-    };
-    let mut polygons = Vec::new();
-    collect_areal_polygons(areal, &mut polygons);
-    if polygons.is_empty()
-        || !polygons
-            .iter()
-            .all(|polygon| polygon.rings().all(ring_is_sound))
-    {
-        return None;
-    }
-    let location = exact_point_location(areal, point)?;
-    let mut matrix = De9im::empty_disjoint();
-    matrix.set_at_least(location, Loc::Interior, crate::geometry::Dimension::Point);
-    matrix.set_at_least(
-        Loc::Interior,
-        Loc::Exterior,
-        crate::geometry::Dimension::Surface,
-    );
-    matrix.set_at_least(
-        Loc::Boundary,
-        Loc::Exterior,
-        crate::geometry::Dimension::Curve,
-    );
-    Some(if transpose {
-        matrix.transpose()
-    } else {
-        matrix
-    })
 }
 
 fn exact_cartesian_relate(left: &Shape, right: &Shape) -> Result<De9im> {
@@ -1710,12 +1672,12 @@ mod tests {
         let right = PreparedPlan::transient(&line).unwrap();
         assert_eq!(
             graph_relate_data(&left, &right).unwrap().text(),
-            "10FFFFFF2"
+            "1FFF0FFF2"
         );
     }
 
     #[test]
-    fn invalid_outlying_hole_boundary_remains_a_point_contact() {
+    fn external_hole_boundary_is_not_polygon_support() {
         let polygon =
             crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0),(5 5,6 5,6 6,5 6,5 5))").unwrap();
         let point = Shape::Point(Point::new_raw_xy(5.0, 5.0));
@@ -1723,7 +1685,7 @@ mod tests {
         let right = PreparedPlan::transient(&point).unwrap();
         assert_eq!(
             graph_relate_data(&left, &right).unwrap().text(),
-            "FF20F1FF2"
+            "FF2FF10F2"
         );
     }
 
@@ -1782,23 +1744,6 @@ mod tests {
             ),
             ("hole", &hole, &square, "212F11FF2"),
             ("concave", &concave, &square, "212111212"),
-            ("invalid", &invalid, &square, "FF2111212"),
-            // The graph models a zero-area ring as interior linework (its
-            // edges carry no boundary flag), so its stretch along the square's
-            // bottom edge reads as interior-on-boundary. The earlier `FF2F0F212`
-            // was not a convention but an artifact: the pairing dropped one
-            // side's ownership when the ring's pieces collided with the
-            // square's. The degenerate-area convention itself (a `BB=0` node
-            // cell beside an otherwise empty boundary row) is logged as open.
-            // A polygon whose rings are collinear encloses nothing, so it IS
-            // its linework and relates exactly as the equivalent closed line:
-            // interior along the ring, no boundary (a closed curve has none).
-            // The former `F12F0F212` claimed a two-dimensional interior (IE=2)
-            // and a point-sized boundary at once, which is neither reading.
-            // A zero-area set cannot have a two-dimensional interior.
-            // `degenerate_polygon_relates_as_its_own_linework` pins the
-            // equivalence.
-            ("collapsed", &collapsed, &square, "F1FFFF212"),
             ("nonstrict", &nonstrict, &far, "FF2FF1212"),
             ("right edge apex", &square4, &right_edge_apex, "212F01FF2"),
             ("left edge apex", &square4, &left_edge_apex, "212F01FF2"),
@@ -1817,6 +1762,22 @@ mod tests {
         ] {
             assert_convex_relation_case(name, left, right, false, expected);
         }
+        let collapsed_left = PreparedPlan::transient(&collapsed).unwrap();
+        let square_right = PreparedPlan::transient(&square).unwrap();
+        assert_eq!(
+            graph_relate_data(&collapsed_left, &square_right)
+                .unwrap()
+                .text(),
+            "F1FF0F212"
+        );
+        let invalid_left = PreparedPlan::transient(&invalid).unwrap();
+        assert!(try_convex_relate(&invalid, &square).is_none());
+        assert_eq!(
+            graph_relate_data(&invalid_left, &square_right)
+                .unwrap()
+                .text(),
+            "212111212"
+        );
     }
 
     #[test]
@@ -1835,17 +1796,16 @@ mod tests {
         let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
         let left = PreparedPlan::transient(&two_unique).unwrap();
         let right = PreparedPlan::transient(&square).unwrap();
-        let oracle = graph_relate_data_oracle(&left, &right).unwrap();
         assert!(try_convex_relate(&two_unique, &square).is_none());
-        assert_eq!(graph_relate_data(&left, &right).unwrap().0, oracle.0);
+        let forward = graph_relate_data(&left, &right).unwrap();
+        assert_eq!(forward.text(), "FF1FF0212");
 
         let reverse_left = PreparedPlan::transient(&square).unwrap();
         let reverse_right = PreparedPlan::transient(&two_unique).unwrap();
-        let reverse_oracle = graph_relate_data_oracle(&reverse_left, &reverse_right).unwrap();
         assert!(try_convex_relate(&square, &two_unique).is_none());
         assert_eq!(
             graph_relate_data(&reverse_left, &reverse_right).unwrap().0,
-            reverse_oracle.0
+            forward.transpose().0
         );
     }
 
@@ -2105,10 +2065,14 @@ mod tests {
             ])),
             &areal,
         );
-        assert_areal_fallback(
-            "collapsed ring",
-            &Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]])),
-            &areal,
+        let collapsed = Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]));
+        let collapsed_left = PreparedPlan::transient(&collapsed).unwrap();
+        let areal_right = PreparedPlan::transient(&areal).unwrap();
+        assert_eq!(
+            graph_relate_data(&collapsed_left, &areal_right)
+                .unwrap()
+                .text(),
+            "F1FF0F212"
         );
         assert!(try_areal_relate_in(&areal, &areal, TopologySpace::Geographic).is_none());
     }

@@ -6,57 +6,8 @@ use crate::geometry::{
     Bounds, CoordSeq, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains,
     Orientation, Point, PointKey, Polygon, Ring, ValidationIssue, XY, classify_ring_pair,
     face_interior_point, for_each_overlapping_bounds_pair, orient_ring, orientation_xy,
-    point_on_segment, ray_crossing_is_right, ring_probe_point, same_point, settle_touches,
-    topology, visit_interacting_pairs,
+    ray_crossing_is_right, ring_probe_point, settle_touches, topology, visit_interacting_pairs,
 };
-pub(crate) fn line_contains_point<C: Coordinates + ?Sized>(points: &C, point: Point) -> bool {
-    if !points
-        .segment_pairs()
-        .any(|[start, end]| point_on_segment(point, start, end))
-    {
-        return false;
-    }
-    if points
-        .first_coord()
-        .zip(points.last_coord())
-        .is_some_and(|(first, last)| same_point(first, last))
-    {
-        return true;
-    }
-    !points
-        .first_coord()
-        .zip(points.last_coord())
-        .is_some_and(|(first, last)| same_point(first, point) || same_point(last, point))
-}
-
-pub(crate) fn multiline_contains_point<L: AsRef<CoordSeq>>(lines: &[L], point: Point) -> bool {
-    let mut boundary_count = 0;
-    let mut on_linework = false;
-    for line in lines {
-        let line = line.as_ref();
-        if !line
-            .segment_pairs()
-            .any(|[start, end]| point_on_segment(point, start, end))
-        {
-            continue;
-        }
-        on_linework = true;
-        let Some((first, last)) = line.first().zip(line.last()) else {
-            continue;
-        };
-        if same_point(first, last) {
-            return true;
-        }
-        let at_start = same_point(first, point);
-        let at_end = same_point(last, point);
-        if !at_start && !at_end {
-            return true;
-        }
-        boundary_count += usize::from(at_start) + usize::from(at_end);
-    }
-    on_linework && boundary_count % 2 == 0
-}
-
 /// Where a probe point sits relative to one ring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RingClass {
@@ -153,22 +104,16 @@ pub(in crate::geometry) fn polygon_row_point_membership<const BOUNDARY: bool>(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
     point: Point,
-) -> bool {
-    if rings.is_empty() || rings.start >= rings.end {
-        return false;
-    }
-    let classify = |ring_index: usize| -> RingClass {
-        let start = ring_offsets[ring_index] as usize;
-        let end = ring_offsets[ring_index + 1] as usize;
-        ring_classify_point_columns(&coords.xs()[start..end], &coords.ys()[start..end], point)
-    };
-    if BOUNDARY {
-        classify(rings.start) != RingClass::Exterior
-            && !(rings.start + 1..rings.end).any(|index| classify(index) == RingClass::Interior)
-    } else {
-        classify(rings.start) == RingClass::Interior
-            && !(rings.start + 1..rings.end).any(|index| classify(index) != RingClass::Exterior)
-    }
+) -> crate::error::Result<bool> {
+    crate::geometry::cartesian_polygon_row_point_location(coords, ring_offsets, rings, point).map(
+        |location| {
+            if BOUNDARY {
+                location != crate::geometry::Loc::Exterior
+            } else {
+                location == crate::geometry::Loc::Interior
+            }
+        },
+    )
 }
 
 /// Exact resolution when the point lies within some edge's bbox: the original

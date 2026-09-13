@@ -23,7 +23,7 @@ impl PreparedPlan {
             .bounds()
             .zip(other.bounds())
             .is_some_and(|(left, right)| left.intersects(right));
-        if overlapping && let Some(witness) = quick_area_overlap(self.shape(), other.shape()) {
+        if overlapping && let Some(witness) = quick_area_overlap(self.shape(), other.shape())? {
             return Ok(Some((witness, witness)));
         }
         let self_parts = self.distance_parts()?;
@@ -41,7 +41,7 @@ impl PreparedPlan {
         }
         if overlapping
             && let Some(witness) =
-                parts_boundary_witness(self.shape(), self_parts, other.shape(), other_parts)
+                parts_boundary_witness(self.shape(), self_parts, other.shape(), other_parts)?
         {
             return Ok(Some((witness, witness)));
         }

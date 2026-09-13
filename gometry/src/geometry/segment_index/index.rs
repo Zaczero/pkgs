@@ -1,8 +1,10 @@
 use rstar::{AABB, RTreeNode, RTreeObject};
 
 use crate::HeapSize;
+#[cfg(test)]
+use crate::geometry::point_on_segment;
 use crate::geometry::{
-    BulkRTree, Ordering, Point, Segment, point_on_segment, point_segment_distance_key,
+    BulkRTree, Ordering, Point, Segment, point_segment_distance_key,
     point_segment_distance_squared, same_point,
 };
 
@@ -154,6 +156,7 @@ impl SegmentIndex {
     /// Whether a point lies on any indexed segment. The envelope query keeps
     /// the exact segment predicate on the small candidate set, so repeated
     /// point probes do not rescan the full linework.
+    #[cfg(test)]
     pub(crate) fn covers_point(&self, point: Point) -> bool {
         let query = Segment {
             start: point.xy(),

@@ -98,6 +98,11 @@ pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
 mod segments;
+mod source_support;
+pub(crate) use source_support::{
+    RingKind, RingView, cartesian_area_covers_point, cartesian_point_location,
+    cartesian_polygon_row_point_location, cartesian_ring_views_location, ring_kind_columns,
+};
 mod tessellation;
 mod topology;
 pub(crate) use topology::{TopologyDomain, TopologyGraph};
@@ -147,14 +152,11 @@ use geodesic_bvh::{
 pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric};
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
 use linear::{normalize_line_distance, push_distinct_point};
-pub(crate) use ordinates::{
-    carry_direct_point_ordinates, carry_direct_points_ordinates, carry_overlay_ordinates,
-    carry_overlay_ordinates_from_graph,
-};
 use ordinates::{carry_each, carry_ordinates};
+pub(crate) use ordinates::{carry_overlay_ordinates, carry_overlay_ordinates_from_graph};
 pub(crate) use overlay::{
-    OverlayOp, Strictness, empty_shape_for_dimension_with_axes, exact_intersects_bounds,
-    rect_polygon,
+    OverlayOp, Strictness, cartesian_support_nonempty, empty_shape_for_dimension_with_axes,
+    exact_intersects_bounds, rect_polygon,
 };
 use overlay::{
     binary_areal_overlay, clip_multipoint_columns, clip_polygonal, clipped_line_parts,
@@ -183,19 +185,6 @@ pub(crate) use util::{
     same_active_position, same_point, same_topological_coordinate, topology_coordinate_bits_simd,
     unique_xy_points, wrap_index,
 };
-
-/// Algebraic area is equivalent to occupied Cartesian support for a validated
-/// non-collection operand. A geometry collection may contain overlapping valid
-/// polygon members, so its member-wise sum cannot use this admission.
-pub(crate) fn valid_cartesian_area(data: &PreparedPlan) -> Result<Option<f64>> {
-    if matches!(data.shape(), Shape::GeometryCollection(_)) {
-        return Ok(None);
-    }
-    if data.validate_cached()?.is_some() {
-        return Ok(None);
-    }
-    Ok(Some(data.shape().area()))
-}
 
 /// Which optional ordinate an edit replaces or clears.
 #[derive(Clone, Copy)]
@@ -260,7 +249,7 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
     point: Point,
-) -> bool {
+) -> Result<bool> {
     predicates::polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, rings, point)
 }
 pub(crate) use relate::{

@@ -29,9 +29,9 @@ use crate::geometry::tessellation::exact::{
 };
 use crate::geometry::{
     Bounds, Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget,
-    GeometryErrorKind, HashMap, HashMapExt as _, HashSet, LineSeq, Loc, Point, PointKey, Polygon,
-    PolygonizeFull, Result, Ring, Segment, Shape, XY, for_each_candidate_pair, same_point,
-    segment_contact_exact, single_chain, undirected_segment_edge_key,
+    GeometryErrorKind, HashMap, HashMapExt as _, LineSeq, Loc, Point, PointKey, Polygon,
+    PolygonizeFull, Result, Ring, RingKind, Segment, Shape, XY, for_each_candidate_pair,
+    same_point, segment_contact_exact, single_chain,
 };
 use crate::try_reserve_vec;
 
@@ -61,8 +61,26 @@ impl ArealCells {
         edges: &[u32],
         global: &GlobalFaces,
     ) -> Result<BoundaryPlan> {
+        self.emission_plan_with_protected(partition, topology, edges, global, None)
+    }
+
+    fn emission_plan_with_protected(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+        extra_protected: Option<&[bool]>,
+    ) -> Result<BoundaryPlan> {
         let (lines, points) = self.lower_dimensions(partition, topology, edges, global)?;
-        let mut plan = global.boundary_plan(&lines, topology, edges, partition, &self.faces)?;
+        let mut plan = global.boundary_plan_with_protected(
+            &lines,
+            topology,
+            edges,
+            partition,
+            &self.faces,
+            extra_protected,
+        )?;
         try_reserve_vec(&mut plan.points, points.len())?;
         for node in points {
             let index = node.0 as usize;
@@ -329,6 +347,15 @@ struct GlobalFaces {
     count: u32,
 }
 
+struct CellFacts {
+    face_membership: Vec<bool>,
+    span_raw: Vec<bool>,
+    span_curve: Vec<bool>,
+    span_support: Vec<bool>,
+    span_faces: Vec<[u32; 2]>,
+    point_membership: Vec<bool>,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct RoundedExtent {
     x_lo: f64,
@@ -422,6 +449,13 @@ struct BoundaryPlan {
     lines: Vec<PlannedChord>,
     points: Vec<(NodeId, u32)>,
     face_quotient: Vec<u32>,
+}
+
+struct NodeParts {
+    points: Vec<NodeId>,
+    lines: Vec<Vec<NodeId>>,
+    polygons: Vec<Vec<Vec<NodeId>>>,
+    rounded: Vec<(NodeId, XY)>,
 }
 
 impl BoundaryPlan {
@@ -593,6 +627,107 @@ impl BoundaryPlan {
                 .map(|item| Point::new_raw_xy(item.start.x, item.start.y)),
         );
         Ok((points, lines, polygons))
+    }
+
+    fn emit_node_parts(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+    ) -> Result<NodeParts> {
+        // Round and certify once, while retaining the exact node identities for
+        // the publication pass.  No emitted coordinate is used to rediscover
+        // its source node.
+        let items = self.incident_items(topology)?;
+        let rounded_segments = self.round_items(partition, topology)?;
+        let mut rounded = Vec::new();
+        try_reserve_vec(&mut rounded, items.len().saturating_mul(2))?;
+        for (&[start, end], segment) in items.iter().zip(&rounded_segments) {
+            rounded.push((start, segment.start));
+            rounded.push((end, segment.end));
+        }
+        let node_chord = |chord: &PlannedChord| {
+            let first = self.source_darts[chord.sources.start] as usize;
+            let last = self.source_darts[chord.sources.end - 1] as usize;
+            [
+                NodeId(topology.owners[first]),
+                NodeId(topology.targets[last]),
+            ]
+        };
+
+        let groups = self.polygon_walks(partition, topology)?;
+        let mut rings: Vec<Option<Vec<NodeId>>> = Vec::new();
+        try_reserve_vec(&mut rings, self.walks.len())?;
+        rings.resize_with(self.walks.len(), || None);
+        for (index, walk) in self.walks.iter().enumerate() {
+            let mut nodes = Vec::new();
+            try_reserve_vec(&mut nodes, walk.len().saturating_add(1))?;
+            for chord in walk {
+                nodes.push(node_chord(chord)[0]);
+            }
+            if let Some(&first) = nodes.first() {
+                nodes.push(first);
+                canonicalize_closed_nodes(partition, &mut nodes)?;
+            }
+            rings[index] = Some(nodes);
+        }
+        let mut polygons = Vec::new();
+        try_reserve_vec(&mut polygons, groups.len())?;
+        for group in groups {
+            let mut indices = group.into_iter();
+            let shell = rings[indices.next().expect("polygon has a shell")]
+                .take()
+                .expect("each ring has one polygon owner");
+            let mut polygon_rings = Vec::new();
+            try_reserve_vec(&mut polygon_rings, indices.len().saturating_add(1))?;
+            polygon_rings.push(shell);
+            for index in indices {
+                polygon_rings.push(
+                    rings[index]
+                        .take()
+                        .expect("each ring has one polygon owner"),
+                );
+            }
+            polygons.push(polygon_rings);
+        }
+
+        let line_walks = self.line_walks(topology)?;
+        let mut lines = Vec::new();
+        try_reserve_vec(&mut lines, line_walks.len())?;
+        for walk in line_walks {
+            let mut nodes = Vec::new();
+            try_reserve_vec(&mut nodes, walk.len().saturating_add(1))?;
+            for (index, reversed) in walk {
+                let [start, end] = node_chord(&self.lines[index]);
+                let (start, end) = if reversed { (end, start) } else { (start, end) };
+                if nodes.is_empty() {
+                    nodes.push(start);
+                }
+                nodes.push(end);
+            }
+            if nodes.len() > 2 && nodes.first() == nodes.last() {
+                canonicalize_closed_nodes(partition, &mut nodes)?;
+                let open = nodes.len() - 1;
+                if partition.compare_nodes(nodes[1], nodes[open - 1])? == Ordering::Greater {
+                    nodes[1..open].reverse();
+                    nodes[open] = nodes[0];
+                }
+            }
+            if let (Some(&first), Some(&last)) = (nodes.first(), nodes.last())
+                && partition.compare_nodes(last, first)? == Ordering::Less
+            {
+                nodes.reverse();
+            }
+            lines.push(nodes);
+        }
+        let mut points = Vec::new();
+        try_reserve_vec(&mut points, self.points.len())?;
+        points.extend(self.points.iter().map(|&(node, _)| node));
+        Ok(NodeParts {
+            points,
+            lines,
+            polygons,
+            rounded,
+        })
     }
 
     fn polygon_walks(
@@ -837,6 +972,22 @@ impl BoundaryPlan {
     }
 }
 
+fn canonicalize_closed_nodes(partition: &ExactPartition<'_>, nodes: &mut [NodeId]) -> Result<()> {
+    let open = nodes.len().saturating_sub(1);
+    if open == 0 {
+        return Ok(());
+    }
+    let mut start = 0;
+    for index in 1..open {
+        if partition.compare_nodes(nodes[index], nodes[start])? == Ordering::Less {
+            start = index;
+        }
+    }
+    nodes[..open].rotate_left(start);
+    nodes[open] = nodes[0];
+    Ok(())
+}
+
 fn canonicalize_closed_xy(xs: &mut [f64], ys: &mut [f64]) {
     let open = xs.len().saturating_sub(1);
     if open == 0 {
@@ -891,6 +1042,7 @@ fn emitted_pair_preserves_incidence(left: [(NodeId, XY); 2], right: [(NodeId, XY
 }
 
 impl GlobalFaces {
+    #[cfg(test)]
     fn boundary_plan(
         &self,
         lines: &[u32],
@@ -899,6 +1051,26 @@ impl GlobalFaces {
         partition: &ExactPartition<'_>,
         occupied: &[bool],
     ) -> Result<BoundaryPlan> {
+        self.boundary_plan_with_protected(lines, topology, edges, partition, occupied, None)
+    }
+
+    fn boundary_plan_with_protected(
+        &self,
+        lines: &[u32],
+        topology: &IndexedTopology,
+        edges: &[u32],
+        partition: &ExactPartition<'_>,
+        occupied: &[bool],
+        extra_protected: Option<&[bool]>,
+    ) -> Result<BoundaryPlan> {
+        if let Some(extra_protected) = extra_protected
+            && extra_protected.len() != partition.recipes.len()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "exact overlay protection does not match node count".into(),
+            )
+            .into());
+        }
         let mut walks = self.boundary_walks(topology, occupied)?;
         let mut retained = Vec::new();
         try_reserve_vec(&mut retained, partition.spans.len())?;
@@ -920,6 +1092,11 @@ impl GlobalFaces {
                 if partition.protect_all || matches!(recipe, NodeRecipe::Stored(_)) {
                     protected[node] = true;
                 }
+            }
+        }
+        if let Some(extra_protected) = extra_protected {
+            for (protected, &extra) in protected.iter_mut().zip(extra_protected) {
+                *protected |= extra;
             }
         }
         for &node in &partition.point_nodes {
@@ -1166,6 +1343,8 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     /// Node ownership in explicit input-point occurrence order, including duplicates.
     pub point_nodes: Vec<NodeId>,
     pub point_sources: Vec<(NodeId, u32)>,
+    binding_starts: Vec<u32>,
+    bindings: Vec<NodeOnUnique>,
     /// The first source spelling of each stored node. `PointKey` deliberately
     /// canonicalizes signed zero for identity; emission must not do the same
     /// to an endpoint that was already present in the input.
@@ -1188,15 +1367,20 @@ pub(in crate::geometry) struct ExactSourceInventory {
     provenance: SegmentProvenance,
     source_operands: Vec<u32>,
     source_rings: Vec<Option<u32>>,
-    source_boundaries: Vec<bool>,
-    source_collapsed: Vec<bool>,
+    source_ring_kinds: Vec<Option<RingKind>>,
+    ring_kinds: Vec<RingKind>,
+    ring_polygons: Vec<u32>,
+    ring_holes: Vec<bool>,
+    polygon_count: usize,
+    polygon_operands: Vec<u32>,
+    polygon_ring_ranges: Vec<Range<usize>>,
+    source_points: Vec<[Point; 2]>,
     polygon_rings: Vec<Vec<Range<usize>>>,
     ring_count: usize,
     isolated: Vec<XY>,
+    isolated_points: Vec<Point>,
     isolated_operands: Vec<u32>,
-    isolated_collapsed: Vec<bool>,
     line_boundaries: Vec<(u32, PointKey)>,
-    invalid_areas: Vec<bool>,
 }
 
 impl ExactSourceInventory {
@@ -1212,15 +1396,20 @@ impl ExactSourceInventory {
             provenance,
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
-            source_boundaries: staged.source_boundaries,
-            source_collapsed: staged.source_collapsed,
+            source_ring_kinds: staged.source_ring_kinds,
+            ring_kinds: staged.ring_kinds,
+            ring_polygons: staged.ring_polygons,
+            ring_holes: staged.ring_holes,
+            polygon_count: staged.polygon_count,
+            polygon_operands: staged.polygon_operands,
+            polygon_ring_ranges: staged.polygon_ring_ranges,
+            source_points: staged.source_points,
             polygon_rings: staged.polygon_rings,
             ring_count: staged.ring_count,
             isolated: staged.isolated,
+            isolated_points: staged.isolated_points,
             isolated_operands: staged.isolated_operands,
-            isolated_collapsed: staged.isolated_collapsed,
             line_boundaries: staged.line_boundaries,
-            invalid_areas: staged.invalid_areas,
         })
     }
 
@@ -1242,22 +1431,33 @@ impl ExactSourceInventory {
             provenance,
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
-            source_boundaries: staged.source_boundaries,
-            source_collapsed: staged.source_collapsed,
+            source_ring_kinds: staged.source_ring_kinds,
+            ring_kinds: staged.ring_kinds,
+            ring_polygons: staged.ring_polygons,
+            ring_holes: staged.ring_holes,
+            polygon_count: staged.polygon_count,
+            polygon_operands: staged.polygon_operands,
+            polygon_ring_ranges: staged.polygon_ring_ranges,
+            source_points: staged.source_points,
             polygon_rings: staged.polygon_rings,
             ring_count: staged.ring_count,
             isolated: staged.isolated,
+            isolated_points: staged.isolated_points,
             isolated_operands: staged.isolated_operands,
-            isolated_collapsed: staged.isolated_collapsed,
             line_boundaries: staged.line_boundaries,
-            invalid_areas: staged.invalid_areas,
         })
     }
 
     pub(in crate::geometry) fn from_segments(segments: &[Segment]) -> Result<Self> {
         let mut staged = StagedExactSources::new(1)?;
         for &segment in segments {
-            staged.push_segment(segment, 0, None, false, false)?;
+            staged.push_segment(
+                segment,
+                &[segment.start.point(), segment.end.point()],
+                0,
+                None,
+                None,
+            )?;
         }
         let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
         Ok(Self {
@@ -1266,15 +1466,20 @@ impl ExactSourceInventory {
             provenance,
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
-            source_boundaries: staged.source_boundaries,
-            source_collapsed: staged.source_collapsed,
+            source_ring_kinds: staged.source_ring_kinds,
+            ring_kinds: staged.ring_kinds,
+            ring_polygons: staged.ring_polygons,
+            ring_holes: staged.ring_holes,
+            polygon_count: staged.polygon_count,
+            polygon_operands: staged.polygon_operands,
+            polygon_ring_ranges: staged.polygon_ring_ranges,
+            source_points: staged.source_points,
             polygon_rings: staged.polygon_rings,
             ring_count: staged.ring_count,
             isolated: staged.isolated,
+            isolated_points: staged.isolated_points,
             isolated_operands: staged.isolated_operands,
-            isolated_collapsed: staged.isolated_collapsed,
             line_boundaries: staged.line_boundaries,
-            invalid_areas: staged.invalid_areas,
         })
     }
 
@@ -1298,6 +1503,8 @@ impl ExactSourceInventory {
                         XY::new(xs[xs.len() - 1], ys[ys.len() - 1]),
                     ),
             ));
+            try_reserve_vec(&mut staged.ring_kinds, 1)?;
+            staged.ring_kinds.push(RingKind::Winding);
             for index in 0..count {
                 let next = if index + 1 == count { 0 } else { index + 1 };
                 staged.push_segment(
@@ -1305,10 +1512,13 @@ impl ExactSourceInventory {
                         start: XY::new(xs[index], ys[index]),
                         end: XY::new(xs[next], ys[next]),
                     },
+                    &[
+                        Point::new_raw_xy(xs[index], ys[index]),
+                        Point::new_raw_xy(xs[next], ys[next]),
+                    ],
                     0,
                     closed.then_some(ring_id),
-                    false,
-                    false,
+                    closed.then_some(RingKind::Winding),
                 )?;
             }
         }
@@ -1319,15 +1529,20 @@ impl ExactSourceInventory {
             provenance,
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
-            source_boundaries: staged.source_boundaries,
-            source_collapsed: staged.source_collapsed,
+            source_ring_kinds: staged.source_ring_kinds,
+            ring_kinds: staged.ring_kinds,
+            ring_polygons: staged.ring_polygons,
+            ring_holes: staged.ring_holes,
+            polygon_count: staged.polygon_count,
+            polygon_operands: staged.polygon_operands,
+            polygon_ring_ranges: staged.polygon_ring_ranges,
+            source_points: staged.source_points,
             polygon_rings: staged.polygon_rings,
             ring_count: staged.ring_count,
             isolated: staged.isolated,
+            isolated_points: staged.isolated_points,
             isolated_operands: staged.isolated_operands,
-            isolated_collapsed: staged.isolated_collapsed,
             line_boundaries: staged.line_boundaries,
-            invalid_areas: staged.invalid_areas,
         })
     }
 
@@ -1350,11 +1565,220 @@ impl ExactSourceInventory {
         &self.source_operands
     }
 
+    fn node_bindings<'a>(
+        &self,
+        node: NodeId,
+        partition: &'a ExactPartition<'_>,
+    ) -> &'a [NodeOnUnique] {
+        let index = node.0 as usize;
+        let start = partition.binding_starts[index] as usize;
+        let end = partition.binding_starts[index + 1] as usize;
+        &partition.bindings[start..end]
+    }
+
+    fn resolve_node_point(
+        &self,
+        partition: &ExactPartition<'_>,
+        node: NodeId,
+        xy: XY,
+        axes: crate::geometry::CoordinateAxes,
+    ) -> Result<Point> {
+        if !axes.has_z() && !axes.has_m() {
+            return Ok(Point::new_raw_xy(xy.x, xy.y));
+        }
+        let mut z = AxisValue::default();
+        let mut m = AxisValue::default();
+        for binding in self.node_bindings(node, partition) {
+            let owners = self.provenance.owners(binding.unique as usize);
+            for &(source, reversed) in owners {
+                let source = source as usize;
+                let points = self.source_points.get(source).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact partition ordinate binding references an unknown source".into(),
+                    )
+                })?;
+                let parameter = if reversed {
+                    binding.parameter.reverse()?
+                } else {
+                    binding.parameter.clone()
+                };
+                let [start, end] = *points;
+                if axes.has_z() {
+                    z.observe(interpolate_ordinate(start.z(), end.z(), &parameter)?);
+                }
+                if axes.has_m() {
+                    m.observe(interpolate_ordinate(start.m(), end.m(), &parameter)?);
+                }
+            }
+        }
+        for &(bound, source) in &partition.point_sources {
+            if bound != node {
+                continue;
+            }
+            let source = source as usize;
+            let points = self.source_points.get(source).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "exact partition point binding references an unknown source".into(),
+                )
+            })?;
+            for point in points {
+                if axes.has_z() {
+                    z.observe(point.z());
+                }
+                if axes.has_m() {
+                    m.observe(point.m());
+                }
+            }
+        }
+        if partition.point_nodes.len() != self.isolated_points.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "exact partition isolated-point provenance is out of sync".into(),
+            )
+            .into());
+        }
+        for (index, &bound) in partition.point_nodes.iter().enumerate() {
+            if bound != node {
+                continue;
+            }
+            let point = self.isolated_points[index];
+            if axes.has_z() {
+                z.observe(point.z());
+            }
+            if axes.has_m() {
+                m.observe(point.m());
+            }
+        }
+        Ok(Point::new_raw_axes(
+            xy.x,
+            xy.y,
+            crate::geometry::ZOrdinate(z.value()),
+            crate::geometry::MOrdinate(m.value()),
+        ))
+    }
+
+    fn ordinate_protected_nodes(
+        &self,
+        partition: &ExactPartition<'_>,
+        axes: crate::geometry::CoordinateAxes,
+    ) -> Result<Option<Vec<bool>>> {
+        if !axes.has_z() && !axes.has_m() {
+            return Ok(None);
+        }
+        let mut protected = Vec::new();
+        try_reserve_vec(&mut protected, partition.recipes.len())?;
+        protected.resize(partition.recipes.len(), false);
+        for (node, range) in partition.binding_starts.windows(2).enumerate() {
+            for binding in &partition.bindings[range[0] as usize..range[1] as usize] {
+                let mut source_has_ordinate = false;
+                for &(source, _) in self.provenance.owners(binding.unique as usize) {
+                    let points = self.source_points.get(source as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "exact partition ordinate binding references an unknown source".into(),
+                        )
+                    })?;
+                    source_has_ordinate |= (axes.has_z()
+                        && (points[0].z().is_some() || points[1].z().is_some()))
+                        || (axes.has_m() && (points[0].m().is_some() || points[1].m().is_some()));
+                }
+                if source_has_ordinate {
+                    protected[node] = true;
+                    break;
+                }
+            }
+        }
+        Ok(Some(protected))
+    }
+
+    fn resolve_node_points(
+        &self,
+        partition: &ExactPartition<'_>,
+        nodes: &[NodeId],
+        rounded: &HashMap<NodeId, XY>,
+        declared_axes: crate::geometry::CoordinateAxes,
+    ) -> Result<HashMap<NodeId, Point>> {
+        let mut by_node =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        by_node
+            .try_reserve(nodes.len())
+            .map_err(crate::error::Error::from)?;
+        for &node in nodes {
+            if by_node.contains_key(&node) {
+                continue;
+            }
+            let point = self.resolve_node_point(
+                partition,
+                node,
+                *rounded.get(&node).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("exact overlay output lost rounded XY".into())
+                })?,
+                declared_axes,
+            )?;
+            by_node.insert(node, point);
+        }
+        Ok(by_node)
+    }
+
+    fn winding_source_rings(&self) -> Result<Vec<Option<u32>>> {
+        let mut rings = Vec::new();
+        try_reserve_vec(&mut rings, self.source_rings.len())?;
+        for (&ring, &kind) in self.source_rings.iter().zip(&self.source_ring_kinds) {
+            rings.push(
+                matches!(kind, Some(RingKind::Winding))
+                    .then(|| ring.expect("a ring source always carries its ring identity")),
+            );
+        }
+        Ok(rings)
+    }
+
     pub(in crate::geometry) fn line_emission(
         &self,
         partition: &ExactPartition<'_>,
     ) -> Result<ExactLineEmission> {
         partition.emit_lines(&self.source_operands)
+    }
+
+    pub(in crate::geometry) fn node_shape(
+        &self,
+        partition: &ExactPartition<'_>,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+    ) -> Result<Shape> {
+        let mut items = Vec::new();
+        try_reserve_vec(&mut items, partition.spans.len())?;
+        items.extend(partition.spans.iter().map(|span| [span.start, span.end]));
+        if items.is_empty() {
+            return Shape::multi_line_string(declared_axes, Vec::new());
+        }
+        let rounded_segments = partition.round_incident_items(&items)?;
+        let mut nodes = Vec::new();
+        let node_capacity = items
+            .len()
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        try_reserve_vec(&mut nodes, node_capacity)?;
+        let mut rounded =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        rounded
+            .try_reserve(node_capacity)
+            .map_err(crate::error::Error::from)?;
+        for (&[start, end], segment) in items.iter().zip(&rounded_segments) {
+            nodes.push(start);
+            nodes.push(end);
+            rounded.entry(start).or_insert(segment.start);
+            rounded.entry(end).or_insert(segment.end);
+        }
+        let by_node = self.resolve_node_points(partition, &nodes, &rounded, declared_axes)?;
+        let axes = bucket_axes(&nodes, &by_node, declared_axes, strict, "node")?;
+        let mut lines = Vec::new();
+        try_reserve_vec(&mut lines, items.len())?;
+        for item in items {
+            let mut points = Vec::new();
+            try_reserve_vec(&mut points, 2)?;
+            points.push(with_axes(by_node[&item[0]], axes));
+            points.push(with_axes(by_node[&item[1]], axes));
+            lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
+        }
+        Shape::multi_line_string(axes, lines)
     }
 
     pub(in crate::geometry) fn polygonize_diagnostics(
@@ -1439,6 +1863,7 @@ impl ExactSourceInventory {
         );
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
+        let winding_rings = self.winding_source_rings()?;
         let mut selected = Vec::new();
         try_reserve_vec(&mut selected, global.count as usize)?;
         selected.resize(global.count as usize, false);
@@ -1446,10 +1871,10 @@ impl ExactSourceInventory {
             &topology,
             &edges,
             &global,
-            &self.source_rings,
+            &winding_rings,
             self.ring_count,
             |face, winding| {
-                selected[face as usize] = self.operand_occupied(winding, 0, false, true);
+                selected[face as usize] = self.operand_occupied(winding, 0, false);
                 Ok(())
             },
         )?;
@@ -1462,6 +1887,11 @@ impl ExactSourceInventory {
                 topology.face_starts[walk] as usize..topology.face_starts[walk + 1] as usize;
             for &slot in &topology.face_slots[range] {
                 let slot = slot as usize;
+                let twin_face =
+                    global.walk_faces[topology.face_of[topology.twins[slot] as usize] as usize];
+                if selected[twin_face as usize] {
+                    continue;
+                }
                 area.add_homogeneous_cross(
                     partition.homogeneous(NodeId(topology.owners[slot]))?,
                     partition.homogeneous(NodeId(topology.targets[slot]))?,
@@ -1480,7 +1910,7 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
     ) -> Result<Shape> {
         let (points, lines, polygons) =
-            self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union, true)?;
+            self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union)?;
         build_certified_overlay_shape(points, lines, polygons)
     }
 
@@ -1496,27 +1926,183 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
         operation: crate::geometry::OverlayOp,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
-        self.overlay_parts_with_fill(partition, operation, false)
+        self.overlay_parts_with_fill(partition, operation)
+    }
+
+    pub(in crate::geometry) fn overlay_shape(
+        &self,
+        partition: &ExactPartition<'_>,
+        operation: crate::geometry::OverlayOp,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+    ) -> Result<Shape> {
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let cells = self.select_cells(partition, &topology, &edges, &global, operation, false)?;
+        let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
+        let plan = cells.emission_plan_with_protected(
+            partition,
+            &topology,
+            &edges,
+            &global,
+            ordinate_protected.as_deref(),
+        )?;
+        let parts = plan.emit_node_parts(partition, &topology)?;
+        let mut nodes = Vec::new();
+        try_reserve_vec(
+            &mut nodes,
+            parts
+                .points
+                .len()
+                .checked_add(parts.lines.iter().map(Vec::len).sum::<usize>())
+                .and_then(|count| {
+                    count.checked_add(
+                        parts
+                            .polygons
+                            .iter()
+                            .flat_map(|polygon| polygon.iter())
+                            .map(Vec::len)
+                            .sum::<usize>(),
+                    )
+                })
+                .ok_or(ResourceError::SizeOverflow)?,
+        )?;
+        nodes.extend(parts.points.iter().copied());
+        for line in &parts.lines {
+            nodes.extend(line.iter().copied());
+        }
+        for polygon in &parts.polygons {
+            for ring in polygon {
+                nodes.extend(ring.iter().copied());
+            }
+        }
+        let mut rounded =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        rounded
+            .try_reserve(parts.rounded.len())
+            .map_err(crate::error::Error::from)?;
+        for (node, point) in parts.rounded {
+            rounded.entry(node).or_insert(point);
+        }
+        let by_node = self.resolve_node_points(partition, &nodes, &rounded, declared_axes)?;
+        let point_axes = bucket_axes(
+            &parts.points,
+            &by_node,
+            declared_axes,
+            strict,
+            operation.name(),
+        )?;
+        let line_node_count = parts
+            .lines
+            .iter()
+            .map(Vec::len)
+            .try_fold(0_usize, |count, len| count.checked_add(len))
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut line_nodes = Vec::new();
+        try_reserve_vec(&mut line_nodes, line_node_count)?;
+        for line in &parts.lines {
+            line_nodes.extend(line.iter().copied());
+        }
+        let line_axes = bucket_axes(
+            &line_nodes,
+            &by_node,
+            declared_axes,
+            strict,
+            operation.name(),
+        )?;
+        let polygon_node_count = parts
+            .polygons
+            .iter()
+            .flat_map(|polygon| polygon.iter())
+            .map(Vec::len)
+            .try_fold(0_usize, |count, len| count.checked_add(len))
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut polygon_nodes = Vec::new();
+        try_reserve_vec(&mut polygon_nodes, polygon_node_count)?;
+        for polygon in &parts.polygons {
+            for ring in polygon {
+                polygon_nodes.extend(ring.iter().copied());
+            }
+        }
+        let polygon_axes = bucket_axes(
+            &polygon_nodes,
+            &by_node,
+            declared_axes,
+            strict,
+            operation.name(),
+        )?;
+        let mut points = Vec::new();
+        try_reserve_vec(&mut points, parts.points.len())?;
+        for node in parts.points {
+            points.push(with_axes(by_node[&node], point_axes));
+        }
+        let mut lines = Vec::new();
+        try_reserve_vec(&mut lines, parts.lines.len())?;
+        for line in parts.lines {
+            let mut coordinates = Vec::new();
+            try_reserve_vec(&mut coordinates, line.len())?;
+            coordinates.extend(
+                line.into_iter()
+                    .map(|node| with_axes(by_node[&node], line_axes)),
+            );
+            lines.push(CoordSeq::try_from_points(&coordinates)?);
+        }
+        let mut polygons = Vec::new();
+        try_reserve_vec(&mut polygons, parts.polygons.len())?;
+        for polygon in parts.polygons {
+            let mut rings = Vec::new();
+            try_reserve_vec(&mut rings, polygon.len())?;
+            for ring in polygon {
+                let mut coordinates = Vec::new();
+                try_reserve_vec(&mut coordinates, ring.len())?;
+                coordinates.extend(
+                    ring.into_iter()
+                        .map(|node| with_axes(by_node[&node], polygon_axes)),
+                );
+                rings.push(Ring::from_closed(CoordSeq::try_from_points(&coordinates)?));
+            }
+            let mut ring_iter = rings.into_iter();
+            let shell = ring_iter.next().expect("polygon has a shell");
+            polygons.push(Polygon::new(shell, ring_iter.collect())?);
+        }
+        let point_part = (!points.is_empty())
+            .then(|| Shape::narrow_points(point_axes, points))
+            .transpose()?;
+        let line_part = (!lines.is_empty())
+            .then(|| {
+                Shape::narrow_lines(
+                    line_axes,
+                    lines.into_iter().map(LineSeq::from_proven).collect(),
+                )
+            })
+            .transpose()?;
+        let polygon_part = (!polygons.is_empty())
+            .then(|| Shape::narrow_polygons(polygon_axes, polygons))
+            .transpose()?;
+        let mut output = Vec::new();
+        try_reserve_vec(&mut output, 3)?;
+        output.extend([point_part, line_part, polygon_part].into_iter().flatten());
+        match <[Shape; 1]>::try_from(output) {
+            Ok([single]) => Ok(single),
+            Err(parts) => Shape::geometry_collection(parts),
+        }
     }
 
     pub(in crate::geometry) fn structure_parts(
         &self,
         partition: &ExactPartition<'_>,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
-        self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union, true)
+        self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union)
     }
 
     fn overlay_parts_with_fill(
         &self,
         partition: &ExactPartition<'_>,
         operation: crate::geometry::OverlayOp,
-        structure: bool,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let cells = self.select_cells(
-            partition, &topology, &edges, &global, operation, false, structure,
-        )?;
+        let cells = self.select_cells(partition, &topology, &edges, &global, operation, false)?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
         plan.emit_xy_parts(partition, &topology)
     }
@@ -1535,7 +2121,6 @@ impl ExactSourceInventory {
             &global,
             crate::geometry::OverlayOp::Union,
             true,
-            false,
             &winding_rings,
         )?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
@@ -1655,6 +2240,7 @@ impl ExactSourceInventory {
     ) -> Result<Vec<Polygon>> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
+        let winding_rings = self.winding_source_rings()?;
         let mut selected = Vec::new();
         try_reserve_vec(&mut selected, global.count as usize)?;
         selected.resize(global.count as usize, false);
@@ -1662,7 +2248,7 @@ impl ExactSourceInventory {
             &topology,
             &edges,
             &global,
-            &self.source_rings,
+            &winding_rings,
             self.ring_count,
             |face, winding| {
                 selected[face as usize] = keep(winding.iter().sum());
@@ -1692,226 +2278,525 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn relate(&self, partition: &ExactPartition<'_>) -> Result<De9im> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let face_membership = self.face_memberships(partition, &topology, &edges, &global)?;
+        let winding_rings = self.winding_source_rings()?;
+        let facts =
+            self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
+        let line_boundaries = self.node_source_flags(partition)?;
         let operands = self.operand_count();
         let mut matrix = De9im::empty_disjoint();
-        if self.invalid_areas[0] {
-            matrix.set_at_least(Loc::Interior, Loc::Exterior, Dimension::Surface);
-        }
-        if self.invalid_areas[1] {
-            matrix.set_at_least(Loc::Exterior, Loc::Interior, Dimension::Surface);
-        }
         for face in 0..global.count as usize {
             matrix.set_at_least(
-                location(face_membership[face * operands]),
-                location(face_membership[face * operands + 1]),
+                location(facts.face_membership[face * operands]),
+                location(facts.face_membership[face * operands + 1]),
                 Dimension::Surface,
             );
         }
-        for (span_index, _span) in partition.spans.iter().enumerate() {
-            let left = self.span_location(
-                0,
-                span_index,
-                partition,
-                &topology,
-                &edges,
-                &global,
-                &face_membership,
-            );
-            let right = self.span_location(
-                1,
-                span_index,
-                partition,
-                &topology,
-                &edges,
-                &global,
-                &face_membership,
-            );
-            matrix.set_at_least(left, right, Dimension::Curve);
+        for span in 0..partition.spans.len() {
+            let left_face = facts.span_faces[span][0] as usize;
+            let right_face = facts.span_faces[span][1] as usize;
+            let left =
+                self.span_location_from_facts(0, span, left_face, right_face, &facts, operands);
+            let right =
+                self.span_location_from_facts(1, span, left_face, right_face, &facts, operands);
+            if left != Loc::Exterior || right != Loc::Exterior {
+                matrix.set_at_least(left, right, Dimension::Curve);
+            }
         }
         for node in 0..partition.recipes.len() {
-            let left = self.node_location(
+            let left = self.node_location_from_facts(
                 0,
                 NodeId(node as u32),
-                partition,
                 &topology,
                 &edges,
                 &global,
-                &face_membership,
+                &facts,
+                &line_boundaries,
+                &facts.point_membership,
             );
-            let right = self.node_location(
+            let right = self.node_location_from_facts(
                 1,
                 NodeId(node as u32),
-                partition,
                 &topology,
                 &edges,
                 &global,
-                &face_membership,
+                &facts,
+                &line_boundaries,
+                &facts.point_membership,
             );
-            matrix.set_at_least(left, right, Dimension::Point);
+            if left != Loc::Exterior || right != Loc::Exterior {
+                matrix.set_at_least(left, right, Dimension::Point);
+            }
         }
         Ok(matrix)
     }
 
-    fn face_memberships(
+    fn build_cell_facts(
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
         edges: &[u32],
         global: &GlobalFaces,
-    ) -> Result<Vec<bool>> {
+        winding_rings: &[Option<u32>],
+        odd: bool,
+    ) -> Result<CellFacts> {
         let operands = self.operand_count();
-        let mut memberships = Vec::new();
-        try_reserve_vec(&mut memberships, global.count as usize * operands)?;
-        memberships.resize(global.count as usize * operands, false);
+        let face_cells = (global.count as usize)
+            .checked_mul(operands)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let span_cells = partition
+            .spans
+            .len()
+            .checked_mul(operands)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let raw_cells = span_cells
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let face_slots = self.global_face_slots(topology, edges, global)?;
+        let span_faces = self.span_faces(topology, edges, global)?;
+        let mut facts = CellFacts {
+            face_membership: Vec::new(),
+            span_raw: Vec::new(),
+            span_curve: Vec::new(),
+            span_support: Vec::new(),
+            span_faces,
+            point_membership: Vec::new(),
+        };
+        try_reserve_vec(&mut facts.face_membership, face_cells)?;
+        facts.face_membership.resize(face_cells, false);
+        try_reserve_vec(&mut facts.span_raw, raw_cells)?;
+        facts.span_raw.resize(raw_cells, false);
+        try_reserve_vec(&mut facts.span_curve, span_cells)?;
+        facts.span_curve.resize(span_cells, false);
+        try_reserve_vec(&mut facts.span_support, span_cells)?;
+        facts.span_support.resize(span_cells, false);
+        let node_cells = partition
+            .recipes
+            .len()
+            .checked_mul(operands)
+            .ok_or(ResourceError::SizeOverflow)?;
+        try_reserve_vec(&mut facts.point_membership, node_cells)?;
+        facts.point_membership.resize(node_cells, false);
+        let mut shell_support = Vec::new();
+        let mut hole_support = Vec::new();
+        try_reserve_vec(&mut shell_support, self.polygon_count)?;
+        try_reserve_vec(&mut hole_support, self.polygon_count)?;
+        shell_support.resize(self.polygon_count, false);
+        hole_support.resize(self.polygon_count, false);
+        let mut touched_polygons = Vec::new();
+        try_reserve_vec(&mut touched_polygons, partition.spans.len())?;
+        let mut point_sources_by_node = Vec::new();
+        try_reserve_vec(&mut point_sources_by_node, partition.point_sources.len())?;
+        point_sources_by_node.extend_from_slice(&partition.point_sources);
+        point_sources_by_node.sort_unstable_by_key(|(node, _)| node.0);
+        let mut point_polygon_index =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        point_polygon_index
+            .try_reserve(partition.point_sources.len())
+            .map_err(crate::error::Error::from)?;
+        let mut point_polygon_states = Vec::new();
+        try_reserve_vec(&mut point_polygon_states, partition.point_sources.len())?;
+        let mut point_shell_faces = Vec::new();
+        for &(node, source) in &partition.point_sources {
+            let source_index = source as usize;
+            let Some(ring) = self.source_rings[source_index] else {
+                continue;
+            };
+            if self.ring_holes[ring as usize]
+                || self.source_ring_kinds[source_index] != Some(RingKind::Collapsed)
+            {
+                continue;
+            }
+            let polygon = self.ring_polygons[ring as usize];
+            let state = if let Some(&state) = point_polygon_index.get(&(node, polygon)) {
+                state
+            } else {
+                let state = u32::try_from(point_polygon_states.len())
+                    .map_err(|_| ResourceError::SizeOverflow)?;
+                point_polygon_index.insert((node, polygon), state);
+                try_reserve_vec(&mut point_polygon_states, 1)?;
+                point_polygon_states.push((node, polygon, false));
+                state
+            };
+            let range = topology.starts[node.0 as usize] as usize
+                ..topology.starts[node.0 as usize + 1] as usize;
+            if range.is_empty() {
+                let component = topology.component_of[node.0 as usize] as usize;
+                try_reserve_vec(&mut point_shell_faces, 1)?;
+                point_shell_faces.push((global.component_hosts[component], state));
+            } else {
+                for slot in range {
+                    try_reserve_vec(&mut point_shell_faces, 1)?;
+                    point_shell_faces
+                        .push((global.walk_faces[topology.face_of[slot] as usize], state));
+                }
+            }
+        }
+        point_shell_faces.sort_unstable_by_key(|(face, _)| *face);
+        let mut point_shell_cursor = 0;
         partition.visit_face_windings(
             topology,
             edges,
             global,
-            &self.source_rings,
+            winding_rings,
             self.ring_count,
             |face, winding| {
+                let face = face as usize;
                 for operand in 0..operands {
-                    memberships[face as usize * operands + operand] = !self.invalid_areas[operand]
-                        && self.operand_occupied(winding, operand, false, false);
+                    facts.face_membership[face * operands + operand] =
+                        self.operand_occupied(winding, operand, odd);
+                }
+                while point_shell_cursor < point_shell_faces.len()
+                    && point_shell_faces[point_shell_cursor].0 == face as u32
+                {
+                    let (_, state_index) = point_shell_faces[point_shell_cursor];
+                    let state = &mut point_polygon_states[state_index as usize];
+                    let node = state.0;
+                    let polygon = state.1 as usize;
+                    let hole = self.polygon_ring_ranges[polygon]
+                        .clone()
+                        .skip(1)
+                        .any(|hole| {
+                            if self.ring_kinds[hole] == RingKind::Winding {
+                                ring_occupied(winding[hole], odd)
+                            } else {
+                                self.collapsed_ring_at_node(
+                                    partition,
+                                    topology,
+                                    edges,
+                                    &point_sources_by_node,
+                                    node,
+                                    hole,
+                                )
+                            }
+                        });
+                    state.2 |= hole;
+                    point_shell_cursor += 1;
+                }
+                let start = face_slots.0[face] as usize;
+                let end = face_slots.0[face + 1] as usize;
+                for &slot in &face_slots.1[start..end] {
+                    let slot = slot as usize;
+                    let span = edges[slot] as usize;
+                    let side = usize::from(facts.span_faces[span][1] as usize == face);
+                    for &(source, _) in partition.owners(span) {
+                        let source = source as usize;
+                        let Some(ring) = self.source_rings[source] else {
+                            continue;
+                        };
+                        let occupied = match self.source_ring_kinds[source] {
+                            Some(RingKind::Winding) => ring_occupied(winding[ring as usize], odd),
+                            Some(RingKind::Collapsed) => true,
+                            None => false,
+                        };
+                        if !occupied {
+                            continue;
+                        }
+                        let polygon = self.ring_polygons[ring as usize] as usize;
+                        if !shell_support[polygon] && !hole_support[polygon] {
+                            try_reserve_vec(&mut touched_polygons, 1)?;
+                            touched_polygons.push(polygon as u32);
+                        }
+                        if self.ring_holes[ring as usize] {
+                            hole_support[polygon] = true;
+                        } else {
+                            shell_support[polygon] = true;
+                        }
+                    }
+                    for &polygon in &touched_polygons {
+                        let polygon = polygon as usize;
+                        if shell_support[polygon] && !hole_support[polygon] {
+                            hole_support[polygon] = self.polygon_ring_ranges[polygon]
+                                .clone()
+                                .skip(1)
+                                .any(|hole| {
+                                    self.ring_kinds[hole] == RingKind::Winding
+                                        && ring_occupied(winding[hole], odd)
+                                });
+                        }
+                        if shell_support[polygon] && !hole_support[polygon] {
+                            let operand = self.polygon_operands[polygon] as usize;
+                            facts.span_raw[(span * 2 + side) * operands + operand] = true;
+                        }
+                        shell_support[polygon] = false;
+                        hole_support[polygon] = false;
+                    }
+                    touched_polygons.clear();
                 }
                 Ok(())
             },
         )?;
-        Ok(memberships)
+        for (node, polygon, hole) in point_polygon_states {
+            if !hole {
+                let operand = self.polygon_operands[polygon as usize] as usize;
+                facts.point_membership[node.0 as usize * operands + operand] = true;
+            }
+        }
+        if partition.point_nodes.len() != self.isolated_operands.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "exact partition point sources lost their occurrence mapping".into(),
+            )
+            .into());
+        }
+        for (index, &node) in partition.point_nodes.iter().enumerate() {
+            let operand = self.isolated_operands[index] as usize;
+            facts.point_membership[node.0 as usize * operands + operand] = true;
+        }
+        for &(node, source) in &partition.point_sources {
+            let source = source as usize;
+            if self.source_rings[source].is_none() {
+                let operand = self.source_operands[source] as usize;
+                facts.point_membership[node.0 as usize * operands + operand] = true;
+            }
+        }
+
+        for span in 0..partition.spans.len() {
+            let left = facts.span_faces[span][0] as usize;
+            let right = facts.span_faces[span][1] as usize;
+            for operand in 0..operands {
+                let index = span * operands + operand;
+                facts.span_curve[index] = self.explicit_curve_support(partition, span, operand);
+                facts.span_support[index] = facts.span_curve[index]
+                    || facts.span_raw[(span * 2) * operands + operand]
+                    || facts.span_raw[(span * 2 + 1) * operands + operand]
+                    || facts.face_membership[left * operands + operand]
+                    || facts.face_membership[right * operands + operand];
+            }
+        }
+        Ok(facts)
     }
 
-    fn span_location(
+    fn global_face_slots(
         &self,
-        operand: usize,
-        span_index: usize,
-        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        _edges: &[u32],
+        global: &GlobalFaces,
+    ) -> Result<(Vec<u32>, Vec<u32>)> {
+        let count = global.count as usize;
+        let mut counts = Vec::new();
+        try_reserve_vec(&mut counts, count)?;
+        counts.resize(count, 0_u32);
+        for &walk in &topology.face_of {
+            let face = global.walk_faces[walk as usize] as usize;
+            counts[face] = counts[face]
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+        }
+        let mut starts: Vec<u32> = Vec::new();
+        try_reserve_vec(
+            &mut starts,
+            count.checked_add(1).ok_or(ResourceError::SizeOverflow)?,
+        )?;
+        starts.push(0);
+        for count in counts {
+            starts.push(
+                starts
+                    .last()
+                    .copied()
+                    .unwrap_or(0_u32)
+                    .checked_add(count)
+                    .ok_or(ResourceError::SizeOverflow)?,
+            );
+        }
+        let mut slots = Vec::new();
+        try_reserve_vec(&mut slots, topology.face_of.len())?;
+        slots.resize(topology.face_of.len(), 0);
+        let mut cursor = starts[..count].to_vec();
+        for (slot, &walk) in topology.face_of.iter().enumerate() {
+            let face = global.walk_faces[walk as usize] as usize;
+            let index = cursor[face] as usize;
+            slots[index] = u32::try_from(slot).map_err(|_| ResourceError::SizeOverflow)?;
+            cursor[face] += 1;
+        }
+        Ok((starts, slots))
+    }
+
+    fn span_faces(
+        &self,
         topology: &IndexedTopology,
         edges: &[u32],
         global: &GlobalFaces,
-        memberships: &[bool],
-    ) -> Loc {
-        let mut sides = None;
-        for (slot, &edge) in edges.iter().enumerate() {
-            if edge as usize != span_index {
-                continue;
-            }
-            let left = global.walk_faces[topology.face_of[slot] as usize] as usize;
-            let twin = topology.twins[slot] as usize;
-            let right = global.walk_faces[topology.face_of[twin] as usize] as usize;
-            sides = Some((
-                memberships[left * self.operand_count() + operand],
-                memberships[right * self.operand_count() + operand],
-            ));
-            break;
+    ) -> Result<Vec<[u32; 2]>> {
+        let mut faces = Vec::new();
+        try_reserve_vec(
+            &mut faces,
+            edges
+                .iter()
+                .copied()
+                .max()
+                .map_or(0, |edge| edge as usize + 1),
+        )?;
+        if let Some(count) = edges.iter().copied().max() {
+            faces.resize(count as usize + 1, [u32::MAX; 2]);
         }
-        let (first, second) = sides.unwrap_or((false, false));
-        let areal = match (first, second) {
-            (true, true) => Loc::Interior,
-            (false, false) => Loc::Exterior,
-            _ => Loc::Boundary,
-        };
-        let line = partition.owners(span_index).iter().any(|&(source, _)| {
-            self.source_operands[source as usize] as usize == operand
-                && self.source_rings[source as usize].is_none()
-        });
-        let boundary_line = partition.owners(span_index).iter().any(|&(source, _)| {
-            self.source_operands[source as usize] as usize == operand
-                && self.source_boundaries[source as usize]
-        });
-        if boundary_line {
-            Loc::Boundary
-        } else if line && areal == Loc::Exterior {
+        for (slot, &span) in edges.iter().enumerate() {
+            let face = global.walk_faces[topology.face_of[slot] as usize];
+            let twin = topology.twins[slot] as usize;
+            let other = global.walk_faces[topology.face_of[twin] as usize];
+            let pair = &mut faces[span as usize];
+            if pair[0] == u32::MAX {
+                *pair = [face, other];
+            }
+        }
+        Ok(faces)
+    }
+
+    fn explicit_curve_support(
+        &self,
+        partition: &ExactPartition<'_>,
+        span: usize,
+        operand: usize,
+    ) -> bool {
+        partition.owners(span).iter().any(|&(source, _)| {
+            let source = source as usize;
+            self.source_operands[source] as usize == operand && self.source_rings[source].is_none()
+        })
+    }
+
+    fn collapsed_ring_at_node(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        point_sources_by_node: &[(NodeId, u32)],
+        node: NodeId,
+        ring: usize,
+    ) -> bool {
+        let mut range = topology.starts[node.0 as usize] as usize
+            ..topology.starts[node.0 as usize + 1] as usize;
+        if range.any(|slot| {
+            partition
+                .owners(edges[slot] as usize)
+                .iter()
+                .any(|&(source, _)| {
+                    self.source_rings[source as usize] == Some(ring as u32)
+                        && self.source_ring_kinds[source as usize] == Some(RingKind::Collapsed)
+                })
+        }) {
+            return true;
+        }
+        let mut range = node_source_range(point_sources_by_node, node);
+        range.any(|index| {
+            let source = point_sources_by_node[index].1 as usize;
+            self.source_rings[source] == Some(ring as u32)
+                && self.source_ring_kinds[source] == Some(RingKind::Collapsed)
+        })
+    }
+
+    fn node_source_flags(&self, partition: &ExactPartition<'_>) -> Result<Vec<bool>> {
+        let operands = self.operand_count();
+        let cells = partition
+            .recipes
+            .len()
+            .checked_mul(operands)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut line_boundaries = Vec::new();
+        try_reserve_vec(&mut line_boundaries, cells)?;
+        line_boundaries.resize(cells, false);
+
+        let mut stored = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        stored
+            .try_reserve(partition.recipes.len())
+            .map_err(crate::error::Error::from)?;
+        for (index, recipe) in partition.recipes.iter().enumerate() {
+            if let Some(key) = recipe.stored_key() {
+                stored.insert(key, index as u32);
+            }
+        }
+        for &(operand, key) in &self.line_boundaries {
+            let Some(&node) = stored.get(&key) else {
+                continue;
+            };
+            let index = node as usize * operands + operand as usize;
+            if let Some(value) = line_boundaries.get_mut(index) {
+                *value = !*value;
+            }
+        }
+        Ok(line_boundaries)
+    }
+
+    fn span_location_from_facts(
+        &self,
+        operand: usize,
+        span: usize,
+        left_face: usize,
+        right_face: usize,
+        facts: &CellFacts,
+        operands: usize,
+    ) -> Loc {
+        let left = facts.face_membership[left_face * operands + operand];
+        let right = facts.face_membership[right_face * operands + operand];
+        if left || right {
+            return match (left, right) {
+                (true, true) => Loc::Interior,
+                _ => Loc::Boundary,
+            };
+        }
+        if facts.span_support[span * operands + operand] {
             Loc::Interior
         } else {
-            areal
+            Loc::Exterior
         }
     }
 
-    fn node_location(
+    fn node_location_from_facts(
         &self,
         operand: usize,
         node: NodeId,
-        partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
         edges: &[u32],
         global: &GlobalFaces,
-        memberships: &[bool],
+        facts: &CellFacts,
+        line_boundaries: &[bool],
+        point_membership: &[bool],
     ) -> Loc {
         let operands = self.operand_count();
-        let mut any = false;
-        let mut all = true;
         let range = topology.starts[node.0 as usize] as usize
             ..topology.starts[node.0 as usize + 1] as usize;
-        if range.is_empty() {
+        let (any_area, all_area) = if range.is_empty() {
             let component = topology.component_of[node.0 as usize] as usize;
             let face = global.component_hosts[component] as usize;
-            any = memberships[face * operands + operand];
-            all = any;
+            let value = facts.face_membership[face * operands + operand];
+            (value, value)
         } else {
-            for slot in range {
+            let mut any = false;
+            let mut all = true;
+            for slot in range.clone() {
                 let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
-                let value = memberships[face * operands + operand];
+                let value = facts.face_membership[face * operands + operand];
                 any |= value;
                 all &= value;
             }
+            (any, all)
+        };
+        if any_area {
+            return if all_area {
+                Loc::Interior
+            } else {
+                Loc::Boundary
+            };
         }
+
         let mut line = false;
-        let mut line_on_boundary = false;
-        let mut point = false;
-        let mut boundary_line = false;
-        for (span_index, span) in partition.spans.iter().enumerate() {
-            if span.start != node && span.end != node {
-                continue;
-            }
-            let span_line = self.line_support(partition, span_index, operand);
-            line |= span_line;
-            if span_line
-                && !self.polygon_rings[operand].is_empty()
-                && edges.iter().enumerate().find_map(|(slot, &edge)| {
-                    (edge as usize == span_index).then(|| {
-                        let left = global.walk_faces[topology.face_of[slot] as usize] as usize;
-                        let twin = topology.twins[slot] as usize;
-                        let right = global.walk_faces[topology.face_of[twin] as usize] as usize;
-                        memberships[left * self.operand_count() + operand]
-                            != memberships[right * self.operand_count() + operand]
-                    })
-                }) == Some(true)
+        let mut residual_degree = 0_usize;
+        for slot in range {
+            let span = edges[slot] as usize;
+            let index = span * operands + operand;
+            line |= facts.span_support[index];
+            if facts.span_raw[span * 2 * operands + operand]
+                || facts.span_raw[(span * 2 + 1) * operands + operand]
             {
-                line_on_boundary = true;
+                residual_degree += usize::from(!facts.span_curve[index]);
             }
-            boundary_line |= partition.owners(span_index).iter().any(|&(source, _)| {
-                self.source_operands[source as usize] as usize == operand
-                    && self.source_boundaries[source as usize]
-            });
         }
-        for &(source_node, source) in &partition.point_sources {
-            point |=
-                source_node == node && self.source_operands[source as usize] as usize == operand;
+        let node_index = node.0 as usize * operands + operand;
+        if line {
+            return if line_boundaries[node_index] ^ (residual_degree % 2 == 1) {
+                Loc::Boundary
+            } else {
+                Loc::Interior
+            };
         }
-        for (index, &source_node) in partition.point_nodes.iter().enumerate() {
-            point |= source_node == node && self.isolated_operands[index] as usize == operand;
-        }
-        let boundary = self
-            .line_boundaries
-            .iter()
-            .filter(|&&(source, key)| {
-                source as usize == operand
-                    && partition
-                        .recipe(node)
-                        .stored_key()
-                        .is_some_and(|node_key| node_key == key)
-            })
-            .count()
-            % 2
-            == 1;
-        if boundary_line {
-            Loc::Boundary
-        } else if all || (line && !boundary && !line_on_boundary) {
-            Loc::Interior
-        } else if boundary || any {
-            Loc::Boundary
-        } else if point {
+        if point_membership[node_index] {
             Loc::Interior
         } else {
             Loc::Exterior
@@ -1926,8 +2811,8 @@ impl ExactSourceInventory {
         global: &GlobalFaces,
         operation: crate::geometry::OverlayOp,
         odd: bool,
-        structure: bool,
     ) -> Result<ArealCells> {
+        let winding_rings = self.winding_source_rings()?;
         self.select_cells_with_winding_rings(
             partition,
             topology,
@@ -1935,8 +2820,7 @@ impl ExactSourceInventory {
             global,
             operation,
             odd,
-            structure,
-            &self.source_rings,
+            &winding_rings,
         )
     }
 
@@ -1948,13 +2832,11 @@ impl ExactSourceInventory {
         global: &GlobalFaces,
         operation: crate::geometry::OverlayOp,
         odd: bool,
-        structure: bool,
         winding_rings: &[Option<u32>],
     ) -> Result<ArealCells> {
         let operands = self.operand_count();
-        let mut face_membership = Vec::new();
-        try_reserve_vec(&mut face_membership, global.count as usize)?;
-        face_membership.resize(global.count as usize * operands, false);
+        let facts =
+            self.build_cell_facts(partition, topology, edges, global, winding_rings, odd)?;
         let mut cells = ArealCells {
             faces: Vec::new(),
             spans: Vec::new(),
@@ -1966,106 +2848,46 @@ impl ExactSourceInventory {
         cells.spans.resize(partition.spans.len(), false);
         try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
         cells.nodes.resize(partition.recipes.len(), false);
+        for face in 0..global.count as usize {
+            cells.faces[face] = select_operation(
+                operation,
+                &facts.face_membership[face * operands..][..operands],
+            );
+        }
 
-        let mut windings = Vec::new();
-        try_reserve_vec(&mut windings, self.ring_count)?;
-        windings.resize(self.ring_count, 0_i64);
-        partition.visit_face_windings(
-            topology,
-            edges,
-            global,
-            winding_rings,
-            self.ring_count,
-            |face, winding| {
-                for operand in 0..operands {
-                    let occupied = self.operand_occupied(winding, operand, odd, structure);
-                    face_membership[face as usize * operands + operand] = occupied;
-                }
-                cells.faces[face as usize] = select_operation(
-                    operation,
-                    &face_membership[face as usize * operands..][..operands],
-                );
-                Ok(())
-            },
-        )?;
-
-        // Every exact span is a relatively open one-dimensional cell. Its
-        // source support includes ring boundaries and line sources; a selected
-        // two-dimensional neighbour supplies downward closure, while the
-        // later emission plan absorbs spans covered on both sides.
-        for (span_index, span) in partition.spans.iter().enumerate() {
-            let mut covered = Vec::new();
-            let mut line_support = Vec::new();
-            try_reserve_vec(&mut covered, operands)?;
-            try_reserve_vec(&mut line_support, operands)?;
-            covered.resize(operands, false);
-            line_support.resize(operands, false);
-            for operand in 0..operands {
-                line_support[operand] = self.line_support(partition, span_index, operand);
-                covered[operand] = line_support[operand];
-            }
-            for (slot, &edge) in edges.iter().enumerate() {
-                if edge as usize != span_index {
-                    continue;
-                }
-                let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
-                let twin = topology.twins[slot] as usize;
-                let other = global.walk_faces[topology.face_of[twin] as usize] as usize;
-                for operand in 0..operands {
-                    covered[operand] |= face_membership[face * operands + operand]
-                        || face_membership[other * operands + operand];
-                }
-            }
-            cells.spans[span_index] = match operation {
-                crate::geometry::OverlayOp::Intersection => covered.iter().all(|&value| value),
-                crate::geometry::OverlayOp::Union => line_support.iter().any(|&value| value),
-                crate::geometry::OverlayOp::Difference => {
-                    line_support.first().copied().unwrap_or(false)
-                        && covered.iter().skip(1).all(|&value| !value)
-                },
-                crate::geometry::OverlayOp::SymmetricDifference => {
-                    line_support.iter().filter(|&&value| value).count() % 2 == 1
-                },
-            };
+        let node_cells = partition
+            .recipes
+            .len()
+            .checked_mul(operands)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut node_membership = Vec::new();
+        try_reserve_vec(&mut node_membership, node_cells)?;
+        node_membership.resize(node_cells, false);
+        for span_index in 0..partition.spans.len() {
+            let membership = &facts.span_support[span_index * operands..][..operands];
+            cells.spans[span_index] = select_operation(operation, membership);
             if cells.spans[span_index] {
+                let span = partition.spans[span_index];
                 cells.nodes[span.start.0 as usize] = true;
                 cells.nodes[span.end.0 as usize] = true;
             }
-        }
-
-        // Endpoint incidences are node-cell source membership. Explicit point
-        // occurrences are added separately because they have no segment owner.
-        let mut node_membership = Vec::new();
-        try_reserve_vec(
-            &mut node_membership,
-            partition.recipes.len().saturating_mul(operands),
-        )?;
-        node_membership.resize(partition.recipes.len() * operands, false);
-        for (span_index, span) in partition.spans.iter().enumerate() {
             for operand in 0..operands {
-                if self.line_support(partition, span_index, operand) {
+                if facts.span_support[span_index * operands + operand] {
+                    let span = partition.spans[span_index];
                     node_membership[span.start.0 as usize * operands + operand] = true;
                     node_membership[span.end.0 as usize * operands + operand] = true;
                 }
             }
         }
-        for (index, &node) in partition.point_nodes.iter().enumerate() {
-            if self.isolated_collapsed[index] {
-                continue;
-            }
-            let operand = self.isolated_operands[index] as usize;
-            node_membership[node.0 as usize * operands + operand] = true;
-        }
-        for &(node, source) in &partition.point_sources {
-            let operand = self.source_operands[source as usize] as usize;
-            node_membership[node.0 as usize * operands + operand] = true;
+        for (membership, &point) in node_membership.iter_mut().zip(&facts.point_membership) {
+            *membership |= point;
         }
         for &node in &partition.isolated {
             let component = topology.component_of[node.0 as usize] as usize;
             let host = global.component_hosts[component] as usize;
             for operand in 0..operands {
                 node_membership[node.0 as usize * operands + operand] |=
-                    face_membership[host * operands + operand];
+                    facts.face_membership[host * operands + operand];
             }
         }
         for node in 0..partition.recipes.len() {
@@ -2076,7 +2898,7 @@ impl ExactSourceInventory {
             for operand in 0..operands {
                 let any = range.clone().any(|slot| {
                     let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
-                    face_membership[face * operands + operand]
+                    facts.face_membership[face * operands + operand]
                 });
                 node_membership[node * operands + operand] |= any;
             }
@@ -2091,67 +2913,27 @@ impl ExactSourceInventory {
     fn linework_source_rings(&self) -> Result<Vec<Option<u32>>> {
         let mut winding_rings = Vec::new();
         try_reserve_vec(&mut winding_rings, self.source_rings.len())?;
-        winding_rings.extend_from_slice(&self.source_rings);
-        let mut seen = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
-        seen.try_reserve(self.source_rings.len())
-            .map_err(crate::error::Error::from)?;
-        for (unique, segment) in self.unique.iter().enumerate() {
-            let (start, end) = undirected_segment_edge_key(*segment);
-            for &(source, _) in self.provenance.owners(unique) {
-                let Some(ring) = self.source_rings[source as usize] else {
-                    continue;
-                };
-                if !seen.insert((ring, start, end)) {
-                    winding_rings[source as usize] = None;
-                }
-            }
+        for (&ring, &kind) in self.source_rings.iter().zip(&self.source_ring_kinds) {
+            winding_rings.push(
+                matches!(kind, Some(RingKind::Winding))
+                    .then(|| ring.expect("a ring source always carries its ring identity")),
+            );
         }
         Ok(winding_rings)
     }
 
-    fn operand_occupied(
-        &self,
-        winding: &[i64],
-        operand: usize,
-        odd: bool,
-        structure: bool,
-    ) -> bool {
-        if odd {
-            let mut occupied = false;
-            for rings in &self.polygon_rings[operand] {
-                for ring in rings.clone() {
-                    occupied ^= winding[ring] % 2 != 0;
-                }
-            }
-            return occupied;
-        }
+    fn operand_occupied(&self, winding: &[i64], operand: usize, odd: bool) -> bool {
         self.polygon_rings[operand].iter().any(|rings| {
             let mut rings = rings.clone();
             let filled = |ring| {
-                if self.invalid_areas[operand] && !structure {
-                    winding[ring] < 0
+                if odd {
+                    winding[ring] % 2 != 0
                 } else {
                     winding[ring] != 0
                 }
             };
             rings.next().is_some_and(filled) && !rings.any(filled)
         })
-    }
-
-    fn line_support(&self, partition: &ExactPartition<'_>, span: usize, operand: usize) -> bool {
-        let mut net = 0_i64;
-        for &(source, reversed) in partition.owners(span) {
-            if self.source_operands[source as usize] as usize == operand
-                && (self.source_rings[source as usize].is_none()
-                    || self.source_boundaries[source as usize])
-            {
-                if self.source_collapsed[source as usize] {
-                    return true;
-                }
-                net += if reversed { -1 } else { 1 };
-            }
-        }
-        net != 0
     }
 }
 
@@ -2169,82 +2951,48 @@ pub(crate) fn occupied_cartesian_support(shape: &Shape) -> Result<Shape> {
     inventory.occupied_cartesian_support(&partition)
 }
 
-/// Exact point-cell certificate for a polygonal source. This is the cheap
-/// point specialization of the partition owner: ring membership is decided
-/// by the robust polygon predicates, so a full face embedding is unnecessary
-/// when the query has no one-dimensional source of its own.
-pub(in crate::geometry) fn exact_point_location(shape: &Shape, point: Point) -> Option<Loc> {
-    match shape {
-        Shape::Polygon(polygon) => {
-            if polygon.rings().any(|ring| {
-                ring.segment_pairs()
-                    .any(|[start, end]| point_on_segment(point, start, end))
-            }) {
-                Some(Loc::Boundary)
-            } else if polygon.contains_point(point) {
-                Some(Loc::Interior)
-            } else if polygon.covers_point(point) {
-                Some(Loc::Boundary)
-            } else {
-                Some(Loc::Exterior)
-            }
-        },
-        Shape::MultiPolygon(polygons) => {
-            let mut boundary = false;
-            for polygon in polygons {
-                if polygon.rings().any(|ring| {
-                    ring.segment_pairs()
-                        .any(|[start, end]| point_on_segment(point, start, end))
-                }) {
-                    boundary = true;
-                } else if polygon.contains_point(point) {
-                    return Some(Loc::Interior);
-                } else {
-                    boundary |= polygon.covers_point(point);
-                }
-            }
-            Some(if boundary {
-                Loc::Boundary
-            } else {
-                Loc::Exterior
-            })
-        },
-        Shape::GeometryCollection(geometries) => {
-            let mut boundary = false;
-            let mut admitted = false;
-            for geometry in geometries {
-                let Some(location) = exact_point_location(geometry, point) else {
-                    continue;
-                };
-                admitted = true;
-                match location {
-                    Loc::Interior => return Some(Loc::Interior),
-                    Loc::Boundary => boundary = true,
-                    Loc::Exterior => {},
-                }
-            }
-            admitted.then_some(if boundary {
-                Loc::Boundary
-            } else {
-                Loc::Exterior
-            })
-        },
-        _ => None,
-    }
+pub(crate) fn cartesian_support_nonempty(shape: &Shape) -> Result<bool> {
+    let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+    let mut budget = ExpansionBudget::new("support", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let (topology, edges) = partition.local_topology()?;
+    let global = partition.global_faces(&topology, &edges)?;
+    let cells = inventory.select_cells(
+        &partition,
+        &topology,
+        &edges,
+        &global,
+        crate::geometry::OverlayOp::Union,
+        false,
+    )?;
+    Ok(cells.faces.iter().any(|&value| value)
+        || cells.spans.iter().any(|&value| value)
+        || cells.nodes.iter().any(|&value| value))
 }
 
 pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<bool> {
     let inventory = ExactSourceInventory::from_shapes(&[shape])?;
     let mut budget = ExpansionBudget::new("intersects", "exact partition");
     let partition = inventory.partition(&mut budget)?;
-    if bounds.corners().into_iter().any(|[x, y]| {
-        exact_point_location(shape, Point::new_raw_xy(x, y))
-            .is_some_and(|location| location != Loc::Exterior)
-    }) {
-        return Ok(true);
+    for [x, y] in bounds.corners() {
+        if crate::geometry::cartesian_point_location(shape, Point::new_raw_xy(x, y))?
+            != Loc::Exterior
+        {
+            return Ok(true);
+        }
     }
-    for index in 0..partition.recipes.len() {
-        if partition.node_in_bounds(NodeId(index as u32), bounds)? {
+    let (topology, edges) = partition.local_topology()?;
+    let global = partition.global_faces(&topology, &edges)?;
+    let cells = inventory.select_cells(
+        &partition,
+        &topology,
+        &edges,
+        &global,
+        crate::geometry::OverlayOp::Union,
+        false,
+    )?;
+    for (index, &selected) in cells.nodes.iter().enumerate() {
+        if selected && partition.node_in_bounds(NodeId(index as u32), bounds)? {
             return Ok(true);
         }
     }
@@ -2267,14 +3015,22 @@ pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<b
             end: XY::new(corners[0][0], corners[0][1]),
         },
     ];
-    Ok(inventory.unique.iter().any(|&segment| {
-        bounds.contains_xy(segment.start)
+    for (index, &span) in partition.spans.iter().enumerate() {
+        if !cells.spans[index] {
+            continue;
+        }
+        let segment = partition.unique[span.unique as usize];
+        if bounds.contains_xy(segment.start)
             || bounds.contains_xy(segment.end)
             || rectangle
                 .iter()
                 .copied()
                 .any(|candidate| segment_contact_exact(segment, candidate) != Contact::Disjoint)
-    }))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn diagnostic_line(segment: Segment, closed: bool) -> Result<Shape> {
@@ -2304,17 +3060,22 @@ fn compare_diagnostic_lines(left: &Shape, right: &Shape) -> Ordering {
 
 struct StagedExactSources {
     segments: Vec<Segment>,
+    source_points: Vec<[Point; 2]>,
     source_operands: Vec<u32>,
     source_rings: Vec<Option<u32>>,
-    source_boundaries: Vec<bool>,
-    source_collapsed: Vec<bool>,
+    source_ring_kinds: Vec<Option<RingKind>>,
+    ring_kinds: Vec<RingKind>,
+    ring_polygons: Vec<u32>,
+    ring_holes: Vec<bool>,
+    polygon_count: usize,
+    polygon_operands: Vec<u32>,
+    polygon_ring_ranges: Vec<Range<usize>>,
     polygon_rings: Vec<Vec<Range<usize>>>,
     ring_count: usize,
     isolated: Vec<XY>,
+    isolated_points: Vec<Point>,
     isolated_operands: Vec<u32>,
-    isolated_collapsed: Vec<bool>,
     line_boundaries: Vec<(u32, PointKey)>,
-    invalid_areas: Vec<bool>,
 }
 
 impl StagedExactSources {
@@ -2324,17 +3085,22 @@ impl StagedExactSources {
         polygon_rings.resize_with(operand_count, Vec::new);
         Ok(Self {
             segments: Vec::new(),
+            source_points: Vec::new(),
             source_operands: Vec::new(),
             source_rings: Vec::new(),
-            source_boundaries: Vec::new(),
-            source_collapsed: Vec::new(),
+            source_ring_kinds: Vec::new(),
+            ring_kinds: Vec::new(),
+            ring_polygons: Vec::new(),
+            ring_holes: Vec::new(),
+            polygon_count: 0,
+            polygon_operands: Vec::new(),
+            polygon_ring_ranges: Vec::new(),
             polygon_rings,
             ring_count: 0,
             isolated: Vec::new(),
+            isolated_points: Vec::new(),
             isolated_operands: Vec::new(),
-            isolated_collapsed: Vec::new(),
             line_boundaries: Vec::new(),
-            invalid_areas: vec![false; operand_count],
         })
     }
 
@@ -2342,20 +3108,20 @@ impl StagedExactSources {
         match shape {
             Shape::Point(point) => {
                 try_reserve_vec(&mut self.isolated, 1)?;
+                try_reserve_vec(&mut self.isolated_points, 1)?;
                 try_reserve_vec(&mut self.isolated_operands, 1)?;
-                try_reserve_vec(&mut self.isolated_collapsed, 1)?;
                 self.isolated.push(point.xy());
+                self.isolated_points.push(*point);
                 self.isolated_operands.push(operand);
-                self.isolated_collapsed.push(false);
             },
             Shape::MultiPoint(points) => {
                 for point in points.points() {
                     try_reserve_vec(&mut self.isolated, 1)?;
+                    try_reserve_vec(&mut self.isolated_points, 1)?;
                     try_reserve_vec(&mut self.isolated_operands, 1)?;
-                    try_reserve_vec(&mut self.isolated_collapsed, 1)?;
                     self.isolated.push(point.xy());
+                    self.isolated_points.push(point);
                     self.isolated_operands.push(operand);
-                    self.isolated_collapsed.push(false);
                 }
             },
             Shape::LineString(line) => self.append_line(line, operand)?,
@@ -2381,29 +3147,48 @@ impl StagedExactSources {
     }
 
     fn append_line(&mut self, line: &LineSeq, operand: u32) -> Result<()> {
-        self.append_line_coords(line.as_coords(), operand, false)
+        self.append_line_coords(line.as_coords(), operand)
     }
 
-    fn append_line_coords(&mut self, line: &CoordSeq, operand: u32, collapsed: bool) -> Result<()> {
+    fn append_line_coords(&mut self, line: &CoordSeq, operand: u32) -> Result<()> {
         let mut first = None;
         let mut last = None;
         for [start, end] in line.segment_pairs() {
-            let (start, end) = (start.xy(), end.xy());
-            if same_point(start, end) {
+            let (start_xy, end_xy) = (start.xy(), end.xy());
+            if same_point(start_xy, end_xy) {
+                self.push_segment(
+                    Segment {
+                        start: start_xy,
+                        end: end_xy,
+                    },
+                    &[start, end],
+                    operand,
+                    None,
+                    None,
+                )?;
                 continue;
             }
-            first.get_or_insert(start);
-            last = Some(end);
-            self.push_segment(Segment { start, end }, operand, None, false, collapsed)?;
+            first.get_or_insert(start_xy);
+            last = Some(end_xy);
+            self.push_segment(
+                Segment {
+                    start: start_xy,
+                    end: end_xy,
+                },
+                &[start, end],
+                operand,
+                None,
+                None,
+            )?;
         }
         if first.is_none() {
             for point in line.iter_coords() {
                 try_reserve_vec(&mut self.isolated, 1)?;
+                try_reserve_vec(&mut self.isolated_points, 1)?;
                 try_reserve_vec(&mut self.isolated_operands, 1)?;
-                try_reserve_vec(&mut self.isolated_collapsed, 1)?;
                 self.isolated.push(point.xy());
+                self.isolated_points.push(point);
                 self.isolated_operands.push(operand);
-                self.isolated_collapsed.push(true);
             }
             return Ok(());
         }
@@ -2418,17 +3203,16 @@ impl StagedExactSources {
     }
 
     fn append_polygon(&mut self, polygon: &Polygon, operand: u32) -> Result<()> {
-        if polygon
-            .rings()
-            .all(|ring| crate::geometry::ring_is_collinear(ring.coords()))
-        {
-            for ring in polygon.rings() {
-                self.append_line_coords(ring.coords(), operand, true)?;
-            }
-            return Ok(());
-        }
         let first_ring = self.ring_count;
-        for ring in polygon.rings() {
+        let polygon_id =
+            u32::try_from(self.polygon_count).map_err(|_| ResourceError::SizeOverflow)?;
+        self.polygon_count = self
+            .polygon_count
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+        try_reserve_vec(&mut self.polygon_operands, 1)?;
+        self.polygon_operands.push(operand);
+        for (ring_index, ring) in polygon.rings().enumerate() {
             let ring_id =
                 u32::try_from(self.ring_count).map_err(|_| ResourceError::SizeOverflow)?;
             self.ring_count = self
@@ -2441,75 +3225,58 @@ impl StagedExactSources {
             {
                 count -= 1;
             }
-            let collapsed = crate::geometry::ring_is_collinear(ring.coords());
-            let mut ring_segments = Vec::new();
-            try_reserve_vec(&mut ring_segments, count)?;
+            let kind = if crate::geometry::ring_is_collinear(ring.coords()) {
+                RingKind::Collapsed
+            } else {
+                RingKind::Winding
+            };
+            try_reserve_vec(&mut self.ring_polygons, 1)?;
+            try_reserve_vec(&mut self.ring_holes, 1)?;
+            try_reserve_vec(&mut self.ring_kinds, 1)?;
+            self.ring_polygons.push(polygon_id);
+            self.ring_holes.push(ring_index > 0);
+            self.ring_kinds.push(kind);
             for index in 0..count {
                 let next = if index + 1 == count { 0 } else { index + 1 };
-                ring_segments.push(Segment {
-                    start: XY::new(xs[index], ys[index]),
-                    end: XY::new(xs[next], ys[next]),
-                });
-            }
-            let mut self_intersection = false;
-            for left in 0..ring_segments.len() {
-                for right in left + 1..ring_segments.len() {
-                    let adjacent =
-                        right == left + 1 || (left == 0 && right + 1 == ring_segments.len());
-                    if !adjacent
-                        && matches!(
-                            segment_contact_exact(ring_segments[left], ring_segments[right]),
-                            Contact::Cross { .. } | Contact::Collinear { .. }
-                        )
-                    {
-                        self_intersection = true;
-                        break;
-                    }
-                }
-                if self_intersection {
-                    break;
-                }
-            }
-            if self_intersection {
-                self.invalid_areas[operand as usize] = true;
-            }
-            for index in 0..count {
-                let next = if index + 1 == count { 0 } else { index + 1 };
+                let start = ring.point_at(index);
+                let end = ring.point_at(next);
                 self.push_segment(
                     Segment {
-                        start: XY::new(xs[index], ys[index]),
-                        end: XY::new(xs[next], ys[next]),
+                        start: start.xy(),
+                        end: end.xy(),
                     },
+                    &[start, end],
                     operand,
-                    (!collapsed).then_some(ring_id),
-                    self_intersection,
-                    collapsed,
+                    Some(ring_id),
+                    Some(kind),
                 )?;
             }
         }
         try_reserve_vec(&mut self.polygon_rings[operand as usize], 1)?;
         self.polygon_rings[operand as usize].push(first_ring..self.ring_count);
+        try_reserve_vec(&mut self.polygon_ring_ranges, 1)?;
+        self.polygon_ring_ranges.push(first_ring..self.ring_count);
         Ok(())
     }
 
     fn push_segment(
         &mut self,
         segment: Segment,
+        source_points: &[Point; 2],
         operand: u32,
         ring: Option<u32>,
-        boundary: bool,
-        collapsed: bool,
+        ring_kind: Option<RingKind>,
     ) -> Result<()> {
         try_reserve_vec(&mut self.segments, 1)?;
+        try_reserve_vec(&mut self.source_points, 1)?;
         try_reserve_vec(&mut self.source_operands, 1)?;
         try_reserve_vec(&mut self.source_rings, 1)?;
-        try_reserve_vec(&mut self.source_boundaries, 1)?;
-        try_reserve_vec(&mut self.source_collapsed, 1)?;
+        try_reserve_vec(&mut self.source_ring_kinds, 1)?;
         self.segments.push(segment);
+        self.source_points.push(*source_points);
         self.source_operands.push(operand);
         self.source_rings.push(ring);
-        self.source_boundaries.push(boundary);
-        self.source_collapsed.push(collapsed);
+        self.source_ring_kinds.push(ring_kind);
         Ok(())
     }
 }
@@ -2558,7 +3325,7 @@ fn dedup_exact_segments(segments: &[Segment]) -> Result<(Vec<Segment>, SegmentPr
         let next = offsets
             .last()
             .copied()
-            .unwrap_or(0)
+            .unwrap_or(0_u32)
             .checked_add(count)
             .ok_or(ResourceError::SizeOverflow)?;
         offsets.push(next);
@@ -2587,6 +3354,48 @@ fn select_operation(operation: crate::geometry::OverlayOp, membership: &[bool]) 
             membership.iter().filter(|&&value| value).count() % 2 == 1
         },
     }
+}
+
+const fn ring_occupied(winding: i64, odd: bool) -> bool {
+    if odd { winding % 2 != 0 } else { winding != 0 }
+}
+
+fn bucket_axes(
+    nodes: &[NodeId],
+    points: &HashMap<NodeId, Point>,
+    declared: crate::geometry::CoordinateAxes,
+    strict: bool,
+    operation: &str,
+) -> Result<crate::geometry::CoordinateAxes> {
+    if nodes.is_empty() {
+        return Ok(crate::geometry::CoordinateAxes::XY);
+    }
+    let mut has_z = declared.has_z();
+    let mut has_m = declared.has_m();
+    for node in nodes {
+        let point = points.get(node).ok_or_else(|| {
+            GeometryErrorKind::Invalid("exact overlay output lost a live node".into())
+        })?;
+        has_z &= point.z().is_some();
+        has_m &= point.m().is_some();
+    }
+    let axes = crate::geometry::CoordinateAxes::new(
+        crate::geometry::HasZ(has_z),
+        crate::geometry::HasM(has_m),
+    );
+    if strict && axes != declared {
+        return Err(GeometryErrorKind::ordinate_dropped(operation));
+    }
+    Ok(axes)
+}
+
+fn with_axes(point: Point, axes: crate::geometry::CoordinateAxes) -> Point {
+    Point::new_raw_axes(
+        point.x,
+        point.y,
+        crate::geometry::ZOrdinate(axes.has_z().then(|| point.z().expect("retained Z"))),
+        crate::geometry::MOrdinate(axes.has_m().then(|| point.m().expect("retained M"))),
+    )
 }
 
 const fn location(occupied: bool) -> Loc {
@@ -2715,6 +3524,24 @@ fn cycle_contains_node(
         }
     }
     Ok(inside)
+}
+
+const fn node_source_range(records: &[(NodeId, u32)], node: NodeId) -> Range<usize> {
+    let mut low = 0;
+    let mut high = records.len();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if records[middle].0.0 < node.0 {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    let start = low;
+    while high < records.len() && records[high].0.0 == node.0 {
+        high += 1;
+    }
+    start..high
 }
 
 fn next_incident_span(
@@ -3673,13 +4500,31 @@ impl ExactPartition<'_> {
     }
 }
 
+#[derive(Clone, Debug)]
 enum SourceParam {
     Start,
     End,
     Ratio { num: ExactDyadic, den: ExactDyadic },
 }
 
+#[derive(Clone, Debug)]
+struct NodeOnUnique {
+    unique: u32,
+    parameter: SourceParam,
+}
+
 impl SourceParam {
+    fn reverse(&self) -> Result<Self> {
+        Ok(match self {
+            Self::Start => Self::End,
+            Self::End => Self::Start,
+            Self::Ratio { num, den } => Self::Ratio {
+                num: den.try_clone()?.try_subtract(num.try_clone()?)?,
+                den: den.try_clone()?,
+            },
+        })
+    }
+
     fn cmp(&self, other: &Self, zero: &ExactDyadic, one: &ExactDyadic) -> Result<Ordering> {
         match (self, other) {
             (Self::Start, Self::Start) | (Self::End, Self::End) => Ok(Ordering::Equal),
@@ -3710,6 +4555,54 @@ impl SourceParam {
                 && try_compare_ratios(num, den, one, one)? == Ordering::Less),
         }
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct AxisValue {
+    value: Option<f64>,
+    conflict: bool,
+}
+
+impl AxisValue {
+    const fn observe(&mut self, value: Option<f64>) {
+        let Some(value) = value else {
+            return;
+        };
+        match self.value {
+            None => self.value = Some(value),
+            Some(previous) if previous.to_bits() == value.to_bits() => {},
+            Some(_) => self.conflict = true,
+        }
+    }
+
+    fn value(self) -> Option<f64> {
+        (!self.conflict).then_some(self.value).flatten()
+    }
+}
+
+fn interpolate_ordinate(
+    start: Option<f64>,
+    end: Option<f64>,
+    parameter: &SourceParam,
+) -> Result<Option<f64>> {
+    let (Some(start), Some(end)) = (start, end) else {
+        return Ok(None);
+    };
+    Ok(match parameter {
+        SourceParam::Start => Some(start),
+        SourceParam::End => Some(end),
+        SourceParam::Ratio { num, den } => {
+            if start.to_bits() == end.to_bits() {
+                Some(start)
+            } else {
+                let start = ExactDyadic::try_from_f64(start)?;
+                let end = ExactDyadic::try_from_f64(end)?;
+                let left = den.try_clone()?.try_subtract(num.try_clone()?)?;
+                let numerator = start.try_product(&left)?.try_add(end.try_product(num)?)?;
+                Some(round_ratio(&numerator, den)?)
+            }
+        },
+    })
 }
 
 struct SourceCut {
@@ -3957,10 +4850,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             },
             HandleKind::Constructed { unique, cut } => {
                 budget.add(1)?;
-                let param = mem::replace(
-                    &mut cuts[unique as usize][cut as usize].param,
-                    SourceParam::Start,
-                );
+                let param = cuts[unique as usize][cut as usize].param.clone();
                 let SourceParam::Ratio { num, den } = param else {
                     return Err(GeometryErrorKind::Invalid(
                         "constructed partition node has no source-parameter recipe".into(),
@@ -3979,6 +4869,54 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         let root = forest.find(handle as u32);
         compact_of[handle] = compact_of[root as usize];
     }
+
+    let mut binding_pairs: Vec<(u32, NodeOnUnique)> = Vec::new();
+    for (unique_index, source_cuts) in cuts.iter().enumerate() {
+        let unique_index = u32::try_from(unique_index).map_err(|_| ResourceError::SizeOverflow)?;
+        for cut in source_cuts {
+            let root = forest.find(cut.handle);
+            let node = compact_of[root as usize].ok_or_else(|| {
+                GeometryErrorKind::Invalid("partition binding was not compacted".into())
+            })?;
+            try_reserve_vec(&mut binding_pairs, 1)?;
+            binding_pairs.push((node, NodeOnUnique {
+                unique: unique_index,
+                parameter: cut.param.clone(),
+            }));
+        }
+    }
+    binding_pairs.sort_unstable_by_key(|(node, binding)| (*node, binding.unique));
+    binding_pairs.dedup_by(|left, right| left.0 == right.0 && left.1.unique == right.1.unique);
+    let mut binding_counts = Vec::new();
+    try_reserve_vec(&mut binding_counts, recipes.len())?;
+    binding_counts.resize(recipes.len(), 0_u32);
+    for &(node, _) in &binding_pairs {
+        binding_counts[node as usize] = binding_counts[node as usize]
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+    }
+    let mut binding_starts = Vec::new();
+    try_reserve_vec(
+        &mut binding_starts,
+        recipes
+            .len()
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?,
+    )?;
+    binding_starts.push(0);
+    for count in binding_counts {
+        binding_starts.push(
+            binding_starts
+                .last()
+                .copied()
+                .unwrap_or(0_u32)
+                .checked_add(count)
+                .ok_or(ResourceError::SizeOverflow)?,
+        );
+    }
+    let mut bindings = Vec::new();
+    try_reserve_vec(&mut bindings, binding_pairs.len())?;
+    bindings.extend(binding_pairs.into_iter().map(|(_, binding)| binding));
 
     let mut intervals: Vec<(u32, u32, u32)> = Vec::new();
     for source in 0..unique.len() {
@@ -4055,6 +4993,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         isolated: isolated_nodes,
         point_nodes,
         point_sources,
+        binding_starts,
+        bindings,
         stored_points,
         protect_stored: false,
         protect_all: false,

@@ -16,12 +16,11 @@ use std::sync::Arc;
 
 use crate::HeapSize;
 use crate::error::Result;
-#[cfg(test)]
-use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape,
-    SharedSlice, ring_edge_membership, same_point, xy_bounds_columns,
+    Bounds, CoordSeq, Point, Polygon, Ring, RingClass, RingEdgeMembership, RingView, Shape,
+    SharedSlice, cartesian_ring_views_location, ring_edge_membership, ring_kind_columns,
+    xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
@@ -29,6 +28,7 @@ pub(crate) struct RingPointIndex {
     bounds: Bounds,
     xs: SharedSlice<f64>,
     ys: SharedSlice<f64>,
+    kind: crate::geometry::RingKind,
     /// Edge start indices (`0..n-1`) stabbed by Y — dense CSR stores edge
     /// ids directly (no items-vector indirection).
     edges: EdgeYIndex,
@@ -40,6 +40,7 @@ impl RingPointIndex {
         let ys = coords.ys();
         let n = xs.len();
         debug_assert_eq!(n, ys.len());
+        let kind = ring_kind_columns(xs, ys);
         let bounds = if n == 0 {
             Bounds::new_raw(
                 f64::INFINITY,
@@ -55,8 +56,17 @@ impl RingPointIndex {
             bounds,
             xs: coords.carried_xs()?,
             ys: coords.carried_ys()?,
+            kind,
             edges: EdgeYIndex::build(ys)?,
         })
+    }
+
+    fn view(&self) -> RingView<'_> {
+        RingView {
+            xs: &self.xs,
+            ys: &self.ys,
+            kind: self.kind,
+        }
     }
 
     fn bounds_contains(&self, x: f64, y: f64) -> bool {
@@ -186,29 +196,62 @@ impl PolygonPointIndex {
     }
 
     /// Strict membership after the envelope candidate gate.
-    pub(crate) fn contains_xy(&self, x: f64, y: f64) -> bool {
+    #[cfg(test)]
+    pub(crate) fn contains_xy(&self, x: f64, y: f64) -> Result<bool> {
         if !self.in_bounds_xy(x, y) {
-            return false;
+            return Ok(false);
         }
-        // Shell envelope ≈ polygon envelope — skip redundant ring gate.
-        if self.shell.classify_at(x, y) != RingClass::Interior {
-            return false;
-        }
-        !self.hole_hits_xy(x, y, |class| class != RingClass::Exterior)
+        Ok(self.location(Point::new_raw_xy(x, y))? == RingClass::Interior)
     }
 
-    pub(crate) fn covers_point(&self, point: Point) -> bool {
+    pub(crate) fn covers_point(&self, point: Point) -> Result<bool> {
         self.covers_xy(point.x, point.y)
     }
 
-    fn covers_xy(&self, x: f64, y: f64) -> bool {
+    fn covers_xy(&self, x: f64, y: f64) -> Result<bool> {
+        if !self.in_bounds_xy(x, y) {
+            return Ok(false);
+        }
+        Ok(self.location(Point::new_raw_xy(x, y))? != RingClass::Exterior)
+    }
+
+    fn location(&self, point: Point) -> Result<RingClass> {
+        if !self.in_bounds_xy(point.x, point.y) {
+            return Ok(RingClass::Exterior);
+        }
+        let mut hole_indices = Vec::new();
+        crate::try_reserve_vec(&mut hole_indices, self.holes.len())?;
+        let _: Option<()> = self
+            .holes
+            .for_each_at_point_index(point.x, point.y, |index| {
+                hole_indices.push(index);
+                ControlFlow::Continue(())
+            });
+        let mut holes = Vec::new();
+        crate::try_reserve_vec(&mut holes, hole_indices.len())?;
+        for index in hole_indices {
+            let hole = self
+                .holes
+                .get(index)
+                .expect("point index returned an invalid item index");
+            holes.push(hole.view());
+        }
+        let location = cartesian_ring_views_location(self.shell.view(), &holes, point)?;
+        Ok(match location {
+            crate::geometry::Loc::Interior => RingClass::Interior,
+            crate::geometry::Loc::Boundary => RingClass::Boundary,
+            crate::geometry::Loc::Exterior => RingClass::Exterior,
+        })
+    }
+
+    /// Rounded graph oracle only. Production Cartesian point queries use
+    /// [`location`], including its exact local source-star boundary rule.
+    pub(crate) fn contains_xy_graph_oracle(&self, x: f64, y: f64) -> bool {
         if !self.in_bounds_xy(x, y) {
             return false;
         }
-        if self.shell.classify_at(x, y) == RingClass::Exterior {
-            return false;
-        }
-        !self.hole_hits_xy(x, y, |class| class == RingClass::Interior)
+        self.shell.classify_at(x, y) == RingClass::Interior
+            && !self.hole_hits_xy(x, y, |class| class != RingClass::Exterior)
     }
 
     /// Three-way membership: `Boundary` on shell or any hole ring, `Interior`
@@ -315,50 +358,14 @@ pub(crate) struct ExactPointTester {
 
 impl ExactPointTester {
     #[cfg(test)]
-    fn contains_point(&self, point: Point) -> bool {
-        exact_contains_point(&self.shape, point)
+    fn contains_point(&self, point: Point) -> Result<bool> {
+        crate::geometry::cartesian_point_location(&self.shape, point)
+            .map(|location| location == crate::geometry::Loc::Interior)
     }
 
-    fn covers_point(&self, point: Point) -> bool {
-        exact_covers_point(&self.shape, point)
-    }
-}
-
-#[cfg(test)]
-fn exact_contains_point(shape: &Shape, point: Point) -> bool {
-    match shape {
-        Shape::Point(value) => same_point(*value, point),
-        Shape::MultiPoint(points) => points.iter().any(|value| same_point(value, point)),
-        Shape::LineString(line) => line_contains_point(line, point),
-        Shape::MultiLineString(lines) => multiline_contains_point(lines, point),
-        Shape::Polygon(polygon) => polygon.contains_point(point),
-        Shape::MultiPolygon(polygons) => {
-            polygons.iter().any(|polygon| polygon.contains_point(point))
-        },
-        Shape::GeometryCollection(geometries) => geometries
-            .iter()
-            .any(|geometry| exact_contains_point(geometry, point)),
-        Shape::Empty(..) => false,
-    }
-}
-
-fn exact_covers_point(shape: &Shape, point: Point) -> bool {
-    match shape {
-        Shape::Point(value) => same_point(*value, point),
-        Shape::MultiPoint(points) => points.iter().any(|value| same_point(value, point)),
-        Shape::LineString(line) => line
-            .segment_pairs()
-            .any(|[start, end]| crate::geometry::point_on_segment(point, start, end)),
-        Shape::MultiLineString(lines) => lines.iter().any(|line| {
-            line.segment_pairs()
-                .any(|[start, end]| crate::geometry::point_on_segment(point, start, end))
-        }),
-        Shape::Polygon(polygon) => polygon.covers_point(point),
-        Shape::MultiPolygon(polygons) => polygons.iter().any(|polygon| polygon.covers_point(point)),
-        Shape::GeometryCollection(geometries) => geometries
-            .iter()
-            .any(|geometry| exact_covers_point(geometry, point)),
-        Shape::Empty(..) => false,
+    fn covers_point(&self, point: Point) -> Result<bool> {
+        crate::geometry::cartesian_point_location(&self.shape, point)
+            .map(|location| location != crate::geometry::Loc::Exterior)
     }
 }
 
@@ -428,40 +435,54 @@ impl PointBatchTester {
 
     /// Strict membership — [`Shape::contains_point`] semantics.
     #[cfg(test)]
-    pub(crate) fn contains_point(&self, point: Point) -> bool {
+    pub(crate) fn contains_point(&self, point: Point) -> Result<bool> {
         match self {
             Self::Polygon { index: polygon, .. } => polygon.contains_xy(point.x, point.y),
             Self::MultiPolygon { parts, .. } => {
                 let mut hit = false;
+                let mut error = None;
                 let _ = parts.for_each_at_point(point.x, point.y, |polygon| {
-                    if polygon.contains_xy(point.x, point.y) {
-                        hit = true;
+                    match polygon.contains_xy(point.x, point.y) {
+                        Ok(value) => hit |= value,
+                        Err(value) => {
+                            error = Some(value);
+                            return ControlFlow::Break(());
+                        },
+                    }
+                    if hit {
                         ControlFlow::Break(())
                     } else {
                         ControlFlow::Continue(())
                     }
                 });
-                hit
+                error.map_or(Ok(hit), Err)
             },
             Self::Generic(tester) => tester.contains_point(point),
         }
     }
 
     /// Boundary-inclusive membership — [`Shape::covers_point`] semantics.
-    pub(crate) fn covers_point(&self, point: Point) -> bool {
+    pub(crate) fn covers_point(&self, point: Point) -> Result<bool> {
         match self {
             Self::Polygon { index: polygon, .. } => polygon.covers_xy(point.x, point.y),
             Self::MultiPolygon { parts, .. } => {
                 let mut hit = false;
+                let mut error = None;
                 let _ = parts.for_each_at_point(point.x, point.y, |polygon| {
-                    if polygon.covers_xy(point.x, point.y) {
-                        hit = true;
+                    match polygon.covers_xy(point.x, point.y) {
+                        Ok(value) => hit |= value,
+                        Err(value) => {
+                            error = Some(value);
+                            return ControlFlow::Break(());
+                        },
+                    }
+                    if hit {
                         ControlFlow::Break(())
                     } else {
                         ControlFlow::Continue(())
                     }
                 });
-                hit
+                error.map_or(Ok(hit), Err)
             },
             Self::Generic(tester) => tester.covers_point(point),
         }
@@ -719,12 +740,12 @@ mod tests {
         for &(x, y) in &probes {
             let p = Point::new_raw_xy(x, y);
             assert_eq!(
-                tester.contains_point(p),
+                tester.contains_point(p).unwrap(),
                 shape.contains_point(p).unwrap(),
                 "contains at ({x},{y})"
             );
             assert_eq!(
-                tester.covers_point(p),
+                tester.covers_point(p).unwrap(),
                 shape.covers_point(p).unwrap(),
                 "covers at ({x},{y})"
             );
@@ -750,13 +771,13 @@ mod tests {
         let shape = Shape::MultiPolygon(vec![a, b].into());
         let tester = PointBatchTester::new(&shape).unwrap();
         let overlap = Point::new_raw_xy(0.75, 0.75);
-        assert!(tester.contains_point(overlap));
+        assert!(tester.contains_point(overlap).unwrap());
         assert_eq!(
             tester.classify_area_point(overlap),
             Some(RingClass::Interior)
         );
         let out = Point::new_raw_xy(3.0, 3.0);
-        assert!(!tester.contains_point(out));
+        assert!(!tester.contains_point(out).unwrap());
         assert_eq!(tester.classify_area_point(out), Some(RingClass::Exterior));
     }
 
@@ -765,7 +786,7 @@ mod tests {
         let poly = square_with_hole();
         let tester = PointBatchTester::new(&Shape::Polygon(poly)).unwrap();
         let p = Point::new_raw_xy(1.0, 9.0);
-        assert!(tester.contains_point(p));
+        assert!(tester.contains_point(p).unwrap());
         assert_eq!(tester.classify_area_point(p), Some(RingClass::Interior));
     }
 
@@ -787,8 +808,16 @@ mod tests {
         };
         let shape = Shape::Polygon(poly);
         let tester = PointBatchTester::new(&shape).unwrap();
-        assert!(tester.contains_point(Point::new_raw_xy(0.5, n_side as f64 * 0.5)));
-        assert!(!tester.contains_point(Point::new_raw_xy(-1.0, n_side as f64 * 0.5)));
+        assert!(
+            tester
+                .contains_point(Point::new_raw_xy(0.5, n_side as f64 * 0.5))
+                .unwrap()
+        );
+        assert!(
+            !tester
+                .contains_point(Point::new_raw_xy(-1.0, n_side as f64 * 0.5))
+                .unwrap()
+        );
         let bytes = tester.heap_bytes();
         let verts = pts.len();
         assert!(
@@ -830,12 +859,12 @@ mod tests {
             let y = f64::from(i * 53 + 7) % 1000.0;
             let p = Point::new_raw_xy(x, y);
             assert_eq!(
-                tester.contains_point(p),
+                tester.contains_point(p).unwrap(),
                 shape.contains_point(p).unwrap(),
                 "mismatch at ({x},{y})"
             );
             assert_eq!(
-                tester.covers_point(p),
+                tester.covers_point(p).unwrap(),
                 shape.covers_point(p).unwrap(),
                 "covers mismatch at ({x},{y})"
             );
@@ -855,11 +884,11 @@ mod tests {
             Point::new_raw_xy(-1.0, 0.0),
         ] {
             assert_eq!(
-                tester.contains_point(point),
+                tester.contains_point(point).unwrap(),
                 shape.contains_point(point).unwrap()
             );
             assert_eq!(
-                tester.covers_point(point),
+                tester.covers_point(point).unwrap(),
                 shape.covers_point(point).unwrap()
             );
         }
@@ -872,10 +901,36 @@ mod tests {
         ));
         let tester = PointBatchTester::new(&line).unwrap();
 
-        assert!(tester.covers_point(Point::new_raw_xy(1.0, 1.0)));
-        assert!(tester.covers_point(Point::new_raw_xy(0.0, 0.0)));
-        assert!(!tester.covers_point(Point::new_raw_xy(1.0, 1.1)));
-        assert!(!tester.contains_point(Point::new_raw_xy(0.0, 0.0)));
-        assert!(tester.contains_point(Point::new_raw_xy(1.0, 1.0)));
+        assert!(tester.covers_point(Point::new_raw_xy(1.0, 1.0)).unwrap());
+        assert!(tester.covers_point(Point::new_raw_xy(0.0, 0.0)).unwrap());
+        assert!(!tester.covers_point(Point::new_raw_xy(1.0, 1.1)).unwrap());
+        assert!(!tester.contains_point(Point::new_raw_xy(0.0, 0.0)).unwrap());
+        assert!(tester.contains_point(Point::new_raw_xy(1.0, 1.0)).unwrap());
+    }
+
+    #[test]
+    fn indexed_point_tester_uses_composed_source_support() {
+        for (wkt, point, contains) in [
+            (
+                "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
+                Point::new_raw_xy(2.0, 2.0),
+                true,
+            ),
+            (
+                "POLYGON ((0 0,2 0,1 0,0 0))",
+                Point::new_raw_xy(1.0, 0.0),
+                true,
+            ),
+            (
+                "POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))",
+                Point::new_raw_xy(2.0, 2.0),
+                true,
+            ),
+        ] {
+            let shape = crate::io::parse_wkt(wkt).unwrap();
+            let tester = PointBatchTester::new(&shape).unwrap();
+            assert_eq!(tester.contains_point(point).unwrap(), contains);
+            assert_eq!(tester.covers_point(point).unwrap(), contains);
+        }
     }
 }

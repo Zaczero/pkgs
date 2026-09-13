@@ -162,7 +162,7 @@ fn directed_filled_hausdorff(source: &Shape, target: &Shape) -> Result<f64> {
 fn convex_target_directed_distance(source: &Shape, target: &Shape) -> Result<f64> {
     let mut best = 0.0_f64;
     source.try_for_each_point(|point| {
-        let distance = if target.area_covers_point(point) {
+        let distance = if target.area_covers_point(point)? {
             0.0
         } else {
             let mut distance = f64::INFINITY;
@@ -227,7 +227,7 @@ impl FilledSearch<'_> {
             0,
         )?;
         let mut cells = BinaryHeap::new();
-        if !self.cell_may_contain_source(cell) {
+        if !self.cell_may_contain_source(cell)? {
             return Ok(());
         }
         // Small targets have a bounded site set. A localized source-minus-
@@ -278,7 +278,7 @@ impl FilledSearch<'_> {
             ] {
                 let child =
                     self.make_cell(min_x, max_x, min_y, max_y, cell.depth.saturating_add(1))?;
-                if !self.cell_may_contain_source(child) {
+                if !self.cell_may_contain_source(child)? {
                     continue;
                 }
                 if child.upper <= self.best.next_up() {
@@ -364,7 +364,7 @@ impl FilledSearch<'_> {
             return Ok(false);
         };
         let center = Point::new_raw_xy(f64::midpoint(min_x, max_x), f64::midpoint(min_y, max_y));
-        if !shape.area_covers_point(center) {
+        if !shape.area_covers_point(center)? {
             return Ok(false);
         }
         let rectangle = Bounds::new_raw(min_x, min_y, max_x, max_y);
@@ -385,25 +385,22 @@ impl FilledSearch<'_> {
         }))
     }
 
-    fn cell_may_contain_source(&self, cell: FilledCell) -> bool {
+    fn cell_may_contain_source(&self, cell: FilledCell) -> Result<bool> {
         if cell.max_x < self.source_bounds.minx()
             || cell.min_x > self.source_bounds.maxx()
             || cell.max_y < self.source_bounds.miny()
             || cell.min_y > self.source_bounds.maxy()
         {
-            return false;
+            return Ok(false);
         }
         let points = cell_corners(cell);
-        if points
-            .iter()
-            .copied()
-            .chain(std::iter::once(cell_center(cell)))
-            .any(|point| {
-                self.source
-                    .area_covers_point(Point::new_raw_xy(point.x, point.y))
-            })
-        {
-            return true;
+        for point in points.into_iter().chain(std::iter::once(cell_center(cell))) {
+            if self
+                .source
+                .area_covers_point(Point::new_raw_xy(point.x, point.y))?
+            {
+                return Ok(true);
+            }
         }
         // If no probe is inside, an intersecting source boundary is the only
         // way an area can cross the cell. Use exact segment-cell contact
@@ -417,7 +414,7 @@ impl FilledSearch<'_> {
             }
             possible = segment_vs_rect(segment, rectangle) != RectContact::None;
         });
-        possible
+        Ok(possible)
     }
 
     fn probe_cell(&mut self, cell: FilledCell) -> Result<()> {
@@ -431,11 +428,12 @@ impl FilledSearch<'_> {
     }
 
     fn consider(&mut self, point: XY) -> Result<()> {
-        if !point.x.is_finite()
-            || !point.y.is_finite()
-            || !self
-                .source
-                .area_covers_point(Point::new_raw_xy(point.x, point.y))
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Ok(());
+        }
+        if !self
+            .source
+            .area_covers_point(Point::new_raw_xy(point.x, point.y))?
         {
             return Ok(());
         }
@@ -699,18 +697,20 @@ fn source_minus_target_bounds(source: &Shape, target: &Shape, fallback: Bounds) 
     let mut candidates = None;
     let mut uncertain = false;
 
-    source.for_each_point(|point| {
-        if !target.area_covers_point(point) && !include_search_point(&mut candidates, point.xy()) {
+    source.try_for_each_point(|point| {
+        if !target.area_covers_point(point)? && !include_search_point(&mut candidates, point.xy()) {
             uncertain = true;
         }
-    });
-    target.for_each_point(|point| {
-        if area_strictly_covers_point(source, point.xy())
+        Ok::<(), crate::error::Error>(())
+    })?;
+    target.try_for_each_point(|point| {
+        if area_strictly_covers_point(source, point.xy())?
             && !include_search_point(&mut candidates, point.xy())
         {
             uncertain = true;
         }
-    });
+        Ok::<(), crate::error::Error>(())
+    })?;
 
     for &left in &source_segments {
         if uncertain {
@@ -885,8 +885,8 @@ fn difference_at_contact(
             return Ok(None);
         }
         face_count += 1;
-        if source.area_covers_point(Point::new_raw_xy(probe.x, probe.y))
-            && !target.area_covers_point(Point::new_raw_xy(probe.x, probe.y))
+        if source.area_covers_point(Point::new_raw_xy(probe.x, probe.y))?
+            && !target.area_covers_point(Point::new_raw_xy(probe.x, probe.y))?
         {
             return Ok(Some(true));
         }
@@ -915,9 +915,9 @@ const fn same_site(left: Site, right: Site) -> bool {
     }
 }
 
-fn area_strictly_covers_point(shape: &Shape, point: XY) -> bool {
-    if !shape.area_covers_point(Point::new_raw_xy(point.x, point.y)) {
-        return false;
+fn area_strictly_covers_point(shape: &Shape, point: XY) -> Result<bool> {
+    if !shape.area_covers_point(Point::new_raw_xy(point.x, point.y))? {
+        return Ok(false);
     }
     let mut boundary = false;
     shape.for_each_segment(|segment| {
@@ -925,7 +925,7 @@ fn area_strictly_covers_point(shape: &Shape, point: XY) -> bool {
             boundary = true;
         }
     });
-    !boundary
+    Ok(!boundary)
 }
 
 const fn segment_is_finite(segment: Segment) -> bool {
@@ -1410,7 +1410,11 @@ mod tests {
             &[&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]],
         );
         let query = HausdorffTarget::build(&target).unwrap();
-        assert!(source.area_covers_point(Point::new_raw_xy(5.0, 5.0)));
+        assert!(
+            source
+                .area_covers_point(Point::new_raw_xy(5.0, 5.0))
+                .unwrap()
+        );
         assert_eq!(query.distance(XY::new(5.0, 5.0)).unwrap(), 2.0);
         assert_eq!(directed_filled_hausdorff(&source, &target).unwrap(), 2.0);
         assert_eq!(directed_filled_hausdorff(&target, &source).unwrap(), 0.0);
@@ -1533,7 +1537,11 @@ mod tests {
         let query = HausdorffTarget::build(&target).unwrap();
         assert_eq!(query.distance(XY::new(5.0, 5.0)).unwrap(), 3.0);
         assert_eq!(query.distance(XY::new(4.0, 4.0)).unwrap(), 2.0);
-        assert!(source.area_covers_point(Point::new_raw_xy(5.0, 5.0)));
+        assert!(
+            source
+                .area_covers_point(Point::new_raw_xy(5.0, 5.0))
+                .unwrap()
+        );
         assert_eq!(directed_filled_hausdorff(&source, &target).unwrap(), 3.0);
     }
 

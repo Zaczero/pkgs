@@ -8,9 +8,9 @@ use crate::collections::{HashMap, HashMapExt as _};
 use crate::error::Result;
 use crate::geometry::topology::TopologyGraph;
 use crate::geometry::{
-    CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
-    OverlayOp, Point, PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay,
-    point_distance, point_on_segment, point_segment_distance_and_projection, same_point,
+    CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON, OverlayOp, Point,
+    PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay, point_distance,
+    point_on_segment, point_segment_distance_and_projection, same_point,
     scaled_residual, segment_projection,
 };
 
@@ -305,155 +305,6 @@ pub(super) fn segment_ordinate_at(
     })?;
     let lifted = projection.interpolate_point(start, end)?;
     Ok(Some((lifted.z(), lifted.m())))
-}
-
-/// Carry ordinates onto a directly admitted point/carrier intersection without
-/// constructing topology state. Copied XY points keep a source Z/M only when a
-/// stored vertex matches or the point lies exactly on a stored segment.
-pub(crate) fn carry_direct_point_ordinates(
-    point: Point,
-    inputs: &[&Shape],
-    strict: bool,
-) -> Result<Shape> {
-    carry_direct_points_ordinates(Shape::Point(point), inputs, strict)
-}
-
-/// Carry ordinates onto a directly admitted point or multipoint intersection.
-/// Scalar and multipoint copies share exact vertex and `point_on_segment`
-/// admission; multipoint axes are the homogeneous intersection across vertices.
-pub(crate) fn carry_direct_points_ordinates(
-    output: Shape,
-    inputs: &[&Shape],
-    strict: bool,
-) -> Result<Shape> {
-    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
-        return Ok(output);
-    }
-    let declared_axes = overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
-    if let Shape::Empty(kind, _) = &output {
-        return Ok(Shape::typed_empty(*kind, declared_axes));
-    }
-    let mut has_z = declared_axes.has_z();
-    let mut has_m = declared_axes.has_m();
-    output.try_for_each_point(|point| {
-        let (z, m) = resolve_copied_point_ordinates(point, inputs)?;
-        has_z &= z.is_some();
-        has_m &= m.is_some();
-        Ok::<(), crate::error::Error>(())
-    })?;
-    let axes = CoordinateAxes::new(HasZ(has_z), HasM(has_m));
-    if strict && axes != declared_axes {
-        return Err(GeometryErrorKind::ordinate_dropped("intersection"));
-    }
-    output.map_points(&|point| {
-        let (z, m) = resolve_copied_point_ordinates(point, inputs)?;
-        Ok(Point::new_raw_axes(
-            point.x,
-            point.y,
-            ZOrdinate(axes.has_z().then(|| z.expect("retained Z is sourced"))),
-            MOrdinate(axes.has_m().then(|| m.expect("retained M is sourced"))),
-        ))
-    })
-}
-
-fn resolve_copied_point_ordinates(
-    point: Point,
-    inputs: &[&Shape],
-) -> Result<(Option<f64>, Option<f64>)> {
-    let mut z = AxisValue::default();
-    let mut m = AxisValue::default();
-    for shape in inputs {
-        if !(shape.has_z() || shape.has_m()) {
-            continue;
-        }
-        observe_copied_shape_ordinates(shape, point, &mut z, &mut m)?;
-        if z.conflict && m.conflict {
-            break;
-        }
-    }
-    Ok((z.value(), m.value()))
-}
-
-fn observe_copied_shape_ordinates(
-    shape: &Shape,
-    point: Point,
-    z: &mut AxisValue,
-    m: &mut AxisValue,
-) -> Result<()> {
-    match shape {
-        Shape::Point(source) => {
-            if same_point(*source, point) {
-                z.observe(source.z());
-                m.observe(source.m());
-            }
-        },
-        Shape::MultiPoint(points) => {
-            for source in points.points() {
-                if same_point(source, point) {
-                    z.observe(source.z());
-                    m.observe(source.m());
-                }
-            }
-        },
-        Shape::LineString(line) => observe_direct_ordinates(line, point, z, m)?,
-        Shape::MultiLineString(lines) => {
-            for line in lines {
-                observe_direct_ordinates(line, point, z, m)?;
-            }
-        },
-        Shape::Polygon(polygon) => {
-            for ring in polygon.rings() {
-                observe_direct_ordinates(ring, point, z, m)?;
-            }
-        },
-        Shape::MultiPolygon(polygons) => {
-            for polygon in polygons {
-                for ring in polygon.rings() {
-                    observe_direct_ordinates(ring, point, z, m)?;
-                }
-            }
-        },
-        _ => {},
-    }
-    Ok(())
-}
-
-fn observe_direct_ordinates<C: Coordinates + ?Sized>(
-    coords: &C,
-    point: Point,
-    z: &mut AxisValue,
-    m: &mut AxisValue,
-) -> Result<()> {
-    for [raw_start, raw_end] in coords.segment_pairs() {
-        if same_point(raw_start, raw_end) {
-            continue;
-        }
-        if same_point(raw_start, point) {
-            z.observe(raw_start.z());
-            m.observe(raw_start.m());
-        }
-        if same_point(raw_end, point) {
-            z.observe(raw_end.z());
-            m.observe(raw_end.m());
-        }
-        let (start, end) = canonical_segment(raw_start, raw_end);
-        if !same_point(start, point)
-            && !same_point(end, point)
-            && point_on_segment(point, start, end)
-        {
-            let projection = segment_projection(point, Segment {
-                start: start.xy(),
-                end: end.xy(),
-            })?;
-            let lifted = projection.interpolate_point(start, end)?;
-            z.observe(lifted.z());
-            m.observe(lifted.m());
-        }
-        if z.conflict && m.conflict {
-            return Ok(());
-        }
-    }
-    Ok(())
 }
 
 fn ordinate_tolerance(inputs: &[&Shape]) -> f64 {

@@ -204,11 +204,24 @@ impl<T> YStabbingIndex<T> {
         y: f64,
         mut visit: impl FnMut(&T) -> std::ops::ControlFlow<B>,
     ) -> Option<B> {
+        self.for_each_at_point_index(x, y, |index| visit(&self.items[index]))
+    }
+
+    /// Visit every item index whose closed envelope contains `(x, y)`.
+    ///
+    /// This keeps the index's callback lifetime from constraining callers that
+    /// need to borrow a view from the selected item after the traversal.
+    pub(crate) fn for_each_at_point_index<B>(
+        &self,
+        x: f64,
+        y: f64,
+        mut visit: impl FnMut(usize) -> std::ops::ControlFlow<B>,
+    ) -> Option<B> {
         use std::ops::ControlFlow;
         if let Some(envelopes) = &self.envelopes {
             let probe = rstar::AABB::from_point([x, y]);
             for entry in envelopes.locate_in_envelope_intersecting(probe) {
-                if let ControlFlow::Break(b) = visit(&self.items[entry.index as usize]) {
+                if let ControlFlow::Break(b) = visit(entry.index as usize) {
                     return Some(b);
                 }
             }
@@ -219,8 +232,12 @@ impl<T> YStabbingIndex<T> {
             if x < min_x || x > max_x {
                 return ControlFlow::Continue(());
             }
-            visit(&self.items[item_index])
+            visit(item_index)
         })
+    }
+
+    pub(crate) fn get(&self, index: usize) -> Option<&T> {
+        self.items.get(index)
     }
 
     /// The Y walk, handing the caller each surviving item's index so a filter

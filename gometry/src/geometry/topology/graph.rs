@@ -828,7 +828,7 @@ impl AreaMembership {
         match self {
             Self::Cartesian { polygons, .. } => {
                 polygons.for_each_at_point(point.x, point.y, |candidate| {
-                    if candidate.index.contains_xy(point.x, point.y) {
+                    if candidate.index.contains_xy_graph_oracle(point.x, point.y) {
                         visit(candidate.polygon)
                     } else {
                         std::ops::ControlFlow::Continue(())

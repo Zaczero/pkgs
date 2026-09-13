@@ -172,25 +172,6 @@ impl StaticStrTree {
         )
     }
 
-    /// Live handles whose envelope is fully contained in `query`.
-    pub(super) fn each_contained(
-        &self,
-        live: &[u8],
-        query: &AABB<[f64; 2]>,
-        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
-    ) -> crate::error::Result<()> {
-        self.descend(
-            live,
-            |envelope| intersects(envelope, query),
-            |entry| {
-                if contains_envelope(query, &entry.envelope) {
-                    visit(entry.idx)?;
-                }
-                Ok(())
-            },
-        )
-    }
-
     /// Live handles whose envelope lies within squared distance
     /// `max_distance_2` of `point` (rstar `locate_within_distance`
     /// semantics: the entry's envelope distance decides).
@@ -271,18 +252,6 @@ fn intersects(left: &AABB<[f64; 2]>, right: &AABB<[f64; 2]>) -> bool {
         && left_lower[1] <= right_upper[1]
         && left_upper[0] >= right_lower[0]
         && left_upper[1] >= right_lower[1]
-}
-
-#[inline]
-fn contains_envelope(outer: &AABB<[f64; 2]>, inner: &AABB<[f64; 2]>) -> bool {
-    let outer_lower = outer.lower();
-    let outer_upper = outer.upper();
-    let inner_lower = inner.lower();
-    let inner_upper = inner.upper();
-    outer_lower[0] <= inner_lower[0]
-        && outer_lower[1] <= inner_lower[1]
-        && outer_upper[0] >= inner_upper[0]
-        && outer_upper[1] >= inner_upper[1]
 }
 
 #[inline]
@@ -394,17 +363,6 @@ mod tests {
                     brute(&entries, &removed, |entry| entry
                         .envelope
                         .intersects(&query))
-                );
-                let mut inside = Vec::new();
-                tree.each_contained(&live, &query, |idx| {
-                    inside.push(idx);
-                    Ok(())
-                })
-                .unwrap();
-                assert_eq!(
-                    sorted(inside),
-                    brute(&entries, &removed, |entry| query
-                        .contains_envelope(&entry.envelope))
                 );
             }
             let point = [120.0, 90.0];

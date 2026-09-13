@@ -103,27 +103,36 @@ pub(crate) fn parts_boundary_witness(
     left_parts: &DistanceParts,
     right: &Shape,
     right_parts: &DistanceParts,
-) -> Option<Point> {
+) -> crate::error::Result<Option<Point>> {
+    if left.has_area_parts() || right.has_area_parts() {
+        let intersection = crate::geometry::overlay_all(
+            &[left, right],
+            crate::geometry::TopologyDomain::Cartesian,
+            crate::geometry::OverlayOp::Intersection,
+            crate::geometry::Strictness::Lenient,
+        )?;
+        let mut witness = None;
+        intersection.for_each_point(|point| {
+            witness.get_or_insert(point);
+        });
+        return Ok(witness);
+    }
     if let Some((left_segment, right_segment)) = parts_crossing_pair(left_parts, right_parts)
         && let Some(point) = segment_contact_point(left_segment, right_segment)
     {
-        return Some(point.point());
+        return Ok(Some(point.point()));
     }
-    if let Some(&point) = left_parts
-        .point_only
-        .iter()
-        .find(|&&point| parts_covers_point(right, right_parts, point))
-    {
-        return Some(point);
+    for &point in &left_parts.point_only {
+        if parts_covers_point(right, right_parts, point)? {
+            return Ok(Some(point));
+        }
     }
-    if let Some(&point) = right_parts
-        .point_only
-        .iter()
-        .find(|&&point| parts_covers_point(left, left_parts, point))
-    {
-        return Some(point);
+    for &point in &right_parts.point_only {
+        if parts_covers_point(left, left_parts, point)? {
+            return Ok(Some(point));
+        }
     }
-    None
+    Ok(None)
 }
 
 /// First touching/crossing segment pair (full ordinates), mirroring

@@ -231,19 +231,19 @@ def test_repair_is_deterministic() -> None:
     assert len({'|'.join(gm.polygonize(list(lines)).to_wkt()) for _ in range(20)}) == 1
 
 
-def test_repair_methods_are_genuinely_distinct() -> None:
+def test_repair_methods_union_distinct_polygon_members() -> None:
     overlap = gm.from_wkt(
         'MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((2 2, 6 2, 6 6, 2 6, 2 2)))'
     )
     linework = overlap.repair()
     structure = overlap.repair(method='structure')
-    assert linework.geometry_type == 'MultiPolygon'
-    assert linework.area == pytest.approx(24)
+    assert linework.geometry_type == 'Polygon'
+    assert linework.area == pytest.approx(28)
     assert structure.geometry_type == 'Polygon'
     assert structure.area == pytest.approx(28)
     square = '((0 0, 1 0, 1 1, 0 1, 0 0))'
     duplicated = gm.from_wkt(f'MULTIPOLYGON ({square}, {square})')
-    assert duplicated.repair().is_empty
+    assert duplicated.repair().area == pytest.approx(1)
     assert duplicated.repair(method='structure').area == pytest.approx(1)
 
 
@@ -293,9 +293,9 @@ def test_linework_repair_keeps_bowtie_and_nested_hole_regions() -> None:
     assert all(repaired.is_valid)
     assert repaired[0].geometry_type == 'MultiPolygon'
     assert repaired[0].area == pytest.approx(2)
-    assert repaired[1].area == pytest.approx(68)
+    assert repaired[1].area == pytest.approx(64)
     assert not gm.covers(repaired[1], gm.Point(3, 3))
-    assert gm.covers(repaired[1], gm.Point(5, 5))
+    assert not gm.covers(repaired[1], gm.Point(5, 5))
 
 
 def test_repair_drops_conflicting_z_from_the_rebuild() -> None:

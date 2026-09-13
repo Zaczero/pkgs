@@ -135,10 +135,8 @@ impl HausdorffTarget {
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
     pub(crate) fn distance_squared(&self, point: XY) -> crate::error::Result<f64> {
-        if self
-            .filled
-            .as_ref()
-            .is_some_and(|shape| shape.area_covers_point(Point::new_raw_xy(point.x, point.y)))
+        if let Some(shape) = self.filled.as_ref()
+            && shape.area_covers_point(Point::new_raw_xy(point.x, point.y))?
         {
             return Ok(0.0);
         }
@@ -155,10 +153,8 @@ impl HausdorffTarget {
     /// squared norm overflow or underflow.
     pub(crate) fn distance(&self, point: XY) -> crate::error::Result<f64> {
         let point = Point::new_raw_xy(point.x, point.y);
-        if self
-            .filled
-            .as_ref()
-            .is_some_and(|shape| shape.area_covers_point(point))
+        if let Some(shape) = self.filled.as_ref()
+            && shape.area_covers_point(point)?
         {
             return Ok(0.0);
         }

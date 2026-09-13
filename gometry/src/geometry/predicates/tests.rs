@@ -413,25 +413,22 @@ mod convex_tests {
     }
 
     #[test]
-    fn linework_repair_deduplicates_retraced_edges_within_one_ring() {
+    fn linework_repair_cancels_retraced_occurrences_within_one_ring() {
         let retraced =
             crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,2 0,2 2,0 2,0 0))").unwrap();
         let repaired = retraced.repair(RepairMethod::Linework, false).unwrap();
-        assert_eq!(
-            crate::io::to_wkt(&repaired).unwrap(),
-            "POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"
-        );
+        assert_eq!(crate::io::to_wkt(&repaired).unwrap(), "POLYGON EMPTY");
     }
 
     #[test]
-    fn repair_selection_keeps_linework_parity_distinct_from_structure() {
+    fn repair_linework_unions_distinct_polygon_members() {
         let overlap =
             crate::io::parse_wkt("MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((2 2,6 2,6 6,2 6,2 2)))")
                 .unwrap();
         let linework = overlap.repair(RepairMethod::Linework, false).unwrap();
         let structure = overlap.repair(RepairMethod::Structure, false).unwrap();
-        assert_eq!(linework.geometry_type(), "MultiPolygon");
-        assert_eq!(linework.area(), 24.0);
+        assert_eq!(linework.geometry_type(), "Polygon");
+        assert_eq!(linework.area(), 28.0);
         assert_eq!(structure.geometry_type(), "Polygon");
         assert_eq!(structure.area(), 28.0);
 
@@ -441,7 +438,7 @@ mod convex_tests {
         .unwrap();
         assert_eq!(
             nested.repair(RepairMethod::Linework, false).unwrap().area(),
-            68.0
+            64.0
         );
     }
 }

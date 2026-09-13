@@ -7,18 +7,17 @@ use crate::boundary::geographic::invalid_lonlat_error;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicInputs, GeographicViewError};
 use crate::geometry::overlay::{
-    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
-    build_overlay_shape, dedup_points, overlay_declared_axes,
+    ExactSourceInventory, OverlayOp, Strictness, build_overlay_shape, dedup_points,
+    overlay_declared_axes,
 };
 use crate::geometry::predicates::ring_classify_point;
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
-    GeometryErrorKind, GeometryKind, HashMap, HashMapExt as _, HashSet, Point, PointBatchTester,
-    PointKey, Segment, SegmentIndex, Shape, TopologyDomain, TopologyGraph, XY,
-    carry_direct_points_ordinates, carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
-    clean_union, column_all_finite, ordered_edge, point_on_segment, relate, same_point,
-    segment_midpoint, shell_is_convex,
+    GeometryErrorKind, GeometryKind, HashMap, HashMapExt as _, HashSet, Point, PointKey, Segment,
+    Shape, TopologyDomain, TopologyGraph, XY, carry_overlay_ordinates,
+    carry_overlay_ordinates_from_graph, clean_union, column_all_finite, ordered_edge,
+    point_on_segment, relate, same_point, segment_midpoint, shell_is_convex,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -149,17 +148,25 @@ fn exact_cartesian_overlay(
     if inputs.len() == 1 && operation == OverlayOp::Intersection {
         return Ok(inputs[0].clone());
     }
+    let mut ordered = inputs.to_vec();
+    if operation == OverlayOp::Difference {
+        ordered[1..].sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
+    } else {
+        ordered.sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
+    }
+    let inputs = ordered.as_slice();
     let inventory = ExactSourceInventory::from_shapes(inputs)?;
     let mut budget = crate::geometry::ExpansionBudget::new(operation.name(), "exact partition");
     let partition = inventory.partition(&mut budget)?;
-    let (points, lines, polygons) = inventory.overlay_parts(&partition, operation)?;
-    let shape = build_certified_overlay_shape(points, lines, polygons)?;
+    let declared_axes = overlay_declared_axes(inputs, operation);
+    let shape =
+        inventory.overlay_shape(&partition, operation, declared_axes, strictness.is_strict())?;
     let shape = if shape.is_empty() {
         empty_nary_overlay_shape(inputs, operation)
     } else {
-        shape
+        shape.normalize()?
     };
-    crate::geometry::carry_overlay_ordinates(shape, inputs, operation, strictness.is_strict())
+    Ok(shape)
 }
 
 pub(in crate::geometry) fn overlay_all_geographic_from(
@@ -217,14 +224,6 @@ fn overlay_admitted(
                 .collect::<Vec<_>>(),
             op,
         ));
-    }
-
-    if let OverlayInputs::Cartesian(shapes) = originals
-        && shapes.len() == 2
-        && op == OverlayOp::Intersection
-        && let Some(shape) = direct_point_intersection(shapes, strictness)?
-    {
-        return Ok(shape);
     }
 
     let mut sources: Vec<Shape> = match originals {
@@ -356,192 +355,6 @@ fn overlay_admitted(
     } else {
         carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
     }
-}
-
-#[derive(Clone, Copy)]
-enum DirectPointCarrier<'a> {
-    Line(&'a crate::geometry::LineSeq),
-    MultiLine(&'a crate::geometry::MultiLineString),
-    Polygon(&'a crate::geometry::Polygon),
-    MultiPolygon(&'a crate::geometry::MultiPolygon),
-}
-
-impl DirectPointCarrier<'_> {
-    fn covers_point(self, point: Point) -> bool {
-        match self {
-            Self::Line(line) => line
-                .segment_pairs()
-                .any(|[start, end]| point_on_segment(point, start, end)),
-            Self::MultiLine(lines) => lines.iter().any(|line| {
-                line.segment_pairs()
-                    .any(|[start, end]| point_on_segment(point, start, end))
-            }),
-            Self::Polygon(polygon) => polygon.covers_point(point),
-            Self::MultiPolygon(polygons) => {
-                polygons.iter().any(|polygon| polygon.covers_point(point))
-            },
-        }
-    }
-}
-
-fn direct_point_intersection<S: Borrow<Shape>>(
-    inputs: &[S],
-    strictness: Strictness,
-) -> Result<Option<Shape>> {
-    let [left, right] = inputs else {
-        return Ok(None);
-    };
-    let (left, right) = (left.borrow(), right.borrow());
-    let source_refs = [left, right];
-    if let (Some(point), Some(carrier)) = (scalar_point(left), direct_point_carrier(right)?) {
-        return direct_scalar_point_intersection(point, carrier, &source_refs, strictness);
-    }
-    if let (Some(point), Some(carrier)) = (scalar_point(right), direct_point_carrier(left)?) {
-        return direct_scalar_point_intersection(point, carrier, &source_refs, strictness);
-    }
-    if let (Some(points), Some(carrier)) = (multipoint(left), direct_point_carrier(right)?) {
-        return direct_multipoint_intersection(points, carrier, &source_refs, strictness);
-    }
-    if let (Some(points), Some(carrier)) = (multipoint(right), direct_point_carrier(left)?) {
-        return direct_multipoint_intersection(points, carrier, &source_refs, strictness);
-    }
-    Ok(None)
-}
-
-const fn scalar_point(shape: &Shape) -> Option<Point> {
-    match shape {
-        Shape::Point(point) => Some(*point),
-        _ => None,
-    }
-}
-
-const fn multipoint(shape: &Shape) -> Option<&crate::geometry::MultiPoint> {
-    match shape {
-        Shape::MultiPoint(points) => Some(points),
-        _ => None,
-    }
-}
-
-fn direct_point_carrier(shape: &Shape) -> Result<Option<DirectPointCarrier<'_>>> {
-    Ok(match shape {
-        Shape::LineString(line) if relate::line_has_nonzero_segment(line) => {
-            Some(DirectPointCarrier::Line(line))
-        },
-        Shape::MultiLineString(lines)
-            if !lines.has_empty_members()
-                && lines
-                    .iter()
-                    .all(|line| relate::line_has_nonzero_segment(line)) =>
-        {
-            Some(DirectPointCarrier::MultiLine(lines))
-        },
-        Shape::Polygon(polygon) => crate::geometry::polygon_is_valid(polygon)?
-            .then_some(DirectPointCarrier::Polygon(polygon)),
-        Shape::MultiPolygon(polygons) => shape
-            .validate()?
-            .is_none()
-            .then_some(DirectPointCarrier::MultiPolygon(polygons)),
-        _ => None,
-    })
-}
-
-fn direct_scalar_point_intersection(
-    point: Point,
-    carrier: DirectPointCarrier<'_>,
-    source_refs: &[&Shape],
-    strictness: Strictness,
-) -> Result<Option<Shape>> {
-    if !carrier.covers_point(point) {
-        return Ok(Some(empty_nary_overlay_shape(
-            source_refs,
-            OverlayOp::Intersection,
-        )));
-    }
-    Ok(Some(crate::geometry::carry_direct_point_ordinates(
-        point,
-        source_refs,
-        strictness.is_strict(),
-    )?))
-}
-
-fn direct_multipoint_intersection(
-    points: &crate::geometry::MultiPoint,
-    carrier: DirectPointCarrier<'_>,
-    source_refs: &[&Shape],
-    strictness: Strictness,
-) -> Result<Option<Shape>> {
-    if points.is_empty() {
-        return Ok(Some(empty_nary_overlay_shape(
-            source_refs,
-            OverlayOp::Intersection,
-        )));
-    }
-    let mut candidates = direct_multipoint_candidates(points, carrier)?;
-    if candidates.is_empty() {
-        return Ok(Some(empty_nary_overlay_shape(
-            source_refs,
-            OverlayOp::Intersection,
-        )));
-    }
-    dedup_points(&mut candidates);
-    candidates.sort_by(crate::geometry::compare_points);
-    let axes = candidates
-        .first()
-        .map_or(CoordinateAxes::XY, |point| point.axes);
-    let output = Shape::narrow_points(axes, candidates);
-    Ok(Some(carry_direct_points_ordinates(
-        output?,
-        source_refs,
-        strictness.is_strict(),
-    )?))
-}
-
-fn direct_multipoint_candidates(
-    points: &crate::geometry::MultiPoint,
-    carrier: DirectPointCarrier<'_>,
-) -> Result<Vec<Point>> {
-    Ok(match carrier {
-        DirectPointCarrier::Line(line) => {
-            let index =
-                SegmentIndex::build_from_iter(line.segment_pairs().map(|[start, end]| Segment {
-                    start: start.xy(),
-                    end: end.xy(),
-                }))?;
-            points
-                .points()
-                .filter(|point| index.covers_point(*point))
-                .collect()
-        },
-        DirectPointCarrier::MultiLine(lines) => {
-            let index = SegmentIndex::build_from_iter(
-                lines
-                    .iter()
-                    .flat_map(|line| line.segment_pairs())
-                    .map(|[start, end]| Segment {
-                        start: start.xy(),
-                        end: end.xy(),
-                    }),
-            )?;
-            points
-                .points()
-                .filter(|point| index.covers_point(*point))
-                .collect()
-        },
-        DirectPointCarrier::Polygon(polygon) => {
-            let tester = PointBatchTester::from_polygon(polygon)?;
-            points
-                .points()
-                .filter(|point| tester.covers_point(*point))
-                .collect()
-        },
-        DirectPointCarrier::MultiPolygon(polygons) => {
-            let tester = PointBatchTester::from_multipolygon(polygons)?;
-            points
-                .points()
-                .filter(|point| tester.covers_point(*point))
-                .collect()
-        },
-    })
 }
 
 /// Assemble a binary Cartesian polygon/line intersection from one joint graph.
@@ -968,7 +781,7 @@ fn assemble_joint_graph_overlay(
     }
     let polygon_edges = output_polygon_edges(&polygons);
     let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, &polygon_edges, op)?;
-    let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op);
+    let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op)?;
     build_overlay_shape(points, &lines, &polygons)
 }
 
@@ -1505,9 +1318,9 @@ fn overlay_lines(
                     || graph.edge_has_line_source_for_row(edge, source_row as u32)
             })
             .collect();
-        let result_covers = polygon_indexes
-            .iter()
-            .any(|polygon| polygon.covers_point(midpoint));
+        let result_covers = polygon_indexes.iter().try_fold(false, |covered, polygon| {
+            Ok::<_, crate::error::Error>(covered || polygon.covers_point(midpoint)?)
+        })?;
         let keep = match op {
             OverlayOp::Intersection => covered.iter().all(|&present| present) && !result_covers,
             OverlayOp::Union => line_membership.iter().any(|&present| present) && !result_covers,
@@ -1537,7 +1350,7 @@ fn overlay_points(
     polygon_indexes: &[crate::geometry::PolygonPointIndex],
     lines: &[CoordSeq],
     op: OverlayOp,
-) -> Vec<Point> {
+) -> Result<Vec<Point>> {
     let mut candidates: Vec<Point> = graph
         .source_points
         .iter()
@@ -1547,16 +1360,15 @@ fn overlay_points(
     if op == OverlayOp::Intersection {
         candidates.extend(graph.nodes.iter().map(|node| node.point.point()));
     }
-    candidates.retain(|point| {
-        let membership: Vec<bool> = sources
-            .iter()
-            .enumerate()
-            .map(|(source_row, source)| {
-                source.locate_point_for_overlay(point.xy()) != TopologyLocation::Exterior
-                    || (op == OverlayOp::Intersection
-                        && graph.has_line_source_at_node(point.xy(), source_row as u32))
-            })
-            .collect();
+    let mut kept = Vec::new();
+    for point in candidates {
+        let mut membership = Vec::new();
+        for (source_row, source) in sources.iter().enumerate() {
+            let value = source.locate_point_for_overlay(point.xy()) != TopologyLocation::Exterior
+                || (op == OverlayOp::Intersection
+                    && graph.has_line_source_at_node(point.xy(), source_row as u32));
+            membership.push(value);
+        }
         let keep = match op {
             OverlayOp::Union => membership.iter().any(|&present| present),
             OverlayOp::Intersection => {
@@ -1570,16 +1382,22 @@ fn overlay_points(
                 membership.iter().filter(|&&present| present).count() % 2 == 1
             },
         };
-        keep && !polygon_indexes
-            .iter()
-            .any(|polygon| polygon.covers_point(*point))
+        let covered = polygon_indexes.iter().try_fold(false, |covered, polygon| {
+            Ok::<_, crate::error::Error>(covered || polygon.covers_point(point)?)
+        })?;
+        if keep
+            && !covered
             && !lines.iter().any(|line| {
                 line.segment_pairs()
-                    .any(|[start, end]| point_on_segment(*point, start, end))
+                    .any(|[start, end]| point_on_segment(point, start, end))
             })
-    });
+        {
+            kept.push(point);
+        }
+    }
+    let mut candidates = kept;
     dedup_points(&mut candidates);
-    candidates
+    Ok(candidates)
 }
 
 pub(crate) fn empty_nary_overlay_shape(inputs: &[&Shape], op: OverlayOp) -> Shape {

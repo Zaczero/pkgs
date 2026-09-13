@@ -1,18 +1,24 @@
 use crate::geometry::{
-    DistanceParts, Point, Segment, Shape, point_distance, point_distance_squared,
+    DistanceParts, Loc, Point, Segment, Shape, point_distance, point_distance_squared,
     point_segment_distance, point_segment_distance_squared, points_dwithin, same_point,
     segment_envelopes_disjoint, segments_intersect,
 };
-pub(crate) fn parts_covers_point(shape: &Shape, parts: &DistanceParts, point: Point) -> bool {
-    parts
+pub(crate) fn parts_covers_point(
+    shape: &Shape,
+    parts: &DistanceParts,
+    point: Point,
+) -> crate::error::Result<bool> {
+    if shape.has_area_parts() {
+        return Ok(crate::geometry::cartesian_point_location(shape, point)? != Loc::Exterior);
+    }
+    Ok(parts
         .point_only
         .iter()
         .any(|&other| same_point(other, point))
         || parts.bvh().map_or_else(
             || parts.linework.covers_point(point),
             |bvh| bvh.covers_point(&parts.linework, point),
-        )
-        || (shape.has_area_parts() && shape.area_covers_point(point))
+        ))
 }
 
 /// Whether any segment pair between the two parts touches or crosses —
@@ -144,27 +150,44 @@ pub(crate) fn any_parts_within(
 /// `PreparedLinework` staging — the common area-overlap case (a polygon
 /// covering the other operand) answers without building parts at all.
 /// Callers gate on overlapping bounds. Returns the witnessing vertex.
-pub(crate) fn quick_area_overlap(left: &Shape, right: &Shape) -> Option<Point> {
+pub(crate) fn quick_area_overlap(
+    left: &Shape,
+    right: &Shape,
+) -> crate::error::Result<Option<Point>> {
     let mut witness = None;
+    let mut error = None;
     if right.has_area_parts() {
-        left.any_component_representative(&mut |point| {
-            let covered = right.area_covers_point(point);
-            if covered {
-                witness = Some(point);
-            }
-            covered
+        left.any_component_representative(&mut |point| match right.area_covers_point(point) {
+            Ok(covered) => {
+                if covered {
+                    witness = Some(point);
+                }
+                covered
+            },
+            Err(value) => {
+                error = Some(value);
+                true
+            },
         });
+    }
+    if let Some(error) = error {
+        return Err(error);
     }
     if witness.is_none() && left.has_area_parts() {
-        right.any_component_representative(&mut |point| {
-            let covered = left.area_covers_point(point);
-            if covered {
-                witness = Some(point);
-            }
-            covered
+        right.any_component_representative(&mut |point| match left.area_covers_point(point) {
+            Ok(covered) => {
+                if covered {
+                    witness = Some(point);
+                }
+                covered
+            },
+            Err(value) => {
+                error = Some(value);
+                true
+            },
         });
     }
-    witness
+    error.map_or(Ok(witness), Err)
 }
 
 /// Segment-count crossover for [`puntal_brute_distance`]. Measured against the

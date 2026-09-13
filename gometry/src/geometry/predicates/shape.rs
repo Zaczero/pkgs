@@ -1,8 +1,7 @@
 use crate::error::Result;
-use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
 use crate::geometry::{
-    CompiledPattern, Coordinates as _, GeometryErrorKind, Point, PreparedPlan, Shape,
-    graph_relate_shapes, point_equals_exact, point_on_segment, points_equal_exact, same_point,
+    CompiledPattern, GeometryErrorKind, Loc, Point, PreparedPlan, Shape, cartesian_point_location,
+    graph_relate_shapes, point_equals_exact, points_equal_exact,
 };
 use crate::predicates::engine::{PreparedTopologyPair, topology_scalar_pattern};
 
@@ -23,51 +22,11 @@ impl Shape {
     /// keeps a single exhaustive match, so a new `Shape` variant cannot
     /// update one predicate and silently miss its twin.
     fn point_membership<const BOUNDARY: bool>(&self, point: Point) -> Result<bool> {
-        Ok(match self {
-            Self::Point(value) => same_point(*value, point),
-            Self::MultiPoint(points) => points.iter().any(|value| same_point(value, point)),
-            Self::LineString(points) => {
-                if BOUNDARY {
-                    points
-                        .segment_pairs()
-                        .any(|[start, end]| point_on_segment(point, start, end))
-                } else {
-                    line_contains_point(points, point)
-                }
-            },
-            Self::MultiLineString(lines) => {
-                if BOUNDARY {
-                    lines.iter().any(|line| {
-                        line.segment_pairs()
-                            .any(|[start, end]| point_on_segment(point, start, end))
-                    })
-                } else {
-                    multiline_contains_point(lines, point)
-                }
-            },
-            Self::Polygon(polygon) => {
-                if BOUNDARY {
-                    polygon.covers_point(point)
-                } else {
-                    polygon.contains_point(point)
-                }
-            },
-            Self::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
-                if BOUNDARY {
-                    polygon.covers_point(point)
-                } else {
-                    polygon.contains_point(point)
-                }
-            }),
-            Self::GeometryCollection(_) => {
-                let matrix = graph_relate_shapes(self, &Self::Point(point.to_xy()))?;
-                if BOUNDARY {
-                    matrix.is_covers()
-                } else {
-                    matrix.is_contains()
-                }
-            },
-            Self::Empty(..) => false,
+        let location = cartesian_point_location(self, point)?;
+        Ok(if BOUNDARY {
+            location != Loc::Exterior
+        } else {
+            location == Loc::Interior
         })
     }
 
@@ -138,17 +97,8 @@ impl Shape {
 
     /// Boundary-inclusive point-in-AREA test: `covers_point` restricted to
     /// the polygon parts (1D/0D parts cannot contain a disjoint component).
-    pub(crate) fn area_covers_point(&self, point: Point) -> bool {
-        match self {
-            Self::Polygon(polygon) => polygon.covers_point(point),
-            Self::MultiPolygon(polygons) => {
-                polygons.iter().any(|polygon| polygon.covers_point(point))
-            },
-            Self::GeometryCollection(geometries) => geometries
-                .iter()
-                .any(|geometry| geometry.area_covers_point(point)),
-            _ => false,
-        }
+    pub(crate) fn area_covers_point(&self, point: Point) -> Result<bool> {
+        crate::geometry::cartesian_area_covers_point(self, point)
     }
 
     pub fn disjoint(&self, other: &Self) -> Result<bool> {

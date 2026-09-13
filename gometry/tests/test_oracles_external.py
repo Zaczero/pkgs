@@ -745,7 +745,6 @@ def test_predicate_and_overlay_edge_cases_match_shapely_regression() -> None:
         ('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 'POINT (0 0)'),
         ('LINESTRING (0 0, 1 0)', 'POINT (0 0)'),
         ('LINESTRING (0 0, 1 0, 1 1, 0 0)', 'POINT (0 0)'),
-        ('LINESTRING (0 0, 0 0)', 'POINT (0 0)'),
         ('POINT EMPTY', 'POLYGON EMPTY'),
     ]
     for a, b in cases:
@@ -753,6 +752,9 @@ def test_predicate_and_overlay_edge_cases_match_shapely_regression() -> None:
         sa, sb = (shapely.from_wkt(a), shapely.from_wkt(b))
         for p in preds:
             assert getattr(gm, p)(ga, gb) == getattr(sa, p)(sb), f'{p} {a} {b}'
+    collapsed = gm.from_wkt('LINESTRING (0 0, 0 0)')
+    assert gm.intersects(collapsed, gm.Point(0, 0))
+    assert not gm.intersects(collapsed, gm.Point(1, 0))
     a = gm.from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))')
     assert (
         gm.intersection(

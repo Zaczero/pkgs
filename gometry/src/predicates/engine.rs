@@ -10,8 +10,8 @@
 use std::cell::OnceCell;
 
 use crate::geometry::{
-    Bounds, CompiledPattern, GeographicPrepared, PreparedPlan, TopologyDomain, graph_relate_data,
-    line_scalar_prefers_direct_polygon_relate,
+    Bounds, CompiledPattern, GeographicPrepared, Loc, PreparedPlan, Shape, TopologyDomain,
+    cartesian_point_location, graph_relate_data, line_scalar_prefers_direct_polygon_relate,
 };
 
 #[derive(Clone, Copy)]
@@ -140,8 +140,9 @@ pub(crate) enum Predicate {
 pub(crate) enum IndexEnvelope {
     /// Candidates whose envelope intersects the query envelope.
     Intersecting,
-    /// Candidates whose envelope lies inside the query envelope — the tighter
-    /// lookup containment predicates allow.
+    /// Use the query's whole outer envelope for containment predicates. The
+    /// candidate walk is still intersecting and exact refinement owns
+    /// containment; a raw item envelope is not a support certificate.
     ContainedInQuery,
 }
 
@@ -177,15 +178,6 @@ const fn kind_class(kind: GeometryKind) -> KindClass {
         GeometryKind::LineString | GeometryKind::MultiLineString => KindClass::Curve,
         GeometryKind::Polygon | GeometryKind::MultiPolygon => KindClass::Surface,
         GeometryKind::GeometryCollection => KindClass::Collection,
-    }
-}
-
-const fn kind_class_dim(class: KindClass) -> Option<u8> {
-    match class {
-        KindClass::Point | KindClass::MultiPoint => Some(0),
-        KindClass::Curve => Some(1),
-        KindClass::Surface => Some(2),
-        KindClass::Collection => None,
     }
 }
 
@@ -237,13 +229,9 @@ impl Predicate {
         }
     }
 
-    /// Compile-time kind×kind refutations for Crosses and Overlaps.
-    ///
-    /// Keys off **declared** [`GeometryKind`] (`Point` vs `MultiPoint`), never
-    /// topological dimension alone — a MultiPoint can cross an area while a
-    /// single Point never can. `GeometryCollection` on either side returns
-    /// `None` (fall through). All non-refuted pairs, including empties and
-    /// equality, use the matrix path.
+    /// Structural refutations that do not depend on a carrier's effective
+    /// support. A single Point cannot cross or overlap another carrier;
+    /// declared polygon and line kinds are not support-dimension proofs.
     pub(crate) const fn kind_gate(
         self,
         left_kind: GeometryKind,
@@ -256,30 +244,20 @@ impl Predicate {
         }
         match self {
             Self::Crosses => {
-                // Point × anything = F (both orders). MultiPoint is NOT Point.
+                // A single Point has no crossing locus in either order.
                 if matches!(left, KindClass::Point) || matches!(right, KindClass::Point) {
                     return Some(false);
                 }
-                // Area × Area = F. MultiPoint × MultiPoint = F.
-                if (matches!(left, KindClass::Surface) && matches!(right, KindClass::Surface))
-                    || (matches!(left, KindClass::MultiPoint)
-                        && matches!(right, KindClass::MultiPoint))
-                {
-                    return Some(false);
-                }
-                // MultiPoint×{Line,Area}, Line×Line, Line×Area = REAL.
                 None
             },
             Self::Overlaps => {
-                // Point × anything = F (both orders).
+                // A single Point never overlaps another carrier. Other
+                // declarations do not prove their effective support
+                // dimension: polygons can collapse and lines can be point-only.
                 if matches!(left, KindClass::Point) || matches!(right, KindClass::Point) {
                     return Some(false);
                 }
-                // Unequal dimension = F; same-dim MultiPoint/Line/Area = REAL.
-                match (kind_class_dim(left), kind_class_dim(right)) {
-                    (Some(a), Some(b)) if a != b => Some(false),
-                    _ => None,
-                }
+                None
             },
             // Every other predicate uses the complete relation matrix.
             Self::Equals
@@ -308,11 +286,9 @@ impl Predicate {
     }
 
     const fn directed_spec(self, token: &'static str) -> PredicateSpec {
-        // Directed containment predicates share one envelope rule: the
-        // container's envelope must contain the candidate's, so the index can
-        // use the tighter `locate_in_envelope` lookup when the query is the
-        // container (`contains`/`contains_properly`/`covers`), and the generic
-        // intersecting lookup otherwise.
+        // Directed containment predicates use the query's whole outer window;
+        // candidate traversal remains intersecting and exact refinement decides
+        // whether the effective support is contained.
         let index_envelope = Some(match self {
             Self::Contains | Self::ContainsProperly | Self::Covers => {
                 IndexEnvelope::ContainedInQuery
@@ -331,25 +307,18 @@ impl Predicate {
 impl PredicateSpec {
     /// A definite answer from operand bounds alone, before any exact topology.
     ///
-    /// Strictly disjoint bounds settle every predicate (`disjoint` → `true`,
-    /// everything else → `false`); containment and equality predicates also
-    /// reject when the required bounds nesting fails. `None` means the exact
-    /// kernel must decide.
+    /// Disjoint bounds settle only `disjoint` and `intersects`. Every other
+    /// predicate reaches the exact support owner because raw coordinate
+    /// envelopes may include canceled or hole-erased source geometry.
     pub(crate) fn bounds_gate(&self, left: Bounds, right: Bounds) -> Option<bool> {
         if !left.intersects(right) {
-            return Some(self.predicate == Predicate::Disjoint);
+            return match self.predicate {
+                Predicate::Disjoint => Some(true),
+                Predicate::Intersects => Some(false),
+                _ => None,
+            };
         }
-        match self.predicate {
-            Predicate::Contains | Predicate::ContainsProperly | Predicate::Covers
-                if !left.contains(right) =>
-            {
-                Some(false)
-            },
-            Predicate::Within | Predicate::CoveredBy if !right.contains(left) => Some(false),
-            // Topologically equal point sets have identical extremes.
-            Predicate::Equals if left != right => Some(false),
-            _ => None,
-        }
+        None
     }
 
     #[expect(
@@ -408,9 +377,12 @@ impl PredicateSpec {
             _ => return Ok(None),
         };
         let rectangle = |operand: GateOperand<'_>, bounds: Bounds| {
-            operand
-                .row
-                .with_shape(|shape| crate::geometry::is_axis_aligned_rectangle(shape, bounds))
+            operand.row.try_with_shape(|shape| {
+                if !crate::geometry::is_axis_aligned_rectangle(shape, bounds) {
+                    return Ok(false);
+                }
+                crate::geometry::cartesian_support_nonempty(shape)
+            })
         };
         Ok((rectangle(left, left_bounds)? && rectangle(right, right_bounds)?).then_some(meeting))
     }
@@ -709,7 +681,58 @@ pub(crate) fn topology_scalar_pair(
     {
         return Ok(verdict);
     }
+    if let Some(verdict) = local_point_predicate(spec, &operands)? {
+        return Ok(verdict);
+    }
     Ok(predicate_matrix_value(spec, operands.relate()?))
+}
+
+fn local_point_predicate(
+    spec: &PredicateSpec,
+    operands: &PreparedTopologyPair<'_>,
+) -> crate::error::Result<Option<bool>> {
+    let PreparedTopologyPair::Cartesian { left, right } = *operands else {
+        return Ok(None);
+    };
+    if let Shape::Point(right_point) = right.shape() {
+        if matches!(left.shape(), Shape::Point(_)) {
+            return Ok(None);
+        }
+        return Ok(Some(match spec.predicate {
+            Predicate::Intersects | Predicate::Covers => {
+                cartesian_point_location(left.shape(), *right_point)? != Loc::Exterior
+            },
+            Predicate::Disjoint => {
+                cartesian_point_location(left.shape(), *right_point)? == Loc::Exterior
+            },
+            Predicate::Contains | Predicate::ContainsProperly => {
+                cartesian_point_location(left.shape(), *right_point)? == Loc::Interior
+            },
+            Predicate::Touches => {
+                cartesian_point_location(left.shape(), *right_point)? == Loc::Boundary
+            },
+            Predicate::Within | Predicate::CoveredBy | Predicate::Equals => return Ok(None),
+            Predicate::Crosses | Predicate::Overlaps => false,
+        }));
+    }
+    if let Shape::Point(left_point) = left.shape() {
+        if matches!(right.shape(), Shape::Point(_)) {
+            return Ok(None);
+        }
+        let location = cartesian_point_location(right.shape(), *left_point)?;
+        return Ok(Some(match spec.predicate {
+            Predicate::Intersects | Predicate::CoveredBy => location != Loc::Exterior,
+            Predicate::Disjoint => location == Loc::Exterior,
+            Predicate::Within => location == Loc::Interior,
+            Predicate::Touches => location == Loc::Boundary,
+            Predicate::Contains
+            | Predicate::ContainsProperly
+            | Predicate::Covers
+            | Predicate::Equals => return Ok(None),
+            Predicate::Crosses | Predicate::Overlaps => false,
+        }));
+    }
+    Ok(None)
 }
 
 /// A DE-9IM pattern over a scalar pair, decided as early as the evidence
@@ -730,9 +753,9 @@ pub(crate) fn topology_scalar_pattern(
 }
 
 /// What sound, disjoint bounds prove about a pattern: the four inner cells
-/// are empty and each operand lies wholly in the other's exterior. The
-/// interval leaves a curve's boundary cells open, so a pattern that reads
-/// them stays undecided here rather than guessed.
+/// are empty and each operand lies wholly in the other's exterior. Surface
+/// dimensions are admitted only for a filled rectangle certificate; all other
+/// areal support remains undecided here rather than inferred from kind.
 fn pattern_bounds_gate(
     pattern: CompiledPattern,
     left: &GateOperand<'_>,
@@ -752,6 +775,25 @@ fn pattern_bounds_gate(
         let Some(interior) = operand.row.with_shape(dimension)? else {
             return Ok(None);
         };
+        if interior == Dimension::Surface {
+            let Some(bounds) = operand.bounds else {
+                return Ok(None);
+            };
+            let is_filled_rectangle =
+                operand
+                    .row
+                    .try_with_shape(|shape| -> crate::error::Result<bool> {
+                        let Shape::Polygon(polygon) = shape else {
+                            return Ok(false);
+                        };
+                        Ok(crate::geometry::is_axis_aligned_rectangle(shape, bounds)
+                            && !crate::geometry::ring_winding(polygon.shell.coords())
+                                .is_degenerate())
+                    })?;
+            if !is_filled_rectangle {
+                return Ok(None);
+            }
+        }
         Ok(Some(OperandShape {
             interior,
             boundary: match interior {
@@ -902,6 +944,15 @@ mod tests {
             None,
             "bounds meet: the gate declines"
         );
+        let cancelled =
+            crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,0 2,2 2,2 0,0 0))").unwrap();
+        let remote = rectangle(4.0, 4.0, 5.0, 5.0);
+        assert_eq!(
+            gate(&cancelled, &remote, "**2******"),
+            None,
+            "declared polygon kind cannot prove an effective interior"
+        );
+        assert!(!cancelled.relate_pattern(&remote, "**2******").unwrap());
     }
 
     use super::*;

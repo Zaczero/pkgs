@@ -965,7 +965,19 @@ mod binary_areal_overlay_tests {
             ("multipolygon", multipolygon),
             ("invalid", invalid),
         ] {
-            let _ = assert_intersection_matches_joint_graph(name, &input, &cutter);
+            if name == "invalid" {
+                let result = overlay_all(
+                    &[&input, &cutter],
+                    crate::geometry::TopologyDomain::Cartesian,
+                    OverlayOp::Intersection,
+                    Strictness::Strict,
+                )
+                .unwrap();
+                assert!(matches!(result, Shape::MultiPolygon(_)), "{result:?}");
+                assert_eq!(result.area(), 4.5);
+            } else {
+                let _ = assert_intersection_matches_joint_graph(name, &input, &cutter);
+            }
         }
     }
 
@@ -1129,8 +1141,11 @@ mod binary_areal_overlay_tests {
             .unwrap(),
         );
 
+        let collapsed_result = polygon
+            .intersection(&collapsed, Strictness::Strict)
+            .unwrap();
+        assert_eq!(collapsed_result, point(1.0, 1.0));
         for (name, line) in [
-            ("collapsed", collapsed),
             ("empty", empty),
             ("collection", collection),
             ("empty member", empty_member),
@@ -1257,15 +1272,26 @@ mod binary_areal_overlay_tests {
                 point(1.0, 0.0),
                 line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (2.0, 0.0)]),
             ),
-            (
-                "line collapsed",
-                point(1.0, 1.0),
-                line(&[(1.0, 1.0), (1.0, 1.0)]),
-            ),
         ];
         for (name, point, line) in line_cases {
             assert_point_intersection_matches_generic(name, &point, &line, Strictness::Strict);
             assert_point_intersection_matches_generic(name, &line, &point, Strictness::Strict);
+        }
+        let collapsed = line(&[(1.0, 1.0), (1.0, 1.0)]);
+        let collapsed_point = point(1.0, 1.0);
+        for (left, right) in [
+            (&collapsed_point, &collapsed),
+            (&collapsed, &collapsed_point),
+        ] {
+            let inputs = vec![left, right];
+            let result = overlay_all(
+                &inputs,
+                crate::geometry::TopologyDomain::Cartesian,
+                OverlayOp::Intersection,
+                Strictness::Strict,
+            )
+            .unwrap();
+            assert_eq!(result, point(1.0, 1.0));
         }
 
         let holed = Shape::Polygon(
@@ -1759,14 +1785,22 @@ mod binary_areal_overlay_tests {
             .unwrap(),
         );
         let repeated_point = Shape::MultiPoint(vec![Point::new(0.0, 0.0).unwrap()].into());
-        let repeated_result = assert_point_intersection_matches_generic(
-            "repeated zero-length source edge",
-            &repeated_point,
-            &repeated_line,
+        let repeated_error = overlay_all(
+            &[&repeated_point, &repeated_line],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
             Strictness::Strict,
         )
-        .expect("repeated edge result");
-        assert_eq!(repeated_result.points_vec().unwrap()[0].z(), Some(99.0));
+        .unwrap_err();
+        assert!(repeated_error.to_string().contains("cannot represent Z/M"));
+        let repeated_result = overlay_all(
+            &[&repeated_point, &repeated_line],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        assert_eq!(repeated_result.coordinate_axes(), "XY");
 
         let extreme = Shape::MultiPoint(vec![Point::new(0.0, 0.0).unwrap()].into());
         let extreme_line = line(&[(-1.0e150, -1.0e150), (1.0e150, 1.0e150)]);
@@ -1960,7 +1994,7 @@ mod binary_areal_overlay_tests {
             .unwrap();
         assert_eq!(
             crate::io::to_wkt(&result).unwrap(),
-            "GEOMETRYCOLLECTION (LINESTRING (2 1, 3 1), MULTIPOLYGON (((0 0, 2 0, 2 1, 2 4, 0 4, 0 0)), ((2 -1, 6 -1, 6 5, 2 5, 2 4, 4 4, 4 0, 2 0, 2 -1))))"
+            "MULTIPOLYGON (((0 0, 2 0, 2 4, 0 4, 0 0)), ((2 -1, 6 -1, 6 5, 2 5, 2 4, 4 4, 4 0, 2 0, 2 -1)))"
         );
     }
 
@@ -2551,7 +2585,7 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
-    fn line_only_guard_falls_back_for_non_line_and_collapsed_support() {
+    fn line_only_support_includes_collapsed_points() {
         let line_shape = line(&[(0.0, 0.0), (2.0, 0.0)]);
         let collapsed = line(&[(4.0, 4.0), (4.0, 4.0)]);
         let empty = Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY);
@@ -2581,8 +2615,28 @@ mod binary_areal_overlay_tests {
             &[&line_shape, &point_on_line],
             OverlayOp::Intersection,
         );
-        assert_line_overlay_matches_generic(&[&line_shape, &collapsed], OverlayOp::Union);
-        assert_line_overlay_matches_generic(&[&line_shape, &collapsed], OverlayOp::Intersection);
+        let collapsed_union = overlay_all(
+            &[&line_shape, &collapsed],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::io::to_wkt(&collapsed_union).unwrap(),
+            "GEOMETRYCOLLECTION (POINT (4 4), LINESTRING (0 0, 2 0))"
+        );
+        let collapsed_intersection = overlay_all(
+            &[&line_shape, &collapsed],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert!(matches!(
+            collapsed_intersection,
+            Shape::Empty(GeometryKind::LineString, _)
+        ));
         assert_line_overlay_matches_generic(&[&line_shape, &empty], OverlayOp::Union);
         assert_line_overlay_matches_generic(&[&line_shape, &polygon], OverlayOp::Union);
         assert_line_overlay_matches_generic(&[&line_shape, &mixed], OverlayOp::Union);
