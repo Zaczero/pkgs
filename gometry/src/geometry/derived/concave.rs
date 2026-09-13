@@ -19,7 +19,7 @@ pub(crate) fn native_concave_hull(
     if points.len() < 3 {
         return Ok(monotone_chain_hull(points));
     }
-    let triangulation = delaunay_triangulation(points);
+    let triangulation = delaunay_triangulation(points)?;
     if triangulation.triangles.is_empty() {
         return Ok(monotone_chain_hull(points));
     }

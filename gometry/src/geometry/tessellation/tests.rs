@@ -155,6 +155,81 @@ fn public_delaunay_keeps_collinear_empty_contract() {
     assert!(source.delaunay_triangles().unwrap().is_empty());
 }
 
+#[test]
+fn unconstrained_delaunay_allocation_prefixes_are_resource_errors_and_retryable() {
+    let large = 2.0_f64.powi(200);
+    let tiny = 2.0_f64.powi(-200);
+    let points = [
+        xy(-large, 0.0),
+        xy(0.0, -tiny),
+        xy(large, 0.0),
+        xy(0.0, tiny),
+    ];
+    let source = Shape::MultiPoint(CoordSeq::try_from_points(&points).unwrap().into());
+    let before = source.clone();
+
+    let (result, allocations) = allocation_count(|| source.delaunay_triangle_vertices());
+    result.unwrap();
+    assert!(allocations > 0);
+    for allowed in 0..allocations {
+        let result = fail_allocations_after(allowed, || source.delaunay_triangle_vertices());
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                )
+        ));
+        assert_eq!(
+            source, before,
+            "source remains immutable after allocation failure"
+        );
+    }
+    fail_allocations_after(allocations + 8, || source.delaunay_triangle_vertices()).unwrap();
+
+    let (result, allocations) =
+        allocation_count(|| super::delaunay::delaunay_triangulation(&points));
+    result.unwrap();
+    assert!(allocations > 0);
+    for allowed in 0..allocations {
+        let result =
+            fail_allocations_after(allowed, || super::delaunay::delaunay_triangulation(&points));
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                )
+        ));
+    }
+    fail_allocations_after(allocations + 8, || {
+        super::delaunay::delaunay_triangulation(&points)
+    })
+    .unwrap();
+
+    let (result, allocations) = allocation_count(|| source.delaunay_triangles());
+    result.unwrap();
+    assert!(allocations > 0);
+    for allowed in 0..allocations {
+        let result = fail_allocations_after(allowed, || source.delaunay_triangles());
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                )
+        ));
+        assert_eq!(
+            source, before,
+            "source remains immutable after scalar publication failure"
+        );
+    }
+    fail_allocations_after(allocations + 8, || source.delaunay_triangles()).unwrap();
+}
+
 fn polygon(shell: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
     Polygon::new(
         Ring::closed(shell).expect("valid test shell"),
@@ -729,7 +804,7 @@ fn reciprocal_delaunay_legalizes_with_the_source_incircle() {
                 point(large, 0.0),
                 point(0.0, 2.0 * tiny),
             ];
-            let triangulation = super::delaunay::delaunay_triangulation(&points);
+            let triangulation = super::delaunay::delaunay_triangulation(&points).unwrap();
             let has_edge = |left, right| {
                 triangulation
                     .triangles
@@ -761,7 +836,7 @@ fn sorted_indices(cycle: &[usize]) -> Vec<usize> {
 }
 
 fn assert_sites_covered_by_nondegenerate_triangles(points: &[Point]) {
-    let triangulation = super::delaunay::delaunay_triangulation(points);
+    let triangulation = super::delaunay::delaunay_triangulation(points).unwrap();
     let mut used = std::collections::HashSet::<usize>::new();
     for triangle in triangulation.triangles.as_chunks::<3>().0 {
         assert_ne!(

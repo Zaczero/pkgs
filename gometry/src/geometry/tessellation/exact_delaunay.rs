@@ -72,31 +72,21 @@ impl ExactMesh {
 
 /// Triangulate `points` exactly. Fewer than three non-collinear sites give an
 /// empty mesh whose hull is the collinear chain the crate already reports.
-pub(super) fn exact_delaunay(points: &[Point]) -> ExactMesh {
-    Mesh::delaunay(points).map_or_else(
-        || ExactMesh {
+pub(super) fn exact_delaunay(points: &[Point]) -> Result<ExactMesh> {
+    let Some(mesh) = Mesh::try_delaunay(points)? else {
+        return Ok(ExactMesh {
             triangles: Vec::new(),
             halfedges: Vec::new(),
-            hull: super::exact_hull_cycle(points),
+            hull: super::try_exact_hull_cycle(points)?,
             cocircular: Vec::new(),
-        },
-        |mesh| mesh.finish(|site| points[site].xy()),
-    )
+        });
+    };
+    mesh.finish(|site| points[site].xy())
 }
 
 impl Mesh {
-    /// The exact Delaunay mesh of `points`, live (uncompacted) so constraints
-    /// and refinement can keep inserting into it; `None` when the sites are
-    /// collinear and there is no triangle to build.
-    pub(super) fn delaunay(points: &[Point]) -> Option<Self> {
-        Self::try_delaunay(points)
-            .unwrap_or_else(|_| unreachable!("unconstrained mesh allocation failed"))
-    }
-
-    /// Fallible exact Delaunay construction for the constrained path. The
-    /// legacy infallible wrapper above remains the owner of the unconstrained
-    /// public shape, while every allocation needed before constrained
-    /// publication is returned to its caller.
+    /// Fallible exact Delaunay construction. Every allocation needed before
+    /// constrained or unconstrained publication is returned to its caller.
     pub(super) fn try_delaunay(points: &[Point]) -> Result<Option<Self>> {
         let hull = super::try_exact_corner_hull_cycle(points)?;
         if hull.len() < 3 {
@@ -700,6 +690,8 @@ impl Mesh {
             self.stamp[t] = 0;
             return t;
         }
+        // try_insert_with reserves all three buffers for every slot that
+        // cannot be reused before it consumes the free list.
         let t = self.triangle_count();
         self.triangles.extend([EMPTY; 3]);
         self.halfedges.extend([EMPTY; 3]);
@@ -722,29 +714,48 @@ impl Mesh {
 
     /// Compact out the dead slots, remap twins, and flag cocircular edges
     /// with one exact pass over the finished mesh.
-    pub(super) fn finish(self, xy: impl Fn(usize) -> XY) -> ExactMesh {
-        let mut remap = vec![EMPTY; self.triangle_count()];
-        let mut triangles = Vec::with_capacity(self.triangles.len());
-        let mut old_slots = Vec::with_capacity(self.triangles.len());
+    pub(super) fn finish(self, xy: impl Fn(usize) -> XY) -> Result<ExactMesh> {
+        let mut remap = Vec::new();
+        crate::try_reserve_vec(&mut remap, self.triangle_count())?;
+        remap.resize(self.triangle_count(), EMPTY);
+        let mut triangles = Vec::new();
+        crate::try_reserve_vec(&mut triangles, self.triangles.len())?;
+        let mut old_slots = Vec::new();
+        crate::try_reserve_vec(&mut old_slots, self.triangles.len())?;
         for (t, slot) in remap.iter_mut().enumerate() {
             if self.alive(t) {
                 *slot = triangles.len() / 3;
-                triangles.extend(self.triangle(t));
-                old_slots.extend([3 * t, 3 * t + 1, 3 * t + 2]);
+                for vertex in self.triangle(t) {
+                    crate::try_push_vec(&mut triangles, vertex)?;
+                }
+                let base = t
+                    .checked_mul(3)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                let end = base
+                    .checked_add(3)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                for slot in base..end {
+                    crate::try_push_vec(&mut old_slots, slot)?;
+                }
             }
         }
-        let halfedges: Vec<usize> = old_slots
-            .iter()
-            .map(|&old| {
-                let twin = self.halfedges[old];
-                if twin == EMPTY {
-                    EMPTY
-                } else {
-                    3 * remap[twin / 3] + twin % 3
-                }
-            })
-            .collect();
-        let mut cocircular = vec![false; halfedges.len()];
+        let mut halfedges = Vec::new();
+        crate::try_reserve_vec(&mut halfedges, old_slots.len())?;
+        for &old in &old_slots {
+            let twin = self.halfedges[old];
+            let twin = if twin == EMPTY {
+                EMPTY
+            } else {
+                remap[twin / 3]
+                    .checked_mul(3)
+                    .and_then(|slot| slot.checked_add(twin % 3))
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?
+            };
+            crate::try_push_vec(&mut halfedges, twin)?;
+        }
+        let mut cocircular = Vec::new();
+        crate::try_reserve_vec(&mut cocircular, halfedges.len())?;
+        cocircular.resize(halfedges.len(), false);
         for e in 0..halfedges.len() {
             let twin = halfedges[e];
             if twin == EMPTY || twin < e {
@@ -753,17 +764,17 @@ impl Mesh {
             let t = e / 3;
             let [a, b, c] = [triangles[3 * t], triangles[3 * t + 1], triangles[3 * t + 2]];
             let opposite = triangles[prev_halfedge(twin)];
-            if exact::incircle(xy(a), xy(b), xy(c), xy(opposite)) == ExactSign::Zero {
+            if exact::try_incircle(xy(a), xy(b), xy(c), xy(opposite))? == ExactSign::Zero {
                 cocircular[e] = true;
                 cocircular[twin] = true;
             }
         }
-        ExactMesh {
+        Ok(ExactMesh {
             triangles,
             halfedges,
             hull: self.hull,
             cocircular,
-        }
+        })
     }
 }
 
@@ -862,7 +873,7 @@ mod tests {
     fn random_sites_are_delaunay_consistent_and_match_the_current_engine() {
         for seed in [1_u64, 7, 42, 1234] {
             let pts = random(400, seed);
-            let mesh = exact_delaunay(&pts);
+            let mesh = exact_delaunay(&pts).unwrap();
             assert_halfedges_consistent(&mesh);
             assert_delaunay(&mesh, &pts);
             // Random sites have no cocircular quads, so the Delaunay
@@ -871,7 +882,7 @@ mod tests {
                 !mesh.cocircular.iter().any(|&f| f),
                 "random sites should not be cocircular"
             );
-            let current = super::super::delaunay_triangulation(&pts);
+            let current = super::super::delaunay_triangulation(&pts).unwrap();
             assert_eq!(
                 triangle_set(&mesh.triangles),
                 triangle_set(&current.triangles),
@@ -898,7 +909,7 @@ mod tests {
                     Point::new_raw_xy(t.cos(), t.sin())
                 })
                 .collect();
-            let mesh = exact_delaunay(&points);
+            let mesh = exact_delaunay(&points).unwrap();
             assert_eq!(mesh.triangles.len() / 3, n - 2, "n={n} triangles");
             assert_eq!(mesh.hull.len(), n, "n={n} hull");
             assert_halfedges_consistent(&mesh);
@@ -909,7 +920,7 @@ mod tests {
     #[test]
     fn a_grid_is_delaunay_with_every_diagonal_flagged_cocircular() {
         let pts = grid(20);
-        let mesh = exact_delaunay(&pts);
+        let mesh = exact_delaunay(&pts).unwrap();
         assert_halfedges_consistent(&mesh);
         assert_delaunay(&mesh, &pts);
         assert_eq!(
@@ -935,13 +946,13 @@ mod tests {
             (0.5, 0.5),
             (0.5, 0.5),
         ]);
-        let mesh = exact_delaunay(&dup);
+        let mesh = exact_delaunay(&dup).unwrap();
         assert_halfedges_consistent(&mesh);
         assert_delaunay(&mesh, &dup);
         assert_eq!(mesh.hull, super::super::exact_corner_hull_cycle(&dup));
         // Five distinct sites, four on the hull: 2*5 - 4 - 2 = 4 triangles.
         assert_eq!(mesh.triangles.len() / 3, 4);
-        let public = super::super::delaunay_triangulation(&dup);
+        let public = super::super::delaunay_triangulation(&dup).unwrap();
         assert_eq!(
             public.triangles.len() / 3,
             4,
@@ -952,9 +963,12 @@ mod tests {
     #[test]
     fn collinear_input_matches_the_current_hull() {
         let line = points(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]);
-        let mesh = exact_delaunay(&line);
+        let mesh = exact_delaunay(&line).unwrap();
         assert!(mesh.triangles.is_empty());
-        assert_eq!(mesh.hull, super::super::delaunay_triangulation(&line).hull);
+        assert_eq!(
+            mesh.hull,
+            super::super::delaunay_triangulation(&line).unwrap().hull
+        );
     }
 
     #[test]
@@ -971,7 +985,7 @@ mod tests {
             (3.0, 3.0),
             (2.0, 2.0),
         ]);
-        let mesh = exact_delaunay(&pts);
+        let mesh = exact_delaunay(&pts).unwrap();
         assert_halfedges_consistent(&mesh);
         assert_delaunay(&mesh, &pts);
         assert_eq!(mesh.triangles.len() / 3, 2 * 7 - 4 - 2);

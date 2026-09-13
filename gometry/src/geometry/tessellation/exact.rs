@@ -1313,6 +1313,7 @@ fn incircle_filtered(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     determinant.sign()
 }
 
+#[cfg(test)]
 pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
     if let Some(sign) = incircle_float(a, b, c, d) {
         debug_assert_eq!(
@@ -1356,6 +1357,7 @@ pub(super) fn try_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
     try_incircle_dyadic(a, b, c, d)
 }
 
+#[cfg(test)]
 fn incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
     let (adx, ady) = (difference(a.x, d.x), difference(a.y, d.y));
     let (bdx, bdy) = (difference(b.x, d.x), difference(b.y, d.y));

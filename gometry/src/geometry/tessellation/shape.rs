@@ -162,7 +162,7 @@ impl Shape {
         for (id, &point) in points.iter().enumerate() {
             crate::try_push_vec(&mut sites, Site { id, point })?;
         }
-        let triangulation = certified_delaunay(&sites);
+        let triangulation = certified_delaunay(&sites)?;
         let capacity = triangulation
             .triangles()
             .len()
@@ -437,7 +437,7 @@ impl Shape {
         budget: &mut ExpansionBudget,
     ) -> Result<Vec<Self>> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let (canonical, Some(mesh)) = self.prepare_voronoi(tolerance) else {
+        let (canonical, Some(mesh)) = self.prepare_voronoi(tolerance)? else {
             return Ok(Vec::new());
         };
         if mesh.collinear_order().is_some() {
@@ -496,7 +496,7 @@ impl Shape {
         budget: &mut ExpansionBudget,
     ) -> Result<voronoi_dcel::EmbeddedEdges> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let (canonical, Some(mesh)) = self.prepare_voronoi(tolerance) else {
+        let (canonical, Some(mesh)) = self.prepare_voronoi(tolerance)? else {
             return voronoi_dcel::empty_packed_edges();
         };
         if mesh.collinear_order().is_none() {
@@ -672,10 +672,14 @@ impl Shape {
         canonical_voronoi_sites(points, tolerance)
     }
 
-    fn prepare_voronoi(&self, tolerance: f64) -> (Vec<Site>, Option<CertifiedDelaunay>) {
+    fn prepare_voronoi(&self, tolerance: f64) -> Result<(Vec<Site>, Option<CertifiedDelaunay>)> {
         let sites = self.voronoi_sites(tolerance);
-        let mesh = (sites.len() >= 2).then(|| certified_delaunay(&sites));
-        (sites, mesh)
+        let mesh = if sites.len() >= 2 {
+            Some(certified_delaunay(&sites)?)
+        } else {
+            None
+        };
+        Ok((sites, mesh))
     }
 }
 

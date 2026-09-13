@@ -3757,7 +3757,7 @@ mod tests {
                 &sites,
                 VoronoiBoundary::Envelope,
                 &mut dual_budget,
-                &certified_delaunay(&sites),
+                &certified_delaunay(&sites).unwrap(),
             );
             let mut legacy_budget = ExpansionBudget::new("test", "subnormal legacy");
             let legacy = build(
@@ -3765,7 +3765,7 @@ mod tests {
                 VoronoiBoundary::Envelope,
                 &mut legacy_budget,
                 false,
-                &certified_delaunay(&sites),
+                &certified_delaunay(&sites).unwrap(),
             );
 
             match (admitted, dual, legacy) {
@@ -4134,7 +4134,7 @@ mod tests {
             VoronoiBoundary::Padded,
             &mut budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap();
         assert_eq!(diagram.polygons.len(), sites.len());
@@ -4162,7 +4162,7 @@ mod tests {
             VoronoiBoundary::Envelope,
             &mut budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap();
         assert_eq!(diagram.polygons.len(), sites.len());
@@ -4362,7 +4362,7 @@ mod tests {
             VoronoiBoundary::Envelope,
             &mut budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         ) {
             Ok(_) => panic!("colliding exact vertices unexpectedly embedded"),
             Err(error) => error,
@@ -4378,7 +4378,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
         let clip =
             normalize_clip(sites, VoronoiBoundary::Polygon(clip_polygon), &mut budget).unwrap();
-        let mesh = certified_delaunay(sites);
+        let mesh = certified_delaunay(sites).unwrap();
         let complex = delaunay_complex(&mesh, sites).unwrap();
         let primal_edges = mesh.primal_edges();
         let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
@@ -4491,7 +4491,7 @@ mod tests {
     fn node_polygon(sites: &[Site], polygon: &Polygon, budget: &mut ExpansionBudget) -> NodedAtoms {
         let clip = normalize_clip(sites, VoronoiBoundary::Polygon(polygon), budget).unwrap();
         let rect = clip_rectangle(&clip).unwrap();
-        let mesh = certified_delaunay(sites);
+        let mesh = certified_delaunay(sites).unwrap();
         let complex = delaunay_complex(&mesh, sites).unwrap();
         let primal_edges = mesh.primal_edges();
         let adjacency = certified_site_adjacency(&primal_edges, sites.len(), budget).unwrap();
@@ -4535,7 +4535,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "canonical separators");
         let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut budget).unwrap();
         let rect = clip_rectangle(&clip).unwrap();
-        let mesh = certified_delaunay(&sites);
+        let mesh = certified_delaunay(&sites).unwrap();
         let complex = delaunay_complex(&mesh, &sites).unwrap();
         let primal_edges = mesh.primal_edges();
         let separators =
@@ -4566,7 +4566,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "external center chord");
         let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut budget).unwrap();
         let rect = clip_rectangle(&clip).unwrap();
-        let mesh = certified_delaunay(&sites);
+        let mesh = certified_delaunay(&sites).unwrap();
         let complex = delaunay_complex(&mesh, &sites).unwrap();
         let separators =
             emit_clipped_separators(&sites, &mesh.primal_edges(), &complex, &rect, &mut budget)
@@ -4641,7 +4641,7 @@ mod tests {
         let clip =
             normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut fail_budget).unwrap();
         let rect = clip_rectangle(&clip).unwrap();
-        let mesh = certified_delaunay(&sites);
+        let mesh = certified_delaunay(&sites).unwrap();
         let adjacency =
             certified_site_adjacency(&mesh.primal_edges(), sites.len(), &mut fail_budget).unwrap();
         let scaffold = build_scaffold(&rect, &clip, &mut fail_budget).unwrap();
@@ -4668,7 +4668,7 @@ mod tests {
             VoronoiBoundary::Polygon(&polygon),
             &mut budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap();
         let (coords, offsets) = packed.clone().into_line_column().unwrap();
@@ -4701,7 +4701,7 @@ mod tests {
             VoronoiBoundary::Polygon(&polygon),
             &mut budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap()
         .into_line_seqs()
@@ -4752,7 +4752,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "interior-first chain");
         let atoms = node_polygon(&sites, &polygon, &mut budget);
         let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
-        let primal_edges = certified_delaunay(&sites).primal_edges();
+        let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
         let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
         graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
         let assembled = assemble_edges(&subdivision, &mut budget).unwrap();
@@ -4834,7 +4834,7 @@ mod tests {
             VoronoiBoundary::Polygon(&clip),
             &mut budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         ) {
             Ok(_) => {
                 panic!("colliding exact vertices unexpectedly embedded on the edges-only path")
@@ -5007,7 +5007,7 @@ mod tests {
             VoronoiBoundary::Polygon(&polygon),
             &mut budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap();
     }
@@ -5022,7 +5022,7 @@ mod tests {
             VoronoiBoundary::Envelope,
             &mut envelope_budget,
             false,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap();
         let polygon = Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new()).unwrap();
@@ -5032,7 +5032,7 @@ mod tests {
             VoronoiBoundary::Polygon(&polygon),
             &mut polygon_budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap();
     }
@@ -5070,7 +5070,7 @@ mod tests {
         let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
         let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
         assert_boundary_walk_euler(&subdivision);
-        let primal_edges = certified_delaunay(&sites).primal_edges();
+        let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
         let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
         graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
         assert_boundary_walk_euler(&subdivision);
@@ -5110,7 +5110,7 @@ mod tests {
         let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
         let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
         assert_boundary_walk_euler(&subdivision);
-        let primal_edges = certified_delaunay(&sites).primal_edges();
+        let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
         let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
         graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
         assert_boundary_walk_euler(&subdivision);
@@ -5223,7 +5223,7 @@ mod tests {
             &sites,
             VoronoiBoundary::Polygon(&clip),
             &mut budget,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap()
         .into_line_seqs()
@@ -5282,7 +5282,7 @@ mod tests {
                 &sites,
                 VoronoiBoundary::Envelope,
                 &mut budget,
-                &certified_delaunay(&sites),
+                &certified_delaunay(&sites).unwrap(),
             )
             .unwrap()
             .into_line_seqs()
@@ -5306,7 +5306,7 @@ mod tests {
             &sites,
             VoronoiBoundary::Envelope,
             &mut budget,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap()
         .into_line_seqs()
@@ -5333,7 +5333,7 @@ mod tests {
             VoronoiBoundary::Polygon(&clip),
             &mut budget,
             true,
-            &certified_delaunay(&sites),
+            &certified_delaunay(&sites).unwrap(),
         )
         .unwrap();
         assert!(!diagram.into_edges().into_line_seqs().unwrap().is_empty());
@@ -5482,7 +5482,7 @@ mod tests {
         let mut construction_budget = ExpansionBudget::new("test", "dual completeness");
         let clip =
             normalize_clip(&sites, VoronoiBoundary::Envelope, &mut construction_budget).unwrap();
-        let mesh = certified_delaunay(&sites);
+        let mesh = certified_delaunay(&sites).unwrap();
         let complex = delaunay_complex(&mesh, &sites).unwrap();
         let restored =
             dual_build_rings(&sites, &mesh, complex, &clip, &mut construction_budget).unwrap();
@@ -5598,7 +5598,7 @@ mod tests {
         let mut construction_budget = ExpansionBudget::new("test", "dual mutation fixture");
         let clip =
             normalize_clip(&sites, VoronoiBoundary::Envelope, &mut construction_budget).unwrap();
-        let mesh = certified_delaunay(&sites);
+        let mesh = certified_delaunay(&sites).unwrap();
         let complex = delaunay_complex(&mesh, &sites).unwrap();
         let restored =
             dual_build_rings(&sites, &mesh, complex, &clip, &mut construction_budget).unwrap();
@@ -5816,7 +5816,7 @@ mod convex_cell_certificate {
                 VoronoiBoundary::Envelope,
                 &mut budget,
                 true,
-                &certified_delaunay(&sites),
+                &certified_delaunay(&sites).unwrap(),
             )
             .unwrap_or_else(|error| panic!("scale {scale:e}: {error:?}"))
             .into_polygons();

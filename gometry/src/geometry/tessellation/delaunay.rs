@@ -9,7 +9,6 @@
 
 use std::cmp::Ordering;
 
-use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
 use crate::geometry::{
@@ -253,49 +252,56 @@ impl CertifiedDelaunay {
 
     /// The public layout: faces run clockwise, which is what every
     /// triangulation consumer outside this module has always read.
-    pub(super) fn into_topology(self) -> Triangulation {
-        let mut triangles = Vec::with_capacity(self.topology.triangles.len());
+    pub(super) fn into_topology(self) -> Result<Triangulation> {
+        let mut triangles = Vec::new();
+        crate::try_reserve_vec(&mut triangles, self.topology.triangles.len())?;
         for &[a, b, c] in self.topology.triangles.as_chunks::<3>().0 {
-            triangles.extend([a, c, b]);
+            for vertex in [a, c, b] {
+                crate::try_push_vec(&mut triangles, vertex)?;
+            }
         }
-        let halfedges = delaunay_halfedges(&triangles);
-        Triangulation {
+        let halfedges = delaunay_halfedges(&triangles)?;
+        Ok(Triangulation {
             triangles,
             halfedges,
             hull: self.topology.hull,
-        }
+        })
     }
 }
 
-pub(super) fn certified_delaunay(sites: &[Site]) -> CertifiedDelaunay {
+pub(super) fn certified_delaunay(sites: &[Site]) -> Result<CertifiedDelaunay> {
     // Every site by its input index; duplicates and collinear input are the
     // engine's to settle exactly.
-    let points: Vec<Point> = sites.iter().map(|site| site.point).collect();
-    let mut mesh = exact_delaunay::exact_delaunay(&points);
+    let mut points = Vec::new();
+    crate::try_reserve_vec(&mut points, sites.len())?;
+    for site in sites {
+        crate::try_push_vec(&mut points, site.point)?;
+    }
+    let mut mesh = exact_delaunay::exact_delaunay(&points)?;
     if mesh.triangles.is_empty() {
-        return CertifiedDelaunay::empty(mesh.hull);
+        return Ok(CertifiedDelaunay::empty(mesh.hull));
     }
     let cocircular_halfedges = std::mem::take(&mut mesh.cocircular);
-    CertifiedDelaunay {
+    Ok(CertifiedDelaunay {
         topology: mesh.into_topology(),
         cocircular_halfedges,
-    }
+    })
 }
 
-pub(crate) fn delaunay_triangulation(points: &[Point]) -> Triangulation {
-    let sites: Vec<_> = points
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(id, point)| Site { id, point })
-        .collect();
-    certified_delaunay(&sites).into_topology()
+pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> {
+    let mut sites = Vec::new();
+    crate::try_reserve_vec(&mut sites, points.len())?;
+    for (id, &point) in points.iter().enumerate() {
+        crate::try_push_vec(&mut sites, Site { id, point })?;
+    }
+    certified_delaunay(&sites)?.into_topology()
 }
 
 /// The exact convex hull as a counter-clockwise cycle rotated to its smallest
 /// site index. With `corners` only strict corners survive, which is the seed
 /// the engine fans from; without it collinear boundary sites stay on the
 /// cycle, and a wholly collinear input yields its collinear order instead.
+#[cfg(test)]
 fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
     try_hull_cycle(points, corners)
         .unwrap_or_else(|_| unreachable!("exact hull construction allocation failed"))
@@ -374,6 +380,11 @@ pub(super) fn try_exact_corner_hull_cycle(points: &[Point]) -> Result<Vec<usize>
     try_hull_cycle(points, true)
 }
 
+pub(super) fn try_exact_hull_cycle(points: &[Point]) -> Result<Vec<usize>> {
+    try_hull_cycle(points, false)
+}
+
+#[cfg(test)]
 pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
     hull_cycle(points, false)
 }
@@ -431,9 +442,11 @@ fn geometric_cmp(left: f64, right: f64) -> Ordering {
 }
 
 /// Twin slots for a flat triangle list by directed-edge lookup.
-fn delaunay_halfedges(triangles: &[usize]) -> Vec<usize> {
-    let mut halfedges = vec![EMPTY; triangles.len()];
-    let mut directed: HashMap<(usize, usize), usize> = HashMap::with_capacity(triangles.len());
+fn delaunay_halfedges(triangles: &[usize]) -> Result<Vec<usize>> {
+    let mut halfedges = Vec::new();
+    crate::try_reserve_vec(&mut halfedges, triangles.len())?;
+    halfedges.resize(triangles.len(), EMPTY);
+    let mut directed = crate::collections::try_hash_map_with_capacity(triangles.len())?;
     for index in 0..triangles.len() {
         let start = triangles[index];
         let end = triangles[next_halfedge(index)];
@@ -444,7 +457,7 @@ fn delaunay_halfedges(triangles: &[usize]) -> Vec<usize> {
             directed.insert((start, end), index);
         }
     }
-    halfedges
+    Ok(halfedges)
 }
 
 /// Planar triangulation Euler identity: `T = 2n - 2 - h` for `n` vertices
@@ -725,12 +738,12 @@ mod tests {
     #[test]
     fn hull_retains_collinear_boundary_sites_and_collinear_input_is_empty() {
         let boundary_sites = sites(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]);
-        let mesh = certified_delaunay(&boundary_sites);
+        let mesh = certified_delaunay(&boundary_sites).unwrap();
         assert_eq!(mesh.hull().len(), 5);
         assert!(mesh.hull().contains(&1));
 
         let collinear = sites(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
-        let mesh = certified_delaunay(&collinear);
+        let mesh = certified_delaunay(&collinear).unwrap();
         assert!(mesh.triangles().is_empty());
         assert_eq!(mesh.hull(), &[0, 1, 2]);
     }
@@ -738,7 +751,7 @@ mod tests {
     #[test]
     fn cocircular_state_is_reciprocal() {
         let sites = sites(&[(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]);
-        let mesh = certified_delaunay(&sites);
+        let mesh = certified_delaunay(&sites).unwrap();
         let mut cocircular_pairs = 0;
         for (slot, &reverse) in mesh.halfedges().iter().enumerate() {
             if reverse == EMPTY {
@@ -766,7 +779,7 @@ mod tests {
         .into_iter()
         .map(|(x, y)| Point::new_raw_xy(x, y))
         .collect();
-        let topology = delaunay_triangulation(&points);
+        let topology = delaunay_triangulation(&points).unwrap();
         assert!(delaunay_euler_complete(points.len(), &topology));
         for &[a, b, c] in topology.triangles.as_chunks::<3>().0 {
             assert_eq!(
