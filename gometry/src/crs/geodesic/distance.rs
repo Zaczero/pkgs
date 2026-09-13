@@ -126,9 +126,10 @@ pub(crate) fn geodesic_point_distances(
 /// Segment-aware geodesic Hausdorff distance (meters) on `crs`'s ellipsoid.
 ///
 /// The geodesic sibling of `Shape::hausdorff_distance`. Each directed sweep
-/// is the linework max-min over source vertices and source segment interiors,
-/// with target pruning via auxiliary-sphere bounds and exact
-/// point-to-segment distances.
+/// evaluates source vertices and a global along-track frontier over source
+/// segment interiors. Complete target witnesses provide the returned values;
+/// conservative interval supports close regular, near-coincident, and
+/// exact-family cells.
 pub(crate) fn geodesic_hausdorff_at(
     crs: &str,
     a: &Shape,

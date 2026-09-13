@@ -42,8 +42,9 @@ pub(crate) mod types;
 pub(crate) use types::{
     Bounds, Bounds3D, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder,
     CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
-    FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicParts, GeodesicSegment,
-    GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
+    FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicParts,
+    GeodesicPreparedSegment, GeodesicSegment, GeodesicSegmentDerivative, GeodesicSegmentMinimum,
+    GeodesicSegmentQuery, GeodesicSegmentQueryResult, GeodesicSegmentSample,
     GeodesicSegmentScratch, GeodesicThresholdCompletion, GeodesicWitnessNeed, GeometryErrorKind,
     GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq, MAX_NESTING, MColumn,
     MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointKey, Polygon,
@@ -141,7 +142,8 @@ pub(crate) use facet_bvh::{
 };
 pub(crate) use generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
 use geodesic_bvh::{
-    GeodesicFacetBvh, GeodesicWitnessCandidate, geodesic_witness_is_better, witness_refine_limit,
+    GeodesicFacetBvh, GeodesicTargetFeature, GeodesicWitnessCandidate, geodesic_witness_is_better,
+    witness_refine_limit,
 };
 pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric};
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};

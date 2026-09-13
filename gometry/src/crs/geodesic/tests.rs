@@ -344,6 +344,21 @@ fn geodesic_point_to_segment_threshold_is_inclusive() {
 }
 
 #[test]
+fn exact_geodesic_contact_preserves_query_xy() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let segment = metric
+        .make_segment(p(0.0, 0.0), p(5.0, 0.0))
+        .expect("equatorial segment is unique");
+    let query = p(2.5, 0.0);
+    let witness = metric_witness(&metric, query, segment, f64::INFINITY);
+
+    assert_eq!(witness.foot.x.to_bits(), query.x.to_bits());
+    assert_eq!(witness.foot.y.to_bits(), query.y.to_bits());
+    assert_eq!(witness.distance, 0.0);
+}
+
+#[test]
 fn spherical_segment_phase_selects_the_nearest_stationary_point() {
     let radius = 6_378_137.0;
     let geodesic = Geodesic::new(radius, 0.0);

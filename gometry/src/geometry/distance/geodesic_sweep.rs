@@ -1,10 +1,13 @@
 use crate::error::Result;
+#[cfg(test)]
+use crate::geometry::distance::geodesic_hausdorff_counters;
 use crate::geometry::distance::geodesic_scratch;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
 use crate::geometry::{
     GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentQuery,
-    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicWitnessCandidate,
-    GeodesicWitnessNeed, Point, geodesic_witness_is_better, witness_refine_limit,
+    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicTargetFeature,
+    GeodesicWitnessCandidate, GeodesicWitnessNeed, Point, geodesic_witness_is_better,
+    witness_refine_limit,
 };
 pub(crate) const GEODESIC_CAP_GROUP: usize = 16;
 
@@ -442,6 +445,87 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
     )
 }
 
+pub(crate) fn geodesic_target_witness(
+    point: Point,
+    target_parts: &GeodesicParts,
+    metric: &impl GeodesicMetric,
+    stack: &mut Vec<u32>,
+    segment_scratch: &mut GeodesicSegmentScratch,
+) -> Result<Option<GeodesicWitnessCandidate>> {
+    let width = target_parts.segments.len() + target_parts.point_only.len();
+    if let Some(bvh) = target_parts.geodesic_bvh(metric)? {
+        #[cfg(test)]
+        geodesic_hausdorff_counters::bvh_target_query();
+        return bvh.witness_point(
+            point,
+            0,
+            target_parts,
+            metric,
+            stack,
+            segment_scratch,
+            None,
+            0,
+            false,
+            width,
+        );
+    }
+
+    let mut best = None;
+    for (index, &segment) in target_parts.segments.iter().enumerate() {
+        let cutoff = witness_refine_limit(best.as_ref(), index);
+        let result = metric.point_segment_query(
+            point,
+            segment,
+            GeodesicSegmentQuery::Minimum {
+                cutoff,
+                witness: GeodesicWitnessNeed::Yes,
+            },
+            segment_scratch,
+        )?;
+        let GeodesicSegmentQueryResult::Attained {
+            minimum,
+            foot: Some(target),
+        } = result
+        else {
+            continue;
+        };
+        let candidate = GeodesicWitnessCandidate {
+            probe: point,
+            target,
+            distance: minimum.distance,
+            feature: GeodesicTargetFeature::Segment {
+                index,
+                along: minimum.along,
+            },
+            order: index,
+            swapped: false,
+        };
+        if geodesic_witness_is_better(best.as_ref(), &candidate) {
+            best = Some(candidate);
+        }
+    }
+    for (index, &target) in target_parts.point_only.iter().enumerate() {
+        let order = target_parts.segments.len() + index;
+        let cutoff = witness_refine_limit(best.as_ref(), order);
+        if metric.point_distance_lower_bound(point, target) > cutoff {
+            continue;
+        }
+        let distance = metric.segment_length(point, target);
+        let candidate = GeodesicWitnessCandidate {
+            probe: point,
+            target,
+            distance,
+            feature: GeodesicTargetFeature::Point,
+            order,
+            swapped: false,
+        };
+        if geodesic_witness_is_better(best.as_ref(), &candidate) {
+            best = Some(candidate);
+        }
+    }
+    Ok(best)
+}
+
 fn geodesic_capped_witness_sweep_core(
     vertices: &[Point],
     segments: &[GeodesicSegment],
@@ -513,6 +597,10 @@ fn geodesic_capped_witness_sweep_core(
                     probe: vertex,
                     target,
                     distance: minimum.distance,
+                    feature: GeodesicTargetFeature::Segment {
+                        index: edge_index,
+                        along: minimum.along,
+                    },
                     order,
                     swapped,
                 };
@@ -532,6 +620,7 @@ fn geodesic_capped_witness_sweep_core(
                 probe: vertex,
                 target: point,
                 distance,
+                feature: GeodesicTargetFeature::Point,
                 order,
                 swapped,
             };

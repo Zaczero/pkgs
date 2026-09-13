@@ -1,14 +1,19 @@
 use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic;
+use crate::crs::geodesic::segment::{
+    PreparedSegment, geodesic_curvature_domain, longitude_difference,
+};
 use crate::crs::geodesic::{
-    DirectGeodesic, IntersectSolver, InverseGeodesic as _, LowerBoundKernel,
-    cached_lower_bound_kernel, checked_geodesic_segment, geodesic_point_segment_query,
-    geodesic_segment_intersection_with_solver, interpolate_optional_ordinate,
+    DirectGeodesic, GEODESIC_BACKEND_RELATIVE_FLOOR, IntersectSolver, InverseGeodesic as _,
+    LowerBoundKernel, cached_lower_bound_kernel, checked_geodesic_segment,
+    geodesic_point_segment_query, geodesic_segment_intersection_with_solver, geodesic_unit_vector,
+    interpolate_optional_ordinate,
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    GeodesicMetric, GeodesicSegment, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
+    GeodesicMetric, GeodesicPreparedSegment, GeodesicSegment, GeodesicSegmentDerivative,
+    GeodesicSegmentQuery, GeodesicSegmentQueryResult, GeodesicSegmentSample,
     GeodesicSegmentScratch, MOrdinate, Point, XY, ZOrdinate,
 };
 
@@ -76,6 +81,52 @@ pub(crate) struct EllipsoidMetric<'a> {
     intersection: std::cell::OnceCell<IntersectSolver>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedMetricSegment {
+    source_segment: GeodesicSegment,
+    inner: PreparedSegment,
+    frame: GeographicFrame,
+}
+
+impl GeodesicPreparedSegment for PreparedMetricSegment {
+    fn segment(&self) -> GeodesicSegment {
+        self.source_segment
+    }
+
+    fn sample(
+        &self,
+        point: Point,
+        along: f64,
+        derivative: bool,
+    ) -> crate::error::Result<GeodesicSegmentSample> {
+        let point = self
+            .frame
+            .to_geodesic_point(point)
+            .expect("geographic metric received an admitted point");
+        let sample = self.inner.sample(point, along, derivative)?;
+        Ok(GeodesicSegmentSample {
+            derivative: sample
+                .derivative
+                .map(|derivative| GeodesicSegmentDerivative {
+                    value: derivative.value,
+                    error: derivative.error,
+                }),
+        })
+    }
+
+    fn position(&self, along: f64) -> crate::error::Result<Point> {
+        let point = self.inner.position(along)?;
+        Ok(self
+            .frame
+            .point_from_geodesic(point)
+            .expect("geodesic metric produced a finite point"))
+    }
+
+    fn tangent(&self, along: f64) -> crate::error::Result<Option<[f64; 3]>> {
+        self.inner.tangent(along)
+    }
+}
+
 impl<'a> EllipsoidMetric<'a> {
     #[cfg(test)]
     pub(crate) const fn for_crs84_geometry_test(geodesic: &'a Geodesic) -> Self {
@@ -124,6 +175,8 @@ impl<'a> EllipsoidMetric<'a> {
 }
 
 impl GeodesicMetric for EllipsoidMetric<'_> {
+    type PreparedSegment = PreparedMetricSegment;
+
     fn runtime_generation(&self) -> u64 {
         self.runtime_generation
     }
@@ -151,6 +204,18 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         segment.start = start;
         segment.end = end;
         Ok(segment)
+    }
+
+    fn prepare_segment(
+        &self,
+        segment: &GeodesicSegment,
+    ) -> crate::error::Result<Self::PreparedSegment> {
+        let geodesic_segment = self.to_geodesic_segment(*segment);
+        Ok(PreparedMetricSegment {
+            source_segment: *segment,
+            inner: PreparedSegment::new(self.geodesic, &geodesic_segment),
+            frame: self.frame,
+        })
     }
 
     fn point_segment_query(
@@ -289,6 +354,60 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
                 self.to_geodesic_point(a),
                 self.to_geodesic_point(b),
             )
+    }
+
+    fn geodesic_curvature_domain(&self) -> Option<(f64, f64, f64)> {
+        geodesic_curvature_domain(self.geodesic)
+    }
+
+    fn geodesic_backend_floor(&self) -> f64 {
+        self.geodesic.a.abs() * GEODESIC_BACKEND_RELATIVE_FLOOR
+    }
+
+    fn geodesic_radius(&self) -> f64 {
+        self.geodesic.a
+    }
+
+    fn surface_unit(&self, point: Point) -> Option<[f64; 3]> {
+        let point = self.to_geodesic_point(point);
+        Some(geodesic_unit_vector(point.x, point.y))
+    }
+
+    fn is_spherical(&self) -> bool {
+        self.geodesic.f == 0.0
+    }
+
+    fn is_equatorial_segment(&self, segment: &GeodesicSegment) -> bool {
+        let segment = self.to_geodesic_segment(*segment);
+        segment.start.y == 0.0
+            && segment.end.y == 0.0
+            && longitude_difference(segment.start.x, segment.end.x).abs() < 180.0
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "a pole is one specific representable coordinate; a tolerance would admit a merely near-polar point"
+    )]
+    fn is_polar_point(&self, point: Point) -> bool {
+        self.to_geodesic_point(point).y.abs() == 90.0
+    }
+
+    fn equatorial_opposite_meridian_parameter(
+        &self,
+        segment: &GeodesicSegment,
+        target: Point,
+    ) -> Option<f64> {
+        let segment = self.to_geodesic_segment(*segment);
+        let target = self.to_geodesic_point(target);
+        if segment.start.y != 0.0 || segment.end.y != 0.0 {
+            return None;
+        }
+        let delta = longitude_difference(segment.start.x, segment.end.x);
+        if !(delta != 0.0 && delta.abs() < 180.0) {
+            return None;
+        }
+        let opposite_delta = longitude_difference(segment.start.x, target.x + 180.0);
+        Some(segment.length * opposite_delta.abs() / delta.abs()).filter(|along| along.is_finite())
     }
 }
 

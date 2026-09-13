@@ -639,6 +639,29 @@ pub(super) fn assert_same_witness(
                 actual.distance, expected.distance,
                 "{name} witness distance"
             );
+            match (actual.feature, expected.feature) {
+                (
+                    GeodesicTargetFeature::Segment {
+                        index: actual_index,
+                        along: actual_along,
+                    },
+                    GeodesicTargetFeature::Segment {
+                        index: expected_index,
+                        along: expected_along,
+                    },
+                ) => {
+                    assert_eq!(actual_index, expected_index, "{name} witness feature");
+                    assert_eq!(
+                        actual_along.to_bits(),
+                        expected_along.to_bits(),
+                        "{name} witness feature along"
+                    );
+                },
+                (GeodesicTargetFeature::Point, GeodesicTargetFeature::Point) => {},
+                (actual, expected) => {
+                    panic!("{name} witness feature mismatch: {actual:?} != {expected:?}")
+                },
+            }
             assert_eq!(actual.order, expected.order, "{name} witness order");
             assert_eq!(actual.swapped, expected.swapped, "{name} witness swapped");
         },

@@ -1059,10 +1059,32 @@ impl Ord for GeodesicInnerInterval {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GeodesicSegmentDerivative {
+    pub(crate) value: f64,
+    pub(crate) error: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GeodesicSegmentSample {
+    pub(crate) derivative: Option<GeodesicSegmentDerivative>,
+}
+
+/// One cached geodesic line with source-frame point, tangent, and sample
+/// access for a continuous Hausdorff search.
+pub(crate) trait GeodesicPreparedSegment: Copy {
+    fn segment(&self) -> GeodesicSegment;
+    fn sample(&self, point: Point, along: f64, derivative: bool) -> Result<GeodesicSegmentSample>;
+    fn position(&self, along: f64) -> Result<Point>;
+    fn tangent(&self, along: f64) -> Result<Option<[f64; 3]>>;
+}
+
 /// Ellipsoidal distance primitive injected into [`Shape::geodesic_distance`] so
 /// the geometry layer stays free of any CRS/ellipsoid dependency. Implemented
 /// in `crs.rs` over a `geographiclib` `Geodesic`.
 pub(crate) trait GeodesicMetric {
+    type PreparedSegment: GeodesicPreparedSegment;
+
     /// Runtime generation used to namespace CRS-dependent prepared state.
     /// Geometry-only test metrics use the default zero generation.
     fn runtime_generation(&self) -> u64 {
@@ -1092,6 +1114,10 @@ pub(crate) trait GeodesicMetric {
     /// Precompute the ellipsoidal metadata shared by every exact probe of one
     /// segment.
     fn make_segment(&self, start: Point, end: Point) -> Result<GeodesicSegment>;
+
+    /// Prepare one reusable geodesic line for continuous source/target
+    /// interval work.
+    fn prepare_segment(&self, segment: &GeodesicSegment) -> Result<Self::PreparedSegment>;
 
     /// Run the shared point-to-segment query owner.
     #[expect(
@@ -1131,6 +1157,33 @@ pub(crate) trait GeodesicMetric {
     /// points — the auxiliary-sphere reduced-latitude bound. Drives the
     /// segment pruning in batch locate sweeps; `0.0` is always sound.
     fn point_distance_lower_bound(&self, a: Point, b: Point) -> f64;
+
+    /// Curvature and injectivity bounds for the admitted ellipsoid.
+    fn geodesic_curvature_domain(&self) -> Option<(f64, f64, f64)>;
+
+    /// Radius-scaled allowance for the binary64 geodesic backend.
+    fn geodesic_backend_floor(&self) -> f64;
+
+    /// Semi-major radius used by exact spherical family formulas.
+    fn geodesic_radius(&self) -> f64;
+
+    /// Unit surface vector in the ellipsoid's canonical Cartesian frame.
+    fn surface_unit(&self, point: Point) -> Option<[f64; 3]>;
+
+    /// Exact family predicates used only to close focal plateaus.
+    fn is_spherical(&self) -> bool;
+    fn is_equatorial_segment(&self, segment: &GeodesicSegment) -> bool;
+    fn is_polar_point(&self, point: Point) -> bool;
+
+    /// Along-track parameter of an equatorial source at the target point's
+    /// opposite meridian, when the metric can apply that exact family.
+    fn equatorial_opposite_meridian_parameter(
+        &self,
+        _segment: &GeodesicSegment,
+        _target: Point,
+    ) -> Option<f64> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

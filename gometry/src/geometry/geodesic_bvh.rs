@@ -226,7 +226,7 @@ impl GeodesicFacetBvh {
         mut best: f64,
     ) -> Result<f64> {
         stack.clear();
-        stack.push(0);
+        crate::try_push_vec(stack, 0)?;
         while let Some(node) = stack.pop() {
             let node = node as usize;
             if self.bound(point, node, metric) > best {
@@ -257,7 +257,7 @@ impl GeodesicFacetBvh {
                     }
                 },
                 BvhNode::Internal(first_child) => {
-                    self.push_nearer_last(point, first_child as u32, metric, stack);
+                    self.push_nearer_last(point, first_child as u32, metric, stack)?;
                 },
             }
         }
@@ -287,7 +287,7 @@ impl GeodesicFacetBvh {
         width: usize,
     ) -> Result<Option<GeodesicWitnessCandidate>> {
         stack.clear();
-        stack.push(0);
+        crate::try_push_vec(stack, 0)?;
         while let Some(node) = stack.pop() {
             let node = node as usize;
             let best_distance = best
@@ -329,6 +329,10 @@ impl GeodesicFacetBvh {
                             probe: vertex,
                             target,
                             distance: minimum.distance,
+                            feature: GeodesicTargetFeature::Segment {
+                                index: edge_index,
+                                along: minimum.along,
+                            },
                             order,
                             swapped,
                         };
@@ -338,7 +342,7 @@ impl GeodesicFacetBvh {
                     }
                 },
                 BvhNode::Internal(first_child) => {
-                    self.push_nearer_last(vertex, first_child as u32, metric, stack);
+                    self.push_nearer_last(vertex, first_child as u32, metric, stack)?;
                 },
             }
         }
@@ -357,6 +361,7 @@ impl GeodesicFacetBvh {
                     probe: vertex,
                     target: point,
                     distance,
+                    feature: GeodesicTargetFeature::Point,
                     order,
                     swapped,
                 };
@@ -378,7 +383,7 @@ impl GeodesicFacetBvh {
         limit: f64,
     ) -> Result<bool> {
         stack.clear();
-        stack.push(0);
+        crate::try_push_vec(stack, 0)?;
         while let Some(node) = stack.pop() {
             let node = node as usize;
             if self.bound(point, node, metric) > limit {
@@ -422,8 +427,8 @@ impl GeodesicFacetBvh {
                 },
                 BvhNode::Internal(first_child) => {
                     let first_child = first_child as u32;
-                    stack.push(first_child);
-                    stack.push(first_child + 1);
+                    crate::try_push_vec(stack, first_child)?;
+                    crate::try_push_vec(stack, first_child + 1)?;
                 },
             }
         }
@@ -439,18 +444,19 @@ impl GeodesicFacetBvh {
         first_child: u32,
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
-    ) {
+    ) -> Result<()> {
         let left = first_child as usize;
         let right = left + 1;
         let left_bound = self.bound(point, left, metric);
         let right_bound = self.bound(point, right, metric);
         if left_bound < right_bound {
-            stack.push(first_child + 1);
-            stack.push(first_child);
+            crate::try_push_vec(stack, first_child + 1)?;
+            crate::try_push_vec(stack, first_child)?;
         } else {
-            stack.push(first_child);
-            stack.push(first_child + 1);
+            crate::try_push_vec(stack, first_child)?;
+            crate::try_push_vec(stack, first_child + 1)?;
         }
+        Ok(())
     }
 
     fn bound(&self, point: Point, node: usize, metric: &impl GeodesicMetric) -> f64 {
@@ -503,10 +509,17 @@ fn split_axis(ids: &[SegmentBuild]) -> usize {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub(super) enum GeodesicTargetFeature {
+    Segment { index: usize, along: f64 },
+    Point,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub(super) struct GeodesicWitnessCandidate {
     pub(super) probe: Point,
     pub(super) target: Point,
     pub(super) distance: f64,
+    pub(super) feature: GeodesicTargetFeature,
     pub(super) order: usize,
     pub(super) swapped: bool,
 }

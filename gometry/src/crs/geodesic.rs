@@ -224,5 +224,5 @@ pub(crate) use nearest_lrs::{
 };
 use segment::{
     IntersectSolver, checked_geodesic_segment, geodesic_point_segment_query,
-    geodesic_segment_intersection_with_solver,
+    geodesic_segment_intersection_with_solver, geodesic_unit_vector,
 };

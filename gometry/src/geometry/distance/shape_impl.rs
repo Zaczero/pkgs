@@ -4,14 +4,14 @@ use crate::geometry::distance::{
     directed_hausdorff_distance_squared_shapes, discrete_frechet_distance,
     discrete_frechet_distance_with_scratch, ensure_geodesic_linework, filled_hausdorff_distance,
     geodesic_cap_streaming, geodesic_capped_sweep, geodesic_capped_witness_sweep,
-    geodesic_max_min_on_source_segment, geodesic_min_distance_to_target, geodesic_scratch,
-    geodesic_segments_cross_streaming, min_parts_to_parts, push_equidistant_roots_on_interval,
-    push_point_on_line_breakpoint, push_segment_projection_breakpoints, squared_space_safe,
+    geodesic_directed_hausdorff_distance, geodesic_scratch, geodesic_segments_cross_streaming,
+    min_parts_to_parts, push_equidistant_roots_on_interval, push_point_on_line_breakpoint,
+    push_segment_projection_breakpoints, squared_space_safe,
 };
 use crate::geometry::frame::SimilarityFrame;
 use crate::geometry::{
-    Coordinates, DistanceParts, GeodesicMetric, GeodesicParts, GeodesicSegment, Orientation, Point,
-    Polygon, PreparedLinework, Segment, Shape, ShapeData, XY, axis_pow2_scale, distance,
+    Coordinates, DistanceParts, GeodesicMetric, GeodesicParts, Orientation, Point, Polygon,
+    PreparedLinework, Segment, Shape, ShapeData, XY, axis_pow2_scale, distance,
     finish_planar_squared_min, nearest_points, orientation, point_distance, point_segment_distance,
     power_of_two_exponent, same_point, scale_by_power_of_two, scaled_residual, segment_projection,
 };
@@ -103,18 +103,13 @@ impl Shape {
         min_parts_to_parts::<false>(other_parts, self_parts, best)
     }
 
-    /// Minimum distance between two geometries whose edges are geodesics, in
-    /// the meters returned by `metric`. Mirrors [`Self::distance`] but
-    /// measures every vertex-to-edge pair ellipsoidally instead of in the
-    /// plane. Segment intersections are certified by the GeographicLib
-    /// intersection solver; filled polygon interiors are unsupported.
-    /// The shape's auxiliary-sphere cap under `metric`: its first vertex
-    /// (the anchor) and a PROVEN upper bound (meters) on any shape point's
-    /// geodesic distance from it — `max(s(anchor, start) + length)` over
-    /// segments plus isolated points (`σ ≤ s/b` covers geodesic edges that
-    /// bow outside their lon/lat envelope). `None` for empty shapes. The
-    /// spatial index's geodesic row caps and the capped sweeps below share
-    /// this bound.
+    /// Build the shape's auxiliary-sphere cap under `metric`: its first
+    /// vertex (the anchor) and a conservative upper bound (meters) on any
+    /// shape point's geodesic distance from it — `max(s(anchor, start) +
+    /// length)` over segments plus isolated points (`σ ≤ s/b` covers
+    /// geodesic edges that bow outside their lon/lat envelope). `None` for
+    /// empty shapes. The spatial index's geodesic row caps and capped
+    /// sweeps share this bound.
     pub(crate) fn geodesic_cap(
         &self,
         metric: &impl GeodesicMetric,
@@ -180,9 +175,10 @@ impl Shape {
 
     /// Directed and symmetric geodesic Hausdorff distance (meters) — the
     /// segment-aware sibling of [`Shape::hausdorff_distance`]. Each directed
-    /// sweep takes the linework max-min over source vertices and source
-    /// segment interiors, with a 1-Lipschitz branch-and-bound certificate and
-    /// target pruning via auxiliary-sphere bounds.
+    /// sweep evaluates source vertices and a global along-track frontier over
+    /// source segment interiors. Complete target witnesses provide the
+    /// returned values, while conservative interval supports close regular,
+    /// near-coincident, and exact-family cells.
     pub(crate) fn geodesic_hausdorff_distance(
         &self,
         other: &Self,
@@ -193,28 +189,15 @@ impl Shape {
         if self.is_empty() || other.is_empty() {
             return Ok(f64::INFINITY);
         }
+        let source_parts = self.geodesic_parts(metric)?;
+        let target_parts = other.geodesic_parts(metric)?;
         let mut scratch = geodesic_scratch();
         let scratch = &mut *scratch;
-        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
-        other.collect_points_into(&mut scratch.right_points)?;
-        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
-        self.collect_points_into(&mut scratch.left_points)?;
-        Ok(geodesic_directed_hausdorff_distance(
-            &scratch.left_points,
-            &scratch.left_edges,
-            &scratch.right_edges,
-            &scratch.right_points,
-            metric,
-            &mut scratch.segment,
-        )?
-        .max(geodesic_directed_hausdorff_distance(
-            &scratch.right_points,
-            &scratch.right_edges,
-            &scratch.left_edges,
-            &scratch.left_points,
-            metric,
-            &mut scratch.segment,
-        )?))
+        let forward =
+            geodesic_directed_hausdorff_distance(&source_parts, &target_parts, metric, scratch)?;
+        let reverse =
+            geodesic_directed_hausdorff_distance(&target_parts, &source_parts, metric, scratch)?;
+        Ok(forward.distance.max(reverse.distance))
     }
 
     /// The closest pair of points (one on each geometry) under the geodesic
@@ -467,44 +450,6 @@ impl Shape {
             scratch,
         ))
     }
-}
-
-pub(super) fn geodesic_directed_hausdorff_distance(
-    source_points: &[Point],
-    source_edges: &[GeodesicSegment],
-    target_edges: &[GeodesicSegment],
-    target_points: &[Point],
-    metric: &impl GeodesicMetric,
-    segment_scratch: &mut crate::geometry::GeodesicSegmentScratch,
-) -> Result<f64> {
-    let mut cmax = 0.0_f64;
-    for &point in source_points {
-        let cmin = geodesic_min_distance_to_target(
-            point,
-            target_edges,
-            target_points,
-            metric,
-            cmax,
-            segment_scratch,
-        )?;
-        if cmin > cmax {
-            cmax = cmin;
-        }
-    }
-    for &segment in source_edges {
-        let value = geodesic_max_min_on_source_segment(
-            segment,
-            target_edges,
-            target_points,
-            metric,
-            cmax,
-            segment_scratch,
-        )?;
-        if value > cmax {
-            cmax = value;
-        }
-    }
-    Ok(cmax)
 }
 
 /// A one-member collection or multipart line has exactly the member's

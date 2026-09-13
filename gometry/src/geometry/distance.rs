@@ -25,8 +25,10 @@ pub(crate) use frechet::{
     FrechetDpScratch, discrete_frechet_distance, discrete_frechet_distance_with_scratch,
     frechet_distance_line_columns, frechet_distance_line_columns_batch,
 };
+pub(crate) use geodesic_hausdorff_helpers::geodesic_directed_hausdorff_distance;
+#[cfg(test)]
 pub(crate) use geodesic_hausdorff_helpers::{
-    geodesic_max_min_on_source_segment, geodesic_min_distance_to_target,
+    GEODESIC_HAUSDORFF_TOLERANCE, GeodesicHausdorffWitness, geodesic_hausdorff_counters,
 };
 pub(crate) use geodesic_parts::{
     ensure_geodesic_linework, geodesic_cap_streaming, geodesic_distance_with_parts,

@@ -418,10 +418,15 @@ primitive scope does not certify this composite point-to-segment query.
 radius. It does not add a contact tolerance or widen the radius by pruning
 slack.
 
-Geodesic Hausdorff refinement uses a `0.01 m` interval gap. In the three
-analytic WGS 84 line-versus-two-point cases used for validation, its shortfall
-from the exhibited source midpoint was `0.33–0.53 cm`; this is measured
-algorithm scope, not a per-call bound.
+Geodesic Hausdorff evaluates every source vertex and uses one global
+along-track frontier for each source segment. Each target query is complete
+over the target's segments and isolated points, and the returned pair is an
+actual source/target witness rather than an interval upper bound. Regular
+finite-foot branches, near-coincident moving witnesses, and exact
+spherical/equatorial/polar families can close a source interval directly;
+other intervals use a conservative `0.01 m` coverage gap. The underlying
+binary64 backend allowance remains the radius-scaled floor described above,
+not an additional contact tolerance.
 
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a
