@@ -20,14 +20,16 @@ from _bench_oracles import (
     OracleMismatch,
     PairCase,
     _as_shapely,
+    areal_result_equivalent,
     exact_coordinates,
     exact_mask,
-    geometry_equivalent,
+    linework_result_equivalent,
     metric_allclose,
     non_unique_points_contract,
     normalized_index_pairs,
     normalized_tile_set,
     normalized_uint64_set,
+    parsed_geometry_exact,
     register_public_builders,
     wrap_longitude_allclose,
 )
@@ -148,7 +150,7 @@ def _reg(name: str, fn: Callable[[], object]) -> Callable[[], object]:
 def _compare_ewkb_roundtrip(
     left: object, right: object | None, context: OracleContext
 ) -> None:
-    """Rowwise geometry + SRID (shapely exposes SRID via get_srid, not .crs)."""
+    """Exact parsed structure plus EWKB SRID."""
     import shapely
 
     if right is None:
@@ -165,13 +167,6 @@ def _compare_ewkb_roundtrip(
             if lg is not rg:
                 raise OracleMismatch(f'from_wkb missing mismatch row={i}')
             continue
-        l_kind = getattr(lg, 'geometry_type', type(lg).__name__)
-        r_kind = getattr(rg, 'geom_type', type(rg).__name__)
-        if str(l_kind).lower().replace(' ', '') != str(r_kind).lower().replace(' ', ''):
-            raise OracleMismatch(
-                'from_wkb type mismatch',
-                details=f'row={i} {l_kind!r} vs {r_kind!r}',
-            )
         crs = getattr(lg, 'crs', None)
         l_srid = crs.to_epsg() if crs is not None and hasattr(crs, 'to_epsg') else None
         r_srid = int(shapely.get_srid(rg))
@@ -180,14 +175,7 @@ def _compare_ewkb_roundtrip(
                 'from_wkb SRID mismatch',
                 details=f'row={i} {l_srid!r} vs {r_srid!r}',
             )
-        # Compare CRS-free shapes (shapely WKB has no CRS tag)
-        lg_xy = lg.set_crs(None) if getattr(lg, 'crs', None) is not None else lg
-        # This is a weaker parser-row fix than the overlay-row fix: the
-        # predicate is only the judge, not the operation under test. Both
-        # results still cross the representation-only WKB boundary before
-        # Shapely makes the equivalence decision.
-        if not bool(shapely.equals(_as_shapely(lg_xy), _as_shapely(rg))):
-            raise OracleMismatch('from_wkb geometry mismatch', details=f'row={i}')
+    parsed_geometry_exact(left, right, context)
 
 
 def _compare_from_arrow(
@@ -401,15 +389,11 @@ def _as_geom_rows(value: object) -> list[object]:
     return list(value)  # type: ignore[arg-type]
 
 
-def _compare_overlay_geom(
+def _compare_areal_result(
     left: object, right: object | None, context: OracleContext
 ) -> None:
-    """Compare topology through Shapely after WKB-only conversion.
-
-    The existing public-row tolerance is retained; only the judging
-    implementation moves off gometry.
-    """
-    geometry_equivalent(left, right, context, rtol=1e-6, atol=1e-3)
+    """Compare pure areal overlay output with its explicit area budget."""
+    areal_result_equivalent(left, right, context, rtol=1e-6, atol=1e-3)
 
 
 def _compare_repair(left: object, right: object | None, context: OracleContext) -> None:
@@ -440,7 +424,14 @@ def _compare_repair(left: object, right: object | None, context: OracleContext) 
             raise OracleMismatch(f'repair gometry output invalid row={i}')
         if not right_valid:
             raise OracleMismatch('repair competitor output has invalids')
-    _compare_overlay_geom(left, right, context)
+    areal_result_equivalent(
+        left,
+        right,
+        context,
+        rtol=1e-6,
+        atol=1e-3,
+        allow_collapsed=True,
+    )
 
 
 def _compare_to_crs(left: object, right: object | None, context: OracleContext) -> None:
@@ -692,7 +683,7 @@ def build_from_wkb() -> PublicCase:
         gometry_call,
         competitor_call,
         _compare_ewkb_roundtrip,
-        kind='rowwise_geometry_exact',
+        kind='parsed_geometry_exact',
         preconditions=(pre,),
     )
 
@@ -700,7 +691,7 @@ def build_from_wkb() -> PublicCase:
 def _compare_from_wkt(
     left: object, right: object | None, context: OracleContext
 ) -> None:
-    """Check row shape/type/axes and topology without trusting WKT text."""
+    """Check every parsed row's recursive WKB structure exactly."""
     if right is None:
         raise OracleMismatch('from_wkt requires competitor')
     left_rows = _as_geom_rows(left)
@@ -710,26 +701,7 @@ def _compare_from_wkt(
             'from_wkt row count mismatch',
             details=f'{len(left_rows)} vs {len(right_rows)} (want 10000)',
         )
-    for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
-        if (lg is None) != (rg is None):
-            raise OracleMismatch(f'from_wkt missingness mismatch row={i}')
-        if lg is None:
-            continue
-        left_kind = getattr(lg, 'geometry_type', None) or getattr(lg, 'geom_type', None)
-        right_kind = getattr(rg, 'geometry_type', None) or getattr(rg, 'geom_type', None)
-        if str(left_kind).lower().replace(' ', '') != str(right_kind).lower().replace(' ', ''):
-            raise OracleMismatch(
-                f'from_wkt geometry type mismatch row={i}',
-                details=f'{left_kind!r} vs {right_kind!r}',
-            )
-        left_axes = getattr(lg, 'coordinate_axes', None)
-        right_axes = getattr(rg, 'coordinate_axes', None)
-        if left_axes is not None and right_axes is not None and left_axes != right_axes:
-            raise OracleMismatch(
-                f'from_wkt coordinate axes mismatch row={i}',
-                details=f'{left_axes!r} vs {right_axes!r}',
-            )
-        geometry_equivalent([lg], [rg], context, rtol=1e-12, atol=1e-9)
+    parsed_geometry_exact(left_rows, right_rows, context)
 
 
 def build_from_wkt() -> PublicCase:
@@ -751,7 +723,7 @@ def build_from_wkt() -> PublicCase:
         gometry_call,
         competitor_call,
         _compare_from_wkt,
-        kind='wkt_rowwise_topology',
+        kind='parsed_geometry_exact',
         preconditions=(lambda: len(wkts) == 10_000,),
     )
 
@@ -778,7 +750,7 @@ def build_from_arrow() -> PublicCase:
         gometry_call,
         competitor_call,
         _compare_from_arrow,
-        kind='rowwise_geometry_exact',
+        kind='rowwise_geometry_topological',
     )
 
 
@@ -1086,9 +1058,8 @@ def build_buffer() -> PublicCase:
     return _case(
         gometry_call,
         competitor_call,
-        _compare_overlay_geom,
-        kind='geometry_equivalent',
-        unit='symdiff',
+        _compare_areal_result,
+        kind='areal_result',
     )
 
 
@@ -1110,9 +1081,8 @@ def build_intersection() -> PublicCase:
     return _case(
         gometry_call,
         competitor_call,
-        _compare_overlay_geom,
-        kind='geometry_equivalent',
-        unit='symdiff',
+        _compare_areal_result,
+        kind='areal_result',
     )
 
 
@@ -1136,11 +1106,10 @@ def build_union_all() -> PublicCase:
     return _case(
         gometry_call,
         competitor_call,
-        _compare_overlay_geom,
-        kind='geometry_equivalent',
+        _compare_areal_result,
+        kind='areal_result',
         useful_work={'count': 1_024, 'unit': 'input-geometries'},
         output_validator=output_validator,
-        unit='symdiff',
     )
 
 
@@ -1168,9 +1137,8 @@ def build_coverage_union() -> PublicCase:
     return _case(
         gometry_call,
         competitor_call,
-        _compare_overlay_geom,
-        kind='geometry_equivalent',
-        unit='symdiff',
+        _compare_areal_result,
+        kind='areal_result',
         preconditions=(pre,),
     )
 
@@ -1216,8 +1184,7 @@ def build_repair() -> PublicCase:
         gometry_call,
         competitor_call,
         _compare_repair,
-        kind='geometry_equivalent',
-        unit='symdiff',
+        kind='repair_result',
     )
 
 
@@ -1236,21 +1203,7 @@ def _compare_clip_by_rect(
     for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
         if lg is None or rg is None:
             raise OracleMismatch(f'clip_by_rect unexpected missing row={i}')
-        left_kind = getattr(lg, 'geometry_type', None) or getattr(lg, 'geom_type', None)
-        right_kind = getattr(rg, 'geometry_type', None) or getattr(rg, 'geom_type', None)
-        import shapely
-
-        # Shapely represents an empty clipped line as GeometryCollection while
-        # gometry preserves the subject type.  The non-empty rows still require
-        # exact kind parity; empty topology is the meaningful contract here.
-        if bool(shapely.is_empty(_as_shapely(lg))) and bool(shapely.is_empty(rg)):
-            continue
-        if str(left_kind).lower().replace(' ', '') != str(right_kind).lower().replace(' ', ''):
-            raise OracleMismatch(
-                f'clip_by_rect type mismatch row={i}',
-                details=f'{left_kind!r} vs {right_kind!r}',
-            )
-    geometry_equivalent(left_rows, right_rows, context, rtol=1e-9, atol=1e-8)
+    linework_result_equivalent(left_rows, right_rows, context)
 
 
 def build_clip_by_rect() -> PublicCase:
@@ -1304,7 +1257,7 @@ def build_clip_by_rect() -> PublicCase:
         gometry_call,
         competitor_call,
         _compare_clip_by_rect,
-        kind='rowwise_clip_topology',
+        kind='linework_result',
         preconditions=(precondition,),
     )
 
@@ -1809,7 +1762,7 @@ def build_from_geojson() -> PublicCase:
         gometry_call,
         competitor_call,
         _compare_from_geojson,
-        kind='rowwise_geometry_exact',
+        kind='rowwise_geometry_hausdorff',
     )
 
 

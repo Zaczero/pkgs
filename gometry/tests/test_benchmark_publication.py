@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -755,6 +757,74 @@ def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:
         if path.is_file()
     }
     assert second == first
+    assert not list(current.parent.glob(f'.{current.name}.publication-*'))
+
+
+def test_publication_final_rename_failure_restores_previous_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run_manifest_path, analysis_manifest = _analysis(tmp_path)
+    current = tmp_path / 'published' / 'current'
+    current.mkdir(parents=True)
+    (current / 'sentinel').write_bytes(b'previous evidence')
+    (current / 'nested').mkdir()
+    (current / 'nested' / 'bytes').write_bytes(b'\x00\x01previous')
+    before = {
+        path.relative_to(current).as_posix(): path.read_bytes()
+        for path in current.rglob('*')
+        if path.is_file()
+    }
+
+    real_rename = Path.rename
+    rename_calls = 0
+
+    def fail_final_rename(self: Path, target: Path) -> Path:
+        nonlocal rename_calls
+        rename_calls += 1
+        if rename_calls == 2:
+            raise OSError('injected final publication rename failure')
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, 'rename', fail_final_rename)
+    with pytest.raises(OSError, match='injected final'):
+        bench_driver.publish_current_run(
+            analysis_manifest,
+            output_dir=tmp_path / 'evidence',
+            current_dir=current,
+        )
+
+    after = {
+        path.relative_to(current).as_posix(): path.read_bytes()
+        for path in current.rglob('*')
+        if path.is_file()
+    }
+    assert after == before
+    assert not list(current.parent.glob(f'.{current.name}.publication-*'))
+
+
+def test_publication_custom_roots_do_not_require_cross_filesystem_rename(
+    tmp_path: Path,
+) -> None:
+    other_root = Path('/dev/shm')  # noqa: S108 - deliberate cross-filesystem test
+    if not other_root.is_dir():
+        pytest.skip('Linux shared-memory filesystem is unavailable')
+    if os.stat(other_root).st_dev == os.stat(tmp_path).st_dev:
+        pytest.skip('test roots are on one filesystem')
+    scratch = Path(tempfile.mkdtemp(prefix='gometry-publication-', dir=other_root))
+    try:
+        _run_manifest_path, analysis_manifest = _analysis(tmp_path)
+        current = tmp_path / 'published' / 'current'
+        published = bench_driver.publish_current_run(
+            analysis_manifest,
+            output_dir=scratch / 'evidence',
+            current_dir=current,
+        )
+        assert published == current
+        assert (current / 'summary.json').is_file()
+        assert (scratch / 'evidence').is_dir()
+        assert not list(current.parent.glob(f'.{current.name}.publication-*'))
+    finally:
+        shutil.rmtree(scratch)
 
 
 def test_cli_requires_explicit_analysis_then_publish_manifests(

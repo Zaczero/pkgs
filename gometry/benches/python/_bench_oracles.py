@@ -37,9 +37,12 @@ TOLERANCES: dict[str, tuple[float, float]] = {
     'deg_destination': (0.0, 1e-11),  # destination coords (lon wrapped)
     'm2_ellipsoidal': (2e-12, 1e-3),  # 217-country area
     'm_ellipsoidal': (2e-12, 1e-6),  # country boundary length
-    # overlay / repair symmetric-difference relative branch
-    'symdiff': (1e-8, 0.0),
 }
+
+# ``clip_by_rect`` already admits this coordinate budget in its public
+# benchmark contract.  It is a distance budget, not an area budget.
+_LINEWORK_COORD_RTOL = 1e-9
+_LINEWORK_COORD_ATOL = 1e-8
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,40 +462,6 @@ def _geom_missing(g: object) -> bool:
     return g is None
 
 
-def _geom_axes(g: object) -> object:
-    return getattr(g, 'coordinate_axes', None)
-
-
-def _geom_crs(g: object) -> object:
-    crs = getattr(g, 'crs', None)
-    if crs is None:
-        return None
-    for attr in ('to_epsg', 'to_authority'):
-        fn = getattr(crs, attr, None)
-        if callable(fn):
-            try:
-                return fn()
-            except Exception:
-                pass
-    return str(crs)
-
-
-def _geom_coords(g: object) -> np.ndarray:
-    if hasattr(g, 'coords'):
-        try:
-            return np.asarray(g.coords, dtype=np.float64)
-        except Exception:
-            pass
-    if hasattr(g, '__geo_interface__'):
-        try:
-            import gometry as gm
-
-            return np.asarray(gm.get_coordinates(g), dtype=np.float64)
-        except Exception:
-            pass
-    raise TypeError(f'cannot extract coordinates from {type(g)!r}')
-
-
 def _as_sequence(value: object) -> Sequence[object]:
     if value is None:
         return ()
@@ -504,85 +473,6 @@ def _as_sequence(value: object) -> Sequence[object]:
         return list(value)  # type: ignore[arg-type]
     except TypeError:
         return (value,)
-
-
-def _norm_geom_kind(kind: object) -> str:
-    return str(kind).lower().replace(' ', '')
-
-
-def rowwise_geometry_exact(
-    left: object,
-    right: object | None,
-    context: OracleContext,
-) -> None:
-    """Same count, missingness, type, axes, CRS/SRID, and coordinates."""
-    if right is None:
-        _raise('rowwise_geometry_exact requires a competitor result', context)
-    left_rows = _as_sequence(left)
-    right_rows = _as_sequence(right)
-    if len(left_rows) != len(right_rows):
-        _raise(
-            'rowwise_geometry_exact count mismatch',
-            context,
-            details=f'left={len(left_rows)} right={len(right_rows)}',
-        )
-    for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
-        lm = _geom_missing(lg)
-        rm = _geom_missing(rg)
-        if lm != rm:
-            _raise(
-                'rowwise_geometry_exact missingness mismatch',
-                context,
-                details=f'row={i} left_missing={lm} right_missing={rm}',
-            )
-        if lm:
-            continue
-        lt = type(lg).__name__
-        rt = type(rg).__name__
-        l_kind = getattr(lg, 'geom_type', None) or getattr(type(lg), '__name__', lt)
-        r_kind = getattr(rg, 'geom_type', None) or getattr(type(rg), '__name__', rt)
-        if _norm_geom_kind(l_kind) != _norm_geom_kind(r_kind):
-            _raise(
-                'rowwise_geometry_exact type mismatch',
-                context,
-                details=f'row={i} left={l_kind!r} right={r_kind!r}',
-            )
-        la = _geom_axes(lg)
-        ra = _geom_axes(rg)
-        if la is not None and ra is not None and la != ra:
-            _raise(
-                'rowwise_geometry_exact axes mismatch',
-                context,
-                details=f'row={i} left={la!r} right={ra!r}',
-            )
-        lc = _geom_crs(lg)
-        rc = _geom_crs(rg)
-        if lc != rc and not (lc is None and rc is None) and str(lc) != str(rc):
-            _raise(
-                'rowwise_geometry_exact CRS mismatch',
-                context,
-                details=f'row={i} left={lc!r} right={rc!r}',
-            )
-        try:
-            lxy = _geom_coords(lg)
-            rxy = _geom_coords(rg)
-        except TypeError as exc:
-            _raise(f'rowwise_geometry_exact coords: {exc}', context)
-        if lxy.shape != rxy.shape or not np.array_equal(np.isnan(lxy), np.isnan(rxy)):
-            _raise(
-                'rowwise_geometry_exact coordinate mismatch',
-                context,
-                details=(
-                    f'row={i} shapes {lxy.shape} vs {rxy.shape}; '
-                    f'{_error_stats(lxy, rxy)}'
-                ),
-            )
-        if not np.allclose(lxy, rxy, rtol=0.0, atol=0.0, equal_nan=True):
-            _raise(
-                'rowwise_geometry_exact coordinate mismatch',
-                context,
-                details=f'row={i}; {_error_stats(lxy, rxy)}',
-            )
 
 
 def _is_gometry_module(obj: object) -> bool:
@@ -605,97 +495,404 @@ def _as_shapely(geom: object):
     return shapely.from_wkb(bytes(payload))
 
 
-def _try_equals(a: object, b: object) -> bool:
-    try:
-        import shapely
+def _coordinate_bits(geometry: object) -> tuple[tuple[int, ...], ...]:
+    import shapely
 
-        return bool(shapely.equals(_as_shapely(a), _as_shapely(b)))
-    except Exception:
-        return False
-
-
-def _symdiff_area(a: object, b: object) -> float | None:
-    try:
-        import shapely
-
-        sd = shapely.symmetric_difference(_as_shapely(a), _as_shapely(b))
-        return float(shapely.area(sd))
-    except Exception:
-        return None
+    coordinates = np.asarray(
+        shapely.get_coordinates(geometry, include_z=True, include_m=True),
+        dtype=np.float64,
+    )
+    bits = coordinates.view(np.uint64).reshape(coordinates.shape)
+    return tuple(tuple(int(value) for value in row) for row in bits)
 
 
-def _union_area(a: object, b: object) -> float | None:
-    try:
-        import shapely
+def _structure_signature(geometry: object) -> tuple[object, ...]:
+    import shapely
 
-        return float(shapely.area(shapely.union(_as_shapely(a), _as_shapely(b))))
-    except Exception:
-        return None
+    kind = str(geometry.geom_type)
+    axes = (bool(shapely.has_z(geometry)), bool(shapely.has_m(geometry)))
+    empty = bool(shapely.is_empty(geometry))
+    if kind == 'Polygon':
+        children = (
+            _structure_signature(geometry.exterior),
+            *(_structure_signature(ring) for ring in geometry.interiors),
+        )
+        coordinates: tuple[tuple[int, ...], ...] = ()
+    elif kind in {
+        'MultiPoint',
+        'MultiLineString',
+        'MultiPolygon',
+        'GeometryCollection',
+    }:
+        children = tuple(_structure_signature(part) for part in geometry.geoms)
+        coordinates = ()
+    else:
+        children = ()
+        coordinates = _coordinate_bits(geometry)
+    return kind, axes, empty, coordinates, children
 
 
-def geometry_equivalent(
+def _structure_difference(
+    left: tuple[object, ...],
+    right: tuple[object, ...],
+    path: str = 'root',
+) -> str | None:
+    left_kind, left_axes, left_empty, left_coords, left_children = left
+    right_kind, right_axes, right_empty, right_coords, right_children = right
+    if left_kind != right_kind:
+        return f'{path} kind {left_kind!r} vs {right_kind!r}'
+    if left_axes != right_axes:
+        return f'{path} axes {left_axes!r} vs {right_axes!r}'
+    if left_empty != right_empty:
+        return f'{path} empty={left_empty} vs {right_empty}'
+    if left_coords != right_coords:
+        return f'{path} ordinate binary64 values differ'
+    if len(left_children) != len(right_children):
+        return f'{path} child count {len(left_children)} vs {len(right_children)}'
+    for index, (left_child, right_child) in enumerate(
+        zip(left_children, right_children, strict=True)
+    ):
+        difference = _structure_difference(
+            left_child,
+            right_child,
+            f'{path}.child[{index}]',
+        )
+        if difference is not None:
+            return difference
+    return None
+
+
+def parsed_geometry_exact(
     left: object,
     right: object | None,
     context: OracleContext,
-    *,
-    rtol: float | None = None,
-    atol: float | None = None,
 ) -> None:
-    """Pass if equals(a, b) OR symmetric-difference area within tolerance.
+    """Compare parsed rows through exact Shapely/WKB structure.
 
-    Requiring both would incorrectly reject harmless numerical differences.
+    Both results cross the same representation-only WKB boundary.  Geometry
+    kind, every collection/part and polygon-ring boundary, ordinate axes, row
+    missingness, and the exact binary64 bits are then compared recursively.
+    Topological equality is deliberately not used as parser evidence.
     """
     if right is None:
-        _raise('geometry_equivalent requires a competitor result', context)
-
+        _raise('parsed_geometry_exact requires a competitor result', context)
     left_rows = _as_sequence(left)
     right_rows = _as_sequence(right)
     if len(left_rows) != len(right_rows):
         _raise(
-            'geometry_equivalent count mismatch',
+            'parsed_geometry_exact count mismatch',
             context,
             details=f'left={len(left_rows)} right={len(right_rows)}',
         )
-
-    unit = context.unit or 'symdiff'
-    tr, ta = TOLERANCES.get(unit, (1e-8, 0.0))
-    use_rtol = tr if rtol is None else rtol
-    use_atol = ta if atol is None else atol
-
     for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
-        if _geom_missing(lg) and _geom_missing(rg):
+        left_missing = _geom_missing(lg)
+        right_missing = _geom_missing(rg)
+        if left_missing and right_missing:
             continue
-        if _geom_missing(lg) or _geom_missing(rg):
+        if left_missing or right_missing:
             _raise(
-                'geometry_equivalent missingness mismatch',
+                'parsed_geometry_exact missingness mismatch',
                 context,
                 details=f'row={i}',
             )
-        if _try_equals(lg, rg):
+        try:
+            left_structure = _structure_signature(_as_shapely(lg))
+            right_structure = _structure_signature(_as_shapely(rg))
+        except Exception as exc:
+            _raise(
+                'parsed_geometry_exact WKB conversion failed',
+                context,
+                details=f'row={i}: {exc}',
+            )
+        difference = _structure_difference(left_structure, right_structure)
+        if difference is not None:
+            _raise(
+                'parsed_geometry_exact structure mismatch',
+                context,
+                details=f'row={i}: {difference}',
+            )
+
+
+def _support_dimensions(geometry: object) -> frozenset[str]:
+    import shapely
+
+    if bool(shapely.is_empty(geometry)):
+        return frozenset()
+    kind = str(geometry.geom_type)
+    if kind == 'Polygon':
+        return frozenset({'areal'})
+    if kind == 'MultiPolygon':
+        dimensions: set[str] = set()
+        for part in geometry.geoms:
+            dimensions.update(_support_dimensions(part))
+        return frozenset(dimensions)
+    if kind in {'LineString', 'LinearRing'}:
+        return frozenset({'line'})
+    if kind == 'MultiLineString':
+        dimensions = set()
+        for part in geometry.geoms:
+            dimensions.update(_support_dimensions(part))
+        return frozenset(dimensions)
+    if kind == 'Point':
+        return frozenset({'point'})
+    if kind == 'MultiPoint':
+        dimensions = set()
+        for part in geometry.geoms:
+            dimensions.update(_support_dimensions(part))
+        return frozenset(dimensions)
+    if kind == 'GeometryCollection':
+        dimensions = set()
+        for part in geometry.geoms:
+            dimensions.update(_support_dimensions(part))
+        return frozenset(dimensions)
+    return frozenset({'unknown'})
+
+
+def _format_dimensions(dimensions: frozenset[str]) -> str:
+    return ','.join(sorted(dimensions)) or 'empty'
+
+
+def areal_result_equivalent(
+    left: object,
+    right: object | None,
+    context: OracleContext,
+    *,
+    rtol: float = 1e-6,
+    atol: float = 1e-3,
+    allow_collapsed: bool = False,
+) -> None:
+    """Compare areal results with a bounded, support-aware area fallback.
+
+    Non-repair callers must produce pure areal support.  Repair may produce a
+    collapsed point or line, but only an exact topological match may admit that
+    lower-dimensional result; the area fallback itself never admits one.
+    """
+    import shapely
+
+    if right is None:
+        _raise('areal_result_equivalent requires a competitor result', context)
+    left_rows = _as_sequence(left)
+    right_rows = _as_sequence(right)
+    if len(left_rows) != len(right_rows):
+        _raise(
+            'areal_result_equivalent count mismatch',
+            context,
+            details=f'left={len(left_rows)} right={len(right_rows)}',
+        )
+    for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
+        left_missing = _geom_missing(lg)
+        right_missing = _geom_missing(rg)
+        if left_missing and right_missing:
             continue
-        sd = _symdiff_area(lg, rg)
-        if sd is None:
+        if left_missing or right_missing:
             _raise(
-                'geometry_equivalent: equals failed and symdiff unavailable',
+                'areal_result_equivalent missingness mismatch',
                 context,
                 details=f'row={i}',
             )
-        u_area = _union_area(lg, rg)
-        if u_area is None:
+        try:
+            left_shape = _as_shapely(lg)
+            right_shape = _as_shapely(rg)
+        except Exception as exc:
             _raise(
-                'geometry_equivalent: Shapely union unavailable',
+                'areal_result_equivalent WKB conversion failed',
+                context,
+                details=f'row={i}: {exc}',
+            )
+        left_empty = bool(shapely.is_empty(left_shape))
+        right_empty = bool(shapely.is_empty(right_shape))
+        if not allow_collapsed and str(left_shape.geom_type) != str(
+            right_shape.geom_type
+        ):
+            _raise(
+                'areal_result_equivalent kind mismatch',
                 context,
                 details=f'row={i}',
             )
-        budget = use_atol + use_rtol * abs(u_area)
-        if sd <= budget:
+        if left_empty and right_empty:
+            continue
+        left_dimensions = _support_dimensions(left_shape)
+        right_dimensions = _support_dimensions(right_shape)
+        if not allow_collapsed and (
+            left_dimensions != frozenset({'areal'})
+            or right_dimensions != frozenset({'areal'})
+        ):
+            _raise(
+                'areal_result_equivalent lower-dimensional result',
+                context,
+                details=(
+                    f'row={i} left={_format_dimensions(left_dimensions)} '
+                    f'right={_format_dimensions(right_dimensions)}'
+                ),
+            )
+        try:
+            if bool(shapely.equals(left_shape, right_shape)):
+                continue
+            if allow_collapsed and left_dimensions != right_dimensions:
+                _raise(
+                    'areal_result_equivalent dimensionality mismatch',
+                    context,
+                    details=(
+                        f'row={i} left={_format_dimensions(left_dimensions)} '
+                        f'right={_format_dimensions(right_dimensions)}'
+                    ),
+                )
+            symmetric_difference = shapely.symmetric_difference(left_shape, right_shape)
+            residual_dimensions = _support_dimensions(symmetric_difference)
+            if residual_dimensions and residual_dimensions != frozenset({'areal'}):
+                _raise(
+                    'areal_result_equivalent lower-dimensional residual',
+                    context,
+                    details=(
+                        f'row={i} support={_format_dimensions(residual_dimensions)}'
+                    ),
+                )
+            symmetric_difference_area = float(shapely.area(symmetric_difference))
+            union_area = float(shapely.area(shapely.union(left_shape, right_shape)))
+        except OracleMismatch:
+            raise
+        except Exception as exc:
+            _raise(
+                'areal_result_equivalent Shapely comparison failed',
+                context,
+                details=f'row={i}: {exc}',
+            )
+        budget = atol + rtol * abs(union_area)
+        if (
+            np.isfinite(symmetric_difference_area)
+            and symmetric_difference_area <= budget
+        ):
             continue
         _raise(
-            'geometry_equivalent failed (equals=False, symdiff out of budget)',
+            'areal_result_equivalent failed',
             context,
             details=(
-                f'row={i} symdiff_area={sd:.6g} union_area={u_area:.6g} '
-                f'budget={budget:.6g} rtol={use_rtol} atol={use_atol}'
+                f'row={i} symdiff_area={symmetric_difference_area:.6g} '
+                f'union_area={union_area:.6g} budget={budget:.6g} '
+                f'rtol={rtol} atol={atol}'
+            ),
+        )
+
+
+def _linework_signature(geometry: object) -> tuple[object, ...]:
+    kind = str(geometry.geom_type)
+    if kind in {'MultiLineString', 'GeometryCollection'}:
+        return kind, tuple(_linework_signature(part) for part in geometry.geoms)
+    return (kind,)
+
+
+def _linework_scale(left: object, right: object) -> float:
+    import shapely
+
+    bounds = np.concatenate((
+        np.asarray(shapely.bounds(left), dtype=np.float64).reshape(-1),
+        np.asarray(shapely.bounds(right), dtype=np.float64).reshape(-1),
+    ))
+    finite = bounds[np.isfinite(bounds)]
+    return max(1.0, float(np.max(np.abs(finite), initial=0.0)))
+
+
+def linework_result_equivalent(
+    left: object,
+    right: object | None,
+    context: OracleContext,
+    *,
+    rtol: float = _LINEWORK_COORD_RTOL,
+    atol: float = _LINEWORK_COORD_ATOL,
+) -> None:
+    """Compare clipped linework by structure, Hausdorff distance, and length."""
+    import shapely
+
+    if right is None:
+        _raise('linework_result_equivalent requires a competitor result', context)
+    left_rows = _as_sequence(left)
+    right_rows = _as_sequence(right)
+    if len(left_rows) != len(right_rows):
+        _raise(
+            'linework_result_equivalent count mismatch',
+            context,
+            details=f'left={len(left_rows)} right={len(right_rows)}',
+        )
+    for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
+        if _geom_missing(lg) or _geom_missing(rg):
+            _raise(
+                'linework_result_equivalent missingness mismatch',
+                context,
+                details=f'row={i}',
+            )
+        try:
+            left_shape = _as_shapely(lg)
+            right_shape = _as_shapely(rg)
+        except Exception as exc:
+            _raise(
+                'linework_result_equivalent WKB conversion failed',
+                context,
+                details=f'row={i}: {exc}',
+            )
+        left_empty = bool(shapely.is_empty(left_shape))
+        right_empty = bool(shapely.is_empty(right_shape))
+        if left_empty or right_empty:
+            if not left_empty or not right_empty:
+                _raise(
+                    'linework_result_equivalent empty mismatch',
+                    context,
+                    details=f'row={i}',
+                )
+            continue
+        left_dimensions = _support_dimensions(left_shape)
+        right_dimensions = _support_dimensions(right_shape)
+        if left_dimensions != frozenset({'line'}) or (
+            right_dimensions != frozenset({'line'})
+        ):
+            _raise(
+                'linework_result_equivalent non-line support',
+                context,
+                details=(
+                    f'row={i} left={_format_dimensions(left_dimensions)} '
+                    f'right={_format_dimensions(right_dimensions)}'
+                ),
+            )
+        if _linework_signature(left_shape) != _linework_signature(right_shape):
+            _raise(
+                'linework_result_equivalent component structure mismatch',
+                context,
+                details=f'row={i}',
+            )
+        left_length = float(shapely.length(left_shape))
+        right_length = float(shapely.length(right_shape))
+        if not np.isclose(
+            left_length, right_length, rtol=rtol, atol=atol, equal_nan=False
+        ):
+            _raise(
+                'linework_result_equivalent length mismatch',
+                context,
+                details=(
+                    f'row={i} left={left_length:.6g} right={right_length:.6g} '
+                    f'rtol={rtol} atol={atol}'
+                ),
+            )
+        try:
+            if bool(shapely.equals(left_shape, right_shape)):
+                continue
+            separation = max(
+                float(shapely.hausdorff_distance(left_shape, right_shape)),
+                float(shapely.hausdorff_distance(right_shape, left_shape)),
+            )
+        except Exception as exc:
+            _raise(
+                'linework_result_equivalent Shapely comparison failed',
+                context,
+                details=f'row={i}: {exc}',
+            )
+        budget = atol + rtol * _linework_scale(left_shape, right_shape)
+        if np.isfinite(separation) and separation <= budget:
+            continue
+        _raise(
+            'linework_result_equivalent Hausdorff mismatch',
+            context,
+            details=(
+                f'row={i} separation={separation:.6g} budget={budget:.6g} '
+                f'rtol={rtol} atol={atol}'
             ),
         )
 

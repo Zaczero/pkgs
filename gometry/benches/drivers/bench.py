@@ -1206,6 +1206,35 @@ def _load_analysis(
     return analysis_path, analysis, source_path, result, artifacts, records
 
 
+def _publication_path_exists(path: Path) -> bool:
+    """Include broken symlinks when checking an owned publication path."""
+    return path.exists() or path.is_symlink()
+
+
+def _remove_publication_tree(path: Path) -> None:
+    """Remove only a publication directory owned by this transaction."""
+    if not _publication_path_exists(path):
+        return
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
+
+
+def _reserve_publication_sibling(parent: Path, prefix: str) -> Path:
+    """Reserve a unique sibling name without creating a replacement target."""
+    reserved = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
+    try:
+        reserved.rmdir()
+    except BaseException:
+        try:
+            reserved.rmdir()
+        except OSError:
+            pass
+        raise
+    return reserved
+
+
 def publish_current_run(
     analysis_manifest: Path | str,
     *,
@@ -1226,6 +1255,14 @@ def publish_current_run(
         output_dir = GOMETRY_ROOT / 'target' / 'bench' / 'results'
     if current_dir is None:
         current_dir = GOMETRY_ROOT / 'benches' / 'results' / 'current'
+    output_dir = Path(output_dir)
+    current_dir = Path(current_dir)
+    if _publication_path_exists(current_dir) and (
+        current_dir.is_symlink() or not current_dir.is_dir()
+    ):
+        raise SystemExit(
+            f'publication rejected: current path is not a directory: {current_dir}'
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     current_dir.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1252,7 +1289,18 @@ def publish_current_run(
         raise SystemExit('publication rejected: analysis Markdown identity is stale')
     summary_md = summary_md_path.read_text(encoding='utf-8')
 
-    stage = Path(tempfile.mkdtemp(prefix='.publication-', dir=output_dir))
+    # The final publication path owns the rename boundary.  Staging under
+    # current_dir.parent keeps both publication renames on one filesystem even
+    # when evidence is supplied from a custom output_dir elsewhere.
+    stage = Path(
+        tempfile.mkdtemp(
+            prefix=f'.{current_dir.name}.publication-stage-',
+            dir=current_dir.parent,
+        )
+    )
+    stage_published = False
+    backup: Path | None = None
+    current_moved = False
     try:
         raw_dir = stage / 'raw'
         raw_dir.mkdir()
@@ -1325,12 +1373,64 @@ def publish_current_run(
         required = (stage / 'identity.json', stage / 'summary.json', stage / 'summary.md', raw_dir)
         if not all(path.exists() for path in required) or not any(raw_dir.iterdir()):
             raise SystemExit('publication rejected: staged output is incomplete')
-        if current_dir.exists():
-            shutil.rmtree(current_dir)
-        stage.rename(current_dir)
-    except Exception:
-        if stage.exists():
-            shutil.rmtree(stage)
+        if _publication_path_exists(current_dir):
+            backup = _reserve_publication_sibling(
+                current_dir.parent,
+                f'.{current_dir.name}.publication-backup-',
+            )
+            try:
+                current_dir.rename(backup)
+            except BaseException:
+                current_moved = (
+                    not _publication_path_exists(current_dir)
+                    and _publication_path_exists(backup)
+                )
+                raise
+            current_moved = True
+        try:
+            stage.rename(current_dir)
+        except BaseException as replacement_error:
+            if current_moved and backup is not None:
+                if _publication_path_exists(current_dir):
+                    raise RuntimeError(
+                        'publication replacement path became occupied; '
+                        f'previous evidence remains at {backup}'
+                    ) from replacement_error
+                try:
+                    backup.rename(current_dir)
+                except BaseException as restore_error:
+                    raise RuntimeError(
+                        'publication replacement failed and previous evidence '
+                        f'could not be restored from {backup}'
+                    ) from restore_error
+                current_moved = False
+            raise
+        stage_published = True
+        if backup is not None:
+            old_backup = backup
+            backup = None
+            current_moved = False
+            # The new current is committed before the old tree is cleaned.
+            shutil.rmtree(old_backup)
+    except BaseException:
+        if not stage_published and _publication_path_exists(stage):
+            try:
+                _remove_publication_tree(stage)
+            except OSError:
+                pass
+        if (
+            current_moved
+            and backup is not None
+            and _publication_path_exists(backup)
+            and not _publication_path_exists(current_dir)
+        ):
+            try:
+                backup.rename(current_dir)
+            except BaseException as restore_error:
+                raise RuntimeError(
+                    'publication failed and previous evidence could not be '
+                    f'restored from {backup}'
+                ) from restore_error
         raise
     return current_dir
 

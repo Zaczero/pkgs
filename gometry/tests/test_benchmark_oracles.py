@@ -35,13 +35,14 @@ OracleContext = _bench_oracles.OracleContext
 OracleMismatch = _bench_oracles.OracleMismatch
 exact_coordinates = _bench_oracles.exact_coordinates
 exact_mask = _bench_oracles.exact_mask
-geometry_equivalent = _bench_oracles.geometry_equivalent
+areal_result_equivalent = _bench_oracles.areal_result_equivalent
+linework_result_equivalent = _bench_oracles.linework_result_equivalent
 metric_allclose = _bench_oracles.metric_allclose
 non_unique_points_contract = _bench_oracles.non_unique_points_contract
 normalized_index_pairs = _bench_oracles.normalized_index_pairs
 normalized_tile_set = _bench_oracles.normalized_tile_set
 normalized_uint64_set = _bench_oracles.normalized_uint64_set
-rowwise_geometry_exact = _bench_oracles.rowwise_geometry_exact
+parsed_geometry_exact = _bench_oracles.parsed_geometry_exact
 RELEASE_OPERATIONS = _bench_registry.RELEASE_OPERATIONS
 SCALING_OPERATIONS = _bench_registry.SCALING_OPERATIONS
 ALL_PUBLIC_OPERATIONS = _bench_registry.ALL_PUBLIC_OPERATIONS
@@ -184,38 +185,256 @@ def test_normalized_index_pairs_fail() -> None:
         normalized_index_pairs(left, right, _ctx('pairs'))
 
 
-def test_rowwise_geometry_exact_pass() -> None:
+def test_parsed_geometry_exact_passes_recursive_structure() -> None:
     import gometry as gm
+    import shapely
 
-    left = gm.GeometryArray([gm.Point(1.0, 2.0), gm.Point(3.0, 4.0)])
-    right = gm.GeometryArray([gm.Point(1.0, 2.0), gm.Point(3.0, 4.0)])
-    rowwise_geometry_exact(left, right, _ctx('rowwise'))
+    wkt = (
+        'GEOMETRYCOLLECTION (POINT (1 2), '
+        'POLYGON ((0 0, 4 0, 4 4, 0 0), (1 1, 2 1, 1 2, 1 1)))'
+    )
+    parsed_geometry_exact(
+        [gm.from_wkt(wkt)],
+        [shapely.from_wkt(wkt)],
+        _ctx('parsed'),
+    )
 
 
-def test_rowwise_geometry_exact_fail_coords() -> None:
+def test_parsed_geometry_exact_rejects_coordinate_bits() -> None:
     import gometry as gm
+    import shapely
 
-    left = gm.GeometryArray([gm.Point(1.0, 2.0)])
-    right = gm.GeometryArray([gm.Point(1.0, 9.0)])
-    with pytest.raises(OracleMismatch, match='rowwise_geometry_exact'):
-        rowwise_geometry_exact(left, right, _ctx('rowwise'))
+    with pytest.raises(OracleMismatch, match='structure mismatch'):
+        parsed_geometry_exact(
+            [gm.Point(1.0, 2.0)],
+            [shapely.Point(1.0, 9.0)],
+            _ctx('parsed'),
+        )
 
 
-def test_geometry_equivalent_equals_pass() -> None:
+@pytest.mark.parametrize(
+    ('left_wkt', 'right_wkt'),
+    [
+        (
+            'GEOMETRYCOLLECTION (POINT (0 0), LINESTRING (0 0, 1 1))',
+            'GEOMETRYCOLLECTION (LINESTRING (0 0, 1 1), POINT (0 0))',
+        ),
+        (
+            'GEOMETRYCOLLECTION (POINT (0 0), LINESTRING (0 0, 1 1))',
+            'GEOMETRYCOLLECTION (POINT (0 0))',
+        ),
+        (
+            'MULTILINESTRING ((0 0, 1 1), (2 2, 3 3))',
+            'MULTILINESTRING ((2 2, 3 3), (0 0, 1 1))',
+        ),
+        (
+            'MULTILINESTRING ((0 0, 1 1), (2 2, 3 3))',
+            'MULTILINESTRING ((0 0, 1 1))',
+        ),
+        (
+            'POLYGON ((0 0, 10 0, 10 10, 0 0), '
+            '(1 1, 2 1, 1 2, 1 1), (3 3, 4 3, 3 4, 3 3))',
+            'POLYGON ((0 0, 10 0, 10 10, 0 0), '
+            '(3 3, 4 3, 3 4, 3 3), (1 1, 2 1, 1 2, 1 1))',
+        ),
+        (
+            'POLYGON ((0 0, 10 0, 10 10, 0 0), (1 1, 2 1, 1 2, 1 1))',
+            'POLYGON ((0 0, 10 0, 10 10, 0 0))',
+        ),
+        ('POINT Z (1 2 3)', 'POINT (1 2)'),
+        ('POINT M (1 2 3)', 'POINT (1 2)'),
+    ],
+    ids=(
+        'collection-order',
+        'collection-boundary',
+        'part-order',
+        'part-boundary',
+        'ring-order',
+        'ring-boundary',
+        'lost-z',
+        'lost-m',
+    ),
+)
+def test_parsed_geometry_exact_rejects_structure_changes(
+    left_wkt: str, right_wkt: str
+) -> None:
     import gometry as gm
+    import shapely
 
-    a = gm.box(0, 0, 1, 1)
-    b = gm.box(0, 0, 1, 1)
-    geometry_equivalent(a, b, _ctx('geom_eq', unit='symdiff'))
+    with pytest.raises(OracleMismatch, match='structure mismatch'):
+        parsed_geometry_exact(
+            [gm.from_wkt(left_wkt)],
+            [shapely.from_wkt(right_wkt)],
+            _ctx('parsed'),
+        )
 
 
-def test_geometry_equivalent_fail_disjoint() -> None:
+def test_parsed_geometry_exact_rejects_missing_to_empty() -> None:
+    import shapely
+
+    with pytest.raises(OracleMismatch, match='missingness'):
+        parsed_geometry_exact(
+            [None],
+            [shapely.Point()],
+            _ctx('parsed'),
+        )
+
+
+def test_areal_result_equivalent_accepts_equal_and_numerical_boundary() -> None:
     import gometry as gm
+    import shapely
 
-    a = gm.box(0, 0, 1, 1)
-    b = gm.box(10, 10, 11, 11)
-    with pytest.raises(OracleMismatch, match='geometry_equivalent'):
-        geometry_equivalent(a, b, _ctx('geom_eq', unit='symdiff'))
+    areal_result_equivalent(
+        [gm.box(0, 0, 1, 1)],
+        [shapely.box(0, 0, 1, 1)],
+        _ctx('areal'),
+    )
+    areal_result_equivalent(
+        [gm.box(0, 0, 1, 1)],
+        [shapely.box(1e-5, 0, 1.00001, 1)],
+        _ctx('areal'),
+    )
+
+
+def test_areal_result_equivalent_rejects_distinct_points() -> None:
+    import gometry as gm
+    import shapely
+
+    with pytest.raises(
+        OracleMismatch, match=r'(lower-dimensional|kind mismatch)'
+    ):
+        areal_result_equivalent(
+            [gm.Point(0, 0)],
+            [shapely.Point(100, 100)],
+            _ctx('areal'),
+        )
+
+
+def test_areal_result_equivalent_rejects_wrong_line_even_at_zero_area() -> None:
+    import gometry as gm
+    import shapely
+
+    with pytest.raises(OracleMismatch, match='lower-dimensional'):
+        areal_result_equivalent(
+            [gm.LineString([(0, 0), (1, 0)])],
+            [shapely.LineString([(100, 100), (101, 100)])],
+            _ctx('areal'),
+        )
+
+
+def test_areal_result_equivalent_rejects_wrong_empty_kind() -> None:
+    import gometry as gm
+    import shapely
+
+    with pytest.raises(OracleMismatch, match='kind mismatch'):
+        areal_result_equivalent(
+            [gm.from_wkt('POLYGON EMPTY')],
+            [shapely.from_wkt('LINESTRING EMPTY')],
+            _ctx('areal'),
+        )
+
+
+@pytest.mark.parametrize(
+    'right',
+    [
+        pytest.param(
+            'POINT (100 100)',
+            id='distinct-point',
+        ),
+        pytest.param(
+            'LINESTRING (100 100, 101 101)',
+            id='far-line',
+        ),
+        pytest.param(
+            'GEOMETRYCOLLECTION (POLYGON ((0 0, 1 0, 1 1, 0 0)), '
+            'POINT (100 100))',
+            id='polygon-with-external-point',
+        ),
+        pytest.param(
+            'GEOMETRYCOLLECTION (POLYGON ((0 0, 1 0, 1 1, 0 0)), '
+            'LINESTRING (100 100, 101 100))',
+            id='polygon-with-external-line',
+        ),
+    ],
+)
+def test_areal_result_equivalent_rejects_non_areal_support(right: str) -> None:
+    import gometry as gm
+    import shapely
+
+    with pytest.raises(
+        OracleMismatch, match=r'(lower-dimensional|kind mismatch)'
+    ):
+        areal_result_equivalent(
+            [gm.box(0, 0, 1, 1)],
+            [shapely.from_wkt(right)],
+            _ctx('areal'),
+        )
+
+
+def test_repair_areal_result_allows_exact_collapsed_support_only() -> None:
+    import gometry as gm
+    import shapely
+
+    areal_result_equivalent(
+        [gm.LineString([(0, 0), (1, 0)])],
+        [shapely.LineString([(0, 0), (1, 0)])],
+        _ctx('repair'),
+        allow_collapsed=True,
+    )
+    areal_result_equivalent(
+        [gm.Point(0, 0)],
+        [shapely.MultiPoint([(0, 0)])],
+        _ctx('repair'),
+        allow_collapsed=True,
+    )
+    with pytest.raises(OracleMismatch, match='lower-dimensional residual'):
+        areal_result_equivalent(
+            [gm.LineString([(0, 0), (1, 0)])],
+            [shapely.LineString([(0, 1e-4), (1, 1e-4)])],
+            _ctx('repair'),
+            allow_collapsed=True,
+        )
+
+
+def test_linework_result_equivalent_uses_hausdorff_and_length() -> None:
+    import gometry as gm
+    import shapely
+
+    line = gm.LineString([(0, 0), (1, 0)])
+    linework_result_equivalent(
+        [line],
+        [shapely.LineString([(0, 5e-10), (1, 5e-10)])],
+        _ctx('linework'),
+    )
+    with pytest.raises(OracleMismatch, match='Hausdorff'):
+        linework_result_equivalent(
+            [line],
+            [shapely.LineString([(0, 10), (1, 10)])],
+            _ctx('linework'),
+        )
+    with pytest.raises(OracleMismatch, match='component structure'):
+        linework_result_equivalent(
+            [gm.MultiLineString([[(0, 0), (1, 0)], [(2, 0), (3, 0)]])],
+            [shapely.MultiLineString([[(0, 0), (1, 0)]])],
+            _ctx('linework'),
+        )
+
+
+def test_linework_result_equivalent_preserves_empty_kind_and_missing_rules() -> None:
+    import gometry as gm
+    import shapely
+
+    linework_result_equivalent(
+        [gm.from_wkt('LINESTRING EMPTY')],
+        [shapely.from_wkt('GEOMETRYCOLLECTION EMPTY')],
+        _ctx('linework'),
+    )
+    with pytest.raises(OracleMismatch, match='missingness'):
+        linework_result_equivalent(
+            [None],
+            [shapely.from_wkt('LINESTRING EMPTY')],
+            _ctx('linework'),
+        )
 
 
 def test_non_unique_points_contract_pass() -> None:

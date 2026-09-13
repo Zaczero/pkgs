@@ -26,7 +26,7 @@ from _bench_oracles import (
 from _bench_public_cases import (
     PublicCase,
     _case,
-    _compare_overlay_geom,
+    _compare_areal_result,
     exact_mask,
     normalized_index_pairs,
     normalized_tile_set,
@@ -199,8 +199,8 @@ def _overlay_case(operation: ScalingOperation) -> PublicCase:
     return _case(
         gometry_call,
         competitor_call,
-        _compare_overlay_geom,
-        kind='overlay_geometry',
+        _compare_areal_result,
+        kind='areal_result',
         useful_work={'count': point, 'unit': operation.useful_work_unit},
         output_validator=output_validator,
     )
