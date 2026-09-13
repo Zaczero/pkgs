@@ -50,8 +50,7 @@ pub(crate) use types::{
     MultiMember, MultiPoint, MultiPolygon, Point, PointKey, Polygon, PolygonLevel, PolygonizeFull,
     PolylabelCell, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeData,
     SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
-    canonical_f64_bits, coerce_to_common_axes, concat_coord_columns, ordered_edge,
-    segment_midpoint, try_copy_slice,
+    canonical_f64_bits, coerce_to_common_axes, ordered_edge, segment_midpoint, try_copy_slice,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{

@@ -18,10 +18,10 @@ mod shared_slice;
 
 pub(crate) use coordseq::{
     CoordIter, CoordSeq, CoordSeqBuilder, CoordWindow, MColumn, coerce_to_common_axes,
-    concat_coord_columns, try_copy_slice,
+    try_copy_slice,
 };
 pub(crate) use csr::{
-    CsrOffsetBuilder, CsrOffsetColumn, GeometryKind, PolygonLevel, RingLevel,
+    CsrOffsetBuilder, CsrOffsetColumn, GeometryKind, PolygonLevel, RingLevel, checked_csr_window,
     ensure_coordseq_vertex_capacity,
 };
 pub(crate) use error::GeometryErrorKind;

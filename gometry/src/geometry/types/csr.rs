@@ -90,6 +90,38 @@ impl CsrOffsetBuilder {
         self.builder.push_end(vertex_index)
     }
 
+    /// Append a prevalidated contiguous CSR window rebased into the current
+    /// output coordinate space. Only its closing ends are appended.
+    pub(crate) fn extend_rebased(
+        &mut self,
+        window: CheckedCsrWindow<'_>,
+        output_base: usize,
+    ) -> Result<()> {
+        if window.start_row == window.end_row {
+            return Ok(());
+        }
+        let start = window
+            .start_row
+            .checked_add(1)
+            .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;
+        let Some(ends) = window.source.get(start..=window.end_row) else {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+        };
+        for &raw_end in ends {
+            let end = raw_end as usize;
+            let relative = end - window.source_start;
+            let rebased = output_base
+                .checked_add(relative)
+                .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+            self.push_end(rebased, i32::MAX as usize)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn row_count(&self) -> usize {
+        self.builder.row_count()
+    }
+
     pub(crate) fn finish(self, vertex_cap: usize) -> Result<CsrOffsetColumn> {
         let (_, offsets) = self.builder.finish()?;
         if offsets
@@ -255,6 +287,72 @@ impl<Level> CsrOffsetColumn<Level> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CheckedCsrWindow<'a> {
+    source: &'a [i32],
+    start_row: usize,
+    end_row: usize,
+    source_start: usize,
+    source_end: usize,
+}
+
+impl CheckedCsrWindow<'_> {
+    pub(crate) const fn source_start(self) -> usize {
+        self.source_start
+    }
+
+    pub(crate) const fn source_end(self) -> usize {
+        self.source_end
+    }
+}
+
+/// Validate every source boundary in a contiguous CSR row range before any
+/// caller indexes or casts its endpoints.
+pub(crate) fn checked_csr_window(
+    source: &[i32],
+    rows: std::ops::Range<usize>,
+    value_cap: usize,
+) -> Result<CheckedCsrWindow<'_>> {
+    if rows.start > rows.end {
+        return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+    }
+    let Some(values) = source.get(rows.start..=rows.end) else {
+        return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+    };
+    let mut previous = None;
+    for &raw in values {
+        if raw < 0 {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+        }
+        let value = raw as usize;
+        if value > value_cap {
+            return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
+        }
+        if previous.is_some_and(|previous| value < previous) {
+            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+        }
+        previous = Some(value);
+    }
+    let source_start = values
+        .first()
+        .copied()
+        .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;
+    let source_end = values
+        .last()
+        .copied()
+        .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;
+    if rows.start == 0 && source_start != 0 {
+        return Err(GeometryErrorKind::MalformedCsrOffsets.into());
+    }
+    Ok(CheckedCsrWindow {
+        source,
+        start_row: rows.start,
+        end_row: rows.end,
+        source_start: source_start as usize,
+        source_end: source_end as usize,
+    })
+}
+
 fn validate_csr_offsets_i32(offsets: &[i32], end_cap: usize) -> Result<()> {
     let Some(&first) = offsets.first() else {
         return Err(GeometryErrorKind::MalformedCsrOffsets.into());
@@ -314,4 +412,29 @@ pub(crate) fn ensure_coordseq_vertex_capacity(len: usize) -> Result<()> {
         return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_csr_window;
+
+    #[test]
+    fn checked_csr_window_rejects_malformed_boundaries_without_panicking() {
+        for (offsets, rows, cap) in [
+            (&[0, -1, 2][..], 0..2, 2),
+            (&[0, 2, 1][..], 0..2, 2),
+            (&[0, 2][..], 0..3, 2),
+            (&[0, 3][..], 0..1, 2),
+            (&[1, 2][..], 0..1, 2),
+            (&[0, 2][..], std::ops::Range { start: 2, end: 1 }, 2),
+            (&[][..], 0..0, 0),
+        ] {
+            let result = std::panic::catch_unwind(|| checked_csr_window(offsets, rows, cap));
+            assert!(result.is_ok(), "malformed CSR boundary panicked");
+            assert!(
+                result.unwrap().is_err(),
+                "malformed CSR boundary was accepted"
+            );
+        }
+    }
 }

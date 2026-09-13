@@ -19,9 +19,8 @@ pub(crate) use crate::broadcast::{CollectRows, rows_err};
 use crate::error::{Error, Result};
 use crate::geometry::CsrOffsetColumn;
 pub(crate) use crate::geometry::{
-    CsrOffsetBuilder, PolygonLevel, RingLevel, concat_coord_columns, line_crosses_antimeridian,
-    line_is_ccw, line_is_closed, line_is_simple, line_is_valid, polygon_is_valid,
-    polygon_row_point_membership,
+    CsrOffsetBuilder, PolygonLevel, RingLevel, line_crosses_antimeridian, line_is_ccw,
+    line_is_closed, line_is_simple, line_is_valid, polygon_is_valid, polygon_row_point_membership,
 };
 pub(crate) use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
@@ -356,7 +355,7 @@ mod methods_measures;
 mod methods_predicates;
 mod methods_topology;
 pub(crate) mod missing;
-pub(crate) use missing::{ValidityMask, ValidityRank};
+pub(crate) use missing::{ValidityBuilder, ValidityMask, ValidityRank};
 
 mod methods_unary_io;
 mod ops;
@@ -399,7 +398,7 @@ mod packed_ops;
 mod streaming;
 mod uniform_columns;
 pub(crate) use pack_admission::{CheckedRingWindow, RingWindowError, polygon_pack_axes};
-pub(crate) use packed::{ComputedCaches, sparse_missing_mask};
+pub(crate) use packed::ComputedCaches;
 pub(crate) use streaming::StreamingShapes;
 mod shape_row;
 mod storage_impl;

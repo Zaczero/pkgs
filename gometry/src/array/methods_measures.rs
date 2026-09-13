@@ -10,13 +10,59 @@ use crate::array::{
     Bound, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _, PackedColumnError,
     PackedColumns, PackedStorage, Py, PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr,
     PyGeometry, PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError, PyTypeMethods as _,
-    Python, Shape, SpatialCurve, Typed, ValidityMask, bounds_3d_values_from_columns,
+    Python, Shape, SpatialCurve, Typed, bounds_3d_values_from_columns,
     bounds_values_from_columns_masked, crs, crs_label, ensure_geographic_columns_present,
     geographic_bounds_values_from_columns, line_measure_masked, polygon_measure_masked, pymethods,
     reduce_lines_or_polygons, resolve_metric, segmented_planar_lengths,
     segmented_planar_lengths_3d,
 };
 use crate::dispatch::MetricOp;
+
+fn coordinate_payload_len(array: &PyGeometryArray) -> Option<usize> {
+    match array.storage() {
+        GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
+            Some(if array.is_compact_nullable() {
+                coords.len()
+            } else {
+                row_map.as_deref().len(coords.len())
+            })
+        },
+        GeometryArrayStorage::Packed(PackedStorage::Lines {
+            offsets, row_map, ..
+        }) => Some(crate::array::packed_lines_coord_len(
+            offsets.as_slice(),
+            row_map.as_deref(),
+        )),
+        GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            ring_offsets,
+            polygon_offsets,
+            row_map,
+            ..
+        }) => Some(crate::array::packed_polygons_coord_len(
+            ring_offsets.as_slice(),
+            polygon_offsets.as_slice(),
+            row_map.as_deref(),
+        )),
+        GeometryArrayStorage::Mixed(_) => None,
+    }
+}
+
+fn ring_payload_len(array: &PyGeometryArray) -> Option<usize> {
+    match array.storage() {
+        GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            polygon_offsets,
+            row_map,
+            ..
+        }) => Some(crate::array::packed_polygons_ring_len(
+            polygon_offsets.as_slice(),
+            row_map.as_deref(),
+        )),
+        GeometryArrayStorage::Packed(
+            PackedStorage::Points { .. } | PackedStorage::Lines { .. },
+        )
+        | GeometryArrayStorage::Mixed(_) => None,
+    }
+}
 
 #[pymethods]
 impl PyGeometryArray {
@@ -67,11 +113,7 @@ impl PyGeometryArray {
         for array in &borrowed {
             arrays.push(&**array);
         }
-        if arrays.len() == 2 {
-            self.concat_pair(arrays[1])
-        } else {
-            Self::concat_many(&arrays)
-        }
+        Self::concat_many(&arrays)
     }
 
     /// Per-row smallest Z ordinate (``nan`` where a geometry carries no Z).
@@ -840,84 +882,39 @@ impl PyGeometryArray {
                 .checked_add(array.len())
                 .ok_or_else(|| PyOverflowError::new_err("concatenated row count overflows usize"))
         })?;
-        let merged_mask =
-            ValidityMask::try_concat(arrays.iter().map(|array| (array.len(), array.missing())))
-                .map_err(PyErr::from)?;
-
-        if let Some(packed) = Self::concat_packed_many(arrays)? {
-            return Ok(match merged_mask {
-                None => packed,
-                Some(mask) => Self::scatter_present_rows(&packed, mask)?,
-            });
-        }
-
-        let mut shapes = crate::try_vec_with_capacity(total_rows)?;
-        for array in arrays {
-            for row in array.present_shape_rows() {
-                let (_, shape) = row.map_err(PyErr::from)?;
-                shapes.push(shape);
-            }
-        }
-        let present = Self::from_shapes(shapes, first.frame.clone())?;
-        Ok(match merged_mask {
-            None => present,
-            Some(mask) => Self::scatter_present_rows(&present, mask)?,
-        })
-    }
-
-    pub(crate) fn concat_pair(&self, other: &Self) -> PyResult<Self> {
-        // Missing masks concatenate row-wise (dense sides contribute
-        // all-present runs); computed up front, attached to the merged array.
-        let merged_mask = ValidityMask::try_concat([
-            (self.len(), self.missing()),
-            (other.len(), other.missing()),
-        ])
-        .map_err(PyErr::from)?;
-        let merged = self.concat_pair_dense(other)?;
-        // `concat_pair_dense` walks present rows, so its output has one
-        // physical row per present mask bit rather than one row per logical
-        // input row. Reattach the merged mask through the present-only
-        // constructor; `with_missing_mask` is for row-aligned payloads.
-        Ok(match merged_mask {
-            None => merged,
-            Some(mask) => Self::scatter_present_rows(&merged, mask)?,
-        })
-    }
-
-    fn concat_pair_dense(&self, other: &Self) -> PyResult<Self> {
-        self.ensure_concat_frame(other, 1)?;
-        if self.is_compact_nullable() || other.is_compact_nullable() {
-            let total_rows = self.len().checked_add(other.len()).ok_or_else(|| {
-                PyOverflowError::new_err("concatenated row count overflows usize")
+        let coordinate_capacity = arrays
+            .iter()
+            .map(|array| coordinate_payload_len(array).unwrap_or(0))
+            .try_fold(0_usize, |total, value| total.checked_add(value))
+            .ok_or_else(|| {
+                PyOverflowError::new_err("concatenated coordinate count overflows usize")
             })?;
-            let mut shapes = crate::try_vec_with_capacity(total_rows)?;
-            for row in self.present_shape_rows() {
-                let (_, shape) = row.map_err(PyErr::from)?;
-                shapes.push(shape);
+        let ring_capacity = arrays
+            .iter()
+            .map(|array| ring_payload_len(array).unwrap_or(0))
+            .try_fold(0_usize, |total, value| total.checked_add(value))
+            .ok_or_else(|| PyOverflowError::new_err("concatenated ring count overflows usize"))?;
+        let mut builder = crate::array::StreamingShapes::with_capacity_and_rings(
+            coordinate_capacity,
+            total_rows,
+            ring_capacity,
+        );
+        for array in arrays {
+            if builder.try_extend_array(array).map_err(PyErr::from)? {
+                continue;
             }
-            for row in other.present_shape_rows() {
-                let (_, shape) = row.map_err(PyErr::from)?;
-                shapes.push(shape);
+            for row in array.row_operation().rows_with_missing(|| ()) {
+                match row {
+                    crate::array::ArrayRow::Missing { .. } => {
+                        builder.try_push_missing().map_err(PyErr::from)?;
+                    },
+                    crate::array::ArrayRow::Present(row) => {
+                        builder.try_push_row(Some(row.row())).map_err(PyErr::from)?;
+                    },
+                }
             }
-            return Ok(Self::from_shapes(shapes, self.frame.clone())?);
         }
-        if let Some(joined) = self.try_concat_packed(other)? {
-            return Ok(joined);
-        }
-        let total_rows = self
-            .len()
-            .checked_add(other.len())
-            .ok_or_else(|| PyOverflowError::new_err("concatenated row count overflows usize"))?;
-        let mut shapes = crate::try_vec_with_capacity(total_rows)?;
-        for row in self.present_shape_rows() {
-            let (_, shape) = row.map_err(PyErr::from)?;
-            shapes.push(shape);
-        }
-        for row in other.present_shape_rows() {
-            let (_, shape) = row.map_err(PyErr::from)?;
-            shapes.push(shape);
-        }
-        Ok(Self::from_shapes(shapes, self.frame.clone())?)
+        builder.finish(first.frame.clone()).map_err(PyErr::from)
     }
 }
 
@@ -949,6 +946,7 @@ impl PyGeometryArray {
 #[cfg(test)]
 mod geographic_masked_bounds_tests {
     use super::*;
+    use crate::array::ValidityMask;
     use crate::boundary::{Frame, crs_arc_static};
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
 
@@ -1055,5 +1053,366 @@ mod geographic_masked_bounds_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod concat_bulk_tests {
+    use super::*;
+    use crate::array::ValidityMask;
+    use crate::array::streaming::{
+        reset_stream_bulk_extensions, reset_stream_row_advances, stream_bulk_extensions,
+        stream_bulk_rows, stream_row_advances,
+    };
+    use crate::boundary::Frame;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn line(start: f64) -> Shape {
+        Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(start, start + 0.25),
+                    Point::new_raw_xy(start + 1.0, start + 1.25),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn polygon(start: f64) -> Shape {
+        let coords = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(start, 0.0),
+            Point::new_raw_xy(start + 1.0, 0.0),
+            Point::new_raw_xy(start + 1.0, 1.0),
+            Point::new_raw_xy(start, 1.0),
+            Point::new_raw_xy(start, 0.0),
+        ])
+        .unwrap();
+        Shape::Polygon(Polygon::new(Ring::from_closed(coords), Vec::new()).unwrap())
+    }
+
+    fn polygon_with_hole(start: f64) -> Shape {
+        let shell = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(start, 0.0),
+            Point::new_raw_xy(start + 1.0, 0.0),
+            Point::new_raw_xy(start + 1.0, 1.0),
+            Point::new_raw_xy(start, 1.0),
+            Point::new_raw_xy(start, 0.0),
+        ])
+        .unwrap();
+        let hole = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(start + 0.25, 0.25),
+            Point::new_raw_xy(start + 0.75, 0.25),
+            Point::new_raw_xy(start + 0.75, 0.75),
+            Point::new_raw_xy(start + 0.25, 0.75),
+            Point::new_raw_xy(start + 0.25, 0.25),
+        ])
+        .unwrap();
+        Shape::Polygon(
+            Polygon::new(Ring::from_closed(shell), vec![Ring::from_closed(hole)]).unwrap(),
+        )
+    }
+
+    fn points() -> PyGeometryArray {
+        PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(10.0, 10.25)),
+                Shape::Point(Point::new_raw_xy(20.0, 20.25)),
+                Shape::Point(Point::new_raw_xy(30.0, 30.25)),
+            ],
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn lines() -> PyGeometryArray {
+        PyGeometryArray::from_shapes(vec![line(0.0), line(10.0), line(20.0)], Frame::None).unwrap()
+    }
+
+    fn polygons() -> PyGeometryArray {
+        PyGeometryArray::from_shapes(
+            vec![polygon(0.0), polygon_with_hole(10.0), polygon(20.0)],
+            Frame::None,
+        )
+        .unwrap()
+    }
+
+    fn reset_bulk_observations() {
+        reset_stream_bulk_extensions();
+        reset_stream_row_advances();
+        crate::array::reset_shape_iter_materializations();
+    }
+
+    fn assert_bulk_counts() {
+        assert_eq!(stream_bulk_extensions(), 2);
+        assert_eq!(stream_bulk_rows(), 5);
+        assert_eq!(stream_row_advances(), 0);
+        assert_eq!(crate::array::shape_iter_materializations(), 0);
+    }
+
+    #[test]
+    fn dense_identity_and_window_concat_use_native_bulk_spans() {
+        let points = points();
+        let point_window = points.gather_logical_row_range(1..3).unwrap();
+        reset_bulk_observations();
+        let merged = PyGeometryArray::concat_many(&[&points, &point_window]).unwrap();
+        assert_bulk_counts();
+        let GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) = merged.storage()
+        else {
+            panic!("dense point concat must remain packed");
+        };
+        assert_eq!(coords.xs(), &[10.0, 20.0, 30.0, 20.0, 30.0]);
+
+        let lines = lines();
+        let line_window = lines.gather_logical_row_range(1..3).unwrap();
+        reset_bulk_observations();
+        let merged = PyGeometryArray::concat_many(&[&lines, &line_window]).unwrap();
+        assert_bulk_counts();
+        let GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords, offsets, ..
+        }) = merged.storage()
+        else {
+            panic!("dense line concat must remain packed");
+        };
+        assert_eq!(coords.xs(), &[
+            0.0, 1.0, 10.0, 11.0, 20.0, 21.0, 10.0, 11.0, 20.0, 21.0
+        ]);
+        assert_eq!(offsets.as_slice(), &[0, 2, 4, 6, 8, 10]);
+
+        let polygons = polygons();
+        let polygon_window = polygons.gather_logical_row_range(1..3).unwrap();
+        reset_bulk_observations();
+        let merged = PyGeometryArray::concat_many(&[&polygons, &polygon_window]).unwrap();
+        assert_bulk_counts();
+        let GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            ..
+        }) = merged.storage()
+        else {
+            panic!("dense polygon concat must remain packed");
+        };
+        assert_eq!(coords.len(), 35);
+        assert_eq!(ring_offsets.as_slice(), &[0, 5, 10, 15, 20, 25, 30, 35]);
+        assert_eq!(polygon_offsets.as_slice(), &[0, 1, 3, 4, 6, 7]);
+    }
+
+    #[test]
+    fn empty_identity_and_window_arrays_do_not_select_a_stream_kind() {
+        let empty_points = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None).unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let lines = lines();
+        let empty_lines = lines.gather_logical_row_range(0..0).unwrap();
+        reset_bulk_observations();
+        let mut builder = crate::array::StreamingShapes::new();
+        assert!(builder.try_extend_array(&empty_points).unwrap());
+        assert!(!builder.try_extend_array(&empty_lines).unwrap());
+        assert_eq!(empty_lines.logical_rows().count(), 0);
+        assert!(builder.try_extend_array(&lines).unwrap());
+        let result = builder.finish(Frame::None).unwrap();
+        assert!(matches!(
+            result.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
+        ));
+        assert_eq!(stream_bulk_extensions(), 1);
+        assert_eq!(stream_bulk_rows(), 3);
+        assert_eq!(stream_row_advances(), 0);
+    }
+
+    #[test]
+    fn incompatible_bulk_extension_allocates_nothing_before_mixed_fallback() {
+        let points = points();
+        let lines = lines();
+        reset_bulk_observations();
+        let mut builder = crate::array::StreamingShapes::with_capacity(0, 2);
+        assert!(builder.try_extend_array(&points).unwrap());
+        assert!(
+            !crate::test_support::fail_allocations_after(0, || {
+                builder.try_extend_array(&lines)
+            })
+            .unwrap()
+        );
+        for row in lines.logical_rows() {
+            match row {
+                crate::array::LogicalRow::Missing { .. } => {
+                    builder.try_push_missing().unwrap();
+                },
+                crate::array::LogicalRow::Present { row, .. } => {
+                    builder.try_push_row(Some(row)).unwrap();
+                },
+            }
+        }
+        let result = builder.finish(Frame::None).unwrap();
+        assert!(matches!(result.storage(), GeometryArrayStorage::Mixed(_)));
+        assert_eq!(result.len(), points.len() + lines.len());
+        assert_eq!(stream_bulk_extensions(), 1);
+        assert_eq!(stream_row_advances(), 3);
+        assert_eq!(crate::array::shape_iter_materializations(), 0);
+
+        let xyz = PyGeometryArray::from_shapes(
+            vec![Shape::Point(Point::new_raw_axes(
+                40.0,
+                40.25,
+                crate::geometry::ZOrdinate(Some(1.0)),
+                crate::geometry::MOrdinate(None),
+            ))],
+            Frame::None,
+        )
+        .unwrap();
+        reset_bulk_observations();
+        let mut builder = crate::array::StreamingShapes::with_capacity(0, 2);
+        assert!(builder.try_extend_array(&points).unwrap());
+        assert!(
+            !crate::test_support::fail_allocations_after(0, || { builder.try_extend_array(&xyz) })
+                .unwrap()
+        );
+        for row in xyz.logical_rows() {
+            let crate::array::LogicalRow::Present { row, .. } = row else {
+                unreachable!("dense xyz fixture has no missing rows");
+            };
+            builder.try_push_row(Some(row)).unwrap();
+        }
+        let result = builder.finish(Frame::None).unwrap();
+        assert!(matches!(result.storage(), GeometryArrayStorage::Mixed(_)));
+        assert_eq!(result.len(), points.len() + xyz.len());
+    }
+
+    #[test]
+    fn gathered_duplicate_concat_uses_row_fallback_with_exact_payload_capacity() {
+        let lines = lines();
+        let gathered = lines.gather_logical_rows(&[2, 0, 2]).unwrap();
+        reset_bulk_observations();
+        let merged = PyGeometryArray::concat_many(&[&gathered]).unwrap();
+        assert_eq!(stream_bulk_extensions(), 0);
+        assert_eq!(stream_bulk_rows(), 0);
+        assert_eq!(stream_row_advances(), 3);
+        assert_eq!(crate::array::shape_iter_materializations(), 0);
+        let GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords, offsets, ..
+        }) = merged.storage()
+        else {
+            panic!("gathered duplicate lines must remain packed");
+        };
+        assert_eq!(coords.xs(), &[20.0, 21.0, 0.0, 1.0, 20.0, 21.0]);
+        assert_eq!(offsets.as_slice(), &[0, 2, 4, 6]);
+        assert!(coords.column_arcs().xs.capacity() >= 6);
+    }
+
+    #[test]
+    fn nullable_concat_uses_logical_row_fallback() {
+        let nullable = points()
+            .with_missing_mask(Some(
+                ValidityMask::from_vec(3, vec![false, true, false])
+                    .unwrap()
+                    .unwrap(),
+            ))
+            .unwrap();
+        reset_bulk_observations();
+        let merged = PyGeometryArray::concat_many(&[&nullable]).unwrap();
+        assert_eq!(stream_bulk_extensions(), 0);
+        assert_eq!(stream_bulk_rows(), 0);
+        assert_eq!(stream_row_advances(), 3);
+        assert_eq!(merged.missing().unwrap().iter().collect::<Vec<_>>(), [
+            false, true, false
+        ]);
+        let GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) = merged.storage()
+        else {
+            panic!("nullable point concat must remain packed");
+        };
+        assert_eq!(coords.xs(), &[10.0, 30.0]);
+
+        let dense = points();
+        reset_bulk_observations();
+        let merged = PyGeometryArray::concat_many(&[&nullable, &dense]).unwrap();
+        assert_eq!(stream_bulk_extensions(), 1);
+        assert_eq!(stream_bulk_rows(), 3);
+        assert_eq!(stream_row_advances(), 3);
+        assert_eq!(merged.missing().unwrap().iter().collect::<Vec<_>>(), [
+            false, true, false, false, false, false
+        ]);
+    }
+
+    fn assert_concat_allocation_faults(left: &PyGeometryArray, right: &PyGeometryArray) {
+        pyo3::Python::initialize();
+        let (successful, allocations) =
+            allocation_count(|| PyGeometryArray::concat_many(&[left, right]));
+        successful.unwrap();
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error =
+                fail_allocations_after(allowed, || PyGeometryArray::concat_many(&[left, right]))
+                    .unwrap_err();
+            pyo3::Python::attach(|py| {
+                assert!(
+                    error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py),
+                    "allocation failure changed error class: {error:?}"
+                );
+            });
+            let retry = PyGeometryArray::concat_many(&[left, right]).unwrap();
+            assert_eq!(retry.len(), left.len() + right.len());
+        }
+    }
+
+    fn assert_bulk_extension_allocation_faults(
+        array: &PyGeometryArray,
+        coordinate_capacity: usize,
+        row_capacity: usize,
+        ring_capacity: usize,
+    ) {
+        let (_, allocations) = allocation_count(|| {
+            let mut builder = crate::array::StreamingShapes::with_capacity_and_rings(
+                coordinate_capacity,
+                row_capacity,
+                ring_capacity,
+            );
+            builder.try_extend_array(array)
+        });
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = fail_allocations_after(allowed, || {
+                let mut builder = crate::array::StreamingShapes::with_capacity_and_rings(
+                    coordinate_capacity,
+                    row_capacity,
+                    ring_capacity,
+                );
+                builder.try_extend_array(array)
+            })
+            .unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            let mut retry = crate::array::StreamingShapes::with_capacity_and_rings(
+                coordinate_capacity,
+                row_capacity,
+                ring_capacity,
+            );
+            assert!(retry.try_extend_array(array).unwrap());
+        }
+    }
+
+    #[test]
+    fn concat_allocation_faults_return_resource_error_and_fresh_retry_succeeds() {
+        let lines = lines();
+        let line_window = lines.gather_logical_row_range(1..3).unwrap();
+        assert_concat_allocation_faults(&lines, &line_window);
+
+        let polygons = polygons();
+        let polygon_window = polygons.gather_logical_row_range(1..3).unwrap();
+        assert_concat_allocation_faults(&polygons, &polygon_window);
+    }
+
+    #[test]
+    fn bulk_extension_allocation_faults_are_resource_errors() {
+        assert_bulk_extension_allocation_faults(&points(), 3, 3, 0);
+        assert_bulk_extension_allocation_faults(&lines(), 6, 3, 0);
+        assert_bulk_extension_allocation_faults(&polygons(), 20, 3, 4);
     }
 }

@@ -26,6 +26,163 @@ pub(crate) struct ValidityMask {
     valid_count: usize,
 }
 
+/// Fallible validity publisher for one logical row stream.
+///
+/// The builder keeps the Arrow polarity (`1 = present`) while rows are
+/// admitted, so nullable producers do not need a parallel missing-row index
+/// or a second pass to construct the final bitmap.
+pub(crate) struct ValidityBuilder {
+    bytes: Option<Vec<u8>>,
+    len: usize,
+    valid_count: usize,
+    capacity_hint: usize,
+}
+
+impl ValidityBuilder {
+    pub(crate) const fn new() -> Self {
+        Self {
+            bytes: None,
+            len: 0,
+            valid_count: 0,
+            capacity_hint: 0,
+        }
+    }
+
+    pub(crate) fn with_capacity(len: usize) -> Self {
+        Self {
+            capacity_hint: len,
+            ..Self::new()
+        }
+    }
+
+    pub(crate) const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) const fn present_count(&self) -> usize {
+        self.valid_count
+    }
+
+    pub(crate) fn is_present(&self, row: usize) -> bool {
+        assert!(row < self.len, "validity row must be in bounds");
+        self.bytes
+            .as_ref()
+            .is_none_or(|bytes| bytes[row / 8] & (1 << (row % 8)) != 0)
+    }
+
+    pub(crate) fn push(&mut self, present: bool) -> crate::error::Result<()> {
+        if self.len == usize::MAX {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        }
+        if !present && self.bytes.is_none() {
+            let byte_len = self
+                .capacity_hint
+                .max(
+                    self.len
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?,
+                )
+                .div_ceil(8);
+            let mut bytes = Vec::new();
+            crate::boundary::try_reserve_vec(&mut bytes, byte_len)?;
+            bytes.resize((self.len + 1).div_ceil(8), u8::MAX);
+            bytes[self.len / 8] &= !(1 << (self.len % 8));
+            self.bytes = Some(bytes);
+        } else if let Some(bytes) = &mut self.bytes
+            && self.len.is_multiple_of(8)
+        {
+            crate::try_push_vec(bytes, 0)?;
+        }
+        if let Some(bytes) = &mut self.bytes {
+            let byte = self.len / 8;
+            let bit = self.len % 8;
+            if present {
+                bytes[byte] |= 1 << bit;
+            } else {
+                bytes[byte] &= !(1 << bit);
+            }
+        }
+        if present {
+            self.valid_count += 1;
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Append an all-present run without visiting one validity bit per row.
+    ///
+    /// A bitmap is allocated only when an earlier row was missing. Newly
+    /// covered bytes are initialized to zero before the run is marked
+    /// present; unused trailing bits are normalized by [`Self::finish`].
+    pub(crate) fn extend_present(&mut self, count: usize) -> crate::error::Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let end = self
+            .len
+            .checked_add(count)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let valid_count = self
+            .valid_count
+            .checked_add(count)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        if let Some(bytes) = &mut self.bytes {
+            let required = end.div_ceil(8);
+            if required > bytes.len() {
+                let additional = required - bytes.len();
+                crate::boundary::try_reserve_vec(bytes, additional)?;
+                for _ in 0..additional {
+                    crate::try_push_vec(bytes, 0)?;
+                }
+            }
+            let start = self.len;
+            let first = start / 8;
+            let last = (end - 1) / 8;
+            if first == last {
+                let high = end % 8;
+                let high_mask = if high == 0 {
+                    u8::MAX
+                } else {
+                    (1_u8 << high) - 1
+                };
+                bytes[first] |= high_mask & (u8::MAX << (start % 8));
+            } else {
+                bytes[first] |= u8::MAX << (start % 8);
+                for byte in &mut bytes[first + 1..last] {
+                    *byte = u8::MAX;
+                }
+                let high = end % 8;
+                bytes[last] |= if high == 0 {
+                    u8::MAX
+                } else {
+                    (1_u8 << high) - 1
+                };
+            }
+        }
+        self.len = end;
+        self.valid_count = valid_count;
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> crate::error::Result<Option<ValidityMask>> {
+        if self.valid_count == self.len {
+            return Ok(None);
+        }
+        let mut bytes = self
+            .bytes
+            .expect("a missing row initializes the validity bitmap");
+        if let Some(last) = bytes.last_mut() {
+            *last &= trailing_mask(self.len);
+        }
+        Ok(Some(ValidityMask {
+            bytes: SharedSlice::try_from_vec(bytes)?,
+            bit_offset: 0,
+            len: self.len,
+            valid_count: self.valid_count,
+        }))
+    }
+}
+
 impl ValidityMask {
     /// Build from the public/pickle convention (`true = missing`).
     #[expect(
@@ -232,51 +389,6 @@ impl ValidityMask {
             bytes: SharedSlice::try_from_vec(bytes)?,
             bit_offset: 0,
             len: rows.len(),
-            valid_count,
-        }))
-    }
-
-    /// Concatenate optional validity lanes. `None` contributes all-present bits.
-    pub(crate) fn try_concat<'a>(
-        parts: impl IntoIterator<Item = (usize, Option<&'a Self>)>,
-    ) -> crate::error::Result<Option<Self>> {
-        let parts = parts.into_iter();
-        let mut collected = Vec::new();
-        crate::try_reserve_vec(&mut collected, parts.size_hint().0)?;
-        for part in parts {
-            crate::try_push_vec(&mut collected, part)?;
-        }
-        let parts = collected;
-        let len = parts.iter().try_fold(0_usize, |total, (len, mask)| {
-            if let Some(mask) = mask {
-                debug_assert_eq!(*len, mask.len, "validity concat length must match mask");
-            }
-            total
-                .checked_add(*len)
-                .ok_or(crate::error::ResourceError::SizeOverflow)
-        })?;
-        let mut bytes = Vec::new();
-        crate::try_reserve_vec(&mut bytes, len.div_ceil(8))?;
-        bytes.resize(len.div_ceil(8), 0);
-        let mut out = 0;
-        let mut valid_count = 0;
-        for (part_len, mask) in parts {
-            for row in 0..part_len {
-                let valid = mask.is_none_or(|mask| mask.is_valid(row));
-                if valid {
-                    bytes[out / 8] |= 1 << (out % 8);
-                    valid_count += 1;
-                }
-                out += 1;
-            }
-        }
-        if valid_count == len {
-            return Ok(None);
-        }
-        Ok(Some(Self {
-            bytes: SharedSlice::try_from_vec(bytes)?,
-            bit_offset: 0,
-            len,
             valid_count,
         }))
     }
@@ -571,6 +683,62 @@ pub(crate) fn is_missing_row(mask: Option<&ValidityMask>, row: usize) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn validity_builder_publishes_dense_as_none_after_counting_rows() {
+        use super::ValidityBuilder;
+
+        let mut builder = ValidityBuilder::new();
+        builder.push(true).unwrap();
+        builder.push(true).unwrap();
+        assert_eq!(builder.len(), 2);
+        assert_eq!(builder.present_count(), 2);
+        assert!(builder.finish().unwrap().is_none());
+    }
+
+    #[test]
+    fn validity_builder_keeps_bit_offset_zero_and_missing_polarity() {
+        use super::ValidityBuilder;
+
+        let mut builder = ValidityBuilder::new();
+        for present in [false, true, false, true, true, false, true, false, true] {
+            builder.push(present).unwrap();
+        }
+        let mask = builder.finish().unwrap().unwrap();
+        assert_eq!(mask.iter().collect::<Vec<_>>(), [
+            true, false, true, false, false, true, false, true, false
+        ]);
+        assert_eq!(mask.arrow_bitmap().1, 0);
+    }
+
+    #[test]
+    fn validity_builder_clears_unused_trailing_bits_after_a_reserved_hint() {
+        use super::ValidityBuilder;
+
+        let mut builder = ValidityBuilder::with_capacity(64);
+        builder.push(false).unwrap();
+        builder.push(true).unwrap();
+        let mask = builder.finish().unwrap().unwrap();
+        assert_eq!(mask.arrow_bitmap().0.as_ref(), &[0b10]);
+    }
+
+    #[test]
+    fn validity_builder_bulk_present_run_matches_scalar_bits() {
+        use super::ValidityBuilder;
+
+        let mut builder = ValidityBuilder::new();
+        builder.push(false).unwrap();
+        builder.extend_present(17).unwrap();
+        builder.push(false).unwrap();
+        builder.extend_present(3).unwrap();
+        let mask = builder.finish().unwrap().unwrap();
+        let mut expected = vec![true];
+        expected.extend([false; 17]);
+        expected.push(true);
+        expected.extend([false; 3]);
+        assert_eq!(mask.iter().collect::<Vec<_>>(), expected);
+        assert_eq!(mask.present_count(), 20);
+    }
+
+    #[test]
     fn mask_publication_failure_preserves_source_and_allows_retry() {
         use super::ValidityMask;
         use crate::test_support::{allocation_count, fail_allocations_after};
@@ -628,14 +796,6 @@ mod tests {
             true, false, true, true, true
         ]);
         assert_eq!(gathered.arrow_bitmap().0.as_ref(), &[0b0000_0010]);
-
-        let joined = ValidityMask::try_concat([(2, None), (7, Some(&window))])
-            .unwrap()
-            .unwrap();
-        assert_eq!(joined.iter().collect::<Vec<_>>(), [
-            false, false, true, false, false, true, false, true, false
-        ]);
-        assert_eq!(joined.arrow_bitmap().0[1] & 0b1111_1110, 0);
     }
 
     #[test]

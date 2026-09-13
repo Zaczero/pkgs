@@ -280,6 +280,10 @@ impl<T> CsrBuilder<T> {
         self.values.len()
     }
 
+    pub(crate) const fn row_count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
     pub(crate) fn clear(&mut self) {
         self.release();
     }

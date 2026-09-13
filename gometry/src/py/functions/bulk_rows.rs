@@ -38,8 +38,6 @@ struct BulkState {
     first_crs: SharedRowCrs,
     first_epoch: Option<f64>,
     have_present_row: bool,
-    missing_rows: Vec<usize>,
-    row_count: usize,
     fallback: Option<Crs>,
 }
 
@@ -66,12 +64,9 @@ where
         first_crs: SharedRowCrs::Unseen,
         first_epoch: None,
         have_present_row: false,
-        missing_rows: Vec::new(),
-        row_count: 0,
         fallback,
     };
     for (row, item) in iter.enumerate() {
-        state.row_count = row + 1;
         let item = item?;
         crate::check_python_signals(item.py(), row)?;
         if item.is_none() {
@@ -80,22 +75,17 @@ where
                 first_crs,
                 first_epoch,
                 have_present_row,
-                mut missing_rows,
-                row_count,
                 fallback,
             } = state;
             let result = item
                 .py()
                 .detach(move || -> crate::error::Result<BulkState> {
-                    crate::try_push_vec(&mut missing_rows, row)?;
                     rows.try_push_missing()?;
                     Ok(BulkState {
                         rows,
                         first_crs,
                         first_epoch,
                         have_present_row,
-                        missing_rows,
-                        row_count,
                         fallback,
                     })
                 });
@@ -116,8 +106,6 @@ where
             mut first_crs,
             mut first_epoch,
             mut have_present_row,
-            mut missing_rows,
-            row_count,
             fallback,
         } = state;
         let result = item
@@ -165,7 +153,6 @@ where
                         }
                     },
                     StreamedShape::Missing => {
-                        crate::try_push_vec(&mut missing_rows, row)?;
                         rows.try_push_missing()?;
                     },
                 }
@@ -174,8 +161,6 @@ where
                     first_crs,
                     first_epoch,
                     have_present_row,
-                    missing_rows,
-                    row_count,
                     fallback,
                 })
             });
@@ -189,8 +174,6 @@ where
         rows,
         first_crs,
         first_epoch,
-        missing_rows,
-        row_count,
         fallback,
         ..
     } = state;
@@ -199,8 +182,6 @@ where
             rows,
             first_crs,
             first_epoch,
-            missing_rows,
-            row_count,
             fallback,
             explicit_epoch,
             crs_context,
@@ -224,14 +205,10 @@ pub(crate) fn stream_bulk<'py>(
     let mut first_crs = SharedRowCrs::Unseen;
     let mut first_epoch = None;
     let mut have_present_row = false;
-    let mut missing_rows = Vec::new();
-    let mut row_count = 0;
     for (row, item) in iter.enumerate() {
-        row_count = row + 1;
         let item = item?;
         crate::check_python_signals(item.py(), row)?;
         if item.is_none() {
-            crate::try_push(&mut missing_rows, row)?;
             rows.try_push_missing()?;
             continue;
         }
@@ -281,8 +258,6 @@ pub(crate) fn stream_bulk<'py>(
         rows,
         first_crs,
         first_epoch,
-        missing_rows,
-        row_count,
         fallback,
         explicit_epoch,
         crs_context,
@@ -293,8 +268,6 @@ fn py_finish_attached(
     rows: crate::array::StreamingShapes,
     first_crs: SharedRowCrs,
     first_epoch: Option<f64>,
-    missing_rows: Vec<usize>,
-    row_count: usize,
     fallback: Option<Crs>,
     explicit_epoch: Option<f64>,
     crs_context: Option<&str>,
@@ -303,8 +276,6 @@ fn py_finish_attached(
         rows,
         first_crs,
         first_epoch,
-        missing_rows,
-        row_count,
         fallback,
         explicit_epoch,
         crs_context,
@@ -316,8 +287,6 @@ fn iter_detach_finalize(
     rows: crate::array::StreamingShapes,
     first_crs: SharedRowCrs,
     first_epoch: Option<f64>,
-    missing_rows: Vec<usize>,
-    row_count: usize,
     fallback: Option<Crs>,
     explicit_epoch: Option<f64>,
     crs_context: Option<&str>,
@@ -330,17 +299,12 @@ fn iter_detach_finalize(
     let epoch = explicit_epoch.or(first_epoch);
     guard_epoch_frame(epoch, crs.as_ref())?;
     let frame = Frame::new(crs, epoch)?;
-    match crate::array::sparse_missing_mask(row_count, &missing_rows)? {
-        Some(mask) => rows.finish_with_missing_mask(frame, mask),
-        None => rows.finish(frame),
-    }
+    rows.finish(frame)
 }
 
 struct SridBulkState {
     rows: crate::array::StreamingShapes,
     frame: SridFrameAdmission,
-    missing_rows: Vec<usize>,
-    row_count: usize,
 }
 
 enum BatchError {
@@ -358,7 +322,7 @@ fn acquire_owned_chunk<'py, T>(
     own_row: &mut impl FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
     first_row: usize,
 ) -> PyResult<AcquiredChunk<T>> {
-    let mut rows = Vec::with_capacity(DETACHED_BATCH_ROWS);
+    let mut rows = crate::try_vec_with_capacity(DETACHED_BATCH_ROWS)?;
     for row in first_row..first_row + DETACHED_BATCH_ROWS {
         let Some(item) = iter.next() else {
             return Ok(AcquiredChunk {
@@ -409,7 +373,7 @@ fn process_owned_chunks<'py, T, S, Own, Parse>(
     mut own_row: Own,
     mut state: S,
     parse_chunk: Parse,
-) -> PyResult<(S, usize)>
+) -> PyResult<S>
 where
     T: Send,
     S: Send,
@@ -440,7 +404,7 @@ where
             return Err(crate::note_array_row(error, row));
         }
         if finished {
-            return Ok((state, first_row + acquired));
+            return Ok(state);
         }
         first_row += acquired;
     }
@@ -458,8 +422,6 @@ where
 {
     for (row, owned) in chunk {
         let Some(parsed) = parse_row(owned).map_err(|error| BatchError::Row(row, error))? else {
-            crate::try_push_vec(&mut state.missing_rows, row)
-                .map_err(|error| BatchError::Row(row, error))?;
             state
                 .rows
                 .try_push_missing()
@@ -536,8 +498,6 @@ where
                 }
             },
             StreamedShape::Missing => {
-                crate::try_push_vec(&mut state.missing_rows, row)
-                    .map_err(|error| BatchError::Row(row, error))?;
                 state
                     .rows
                     .try_push_missing()
@@ -567,23 +527,12 @@ where
     let state = SridBulkState {
         rows: crate::array::StreamingShapes::new(),
         frame: SridFrameAdmission::new(fallback, None),
-        missing_rows: Vec::new(),
-        row_count: 0,
     };
-    let (state, row_count) =
-        process_owned_chunks(py, iter, own_row, state, move |state, chunk| {
-            parse_srid_chunk(state, chunk, context, source, &parse_row)
-        })?;
-    py.detach(move || {
-        item_detach_finalize(
-            state.rows,
-            state.frame,
-            state.missing_rows,
-            row_count,
-            epoch,
-        )
-    })
-    .map_err(PyErr::from)
+    let state = process_owned_chunks(py, iter, own_row, state, move |state, chunk| {
+        parse_srid_chunk(state, chunk, context, source, &parse_row)
+    })?;
+    py.detach(move || item_detach_finalize(state.rows, state.frame, epoch))
+        .map_err(PyErr::from)
 }
 
 /// Acquire and parse a concrete GeoJSON/polyline batch in bounded detached
@@ -607,21 +556,16 @@ where
         first_crs: SharedRowCrs::Unseen,
         first_epoch: None,
         have_present_row: false,
-        missing_rows: Vec::new(),
-        row_count: 0,
         fallback,
     };
-    let (state, row_count) =
-        process_owned_chunks(py, iter, own_row, state, move |state, chunk| {
-            parse_geometry_chunk(state, chunk, explicit_epoch, crs_context, &parse_row)
-        })?;
+    let state = process_owned_chunks(py, iter, own_row, state, move |state, chunk| {
+        parse_geometry_chunk(state, chunk, explicit_epoch, crs_context, &parse_row)
+    })?;
     py.detach(move || {
         iter_detach_finalize(
             state.rows,
             state.first_crs,
             state.first_epoch,
-            state.missing_rows,
-            row_count,
             state.fallback,
             explicit_epoch,
             crs_context,
@@ -652,31 +596,17 @@ where
     let mut state = SridBulkState {
         rows: crate::array::StreamingShapes::new(),
         frame: SridFrameAdmission::new(fallback, None),
-        missing_rows: Vec::new(),
-        row_count: 0,
     };
     for (row, item) in iter.enumerate() {
-        state.row_count = row + 1;
         let item = item?;
         crate::check_python_signals(item.py(), row)?;
         if item.is_none() {
-            let SridBulkState {
-                mut rows,
-                frame,
-                mut missing_rows,
-                row_count,
-            } = state;
+            let SridBulkState { mut rows, frame } = state;
             let result = item
                 .py()
                 .detach(move || -> crate::error::Result<SridBulkState> {
-                    crate::try_push_vec(&mut missing_rows, row)?;
                     rows.try_push_missing()?;
-                    Ok(SridBulkState {
-                        rows,
-                        frame,
-                        missing_rows,
-                        row_count,
-                    })
+                    Ok(SridBulkState { rows, frame })
                 });
             state = match result {
                 Ok(state) => state,
@@ -693,8 +623,6 @@ where
         let SridBulkState {
             mut rows,
             mut frame,
-            missing_rows,
-            row_count,
         } = state;
         let result = item
             .py()
@@ -702,12 +630,7 @@ where
                 let parsed = parse_row_ref(owned)?;
                 frame.admit_srid(parsed.srid, row, context, source)?;
                 rows.try_push(parsed.shape)?;
-                Ok(SridBulkState {
-                    rows,
-                    frame,
-                    missing_rows,
-                    row_count,
-                })
+                Ok(SridBulkState { rows, frame })
             });
         state = match result {
             Ok(state) => state,
@@ -715,29 +638,18 @@ where
         };
     }
 
-    let SridBulkState {
-        rows,
-        frame,
-        missing_rows,
-        row_count,
-    } = state;
-    let result =
-        py.detach(move || item_detach_finalize(rows, frame, missing_rows, row_count, epoch));
+    let SridBulkState { rows, frame } = state;
+    let result = py.detach(move || item_detach_finalize(rows, frame, epoch));
     result.map_err(PyErr::from)
 }
 
 fn item_detach_finalize(
     rows: crate::array::StreamingShapes,
     frame: SridFrameAdmission,
-    missing_rows: Vec<usize>,
-    row_count: usize,
     epoch: Option<f64>,
 ) -> crate::error::Result<PyGeometryArray> {
     let crs = frame.finish()?;
     guard_epoch_frame(epoch, crs.as_ref())?;
     let frame = Frame::new(crs, epoch)?;
-    match crate::array::sparse_missing_mask(row_count, &missing_rows)? {
-        Some(mask) => rows.finish_with_missing_mask(frame, mask),
-        None => rows.finish(frame),
-    }
+    rows.finish(frame)
 }

@@ -25,11 +25,11 @@ use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::types::{PyBool, PyInt, PyList, PySequence, PyTuple};
 
 use crate::array::{
-    Arc, ArrayRow, Bound, CoordSeq, GeometryArrayStorage, GeometryError, HeapSize,
-    IntoPyObject as _, OverlayOp, PackedStorage, Py, PyAny, PyAnyMethods as _, PyCoordinates,
-    PyErr, PyGeometryArray, PyGeometryArrayIter, PyListMethods as _, PyResult, PyTupleMethods as _,
-    PyTypeMethods as _, Python, Shape, StorageLayout, Typed, ValidityMask, exact_geometry,
-    exact_geometry_array, overlay_operator,
+    Arc, ArrayRow, Bound, GeometryArrayStorage, GeometryError, HeapSize, IntoPyObject as _,
+    OverlayOp, PackedStorage, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyErr, PyGeometryArray,
+    PyGeometryArrayIter, PyListMethods as _, PyResult, PyTupleMethods as _, PyTypeMethods as _,
+    Python, Shape, StorageLayout, Typed, ValidityMask, exact_geometry, exact_geometry_array,
+    overlay_operator,
 };
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, collect_slice_rows};
 
@@ -855,101 +855,46 @@ impl PyGeometryArray {
             rows.push((row, Some(geometry.shape.shape().clone())));
         }
         let unchanged_rows = unchanged_rows_after_replacements(n, &rows)?;
-        // Packed identity XY points: copy ordinate columns once and patch
-        // selected rows (cost ~O(n) memcpy of f64 columns, not per-row Shape).
-        if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = self.storage()
-            && !self.is_compact_nullable()
-            && row_map.is_identity()
-            && coords.axes() == crate::geometry::CoordinateAxes::XY
-            && rows.iter().all(|(_, shape)| {
-                shape.as_ref().is_none_or(|s| {
-                    matches!(s, Shape::Point(p) if p.axes == crate::geometry::CoordinateAxes::XY)
-                })
-            })
-        {
-            let mut xs = coords.xs().to_vec();
-            let mut ys = coords.ys().to_vec();
-            let mut missing_flags = if rows.iter().any(|(_, shape)| shape.is_none()) {
-                let mut flags = crate::try_vec_with_capacity(n)?;
-                flags.resize(n, false);
-                Some(flags)
-            } else {
-                None
-            };
-            for (row, shape) in &rows {
-                match shape {
-                    None => {
-                        xs[*row] = f64::NAN;
-                        ys[*row] = f64::NAN;
-                        if let Some(flags) = &mut missing_flags {
-                            flags[*row] = true;
-                        }
-                    },
-                    Some(Shape::Point(point)) => {
-                        xs[*row] = point.x;
-                        ys[*row] = point.y;
-                        if let Some(flags) = &mut missing_flags {
-                            flags[*row] = false;
-                        }
-                    },
-                    Some(_) => unreachable!("axes gate above"),
-                }
-            }
-            let seq = CoordSeq::try_from_vecs(xs, ys, None, None).map_err(PyErr::from)?;
-            let missing = missing_flags
-                .map(|flags| ValidityMask::from_vec(n, flags))
-                .transpose()?
-                .flatten();
-            let storage = GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: Arc::try_new(seq).map_err(crate::error::Error::from)?,
-                row_map: crate::array::RowSelection::Identity,
-            });
-            return Self::from_replacement_storage(
-                self,
-                Arc::try_new(storage).map_err(crate::error::Error::from)?,
-                self.frame.clone(),
-                missing,
-                StorageLayout::LogicalRows,
-                &unchanged_rows,
-            )
-            .map_err(PyErr::from);
+        let mut selected = crate::try_vec_with_capacity(n)?;
+        selected.resize(n, None);
+        for (index, (row, _)) in rows.iter().enumerate() {
+            selected[*row] = Some(index);
         }
-
-        let mut shapes: Vec<Option<Shape>> = self
+        let mut builder = crate::array::StreamingShapes::with_capacity(0, n);
+        for (row, source) in self
             .row_operation()
-            .rows_with_missing(|| None::<Shape>)
-            .map(|row| match row {
-                ArrayRow::Missing { value, .. } => Ok(value),
-                ArrayRow::Present(row) => row.row().with_shape(Clone::clone).map(Some),
-            })
-            .collect::<crate::error::Result<Vec<_>>>()
-            .map_err(PyErr::from)?;
-        for (row, shape) in &rows {
-            match shape {
-                None => {
-                    shapes[*row] = None;
+            .rows_with_missing(|| ())
+            .enumerate()
+        {
+            if let Some(replacement) = selected[row] {
+                match rows[replacement].1.as_ref() {
+                    None => builder.try_push_missing().map_err(PyErr::from)?,
+                    Some(shape) => {
+                        builder
+                            .try_push_shape_ref(shape)
+                            .map_err(PyErr::from)?;
+                    },
+                }
+                continue;
+            }
+            match source {
+                ArrayRow::Missing { .. } => {
+                    builder.try_push_missing().map_err(PyErr::from)?;
                 },
-                Some(shape) => {
-                    shapes[*row] = Some(shape.clone());
+                ArrayRow::Present(row) => {
+                    builder
+                        .try_push_row(Some(row.row()))
+                        .map_err(PyErr::from)?;
                 },
             }
         }
-        let mut missing_flags = crate::try_vec_with_capacity(n)?;
-        let mut present_shapes = crate::try_vec_with_capacity(n)?;
-        for shape in &shapes {
-            crate::try_push_vec(&mut missing_flags, shape.is_none())?;
-            if let Some(shape) = shape {
-                crate::try_push_vec(&mut present_shapes, shape.clone())?;
-            }
-        }
-        let missing = ValidityMask::from_vec(n, missing_flags)?;
-        let storage = Self::storage_from_shapes(present_shapes)?;
+        let (storage, missing, layout) = builder.finish_parts().map_err(PyErr::from)?;
         Self::from_replacement_storage(
             self,
             Arc::try_new(storage).map_err(crate::error::Error::from)?,
             self.frame.clone(),
             missing,
-            StorageLayout::PresentOnly,
+            layout,
             &unchanged_rows,
         )
         .map_err(PyErr::from)
@@ -1088,37 +1033,44 @@ impl PyGeometryArray {
     /// Dense fill from a scalar shape: packed columns stay column-native;
     /// mixed storage patches only missing rows. Never stages `PyGeometry`.
     fn fill_missing_with_shape(&self, _mask: &ValidityMask, fill: &Shape) -> PyResult<Self> {
-        let shapes = self
-            .row_operation()
-            .rows_with_missing(|| ())
-            .map(|row| match row {
-                ArrayRow::Missing { .. } => Ok(fill.clone()),
-                ArrayRow::Present(row) => row.row().with_shape(Clone::clone),
-            })
-            .collect::<crate::error::Result<Vec<_>>>()
-            .map_err(PyErr::from)?;
-        Ok(Self::from_shapes(shapes, self.frame.clone())?)
+        let mut builder = crate::array::StreamingShapes::with_capacity(0, self.len());
+        for row in self.row_operation().rows_with_missing(|| ()) {
+            match row {
+                ArrayRow::Missing { .. } => {
+                    builder.try_push_shape_ref(fill).map_err(PyErr::from)?;
+                },
+                ArrayRow::Present(row) => {
+                    builder.try_push_row(Some(row.row())).map_err(PyErr::from)?;
+                },
+            }
+        }
+        builder.finish(self.frame.clone()).map_err(PyErr::from)
     }
 
-    /// Dense fill from a row-aligned array: packed point×point stays columnar;
-    /// otherwise collect shapes only (no `PyGeometry` staging).
+    /// Dense fill from a row-aligned array through the native row builder;
+    /// incompatible rows take its single explicit mixed fallback.
     fn fill_missing_with_array(&self, _mask: &ValidityMask, fill: &Self) -> PyResult<Self> {
-        let shapes = self
+        let mut builder = crate::array::StreamingShapes::with_capacity(0, self.len());
+        for (left, right) in self
             .row_operation()
             .rows_with_missing(|| ())
             .zip(fill.row_operation().rows_with_missing(|| ()))
-            .map(|(left, right)| match left {
+        {
+            match left {
                 ArrayRow::Missing { .. } => match right {
-                    ArrayRow::Present(shape) => shape.row().with_shape(Clone::clone),
+                    ArrayRow::Present(row) => {
+                        builder.try_push_row(Some(row.row())).map_err(PyErr::from)?;
+                    },
                     ArrayRow::Missing { .. } => {
-                        unreachable!("required fill rows were checked present")
+                        unreachable!("required fill rows were checked present");
                     },
                 },
-                ArrayRow::Present(shape) => shape.row().with_shape(Clone::clone),
-            })
-            .collect::<crate::error::Result<Vec<_>>>()
-            .map_err(PyErr::from)?;
-        Ok(Self::from_shapes(shapes, self.frame.clone())?)
+                ArrayRow::Present(row) => {
+                    builder.try_push_row(Some(row.row())).map_err(PyErr::from)?;
+                },
+            }
+        }
+        builder.finish(self.frame.clone()).map_err(PyErr::from)
     }
 }
 

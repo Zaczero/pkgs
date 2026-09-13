@@ -17,13 +17,13 @@ use crate::array::{
     GeometryKind, InvalidGeometryError, PackedStorage, Py, PyAny, PyAnyMethods as _, PyCoordinates,
     PyCrs, PyDict, PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef,
     PyResult, PyTuple, PyTypeError, PyTypeMethods as _, Python, Result, RingLevel,
-    SVG_ARRAY_PREVIEW, Shape, ValidityMask, bool_array, coerce_collected_geometry_items,
-    coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
-    geometry_array_svg_grid_html_masked, line_crosses_antimeridian, line_is_ccw, line_is_closed,
-    line_is_simple, line_is_valid, line_logical_len, map_coordinates_callback,
-    parse_coordinate_replacement, parse_crs, physical_row, polygon_is_valid, polygon_logical_len,
-    polygon_rings_range, pymethods, replace_shape_coordinates, require_geojson_crs,
-    slice_replacement_for_shape, total_bounds_from_columns,
+    SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_collected_geometry_items, coordinate_epoch_option,
+    crs, crs_arc, exact_geometry, geometry, geometry_array_svg_grid_html_masked,
+    line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
+    line_logical_len, map_coordinates_callback, parse_coordinate_replacement, parse_crs,
+    physical_row, polygon_is_valid, polygon_logical_len, polygon_rings_range, pymethods,
+    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
+    total_bounds_from_columns,
 };
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
 use crate::py::support::{own_geometry_item, parse_owned_geometry_item};
@@ -345,15 +345,13 @@ impl PyGeometryArray {
                 .extract::<PyRef<'_, Self>>()?
                 .clone());
         }
-        // First-class missing rows: `None` items mark the mask; only the
-        // present items participate in coercion and frame resolution, then
-        // placeholder rows (already frame-tagged) fill the masked slots.
-        let mut has_missing = false;
+        // First-class missing rows: `None` items mark the validity lane; only
+        // present items participate in coercion and frame resolution. The
+        // native row builder restores their logical positions on publication.
         let mut mask = crate::try_vec_with_capacity(raw_items.len())?;
         let mut present = crate::try_vec_with_capacity(raw_items.len())?;
         for item in &raw_items {
             let missing = item.is_none();
-            has_missing |= missing;
             mask.push(missing);
             if !missing {
                 present.push(item.clone());
@@ -379,24 +377,33 @@ impl PyGeometryArray {
                 },
                 "GeometryArray",
             )?;
-            Self::pack_or_mixed(items, frame)
+            let mut rows = crate::array::StreamingShapes::with_capacity(0, mask.len());
+            let mut present = items.into_iter();
+            for is_missing in mask {
+                if is_missing {
+                    rows.try_push_missing()?;
+                } else {
+                    let geometry = present
+                        .next()
+                        .expect("mask and present geometry counts agree");
+                    let shape = match std::sync::Arc::try_unwrap(geometry.shape) {
+                        Ok(data) => data.into_shape(),
+                        Err(data) => data.shape().clone(),
+                    };
+                    rows.try_push(shape)?;
+                }
+            }
+            let extra = present.next();
+            debug_assert!(extra.is_none());
+            rows.finish(frame)
         });
         let array = match result {
             Ok(array) => array,
             Err(error) => {
-                drop(mask);
                 return Err(PyErr::from(error));
             },
         };
-        Ok(if has_missing {
-            Self::scatter_present_rows(
-                &array,
-                ValidityMask::from_vec(mask.len(), mask)?
-                    .expect("has_missing guarantees a present missing mask"),
-            )?
-        } else {
-            array
-        })
+        Ok(array)
     }
 
     pub fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {

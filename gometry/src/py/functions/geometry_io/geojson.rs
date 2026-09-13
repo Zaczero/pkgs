@@ -14,7 +14,6 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use crate::array::ValidityMask;
 use crate::py::functions::bulk_rows::{StreamedShape, batch_bulk, stream_bulk_owned};
 use crate::{
     Crs, Frame, GeoJsonDecodeContext, OwnedBytes, PyGeometry, PyGeometryArray, ScalarOrIterator,
@@ -54,12 +53,8 @@ fn decode_geojson_value(
         let mut declarations = Vec::new();
         io::collect_geojson_legacy_crs(&parsed, &mut declarations);
         io::reconcile_legacy_geojson_crs(&declarations, fixed)?;
-        let (shapes, mask) = feature_value_shapes_and_missing(features)?;
-        let present = PyGeometryArray::from_shapes(shapes, Frame::new(crs, epoch)?)?;
-        return Ok(DecodedGeoJson::Array(match mask {
-            None => present,
-            Some(mask) => PyGeometryArray::scatter_present_rows(&present, mask)?,
-        }));
+        let geometries = feature_value_array(features, crs, epoch)?;
+        return Ok(DecodedGeoJson::Array(geometries));
     }
     let Some((shape, frame)) = coerce_geojson_geometry_value(
         &parsed,
@@ -506,7 +501,6 @@ fn decode_features_text(
         io::reconcile_legacy_geojson_crs(&[legacy], policy)?;
     }
     let mut shapes = crate::array::StreamingShapes::new();
-    let mut missing_rows = Vec::new();
     let mut side_rows = Vec::new();
     for (row_index, meta) in rows_meta.into_iter().enumerate() {
         let (row, nested) =
@@ -516,7 +510,6 @@ fn decode_features_text(
         }
         match &row.geometry {
             FeatureGeometryInput::Null => {
-                crate::try_push_vec(&mut missing_rows, row_index)?;
                 shapes.try_push_missing()?;
             },
             FeatureGeometryInput::Json(value) => {
@@ -526,12 +519,8 @@ fn decode_features_text(
         validate_text_side_data(&row)?;
         crate::try_push_vec(&mut side_rows, (row.properties, row.id))?;
     }
-    let row_count = side_rows.len();
     let frame = Frame::new(crs, epoch)?;
-    let geometries = match crate::array::sparse_missing_mask(row_count, &missing_rows)? {
-        Some(mask) => shapes.finish_with_missing_mask(frame, mask)?,
-        None => shapes.finish(frame)?,
-    };
+    let geometries = shapes.finish(frame)?;
     Ok(TextFeatureOutput {
         geometries,
         side_rows,
@@ -923,12 +912,9 @@ fn build_features(
     let mut properties = Vec::new();
     let mut ids = Vec::new();
     let mut shapes = crate::array::StreamingShapes::new();
-    let mut missing_rows = Vec::new();
-    let mut row_count = 0;
     for (row_index, row) in rows.enumerate() {
         let row = row?;
         crate::check_python_signals(py, row_index)?;
-        row_count = row_index + 1;
         let FeatureRow {
             geometry,
             geometry_path,
@@ -938,16 +924,15 @@ fn build_features(
         let result = py.detach(move || -> crate::error::Result<_> {
             match geometry {
                 FeatureGeometryInput::Null => {
-                    crate::try_push_vec(&mut missing_rows, row_index)?;
                     shapes.try_push_missing()?;
                 },
                 FeatureGeometryInput::Json(value) => {
                     shapes.try_push(io::parse_geojson_at(&value, &geometry_path)?)?;
                 },
             }
-            Ok((shapes, missing_rows))
+            Ok(shapes)
         });
-        (shapes, missing_rows) = match result {
+        shapes = match result {
             Ok(state) => state,
             Err(error) => {
                 drop(properties);
@@ -961,10 +946,7 @@ fn build_features(
     }
     let result = py.detach(move || -> crate::error::Result<PyGeometryArray> {
         let frame = Frame::new(crs, epoch)?;
-        match crate::array::sparse_missing_mask(row_count, &missing_rows)? {
-            Some(mask) => shapes.finish_with_missing_mask(frame, mask),
-            None => shapes.finish(frame),
-        }
+        shapes.finish(frame)
     });
     let geometries = match result {
         Ok(geometries) => geometries,
@@ -1661,25 +1643,22 @@ fn geojson_feature_collection_member(
     }
 }
 
-fn feature_value_shapes_and_missing(
+fn feature_value_array(
     features: &[Value],
-) -> crate::error::Result<(Vec<Shape>, Option<ValidityMask>)> {
-    let mut present = Vec::new();
-    let mut missing_rows = Vec::new();
-    crate::try_reserve_pair(&mut present, &mut missing_rows, features.len())?;
+    crs: Option<Crs>,
+    epoch: Option<f64>,
+) -> crate::error::Result<PyGeometryArray> {
+    let mut rows = crate::array::StreamingShapes::with_capacity(0, features.len());
     for (row, feature) in features.iter().enumerate() {
         let feature_path = format!("$.features[{row}]");
         let shape = geojson_feature_collection_member(feature, &feature_path)?;
         if let Some(shape) = shape {
-            crate::try_push_vec(&mut present, shape)?;
+            rows.try_push(shape)?;
         } else {
-            crate::try_push_vec(&mut missing_rows, row)?;
+            rows.try_push_missing()?;
         }
     }
-    Ok((
-        present,
-        crate::array::sparse_missing_mask(features.len(), &missing_rows)?,
-    ))
+    rows.finish(Frame::new(crs, epoch)?)
 }
 
 #[cfg(test)]
