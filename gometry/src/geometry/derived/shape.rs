@@ -3,14 +3,15 @@ use std::num::NonZeroU32;
 use crate::error::Result;
 use crate::geometry::derived::{
     areal_centroid, build_inscribed_circle, canonicalize_concave_hull_points,
-    collection_surface_point, emit_zero_radius_point, lineal_centroid, lineal_surface_point,
-    minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point, native_concave_hull,
-    point_centroid, polygonal_surface_point, polylabel_center_radius, polylabel_point,
-    shape_from_open_hull, shape_from_selected_hull, smallest_enclosing_circle,
+    collection_surface_point, emit_minimum_bounding_circle, emit_zero_radius_point,
+    lineal_centroid, lineal_surface_point, minimum_area_rectangle, monotone_chain_hull,
+    multipoint_surface_point, native_concave_hull, point_centroid, polygonal_surface_point,
+    polylabel_center_radius, polylabel_point, shape_from_open_hull, shape_from_selected_hull,
+    smallest_enclosing_circle,
 };
 use crate::geometry::{
-    BufferCapStyle, BufferJoinStyle, DEFAULT_MITER_LIMIT, GeometryErrorKind, GeometryKind, LineSeq,
-    Point, Polygon, Ring, Shape, bounds_to_shape, carry_ordinates, empty_geometry,
+    GeometryErrorKind, GeometryKind, LineSeq, Point, Polygon, Ring, Shape, bounds_to_shape,
+    carry_ordinates, empty_geometry,
 };
 use crate::{NonNegative, Positive};
 
@@ -188,46 +189,58 @@ impl Shape {
     /// The smallest circle enclosing the geometry, as a `Polygon` — the
     /// standard shape. A single distinct vertex returns itself (a radius-zero
     /// circle); empty
-    /// input returns `POLYGON EMPTY`. Computed with Welzl's algorithm over the
-    /// geometry's vertices, then realized as a round 64-gon about the exact
-    /// center and radius.
+    /// input returns `POLYGON EMPTY`. Computed with an exact-support Welzl
+    /// algorithm over the geometry's vertices, then realized as a round 64-gon
+    /// about the correctly rounded center and true minimum radius.
     pub fn minimum_bounding_circle(&self) -> Result<Self> {
-        let points = self.unique_xy_points();
+        if self.is_empty() {
+            return Ok(Self::empty_polygon());
+        }
+        let mut source_finite = true;
+        self.for_each_point(|point| {
+            source_finite &= point.x.is_finite() && point.y.is_finite();
+        });
+        if !source_finite {
+            return Err(GeometryErrorKind::unrepresentable_output(
+                "minimum_bounding_circle",
+            ));
+        }
+        let points = self.try_unique_xy_points()?;
         if points.is_empty() {
             return Ok(Self::empty_polygon());
         }
-        let (center, support) = smallest_enclosing_circle(&points);
-        // Overflow-safe radius (`hypot` scales internally) — a support vertex at
-        // ~1e155 would overflow a squared term but its distance stays finite.
-        let radius = (center.x - support.x).hypot(center.y - support.y);
-        if radius == 0.0 {
-            // A single distinct vertex: the degenerate circle is that point.
-            return Ok(Self::Point(center));
+        let circle = smallest_enclosing_circle(&points)?;
+        let rounded = match circle.rounded(&points) {
+            Ok(rounded) => rounded,
+            Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
+                return Err(error);
+            },
+            Err(_) => {
+                return Err(GeometryErrorKind::unrepresentable_output(
+                    "minimum_bounding_circle",
+                ));
+            },
+        };
+        if rounded.exact_zero_radius {
+            // A single distinct vertex: the degenerate circle is that source
+            // point, including its stored signed-zero spelling.
+            return Ok(Self::Point(rounded.center));
         }
-        // The buffer emitter places vertices on the requested radius, so using
-        // the exact radius would create an inscribed polygon that can exclude
-        // support points between vertices. Scale to its circumradius so every
-        // edge is tangent to the exact enclosing circle.
-        let vertex_count = 4.0 * f64::from(CIRCLE_QUADRANT_SEGMENTS.get());
-        let polygon_radius = radius / (std::f64::consts::PI / vertex_count).cos();
-        Self::Point(center).buffer_with_style(
-            polygon_radius,
-            BufferCapStyle::Round,
-            BufferJoinStyle::Round,
-            CIRCLE_QUADRANT_SEGMENTS,
-            Positive::try_new("miter_limit", DEFAULT_MITER_LIMIT)?,
-        )
+        emit_minimum_bounding_circle(&points, rounded, CIRCLE_QUADRANT_SEGMENTS)
     }
 
     /// Radius of the smallest circle enclosing the geometry. Empty input
     /// returns ``NaN``; a single distinct vertex returns ``0``.
-    pub fn minimum_bounding_radius(&self) -> f64 {
-        let points = self.unique_xy_points();
-        if points.is_empty() {
-            return f64::NAN;
+    pub fn minimum_bounding_radius(&self) -> Result<f64> {
+        if self.is_empty() {
+            return Ok(f64::NAN);
         }
-        let (center, support) = smallest_enclosing_circle(&points);
-        (center.x - support.x).hypot(center.y - support.y)
+        let points = self.try_unique_xy_points()?;
+        if points.is_empty() {
+            return Ok(f64::NAN);
+        }
+        let circle = smallest_enclosing_circle(&points)?;
+        circle.rounded_radius(&points)
     }
 
     /// The largest circle inscribed in a polygonal geometry: the filled disk

@@ -422,9 +422,14 @@ print("polygonized:", len(gm.polygonize(edges)))
 ```
 
 [`minimum_bounding_circle`][gometry.Geometry.minimum_bounding_circle] returns the
-smallest enclosing circle as geometry; [`minimum_bounding_radius`][gometry.Geometry.minimum_bounding_radius]
-returns only that circle's radius. On arrays, the radius method returns a
-read-only `float64` NumPy column.
+smallest enclosing circle as geometry; for planar/projected input,
+[`minimum_bounding_radius`][gometry.Geometry.minimum_bounding_radius] returns
+only that circle's correctly rounded true source radius. The polygon is
+certified after rounding and raises `GeometryError` rather than publishing a
+non-finite, invalid, or non-enclosing result when binary64 cannot represent it.
+Geographic multi-point radii retain their documented local/ellipsoidal
+approximation.
+On arrays, the radius method returns a read-only `float64` NumPy column.
 
 !!! note "Choose the triangulation"
     `method='constrained'` accepts `min_angle` and `max_area` for

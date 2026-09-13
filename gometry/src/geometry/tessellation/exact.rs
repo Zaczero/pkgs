@@ -1365,6 +1365,321 @@ pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
     incircle_dyadic(a, b, c, d)
 }
 
+fn try_difference(left: f64, right: f64) -> Result<ExactDyadic> {
+    ExactDyadic::try_from_f64(left)?.try_subtract(ExactDyadic::try_from_f64(right)?)
+}
+
+fn try_orient2d_dyadic(a: XY, b: XY, c: XY) -> Result<ExactSign> {
+    let bax = try_difference(b.x, a.x)?;
+    let bay = try_difference(b.y, a.y)?;
+    let cax = try_difference(c.x, a.x)?;
+    let cay = try_difference(c.y, a.y)?;
+    Ok(bax
+        .try_product(&cay)?
+        .try_subtract(bay.try_product(&cax)?)?
+        .sign())
+}
+
+/// Fallible exact orientation for a stored-binary64 triple.
+///
+/// The ordinary filters are allocation-free.  A full dyadic fallback keeps the
+/// same exact sign contract while allowing the owned arbitrary-precision
+/// storage to report an allocation failure rather than panicking.
+pub(in crate::geometry) fn try_orient2d(a: XY, b: XY, c: XY) -> Result<ExactSign> {
+    if let Some(sign) = orient2d_float(a, b, c) {
+        return Ok(sign);
+    }
+    if let Some(sign) = orient2d_lattice(a, b, c) {
+        return Ok(sign);
+    }
+    try_orient2d_dyadic(a, b, c)
+}
+
+fn try_incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
+    let (adx, ady) = (try_difference(a.x, d.x)?, try_difference(a.y, d.y)?);
+    let (bdx, bdy) = (try_difference(b.x, d.x)?, try_difference(b.y, d.y)?);
+    let (cdx, cdy) = (try_difference(c.x, d.x)?, try_difference(c.y, d.y)?);
+    let alift = adx.try_product(&adx)?.try_add(ady.try_product(&ady)?)?;
+    let blift = bdx.try_product(&bdx)?.try_add(bdy.try_product(&bdy)?)?;
+    let clift = cdx.try_product(&cdx)?.try_add(cdy.try_product(&cdy)?)?;
+    let bcdet = bdx
+        .try_product(&cdy)?
+        .try_subtract(cdx.try_product(&bdy)?)?;
+    let cadet = cdx
+        .try_product(&ady)?
+        .try_subtract(adx.try_product(&cdy)?)?;
+    let abdet = adx
+        .try_product(&bdy)?
+        .try_subtract(bdx.try_product(&ady)?)?;
+    Ok(alift
+        .try_product(&bcdet)?
+        .try_add(blift.try_product(&cadet)?)?
+        .try_add(clift.try_product(&abdet)?)?
+        .sign())
+}
+
+/// Fallible exact in-circle determinant for a stored-binary64 quadruple.
+///
+/// The sign is positive for an interior point when `a,b,c` are
+/// counter-clockwise, and negative for a clockwise triple.
+pub(in crate::geometry) fn try_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
+    if let Some(sign) = incircle_float(a, b, c, d) {
+        return Ok(sign);
+    }
+    if let Some(sign) = incircle_lattice(a, b, c, d) {
+        return Ok(sign);
+    }
+    if let Some(sign) = incircle_filtered(a, b, c, d) {
+        return Ok(sign);
+    }
+    try_incircle_dyadic(a, b, c, d)
+}
+
+fn same_xy(left: XY, right: XY) -> bool {
+    crate::geometry::canonical_f64_bits(left.x) == crate::geometry::canonical_f64_bits(right.x)
+        && crate::geometry::canonical_f64_bits(left.y)
+            == crate::geometry::canonical_f64_bits(right.y)
+}
+
+/// Exact containment in the circle through one, two, or three source points.
+///
+/// A one-point candidate is an identity test.  A two-point candidate is the
+/// diameter disk, whose exact predicate is `(p-a)·(p-b) <= 0`.  A three-point
+/// candidate uses the oriented exact in-circle determinant.
+pub(in crate::geometry) fn try_circle_contains(support: &[XY], point: XY) -> Result<bool> {
+    match support {
+        [only] => Ok(same_xy(*only, point)),
+        [a, b] => {
+            let pa = (try_difference(point.x, a.x)?, try_difference(point.y, a.y)?);
+            let pb = (try_difference(point.x, b.x)?, try_difference(point.y, b.y)?);
+            let dot = pa.0.try_product(&pb.0)?.try_add(pa.1.try_product(&pb.1)?)?;
+            Ok(dot.sign() != ExactSign::Positive)
+        },
+        [a, b, c] => {
+            let orientation = try_orient2d(*a, *b, *c)?;
+            if orientation == ExactSign::Zero {
+                return Ok(false);
+            }
+            let determinant = try_incircle(*a, *b, *c, point)?;
+            Ok(match orientation {
+                ExactSign::Positive => determinant != ExactSign::Negative,
+                ExactSign::Negative => determinant != ExactSign::Positive,
+                ExactSign::Zero => unreachable!(),
+            })
+        },
+        _ => Err(GeometryErrorKind::Invalid(
+            "minimum circle support must contain one, two, or three points".into(),
+        )
+        .into()),
+    }
+}
+
+/// Compare squared distances between two source pairs without rounding or
+/// forming a floating-point square.
+pub(in crate::geometry) fn try_squared_distance_cmp(
+    left_a: XY,
+    left_b: XY,
+    right_a: XY,
+    right_b: XY,
+) -> Result<Ordering> {
+    let squared = |a: XY, b: XY| -> Result<ExactDyadic> {
+        let dx = try_difference(a.x, b.x)?;
+        let dy = try_difference(a.y, b.y)?;
+        dx.try_product(&dx)?.try_add(dy.try_product(&dy)?)
+    };
+    Ok(squared(left_a, left_b)?.cmp(&squared(right_a, right_b)?))
+}
+
+struct ExactSupportCircle {
+    center: ExactPoint,
+    radius_numerator: ExactDyadic,
+    radius_denominator: ExactDyadic,
+}
+
+fn try_exact_point(point: XY) -> Result<ExactPoint> {
+    Ok(ExactPoint::homogeneous(
+        ExactDyadic::try_from_f64(point.x)?,
+        ExactDyadic::try_from_f64(point.y)?,
+        ExactDyadic::one(),
+    ))
+}
+
+fn try_circumcenter_exact(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
+    if try_orient2d(a, b, c)? == ExactSign::Zero {
+        return Err(GeometryErrorKind::voronoi(
+            "cannot construct a circumcenter for collinear sites",
+        ));
+    }
+    let first = ExactLine::try_perpendicular_bisector(a, b)?;
+    let second = ExactLine::try_perpendicular_bisector(a, c)?;
+    try_line_intersection(&first, &second)
+}
+
+fn try_radius_squared(center: &ExactPoint, point: XY) -> Result<(ExactDyadic, ExactDyadic)> {
+    let px = ExactDyadic::try_from_f64(point.x)?;
+    let py = ExactDyadic::try_from_f64(point.y)?;
+    let dx = center
+        .x()
+        .try_clone()?
+        .try_subtract(px.try_product(center.w())?)?;
+    let dy = center
+        .y()
+        .try_clone()?
+        .try_subtract(py.try_product(center.w())?)?;
+    Ok((
+        dx.try_product(&dx)?.try_add(dy.try_product(&dy)?)?,
+        center.w().try_product(center.w())?,
+    ))
+}
+
+fn try_support_circle(support: &[XY]) -> Result<ExactSupportCircle> {
+    match support {
+        [point] => {
+            let center = try_exact_point(*point)?;
+            Ok(ExactSupportCircle {
+                center,
+                radius_numerator: ExactDyadic::zero(),
+                radius_denominator: ExactDyadic::one(),
+            })
+        },
+        [a, b] => {
+            let ax = ExactDyadic::try_from_f64(a.x)?;
+            let ay = ExactDyadic::try_from_f64(a.y)?;
+            let bx = ExactDyadic::try_from_f64(b.x)?;
+            let by = ExactDyadic::try_from_f64(b.y)?;
+            let center = ExactPoint::homogeneous(
+                ax.try_clone()?.try_add(bx.try_clone()?)?,
+                ay.try_clone()?.try_add(by.try_clone()?)?,
+                ExactDyadic::try_from_f64(2.0)?,
+            );
+            let (radius_numerator, radius_denominator) = try_radius_squared(&center, *a)?;
+            Ok(ExactSupportCircle {
+                center,
+                radius_numerator,
+                radius_denominator,
+            })
+        },
+        [a, b, c] => {
+            let center = try_circumcenter_exact(*a, *b, *c)?;
+            let (radius_numerator, radius_denominator) = try_radius_squared(&center, *a)?;
+            Ok(ExactSupportCircle {
+                center,
+                radius_numerator,
+                radius_denominator,
+            })
+        },
+        _ => Err(GeometryErrorKind::Invalid(
+            "minimum circle support must contain one, two, or three points".into(),
+        )
+        .into()),
+    }
+}
+
+fn try_orient_source_center(a: XY, b: XY, center: &ExactPoint) -> Result<ExactSign> {
+    let ax = ExactDyadic::try_from_f64(a.x)?;
+    let ay = ExactDyadic::try_from_f64(a.y)?;
+    let bx = ExactDyadic::try_from_f64(b.x)?;
+    let by = ExactDyadic::try_from_f64(b.y)?;
+    let edge_x = bx.try_subtract(ax.try_clone()?)?;
+    let edge_y = by.try_subtract(ay.try_clone()?)?;
+    let center_x = center
+        .x()
+        .try_clone()?
+        .try_subtract(ax.try_product(center.w())?)?;
+    let center_y = center
+        .y()
+        .try_clone()?
+        .try_subtract(ay.try_product(center.w())?)?;
+    let determinant = edge_x
+        .try_product(&center_y)?
+        .try_subtract(edge_y.try_product(&center_x)?)?;
+    Ok(determinant.sign().quotient(center.w().sign()))
+}
+
+/// Independently certify a support candidate against all original points.
+///
+/// The final pass deliberately does not rely on the loop's current candidate
+/// state.  It checks source containment again and then verifies the closed
+/// KKT condition: a one-point support is coincident, a two-point support is a
+/// diameter, and a three-point support is non-collinear with its exact
+/// circumcenter in the closed support triangle.
+pub(in crate::geometry) fn try_certify_support(
+    support: &[XY],
+    points: impl IntoIterator<Item = XY>,
+) -> Result<bool> {
+    if support.is_empty() || support.len() > 3 {
+        return Err(GeometryErrorKind::Invalid(
+            "minimum circle support must contain one, two, or three points".into(),
+        )
+        .into());
+    }
+    match support {
+        [only] => Ok(points.into_iter().all(|point| same_xy(*only, point))),
+        [a, b] => {
+            if same_xy(*a, *b) {
+                return Ok(false);
+            }
+            points.into_iter().try_fold(true, |valid, point| {
+                if !valid {
+                    return Ok(false);
+                }
+                try_circle_contains(support, point)
+            })
+        },
+        [a, b, c] => {
+            let orientation = try_orient2d(*a, *b, *c)?;
+            if orientation == ExactSign::Zero {
+                return Ok(false);
+            }
+            let contained = points.into_iter().try_fold(true, |valid, point| {
+                if !valid {
+                    return Ok(false);
+                }
+                try_circle_contains(support, point)
+            })?;
+            if !contained {
+                return Ok(false);
+            }
+            let center = try_circumcenter_exact(*a, *b, *c)?;
+            for (left, right) in [(*a, *b), (*b, *c), (*c, *a)] {
+                let edge_orientation = try_orient_source_center(left, right, &center)?;
+                let inside = match orientation {
+                    ExactSign::Positive => edge_orientation != ExactSign::Negative,
+                    ExactSign::Negative => edge_orientation != ExactSign::Positive,
+                    ExactSign::Zero => unreachable!(),
+                };
+                if !inside {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
+        _ => unreachable!(),
+    }
+}
+
+/// Round the exact center and squared radius of a source support.
+///
+/// The center and squared radius are each rounded once from their exact
+/// constructions.  In particular, the radius is never recovered from the
+/// rounded center.
+pub(in crate::geometry) fn round_support_circle(support: &[XY]) -> Result<(XY, f64, bool)> {
+    let circle = try_support_circle(support)?;
+    let center = circle.center.round_nearest_even()?;
+    let radius = round_sqrt_ratio(&circle.radius_numerator, &circle.radius_denominator)?;
+    Ok((center, radius, circle.radius_numerator.is_zero()))
+}
+
+pub(in crate::geometry) fn round_support_radius(support: &[XY]) -> Result<f64> {
+    let circle = try_support_circle(support)?;
+    round_sqrt_ratio(&circle.radius_numerator, &circle.radius_denominator)
+}
+
+pub(in crate::geometry) fn round_support_center(support: &[XY]) -> Result<XY> {
+    let circle = try_support_circle(support)?;
+    circle.center.round_nearest_even()
+}
+
 pub(super) fn try_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
     if let Some(sign) = incircle_float(a, b, c, d) {
         return Ok(sign);
@@ -2617,6 +2932,19 @@ fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Homogeneous {
         y: a[2].product(&b[0]).subtract(a[0].product(&b[2])),
         w: a[0].product(&b[1]).subtract(a[1].product(&b[0])),
     }
+}
+
+fn try_line_intersection(a: &ExactLine, b: &ExactLine) -> Result<ExactPoint> {
+    let a = &a.0;
+    let b = &b.0;
+    Ok(ExactPoint::homogeneous(
+        a[1].try_product(&b[2])?
+            .try_subtract(a[2].try_product(&b[1])?)?,
+        a[2].try_product(&b[0])?
+            .try_subtract(a[0].try_product(&b[2])?)?,
+        a[0].try_product(&b[1])?
+            .try_subtract(a[1].try_product(&b[0])?)?,
+    ))
 }
 
 fn try_intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Result<Homogeneous> {
@@ -4301,5 +4629,88 @@ mod tests {
         ];
         assert!(enclosing_frame_binary64(extremes.iter()).is_none());
         enclosing_frame(&extremes).expect("exact fallback frame");
+    }
+
+    #[test]
+    fn minimum_circle_support_predicates_use_exact_diameter_and_incircle_signs() {
+        let diameter = [XY::new(-1.0, 0.0), XY::new(1.0, 0.0)];
+        assert!(try_circle_contains(&diameter, XY::new(0.0, 1.0)).unwrap());
+        assert!(!try_circle_contains(&diameter, XY::new(0.0, 1.0 + 2.5e-13)).unwrap());
+
+        let acute = [XY::new(0.0, 0.0), XY::new(4.0, 0.0), XY::new(1.0, 3.0)];
+        assert!(try_circle_contains(&acute, XY::new(2.0, 1.0)).unwrap());
+        assert!(!try_circle_contains(&acute, XY::new(5.0, 5.0)).unwrap());
+        assert!(try_certify_support(&acute, acute.into_iter()).unwrap());
+
+        let obtuse = [XY::new(0.0, 0.0), XY::new(4.0, 0.0), XY::new(1.0, 0.5)];
+        assert!(!try_certify_support(&obtuse, obtuse.into_iter()).unwrap());
+    }
+
+    #[test]
+    fn minimum_circle_rounds_exact_midpoint_and_circumradius_without_recomputing() {
+        let pair = [XY::new(0.0, 0.0), XY::new(4.0, 0.0)];
+        let (center, radius, zero) = round_support_circle(&pair).unwrap();
+        assert_eq!(center, XY::new(2.0, 0.0));
+        assert_eq!(radius.to_bits(), 2.0_f64.to_bits());
+        assert!(!zero);
+
+        let triangle = [XY::new(0.0, 0.0), XY::new(4.0, 0.0), XY::new(0.0, 2.0)];
+        let (center, radius, zero) = round_support_circle(&triangle).unwrap();
+        assert_eq!(center, XY::new(2.0, 1.0));
+        assert_eq!(radius.to_bits(), 5.0_f64.sqrt().to_bits());
+        assert!(!zero);
+
+        let singleton = [XY::new(-0.0, 3.0)];
+        let (center, radius, zero) = round_support_circle(&singleton).unwrap();
+        assert_eq!(center, XY::new(0.0, 3.0));
+        assert_eq!(radius.to_bits(), 0.0_f64.to_bits());
+        assert!(zero);
+    }
+
+    #[test]
+    fn minimum_circle_exact_diameter_fallback_propagates_allocation_failure() {
+        let support = [XY::new(-f64::MAX, 0.0), XY::new(f64::MAX, 0.0)];
+        let point = XY::new(0.0, f64::from_bits(1));
+        let (_, allocations) =
+            crate::test_support::allocation_count(|| try_circle_contains(&support, point));
+        assert!(
+            allocations > 0,
+            "mixed-exponent diameter must use exact storage"
+        );
+        let error =
+            crate::test_support::fail_allocations_after(0, || try_circle_contains(&support, point))
+                .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn minimum_circle_three_support_rounding_stays_fallible_at_mixed_exponents() {
+        let scale = 2.0_f64.powi(200);
+        let tiny = 2.0_f64.powi(-200);
+        let support = [
+            XY::new(-scale, 0.0),
+            XY::new(scale, 0.0),
+            XY::new(0.0, tiny),
+        ];
+        let (result, allocations) =
+            crate::test_support::allocation_count(|| round_support_circle(&support));
+        assert!(
+            result.is_ok(),
+            "mixed-exponent circumcircle is representable"
+        );
+        assert!(
+            allocations > 0,
+            "three-support exact construction must allocate"
+        );
+        let error =
+            crate::test_support::fail_allocations_after(0, || round_support_circle(&support))
+                .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+        ));
     }
 }

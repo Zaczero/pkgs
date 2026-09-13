@@ -441,8 +441,8 @@ Examples
 method_doc! {
     doc_minimum_bounding_circle;
     body: r"Smallest circle enclosing the geometry, as a polygon. The standard shape:
-the enclosing circle as a round 64-gon about the exact Welzl center and
-radius. A single distinct vertex returns itself; empty input returns
+for planar/projected input, the enclosing circle is a round 64-gon about the
+correctly rounded source center and true minimum radius. A single distinct vertex returns itself; empty input returns
 ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
 geographic CRS; projected CRS distances default to the CRS's native unit
 and scale through the CRS linear unit only with ``unit='meters'``.
@@ -457,8 +457,8 @@ unit : {'planar', 'meters'}, default None
 
 Returns
 -------
-Polygon
-    The smallest enclosing circle.
+Point or Polygon
+    The smallest enclosing circle, or the source point for a zero-radius result.
 
 ";
     array: r"
@@ -472,6 +472,9 @@ GeometryArray
     tail: r"
 Raises
 ------
+GeometryError
+    If the correctly rounded circle cannot be emitted as a finite, valid,
+    source-enclosing polygon without changing its center or radius.
 InvalidGeometryError
     If the bounding circle cannot be computed.
 
@@ -485,13 +488,13 @@ Examples
 
 method_doc! {
     doc_minimum_bounding_radius;
-    body: r"Radius of the smallest circle enclosing the geometry. This is the numeric
-twin of minimum_bounding_circle: computed by the same Welzl center/support
-kernel without materializing the polygon. Empty input yields ``NaN``; a single
-distinct vertex yields ``0``. CRS-aware via local projection/ellipsoid support
-measurement (approximate for geographic point sets with three or more
-distinct vertices); two-point geographic inputs are the exact geodesic
-half-distance.
+    body: r"Radius of the smallest circle enclosing the geometry. For planar/projected
+input it is rounded from the exact source minimum; this is the numeric twin of
+minimum_bounding_circle, and both use the same exact support kernel. Empty
+input yields ``NaN``; a single distinct vertex yields ``0``. Geographic point
+sets with three or more distinct vertices use the planar center and
+ellipsoidal support measurement (an approximation); two-point geographic
+inputs are the exact geodesic half-distance.
 
 Parameters
 ----------

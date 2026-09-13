@@ -7,7 +7,10 @@ use std::collections::BinaryHeap;
 use std::num::NonZeroU32;
 
 use crate::error::Result;
-use crate::geometry::tessellation::exact::{ExactDyadic, round_sqrt_ratio, try_compare_ratios};
+use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::tessellation::exact::{
+    self, ExactDyadic, round_sqrt_ratio, try_compare_ratios,
+};
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
     ExpansionBudget, FacetBvh, Orientation, Point, Polygon, PolylabelCell, PreparedLinework, Ring,
@@ -33,116 +36,431 @@ impl PartialOrd for PolylabelCell {
     }
 }
 
-/// Welzl's smallest enclosing circle (iterative move-to-front form, expected
-/// O(n) after a deterministic LCG shuffle), returning the center and a
-/// support vertex (an input vertex on the circle — the radius is their
-/// distance). The kernel runs in a unit frame — coordinates translated to the
-/// bounds midpoint and scaled by the half-extent — so squared terms can
-/// neither overflow (`1e155`-scale inputs) nor flush collinearity tests to
-/// zero (subnormal-scale inputs); containment tests use the ordinary
-/// binary64 squared-distance comparison without scale-dependent slack.
-pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
-    fn contains(center: Point, radius_sq: f64, point: Point) -> bool {
-        crate::geometry::segments::point_distance_squared(center, point) <= radius_sq
+/// The support of a minimum enclosing circle.  A candidate never stores a
+/// rounded center or radius: those values are derived only after the support
+/// has passed the independent exact certificate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CircleSupport {
+    One(usize),
+    Two(usize, usize),
+    Three(usize, usize, usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MinimumCircle {
+    support: CircleSupport,
+}
+
+/// The public-value realization of a certified support.  This is deliberately
+/// separate from [`MinimumCircle`], whose only state is source support.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RoundedMinimumCircle {
+    pub(crate) center: Point,
+    pub(crate) radius: f64,
+    pub(crate) exact_zero_radius: bool,
+}
+
+impl MinimumCircle {
+    fn support_xy(self, points: &[Point]) -> ([XY; 3], usize) {
+        let mut support = [XY::new(0.0, 0.0); 3];
+        let indices = match self.support {
+            CircleSupport::One(a) => [a, 0, 0],
+            CircleSupport::Two(a, b) => [a, b, 0],
+            CircleSupport::Three(a, b, c) => [a, b, c],
+        };
+        let count = match self.support {
+            CircleSupport::One(_) => 1,
+            CircleSupport::Two(..) => 2,
+            CircleSupport::Three(..) => 3,
+        };
+        for index in 0..count {
+            support[index] = points[indices[index]].xy();
+        }
+        (support, count)
     }
-    fn from_two(a: Point, b: Point) -> (Point, f64) {
-        let center = Point::new_raw_xy(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
-        (
-            center,
-            crate::geometry::segments::point_distance_squared(center, a),
+
+    fn contains(self, points: &[Point], point: usize) -> Result<bool> {
+        let (support, count) = self.support_xy(points);
+        exact::try_circle_contains(&support[..count], points[point].xy())
+    }
+
+    fn widest_pair(points: &[Point], a: usize, b: usize, c: usize) -> Result<Self> {
+        let pairs = [(a, b), (a, c), (b, c)];
+        let mut widest = pairs[0];
+        for &(left, right) in &pairs[1..] {
+            if exact::try_squared_distance_cmp(
+                points[left].xy(),
+                points[right].xy(),
+                points[widest.0].xy(),
+                points[widest.1].xy(),
+            )?
+            .is_gt()
+            {
+                widest = (left, right);
+            }
+        }
+        Ok(Self {
+            support: CircleSupport::Two(widest.0, widest.1),
+        })
+    }
+
+    fn certificate(self, points: &[Point]) -> Result<bool> {
+        let (support, count) = self.support_xy(points);
+        exact::try_certify_support(
+            &support[..count],
+            points.iter().copied().map(|point| point.xy()),
         )
     }
-    fn circumcircle(a: Point, b: Point, c: Point) -> Option<(Point, f64)> {
-        let bx = b.x - a.x;
-        let by = b.y - a.y;
-        let cx = c.x - a.x;
-        let cy = c.y - a.y;
-        let d = 2.0 * (bx * cy - by * cx);
-        if d == 0.0 {
-            return None; // collinear
+
+    pub(crate) fn rounded(self, points: &[Point]) -> Result<RoundedMinimumCircle> {
+        let (support, count) = self.support_xy(points);
+        let (center, radius, exact_zero_radius) = exact::round_support_circle(&support[..count])?;
+        // Preserve the source spelling for the zero-radius case.  Exact
+        // mathematical zero has no sign, while the derived point is still a
+        // source point and therefore retains its stored coordinate bits.
+        let center = if let CircleSupport::One(index) = self.support {
+            Point::new_raw_xy(points[index].x, points[index].y)
+        } else {
+            Point::new_raw_xy(center.x, center.y)
+        };
+        Ok(RoundedMinimumCircle {
+            center,
+            radius,
+            exact_zero_radius,
+        })
+    }
+
+    pub(crate) fn rounded_radius(self, points: &[Point]) -> Result<f64> {
+        let (support, count) = self.support_xy(points);
+        exact::round_support_radius(&support[..count])
+    }
+
+    pub(crate) fn rounded_center(self, points: &[Point]) -> Result<Point> {
+        let (support, count) = self.support_xy(points);
+        let center = exact::round_support_center(&support[..count])?;
+        if let CircleSupport::One(index) = self.support {
+            Ok(Point::new_raw_xy(points[index].x, points[index].y))
+        } else {
+            Ok(Point::new_raw_xy(center.x, center.y))
         }
-        let b2 = bx * bx + by * by;
-        let c2 = cx * cx + cy * cy;
-        let ux = (cy * b2 - by * c2) / d;
-        let uy = (bx * c2 - cx * b2) / d;
-        let center = Point::new_raw_xy(a.x + ux, a.y + uy);
-        Some((center, ux * ux + uy * uy))
     }
-    /// Largest of the three pairwise circles (the collinear fallback).
-    fn widest_pair(a: Point, b: Point, c: Point) -> (Point, f64) {
-        [from_two(a, b), from_two(a, c), from_two(b, c)]
-            .into_iter()
-            .max_by(|left, right| left.1.total_cmp(&right.1))
-            .expect("three candidates")
-    }
+}
 
-    // Unit frame: translate to the bounds midpoint, then derive the extent
-    // from finite distances to that midpoint. Halving both extrema first can
-    // underflow at the smallest scale (`±s / 2` is zero); midpoint distances
-    // retain a nonzero extent even there. Original input vertices are kept
-    // aside for the support.
-    let bounds = Bounds::from_points(points.iter().copied());
-    let mid = Point::new_raw_xy(
-        f64::midpoint(bounds.minx(), bounds.maxx()),
-        f64::midpoint(bounds.miny(), bounds.maxy()),
-    );
-    let extent = (bounds.maxx() - mid.x)
-        .max(mid.x - bounds.minx())
-        .max(bounds.maxy() - mid.y)
-        .max(mid.y - bounds.miny());
-    let scale = if extent > 0.0 { extent } else { 1.0 };
-    let originals = points;
-    let mut points = points
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct CircleWork {
+    contains: usize,
+    one_supports: usize,
+    two_supports: usize,
+    three_supports: usize,
+    collinear_fallbacks: usize,
+}
+
+#[cfg(not(test))]
+type CircleWork = ();
+
+#[inline]
+const fn count_contains(_work: &mut CircleWork) {
+    #[cfg(test)]
+    {
+        _work.contains += 1;
+    }
+}
+
+#[inline]
+const fn count_one_support(_work: &mut CircleWork) {
+    #[cfg(test)]
+    {
+        _work.one_supports += 1;
+    }
+}
+
+#[inline]
+const fn count_two_support(_work: &mut CircleWork) {
+    #[cfg(test)]
+    {
+        _work.two_supports += 1;
+    }
+}
+
+#[inline]
+const fn count_three_support(_work: &mut CircleWork) {
+    #[cfg(test)]
+    {
+        _work.three_supports += 1;
+    }
+}
+
+#[inline]
+const fn count_collinear_fallback(_work: &mut CircleWork) {
+    #[cfg(test)]
+    {
+        _work.collinear_fallbacks += 1;
+    }
+}
+
+fn solve_enclosing_circle_order(
+    points: &[Point],
+    order: &[usize],
+    work: &mut CircleWork,
+) -> Result<MinimumCircle> {
+    let mut circle = MinimumCircle::new_one(order[0]);
+    count_one_support(work);
+    for i in 1..order.len() {
+        count_contains(work);
+        if circle.contains(points, order[i])? {
+            continue;
+        }
+        circle = MinimumCircle::new_one(order[i]);
+        count_one_support(work);
+        for j in 0..i {
+            count_contains(work);
+            if circle.contains(points, order[j])? {
+                continue;
+            }
+            circle = MinimumCircle::new_two(order[i], order[j]);
+            count_two_support(work);
+            for k in 0..j {
+                count_contains(work);
+                if circle.contains(points, order[k])? {
+                    continue;
+                }
+                let a = order[i];
+                let b = order[j];
+                let c = order[k];
+                circle = if exact::try_orient2d(points[a].xy(), points[b].xy(), points[c].xy())?
+                    == ExactSign::Zero
+                {
+                    count_collinear_fallback(work);
+                    MinimumCircle::widest_pair(points, a, b, c)?
+                } else {
+                    count_three_support(work);
+                    MinimumCircle::new_three(a, b, c)
+                };
+            }
+        }
+    }
+    if !circle.certificate(points)? {
+        return Err(crate::geometry::GeometryErrorKind::Invalid(
+            "minimum enclosing circle support certificate failed".into(),
+        )
+        .into());
+    }
+    Ok(circle)
+}
+
+/// Welzl's smallest enclosing circle in an index-only support representation.
+///
+/// The move-to-front loop has expected linear work after a process-keyed
+/// Fisher-Yates/LCG order.  Every containment decision is exact in the stored
+/// binary64 source coordinates, so the result is independent of the input
+/// order and is not based on a normalized or rounded candidate.
+pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> Result<MinimumCircle> {
+    if points.is_empty() {
+        return Err(crate::geometry::GeometryErrorKind::Invalid(
+            "minimum enclosing circle requires a non-empty source".into(),
+        )
+        .into());
+    }
+    if points
         .iter()
-        .map(|point| Point::new_raw_xy((point.x - mid.x) / scale, (point.y - mid.y) / scale))
-        .collect::<Vec<_>>();
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return Err(crate::geometry::GeometryErrorKind::NonFiniteCoordinate.into());
+    }
 
-    // Deterministic shuffle (LCG) to defeat adversarial input order.
-    let mut state: u64 = 0x9E37_79B9_7F4A_7C15 ^ (points.len() as u64);
-    for index in (1..points.len()).rev() {
+    let hash_state = crate::collections::collection_hash_state()?;
+    let mut state = hash_state.hash_one((points.len(), "minimum_enclosing_circle"));
+    let mut order = Vec::new();
+    crate::try_reserve_vec(&mut order, points.len())?;
+    order.extend(0..points.len());
+    for index in (1..order.len()).rev() {
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1);
         let other = (state >> 33) as usize % (index + 1);
-        points.swap(index, other);
+        order.swap(index, other);
     }
 
-    let mut circle = (points[0], 0.0);
-    for i in 1..points.len() {
-        if contains(circle.0, circle.1, points[i]) {
-            continue;
-        }
-        circle = (points[i], 0.0);
-        for j in 0..i {
-            if contains(circle.0, circle.1, points[j]) {
-                continue;
-            }
-            circle = from_two(points[i], points[j]);
-            for k in 0..j {
-                if contains(circle.0, circle.1, points[k]) {
-                    continue;
-                }
-                circle = circumcircle(points[i], points[j], points[k])
-                    .unwrap_or_else(|| widest_pair(points[i], points[j], points[k]));
-            }
+    #[cfg(test)]
+    {
+        let mut work = CircleWork::default();
+        solve_enclosing_circle_order(points, &order, &mut work)
+    }
+    #[cfg(not(test))]
+    {
+        solve_enclosing_circle_order(points, &order, &mut ())
+    }
+}
+
+impl MinimumCircle {
+    const fn new_one(index: usize) -> Self {
+        Self {
+            support: CircleSupport::One(index),
         }
     }
 
-    // The support is the original vertex farthest from the denormalized
-    // center — measured against the *original* coordinates (in the unit
-    // scale, so the comparison cannot overflow) so the reported radius
-    // includes the center's denormalization rounding.
-    let center = Point::new_raw_xy(mid.x + circle.0.x * scale, mid.y + circle.0.y * scale);
-    let scaled_distance = |point: &Point| {
-        let dx = (point.x - center.x) / scale;
-        let dy = (point.y - center.y) / scale;
-        dx * dx + dy * dy
+    const fn new_two(left: usize, right: usize) -> Self {
+        Self {
+            support: CircleSupport::Two(left, right),
+        }
+    }
+
+    const fn new_three(a: usize, b: usize, c: usize) -> Self {
+        Self {
+            support: CircleSupport::Three(a, b, c),
+        }
+    }
+}
+
+fn unrepresentable_minimum_circle() -> crate::error::Error {
+    crate::geometry::GeometryErrorKind::unrepresentable_output("minimum_bounding_circle")
+}
+
+fn circle_emission_error(error: crate::error::Error) -> crate::error::Error {
+    if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) {
+        error
+    } else {
+        unrepresentable_minimum_circle()
+    }
+}
+
+fn certify_minimum_circle_polygon(
+    output: &Shape,
+    source: &[Point],
+    quadrant_segments: NonZeroU32,
+) -> Result<()> {
+    let Shape::Polygon(polygon) = output else {
+        return Err(unrepresentable_minimum_circle());
     };
-    let support = originals
+    let mut rings = polygon.rings();
+    let Some(shell) = rings.next() else {
+        return Err(unrepresentable_minimum_circle());
+    };
+    if rings.next().is_some() {
+        return Err(unrepresentable_minimum_circle());
+    }
+    let steps = (quadrant_segments.get() as usize)
+        .checked_mul(4)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let expected_length = steps
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    if shell.coords().len() != expected_length {
+        return Err(unrepresentable_minimum_circle());
+    }
+
+    let mut vertices = Vec::new();
+    crate::try_reserve_vec(&mut vertices, expected_length)?;
+    for point in shell.coords().iter_coords() {
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Err(unrepresentable_minimum_circle());
+        }
+        vertices.push(point.xy());
+    }
+    let Some((&first, rest)) = vertices.split_first() else {
+        return Err(unrepresentable_minimum_circle());
+    };
+    let Some(&last) = rest.last() else {
+        return Err(unrepresentable_minimum_circle());
+    };
+    let same_coordinate = |left: f64, right: f64| {
+        crate::geometry::canonical_f64_bits(left) == crate::geometry::canonical_f64_bits(right)
+    };
+    if !same_coordinate(first.x, last.x) || !same_coordinate(first.y, last.y) {
+        return Err(unrepresentable_minimum_circle());
+    }
+    let open = &vertices[..vertices.len() - 1];
+    if open.len() < 3 {
+        return Err(unrepresentable_minimum_circle());
+    }
+    for index in 0..open.len() {
+        let next = (index + 1) % open.len();
+        if same_coordinate(open[index].x, open[next].x)
+            && same_coordinate(open[index].y, open[next].y)
+        {
+            return Err(unrepresentable_minimum_circle());
+        }
+    }
+
+    let mut direction = None;
+    for index in 0..open.len() {
+        let previous = open[(index + open.len() - 1) % open.len()];
+        let current = open[index];
+        let next = open[(index + 1) % open.len()];
+        let turn = exact::try_orient2d(previous, current, next)?;
+        if turn == ExactSign::Zero {
+            return Err(unrepresentable_minimum_circle());
+        }
+        if let Some(expected) = direction {
+            if turn != expected {
+                return Err(unrepresentable_minimum_circle());
+            }
+        } else {
+            direction = Some(turn);
+        }
+    }
+    let direction = direction.expect("three or more open circle vertices");
+
+    for index in 0..open.len() {
+        let left = open[index];
+        let right = open[(index + 1) % open.len()];
+        for point in source {
+            let side = exact::try_orient2d(left, right, point.xy())?;
+            let contained = match direction {
+                ExactSign::Positive => side != ExactSign::Negative,
+                ExactSign::Negative => side != ExactSign::Positive,
+                ExactSign::Zero => unreachable!(),
+            };
+            if !contained {
+                return Err(unrepresentable_minimum_circle());
+            }
+        }
+    }
+
+    if output.validate()?.is_some() {
+        return Err(unrepresentable_minimum_circle());
+    }
+    Ok(())
+}
+
+/// Emit the existing regular point-circle polygon at the rounded true radius,
+/// then certify the stored output before publishing it.  The polygon radius is
+/// the circumradius needed for its apothem to reach the true radius; it is not
+/// fed back into the scalar minimum-radius result.
+pub(crate) fn emit_minimum_bounding_circle(
+    source: &[Point],
+    rounded: RoundedMinimumCircle,
+    quadrant_segments: NonZeroU32,
+) -> Result<Shape> {
+    if source
         .iter()
-        .max_by(|a, b| scaled_distance(a).total_cmp(&scaled_distance(b)))
-        .expect("non-empty");
-    (center, *support)
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+        || !rounded.center.x.is_finite()
+        || !rounded.center.y.is_finite()
+        || !rounded.radius.is_finite()
+        || rounded.radius <= 0.0
+    {
+        return Err(unrepresentable_minimum_circle());
+    }
+    let vertex_count = 4.0 * f64::from(quadrant_segments.get());
+    let polygon_radius = rounded.radius / (std::f64::consts::PI / vertex_count).cos();
+    if !polygon_radius.is_finite() || polygon_radius <= 0.0 {
+        return Err(unrepresentable_minimum_circle());
+    }
+    let mut budget = ExpansionBudget::new("minimum_bounding_circle", "quadrant_segments");
+    let output = match crate::geometry::point_buffer(
+        rounded.center,
+        polygon_radius,
+        quadrant_segments,
+        &mut budget,
+    ) {
+        Ok(Some(output)) => output,
+        Ok(None) => return Err(unrepresentable_minimum_circle()),
+        Err(error) => return Err(circle_emission_error(error)),
+    };
+    certify_minimum_circle_polygon(&output, source, quadrant_segments)?;
+    Ok(output)
 }
 
 /// The pole of inaccessibility, returned after denormalizing the search center.
@@ -1384,5 +1702,210 @@ mod tests {
         let recovered = representative_point(&shape, bounds).expect("retry");
         assert_eq!((recovered.x, recovered.y), (1.0, 2.0));
         assert_ne!((recovered.x, recovered.y), (bbox_seed.x, bbox_seed.y));
+    }
+
+    #[test]
+    fn minimum_circle_radius_propagates_allocation_failures() {
+        let shape = Shape::MultiPoint(
+            crate::geometry::MultiPoint::try_new(crate::geometry::CoordinateAxes::XY, vec![
+                crate::geometry::MultiMember::Value(Point::new_raw_xy(0.0, 0.0)),
+                crate::geometry::MultiMember::Value(Point::new_raw_xy(4.0, 0.0)),
+                crate::geometry::MultiMember::Value(Point::new_raw_xy(1.0, 3.0)),
+            ])
+            .unwrap(),
+        );
+        let (_, allocations) = crate::test_support::allocation_count(|| {
+            shape.minimum_bounding_radius().expect("finite radius")
+        });
+        assert!(allocations > 0, "minimum-circle staging must allocate");
+        for allowed in 0..allocations {
+            let error = crate::test_support::fail_allocations_after(allowed, || {
+                shape.minimum_bounding_radius()
+            })
+            .expect_err("a rejected allocation must remain a native error");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
+    }
+
+    #[test]
+    fn minimum_circle_polygon_propagates_emission_allocation_failures() {
+        let shape = Shape::MultiPoint(
+            crate::geometry::MultiPoint::try_new(crate::geometry::CoordinateAxes::XY, vec![
+                crate::geometry::MultiMember::Value(Point::new_raw_xy(0.0, 0.0)),
+                crate::geometry::MultiMember::Value(Point::new_raw_xy(4.0, 0.0)),
+                crate::geometry::MultiMember::Value(Point::new_raw_xy(1.0, 3.0)),
+            ])
+            .unwrap(),
+        );
+        let (_, allocations) = crate::test_support::allocation_count(|| {
+            shape
+                .minimum_bounding_circle()
+                .expect("finite circle polygon")
+        });
+        assert!(allocations > 0, "circle emission must allocate");
+        let error =
+            crate::test_support::fail_allocations_after(0, || shape.minimum_bounding_circle())
+                .expect_err("the first rejected allocation must remain a native error");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    #[test]
+    fn minimum_circle_polygon_rejects_a_collapsed_output_ring() {
+        let points = [
+            Point::new_raw_xy(2.0_f64.powi(60), 2.0_f64.powi(60)),
+            Point::new_raw_xy(2.0_f64.powi(60) + 1024.0, 2.0_f64.powi(60)),
+            Point::new_raw_xy(2.0_f64.powi(60) + 256.0, 2.0_f64.powi(60) + 768.0),
+        ];
+        let shape = Shape::MultiPoint(
+            crate::geometry::MultiPoint::try_new(
+                crate::geometry::CoordinateAxes::XY,
+                points
+                    .into_iter()
+                    .map(crate::geometry::MultiMember::Value)
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let error = shape.minimum_bounding_circle().unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(crate::geometry::GeometryErrorKind::UnrepresentableOutput {
+                operation: "minimum_bounding_circle"
+            })
+        ));
+    }
+
+    #[test]
+    fn minimum_circle_polygon_maps_nonfinite_source_to_unrepresentable_output() {
+        let error = Shape::Point(Point::new_raw_xy(f64::INFINITY, 0.0))
+            .minimum_bounding_circle()
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(crate::geometry::GeometryErrorKind::UnrepresentableOutput {
+                operation: "minimum_bounding_circle"
+            })
+        ));
+    }
+
+    #[test]
+    fn minimum_circle_support_matches_independent_boundary_cases() {
+        let cases = [
+            (
+                vec![
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(4.0, 0.0),
+                    Point::new_raw_xy(1.0, 3.0),
+                ],
+                vec![XY::new(0.0, 0.0), XY::new(4.0, 0.0), XY::new(1.0, 3.0)],
+            ),
+            (
+                vec![
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(4.0, 0.0),
+                    Point::new_raw_xy(1.0, 0.5),
+                ],
+                vec![XY::new(0.0, 0.0), XY::new(4.0, 0.0)],
+            ),
+            (
+                vec![
+                    Point::new_raw_xy(-3.0, -3.0),
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(4.0, 4.0),
+                    Point::new_raw_xy(1.0, 1.0),
+                ],
+                vec![XY::new(-3.0, -3.0), XY::new(4.0, 4.0)],
+            ),
+        ];
+        for (points, mut expected) in cases {
+            let circle = smallest_enclosing_circle(&points).unwrap();
+            let (support, count) = circle.support_xy(&points);
+            let mut actual = support[..count].to_vec();
+            actual.sort_by(|left, right| {
+                left.x
+                    .total_cmp(&right.x)
+                    .then_with(|| left.y.total_cmp(&right.y))
+            });
+            expected.sort_by(|left, right| {
+                left.x
+                    .total_cmp(&right.x)
+                    .then_with(|| left.y.total_cmp(&right.y))
+            });
+            assert_eq!(actual, expected);
+        }
+    }
+
+    fn shuffle_with_seed(length: usize, seed: u64) -> Vec<usize> {
+        let mut state = seed ^ length as u64;
+        let mut order: Vec<usize> = (0..length).collect();
+        for index in (1..length).rev() {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            order.swap(index, (state >> 33) as usize % (index + 1));
+        }
+        order
+    }
+
+    fn fixed_shuffle(length: usize) -> Vec<usize> {
+        shuffle_with_seed(length, 0x9E37_79B9_7F4A_7C15)
+    }
+
+    #[test]
+    fn minimum_circle_work_counters_cover_normal_and_inverse_fixed_shuffle_orders() {
+        // These thresholds characterize this fixed parabola fixture: they
+        // document the old fixed-shuffle adversary without making a universal
+        // speed claim about the randomized algorithm.
+        let length = 64;
+        let source: Vec<_> = (0..length)
+            .map(|index| {
+                let x = index as f64;
+                Point::new_raw_xy(x, x * x)
+            })
+            .collect();
+        let ordinary_order = shuffle_with_seed(length, 0xD1B5_4A32_D192_ED03);
+        let mut ordinary_work = CircleWork::default();
+        let ordinary =
+            solve_enclosing_circle_order(&source, &ordinary_order, &mut ordinary_work).unwrap();
+
+        let permutation = fixed_shuffle(length);
+        let mut inverse_source = vec![Point::new_raw_xy(0.0, 0.0); length];
+        for (after, &before) in permutation.iter().enumerate() {
+            inverse_source[before] = source[after];
+        }
+        let mut adversarial_work = CircleWork::default();
+        let adversarial =
+            solve_enclosing_circle_order(&inverse_source, &permutation, &mut adversarial_work)
+                .unwrap();
+
+        assert_eq!(
+            ordinary.rounded(&source).unwrap().radius.to_bits(),
+            adversarial
+                .rounded(&inverse_source)
+                .unwrap()
+                .radius
+                .to_bits()
+        );
+        assert!(ordinary_work.contains > 0);
+        assert!(adversarial_work.contains > 0);
+        assert!(ordinary_work.contains < length * length / 4);
+        assert!(adversarial_work.contains > length * length / 4);
+        assert!(ordinary_work.one_supports > 0);
+        assert!(ordinary_work.two_supports > 0);
+
+        let three_source = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(4.0, 0.0),
+            Point::new_raw_xy(1.0, 3.0),
+        ];
+        let mut three_work = CircleWork::default();
+        solve_enclosing_circle_order(&three_source, &[0, 1, 2], &mut three_work).unwrap();
+        assert!(three_work.three_supports > 0);
     }
 }

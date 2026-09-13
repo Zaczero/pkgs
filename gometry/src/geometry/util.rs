@@ -96,19 +96,21 @@ pub(crate) fn geographic_bounds_to_shape(
 }
 
 impl Shape {
-    /// XY-unique vertices in first-seen order, pre-sized from
-    /// [`coord_count`](Self::coord_count) and gathered without the boxed
-    /// point iterator.
-    pub(crate) fn unique_xy_points(&self) -> Vec<Point> {
+    /// XY-unique vertices in first-seen order, with every owned reservation
+    /// allowed to report allocation failure to the caller.
+    pub(crate) fn try_unique_xy_points(&self) -> crate::error::Result<Vec<Point>> {
         let capacity = self.coord_count();
-        let mut seen = HashSet::with_capacity(capacity);
-        let mut unique = Vec::with_capacity(capacity);
+        let hasher = crate::collections::collection_hash_state()?.clone();
+        let mut seen = HashSet::with_hasher(hasher);
+        seen.try_reserve(capacity)?;
+        let mut unique = Vec::new();
+        crate::try_reserve_vec(&mut unique, capacity)?;
         self.for_each_point(|point| {
             if seen.insert(PointKey::new(point)) {
                 unique.push(point.to_xy());
             }
         });
-        unique
+        Ok(unique)
     }
 
     /// XY-unique vertices in first-seen order, keeping each survivor's full
