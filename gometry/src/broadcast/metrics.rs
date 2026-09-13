@@ -2,11 +2,10 @@
 //! point operations (bearing/destination/interpolate) that depend on the CRS.
 
 use crate::broadcast::{
-    Arc, Bound, Bounds, CollectRows, CoordinateAxes, Crs, F64Param, Frame, GeometryArrayStorage,
+    Arc, Bound, Bounds, CollectRows, CoordinateAxes, F64Param, Frame, GeometryArrayStorage,
     GeometryError, GeometryInput, GeometryKind, Point, Py, PyGeometry, PyGeometryArray, PyResult,
-    Python, Result, Shape, ShapeData, bool_array, broadcast2_geometry, classify_input,
-    classify_required, crs, float64_array, geometry_type_err, mask_missing, paired_arrays,
-    point_distance, rows_err,
+    Python, Result, Shape, ShapeData, bool_array, crs, float64_array, geometry_type_err,
+    mask_missing, point_distance, rows_err,
 };
 
 crate::tokens::token_enum! {
@@ -31,15 +30,14 @@ mod similarity;
 
 pub(crate) use arrays::{
     array_crs_distances, array_crs_dwithin, array_crs_dwithin_per_element, array_crs_metric_float,
-    crs_metric_binary_geometry_broadcast,
 };
 pub(crate) use pair::{
-    LonLatPointsError, binary_frame_crs, geodesic_point_columns_dwithin_shape_values,
+    LonLatPointsError, geodesic_point_columns_dwithin_shape_values,
     geodesic_point_columns_to_shape_values, lonlat_points, lonlat_shape,
     metric_frechet_densified_with_scratch, metric_hausdorff_densified,
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_nearest_points, metric_shortest_line, pair_distance_geodesic, pair_distance_planar,
-    pair_dwithin_geodesic, pair_dwithin_planar, require_nonempty_hausdorff, require_point,
-    resolve_metric, resolve_metric_3d, same_storage_similarity_metric_zeros,
+    metric_nearest_points_resolved, metric_shortest_line_resolved, pair_distance_geodesic,
+    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, require_nonempty_hausdorff,
+    require_point, resolve_metric, resolve_metric_3d, same_storage_similarity_metric_zeros,
 };
 pub(crate) use similarity::{SimilarityOp, array_crs_similarity_metric_per_densify};

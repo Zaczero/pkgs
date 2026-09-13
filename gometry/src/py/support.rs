@@ -11,11 +11,12 @@ use crate::{
     Polygon, PolygonizeFull, Positive, Py, PyAny, PyAnyMethods, PyBool, PyBoolMethods,
     PyDictMethods, PyErr, PyFloatMethods, PyGeometry, PyGeometryArray, PyInt, PyListMethods,
     PyOnceLock, PyResult, PyStringMethods, PyTuple, PyTupleMethods, PyTypeError, PyTypeMethods,
-    Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Typed, Value,
+    Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
     VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option,
     coordinate_values_at_most, coordinate_values_exact, exact_geometry, finite_f64_required,
-    geometry_type_err, metric_nearest_points, non_negative_int, parameter_values, push_ring_shapes,
-    py_i64_bounded, py_i64_required, pyfunction, resolve_metric, rows_err, wgs84_crs,
+    geometry_type_err, metric_nearest_points_resolved, non_negative_int, parameter_values,
+    push_ring_shapes, py_i64_bounded, py_i64_required, pyfunction, resolve_metric, rows_err,
+    wgs84_crs,
 };
 
 pub(crate) type Crs = SmolStr;
@@ -104,9 +105,9 @@ pub(crate) use linref::{
     resolve_line_metric,
 };
 pub(crate) use nearest::{
-    fixed_geometry_array_nearest_points, fixed_geometry_array_shortest_line_geodesic,
-    geometry_array_line_locate_point_geometry, nearest_point_columns_masked, py_nearest_points,
-    require_locate_point, require_locate_points,
+    fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
+    geometry_array_line_locate_point_geometry, nearest_point_columns_masked, require_locate_point,
+    require_locate_points,
 };
 pub(crate) use tokens::{
     _token_vocabulary, LineReferenceBasis, NavigationPath, SpatialCurve, TriangulationMethod,

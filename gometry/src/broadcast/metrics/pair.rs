@@ -2,13 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use pyo3::types::PyAny;
-
 use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
 use crate::broadcast::metrics::{
-    Bound, CoordinateAxes, Crs, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryInput,
-    GeometryKind, Point, PyGeometry, PyResult, Shape, ShapeData, classify_input, crs,
-    geometry_type_err,
+    CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
+    PyGeometry, PyResult, Shape, ShapeData, crs, geometry_type_err,
 };
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
@@ -166,6 +163,8 @@ pub(crate) fn resolve_metric(
     unit: Option<DistanceUnit>,
     operation: MetricOp,
 ) -> PyResult<crs::MetricModel> {
+    #[cfg(test)]
+    crate::test_support::binary_dispatch_counters::metric_context_acquisition();
     let operation = operation.name();
     match unit {
         Some(DistanceUnit::Planar) => Ok(crs::MetricModel::COORDINATE),
@@ -193,6 +192,8 @@ pub(crate) fn resolve_metric_3d(
     unit: Option<DistanceUnit>,
     operation: MetricOp,
 ) -> PyResult<crs::MetricModel> {
+    #[cfg(test)]
+    crate::test_support::binary_dispatch_counters::metric_context_acquisition();
     let operation = operation.name();
     // Validate 3D eligibility first, so an ineligible CRS reports the
     // dimensional problem rather than a unit one, whatever `unit=` says.
@@ -717,30 +718,10 @@ pub(crate) fn metric_frechet_densified_with_scratch(
     })
 }
 
-/// CRS-aware nearest points (one per geometry). Returns coordinates in the
-/// geometry's own frame — planar coordinates for a planar/projected frame,
-/// lon/lat for a geographic one (the geodesic witness) — so the result is a
-/// pair of points, not a scaled distance.
-pub(crate) fn metric_nearest_points(
-    model: &crs::MetricModel,
-    a: &PreparedPlan,
-    b: &PreparedPlan,
-) -> crate::error::Result<Option<(Point, Point)>> {
-    let a_cache = FrameDependentCaches::default();
-    let b_cache = FrameDependentCaches::default();
-    metric_nearest_points_resolved(
-        &crs::ResolvedMetric::from_model(model)?,
-        a,
-        &a_cache,
-        b,
-        &b_cache,
-    )
-}
-
-/// `metric_nearest_points` against an already-resolved metric (see
-/// [`pair_distance_geodesic`]). `None` when an operand is empty — the surfaces
-/// map it to the output-type EMPTY sentinel (`(POINT EMPTY, POINT EMPTY)` /
-/// `LINESTRING EMPTY`), mirroring distance's empty→`inf`.
+/// `metric_nearest_points` against an already-resolved metric. `None` when an
+/// operand is empty — the surfaces map it to the output-type EMPTY sentinel
+/// (`(POINT EMPTY, POINT EMPTY)` / `LINESTRING EMPTY`), mirroring distance's
+/// `inf`.
 pub(crate) fn metric_nearest_points_resolved(
     metric: &crs::ResolvedMetric,
     a: &PreparedPlan,
@@ -757,8 +738,6 @@ pub(crate) fn metric_nearest_points_resolved(
             &FrameDependentCaches::default(),
         );
     }
-    // Empty operand → no witness (the sentinel is built at the surface). Gate
-    // before the geodesic domain/ellipsoid machinery, like the distance lane.
     if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(None);
     }
@@ -789,13 +768,19 @@ pub(crate) fn metric_nearest_points_resolved(
 /// CRS-aware shortest connecting line — `metric_nearest_points` as a two-point
 /// `LineString` (degenerate when the geometries touch), or `LINESTRING EMPTY`
 /// in the operands' common axes when a side is empty.
-pub(crate) fn metric_shortest_line(
-    model: &crs::MetricModel,
+pub(crate) fn metric_shortest_line_resolved(
+    metric: &crs::ResolvedMetric,
     a: &PreparedPlan,
     b: &PreparedPlan,
 ) -> crate::error::Result<Shape> {
     crate::geometry::nearest_line(
-        metric_nearest_points(model, a, b)?,
+        metric_nearest_points_resolved(
+            metric,
+            a,
+            &FrameDependentCaches::default(),
+            b,
+            &FrameDependentCaches::default(),
+        )?,
         crate::geometry::common_axes(a.shape(), b.shape()),
     )
 }
@@ -884,27 +869,6 @@ pub(crate) fn metric_maximum_inscribed_radius(
                 .maximum_inscribed_radius(tolerance)
         },
     )
-}
-
-/// Representative frame CRS of a binary operation's operands — the shared CRS
-/// the metric resolves against. Operands must agree (the broadcast enforces it
-/// per pair), so any present operand's CRS is the frame.
-pub(crate) fn binary_frame_crs(left: &Bound<'_, PyAny>, right: &Bound<'_, PyAny>) -> Option<Crs> {
-    for operand in [left, right] {
-        // Take the first operand that actually carries a CRS — a leading
-        // CRS-free operand must not mask a CRS-tagged sibling (else
-        // `unit='meters'` would wrongly resolve against `None`). The real
-        // frame-compatibility check still runs per pair in the broadcast.
-        let crs = match classify_input(operand) {
-            Some(GeometryInput::One(geometry)) => geometry.crs_ref().cloned(),
-            Some(GeometryInput::Many(array)) => array.crs_ref().cloned(),
-            None => continue,
-        };
-        if crs.is_some() {
-            return crs;
-        }
-    }
-    None
 }
 
 #[cfg(test)]

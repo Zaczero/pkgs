@@ -14,13 +14,14 @@ mod packed;
 mod unary;
 
 pub(crate) use binary::{
-    NoBinaryFastPath, dispatch_binary, dispatch_binary_array_left, dispatch_binary_geometry,
+    NoBinaryFastPath, admit_binary, admit_binary_inputs, dispatch_binary,
+    dispatch_binary_array_left, dispatch_binary_geometry, dispatch_binary_geometry_admitted,
     dispatch_typed_metric_binary, geometry_kernel_over_array,
 };
 pub(crate) use binary_fast::{
     OverlayFastPath, dispatch_broadcast2, dispatch_distance, dispatch_distance_3d,
-    dispatch_dwithin, dispatch_frechet_distance, dispatch_hausdorff_distance, dispatch_overlay,
-    dispatch_predicate,
+    dispatch_dwithin_admitted, dispatch_frechet_distance, dispatch_hausdorff_distance,
+    dispatch_overlay, dispatch_predicate,
 };
 pub(crate) use linref::{
     line_interpolate_points_scalar, line_locate_point_input, line_locate_point_m_input,

@@ -16,9 +16,8 @@ use crate::broadcast::{
     Bound, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput, GeometryArrayStorage,
     GeometryErrorKind, GeometryInput, GeometryKind, Point, PredicateSpec, Py, PyErr, PyGeometry,
     PyGeometryArray, PyResult, Python, Shape, ShapeData, broadcast_coordinate_input,
-    classify_input, classify_required, coordinate_input_with_expected,
-    coordinate_sequence_len_hint, expected_geometry_or_array_for, mask_missing, paired_arrays,
-    py_bool, scalar_vs_shapes,
+    classify_input, coordinate_input_with_expected, coordinate_sequence_len_hint,
+    expected_geometry_or_array_for, mask_missing, py_bool, scalar_vs_shapes,
 };
 use crate::error::Result;
 use crate::geometry::{PreparedPlan, TopologyDomain};
@@ -93,15 +92,9 @@ pub(crate) fn predicate_scalar_vs_array(
     scalar: &PyGeometry,
     array: &PyGeometryArray,
     scalar_is_left: bool,
+    _frame: &Frame,
+    domain: TopologyDomain,
 ) -> PyResult<Py<PyAny>> {
-    let compatible = Frame::compatible_parts(
-        scalar.crs_ref(),
-        scalar.epoch(),
-        array.crs_ref(),
-        array.epoch(),
-        spec.token,
-    )?;
-    let domain = crate::geometry::topology_domain(&compatible)?;
     let spec = *spec;
     let missing = array.missing().cloned();
     let plan = scalar.plan_or_transient()?;
@@ -137,11 +130,11 @@ pub(crate) fn predicate_pairwise_arrays(
     spec: &PredicateSpec,
     left: &PyGeometryArray,
     right: &PyGeometryArray,
+    _frame: &Frame,
+    domain: TopologyDomain,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<Py<PyAny>> {
-    let (..) = paired_arrays(left, right, spec.token)?;
-    let domain = crate::geometry::topology_domain(&left.frame)?;
     let spec = *spec;
-    let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
     let left_bounds = left.existing_element_bounds();
     let right_bounds = right.existing_element_bounds();
     let left_array = left.clone();
@@ -223,7 +216,7 @@ pub(crate) fn predicate_pairwise_arrays(
                 .collect_rows()
         })
         .map_err(super::rows_err)?,
-        missing.as_ref(),
+        missing,
     )
 }
 
@@ -364,7 +357,6 @@ fn topology_array_pair<R, F>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: &PyGeometryArray,
-    operation: &str,
     frame: &Frame,
     domain: TopologyDomain,
     evaluate: F,
@@ -373,7 +365,6 @@ where
     R: crate::broadcast::BulkElement,
     F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
-    paired_arrays(left, right, operation)?;
     let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
     let output_missing = missing;
     let left = left.clone();
@@ -423,17 +414,11 @@ where
     R: crate::broadcast::BulkElement,
     F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
-    let (left, right) = (classify_required(left)?, classify_required(right)?);
-    let (left_crs, left_epoch) = match left {
-        GeometryInput::One(geometry) => (geometry.crs_ref(), geometry.epoch()),
-        GeometryInput::Many(array) => (array.crs_ref(), array.epoch()),
-    };
-    let (right_crs, right_epoch) = match right {
-        GeometryInput::One(geometry) => (geometry.crs_ref(), geometry.epoch()),
-        GeometryInput::Many(array) => (array.crs_ref(), array.epoch()),
-    };
-    let frame = Frame::compatible_parts(left_crs, left_epoch, right_crs, right_epoch, operation)?;
-    let domain = crate::geometry::topology_domain(&frame)?;
+    let admission = crate::dispatch::admit_binary(left, right, operation)?;
+    let left = admission.left;
+    let right = admission.right;
+    let frame = admission.frame;
+    let domain = admission.domain;
     match (left, right) {
         (GeometryInput::One(left), GeometryInput::One(right)) => {
             let left_plan = left.plan_or_transient()?;
@@ -459,7 +444,7 @@ where
             topology_scalar_array(py, right, left, false, &frame, domain, evaluate)
         },
         (GeometryInput::Many(left), GeometryInput::Many(right)) => {
-            topology_array_pair(py, left, right, operation, &frame, domain, evaluate)
+            topology_array_pair(py, left, right, &frame, domain, evaluate)
         },
     }
 }

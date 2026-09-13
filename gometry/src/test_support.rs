@@ -113,6 +113,94 @@ pub(crate) fn fail_allocations_after<T>(count: usize, operation: impl FnOnce() -
     result
 }
 
+/// Counters for the binary admission contract. They are deliberately test-only:
+/// production dispatch has no observable registry or diagnostic surface for
+/// these implementation choices.
+pub(crate) mod binary_dispatch_counters {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Snapshot {
+        pub(crate) classifications: usize,
+        pub(crate) paired_array_validations: usize,
+        pub(crate) frame_resolutions: usize,
+        pub(crate) metric_context_acquisitions: usize,
+        pub(crate) runtime_state_snapshots: usize,
+        pub(crate) fast_path_attempts: usize,
+        pub(crate) fast_path_taken: usize,
+        pub(crate) fast_path_declines: usize,
+        pub(crate) general_lane_runs: usize,
+    }
+
+    thread_local! {
+        static COUNTERS: Cell<Snapshot> = const {
+            Cell::new(Snapshot {
+                classifications: 0,
+                paired_array_validations: 0,
+                frame_resolutions: 0,
+                metric_context_acquisitions: 0,
+                runtime_state_snapshots: 0,
+                fast_path_attempts: 0,
+                fast_path_taken: 0,
+                fast_path_declines: 0,
+                general_lane_runs: 0,
+            })
+        };
+    }
+
+    pub(crate) fn reset() {
+        COUNTERS.with(|counters| counters.set(Snapshot::default()));
+    }
+
+    pub(crate) fn snapshot() -> Snapshot {
+        COUNTERS.with(Cell::get)
+    }
+
+    fn update(update: impl FnOnce(&mut Snapshot)) {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            update(&mut snapshot);
+            counters.set(snapshot);
+        });
+    }
+
+    pub(crate) fn classification() {
+        update(|snapshot| snapshot.classifications += 1);
+    }
+
+    pub(crate) fn paired_array_validation() {
+        update(|snapshot| snapshot.paired_array_validations += 1);
+    }
+
+    pub(crate) fn frame_resolution() {
+        update(|snapshot| snapshot.frame_resolutions += 1);
+    }
+
+    pub(crate) fn metric_context_acquisition() {
+        update(|snapshot| snapshot.metric_context_acquisitions += 1);
+    }
+
+    pub(crate) fn runtime_state_snapshot() {
+        update(|snapshot| snapshot.runtime_state_snapshots += 1);
+    }
+
+    pub(crate) fn fast_path_attempt() {
+        update(|snapshot| snapshot.fast_path_attempts += 1);
+    }
+
+    pub(crate) fn fast_path_taken() {
+        update(|snapshot| snapshot.fast_path_taken += 1);
+    }
+
+    pub(crate) fn fast_path_declined() {
+        update(|snapshot| snapshot.fast_path_declines += 1);
+    }
+
+    pub(crate) fn general_lane() {
+        update(|snapshot| snapshot.general_lane_runs += 1);
+    }
+}
+
 #[pyclass(module = "gometry_test")]
 pub(crate) struct NativeBoundaryIterator {
     item: Py<PyAny>,

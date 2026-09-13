@@ -11,16 +11,13 @@ use pyo3::exceptions::PyOverflowError;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::array::{
-    Arc, ArrayRow, Bound, CollectRows as _, CoordinateAxes, DefaultedF64Input, DistanceUnit, Error,
-    F64Param, Frame, GeometryArrayStorage, I64Param, InvalidGeometryError, PackedStorage, Py,
-    PyAny, PyAnyMethods as _, PyErr, PyGeometryArray, PyResult, PyValidationReport, Python,
-    RepairMethod, Result, Shape, VoronoiClipInput, array_binary_geometry, bool_array,
-    cdt_refinement_values, crs, curves, exact_geometry, exact_geometry_array,
-    expected_geometry_or_array, fixed_geometry_array_nearest_points,
-    fixed_geometry_array_shortest_line_geodesic, geometry, io, metric_nearest_points,
-    metric_shortest_line, non_negative_int, note_array_row, owned_voronoi_boundary,
-    pair_packed_equals_exact, paired_arrays, parse_precision, parse_wkt_output_dimension,
-    require_geojson_crs, resolve_metric, row_sample_seed, rows_err,
+    Arc, ArrayRow, Bound, CollectRows as _, DefaultedF64Input, Error, F64Param, Frame,
+    GeometryArrayStorage, I64Param, InvalidGeometryError, PackedStorage, Py, PyAny,
+    PyAnyMethods as _, PyErr, PyGeometryArray, PyResult, PyValidationReport, Python, RepairMethod,
+    Result, Shape, VoronoiClipInput, bool_array, cdt_refinement_values, curves, exact_geometry,
+    exact_geometry_array, expected_geometry_or_array, geometry, io, non_negative_int,
+    note_array_row, owned_voronoi_boundary, pair_packed_equals_exact, parse_precision,
+    parse_wkt_output_dimension, require_geojson_crs, row_sample_seed, rows_err,
     validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
 
@@ -395,210 +392,6 @@ impl PyGeometryArray {
         bool_array(py, results)
     }
 
-    pub(crate) fn shortest_line(
-        &self,
-        other: &Bound<'_, PyAny>,
-        unit: Option<DistanceUnit>,
-    ) -> PyResult<Self> {
-        let model = resolve_metric(
-            self.crs_str(),
-            unit,
-            crate::dispatch::MetricOp::ShortestLine,
-        )?;
-        if let crs::MetricModel::Geodesic { crs, frame, state } = model {
-            if let Some(geometry) = exact_geometry(other) {
-                Frame::compatible_parts(
-                    self.crs_ref(),
-                    self.epoch(),
-                    geometry.crs_ref(),
-                    geometry.epoch(),
-                    "shortest_line",
-                )?;
-                return Python::attach(|py| {
-                    fixed_geometry_array_shortest_line_geodesic(
-                        py, geometry, self, false, crs, frame, state,
-                    )
-                });
-            }
-            if let Some(array) = exact_geometry_array(other) {
-                paired_arrays(self, array, crate::dispatch::MetricOp::ShortestLine.name())?;
-                let (lefts, rights) = (self.clone(), array.clone());
-                let missing = crate::array::missing::union_pair(self.missing(), array.missing())?;
-                let rows = Python::attach(|py| {
-                    py.detach(move || {
-                        let mut left_rows = lefts.row_operation();
-                        let mut right_rows = rights.row_operation();
-                        crs::with_resolved_ellipsoid_metric_at(&crs, &[], &state, |crs, metric| {
-                            let (semi_major, flattening) = metric.ellipsoid_parameters();
-                            Ok(left_rows
-                                .rows_with_missing(|| None::<Shape>)
-                                .zip(right_rows.rows_with_missing(|| None::<Shape>))
-                                .map(|(left, right)| {
-                                    let (ArrayRow::Present(left), ArrayRow::Present(right)) =
-                                        (left, right)
-                                    else {
-                                        return Ok(None);
-                                    };
-                                    let row = left.logical();
-                                    let left = left_rows.prepared(left)?;
-                                    let right = right_rows.prepared(right)?;
-                                    let left_cache = left_rows.frame_cache(row)?;
-                                    let right_cache = right_rows.frame_cache(row)?;
-                                    Ok(Some(crate::geometry::nearest_line(
-                                        left.geodesic_nearest_points_cached_split(
-                                            &left_cache,
-                                            &right,
-                                            &right_cache,
-                                            crs,
-                                            semi_major,
-                                            flattening,
-                                            metric,
-                                            frame,
-                                        )?,
-                                        crate::geometry::common_axes(left.shape(), right.shape()),
-                                    )?))
-                                })
-                                .collect_rows())
-                        })
-                    })
-                })?;
-                let rows = rows.map_err(rows_err)?;
-                let mut shapes = Vec::new();
-                crate::boundary::try_reserve_vec(&mut shapes, rows.len())?;
-                for shape in rows.into_iter().flatten() {
-                    crate::try_push_vec(&mut shapes, shape)?;
-                }
-                let present = Self::from_shapes(shapes, self.frame.clone())?;
-                return Ok(match missing {
-                    None => present,
-                    Some(mask) => Self::scatter_present_rows(&present, mask)?,
-                });
-            }
-            return Err(expected_geometry_or_array());
-        }
-        Python::attach(|py| {
-            array_binary_geometry(
-                py,
-                self,
-                other,
-                crate::dispatch::MetricOp::ShortestLine.name(),
-                move |left, right| metric_shortest_line(&model, left, right),
-            )
-        })
-    }
-
-    pub(crate) fn nearest_points(
-        &self,
-        py: Python<'_>,
-        other: &Bound<'_, PyAny>,
-        unit: Option<DistanceUnit>,
-    ) -> PyResult<(Self, Self)> {
-        if let Some(geometry) = exact_geometry(other) {
-            return fixed_geometry_array_nearest_points(py, geometry, self, false, unit);
-        }
-        if let Some(array) = exact_geometry_array(other) {
-            paired_arrays(self, array, crate::dispatch::MetricOp::NearestPoints.name())?;
-            let (lefts, rights) = (self.clone(), array.clone());
-            let model = resolve_metric(
-                self.crs_str(),
-                unit,
-                crate::dispatch::MetricOp::NearestPoints,
-            )?;
-            let missing = crate::array::missing::union_pair(self.missing(), array.missing())?;
-            if let crs::MetricModel::Geodesic { crs, frame, state } = model {
-                let pairs = py
-                    .detach(move || {
-                        let mut left_rows = lefts.row_operation();
-                        let mut right_rows = rights.row_operation();
-                        crs::with_resolved_ellipsoid_metric_at(&crs, &[], &state, |crs, metric| {
-                            let (semi_major, flattening) = metric.ellipsoid_parameters();
-                            Ok(left_rows
-                                .rows_with_missing(|| {
-                                    (
-                                        None::<(crate::geometry::Point, crate::geometry::Point)>,
-                                        CoordinateAxes::XY,
-                                    )
-                                })
-                                .zip(right_rows.rows_with_missing(|| {
-                                    (
-                                        None::<(crate::geometry::Point, crate::geometry::Point)>,
-                                        CoordinateAxes::XY,
-                                    )
-                                }))
-                                .map(|(left, right)| {
-                                    let (ArrayRow::Present(left), ArrayRow::Present(right)) =
-                                        (left, right)
-                                    else {
-                                        return Ok((None, CoordinateAxes::XY));
-                                    };
-                                    let row = left.logical();
-                                    let left = left_rows.prepared(left)?;
-                                    let right = right_rows.prepared(right)?;
-                                    let left_cache = left_rows.frame_cache(row)?;
-                                    let right_cache = right_rows.frame_cache(row)?;
-                                    let common =
-                                        crate::geometry::common_axes(left.shape(), right.shape());
-                                    left.geodesic_nearest_points_cached_split(
-                                        &left_cache,
-                                        &right,
-                                        &right_cache,
-                                        crs,
-                                        semi_major,
-                                        flattening,
-                                        metric,
-                                        frame,
-                                    )
-                                    .map(|pair| (pair, common))
-                                })
-                                .collect_rows())
-                        })
-                    })?
-                    .map_err(rows_err)?;
-                return crate::py::support::nearest_point_columns_masked(
-                    pairs,
-                    self.frame.clone(),
-                    missing,
-                );
-            }
-            let pairs = py
-                .detach(move || {
-                    let mut left_rows = lefts.row_operation();
-                    let mut right_rows = rights.row_operation();
-                    left_rows
-                        .rows_with_missing(|| {
-                            (
-                                None::<(crate::geometry::Point, crate::geometry::Point)>,
-                                CoordinateAxes::XY,
-                            )
-                        })
-                        .zip(right_rows.rows_with_missing(|| {
-                            (
-                                None::<(crate::geometry::Point, crate::geometry::Point)>,
-                                CoordinateAxes::XY,
-                            )
-                        }))
-                        .map(|(left, right)| {
-                            let (ArrayRow::Present(left), ArrayRow::Present(right)) = (left, right)
-                            else {
-                                return Ok((None, CoordinateAxes::XY));
-                            };
-                            let left = left_rows.prepared(left)?;
-                            let right = right_rows.prepared(right)?;
-                            let common = crate::geometry::common_axes(left.shape(), right.shape());
-                            metric_nearest_points(&model, &left, &right).map(|pair| (pair, common))
-                        })
-                        .collect_rows()
-                })
-                .map_err(rows_err)?;
-            return crate::py::support::nearest_point_columns_masked(
-                pairs,
-                self.frame.clone(),
-                missing,
-            );
-        }
-        Err(expected_geometry_or_array())
-    }
-
     pub(crate) fn delaunay_triangles_impl(
         &self,
         py: Python<'_>,
@@ -908,7 +701,7 @@ impl PyGeometryArray {
                 Ok::<_, Error>(shapes)
             })?
         } else if let Some(splitters) = exact_geometry_array(splitter) {
-            paired_arrays(self, splitters, "split")?;
+            crate::broadcast::validate_paired_arrays(self, splitters, "split")?;
             let lines = self.clone();
             let cutters = splitters.clone();
             py.detach(move || {

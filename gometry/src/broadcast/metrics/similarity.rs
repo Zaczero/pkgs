@@ -9,8 +9,8 @@ use pyo3::types::{PyAny, PyAnyMethods as _};
 use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
 use crate::broadcast::metrics::{
     Arc, Bound, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Py,
-    PyGeometryArray, PyResult, Python, Shape, classify_required, crs, float64_array,
-    resolve_metric, rows_err, same_storage_similarity_metric_zeros,
+    PyGeometryArray, PyResult, Python, Shape, crs, float64_array, resolve_metric, rows_err,
+    same_storage_similarity_metric_zeros,
 };
 use crate::dispatch::{CachelessRowContext, MetricOp};
 use crate::geometry::{FrechetDpScratch, PackedLineColumnView, PreparedPlan};
@@ -278,20 +278,13 @@ fn validate_densify(densify: Option<f64>) -> PyResult<Option<f64>> {
 pub(crate) fn array_crs_similarity_metric_per_densify(
     py: Python<'_>,
     array: &PyGeometryArray,
-    other: &Bound<'_, PyAny>,
+    other: GeometryInput<'_>,
+    _frame: &Frame,
     operation: SimilarityOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let operation_name = operation.metric_op().name();
-    match classify_required(other)? {
+    match other {
         GeometryInput::One(right) => {
-            Frame::compatible_parts(
-                array.crs_ref(),
-                array.epoch(),
-                right.crs_ref(),
-                right.epoch(),
-                operation_name,
-            )?;
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             let right = Arc::clone(&right.shape);
             float64_array(
@@ -322,7 +315,6 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
             )
         },
         GeometryInput::Many(right) => {
-            crate::broadcast::validate_paired_arrays(array, right, operation_name)?;
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             let left = array.clone();
             let right = right.clone();

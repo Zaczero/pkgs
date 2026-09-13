@@ -12,12 +12,12 @@ use crate::PackedColumnError;
 use crate::array::{ArrayRow, ArrayRowOperation, ValidityMask};
 use crate::broadcast::bool_array_mask_missing;
 use crate::broadcast::metrics::{
-    Arc, Bound, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Point, Py,
-    PyGeometry, PyGeometryArray, PyResult, Python, Shape, SimilarityOp, binary_frame_crs,
-    bool_array, broadcast2_geometry, classify_required, crs, float64_array,
-    geodesic_point_columns_dwithin_shape_values, geodesic_point_columns_to_shape_values,
-    mask_missing, pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic,
-    pair_dwithin_planar, paired_arrays, point_distance, resolve_metric, rows_err,
+    Arc, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Point, Py,
+    PyGeometry, PyGeometryArray, PyResult, Python, Shape, SimilarityOp, bool_array, crs,
+    float64_array, geodesic_point_columns_dwithin_shape_values,
+    geodesic_point_columns_to_shape_values, mask_missing, pair_distance_geodesic,
+    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, point_distance,
+    resolve_metric, rows_err,
 };
 use crate::dispatch::MetricOp;
 use crate::geometry::packed_line_metrics::scale_metric_values;
@@ -44,20 +44,13 @@ fn float64_array_mask_missing(
 pub(crate) fn array_crs_metric_float(
     py: Python<'_>,
     array: &PyGeometryArray,
-    other: &Bound<'_, PyAny>,
+    other: GeometryInput<'_>,
+    _frame: &Frame,
     operation: SimilarityOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let operation_name = operation.metric_op().name();
-    match classify_required(other)? {
+    match other {
         GeometryInput::One(right) => {
-            Frame::compatible_parts(
-                array.crs_ref(),
-                array.epoch(),
-                right.crs_ref(),
-                right.epoch(),
-                operation_name,
-            )?;
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             let left = array.clone();
             let right = Arc::clone(&right.shape);
@@ -88,7 +81,8 @@ pub(crate) fn array_crs_metric_float(
             )
         },
         GeometryInput::Many(right) => {
-            let (lefts, rights) = paired_arrays(array, right, operation_name)?;
+            let lefts = Arc::clone(array.storage_arc());
+            let rights = Arc::clone(right.storage_arc());
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             let missing = crate::array::missing::union_pair(array.missing(), right.missing())?;
             if Arc::ptr_eq(&lefts, &rights)
@@ -189,23 +183,6 @@ pub(crate) fn array_crs_metric_float(
             )
         },
     }
-}
-
-/// CRS-aware binary geometry metric broadcast (behind `shortest_line`).
-pub(crate) fn crs_metric_binary_geometry_broadcast(
-    py: Python<'_>,
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    operation: MetricOp,
-    unit: Option<DistanceUnit>,
-    kernel: impl Fn(&crs::MetricModel, &PreparedPlan, &PreparedPlan) -> crate::error::Result<Shape>
-    + Send
-    + Sync,
-) -> PyResult<Py<PyAny>> {
-    let model = resolve_metric(binary_frame_crs(left, right).as_deref(), unit, operation)?;
-    broadcast2_geometry(py, left, right, operation.name(), move |a, b| {
-        kernel(&model, a, b)
-    })
 }
 
 /// Element-wise lane ladder for array × array CRS-aware metrics, shared by
@@ -357,22 +334,16 @@ where
 pub(crate) fn array_crs_distances(
     py: Python<'_>,
     array: &PyGeometryArray,
-    other: &Bound<'_, PyAny>,
+    other: GeometryInput<'_>,
+    _frame: &Frame,
     operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     // Operand classification and structural checks (length, frame) come
     // BEFORE metric-model resolution, so an invalid pairing reports as such
     // even when the array's CRS cannot back a metric.
-    match classify_required(other)? {
+    match other {
         GeometryInput::One(right) => {
-            Frame::compatible_parts(
-                array.crs_ref(),
-                array.epoch(),
-                right.crs_ref(),
-                right.epoch(),
-                operation.name(),
-            )?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             // Planar scalar-vs-array: build the fixed operand's distance parts ONCE
             // and reuse them across every element (a large fixed geometry otherwise
@@ -543,7 +514,6 @@ pub(crate) fn array_crs_distances(
             unreachable!("metric model is Planar or Geodesic")
         },
         GeometryInput::Many(right) => {
-            paired_arrays(array, right, operation.name())?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             // Planar packed × packed: pure column zip — one guarded-sqrt distance
             // per pair (`hypot` is a libm call at every x86-64 level), no
@@ -667,19 +637,17 @@ pub(crate) fn array_crs_distances(
 pub(crate) fn array_crs_dwithin(
     py: Python<'_>,
     array: &PyGeometryArray,
-    other: &Bound<'_, PyAny>,
+    other: GeometryInput<'_>,
+    _frame: &Frame,
     distance: f64,
     operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    match classify_required(other)? {
+    match other {
         GeometryInput::One(right) => {
             array_crs_dwithin_scalar(py, array, right, distance, operation, unit)
         },
         GeometryInput::Many(right) => {
-            // Structural checks (length, frame) precede metric-model resolution
-            // — see `array_crs_distances`.
-            paired_arrays(array, right, operation.name())?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             // Resolve the geodesic ellipsoid ONCE for the whole array pair.
             let resolved = crs::ResolvedMetric::from_model(&model)?;
@@ -824,20 +792,14 @@ fn dwithin_box_refutes(left: Option<Bounds>, right: Option<Bounds>, limit: f64) 
 pub(crate) fn array_crs_dwithin_per_element(
     py: Python<'_>,
     array: &PyGeometryArray,
-    other: &Bound<'_, PyAny>,
+    other: GeometryInput<'_>,
+    _frame: &Frame,
     distance: &F64Param,
     operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    match classify_required(other)? {
+    match other {
         GeometryInput::One(right) => {
-            Frame::compatible_parts(
-                array.crs_ref(),
-                array.epoch(),
-                right.crs_ref(),
-                right.epoch(),
-                operation.name(),
-            )?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let right_plan = right.plan_or_transient()?;
@@ -901,7 +863,6 @@ pub(crate) fn array_crs_dwithin_per_element(
             bool_array(py, results)
         },
         GeometryInput::Many(right) => {
-            paired_arrays(array, right, operation.name())?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let results: Vec<bool> = match &resolved {
@@ -999,14 +960,6 @@ pub(crate) fn array_crs_dwithin_scalar(
     operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let operation_name = operation.name();
-    Frame::compatible_parts(
-        array.crs_ref(),
-        array.epoch(),
-        other.crs_ref(),
-        other.epoch(),
-        operation_name,
-    )?;
     let model = resolve_metric(array.crs_str(), unit, operation)?;
     // The physical storage uses a finite NaN placeholder for missing rows.
     // Once a mask exists, enter the row lane before any packed reduction,

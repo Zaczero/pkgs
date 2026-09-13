@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::broadcast::{
-    GeometryInput, SimilarityOp, array_crs_distances, array_crs_dwithin, classify_input,
+    GeometryInput, SimilarityOp, array_crs_distances, array_crs_dwithin, classify_required,
     predicate_pairwise_arrays, predicate_scalar_vs_array,
 };
 use crate::crs::{MetricModel, ResolvedMetric};
@@ -26,8 +26,7 @@ pub(crate) struct PredicateFastPath {
 }
 
 impl PredicateFastPath {
-    fn new(predicate: Predicate, left: &Bound<'_, PyAny>) -> Self {
-        let scalar_is_left = matches!(classify_input(left), Some(GeometryInput::One(_)));
+    const fn new(predicate: Predicate, scalar_is_left: bool) -> Self {
         Self {
             predicate,
             scalar_is_left,
@@ -36,22 +35,42 @@ impl PredicateFastPath {
 }
 
 impl BinaryArrayFastPath<bool> for PredicateFastPath {
+    fn is_eligible(
+        &self,
+        _left: &crate::PyGeometryArray,
+        _right: GeometryInput<'_>,
+        _op_name: &str,
+        _frame: &crate::boundary::metadata::Frame,
+    ) -> bool {
+        true
+    }
+
     fn try_dispatch(
         &self,
         py: Python<'_>,
         array: &crate::PyGeometryArray,
         other: GeometryInput<'_>,
         _op_name: &str,
-        _frame: &crate::boundary::metadata::Frame,
+        frame: &crate::boundary::metadata::Frame,
+        domain: crate::geometry::TopologyDomain,
+        missing: Option<&crate::array::ValidityMask>,
         _model: Option<&MetricModel>,
         _metric: Option<&ResolvedMetric>,
     ) -> Option<PyResult<Py<PyAny>>> {
         let spec = self.predicate.spec();
         Some(match other {
-            GeometryInput::One(scalar) => {
-                predicate_scalar_vs_array(py, &spec, scalar, array, self.scalar_is_left)
+            GeometryInput::One(scalar) => predicate_scalar_vs_array(
+                py,
+                &spec,
+                scalar,
+                array,
+                self.scalar_is_left,
+                frame,
+                domain,
+            ),
+            GeometryInput::Many(right) => {
+                predicate_pairwise_arrays(py, &spec, array, right, frame, domain, missing)
             },
-            GeometryInput::Many(right) => predicate_pairwise_arrays(py, &spec, array, right),
         })
     }
 }
@@ -60,6 +79,16 @@ impl BinaryArrayFastPath<bool> for PredicateFastPath {
 pub(crate) struct OverlayFastPath;
 
 impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
+    fn is_eligible(
+        &self,
+        _left: &crate::PyGeometryArray,
+        _right: GeometryInput<'_>,
+        _op_name: &str,
+        _frame: &crate::boundary::metadata::Frame,
+    ) -> bool {
+        false
+    }
+
     fn try_dispatch(
         &self,
         _py: Python<'_>,
@@ -67,6 +96,8 @@ impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
         _right: GeometryInput<'_>,
         _op_name: &str,
         _frame: &crate::boundary::metadata::Frame,
+        _domain: crate::geometry::TopologyDomain,
+        _missing: Option<&crate::array::ValidityMask>,
         _model: Option<&MetricModel>,
         _metric: Option<&ResolvedMetric>,
     ) -> Option<PyResult<Py<PyAny>>> {
@@ -82,15 +113,14 @@ pub(crate) fn dispatch_predicate(
     predicate: Predicate,
 ) -> PyResult<Py<PyAny>> {
     let operation = Operation::Predicate(predicate);
-    if let (Some(GeometryInput::One(left)), Some(GeometryInput::One(right))) =
-        (classify_input(left), classify_input(right))
+    let admission = super::binary::admit_binary(left, right, operation.name())?;
+    if let (GeometryInput::One(left), GeometryInput::One(right)) = (admission.left, admission.right)
     {
-        left.frame.compatible(&right.frame, operation.name())?;
         let left_plan = left.plan_or_transient()?;
         let right_plan = right.plan_or_transient()?;
         let left_cache = left.frame_cache()?;
         let right_cache = right.frame_cache()?;
-        let domain = crate::geometry::topology_domain(&left.frame)?;
+        let domain = admission.domain;
         let spec = predicate.spec();
         let value = py.detach(move || {
             if let Some(verdict) = spec.predicate.kind_gate(
@@ -110,13 +140,13 @@ pub(crate) fn dispatch_predicate(
         })?;
         return Ok(crate::broadcast::py_bool(py, value));
     }
-    dispatch_binary(
+    let scalar_is_left = matches!(admission.left, GeometryInput::One(_));
+    super::binary::dispatch_binary_admitted(
         py,
-        left,
-        right,
+        &admission,
         operation.name(),
         super::MetricResolver::None,
-        &PredicateFastPath::new(predicate, left),
+        &PredicateFastPath::new(predicate, scalar_is_left),
         |_left, _right, _ctx| unreachable!("predicate array fast path handles every array lane"),
     )
 }
@@ -183,7 +213,49 @@ fn dispatch_metric_binary<R>(
     array_lane: impl Fn(
         Python<'_>,
         &crate::PyGeometryArray,
-        &Bound<'_, PyAny>,
+        GeometryInput<'_>,
+        &crate::boundary::metadata::Frame,
+        MetricOp,
+        Option<DistanceUnit>,
+    ) -> PyResult<Py<PyAny>>,
+) -> PyResult<Py<PyAny>>
+where
+    R: Send + crate::broadcast::BulkElement,
+{
+    let admission = super::binary::admit_binary(left, right, op.name())?;
+    dispatch_metric_binary_admitted(
+        py,
+        &admission,
+        op,
+        unit,
+        planar_kernel,
+        geodesic_kernel,
+        array_lane,
+    )
+}
+
+fn dispatch_metric_binary_admitted<R>(
+    py: Python<'_>,
+    admission: &super::binary::BinaryAdmission<'_>,
+    op: MetricOp,
+    unit: Option<DistanceUnit>,
+    planar_kernel: impl Fn(f64, &PreparedPlan, &PreparedPlan) -> crate::error::Result<R>
+    + Copy
+    + Send
+    + Sync,
+    geodesic_kernel: impl Fn(
+        &PreparedPlan,
+        &PreparedPlan,
+        &crate::dispatch::metric::GeodesicBinaryRow<'_>,
+    ) -> crate::error::Result<R>
+    + Copy
+    + Send
+    + Sync,
+    array_lane: impl Fn(
+        Python<'_>,
+        &crate::PyGeometryArray,
+        GeometryInput<'_>,
+        &crate::boundary::metadata::Frame,
         MetricOp,
         Option<DistanceUnit>,
     ) -> PyResult<Py<PyAny>>,
@@ -192,32 +264,28 @@ where
     R: Send + crate::broadcast::BulkElement,
 {
     let operation = Operation::Metric(op);
-    let left_in = classify_input(left);
-    let right_in = classify_input(right);
-    let has_missing = matches!(&left_in, Some(GeometryInput::Many(array)) if array.has_missing())
-        || matches!(&right_in, Some(GeometryInput::Many(array)) if array.has_missing());
+    let has_missing = matches!(&admission.left, GeometryInput::Many(array) if array.has_missing())
+        || matches!(&admission.right, GeometryInput::Many(array) if array.has_missing());
     if has_missing
         || matches!(
-            (&left_in, &right_in),
-            (Some(GeometryInput::One(_)), Some(GeometryInput::One(_)))
+            (&admission.left, &admission.right),
+            (GeometryInput::One(_), GeometryInput::One(_))
         )
     {
         return super::dispatch_typed_metric_binary(
             py,
-            left,
-            right,
+            admission,
             op,
             operation.resolver_with_unit(unit),
             planar_kernel,
             geodesic_kernel,
         );
     }
-    match (left_in, right_in) {
-        (Some(GeometryInput::Many(array)), _) => array_lane(py, array, right, op, unit),
-        (_, Some(GeometryInput::Many(array))) => array_lane(py, array, left, op, unit),
-        (None, _) => Err(crate::broadcast::expected_geometry_or_array_for(left)),
-        (_, None) => Err(crate::broadcast::expected_geometry_or_array_for(right)),
-        (Some(GeometryInput::One(_)), Some(GeometryInput::One(_))) => unreachable!(),
+    match (admission.left, admission.right) {
+        (GeometryInput::Many(array), other) | (other, GeometryInput::Many(array)) => {
+            array_lane(py, array, other, &admission.frame, op, unit)
+        },
+        (GeometryInput::One(_), GeometryInput::One(_)) => unreachable!(),
     }
 }
 
@@ -240,27 +308,23 @@ pub(crate) fn dispatch_distance(
     )
 }
 
-/// ``dwithin`` free-function dispatch through the spine.
-pub(crate) fn dispatch_dwithin(
+pub(crate) fn dispatch_dwithin_admitted(
     py: Python<'_>,
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    distance: f64,
+    admission: &super::binary::BinaryAdmission<'_>,
+    distance: NonNegative,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let distance = NonNegative::try_new("distance", distance)?;
-    dispatch_metric_binary(
+    dispatch_metric_binary_admitted(
         py,
-        left,
-        right,
+        admission,
         MetricOp::Dwithin,
         unit,
         move |scale, left, right| {
             crate::broadcast::pair_dwithin_planar(scale, left, right, distance.get())
         },
         move |left, right, ctx| kernels::binary_dwithin(left, right, ctx, distance.get()),
-        move |py, array, other, op, unit| {
-            array_crs_dwithin(py, array, other, distance.get(), op, unit)
+        move |py, array, other, frame, op, unit| {
+            array_crs_dwithin(py, array, other, frame, distance.get(), op, unit)
         },
     )
 }
@@ -316,40 +380,32 @@ fn dispatch_similarity_metric(
 ) -> PyResult<Py<PyAny>> {
     let left_array = crate::broadcast::exact_geometry_array(left);
     let right_array = crate::broadcast::exact_geometry_array(right);
-    let Some((len, side)) = similarity_array_side(left_array, right_array) else {
+    let array_len = match (left_array, right_array) {
+        (Some(array), _) | (None, Some(array)) => Some(array.len()),
+        (None, None) => None,
+    };
+    let Some(len) = array_len else {
         let operation = op.with_scalar_densify(SimilarityOp::parse_scalar_densify(densify)?);
         let metric_op = operation.metric_op();
-        return dispatch_binary(
+        let left_input = classify_required(left)?;
+        let right_input = classify_required(right)?;
+        let admission =
+            super::binary::admit_binary_inputs(left_input, right_input, metric_op.name())?;
+        return super::binary::dispatch_binary_admitted(
             py,
-            left,
-            right,
+            &admission,
             Operation::Metric(metric_op).name(),
             Operation::Metric(metric_op).resolver_with_unit(unit),
             &NoBinaryFastPath,
             move |left, right, ctx| operation.eval_scalar(left, right, ctx),
         );
     };
+    let metric_op = op.metric_op();
     let operation = op.parse_array_densify(densify, len)?;
-    dispatch_similarity_array_lane(py, side, left, right, operation, unit)
-}
-
-#[derive(Clone, Copy)]
-enum SimilarityArraySide<'a> {
-    Left(&'a crate::PyGeometryArray),
-    Right(&'a crate::PyGeometryArray),
-    Both(&'a crate::PyGeometryArray, &'a crate::PyGeometryArray),
-}
-
-fn similarity_array_side<'a>(
-    left: Option<&'a crate::PyGeometryArray>,
-    right: Option<&'a crate::PyGeometryArray>,
-) -> Option<(usize, SimilarityArraySide<'a>)> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some((left.len(), SimilarityArraySide::Both(left, right))),
-        (Some(left), None) => Some((left.len(), SimilarityArraySide::Left(left))),
-        (None, Some(right)) => Some((right.len(), SimilarityArraySide::Right(right))),
-        (None, None) => None,
-    }
+    let left_input = classify_required(left)?;
+    let right_input = classify_required(right)?;
+    let admission = super::binary::admit_binary_inputs(left_input, right_input, metric_op.name())?;
+    dispatch_similarity_array_lane(py, &admission, operation, unit)
 }
 
 /// Shared array lane for the densify-aware similarity metrics (Hausdorff and
@@ -359,54 +415,36 @@ fn similarity_array_side<'a>(
 /// the array is the right operand) is identical.
 fn dispatch_similarity_array_lane(
     py: Python<'_>,
-    side: SimilarityArraySide<'_>,
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
+    admission: &super::binary::BinaryAdmission<'_>,
     operation: SimilarityOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
+    let (array, other) = match (admission.left, admission.right) {
+        (GeometryInput::Many(array), other) | (other, GeometryInput::Many(array)) => (array, other),
+        (GeometryInput::One(_), GeometryInput::One(_)) => unreachable!(),
+    };
     if operation.is_per_element() {
-        return match side {
-            SimilarityArraySide::Left(array) => {
-                crate::broadcast::array_crs_similarity_metric_per_densify(
-                    py, array, right, operation, unit,
-                )
-            },
-            SimilarityArraySide::Both(array, other) => {
-                let _ = other.len();
-                crate::broadcast::array_crs_similarity_metric_per_densify(
-                    py, array, right, operation, unit,
-                )
-            },
-            SimilarityArraySide::Right(array) => {
-                crate::broadcast::array_crs_similarity_metric_per_densify(
-                    py, array, left, operation, unit,
-                )
-            },
-        };
+        return crate::broadcast::array_crs_similarity_metric_per_densify(
+            py,
+            array,
+            other,
+            &admission.frame,
+            operation,
+            unit,
+        );
     }
-    match side {
-        SimilarityArraySide::Left(array) => {
-            similarity_array_lane(py, array, right, operation, unit)
-        },
-        SimilarityArraySide::Both(array, other) => {
-            let _ = other.len();
-            similarity_array_lane(py, array, right, operation, unit)
-        },
-        SimilarityArraySide::Right(array) => {
-            similarity_array_lane(py, array, left, operation, unit)
-        },
-    }
+    similarity_array_lane(py, array, other, &admission.frame, operation, unit)
 }
 
 fn similarity_array_lane(
     py: Python<'_>,
     array: &crate::PyGeometryArray,
-    other: &Bound<'_, PyAny>,
+    other: GeometryInput<'_>,
+    frame: &crate::boundary::metadata::Frame,
     operation: SimilarityOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    crate::broadcast::array_crs_metric_float(py, array, other, operation, unit)
+    crate::broadcast::array_crs_metric_float(py, array, other, frame, operation, unit)
 }
 
 #[cfg(test)]

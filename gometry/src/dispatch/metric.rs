@@ -4,6 +4,8 @@ use crate::boundary::metadata::Frame;
 use crate::broadcast::resolve_metric;
 use crate::crs::{self, MetricModel, ResolvedMetric};
 use crate::geometry::TopologyDomain;
+#[cfg(test)]
+use crate::test_support::binary_dispatch_counters::metric_context_acquisition;
 
 /// CRS/metric resolution policy for a dispatched operation.
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +81,8 @@ impl MetricResolver {
         let model = match self {
             Self::None => return Ok(MetricCtx::None),
             Self::Antimeridian => {
+                #[cfg(test)]
+                metric_context_acquisition();
                 let model = scratch.model.insert(crs::metric_model(frame.crs_str())?);
                 return Ok(MetricCtx::Antimeridian(model));
             },
@@ -90,7 +94,11 @@ impl MetricResolver {
                 op,
                 unit,
                 normalized,
-            } => crate::resolve_line_metric(frame.crs_str(), unit, normalized, op)?,
+            } => {
+                #[cfg(test)]
+                metric_context_acquisition();
+                crate::resolve_line_metric(frame.crs_str(), unit, normalized, op)?
+            },
         };
         let metric = match crs::ResolvedMetric::from_model(&model) {
             Ok(metric) => metric,

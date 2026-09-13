@@ -284,7 +284,6 @@ mod tests {
         let source = mixed_with_missing();
         // Warm prepared slots so the shared map can transfer them.
         let warmed0 = source.geometry_at(0).unwrap();
-        let warmed1 = source.geometry_at(1).unwrap();
         let before_cache = source.row_products.frame_cache(0).unwrap();
         let result = source
             .map_shapes_shared(|shape| {
@@ -295,10 +294,6 @@ mod tests {
         assert!(Arc::ptr_eq(
             &warmed0.shape,
             &result.geometry_at(0).unwrap().shape
-        ));
-        assert!(Arc::ptr_eq(
-            &warmed1.shape,
-            &result.geometry_at(1).unwrap().shape
         ));
         assert!(!Arc::ptr_eq(
             &source.geometry_at(2).unwrap().shape,

@@ -9,8 +9,8 @@ use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, DistanceUnit, Frame, Point, PointRows, Py, PyAny, PyGeometry,
-    PyGeometryArray, PyResult, PyTypeError, Python, Shape, Typed, geometry_type_err,
-    line_locate_shape, metric_nearest_points, resolve_line_metric, resolve_metric, rows_err,
+    PyGeometryArray, PyResult, PyTypeError, Python, Shape, geometry_type_err, line_locate_shape,
+    metric_nearest_points_resolved, resolve_line_metric, rows_err,
 };
 
 /// Build the `(left, right)` witness point columns from per-row nearest
@@ -43,30 +43,6 @@ pub(crate) fn nearest_point_columns_masked(
     Ok((
         PyGeometryArray::from_shapes(left, frame.clone())?.with_missing_mask(missing.clone())?,
         PyGeometryArray::from_shapes(right, frame)?.with_missing_mask(missing)?,
-    ))
-}
-
-pub(crate) fn py_nearest_points(
-    py: Python<'_>,
-    left: &PyGeometry,
-    right: &PyGeometry,
-    unit: Option<DistanceUnit>,
-) -> PyResult<(Typed, Typed)> {
-    left.frame
-        .compatible(&right.frame, MetricOp::NearestPoints.name())?;
-    let model = resolve_metric(
-        left.crs_str(),
-        unit,
-        crate::dispatch::MetricOp::NearestPoints,
-    )?;
-    let common = crate::geometry::common_axes(left.shape.shape(), right.shape.shape());
-    let left_plan = left.plan_or_transient()?;
-    let right_plan = right.plan_or_transient()?;
-    let pair = py.detach(move || metric_nearest_points(&model, &left_plan, &right_plan))?;
-    let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair, common);
-    Ok((
-        Typed(PyGeometry::with_frame(left_shape, left.frame.clone())?),
-        Typed(PyGeometry::with_frame(right_shape, right.frame.clone())?),
     ))
 }
 
@@ -114,31 +90,13 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
     crate::py::numpy::float64_array(py, result)
 }
 
-/// One fixed geometry against every array element, preserving public
-/// left/right witness orientation through `fixed_is_left`.
-///
-/// Frame/model resolution, antimeridian-aware geodesic preparation, missing
-/// rows, and output materialization live here once for both scalar-left and
-/// array-left entry points.
-pub(crate) fn fixed_geometry_array_nearest_points(
+pub(crate) fn fixed_geometry_array_nearest_points_admitted(
     py: Python<'_>,
     fixed: &PyGeometry,
     array: &PyGeometryArray,
     fixed_is_left: bool,
-    unit: Option<DistanceUnit>,
+    model: crate::crs::MetricModel,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
-    Frame::compatible_parts(
-        fixed.crs_ref(),
-        fixed.epoch(),
-        array.crs_ref(),
-        array.epoch(),
-        MetricOp::NearestPoints.name(),
-    )?;
-    let model = resolve_metric(
-        fixed.crs_str(),
-        unit,
-        crate::dispatch::MetricOp::NearestPoints,
-    )?;
     let fixed_plan = fixed.plan_or_transient()?;
     let fixed_cache = fixed.frame_cache()?;
     let array_owned = array.clone();
@@ -203,6 +161,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
         let pairs = rows.map_err(rows_err)?;
         return nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned());
     }
+    let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
     let pairs = py
         .detach(move || {
             let mut rows = array_owned.row_operation();
@@ -213,10 +172,24 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                     };
                     let element = rows.prepared(row)?;
                     let common = crate::geometry::common_axes(fixed_plan.shape(), element.shape());
+                    let fixed_cache = crate::geometry::FrameDependentCaches::default();
+                    let element_cache = crate::geometry::FrameDependentCaches::default();
                     if fixed_is_left {
-                        metric_nearest_points(&model, &fixed_plan, &element)
+                        metric_nearest_points_resolved(
+                            &resolved,
+                            &fixed_plan,
+                            &fixed_cache,
+                            &element,
+                            &element_cache,
+                        )
                     } else {
-                        metric_nearest_points(&model, &element, &fixed_plan)
+                        metric_nearest_points_resolved(
+                            &resolved,
+                            &element,
+                            &element_cache,
+                            &fixed_plan,
+                            &fixed_cache,
+                        )
                     }
                     .map(|pair| (pair, common))
                 })

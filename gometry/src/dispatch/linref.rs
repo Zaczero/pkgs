@@ -8,7 +8,7 @@ use crate::array::{ArrayRow, PackedStorage, line_locate_point_on_lines};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     CollectRows as _, GeometryInput, classify_required, degrade_linref_float, detach_collect_f64,
-    paired_arrays,
+    validate_paired_arrays,
 };
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::{
@@ -112,7 +112,7 @@ pub(crate) fn line_locate_point_input(
             geometry_array_line_locate_point_geometry(py, array, point_geometry, normalized, unit)
         },
         (GeometryInput::Many(array), GeometryInput::Many(points)) => {
-            paired_arrays(array, points, op_name)?;
+            validate_paired_arrays(array, points, op_name)?;
             let queries = require_locate_points(points, MetricOp::LineLocate)?;
             let model = Operation::Metric(MetricOp::LineLocate)
                 .resolver_with_line_unit(unit, normalized)
@@ -299,7 +299,7 @@ pub(crate) fn line_locate_point_m_input(
             })
         },
         (GeometryInput::Many(array), GeometryInput::Many(points)) => {
-            paired_arrays(array, points, op_name)?;
+            validate_paired_arrays(array, points, op_name)?;
             require_locate_points(points, MetricOp::LineLocate)?;
             let model =
                 crate::resolve_line_metric(array.crs_str(), None, false, MetricOp::LineLocate)?;

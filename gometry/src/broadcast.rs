@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::{
-    Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, Crs, F64Param, Frame,
+    Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, F64Param, Frame,
     GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind,
     Point, PreparedPlan, Py, PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError,
     Python, Shape, ShapeData, broadcast_coordinate_input, coerce_geojson_geometry_value,
@@ -34,16 +34,16 @@ mod input;
 pub(crate) use input::{
     GeometryInput, classify_input, classify_required, coerce_geometry, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, expected_geometry_or_array_for,
-    paired_arrays, paired_arrays_len, parse_wkb_geometry, validate_paired_arrays,
+    parse_wkb_geometry, validate_paired_arrays,
 };
 mod metrics;
 pub(crate) use metrics::{
     DistanceUnit, LonLatPointsError, SimilarityOp, array_crs_distances, array_crs_dwithin,
     array_crs_dwithin_per_element, array_crs_metric_float, array_crs_similarity_metric_per_densify,
-    crs_metric_binary_geometry_broadcast, lonlat_points, lonlat_shape,
-    metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_nearest_points, metric_shortest_line, pair_distance_geodesic, pair_distance_planar,
-    pair_dwithin_geodesic, pair_dwithin_planar, require_point, resolve_metric, resolve_metric_3d,
+    lonlat_points, lonlat_shape, metric_maximum_inscribed_radius, metric_minimum_clearance,
+    metric_minimum_clearance_line, metric_nearest_points_resolved, metric_shortest_line_resolved,
+    pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
+    require_point, resolve_metric, resolve_metric_3d,
 };
 mod predicates;
 pub(crate) use predicates::{
@@ -227,31 +227,6 @@ where
         op_name,
         crate::dispatch::MetricResolver::None,
         move |left, right, ctx| op(left.shape(), right.shape(), ctx.lane.row()),
-    )
-}
-
-/// Geometry-returning pairwise
-/// `kernel` over `left` × `right` producing a `GeometryArray`, DETACHED
-/// like the value form (frames resolved once; pure shape work without the
-/// GIL).
-pub(crate) fn array_binary_geometry<K>(
-    py: Python<'_>,
-    left: &PyGeometryArray,
-    right: &Bound<'_, PyAny>,
-    op_name: &str,
-    kernel: K,
-) -> PyResult<PyGeometryArray>
-where
-    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape> + Send + Sync,
-{
-    let right = classify_required(right)?;
-    crate::dispatch::geometry_kernel_over_array(
-        py,
-        left,
-        right,
-        op_name,
-        crate::dispatch::MetricResolver::None,
-        move |left, right, _ctx| kernel(left, right),
     )
 }
 

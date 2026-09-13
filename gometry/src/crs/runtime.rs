@@ -15,6 +15,8 @@ use crate::crs::{
     info_with_state, lru_resolve, parse_epsg, to_authority_with_state,
 };
 use crate::error::Result;
+#[cfg(test)]
+use crate::test_support::binary_dispatch_counters::runtime_state_snapshot as count_runtime_state_snapshot;
 
 const MAX_PROJ_DIAGNOSTIC_BYTES: usize = 4096;
 
@@ -305,6 +307,8 @@ pub(crate) fn runtime_state_lock() -> &'static RwLock<Arc<RuntimeState>> {
 }
 
 pub(crate) fn runtime_state_snapshot() -> Result<Arc<RuntimeState>> {
+    #[cfg(test)]
+    count_runtime_state_snapshot();
     runtime_state_lock()
         .read()
         .map_err(|_| CrsError::invalid("CRS runtime config lock is poisoned".to_owned()))

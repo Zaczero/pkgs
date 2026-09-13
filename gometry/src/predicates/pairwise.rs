@@ -1,11 +1,14 @@
+use std::sync::Arc;
+
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
+use crate::array::missing::union_pair;
 use crate::{
-    Bound, DistanceUnit, Frame, IntoPyObject as _, Py, PyResult, Python, crs,
-    crs_metric_binary_geometry_broadcast, exact_geometry, exact_geometry_array,
-    expected_geometry_or_array, fixed_geometry_array_nearest_points,
-    fixed_geometry_array_shortest_line_geodesic, metric_shortest_line, py_nearest_points,
+    Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, Py, PyGeometry,
+    PyResult, Python, classify_required, crs, exact_geometry_array,
+    fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
+    metric_nearest_points_resolved, metric_shortest_line_resolved, nearest_point_columns_masked,
     pyfunction, resolve_metric, validate_distance_arg,
 };
 
@@ -73,50 +76,77 @@ pub(crate) fn shortest_line(
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     Python::attach(|py| {
-        if let (Some(geometry), Some(array)) = (exact_geometry(left), exact_geometry_array(right)) {
-            Frame::compatible_parts(
-                geometry.crs_ref(),
-                geometry.epoch(),
-                array.crs_ref(),
-                array.epoch(),
-                crate::dispatch::MetricOp::ShortestLine.name(),
-            )?;
-            let model = resolve_metric(
-                geometry.crs_str(),
-                unit,
-                crate::dispatch::MetricOp::ShortestLine,
-            )?;
-            // A crossing scalar can't share one prepared cache across the seam —
-            // fall through to the split-normalizing broadcast below for it.
-            if let crs::MetricModel::Geodesic { crs, frame, state } = model
-                && !crate::geometry::crosses_antimeridian_in_frame(geometry.shape.shape(), frame)
-                && !array.has_missing()
-            {
-                let result = fixed_geometry_array_shortest_line_geodesic(
-                    py, geometry, array, true, crs, frame, state,
-                )?;
-                return Ok(result.into_pyobject(py)?.unbind().into());
-            }
+        let operation = crate::dispatch::MetricOp::ShortestLine;
+        let admission = crate::dispatch::admit_binary(left, right, operation.name())?;
+        let model = resolve_metric(admission.frame.crs_str(), unit, operation)?;
+        match (admission.left, admission.right) {
+            (GeometryInput::One(geometry), GeometryInput::Many(array)) => {
+                // A crossing scalar can't share one prepared cache across the
+                // seam — fall through to the split-normalizing broadcast below
+                // for it.
+                if let crs::MetricModel::Geodesic { crs, frame, state } = &model
+                    && !crate::geometry::crosses_antimeridian_in_frame(
+                        geometry.shape.shape(),
+                        *frame,
+                    )
+                    && !array.has_missing()
+                {
+                    let result = fixed_geometry_array_shortest_line_geodesic(
+                        py,
+                        geometry,
+                        array,
+                        true,
+                        crs.clone(),
+                        *frame,
+                        Arc::clone(state),
+                    )?;
+                    return Ok(result.into_pyobject(py)?.unbind().into());
+                }
+                let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+                crate::dispatch::dispatch_binary_geometry_admitted(
+                    py,
+                    &admission,
+                    operation.name(),
+                    &crate::dispatch::OverlayFastPath,
+                    move |left, right, _ctx| metric_shortest_line_resolved(&resolved, left, right),
+                )
+            },
+            (GeometryInput::Many(array), GeometryInput::One(geometry)) => {
+                if let crs::MetricModel::Geodesic { crs, frame, state } = &model
+                    && !array.has_missing()
+                {
+                    let result = fixed_geometry_array_shortest_line_geodesic(
+                        py,
+                        geometry,
+                        array,
+                        false,
+                        crs.clone(),
+                        *frame,
+                        Arc::clone(state),
+                    )?;
+                    return Ok(result.into_pyobject(py)?.unbind().into());
+                }
+                let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+                crate::dispatch::dispatch_binary_geometry_admitted(
+                    py,
+                    &admission,
+                    operation.name(),
+                    &crate::dispatch::OverlayFastPath,
+                    move |left, right, _ctx| metric_shortest_line_resolved(&resolved, left, right),
+                )
+            },
+            (GeometryInput::One(_), GeometryInput::One(_))
+            | (GeometryInput::Many(_), GeometryInput::Many(_)) => {
+                let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+                crate::dispatch::dispatch_binary_geometry_admitted(
+                    py,
+                    &admission,
+                    operation.name(),
+                    &crate::dispatch::OverlayFastPath,
+                    move |left, right, _ctx| metric_shortest_line_resolved(&resolved, left, right),
+                )
+            },
         }
-        if let Some(array) = exact_geometry_array(left) {
-            let model = resolve_metric(
-                array.crs_str(),
-                unit,
-                crate::dispatch::MetricOp::ShortestLine,
-            )?;
-            if let crs::MetricModel::Geodesic { .. } = model {
-                let result = array.shortest_line(right, unit)?;
-                return Ok(result.into_pyobject(py)?.unbind().into());
-            }
-        }
-        crs_metric_binary_geometry_broadcast(
-            py,
-            left,
-            right,
-            crate::dispatch::MetricOp::ShortestLine,
-            unit,
-            metric_shortest_line,
-        )
     })
 }
 
@@ -438,22 +468,104 @@ pub(crate) fn nearest_points(
     right: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    if let Some(geometry) = exact_geometry(left) {
-        if let Some(right_geometry) = exact_geometry(right) {
-            return Ok(py_nearest_points(py, geometry, right_geometry, unit)?
-                .into_pyobject(py)?
-                .unbind()
-                .into());
-        }
-        if let Some(right_array) = exact_geometry_array(right) {
-            return fixed_geometry_array_nearest_points(py, geometry, right_array, true, unit)?
-                .into_py_any(py);
-        }
+    let admission = crate::dispatch::admit_binary(
+        left,
+        right,
+        crate::dispatch::MetricOp::NearestPoints.name(),
+    )?;
+    let model = resolve_metric(
+        admission.frame.crs_str(),
+        unit,
+        crate::dispatch::MetricOp::NearestPoints,
+    )?;
+    match (admission.left, admission.right) {
+        (GeometryInput::One(left), GeometryInput::One(right)) => {
+            let common = crate::geometry::common_axes(left.shape.shape(), right.shape.shape());
+            let left_plan = left.plan_or_transient()?;
+            let right_plan = right.plan_or_transient()?;
+            let left_cache = crate::geometry::FrameDependentCaches::default();
+            let right_cache = crate::geometry::FrameDependentCaches::default();
+            let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+            let pair = py.detach(move || {
+                metric_nearest_points_resolved(
+                    &resolved,
+                    &left_plan,
+                    &left_cache,
+                    &right_plan,
+                    &right_cache,
+                )
+            })?;
+            let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair, common);
+            (
+                crate::Typed(PyGeometry::with_frame(left_shape, left.frame.clone())?)
+                    .into_pyobject(py)?
+                    .unbind(),
+                crate::Typed(PyGeometry::with_frame(right_shape, right.frame.clone())?)
+                    .into_pyobject(py)?
+                    .unbind(),
+            )
+                .into_py_any(py)
+        },
+        (GeometryInput::One(fixed), GeometryInput::Many(array)) => {
+            fixed_geometry_array_nearest_points_admitted(py, fixed, array, true, model)?
+                .into_py_any(py)
+        },
+        (GeometryInput::Many(array), GeometryInput::One(fixed)) => {
+            fixed_geometry_array_nearest_points_admitted(py, fixed, array, false, model)?
+                .into_py_any(py)
+        },
+        (GeometryInput::Many(left), GeometryInput::Many(right)) => {
+            let missing = union_pair(left.missing(), right.missing())?;
+            let left = left.clone();
+            let right = right.clone();
+            let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+            let pairs = py
+                .detach(move || {
+                    let mut left_rows = left.row_operation();
+                    let mut right_rows = right.row_operation();
+                    left_rows
+                        .rows_with_missing(|| {
+                            (
+                                None::<(crate::geometry::Point, crate::geometry::Point)>,
+                                crate::geometry::CoordinateAxes::XY,
+                            )
+                        })
+                        .zip(right_rows.rows_with_missing(|| {
+                            (
+                                None::<(crate::geometry::Point, crate::geometry::Point)>,
+                                crate::geometry::CoordinateAxes::XY,
+                            )
+                        }))
+                        .map(|(left, right)| {
+                            let (
+                                crate::array::ArrayRow::Present(left),
+                                crate::array::ArrayRow::Present(right),
+                            ) = (left, right)
+                            else {
+                                return Ok((None, crate::geometry::CoordinateAxes::XY));
+                            };
+                            let row = left.logical();
+                            let left = left_rows.prepared(left)?;
+                            let right = right_rows.prepared(right)?;
+                            let left_cache = left_rows.frame_cache(row)?;
+                            let right_cache = right_rows.frame_cache(row)?;
+                            let common = crate::geometry::common_axes(left.shape(), right.shape());
+                            metric_nearest_points_resolved(
+                                &resolved,
+                                &left,
+                                &left_cache,
+                                &right,
+                                &right_cache,
+                            )
+                            .map(|pair| (pair, common))
+                        })
+                        .collect_rows()
+                })
+                .map_err(crate::broadcast::rows_err)?;
+            nearest_point_columns_masked(pairs, admission.frame, missing)
+                .and_then(|value| value.into_py_any(py))
+        },
     }
-    if let Some(array) = exact_geometry_array(left) {
-        return array.nearest_points(py, right, unit)?.into_py_any(py);
-    }
-    Err(expected_geometry_or_array())
 }
 
 /// Test whether ``left`` and ``right`` are within ``distance`` of each other.
@@ -526,39 +638,55 @@ pub(crate) fn dwithin(
         let geometry = prepared.get().as_geometry().into_pyobject(py)?;
         return dwithin(py, left, geometry.as_any(), distance, unit);
     }
+    let left_array = exact_geometry_array(left);
+    let right_array = exact_geometry_array(right);
     // The per-element distance lane needs an array operand (its result is one
     // bool per row); the broadcast length comes from that operand.
-    let left_array = crate::broadcast::exact_geometry_array(left);
-    let right_array = crate::broadcast::exact_geometry_array(right);
-    let Some(len) = left_array.or(right_array).map(|array| array.len()) else {
+    let Some(len) = (match (left_array, right_array) {
+        (Some(array), _) | (None, Some(array)) => Some(array.len()),
+        (None, None) => None,
+    }) else {
         // Two scalars: a single bool, so the distance must be scalar too.
         let distance = validate_distance_arg(distance)?.get();
-        return crate::dispatch::dispatch_dwithin(py, left, right, distance, unit);
+        let left_input = classify_required(left)?;
+        let right_input = classify_required(right)?;
+        let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;
+        return crate::dispatch::dispatch_dwithin_admitted(
+            py,
+            &admission,
+            crate::NonNegative::try_new("distance", distance)?,
+            unit,
+        );
     };
     let distance = crate::F64Param::parse(distance, "distance", len)?;
     distance.try_validate(|value| crate::validate_distance(value).map(|_| ()))?;
+    let left_input = classify_required(left)?;
+    let right_input = classify_required(right)?;
+    let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;
     let Some(scalar) = distance.as_scalar() else {
         // `dwithin` is symmetric, so route the ARRAY operand as the primary and
         // the other operand (scalar or array) as the broadcast partner.
-        return match (left_array, right_array) {
-            (Some(array), _) => crate::broadcast::array_crs_dwithin_per_element(
-                py,
-                array,
-                right,
-                &distance,
-                crate::dispatch::MetricOp::Dwithin,
-                unit,
-            ),
-            (None, Some(array)) => crate::broadcast::array_crs_dwithin_per_element(
-                py,
-                array,
-                left,
-                &distance,
-                crate::dispatch::MetricOp::Dwithin,
-                unit,
-            ),
-            (None, None) => unreachable!("the length came from an array operand"),
+        return match (admission.left, admission.right) {
+            (GeometryInput::Many(array), other) | (other, GeometryInput::Many(array)) => {
+                crate::broadcast::array_crs_dwithin_per_element(
+                    py,
+                    array,
+                    other,
+                    &admission.frame,
+                    &distance,
+                    crate::dispatch::MetricOp::Dwithin,
+                    unit,
+                )
+            },
+            (GeometryInput::One(_), GeometryInput::One(_)) => {
+                unreachable!("the length came from an array operand")
+            },
         };
     };
-    crate::dispatch::dispatch_dwithin(py, left, right, scalar, unit)
+    crate::dispatch::dispatch_dwithin_admitted(
+        py,
+        &admission,
+        crate::NonNegative::try_new("distance", scalar)?,
+        unit,
+    )
 }

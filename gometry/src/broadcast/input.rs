@@ -3,10 +3,9 @@
 
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
-    Arc, Bound, GeoJsonDecodeContext, GeometryArrayStorage, PyAny, PyAnyMethods as _, PyErr,
-    PyGeometry, PyGeometryArray, PyResult, PyTypeError, PyTypeMethods as _,
-    coerce_geojson_geometry_value, crs_arc, ensure_same_len, is_mapping_like, is_one_byte_buffer,
-    parse_geojson_geometry_value,
+    Bound, GeoJsonDecodeContext, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray,
+    PyResult, PyTypeError, PyTypeMethods as _, coerce_geojson_geometry_value, crs_arc,
+    ensure_same_len, is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value,
 };
 
 pub(crate) fn parse_wkb_geometry(value: &[u8]) -> crate::error::Result<PyGeometry> {
@@ -41,6 +40,8 @@ pub(crate) fn expected_geometry_or_array_for(value: &Bound<'_, PyAny>) -> PyErr 
 /// `classify_input` with the canonical error baked in — the one spelling for
 /// "this operand must be a Geometry or GeometryArray".
 pub(crate) fn classify_required<'a>(value: &'a Bound<'_, PyAny>) -> PyResult<GeometryInput<'a>> {
+    #[cfg(test)]
+    crate::test_support::binary_dispatch_counters::classification();
     classify_input(value).ok_or_else(|| expected_geometry_or_array_for(value))
 }
 
@@ -78,45 +79,22 @@ pub(crate) fn validate_paired_arrays(
     left: &PyGeometryArray,
     right: &PyGeometryArray,
     operation: &str,
-) -> PyResult<()> {
+) -> PyResult<Frame> {
+    #[cfg(test)]
+    crate::test_support::binary_dispatch_counters::paired_array_validation();
     ensure_same_len(left.len(), right.len())?;
-    Frame::compatible_parts(
-        left.crs_ref(),
-        left.epoch(),
-        right.crs_ref(),
-        right.epoch(),
-        operation,
-    )?;
-    Ok(())
-}
-
-/// The canonical producer of both operand storages for a Many×Many broadcast.
-/// Callers that only need structural validation use [`validate_paired_arrays`]
-/// instead, avoiding cloned handles that cannot participate in the operation.
-pub(crate) fn paired_arrays(
-    left: &PyGeometryArray,
-    right: &PyGeometryArray,
-    operation: &str,
-) -> PyResult<(Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>)> {
-    validate_paired_arrays(left, right, operation)?;
-    Ok((
-        Arc::clone(left.storage_arc()),
-        Arc::clone(right.storage_arc()),
-    ))
-}
-
-/// `paired_arrays` for callers that have already resolved the frame separately
-/// and must NOT repeat the operand-equality frame check. The length gate stays
-/// first so unequal arrays fail before any row pairing work.
-pub(crate) fn paired_arrays_len(
-    left: &PyGeometryArray,
-    right: &PyGeometryArray,
-) -> PyResult<(Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>)> {
-    ensure_same_len(left.len(), right.len())?;
-    Ok((
-        Arc::clone(left.storage_arc()),
-        Arc::clone(right.storage_arc()),
-    ))
+    let frame = {
+        #[cfg(test)]
+        crate::test_support::binary_dispatch_counters::frame_resolution();
+        Frame::compatible_parts(
+            left.crs_ref(),
+            left.epoch(),
+            right.crs_ref(),
+            right.epoch(),
+            operation,
+        )?
+    };
+    Ok(frame)
 }
 
 /// Resolve one array element: a native `Geometry`, a GeoJSON mapping, or any
