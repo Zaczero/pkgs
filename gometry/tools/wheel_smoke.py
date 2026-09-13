@@ -15,7 +15,7 @@ clean-installs it into a temporary venv, and runs a functional import/API smoke.
 from __future__ import annotations
 
 import argparse
-import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -191,50 +191,19 @@ def _content_leaks(
 
 def native_notice_markers() -> list[tuple[str, str, str]]:
     """Component name, license ID, and full pinned notice text."""
-    manifest = ROOT / 'native-licenses.toml'
-    if not manifest.exists():
-        return []
-    with manifest.open('rb') as stream:
-        components = tomllib.load(stream)['component']
-    markers: list[tuple[str, str, str]] = []
-    for component in components:
-        name = component['name']
-        if notice_file := component.get('notice-file'):
-            try:
-                text = (ROOT / notice_file).read_text(encoding='utf-8')
-            except (OSError, UnicodeDecodeError) as error:
-                raise AssertionError(
-                    f'native component {name} has unreadable notice-file {notice_file!r}'
-                ) from error
-        else:
-            with tarfile.open(ROOT / component['archive']) as archive:
-                member = archive.extractfile(component['notice'])
-                if member is None:
-                    raise AssertionError(
-                        f'native component {name} has no notice member'
-                    )
-                text = member.read().decode('utf-8')
-        notice_sha256 = component.get('notice-sha256')
-        if notice_sha256 is not None:
-            if (
-                not isinstance(notice_sha256, str)
-                or len(notice_sha256) != hashlib.sha256().digest_size * 2
-                or any(character not in '0123456789abcdef' for character in notice_sha256)
-            ):
-                raise AssertionError(
-                    f'native component {name} has an invalid notice-sha256'
-                )
-            digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
-            if digest != notice_sha256:
-                raise AssertionError(
-                    f'native component {name} notice does not match pinned SHA-256 '
-                    f'{notice_sha256}'
-                )
-        marker = next((line.strip() for line in text.splitlines() if line.strip()), '')
-        if not marker:
-            raise AssertionError(f'native component {name} has an empty notice')
-        markers.append((name, component['license'], text))
-    return markers
+    spec = importlib.util.spec_from_file_location('gometry_license_generator', LICENSE_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f'could not load license generator {LICENSE_SCRIPT}')
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    try:
+        entries = generator._native_notice_texts('gometry')
+    except SystemExit as error:
+        raise AssertionError(str(error)) from error
+    return [
+        (component['name'], component['license'], text)
+        for component, text in entries
+    ]
 
 
 def verify_native_notice_texts(text: str, artifact: Path) -> None:

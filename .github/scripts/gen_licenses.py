@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -47,6 +48,7 @@ CONFIG = SCRIPTS / 'about.toml'
 TEMPLATE = SCRIPTS / 'about.hbs'
 OWN_NAME = 'LICENSE.md'
 THIRD_PARTY_NAME = 'LICENSE-THIRD-PARTY.md'
+CARGO_REGISTRY_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
 
 ZERO_BSD = """\
 # 0BSD License
@@ -359,10 +361,200 @@ def _native_error(package: str, component: str, message: str) -> SystemExit:
     return SystemExit(f'{package}: native component {component}: {message}')
 
 
-def _native_section(package: str) -> str:
+def _validate_native_digest(
+    package: str,
+    component: str,
+    field: str,
+    expected: object,
+    payload: bytes,
+) -> None:
+    if expected is None:
+        return
+    if (
+        not isinstance(expected, str)
+        or len(expected) != hashlib.sha256().digest_size * 2
+        or any(character not in '0123456789abcdef' for character in expected)
+    ):
+        raise _native_error(package, component, f'{field} must be a lowercase SHA-256 digest')
+    actual = hashlib.sha256(payload).hexdigest()
+    if actual != expected:
+        raise _native_error(
+            package,
+            component,
+            f'{field} does not match pinned SHA-256 {expected}',
+        )
+
+
+def _extract_native_slice(
+    package: str, component: str, text: str, metadata: dict
+) -> str:
+    start, end = metadata.get('notice-start'), metadata.get('notice-end')
+    if (start is None) != (end is None):
+        raise _native_error(
+            package, component, 'notice-start and notice-end must be declared together'
+        )
+    if start is None:
+        return text
+    if not isinstance(start, str) or not isinstance(end, str) or not start or not end:
+        raise _native_error(
+            package, component, 'notice-start and notice-end must be non-empty strings'
+        )
+    begin = text.find(start)
+    finish = text.find(end, begin + len(start)) if begin >= 0 else -1
+    if begin < 0 or finish < 0:
+        raise _native_error(
+            package,
+            component,
+            'notice markers were not found in the pinned source member',
+        )
+    return text[begin : finish + len(end)]
+
+
+def _cargo_notice_text(
+    package: str,
+    component: str,
+    metadata: dict,
+    cargo_metadata: dict | None,
+) -> tuple[str, dict]:
+    cargo_package = metadata.get('cargo-package')
+    cargo_version = metadata.get('cargo-version')
+    cargo_checksum = metadata.get('cargo-checksum')
+    cargo_source = metadata.get('cargo-source')
+    required_features = metadata.get('cargo-features', [])
+    forbidden_features = metadata.get('cargo-forbidden-features', [])
+    if (
+        not isinstance(cargo_package, str)
+        or not cargo_package
+        or not isinstance(cargo_version, str)
+        or not cargo_version
+        or not isinstance(cargo_checksum, str)
+        or not cargo_checksum
+        or not isinstance(cargo_source, str)
+        or not cargo_source
+    ):
+        raise _native_error(
+            package,
+            component,
+            'cargo-package, cargo-version, cargo-checksum, and cargo-source are required',
+        )
+    if not isinstance(required_features, list) or not all(
+        isinstance(feature, str) and feature for feature in required_features
+    ):
+        raise _native_error(package, component, 'cargo-features must be a string array')
+    if not isinstance(forbidden_features, list) or not all(
+        isinstance(feature, str) and feature for feature in forbidden_features
+    ):
+        raise _native_error(
+            package, component, 'cargo-forbidden-features must be a string array'
+        )
+    lock_path = ROOT / 'Cargo.lock'
+    try:
+        with lock_path.open('rb') as stream:
+            lock = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise _native_error(package, component, f'could not read {lock_path}: {error}') from error
+    locked = [
+        entry
+        for entry in lock.get('package', [])
+        if entry.get('name') == cargo_package and entry.get('version') == cargo_version
+    ]
+    if len(locked) != 1:
+        raise _native_error(
+            package,
+            component,
+            f'Cargo.lock must contain one {cargo_package} {cargo_version}, found {len(locked)}',
+        )
+    locked_package = locked[0]
+    if (
+        locked_package.get('source') != CARGO_REGISTRY_SOURCE
+        or locked_package.get('checksum') != cargo_checksum
+    ):
+        raise _native_error(
+            package,
+            component,
+            f'Cargo.lock identity for {cargo_package} {cargo_version} does not match',
+        )
+    if cargo_metadata is None:
+        result = subprocess.run(
+            [
+                'cargo',
+                'metadata',
+                '--format-version=1',
+                '--locked',
+                '--manifest-path',
+                str(ROOT / package / 'Cargo.toml'),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            raise _native_error(
+                package,
+                component,
+                f'cargo metadata failed (exit {result.returncode}): {result.stderr.strip()}',
+            )
+        try:
+            cargo_metadata = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise _native_error(package, component, f'invalid cargo metadata: {error}') from error
+    packages = [
+        entry
+        for entry in cargo_metadata.get('packages', [])
+        if entry.get('name') == cargo_package
+        and entry.get('version') == cargo_version
+        and entry.get('source') == CARGO_REGISTRY_SOURCE
+    ]
+    if len(packages) != 1:
+        raise _native_error(
+            package,
+            component,
+            f'cargo metadata must resolve one locked {cargo_package} {cargo_version}, '
+            f'found {len(packages)}',
+        )
+    resolved = packages[0]
+    node_id = f'{CARGO_REGISTRY_SOURCE}#{cargo_package}@{cargo_version}'
+    nodes = [
+        node for node in (cargo_metadata.get('resolve') or {}).get('nodes', [])
+        if node.get('id') == node_id
+    ]
+    if len(nodes) != 1:
+        raise _native_error(
+            package,
+            component,
+            f'cargo metadata has no unique feature selection for {cargo_package} '
+            f'{cargo_version}',
+        )
+    features = set(nodes[0].get('features', []))
+    missing = sorted(set(required_features) - features)
+    forbidden = sorted(set(forbidden_features) & features)
+    if missing or forbidden:
+        details = []
+        if missing:
+            details.append(f'missing features {missing}')
+        if forbidden:
+            details.append(f'forbidden features {forbidden}')
+        raise _native_error(package, component, '; '.join(details))
+    package_root = Path(resolved['manifest_path']).resolve().parent
+    source_path = (package_root / cargo_source).resolve()
+    if package_root not in source_path.parents:
+        raise _native_error(package, component, 'cargo-source must be relative to its package')
+    try:
+        text = source_path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as error:
+        raise _native_error(
+            package,
+            component,
+            f'could not read cargo source {cargo_source!r}: {error}',
+        ) from error
+    return _extract_native_slice(package, component, text, metadata), cargo_metadata
+
+
+def _native_notice_texts(package: str) -> list[tuple[dict, str]]:
     manifest = ROOT / package / 'native-licenses.toml'
     if not manifest.exists():
-        return ''
+        return []
     try:
         with manifest.open('rb') as stream:
             components = tomllib.load(stream)['component']
@@ -374,7 +566,8 @@ def _native_section(package: str) -> str:
         )
     with CONFIG.open('rb') as stream:
         accepted = frozenset(tomllib.load(stream)['accepted'])
-    rendered = ['\n## Additional Components\n']
+    entries: list[tuple[dict, str]] = []
+    cargo_metadata = None
     for index, component in enumerate(components, start=1):
         if not isinstance(component, dict):
             raise _native_error(package, f'#{index}', 'must be a table')
@@ -394,28 +587,33 @@ def _native_section(package: str) -> str:
             component.get('notice'),
             component.get('notice-file'),
         )
-        notice_sha256 = component.get('notice-sha256')
-        if notice_sha256 is not None and (
-            not isinstance(notice_sha256, str)
-            or len(notice_sha256) != hashlib.sha256().digest_size * 2
-            or any(character not in '0123456789abcdef' for character in notice_sha256)
-        ):
-            raise _native_error(
-                package, name, 'notice-sha256 must be a lowercase SHA-256 digest'
-            )
+        cargo_mode = component.get('cargo-package') is not None or component.get(
+            'cargo-source'
+        ) is not None
         archive_mode = archive is not None or notice is not None
         file_mode = notice_file is not None
-        if sum((archive_mode, file_mode)) != 1:
+        if sum((archive_mode, file_mode, cargo_mode)) != 1:
             raise _native_error(
                 package,
                 name,
-                'declare exactly one of archive + notice or notice-file',
+                'declare exactly one of archive + notice, notice-file, or cargo source',
             )
         if archive_mode:
             if not isinstance(archive, str) or not isinstance(notice, str):
                 raise _native_error(package, name, 'archive and notice must be strings')
             try:
-                with tarfile.open(ROOT / package / archive) as tar:
+                archive_path = (ROOT / package / archive).resolve()
+                package_root = (ROOT / package).resolve()
+                if package_root not in archive_path.parents:
+                    raise _native_error(package, name, 'archive must be relative to package root')
+                _validate_native_digest(
+                    package,
+                    name,
+                    'archive-sha256',
+                    component.get('archive-sha256'),
+                    archive_path.read_bytes(),
+                )
+                with tarfile.open(archive_path) as tar:
                     member = tar.extractfile(notice)
                     text = member.read().decode('utf-8') if member else ''
             except (OSError, KeyError, tarfile.TarError, UnicodeDecodeError) as error:
@@ -441,16 +639,33 @@ def _native_section(package: str) -> str:
                     name,
                     f'could not read notice-file {notice_file!r}: {error}',
                 ) from error
+        else:
+            text, cargo_metadata = _cargo_notice_text(
+                package, name, component, cargo_metadata
+            )
+        if archive_mode:
+            text = _extract_native_slice(package, name, text, component)
         if not text.strip():
             raise _native_error(package, name, 'notice is empty')
-        if notice_sha256 is not None:
-            digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
-            if digest != notice_sha256:
-                raise _native_error(
-                    package,
-                    name,
-                    f'notice does not match pinned SHA-256 {notice_sha256}',
-                )
+        _validate_native_digest(
+            package,
+            name,
+            'notice-sha256',
+            component.get('notice-sha256'),
+            text.encode('utf-8'),
+        )
+        entries.append((component, text))
+    return entries
+
+
+def _native_section(package: str) -> str:
+    rendered = ['\n## Additional Components\n']
+    for component, text in _native_notice_texts(package):
+        name, version, license = (
+            component['name'],
+            component['version'],
+            component['license'],
+        )
         fence = '```'
         while fence in text:
             fence += '`'

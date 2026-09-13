@@ -15,7 +15,7 @@ include = [
   "/README.md",
   "/LICENSE-*",
   "/rust-toolchain.toml",
-  "/native/notices/**",
+  "/native/notices/nlohmann-json-license.md",
   "/native/proj-sys/**",
   "/native/libtiff-sys/**",
 ]

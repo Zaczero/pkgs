@@ -3,9 +3,9 @@
 # `cargo-about` covers the Cargo dependency graph. Native sources vendored inside
 # `-sys` crates are outside that graph, so they are declared here. A `-sys` crate's
 # own license is a separate obligation from the library it bundles.
-# The zlib source is owned by libz-sys in Cargo's registry rather than this tree;
-# its version and holder are therefore pinned here and checked in the generated
-# payload, not coupled to a fragile registry path scan.
+# Native registry sources are resolved through Cargo.lock and cargo metadata.
+# Their crate checksum, selected features, and source-relative notice path are
+# part of each component below.
 
 [[component]]
 name          = "PROJ"
@@ -14,17 +14,21 @@ license       = "MIT"
 homepage      = "https://proj.org"
 archive       = "native/proj-sys/PROJSRC/proj-9.6.2.tar.gz"
 notice        = "proj-9.6.2/COPYING"
+archive-sha256 = "53d0cafaee3bb2390264a38668ed31d90787de05e71378ad7a8f35bb34c575d1"
 # Pinned PROJ 9.6.2 source archive; the notice is the archive member above.
 notice-sha256 = "6a8f30793e877d32e3f88b972f0970a051a3b5a26cd057d3993cb51e21c43319"
 
 [[component]]
-name          = "nlohmann/json"
+name          = "nlohmann/json release license"
 version       = "3.9.1"
 license       = "MIT"
 homepage      = "https://github.com/nlohmann/json"
 notice-file   = "native/notices/nlohmann-json-license.md"
 # https://raw.githubusercontent.com/nlohmann/json/v3.9.1/LICENSE.MIT
-notice-sha256 = "50be9457e5c9faaba5e60d9c73f8eabe9e0737a2d9c3e58357d856661862c18e"
+# The source has one trailing ASCII space after "MIT License"; the tracked
+# notice removes that whitespace so the repository quality check stays green.
+# Upstream source SHA-256: 50be9457e5c9faaba5e60d9c73f8eabe9e0737a2d9c3e58357d856661862c18e
+notice-sha256 = "4340368262b9b78debc79678618b8d6cfc48abe6d98572883b9b8dbf301ae146"
 
 [[component]]
 name          = "nlohmann/json bundled header"
@@ -33,8 +37,51 @@ license       = "MIT"
 homepage      = "https://github.com/nlohmann/json"
 archive       = "native/proj-sys/PROJSRC/proj-9.6.2.tar.gz"
 notice        = "proj-9.6.2/include/proj/internal/vendor/nlohmann/json.hpp"
-# The full pinned header retains the bundled header and its embedded notices.
-notice-sha256 = "1c6a0b5ff46e5967201646728e22df59185c84191f99e056c0194b4ab46160a4"
+# notice-start/end select bounded source notices; archive-sha256 protects the member corpus.
+archive-sha256 = "53d0cafaee3bb2390264a38668ed31d90787de05e71378ad7a8f35bb34c575d1"
+notice-start  = "Licensed under the MIT License <http://opensource.org/licenses/MIT>."
+notice-end    = "*/"
+notice-sha256 = "4d7c362f2cdd6d5625679f7efa1e0107147479ccb4e3e0ceac885c23f7173dac"
+
+[[component]]
+name          = "Hedley"
+version       = "13"
+license       = "CC0-1.0"
+homepage      = "https://nemequ.github.io/hedley"
+archive       = "native/proj-sys/PROJSRC/proj-9.6.2.tar.gz"
+notice        = "proj-9.6.2/include/proj/internal/vendor/nlohmann/json.hpp"
+archive-sha256 = "53d0cafaee3bb2390264a38668ed31d90787de05e71378ad7a8f35bb34c575d1"
+notice-start  = "/* Hedley - https://nemequ.github.io/hedley"
+notice-end    = "*/"
+notice-sha256 = "cd231a186c7be0a5b5e6de57bb3ea87b712f5f2bce340ed048656008b4e3c013"
+
+[[component]]
+name          = "nlohmann/json Grisu2 attribution"
+version       = "3.9.1"
+license       = "MIT"
+homepage      = "https://github.com/nlohmann/json"
+archive       = "native/proj-sys/PROJSRC/proj-9.6.2.tar.gz"
+notice        = "proj-9.6.2/include/proj/internal/vendor/nlohmann/json.hpp"
+archive-sha256 = "53d0cafaee3bb2390264a38668ed31d90787de05e71378ad7a8f35bb34c575d1"
+notice-start  = "/*!\n@brief implements the Grisu2 algorithm"
+notice-end    = "*/"
+notice-sha256 = "53217df3f0fc93e533dba1153fcddd37feb3e570162af59bce6f2b6a4bfa05d5"
+
+[[component]]
+name          = "nlohmann/json UTF-8 decoder attribution"
+version       = "3.9.1"
+license       = "MIT"
+homepage      = "https://github.com/nlohmann/json"
+archive       = "native/proj-sys/PROJSRC/proj-9.6.2.tar.gz"
+notice        = "proj-9.6.2/include/proj/internal/vendor/nlohmann/json.hpp"
+archive-sha256 = "53d0cafaee3bb2390264a38668ed31d90787de05e71378ad7a8f35bb34c575d1"
+notice-start  = "    @copyright Copyright (c) 2008-2009 Bjoern Hoehrmann"
+notice-end    = "*/"
+notice-sha256 = "5907264c3c798821c00082f30289d93d5c84a378dde9894ace4c953431a48b21"
+# The primary source's License section identifies this 2008-2009 decoder as MIT:
+# https://bjoern.hoehrmann.de/utf-8/decoder/dfa/. The bundled header carries
+# only this attribution and URL, so this component retains that exact bounded
+# notice rather than borrowing terms from Niels Lohmann's separate license.
 
 [[component]]
 name        = "libtiff"
@@ -55,17 +102,25 @@ name          = "zlib"
 version       = "1.3.2"
 license       = "Zlib"
 homepage      = "https://zlib.net"
-notice-file   = "native/notices/zlib-license.md"
-# libz-sys 1.1.29, Cargo.lock checksum
-# 85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9
+cargo-package = "libz-sys"
+cargo-version = "1.1.29"
+cargo-checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+cargo-source = "src/zlib/LICENSE"
+cargo-features = ["static", "stock-zlib"]
+cargo-forbidden-features = ["zlib-ng", "zlib-ng-no-cmake-experimental-community-maintained"]
 notice-sha256 = "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
 
 [[component]]
-name        = "SQLite"
-version     = "3.50.2"
-license     = "blessing"
-homepage    = "https://sqlite.org"
-notice-file = "native/notices/sqlite-blessing.md"
-# libsqlite3-sys 0.35.0, Cargo.lock checksum
-# 133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f
-notice-sha256 = "85806d613cfda5901f848b3b5b4b04396c8c64e89c97c0af3706c42b0c44bb47"
+name          = "SQLite blessing"
+version       = "3.50.2"
+license       = "blessing"
+homepage      = "https://sqlite.org"
+cargo-package = "libsqlite3-sys"
+cargo-version = "0.35.0"
+cargo-checksum = "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
+cargo-source = "sqlite3/sqlite3.h"
+cargo-features = ["bundled"]
+cargo-forbidden-features = ["sqlcipher", "bundled-sqlcipher", "bundled-sqlcipher-vendored-openssl"]
+notice-start = "/*\n** 2001-09-15"
+notice-end = "*/"
+notice-sha256 = "cc65d76f325d884dd49e319acf3764d5513920f34ad18e34347b8dedc6ddd2ec"
