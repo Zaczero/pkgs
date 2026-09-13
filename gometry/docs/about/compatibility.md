@@ -44,7 +44,7 @@ CRS, epoch, missing-row, and loss behavior.
 | GeoPandas | `gometry[geopandas]`, `geopandas>=1.1.4` | [`to_geopandas`][gometry.GeometryArray.to_geopandas], [`from_geopandas`][gometry.from_geopandas] | Converts through the GeoPandas/Shapely boundary; coordinate epochs require explicit loss acknowledgement on export. |
 | GeoParquet | `gometry[arrow]` | [`to_geoparquet`][gometry.GeometryArray.to_geoparquet], [`from_geoparquet`][gometry.from_geoparquet] | Uses PyArrow and GeoParquet column metadata; see [Arrow & storage](../ecosystem/arrow.md) for CRS and epoch portability. |
 | lonboard maps | `gometry[viz]`, `lonboard>=0.16.0` plus its map runtime | [`explore`][gometry.explore], notebook HTML preview | Reproject to a WGS 84 display frame when the source CRS is not equivalent to WGS 84. |
-| NumPy | Core dependency `numpy>=1.26` | Coordinate views and dense result arrays | Numeric results are read-only NumPy arrays; gometry is not a Python Array API provider. See [Array API compatibility](../ecosystem/numpy.md#python-array-api-compatibility). |
+| NumPy | Core dependency `numpy>=1.26` | Coordinate views and dense result arrays | Numeric results are read-only NumPy arrays; input buffer capture requires a quiescent producer and copies into native storage. Gometry is not a Python Array API provider. See [NumPy arrays & coordinates](../ecosystem/numpy.md). |
 
 For protocol-level details, see [Ecosystem & interoperability](../ecosystem/index.md),
 [Arrow & storage](../ecosystem/arrow.md), and [Text & binary formats](../ecosystem/text-formats.md).

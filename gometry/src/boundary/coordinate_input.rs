@@ -423,7 +423,9 @@ pub(crate) fn integer_values_exact(
 
 /// Capture a coordinate column in owned native-endian storage. Contiguous and
 /// simple strided buffers fill the column directly; general inputs use
-/// [`coordinate_values`].
+/// [`coordinate_values`]. The producer must remain quiescent until capture
+/// returns; retaining a `PyBuffer` pins its allocation but does not synchronize
+/// native writers.
 pub(crate) fn coordinate_column_values(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -454,17 +456,18 @@ pub(crate) fn coordinate_column_values_from_buffer(
 /// Capture a non-contiguous buffer in an owned column.
 ///
 /// Each element is read through [`pyo3::buffer::ReadOnlyCell`] — never as a
-/// plain `&f64` / `&[f64]` over buffer memory another free-threaded mutator may
-/// write (aliasing UB). `ReadOnlyCell::get` is a non-atomic load: the producer
-/// must stay quiescent until this capture returns, after which only the owned
-/// column is retained.
+/// plain `&f64` / `&[f64]` over buffer memory. `ReadOnlyCell::get` is a
+/// non-atomic load, and the fallback copy is an ordinary copy rather than a
+/// synchronization protocol: the producer must stay quiescent until this
+/// capture returns. Afterward only the owned column is retained.
 fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Vec<f64>> {
     use pyo3::buffer::ReadOnlyCell;
 
     // The strided fast path below reads through a raw pointer. When the
-    // exporter's storage may change under it, take the same contiguous copy the
-    // suboffset case already falls back to.
-    if !crate::boundary::buffer_endian::exporter_storage_is_stable(py, buffer) {
+    // exporter does not support direct capture, take the ordinary contiguous
+    // copy the suboffset case already falls back to. Neither choice
+    // synchronizes a native writer; the producer remains quiescent for both.
+    if !crate::boundary::buffer_endian::exporter_supports_direct_capture(py, buffer) {
         return buffer_to_vec_f64(py, buffer);
     }
 
@@ -620,9 +623,9 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     }
     let row_step = row_stride / item;
     let col_step = col_stride / item;
-    // Same reasoning as the suboffset branch above: storage another thread may
-    // write cannot be read through the stride arithmetic below.
-    if !crate::boundary::buffer_endian::exporter_storage_is_stable(value.py(), &buffer) {
+    // The direct stride walk and the ordinary copy both require a quiescent
+    // producer; the copy path is not a native-writer synchronization protocol.
+    if !crate::boundary::buffer_endian::exporter_supports_direct_capture(value.py(), &buffer) {
         return coordseq_from_indirect_nd_buffer(value.py(), &buffer, n, d, z, m).map(Some);
     }
     let native = crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format());
@@ -638,13 +641,13 @@ pub(crate) fn try_coordseq_from_nd_buffer(
         unsafe {
             values.set_len(n);
         }
-        // Never form `&[f64]` over a buffer another free-threaded mutator may
-        // write — load each element through ReadOnlyCell (non-atomic; producer
-        // must stay quiescent for this finite capture).
+        // Load each element through ReadOnlyCell rather than forming a slice
+        // over foreign storage. The loads are non-atomic; the producer must
+        // stay quiescent for this finite capture.
         let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
         // SAFETY: buffer held; N×D shape and strides validated; no suboffsets
-        // (checked above); col < d. ReadOnlyCell::get is a plain load — the
-        // provider must not write until capture returns.
+        // (checked above); col < d. ReadOnlyCell::get is a plain load, and
+        // the provider must not write until capture returns.
         unsafe {
             for (i, slot) in values.iter_mut().enumerate() {
                 let offset = (i as isize)

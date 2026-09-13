@@ -562,6 +562,8 @@ fn extract_bytes_payload(item: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
 
 /// Copy a one-byte Python buffer into exclusive Rust storage with fallible
 /// allocation. This is the owning counterpart to [`with_one_byte_buffer`].
+/// The source producer must remain quiescent until the copy returns; owning
+/// the result does not synchronize the source read.
 pub(crate) fn copy_one_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(bytes) = value.extract::<&[u8]>() {
         let mut owned = try_vec_with_capacity(bytes.len())?;
@@ -644,9 +646,9 @@ pub(crate) fn is_one_byte_buffer(value: &Bound<'_, PyAny>) -> bool {
 /// Free-threading soundness: zero-copy `&[u8]` is allowed **only** for
 /// known-immutable ``bytes`` (`extract::<&[u8]>` is PyBytes-only). Mutable
 /// carriers (`bytearray`, writable `memoryview`, NumPy, …) are **copied**
-/// before parse — a `PyBuffer` pins the allocation but does not stop another
-/// thread mutating contents, and forming a plain `&[u8]` over that memory is
-/// aliasing UB.
+/// before parse. A `PyBuffer` pins the allocation but does not stop another
+/// thread mutating contents, so the producer must remain quiescent until the
+/// copy returns; the resulting parse borrows only the owned copy.
 pub(crate) fn with_one_byte_buffer<R>(
     value: &Bound<'_, PyAny>,
     f: impl FnOnce(&[u8]) -> PyResult<R>,
@@ -669,8 +671,10 @@ pub(crate) fn with_one_byte_buffer<R>(
 /// Copy a `u8` `PyBuffer` into an exclusive `Vec<u8>`, then hand `&[u8]` to ``f``.
 ///
 /// The slice always refers to the Rust-owned `Vec` — never to the Python
-/// exporter's memory — so concurrent free-threaded mutators of the original
-/// `bytearray` / writable `memoryview` cannot alias through this borrow.
+/// exporter's memory — so later mutators of the original `bytearray` /
+/// writable `memoryview` cannot alias through this borrow. The copy itself is
+/// not atomic and does not synchronize a native writer; the producer must
+/// remain quiescent until it returns.
 fn with_u8_buffer_owned<R>(
     buffer: &pyo3::buffer::PyBuffer<u8>,
     py: Python<'_>,

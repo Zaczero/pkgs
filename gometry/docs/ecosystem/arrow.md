@@ -97,8 +97,10 @@ The [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface
 does not provide general buffer capacities. Providers must obey its exported
 structures, pointer tables, readable spans, capsule names, and release-callback
 rules; a provider that forges pointers or capacities is outside this boundary.
-Native producers must keep exported memory valid until release, and PyArrow
-objects must not be modified during `from_arrow`.
+Native producers must keep exported memory valid and its addressed contents
+quiescent until release; PyArrow objects must not be modified during
+`from_arrow`. Copying a foreign span gives gometry ownership after capture but
+does not synchronize a producer that writes during the copy.
 
 Gometry copies the admitted schema and visible spans into owned storage, then
 validates schema formats, offsets (including null slots), null bitmaps,

@@ -136,6 +136,8 @@ pub(super) fn parse_h3_index<I: H3Index>(
     I::from_token(&token).ok_or_else(|| invalid_token::<I>(&token))
 }
 
+/// Copy a numeric ndarray into owned ids. The source must remain quiescent
+/// until `tobytes` returns; that copy does not synchronize native writers.
 fn owned_h3_ids_from_tobytes<I: H3Index, T>(ids: &Bound<'_, PyAny>) -> PyResult<Vec<u64>>
 where
     T: Copy + TryInto<u64>,
@@ -182,10 +184,8 @@ fn parse_uint64_ids<I: H3Index>(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u
                 if ids.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
                     // Owned capture via `tobytes()` — never an ArrayView over
                     // writable NumPy memory, so no borrow outlives this call.
-                    // The free-threaded exporter allowlist that
-                    // `boundary::coordinate_input` needs for its raw pointer
-                    // loads has nothing to protect here, and applying it would
-                    // reject every NumPy array the GIL build accepts.
+                    // The copy does not synchronize a native writer; the
+                    // producer must remain quiescent until it returns.
                     return Ok(Some(owned_h3_ids_from_tobytes::<I, $ty>(ids)?));
                 }
             )*

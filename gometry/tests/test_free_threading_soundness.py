@@ -1,16 +1,17 @@
-"""Free-threading soundness: concurrent mutation of list fancy-index and PEP-3118 buffers.
+"""Free-threading soundness for list indexing and numeric buffer capture.
 
-These tests prove the two v1 free-threading blockers stay fixed:
+These tests cover two interpreter-boundary contracts:
 
 1. Exact-list fancy indexing must not read past a list that another thread
    shrinks (no length-snapshot + unsynchronized ``get_item_unchecked``).
-2. Numeric / one-byte PEP-3118 buffers must not form Rust ``&[T]`` over memory
-   another thread may mutate (ReadOnlyCell / copy-on-mutable).
+2. Numeric PEP-3118 captures must not expose foreign storage after the call;
+   deterministic cases exercise the producer-quiescent capture contract.
 
-On a free-threaded build (``sys._is_gil_enabled() is False``) a mutator thread
-races the reader. On a GIL-enabled build the concurrent cases **skip** with an
-explicit free-threading reason so they never pass as a false free-threading
-proof. Deterministic single-thread safe-path tests always run.
+On a free-threaded build (``sys._is_gil_enabled() is False``), only the list
+indexing case races a mutator because the list admission path owns a snapshot.
+The numeric capture cases remain quiescent: copying a buffer does not
+synchronize a native writer, even when the GIL is enabled. Deterministic
+single-thread safe-path tests always run.
 """
 
 from __future__ import annotations
@@ -141,14 +142,13 @@ def test_buffer_ingest_shapes_deterministic() -> None:
         pytest.param('nd', id='buffer-NxD-f64-ndarray'),
     ],
 )
-def test_mutable_numeric_buffers_are_snapshotted(shape: str) -> None:
-    """A writable exporter is copied at capture — neither aliased nor refused.
+def test_quiescent_numeric_buffers_are_captured_independently(shape: str) -> None:
+    """A quiescent writable exporter is captured and later writes cannot escape.
 
-    The paths that would form a Rust slice over the exporter take CPython's
-    contiguous copy when its storage may change under them, so ingest is a
-    snapshot and a later write cannot reach an already-built geometry. Refusing
-    the input instead would make NumPy, the one required runtime dependency,
-    unusable on the supported ``cp314t`` target.
+    A retained ``Py_buffer`` pins the exporter's allocation, but its copy is
+    not a synchronization protocol. Callers must keep the producer quiescent
+    until capture returns; after that point the completed geometry is
+    independent of the source storage.
     """
     n = 256
     if shape == 'contiguous':
@@ -182,8 +182,9 @@ def test_mutable_numeric_buffers_are_snapshotted(shape: str) -> None:
 def test_readonly_facade_over_mutable_buffer_is_snapshotted() -> None:
     """A readonly memoryview is a facade: the storage behind it still moves.
 
-    It carries no immutable provenance, so it takes the copying path — which is
-    a snapshot, not an error.
+    It carries no immutable provenance. Free-threaded capture therefore uses
+    the copying path; the GIL build may use its direct typed path. Both require
+    a quiescent producer and retain owned geometry after the call.
     """
     storage = np.arange(32, dtype=np.float64)
     view = memoryview(storage).toreadonly()
@@ -211,8 +212,8 @@ def test_free_threaded_bytes_backed_typed_memoryview_is_accepted(format: str) ->
         assert arr[0].id == cell.id
 
 
-def test_uint64_buffer_is_snapshotted() -> None:
-    """The cell and H3 u64 paths capture through ``tobytes()``, so they own their ids."""
+def test_quiescent_uint64_buffer_capture_is_independent() -> None:
+    """A quiescent ``tobytes()`` capture owns cell and H3 ids after return."""
     cell = gm.H3Cell('8928308280fffff')
     ids = np.array([cell.id], dtype=np.uint64)
     built = gm.CellArray(ids, type=gm.H3Cell)
@@ -326,48 +327,6 @@ def test_concurrent_list_fancy_index_mutation(receiver_kind: str) -> None:
             _ = arr[mask_list]
         except (IndexError, TypeError, ValueError, gm.GeometryError):
             pass
-
-    errors = _run_mutator_reader(reader, mutator)
-    if errors:
-        pytest.fail('\n'.join(errors))
-
-
-@pytest.mark.parametrize(
-    'shape',
-    [
-        pytest.param('columns', id='buffer-columns-f64-ndarray'),
-        pytest.param('nd', id='buffer-NxD-f64-ndarray'),
-    ],
-)
-def test_concurrent_numeric_buffer_mutation(shape: str) -> None:
-    """A mutator rewrites the source array while the reader captures from it.
-
-    Refusing writable exporters left this race with no coverage at all: the
-    reader could only raise. A torn snapshot is an acceptable outcome for a
-    caller that mutates its own input mid-call; memory unsafety is not.
-    """
-    _require_free_threading()
-
-    n = 256
-    xs = np.arange(n, dtype=np.float64)
-    ys = np.arange(n, dtype=np.float64) * 0.5
-    nd = np.column_stack([xs, ys])
-
-    def mutator() -> None:
-        # Slice assignment writes through; `xs += 1.0` would rebind a local.
-        xs[:] += 1.0
-        ys[:] -= 0.5
-        nd[:, 0] += 1.0
-
-    if shape == 'columns':
-
-        def reader() -> None:
-            _ = gm.points(xs, ys)
-
-    else:
-
-        def reader() -> None:
-            _ = gm.LineString(nd)
 
     errors = _run_mutator_reader(reader, mutator)
     if errors:

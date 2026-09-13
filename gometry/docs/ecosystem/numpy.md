@@ -41,9 +41,13 @@ single dense ndarray shape.
 Numeric input columns also accept PEP-3118 buffers when the operation accepts a
 `FloatColumn` or integer column. This is input admission, not an output-buffer
 promise: gometry does not export geometry containers as PEP-3118 numeric buffers.
-Input buffers are copied into native storage. The native coordinate representation
-is float64, so a float32 `FloatColumn` is accepted but converted to float64 during
-ingestion; `FloatColumn` input is not zero-copy.
+Input buffers are copied into native storage. Capture is synchronous: keep the
+producer quiescent (do not modify it) until the call returns. Holding a buffer
+view keeps its allocation alive but does not synchronize a native writer or
+make a torn concurrent read coherent. Once capture returns, later mutations of
+the input cannot affect the completed geometry. The native coordinate
+representation is float64, so a float32 `FloatColumn` is accepted but converted
+to float64 during ingestion; `FloatColumn` input is not zero-copy.
 
 ## Coordinate columns, zero-copy
 

@@ -2,6 +2,8 @@
 constructors, and parts/rings extraction helpers.
 """
 
+import gc
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -293,6 +295,30 @@ def test_coordinate_groups_are_readonly_and_pickle_round_trip() -> None:
     assert restored == groups
 
 
+def test_coordinate_group_matrix_view_retains_its_immutable_owner() -> None:
+    groups = gm.get_coordinates(
+        gm.GeometryArray([
+            gm.LineString([(1.0, 2.0), (3.0, 4.0)]),
+            gm.LineString([(5.0, 6.0), (7.0, 8.0)]),
+        ])
+    )
+    row = groups[1]
+    values = groups.values
+
+    del groups
+    gc.collect()
+
+    np.testing.assert_array_equal(row, [[5.0, 6.0], [7.0, 8.0]])
+    np.testing.assert_array_equal(
+        values,
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
+    )
+    assert row.flags.writeable is False
+    assert values.flags.writeable is False
+    with pytest.raises(ValueError):
+        row[0, 0] = 9.0
+
+
 def test_coordinate_groups_slice_xyz_m_rows_from_the_source_window() -> None:
     groups = gm.get_coordinates(
         gm.GeometryArray([
@@ -311,6 +337,10 @@ def test_coordinate_groups_slice_xyz_m_rows_from_the_source_window() -> None:
     assert selected[0].shape == (0, 4)
     np.testing.assert_array_equal(
         selected[1],
+        [[2.0, 2.0, 3.0, 30.0], [3.0, 3.0, 4.0, 40.0], [4.0, 4.0, 5.0, 50.0]],
+    )
+    np.testing.assert_array_equal(
+        selected.values,
         [[2.0, 2.0, 3.0, 30.0], [3.0, 3.0, 4.0, 40.0], [4.0, 4.0, 5.0, 50.0]],
     )
 

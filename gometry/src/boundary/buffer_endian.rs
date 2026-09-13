@@ -10,8 +10,6 @@ use std::ffi::CStr;
 use std::mem::MaybeUninit;
 
 use pyo3::buffer::PyBuffer;
-#[cfg(Py_GIL_DISABLED)]
-use pyo3::exceptions::PyBufferError;
 use pyo3::prelude::*;
 #[cfg(Py_GIL_DISABLED)]
 use pyo3::types::PyBytes;
@@ -21,18 +19,23 @@ use pyo3::types::PyMemoryView;
 #[cfg(Py_GIL_DISABLED)]
 use crate::py::vectors::Float64Buffer;
 
-/// Admit only exporters whose storage is immutable for the duration of a
-/// native capture. A read-only view can still be a facade over writable
-/// storage, so readonly metadata is not an admission proof.
+/// Select direct typed loads instead of the generic buffer copy.
+///
+/// The GIL build retains the direct path for compatibility and throughput.
+/// That is a capture-strategy choice, not a synchronization guarantee: a
+/// native writer can release the GIL and modify the exporter concurrently.
+/// Free-threaded builds use the narrower exact immutable-owner set for direct
+/// loads. Every capture path still requires the producer to remain quiescent
+/// unless the producer supplies its own synchronization protocol.
 #[cfg_attr(
     not(Py_GIL_DISABLED),
     expect(
         clippy::missing_const_for_fn,
         clippy::needless_return,
-        reason = "the GIL build always answers true while the free-threaded build walks the chain"
+        reason = "the GIL build keeps the existing direct path while the free-threaded build walks the owner chain"
     )
 )]
-pub(crate) fn exporter_storage_is_stable<T>(py: Python<'_>, buffer: &PyBuffer<T>) -> bool {
+pub(crate) fn exporter_supports_direct_capture<T>(py: Python<'_>, buffer: &PyBuffer<T>) -> bool {
     #[cfg(not(Py_GIL_DISABLED))]
     {
         let _ = (py, buffer);
@@ -91,14 +94,16 @@ pub(crate) const fn swap_u64_endian(value: u64) -> u64 {
 /// Copy a C-contiguous `f64` buffer into a `Vec<f64>` in host-native order.
 ///
 /// Reads each element through [`pyo3::buffer::ReadOnlyCell`], forming a Rust
-/// slice over the exporter's storage. That is only sound while nothing else can
-/// write it, so an exporter failing [`exporter_storage_is_stable`] takes
-/// CPython's own contiguous copy instead: the same answer, no data race.
+/// slice over the exporter's storage. The direct/copy distinction is not a
+/// synchronization protocol: both paths require the producer to remain
+/// quiescent for this finite capture. An exporter that does not support direct
+/// capture takes CPython's ordinary contiguous copy instead.
 ///
-/// # Safety contract
-/// Caller must only pass a C-contiguous `f64` buffer held for this scope.
+/// # Capture contract
+/// Caller must only pass a C-contiguous `f64` buffer held for this scope, and
+/// its producer must remain quiescent until the copy returns.
 pub(crate) fn buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Vec<f64>> {
-    if !exporter_storage_is_stable(py, buffer) {
+    if !exporter_supports_direct_capture(py, buffer) {
         return buffer_to_vec_f64(py, buffer);
     }
     let len = buffer.item_count();
@@ -136,6 +141,10 @@ pub(crate) fn buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> Py
 
 /// Copy buffer elements to a `Vec<f64>` in host-native order (byteswaps when
 /// the PEP 3118 format is non-native).
+///
+/// This is an ordinary copy, not a synchronization protocol. The buffer
+/// exporter must remain quiescent until the copy returns; retaining the
+/// `PyBuffer` pins its allocation but does not exclude native writers.
 pub(crate) fn buffer_to_vec_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Vec<f64>> {
     let mut values = crate::try_vec_with_capacity(buffer.item_count())?;
     values.resize(buffer.item_count(), 0.0);
@@ -149,6 +158,10 @@ pub(crate) fn buffer_to_vec_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
 }
 
 /// Copy buffer elements to a `Vec<u64>` in host-native order.
+///
+/// This is an ordinary copy, not a synchronization protocol. The buffer
+/// exporter must remain quiescent until the copy returns; retaining the
+/// `PyBuffer` pins its allocation but does not exclude native writers.
 pub(crate) fn buffer_to_vec_u64(py: Python<'_>, buffer: &PyBuffer<u64>) -> PyResult<Vec<u64>> {
     let mut values = crate::try_vec_with_capacity(buffer.item_count())?;
     values.resize(buffer.item_count(), 0);
@@ -162,6 +175,10 @@ pub(crate) fn buffer_to_vec_u64(py: Python<'_>, buffer: &PyBuffer<u64>) -> PyRes
 }
 
 /// `copy_to_slice` then byteswap if the buffer format is non-native.
+///
+/// The exporter must remain quiescent until the copy returns. A destination
+/// slice is exclusive after the copy, but `copy_to_slice` does not synchronize
+/// the source with a native writer.
 pub(crate) fn buffer_copy_to_slice_u64(
     py: Python<'_>,
     buffer: &PyBuffer<u64>,

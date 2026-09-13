@@ -27,7 +27,7 @@ use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::errors::GeometryError;
 use crate::py::numpy;
-use crate::py::numpy::{ImmutableI64Owner, frozen_i64_owner, frozen_i64_view, int64_array};
+use crate::py::numpy::{ImmutableBufferOwner, frozen_buffer_owner, frozen_i64_view, int64_array};
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{CsrBuilder, HeapSize};
 
@@ -192,10 +192,10 @@ enum GroupsContainsNeedle {
     Coordinates(Vec<f64>),
 }
 
-// Frozen + immutable Arc<[i64]> backing: the only owner admitted to
-// `frozen_i64_view` (Item C). A mutable pyclass cannot implement Sealed.
-impl frozen_i64_owner::Sealed for Groups {}
-impl ImmutableI64Owner for Groups {}
+// Frozen + immutable Arc-backed storage: the only owner admitted to the
+// owner-derived NumPy views. A mutable pyclass cannot implement Sealed.
+impl frozen_buffer_owner::Sealed for Groups {}
+impl ImmutableBufferOwner for Groups {}
 
 mod ctor;
 
@@ -238,22 +238,22 @@ impl Groups {
         rows.start * dimensions..rows.end * dimensions
     }
 
-    fn coordinate_row_array(
-        &self,
-        py: Python<'_>,
-        slf: Bound<'_, Self>,
-        row: usize,
-    ) -> PyResult<Py<PyAny>> {
-        let GroupsValues::Coordinates { values, dimensions } = &self.values else {
+    fn coordinate_row_array(&self, slf: Bound<'_, Self>, row: usize) -> PyResult<Py<PyAny>> {
+        let GroupsValues::Coordinates { dimensions, .. } = &self.values else {
             unreachable!("coordinate_row_array requires Coordinates backing");
         };
         let rows = self.row_values_window(row);
-        let start = rows.start * *dimensions;
-        let end = rows.end * *dimensions;
-        numpy::float64_matrix_slice_array(
-            py,
-            slf.into_any(),
-            &values[start..end],
+        numpy::frozen_f64_matrix_view(
+            slf,
+            |this| {
+                let GroupsValues::Coordinates { values, dimensions } = &this.values else {
+                    unreachable!("coordinate_row_array requires Coordinates backing");
+                };
+                let rows = this.row_values_window(row);
+                let start = rows.start * *dimensions;
+                let end = rows.end * *dimensions;
+                &values[start..end]
+            },
             rows.len(),
             *dimensions,
         )
@@ -326,7 +326,7 @@ impl Groups {
             GroupsValues::Int64(_) => frozen_i64_view(slf, |this| this.int64_row_slice(row)),
             GroupsValues::Geometry(_) => self.geometry_row_view(row)?.into_py_any(py),
             GroupsValues::Cells(_) => self.cell_row_view(row)?.into_py_any(py),
-            GroupsValues::Coordinates { .. } => self.coordinate_row_array(py, slf, row),
+            GroupsValues::Coordinates { .. } => self.coordinate_row_array(slf, row),
         }
     }
 
@@ -640,19 +640,26 @@ impl Groups {
                     values.logical_row_range(start..end)?.into_py_any(py)
                 }
             },
-            GroupsValues::Coordinates { values, dimensions } => {
+            GroupsValues::Coordinates { .. } => {
                 let this = slf.borrow();
                 let rows = this.values_window();
-                let start = rows.start * *dimensions;
-                let end = rows.end * *dimensions;
                 let row_count = rows.len();
+                let GroupsValues::Coordinates { dimensions, .. } = &this.values else {
+                    unreachable!("values getter coordinate branch");
+                };
                 let dimensions = *dimensions;
-                let values = &values[start..end];
                 drop(this);
-                numpy::float64_matrix_slice_array(
-                    slf.py(),
-                    slf.into_any(),
-                    values,
+                numpy::frozen_f64_matrix_view(
+                    slf,
+                    |this| {
+                        let GroupsValues::Coordinates { values, dimensions } = &this.values else {
+                            unreachable!("values getter coordinate branch");
+                        };
+                        let rows = this.values_window();
+                        let start = rows.start * *dimensions;
+                        let end = rows.end * *dimensions;
+                        &values[start..end]
+                    },
                     row_count,
                     dimensions,
                 )

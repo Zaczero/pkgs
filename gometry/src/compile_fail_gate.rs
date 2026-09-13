@@ -91,6 +91,18 @@ const MANIFEST: &[Fixture] = &[
         code: "E0382",
         message_needle: "use of moved value: `foreign`",
     },
+    Fixture {
+        rel: "py/arrow_c/compile_fail/item_i_owner_derived_unrelated.rs",
+        property: "item_i/owner_derived_rejects_unrelated_owner",
+        code: "E0277",
+        message_needle: "ImmutableBufferOwner",
+    },
+    Fixture {
+        rel: "py/arrow_c/compile_fail/item_j_owner_derived_temporary.rs",
+        property: "item_j/owner_derived_rejects_temporary",
+        code: "E0515",
+        message_needle: "local variable `values`",
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
