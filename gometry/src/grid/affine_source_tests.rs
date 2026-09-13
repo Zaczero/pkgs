@@ -4,15 +4,16 @@ use h3o::Resolution;
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape, is_axis_aligned_rectangle};
 use crate::grid::affine_source::{
-    CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactParentParameter,
-    ExactPlanarCoordinates as _, ExactPlanarPoint, ExactRatio, FULL_TURN_DEGREES,
-    GeographicCoverageSource, GridPointClass, LiftKind, LiftedChain, LiftedLongitude,
-    ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass, SourceEdgeKey,
-    SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge, authority_edge_proxy_envelopes,
-    build_authority_edge_index, classify_lifted_ring_bucket, closed_between,
-    closed_between_expansion, closed_between_raw, combine_polygon_point_classes,
-    exact_affine_level, exact_axis_rectangle, exact_segment_touches_rectangle,
-    integer_levels_between, lifted_step, selection_closed_between,
+    CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactFailure,
+    ExactParentParameter, ExactPlanarCoordinates as _, ExactPlanarPoint, ExactRatio,
+    FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass, INLINE_EXPANSION_LIMBS, LiftKind,
+    LiftedChain, LiftedLongitude, ParentCrossing, ParentParameterKey, PartitionConstraint,
+    RectClass, SourceEdgeKey, SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge,
+    authority_edge_exact_refinements, authority_edge_proxy_envelopes, build_authority_edge_index,
+    classify_lifted_ring_bucket, closed_between, closed_between_expansion, closed_between_raw,
+    combine_polygon_point_classes, exact_affine_level, exact_axis_rectangle,
+    exact_segment_touches_rectangle, integer_levels_between, lifted_step,
+    reset_authority_edge_exact_refinements, selection_closed_between,
     subdivided_axis_aligned_rectangle,
 };
 use crate::grid::spherical_arc::{
@@ -48,7 +49,7 @@ fn exhaustive_authority_point_class(
     {
         return GridPointClass::Unknown;
     }
-    let Some(query) = ExactPlanarPoint::from_stored(longitude, latitude) else {
+    let Some(query) = ExactPlanarPoint::from_stored(longitude, latitude).ok() else {
         return GridPointClass::Unknown;
     };
     let mut aggregate = GridPointClass::Exterior;
@@ -99,11 +100,13 @@ fn exhaustive_authority_point_class(
 fn assert_indexed_matches_exhaustive(source: &GeographicCoverageSource, points: &[(f64, f64)]) {
     for &(longitude, latitude) in points {
         assert_eq!(
-            source.authority_point_class(longitude, latitude),
+            source
+                .authority_point_class(longitude, latitude)
+                .expect("exact point classification"),
             exhaustive_authority_point_class(source, longitude, latitude),
             "source point ({longitude}, {latitude})",
         );
-        let Some(query) = ExactPlanarPoint::from_stored(longitude, latitude) else {
+        let Some(query) = ExactPlanarPoint::from_stored(longitude, latitude).ok() else {
             continue;
         };
         for shell in &source.ring_fills {
@@ -111,7 +114,9 @@ fn assert_indexed_matches_exhaustive(source: &GeographicCoverageSource, points: 
                 panic!("ring fill has no authoritative chain");
             };
             assert_eq!(
-                shell.point_class(chain, longitude, &query),
+                shell
+                    .point_class(chain, longitude, &query)
+                    .expect("exact ring classification"),
                 shell.direct_oracle_point_class(chain, longitude, &query),
                 "ring {}/{} point ({longitude}, {latitude})",
                 shell.component,
@@ -206,7 +211,7 @@ fn symbolic_split_stages_cover_longitude_reflection_and_post_reflection_seams() 
     let longitude_start = start_point.longitude();
     let longitude_end = end_point.longitude();
     assert_eq!(
-        integer_levels_between(longitude_start, longitude_end, 180, 360),
+        integer_levels_between(longitude_start, longitude_end, 180, 360).ok(),
         Some(-2..=0)
     );
     let seam_crossing = edge
@@ -219,29 +224,20 @@ fn symbolic_split_stages_cover_longitude_reflection_and_post_reflection_seams() 
     let ParentCrossing::Present(seam_ratio) = seam_crossing else {
         panic!("the -180 degree lifted seam must cross this full edge");
     };
-    assert!(
-        ExactParentParameter::new(
-            ParentParameterKey::Partition(PartitionConstraint::LiftedLongitudeSeam),
-            seam_ratio,
-        )
-        .is_some()
-    );
+    ExactParentParameter::new(
+        ParentParameterKey::Partition(PartitionConstraint::LiftedLongitudeSeam),
+        seam_ratio,
+    )
+    .unwrap();
     for level in integer_levels_between(longitude_start, longitude_end, 180, 360).unwrap() {
         let seam = exact_affine_level(180, 360, level).unwrap();
-        assert!(
-            edge.parameter_for(longitude_start, longitude_end, &seam)
-                .is_some(),
-            "level {level}"
-        );
+        edge.parameter_for(longitude_start, longitude_end, &seam)
+            .unwrap_or_else(|_| panic!("level {level}"));
     }
-    assert!(
-        edge.collect_lifted_longitude_seams(&start_point, &end_point)
-            .is_some()
-    );
-    assert!(
-        edge.collect_latitude_reflections(&start_point, &end_point)
-            .is_some()
-    );
+    edge.collect_lifted_longitude_seams(&start_point, &end_point)
+        .unwrap();
+    edge.collect_latitude_reflections(&start_point, &end_point)
+        .unwrap();
     assert!(edge.parameters.iter().any(|parameter| {
         parameter.key == ParentParameterKey::Partition(PartitionConstraint::LiftedLongitudeSeam)
     }));
@@ -251,11 +247,9 @@ fn symbolic_split_stages_cover_longitude_reflection_and_post_reflection_seams() 
     let mut post_reflection = unpartitioned_symbolic_edge(&[(-100.0, 100.0), (260.0, 110.0)]);
     let post_start = ExactPlanarPoint::from_lifted(post_reflection.start).unwrap();
     let post_end = ExactPlanarPoint::from_lifted(post_reflection.end).unwrap();
-    assert!(
-        post_reflection
-            .collect_post_reflection_longitude_seams(&post_start, &post_end)
-            .is_some()
-    );
+    post_reflection
+        .collect_post_reflection_longitude_seams(&post_start, &post_end)
+        .unwrap();
     assert!(post_reflection.parameters.iter().any(|parameter| {
         parameter.key
             == ParentParameterKey::Partition(PartitionConstraint::PostReflectionLongitudeSeam)
@@ -269,8 +263,8 @@ fn exact_ratio_orders_the_two_stored_doubles_around_forty_over_three() {
     let upper = f64::from_bits(0x402A_AAAA_AAAA_AAAB);
     let scale = ExactExpansion::from_i64(40).unwrap();
     let ratio = |value| ExactRatio::new(&ExactExpansion::from_f64(value).unwrap(), &scale).unwrap();
-    assert_eq!(ratio(lower).ordering(&third), Some(Ordering::Less));
-    assert_eq!(ratio(upper).ordering(&third), Some(Ordering::Greater));
+    assert_eq!(ratio(lower).ordering(&third), Ok(Ordering::Less));
+    assert_eq!(ratio(upper).ordering(&third), Ok(Ordering::Greater));
 }
 
 #[test]
@@ -283,7 +277,7 @@ fn compact_exact_storage_canonicalizes_heap_zero_and_grows_from_spare_capacity()
     assert_eq!(storage.as_slice().len(), 12);
     storage.truncate(4).unwrap();
     assert_eq!(storage.as_slice(), &[1.0, 2.0, 4.0, 8.0]);
-    assert!(storage.prepare(EXPANSION_LIMBS + 1).is_none());
+    storage.prepare(EXPANSION_LIMBS + 1).unwrap_err();
 
     let heap = ExactExpansion {
         limbs: CompactLimbs::Heap(vec![
@@ -306,6 +300,29 @@ fn compact_exact_storage_canonicalizes_heap_zero_and_grows_from_spare_capacity()
 }
 
 #[test]
+fn compact_exact_heap_promotion_is_fallibly_reserved() {
+    let ((), allocations) = crate::test_support::allocation_count(|| {
+        let mut storage = CompactLimbs::single(1.0);
+        storage
+            .prepare(INLINE_EXPANSION_LIMBS + 1)
+            .expect("heap promotion");
+        assert!(matches!(storage, CompactLimbs::Heap(_)));
+    });
+    assert!(
+        allocations > 0,
+        "the direct control must enter the former heap-promotion allocation"
+    );
+
+    let error = crate::test_support::fail_allocations_after(0, || {
+        let mut storage = CompactLimbs::single(1.0);
+        storage
+            .prepare(INLINE_EXPANSION_LIMBS + 1)
+            .expect_err("allocation failure must remain recoverable")
+    });
+    assert_eq!(error, ExactFailure::Allocation);
+}
+
+#[test]
 fn expansion_sub_cancels_unit_plus_half_ulp_without_a_scratch_clone() {
     // 1 - 2^-53 is one binary64. 1 + 2^-53 is not; add then sub must recover
     // the half-ulp limb, including empty-right identity.
@@ -314,10 +331,10 @@ fn expansion_sub_cancels_unit_plus_half_ulp_without_a_scratch_clone() {
     let sum = unit.add(&half_ulp).unwrap();
     assert!(sum.as_f64().is_none());
     let recovered = sum.sub(&unit).unwrap();
-    assert_eq!(recovered.is_exact(2.0_f64.powi(-53)), Some(true));
+    assert_eq!(recovered.is_exact(2.0_f64.powi(-53)), Ok(true));
     let unchanged = sum.sub(&ExactExpansion::zero()).unwrap();
     assert_eq!(unchanged.ordering(), sum.ordering());
-    assert_eq!(unchanged.is_exact(1.0), Some(false));
+    assert_eq!(unchanged.is_exact(1.0), Ok(false));
 }
 
 #[test]
@@ -359,15 +376,13 @@ fn exact_ratio_equality_deduplicates_inline_and_heap_representations() {
 
 #[test]
 fn exact_parent_endpoints_have_certified_enclosures() {
-    assert!(ExactParentParameter::start().is_some());
-    assert!(ExactParentParameter::end().is_some());
-    assert!(
-        ExactParentParameter::new(
-            ParentParameterKey::Partition(PartitionConstraint::FullEdgeMidpoint),
-            ExactRatio::from_i64(1, 2).unwrap(),
-        )
-        .is_some()
-    );
+    ExactParentParameter::start().unwrap();
+    ExactParentParameter::end().unwrap();
+    ExactParentParameter::new(
+        ParentParameterKey::Partition(PartitionConstraint::FullEdgeMidpoint),
+        ExactRatio::from_i64(1, 2).unwrap(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -385,7 +400,7 @@ fn generated_parent_split_retains_exact_one_third_through_the_affine_map() {
         .expect("the generated 90-degree reflection split");
     assert_eq!(
         split.ratio.ordering(&ExactRatio::from_i64(1, 3).unwrap()),
-        Some(Ordering::Equal)
+        Ok(Ordering::Equal)
     );
     let start_point = ExactPlanarPoint::from_lifted(edge.start).unwrap();
     let end_point = ExactPlanarPoint::from_lifted(edge.end).unwrap();
@@ -394,23 +409,23 @@ fn generated_parent_split_retains_exact_one_third_through_the_affine_map() {
         .unwrap();
     let lower = ExactRatio::from_f64(f64::from_bits(0x402A_AAAA_AAAA_AAAA)).unwrap();
     let upper = ExactRatio::from_f64(f64::from_bits(0x402A_AAAA_AAAA_AAAB)).unwrap();
-    assert_eq!(position.ordering(&lower), Some(Ordering::Greater));
-    assert_eq!(position.ordering(&upper), Some(Ordering::Less));
+    assert_eq!(position.ordering(&lower), Ok(Ordering::Greater));
+    assert_eq!(position.ordering(&upper), Ok(Ordering::Less));
     let enclosure = position.certified_bound().unwrap();
     assert_ne!(
         position.ordering(&ExactRatio::from_f64(enclosure.lo).unwrap()),
-        Some(Ordering::Less)
+        Ok(Ordering::Less)
     );
     assert_ne!(
         position.ordering(&ExactRatio::from_f64(enclosure.hi).unwrap()),
-        Some(Ordering::Greater)
+        Ok(Ordering::Greater)
     );
     let mut pieces = Vec::new();
     edge.selection_pieces(&mut pieces).unwrap();
     assert!(pieces.iter().any(|piece| {
         piece.interval.end.key
             == ParentParameterKey::Partition(PartitionConstraint::LatitudeReflection)
-            && piece.interval.end.ratio.ordering(&split.ratio) == Some(Ordering::Equal)
+            && piece.interval.end.ratio.ordering(&split.ratio) == Ok(Ordering::Equal)
     }));
 }
 
@@ -536,7 +551,7 @@ fn full_edge_splits_symbolically_before_selection_wrap() {
             && parameter
                 .ratio
                 .ordering(&ExactRatio::from_i64(1, 2).unwrap())
-                == Some(Ordering::Equal)
+                == Ok(Ordering::Equal)
     }));
     let mut pieces = Vec::new();
     edge.selection_pieces(&mut pieces).unwrap();
@@ -713,7 +728,9 @@ fn periodic_pole_roof_blocks_raw_latitude_pruning() {
             pole
         );
         assert_eq!(
-            source.authority_point_class(0.0, latitude),
+            source
+                .authority_point_class(0.0, latitude)
+                .expect("exact point classification"),
             GridPointClass::Interior
         );
         let latitude = if latitude > 0.0 {
@@ -725,7 +742,12 @@ fn periodic_pole_roof_blocks_raw_latitude_pruning() {
             latitude,
             longitude: CertifiedLongitudeDegrees::One(Bound::new(-1.0, 1.0).unwrap()),
         });
-        assert_ne!(source.classify_rect(candidate), RectClass::Outside);
+        assert_ne!(
+            source
+                .classify_rect(candidate)
+                .expect("exact rectangle classification"),
+            RectClass::Outside
+        );
     }
 }
 
@@ -757,7 +779,10 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
     assert_eq!(fill.degree, 2);
     assert!(!fill.periodic_exact);
     let query = ExactPlanarPoint::from_stored(0.0, 85.0).unwrap();
-    let DirectPreimages::Copies(copies) = source.chains[0].direct_preimages(0.0) else {
+    let DirectPreimages::Copies(copies) = source.chains[0]
+        .direct_preimages(0.0)
+        .expect("direct preimages")
+    else {
         panic!("the fixed two-turn cap has finite direct preimages");
     };
     assert_eq!(
@@ -767,17 +792,21 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
             fill.roof.as_ref(),
             &query,
             copies,
-        ),
+        )
+        .expect("exact ring classification"),
         GridPointClass::Interior,
         "the planar lift has an interior that is not yet a quotient proof"
     );
     assert_eq!(
-        fill.point_class(&source.chains[0], 0.0, &query),
+        fill.point_class(&source.chains[0], 0.0, &query)
+            .expect("exact ring classification"),
         GridPointClass::Unknown,
         "only the periodic-exact certificate may promote that interior"
     );
     assert_eq!(
-        source.authority_point_class(0.0, 85.0),
+        source
+            .authority_point_class(0.0, 85.0)
+            .expect("exact point classification"),
         GridPointClass::Unknown
     );
 }
@@ -929,10 +958,8 @@ fn authority_point_location_respects_shell_hole_and_closed_boundary() {
         for (ordinal, edge) in points.windows(2).enumerate() {
             let edge = symbolic_edge(edge, LiftKind::Shortest);
             let mut pieces = Vec::new();
-            assert!(
-                edge.selection_pieces(&mut pieces).is_some(),
-                "{label} edge {ordinal}"
-            );
+            edge.selection_pieces(&mut pieces)
+                .unwrap_or_else(|_| panic!("{label} edge {ordinal}"));
         }
     }
     let source = GeographicCoverageSource::new(
@@ -943,37 +970,53 @@ fn authority_point_location_respects_shell_hole_and_closed_boundary() {
     assert!(!source.is_unknown());
     let query = ExactPlanarPoint::from_stored(3.0, 3.0).unwrap();
     assert_eq!(
-        source.ring_fills[0].point_class(&source.chains[0], 3.0, &query),
+        source.ring_fills[0]
+            .point_class(&source.chains[0], 3.0, &query)
+            .expect("exact ring classification"),
         GridPointClass::Interior
     );
     assert_eq!(
-        source.ring_fills[1].point_class(&source.chains[1], 3.0, &query),
+        source.ring_fills[1]
+            .point_class(&source.chains[1], 3.0, &query)
+            .expect("exact ring classification"),
         GridPointClass::Exterior
     );
     assert_eq!(
         source.ring_fills[0].direct_oracle_point_class(&source.chains[0], 3.0, &query),
-        source.ring_fills[0].point_class(&source.chains[0], 3.0, &query),
+        source.ring_fills[0]
+            .point_class(&source.chains[0], 3.0, &query)
+            .expect("exact ring classification"),
         "the O(n) bucket evaluates the same finite periodic preimages as the direct oracle"
     );
     assert_eq!(
         source.ring_fills[1].direct_oracle_point_class(&source.chains[1], 3.0, &query),
-        source.ring_fills[1].point_class(&source.chains[1], 3.0, &query),
+        source.ring_fills[1]
+            .point_class(&source.chains[1], 3.0, &query)
+            .expect("exact ring classification"),
         "an empty direct preimage remains a certified exterior in both paths"
     );
     assert_eq!(
-        source.authority_point_class(3.0, 3.0),
+        source
+            .authority_point_class(3.0, 3.0)
+            .expect("exact point classification"),
         GridPointClass::Interior
     );
     assert_eq!(
-        source.authority_point_class(0.0, 0.0),
+        source
+            .authority_point_class(0.0, 0.0)
+            .expect("exact point classification"),
         GridPointClass::Exterior
     );
     assert_eq!(
-        source.authority_point_class(2.0, 0.0),
+        source
+            .authority_point_class(2.0, 0.0)
+            .expect("exact point classification"),
         GridPointClass::Boundary
     );
     assert_eq!(
-        source.authority_point_class(11.0, 0.0),
+        source
+            .authority_point_class(11.0, 0.0)
+            .expect("exact point classification"),
         GridPointClass::Exterior
     );
 }
@@ -1084,10 +1127,10 @@ fn lifted_ring_classifier_matches_the_exhaustive_oracle_for_tall_edges_and_windi
 
 #[test]
 fn lifted_ring_index_keeps_nonfinite_queries_and_chains_fail_open() {
-    assert!(LiftedChain::from_points(&[], true).is_none());
-    assert!(LiftedChain::from_points(&[(0.0, 0.0), (1.0, 1.0), (0.0, 0.0)], true).is_none());
-    assert!(LiftedChain::from_points(&[(0.0, 0.0), (1.0, f64::NAN)], false).is_none());
-    assert!(ExactPlanarPoint::from_stored(f64::INFINITY, 0.0).is_none());
+    LiftedChain::from_points(&[], true).unwrap_err();
+    LiftedChain::from_points(&[(0.0, 0.0), (1.0, 1.0), (0.0, 0.0)], true).unwrap_err();
+    LiftedChain::from_points(&[(0.0, 0.0), (1.0, f64::NAN)], false).unwrap_err();
+    ExactPlanarPoint::from_stored(f64::INFINITY, 0.0).unwrap_err();
 
     let source = polygon_source(
         &[
@@ -1100,11 +1143,15 @@ fn lifted_ring_index_keeps_nonfinite_queries_and_chains_fail_open() {
         Vec::new(),
     );
     assert_eq!(
-        source.authority_point_class(f64::NAN, 0.0),
+        source
+            .authority_point_class(f64::NAN, 0.0)
+            .expect("invalid query remains fail-open"),
         GridPointClass::Unknown
     );
     assert_eq!(
-        source.authority_point_class(0.0, f64::INFINITY),
+        source
+            .authority_point_class(0.0, f64::INFINITY)
+            .expect("invalid query remains fail-open"),
         GridPointClass::Unknown
     );
 }
@@ -1130,16 +1177,22 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
     )
     .unwrap();
     assert_eq!(
-        forward.authority_point_class(0.0, 85.0),
+        forward
+            .authority_point_class(0.0, 85.0)
+            .expect("exact point classification"),
         GridPointClass::Interior
     );
     assert_eq!(
-        forward.authority_point_class(0.0, 0.0),
+        forward
+            .authority_point_class(0.0, 0.0)
+            .expect("exact point classification"),
         GridPointClass::Exterior
     );
     let north_query = ExactPlanarPoint::from_stored(0.0, 85.0).unwrap();
     assert_eq!(
-        forward.ring_fills[0].point_class(&forward.chains[0], 0.0, &north_query),
+        forward.ring_fills[0]
+            .point_class(&forward.chains[0], 0.0, &north_query)
+            .expect("exact ring classification"),
         forward.ring_fills[0].direct_oracle_point_class(&forward.chains[0], 0.0, &north_query),
         "the physical pole roof has identical bucket and direct-preimage parity"
     );
@@ -1158,15 +1211,21 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
     )
     .unwrap();
     assert_eq!(
-        reverse.authority_point_class(0.0, 85.0),
+        reverse
+            .authority_point_class(0.0, 85.0)
+            .expect("exact point classification"),
         GridPointClass::Interior
     );
     assert_eq!(
-        reverse.authority_point_class(0.0, -85.0),
+        reverse
+            .authority_point_class(0.0, -85.0)
+            .expect("exact point classification"),
         GridPointClass::Exterior
     );
     assert_eq!(
-        reverse.authority_point_class(0.0, 0.0),
+        reverse
+            .authority_point_class(0.0, 0.0)
+            .expect("exact point classification"),
         GridPointClass::Exterior
     );
 }
@@ -1204,17 +1263,23 @@ fn exact_axis_rectangle_precedes_the_global_unknown_veto_for_cap_windows() {
         })
     };
     assert_eq!(
-        source.classify_rect(windows(75.0, 80.0)),
+        source
+            .classify_rect(windows(75.0, 80.0))
+            .expect("exact rectangle classification"),
         RectClass::Interior,
         "a full-longitude cap strictly inside the stored rectangle is a complete proof"
     );
     assert_eq!(
-        source.classify_rect(windows(0.0, 60.0)),
+        source
+            .classify_rect(windows(0.0, 60.0))
+            .expect("exact rectangle classification"),
         RectClass::Outside,
         "strict latitude separation still prunes under the unknown general lift"
     );
     assert_eq!(
-        source.classify_rect(windows(60.0, 70.0)),
+        source
+            .classify_rect(windows(60.0, 70.0))
+            .expect("exact rectangle classification"),
         RectClass::Boundary,
         "closed contact is retained rather than converted to a strict negative"
     );
@@ -1311,7 +1376,7 @@ fn subdivided_parallel_edges_remain_an_exact_full_longitude_rectangle() {
         "the generic side-walk certificate admits geographic parallel subdivision"
     );
     assert!(
-        subdivided_axis_aligned_rectangle(&shape, bounds),
+        subdivided_axis_aligned_rectangle(&shape, bounds).unwrap(),
         "each exact segment advances once around the four rectangle sides"
     );
     let source =
@@ -1342,7 +1407,7 @@ fn exact_axis_rectangle_requires_an_ordered_directed_boundary_walk() {
     ]);
     let bow_tie_bounds = bow_tie.bounds().unwrap();
     assert!(
-        !exact_axis_rectangle(&bow_tie, bow_tie_bounds),
+        !exact_axis_rectangle(&bow_tie, bow_tie_bounds).unwrap(),
         "a corner set is not a side-ordered rectangle certificate"
     );
 
@@ -1359,7 +1424,7 @@ fn exact_axis_rectangle_requires_an_ordered_directed_boundary_walk() {
     ]);
     let seam_zigzag_bounds = seam_zigzag.bounds().unwrap();
     assert!(
-        !exact_axis_rectangle(&seam_zigzag, seam_zigzag_bounds),
+        !exact_axis_rectangle(&seam_zigzag, seam_zigzag_bounds).unwrap(),
         "a shortest-lift seam zigzag is not the written full-world side"
     );
 }
@@ -1413,7 +1478,7 @@ fn incremental_reduction_preserves_seam_zigzags_and_full_turn_edges() {
     let full =
         LiftedChain::from_points(&[(-180.0, 0.0), (180.0, 0.0), (-180.0, 0.0)], false).unwrap();
     assert_eq!(full.vertices.len(), 3);
-    assert_eq!(full.edges.as_ref(), &[
+    assert_eq!(full.edges.as_slice(), &[
         LiftKind::FullPositive,
         LiftKind::FullNegative
     ]);
@@ -1458,18 +1523,29 @@ fn authority_edge_index_matches_exhaustive_exact_classification() {
     assert!(source.authority_edge_index.is_some());
     assert_eq!(source.chains[0].vertices.len(), 4_000);
 
-    // The indexed classification is checked against the exhaustive one; how
-    // many edges each visits is a performance property the benchmarks own.
+    // The indexed classification is checked against the exhaustive one. The
+    // far query also proves the packed BVH prunes the large source before any
+    // exact edge refinement.
     let longitude = Bound::new(-1.0, 1.0).unwrap();
     let latitude = Bound::new(-1.0, 1.0).unwrap();
-    let indexed = source.classify_rect_window(longitude, latitude);
+    reset_authority_edge_exact_refinements();
+    let indexed = source
+        .classify_rect_window(longitude, latitude)
+        .expect("exact rectangle classification");
+    let indexed_refinements = authority_edge_exact_refinements();
+    reset_authority_edge_exact_refinements();
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
+    let exhaustive_refinements = authority_edge_exact_refinements();
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Outside);
+    assert_eq!(indexed_refinements, 0);
+    assert_eq!(exhaustive_refinements, 3_999);
 
     let longitude = Bound::new(-1.0, 1.0).unwrap();
     let latitude = Bound::new(19.9, 20.2).unwrap();
-    let indexed = source.classify_rect_window(longitude, latitude);
+    let indexed = source
+        .classify_rect_window(longitude, latitude)
+        .expect("exact rectangle classification");
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Boundary);
@@ -1499,7 +1575,9 @@ fn authority_edge_index_matches_polar_cap_interior() {
     assert!(source.authority_edge_index.is_some());
     let longitude = Bound::new(-10.0, 10.0).unwrap();
     let latitude = Bound::new(74.0, 75.0).unwrap();
-    let indexed = source.classify_rect_window(longitude, latitude);
+    let indexed = source
+        .classify_rect_window(longitude, latitude)
+        .expect("exact rectangle classification");
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Interior);
@@ -1527,7 +1605,9 @@ fn authority_edge_index_matches_seam_endpoint_contact_on_both_sheets() {
         Bound::new(179.0, 179.0).unwrap(),
     ] {
         let latitude = Bound::new(0.0, 0.0).unwrap();
-        let indexed = source.classify_rect_window(longitude, latitude);
+        let indexed = source
+            .classify_rect_window(longitude, latitude)
+            .expect("exact rectangle classification");
         let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
         assert_eq!(indexed, exhaustive);
         assert_eq!(indexed, RectClass::Boundary);
@@ -1553,7 +1633,9 @@ fn authority_edge_index_matches_an_unwrapped_longitude_alias() {
     assert!(source.authority_edge_index.is_some());
     let longitude = Bound::new(84.0, 86.0).unwrap();
     let latitude = Bound::new(54.0, 56.0).unwrap();
-    let indexed = source.classify_rect_window(longitude, latitude);
+    let indexed = source
+        .classify_rect_window(longitude, latitude)
+        .expect("exact rectangle classification");
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Boundary);
@@ -1578,7 +1660,9 @@ fn authority_edge_index_deduplicates_full_turn_sheet_hits() {
     assert!(source.authority_edge_index.is_some());
     let longitude = Bound::new(-180.0, 180.0).unwrap();
     let latitude = Bound::new(-1.0, 1.0).unwrap();
-    let indexed = source.classify_rect_window(longitude, latitude);
+    let indexed = source
+        .classify_rect_window(longitude, latitude)
+        .expect("exact rectangle classification");
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Boundary);
@@ -1589,17 +1673,24 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
     let mut edge = unpartitioned_symbolic_edge(&[(0.0, 0.0), (1.0, 1.0)]);
     edge.start.longitude.raw = f64::MAX;
     edge.end.longitude.raw = f64::MAX;
-    assert!(authority_edge_proxy_envelopes(&edge).is_none());
-    assert!(build_authority_edge_index(std::slice::from_ref(&edge)).is_none());
+    authority_edge_proxy_envelopes(&edge).unwrap_err();
+    assert!(
+        build_authority_edge_index(std::slice::from_ref(&edge))
+            .unwrap()
+            .is_none()
+    );
 
     let source = GeographicCoverageSource {
         target: SphericalGridTarget::H3(Resolution::Two),
         exact_axis_rect: None,
         authority_latitude: None,
-        chains: Vec::new().into_boxed_slice(),
+        chains: Vec::new(),
         ring_fills: Vec::new(),
         authority_points: Vec::new(),
+        authority_point_bounds: Vec::new(),
         selection_points: Vec::new(),
+        selection_point_bounds: Vec::new(),
+        selection_poles: Vec::new(),
         authority_edges: vec![edge],
         authority_edge_index: None,
         authority_pieces: Vec::new(),
@@ -1607,10 +1698,12 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
         unknown: false,
     };
     assert_eq!(
-        source.classify_rect_window(
-            Bound::new(-1.0, 1.0).unwrap(),
-            Bound::new(-1.0, 1.0).unwrap()
-        ),
+        source
+            .classify_rect_window(
+                Bound::new(-1.0, 1.0).unwrap(),
+                Bound::new(-1.0, 1.0).unwrap()
+            )
+            .expect("exact rectangle classification"),
         RectClass::Boundary
     );
 }
@@ -1647,10 +1740,14 @@ fn assert_all_oracles(left: f64, middle: f64, right: f64, expected: Option<bool>
         &ExactRatio::from_f64(middle).unwrap(),
         &ExactRatio::from_f64(right).unwrap(),
     );
-    assert_eq!(expansion, expected, "expansion {left} {middle} {right}");
-    assert_eq!(raw, expected, "raw {left} {middle} {right}");
-    assert_eq!(lifted, expected, "lifted {left} {middle} {right}");
-    assert_eq!(ratio, expected, "ratio {left} {middle} {right}");
+    assert_eq!(
+        expansion.ok(),
+        expected,
+        "expansion {left} {middle} {right}"
+    );
+    assert_eq!(raw.ok(), expected, "raw {left} {middle} {right}");
+    assert_eq!(lifted.ok(), expected, "lifted {left} {middle} {right}");
+    assert_eq!(ratio.ok(), expected, "ratio {left} {middle} {right}");
 }
 
 #[test]

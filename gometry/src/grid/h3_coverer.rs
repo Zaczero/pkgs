@@ -109,9 +109,8 @@ impl H3UniqueCells {
         // The component length is an upper bound on new keys; reserving only
         // the remaining budget avoids allocating beyond a caller's ceiling
         // while duplicates still remain admissible.
-        let remaining = max_cells
-            .map(|limit| limit.saturating_sub(self.cells.len()))
-            .unwrap_or(usize::MAX);
+        let remaining =
+            max_cells.map_or(usize::MAX, |limit| limit.saturating_sub(self.cells.len()));
         self.try_reserve(component_len.min(remaining))
     }
 
@@ -226,6 +225,13 @@ impl H3CoverAccumulator {
         Ok(())
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "test-only movement statistics share the production insertion path"
+        )
+    )]
     fn insert_entries(
         &mut self,
         unique: &mut H3UniqueCells,
@@ -259,7 +265,7 @@ impl H3CoverAccumulator {
     }
 
     #[cfg(test)]
-    fn stats(&self) -> H3AggregationStats {
+    const fn stats(&self) -> H3AggregationStats {
         self.stats
     }
 }
@@ -356,9 +362,12 @@ pub(crate) fn h3_cover(
     let mut covered = Vec::new();
     while let Some(cell) = stack.pop() {
         let depth = cell.resolution();
-        let relation = plan.cap.as_ref().map_or(RectClass::Boundary, |cap| {
-            source.classify_rect(cap.descendant_windows(cell))
-        });
+        let relation = match plan.cap.as_ref() {
+            Some(cap) => source
+                .classify_rect(cap.descendant_windows(cell))
+                .map_err(H3CoverError::Native)?,
+            None => RectClass::Boundary,
+        };
         match relation {
             RectClass::Outside => {},
             RectClass::Interior => {
@@ -403,7 +412,10 @@ fn emit_within_leaf(
     covered: &mut Vec<H3CoveredCell>,
 ) -> Result<(), H3CoverError> {
     let cell_plan = h3_cell_plan(cell, plan.target);
-    match source.classify_rect(cell_plan.bbox()) {
+    match source
+        .classify_rect(cell_plan.bbox())
+        .map_err(H3CoverError::Native)?
+    {
         RectClass::Interior => return emit_leaf(cell, true, max_cells, covered),
         RectClass::Outside => return Ok(()),
         RectClass::Boundary => {},
@@ -411,7 +423,7 @@ fn emit_within_leaf(
     if source.is_unknown() {
         return Ok(());
     }
-    if classify_h3_overlap(source, &cell_plan) == H3LeafClass::Interior {
+    if classify_h3_overlap(source, &cell_plan)? == H3LeafClass::Interior {
         emit_leaf(cell, true, max_cells, covered)?;
     }
     Ok(())
@@ -432,10 +444,14 @@ fn emit_overlap_leaf(
         return emit_bbox_leaf(source, cell, max_cells, covered);
     }
     let cell_plan = h3_cell_plan(cell, plan.target);
-    if source.classify_rect(cell_plan.bbox()) == RectClass::Outside {
+    if source
+        .classify_rect(cell_plan.bbox())
+        .map_err(H3CoverError::Native)?
+        == RectClass::Outside
+    {
         return Ok(());
     }
-    let relation = classify_h3_overlap(source, &cell_plan);
+    let relation = classify_h3_overlap(source, &cell_plan)?;
     if relation == H3LeafClass::Outside {
         return Ok(());
     }
@@ -456,17 +472,34 @@ fn emit_bbox_leaf(
     // Skipping the positive-only witness pass here is exact: its only possible
     // outcome for these sources is `Boundary`, after which we run the certified
     // classifier below anyway.
-    let witness_is_interior = source.has_polygon()
-        && h3_bbox_positive_witnesses(cell).is_some_and(|witnesses| {
-            witnesses.iter().any(|window| {
-                source.classify_rect(DegreeWindowResult::Windows(window)) == RectClass::Interior
-            })
-        });
+    let witness_is_interior = if source.has_polygon() {
+        match h3_bbox_positive_witnesses(cell) {
+            Some(witnesses) => {
+                let mut interior = false;
+                for window in witnesses.iter() {
+                    if source
+                        .classify_rect(DegreeWindowResult::Windows(window))
+                        .map_err(H3CoverError::Native)?
+                        == RectClass::Interior
+                    {
+                        interior = true;
+                        break;
+                    }
+                }
+                interior
+            },
+            None => false,
+        }
+    } else {
+        false
+    };
     if witness_is_interior {
         return emit_leaf(cell, false, max_cells, covered);
     }
     let cell_plan = h3_cell_plan(cell, cell.resolution());
-    let relation = source.classify_rect(cell_plan.bbox());
+    let relation = source
+        .classify_rect(cell_plan.bbox())
+        .map_err(H3CoverError::Native)?;
     if relation == RectClass::Outside {
         return Ok(());
     }
@@ -528,12 +561,12 @@ pub(crate) enum H3LeafClass {
 pub(crate) fn classify_h3_overlap(
     source: &GeographicCoverageSource,
     cell: &H3CellPlan,
-) -> H3LeafClass {
+) -> Result<H3LeafClass, H3CoverError> {
     if source.is_unknown() {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     }
     let Some(arcs) = cell.arcs() else {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     };
     let fan = cell.fan();
     classify_h3_overlap_parts(source, cell.cell(), arcs, &fan)
@@ -547,32 +580,32 @@ fn classify_h3_overlap_parts(
     cell: h3o::CellIndex,
     arcs: &H3ArcSet,
     fan: &H3FanPlan,
-) -> H3LeafClass {
+) -> Result<H3LeafClass, H3CoverError> {
     if source.is_unknown() || !matches!(fan, H3FanPlan::Certified(_)) {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     }
 
     let Some(authority) = source.authority_pieces() else {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     };
     for piece in authority.filter(|piece| piece.is_polygon()) {
         if arcs
             .iter()
             .any(|arc| classify_h3_arc_contact(piece.arc(), arc, fan) != ArcContact::None)
         {
-            return H3LeafClass::Boundary;
+            return Ok(H3LeafClass::Boundary);
         }
     }
 
     let Some(selection) = source.selection_pieces() else {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     };
     for piece in selection.filter(|piece| piece.is_polygon() && piece.is_positive_only()) {
         if arcs
             .iter()
             .any(|arc| classify_h3_arc_contact(piece.arc(), arc, fan) != ArcContact::None)
         {
-            return H3LeafClass::Boundary;
+            return Ok(H3LeafClass::Boundary);
         }
     }
 
@@ -587,7 +620,7 @@ fn classify_h3_overlap_parts(
             )
         })
     {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     }
 
     // Every physical pole is a structural sphere point, not an arbitrary
@@ -597,12 +630,12 @@ fn classify_h3_overlap_parts(
         .selection_pole_witnesses()
         .any(|point| fan_retains_point(fan, Some(point)))
     {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     }
 
     let mut lower_contact = false;
     let Some(authority) = source.authority_pieces() else {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     };
     for piece in authority.filter(|piece| !piece.is_polygon()) {
         lower_contact |= arcs
@@ -610,7 +643,7 @@ fn classify_h3_overlap_parts(
             .any(|arc| classify_h3_arc_contact(piece.arc(), arc, fan) != ArcContact::None);
     }
     let Some(selection) = source.selection_pieces() else {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     };
     for piece in selection.filter(|piece| !piece.is_polygon() && piece.is_positive_only()) {
         lower_contact |= arcs
@@ -629,38 +662,46 @@ fn classify_h3_overlap_parts(
     lower_contact |= source.has_positive_selection_lower();
 
     if !source.has_polygon() {
-        return if lower_contact {
+        return Ok(if lower_contact {
             H3LeafClass::Boundary
         } else {
             H3LeafClass::Outside
-        };
+        });
     }
 
     let center = LatLng::from(cell);
     let (Some(longitude), Some(latitude)) =
         (Bound::exact(center.lng()), Bound::exact(center.lat()))
     else {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     };
     if fan.kernel_point_class(longitude, latitude) != H3FanPointClass::Open {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     }
 
     // A reflected selection image can only veto a negative.  Crucially this
     // is candidate-local exact PIP, not the former global `has_positive...`
     // veto that widened every distant leaf when one source edge crossed a
     // pole.
-    if source.positive_selection_point_class(center.lng(), center.lat()) != GridPointClass::Exterior
+    if source
+        .positive_selection_point_class(center.lng(), center.lat())
+        .map_err(H3CoverError::Native)?
+        != GridPointClass::Exterior
     {
-        return H3LeafClass::Boundary;
+        return Ok(H3LeafClass::Boundary);
     }
 
-    match source.authority_point_class(center.lng(), center.lat()) {
-        GridPointClass::Interior => H3LeafClass::Interior,
-        GridPointClass::Exterior if lower_contact => H3LeafClass::Boundary,
-        GridPointClass::Exterior => H3LeafClass::Outside,
-        GridPointClass::Boundary | GridPointClass::Unknown => H3LeafClass::Boundary,
-    }
+    Ok(
+        match source
+            .authority_point_class(center.lng(), center.lat())
+            .map_err(H3CoverError::Native)?
+        {
+            GridPointClass::Interior => H3LeafClass::Interior,
+            GridPointClass::Exterior if lower_contact => H3LeafClass::Boundary,
+            GridPointClass::Exterior => H3LeafClass::Outside,
+            GridPointClass::Boundary | GridPointClass::Unknown => H3LeafClass::Boundary,
+        },
+    )
 }
 
 fn fan_retains_point(fan: &H3FanPlan, point: Option<GridDegreePoint>) -> bool {

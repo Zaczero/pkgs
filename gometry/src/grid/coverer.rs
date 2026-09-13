@@ -14,14 +14,15 @@
 
 use std::sync::{Arc, OnceLock};
 
-use crate::error::Result;
+use rstar::AABB;
+
 use crate::geometry::{
-    Bounds, CoordSeq, Point, PointBatchTester, Polygon, PreparedPlan, RectContact, Segment,
-    SegmentIndex, Shape, Strictness, XY, bounds_to_shape, graph_intersects_bounds, line_segments,
-    segment_vs_rect,
+    Bounds, CoordSeq, Point, PointBatchTester, Polygon, PreparedPlan, RectContact, Segment, Shape,
+    Strictness, XY, bounds_to_shape, graph_intersects_bounds, line_segments, segment_vs_rect,
 };
 use crate::grid::affine_source::{
-    GeographicCoverageSource, RectClass as AffineRectClass, SphericalGridTarget,
+    GeographicCoverageSource, PackedBvh, PackedBvhEntry, RectClass as AffineRectClass,
+    SphericalGridTarget,
 };
 use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
@@ -46,11 +47,16 @@ pub(crate) trait RectCell: Copy + Eq + Ord {
     /// Push each child with its lon/lat bounds into `out`, derived from
     /// `parent_bounds` when the grid allows (tiles: four children from parent
     /// edges + one shared latitude split). Default recomputes `child.bounds()`.
-    fn push_children_bounds(self, parent_bounds: Bounds, out: &mut Vec<(Self, Bounds)>) {
+    fn push_children_bounds(
+        self,
+        parent_bounds: Bounds,
+        out: &mut Vec<(Self, Bounds)>,
+    ) -> crate::error::Result<()> {
         let _ = parent_bounds;
         for child in self.children() {
-            out.push((child, child.bounds()));
+            crate::try_push_vec(out, (child, child.bounds()))?;
         }
+        Ok(())
     }
     /// The edge-adjacent neighbours across the four rectangle sides, in the
     /// CCW order `[south(miny), east(maxx), north(maxy), west(minx)]` —
@@ -91,13 +97,73 @@ pub(crate) enum RectCoverRule {
     Within,
 }
 
+/// Fallible broad phase for the working rectangle classifier.
+///
+/// The affine authority owns its own longitude-sheet index. This separate
+/// segment index keeps the working image's boundary probes sublinear without
+/// delegating construction to an allocator-aborting foreign tree.
+#[derive(Debug)]
+struct SegmentBroadPhase {
+    tree: PackedBvh<Segment>,
+}
+
+impl SegmentBroadPhase {
+    fn build(segments: impl IntoIterator<Item = Segment>) -> Result<Self, crate::error::Error> {
+        let segments = segments.into_iter();
+        let mut entries = Vec::new();
+        crate::try_reserve_vec(&mut entries, segments.size_hint().0)?;
+        for segment in segments {
+            crate::try_push_vec(
+                &mut entries,
+                PackedBvhEntry::new(segment, segment_envelope(segment)),
+            )?;
+        }
+        Ok(Self {
+            tree: PackedBvh::build(entries)?,
+        })
+    }
+
+    fn intersects(&self, bounds: Bounds) -> Result<bool, crate::error::Error> {
+        let (open, closed) = self.contacts(bounds)?;
+        Ok(open || closed)
+    }
+
+    fn contacts(&self, bounds: Bounds) -> Result<(bool, bool), crate::error::Error> {
+        let query = rect_probe(bounds);
+        let mut open = false;
+        let mut closed = false;
+        self.tree.visit(segment_envelope(query), &mut |segment| {
+            match segment_vs_rect(*segment, bounds) {
+                RectContact::Open => open = true,
+                RectContact::Closed => closed = true,
+                RectContact::None => {},
+            }
+            Ok(())
+        })?;
+        Ok((open, closed))
+    }
+}
+
+fn segment_envelope(segment: Segment) -> AABB<[f64; 2]> {
+    AABB::from_bounds(
+        [
+            segment.start.x.min(segment.end.x),
+            segment.start.y.min(segment.end.y),
+        ],
+        [
+            segment.start.x.max(segment.end.x),
+            segment.start.y.max(segment.end.y),
+        ],
+    )
+}
+
 /// Native rectangle-vs-geometry classifier shared by the rectangular grids
 /// and S2's lon/lat rectangle certificates.
 pub(crate) struct NativeRectClassifier {
     source_bounds: Option<Bounds>,
     area: Option<AreaRectClassifier>,
-    line_index: Option<SegmentIndex>,
-    points: Box<[Point]>,
+    line_index: Option<SegmentBroadPhase>,
+    points: Vec<Point>,
 }
 
 /// Candidate admission is owned by the unsplit periodic source. The native
@@ -119,8 +185,7 @@ impl<'a> GeographicCandidateClassifier<'a> {
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Self, crate::error::Error> {
         let authority =
-            GeographicCoverageSource::from_validated(authority, SphericalGridTarget::Rectangular)
-                .map_err(|_| crate::error::ResourceError::Allocation)?;
+            GeographicCoverageSource::from_validated(authority, SphericalGridTarget::Rectangular)?;
         let working = NativeRectClassifier::new(working)?;
         let prepared =
             crate::geometry::GeographicPrepared::try_new(authority_plan, authority_cache, frame)?;
@@ -132,14 +197,14 @@ impl<'a> GeographicCandidateClassifier<'a> {
         })
     }
 
-    fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass> {
+    fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass, crate::error::Error> {
         let working = self.working.classify_bounds(bounds)?;
-        let candidate = self.authority.classify_rect(rectangle_windows(bounds));
-        Ok(match (candidate, working) {
-            (AffineRectClass::Outside, RectClass::Outside) => RectClass::Outside,
-            (AffineRectClass::Interior, RectClass::Interior) => RectClass::Interior,
-            _ => RectClass::Boundary,
-        })
+        let candidate = self.authority.classify_rect(rectangle_windows(bounds))?;
+        match (candidate, working) {
+            (AffineRectClass::Outside, RectClass::Outside) => Ok(RectClass::Outside),
+            (AffineRectClass::Interior, RectClass::Interior) => Ok(RectClass::Interior),
+            _ => Ok(RectClass::Boundary),
+        }
     }
 
     /// Refine a provisional rectangle against the source-owned geographic
@@ -206,7 +271,7 @@ const fn rectangle_windows(bounds: Bounds) -> DegreeWindowResult {
 struct AreaRectClassifier {
     bounds: Option<Bounds>,
     tester: Arc<PointBatchTester>,
-    boundary_index: SegmentIndex,
+    boundary_index: SegmentBroadPhase,
 }
 
 impl NativeRectClassifier {
@@ -223,7 +288,7 @@ impl NativeRectClassifier {
         area_tester: Option<Arc<PointBatchTester>>,
     ) -> Result<Self, crate::error::Error> {
         let mut polygons = Vec::new();
-        collect_area(source, &mut polygons);
+        collect_area(source, &mut polygons)?;
         let area = dissolved_area_shape(polygons)?
             .map(|shape| -> crate::error::Result<_> {
                 let tester = match area_tester {
@@ -240,30 +305,30 @@ impl NativeRectClassifier {
             .transpose()?;
 
         let mut line_seqs = Vec::new();
-        collect_line_sequences(source, &mut line_seqs);
+        collect_line_sequences(source, &mut line_seqs)?;
         let line_index = if line_seqs.is_empty() {
             None
         } else {
-            Some(SegmentIndex::build_from_iter(
+            Some(SegmentBroadPhase::build(
                 line_seqs.into_iter().flat_map(line_segments),
             )?)
         };
 
         let mut points = Vec::new();
-        collect_points(source, &mut points);
+        collect_points(source, &mut points)?;
 
         Ok(Self {
             source_bounds: source.bounds(),
             area,
             line_index,
-            points: points.into_boxed_slice(),
+            points,
         })
     }
 
     /// Classify a closed lon/lat rectangle against the source. Polygonal
     /// area may certify `Interior`; lineal and point components can only
     /// make an otherwise outside rectangle `Boundary`.
-    pub(crate) fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass> {
+    pub(crate) fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass, crate::error::Error> {
         let Some(source_bounds) = self.source_bounds else {
             return Ok(RectClass::Outside);
         };
@@ -279,21 +344,18 @@ impl NativeRectClassifier {
             }
         }
 
-        if self.line_intersects(bounds) || self.point_intersects(bounds) {
+        if self.line_intersects(bounds)? || self.point_intersects(bounds) {
             Ok(RectClass::Boundary)
         } else {
             Ok(RectClass::Outside)
         }
     }
 
-    fn line_intersects(&self, bounds: Bounds) -> bool {
+    fn line_intersects(&self, bounds: Bounds) -> Result<bool, crate::error::Error> {
         let Some(index) = &self.line_index else {
-            return false;
+            return Ok(false);
         };
-        let probe = rect_probe(bounds);
-        index
-            .intersecting_candidates(probe)
-            .any(|entry| segment_vs_rect(entry.segment, bounds) != RectContact::None)
+        index.intersects(bounds)
     }
 
     fn point_intersects(&self, bounds: Bounds) -> bool {
@@ -307,7 +369,7 @@ impl NativeRectClassifier {
 }
 
 impl AreaRectClassifier {
-    fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass> {
+    fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass, crate::error::Error> {
         let Some(area_bounds) = self.bounds else {
             return Ok(RectClass::Outside);
         };
@@ -315,14 +377,9 @@ impl AreaRectClassifier {
             return Ok(RectClass::Outside);
         }
 
-        let mut touches_closed = false;
-        let probe = rect_probe(bounds);
-        for entry in self.boundary_index.intersecting_candidates(probe) {
-            match segment_vs_rect(entry.segment, bounds) {
-                RectContact::Open => return Ok(RectClass::Boundary),
-                RectContact::Closed => touches_closed = true,
-                RectContact::None => {},
-            }
+        let (touches_open, touches_closed) = self.boundary_index.contacts(bounds)?;
+        if touches_open {
+            return Ok(RectClass::Boundary);
         }
         let center = Point::new_raw_xy(
             f64::midpoint(bounds.minx(), bounds.maxx()),
@@ -350,10 +407,14 @@ fn dissolved_area_shape(polygons: Vec<Polygon>) -> Result<Option<Shape>, crate::
     if polygons.len() <= 1 {
         return area_shape(polygons);
     }
-    let parts: Vec<_> = polygons.into_iter().map(Shape::Polygon).collect();
+    let mut parts = Vec::new();
+    crate::try_reserve_vec(&mut parts, polygons.len())?;
+    for polygon in polygons {
+        crate::try_push_vec(&mut parts, Shape::Polygon(polygon))?;
+    }
     let dissolved = Shape::union_all(&parts, Strictness::Strict)?;
     let mut polygons = Vec::new();
-    collect_area(&dissolved, &mut polygons);
+    collect_area(&dissolved, &mut polygons)?;
     area_shape(polygons)
 }
 
@@ -365,46 +426,61 @@ pub(crate) fn dissolved_polygonal_area(
     source: &Shape,
 ) -> Result<Option<Shape>, crate::error::Error> {
     let mut polygons = Vec::new();
-    collect_area(source, &mut polygons);
+    collect_area(source, &mut polygons)?;
     dissolved_area_shape(polygons)
 }
 
-fn collect_area(source: &Shape, out: &mut Vec<Polygon>) {
-    match source {
-        Shape::Polygon(polygon) => out.push(polygon.clone()),
-        Shape::MultiPolygon(polygons) => out.extend(polygons.iter().cloned()),
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                collect_area(geometry, out);
-            }
-        },
-        _ => {},
-    }
-}
-
-fn collect_line_sequences<'a>(source: &'a Shape, out: &mut Vec<&'a CoordSeq>) {
-    match source {
-        Shape::LineString(line) => out.push(line),
-        Shape::MultiLineString(lines) => {
-            for line in lines {
-                out.push(line);
-            }
-        },
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                collect_line_sequences(geometry, out);
-            }
-        },
-        _ => {},
-    }
-}
-
-fn polygon_segment_index(source: &Shape) -> crate::error::Result<SegmentIndex> {
+fn collect_area(source: &Shape, out: &mut Vec<Polygon>) -> Result<(), crate::error::Error> {
     match source {
         Shape::Polygon(polygon) => {
-            SegmentIndex::build_from_iter(polygon.rings().flat_map(line_segments))
+            crate::try_push_vec(out, polygon.clone())?;
         },
-        Shape::MultiPolygon(polygons) => SegmentIndex::build_from_iter(
+        Shape::MultiPolygon(polygons) => {
+            crate::try_reserve_vec(out, polygons.len())?;
+            for polygon in polygons {
+                crate::try_push_vec(out, polygon.clone())?;
+            }
+        },
+        Shape::GeometryCollection(geometries) => {
+            for geometry in geometries {
+                collect_area(geometry, out)?;
+            }
+        },
+        _ => {},
+    }
+    Ok(())
+}
+
+fn collect_line_sequences<'a>(
+    source: &'a Shape,
+    out: &mut Vec<&'a CoordSeq>,
+) -> Result<(), crate::error::Error> {
+    match source {
+        Shape::LineString(line) => {
+            crate::try_push_vec(out, line)?;
+        },
+        Shape::MultiLineString(lines) => {
+            crate::try_reserve_vec(out, lines.len())?;
+            for line in lines {
+                crate::try_push_vec(out, line)?;
+            }
+        },
+        Shape::GeometryCollection(geometries) => {
+            for geometry in geometries {
+                collect_line_sequences(geometry, out)?;
+            }
+        },
+        _ => {},
+    }
+    Ok(())
+}
+
+fn polygon_segment_index(source: &Shape) -> crate::error::Result<SegmentBroadPhase> {
+    match source {
+        Shape::Polygon(polygon) => {
+            SegmentBroadPhase::build(polygon.rings().flat_map(line_segments))
+        },
+        Shape::MultiPolygon(polygons) => SegmentBroadPhase::build(
             polygons
                 .iter()
                 .flat_map(Polygon::rings)
@@ -414,17 +490,25 @@ fn polygon_segment_index(source: &Shape) -> crate::error::Result<SegmentIndex> {
     }
 }
 
-fn collect_points(source: &Shape, out: &mut Vec<Point>) {
+fn collect_points(source: &Shape, out: &mut Vec<Point>) -> Result<(), crate::error::Error> {
     match source {
-        Shape::Point(point) => out.push(*point),
-        Shape::MultiPoint(points) => out.extend(points.iter()),
+        Shape::Point(point) => {
+            crate::try_push_vec(out, *point)?;
+        },
+        Shape::MultiPoint(points) => {
+            crate::try_reserve_vec(out, points.len())?;
+            for point in points {
+                crate::try_push_vec(out, point)?;
+            }
+        },
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                collect_points(geometry, out);
+                collect_points(geometry, out)?;
             }
         },
         _ => {},
     }
+    Ok(())
 }
 
 const fn rect_probe(bounds: Bounds) -> Segment {
@@ -471,22 +555,25 @@ pub(crate) fn cover<C: RectCell>(
     let mut cells = Vec::new();
     // Carry bounds through every traversal step so the terminal can be
     // refined without recomputing a cell's rectangle.
-    let mut boundary: Vec<(C, Bounds)> = roots
-        .into_iter()
-        .map(|cell| (cell, cell.bounds()))
-        .collect();
+    let mut boundary = Vec::new();
+    crate::try_reserve_vec(&mut boundary, roots.len())?;
+    for cell in roots {
+        crate::try_push_vec(&mut boundary, (cell, cell.bounds()))?;
+    }
     let mut interior: Vec<C> = Vec::new();
     let mut emit = |cell| {
         ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-        cells.push(cell);
-        Ok::<_, crate::grid::CoverBudgetExceeded>(())
+        crate::try_push_vec(&mut cells, cell)?;
+        Ok::<_, CoverError>(())
     };
     loop {
         while let Some(cell) = interior.pop() {
             if cell.depth() >= target_depth {
                 emit(cell)?;
             } else {
-                interior.extend(cell.children());
+                for child in cell.children() {
+                    crate::try_push_vec(&mut interior, child)?;
+                }
             }
         }
         let Some((cell, bounds)) = boundary.pop() else {
@@ -498,7 +585,9 @@ pub(crate) fn cover<C: RectCell>(
                 if cell.depth() >= target_depth {
                     emit(cell)?;
                 } else {
-                    interior.extend(cell.children());
+                    for child in cell.children() {
+                        crate::try_push_vec(&mut interior, child)?;
+                    }
                 }
             },
             RectClass::Boundary => {
@@ -508,7 +597,9 @@ pub(crate) fn cover<C: RectCell>(
                         if cell.depth() >= target_depth {
                             emit(cell)?;
                         } else {
-                            interior.extend(cell.children());
+                            for child in cell.children() {
+                                crate::try_push_vec(&mut interior, child)?;
+                            }
                         }
                     },
                     RectClass::Boundary => {
@@ -531,7 +622,7 @@ pub(crate) fn cover<C: RectCell>(
                             // Expand in place onto `boundary` — avoid a side buffer
                             // that copies twice. Children derived from parent edges
                             // (Tile: one shared mid-lat) rather than full recompute.
-                            cell.push_children_bounds(bounds, &mut boundary);
+                            cell.push_children_bounds(bounds, &mut boundary)?;
                         }
                     },
                 }
@@ -667,7 +758,7 @@ mod tests {
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots(),
+            geohash::roots().unwrap(),
             1,
             None,
         ) {
@@ -710,7 +801,7 @@ mod tests {
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots(),
+            geohash::roots().unwrap(),
             10,
             Some(usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()),
         ) {
@@ -755,7 +846,7 @@ mod tests {
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Center,
-            geohash::roots(),
+            geohash::roots().unwrap(),
             depth,
             None,
         )
@@ -767,7 +858,7 @@ mod tests {
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots(),
+            geohash::roots().unwrap(),
             depth,
             None,
         )
@@ -889,7 +980,7 @@ mod tests {
             &cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Within,
-            geohash::roots(),
+            geohash::roots().unwrap(),
             1,
             None,
         )
@@ -941,7 +1032,7 @@ mod tests {
         let bounds = geohash::Geohash::parse("7").unwrap().bounds();
 
         assert_eq!(
-            classifier.classify_bounds(bounds).unwrap(),
+            classifier.classify_bounds(bounds).expect("fixture admits"),
             RectClass::Boundary
         );
         assert_eq!(
@@ -1048,7 +1139,7 @@ mod tests {
             &raw_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots(),
+            geohash::roots().unwrap(),
             3,
             None,
         )
@@ -1060,7 +1151,7 @@ mod tests {
             &chart_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots(),
+            geohash::roots().unwrap(),
             3,
             None,
         )

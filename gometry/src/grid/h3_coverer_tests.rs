@@ -13,6 +13,7 @@ use crate::grid::spherical_arc::{
     ArcContact, Bound, H3FanPlan, H3FanPointClass, classify_h3_arc_contact, exact_h3_bbox_for_cell,
     h3_cell_plan, h3_fan_plan_construction_count, reset_h3_fan_plan_construction_count,
 };
+use crate::py::cells::GridCoverError;
 
 const CELL: u64 = 0x0827_54FF_FFFF_FFFF;
 // Stored doubles from the independent analytic leaf corpus.  They are
@@ -57,7 +58,7 @@ fn classify(shape: &Shape) -> H3LeafClass {
     let source =
         GeographicCoverageSource::new(shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
     let plan = h3_cell_plan(cell, Resolution::Two);
-    classify_h3_overlap(&source, &plan)
+    classify_h3_overlap(&source, &plan).expect("test source admits")
 }
 
 fn assert_h3_allocation_error(error: H3CoverError) {
@@ -70,14 +71,83 @@ fn assert_h3_allocation_error(error: H3CoverError) {
     ));
 }
 
+fn assert_h3_source_preparation_allocation_prefixes(source: &Shape, rule: H3TraversalRule) {
+    let plan = H3CoverPlan::new(Resolution::Zero);
+    let (expected, allocations) =
+        crate::test_support::allocation_count(|| h3_cover_shape(source, &plan, rule, None));
+    let expected = expected.expect("unrestricted H3 source preparation");
+    assert!(
+        allocations > 0,
+        "fixture must allocate during H3 preparation"
+    );
+
+    for prefix in 0..allocations {
+        let failed = crate::test_support::fail_allocations_after(prefix, || {
+            h3_cover_shape(source, &plan, rule, None)
+        });
+        let Err(error) = failed else {
+            panic!("allocation prefix {prefix} published an H3 cover");
+        };
+        assert_h3_allocation_error(error);
+        let retry = h3_cover_shape(source, &plan, rule, None)
+            .expect("retry after H3 source preparation allocation failure");
+        assert_eq!(retry, expected, "allocation prefix {prefix}");
+    }
+}
+
+#[test]
+fn h3_source_preparation_point_allocation_prefixes_are_native() {
+    let point = Shape::Point(Point::new_raw_xy(10.0, 20.0));
+    assert_h3_source_preparation_allocation_prefixes(&point, H3TraversalRule::Overlap);
+}
+
+#[test]
+fn h3_source_preparation_line_allocation_prefixes_are_native() {
+    let line = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-50.0, -40.0),
+                Point::new_raw_xy(50.0, -40.0),
+            ])
+            .unwrap(),
+        )
+        .expect("test line is valid"),
+    );
+    assert_h3_source_preparation_allocation_prefixes(&line, H3TraversalRule::Overlap);
+}
+
+#[test]
+fn h3_source_preparation_polygon_allocation_prefixes_are_native() {
+    let source = Shape::Polygon(polygon(-10.0, 10.0, 10.0, 20.0));
+    assert_h3_source_preparation_allocation_prefixes(&source, H3TraversalRule::Overlap);
+}
+
+#[test]
+fn h3_source_preparation_antimeridian_allocation_prefixes_are_native() {
+    let source = Shape::Polygon(polygon(179.0, -1.0, -179.0, 1.0));
+    assert_h3_source_preparation_allocation_prefixes(&source, H3TraversalRule::Overlap);
+}
+
+#[test]
+fn h3_source_preparation_pole_allocation_prefixes_are_native() {
+    let source = Shape::Polygon(polygon(-20.0, 80.0, 20.0, 90.0));
+    assert_h3_source_preparation_allocation_prefixes(&source, H3TraversalRule::Overlap);
+}
+
+#[test]
+fn h3_source_preparation_full_world_allocation_prefixes_are_native() {
+    let source = Shape::Polygon(polygon(-180.0, 70.0, 180.0, 80.0));
+    assert_h3_source_preparation_allocation_prefixes(&source, H3TraversalRule::Overlap);
+}
+
 #[test]
 fn h3_hash_entropy_failure_preserves_native_kind_and_python_exception() {
     let error = super::H3UniqueCells::with_capacity_using(1, 1, None, || {
         Err(crate::error::ResourceError::Entropy.into())
     })
     .unwrap_err();
-    let grid_error: crate::py::cells::GridCoverError = error.into();
-    let crate::py::cells::GridCoverError::Native(native) = &grid_error else {
+    let grid_error: GridCoverError = error.into();
+    let GridCoverError::Native(native) = &grid_error else {
         panic!("expected native H3 error");
     };
     assert!(matches!(
@@ -521,7 +591,9 @@ fn big_fixture_enters_each_area_proof_before_its_leaf_verdict() {
         "the stored H3 center reaches the certified fan"
     );
     assert_eq!(
-        source.authority_point_class(center.lng(), center.lat()),
+        source
+            .authority_point_class(center.lng(), center.lat())
+            .expect("test source admits"),
         GridPointClass::Interior,
         "the raw authority PIP sees the center in BIG"
     );
@@ -631,7 +703,10 @@ fn wrapped_selection_image_does_not_turn_an_unrelated_leaf_into_contact() {
             .any(|piece| !piece.is_positive_only()),
         "the source enters the wrapped seam partition without a reflected image"
     );
-    assert_eq!(classify_h3_overlap(&source, &plan), H3LeafClass::Outside);
+    assert_eq!(
+        classify_h3_overlap(&source, &plan).expect("test source admits"),
+        H3LeafClass::Outside
+    );
 }
 
 #[test]
@@ -651,12 +726,14 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
     let inside_center = h3o::LatLng::from(inside);
     let inside_plan = h3_cell_plan(inside, Resolution::Two);
     assert_eq!(
-        source.positive_selection_point_class(inside_center.lng(), inside_center.lat()),
+        source
+            .positive_selection_point_class(inside_center.lng(), inside_center.lat())
+            .expect("test source admits"),
         GridPointClass::Interior,
         "the reflected selected shell contains this exact H3 center"
     );
     assert_eq!(
-        classify_h3_overlap(&source, &inside_plan),
+        classify_h3_overlap(&source, &inside_plan).expect("test source admits"),
         H3LeafClass::Boundary
     );
 
@@ -665,7 +742,9 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
     let far_plan = h3_cell_plan(far, Resolution::Two);
     let far_fan = far_plan.fan();
     assert_eq!(
-        source.positive_selection_point_class(far_center.lng(), far_center.lat()),
+        source
+            .positive_selection_point_class(far_center.lng(), far_center.lat())
+            .expect("test source admits"),
         GridPointClass::Exterior,
         "the distant center is outside the exact reflected selection shell"
     );
@@ -682,12 +761,14 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
         "the distant fan has no exact reflected-boundary contact"
     );
     assert_eq!(
-        source.authority_point_class(far_center.lng(), far_center.lat()),
+        source
+            .authority_point_class(far_center.lng(), far_center.lat())
+            .expect("test source admits"),
         GridPointClass::Exterior,
         "the raw out-of-strip shell cannot manufacture authority interior"
     );
     assert_eq!(
-        classify_h3_overlap(&source, &far_plan),
+        classify_h3_overlap(&source, &far_plan).expect("test source admits"),
         H3LeafClass::Outside
     );
 }
@@ -705,7 +786,8 @@ fn uncertified_fan_cannot_reach_an_empty_source_negative() {
     .unwrap();
     let plan = h3_cell_plan(cell, Resolution::Two);
     assert_eq!(
-        classify_h3_overlap_parts(&source, cell, plan.arcs().unwrap(), &H3FanPlan::Uncertain),
+        classify_h3_overlap_parts(&source, cell, plan.arcs().unwrap(), &H3FanPlan::Uncertain)
+            .expect("uncertainty is a source classification"),
         H3LeafClass::Boundary,
         "an uncertified fan fails open before the source can establish Outside"
     );
@@ -745,7 +827,10 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
             }),
             "the exact {longitude} pole crossing reaches the native fan without a seam spelling"
         );
-        assert_eq!(classify_h3_overlap(&source, &plan), H3LeafClass::Boundary);
+        assert_eq!(
+            classify_h3_overlap(&source, &plan).expect("test source admits"),
+            H3LeafClass::Boundary
+        );
     }
 }
 
@@ -878,12 +963,14 @@ fn periodic_polar_annulus_cap_never_prunes_an_intersecting_leaf() {
     let cell = CellIndex::try_from(0x0820_007F_FFFF_FFFF_u64).unwrap();
     let cap = plan.cap.as_ref().unwrap().descendant_windows(cell);
     assert_ne!(
-        source.classify_rect(cap),
+        source.classify_rect(cap).expect("exact cap classification"),
         RectClass::Outside,
         "the target cap contains an annulus cell that the analytic universe intersects; cap={cap:?}"
     );
     assert_ne!(
-        source.classify_rect(exact_h3_bbox_for_cell(cell)),
+        source
+            .classify_rect(exact_h3_bbox_for_cell(cell))
+            .expect("exact bbox classification"),
         RectClass::Outside,
         "the exact logical bbox retains the same annulus cell"
     );
@@ -908,7 +995,10 @@ fn periodic_polar_winding_caps_retain_each_analytic_owner() {
             .to_cell(Resolution::Two);
         let plan = H3CoverPlan::new(Resolution::Two);
         let cap = plan.cap.as_ref().unwrap().descendant_windows(owner);
-        assert_ne!(source.classify_rect(cap), RectClass::Outside);
+        assert_ne!(
+            source.classify_rect(cap).expect("exact cap classification"),
+            RectClass::Outside
+        );
         assert!(
             h3_cover(&source, &plan, H3TraversalRule::Overlap, None)
                 .unwrap()
@@ -1189,7 +1279,9 @@ fn global_unknown_veto_cannot_suppress_north_cap_bulk_certificates() {
         .unwrap()
         .to_cell(Resolution::Two);
     let relation = plan.cap.as_ref().map_or(RectClass::Boundary, |cap| {
-        source.classify_rect(cap.descendant_windows(bulk_parent))
+        source
+            .classify_rect(cap.descendant_windows(bulk_parent))
+            .expect("exact cap classification")
     });
     assert_eq!(
         relation,

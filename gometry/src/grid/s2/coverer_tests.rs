@@ -180,7 +180,12 @@ fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
     let cell = Cell::from_id(id);
     let vertices = cell.vertices_lonlat();
     let rect = cell.rect_bound(&vertices);
-    if ctx.authority.classify_rect(certified_rect_windows(rect)) == AffineRectClass::Outside {
+    if ctx
+        .authority
+        .classify_rect(certified_rect_windows(rect))
+        .expect("exact rectangle classification")
+        == AffineRectClass::Outside
+    {
         return CellClass::Outside;
     }
     let covered = vertices
@@ -295,7 +300,7 @@ fn classify_with_native(source: &Shape, id: CellId) -> CellClass {
     let affine = GeographicCoverageSource::new(source, SphericalGridTarget::S2)
         .expect("test source carrier allocates");
     let ctx = CoverContext::prepare(source, &affine, WorkingShapeRelation::Identity).unwrap();
-    classify(&ctx, id).expect("test source admits")
+    classify(&ctx, id)
 }
 
 fn fixed(level: u8) -> Coverer {
@@ -339,6 +344,52 @@ fn assert_s2_allocation_prefixes(source: &Shape, coverer: Coverer, rule: CoverRu
         let retry = coverer
             .cover_prepared(&ctx, rule)
             .expect("retry after allocation failure");
+        assert_eq!(
+            retry.outer(),
+            expected.outer(),
+            "allocation prefix {prefix}"
+        );
+    }
+}
+
+fn assert_s2_source_preparation_allocation_prefixes(
+    source: &Shape,
+    working: &Shape,
+    relation: WorkingShapeRelation,
+    rule: CoverRule,
+) {
+    let coverer = Coverer {
+        min_level: 4,
+        max_level: 4,
+        level_mod: 1,
+        max_cells: None,
+        target_cells: 8,
+    };
+    let cover = || -> Result<Covering, CoverError> {
+        let affine = GeographicCoverageSource::from_validated(source, SphericalGridTarget::S2)?;
+        coverer.cover_for_rule(working, &affine, relation, rule)
+    };
+    cover().expect("warm source preparation");
+    let (expected, allocations) = allocation_count(cover);
+    let expected = expected.expect("unrestricted S2 source preparation");
+    assert!(
+        allocations > 0,
+        "fixture must allocate during S2 preparation"
+    );
+
+    for prefix in 0..allocations {
+        let failed = fail_allocations_after(prefix, cover);
+        let Err(CoverError::Preparation(error)) = failed else {
+            panic!("allocation prefix {prefix} published an S2 cover");
+        };
+        assert!(
+            matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+            ),
+            "unexpected allocation error: {error:?}"
+        );
+        let retry = cover().expect("retry after S2 source preparation allocation failure");
         assert_eq!(
             retry.outer(),
             expected.outer(),
@@ -500,6 +551,85 @@ fn s2_traversal_allocations_are_native_and_retryable() {
             max_cells: None,
             target_cells: 8,
         },
+        CoverRule::Overlap,
+    );
+}
+
+#[test]
+fn s2_source_preparation_point_allocation_prefixes_are_native() {
+    let point = Shape::Point(Point::new_raw_xy(10.0, 20.0));
+    assert_s2_source_preparation_allocation_prefixes(
+        &point,
+        &point,
+        WorkingShapeRelation::Identity,
+        CoverRule::Overlap,
+    );
+}
+
+#[test]
+fn s2_source_preparation_line_allocation_prefixes_are_native() {
+    let line = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-50.0, -40.0),
+                Point::new_raw_xy(50.0, -40.0),
+            ])
+            .unwrap(),
+        )
+        .expect("test line is valid"),
+    );
+    assert_s2_source_preparation_allocation_prefixes(
+        &line,
+        &line,
+        WorkingShapeRelation::Identity,
+        CoverRule::Overlap,
+    );
+}
+
+#[test]
+fn s2_source_preparation_polygon_allocation_prefixes_are_native() {
+    let polygon = box_shape(-10.0, 10.0, 10.0, 20.0);
+    assert_s2_source_preparation_allocation_prefixes(
+        &polygon,
+        &polygon,
+        WorkingShapeRelation::Identity,
+        CoverRule::Overlap,
+    );
+}
+
+#[test]
+fn s2_source_preparation_antimeridian_allocation_prefixes_are_native() {
+    let seam = box_shape(179.0, -1.0, -179.0, 1.0);
+    // The working-image split is an independent geographic transform
+    // boundary. Keep it outside this matrix so allocation faults exercise the
+    // shared affine source and cover-context preparation owned here.
+    let seam_working = seam.split_antimeridian().expect("seam split");
+    assert_s2_source_preparation_allocation_prefixes(
+        &seam,
+        &seam_working,
+        WorkingShapeRelation::AntimeridianSplit,
+        CoverRule::Overlap,
+    );
+}
+
+#[test]
+fn s2_source_preparation_pole_allocation_prefixes_are_native() {
+    let pole = box_shape(-20.0, 80.0, 20.0, 90.0);
+    assert_s2_source_preparation_allocation_prefixes(
+        &pole,
+        &pole,
+        WorkingShapeRelation::Identity,
+        CoverRule::Overlap,
+    );
+}
+
+#[test]
+fn s2_source_preparation_full_world_allocation_prefixes_are_native() {
+    let full_world = box_shape(-180.0, 70.0, 180.0, 80.0);
+    assert_s2_source_preparation_allocation_prefixes(
+        &full_world,
+        &full_world,
+        WorkingShapeRelation::Identity,
         CoverRule::Overlap,
     );
 }
@@ -785,13 +915,15 @@ fn split_working_window_cannot_prune_the_retained_seam_owner() {
 
     assert!(affine.s2_needs_corroboration(WorkingShapeRelation::AntimeridianSplit));
     assert_eq!(
-        affine.classify_rect(certified_rect_windows(rect)),
+        affine
+            .classify_rect(certified_rect_windows(rect))
+            .expect("exact rectangle classification"),
         AffineRectClass::Boundary,
         "the retained raw affine edge meets the candidate enclosure"
     );
     let ctx =
         CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
-    assert_eq!(classify(&ctx, owner).unwrap(), CellClass::Boundary);
+    assert_eq!(classify(&ctx, owner), CellClass::Boundary);
     let covering = fixed(10)
         .cover(&working, &affine, WorkingShapeRelation::AntimeridianSplit)
         .expect("the regression line has a small fixed-level cover");
@@ -833,7 +965,9 @@ fn split_seam_carrier_can_exclude_the_far_sheet() {
     let cell = Cell::from_id(id);
     let rect = cell.rect_bound(&cell.vertices_lonlat());
     assert_eq!(
-        affine.classify_rect(certified_rect_windows(rect)),
+        affine
+            .classify_rect(certified_rect_windows(rect))
+            .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the continuous seam lift excludes lon 0 from a 179/-179 strip"
     );
@@ -842,13 +976,15 @@ fn split_seam_carrier_can_exclude_the_far_sheet() {
     let far_cell = Cell::from_id(far_seam);
     let far_rect = far_cell.rect_bound(&far_cell.vertices_lonlat());
     assert_eq!(
-        affine.classify_rect(certified_rect_windows(far_rect)),
+        affine
+            .classify_rect(certified_rect_windows(far_rect))
+            .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the exact seam carrier excludes a far-latitude seam cell"
     );
     let ctx =
         CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
-    assert_eq!(classify(&ctx, far_seam).unwrap(), CellClass::Outside);
+    assert_eq!(classify(&ctx, far_seam), CellClass::Outside);
     assert_eq!(
         fixed(8)
             .cover(&working, &affine, WorkingShapeRelation::AntimeridianSplit)
@@ -889,13 +1025,15 @@ fn sub_ulp_seam_sheet_can_certify_retained_authority_interior() {
         "the frozen second sheet enters the adjacent-double closed witness"
     );
     assert_eq!(
-        affine.classify_rect(windows),
+        affine
+            .classify_rect(windows)
+            .expect("exact rectangle classification"),
         AffineRectClass::Interior,
         "candidate={windows:?} rect={rect:?}"
     );
     let ctx =
         CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
-    assert_eq!(classify(&ctx, id).unwrap(), CellClass::Interior);
+    assert_eq!(classify(&ctx, id), CellClass::Interior);
 }
 
 #[test]
@@ -906,7 +1044,9 @@ fn polar_cap_affine_certificate_prunes_the_south() {
     let cell = Cell::from_id(id);
     let rect = cell.rect_bound(&cell.vertices_lonlat());
     assert_eq!(
-        affine.classify_rect(certified_rect_windows(rect)),
+        affine
+            .classify_rect(certified_rect_windows(rect))
+            .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the full-longitude cap's exact carrier excludes a south cell"
     );
@@ -917,7 +1057,7 @@ fn polar_cap_affine_certificate_prunes_the_south() {
         "the south cell owns no retained cap endpoint"
     );
     assert_eq!(
-        classify(&ctx, id).unwrap(),
+        classify(&ctx, id),
         CellClass::Outside,
         "a corroborated polar cap still prunes its disjoint S2 subtree"
     );

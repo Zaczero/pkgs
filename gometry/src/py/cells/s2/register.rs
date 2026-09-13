@@ -460,8 +460,8 @@ pub(crate) fn build_coverage(
         // one bounds request, not source supports themselves: applying
         // `covers` after the split can incorrectly discard distinct polar
         // pieces (and changes a one-member MultiPolygon's result).
-        let source_components = canonical_s2_components(&cover_shape)
-            .map_err(|_| GridCoverError::from(ResourceError::Allocation))?;
+        let source_components =
+            canonical_s2_components(&cover_shape).map_err(GridCoverError::from)?;
         let mut windows = Vec::new();
         for component in &source_components {
             for window in bbox_cover_windows(component)? {

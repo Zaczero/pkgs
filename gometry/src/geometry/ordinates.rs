@@ -8,8 +8,8 @@ use crate::geometry::topology::TopologyGraph;
 use crate::geometry::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON, OverlayOp, Point,
     PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay, point_distance,
-    point_on_segment, point_segment_distance_and_projection, same_point,
-    scaled_residual, segment_projection,
+    point_on_segment, point_segment_distance_and_projection, same_point, scaled_residual,
+    segment_projection,
 };
 use crate::{try_push_vec, try_reserve_vec};
 

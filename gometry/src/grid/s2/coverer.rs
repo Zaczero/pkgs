@@ -1137,12 +1137,15 @@ fn classify_one(
     Ok(out.pop().expect("one candidate was classified"))
 }
 
-/// Native tests inspect only the class while preserving allocation failures.
+/// The native test helper retains its old scalar shape while the traversal
+/// consumes the full certificate.
 #[cfg(test)]
-fn classify(ctx: &CoverContext<'_>, id: CellId) -> Result<CellClass, CoverError> {
+fn classify(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
     let mut stats = CoverStats::default();
     classify_one(ctx, id, &mut stats)
-        .map(|candidate| candidate.certificate.class)
+        .expect("test candidate classification")
+        .certificate
+        .class
 }
 
 struct LocalProbe {
@@ -1240,8 +1243,11 @@ fn classify_ids(
                 stats.productive_path_reuse(level);
             }
         }
-        let affine = (reused.is_none() && ctx.point_leaves.is_none())
-            .then(|| ctx.affine.classify_rect(certified_rect_windows(rect)));
+        let affine = if reused.is_none() && ctx.point_leaves.is_none() {
+            Some(ctx.affine.classify_rect(certified_rect_windows(rect))?)
+        } else {
+            None
+        };
         let mut probe_indices = [0_usize; 5];
         let known_membership = reused
             .as_ref()
@@ -1369,15 +1375,17 @@ fn classify_candidate(
     affine: Option<AffineRectClass>,
     membership: Option<PointMembership>,
     stats: &mut CoverStats,
-) -> Result<CellClass, CoverError> {
+) -> crate::error::Result<CellClass> {
     stats.raw_classify(id.level());
     if let Some(leaves) = &ctx.point_leaves {
         let from = leaves.partition_point(|&leaf| leaf < id.range_min());
-        return Ok(if leaves.get(from).is_some_and(|&leaf| leaf <= id.range_max()) {
-            CellClass::Boundary
-        } else {
-            CellClass::Outside
-        });
+        return Ok(
+            if leaves.get(from).is_some_and(|&leaf| leaf <= id.range_max()) {
+                CellClass::Boundary
+            } else {
+                CellClass::Outside
+            },
+        );
     }
     // The unsplit periodic authority owns the only candidate negative. A
     // charted source window may refine a retained candidate below, but an
@@ -1504,7 +1512,7 @@ const fn merge_certified_rect(
 fn wrapped_rect_is_interior(
     ctx: &CoverContext<'_>,
     rect: super::cell::LatLngRect,
-) -> Result<bool, CoverError> {
+) -> crate::error::Result<bool> {
     if rect.is_full_lng() {
         return Ok(ctx.rects.classify_bounds(Bounds::new_raw(
             -180.0,
@@ -1529,7 +1537,7 @@ fn window_interior(
     south: f64,
     east: f64,
     north: f64,
-) -> Result<bool, CoverError> {
+) -> crate::error::Result<bool> {
     // Degenerate zero-width lon strip (seam edge only) cannot host area;
     // treat as vacuously interior so a single-side polar spelling still
     // certifies when its positive-width sibling does.

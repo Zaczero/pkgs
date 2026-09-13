@@ -36,10 +36,9 @@
 //! cross-group. Not worth a module boundary in this file.
 
 use std::cmp::Ordering;
-use std::collections::TryReserveError;
 
 use h3o::Resolution;
-use rstar::{AABB, RTreeObject};
+use rstar::AABB;
 
 use crate::boundary::geographic::{
     normalize_accepted_geographic_latitudes, normalized_geographic_pole,
@@ -47,8 +46,7 @@ use crate::boundary::geographic::{
 use crate::geographic::{GeographicFrame, GeographicRing, RingDomain, RingSummary, RingTurn};
 use crate::geometry::expansion::{expansion_sign, expansion_sum_zeroelim, two_product};
 use crate::geometry::{
-    Bounds, BulkRTree, CoordSeq, Coordinates as _, EdgeId, EdgeYIndex, Shape,
-    uses_linear_plan_for_len,
+    Bounds, CoordSeq, Coordinates as _, EdgeId, EdgeYIndex, Shape, uses_linear_plan_for_len,
 };
 use crate::grid::s2::cell::Cell as S2Cell;
 use crate::grid::s2::projection::lonlat_to_point as s2_lonlat_to_point;
@@ -62,6 +60,22 @@ const EXPANSION_LIMBS: usize = 64;
 const FULL_TURN_DEGREES: f64 = 360.0;
 const HALF_TURN_DEGREES: f64 = 180.0;
 const ORIENTATION_ERRBOUND: f64 = 128.0 * f64::EPSILON;
+
+#[cfg(test)]
+std::thread_local! {
+    static AUTHORITY_EDGE_EXACT_REFINEMENTS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_authority_edge_exact_refinements() {
+    AUTHORITY_EDGE_EXACT_REFINEMENTS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn authority_edge_exact_refinements() -> usize {
+    AUTHORITY_EDGE_EXACT_REFINEMENTS.with(std::cell::Cell::get)
+}
 
 /// Canonical grid-topology spelling of a geographically admitted source.
 ///
@@ -171,8 +185,11 @@ impl GridDegreePoint {
         })
     }
 
-    fn from_expansions(longitude: &ExactExpansion, latitude: &ExactExpansion) -> Option<Self> {
-        Some(Self {
+    fn try_from_expansions(
+        longitude: &ExactExpansion,
+        latitude: &ExactExpansion,
+    ) -> ExactResult<Self> {
+        Ok(Self {
             longitude: degree_expansion_bound(longitude)?,
             latitude: degree_expansion_bound(latitude)?,
         })
@@ -282,12 +299,12 @@ impl RectangleSide {
     clippy::too_many_lines,
     reason = "the complete four-side certificate stays together so no partial traversal can certify a cap"
 )]
-fn subdivided_axis_aligned_rectangle(source: &Shape, bounds: Bounds) -> bool {
+fn subdivided_axis_aligned_rectangle(source: &Shape, bounds: Bounds) -> ExactResult<bool> {
     let Shape::Polygon(polygon) = source else {
-        return false;
+        return Ok(false);
     };
     if !polygon.holes.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     let side = |start: crate::geometry::Point, end: crate::geometry::Point| {
@@ -316,7 +333,7 @@ fn subdivided_axis_aligned_rectangle(source: &Shape, bounds: Bounds) -> bool {
     let mut side_changes = 0_u8;
     for [start, end] in polygon.shell.segment_pairs() {
         let Some(current) = side(start, end) else {
-            return false;
+            return Ok(false);
         };
         if let Some(previous) = previous
             && current != previous
@@ -332,21 +349,21 @@ fn subdivided_axis_aligned_rectangle(source: &Shape, bounds: Bounds) -> bool {
                     direction = Some(false);
                     current
                 },
-                None => return false,
+                None => return Ok(false),
             };
             if current != next {
-                return false;
+                return Ok(false);
             }
             side_changes = match side_changes.checked_add(1) {
                 Some(changes) => changes,
-                None => return false,
+                None => return Ok(false),
             };
         }
         first.get_or_insert(current);
         previous = Some(current);
     }
     let (Some(first), Some(last), Some(counterclockwise)) = (first, previous, direction) else {
-        return false;
+        return Ok(false);
     };
     let closing_next = if counterclockwise {
         last.next_counterclockwise()
@@ -354,7 +371,7 @@ fn subdivided_axis_aligned_rectangle(source: &Shape, bounds: Bounds) -> bool {
         last.next_clockwise()
     };
     if closing_next != first || side_changes != 3 {
-        return false;
+        return Ok(false);
     }
 
     // The physical side labels alone are not enough at the full-longitude
@@ -371,43 +388,37 @@ fn subdivided_axis_aligned_rectangle(source: &Shape, bounds: Bounds) -> bool {
     };
     for [start, end] in polygon.shell.segment_pairs() {
         let Some(side) = side(start, end) else {
-            return false;
+            return Ok(false);
         };
         let delta = match side {
             RectangleSide::South | RectangleSide::North => {
-                let Some(step) = lifted_step(start.x, end.x) else {
-                    return false;
+                let step = match lifted_step(start.x, end.x) {
+                    Ok(step) => step,
+                    Err(ExactFailure::Arithmetic) => return Ok(false),
+                    Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
                 };
-                let Some(delta) = ExactExpansion::from_f64(end.x)
-                    .and_then(|end| {
-                        ExactExpansion::from_f64(start.x).and_then(|start| end.sub(&start))
-                    })
-                    .and_then(|raw| {
-                        ExactExpansion::exact_degree_turns(step.turn_delta)
-                            .and_then(|turns| raw.add(&turns))
-                    })
-                else {
-                    return false;
-                };
+                let end = ExactExpansion::from_f64(end.x)?;
+                let start = ExactExpansion::from_f64(start.x)?;
+                let raw = end.sub(&start)?;
+                let turns = ExactExpansion::exact_degree_turns(step.turn_delta)?;
+                let delta = raw.add(&turns)?;
                 delta.ordering()
             },
             RectangleSide::East | RectangleSide::West => {
-                let Some(delta) = ExactExpansion::from_f64(end.y).and_then(|end| {
-                    ExactExpansion::from_f64(start.y).and_then(|start| end.sub(&start))
-                }) else {
-                    return false;
-                };
+                let end = ExactExpansion::from_f64(end.y)?;
+                let start = ExactExpansion::from_f64(start.y)?;
+                let delta = end.sub(&start)?;
                 delta.ordering()
             },
         };
         if !advances(side, delta) {
-            return false;
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
-fn exact_axis_rectangle(source: &Shape, bounds: Bounds) -> bool {
+fn exact_axis_rectangle(source: &Shape, bounds: Bounds) -> ExactResult<bool> {
     // The generic rectangle certificate is sufficient for topology shortcuts,
     // but does not verify an ordered, directed source traversal or geographic
     // shortest lifts. The side-walk above owns the stronger cap certificate
@@ -415,20 +426,27 @@ fn exact_axis_rectangle(source: &Shape, bounds: Bounds) -> bool {
     subdivided_axis_aligned_rectangle(source, bounds)
 }
 
-fn exact_world_band(source: &Shape) -> Option<Bounds> {
+fn exact_world_band(source: &Shape) -> crate::error::Result<Option<Bounds>> {
     let Shape::Polygon(polygon) = source else {
-        return None;
+        return Ok(None);
     };
     if !polygon.holes.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let summary = RingSummary::try_new(
+    let summary = match RingSummary::try_new(
         GeographicFrame::crs84(),
         &GeographicRing::from_ring(&polygon.shell),
+    ) {
+        Ok(summary) => summary,
+        Err(crate::geographic::GeographicViewError::Resource) => {
+            return Err(crate::error::ResourceError::Allocation.into());
+        },
+        Err(crate::geographic::GeographicViewError::Diagnostic(_)) => return Ok(None),
+    };
+    Ok(
+        (summary.turn == RingTurn::None && matches!(summary.domain, RingDomain::FullLongitude(_)))
+            .then(|| Bounds::new_raw(-180.0, summary.south.get(), 180.0, summary.north.get())),
     )
-    .ok()?;
-    (summary.turn == RingTurn::None && matches!(summary.domain, RingDomain::FullLongitude(_)))
-        .then(|| Bounds::new_raw(-180.0, summary.south.get(), 180.0, summary.north.get()))
 }
 
 /// A bounds rectangle is a complete source model only on the canonical
@@ -436,26 +454,16 @@ fn exact_world_band(source: &Shape) -> Option<Bounds> {
 /// seam strip in the continuous lift, not the 358-degree rectangle named by
 /// its planar extrema. The one wider admissible form is the exact physical
 /// full-longitude domain `[-180, 180]`.
-fn canonical_axis_rectangle_longitude(bounds: Bounds) -> bool {
-    let Some(minimum) = ExactExpansion::from_f64(bounds.minx()) else {
-        return false;
-    };
-    let Some(maximum) = ExactExpansion::from_f64(bounds.maxx()) else {
-        return false;
-    };
-    let Some(width) = maximum.sub(&minimum) else {
-        return false;
-    };
-    let Some(half_turn) = ExactExpansion::from_i64(180) else {
-        return false;
-    };
-    let Some(over_half_turn) = width.sub(&half_turn).map(|value| value.ordering()) else {
-        return false;
-    };
+fn canonical_axis_rectangle_longitude(bounds: Bounds) -> ExactResult<bool> {
+    let minimum = ExactExpansion::from_f64(bounds.minx())?;
+    let maximum = ExactExpansion::from_f64(bounds.maxx())?;
+    let width = maximum.sub(&minimum)?;
+    let half_turn = ExactExpansion::from_i64(180)?;
+    let over_half_turn = width.sub(&half_turn)?.ordering();
     if over_half_turn != Ordering::Greater {
-        return true;
+        return Ok(true);
     }
-    minimum.is_exact(-180.0).unwrap_or(false) && maximum.is_exact(180.0).unwrap_or(false)
+    Ok(minimum.is_exact(-180.0)? && maximum.is_exact(180.0)?)
 }
 
 const fn classify_exact_axis_window(
@@ -494,8 +502,8 @@ fn with_exact_rectangle<T>(
     longitude: Bound,
     latitude: Bound,
     turn: i64,
-    visit: impl FnOnce([ExactPlanarPointRef<'_>; 4]) -> Option<T>,
-) -> Option<T> {
+    visit: impl FnOnce([ExactPlanarPointRef<'_>; 4]) -> ExactResult<T>,
+) -> ExactResult<T> {
     let offset = ExactExpansion::exact_degree_turns(turn)?;
     let west = ExactExpansion::from_f64(longitude.lo)?.add(&offset)?;
     let east = ExactExpansion::from_f64(longitude.hi)?.add(&offset)?;
@@ -531,7 +539,7 @@ fn closed_segment_intersects<
     end: &E,
     other_start: &OS,
     other_end: &OE,
-) -> Option<bool> {
+) -> ExactResult<bool> {
     let first = planar_orientation_ordering(start, end, other_start)?;
     let second = planar_orientation_ordering(start, end, other_end)?;
     let third = planar_orientation_ordering(other_start, other_end, start)?;
@@ -545,21 +553,18 @@ fn closed_segment_intersects<
             && third != Ordering::Equal
             && fourth != Ordering::Equal
         {
-            return Some(true);
+            return Ok(true);
         }
-        return Some(
-            (first == Ordering::Equal
-                && closed_between_planar_points(start, other_start, end).unwrap_or(false))
-                || (second == Ordering::Equal
-                    && closed_between_planar_points(start, other_end, end).unwrap_or(false))
-                || (third == Ordering::Equal
-                    && closed_between_planar_points(other_start, start, other_end)
-                        .unwrap_or(false))
-                || (fourth == Ordering::Equal
-                    && closed_between_planar_points(other_start, end, other_end).unwrap_or(false)),
-        );
+        return Ok((first == Ordering::Equal
+            && closed_between_planar_points(start, other_start, end)?)
+            || (second == Ordering::Equal
+                && closed_between_planar_points(start, other_end, end)?)
+            || (third == Ordering::Equal
+                && closed_between_planar_points(other_start, start, other_end)?)
+            || (fourth == Ordering::Equal
+                && closed_between_planar_points(other_start, end, other_end)?));
     }
-    Some(false)
+    Ok(false)
 }
 
 fn exact_segment_touches_rectangle(
@@ -567,7 +572,7 @@ fn exact_segment_touches_rectangle(
     end: &ExactPlanarPoint,
     longitude: Bound,
     latitude: Bound,
-) -> Option<bool> {
+) -> ExactResult<bool> {
     let (first_turn, last_turn) =
         exact_longitude_copy_range(&start.longitude, &end.longitude, longitude)?;
     for turn in first_turn..=last_turn {
@@ -578,15 +583,15 @@ fn exact_segment_touches_rectangle(
                 .take(4)
             {
                 if closed_segment_intersects(start, end, first, second)? {
-                    return Some(true);
+                    return Ok(true);
                 }
             }
-            Some(false)
+            Ok(false)
         })? {
-            return Some(true);
+            return Ok(true);
         }
     }
-    Some(false)
+    Ok(false)
 }
 
 /// Every copy of a canonical degree window that can meet one exact lifted
@@ -599,7 +604,7 @@ fn exact_longitude_copy_range(
     first: &ExactExpansion,
     second: &ExactExpansion,
     window: Bound,
-) -> Option<(i64, i64)> {
+) -> ExactResult<(i64, i64)> {
     let (minimum, maximum) = match first.sub(second)?.ordering() {
         Ordering::Greater => (second, first),
         Ordering::Less | Ordering::Equal => (first, second),
@@ -608,48 +613,50 @@ fn exact_longitude_copy_range(
     let east = ExactExpansion::from_f64(window.hi)?;
     let lower = ExactRatio::from_expansion(&minimum.sub(&east)?)?
         .floor_turn()?
-        .checked_sub(1)?;
+        .checked_sub(1)
+        .ok_or(ExactFailure::Arithmetic)?;
     let upper = ExactRatio::from_expansion(&maximum.sub(&west)?)?
         .floor_turn()?
-        .checked_add(1)?;
-    if upper < lower || upper.checked_sub(lower)? > 4 {
-        return None;
+        .checked_add(1)
+        .ok_or(ExactFailure::Arithmetic)?;
+    if upper < lower || upper.checked_sub(lower).ok_or(ExactFailure::Arithmetic)? > 4 {
+        return Err(ExactFailure::Arithmetic);
     }
-    Some((lower, upper))
+    Ok((lower, upper))
 }
 
 fn exact_point_touches_rectangle(
     point: &ExactPlanarPoint,
     longitude: Bound,
     latitude: Bound,
-) -> Option<bool> {
+) -> ExactResult<bool> {
     let (first_turn, last_turn) =
         exact_longitude_copy_range(&point.longitude, &point.longitude, longitude)?;
     for turn in first_turn..=last_turn {
         if with_exact_rectangle(longitude, latitude, turn, |rectangle| {
-            Some(
-                closed_between_expansion(
-                    rectangle[0].longitude,
-                    &point.longitude,
-                    rectangle[1].longitude,
-                )? && closed_between_expansion(
-                    rectangle[0].latitude,
-                    &point.latitude,
-                    rectangle[2].latitude,
-                )?,
-            )
+            Ok(closed_between_expansion(
+                rectangle[0].longitude,
+                &point.longitude,
+                rectangle[1].longitude,
+            )? && closed_between_expansion(
+                rectangle[0].latitude,
+                &point.latitude,
+                rectangle[2].latitude,
+            )?)
         })? {
-            return Some(true);
+            return Ok(true);
         }
     }
-    Some(false)
+    Ok(false)
 }
 
 fn exact_authority_edge_touches_rectangle(
     edge: &SymbolicAffineEdge,
     longitude: Bound,
     latitude: Bound,
-) -> Option<bool> {
+) -> ExactResult<bool> {
+    #[cfg(test)]
+    AUTHORITY_EDGE_EXACT_REFINEMENTS.with(|count| count.set(count.get() + 1));
     let start = ExactPlanarPoint::from_lifted(edge.start)?;
     let end = ExactPlanarPoint::from_lifted(edge.end)?;
     let start_latitude = degree_expansion_bound(&start.latitude)?;
@@ -659,12 +666,12 @@ fn exact_authority_edge_touches_rectangle(
         || !(-90.0..=90.0).contains(&end_latitude.lo)
         || !(-90.0..=90.0).contains(&end_latitude.hi)
     {
-        return Some(true);
+        return Ok(true);
     }
     if exact_point_touches_rectangle(&start, longitude, latitude)?
         || exact_point_touches_rectangle(&end, longitude, latitude)?
     {
-        return Some(true);
+        return Ok(true);
     }
     exact_segment_touches_rectangle(&start, &end, longitude, latitude)
 }
@@ -686,9 +693,40 @@ pub(crate) struct SourceEdgeKey {
     pub(crate) ordinal: usize,
 }
 
+/// Failure while materializing an exact affine certificate.
+///
+/// Arithmetic failure remains a fail-open `Unknown` at the source boundary;
+/// allocation failure must instead escape as the crate's native resource
+/// error. Keeping the two cases distinct is what prevents a refused expansion
+/// buffer from silently publishing a partial cover.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExactFailure {
+    Arithmetic,
+    Allocation,
+}
+
+type ExactResult<T> = std::result::Result<T, ExactFailure>;
+
+fn exact<T>(value: Option<T>) -> ExactResult<T> {
+    value.ok_or(ExactFailure::Arithmetic)
+}
+
+fn exact_allocation<T>(result: crate::error::Result<T>) -> ExactResult<T> {
+    result.map_err(|_| ExactFailure::Allocation)
+}
+
+fn exact_optional<T>(result: ExactResult<T>) -> crate::error::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(ExactFailure::Arithmetic) => Ok(None),
+        Err(ExactFailure::Allocation) => Err(crate::error::ResourceError::Allocation.into()),
+    }
+}
+
 /// Exact dyadic expansion with a bounded, initialized limb carrier. Capacity
-/// failure is `None`, which marks the source component `Unknown`; no epsilon
-/// may ever choose a parent parameter.
+/// failure is distinct from arithmetic uncertainty until the owning source
+/// boundary maps it to a native resource error; no epsilon may ever choose a
+/// parent parameter.
 const INLINE_EXPANSION_LIMBS: usize = 4;
 
 #[derive(Debug)]
@@ -743,23 +781,24 @@ impl CompactLimbs {
         }
     }
 
-    fn prepare(&mut self, required: usize) -> Option<()> {
+    fn prepare(&mut self, required: usize) -> ExactResult<()> {
         if required > EXPANSION_LIMBS {
-            return None;
+            return Err(ExactFailure::Arithmetic);
         }
         match self {
             Self::Inline { len, .. } if required <= INLINE_EXPANSION_LIMBS => {
-                *len = u8::try_from(required).ok()?;
+                *len = u8::try_from(required).map_err(|_| ExactFailure::Arithmetic)?;
             },
             Self::Inline { limbs, len } => {
-                let mut expanded = Vec::with_capacity(required);
+                let mut expanded = Vec::new();
+                exact_allocation(crate::try_reserve_vec(&mut expanded, required))?;
                 expanded.resize(required, 0.0);
                 expanded[..usize::from(*len)].copy_from_slice(&limbs[..usize::from(*len)]);
                 *self = Self::Heap(expanded);
             },
             Self::Heap(limbs) => {
                 let additional = required.saturating_sub(limbs.len());
-                limbs.reserve(additional);
+                exact_allocation(crate::try_reserve_vec(limbs, additional))?;
                 if limbs.len() < required {
                     limbs.resize(required, 0.0);
                 } else {
@@ -767,17 +806,17 @@ impl CompactLimbs {
                 }
             },
         }
-        Some(())
+        Ok(())
     }
 
-    fn truncate(&mut self, len: usize) -> Option<()> {
+    fn truncate(&mut self, len: usize) -> ExactResult<()> {
         match self {
             Self::Inline { len: current, .. } => {
-                *current = u8::try_from(len).ok()?;
+                *current = u8::try_from(len).map_err(|_| ExactFailure::Arithmetic)?;
             },
             Self::Heap(limbs) => limbs.truncate(len),
         }
-        Some(())
+        Ok(())
     }
 
     fn canonicalize(&mut self) {
@@ -786,29 +825,31 @@ impl CompactLimbs {
         }
     }
 
-    fn try_clone(&self) -> Option<Self> {
+    fn try_clone(&self) -> ExactResult<Self> {
         let mut result = match self {
             Self::Inline { limbs, len } => Some(Self::Inline {
                 limbs: *limbs,
                 len: *len,
             }),
             Self::Heap(limbs) => {
-                let mut clone = Vec::with_capacity(limbs.len());
+                let mut clone = Vec::new();
+                exact_allocation(crate::try_reserve_vec(&mut clone, limbs.len()))?;
                 clone.extend_from_slice(limbs);
                 Some(Self::Heap(clone))
             },
-        }?;
+        }
+        .ok_or(ExactFailure::Arithmetic)?;
         result.canonicalize();
-        Some(result)
+        Ok(result)
     }
 
-    fn try_negated(&self) -> Option<Self> {
+    fn try_negated(&self) -> ExactResult<Self> {
         let mut result = self.try_clone()?;
         for limb in result.as_mut_slice() {
             *limb = -*limb;
         }
         result.canonicalize();
-        Some(result)
+        Ok(result)
     }
 
     fn into_negated(mut self) -> Self {
@@ -838,18 +879,25 @@ fn sum_expansions<const NEGATE_RIGHT: bool>(
     left: &[f64],
     right: &[f64],
     output: &mut CompactLimbs,
-) -> Option<usize> {
-    let required = left.len().checked_add(right.len())?;
+) -> ExactResult<usize> {
+    let required = left
+        .len()
+        .checked_add(right.len())
+        .ok_or(ExactFailure::Arithmetic)?;
     if required > EXPANSION_LIMBS {
-        return None;
+        return Err(ExactFailure::Arithmetic);
     }
     output.clear();
     output.prepare(required)?;
-    let output_len =
-        expansion_sum_zeroelim::<NEGATE_RIGHT>(left, right, output.as_mut_slice(), true)?;
+    let output_len = exact(expansion_sum_zeroelim::<NEGATE_RIGHT>(
+        left,
+        right,
+        output.as_mut_slice(),
+        true,
+    ))?;
     output.truncate(output_len)?;
     output.canonicalize();
-    Some(output.as_slice().len())
+    Ok(output.as_slice().len())
 }
 
 impl ExactExpansion {
@@ -859,19 +907,19 @@ impl ExactExpansion {
         }
     }
 
-    fn from_f64(value: f64) -> Option<Self> {
+    fn from_f64(value: f64) -> ExactResult<Self> {
         if !value.is_finite() {
-            return None;
+            return Err(ExactFailure::Arithmetic);
         }
         if value == 0.0 {
-            return Some(Self::zero());
+            return Ok(Self::zero());
         }
-        Some(Self {
+        Ok(Self {
             limbs: CompactLimbs::single(value),
         })
     }
 
-    fn from_i64(value: i64) -> Option<Self> {
+    fn from_i64(value: i64) -> ExactResult<Self> {
         const LOW_BITS: i64 = 1_i64 << 32;
         let high = value / LOW_BITS;
         let low = value % LOW_BITS;
@@ -880,7 +928,7 @@ impl ExactExpansion {
         low.add(&high)
     }
 
-    fn exact_degree_turns(turns: i64) -> Option<Self> {
+    fn exact_degree_turns(turns: i64) -> ExactResult<Self> {
         let scale = Self::from_f64(FULL_TURN_DEGREES)?;
         Self::from_i64(turns)?.product(&scale)
     }
@@ -897,14 +945,14 @@ impl ExactExpansion {
         }
     }
 
-    fn try_clone(&self) -> Option<Self> {
+    fn try_clone(&self) -> ExactResult<Self> {
         let mut limbs = self.limbs.try_clone()?;
         limbs.canonicalize();
-        Some(Self { limbs })
+        Ok(Self { limbs })
     }
 
-    fn neg(&self) -> Option<Self> {
-        Some(Self {
+    fn neg(&self) -> ExactResult<Self> {
+        Ok(Self {
             limbs: self.limbs.try_negated()?,
         })
     }
@@ -914,26 +962,26 @@ impl ExactExpansion {
         self
     }
 
-    fn add(&self, rhs: &Self) -> Option<Self> {
+    fn add(&self, rhs: &Self) -> ExactResult<Self> {
         let mut limbs = CompactLimbs::zero();
         sum_expansions::<false>(self.as_slice(), rhs.as_slice(), &mut limbs)?;
-        Some(Self { limbs })
+        Ok(Self { limbs })
     }
 
-    fn sub(&self, rhs: &Self) -> Option<Self> {
+    fn sub(&self, rhs: &Self) -> ExactResult<Self> {
         let mut limbs = CompactLimbs::zero();
         sum_expansions::<true>(self.as_slice(), rhs.as_slice(), &mut limbs)?;
-        Some(Self { limbs })
+        Ok(Self { limbs })
     }
 
-    fn product(&self, rhs: &Self) -> Option<Self> {
+    fn product(&self, rhs: &Self) -> ExactResult<Self> {
         let mut result = CompactLimbs::zero();
         let mut scratch = CompactLimbs::zero();
         for &left in self.as_slice() {
             for &right in rhs.as_slice() {
-                let (head, tail) = two_product(left, right)?;
+                let (head, tail) = exact(two_product(left, right))?;
                 if !head.is_finite() || !tail.is_finite() {
-                    return None;
+                    return Err(ExactFailure::Arithmetic);
                 }
                 let term = if tail == 0.0 {
                     [if head == 0.0 { 0.0 } else { head }, 0.0]
@@ -959,16 +1007,16 @@ impl ExactExpansion {
                 }
             }
         }
-        Some(Self { limbs: result })
+        Ok(Self { limbs: result })
     }
 
     fn ordering(&self) -> Ordering {
         expansion_sign(self.as_slice())
     }
 
-    fn is_exact(&self, value: f64) -> Option<bool> {
+    fn is_exact(&self, value: f64) -> ExactResult<bool> {
         let value = Self::from_f64(value)?;
-        Some(self.sub(&value)?.ordering() == Ordering::Equal)
+        Ok(self.sub(&value)?.ordering() == Ordering::Equal)
     }
 
     fn checked_estimate(&self) -> Option<f64> {
@@ -995,73 +1043,76 @@ struct ExactRatio {
 }
 
 impl ExactRatio {
-    fn try_clone(&self) -> Option<Self> {
-        Some(Self {
+    fn try_clone(&self) -> ExactResult<Self> {
+        Ok(Self {
             numerator: self.numerator.try_clone()?,
             denominator: self.denominator.try_clone()?,
         })
     }
 
-    fn new(numerator: &ExactExpansion, denominator: &ExactExpansion) -> Option<Self> {
+    fn new(numerator: &ExactExpansion, denominator: &ExactExpansion) -> ExactResult<Self> {
         match denominator.ordering() {
-            Ordering::Equal => None,
-            Ordering::Greater => Some(Self {
+            Ordering::Equal => Err(ExactFailure::Arithmetic),
+            Ordering::Greater => Ok(Self {
                 numerator: numerator.try_clone()?,
                 denominator: denominator.try_clone()?,
             }),
-            Ordering::Less => Some(Self {
+            Ordering::Less => Ok(Self {
                 numerator: numerator.neg()?,
                 denominator: denominator.neg()?,
             }),
         }
     }
 
-    fn from_parts(numerator: ExactExpansion, denominator: ExactExpansion) -> Option<Self> {
+    fn from_parts(numerator: ExactExpansion, denominator: ExactExpansion) -> ExactResult<Self> {
         match denominator.ordering() {
-            Ordering::Equal => None,
-            Ordering::Greater => Some(Self {
+            Ordering::Equal => Err(ExactFailure::Arithmetic),
+            Ordering::Greater => Ok(Self {
                 numerator,
                 denominator,
             }),
-            Ordering::Less => Some(Self {
+            Ordering::Less => Ok(Self {
                 numerator: numerator.into_negated(),
                 denominator: denominator.into_negated(),
             }),
         }
     }
 
-    fn from_numerator(numerator: ExactExpansion, denominator: &ExactExpansion) -> Option<Self> {
+    fn from_numerator(
+        numerator: ExactExpansion,
+        denominator: &ExactExpansion,
+    ) -> ExactResult<Self> {
         match denominator.ordering() {
-            Ordering::Equal => None,
-            Ordering::Greater => Some(Self {
+            Ordering::Equal => Err(ExactFailure::Arithmetic),
+            Ordering::Greater => Ok(Self {
                 numerator,
                 denominator: denominator.try_clone()?,
             }),
-            Ordering::Less => Some(Self {
+            Ordering::Less => Ok(Self {
                 numerator: numerator.into_negated(),
                 denominator: denominator.neg()?,
             }),
         }
     }
 
-    fn from_i64(numerator: i64, denominator: i64) -> Option<Self> {
+    fn from_i64(numerator: i64, denominator: i64) -> ExactResult<Self> {
         let numerator = ExactExpansion::from_i64(numerator)?;
         let denominator = ExactExpansion::from_i64(denominator)?;
         Self::from_parts(numerator, denominator)
     }
 
-    fn from_f64(value: f64) -> Option<Self> {
+    fn from_f64(value: f64) -> ExactResult<Self> {
         let numerator = ExactExpansion::from_f64(value)?;
         let denominator = ExactExpansion::from_i64(1)?;
         Self::from_parts(numerator, denominator)
     }
 
-    fn from_expansion(numerator: &ExactExpansion) -> Option<Self> {
+    fn from_expansion(numerator: &ExactExpansion) -> ExactResult<Self> {
         let denominator = ExactExpansion::from_i64(1)?;
         Self::new(numerator, &denominator)
     }
 
-    fn add(&self, rhs: &Self) -> Option<Self> {
+    fn add(&self, rhs: &Self) -> ExactResult<Self> {
         let left = self.numerator.product(&rhs.denominator)?;
         let right = rhs.numerator.product(&self.denominator)?;
         let numerator = left.add(&right)?;
@@ -1069,7 +1120,7 @@ impl ExactRatio {
         Self::from_parts(numerator, denominator)
     }
 
-    fn sub(&self, rhs: &Self) -> Option<Self> {
+    fn sub(&self, rhs: &Self) -> ExactResult<Self> {
         let left = self.numerator.product(&rhs.denominator)?;
         let right = rhs.numerator.product(&self.denominator)?;
         let numerator = left.sub(&right)?;
@@ -1077,45 +1128,45 @@ impl ExactRatio {
         Self::from_parts(numerator, denominator)
     }
 
-    fn mul(&self, rhs: &Self) -> Option<Self> {
+    fn mul(&self, rhs: &Self) -> ExactResult<Self> {
         let numerator = self.numerator.product(&rhs.numerator)?;
         let denominator = self.denominator.product(&rhs.denominator)?;
         Self::from_parts(numerator, denominator)
     }
 
-    fn div(&self, rhs: &Self) -> Option<Self> {
+    fn div(&self, rhs: &Self) -> ExactResult<Self> {
         if rhs.numerator.ordering() == Ordering::Equal {
-            return None;
+            return Err(ExactFailure::Arithmetic);
         }
         let numerator = self.numerator.product(&rhs.denominator)?;
         let denominator = self.denominator.product(&rhs.numerator)?;
         Self::from_parts(numerator, denominator)
     }
 
-    fn ordering(&self, rhs: &Self) -> Option<Ordering> {
+    fn ordering(&self, rhs: &Self) -> ExactResult<Ordering> {
         let left = self.numerator.product(&rhs.denominator)?;
         let right = rhs.numerator.product(&self.denominator)?;
-        Some(left.sub(&right)?.ordering())
+        Ok(left.sub(&right)?.ordering())
     }
 
-    fn is_closed_unit(&self) -> Option<bool> {
+    fn is_closed_unit(&self) -> ExactResult<bool> {
         let zero = Self::from_i64(0, 1)?;
         let one = Self::from_i64(1, 1)?;
-        Some(self.ordering(&zero)? != Ordering::Less && self.ordering(&one)? != Ordering::Greater)
+        Ok(self.ordering(&zero)? != Ordering::Less && self.ordering(&one)? != Ordering::Greater)
     }
 
     /// Returns an outward binary64 interval only after exact cross-products
     /// prove that the two stored endpoints enclose this parent identity.
     /// The enclosure never participates in ordering or endpoint identity.
-    fn certified_bound(&self) -> Option<Bound> {
+    fn certified_bound(&self) -> ExactResult<Bound> {
         if self.numerator.ordering() == Ordering::Equal {
-            return Bound::exact(0.0);
+            return exact(Bound::exact(0.0));
         }
-        let numerator = self.numerator.checked_estimate()?;
-        let denominator = self.denominator.checked_estimate()?;
+        let numerator = exact(self.numerator.checked_estimate())?;
+        let denominator = exact(self.denominator.checked_estimate())?;
         let proposal = numerator / denominator;
         if !proposal.is_finite() {
-            return None;
+            return Err(ExactFailure::Arithmetic);
         }
         let mut lower = proposal.next_down();
         let mut upper = proposal.next_up();
@@ -1130,36 +1181,38 @@ impl ExactRatio {
                 upper = upper.next_up();
                 continue;
             }
-            return Bound::new(lower, upper);
+            return exact(Bound::new(lower, upper));
         }
-        None
+        Err(ExactFailure::Arithmetic)
     }
 
     /// Exact floor of this ratio divided by one full longitude turn.  The
     /// binary64 quotient merely proposes a nearby bucket; exact
     /// cross-products decide each correction.
-    fn floor_turn(&self) -> Option<i64> {
-        let proposal = self.numerator.checked_estimate()? / self.denominator.checked_estimate()?;
+    fn floor_turn(&self) -> ExactResult<i64> {
+        let proposal =
+            exact(self.numerator.checked_estimate())? / exact(self.denominator.checked_estimate())?;
         let proposal = (proposal / FULL_TURN_DEGREES).floor();
         if !proposal.is_finite() || !(i64::MIN as f64..=i64::MAX as f64).contains(&proposal) {
-            return None;
+            return Err(ExactFailure::Arithmetic);
         }
         let mut level = proposal as i64;
         for _ in 0..4 {
-            let next = level.checked_add(1)?;
-            let next_ratio = Self::from_i64(next.checked_mul(360)?, 1)?;
+            let next = exact(level.checked_add(1))?;
+            let next_ratio = Self::from_i64(exact(next.checked_mul(360))?, 1)?;
             if self.ordering(&next_ratio)? != Ordering::Less {
                 level = next;
                 continue;
             }
-            let current_ratio = Self::from_i64(level.checked_mul(360)?, 1)?;
+            let current_ratio =
+                Self::from_i64(level.checked_mul(360).ok_or(ExactFailure::Arithmetic)?, 1)?;
             if self.ordering(&current_ratio)? == Ordering::Less {
-                level = level.checked_sub(1)?;
+                level = exact(level.checked_sub(1))?;
                 continue;
             }
-            return Some(level);
+            return Ok(level);
         }
-        None
+        Err(ExactFailure::Arithmetic)
     }
 }
 
@@ -1189,28 +1242,31 @@ struct ExactParentParameter {
 }
 
 impl ExactParentParameter {
-    fn try_clone(&self) -> Option<Self> {
-        Some(Self {
+    fn try_clone(&self) -> ExactResult<Self> {
+        Ok(Self {
             key: self.key,
             ratio: self.ratio.try_clone()?,
             enclosure: self.enclosure,
         })
     }
 
-    fn new(key: ParentParameterKey, ratio: ExactRatio) -> Option<Self> {
+    fn new(key: ParentParameterKey, ratio: ExactRatio) -> ExactResult<Self> {
         let enclosure = ratio.certified_bound()?;
-        ratio.is_closed_unit()?.then_some(Self {
-            key,
-            ratio,
-            enclosure,
-        })
+        ratio
+            .is_closed_unit()?
+            .then_some(Self {
+                key,
+                ratio,
+                enclosure,
+            })
+            .ok_or(ExactFailure::Arithmetic)
     }
 
-    fn start() -> Option<Self> {
+    fn start() -> ExactResult<Self> {
         Self::new(ParentParameterKey::Start, ExactRatio::from_i64(0, 1)?)
     }
 
-    fn end() -> Option<Self> {
+    fn end() -> ExactResult<Self> {
         Self::new(ParentParameterKey::End, ExactRatio::from_i64(1, 1)?)
     }
 }
@@ -1230,16 +1286,20 @@ struct LiftedLongitude {
 }
 
 impl LiftedLongitude {
-    fn difference(self, rhs: Self) -> Option<ExactExpansion> {
+    fn difference(self, rhs: Self) -> ExactResult<ExactExpansion> {
         let left = ExactExpansion::from_f64(self.raw)?;
         let right = ExactExpansion::from_f64(rhs.raw)?;
         let delta = left.sub(&right)?;
-        let turns = ExactExpansion::exact_degree_turns(self.turns.checked_sub(rhs.turns)?)?;
+        let turns = ExactExpansion::exact_degree_turns(
+            self.turns
+                .checked_sub(rhs.turns)
+                .ok_or(ExactFailure::Arithmetic)?,
+        )?;
         delta.add(&turns)
     }
 
-    fn ordering(self, rhs: Self) -> Option<Ordering> {
-        Some(self.difference(rhs)?.ordering())
+    fn ordering(self, rhs: Self) -> ExactResult<Ordering> {
+        Ok(self.difference(rhs)?.ordering())
     }
 }
 
@@ -1259,29 +1319,29 @@ struct LiftStep {
 /// Determine an exact continuous-lift update.  The floating estimate only
 /// proposes a nearby integer; every eventual branch is confirmed through the
 /// expansion sign, including the written +/-180 and +/-360 directions.
-fn lifted_step(start: f64, end: f64) -> Option<LiftStep> {
+fn lifted_step(start: f64, end: f64) -> ExactResult<LiftStep> {
     let end_expansion = ExactExpansion::from_f64(end)?;
     let start_expansion = ExactExpansion::from_f64(start)?;
     let raw_delta = end_expansion.sub(&start_expansion)?;
     if raw_delta.is_exact(FULL_TURN_DEGREES)? {
-        return Some(LiftStep {
+        return Ok(LiftStep {
             turn_delta: 0,
             kind: LiftKind::FullPositive,
         });
     }
     if raw_delta.is_exact(-FULL_TURN_DEGREES)? {
-        return Some(LiftStep {
+        return Ok(LiftStep {
             turn_delta: 0,
             kind: LiftKind::FullNegative,
         });
     }
     let proposal = end - start;
     if !proposal.is_finite() {
-        return None;
+        return Err(ExactFailure::Arithmetic);
     }
     let candidate = (-proposal / FULL_TURN_DEGREES).round();
     if !candidate.is_finite() || candidate < i64::MIN as f64 || candidate > i64::MAX as f64 {
-        return None;
+        return Err(ExactFailure::Arithmetic);
     }
     let mut turn_delta = candidate as i64;
     for _ in 0..4 {
@@ -1289,29 +1349,29 @@ fn lifted_step(start: f64, end: f64) -> Option<LiftStep> {
         let lifted = raw_delta.add(&turns)?;
         let half_turn = ExactExpansion::from_f64(HALF_TURN_DEGREES)?;
         if lifted.sub(&half_turn)?.ordering() == Ordering::Greater {
-            turn_delta = turn_delta.checked_sub(1)?;
+            turn_delta = turn_delta.checked_sub(1).ok_or(ExactFailure::Arithmetic)?;
             continue;
         }
         if lifted.add(&half_turn)?.ordering() == Ordering::Less {
-            turn_delta = turn_delta.checked_add(1)?;
+            turn_delta = turn_delta.checked_add(1).ok_or(ExactFailure::Arithmetic)?;
             continue;
         }
         // At exactly half a world, the written direction—not a normalization
         // convention—chooses the branch.
         if lifted.is_exact(-HALF_TURN_DEGREES)? && raw_delta.ordering() == Ordering::Greater {
-            turn_delta = turn_delta.checked_add(1)?;
+            turn_delta = turn_delta.checked_add(1).ok_or(ExactFailure::Arithmetic)?;
             continue;
         }
         if lifted.is_exact(HALF_TURN_DEGREES)? && raw_delta.ordering() == Ordering::Less {
-            turn_delta = turn_delta.checked_sub(1)?;
+            turn_delta = turn_delta.checked_sub(1).ok_or(ExactFailure::Arithmetic)?;
             continue;
         }
-        return Some(LiftStep {
+        return Ok(LiftStep {
             turn_delta,
             kind: LiftKind::Shortest,
         });
     }
-    None
+    Err(ExactFailure::Arithmetic)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1322,8 +1382,8 @@ struct LiftedVertex {
 
 #[derive(Clone, Debug)]
 struct LiftedChain {
-    vertices: Box<[LiftedVertex]>,
-    edges: Box<[LiftKind]>,
+    vertices: Vec<LiftedVertex>,
+    edges: Vec<LiftKind>,
     closed: bool,
     degree: Option<i64>,
 }
@@ -1415,7 +1475,7 @@ impl LiftedRingFill {
         };
         let roof = match pole {
             Some(pole) => {
-                let Some(span) = ExactExpansion::exact_degree_turns(degree) else {
+                let Some(span) = exact_optional(ExactExpansion::exact_degree_turns(degree))? else {
                     return Ok(None);
                 };
                 Some(PeriodicPoleRoof {
@@ -1426,10 +1486,12 @@ impl LiftedRingFill {
             },
             None => None,
         };
-        let Some(longitude_envelope) = chain.longitude_envelope() else {
+        let Some(longitude_envelope) = exact_optional(chain.longitude_envelope())? else {
             return Ok(None);
         };
-        let Some(periodic_exact) = chain.periodic_exact(degree, &longitude_envelope) else {
+        let Some(periodic_exact) =
+            exact_optional(chain.periodic_exact(degree, &longitude_envelope))?
+        else {
             return Ok(None);
         };
         let y_index = if uses_linear_plan_for_len(chain.edges.len()) {
@@ -1466,7 +1528,7 @@ impl LiftedRingFill {
         )
     )]
     fn direct_preimage_copies(&self, longitude: f64) -> Option<std::ops::RangeInclusive<i64>> {
-        match self.direct_preimages(longitude) {
+        match self.direct_preimages(longitude).ok()? {
             DirectPreimages::Copies(copies) => Some(copies),
             DirectPreimages::Empty | DirectPreimages::Uncertain => None,
         }
@@ -1474,9 +1536,11 @@ impl LiftedRingFill {
 
     /// Copies of `longitude` whose lift can land on this fill, from the
     /// envelope proved at construction.
-    fn direct_preimages(&self, longitude: f64) -> DirectPreimages {
-        let Some(query) = ExactExpansion::from_f64(longitude) else {
-            return DirectPreimages::Uncertain;
+    fn direct_preimages(&self, longitude: f64) -> ExactResult<DirectPreimages> {
+        let query = match ExactExpansion::from_f64(longitude) {
+            Ok(query) => query,
+            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         };
         let (minimum, maximum) = &self.longitude_envelope;
         direct_preimages_for_envelope(minimum, maximum, &query)
@@ -1487,13 +1551,13 @@ impl LiftedRingFill {
         chain: &LiftedChain,
         longitude: f64,
         query: &ExactPlanarPoint,
-    ) -> GridPointClass {
-        let copies = match self.direct_preimages(longitude) {
+    ) -> ExactResult<GridPointClass> {
+        let copies = match self.direct_preimages(longitude)? {
             // No lift of the stored query lies in this finite fill's longitude
             // span.  That is a certified exterior, not an arithmetic failure.
-            DirectPreimages::Empty => return GridPointClass::Exterior,
+            DirectPreimages::Empty => return Ok(GridPointClass::Exterior),
             DirectPreimages::Copies(copies) => copies,
-            DirectPreimages::Uncertain => return GridPointClass::Unknown,
+            DirectPreimages::Uncertain => return Ok(GridPointClass::Unknown),
         };
         let result = classify_lifted_ring_bucket(
             chain,
@@ -1502,10 +1566,11 @@ impl LiftedRingFill {
             query,
             copies,
         );
+        let result = result?;
         if result == GridPointClass::Interior && !self.periodic_exact {
-            GridPointClass::Unknown
+            Ok(GridPointClass::Unknown)
         } else {
-            result
+            Ok(result)
         }
     }
 
@@ -1516,14 +1581,17 @@ impl LiftedRingFill {
         longitude: f64,
         query: &ExactPlanarPoint,
     ) -> GridPointClass {
-        let copies = match self.direct_preimages(longitude) {
+        let Ok(copies) = self.direct_preimages(longitude) else {
+            return GridPointClass::Unknown;
+        };
+        let copies = match copies {
             DirectPreimages::Empty => return GridPointClass::Exterior,
             DirectPreimages::Copies(copies) => copies,
             DirectPreimages::Uncertain => return GridPointClass::Unknown,
         };
         let mut result = GridPointClass::Exterior;
         for copy in copies {
-            let Some(shifted) = shifted_exact_planar_point(query, copy) else {
+            let Some(shifted) = shifted_exact_planar_point(query, copy).ok() else {
                 return GridPointClass::Unknown;
             };
             match classify_lifted_ring_copy(chain, self.roof.as_ref(), &shifted) {
@@ -1562,13 +1630,13 @@ fn direct_preimages_for_envelope(
     minimum: &ExactExpansion,
     maximum: &ExactExpansion,
     query: &ExactExpansion,
-) -> DirectPreimages {
+) -> ExactResult<DirectPreimages> {
     let (Some(minimum_proposal), Some(maximum_proposal), Some(query_proposal)) = (
         minimum.checked_estimate(),
         maximum.checked_estimate(),
         query.checked_estimate(),
     ) else {
-        return DirectPreimages::Uncertain;
+        return Ok(DirectPreimages::Uncertain);
     };
     let lower_proposal = ((minimum_proposal - query_proposal) / FULL_TURN_DEGREES).ceil();
     let upper_proposal = ((maximum_proposal - query_proposal) / FULL_TURN_DEGREES).floor();
@@ -1577,24 +1645,28 @@ fn direct_preimages_for_envelope(
         || !(i64::MIN as f64..=i64::MAX as f64).contains(&lower_proposal)
         || !(i64::MIN as f64..=i64::MAX as f64).contains(&upper_proposal)
     {
-        return DirectPreimages::Uncertain;
+        return Ok(DirectPreimages::Uncertain);
     }
     let mut lower = lower_proposal as i64;
     let mut upper = upper_proposal as i64;
     for _ in 0..4 {
-        let Some(ordering) = compare_expansion_query_copy(minimum, query, lower) else {
-            return DirectPreimages::Uncertain;
+        let ordering = match compare_expansion_query_copy(minimum, query, lower) {
+            Ok(ordering) => ordering,
+            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         };
         if ordering == Ordering::Greater {
             let Some(next) = lower.checked_add(1) else {
-                return DirectPreimages::Uncertain;
+                return Ok(DirectPreimages::Uncertain);
             };
             lower = next;
             continue;
         }
         if lower > i64::MIN {
-            let Some(previous) = compare_expansion_query_copy(minimum, query, lower - 1) else {
-                return DirectPreimages::Uncertain;
+            let previous = match compare_expansion_query_copy(minimum, query, lower - 1) {
+                Ok(previous) => previous,
+                Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
+                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
             };
             if previous != Ordering::Greater {
                 lower -= 1;
@@ -1604,19 +1676,23 @@ fn direct_preimages_for_envelope(
         break;
     }
     for _ in 0..4 {
-        let Some(ordering) = compare_expansion_query_copy(maximum, query, upper) else {
-            return DirectPreimages::Uncertain;
+        let ordering = match compare_expansion_query_copy(maximum, query, upper) {
+            Ok(ordering) => ordering,
+            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         };
         if ordering == Ordering::Less {
             let Some(next) = upper.checked_sub(1) else {
-                return DirectPreimages::Uncertain;
+                return Ok(DirectPreimages::Uncertain);
             };
             upper = next;
             continue;
         }
         if upper < i64::MAX {
-            let Some(next) = compare_expansion_query_copy(maximum, query, upper + 1) else {
-                return DirectPreimages::Uncertain;
+            let next = match compare_expansion_query_copy(maximum, query, upper + 1) {
+                Ok(next) => next,
+                Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
+                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
             };
             if next != Ordering::Less {
                 upper += 1;
@@ -1626,9 +1702,9 @@ fn direct_preimages_for_envelope(
         break;
     }
     if lower <= upper {
-        DirectPreimages::Copies(lower..=upper)
+        Ok(DirectPreimages::Copies(lower..=upper))
     } else {
-        DirectPreimages::Empty
+        Ok(DirectPreimages::Empty)
     }
 }
 
@@ -1636,10 +1712,10 @@ fn compare_expansion_query_copy(
     value: &ExactExpansion,
     query: &ExactExpansion,
     turns: i64,
-) -> Option<Ordering> {
+) -> ExactResult<Ordering> {
     let offset = ExactExpansion::exact_degree_turns(turns)?;
     let shifted = query.add(&offset)?;
-    value.sub(&shifted).map(|value| value.ordering())
+    Ok(value.sub(&shifted)?.ordering())
 }
 
 /// Linear periodic even-odd accumulator.  A crossed source edge contributes
@@ -1653,20 +1729,25 @@ struct PeriodicParityBuckets {
 }
 
 impl PeriodicParityBuckets {
-    fn new(copies: std::ops::RangeInclusive<i64>, edge_count: usize) -> Option<Self> {
+    fn new(copies: std::ops::RangeInclusive<i64>, edge_count: usize) -> ExactResult<Self> {
         let first = *copies.start();
         let last = *copies.end();
-        let length = last.checked_sub(first)?.checked_add(1)?;
-        let length = usize::try_from(length).ok()?;
+        let length = last
+            .checked_sub(first)
+            .ok_or(ExactFailure::Arithmetic)?
+            .checked_add(1)
+            .ok_or(ExactFailure::Arithmetic)?;
+        let length = usize::try_from(length).map_err(|_| ExactFailure::Arithmetic)?;
         // The exact lift changes by at most one turn per original edge.  A
         // wider range would violate the carrier premise, not authorize a
         // quadratic fallback.
-        if length > edge_count.checked_add(2)? {
-            return None;
+        if length > edge_count.checked_add(2).ok_or(ExactFailure::Arithmetic)? {
+            return Err(ExactFailure::Arithmetic);
         }
-        let mut events = Vec::with_capacity(length);
+        let mut events = Vec::new();
+        exact_allocation(crate::try_reserve_vec(&mut events, length))?;
         events.resize(length, false);
-        Some(Self {
+        Ok(Self {
             first,
             events,
             parity_at_first: false,
@@ -1768,17 +1849,17 @@ struct ExactSelectionPoint {
 }
 
 impl ExactPlanarPoint {
-    fn from_stored(longitude: f64, latitude: f64) -> Option<Self> {
-        Some(Self {
+    fn from_stored(longitude: f64, latitude: f64) -> ExactResult<Self> {
+        Ok(Self {
             longitude: ExactExpansion::from_f64(longitude)?,
             latitude: ExactExpansion::from_f64(latitude)?,
         })
     }
 
-    fn from_lifted(vertex: LiftedVertex) -> Option<Self> {
+    fn from_lifted(vertex: LiftedVertex) -> ExactResult<Self> {
         let longitude = ExactExpansion::from_f64(vertex.longitude.raw)?;
         let turns = ExactExpansion::exact_degree_turns(vertex.longitude.turns)?;
-        Some(Self {
+        Ok(Self {
             longitude: longitude.add(&turns)?,
             latitude: ExactExpansion::from_f64(vertex.latitude)?,
         })
@@ -1788,9 +1869,9 @@ impl ExactPlanarPoint {
 fn shifted_exact_planar_point<Q: ExactPlanarCoordinates + ?Sized>(
     point: &Q,
     turns: i64,
-) -> Option<ShiftedExactPlanarPoint<'_>> {
+) -> ExactResult<ShiftedExactPlanarPoint<'_>> {
     let offset = ExactExpansion::exact_degree_turns(turns)?;
-    Some(ShiftedExactPlanarPoint {
+    Ok(ShiftedExactPlanarPoint {
         longitude: point.longitude().add(&offset)?,
         latitude: point.latitude(),
     })
@@ -1802,24 +1883,31 @@ fn classify_lifted_ring_bucket(
     roof: Option<&PeriodicPoleRoof>,
     query: &ExactPlanarPoint,
     copies: std::ops::RangeInclusive<i64>,
-) -> GridPointClass {
-    let Some(mut buckets) = PeriodicParityBuckets::new(copies, chain.edges.len()) else {
-        return GridPointClass::Unknown;
+) -> ExactResult<GridPointClass> {
+    let mut buckets = match PeriodicParityBuckets::new(copies, chain.edges.len()) {
+        Ok(buckets) => buckets,
+        Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
     if let Some(y_index) = y_index {
         let Some(query_y) = query.latitude.as_f64() else {
-            return GridPointClass::Unknown;
+            return Ok(GridPointClass::Unknown);
         };
         let mut terminal = None;
+        let mut failure = None;
         let mut visit =
             |edge: EdgeId| match bucket_lifted_chain_edge(chain, edge, query, &mut buckets) {
-                BucketEdge::Continue => std::ops::ControlFlow::Continue(()),
-                BucketEdge::Decisive(result) => {
+                Ok(BucketEdge::Continue) => std::ops::ControlFlow::Continue(()),
+                Ok(BucketEdge::Decisive(result)) => {
                     terminal = Some(result);
                     std::ops::ControlFlow::Break(())
                 },
-                BucketEdge::Uncertain => {
+                Ok(BucketEdge::Uncertain) | Err(ExactFailure::Arithmetic) => {
                     terminal = Some(GridPointClass::Unknown);
+                    std::ops::ControlFlow::Break(())
+                },
+                Err(ExactFailure::Allocation) => {
+                    failure = Some(ExactFailure::Allocation);
                     std::ops::ControlFlow::Break(())
                 },
             };
@@ -1832,57 +1920,62 @@ fn classify_lifted_ring_bucket(
         } else {
             let _ = y_index.for_each_edge(query_y, visit);
         }
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
         if let Some(result) = terminal {
-            return result;
+            return Ok(result);
         }
     } else {
-        let Some(mut previous) = chain
-            .vertices
-            .first()
-            .copied()
-            .and_then(ExactPlanarPoint::from_lifted)
-        else {
-            return GridPointClass::Unknown;
+        let mut previous = match chain.vertices.first().copied() {
+            Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
+                Ok(point) => point,
+                Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
+                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            },
+            None => return Ok(GridPointClass::Unknown),
         };
         for vertex in &chain.vertices[1..] {
-            let Some(current) = ExactPlanarPoint::from_lifted(*vertex) else {
-                return GridPointClass::Unknown;
+            let current = match ExactPlanarPoint::from_lifted(*vertex) {
+                Ok(point) => point,
+                Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
+                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
             };
-            match bucket_lifted_edge(&previous, &current, query, false, &mut buckets) {
-                BucketEdge::Decisive(result) => return result,
+            match bucket_lifted_edge(&previous, &current, query, false, &mut buckets)? {
+                BucketEdge::Decisive(result) => return Ok(result),
                 BucketEdge::Continue => {},
-                BucketEdge::Uncertain => return GridPointClass::Unknown,
+                BucketEdge::Uncertain => return Ok(GridPointClass::Unknown),
             }
             previous = current;
         }
     }
-    let Some(previous) = chain
-        .vertices
-        .last()
-        .copied()
-        .and_then(ExactPlanarPoint::from_lifted)
-    else {
-        return GridPointClass::Unknown;
+    let previous = match chain.vertices.last().copied() {
+        Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
+            Ok(point) => point,
+            Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        },
+        None => return Ok(GridPointClass::Unknown),
     };
-    let Some(first) = chain
-        .vertices
-        .first()
-        .copied()
-        .and_then(ExactPlanarPoint::from_lifted)
-    else {
-        return GridPointClass::Unknown;
+    let first = match chain.vertices.first().copied() {
+        Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
+            Ok(point) => point,
+            Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        },
+        None => return Ok(GridPointClass::Unknown),
     };
     if chain.vertices.len() < 2 {
-        return GridPointClass::Unknown;
+        return Ok(GridPointClass::Unknown);
     }
     if let Some(roof) = roof {
         let pole_latitude = match roof.pole {
-            PhysicalEndpointKey::NorthPole => ExactExpansion::from_i64(90),
-            PhysicalEndpointKey::SouthPole => ExactExpansion::from_i64(-90),
+            PhysicalEndpointKey::NorthPole => Some(ExactExpansion::from_i64(90)?),
+            PhysicalEndpointKey::SouthPole => Some(ExactExpansion::from_i64(-90)?),
             PhysicalEndpointKey::CellVertex(_) => None,
         };
         let Some(pole_latitude) = pole_latitude else {
-            return GridPointClass::Unknown;
+            return Ok(GridPointClass::Unknown);
         };
         let end_pole = ExactPlanarPointRef {
             longitude: &previous.longitude,
@@ -1906,17 +1999,17 @@ fn classify_lifted_ring_bucket(
                 &first as &dyn ExactPlanarCoordinates,
             ),
         ] {
-            match bucket_lifted_edge(start, end, query, true, &mut buckets) {
-                BucketEdge::Decisive(result) => return result,
+            match bucket_lifted_edge(start, end, query, true, &mut buckets)? {
+                BucketEdge::Decisive(result) => return Ok(result),
                 BucketEdge::Continue => {},
-                BucketEdge::Uncertain => return GridPointClass::Unknown,
+                BucketEdge::Uncertain => return Ok(GridPointClass::Unknown),
             }
         }
     }
     if buckets.any_interior() {
-        GridPointClass::Interior
+        Ok(GridPointClass::Interior)
     } else {
-        GridPointClass::Exterior
+        Ok(GridPointClass::Exterior)
     }
 }
 
@@ -1925,24 +2018,26 @@ fn bucket_lifted_chain_edge(
     edge: EdgeId,
     query: &ExactPlanarPoint,
     buckets: &mut PeriodicParityBuckets,
-) -> BucketEdge {
+) -> ExactResult<BucketEdge> {
     let edge = edge.as_usize();
     let Some(next) = edge.checked_add(1) else {
-        return BucketEdge::Uncertain;
+        return Ok(BucketEdge::Uncertain);
     };
-    let (Some(start), Some(end)) = (
-        chain
-            .vertices
-            .get(edge)
-            .copied()
-            .and_then(ExactPlanarPoint::from_lifted),
-        chain
-            .vertices
-            .get(next)
-            .copied()
-            .and_then(ExactPlanarPoint::from_lifted),
-    ) else {
-        return BucketEdge::Uncertain;
+    let start = match chain.vertices.get(edge).copied() {
+        Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
+            Ok(point) => point,
+            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        },
+        None => return Ok(BucketEdge::Uncertain),
+    };
+    let end = match chain.vertices.get(next).copied() {
+        Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
+            Ok(point) => point,
+            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        },
+        None => return Ok(BucketEdge::Uncertain),
     };
     bucket_lifted_edge(&start, &end, query, false, buckets)
 }
@@ -1966,66 +2061,79 @@ fn bucket_lifted_edge<
     query: &Q,
     artificial: bool,
     buckets: &mut PeriodicParityBuckets,
-) -> BucketEdge {
-    let (Some(start_y), Some(end_y)) = (
-        start.latitude().sub(query.latitude()),
-        end.latitude().sub(query.latitude()),
-    ) else {
-        return BucketEdge::Uncertain;
+) -> ExactResult<BucketEdge> {
+    let start_y = match start.latitude().sub(query.latitude()) {
+        Ok(value) => value,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    let Some(on_latitude) =
-        closed_between_expansion(start.latitude(), query.latitude(), end.latitude())
-    else {
-        return BucketEdge::Uncertain;
+    let end_y = match end.latitude().sub(query.latitude()) {
+        Ok(value) => value,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    if on_latitude {
-        let (minimum, maximum) = if let Some(delta) = start.longitude().sub(end.longitude()) {
-            if delta.ordering() == Ordering::Greater {
-                (end.longitude(), start.longitude())
-            } else {
-                (start.longitude(), end.longitude())
-            }
-        } else {
-            return BucketEdge::Uncertain;
+    let on_latitude =
+        match closed_between_expansion(start.latitude(), query.latitude(), end.latitude()) {
+            Ok(value) => value,
+            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         };
-        match direct_preimages_for_envelope(minimum, maximum, query.longitude()) {
+    if on_latitude {
+        let delta = match start.longitude().sub(end.longitude()) {
+            Ok(delta) => delta,
+            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        };
+        let (minimum, maximum) = if delta.ordering() == Ordering::Greater {
+            (end.longitude(), start.longitude())
+        } else {
+            (start.longitude(), end.longitude())
+        };
+        match direct_preimages_for_envelope(minimum, maximum, query.longitude())? {
             DirectPreimages::Empty => {},
-            DirectPreimages::Uncertain => return BucketEdge::Decisive(GridPointClass::Unknown),
+            DirectPreimages::Uncertain => {
+                return Ok(BucketEdge::Decisive(GridPointClass::Unknown));
+            },
             DirectPreimages::Copies(copies) => {
                 let Some(count) = copies
                     .end()
                     .checked_sub(*copies.start())
                     .and_then(|value| value.checked_add(1))
                 else {
-                    return BucketEdge::Uncertain;
+                    return Ok(BucketEdge::Uncertain);
                 };
                 // A shortest/full original edge can meet at most two seam
                 // spellings.  The artificial horizontal roof is excluded by
                 // the non-pole query contract before reaching this branch.
                 if count > 2 {
-                    return BucketEdge::Decisive(GridPointClass::Unknown);
+                    return Ok(BucketEdge::Decisive(GridPointClass::Unknown));
                 }
                 for copy in copies {
-                    let Some(shifted) = shifted_exact_planar_point(query, copy) else {
-                        return BucketEdge::Uncertain;
+                    let shifted = match shifted_exact_planar_point(query, copy) {
+                        Ok(shifted) => shifted,
+                        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+                        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
                     };
-                    let Some(orientation) = planar_orientation_ordering(start, end, &shifted)
-                    else {
-                        return BucketEdge::Uncertain;
+                    let orientation = match planar_orientation_ordering(start, end, &shifted) {
+                        Ok(orientation) => orientation,
+                        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+                        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
                     };
-                    let Some(on_longitude) = closed_between_expansion(
+                    let on_longitude = match closed_between_expansion(
                         start.longitude(),
                         &shifted.longitude,
                         end.longitude(),
-                    ) else {
-                        return BucketEdge::Uncertain;
+                    ) {
+                        Ok(on_longitude) => on_longitude,
+                        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+                        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
                     };
                     if orientation == Ordering::Equal && on_longitude {
-                        return BucketEdge::Decisive(if artificial {
+                        return Ok(BucketEdge::Decisive(if artificial {
                             GridPointClass::Unknown
                         } else {
                             GridPointClass::Boundary
-                        });
+                        }));
                     }
                 }
             },
@@ -2036,27 +2144,35 @@ fn bucket_lifted_edge<
     let crosses = (start_cmp != Ordering::Greater && end_cmp == Ordering::Greater)
         || (end_cmp != Ordering::Greater && start_cmp == Ordering::Greater);
     if !crosses {
-        return BucketEdge::Continue;
+        return Ok(BucketEdge::Continue);
     }
-    let Some(orientation) = planar_orientation(start, end, query) else {
-        return BucketEdge::Uncertain;
+    let orientation = match planar_orientation(start, end, query) {
+        Ok(orientation) => orientation,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    let Some(delta_y) = end.latitude().sub(start.latitude()) else {
-        return BucketEdge::Uncertain;
+    let delta_y = match end.latitude().sub(start.latitude()) {
+        Ok(delta_y) => delta_y,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
     if delta_y.ordering() == Ordering::Equal {
-        return BucketEdge::Continue;
+        return Ok(BucketEdge::Continue);
     }
-    let Some(ratio) = ExactRatio::from_parts(orientation, delta_y) else {
-        return BucketEdge::Uncertain;
+    let ratio = match ExactRatio::from_parts(orientation, delta_y) {
+        Ok(ratio) => ratio,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    let Some(bucket) = ratio.floor_turn() else {
-        return BucketEdge::Uncertain;
+    let bucket = match ratio.floor_turn() {
+        Ok(bucket) => bucket,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
     if buckets.add_crossing(bucket).is_none() {
-        return BucketEdge::Uncertain;
+        return Ok(BucketEdge::Uncertain);
     }
-    BucketEdge::Continue
+    Ok(BucketEdge::Continue)
 }
 
 /// Exact ray contribution of one rational selection-image segment.  Selection
@@ -2068,52 +2184,70 @@ fn bucket_selection_edge(
     end: &ExactSelectionPoint,
     query: &ExactPlanarPoint,
     buckets: &mut PeriodicParityBuckets,
-) -> BucketEdge {
-    let Some(query_longitude) = ExactRatio::from_expansion(&query.longitude) else {
-        return BucketEdge::Uncertain;
+) -> ExactResult<BucketEdge> {
+    let query_longitude = match ExactRatio::from_expansion(&query.longitude) {
+        Ok(value) => value,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    let Some(query_latitude) = ExactRatio::from_expansion(&query.latitude) else {
-        return BucketEdge::Uncertain;
+    let query_latitude = match ExactRatio::from_expansion(&query.latitude) {
+        Ok(value) => value,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    let (Some(start_y), Some(end_y)) = (
-        start.latitude.sub(&query_latitude),
-        end.latitude.sub(&query_latitude),
-    ) else {
-        return BucketEdge::Uncertain;
+    let start_y = match start.latitude.sub(&query_latitude) {
+        Ok(value) => value,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+    };
+    let end_y = match end.latitude.sub(&query_latitude) {
+        Ok(value) => value,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
     let (start_cmp, end_cmp) = (start_y.numerator.ordering(), end_y.numerator.ordering());
 
     // A query on an original selected edge is closed contact.  Test the three
     // only physical sheet preimages individually so exact +/-180 spellings
     // cannot be normalized into an unrelated line.
-    let Some(on_latitude) =
-        selection_closed_between(&start.latitude, &query_latitude, &end.latitude)
-    else {
-        return BucketEdge::Uncertain;
-    };
+    let on_latitude =
+        match selection_closed_between(&start.latitude, &query_latitude, &end.latitude) {
+            Ok(value) => value,
+            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        };
     if on_latitude {
         for turns in -1_i64..=1_i64 {
-            let Some(offset) = turns
-                .checked_mul(360)
-                .and_then(|value| ExactRatio::from_i64(value, 1))
-            else {
-                return BucketEdge::Uncertain;
+            let offset = match turns.checked_mul(360) {
+                Some(value) => match ExactRatio::from_i64(value, 1) {
+                    Ok(offset) => offset,
+                    Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+                    Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                },
+                None => return Ok(BucketEdge::Uncertain),
             };
-            let Some(shifted_longitude) = query_longitude.add(&offset) else {
-                return BucketEdge::Uncertain;
+            let shifted_longitude = match query_longitude.add(&offset) {
+                Ok(value) => value,
+                Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
             };
-            let Some(orientation) =
-                selection_orientation_at(start, end, &shifted_longitude, &query_latitude)
-            else {
-                return BucketEdge::Uncertain;
-            };
-            let Some(on_longitude) =
-                selection_closed_between(&start.longitude, &shifted_longitude, &end.longitude)
-            else {
-                return BucketEdge::Uncertain;
+            let orientation =
+                match selection_orientation_at(start, end, &shifted_longitude, &query_latitude) {
+                    Ok(orientation) => orientation,
+                    Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+                    Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                };
+            let on_longitude = match selection_closed_between(
+                &start.longitude,
+                &shifted_longitude,
+                &end.longitude,
+            ) {
+                Ok(on_longitude) => on_longitude,
+                Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
             };
             if orientation.numerator.ordering() == Ordering::Equal && on_longitude {
-                return BucketEdge::Decisive(GridPointClass::Boundary);
+                return Ok(BucketEdge::Decisive(GridPointClass::Boundary));
             }
         }
     }
@@ -2121,25 +2255,33 @@ fn bucket_selection_edge(
     let crosses = (start_cmp != Ordering::Greater && end_cmp == Ordering::Greater)
         || (end_cmp != Ordering::Greater && start_cmp == Ordering::Greater);
     if !crosses {
-        return BucketEdge::Continue;
+        return Ok(BucketEdge::Continue);
     }
-    let Some(orientation) = selection_orientation_at(start, end, &query_longitude, &query_latitude)
-    else {
-        return BucketEdge::Uncertain;
+    let orientation = match selection_orientation_at(start, end, &query_longitude, &query_latitude)
+    {
+        Ok(orientation) => orientation,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    let Some(delta_y) = end.latitude.sub(&start.latitude) else {
-        return BucketEdge::Uncertain;
+    let delta_y = match end.latitude.sub(&start.latitude) {
+        Ok(delta_y) => delta_y,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    let Some(ratio) = orientation.div(&delta_y) else {
-        return BucketEdge::Uncertain;
+    let ratio = match orientation.div(&delta_y) {
+        Ok(ratio) => ratio,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
-    let Some(bucket) = ratio.floor_turn() else {
-        return BucketEdge::Uncertain;
+    let bucket = match ratio.floor_turn() {
+        Ok(bucket) => bucket,
+        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
+        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
     if buckets.add_crossing(bucket).is_none() {
-        return BucketEdge::Uncertain;
+        return Ok(BucketEdge::Uncertain);
     }
-    BucketEdge::Continue
+    Ok(BucketEdge::Continue)
 }
 
 fn selection_orientation_at(
@@ -2147,7 +2289,7 @@ fn selection_orientation_at(
     end: &ExactSelectionPoint,
     point_longitude: &ExactRatio,
     point_latitude: &ExactRatio,
-) -> Option<ExactRatio> {
+) -> ExactResult<ExactRatio> {
     let dx = end.longitude.sub(&start.longitude)?;
     let dy = end.latitude.sub(&start.latitude)?;
     let px = point_longitude.sub(&start.longitude)?;
@@ -2161,10 +2303,10 @@ fn selection_closed_between(
     left: &ExactRatio,
     middle: &ExactRatio,
     right: &ExactRatio,
-) -> Option<bool> {
+) -> ExactResult<bool> {
     let left_middle = left.ordering(middle)?;
     let middle_right = middle.ordering(right)?;
-    Some(closed_between_orderings(left_middle, middle_right))
+    Ok(closed_between_orderings(left_middle, middle_right))
 }
 
 /// Exact even-odd point location in the finite lifted fill.  This direct
@@ -2181,13 +2323,13 @@ fn classify_lifted_ring_copy<Q: ExactPlanarCoordinates + ?Sized>(
         .vertices
         .first()
         .copied()
-        .and_then(ExactPlanarPoint::from_lifted)
+        .and_then(|vertex| ExactPlanarPoint::from_lifted(vertex).ok())
     else {
         return GridPointClass::Unknown;
     };
     let mut parity = false;
     for vertex in &chain.vertices[1..] {
-        let Some(current) = ExactPlanarPoint::from_lifted(*vertex) else {
+        let Some(current) = ExactPlanarPoint::from_lifted(*vertex).ok() else {
             return GridPointClass::Unknown;
         };
         match classify_lifted_edge(&previous, &current, query, false, &mut parity) {
@@ -2201,13 +2343,13 @@ fn classify_lifted_ring_copy<Q: ExactPlanarCoordinates + ?Sized>(
             .vertices
             .first()
             .copied()
-            .and_then(ExactPlanarPoint::from_lifted)
+            .and_then(|vertex| ExactPlanarPoint::from_lifted(vertex).ok())
         else {
             return GridPointClass::Unknown;
         };
         let pole_latitude = match roof.pole {
-            PhysicalEndpointKey::NorthPole => ExactExpansion::from_i64(90),
-            PhysicalEndpointKey::SouthPole => ExactExpansion::from_i64(-90),
+            PhysicalEndpointKey::NorthPole => ExactExpansion::from_i64(90).ok(),
+            PhysicalEndpointKey::SouthPole => ExactExpansion::from_i64(-90).ok(),
             PhysicalEndpointKey::CellVertex(_) => None,
         };
         let Some(pole_latitude) = pole_latitude else {
@@ -2263,19 +2405,21 @@ fn classify_lifted_edge<
     artificial: bool,
     parity: &mut bool,
 ) -> GridPointClass {
-    let Some(orientation) = planar_orientation_ordering(start, end, query) else {
+    let Some(orientation) = planar_orientation_ordering(start, end, query).ok() else {
         return GridPointClass::Unknown;
     };
     let (Some(start_y), Some(end_y)) = (
-        start.latitude().sub(query.latitude()),
-        end.latitude().sub(query.latitude()),
+        start.latitude().sub(query.latitude()).ok(),
+        end.latitude().sub(query.latitude()).ok(),
     ) else {
         return GridPointClass::Unknown;
     };
     if orientation == Ordering::Equal
         && closed_between_expansion(start.longitude(), query.longitude(), end.longitude())
+            .ok()
             .unwrap_or(false)
         && closed_between_expansion(start.latitude(), query.latitude(), end.latitude())
+            .ok()
             .unwrap_or(false)
     {
         return if artificial {
@@ -2291,7 +2435,7 @@ fn classify_lifted_edge<
     if !crosses {
         return GridPointClass::Exterior;
     }
-    let Some(delta_y) = end.latitude().sub(start.latitude()) else {
+    let Some(delta_y) = end.latitude().sub(start.latitude()).ok() else {
         return GridPointClass::Unknown;
     };
     if delta_y.ordering() == Ordering::Equal {
@@ -2313,10 +2457,10 @@ fn closed_between_expansion(
     left: &ExactExpansion,
     middle: &ExactExpansion,
     right: &ExactExpansion,
-) -> Option<bool> {
+) -> ExactResult<bool> {
     let left_middle = left.sub(middle)?.ordering();
     let middle_right = middle.sub(right)?.ordering();
-    Some(closed_between_orderings(left_middle, middle_right))
+    Ok(closed_between_orderings(left_middle, middle_right))
 }
 
 fn closed_between_planar_points<
@@ -2327,11 +2471,11 @@ fn closed_between_planar_points<
     left: &L,
     middle: &M,
     right: &R,
-) -> Option<bool> {
+) -> ExactResult<bool> {
     let longitude =
         closed_between_expansion(left.longitude(), middle.longitude(), right.longitude())?;
     let latitude = closed_between_expansion(left.latitude(), middle.latitude(), right.latitude())?;
-    Some(longitude && latitude)
+    Ok(longitude && latitude)
 }
 
 fn planar_orientation<
@@ -2342,7 +2486,7 @@ fn planar_orientation<
     start: &S,
     end: &E,
     query: &Q,
-) -> Option<ExactExpansion> {
+) -> ExactResult<ExactExpansion> {
     let dx = end.longitude().sub(start.longitude())?;
     let dy = end.latitude().sub(start.latitude())?;
     let qx = query.longitude().sub(start.longitude())?;
@@ -2398,45 +2542,60 @@ fn planar_orientation_ordering<
     start: &S,
     end: &E,
     query: &Q,
-) -> Option<Ordering> {
-    filtered_planar_orientation(start, end, query)
-        .or_else(|| planar_orientation(start, end, query).map(|value| value.ordering()))
+) -> ExactResult<Ordering> {
+    if let Some(ordering) = filtered_planar_orientation(start, end, query) {
+        Ok(ordering)
+    } else {
+        Ok(planar_orientation(start, end, query)?.ordering())
+    }
 }
 
 impl LiftedChain {
-    fn from_points(points: &[(f64, f64)], closed: bool) -> Option<Self> {
+    fn from_points(points: &[(f64, f64)], closed: bool) -> ExactResult<Self> {
         let minimum = if closed { 4 } else { 2 };
         if points.len() < minimum || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
-            return None;
+            return Err(ExactFailure::Arithmetic);
         }
         let mut vertices = Vec::new();
         let mut edges = Vec::new();
-        vertices.reserve(points.len());
-        edges.reserve(points.len().saturating_sub(1));
-        vertices.push(LiftedVertex {
+        exact_allocation(crate::try_reserve_vec(&mut vertices, points.len()))?;
+        exact_allocation(crate::try_reserve_vec(
+            &mut edges,
+            points.len().saturating_sub(1),
+        ))?;
+        exact_allocation(crate::try_push_vec(&mut vertices, LiftedVertex {
             longitude: LiftedLongitude {
                 raw: points[0].0,
                 turns: 0,
             },
             latitude: points[0].1,
-        });
+        }))?;
         for &(longitude, latitude) in &points[1..] {
-            let previous = *vertices.last()?;
+            let previous = exact(vertices.last().copied())?;
             let step = lifted_step(previous.longitude.raw, longitude)?;
-            let turns = previous.longitude.turns.checked_add(step.turn_delta)?;
-            vertices.push(LiftedVertex {
+            let turns = previous
+                .longitude
+                .turns
+                .checked_add(step.turn_delta)
+                .ok_or(ExactFailure::Arithmetic)?;
+            exact_allocation(crate::try_push_vec(&mut vertices, LiftedVertex {
                 longitude: LiftedLongitude {
                     raw: longitude,
                     turns,
                 },
                 latitude,
-            });
-            edges.push(step.kind);
+            }))?;
+            exact_allocation(crate::try_push_vec(&mut edges, step.kind))?;
             while vertices.len() > minimum {
-                let last = vertices.len().checked_sub(1)?;
-                let previous = *vertices.get(last.checked_sub(2)?)?;
-                let current = *vertices.get(last.checked_sub(1)?)?;
-                let next = *vertices.get(last)?;
+                let last = vertices
+                    .len()
+                    .checked_sub(1)
+                    .ok_or(ExactFailure::Arithmetic)?;
+                let previous =
+                    *exact(vertices.get(last.checked_sub(2).ok_or(ExactFailure::Arithmetic)?))?;
+                let current =
+                    *exact(vertices.get(last.checked_sub(1).ok_or(ExactFailure::Arithmetic)?))?;
+                let next = *exact(vertices.get(last))?;
                 if !can_coalesce(previous, current, next)? {
                     break;
                 }
@@ -2445,30 +2604,30 @@ impl LiftedChain {
                 let direct = lifted_step(previous.longitude.raw, next.longitude.raw)?;
                 vertices.remove(last - 1);
                 edges.remove(last - 1);
-                *edges.get_mut(last - 2)? = direct.kind;
+                *exact(edges.get_mut(last.checked_sub(2).ok_or(ExactFailure::Arithmetic)?))? =
+                    direct.kind;
             }
         }
         let mut result = Self {
-            vertices: vertices.into_boxed_slice(),
-            edges: edges.into_boxed_slice(),
+            vertices,
+            edges,
             closed,
             degree: None,
         };
         if closed {
-            result.degree = result.closure_degree();
-            result.degree?;
+            result.degree = Some(result.closure_degree()?.ok_or(ExactFailure::Arithmetic)?);
         }
-        Some(result)
+        Ok(result)
     }
 
-    fn closure_degree(&self) -> Option<i64> {
-        let first = *self.vertices.first()?;
-        let last = *self.vertices.last()?;
+    fn closure_degree(&self) -> ExactResult<Option<i64>> {
+        let first = *exact(self.vertices.first())?;
+        let last = *exact(self.vertices.last())?;
         if !same_physical_latitude(first.latitude, last.latitude) {
-            return None;
+            return Ok(None);
         }
         let total = last.longitude.difference(first.longitude)?;
-        let edge_count = i64::try_from(self.edges.len()).ok()?;
+        let edge_count = i64::try_from(self.edges.len()).map_err(|_| ExactFailure::Arithmetic)?;
         let raw_alias_turn = if first.longitude.raw.to_bits() == last.longitude.raw.to_bits() {
             0
         } else if first.longitude.raw.to_bits() == (-HALF_TURN_DEGREES).to_bits()
@@ -2480,20 +2639,21 @@ impl LiftedChain {
         {
             -1
         } else {
-            return None;
+            return Ok(None);
         };
         let degree = last
             .longitude
             .turns
-            .checked_sub(first.longitude.turns)?
-            .checked_add(raw_alias_turn)?;
+            .checked_sub(first.longitude.turns)
+            .ok_or(ExactFailure::Arithmetic)?
+            .checked_add(raw_alias_turn)
+            .ok_or(ExactFailure::Arithmetic)?;
         if !(-edge_count..=edge_count).contains(&degree) {
-            return None;
+            return Ok(None);
         }
-        ExactExpansion::exact_degree_turns(degree)
-            .and_then(|expected| total.sub(&expected))
-            .is_some_and(|difference| difference.ordering() == Ordering::Equal)
-            .then_some(degree)
+        let expected = ExactExpansion::exact_degree_turns(degree)?;
+        let difference = total.sub(&expected)?;
+        Ok((difference.ordering() == Ordering::Equal).then_some(degree))
     }
 
     #[cfg_attr(
@@ -2504,24 +2664,28 @@ impl LiftedChain {
         )
     )]
     fn direct_preimage_copies(&self, longitude: f64) -> Option<std::ops::RangeInclusive<i64>> {
-        match self.direct_preimages(longitude) {
+        match self.direct_preimages(longitude).ok()? {
             DirectPreimages::Copies(copies) => Some(copies),
             DirectPreimages::Empty | DirectPreimages::Uncertain => None,
         }
     }
 
-    fn direct_preimages(&self, longitude: f64) -> DirectPreimages {
-        let Some((minimum, maximum)) = self.longitude_envelope() else {
-            return DirectPreimages::Uncertain;
+    fn direct_preimages(&self, longitude: f64) -> ExactResult<DirectPreimages> {
+        let (minimum, maximum) = match self.longitude_envelope() {
+            Ok(envelope) => envelope,
+            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         };
-        let Some(query) = ExactExpansion::from_f64(longitude) else {
-            return DirectPreimages::Uncertain;
+        let query = match ExactExpansion::from_f64(longitude) {
+            Ok(query) => query,
+            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         };
         direct_preimages_for_envelope(&minimum, &maximum, &query)
     }
 
-    fn longitude_envelope(&self) -> Option<(ExactExpansion, ExactExpansion)> {
-        let first = *self.vertices.first()?;
+    fn longitude_envelope(&self) -> ExactResult<(ExactExpansion, ExactExpansion)> {
+        let first = *exact(self.vertices.first())?;
         let mut minimum = ExactPlanarPoint::from_lifted(first)?.longitude;
         let mut maximum = minimum.try_clone()?;
         for &vertex in &self.vertices[1..] {
@@ -2533,7 +2697,7 @@ impl LiftedChain {
                 maximum = value;
             }
         }
-        Some((minimum, maximum))
+        Ok((minimum, maximum))
     }
 
     /// Proves that quotienting the finite lift cannot create a second open
@@ -2547,12 +2711,12 @@ impl LiftedChain {
         &self,
         degree: i64,
         (minimum, maximum): &(ExactExpansion, ExactExpansion),
-    ) -> Option<bool> {
+    ) -> ExactResult<bool> {
         let width = maximum.sub(minimum)?;
         let turn = ExactExpansion::from_f64(FULL_TURN_DEGREES)?;
         match width.sub(&turn)?.ordering() {
-            Ordering::Less => return Some(true),
-            Ordering::Greater => return Some(false),
+            Ordering::Less => return Ok(true),
+            Ordering::Greater => return Ok(false),
             Ordering::Equal => {},
         }
         if degree.unsigned_abs() != 1
@@ -2561,16 +2725,16 @@ impl LiftedChain {
                 .iter()
                 .any(|kind| !matches!(kind, LiftKind::Shortest))
         {
-            return Some(false);
+            return Ok(false);
         }
-        let first = ExactPlanarPoint::from_lifted(*self.vertices.first()?)?.longitude;
-        let last = ExactPlanarPoint::from_lifted(*self.vertices.last()?)?.longitude;
+        let first = ExactPlanarPoint::from_lifted(*exact(self.vertices.first())?)?.longitude;
+        let last = ExactPlanarPoint::from_lifted(*exact(self.vertices.last())?)?.longitude;
         let endpoints_are_extrema = (first.sub(minimum)?.ordering() == Ordering::Equal
             && last.sub(maximum)?.ordering() == Ordering::Equal)
             || (first.sub(maximum)?.ordering() == Ordering::Equal
                 && last.sub(minimum)?.ordering() == Ordering::Equal);
         if !endpoints_are_extrema {
-            return Some(false);
+            return Ok(false);
         }
         for &vertex in self
             .vertices
@@ -2581,10 +2745,10 @@ impl LiftedChain {
             if value.sub(minimum)?.ordering() != Ordering::Greater
                 || maximum.sub(&value)?.ordering() != Ordering::Greater
             {
-                return Some(false);
+                return Ok(false);
             }
         }
-        Some(true)
+        Ok(true)
     }
 }
 
@@ -2647,10 +2811,11 @@ impl SymbolicAffineEdge {
         start: LiftedVertex,
         end: LiftedVertex,
         kind: LiftKind,
-    ) -> Option<Self> {
+    ) -> ExactResult<Self> {
         let start_point = ExactPlanarPoint::from_lifted(start)?;
         let end_point = ExactPlanarPoint::from_lifted(end)?;
-        let mut parameters = Vec::with_capacity(8);
+        let mut parameters = Vec::new();
+        exact_allocation(crate::try_reserve_vec(&mut parameters, 8))?;
         parameters.push(ExactParentParameter::start()?);
         parameters.push(ExactParentParameter::end()?);
         let mut result = Self {
@@ -2670,7 +2835,7 @@ impl SymbolicAffineEdge {
         result.collect_lifted_longitude_seams(&start_point, &end_point)?;
         result.collect_latitude_reflections(&start_point, &end_point)?;
         result.collect_post_reflection_longitude_seams(&start_point, &end_point)?;
-        Some(result)
+        Ok(result)
     }
 
     fn parameter_for(
@@ -2678,21 +2843,21 @@ impl SymbolicAffineEdge {
         start: &ExactExpansion,
         end: &ExactExpansion,
         target: &ExactExpansion,
-    ) -> Option<ParentCrossing> {
+    ) -> ExactResult<ParentCrossing> {
         let denominator = end.sub(start)?;
         if denominator.ordering() == Ordering::Equal {
-            return Some(ParentCrossing::Absent);
+            return Ok(ParentCrossing::Absent);
         }
         let numerator = target.sub(start)?;
         let ratio = ExactRatio::from_parts(numerator, denominator)?;
-        Some(if ratio.is_closed_unit()? {
+        Ok(if ratio.is_closed_unit()? {
             ParentCrossing::Present(ratio)
         } else {
             ParentCrossing::Absent
         })
     }
 
-    fn insert_ratio(&mut self, key: ParentParameterKey, ratio: ExactRatio) -> Option<()> {
+    fn insert_ratio(&mut self, key: ParentParameterKey, ratio: ExactRatio) -> ExactResult<()> {
         let parameter = ExactParentParameter::new(key, ratio)?;
         let mut insert_at = self.parameters.len();
         for (index, existing) in self.parameters.iter().enumerate() {
@@ -2709,21 +2874,21 @@ impl SymbolicAffineEdge {
                     {
                         self.parameters[index] = parameter;
                     }
-                    return Some(());
+                    return Ok(());
                 },
                 Ordering::Greater => {},
             }
         }
-        self.parameters.reserve(1);
+        exact_allocation(crate::try_reserve_vec(&mut self.parameters, 1))?;
         self.parameters.insert(insert_at, parameter);
-        Some(())
+        Ok(())
     }
 
     fn collect_lifted_longitude_seams(
         &mut self,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<()> {
+    ) -> ExactResult<()> {
         let start = start_point.longitude();
         let end = end_point.longitude();
         for level in integer_levels_between(start, end, 180, 360)? {
@@ -2735,14 +2900,14 @@ impl SymbolicAffineEdge {
                 )?;
             }
         }
-        Some(())
+        Ok(())
     }
 
     fn collect_latitude_reflections(
         &mut self,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<()> {
+    ) -> ExactResult<()> {
         let start = start_point.latitude();
         let end = end_point.latitude();
         for level in integer_levels_between(start, end, 90, 180)? {
@@ -2754,14 +2919,14 @@ impl SymbolicAffineEdge {
                 )?;
             }
         }
-        Some(())
+        Ok(())
     }
 
     fn collect_post_reflection_longitude_seams(
         &mut self,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<()> {
+    ) -> ExactResult<()> {
         let latitude_start = start_point.latitude();
         let latitude_end = end_point.latitude();
         let longitude_start = start_point.longitude();
@@ -2774,7 +2939,9 @@ impl SymbolicAffineEdge {
             let upper = exact_affine_level(90, 180, zone)?;
             let lower = ExactRatio::from_parts(lower, ExactExpansion::from_i64(1)?)?;
             let upper = ExactRatio::from_parts(upper, ExactExpansion::from_i64(1)?)?;
-            let seam_base = 180_i64.checked_sub(180_i64.checked_mul(zone)?)?;
+            let seam_base = 180_i64
+                .checked_sub(180_i64.checked_mul(zone).ok_or(ExactFailure::Arithmetic)?)
+                .ok_or(ExactFailure::Arithmetic)?;
             for seam in integer_levels_between(longitude_start, longitude_end, seam_base, 360)? {
                 let longitude = exact_affine_level(seam_base, 360, seam)?;
                 let ParentCrossing::Present(ratio) =
@@ -2794,7 +2961,7 @@ impl SymbolicAffineEdge {
                 )?;
             }
         }
-        Some(())
+        Ok(())
     }
 
     fn coordinate_at(
@@ -2802,7 +2969,7 @@ impl SymbolicAffineEdge {
         parameter: &ExactRatio,
         start: &ExactExpansion,
         end: &ExactExpansion,
-    ) -> Option<ExactRatio> {
+    ) -> ExactResult<ExactRatio> {
         let delta = end.sub(start)?;
         let first = start.product(&parameter.denominator)?;
         let second = delta.product(&parameter.numerator)?;
@@ -2810,7 +2977,7 @@ impl SymbolicAffineEdge {
         ExactRatio::from_numerator(numerator, &parameter.denominator)
     }
 
-    fn midpoint(&self, left: &ExactRatio, right: &ExactRatio) -> Option<ExactRatio> {
+    fn midpoint(&self, left: &ExactRatio, right: &ExactRatio) -> ExactResult<ExactRatio> {
         let first = left.numerator.product(&right.denominator)?;
         let second = right.numerator.product(&left.denominator)?;
         let numerator = first.add(&second)?;
@@ -2827,10 +2994,16 @@ impl SymbolicAffineEdge {
         longitude_wrap: i64,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<AffineSourceArc> {
+    ) -> ExactResult<AffineSourceArc> {
         let longitude_offset = 180_i64
-            .checked_mul(latitude_zone)?
-            .checked_sub(360_i64.checked_mul(longitude_wrap)?)?;
+            .checked_mul(latitude_zone)
+            .ok_or(ExactFailure::Arithmetic)?
+            .checked_sub(
+                360_i64
+                    .checked_mul(longitude_wrap)
+                    .ok_or(ExactFailure::Arithmetic)?,
+            )
+            .ok_or(ExactFailure::Arithmetic)?;
         let longitude_offset = ExactExpansion::from_i64(longitude_offset)?;
         let longitude0 = start_point.longitude().add(&longitude_offset)?;
         let longitude1 = end_point.longitude().add(&longitude_offset)?;
@@ -2838,7 +3011,11 @@ impl SymbolicAffineEdge {
 
         let latitude0 = start_point.latitude();
         let latitude1 = end_point.latitude();
-        let latitude_offset = ExactExpansion::from_i64(180_i64.checked_mul(latitude_zone)?)?;
+        let latitude_offset = ExactExpansion::from_i64(
+            180_i64
+                .checked_mul(latitude_zone)
+                .ok_or(ExactFailure::Arithmetic)?,
+        )?;
         let (latitude0, latitude1) = if latitude_zone.rem_euclid(2) == 0 {
             (
                 latitude0.sub(&latitude_offset)?,
@@ -2854,10 +3031,14 @@ impl SymbolicAffineEdge {
         let structure =
             affine_structure(&longitude0, &longitude_delta, &latitude0, &latitude_delta)?;
         let map = AffineParentMap {
-            lambda0: degree_expansion_bound(&longitude0).and_then(degree_bound_to_radians)?,
-            phi0: degree_expansion_bound(&latitude0).and_then(degree_bound_to_radians)?,
-            dlambda: degree_expansion_bound(&longitude_delta).and_then(degree_bound_to_radians)?,
-            dphi: degree_expansion_bound(&latitude_delta).and_then(degree_bound_to_radians)?,
+            lambda0: degree_expansion_bound(&longitude0)
+                .and_then(|bound| exact(degree_bound_to_radians(bound)))?,
+            phi0: degree_expansion_bound(&latitude0)
+                .and_then(|bound| exact(degree_bound_to_radians(bound)))?,
+            dlambda: degree_expansion_bound(&longitude_delta)
+                .and_then(|bound| exact(degree_bound_to_radians(bound)))?,
+            dphi: degree_expansion_bound(&latitude_delta)
+                .and_then(|bound| exact(degree_bound_to_radians(bound)))?,
             structure,
         };
         let endpoint_roles = [
@@ -2865,10 +3046,8 @@ impl SymbolicAffineEdge {
             endpoint_role(interval.end.key),
         ];
         let poles = [
-            self.selection_endpoint_pole(&interval.start, latitude_zone, start_point, end_point)
-                .ok()?,
-            self.selection_endpoint_pole(&interval.end, latitude_zone, start_point, end_point)
-                .ok()?,
+            self.selection_endpoint_pole(&interval.start, latitude_zone, start_point, end_point)?,
+            self.selection_endpoint_pole(&interval.end, latitude_zone, start_point, end_point)?,
         ];
         let identities = [
             self.selection_endpoint_identity(
@@ -2886,13 +3065,16 @@ impl SymbolicAffineEdge {
                 end_point,
             )?,
         ];
-        AffineSourceArc::from_parent_map(
+        exact(AffineSourceArc::from_parent_map(
             map,
-            Bound::new(interval.start.enclosure.lo, interval.end.enclosure.hi)?,
+            exact(Bound::new(
+                interval.start.enclosure.lo,
+                interval.end.enclosure.hi,
+            ))?,
             endpoint_roles,
             poles,
             identities,
-        )
+        ))
     }
 
     fn selection_endpoint_pole(
@@ -2901,23 +3083,21 @@ impl SymbolicAffineEdge {
         latitude_zone: i64,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Result<Option<PhysicalEndpointKey>, ()> {
+    ) -> ExactResult<Option<PhysicalEndpointKey>> {
         if matches!(parameter.key, ParentParameterKey::Partition(_)) {
             return Ok(None);
         }
-        let latitude = self
-            .coordinate_at(
-                &parameter.ratio,
-                start_point.latitude(),
-                end_point.latitude(),
-            )
-            .ok_or(())?;
-        let latitude = selection_latitude_ratio(&latitude, latitude_zone).ok_or(())?;
-        let north = ExactRatio::from_i64(90, 1).ok_or(())?;
-        let south = ExactRatio::from_i64(-90, 1).ok_or(())?;
-        if latitude.ordering(&north).ok_or(())? == Ordering::Equal {
+        let latitude = self.coordinate_at(
+            &parameter.ratio,
+            start_point.latitude(),
+            end_point.latitude(),
+        )?;
+        let latitude = selection_latitude_ratio(&latitude, latitude_zone)?;
+        let north = ExactRatio::from_i64(90, 1)?;
+        let south = ExactRatio::from_i64(-90, 1)?;
+        if latitude.ordering(&north)? == Ordering::Equal {
             Ok(Some(PhysicalEndpointKey::NorthPole))
-        } else if latitude.ordering(&south).ok_or(())? == Ordering::Equal {
+        } else if latitude.ordering(&south)? == Ordering::Equal {
             Ok(Some(PhysicalEndpointKey::SouthPole))
         } else {
             Ok(None)
@@ -2930,7 +3110,7 @@ impl SymbolicAffineEdge {
         end: ExactParentParameter,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<SelectionAffinePiece> {
+    ) -> ExactResult<Option<SelectionAffinePiece>> {
         let midpoint = self.midpoint(&start.ratio, &end.ratio)?;
         let latitude =
             self.coordinate_at(&midpoint, start_point.latitude(), end_point.latitude())?;
@@ -2941,7 +3121,7 @@ impl SymbolicAffineEdge {
             || zone_proposal < i64::MIN as f64
             || zone_proposal > i64::MAX as f64
         {
-            return None;
+            return Ok(None);
         }
         // A certified bound can straddle a stored-double neighbour of a strip
         // edge even though the exact midpoint is strictly inside one strip:
@@ -2950,20 +3130,29 @@ impl SymbolicAffineEdge {
         // exact ratio. This is not an epsilon: exactly one open strip can
         // satisfy the two strict comparisons.
         let proposed_zone = zone_proposal as i64;
-        let zone = (-1_i64..=1).find_map(|delta| {
-            let zone = proposed_zone.checked_add(delta)?;
+        let mut zone = None;
+        for delta in -1_i64..=1 {
+            let candidate = proposed_zone
+                .checked_add(delta)
+                .ok_or(ExactFailure::Arithmetic)?;
             let lower = ExactRatio::from_parts(
-                exact_affine_level(-90, 180, zone)?,
+                exact_affine_level(-90, 180, candidate)?,
                 ExactExpansion::from_i64(1)?,
             )?;
             let upper = ExactRatio::from_parts(
-                exact_affine_level(90, 180, zone)?,
+                exact_affine_level(90, 180, candidate)?,
                 ExactExpansion::from_i64(1)?,
             )?;
-            (latitude.ordering(&lower)? == Ordering::Greater
-                && latitude.ordering(&upper)? == Ordering::Less)
-                .then_some(zone)
-        })?;
+            if latitude.ordering(&lower)? == Ordering::Greater
+                && latitude.ordering(&upper)? == Ordering::Less
+            {
+                zone = Some(candidate);
+                break;
+            }
+        }
+        let Some(zone) = zone else {
+            return Ok(None);
+        };
         let zone_lower = ExactRatio::from_parts(
             exact_affine_level(-90, 180, zone)?,
             ExactExpansion::from_i64(1)?,
@@ -2977,7 +3166,8 @@ impl SymbolicAffineEdge {
 
         let longitude =
             self.coordinate_at(&midpoint, start_point.longitude(), end_point.longitude())?;
-        let offset = ExactExpansion::from_i64(180_i64.checked_mul(zone)?)?;
+        let offset =
+            ExactExpansion::from_i64(180_i64.checked_mul(zone).ok_or(ExactFailure::Arithmetic)?)?;
         let offset_product = offset.product(&longitude.denominator)?;
         let selection_numerator = longitude.numerator.add(&offset_product)?;
         let selection_longitude =
@@ -2990,7 +3180,7 @@ impl SymbolicAffineEdge {
             || wrap_proposal < i64::MIN as f64
             || wrap_proposal > i64::MAX as f64
         {
-            return None;
+            return Ok(None);
         }
         let mut longitude_wrap = wrap_proposal as i64;
         let mut lower = ExactRatio::from_parts(
@@ -3004,7 +3194,9 @@ impl SymbolicAffineEdge {
         if selection_longitude.ordering(&lower)? == Ordering::Equal
             && selection_longitude.numerator.ordering() == Ordering::Greater
         {
-            longitude_wrap = longitude_wrap.checked_sub(1)?;
+            longitude_wrap = longitude_wrap
+                .checked_sub(1)
+                .ok_or(ExactFailure::Arithmetic)?;
             lower = ExactRatio::from_parts(
                 exact_affine_level(-180, 360, longitude_wrap)?,
                 ExactExpansion::from_i64(1)?,
@@ -3017,7 +3209,7 @@ impl SymbolicAffineEdge {
         if selection_longitude.ordering(&lower)? == Ordering::Less
             || selection_longitude.ordering(&upper)? == Ordering::Greater
         {
-            return None;
+            return Ok(None);
         }
         let interval = ParentInterval { start, end };
         let selection = [
@@ -3037,7 +3229,7 @@ impl SymbolicAffineEdge {
             )?,
         ];
         let arc = self.selection_arc(&interval, zone, longitude_wrap, start_point, end_point)?;
-        Some(SelectionAffinePiece {
+        Ok(Some(SelectionAffinePiece {
             edge: self.key,
             polygon: self.polygon,
             interval,
@@ -3045,7 +3237,7 @@ impl SymbolicAffineEdge {
             longitude_wrap,
             selection,
             arc,
-        })
+        }))
     }
 
     /// Exact degree endpoint in the shared reflect/wrap selection image.
@@ -3059,7 +3251,7 @@ impl SymbolicAffineEdge {
         longitude_wrap: i64,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<ExactSelectionPoint> {
+    ) -> ExactResult<ExactSelectionPoint> {
         let longitude = self.coordinate_at(
             &parameter.ratio,
             start_point.longitude(),
@@ -3071,14 +3263,28 @@ impl SymbolicAffineEdge {
             end_point.latitude(),
         )?;
         let longitude_offset = 180_i64
-            .checked_mul(latitude_zone)?
-            .checked_sub(360_i64.checked_mul(longitude_wrap)?)?;
+            .checked_mul(latitude_zone)
+            .ok_or(ExactFailure::Arithmetic)?
+            .checked_sub(
+                360_i64
+                    .checked_mul(longitude_wrap)
+                    .ok_or(ExactFailure::Arithmetic)?,
+            )
+            .ok_or(ExactFailure::Arithmetic)?;
         let unwrapped_longitude = longitude.add(&ExactRatio::from_i64(
-            longitude_offset.checked_add(360_i64.checked_mul(longitude_wrap)?)?,
+            longitude_offset
+                .checked_add(
+                    360_i64
+                        .checked_mul(longitude_wrap)
+                        .ok_or(ExactFailure::Arithmetic)?,
+                )
+                .ok_or(ExactFailure::Arithmetic)?,
             1,
         )?)?;
         let mut longitude = unwrapped_longitude.sub(&ExactRatio::from_i64(
-            360_i64.checked_mul(longitude_wrap)?,
+            360_i64
+                .checked_mul(longitude_wrap)
+                .ok_or(ExactFailure::Arithmetic)?,
             1,
         )?)?;
         // Preserve the stored positive antimeridian spelling.  The exact
@@ -3090,38 +3296,46 @@ impl SymbolicAffineEdge {
         {
             longitude = ExactRatio::from_i64(180, 1)?;
         }
-        let latitude_offset = ExactRatio::from_i64(180_i64.checked_mul(latitude_zone)?, 1)?;
+        let latitude_offset = ExactRatio::from_i64(
+            180_i64
+                .checked_mul(latitude_zone)
+                .ok_or(ExactFailure::Arithmetic)?,
+            1,
+        )?;
         let latitude = if latitude_zone.rem_euclid(2) == 0 {
             latitude.sub(&latitude_offset)?
         } else {
             latitude_offset.sub(&latitude)?
         };
-        Some(ExactSelectionPoint {
+        Ok(ExactSelectionPoint {
             longitude,
             latitude,
         })
     }
 
-    fn selection_pieces(&self, output: &mut Vec<SelectionAffinePiece>) -> Option<()> {
+    fn selection_pieces(&self, output: &mut Vec<SelectionAffinePiece>) -> ExactResult<()> {
         let start_point = ExactPlanarPoint::from_lifted(self.start)?;
         let end_point = ExactPlanarPoint::from_lifted(self.end)?;
         for parameters in self.parameters.windows(2) {
-            output.reserve(1);
-            output.push(self.selection_piece(
+            let Some(piece) = self.selection_piece(
                 parameters[0].try_clone()?,
                 parameters[1].try_clone()?,
                 &start_point,
                 &end_point,
-            )?);
+            )?
+            else {
+                return Err(ExactFailure::Arithmetic);
+            };
+            exact_allocation(crate::try_push_vec(output, piece))?;
         }
-        Some(())
+        Ok(())
     }
 
     /// Build the source-authority arc only on an exact parent interval whose
     /// midpoint is strictly inside the physical latitude strip.  A strip cut
     /// remains a partition identity, never a pole endpoint manufactured from
     /// an outward enclosure.
-    fn authority_pieces(&self, output: &mut Vec<AuthorityAffinePiece>) -> Option<()> {
+    fn authority_pieces(&self, output: &mut Vec<AuthorityAffinePiece>) -> ExactResult<()> {
         let start_point = ExactPlanarPoint::from_lifted(self.start)?;
         let end_point = ExactPlanarPoint::from_lifted(self.end)?;
         for parameters in self.parameters.windows(2) {
@@ -3137,8 +3351,7 @@ impl SymbolicAffineEdge {
             {
                 continue;
             }
-            output.reserve(1);
-            output.push(AuthorityAffinePiece {
+            let piece = AuthorityAffinePiece {
                 edge: self.key,
                 polygon: self.polygon,
                 arc: self.authority_arc(
@@ -3146,9 +3359,10 @@ impl SymbolicAffineEdge {
                     &start_point,
                     &end_point,
                 )?,
-            });
+            };
+            exact_allocation(crate::try_push_vec(output, piece))?;
         }
-        Some(())
+        Ok(())
     }
 
     fn authority_arc(
@@ -3156,7 +3370,7 @@ impl SymbolicAffineEdge {
         interval: &ParentInterval,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<AffineSourceArc> {
+    ) -> ExactResult<AffineSourceArc> {
         let longitude0 = start_point.longitude();
         let longitude1 = end_point.longitude();
         let latitude0 = start_point.latitude();
@@ -3165,10 +3379,14 @@ impl SymbolicAffineEdge {
         let latitude_delta = latitude1.sub(latitude0)?;
         let structure = affine_structure(longitude0, &longitude_delta, latitude0, &latitude_delta)?;
         let map = AffineParentMap {
-            lambda0: degree_expansion_bound(longitude0).and_then(degree_bound_to_radians)?,
-            phi0: degree_expansion_bound(latitude0).and_then(degree_bound_to_radians)?,
-            dlambda: degree_expansion_bound(&longitude_delta).and_then(degree_bound_to_radians)?,
-            dphi: degree_expansion_bound(&latitude_delta).and_then(degree_bound_to_radians)?,
+            lambda0: degree_expansion_bound(longitude0)
+                .and_then(|bound| exact(degree_bound_to_radians(bound)))?,
+            phi0: degree_expansion_bound(latitude0)
+                .and_then(|bound| exact(degree_bound_to_radians(bound)))?,
+            dlambda: degree_expansion_bound(&longitude_delta)
+                .and_then(|bound| exact(degree_bound_to_radians(bound)))?,
+            dphi: degree_expansion_bound(&latitude_delta)
+                .and_then(|bound| exact(degree_bound_to_radians(bound)))?,
             structure,
         };
         let endpoint_roles = [
@@ -3176,22 +3394,23 @@ impl SymbolicAffineEdge {
             endpoint_role(interval.end.key),
         ];
         let poles = [
-            self.authority_endpoint_pole(&interval.start, start_point, end_point)
-                .ok()?,
-            self.authority_endpoint_pole(&interval.end, start_point, end_point)
-                .ok()?,
+            self.authority_endpoint_pole(&interval.start, start_point, end_point)?,
+            self.authority_endpoint_pole(&interval.end, start_point, end_point)?,
         ];
         let identities = [
             self.authority_endpoint_identity(&interval.start, start_point, end_point)?,
             self.authority_endpoint_identity(&interval.end, start_point, end_point)?,
         ];
-        AffineSourceArc::from_parent_map(
+        exact(AffineSourceArc::from_parent_map(
             map,
-            Bound::new(interval.start.enclosure.lo, interval.end.enclosure.hi)?,
+            exact(Bound::new(
+                interval.start.enclosure.lo,
+                interval.end.enclosure.hi,
+            ))?,
             endpoint_roles,
             poles,
             identities,
-        )
+        ))
     }
 
     fn authority_endpoint_identity(
@@ -3199,7 +3418,7 @@ impl SymbolicAffineEdge {
         parameter: &ExactParentParameter,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<AffineEndpointIdentity> {
+    ) -> ExactResult<AffineEndpointIdentity> {
         let longitude = self.coordinate_at(
             &parameter.ratio,
             start_point.longitude(),
@@ -3220,15 +3439,21 @@ impl SymbolicAffineEdge {
         longitude_wrap: i64,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Option<AffineEndpointIdentity> {
+    ) -> ExactResult<AffineEndpointIdentity> {
         let longitude = self.coordinate_at(
             &parameter.ratio,
             start_point.longitude(),
             end_point.longitude(),
         )?;
         let offset = 180_i64
-            .checked_mul(latitude_zone)?
-            .checked_sub(360_i64.checked_mul(longitude_wrap)?)?;
+            .checked_mul(latitude_zone)
+            .ok_or(ExactFailure::Arithmetic)?
+            .checked_sub(
+                360_i64
+                    .checked_mul(longitude_wrap)
+                    .ok_or(ExactFailure::Arithmetic)?,
+            )
+            .ok_or(ExactFailure::Arithmetic)?;
         let longitude = longitude.add(&ExactRatio::from_i64(offset, 1)?)?;
         let latitude = self.coordinate_at(
             &parameter.ratio,
@@ -3244,22 +3469,20 @@ impl SymbolicAffineEdge {
         parameter: &ExactParentParameter,
         start_point: &ExactPlanarPoint,
         end_point: &ExactPlanarPoint,
-    ) -> Result<Option<PhysicalEndpointKey>, ()> {
+    ) -> ExactResult<Option<PhysicalEndpointKey>> {
         if matches!(parameter.key, ParentParameterKey::Partition(_)) {
             return Ok(None);
         }
-        let latitude = self
-            .coordinate_at(
-                &parameter.ratio,
-                start_point.latitude(),
-                end_point.latitude(),
-            )
-            .ok_or(())?;
-        let north = ExactRatio::from_i64(90, 1).ok_or(())?;
-        let south = ExactRatio::from_i64(-90, 1).ok_or(())?;
-        if latitude.ordering(&north).ok_or(())? == Ordering::Equal {
+        let latitude = self.coordinate_at(
+            &parameter.ratio,
+            start_point.latitude(),
+            end_point.latitude(),
+        )?;
+        let north = ExactRatio::from_i64(90, 1)?;
+        let south = ExactRatio::from_i64(-90, 1)?;
+        if latitude.ordering(&north)? == Ordering::Equal {
             Ok(Some(PhysicalEndpointKey::NorthPole))
-        } else if latitude.ordering(&south).ok_or(())? == Ordering::Equal {
+        } else if latitude.ordering(&south)? == Ordering::Equal {
             Ok(Some(PhysicalEndpointKey::SouthPole))
         } else {
             Ok(None)
@@ -3307,7 +3530,7 @@ impl SelectionAffinePiece {
     }
 }
 
-fn degree_expansion_bound(value: &ExactExpansion) -> Option<Bound> {
+fn degree_expansion_bound(value: &ExactExpansion) -> ExactResult<Bound> {
     ExactRatio::from_expansion(value)?.certified_bound()
 }
 
@@ -3326,66 +3549,67 @@ fn nearby_longitude_sheet(value: Bound) -> Option<i64> {
 /// Rebuilding both endpoints through the expansion carrier keeps the proxy
 /// conservative even when the integer turn is not exactly representable as a
 /// binary64 value.
-fn shifted_degree_bound(value: Bound, turns: i64) -> Option<Bound> {
+fn shifted_degree_bound(value: Bound, turns: i64) -> ExactResult<Bound> {
     let offset = ExactExpansion::exact_degree_turns(turns)?;
     let lower = degree_expansion_bound(&ExactExpansion::from_f64(value.lo)?.add(&offset)?)?;
     let upper = degree_expansion_bound(&ExactExpansion::from_f64(value.hi)?.add(&offset)?)?;
-    Bound::new(lower.lo, upper.hi)
+    exact(Bound::new(lower.lo, upper.hi))
 }
 
 /// The proxy coordinate for a source edge is normalized to its nearby sheet,
 /// then copied onto the closed preceding, current, and following sheets. Any
 /// source edge that cannot produce all three finite envelopes is left to the
 /// source-wide exhaustive path.
-fn authority_edge_proxy_envelopes(edge: &SymbolicAffineEdge) -> Option<[AABB<[f64; 2]>; 3]> {
+fn authority_edge_proxy_envelopes(edge: &SymbolicAffineEdge) -> ExactResult<[AABB<[f64; 2]>; 3]> {
     let start = ExactPlanarPoint::from_lifted(edge.start)?;
     let end = ExactPlanarPoint::from_lifted(edge.end)?;
     let start_longitude = degree_expansion_bound(&start.longitude)?;
     let end_longitude = degree_expansion_bound(&end.longitude)?;
-    let longitude = Bound::new(
+    let longitude = exact(Bound::new(
         start_longitude.lo.min(end_longitude.lo),
         start_longitude.hi.max(end_longitude.hi),
-    )?;
+    ))?;
     let start_latitude = degree_expansion_bound(&start.latitude)?;
     let end_latitude = degree_expansion_bound(&end.latitude)?;
-    let latitude = Bound::new(
+    let latitude = exact(Bound::new(
         start_latitude.lo.min(end_latitude.lo),
         start_latitude.hi.max(end_latitude.hi),
+    ))?;
+    let sheet = exact(nearby_longitude_sheet(longitude))?;
+    let canonical_sheet = sheet.checked_neg().ok_or(ExactFailure::Arithmetic)?;
+    let preceding = shifted_degree_bound(
+        longitude,
+        canonical_sheet
+            .checked_sub(1)
+            .ok_or(ExactFailure::Arithmetic)?,
     )?;
-    let sheet = nearby_longitude_sheet(longitude)?;
-    let canonical_sheet = sheet.checked_neg()?;
-    let preceding = shifted_degree_bound(longitude, canonical_sheet.checked_sub(1)?)?;
     let current = shifted_degree_bound(longitude, canonical_sheet)?;
-    let following = shifted_degree_bound(longitude, canonical_sheet.checked_add(1)?)?;
-    Some([
+    let following = shifted_degree_bound(
+        longitude,
+        canonical_sheet
+            .checked_add(1)
+            .ok_or(ExactFailure::Arithmetic)?,
+    )?;
+    Ok([
         AABB::from_corners([preceding.lo, latitude.lo], [preceding.hi, latitude.hi]),
         AABB::from_corners([current.lo, latitude.lo], [current.hi, latitude.hi]),
         AABB::from_corners([following.lo, latitude.lo], [following.hi, latitude.hi]),
     ])
 }
 
-/// Build the authority-edge broad phase. `None` is an intentional source-wide
-/// fallback: a single unindexable edge must not be omitted from an otherwise
-/// useful index.
-fn build_authority_edge_index(
-    edges: &[SymbolicAffineEdge],
-) -> Option<BulkRTree<AuthorityEdgeProxy>> {
-    let capacity = edges.len().checked_mul(3)?;
-    let mut entries = Vec::with_capacity(capacity);
-    for (edge, authority_edge) in edges.iter().enumerate() {
-        for envelope in authority_edge_proxy_envelopes(authority_edge)? {
-            entries.push(AuthorityEdgeProxy { edge, envelope });
-        }
-    }
-    Some(BulkRTree::bulk_load_with_params(entries))
-}
-
 /// Normalize a query window into the same nearby sheet used by the proxy
 /// envelopes. The exact authority refinement still receives the original
 /// window, including its original longitude alias.
-fn canonical_proxy_window(longitude: Bound) -> Option<Bound> {
-    let sheet = nearby_longitude_sheet(longitude)?;
-    shifted_degree_bound(longitude, sheet.checked_neg()?)
+fn canonical_proxy_window(longitude: Bound) -> ExactResult<Option<Bound>> {
+    let Some(sheet) = nearby_longitude_sheet(longitude) else {
+        return Ok(None);
+    };
+    let sheet = sheet.checked_neg().ok_or(ExactFailure::Arithmetic)?;
+    match shifted_degree_bound(longitude, sheet) {
+        Ok(value) => Ok(Some(value)),
+        Err(ExactFailure::Arithmetic) => Ok(None),
+        Err(ExactFailure::Allocation) => Err(ExactFailure::Allocation),
+    }
 }
 
 const fn endpoint_role(key: ParentParameterKey) -> SourceEndpointRole {
@@ -3396,8 +3620,9 @@ const fn endpoint_role(key: ParentParameterKey) -> SourceEndpointRole {
     }
 }
 
-fn selection_latitude_ratio(latitude: &ExactRatio, zone: i64) -> Option<ExactRatio> {
-    let offset = ExactExpansion::from_i64(180_i64.checked_mul(zone)?)?;
+fn selection_latitude_ratio(latitude: &ExactRatio, zone: i64) -> ExactResult<ExactRatio> {
+    let offset =
+        ExactExpansion::from_i64(180_i64.checked_mul(zone).ok_or(ExactFailure::Arithmetic)?)?;
     let offset = offset.product(&latitude.denominator)?;
     let numerator = if zone.rem_euclid(2) == 0 {
         latitude.numerator.sub(&offset)?
@@ -3412,24 +3637,24 @@ fn affine_structure(
     longitude_delta: &ExactExpansion,
     latitude0: &ExactExpansion,
     latitude_delta: &ExactExpansion,
-) -> Option<AffineStructure> {
+) -> ExactResult<AffineStructure> {
     if longitude_delta.ordering() == Ordering::Equal && latitude_delta.ordering() == Ordering::Equal
     {
-        return Some(AffineStructure::Point);
+        return Ok(AffineStructure::Point);
     }
     if longitude_delta.ordering() == Ordering::Equal {
-        return Some(AffineStructure::ConstantLongitude {
-            axis: structural_axis(longitude0).ok()?,
+        return Ok(AffineStructure::ConstantLongitude {
+            axis: structural_axis(longitude0)?,
         });
     }
     if latitude0.ordering() == Ordering::Equal && latitude_delta.ordering() == Ordering::Equal {
-        return Some(AffineStructure::Equator);
+        return Ok(AffineStructure::Equator);
     }
-    Some(AffineStructure::General)
+    Ok(AffineStructure::General)
 }
 
-fn structural_axis(longitude: &ExactExpansion) -> Result<Option<AxisMeridian>, ()> {
-    let proposal = longitude.checked_estimate().ok_or(())?;
+fn structural_axis(longitude: &ExactExpansion) -> ExactResult<Option<AxisMeridian>> {
+    let proposal = exact(longitude.checked_estimate())?;
     for (axis, base) in [
         (AxisMeridian::Prime, 0_i64),
         (AxisMeridian::EastQuarter, 90_i64),
@@ -3438,15 +3663,12 @@ fn structural_axis(longitude: &ExactExpansion) -> Result<Option<AxisMeridian>, (
     ] {
         let turns = ((proposal - base as f64) / FULL_TURN_DEGREES).round();
         if !turns.is_finite() || turns < i64::MIN as f64 || turns > i64::MAX as f64 {
-            return Err(());
+            return Err(ExactFailure::Arithmetic);
         }
-        let candidate = ExactExpansion::from_i64(base)
-            .and_then(|value| {
-                let offset = ExactExpansion::exact_degree_turns(turns as i64)?;
-                value.add(&offset)
-            })
-            .ok_or(())?;
-        if longitude.sub(&candidate).ok_or(())?.ordering() == Ordering::Equal {
+        let base = ExactExpansion::from_i64(base)?;
+        let offset = ExactExpansion::exact_degree_turns(turns as i64)?;
+        let candidate = base.add(&offset)?;
+        if longitude.sub(&candidate)?.ordering() == Ordering::Equal {
             return Ok(Some(axis));
         }
     }
@@ -3462,7 +3684,7 @@ enum StructuralAxisRatio {
     Axis(AxisMeridian),
 }
 
-fn structural_axis_ratio(longitude: &ExactRatio) -> Option<StructuralAxisRatio> {
+fn structural_axis_ratio(longitude: &ExactRatio) -> ExactResult<StructuralAxisRatio> {
     let bound = longitude.certified_bound()?;
     let proposal = bound.lo + (bound.hi - bound.lo) * 0.5;
     for (axis, base) in [
@@ -3473,24 +3695,24 @@ fn structural_axis_ratio(longitude: &ExactRatio) -> Option<StructuralAxisRatio> 
     ] {
         let turns = ((proposal - base as f64) / FULL_TURN_DEGREES).round();
         if !turns.is_finite() || turns < i64::MIN as f64 || turns > i64::MAX as f64 {
-            return None;
+            return Err(ExactFailure::Arithmetic);
         }
         let base = ExactExpansion::from_i64(base)?;
         let offset = ExactExpansion::exact_degree_turns(turns as i64)?;
         let candidate = base.add(&offset)?;
         if longitude.ordering(&ExactRatio::from_expansion(&candidate)?)? == Ordering::Equal {
-            return Some(StructuralAxisRatio::Axis(axis));
+            return Ok(StructuralAxisRatio::Axis(axis));
         }
     }
-    Some(StructuralAxisRatio::None)
+    Ok(StructuralAxisRatio::None)
 }
 
 fn endpoint_identity(
     longitude: &ExactRatio,
     latitude: &ExactRatio,
-) -> Option<AffineEndpointIdentity> {
+) -> ExactResult<AffineEndpointIdentity> {
     let equator = ExactRatio::from_i64(0, 1)?;
-    Some(AffineEndpointIdentity {
+    Ok(AffineEndpointIdentity {
         longitude: match structural_axis_ratio(longitude)? {
             StructuralAxisRatio::None => None,
             StructuralAxisRatio::Axis(axis) => Some(axis),
@@ -3500,8 +3722,12 @@ fn endpoint_identity(
     })
 }
 
-fn exact_affine_level(base: i64, stride: i64, level: i64) -> Option<ExactExpansion> {
-    let offset = stride.checked_mul(level)?.checked_add(base)?;
+fn exact_affine_level(base: i64, stride: i64, level: i64) -> ExactResult<ExactExpansion> {
+    let offset = stride
+        .checked_mul(level)
+        .ok_or(ExactFailure::Arithmetic)?
+        .checked_add(base)
+        .ok_or(ExactFailure::Arithmetic)?;
     ExactExpansion::from_i64(offset)
 }
 
@@ -3513,9 +3739,9 @@ fn integer_levels_between(
     end: &ExactExpansion,
     base: i64,
     stride: i64,
-) -> Option<std::ops::RangeInclusive<i64>> {
+) -> ExactResult<std::ops::RangeInclusive<i64>> {
     if stride <= 0 {
-        return None;
+        return Err(ExactFailure::Arithmetic);
     }
     let (lower, upper) = if start.ordering() == Ordering::Greater {
         (end, start)
@@ -3529,19 +3755,19 @@ fn integer_levels_between(
         .ordering()
         == Ordering::Less
     {
-        upper_floor = upper_floor.checked_add(1)?;
+        upper_floor = upper_floor.checked_add(1).ok_or(ExactFailure::Arithmetic)?;
     }
-    Some(lower..=upper_floor)
+    Ok(lower..=upper_floor)
 }
 
-fn exact_floor_level(value: &ExactExpansion, base: i64, stride: i64) -> Option<i64> {
-    let proposal = ((value.checked_estimate()? - base as f64) / stride as f64).floor();
+fn exact_floor_level(value: &ExactExpansion, base: i64, stride: i64) -> ExactResult<i64> {
+    let proposal = ((exact(value.checked_estimate())? - base as f64) / stride as f64).floor();
     if !proposal.is_finite() || proposal < i64::MIN as f64 || proposal > i64::MAX as f64 {
-        return None;
+        return Err(ExactFailure::Arithmetic);
     }
     let mut level = proposal as i64;
     loop {
-        let next = level.checked_add(1)?;
+        let next = level.checked_add(1).ok_or(ExactFailure::Arithmetic)?;
         if exact_affine_level(base, stride, next)?
             .sub(value)?
             .ordering()
@@ -3559,16 +3785,20 @@ fn exact_floor_level(value: &ExactExpansion, base: i64, stride: i64) -> Option<i
         {
             break;
         }
-        level = level.checked_sub(1)?;
+        level = level.checked_sub(1).ok_or(ExactFailure::Arithmetic)?;
     }
-    Some(level)
+    Ok(level)
 }
 
 const fn same_physical_latitude(left: f64, right: f64) -> bool {
     left.to_bits() == right.to_bits()
 }
 
-fn can_coalesce(previous: LiftedVertex, current: LiftedVertex, next: LiftedVertex) -> Option<bool> {
+fn can_coalesce(
+    previous: LiftedVertex,
+    current: LiftedVertex,
+    next: LiftedVertex,
+) -> ExactResult<bool> {
     let ab_x = current.longitude.difference(previous.longitude)?;
     let current_y = ExactExpansion::from_f64(current.latitude)?;
     let previous_y = ExactExpansion::from_f64(previous.latitude)?;
@@ -3583,26 +3813,30 @@ fn can_coalesce(previous: LiftedVertex, current: LiftedVertex, next: LiftedVerte
         || !closed_between(previous.longitude, current.longitude, next.longitude)?
         || !closed_between_raw(previous.latitude, current.latitude, next.latitude)?
     {
-        return Some(false);
+        return Ok(false);
     }
     let direct = lifted_step(previous.longitude.raw, next.longitude.raw)?;
-    let direct_turn = previous.longitude.turns.checked_add(direct.turn_delta)?;
+    let direct_turn = previous
+        .longitude
+        .turns
+        .checked_add(direct.turn_delta)
+        .ok_or(ExactFailure::Arithmetic)?;
     // A long path through a collinear point may not be replaced by its short
     // direct periodic lift.  This is distinct from geometric collinearity.
-    Some(direct_turn == next.longitude.turns)
+    Ok(direct_turn == next.longitude.turns)
 }
 
 fn closed_between(
     left: LiftedLongitude,
     middle: LiftedLongitude,
     right: LiftedLongitude,
-) -> Option<bool> {
+) -> ExactResult<bool> {
     let left_middle = left.ordering(middle)?;
     let middle_right = middle.ordering(right)?;
-    Some(closed_between_orderings(left_middle, middle_right))
+    Ok(closed_between_orderings(left_middle, middle_right))
 }
 
-fn closed_between_raw(left: f64, middle: f64, right: f64) -> Option<bool> {
+fn closed_between_raw(left: f64, middle: f64, right: f64) -> ExactResult<bool> {
     closed_between_expansion(
         &ExactExpansion::from_f64(left)?,
         &ExactExpansion::from_f64(middle)?,
@@ -3638,7 +3872,7 @@ struct SelectionPoint {
     latitude: ExactExpansion,
 }
 
-fn selection_image_point(point: &SourcePoint) -> Option<SelectionPoint> {
+fn selection_image_point(point: &SourcePoint) -> ExactResult<SelectionPoint> {
     // `zone` is floor((latitude + 90) / 180), found by an exact sign walk.
     // This is the shared spherical selection image for H3 and S2: reflect
     // through a pole and then wrap longitude.  Clamping would change the
@@ -3660,28 +3894,227 @@ fn selection_image_point(point: &SourcePoint) -> Option<SelectionPoint> {
     if longitude.is_exact(-HALF_TURN_DEGREES)? && lifted_longitude.ordering() == Ordering::Greater {
         longitude = ExactExpansion::from_f64(HALF_TURN_DEGREES)?;
     }
-    Some(SelectionPoint {
+    Ok(SelectionPoint {
         key: point.key,
         longitude,
         latitude,
     })
 }
 
-/// A conservative closed envelope for one authority edge on one longitude
-/// sheet.  The source edge itself remains the exact refinement witness; this
-/// leaf only supplies its position to the broad phase.
+const PACKED_BVH_LEAF_SIZE: usize = 8;
+
 #[derive(Debug)]
-struct AuthorityEdgeProxy {
-    edge: usize,
+pub(crate) struct PackedBvhEntry<T> {
+    value: T,
     envelope: AABB<[f64; 2]>,
+    order: usize,
 }
 
-impl RTreeObject for AuthorityEdgeProxy {
-    type Envelope = AABB<[f64; 2]>;
-
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
+impl<T> PackedBvhEntry<T> {
+    pub(crate) const fn new(value: T, envelope: AABB<[f64; 2]>) -> Self {
+        Self {
+            value,
+            envelope,
+            order: 0,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PackedBvhNode {
+    envelope: AABB<[f64; 2]>,
+    start: usize,
+    end: usize,
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PackedBvh<T> {
+    entries: Vec<PackedBvhEntry<T>>,
+    nodes: Vec<PackedBvhNode>,
+    root: Option<usize>,
+}
+
+impl<T> PackedBvh<T> {
+    pub(crate) fn build(mut entries: Vec<PackedBvhEntry<T>>) -> crate::error::Result<Self> {
+        let entry_count = entries.len();
+        let leaf_count = entry_count.div_ceil(PACKED_BVH_LEAF_SIZE);
+        let node_capacity = if entry_count == 0 {
+            0
+        } else {
+            leaf_count
+                .checked_mul(2)
+                .and_then(|count| count.checked_sub(1))
+                .ok_or(crate::error::ResourceError::SizeOverflow)?
+        };
+        let mut nodes = Vec::new();
+        crate::try_reserve_vec(&mut nodes, node_capacity)?;
+        for (order, entry) in entries.iter_mut().enumerate() {
+            entry.order = order;
+        }
+        let root = if entry_count == 0 {
+            None
+        } else {
+            Some(Self::build_node(&mut entries, &mut nodes, 0, entry_count)?)
+        };
+        Ok(Self {
+            entries,
+            nodes,
+            root,
+        })
+    }
+
+    fn build_node(
+        entries: &mut [PackedBvhEntry<T>],
+        nodes: &mut Vec<PackedBvhNode>,
+        start: usize,
+        end: usize,
+    ) -> crate::error::Result<usize> {
+        let envelope = envelope_for_entries(&entries[start..end]);
+        let node = nodes.len();
+        crate::try_push_vec(nodes, PackedBvhNode {
+            envelope,
+            start,
+            end,
+            left: None,
+            right: None,
+        })?;
+        if end - start > PACKED_BVH_LEAF_SIZE {
+            let axis = longest_axis(envelope);
+            entries[start..end].sort_unstable_by(|left, right| {
+                proxy_center(left.envelope, axis)
+                    .total_cmp(&proxy_center(right.envelope, axis))
+                    .then_with(|| compare_envelopes(left.envelope, right.envelope))
+                    .then_with(|| left.order.cmp(&right.order))
+            });
+            let middle = start + (end - start) / 2;
+            let left = Self::build_node(entries, nodes, start, middle)?;
+            let right = Self::build_node(entries, nodes, middle, end)?;
+            nodes[node].left = Some(left);
+            nodes[node].right = Some(right);
+        }
+        Ok(node)
+    }
+
+    pub(crate) fn visit(
+        &self,
+        query: AABB<[f64; 2]>,
+        visit: &mut impl FnMut(&T) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
+        let Some(root) = self.root else {
+            return Ok(());
+        };
+        self.visit_node(root, query, visit)
+    }
+
+    fn visit_node(
+        &self,
+        node: usize,
+        query: AABB<[f64; 2]>,
+        visit: &mut impl FnMut(&T) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
+        let current = self
+            .nodes
+            .get(node)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        if !aabbs_intersect(current.envelope, query) {
+            return Ok(());
+        }
+        match (current.left, current.right) {
+            (Some(left), Some(right)) => {
+                self.visit_node(left, query, visit)?;
+                self.visit_node(right, query, visit)?;
+            },
+            (None, None) => {
+                for entry in &self.entries[current.start..current.end] {
+                    if aabbs_intersect(entry.envelope, query) {
+                        visit(&entry.value)?;
+                    }
+                }
+            },
+            _ => return Err(crate::error::ResourceError::SizeOverflow.into()),
+        }
+        Ok(())
+    }
+}
+
+type AuthorityEdgeIndex = PackedBvh<usize>;
+
+fn build_authority_edge_index(
+    edges: &[SymbolicAffineEdge],
+) -> crate::error::Result<Option<AuthorityEdgeIndex>> {
+    let entry_capacity = edges
+        .len()
+        .checked_mul(3)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let mut entries = Vec::new();
+    crate::try_reserve_vec(&mut entries, entry_capacity)?;
+    for (edge, authority_edge) in edges.iter().enumerate() {
+        let envelopes = match authority_edge_proxy_envelopes(authority_edge) {
+            Ok(envelopes) => envelopes,
+            Err(ExactFailure::Arithmetic) => return Ok(None),
+            Err(ExactFailure::Allocation) => {
+                return Err(crate::error::ResourceError::Allocation.into());
+            },
+        };
+        for envelope in envelopes {
+            crate::try_push_vec(&mut entries, PackedBvhEntry::new(edge, envelope))?;
+        }
+    }
+    Ok(Some(PackedBvh::build(entries)?))
+}
+
+fn envelope_for_entries<T>(entries: &[PackedBvhEntry<T>]) -> AABB<[f64; 2]> {
+    let first = entries[0].envelope;
+    let mut lower = first.lower();
+    let mut upper = first.upper();
+    for entry in &entries[1..] {
+        let entry_lower = entry.envelope.lower();
+        let entry_upper = entry.envelope.upper();
+        lower[0] = lower[0].min(entry_lower[0]);
+        lower[1] = lower[1].min(entry_lower[1]);
+        upper[0] = upper[0].max(entry_upper[0]);
+        upper[1] = upper[1].max(entry_upper[1]);
+    }
+    AABB::from_bounds(lower, upper)
+}
+
+fn longest_axis(envelope: AABB<[f64; 2]>) -> usize {
+    let lower = envelope.lower();
+    let upper = envelope.upper();
+    let x = upper[0] - lower[0];
+    let y = upper[1] - lower[1];
+    usize::from(y > x)
+}
+
+fn proxy_center(envelope: AABB<[f64; 2]>, axis: usize) -> f64 {
+    let lower = envelope.lower();
+    let upper = envelope.upper();
+    f64::midpoint(lower[axis], upper[axis])
+}
+
+fn compare_envelopes(left: AABB<[f64; 2]>, right: AABB<[f64; 2]>) -> Ordering {
+    let left_lower = left.lower();
+    let left_upper = left.upper();
+    let right_lower = right.lower();
+    let right_upper = right.upper();
+    left_lower[0]
+        .total_cmp(&right_lower[0])
+        .then_with(|| left_lower[1].total_cmp(&right_lower[1]))
+        .then_with(|| left_upper[0].total_cmp(&right_upper[0]))
+        .then_with(|| left_upper[1].total_cmp(&right_upper[1]))
+}
+
+fn aabbs_intersect(left: AABB<[f64; 2]>, right: AABB<[f64; 2]>) -> bool {
+    let left_lower = left.lower();
+    let left_upper = left.upper();
+    let right_lower = right.lower();
+    let right_upper = right.upper();
+    left_lower[0] <= right_upper[0]
+        && right_lower[0] <= left_upper[0]
+        && left_lower[1] <= right_upper[1]
+        && right_lower[1] <= left_upper[1]
 }
 
 /// Shared periodic source lift and conservative candidate authority.
@@ -3697,10 +4130,13 @@ pub(crate) struct GeographicCoverageSource {
     // and zero-degree polygon fills.  A periodic polygon ring closes through
     // a pole, so its raw endpoint extrema alone deliberately cannot prune.
     authority_latitude: Option<Bound>,
-    chains: Box<[LiftedChain]>,
+    chains: Vec<LiftedChain>,
     ring_fills: Vec<LiftedRingFill>,
     authority_points: Vec<SourcePoint>,
+    authority_point_bounds: Vec<Option<GridDegreePoint>>,
     selection_points: Vec<SelectionPoint>,
+    selection_point_bounds: Vec<Option<GridDegreePoint>>,
+    selection_poles: Vec<GridDegreePoint>,
     // R15-S authority-identity disposition: selection differs from authority
     // only for a nonzero latitude reflection zone (`is_positive_only` below).
     // Public H3/S2 cover ingress rejects every such source before this carrier
@@ -3708,7 +4144,7 @@ pub(crate) struct GeographicCoverageSource {
     // its deferred mutation was deleted rather than left as a vacuous claim.
     // The two images stay structurally separate for private fail-open paths.
     authority_edges: Vec<SymbolicAffineEdge>,
-    authority_edge_index: Option<BulkRTree<AuthorityEdgeProxy>>,
+    authority_edge_index: Option<AuthorityEdgeIndex>,
     authority_pieces: Vec<AuthorityAffinePiece>,
     selection_edges: Vec<SelectionAffinePiece>,
     unknown: bool,
@@ -3733,37 +4169,60 @@ impl GeographicCoverageSource {
     }
 
     fn build(source: &Shape, target: SphericalGridTarget) -> crate::error::Result<Self> {
-        let exact_axis_rect = exact_world_band(source).or_else(|| {
-            source.bounds().filter(|bounds| {
-                exact_axis_rectangle(source, *bounds)
-                    && canonical_axis_rectangle_longitude(*bounds)
-                    && (-180.0..=180.0).contains(&bounds.minx())
-                    && (-180.0..=180.0).contains(&bounds.maxx())
-                    && (-90.0..=90.0).contains(&bounds.miny())
-                    && (-90.0..=90.0).contains(&bounds.maxy())
-            })
-        });
+        let exact_axis_rect = if let Some(bounds) = exact_world_band(source)? {
+            Some(bounds)
+        } else if let Some(bounds) = source.bounds() {
+            let is_rectangle = match exact_axis_rectangle(source, bounds) {
+                Ok(value) => value,
+                Err(ExactFailure::Arithmetic) => false,
+                Err(ExactFailure::Allocation) => {
+                    return Err(crate::error::ResourceError::Allocation.into());
+                },
+            };
+            if !is_rectangle
+                || !(-180.0..=180.0).contains(&bounds.minx())
+                || !(-180.0..=180.0).contains(&bounds.maxx())
+                || !(-90.0..=90.0).contains(&bounds.miny())
+                || !(-90.0..=90.0).contains(&bounds.maxy())
+            {
+                None
+            } else {
+                match canonical_axis_rectangle_longitude(bounds) {
+                    Ok(true) => Some(bounds),
+                    Ok(false) | Err(ExactFailure::Arithmetic) => None,
+                    Err(ExactFailure::Allocation) => {
+                        return Err(crate::error::ResourceError::Allocation.into());
+                    },
+                }
+            }
+        } else {
+            None
+        };
         let authority_latitude = source
             .bounds()
             .and_then(|bounds| Bound::new(bounds.miny(), bounds.maxy()));
         let mut chains = Vec::new();
         let mut points = Vec::new();
         let mut component = 0;
-        collect_shape_chains(source, &mut chains, &mut points, &mut component)
-            .map_err(|_| crate::error::ResourceError::Allocation)?;
+        collect_shape_chains(source, &mut chains, &mut points, &mut component)?;
         let mut unknown = false;
         let mut lifted = Vec::new();
         let mut ring_fills = Vec::new();
         let mut authority_points = Vec::new();
+        let mut authority_point_bounds = Vec::new();
         let mut selection_points = Vec::new();
+        let mut selection_point_bounds = Vec::new();
+        let mut selection_poles = Vec::new();
         let mut authority_edges = Vec::new();
         let mut authority_pieces = Vec::new();
         let mut selection_edges = Vec::new();
-        lifted.reserve(chains.len());
-        ring_fills.reserve(chains.len());
-        authority_points.reserve(points.len());
-        selection_points.reserve(points.len());
-        authority_pieces.reserve(chains.len());
+        crate::try_reserve_vec(&mut lifted, chains.len())?;
+        crate::try_reserve_vec(&mut ring_fills, chains.len())?;
+        crate::try_reserve_vec(&mut authority_points, points.len())?;
+        crate::try_reserve_vec(&mut authority_point_bounds, points.len())?;
+        crate::try_reserve_vec(&mut selection_points, points.len())?;
+        crate::try_reserve_vec(&mut selection_point_bounds, points.len())?;
+        crate::try_reserve_vec(&mut authority_pieces, chains.len())?;
         for input in &chains {
             append_lifted_chain(
                 input,
@@ -3776,12 +4235,25 @@ impl GeographicCoverageSource {
             )?;
         }
         for input in points {
-            let (Some(longitude), Some(latitude)) = (
-                ExactExpansion::from_f64(input.longitude),
-                ExactExpansion::from_f64(input.latitude),
-            ) else {
-                unknown = true;
-                continue;
+            let longitude = match ExactExpansion::from_f64(input.longitude) {
+                Ok(value) => value,
+                Err(ExactFailure::Arithmetic) => {
+                    unknown = true;
+                    continue;
+                },
+                Err(ExactFailure::Allocation) => {
+                    return Err(crate::error::ResourceError::Allocation.into());
+                },
+            };
+            let latitude = match ExactExpansion::from_f64(input.latitude) {
+                Ok(value) => value,
+                Err(ExactFailure::Arithmetic) => {
+                    unknown = true;
+                    continue;
+                },
+                Err(ExactFailure::Allocation) => {
+                    return Err(crate::error::ResourceError::Allocation.into());
+                },
             };
             let point = SourcePoint {
                 key: SourceVertexKey {
@@ -3792,18 +4264,49 @@ impl GeographicCoverageSource {
                 longitude,
                 latitude,
             };
-            append_source_point(&point, &mut selection_points, &mut unknown);
-            authority_points.push(point);
+            let authority_bound =
+                match GridDegreePoint::try_from_expansions(&point.longitude, &point.latitude) {
+                    Ok(bound) => Some(bound),
+                    Err(ExactFailure::Arithmetic) => None,
+                    Err(ExactFailure::Allocation) => {
+                        return Err(crate::error::ResourceError::Allocation.into());
+                    },
+                };
+            append_source_point(
+                &point,
+                &mut selection_points,
+                &mut selection_point_bounds,
+                &mut unknown,
+            )?;
+            crate::try_push_vec(&mut authority_points, point)?;
+            crate::try_push_vec(&mut authority_point_bounds, authority_bound)?;
         }
-        let authority_edge_index = build_authority_edge_index(&authority_edges);
+        let pole_capacity = selection_edges
+            .len()
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(selection_points.len()))
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        crate::try_reserve_vec(&mut selection_poles, pole_capacity)?;
+        for point in &selection_points {
+            append_selection_pole_witness(point, &mut selection_poles, &mut unknown)?;
+        }
+        for piece in &selection_edges {
+            for point in &piece.selection {
+                append_selection_planar_pole_witness(point, &mut selection_poles, &mut unknown)?;
+            }
+        }
+        let authority_edge_index = build_authority_edge_index(&authority_edges)?;
         Ok(Self {
             target,
             exact_axis_rect,
             authority_latitude,
-            chains: lifted.into_boxed_slice(),
+            chains: lifted,
             ring_fills,
             authority_points,
+            authority_point_bounds,
             selection_points,
+            selection_point_bounds,
+            selection_poles,
             authority_edges,
             authority_edge_index,
             authority_pieces,
@@ -3910,26 +4413,29 @@ impl GeographicCoverageSource {
     /// logical-bbox leaves.  The rectangle is an outward enclosure of the
     /// cell logical bbox, so an `Outside` result is a valid negative for the
     /// true cell.  A reflected selection image can only retain a candidate.
-    pub(crate) fn classify_rect(&self, candidate: DegreeWindowResult) -> RectClass {
+    pub(crate) fn classify_rect(
+        &self,
+        candidate: DegreeWindowResult,
+    ) -> crate::error::Result<RectClass> {
         // This certificate models the whole source exactly.  It must run
         // before the general lift's global uncertainty veto: that veto is a
         // fail-open fallback for symbolic sources, not a reason to discard a
         // complete rectangle proof.
         if let Some(bounds) = self.exact_axis_rect {
-            return classify_exact_axis_rectangle(bounds, candidate);
+            return Ok(classify_exact_axis_rectangle(bounds, candidate));
         }
         if self.unknown
             || self.has_positive_selection_polygon()
             || self.has_positive_selection_lower()
         {
-            return RectClass::Boundary;
+            return Ok(RectClass::Boundary);
         }
         let DegreeWindowResult::Windows(CertifiedDegreeWindows {
             latitude,
             longitude,
         }) = candidate
         else {
-            return RectClass::Boundary;
+            return Ok(RectClass::Boundary);
         };
         // This is a proof over the authoritative *linear* source, not a
         // working-image bound.  Every segment and every zero-degree polygon
@@ -3943,35 +4449,41 @@ impl GeographicCoverageSource {
                 .authority_latitude
                 .is_some_and(|source| strictly_disjoint_degree_bounds(source, latitude))
         {
-            return RectClass::Outside;
+            return Ok(RectClass::Outside);
         }
         match longitude {
             CertifiedLongitudeDegrees::Full => self.classify_rect_window(
-                Bound::new(-180.0, 180.0).expect("finite longitude domain"),
+                exact(Bound::new(-180.0, 180.0))
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
                 latitude,
             ),
             CertifiedLongitudeDegrees::One(longitude) => {
                 self.classify_rect_window(longitude, latitude)
             },
             CertifiedLongitudeDegrees::Two([west, east]) => {
-                let west = self.classify_rect_window(west, latitude);
-                let east = self.classify_rect_window(east, latitude);
+                let west = self.classify_rect_window(west, latitude)?;
+                let east = self.classify_rect_window(east, latitude)?;
                 match (west, east) {
-                    (RectClass::Outside, RectClass::Outside) => RectClass::Outside,
-                    (RectClass::Interior, RectClass::Interior) => RectClass::Interior,
-                    _ => RectClass::Boundary,
+                    (RectClass::Outside, RectClass::Outside) => Ok(RectClass::Outside),
+                    (RectClass::Interior, RectClass::Interior) => Ok(RectClass::Interior),
+                    _ => Ok(RectClass::Boundary),
                 }
             },
         }
     }
 
-    fn classify_rect_window(&self, longitude: Bound, latitude: Bound) -> RectClass {
+    fn classify_rect_window(
+        &self,
+        longitude: Bound,
+        latitude: Bound,
+    ) -> crate::error::Result<RectClass> {
         self.classify_rect_window_with_index(longitude, latitude, true)
     }
 
     #[cfg(test)]
     fn classify_rect_window_exhaustive(&self, longitude: Bound, latitude: Bound) -> RectClass {
         self.classify_rect_window_with_index(longitude, latitude, false)
+            .unwrap_or(RectClass::Boundary)
     }
 
     fn classify_rect_window_with_index(
@@ -3979,10 +4491,10 @@ impl GeographicCoverageSource {
         longitude: Bound,
         latitude: Bound,
         use_index: bool,
-    ) -> RectClass {
+    ) -> crate::error::Result<RectClass> {
         for point in self.authority_points() {
             let Some(point) = point else {
-                return RectClass::Boundary;
+                return Ok(RectClass::Boundary);
             };
             if !point.is_proven_physical_latitude()
                 || degree_bounds_overlap(point.latitude, latitude)
@@ -3995,45 +4507,60 @@ impl GeographicCoverageSource {
                             .is_none_or(|shifted| degree_bounds_overlap(point.longitude, shifted))
                     })
             {
-                return RectClass::Boundary;
+                return Ok(RectClass::Boundary);
             }
         }
         let edge_ordinals = if use_index {
-            self.authority_edge_index.as_ref().and_then(|index| {
-                let longitude = canonical_proxy_window(longitude)?;
-                let query =
-                    AABB::from_corners([longitude.lo, latitude.lo], [longitude.hi, latitude.hi]);
-                let mut ordinals = Vec::new();
-                for proxy in index.locate_in_envelope_intersecting(query) {
-                    ordinals.push(proxy.edge);
-                }
-                ordinals.sort_unstable();
-                ordinals.dedup();
-                Some(ordinals)
-            })
+            match self.authority_edge_index.as_ref() {
+                Some(index) => match canonical_proxy_window(longitude) {
+                    Err(ExactFailure::Arithmetic) | Ok(None) => None,
+                    Err(ExactFailure::Allocation) => {
+                        return Err(crate::error::ResourceError::Allocation.into());
+                    },
+                    Ok(Some(longitude)) => {
+                        let query = AABB::from_corners([longitude.lo, latitude.lo], [
+                            longitude.hi,
+                            latitude.hi,
+                        ]);
+                        let mut ordinals = Vec::new();
+                        index
+                            .visit(query, &mut |edge| crate::try_push_vec(&mut ordinals, *edge))?;
+                        ordinals.sort_unstable();
+                        ordinals.dedup();
+                        Some(ordinals)
+                    },
+                },
+                None => None,
+            }
         } else {
             None
         };
         if let Some(edge_ordinals) = edge_ordinals {
             for ordinal in edge_ordinals {
                 let Some(edge) = self.authority_edges.get(ordinal) else {
-                    return RectClass::Boundary;
+                    return Ok(RectClass::Boundary);
                 };
-                if exact_authority_edge_touches_rectangle(edge, longitude, latitude).unwrap_or(true)
-                {
-                    return RectClass::Boundary;
+                match exact_authority_edge_touches_rectangle(edge, longitude, latitude) {
+                    Ok(true) | Err(ExactFailure::Arithmetic) => return Ok(RectClass::Boundary),
+                    Ok(false) => {},
+                    Err(ExactFailure::Allocation) => {
+                        return Err(crate::error::ResourceError::Allocation.into());
+                    },
                 }
             }
         } else {
             for edge in &self.authority_edges {
-                if exact_authority_edge_touches_rectangle(edge, longitude, latitude).unwrap_or(true)
-                {
-                    return RectClass::Boundary;
+                match exact_authority_edge_touches_rectangle(edge, longitude, latitude) {
+                    Ok(true) | Err(ExactFailure::Arithmetic) => return Ok(RectClass::Boundary),
+                    Ok(false) => {},
+                    Err(ExactFailure::Allocation) => {
+                        return Err(crate::error::ResourceError::Allocation.into());
+                    },
                 }
             }
         }
         if !self.has_polygon() {
-            return RectClass::Outside;
+            return Ok(RectClass::Outside);
         }
         // An S2 circular bound may retain a seam sheet whose certified degree
         // enclosure is a singleton or one stored-double wide.  The preceding
@@ -4049,15 +4576,15 @@ impl GeographicCoverageSource {
                 .then_some(longitude.lo)
         });
         let Some(longitude) = longitude else {
-            return RectClass::Boundary;
+            return Ok(RectClass::Boundary);
         };
         let Some(latitude) = strict_window_representative(latitude) else {
-            return RectClass::Boundary;
+            return Ok(RectClass::Boundary);
         };
-        match self.authority_point_class(longitude, latitude) {
-            GridPointClass::Exterior => RectClass::Outside,
-            GridPointClass::Interior => RectClass::Interior,
-            GridPointClass::Boundary | GridPointClass::Unknown => RectClass::Boundary,
+        match self.authority_point_class(longitude, latitude)? {
+            GridPointClass::Exterior => Ok(RectClass::Outside),
+            GridPointClass::Interior => Ok(RectClass::Interior),
+            GridPointClass::Boundary | GridPointClass::Unknown => Ok(RectClass::Boundary),
         }
     }
 
@@ -4135,9 +4662,7 @@ impl GeographicCoverageSource {
     pub(crate) fn authority_points(
         &self,
     ) -> impl ExactSizeIterator<Item = Option<GridDegreePoint>> + '_ {
-        self.authority_points
-            .iter()
-            .map(|point| GridDegreePoint::from_expansions(&point.longitude, &point.latitude))
+        self.authority_point_bounds.iter().copied()
     }
 
     #[expect(
@@ -4147,9 +4672,7 @@ impl GeographicCoverageSource {
     pub(crate) fn selection_points(
         &self,
     ) -> impl ExactSizeIterator<Item = Option<GridDegreePoint>> + '_ {
-        self.selection_points
-            .iter()
-            .map(|point| GridDegreePoint::from_expansions(&point.longitude, &point.latitude))
+        self.selection_point_bounds.iter().copied()
     }
 
     pub(crate) fn positive_selection_points(
@@ -4158,7 +4681,8 @@ impl GeographicCoverageSource {
         self.selection_points
             .iter()
             .zip(&self.authority_points)
-            .filter(|(selection, authority)| {
+            .zip(&self.selection_point_bounds)
+            .filter(|((selection, authority), _)| {
                 // A 360-degree longitude rewrite is the same unit-sphere
                 // point and is already represented by the authority lift's
                 // periodic PIP and the ordered arc seam shifts. Reflection
@@ -4166,7 +4690,7 @@ impl GeographicCoverageSource {
                 // positive-only H3 authority.
                 selection.latitude != authority.latitude
             })
-            .map(|(point, _)| GridDegreePoint::from_expansions(&point.longitude, &point.latitude))
+            .map(|((..), point)| *point)
     }
 
     pub(crate) fn has_positive_selection_polygon(&self) -> bool {
@@ -4195,17 +4719,21 @@ impl GeographicCoverageSource {
         &self,
         longitude: f64,
         latitude: f64,
-    ) -> GridPointClass {
+    ) -> crate::error::Result<GridPointClass> {
         if self.unknown
             || !longitude.is_finite()
             || !latitude.is_finite()
             || latitude.to_bits() == 90.0_f64.to_bits()
             || latitude.to_bits() == (-90.0_f64).to_bits()
         {
-            return GridPointClass::Unknown;
+            return Ok(GridPointClass::Unknown);
         }
-        let Some(query) = ExactPlanarPoint::from_stored(longitude, latitude) else {
-            return GridPointClass::Unknown;
+        let query = match ExactPlanarPoint::from_stored(longitude, latitude) {
+            Ok(query) => query,
+            Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
+            Err(ExactFailure::Allocation) => {
+                return Err(crate::error::ResourceError::Allocation.into());
+            },
         };
         let mut aggregate = GridPointClass::Exterior;
         for shell in self.ring_fills.iter().filter(|fill| fill.ring == 0) {
@@ -4215,15 +4743,29 @@ impl GeographicCoverageSource {
             }) {
                 continue;
             }
-            let shell_class = self.selection_ring_point_class(component, 0, &query);
+            let shell_class = match self.selection_ring_point_class(component, 0, &query) {
+                Ok(class) => class,
+                Err(ExactFailure::Arithmetic) => GridPointClass::Unknown,
+                Err(ExactFailure::Allocation) => {
+                    return Err(crate::error::ResourceError::Allocation.into());
+                },
+            };
             let component_class = match shell_class {
                 GridPointClass::Exterior => GridPointClass::Exterior,
                 GridPointClass::Boundary | GridPointClass::Unknown => shell_class,
-                GridPointClass::Interior => self.selection_component_hole_class(component, &query),
+                GridPointClass::Interior => {
+                    match self.selection_component_hole_class(component, &query) {
+                        Ok(class) => class,
+                        Err(ExactFailure::Arithmetic) => GridPointClass::Unknown,
+                        Err(ExactFailure::Allocation) => {
+                            return Err(crate::error::ResourceError::Allocation.into());
+                        },
+                    }
+                },
             };
             aggregate = combine_polygon_point_classes(aggregate, component_class);
         }
-        aggregate
+        Ok(aggregate)
     }
 
     /// Every exact selected pole endpoint, including pole crossings
@@ -4231,46 +4773,60 @@ impl GeographicCoverageSource {
     /// at a pole, so the witness intentionally stores the one canonical zero
     /// longitude rather than choosing an antimeridian spelling.
     pub(crate) fn selection_pole_witnesses(&self) -> impl Iterator<Item = GridDegreePoint> + '_ {
-        self.selection_points
-            .iter()
-            .filter_map(selection_pole_witness)
-            .chain(
-                self.selection_edges
-                    .iter()
-                    .flat_map(|piece| piece.selection.iter())
-                    .filter_map(selection_planar_pole_witness),
-            )
+        self.selection_poles.iter().copied()
     }
 
     /// Exact retained-authority PIP for a non-pole stored degree point.  The
     /// positive selection image is deliberately not consulted here: it can
     /// only veto a later negative, never manufacture this authority result.
-    pub(crate) fn authority_point_class(&self, longitude: f64, latitude: f64) -> GridPointClass {
+    pub(crate) fn authority_point_class(
+        &self,
+        longitude: f64,
+        latitude: f64,
+    ) -> crate::error::Result<GridPointClass> {
         if self.unknown
             || !longitude.is_finite()
             || !latitude.is_finite()
             || latitude.to_bits() == 90.0_f64.to_bits()
             || latitude.to_bits() == (-90.0_f64).to_bits()
         {
-            return GridPointClass::Unknown;
+            return Ok(GridPointClass::Unknown);
         }
-        let Some(query) = ExactPlanarPoint::from_stored(longitude, latitude) else {
-            return GridPointClass::Unknown;
+        let query = match ExactPlanarPoint::from_stored(longitude, latitude) {
+            Ok(query) => query,
+            Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
+            Err(ExactFailure::Allocation) => {
+                return Err(crate::error::ResourceError::Allocation.into());
+            },
         };
         let mut aggregate = GridPointClass::Exterior;
         for shell in self.ring_fills.iter().filter(|fill| fill.ring == 0) {
             let Some(chain) = self.chains.get(shell.chain_index) else {
-                return GridPointClass::Unknown;
+                return Ok(GridPointClass::Unknown);
             };
-            let shell_class = shell.point_class(chain, longitude, &query);
+            let shell_class = match shell.point_class(chain, longitude, &query) {
+                Ok(class) => class,
+                Err(ExactFailure::Arithmetic) => GridPointClass::Unknown,
+                Err(ExactFailure::Allocation) => {
+                    return Err(crate::error::ResourceError::Allocation.into());
+                },
+            };
             let component = match shell_class {
                 GridPointClass::Exterior => GridPointClass::Exterior,
                 GridPointClass::Boundary | GridPointClass::Unknown => shell_class,
-                GridPointClass::Interior => self.component_hole_class(shell, longitude, &query),
+                GridPointClass::Interior => {
+                    match self.component_hole_class(shell, longitude, &query) {
+                        Ok(class) => class,
+                        Err(ExactFailure::Arithmetic) => GridPointClass::Unknown,
+                        Err(ExactFailure::Allocation) => {
+                            return Err(crate::error::ResourceError::Allocation.into());
+                        },
+                    }
+                },
             };
             aggregate = combine_polygon_point_classes(aggregate, component);
         }
-        aggregate
+        Ok(aggregate)
     }
 
     fn component_hole_class(
@@ -4278,7 +4834,7 @@ impl GeographicCoverageSource {
         shell: &LiftedRingFill,
         longitude: f64,
         query: &ExactPlanarPoint,
-    ) -> GridPointClass {
+    ) -> ExactResult<GridPointClass> {
         let mut unknown = false;
         for hole in self
             .ring_fills
@@ -4286,19 +4842,19 @@ impl GeographicCoverageSource {
             .filter(|fill| fill.component == shell.component && fill.ring != 0)
         {
             let Some(chain) = self.chains.get(hole.chain_index) else {
-                return GridPointClass::Unknown;
+                return Ok(GridPointClass::Unknown);
             };
-            match hole.point_class(chain, longitude, query) {
-                GridPointClass::Boundary => return GridPointClass::Boundary,
-                GridPointClass::Interior => return GridPointClass::Exterior,
+            match hole.point_class(chain, longitude, query)? {
+                GridPointClass::Boundary => return Ok(GridPointClass::Boundary),
+                GridPointClass::Interior => return Ok(GridPointClass::Exterior),
                 GridPointClass::Unknown => unknown = true,
                 GridPointClass::Exterior => {},
             }
         }
         if unknown {
-            GridPointClass::Unknown
+            Ok(GridPointClass::Unknown)
         } else {
-            GridPointClass::Interior
+            Ok(GridPointClass::Interior)
         }
     }
 
@@ -4306,24 +4862,24 @@ impl GeographicCoverageSource {
         &self,
         component: usize,
         query: &ExactPlanarPoint,
-    ) -> GridPointClass {
+    ) -> ExactResult<GridPointClass> {
         let mut unknown = false;
         for hole in self
             .ring_fills
             .iter()
             .filter(|fill| fill.component == component && fill.ring != 0)
         {
-            match self.selection_ring_point_class(component, hole.ring, query) {
-                GridPointClass::Boundary => return GridPointClass::Boundary,
-                GridPointClass::Interior => return GridPointClass::Exterior,
+            match self.selection_ring_point_class(component, hole.ring, query)? {
+                GridPointClass::Boundary => return Ok(GridPointClass::Boundary),
+                GridPointClass::Interior => return Ok(GridPointClass::Exterior),
                 GridPointClass::Unknown => unknown = true,
                 GridPointClass::Exterior => {},
             }
         }
         if unknown {
-            GridPointClass::Unknown
+            Ok(GridPointClass::Unknown)
         } else {
-            GridPointClass::Interior
+            Ok(GridPointClass::Interior)
         }
     }
 
@@ -4332,7 +4888,7 @@ impl GeographicCoverageSource {
         component: usize,
         ring: usize,
         query: &ExactPlanarPoint,
-    ) -> GridPointClass {
+    ) -> ExactResult<GridPointClass> {
         let edge_count = self
             .selection_edges
             .iter()
@@ -4341,15 +4897,17 @@ impl GeographicCoverageSource {
             })
             .count();
         if edge_count == 0 {
-            return GridPointClass::Unknown;
+            return Ok(GridPointClass::Unknown);
         }
         // Selection pieces are split into the physical [-180, 180] sheet.
         // A physical query has only its immediate -360/0/+360 preimages in
         // that sheet; retaining all three is the exact circular PIP carrier,
         // not a heuristic longitude neighborhood.
         let copies = -1_i64..=1_i64;
-        let Some(mut buckets) = PeriodicParityBuckets::new(copies, edge_count) else {
-            return GridPointClass::Unknown;
+        let mut buckets = match PeriodicParityBuckets::new(copies, edge_count) {
+            Ok(buckets) => buckets,
+            Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
+            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         };
         for piece in self.selection_edges.iter().filter(|piece| {
             piece.polygon && piece.edge.component == component && piece.edge.ring == ring
@@ -4359,16 +4917,16 @@ impl GeographicCoverageSource {
                 &piece.selection[1],
                 query,
                 &mut buckets,
-            ) {
-                BucketEdge::Decisive(result) => return result,
+            )? {
+                BucketEdge::Decisive(result) => return Ok(result),
                 BucketEdge::Continue => {},
-                BucketEdge::Uncertain => return GridPointClass::Unknown,
+                BucketEdge::Uncertain => return Ok(GridPointClass::Unknown),
             }
         }
         if buckets.any_interior() {
-            GridPointClass::Interior
+            Ok(GridPointClass::Interior)
         } else {
-            GridPointClass::Exterior
+            Ok(GridPointClass::Exterior)
         }
     }
 
@@ -4381,34 +4939,35 @@ impl GeographicCoverageSource {
     }
 }
 
-fn selection_pole_witness(point: &SelectionPoint) -> Option<GridDegreePoint> {
-    selection_planar_pole_witness(&ExactSelectionPoint {
+fn selection_pole_witness_fallible(point: &SelectionPoint) -> ExactResult<Option<GridDegreePoint>> {
+    selection_planar_pole_witness_fallible(&ExactSelectionPoint {
         longitude: ExactRatio::from_expansion(&point.longitude)?,
         latitude: ExactRatio::from_expansion(&point.latitude)?,
     })
 }
 
-fn selection_planar_pole_witness(point: &ExactSelectionPoint) -> Option<GridDegreePoint> {
-    let latitude = if point.latitude.ordering(&ExactRatio::from_i64(90, 1)?)? == Ordering::Equal {
-        Bound::exact(90.0)?
-    } else if point.latitude.ordering(&ExactRatio::from_i64(-90, 1)?)? == Ordering::Equal {
-        Bound::exact(-90.0)?
+fn selection_planar_pole_witness_fallible(
+    point: &ExactSelectionPoint,
+) -> ExactResult<Option<GridDegreePoint>> {
+    let north = ExactRatio::from_i64(90, 1)?;
+    let south = ExactRatio::from_i64(-90, 1)?;
+    let latitude = if point.latitude.ordering(&north)? == Ordering::Equal {
+        exact(Bound::exact(90.0))?
+    } else if point.latitude.ordering(&south)? == Ordering::Equal {
+        exact(Bound::exact(-90.0))?
     } else {
-        return None;
+        return Ok(None);
     };
-    Some(GridDegreePoint {
-        longitude: Bound::exact(0.0)?,
+    Ok(Some(GridDegreePoint {
+        longitude: exact(Bound::exact(0.0))?,
         latitude,
-    })
+    }))
 }
 
 fn first_in_strip_chain_point(chain: &LiftedChain) -> Option<GridDegreePoint> {
     chain.vertices.iter().find_map(|vertex| {
-        let latitude = ExactExpansion::from_f64(vertex.latitude)?;
-        let south = ExactExpansion::from_i64(-90)?;
-        let north = ExactExpansion::from_i64(90)?;
-        (latitude.sub(&south)?.ordering() != Ordering::Less
-            && latitude.sub(&north)?.ordering() != Ordering::Greater)
+        (-90.0..=90.0)
+            .contains(&vertex.latitude)
             .then(|| GridDegreePoint::from_stored(vertex.longitude.raw, vertex.latitude))?
     })
 }
@@ -4438,9 +4997,15 @@ fn append_lifted_chain(
     selection_edges: &mut Vec<SelectionAffinePiece>,
     unknown: &mut bool,
 ) -> crate::error::Result<()> {
-    let Some(chain) = LiftedChain::from_points(&input.points, input.closed) else {
-        *unknown = true;
-        return Ok(());
+    let chain = match LiftedChain::from_points(&input.points, input.closed) {
+        Ok(chain) => chain,
+        Err(ExactFailure::Arithmetic) => {
+            *unknown = true;
+            return Ok(());
+        },
+        Err(ExactFailure::Allocation) => {
+            return Err(crate::error::ResourceError::Allocation.into());
+        },
     };
     let chain_index = lifted.len();
     for (ordinal, edge_kind) in chain.edges.iter().copied().enumerate() {
@@ -4453,7 +5018,7 @@ fn append_lifted_chain(
             ring: input.ring,
             ordinal,
         };
-        let edge = SymbolicAffineEdge::new(
+        let edge = match SymbolicAffineEdge::new(
             key,
             [
                 SourceVertexKey {
@@ -4471,31 +5036,43 @@ fn append_lifted_chain(
             chain.vertices[ordinal],
             chain.vertices[next],
             edge_kind,
-        );
-        let Some(edge) = edge else {
-            *unknown = true;
-            continue;
+        ) {
+            Ok(edge) => edge,
+            Err(ExactFailure::Arithmetic) => {
+                *unknown = true;
+                continue;
+            },
+            Err(ExactFailure::Allocation) => {
+                return Err(crate::error::ResourceError::Allocation.into());
+            },
         };
-        if edge.selection_pieces(selection_edges).is_none() {
-            *unknown = true;
+        match edge.selection_pieces(selection_edges) {
+            Ok(()) => {},
+            Err(ExactFailure::Arithmetic) => *unknown = true,
+            Err(ExactFailure::Allocation) => {
+                return Err(crate::error::ResourceError::Allocation.into());
+            },
         }
-        if edge.authority_pieces(authority_pieces).is_none() {
-            *unknown = true;
+        match edge.authority_pieces(authority_pieces) {
+            Ok(()) => {},
+            Err(ExactFailure::Arithmetic) => *unknown = true,
+            Err(ExactFailure::Allocation) => {
+                return Err(crate::error::ResourceError::Allocation.into());
+            },
         }
-        authority_edges.reserve(1);
-        authority_edges.push(edge);
+        crate::try_push_vec(authority_edges, edge)?;
     }
     debug_assert_eq!(chain_index, lifted.len());
     if input.closed {
         if let Some(fill) =
             LiftedRingFill::from_chain(chain_index, input.component, input.ring, &chain)?
         {
-            ring_fills.push(fill);
+            crate::try_push_vec(ring_fills, fill)?;
         } else {
             *unknown = true;
         }
     }
-    lifted.push(chain);
+    crate::try_push_vec(lifted, chain)?;
     Ok(())
 }
 
@@ -4505,13 +5082,67 @@ fn append_lifted_chain(
 fn append_source_point(
     point: &SourcePoint,
     selection_points: &mut Vec<SelectionPoint>,
+    selection_point_bounds: &mut Vec<Option<GridDegreePoint>>,
     unknown: &mut bool,
-) {
-    let Some(selection) = selection_image_point(point) else {
-        *unknown = true;
-        return;
+) -> crate::error::Result<()> {
+    let selection = match selection_image_point(point) {
+        Ok(selection) => selection,
+        Err(ExactFailure::Arithmetic) => {
+            *unknown = true;
+            return Ok(());
+        },
+        Err(ExactFailure::Allocation) => {
+            return Err(crate::error::ResourceError::Allocation.into());
+        },
     };
-    selection_points.push(selection);
+    let bound =
+        match GridDegreePoint::try_from_expansions(&selection.longitude, &selection.latitude) {
+            Ok(bound) => Some(bound),
+            Err(ExactFailure::Arithmetic) => None,
+            Err(ExactFailure::Allocation) => {
+                return Err(crate::error::ResourceError::Allocation.into());
+            },
+        };
+    crate::try_push_vec(selection_points, selection)?;
+    crate::try_push_vec(selection_point_bounds, bound)
+}
+
+fn append_selection_pole_witness(
+    point: &SelectionPoint,
+    output: &mut Vec<GridDegreePoint>,
+    unknown: &mut bool,
+) -> crate::error::Result<()> {
+    let witness = match selection_pole_witness_fallible(point) {
+        Ok(Some(witness)) => witness,
+        Ok(None) => return Ok(()),
+        Err(ExactFailure::Arithmetic) => {
+            *unknown = true;
+            return Ok(());
+        },
+        Err(ExactFailure::Allocation) => {
+            return Err(crate::error::ResourceError::Allocation.into());
+        },
+    };
+    crate::try_push_vec(output, witness)
+}
+
+fn append_selection_planar_pole_witness(
+    point: &ExactSelectionPoint,
+    output: &mut Vec<GridDegreePoint>,
+    unknown: &mut bool,
+) -> crate::error::Result<()> {
+    let witness = match selection_planar_pole_witness_fallible(point) {
+        Ok(Some(witness)) => witness,
+        Ok(None) => return Ok(()),
+        Err(ExactFailure::Arithmetic) => {
+            *unknown = true;
+            return Ok(());
+        },
+        Err(ExactFailure::Allocation) => {
+            return Err(crate::error::ResourceError::Allocation.into());
+        },
+    };
+    crate::try_push_vec(output, witness)
 }
 
 #[derive(Debug)]
@@ -4535,48 +5166,48 @@ fn collect_shape_chains(
     output: &mut Vec<SourceChainInput>,
     points: &mut Vec<SourcePointInput>,
     component: &mut usize,
-) -> Result<(), TryReserveError> {
+) -> crate::error::Result<()> {
     match shape {
         Shape::Point(point) => {
-            push_point(*point, *component, 0, points);
+            push_point(*point, *component, 0, points)?;
             *component = component.saturating_add(1);
         },
         Shape::MultiPoint(input) => {
-            points.reserve(input.len());
+            crate::try_reserve_vec(points, input.len())?;
             for (ordinal, point) in input.points().enumerate() {
-                push_point(point, *component, ordinal, points);
+                push_point(point, *component, ordinal, points)?;
             }
             *component = component.saturating_add(1);
         },
         Shape::Empty(..) => {},
         Shape::LineString(line) => {
             if let Some(pole) = physical_pole_chain(line) {
-                push_point(pole, *component, 0, points);
+                push_point(pole, *component, 0, points)?;
             } else {
-                push_chain(line, false, *component, 0, output);
+                push_chain(line, false, *component, 0, output)?;
             }
             *component = component.saturating_add(1);
         },
         Shape::MultiLineString(lines) => {
             for line in lines {
                 if let Some(pole) = physical_pole_chain(line) {
-                    push_point(pole, *component, 0, points);
+                    push_point(pole, *component, 0, points)?;
                 } else {
-                    push_chain(line, false, *component, 0, output);
+                    push_chain(line, false, *component, 0, output)?;
                 }
                 *component = component.saturating_add(1);
             }
         },
         Shape::Polygon(polygon) => {
             for (ring_index, ring) in polygon.rings().enumerate() {
-                push_chain(ring, true, *component, ring_index, output);
+                push_chain(ring, true, *component, ring_index, output)?;
             }
             *component = component.saturating_add(1);
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
                 for (ring_index, ring) in polygon.rings().enumerate() {
-                    push_chain(ring, true, *component, ring_index, output);
+                    push_chain(ring, true, *component, ring_index, output)?;
                 }
                 *component = component.saturating_add(1);
             }
@@ -4611,13 +5242,13 @@ fn push_point(
     component: usize,
     ordinal: usize,
     output: &mut Vec<SourcePointInput>,
-) {
-    output.push(SourcePointInput {
+) -> crate::error::Result<()> {
+    crate::try_push_vec(output, SourcePointInput {
         component,
         ordinal,
         longitude: point.x,
         latitude: point.y,
-    });
+    })
 }
 
 fn push_chain(
@@ -4626,14 +5257,18 @@ fn push_chain(
     component: usize,
     ring: usize,
     output: &mut Vec<SourceChainInput>,
-) {
-    let points = coords.points().map(|point| (point.x, point.y)).collect();
-    output.push(SourceChainInput {
+) -> crate::error::Result<()> {
+    let mut points = Vec::new();
+    crate::try_reserve_vec(&mut points, coords.len())?;
+    for point in coords.points() {
+        crate::try_push_vec(&mut points, (point.x, point.y))?;
+    }
+    crate::try_push_vec(output, SourceChainInput {
         component,
         ring,
         points,
         closed,
-    });
+    })
 }
 
 #[cfg(test)]

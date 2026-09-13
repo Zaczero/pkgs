@@ -610,8 +610,7 @@ mod ownership_tests {
             Frame::None,
         )
         .unwrap();
-        let error =
-            packed_spatial_index(&array).expect_err("empty support must not be indexed");
+        let error = packed_spatial_index(&array).expect_err("empty support must not be indexed");
         assert!(error.to_string().contains("cannot index empty geometry"));
     }
 

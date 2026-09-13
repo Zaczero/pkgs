@@ -221,7 +221,7 @@ pub(crate) trait RectCoverSpec {
 
     const KIND: GridKind;
 
-    fn roots() -> Vec<Self::Cell>;
+    fn roots() -> crate::error::Result<Vec<Self::Cell>>;
     fn id(cell: &Self::Cell) -> u64;
 }
 
@@ -586,7 +586,7 @@ where
         &authority_cache,
         frame,
         rule,
-        S::roots(),
+        S::roots()?,
         depth,
         max_cells,
     )?;

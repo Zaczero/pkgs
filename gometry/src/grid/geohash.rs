@@ -268,13 +268,16 @@ impl Geohash {
 use crate::grid::cell_set::uncompact;
 
 /// The 32 precision-1 root cells, in token order — the coverer's seeds.
-pub(crate) fn roots() -> Vec<Geohash> {
-    (0..32_u64)
-        .map(|value| Geohash {
+pub(crate) fn roots() -> crate::error::Result<Vec<Geohash>> {
+    let mut roots = Vec::new();
+    crate::try_reserve_vec(&mut roots, 32)?;
+    for value in 0..32_u64 {
+        crate::try_push_vec(&mut roots, Geohash {
             bits: value << (64 - 5),
             precision: 1,
-        })
-        .collect()
+        })?;
+    }
+    Ok(roots)
 }
 
 impl crate::grid::coverer::RectCell for Geohash {
