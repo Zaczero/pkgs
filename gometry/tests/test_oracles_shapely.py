@@ -1,3 +1,4 @@
+import math
 import warnings
 from typing import Any, cast
 
@@ -260,9 +261,19 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     )
     gometry_nearest = gm.nearest_points(gm.Point(1, 3), reference_line)
     shapely_nearest = nearest_points(Point(1, 3), cast('Any', shapely_reference_line))
-    assert tuple(point.to_wkt() for point in gometry_nearest) == tuple(
-        point.wkt for point in shapely_nearest
-    )
+    assert [point.geometry_type for point in gometry_nearest] == [
+        point.geom_type for point in shapely_nearest
+    ]
+    # These near-unit projection coordinates admit eight binary64 ULPs at the
+    # largest returned binade. The bound is an independent allowance for
+    # projection/interpolation operation ordering, not the observed gap.
+    nearest_tolerance = 8 * math.ulp(2.0)
+    for actual_point, expected_point in zip(
+        gometry_nearest, shapely_nearest, strict=True
+    ):
+        assert (actual_point.x, actual_point.y) == pytest.approx(
+            (expected_point.x, expected_point.y), rel=0.0, abs=nearest_tolerance
+        )
     assert gm.covered_by(left.point_on_surface(), left)
     assert covered_by(point_on_surface(shapely_left), shapely_left)
     assert gm.hausdorff_distance(

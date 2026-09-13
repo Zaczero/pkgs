@@ -79,12 +79,24 @@ def test_exact_clip_rounds_mixed_exponent_crossings() -> None:
 
 
 def test_exact_clip_rounds_thin_crossing_zm_and_packed_missing_rows() -> None:
-    line = gm.LineString(
-        [(-1.0e15, 0.0, 100.0, 1000.0), (1.0e15, 1.0e-20, 300.0, 3000.0)]
-    )
+    start = (-1.0e15, 0.0, 100.0, 1000.0)
+    end = (1.0e15, 1.0e-20, 300.0, 3000.0)
+    line = gm.LineString([start, end])
+    # Exact Fraction interpolation of the stored binary64 endpoints, followed
+    # by float conversion, is the independent correctly rounded oracle.
     expected = [
-        (0.0, 5.0e-21, 200.0, 2000.0),
-        (1.0, 5.000000000000005e-21, 200.00000000000009, 2000.000000000001),
+        (
+            0.0,
+            _diagonal_ordinate(start[0], end[0], 0.0, start[1], end[1]),
+            _diagonal_ordinate(start[0], end[0], 0.0, start[2], end[2]),
+            _diagonal_ordinate(start[0], end[0], 0.0, start[3], end[3]),
+        ),
+        (
+            1.0,
+            _diagonal_ordinate(start[0], end[0], 1.0, start[1], end[1]),
+            _diagonal_ordinate(start[0], end[0], 1.0, start[2], end[2]),
+            _diagonal_ordinate(start[0], end[0], 1.0, start[3], end[3]),
+        ),
     ]
     assert list(line.clip_by_rect(0.0, 0.0, 1.0, 1.0).coords) == expected
 

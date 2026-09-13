@@ -252,25 +252,41 @@ def test_crs_constrained_transform_numeric_paths_match_pyproj() -> None:
         accuracy=10.0,
         allow_ballpark=False,
     )
+    # The outputs are geographic coordinates in the [-128, 128] degree
+    # interval. Eight binary64 ULPs at that scale is 2**-43 degrees; it
+    # admits independent operation-order rounding without deriving a bound
+    # from this implementation's observed discrepancy.
+    transform_tolerance = 8.0 * math.ulp(64.0)
 
     point = gm.Point(980000.0, 190000.0, crs=2263)
     expected_point = transformer.transform(point.x, point.y)
     with pytest.warns(gm.AccuracyWarning, match='us_noaa_njhpgn'):
         actual_point = point.to_crs(4326, **options)
-    assert list(actual_point.coords[0]) == pytest.approx(expected_point)
+    assert list(actual_point.coords[0]) == pytest.approx(
+        expected_point, rel=0.0, abs=transform_tolerance
+    )
 
     xs = [980000.0, 990000.0]
     ys = [190000.0, 200000.0]
     expected_xs, expected_ys = transformer.transform(xs, ys)
     with pytest.warns(gm.AccuracyWarning, match='us_noaa_njhpgn'):
         points = gm.points(xs, ys, crs=2263).to_crs(4326, **options)
-    assert list(points.coords.select('XY')) == pytest.approx(
-        list(zip(expected_xs, expected_ys, strict=True))
-    )
+    for actual_row, expected_row in zip(
+        points.coords.select('XY'),
+        zip(expected_xs, expected_ys, strict=True),
+        strict=True,
+    ):
+        assert actual_row == pytest.approx(
+            expected_row, rel=0.0, abs=transform_tolerance
+        )
 
     with pytest.warns(gm.AccuracyWarning, match='us_noaa_njhpgn'):
         actual_bounds = gm.crs_transform_bounds(2263, 4326, bounds, **options)
-    assert actual_bounds == pytest.approx(transformer.transform_bounds(*bounds))
+    assert actual_bounds == pytest.approx(
+        transformer.transform_bounds(*bounds),
+        rel=0.0,
+        abs=transform_tolerance,
+    )
 
 
 def test_crs_constrained_transform_refusal_preserves_context() -> None:

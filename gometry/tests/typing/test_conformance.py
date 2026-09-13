@@ -723,7 +723,7 @@ assert_type(
     gm.GeometryArray[gm.LineString | gm.MultiLineString],
 )
 assert_type(
-    gm.coverage_simplify([POLY, POLY], 0.1),
+    gm.coverage_simplify([POLY, gm.box(2, 0, 4, 2)], 0.1),
     gm.GeometryArray[gm.Polygon | gm.MultiPolygon],
 )
 assert_type(
