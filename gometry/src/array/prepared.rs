@@ -44,7 +44,6 @@ impl RowProductChunk {
 pub(crate) struct RowProductOwner {
     physical_len: usize,
     chunks: Mutex<HashMap<usize, Arc<RowProductChunk>>>,
-    aliases: HashMap<usize, (Arc<Self>, usize)>,
 }
 
 impl RowProductOwner {
@@ -52,61 +51,36 @@ impl RowProductOwner {
         Self {
             physical_len,
             chunks: Mutex::new(HashMap::new()),
-            aliases: HashMap::new(),
         }
     }
 
-    fn cell(
-        self: &Arc<Self>,
-        physical: usize,
-    ) -> crate::error::Result<(Arc<Self>, usize, Arc<RowProductChunk>)> {
-        let (owner, physical) = if let Some((owner, source_physical)) = self.aliases.get(&physical)
-        {
-            debug_assert!(!owner.aliases.contains_key(source_physical));
-            (owner, *source_physical)
-        } else {
-            (self, physical)
-        };
+    fn cell(&self, physical: usize) -> crate::error::Result<Arc<RowProductChunk>> {
         let chunk_index = physical / ROWS_PER_CHUNK;
-        let offset = physical % ROWS_PER_CHUNK;
         #[cfg(test)]
         DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
-        let mut chunks = owner
+        let mut chunks = self
             .chunks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(chunk) = chunks.get(&chunk_index) {
-            return Ok((Arc::clone(owner), offset, Arc::clone(chunk)));
+            return Ok(Arc::clone(chunk));
         }
         let chunk = Arc::try_new(RowProductChunk::try_new()?).map_err(crate::error::Error::from)?;
         chunks.try_reserve(1).map_err(crate::error::Error::from)?;
         chunks.insert(chunk_index, Arc::clone(&chunk));
         drop(chunks);
-        Ok((Arc::clone(owner), offset, chunk))
+        Ok(chunk)
     }
 
-    fn existing_cell(
-        self: &Arc<Self>,
-        physical: usize,
-    ) -> Option<(Arc<Self>, usize, Arc<RowProductChunk>)> {
-        let (owner, physical) = if let Some((owner, source_physical)) = self.aliases.get(&physical)
-        {
-            debug_assert!(!owner.aliases.contains_key(source_physical));
-            (owner, *source_physical)
-        } else {
-            (self, physical)
-        };
+    fn existing_cell(&self, physical: usize) -> Option<Arc<RowProductChunk>> {
         let chunk_index = physical / ROWS_PER_CHUNK;
-        let offset = physical % ROWS_PER_CHUNK;
         #[cfg(test)]
         DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
-        let chunks = owner
+        let chunks = self
             .chunks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        chunks
-            .get(&chunk_index)
-            .map(|chunk| (Arc::clone(owner), offset, Arc::clone(chunk)))
+        chunks.get(&chunk_index).map(Arc::clone)
     }
 }
 
@@ -119,9 +93,6 @@ pub(crate) struct RowProducts {
 
 #[derive(Debug)]
 struct ResolvedRowProductChunk {
-    physical: usize,
-    offset: usize,
-    owner: Arc<RowProductOwner>,
     chunk_index: usize,
     chunk: Arc<RowProductChunk>,
 }
@@ -312,72 +283,33 @@ impl<'a> ArrayRowOperation<'a> {
 impl RowProductsHandle {
     fn cell(&mut self, logical: usize) -> crate::error::Result<(&Arc<RowProductChunk>, usize)> {
         let physical = self.selection.as_deref().physical(logical);
-        let has_aliases = !self.owner.aliases.is_empty();
-        let cached = self.current.as_ref().is_some_and(|current| {
-            if has_aliases {
-                current.physical == physical
-            } else {
-                Arc::ptr_eq(&current.owner, &self.owner)
-                    && current.chunk_index == physical / ROWS_PER_CHUNK
-            }
-        });
-        if !cached {
-            let (owner, offset, chunk) = self.owner.cell(physical)?;
-            let current = self.current.insert(ResolvedRowProductChunk {
-                physical,
-                offset,
-                owner,
-                chunk_index: physical / ROWS_PER_CHUNK,
-                chunk,
-            });
-            return Ok((&current.chunk, offset));
+        let chunk_index = physical / ROWS_PER_CHUNK;
+        if self
+            .current
+            .as_ref()
+            .is_none_or(|current| current.chunk_index != chunk_index)
+        {
+            let chunk = self.owner.cell(physical)?;
+            self.current = Some(ResolvedRowProductChunk { chunk_index, chunk });
         }
         let current = self.current.as_ref().expect("cached chunk");
-        Ok((
-            &current.chunk,
-            if has_aliases {
-                current.offset
-            } else {
-                physical % ROWS_PER_CHUNK
-            },
-        ))
+        Ok((&current.chunk, physical % ROWS_PER_CHUNK))
     }
 
     fn existing_cell(&mut self, logical: usize) -> Option<(&Arc<RowProductChunk>, usize)> {
         let physical = self.selection.as_deref().physical(logical);
-        let has_aliases = !self.owner.aliases.is_empty();
-        let cached = self.current.as_ref().is_some_and(|current| {
-            if has_aliases {
-                current.physical == physical
-            } else {
-                Arc::ptr_eq(&current.owner, &self.owner)
-                    && current.chunk_index == physical / ROWS_PER_CHUNK
-            }
-        });
-        if !cached {
-            let (owner, offset, chunk) = self.owner.existing_cell(physical)?;
-            self.current = Some(ResolvedRowProductChunk {
-                physical,
-                offset,
-                owner,
-                chunk_index: physical / ROWS_PER_CHUNK,
-                chunk,
-            });
-            return self
-                .current
-                .as_ref()
-                .map(|current| (&current.chunk, offset));
+        let chunk_index = physical / ROWS_PER_CHUNK;
+        if self
+            .current
+            .as_ref()
+            .is_none_or(|current| current.chunk_index != chunk_index)
+        {
+            let chunk = self.owner.existing_cell(physical)?;
+            self.current = Some(ResolvedRowProductChunk { chunk_index, chunk });
         }
-        self.current.as_ref().map(|current| {
-            (
-                &current.chunk,
-                if has_aliases {
-                    current.offset
-                } else {
-                    physical % ROWS_PER_CHUNK
-                },
-            )
-        })
+        self.current
+            .as_ref()
+            .map(|current| (&current.chunk, physical % ROWS_PER_CHUNK))
     }
 
     pub(crate) fn frame_cache(
@@ -499,50 +431,19 @@ impl RowProducts {
         })
     }
 
-    pub(super) fn preserving_physical_rows(
-        physical_len: usize,
-        source: &Self,
-        unchanged_rows: &[usize],
-    ) -> crate::error::Result<Self> {
-        let current = source.selection.as_deref();
-        let mut aliases = HashMap::new();
-        aliases
-            .try_reserve(unchanged_rows.len())
-            .map_err(crate::error::Error::from)?;
-        for &row in unchanged_rows {
-            let physical = current.physical(row);
-            if let Some((owner, source_physical)) = source.owner.aliases.get(&physical) {
-                aliases.insert(row, (Arc::clone(owner), *source_physical));
-            } else {
-                aliases.insert(row, (Arc::clone(&source.owner), physical));
-            }
-        }
-        Ok(Self {
-            owner: Arc::try_new(RowProductOwner {
-                physical_len,
-                chunks: Mutex::new(HashMap::new()),
-                aliases,
-            })
-            .map_err(crate::error::Error::from)?,
-            selection: RowSelection::Identity,
-        })
-    }
-
     #[cfg(test)]
     pub(crate) fn shares_owner_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner) && self.selection == other.selection
     }
 
     #[cfg(test)]
-    fn alias_depth(&self, mut physical: usize) -> usize {
-        let mut owner = &self.owner;
-        let mut depth = 0;
-        while let Some((target, source_physical)) = owner.aliases.get(&physical) {
-            depth += 1;
-            owner = target;
-            physical = *source_physical;
-        }
-        depth
+    pub(crate) fn owner_weak(&self) -> std::sync::Weak<RowProductOwner> {
+        Arc::downgrade(&self.owner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner_strong_count(&self) -> usize {
+        Arc::strong_count(&self.owner)
     }
 
     #[cfg(test)]
@@ -552,7 +453,8 @@ impl RowProducts {
         let mut frame = std::collections::HashSet::new();
         for logical in 0..self.selection.as_deref().len(self.owner.physical_len) {
             let physical = self.selection.as_deref().physical(logical);
-            if let Some((_, offset, chunk)) = self.owner.existing_cell(physical) {
+            if let Some(chunk) = self.owner.existing_cell(physical) {
+                let offset = physical % ROWS_PER_CHUNK;
                 let chunk_id = Arc::as_ptr(&chunk) as usize;
                 chunks.insert(chunk_id);
                 if chunk.cells[offset].prepared.get().is_some() {
@@ -1024,6 +926,66 @@ mod frame_cache_row_tests {
     }
 
     #[test]
+    fn tiny_fresh_result_does_not_retain_a_huge_warmed_source_owner() {
+        let source = RowProducts::fresh(100_000_000).unwrap();
+        let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(7.0, 11.0))));
+        let source_plan = source
+            .prepared_plan(99_999_999, || Ok(Arc::clone(&shape)))
+            .unwrap();
+        let source_frame = source.frame_cache(99_999_999).unwrap();
+        let source_owner = source.owner_weak();
+        let result = RowProducts::fresh(1).unwrap();
+        let source_counts = {
+            let chunks = source.owner.chunks.lock().unwrap();
+            let chunk = chunks
+                .get(&(99_999_999 / ROWS_PER_CHUNK))
+                .expect("warmed source chunk");
+            (
+                chunks.len(),
+                usize::from(
+                    chunk.cells[99_999_999 % ROWS_PER_CHUNK]
+                        .prepared
+                        .get()
+                        .is_some(),
+                ),
+                usize::from(
+                    chunk.cells[99_999_999 % ROWS_PER_CHUNK]
+                        .frame
+                        .get()
+                        .is_some(),
+                ),
+            )
+        };
+        let result_counts = result.initialized_counts();
+        let source_heap = source.heap_bytes();
+        let result_heap = result.heap_bytes();
+
+        assert_eq!(source.owner_strong_count(), 1);
+        assert_eq!(result.owner_strong_count(), 1);
+        assert_eq!(source_counts, (1, 1, 1));
+        assert_eq!(result_counts, (0, 0, 0));
+        assert!(source_heap > result_heap);
+        println!(
+            "row_product_diagnostic source_counts={source_counts:?} \
+             result_counts={result_counts:?} source_heap={source_heap} \
+             result_heap={result_heap} source_owner_strong={} \
+             result_owner_strong={} source_alive_before_drop={}",
+            source.owner_strong_count(),
+            result.owner_strong_count(),
+            source_owner.upgrade().is_some(),
+        );
+
+        drop(source_plan);
+        drop(source_frame);
+        drop(source);
+        assert!(source_owner.upgrade().is_none());
+        println!(
+            "row_product_diagnostic source_alive_after_drop={}",
+            source_owner.upgrade().is_some()
+        );
+    }
+
+    #[test]
     fn duplicate_logical_rows_share_one_physical_cell() {
         let products = RowProducts::fresh(3).unwrap().selected([2, 2]).unwrap();
         let mut handle = products.operation();
@@ -1070,82 +1032,6 @@ mod frame_cache_row_tests {
         assert!(handle.cached_prepared_plan(0).is_none());
         assert!(products.owner.chunks.lock().unwrap().is_empty());
         assert_eq!(RowProducts::directory_resolution_count(), 1);
-    }
-
-    #[test]
-    fn aliased_products_keep_source_identity_on_repeated_access() {
-        for source_row in [2, ROWS_PER_CHUNK + 1] {
-            let source = RowProducts::fresh(source_row + 1).unwrap();
-            let selected = source.selected([source_row]).unwrap();
-            let aliases = RowProducts::preserving_physical_rows(1, &selected, &[0])
-                .expect("alias construction");
-            let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(7.0, 11.0))));
-            let expected_plan = source
-                .prepared_plan(source_row, || Ok(Arc::clone(&shape)))
-                .unwrap();
-            let expected_frame = source.frame_cache(source_row).unwrap();
-
-            let mut handle = aliases.operation();
-            for _ in 0..2 {
-                let plan = handle
-                    .cached_prepared_plan(0)
-                    .expect("source prepared product");
-                assert!(Arc::ptr_eq(&plan, &expected_plan));
-                assert!(Arc::ptr_eq(
-                    &handle.frame_cache(0).unwrap(),
-                    &expected_frame
-                ));
-                assert!(Arc::ptr_eq(
-                    &handle.prepared_plan(0, || Ok(Arc::clone(&shape))).unwrap(),
-                    &expected_plan
-                ));
-            }
-
-            let mut handle = aliases.operation();
-            assert!(Arc::ptr_eq(
-                &handle.frame_cache(0).unwrap(),
-                &expected_frame
-            ));
-            assert!(Arc::ptr_eq(
-                &handle
-                    .cached_prepared_plan(0)
-                    .expect("source prepared product"),
-                &expected_plan
-            ));
-        }
-    }
-
-    #[test]
-    fn repeated_row_replacements_flatten_product_aliases() {
-        let root = RowProducts::fresh(1).unwrap();
-        let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(7.0, 11.0))));
-        let expected = root.prepared_plan(0, || Ok(Arc::clone(&shape))).unwrap();
-        let root_owner = Arc::clone(&root.owner);
-        let mut current = RowProducts::preserving_physical_rows(1, &root, &[0]).unwrap();
-        drop(root);
-        for _ in 1..64 {
-            let next = RowProducts::preserving_physical_rows(1, &current, &[0]).unwrap();
-            drop(current);
-            current = next;
-        }
-
-        RowProducts::reset_directory_resolution_count();
-        let actual = current
-            .cached_prepared_plan(0)
-            .expect("warmed product through final owner");
-        assert!(Arc::ptr_eq(&actual, &expected));
-        assert_eq!(RowProducts::directory_resolution_count(), 1);
-
-        let alias_owner = &current.owner.aliases.get(&0).expect("row alias").0;
-        assert_eq!(
-            (
-                current.alias_depth(0),
-                Arc::ptr_eq(alias_owner, &root_owner),
-                Arc::strong_count(&root_owner),
-                Arc::strong_count(alias_owner),
-            ),
-            (1, true, 2, 2),
-        );
     }
 
     #[test]

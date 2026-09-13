@@ -912,42 +912,6 @@ impl PyGeometryArray {
         })
     }
 
-    /// Canonical route for row replacement. Only output rows proven unchanged
-    /// alias source products; every other row is backed by a fresh owner.
-    pub(crate) fn from_replacement_storage(
-        source: &Self,
-        storage: Arc<GeometryArrayStorage>,
-        frame: Frame,
-        missing: Option<ValidityMask>,
-        layout: StorageLayout,
-        unchanged_rows: &[usize],
-    ) -> crate::error::Result<Self> {
-        let rows = Self::adopt_rows(storage, missing, layout)?;
-        let products = if unchanged_rows.len() == rows.len()
-            && unchanged_rows
-                .iter()
-                .copied()
-                .enumerate()
-                .all(|(row, source_row)| row == source_row)
-        {
-            source.row_products.clone()
-        } else {
-            prepared::RowProducts::preserving_physical_rows(
-                rows.len(),
-                &source.row_products,
-                unchanged_rows,
-            )?
-        };
-        let caches = ComputedCaches::fresh()?;
-        Ok(Self {
-            rows,
-            frame,
-            bounds_cache: caches.bounds_cache,
-            total_bounds_cache: caches.total_bounds_cache,
-            row_products: products,
-        })
-    }
-
     pub(crate) fn from_storage(
         storage: GeometryArrayStorage,
         frame: Frame,

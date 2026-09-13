@@ -5,7 +5,7 @@
 use crate::array::packed_ops::{
     PyGeometryArray, PyResult, Python, Result, Shape, note_array_row, rows_err,
 };
-use crate::array::{Arc, GeometryArrayStorage, PackedStorage, StorageLayout};
+use crate::array::{Arc, ComputedCaches, GeometryArrayStorage, PackedStorage, StorageLayout};
 
 /// One monomorphized row walker for every per-shape map. `T` lets callers
 /// collect either replacement shapes or optional replacements without an
@@ -47,37 +47,28 @@ fn rebuild_shared_mixed(
 ) -> Result<PyGeometryArray> {
     let mut changed = changed_present.into_iter();
     let mut mapped = Vec::new();
-    let mut unchanged_rows = Vec::new();
     crate::boundary::try_reserve_vec(&mut mapped, shapes.len())?;
     for (row, shape) in shapes.iter().enumerate() {
         let mapped_shape = {
             if source.missing().is_some_and(|mask| mask.is_missing(row)) {
-                crate::boundary::try_push_vec(&mut unchanged_rows, row)?;
                 shape.clone()
             } else {
-                match changed
+                changed
                     .next()
                     .expect("one transform result per present row")
-                {
-                    None => {
-                        crate::boundary::try_push_vec(&mut unchanged_rows, row)?;
-                        shape.clone()
-                    },
-                    Some(new_shape) => new_shape,
-                }
+                    .unwrap_or_else(|| shape.clone())
             }
         };
         crate::boundary::try_push_vec(&mut mapped, mapped_shape)?;
     }
     let exhausted = changed.next().is_none();
     debug_assert!(exhausted);
-    PyGeometryArray::from_replacement_storage(
-        source,
+    PyGeometryArray::from_result_storage(
         Arc::try_new(GeometryArrayStorage::Mixed(mapped)).map_err(crate::error::Error::from)?,
         source.frame.clone(),
         source.missing().cloned(),
         StorageLayout::LogicalRows,
-        &unchanged_rows,
+        ComputedCaches::fresh()?,
     )
 }
 
@@ -184,9 +175,8 @@ impl PyGeometryArray {
     /// [`map_shapes`](Self::map_shapes) for transforms that often return
     /// the input UNCHANGED (idempotent canonicalizers re-run on clean
     /// data): `Ok(None)` reuses the row's existing `Shape` (clone of the
-    /// mixed-column value), and array-side frame/prepared caches transfer
-    /// for those unchanged rows so bounds/validity/point-tester slots
-    /// survive the no-op.
+    /// mixed-column value). The materialized result owns fresh array-side
+    /// prepared and frame-product slots.
     #[expect(
         clippy::impl_trait_in_params,
         reason = "the one-shot callback is deliberately existential; a named generic adds no API meaning"
@@ -216,8 +206,8 @@ impl PyGeometryArray {
 
     /// [`map_shapes_shared`](Self::map_shapes_shared), detached for pure-Rust
     /// idempotent canonicalizers. Only `Shape` values cross the detached
-    /// boundary; unchanged mixed rows keep their stored `Shape` and transfer
-    /// array-side frame/prepared cache slots afterward.
+    /// boundary; unchanged mixed rows keep their stored `Shape`, while the
+    /// materialized result owns fresh array-side product slots.
     #[expect(
         clippy::impl_trait_in_params,
         reason = "the one-shot callback is deliberately existential; a named generic adds no API meaning"
@@ -280,9 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn shared_mixed_map_preserves_unchanged_handles_and_row_caches_with_missing() {
+    fn shared_mixed_map_keeps_values_and_starts_products_cold_with_missing() {
         let source = mixed_with_missing();
-        // Warm prepared slots so the shared map can transfer them.
+        // Warm source products so an aliasing implementation would be visible.
         let warmed0 = source.geometry_at(0).unwrap();
         let before_cache = source.row_products.frame_cache(0).unwrap();
         let result = source
@@ -291,42 +281,39 @@ mod tests {
                     .then(|| Shape::Point(Point::new_raw_xy(20.0, 0.0))))
             })
             .expect("shared map");
-        assert!(Arc::ptr_eq(
-            &warmed0.shape,
-            &result.geometry_at(0).unwrap().shape
-        ));
+        assert_eq!(result.row_products.initialized_counts(), (0, 0, 0));
+        assert_eq!(
+            warmed0.shape.shape(),
+            result.geometry_at(0).unwrap().shape.shape()
+        );
+        assert_eq!(
+            result.geometry_at(2).unwrap().shape.shape(),
+            &Shape::Point(Point::new_raw_xy(20.0, 0.0))
+        );
         assert!(!Arc::ptr_eq(
-            &source.geometry_at(2).unwrap().shape,
-            &result.geometry_at(2).unwrap().shape
-        ));
-        assert!(Arc::ptr_eq(
             &before_cache,
             &result.row_products.frame_cache(0).unwrap()
-        ));
-        assert!(!Arc::ptr_eq(
-            &source.row_products.frame_cache(2).unwrap(),
-            &result.row_products.frame_cache(2).unwrap()
         ));
         assert!(result.is_row_missing(1));
     }
 
     #[test]
-    fn all_unchanged_map_reuses_lazy_frame_cache_rows() {
+    fn all_unchanged_map_starts_with_fresh_product_owner() {
         let source = mixed_with_missing();
+        let source_cache = source.row_products.frame_cache(0).unwrap();
         let result = source
             .map_shapes_shared(|_| Ok(None))
             .expect("no-op shared map");
-        assert!(result.row_products.shares_owner_with(&source.row_products));
-        for row in 0..source.len() {
-            assert!(Arc::ptr_eq(
-                &source.row_products.frame_cache(row).unwrap(),
-                &result.row_products.frame_cache(row).unwrap()
-            ));
-        }
+        assert!(!result.row_products.shares_owner_with(&source.row_products));
+        assert_eq!(result.row_products.initialized_counts(), (0, 0, 0));
+        assert!(!Arc::ptr_eq(
+            &source_cache,
+            &result.row_products.frame_cache(0).unwrap()
+        ));
     }
 
     #[test]
-    fn partial_shared_map_aliases_selected_source_rows_only() {
+    fn partial_shared_map_does_not_transfer_selected_source_products() {
         let source = mixed_with_missing()
             .gather_logical_rows(&[2, 0, 2])
             .unwrap();
@@ -340,17 +327,18 @@ mod tests {
             .expect("partial shared map");
 
         assert!(!result.row_products.shares_owner_with(&source.row_products));
-        assert!(Arc::ptr_eq(
+        assert_eq!(result.row_products.initialized_counts(), (0, 0, 0));
+        assert!(!Arc::ptr_eq(
             &source_unchanged,
             &result.row_products.frame_cache(0).unwrap()
         ));
         assert!(!Arc::ptr_eq(
-            &source_changed,
-            &result.row_products.frame_cache(1).unwrap()
-        ));
-        assert!(Arc::ptr_eq(
             &source_unchanged,
             &result.row_products.frame_cache(2).unwrap()
+        ));
+        assert!(!Arc::ptr_eq(
+            &source_changed,
+            &result.row_products.frame_cache(1).unwrap()
         ));
     }
 
