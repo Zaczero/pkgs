@@ -1,9 +1,12 @@
 """Minimal Griffe repairs for a handwritten extension-module stub.
 
 Griffe does not create members for overload-only ``.pyi`` definitions and
-cannot resolve aliases to those missing members.  The docs also expand private
-annotation aliases so reference signatures describe accepted values rather
-than exposing implementation names.  All prose remains untouched.
+cannot resolve aliases to those missing members.  The public facade also
+re-exports Python-defined adapter functions from private modules, so those
+functions need public canonical model paths before the reference is rendered.
+The docs also expand private annotation aliases so reference signatures
+describe accepted values rather than exposing implementation names. Public API
+prose remains untouched.
 """
 
 from __future__ import annotations
@@ -110,7 +113,7 @@ def _promote_overloads(obj: Any, seen: set[int]) -> None:
         _promote_overloads(member, seen)
 
 
-def _top_level_alias_target(member: Any) -> str | None:
+def _native_alias_target(member: Any) -> str | None:
     if isinstance(member, griffe.Alias):
         target_path = getattr(member, 'target_path', '')
         if target_path.startswith('gometry._lib.'):
@@ -129,29 +132,65 @@ def _top_level_alias_target(member: Any) -> str | None:
     return None
 
 
+def _function_alias_target(
+    pkg: griffe.Module,
+    member: Any,
+) -> griffe.Function | None:
+    """Resolve a top-level function alias kept inside this package."""
+    if not isinstance(member, griffe.Alias):
+        return None
+    target_path = getattr(member, 'target_path', '')
+    package_prefix = f'{pkg.path}.'
+    if not target_path.startswith(package_prefix):
+        return None
+    try:
+        target = member.target
+    except (griffe.AliasResolutionError, griffe.CyclicAliasError):
+        return None
+    parent = getattr(target, 'parent', None)
+    if (
+        not isinstance(target, griffe.Function)
+        or not isinstance(parent, griffe.Module)
+        or parent.path == pkg.path
+        or not parent.path.startswith(package_prefix)
+    ):
+        return None
+    return target
+
+
+def _public_function_copy(
+    function: griffe.Function,
+    name: str,
+    parent: griffe.Module,
+) -> griffe.Function:
+    local = copy.copy(function)
+    local.name = name
+    local.parent = parent
+    local.overloads = [
+        copy.copy(overload)
+        for overload in function.overloads or ()
+        if not _is_never(overload)
+    ]
+    for overload in local.overloads:
+        overload.name = name
+        overload.parent = parent
+    return local
+
+
 def _materialize_function_aliases(pkg: griffe.Module) -> None:
-    lib = pkg.members.get('_lib')
-    if not isinstance(lib, griffe.Module):
-        return
     for alias_name, member in list(pkg.members.items()):
-        target_name = _top_level_alias_target(member)
-        if target_name is None:
-            continue
-        target = lib.members.get(target_name)
+        target = _function_alias_target(pkg, member)
+        if target is None:
+            target_name = _native_alias_target(member)
+            lib = pkg.members.get('_lib')
+            target = (
+                lib.members.get(target_name)
+                if target_name is not None and isinstance(lib, griffe.Module)
+                else None
+            )
         if not isinstance(target, griffe.Function):
             continue
-        local = copy.copy(target)
-        local.name = alias_name
-        local.parent = pkg
-        local.overloads = [
-            copy.copy(overload)
-            for overload in target.overloads or ()
-            if not _is_never(overload)
-        ]
-        for overload in local.overloads:
-            overload.name = alias_name
-            overload.parent = pkg
-        pkg.set_member(alias_name, local)
+        pkg.set_member(alias_name, _public_function_copy(target, alias_name, pkg))
 
 
 def _materialize_class_aliases(pkg: griffe.Module) -> None:
@@ -160,7 +199,7 @@ def _materialize_class_aliases(pkg: griffe.Module) -> None:
     if not isinstance(lib, griffe.Module):
         return
     for alias_name, member in list(pkg.members.items()):
-        target_name = _top_level_alias_target(member)
+        target_name = _native_alias_target(member)
         if target_name is None:
             continue
         target = lib.members.get(target_name)

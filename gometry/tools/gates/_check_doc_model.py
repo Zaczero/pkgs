@@ -115,6 +115,34 @@ def _stub_overloads() -> dict[str, tuple[str, tuple[str, ...]]]:
     return result
 
 
+def _python_function_sources(
+    function: griffe.Function,
+    pkg: griffe.Module,
+    native: griffe.Module,
+) -> list[tuple[griffe.Alias, griffe.Function]]:
+    package_prefix = f'{pkg.path}.'
+    sources: list[tuple[griffe.Alias, griffe.Function]] = []
+    for alias in function.aliases.values():
+        if not isinstance(alias, griffe.Alias) or alias.parent is not pkg:
+            continue
+        target_path = getattr(alias, 'target_path', '')
+        if not target_path.startswith(package_prefix):
+            continue
+        try:
+            target = alias.target
+        except (griffe.AliasResolutionError, griffe.CyclicAliasError):
+            continue
+        parent = getattr(target, 'parent', None)
+        if (
+            isinstance(target, griffe.Function)
+            and isinstance(parent, griffe.Module)
+            and parent.path != native.path
+            and parent.path.startswith(package_prefix)
+        ):
+            sources.append((alias, target))
+    return sources
+
+
 def collect_errors() -> list[str]:
     import gometry as gm
 
@@ -131,8 +159,9 @@ def collect_errors() -> list[str]:
     if not isinstance(lib, griffe.Module):
         return ['transformed model has no gometry._lib module']
 
-    # The import inventory is authoritative: every flat public function/class
-    # must still be represented by its same-named native member.
+    # The import inventory is authoritative: every flat public native
+    # function/class must still be represented by its same-named native member;
+    # Python-defined functions carry provenance through their facade alias.
     for name in gm.__all__:
         public = pkg.members.get(name)
         native = lib.members.get(name)
@@ -145,7 +174,15 @@ def collect_errors() -> list[str]:
         if public.canonical_path != f'gometry.{name}' and not stub_owned:
             errors.append(f'{name}: canonical path is {public.canonical_path!r}')
         if isinstance(public, griffe.Function):
-            if not isinstance(native, griffe.Function):
+            python_sources = _python_function_sources(public, pkg, lib)
+            if python_sources:
+                for alias, source in python_sources:
+                    if source.canonical_path != alias.target_path:
+                        errors.append(
+                            f'{name}: Python target canonical path is '
+                            f'{source.canonical_path!r}'
+                        )
+            elif not isinstance(native, griffe.Function):
                 errors.append(f'{name}: missing native function provenance')
         elif isinstance(public, griffe.Class):
             targets = {

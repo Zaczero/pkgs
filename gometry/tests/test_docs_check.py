@@ -1,9 +1,10 @@
-"""Unit tests for built-site checks and Griffe public-class canonicalization.
+"""Unit tests for built-site checks and Griffe public canonicalization.
 
 Drives the real shipped helpers in ``tools/docs/``:
 * ``check.collect_errors`` unresolved-public-type + rendered double-period rules
 * ``griffe_expand_aliases`` private→public class alias installation so annotation
   crossrefs resolve to ``gometry.X`` anchors
+* Python-defined adapter re-exports resolve to their top-level facade anchors
 """
 
 from __future__ import annotations
@@ -164,6 +165,103 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
         path == 'gometry.GeometryArray' or path.endswith('.GeometryArray')
         for path in found
     ), found
+
+
+def _public_python_function_aliases(
+    pkg: griffe.Module,
+) -> dict[str, tuple[griffe.Alias, griffe.Function]]:
+    native = pkg.members['_lib']
+    assert isinstance(native, griffe.Module)
+    package_prefix = f'{pkg.path}.'
+    aliases: dict[str, tuple[griffe.Alias, griffe.Function]] = {}
+    for name, member in pkg.members.items():
+        if not isinstance(member, griffe.Alias) or member.parent is not pkg:
+            continue
+        target_path = getattr(member, 'target_path', '')
+        if not target_path.startswith(package_prefix):
+            continue
+        try:
+            target = member.target
+        except (griffe.AliasResolutionError, griffe.CyclicAliasError):
+            continue
+        parent = getattr(target, 'parent', None)
+        if (
+            isinstance(target, griffe.Function)
+            and isinstance(parent, griffe.Module)
+            and parent.path != native.path
+            and parent.path.startswith(package_prefix)
+        ):
+            aliases[name] = (member, target)
+    return aliases
+
+
+def test_griffe_canonicalizes_python_function_aliases_to_public_paths() -> None:
+    """Python-defined facade aliases resolve to their public routes."""
+    expand = load_tool('griffe_expand_aliases')
+    raw_loader = griffe.GriffeLoader(
+        search_paths=[str(GOMETRY_ROOT / 'python')],
+        allow_inspection=False,
+    )
+    raw_pkg = raw_loader.load('gometry')
+    aliases = _public_python_function_aliases(raw_pkg)
+    assert aliases
+
+    loader = griffe.GriffeLoader(
+        search_paths=[str(GOMETRY_ROOT / 'python')],
+        extensions=griffe.Extensions(
+            expand.PromoteStubOverloads(),
+            expand.ExpandTokenAliases(),
+        ),
+        allow_inspection=False,
+    )
+    pkg = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+
+    for name, (raw_alias, raw_target) in aliases.items():
+        public = pkg.members[name]
+        assert isinstance(public, griffe.Function)
+        assert public.canonical_path == f'gometry.{name}'
+        assert raw_target.canonical_path == raw_alias.target_path
+        private_alias = next(
+            alias
+            for alias in public.aliases.values()
+            if (
+                isinstance(alias, griffe.Alias)
+                and alias.parent is pkg
+                and alias.target_path == raw_alias.target_path
+            )
+        )
+        private = private_alias.target
+        assert isinstance(private, griffe.Function)
+        assert private.canonical_path == raw_alias.target_path
+
+
+def test_function_alias_materializer_ignores_broken_external_and_class_targets() -> (
+    None
+):
+    """Only resolvable package functions enter the public model."""
+    expand = load_tool('griffe_expand_aliases')
+    loader = griffe.GriffeLoader(
+        search_paths=[str(GOMETRY_ROOT / 'python')],
+        allow_inspection=False,
+    )
+    pkg = loader.load('gometry')
+    aliases = {
+        name: griffe.Alias(name, target, parent=pkg)
+        for name, target in {
+            'broken': 'gometry._missing.function',
+            'external': 'other_package.function',
+            'class_alias': pkg.members['CRS'].target,
+        }.items()
+    }
+    for alias in aliases.values():
+        pkg.set_member(alias.name, alias)
+
+    expand._materialize_function_aliases(pkg)
+
+    for name, alias in aliases.items():
+        assert pkg.members[name] is alias
+        assert isinstance(pkg.members[name], griffe.Alias)
 
 
 def test_griffe_uses_final_concrete_overload_as_canonical() -> None:
