@@ -109,20 +109,6 @@ impl WkbReader<'_> {
         }
     }
 
-    /// Fallible reserve for a validated decoded total (never panics on OOM).
-    fn try_vec_with_capacity<T>(&self, capacity: usize) -> Result<Vec<T>> {
-        let mut vec = Vec::new();
-        if capacity == 0 {
-            return Ok(vec);
-        }
-        vec.try_reserve(capacity).map_err(|_| {
-            IoError::wkb(format!(
-                "failed to reserve capacity for {capacity} WKB elements"
-            ))
-        })?;
-        Ok(vec)
-    }
-
     fn validate_coord_count(&self, count: usize, axes: CoordinateAxes) -> Result<()> {
         // Encoding-true bound: each vertex costs `stride` payload bytes.
         let stride = wkb_dimension(axes) * size_of::<f64>();
@@ -602,7 +588,8 @@ impl WkbReader<'_> {
         // XY-open rings; reject Z/M-open; then pack. Winding/simplicity stay
         // for `Geometry.validate()`. Shell first, holes into final Vec.
         let shell = crate::io::admit_closed_ring(self.read_ring(byte_order, axes)?)?;
-        let mut holes = self.try_vec_with_capacity(ring_count - 1)?;
+        let mut holes = Vec::new();
+        crate::boundary::try_reserve_vec(&mut holes, ring_count - 1)?;
         for _ in 0..ring_count - 1 {
             holes.push(crate::io::admit_closed_ring(
                 self.read_ring(byte_order, axes)?,
@@ -627,7 +614,8 @@ impl WkbReader<'_> {
     ) -> Result<(Vec<Shape>, Option<u32>)> {
         let count = self.read_u32(byte_order)? as usize;
         self.validate_element_count(count)?;
-        let mut shapes = self.try_vec_with_capacity(count)?;
+        let mut shapes = Vec::new();
+        crate::boundary::try_reserve_vec(&mut shapes, count)?;
         let mut effective = inherited;
         for index in 0..count {
             let node = WkbMemberPath {
@@ -661,7 +649,8 @@ impl WkbReader<'_> {
     ) -> Result<(Vec<MultiMember<T>>, Option<u32>)> {
         let count = self.read_u32(byte_order)? as usize;
         self.validate_element_count(count)?;
-        let mut items = self.try_vec_with_capacity(count)?;
+        let mut items = Vec::new();
+        crate::boundary::try_reserve_vec(&mut items, count)?;
         let mut effective = inherited;
         let mut member_error = None;
         for index in 0..count {
@@ -698,7 +687,8 @@ impl WkbReader<'_> {
     ) -> Result<(Vec<MultiMember<Point>>, Option<u32>, usize)> {
         let count = self.read_u32(byte_order)? as usize;
         self.validate_multipoint_member_count(count)?;
-        let mut members = self.try_vec_with_capacity(count)?;
+        let mut members = Vec::new();
+        crate::boundary::try_reserve_vec(&mut members, count)?;
         let mut effective = inherited;
         let mut member_error = None;
         for index in 0..count {

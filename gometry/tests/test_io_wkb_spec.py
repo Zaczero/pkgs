@@ -110,6 +110,14 @@ def test_array_to_wkb_srid_error_keeps_first_present_row_note() -> None:
     assert gm.GeometryArray([]).to_wkb(include_srid=True) == []
 
 
+def test_wkb_impossible_count_is_parse_error_with_bulk_row_note() -> None:
+    """A count that cannot fit the input stays malformed, including in bulk."""
+    malformed = b'\x01' + struct.pack('<I', 4) + struct.pack('<I', 2**32 - 1)
+    with pytest.raises(gm.ParseError) as error:
+        gm.from_wkb([gm.Point(0, 0).to_wkb(), malformed])
+    assert error.value.__notes__ == ['while processing array element 1']
+
+
 def test_nested_ewkb_srid_accepts_matching_and_rejects_conflict() -> None:
     """PostGIS may stamp the SRID flag on nested members: a nested SRID equal
     to the parent's is accepted; a genuine conflict is rejected with both codes
