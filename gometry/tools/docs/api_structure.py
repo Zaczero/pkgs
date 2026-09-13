@@ -48,54 +48,6 @@ GEOMETRY_LEAVES = (
     'GeometryCollection',
 )
 
-OPTIONAL_EXPORTS = frozenset({
-    'explore',
-    'from_geopandas',
-    'from_geoparquet',
-    'from_pandas',
-    'from_polars',
-})
-
-CLASS_EXPORTS = frozenset({
-    'AccuracyWarning',
-    'CRS',
-    'CRSError',
-    'CRSMismatchError',
-    'Cell',
-    'CellArray',
-    'Coordinates',
-    'Extremes',
-    'Features',
-    'GeohashCell',
-    'Geometry',
-    'GeometryArray',
-    'GeometryCollection',
-    'GeometryError',
-    'GeometryParts',
-    'GeometryTypeError',
-    'Groups',
-    'H3Cell',
-    'H3Edge',
-    'H3EdgeArray',
-    'H3Vertex',
-    'H3VertexArray',
-    'InvalidGeometryError',
-    'LineString',
-    'MultiLineString',
-    'MultiPoint',
-    'MultiPolygon',
-    'ParseError',
-    'Point',
-    'Polygon',
-    'PolygonizeResult',
-    'PreparedGeometry',
-    'S2Cell',
-    'SpatialIndex',
-    'Tile',
-    'TransformError',
-    'ValidationReport',
-})
-
 ERRORS = (
     'GeometryError',
     'InvalidGeometryError',
@@ -390,7 +342,15 @@ PAGES: tuple[Page, ...] = (
         'interop',
         'Optional interoperability',
         'Typed conversion boundaries for optional dataframe, GeoParquet, and visualization ecosystems.',
-        (section(*sorted(OPTIONAL_EXPORTS)),),
+        (
+            section(
+                'explore',
+                'from_geopandas',
+                'from_geoparquet',
+                'from_pandas',
+                'from_polars',
+            ),
+        ),
         (('Interoperability guide', '../ecosystem/index.md'),),
     ),
 )

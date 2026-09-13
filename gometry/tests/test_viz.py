@@ -174,7 +174,32 @@ def test_explore_applies_readable_defaults_and_keeps_overrides(
     assert kwargs['map_kwargs']['height'] == 640  # type: ignore[index]
 
 
-def test_lonboard_capsule_fallback_preserves_feature_properties(
+@pytest.mark.parametrize(
+    'failure',
+    [TypeError('capsule rejected'), ImportError('broken lonboard')],
+)
+def test_lonboard_capsule_errors_propagate_without_retry(
+    geographic_points: gm.GeometryArray,
+    failure: Exception,
+) -> None:
+    received: list[object] = []
+
+    class FakeLonboard:
+        @staticmethod
+        def viz(data: object, **kwargs: object) -> object:
+            del kwargs
+            received.append(data)
+            raise failure
+
+    with (
+        mock.patch('gometry._viz._require_lonboard', return_value=FakeLonboard),
+        pytest.raises(type(failure), match=str(failure)),
+    ):
+        gm.explore(geographic_points, attributes={'name': ['a', 'b']})
+    assert len(received) == 1
+
+
+def test_lonboard_capsule_success_is_one_call(
     geographic_points: gm.GeometryArray,
 ) -> None:
     received: list[object] = []
@@ -184,17 +209,12 @@ def test_lonboard_capsule_fallback_preserves_feature_properties(
         def viz(data: object, **kwargs: object) -> object:
             del kwargs
             received.append(data)
-            if len(received) == 1:
-                raise TypeError('capsule rejected')
             return object()
 
     with mock.patch('gometry._viz._require_lonboard', return_value=FakeLonboard):
-        gm.explore(geographic_points, attributes={'name': ['a', 'b']})
-    feature_collection = received[1]
-    assert isinstance(feature_collection, dict)
-    assert [
-        feature['properties']['name'] for feature in feature_collection['features']
-    ] == ['a', 'b']
+        assert gm.explore(geographic_points) is not None
+    assert len(received) == 1
+    assert hasattr(received[0], '__arrow_c_array__')
 
 
 def test_lonboard_unexpected_errors_are_not_masked(

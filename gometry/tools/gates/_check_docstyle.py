@@ -2,7 +2,8 @@
 """Docstring style gate for gometry's public surface.
 
 Operates on the generated stub ``python/gometry/_lib.pyi`` as the docstring
-oracle. Public inventory is ``__all__`` plus exported-class public members.
+oracle. Public inventory is ``__all__`` plus declared exported-class public
+members from the stub and Python re-export modules.
 Hard checks follow the detection SPEC; STYLE_GUIDE section 11 checks emit
 ``style.*`` classes. Exit: 0 clean / 1 violations / 2 incomplete.
 """

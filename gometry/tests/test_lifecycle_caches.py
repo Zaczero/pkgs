@@ -14,8 +14,8 @@ import gometry as gm
 import pytest
 
 
-def test_import_loads_numpy_keeps_optional_adapters_lazy() -> None:
-    """Fresh process: import gometry loads NumPy; optional adapters stay out."""
+def test_import_loads_numpy_keeps_optional_adapters_import_cheap() -> None:
+    """Fresh process: public adapters are visible without optional imports."""
     code = """
 import sys
 import gometry as gm
@@ -25,9 +25,16 @@ assert gm.Cell is __import__("gometry._types", fromlist=["Cell"]).Cell
 from gometry._lib import H3Cell
 # Protocol structural check still works after identity re-export.
 _ = H3Cell
-assert "from_pandas" not in dir(gm)
-assert "from_pandas" not in gm.__all__
-for name in ("pandas", "polars", "geopandas", "lonboard", "pyarrow"):
+names = {
+    "explore",
+    "from_geopandas",
+    "from_geoparquet",
+    "from_pandas",
+    "from_polars",
+}
+assert names <= set(dir(gm))
+assert names <= set(gm.__all__)
+for name in ("pandas", "polars", "geopandas", "lonboard", "pyarrow", "arro3"):
     assert name not in sys.modules, name
 # NumPy surfaces work immediately (core dependency already loaded).
 xs = gm.Point(1.0, 2.0).coords.x
@@ -124,17 +131,18 @@ def test_crs_authorities_cached_and_isolated() -> None:
     assert gm.crs_authorities() == cold
 
 
-def test_lazy_adapter_getattr_is_cached_out_of_dir() -> None:
-    # Lazy adapters must not pollute runtime discovery (dir / __all__).
-    assert 'from_pandas' not in dir(gm)
-    assert 'from_pandas' not in gm.__all__
-    # Resolved adapters are not written into module globals; identity is stable
-    # because the adapter module is cached by the import system. Repeated access
-    # still goes through __getattr__ (may import pandas once on first use).
-    first = gm.from_pandas
-    second = gm.from_pandas
-    assert first is second
-    assert 'from_pandas' not in dir(gm)
+def test_optional_exports_are_eager_facade_bindings() -> None:
+    names = (
+        'explore',
+        'from_geopandas',
+        'from_geoparquet',
+        'from_pandas',
+        'from_polars',
+    )
+    assert set(names) <= set(dir(gm))
+    assert set(names) <= set(gm.__all__)
+    for name in names:
+        assert getattr(gm, name) is getattr(gm, name)
 
 
 def test_pandas_setitem_identity() -> None:

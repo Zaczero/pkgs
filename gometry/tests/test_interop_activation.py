@@ -1,4 +1,4 @@
-"""Optional integrations stay lazy and never mutate framework globals."""
+"""Optional integrations stay import-cheap and never mutate framework globals."""
 
 from __future__ import annotations
 
@@ -43,50 +43,66 @@ def test_import_gometry_stays_dep_free() -> None:
         import sys
         import gometry
 
-        heavy = {'pandas', 'polars', 'pyarrow', 'geopandas', 'lonboard'}
+        heavy = {'pandas', 'polars', 'pyarrow', 'arro3', 'geopandas', 'lonboard'}
         assert not heavy & set(sys.modules)
         """
     )
 
 
-def test_star_import_is_core_only_and_dep_free() -> None:
+def test_star_import_exposes_optional_exports_without_dependencies() -> None:
     _run_isolated(
         """
         import sys
         from gometry import *
 
-        heavy = {'pandas', 'polars', 'pyarrow', 'geopandas', 'lonboard'}
+        heavy = {'pandas', 'polars', 'pyarrow', 'arro3', 'geopandas', 'lonboard'}
         assert not heavy & set(sys.modules)
         assert 'GeometryArray' in globals()
-        assert 'from_pandas' not in globals()
-        assert 'from_polars' not in globals()
-        assert 'from_geopandas' not in globals()
-        assert 'from_geoparquet' not in globals()
-        assert 'GeometryDtype' not in globals()
-        assert 'explore' not in globals()
+        assert {
+            'explore',
+            'from_geopandas',
+            'from_geoparquet',
+            'from_pandas',
+            'from_polars',
+        } <= globals().keys()
         """
     )
 
 
-def test_minimal_install_introspection_does_not_resolve_optional_exports() -> None:
+def test_minimal_install_introspection_discovers_optional_exports() -> None:
     _run_isolated(
         """
+        import inspect
         import pydoc
         import sys
 
-        for dependency in ('pandas', 'polars', 'pyarrow', 'geopandas', 'lonboard'):
+        for dependency in (
+            'pandas',
+            'polars',
+            'pyarrow',
+            'arro3',
+            'geopandas',
+            'lonboard',
+        ):
             sys.modules[dependency] = None
 
         import gometry
 
-        rendered = pydoc.render_doc(gometry)
+        names = {
+            'explore',
+            'from_geopandas',
+            'from_geoparquet',
+            'from_pandas',
+            'from_polars',
+        }
+        rendered = pydoc.render_doc(gometry, renderer=pydoc.plaintext)
         assert 'GeometryArray' in rendered
-        assert 'GeometryDtype' not in dir(gometry)
-        assert 'from_pandas' not in dir(gometry)
+        assert names <= set(dir(gometry))
+        assert names <= set(dict(inspect.getmembers(gometry)))
+        assert all(f'{name}(' in rendered for name in names)
+        assert names <= set(gometry.__all__)
+        assert all(callable(getattr(gometry, name)) for name in names)
         assert 'gometry._pandas' not in sys.modules
-        assert 'gometry._polars' not in sys.modules
-        assert 'gometry._geoparquet' not in sys.modules
-        assert 'gometry._viz' not in sys.modules
         """
     )
 
@@ -198,7 +214,7 @@ def test_missing_dataframe_extra_has_targeted_install_hint(
         import gometry as gm
 
         try:
-            getattr(gm, {attribute!r})
+            getattr(gm, {attribute!r})(object())
         except ModuleNotFoundError as error:
             assert error.name == {dependency!r}
             assert 'gometry[{extra}]' in str(error)
@@ -208,21 +224,31 @@ def test_missing_dataframe_extra_has_targeted_install_hint(
     )
 
 
-@pytest.mark.parametrize(
-    ('attribute', 'dependency'),
-    [('from_geoparquet', 'pyarrow'), ('explore', 'lonboard')],
-)
-def test_lazy_exports_do_not_import_their_heavy_dependency(
-    attribute: str,
-    dependency: str,
-) -> None:
+def test_optional_exports_are_discoverable_without_dependency_import() -> None:
     _run_isolated(
-        f"""
+        """
         import sys
+        import inspect
         import gometry as gm
 
-        assert {dependency!r} not in sys.modules
-        assert callable(getattr(gm, {attribute!r}))
-        assert {dependency!r} not in sys.modules
+        names = {
+            'explore',
+            'from_geopandas',
+            'from_geoparquet',
+            'from_pandas',
+            'from_polars',
+        }
+        assert names <= set(dir(gm))
+        assert names <= set(dict(inspect.getmembers(gm)))
+        assert names <= set(gm.__all__)
+        assert all(callable(getattr(gm, name)) for name in names)
+        assert not {
+            'pandas',
+            'polars',
+            'pyarrow',
+            'arro3',
+            'geopandas',
+            'lonboard',
+        } & set(sys.modules)
         """
     )

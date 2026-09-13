@@ -6,6 +6,7 @@ module only assigns public symbols to pages and emits mkdocstrings directives.
 
 from __future__ import annotations
 
+import inspect
 import pathlib
 import sys
 
@@ -17,9 +18,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from api_structure import (
-    CLASS_EXPORTS,
     GEOMETRY_LEAVES,
-    OPTIONAL_EXPORTS,
     PAGES,
     Page,
     Section,
@@ -32,9 +31,7 @@ _EXAMPLES = pathlib.Path(__file__).resolve().parents[2] / 'examples'
 if str(_EXAMPLES) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES))
 
-_CORE_EXPORTS = set(gm.__all__)
-_OPTIONAL_EXPORTS = set(OPTIONAL_EXPORTS)
-_EXPORTS = _CORE_EXPORTS | _OPTIONAL_EXPORTS
+_EXPORTS = set(gm.__all__)
 
 
 def _validate_manifest() -> None:
@@ -52,17 +49,6 @@ def _validate_manifest() -> None:
             f'duplicate={duplicate!r}, missing={sorted(missing)!r}, '
             f'stale={sorted(stale)!r}'
         )
-
-    optional = _OPTIONAL_EXPORTS
-    interop = next(page for page in PAGES if page.path == 'interop')
-    placed_optional = set(resolved_symbols(interop, _EXPORTS))
-    if optional != placed_optional:
-        raise RuntimeError(
-            'optional API partition drift: '
-            f'missing={sorted(optional - placed_optional)!r}, '
-            f'extra={sorted(placed_optional - optional)!r}'
-        )
-
 
 _validate_manifest()
 
@@ -91,7 +77,7 @@ _OWN_CLASS_OPTIONS = (
 
 
 def _options(name: str) -> str:
-    if name not in CLASS_EXPORTS:
+    if not inspect.isclass(getattr(gm, name)):
         return _FUNCTION_OPTIONS
     if name in GEOMETRY_LEAVES:
         return _OWN_CLASS_OPTIONS

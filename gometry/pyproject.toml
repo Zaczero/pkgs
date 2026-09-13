@@ -176,8 +176,8 @@ exclude = [".venv", ".ruff_cache", "site", "target*"]
 # Pickle round-trips of gometry's own objects are the feature under test; the
 # "untrusted data" caveat S301 guards does not apply to self-produced bytes.
 "tests/*.py" = ["S301"]
-# Deliberate import ordering: native exports precede the lazy optional facade,
-# and optional-dependency typing blocks follow their guards.
+# Deliberate import ordering: facade adapter imports are grouped with the
+# native exports, and optional-dependency typing blocks follow their guards.
 "python/gometry/__init__.py" = ["E402"]
 "python/gometry/_types.py" = ["E402"]
 

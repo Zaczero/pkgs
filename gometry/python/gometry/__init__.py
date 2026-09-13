@@ -32,25 +32,14 @@ True
 from __future__ import annotations
 
 import collections.abc as _cabc
-import importlib as _importlib
 from typing import get_type_hints as _get_type_hints
 
 TYPE_CHECKING = False
-
-if TYPE_CHECKING:
-    # Lazy exports (PEP 562 `__getattr__` below) declared for checkers and
-    # IDEs; nothing here imports at runtime, so pandas/pyarrow/lonboard stay
-    # deferred until first attribute access.
-    from gometry._geopandas import from_geopandas as from_geopandas
-    from gometry._geoparquet import from_geoparquet as from_geoparquet
-    from gometry._pandas import from_pandas as from_pandas
-    from gometry._polars import from_polars as from_polars
-    from gometry._viz import explore as explore
-
-# The exact sentinel spelling above is recognized by type checkers, but it is
-# implementation machinery rather than a user-facing ``gm.`` suggestion.
 del TYPE_CHECKING
 
+from gometry._from_pandas import from_pandas
+from gometry._geopandas import from_geopandas
+from gometry._geoparquet import from_geoparquet
 from gometry._lib import (
     CRS,
     AccuracyWarning,
@@ -215,12 +204,14 @@ from gometry._lib import (
 from gometry._lib import (
     __version__ as __version__,
 )
+from gometry._polars import from_polars
 from gometry._types import (
     Cell,
     Extremes,
     Features,
     PolygonizeResult,
 )
+from gometry._viz import explore
 
 # Public Python-defined types have the same canonical identity users import
 # and document; the private module is only their implementation home.
@@ -345,10 +336,15 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'equals',
     'equals_exact',
     'equals_identical',
+    'explore',
     'frechet_distance',
     'from_arrow',
     'from_features',
     'from_geojson',
+    'from_geopandas',
+    'from_geoparquet',
+    'from_pandas',
+    'from_polars',
     'from_polyline',
     'from_wkb',
     'from_wkt',
@@ -424,25 +420,3 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'union_all',
     'within',
 ]
-
-
-# Optional conversion and visualization functions stay lazy; their static
-# declarations above preserve IDE discovery without importing dependencies.
-# Resolved adapters are not written into module globals — the imported adapter
-# module is already cached by the import system, and ``dir(gometry)`` /
-# ``__all__`` stay the import-safe core surface (never force optional imports
-# via ``pydoc`` / ``inspect.getmembers``).
-_LAZY_EXPORTS: dict[str, str] = {
-    'explore': 'gometry._viz',
-    'from_geopandas': 'gometry._geopandas',
-    'from_geoparquet': 'gometry._geoparquet',
-    'from_pandas': 'gometry._pandas',
-    'from_polars': 'gometry._polars',
-}
-
-
-def __getattr__(name: str) -> object:
-    module_name = _LAZY_EXPORTS.get(name)
-    if module_name is not None:
-        return getattr(_importlib.import_module(module_name), name)
-    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

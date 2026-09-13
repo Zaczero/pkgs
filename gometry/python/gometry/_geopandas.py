@@ -17,14 +17,7 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     import geopandas as gpd
 else:
-    try:
-        import geopandas as gpd
-    except ModuleNotFoundError as error:
-        if error.name != 'geopandas' and not (error.name or '').startswith(
-            'geopandas.'
-        ):
-            raise
-        gpd = SimpleNamespace(GeoDataFrame=object, GeoSeries=object)
+    gpd = SimpleNamespace(GeoDataFrame=object, GeoSeries=object)
 
 _GEOPANDAS_INSTALL = "install the 'gometry[geopandas]' extra"
 

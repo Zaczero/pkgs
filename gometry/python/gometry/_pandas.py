@@ -68,8 +68,9 @@ _ExtensionDtype = _pd.api.extensions.ExtensionDtype
 _ExtensionArray = _pd.api.extensions.ExtensionArray
 
 
-# mypy cannot model these runtime-selected pandas extension bases; pandas is
-# deliberately kept lazy so the optional dependency remains optional.
+# mypy cannot model these runtime-selected pandas extension bases. This module
+# is imported only by pandas adapter calls, so pandas remains optional to the
+# top-level package.
 class GeometryDtype(_ExtensionDtype):  # type: ignore[valid-type, misc]
     """pandas extension dtype for gometry geometries."""
 
@@ -536,33 +537,3 @@ def to_pandas(
         name=name,
         dtype=GeometryDtype(),
     )
-
-
-def from_pandas(series: pd.Series) -> GeometryArray[Geometry | None]:
-    """Extract the backing ``GeometryArray`` from a geometry Series.
-
-    Zero-copy: the Series and the returned array share storage. Missing rows
-    are first-class — they come back as missing rows of the ``GeometryArray``
-    (``arr.is_missing`` / ``None`` on access).
-
-    Parameters
-    ----------
-    series : pandas.Series
-        A ``gometry.geometry``-dtyped Series (see `to_pandas`).
-
-    Returns
-    -------
-    GeometryArray
-
-    Raises
-    ------
-    TypeError
-        If the Series is not backed by gometry's extension array.
-    """
-    data = series.array
-    if not isinstance(data, GeometryExtensionArray):
-        raise TypeError(
-            'expected a Series backed by gometry GeometryExtensionArray, '
-            f'got {type(data).__name__}'
-        )
-    return data.geometry_array

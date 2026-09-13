@@ -10,6 +10,7 @@ public signatures without private helper names, and linked See Also entries.
 from __future__ import annotations
 
 import html
+import inspect
 import re
 import shutil
 import subprocess
@@ -25,7 +26,7 @@ SITE = ROOT / 'site'
 API_SITE = SITE / 'api'
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from api_structure import OPTIONAL_EXPORTS, generated_api_nav_paths
+from api_structure import generated_api_nav_paths
 
 _SIGNATURE = re.compile(
     r'<div class="language-python doc-signature highlight">(?P<body>.*?)</div>',
@@ -123,9 +124,9 @@ def collect_errors(site: Path = SITE) -> list[str]:
     api_html = '\n'.join(
         source for path, source in pages.items() if path.is_relative_to(api_site)
     )
-    exports = set(gm.__all__) | set(OPTIONAL_EXPORTS)
+    exports = set(gm.__all__)
     public_classes = {
-        name for name in exports if isinstance(getattr(gm, name, None), type)
+        name for name in exports if inspect.isclass(getattr(gm, name, None))
     }
     for path, source in pages.items():
         unresolved = sorted({

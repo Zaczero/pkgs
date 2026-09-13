@@ -6,7 +6,8 @@ description: How gometry fits the Python geospatial stack — NumPy, Arrow/GeoAr
 
 gometry is a geometry **engine**. It speaks the formats and protocols used by the
 Python geospatial stack through direct, typed adapters. Native Arrow capsules
-and NumPy views can be zero-copy; encoded and foreign-object boundaries copy.
+and NumPy views can avoid copying where the boundary permits; encoded and
+foreign-object boundaries copy.
 One Python-facing package (plus mandatory NumPy) covers
 workflows commonly split across Shapely, pyproj, h3-py, s2sphere, and rtree;
 everything else
@@ -19,7 +20,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 - **Coordinates and bulk numeric results** → [NumPy arrays & coordinates](numpy.md).
   NumPy is a required dependency; every dense result is a typed ndarray.
 - **Columnar interchange / lakehouse / storage & maps** → [Arrow & storage](arrow.md)
-  (zero-copy via Arrow PyCapsules, pyarrow optional; also GeoParquet files and lonboard maps).
+  (Arrow PyCapsules, pyarrow optional; also GeoParquet files and lonboard maps).
 - **DataFrames** → [DataFrames](dataframes.md) (explicit pandas extension
   storage, Polars WKB Series, and GeoPandas round-trip).
 - **Files, wire formats, databases** → [Text & binary formats](text-formats.md)
@@ -29,7 +30,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 
 "Native" integrations need no optional install.
 
-| Partner | Install | → gometry | gometry → | CRS carried | Zero-copy path |
+| Partner | Install | → gometry | gometry → | CRS carried | Copy/ownership note |
 | --- | --- | --- | --- | --- | --- |
 | **NumPy** | *(required)* | coordinate buffers → constructors / factories | ndarray returns, [`geom.coords.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y], [`get_coordinates`][gometry.get_coordinates] | n/a | read-only views |
 | **Arrow / GeoArrow** | *(native capsules)* | consume `__arrow_c_array__`/`__arrow_c_stream__` | export `__arrow_c_*__` capsules | PROJJSON | native packed layouts |
@@ -39,7 +40,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 | **polars** | `gometry[polars]` | [`gm.from_polars(series)`][gometry.from_polars] | [`arr.to_polars()`][gometry.GeometryArray.to_polars] | EWKB EPSG SRID only | encode/decode copy |
 | **GeoPandas** | `gometry[geopandas]` | [`from_geopandas`][gometry.from_geopandas] | [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] | from frame | vectorized WKB |
 | **Arrow C consumers** | *(none)* | — | consume gometry `__arrow_c_*__` | metadata | capsule path |
-| **lonboard** | `gometry[viz]` | — | [`explore`][gometry.explore], notebook `_repr_html_` | reprojects toward WGS84 | GeoArrow capsule |
+| **lonboard** | `gometry[viz]` | — | [`explore`][gometry.explore], notebook `_repr_html_` | reprojects toward WGS84 | Arrow capsule route; preprocessing and widget construction may allocate |
 | **Shapely** | *(none)* | `__geo_interface__`, [`GeometryArray([...])`][gometry.GeometryArray] | `geom.__geo_interface__` | no (GeoJSON) | — |
 | **pyproj** | *(none)* | [`CRS(pyproj_crs)`][gometry.CRS] (duck-typed) | [`crs.to_wkt()`][gometry.CRS.to_wkt] / [`to_authority()`][gometry.CRS.to_authority] | — | — |
 | **scipy / scikit-learn** | *(none)* | — | [`get_coordinates`][gometry.get_coordinates] → ndarray | project first | NumPy view |
@@ -57,7 +58,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 
 ### Zero import cost when unused
 
-`import gometry` never pulls pandas, Polars, PyArrow, GeoPandas, or lonboard. A
+`import gometry` never pulls pandas, Polars, PyArrow, arro3, GeoPandas, or lonboard. A
 script that only calls [`gm.Point`][gometry.Point], [`gm.distance`][gometry.distance], and [`gm.h3_cover`][gometry.h3_cover] imports none
 of them. Converter calls import only the requested framework and never mutate
 framework classes or registries.

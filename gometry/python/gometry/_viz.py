@@ -1,4 +1,4 @@
-"""Optional lonboard visualization glue — zero-copy GeoArrow handoff."""
+"""Optional lonboard visualization glue using the Arrow capsule interface."""
 
 from __future__ import annotations
 
@@ -17,9 +17,9 @@ if TYPE_CHECKING:
     from lonboard import Map
 else:
     # Runtime: keep the `Map` annotation name resolvable WITHOUT importing
-    # lonboard, so `import gometry` and `gm.explore` stay lazy (explore imports
-    # lonboard only when actually called). Static checkers see the real
-    # `lonboard.Map` under TYPE_CHECKING above.
+    # lonboard, so importing gometry and resolving `gm.explore` stay
+    # import-cheap. Static checkers see the real `lonboard.Map` under
+    # TYPE_CHECKING above.
     Map = Any
 
 _LONBOARD_INSTALL = "install the 'gometry[viz]' extra"
@@ -149,19 +149,6 @@ def _attribute_table(attributes: Any, row_count: int) -> Any | None:
     return table
 
 
-def _feature_collection(arr: GeometryArray, attributes: Any | None) -> Any:
-    from gometry import to_feature_collection
-
-    properties = None
-    if attributes is not None:
-        columns = [column.to_pylist() for column in attributes.columns]
-        properties = [
-            dict(zip(attributes.column_names, row, strict=True))
-            for row in zip(*columns, strict=True)
-        ]
-    return to_feature_collection(arr, properties=properties)
-
-
 def _lonboard_data(arr: GeometryArray, attributes: Any | None) -> Any:
     if attributes is None:
         return arr
@@ -183,14 +170,10 @@ def _viz_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _lonboard_viz(arr: GeometryArray, attributes: Any | None, **kwargs: Any) -> Any:
-    """Hand lonboard a GeoArrow capsule first; fall back to GeoJSON if needed."""
+    """Hand lonboard one Arrow-compatible geometry object."""
     lonboard = _require_lonboard()
     configured = _viz_kwargs(kwargs)
-
-    try:
-        return lonboard.viz(_lonboard_data(arr, attributes), **configured)
-    except (ImportError, TypeError):
-        return lonboard.viz(_feature_collection(arr, attributes), **configured)
+    return lonboard.viz(_lonboard_data(arr, attributes), **configured)
 
 
 def explore(
@@ -201,16 +184,15 @@ def explore(
 ) -> Map:
     """Build an interactive lonboard map from gometry geometries.
 
-    Geometries are handed to lonboard via zero-copy GeoArrow
-    (``__arrow_c_array__``) when possible; a GeoJSON feature-collection
-    fallback is used only if the capsule handoff fails.
+    Geometries are handed to lonboard through the Arrow capsule interface.
+    Reprojection, attribute assembly, and widget construction may allocate.
 
     Parameters
     ----------
     values : Geometry or GeometryArray
         Input geometries. A scalar geometry is wrapped as a one-row array.
     attributes : Arrow table or mapping, optional
-        Aligned feature columns carried into lonboard and GeoJSON tooltips.
+        Aligned feature columns carried into lonboard.
     kwargs : mapping, optional
         Keyword arguments forwarded to ``lonboard.viz``. The default map keeps
         points, lines, and polygons visually distinct and makes features

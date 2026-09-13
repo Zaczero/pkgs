@@ -75,6 +75,17 @@ def test_public_inventory_includes_type_only_exports() -> None:
         'Features',
         'PolygonizeResult',
     } <= PUBLIC_API_SYMBOLS
+    assert {
+        'Cell.children_count',
+        'H3Cell.children_count',
+        'Features.geometries',
+        'Features.properties',
+        'Features.ids',
+        'Extremes.west',
+        'Extremes.north',
+        'PolygonizeResult.polygons',
+    } <= PUBLIC_API_SYMBOLS
+    assert 'GeometryArray._replace_at' not in PUBLIC_API_SYMBOLS
 
 
 def test_manifest_serialization_retains_canonical_endpoints() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from gometry._lib import (
@@ -31,11 +32,8 @@ def _polars() -> Any:
 
 if TYPE_CHECKING:
     import polars as pl
-
-    _pl = pl
 else:
-    _pl = _polars()
-    pl = _pl
+    pl = SimpleNamespace(Binary=object, Series=object)
 
 
 def to_polars(
@@ -76,6 +74,7 @@ def to_polars(
         If CRS or coordinate epoch metadata would be lost without the
         corresponding acknowledgement.
     """
+    pl = _polars()
     if values.epoch is not None and not drop_epoch:
         raise GeometryError(
             'to_polars cannot encode coordinate epoch metadata in WKB/EWKB; '
@@ -99,7 +98,7 @@ def to_polars(
                     'pass drop_crs=True to acknowledge the loss'
                 ) from exc
             storage = values.to_wkb(include_srid=False, drop_epoch=drop_epoch)
-    return _pl.Series(name, storage, dtype=_pl.Binary)
+    return pl.Series(name, storage, dtype=pl.Binary)
 
 
 def from_polars(
@@ -133,6 +132,7 @@ def from_polars(
     GeometryError
         If epoch is supplied without a CRS.
     """
+    _polars()
     result = from_wkb(series, crs=crs, epoch=epoch)
     if not isinstance(result, GeometryArray):
         raise TypeError('expected a Polars binary Series, got scalar WKB')

@@ -6,10 +6,10 @@ import gometry as gm
 import numpy as np
 import pandas as pd
 import pytest
+from gometry._from_pandas import from_pandas
 from gometry._pandas import (
     GeometryDtype,
     GeometryExtensionArray,
-    from_pandas,
     to_pandas,
 )
 

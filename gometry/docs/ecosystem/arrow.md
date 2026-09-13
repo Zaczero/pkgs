@@ -126,8 +126,8 @@ gometry GeoArrow extension field and GeoParquet column metadata do.
 
 For dependency-free producers, pass the gometry object itself to any consumer that
 understands the Arrow PyCapsule protocol; the consumer calls `__arrow_c_array__`
-or `__arrow_c_stream__` and imports the GeoArrow buffers **zero-copy**. When
-gometry is the consumer, `from_arrow` accepts those capsules too and copies the
+or `__arrow_c_stream__` and imports the GeoArrow buffers according to its own
+ownership contract. When gometry is the consumer, `from_arrow` accepts those capsules too and copies the
 selected schema plus visible validity, offset, view, variadic-size, coordinate,
 and WKB spans into gometry-owned storage before validation and decode.
 
@@ -135,8 +135,10 @@ Consumers with Arrow-C support can consume these capsules directly, subject to
 their own GeoArrow and extension-type support. Gometry's supported
 [`to_polars()`][gometry.GeometryArray.to_polars] / [`from_polars()`][gometry.from_polars] adapter instead uses a batched WKB/EWKB `Binary`
 Series so it remains independent of PyArrow; that boundary is covered in
-[DataFrames](dataframes.md). The lonboard adapter uses the direct capsule handoff
-and falls back to GeoJSON when that handoff is unavailable.
+[DataFrames](dataframes.md). The lonboard adapter passes the geometry array, or
+an Arrow-compatible table when attributes are supplied, through the direct
+capsule route. Reprojection, attribute assembly, and widget construction may
+allocate; it does not promise a GeoJSON fallback.
 
 ## GeoParquet — durable columnar storage
 
@@ -194,9 +196,10 @@ print("notebook HTML bytes:", len(html) if html else 0)
 print("explore available:", callable(gm.explore))
 ```
 
-[`gm.explore`][gometry.explore] hands lonboard a **zero-copy GeoArrow capsule** when possible; a
-GeoJSON feature-collection fallback runs only if the
-capsule handoff fails. Inputs need a CRS and finite bounds. By default it presents
+[`gm.explore`][gometry.explore] hands lonboard the geometry through its
+Arrow-compatible capsule route. Reprojection, attribute assembly, and widget
+construction may allocate, and lonboard errors propagate from that one route;
+there is no GeoJSON fallback. Inputs need a CRS and finite bounds. By default it presents
 a map where points, lines, and polygons remain distinct and features are inspectable
 on hover. Pass lonboard's `scatterplot_kwargs`, `path_kwargs`,
 `polygon_kwargs`, or `map_kwargs` to tailor individual settings.

@@ -682,11 +682,16 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'equals_exact',
         'equals_identical',
         'Cell',
+        'explore',
         'frechet_distance',
         'from_arrow',
         'from_features',
         'from_geojson',
+        'from_geopandas',
+        'from_geoparquet',
+        'from_pandas',
         'from_polyline',
+        'from_polars',
         'from_wkb',
         'from_wkt',
         'get_coordinates',
@@ -741,11 +746,8 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'from_pandas',
         'from_polars',
     }
-    assert optional_exports.isdisjoint(gm.__all__)
-    # The handwritten stub and API reference advertise optional exports.
-    # Runtime dir() stays core-only because pydoc resolves every returned name
-    # and would otherwise import optional frameworks as a side effect.
-    assert optional_exports.isdisjoint(dir(gm))
+    assert optional_exports <= set(dir(gm))
+    assert optional_exports <= set(gm.__all__)
     assert 'TYPE_CHECKING' not in dir(gm)
     assert all(
         callable(getattr(gm, name)) or isinstance(getattr(gm, name), type)

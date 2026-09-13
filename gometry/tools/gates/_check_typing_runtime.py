@@ -43,6 +43,7 @@ _TOP_LEVEL_HINT_TARGETS = (
 
 _INTEROP_MODULES = (
     'gometry._arrow',
+    'gometry._from_pandas',
     'gometry._geopandas',
     'gometry._geoparquet',
     'gometry._optional',
@@ -138,10 +139,6 @@ def _check_annotated_members(label: str, obj: object, errors: list[str]) -> None
 
 def _check_public_interop_hints(errors: list[str]) -> None:
     seen: set[int] = set()
-    for name in gometry._LAZY_EXPORTS:
-        obj = getattr(gometry, name)
-        seen.add(id(obj))
-        _check_annotated_members(f'gometry.{name}', obj, errors)
 
     for module_name in _INTEROP_MODULES:
         module = importlib.import_module(module_name)
