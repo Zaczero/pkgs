@@ -24,6 +24,13 @@ _WGS84_PROJJSON_METADATA = _json.dumps(
 ).encode()
 
 
+def _assert_same_crs(left: gm.CRS | None, right: gm.CRS | None) -> None:
+    if left is None or right is None:
+        assert left is right
+    else:
+        assert left.same_as(right, mode='exact')
+
+
 _ARROW_LAYOUT_WKTS: dict[str, tuple[str, str, str]] = {
     'points': ('POINT (0 0)', 'POINT (1 1)', 'POINT (2 2)'),
     'lines': (
@@ -90,7 +97,7 @@ def test_arrow_conformance_matrix_preserves_validity_and_values(
     restored = cast('gm.GeometryArray', gm.from_arrow(arrow_like))
     assert restored.is_missing.tolist() == expected.is_missing.tolist()
     assert restored.to_wkt() == expected.to_wkt()
-    assert restored.crs == expected.crs
+    _assert_same_crs(restored.crs, expected.crs)
 
 
 def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
@@ -380,7 +387,7 @@ def test_explicit_empty_multipart_arrow_controls_preserve_other_contracts() -> N
     framed_restored = cast('gm.GeometryArray', gm.from_arrow(framed.to_arrow()))
     assert framed_restored.to_wkt(drop_epoch=True) == [framed.to_wkt(drop_epoch=True)]
     assert framed_restored[0].coordinate_axes == 'XYZM'
-    assert framed_restored.crs == 'EPSG:4326'
+    assert framed_restored.crs.to_epsg() == 4326
     assert framed_restored.epoch == 2020.0
 
 
@@ -391,7 +398,7 @@ def test_to_arrow_forced_wkb_encoding_roundtrips() -> None:
     assert arrow.storage.type == pa.binary()
     restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
     assert canon(restored) == canon(values)
-    assert restored.crs == values.crs
+    _assert_same_crs(restored.crs, values.crs)
 
     scalar = gm.Point(4.0, 5.0, crs=4326)
     scalar_arrow = scalar.to_arrow(encoding='wkb')
@@ -443,9 +450,9 @@ def test_nullable_pyarrow_import_preserves_explicit_frame() -> None:
     nullable = apply_missing(values.to_arrow(), b'\x01')
     restored = cast('gm.GeometryArray', gm.from_arrow(nullable, crs=4326, epoch=2020.0))
     assert restored.is_missing.tolist() == [False, True]
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
     assert restored.epoch == 2020.0
-    assert restored[0].crs == 'EPSG:4326'
+    assert restored[0].crs.to_epsg() == 4326
     assert restored[0].epoch == 2020.0
 
 
@@ -486,7 +493,7 @@ def test_nullable_arrow_c_import_keeps_compact_native_payload(
     restored = cast('gm.GeometryArray', gm.from_arrow(CapsuleOnly()))
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
     assert restored.is_missing.tolist() == [False, True, False]
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
     assert restored.epoch == 2020.0
     native = restored.to_arrow()
     assert native.type.extension_name == extension_name
@@ -714,7 +721,7 @@ def test_geoarrow_wkb_roundtrip_for_scalar_and_array() -> None:
     assert arrow.type.extension_name == 'geoarrow.wkb'
     assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
     assert isinstance(recovered, gm.GeometryArray)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in list(recovered)] == [
         'POINT (1 2)',
         'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))',
@@ -734,7 +741,7 @@ def test_geoarrow_wkb_roundtrip_for_scalar_and_array() -> None:
     assert [(item).to_wkt() for item in list(memoryview_recovered)] == [
         (item).to_wkt() for item in values
     ]
-    assert ewkb_recovered.crs == 'EPSG:4326'
+    assert ewkb_recovered.crs.to_epsg() == 4326
     assert all(isinstance(value, bytes) for value in wkb_values)
     with pytest.raises(AttributeError, match='to_arrow'):
         (cast('Any', [point])).to_arrow()
@@ -780,7 +787,7 @@ def test_arrow_capsule_roundtrip_via_pyarrow_array_protocol() -> None:
             ).encode()
         )
         assert isinstance(restored, gm.GeometryArray)
-        assert restored.crs == 'EPSG:4326'
+        assert restored.crs.to_epsg() == 4326
         assert restored.epoch == 2020.0
         assert [str(g) for g in restored] == [str(g) for g in values]
 
@@ -796,7 +803,7 @@ def test_arrow_capsules_can_be_consumed_without_pyarrow_materialization() -> Non
     assert 'arrow_array' in repr(array_capsule)
     assert 'arrow_array_stream' in repr(stream_capsule)
     restored = cast('gm.GeometryArray', gm.from_arrow(_CapsuleStreamOnly(values)))
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
     assert restored.epoch == 2015.5
     assert [str(g) for g in restored] == ['POINT (0 0)', 'POINT (1 1)']
     for export in (
@@ -810,6 +817,9 @@ def test_arrow_capsules_can_be_consumed_without_pyarrow_materialization() -> Non
 
 def test_arrow_c_array_import_does_not_import_pyarrow() -> None:
     code = "\nimport importlib.abc\nimport sys\n\nimport gometry as gm\n\nclass _CapsuleArrayOnly:\n    def __init__(self, schema, array):\n        self._schema = schema\n        self._array = array\n\n    def __arrow_c_array__(self, requested_schema=None):\n        return (self._schema, self._array)\n\nclass BlockPyArrow(importlib.abc.MetaPathFinder):\n    def find_spec(self, fullname, path=None, target=None):\n        if fullname == 'pyarrow' or fullname.startswith('pyarrow.'):\n            raise AssertionError('pyarrow import attempted')\n        return None\n\nsys.meta_path.insert(0, BlockPyArrow())\nvalues = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)\nschema, array = values.__arrow_c_array__()\nrestored = gm.from_arrow(_CapsuleArrayOnly(schema, array))\nassert 'pyarrow' not in sys.modules\nassert restored.crs == 'EPSG:4326'\nassert restored.epoch == 2020.0\nassert [str(value) for value in restored] == ['POINT (0 2)', 'POINT (1 3)']\n"
+    code = code.replace(
+        "assert restored.crs == 'EPSG:4326'", "assert restored.crs.to_epsg() == 4326"
+    )
     subprocess.run([sys.executable, '-c', code], check=True)
 
 
@@ -845,7 +855,7 @@ def test_foreign_arrow_c_providers_with_shape_attributes_use_native_path() -> No
     for provider in providers:
         restored = cast('gm.GeometryArray', gm.from_arrow(provider))
         assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
-        assert restored.crs == 'EPSG:4326'
+        assert restored.crs.to_epsg() == 4326
         assert restored.epoch == 2020.0
 
 
@@ -864,7 +874,7 @@ def test_pyarrow_container_types_preserve_geometry_frame() -> None:
     for source in inputs:
         restored = cast('gm.GeometryArray', gm.from_arrow(source))
         assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
-        assert restored.crs == 'EPSG:4326'
+        assert restored.crs.to_epsg() == 4326
         assert restored.epoch == 2020.0
 
 
@@ -893,7 +903,7 @@ import sys
 sys.meta_path.insert(0, BlockPyArrow())
 values = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)
 restored = gm.from_arrow(Provider(values))
-assert restored.crs == 'EPSG:4326'
+assert restored.crs.to_epsg() == 4326
 assert restored.epoch == 2020.0
 assert [str(value) for value in restored] == ['POINT (0 2)', 'POINT (1 3)']
 """
@@ -937,7 +947,7 @@ def test_arrow_c_stream_import_consumes_all_batches() -> None:
     stream_only = _ArrowCStreamOnly(chunked)
     assert not hasattr(stream_only, 'chunks')
     restored = cast('gm.GeometryArray', gm.from_arrow(stream_only))
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
     assert restored.epoch == 2020.0
     assert [str(value) for value in restored] == [
         'POINT (0 10)',
@@ -961,7 +971,7 @@ def test_geoarrow_point_array_uses_packed_coordinate_storage() -> None:
     assert arrow.storage.field('y').to_pylist() == [2.0, 4.0]
     assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
     assert isinstance(recovered, gm.GeometryArray)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in list(recovered)] == [
         'POINT (1 2)',
         'POINT (3 4)',
@@ -985,7 +995,7 @@ def test_geoarrow_linestring_array_uses_packed_coordinate_storage() -> None:
     ]
     assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
     assert isinstance(recovered, gm.GeometryArray)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in list(recovered)] == [
         'LINESTRING (0 0, 1 1)',
         'LINESTRING (2 2, 3 4, 5 8)',
@@ -1036,7 +1046,7 @@ def test_geoarrow_polygon_array_uses_packed_coordinate_storage() -> None:
     ]
     assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
     assert isinstance(recovered, gm.GeometryArray)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in list(recovered)] == [
         'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))',
         'POLYGON ((10 10, 14 10, 14 14, 10 14, 10 10), (11 11, 12 11, 12 12, 11 12, 11 11))',
@@ -1126,7 +1136,7 @@ def test_geoarrow_multi_and_polygon_arrays_use_packed_coordinate_storage() -> No
         assert arrow.type.storage_type == storage_type
         assert arrow.type.__arrow_ext_serialize__() == _WGS84_PROJJSON_METADATA
         assert isinstance(recovered, gm.GeometryArray)
-        assert recovered.crs == 'EPSG:4326'
+        assert recovered.crs.to_epsg() == 4326
         assert [(item).to_wkt() for item in recovered] == expected_wkt
 
 
@@ -1139,7 +1149,7 @@ def test_from_arrow_singleton_slice_yields_an_array() -> None:
     recovered = gm.from_arrow(lines.slice(1, 1))
     assert isinstance(recovered, gm.GeometryArray)
     assert len(recovered) == 1
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs.to_epsg() == 4326
     assert (recovered[0]).to_wkt() == 'LINESTRING (2 2, 3 3, 4 4)'
     epoch_lines = gm.GeometryArray([
         gm.LineString([(0, 0), (1, 1)], crs=4326, epoch=2020.0),
@@ -1148,7 +1158,7 @@ def test_from_arrow_singleton_slice_yields_an_array() -> None:
     epoch_recovered = gm.from_arrow(epoch_lines.slice(1, 1))
     assert isinstance(epoch_recovered, gm.GeometryArray)
     assert len(epoch_recovered) == 1
-    assert epoch_recovered.crs == 'EPSG:4326'
+    assert epoch_recovered.crs.to_epsg() == 4326
     assert epoch_recovered.epoch == 2020.0
     assert epoch_recovered[0].epoch == 2020.0
     assert str(epoch_recovered[0]) == 'LINESTRING (2 2, 3 3, 4 4)'
@@ -1163,8 +1173,8 @@ def test_from_arrow_empty_chunked_and_table_preserve_frame_metadata() -> None:
     assert isinstance(table_recovered, gm.GeometryArray)
     assert len(chunked_recovered) == 0
     assert len(table_recovered) == 0
-    assert chunked_recovered.crs == 'EPSG:4326'
-    assert table_recovered.crs == 'EPSG:4326'
+    assert chunked_recovered.crs.to_epsg() == 4326
+    assert table_recovered.crs.to_epsg() == 4326
     assert chunked_recovered.epoch == 2020.0
     assert table_recovered.epoch == 2020.0
 
@@ -1177,15 +1187,15 @@ def test_from_arrow_zero_batch_reader_roundtrips_to_arrow() -> None:
     )
     out = gm.from_arrow(reader)
     assert len(out) == 0
-    assert out.crs == 'EPSG:4326'
+    assert out.crs.to_epsg() == 4326
     exported = out.to_arrow()
     back = gm.from_arrow(exported)
     assert len(back) == 0
-    assert back.crs == 'EPSG:4326'
+    assert back.crs.to_epsg() == 4326
     # Positive: empty array constructed with CRS also re-exports.
     empty = gm.GeometryArray([], crs=4326)
     assert len(empty) == 0
-    assert gm.from_arrow(empty.to_arrow()).crs == 'EPSG:4326'
+    assert gm.from_arrow(empty.to_arrow()).crs.to_epsg() == 4326
 
 
 def test_from_arrow_binary_view_prefix_and_inline_padding() -> None:
@@ -1519,7 +1529,7 @@ def test_from_arrow_nested_offsets_validate_selected_descendant_span() -> None:
             'POLYGON ((2 2, 3 2, 3 3, 2 2))',
             'POLYGON ((4 4, 5 4, 5 5, 4 4))',
         ]
-        assert out.crs == 'EPSG:4326'
+        assert out.crs.to_epsg() == 4326
 
     # Positive: nested multipolygon round-trip (all nesting levels).
     mp = gm.GeometryArray(
@@ -1647,7 +1657,7 @@ def test_from_arrow_terminal_offset_validates_selected_descendant_span() -> None
     for source in (good_arr, CapsuleOnly(good_arr), StreamOnly(good_arr)):
         out = cast('gm.GeometryArray', gm.from_arrow(source))
         assert out.to_wkt() == good.to_wkt()
-        assert out.crs == 'EPSG:4326'
+        assert out.crs.to_epsg() == 4326
     good_slice = good_arr.slice(1, 1)
     for source in (good_slice, CapsuleOnly(good_slice), StreamOnly(good_slice)):
         out = cast('gm.GeometryArray', gm.from_arrow(source))
@@ -1781,7 +1791,7 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
     out_pts = cast('gm.GeometryArray', gm.from_arrow(multi_empty_pts))
     assert len(out_pts) == 0
     assert out_pts.to_wkt() == []
-    assert out_pts.crs == 'EPSG:4326'
+    assert out_pts.crs.to_epsg() == 4326
 
     # Table / read_all path: empty multi-chunk geometry column.
     table = pa.table({'geometry': multi_empty_pts})
@@ -1816,14 +1826,14 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
     assert len(many_empty) == 0 and many_empty.num_chunks == n_empty
     out = cast('gm.GeometryArray', gm.from_arrow(many_empty))
     assert len(out) == 0
-    assert out.crs == 'EPSG:4326'
+    assert out.crs.to_epsg() == 4326
     assert out.to_wkt() == []
 
     # Empty around real data: only present rows land.
     mixed = pa.chunked_array([empty, arr, empty, empty], type=arr.type)
     mixed_out = cast('gm.GeometryArray', gm.from_arrow(mixed))
     assert mixed_out.to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
-    assert mixed_out.crs == 'EPSG:4326'
+    assert mixed_out.crs.to_epsg() == 4326
 
     # Positive: non-empty multi-chunk import unchanged.
     half = arr.slice(0, 1)
@@ -1831,7 +1841,7 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
     non_empty = pa.chunked_array([half, other], type=arr.type)
     kept = cast('gm.GeometryArray', gm.from_arrow(non_empty))
     assert kept.to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
-    assert kept.crs == 'EPSG:4326'
+    assert kept.crs.to_epsg() == 4326
 
 
 def test_from_arrow_stream_discards_zero_row_batches() -> None:
@@ -1862,7 +1872,7 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
     three_empty = pure_stream([empty_batch(), empty_batch(), empty_batch()])
     out = cast('gm.GeometryArray', gm.from_arrow(three_empty))
     assert len(out) == 0
-    assert out.crs == 'EPSG:4326'
+    assert out.crs.to_epsg() == 4326
     assert out.to_wkt() == []
 
     # Empty around real data: only the present rows land (empties discarded).
@@ -1874,7 +1884,7 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
     ])
     mixed_out = cast('gm.GeometryArray', gm.from_arrow(mixed))
     assert mixed_out.to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
-    assert mixed_out.crs == 'EPSG:4326'
+    assert mixed_out.crs.to_epsg() == 4326
 
     # Large finite empty generator: discard path stays O(1) retained state.
     # If every empty batch were retained as a native storage, this would allocate
@@ -1901,7 +1911,7 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
     large = cast('gm.GeometryArray', gm.from_arrow(many_empty()))
     assert produced['n'] == n_empty
     assert len(large) == 0
-    assert large.crs == 'EPSG:4326'
+    assert large.crs.to_epsg() == 4326
 
 
 def test_geoarrow_outer_empty_polygon_is_polygon_empty() -> None:
@@ -1936,7 +1946,7 @@ def test_from_arrow_accepts_table_and_record_batch_geometry_columns() -> None:
     assert isinstance(table_recovered, gm.GeometryArray)
     assert isinstance(batch_recovered, gm.GeometryArray)
     assert isinstance(unnamed_recovered, gm.GeometryArray)
-    assert table_recovered.crs == 'EPSG:4326'
+    assert table_recovered.crs.to_epsg() == 4326
     assert [(item).to_wkt() for item in table_recovered] == [
         'POINT (1 2)',
         'POINT (3 4)',
@@ -2119,7 +2129,7 @@ def test_geoarrow_ipc_roundtrip_preserves_registered_extension_crs() -> None:
         restored_table = pa.ipc.open_stream(pa.py_buffer(sink.getvalue())).read_all()
         restored = gm.from_arrow(restored_table)
         assert isinstance(restored, gm.GeometryArray)
-        assert restored.crs == 'EPSG:4326'
+        assert restored.crs.to_epsg() == 4326
         assert [(item).to_wkt() for item in restored] == expected_wkt
 
 
@@ -2648,7 +2658,7 @@ def test_from_arrow_rejects_non_finite_packed_coordinates() -> None:
 def test_arrow_roundtrip_preserves_coordinate_epoch() -> None:
     points = gm.points([0.0, 1.0], [0.0, 1.0], crs=4326, epoch=2020.0)
     back = cast('gm.GeometryArray', gm.from_arrow(points.to_arrow()))
-    assert back.crs == 'EPSG:4326'
+    assert back.crs.to_epsg() == 4326
     assert back.epoch == 2020.0
     assert back[0].epoch == 2020.0
     plain = cast(
@@ -2678,7 +2688,7 @@ def test_point_outputs_of_mixed_arrays_export_packed_geoarrow() -> None:
     projected = gm.points([21.0, 22.0], [52.0, 53.0], crs=4326).to_crs(3857)
     assert projected.to_arrow().type.extension_name == 'geoarrow.point'
     assert (
-        cast('gm.GeometryArray', gm.from_arrow(projected.to_arrow())).crs == 'EPSG:3857'
+        cast('gm.GeometryArray', gm.from_arrow(projected.to_arrow())).crs.to_epsg() == 3857
     )
 
 

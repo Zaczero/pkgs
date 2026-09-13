@@ -24,9 +24,9 @@ pub(crate) fn crs_parse_required(value: &Bound<'_, PyAny>) -> PyResult<Crs> {
     parse_crs_inner(value, 0)?.ok_or_else(|| CRSError::new_err("CRS is required"))
 }
 
-// Canonical CRS identifier: the same parser as `crs_parse_required` / geometry
-// `to_crs`, so equivalent spellings ("Epsg:4326", "EPSG:4326") share one cached
-// pipeline and the in-core fast path.
+// Normalized CRS definition: the same parser as `crs_parse_required` /
+// geometry `to_crs`, so syntax-only spellings ("Epsg:4326", "EPSG:4326") share
+// one stored authority spelling without rewriting authored definitions.
 pub(crate) fn crs_normalize(value: &Bound<'_, PyAny>) -> PyResult<String> {
     Ok(crs_parse_required(value)?.to_string())
 }

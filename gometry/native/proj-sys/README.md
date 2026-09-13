@@ -14,6 +14,11 @@ checkout:
 git submodule update --init gometry/native/libtiff-sys/libtiff
 ```
 
+The bundled build verifies the pinned PROJ 9.6.2 archive and applies the
+reviewed exact-meaning CRS edits by unique source anchors. A changed archive,
+version, or upstream source layout fails the build instead of silently
+changing CRS axis, unit, datum, or conversion semantics.
+
 Builds do not fetch source or transformation grids from the network. The
 `tiff` feature enables user-supplied PROJ GeoTIFF transformation grids; it is
 not a gometry raster API.

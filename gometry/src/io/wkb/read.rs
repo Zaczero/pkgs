@@ -301,8 +301,8 @@ impl WkbReader<'_> {
     /// Decode one top-level geometry and its normalized embedded SRID.
     ///
     /// SRID resolution is deferred to the caller ([`crate::io::crs_from_srid`]
-    /// / [`crate::io::SridCrsCache`]) so bulk ingest can canonicalize each
-    /// distinct code once. Nested SRID conflicts are still checked here.
+    /// / [`crate::io::SridCrsCache`]) so bulk ingest resolves each distinct
+    /// code once. Nested SRID conflicts are still checked here.
     fn read_shape(&mut self) -> Result<(Shape, Option<u32>)> {
         self.read_geometry(None, None, 0)
     }

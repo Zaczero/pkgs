@@ -52,13 +52,13 @@ mod types;
 pub(crate) static RUNTIME_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use cache::{
-    CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY, CRS_CANONICAL_CACHE,
-    CRS_CANONICAL_CACHE_CAPACITY, CRS_CATALOG_CACHE, CRS_CATALOG_CACHE_CAPACITY,
-    CRS_CELESTIAL_BODIES_CACHE, CRS_CELESTIAL_BODIES_CACHE_CAPACITY, CRS_COMPARISON_CACHE,
-    CRS_COMPARISON_CACHE_CAPACITY, CRS_EXPORT_CACHE, CRS_EXPORT_CACHE_CAPACITY, CRS_FACTOR_CACHE,
-    CRS_FACTOR_CACHE_CAPACITY, CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY,
-    CRS_IN_CORE_DESCRIPTOR_CACHE, CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, CRS_INFO_CACHE,
-    CRS_INFO_CACHE_CAPACITY, CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CRS_SEARCH_CACHE,
+    CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY, CRS_CATALOG_CACHE,
+    CRS_CATALOG_CACHE_CAPACITY, CRS_CELESTIAL_BODIES_CACHE, CRS_CELESTIAL_BODIES_CACHE_CAPACITY,
+    CRS_COMPARISON_CACHE, CRS_COMPARISON_CACHE_CAPACITY, CRS_EXPORT_CACHE,
+    CRS_EXPORT_CACHE_CAPACITY, CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CRS_GEODESIC_CACHE,
+    CRS_GEODESIC_CACHE_CAPACITY, CRS_IN_CORE_DESCRIPTOR_CACHE,
+    CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY,
+    CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CRS_SEARCH_CACHE,
     CRS_SEARCH_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, CachedAuthorityObjects,
     CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog, CachedCrsComparison,
     CachedCrsExport, CachedCrsInfo, CachedCrsOperations, CachedCrsSearch, CachedGeodesicObject,
@@ -72,9 +72,9 @@ pub(crate) use catalog::{
     CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT, ProjStringVersion,
     authorities_with_state, catalog, celestial_bodies_with_state, codes, ellipsoids, geoid_models,
     identify_with_state, non_deprecated, prime_meridians, proj_operations, same, search, to_2d,
-    to_3d, to_authority, to_authority_with_state, to_cf, to_epsg, to_proj, to_projjson,
-    to_projjson_with_options, to_projjson_with_options_at, to_wkt_with_options, unit_info,
-    units_with_state, utm_zones, validate_search_limit,
+    to_3d, to_authority, to_cf, to_epsg, to_proj, to_projjson, to_projjson_with_options,
+    to_projjson_with_options_at, to_wkt_with_options, unit_info, units_with_state, utm_zones,
+    validate_search_limit,
 };
 use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::{CrsError, preserve_resource_error};
@@ -135,7 +135,7 @@ use proj::{
 pub(crate) use rhumb::rhumb_distance_crs;
 pub(crate) use rhumb::{rhumb_bearing_crs_at, rhumb_destination_crs_at, rhumb_distance_crs_at};
 pub(crate) use runtime::{
-    canonicalize, clear_cache, configure_runtime, coordinate_identity_crs, cstring, normalize,
+    clear_cache, configure_runtime, coordinate_identity_crs, cstring, definition, normalize,
     normalize_pair, reset_runtime_config, runtime_config, runtime_state_snapshot,
 };
 pub(crate) use transform::{

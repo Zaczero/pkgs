@@ -803,7 +803,7 @@ class Geometry:
         """Create and return a new object.  See help(type) for accurate signature."""
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
         """Pickle support: round-trip through plain WKB (Z/M preserved) plus the
-        frame (canonical CRS string and epoch stored separately). Enables ``pickle``, ``copy``, and
+        frame (stored CRS definition and epoch stored separately). Enables ``pickle``, ``copy``, and
         ``deepcopy``, so it round-trips through multiprocessing and caches.
         """
     def __copy__(self) -> Self:
@@ -5333,7 +5333,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
         """Pickle support: packed point/line/polygon arrays round-trip their raw
         little-endian f64 columns (plus CSR offsets for lineal storage);
-        mixed arrays round-trip per-row WKB. The frame (canonical CRS string,
+        mixed arrays round-trip per-row WKB. The frame (stored CRS definition,
         epoch) travels alongside.
         """
     def __repr__(self) -> str:
@@ -10267,20 +10267,20 @@ class CRS:
     authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 
     Equality is structural — a ``CRS`` compares equal only to the same
-    canonical stored label (``crs == 4326`` and ``crs == 'EPSG:4326'``).
+    stored definition (``crs == 4326`` and ``crs == 'EPSG:4326'``).
     Operational equivalence, including axis-order-only differences, is the
     explicit ``same_as(..., mode='ignore_axis_order')`` query. It is therefore
-    unhashable; key mappings by ``crs.canonical`` instead.
+    unhashable; key mappings by ``crs.definition`` instead.
     """
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the wrapper plus owned Rust-side CRS text
-        retained by this object. This includes the canonical CRS string when it
+        retained by this object. This includes the stored CRS definition when it
         spills out of `SmolStr` inline storage and any heap strings/vectors in
         the lazily cached `CrsInfo`. Opaque PROJ process-global caches are not
         owned by the Python object and are not counted.
         """
     def __str__(self) -> str:
-        """Return the canonical CRS string."""
+        """Return the stored CRS definition."""
     def __repr__(self) -> str:
         """Return the constructor-style CRS representation."""
     def __copy__(self) -> Self:
@@ -10292,7 +10292,7 @@ class CRS:
         and holds no Python references, so there is nothing to copy.
         """
     def __reduce__(self) -> tuple[type[CRS], tuple[str]]:
-        """Pickle support: a CRS is its canonical string; the constructor
+        """Pickle support: a CRS is its definition string; the constructor
         rebuilds everything else lazily.
         """
     def _repr_html_(self) -> str:
@@ -10437,8 +10437,8 @@ class CRS:
         str or None
         """
     @property
-    def canonical(self) -> str:
-        """Canonical identifier string for this CRS.
+    def definition(self) -> str:
+        """Stored definition string for this CRS.
 
         Returns
         -------

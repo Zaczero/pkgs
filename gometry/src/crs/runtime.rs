@@ -1,4 +1,4 @@
-//! CRS string normalization (`normalize`/`canonicalize`) and global runtime
+//! CRS string normalization (`normalize`/`definition`) and global runtime
 //! configuration (PROJ search paths and local grid directories).
 //!
 //! `&str`/`RuntimeConfig` API; the raw-pointer context mutators stay private in
@@ -10,9 +10,8 @@ use smol_str::SmolStr;
 
 use crate::crs::context::ProjDiagnostic;
 use crate::crs::{
-    CRS_CANONICAL_CACHE, CRS_CANONICAL_CACHE_CAPACITY, CStr, Confidence, CrsError, OnceLock,
-    ProjContext, RuntimeConfig, RuntimeState, RwLock, c_char, ensure_thread_caches_current,
-    info_with_state, lru_resolve, parse_epsg, to_authority_with_state,
+    CStr, CrsError, OnceLock, ProjContext, RuntimeConfig, RuntimeState, RwLock, c_char,
+    ensure_thread_caches_current, info_with_state, parse_epsg,
 };
 use crate::error::Result;
 #[cfg(test)]
@@ -102,110 +101,17 @@ pub(crate) fn cstring(value: impl Into<Vec<u8>>) -> Result<std::ffi::CString> {
     std::ffi::CString::new(value).map_err(|error| CrsError::invalid(error.to_string()))
 }
 
-/// WKT/ProjJSON carry caller-authored conversion parameters that PROJ's `info`
-/// may canonicalize to a database EPSG record — keep the definition string for
-/// transform/admission so in_core never shadows mismatched params.
-fn projected_operation_params_match(
-    lhs: &str,
-    authority_crs: &str,
-    state: &RuntimeState,
-) -> Result<bool> {
-    let lhs_info = info_with_state(lhs, state)?;
-    let rhs_info = info_with_state(authority_crs, state)?;
-    if !lhs_info.is_projected() || !rhs_info.is_projected() {
-        return Ok(true);
-    }
-    let Some(lhs_op) = lhs_info.coordinate_operation.as_ref() else {
-        return Ok(true);
-    };
-    let Some(rhs_op) = rhs_info.coordinate_operation.as_ref() else {
-        return Ok(false);
-    };
-    if lhs_op.method.as_ref().map(|m| m.code.as_deref())
-        != rhs_op.method.as_ref().map(|m| m.code.as_deref())
-    {
-        return Ok(false);
-    }
-    let mut rhs_params: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
-    for param in &rhs_op.parameters {
-        let Some(code) = param.code.as_ref() else {
-            continue;
-        };
-        rhs_params.insert(code.clone(), param.value * param.unit_conversion_factor);
-    }
-    for param in &lhs_op.parameters {
-        let Some(code) = param.code.as_ref() else {
-            if param.value != 0.0 {
-                return Ok(false);
-            }
-            continue;
-        };
-        let lhs_value = param.value * param.unit_conversion_factor;
-        match rhs_params.get(code) {
-            Some(rhs_value) if (lhs_value - rhs_value).abs() <= 1e-9 => {},
-            _ => return Ok(false),
-        }
-    }
-    Ok(true)
-}
-
-fn crs_definition_must_stay_verbatim(normalized: &str) -> bool {
-    let trimmed = normalized.trim_start();
-    // Only projected ProjJSON carries caller-authored conversion parameters
-    // that PROJ `info` may canonicalize away. WKT and geographic definitions
-    // may still collapse to authority codes.
-    trimmed.starts_with('{')
-        && (trimmed.contains("\"type\":\"ProjectedCRS\"")
-            || trimmed.contains("\"type\": \"ProjectedCRS\""))
-}
-
-pub(crate) fn canonicalize(value: &str) -> Result<SmolStr> {
+/// Validate a CRS through PROJ while retaining the caller's normalized
+/// definition. Authority IDs discovered in an authored WKT/PROJJSON object are
+/// metadata only; they never replace the definition used for later operations.
+pub(crate) fn definition(value: &str) -> Result<SmolStr> {
     let normalized = normalize(value)?;
-    // Canonicalization repeats heavily across scalar CRS calls (e.g. the geodesic
-    // inverse loop). Cache the small input->canonical string mapping so the hot
-    // path avoids cloning the heavy `CrsInfo` struct on every call.
     let state = runtime_state_snapshot()?;
-    ensure_thread_caches_current(&state);
-    CRS_CANONICAL_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
-            &mut cache,
-            CRS_CANONICAL_CACHE_CAPACITY,
-            |(key, _)| *key == normalized,
-            || {
-                let crs_info = info_with_state(&normalized, &state)?;
-                let canonical = if crs_definition_must_stay_verbatim(&normalized) {
-                    normalized.clone()
-                } else if parse_epsg(&normalized).is_some() {
-                    // Keep the caller's EPSG spelling (e.g. EPSG:102100 must not
-                    // rewrite to ESRI:102100 — literal/admission gates key on it).
-                    normalized.clone()
-                } else if let (Some(authority), Some(code)) =
-                    (crs_info.authority.clone(), crs_info.code.clone())
-                {
-                    let authority_crs = format!("{authority}:{code}");
-                    if crs_info.is_projected()
-                        && !projected_operation_params_match(&normalized, &authority_crs, &state)?
-                    {
-                        normalized.clone()
-                    } else {
-                        authority_crs
-                    }
-                } else if let Some((authority, code)) = to_authority_with_state(
-                    &normalized,
-                    None,
-                    Confidence::try_new("min_confidence", 70)?,
-                    &state,
-                )? {
-                    format!("{authority}:{code}")
-                } else {
-                    normalized.clone()
-                };
-                Ok((normalized.clone(), SmolStr::from(canonical)))
-            },
-        )?;
-        Ok(cache[index].1.clone())
-    })
+    // Keep the existing eager-admission contract: malformed or unavailable
+    // definitions fail at the public constructor, while the stored value stays
+    // exactly the normalized caller input.
+    let _ = info_with_state(&normalized, &state)?;
+    Ok(SmolStr::from(normalized))
 }
 
 pub(crate) fn runtime_config() -> Result<RuntimeConfig> {

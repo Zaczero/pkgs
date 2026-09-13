@@ -344,10 +344,10 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
     gm.crs_clear_cache()
     scalar = gm.crs_transform(source, 3857, 10.0, 50.0)
     assert scalar == pytest.approx(expected_scalar, abs=1e-6)
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
     coordinate = gm.crs_transform(source, 3857, [10.0, 11.0], [50.0, 51.0])
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
     expected_coordinate = gm.crs_transform(
         4326,
         3857,
@@ -365,7 +365,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
             shape.coords.to_nested(), expected_coordinate.tolist(), strict=True
         )
     )
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
     bounds = gm.crs_transform_bounds(
         source,
@@ -373,7 +373,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
         (10.0, 50.0, 11.0, 51.0),
         densify=2,
     )
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
     expected_bounds = gm.crs_transform_bounds(
         4326,
         3857,
@@ -389,7 +389,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
         (10.0, 50.0, 3.0, 11.0, 51.0, 4.0),
         densify=2,
     )
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
     expected_bounds_3d = gm.crs_transform_bounds(
         4326,
         3857,
@@ -402,7 +402,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
     gm.crs_clear_cache()
     reverse_scalar = gm.crs_transform(3857, source, *expected_scalar)
     assert reverse_scalar == pytest.approx((10.0, 50.0), abs=1e-12)
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
     gm.crs_clear_cache()
     reverse_coordinate = gm.crs_transform(
@@ -417,7 +417,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
             reverse_coordinate.tolist(), ((10.0, 50.0), (11.0, 51.0)), strict=True
         )
     )
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
     gm.crs_clear_cache()
     reverse_shape = gm.LineString(expected_coordinate.tolist(), crs=3857).to_crs(source)
@@ -427,7 +427,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
             reverse_shape.coords.to_nested(), ((10.0, 50.0), (11.0, 51.0)), strict=True
         )
     )
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
     gm.crs_clear_cache()
     reverse_bounds = gm.crs_transform_bounds(
@@ -437,7 +437,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
         densify=2,
     )
     assert reverse_bounds == pytest.approx((10.0, 50.0, 11.0, 51.0), abs=1e-12)
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
     gm.crs_clear_cache()
     reverse_bounds_3d = gm.crs_transform_bounds(
@@ -449,7 +449,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
     assert reverse_bounds_3d == pytest.approx(
         (10.0, 50.0, 3.0, 11.0, 51.0, 4.0), abs=1e-12
     )
-    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
 
 def test_xyz_epoch_bounds_use_the_same_proj_lane_plan() -> None:

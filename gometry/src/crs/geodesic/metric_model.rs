@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use geographiclib_rs::Geodesic;
+use smol_str::SmolStr;
 
 use crate::crs::geodesic::{
     CrsError, CrsInfo, Result, ensure_geodesic_lonlat_crs_at, normalize, with_geodesic_cache_at,
@@ -52,7 +53,7 @@ pub(crate) enum MetricModel {
     Planar { to_metre: PositiveFiniteScale },
     /// Geodesic on the named (normalized) CRS's ellipsoid; results in meters.
     Geodesic {
-        crs: String,
+        crs: SmolStr,
         frame: GeographicFrame,
         state: Arc<crate::crs::RuntimeState>,
     },
@@ -95,7 +96,7 @@ impl MetricModel {
 /// metric would hold across a GIL-released loop.
 #[derive(Clone)]
 pub(crate) struct GeodesicMetric {
-    pub(crate) crs: String,
+    pub(crate) crs: SmolStr,
     pub(crate) geodesic: Box<Geodesic>,
     pub(crate) frame: GeographicFrame,
     pub(crate) state: Arc<crate::crs::RuntimeState>,
@@ -115,7 +116,7 @@ impl GeodesicMetric {
             |g| Box::try_new(*g).map_err(crate::error::Error::from),
         )?;
         Ok(Self {
-            crs,
+            crs: crs.into(),
             geodesic,
             frame: *frame,
             state: Arc::clone(state),
@@ -173,14 +174,14 @@ pub(crate) fn metric_model_at(
 /// previously verbatim copies diverging in two lines.
 enum HorizontalComponent {
     /// A geographic CRS: measured geodesically on its own ellipsoid.
-    Geodesic { crs: String, frame: GeographicFrame },
+    Geodesic {
+        crs: SmolStr,
+        frame: GeographicFrame,
+    },
     /// A projected/engineering CRS, with the info its axis validation needs.
     ///
-    /// The CRS name comes from `info.crs`, not a separate owned copy of the
-    /// caller's string: that allocated on every call purely for error text,
-    /// and it made the two lanes name the CRS differently — the geodesic arm
-    /// reports PROJ's normalized name while this one reported whatever
-    /// spelling the caller happened to pass.
+    /// The CRS definition comes from `info.definition`, so the metric model
+    /// retains the same normalized authored label used by the CRS object.
     Planar { info: std::sync::Arc<CrsInfo> },
 }
 
@@ -196,7 +197,7 @@ fn horizontal_component(
         && let Some(frame) = info.geographic_frame()
     {
         return Ok(HorizontalComponent::Geodesic {
-            crs: info.crs.clone(),
+            crs: info.definition.clone(),
             frame,
         });
     }
@@ -207,25 +208,36 @@ fn horizontal_component(
                 CrsError::crs_create(crs, "geographic CRS has no typed native frame")
             })?;
             return Ok(HorizontalComponent::Geodesic {
-                crs: info.crs.clone(),
+                crs: info.definition.clone(),
                 frame,
             });
         }
+        if let Some(sub) = info.sub_crs.iter().find(|sub| {
+            sub.kind.starts_with("geographic") && (!sub.crs.is_empty() || sub.definition.is_some())
+        }) {
+            return horizontal_component(
+                sub.definition.as_deref().unwrap_or(sub.crs.as_str()),
+                state,
+            );
+        }
         if let Some(sub) = info
             .sub_crs
-            .iter()
-            .find(|sub| sub.kind.starts_with("geographic") && !sub.crs.is_empty())
+            .first()
+            .filter(|sub| !sub.crs.is_empty() || sub.definition.is_some())
         {
-            return horizontal_component(&sub.crs, state);
-        }
-        if let Some(sub) = info.sub_crs.first().filter(|sub| !sub.crs.is_empty()) {
-            return horizontal_component(&sub.crs, state);
+            return horizontal_component(
+                sub.definition.as_deref().unwrap_or(sub.crs.as_str()),
+                state,
+            );
         }
     }
     if info.kind == "compound"
-        && let Some(sub) = info.sub_crs.first().filter(|sub| !sub.crs.is_empty())
+        && let Some(sub) = info
+            .sub_crs
+            .first()
+            .filter(|sub| !sub.crs.is_empty() || sub.definition.is_some())
     {
-        return horizontal_component(&sub.crs, state);
+        return horizontal_component(sub.definition.as_deref().unwrap_or(sub.crs.as_str()), state);
     }
     Ok(HorizontalComponent::Planar { info })
 }
@@ -243,7 +255,7 @@ pub(crate) fn metric_model_for_at(
         // Validate the axes, then discard the scale: the CRS-natural default
         // reports native coordinate units, not metres.
         HorizontalComponent::Planar { info } => {
-            planar_to_metre(&info.crs, &info, state)?;
+            planar_to_metre(&info.definition, &info, state)?;
             MetricModel::COORDINATE
         },
     })
@@ -273,7 +285,7 @@ pub(crate) fn metric_model_meters_at(
         // Same walk as the CRS-natural resolver; here the axis factor is kept
         // so outputs scale to SI metres.
         HorizontalComponent::Planar { info } => MetricModel::Planar {
-            to_metre: planar_to_metre(&info.crs, &info, state)?,
+            to_metre: planar_to_metre(&info.definition, &info, state)?,
         },
     })
 }
@@ -331,7 +343,7 @@ pub(crate) fn geographic_metric_frame_at(
     info.geographic_frame().ok_or_else(|| {
         CrsError::invalid(format!(
             "{} geodesic geometry measurements require a geographic longitude-latitude CRS",
-            info.crs
+            info.definition
         ))
     })
 }
@@ -401,10 +413,11 @@ pub(crate) fn metric_axis_factors_at(
     if crs_info.kind == "compound" {
         let mut factors = Vec::new();
         for sub in &crs_info.sub_crs {
-            if sub.crs.is_empty() {
+            let definition = sub.definition.as_deref().unwrap_or(sub.crs.as_str());
+            if definition.is_empty() {
                 return None;
             }
-            let sub_info = info_with_state(&sub.crs, state).ok()?;
+            let sub_info = info_with_state(definition, state).ok()?;
             factors.extend(metric_axis_factors_at(&sub_info, state)?);
         }
         return (!factors.is_empty()).then_some(factors);

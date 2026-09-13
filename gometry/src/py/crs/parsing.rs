@@ -500,30 +500,28 @@ pub(crate) fn parse_crs_inner(value: &Bound<'_, PyAny>, depth: u8) -> PyResult<O
     // string is never an authority tuple, mapping, or CRS-holder object, so skip
     // the type-dispatch ladder and its per-call attribute probes.
     if let Ok(text) = value.cast_exact::<pyo3::types::PyString>() {
-        return Ok(Some(crs_arc(crs::canonicalize(&text.to_cow()?)?)));
+        return Ok(Some(crs_arc(crs::definition(&text.to_cow()?)?)));
     }
-    // A `CRS` object already holds its canonical identifier — reuse the Arc.
+    // A `CRS` object already holds its validated definition — do not reparse it.
     if let Ok(crs_obj) = value.cast::<PyCrs>() {
-        return Ok(Some(crs_obj.get().canonical.clone()));
+        return Ok(Some(crs_obj.get().definition.clone()));
     }
     if let Some(code) = crs_epsg_code(value)? {
-        return Ok(Some(crs_arc(crs::canonicalize(&format!("EPSG:{code}"))?)));
+        return Ok(Some(crs_arc(crs::definition(&format!("EPSG:{code}"))?)));
     }
     if let Some(text) = crs_text_from_authority_pair(value, "CRS authority tuple")? {
-        return Ok(Some(crs_arc(crs::canonicalize(&text)?)));
+        return Ok(Some(crs_arc(crs::definition(&text)?)));
     }
     if let Some(dict) = crate::mapping_as_dict(value)? {
-        return Ok(Some(crs_arc(crs::canonicalize(&crs_text_from_dict(
-            &dict,
-        )?)?)));
+        return Ok(Some(crs_arc(crs::definition(&crs_text_from_dict(&dict)?)?)));
     }
     if let Some(text) = crs_text_from_object(value, depth)? {
-        return Ok(Some(crs_arc(crs::canonicalize(&text)?)));
+        return Ok(Some(crs_arc(crs::definition(&text)?)));
     }
     let text = value.extract::<String>().map_err(|_| {
         PyTypeError::new_err(
             "CRS input must be an authority string, authority tuple, integer EPSG code, PROJJSON dictionary, CF dictionary, CRS-holder object, or object with to_wkt()/to_json()/to_authority()/to_epsg()",
         )
     })?;
-    Ok(Some(crs_arc(crs::canonicalize(&text)?)))
+    Ok(Some(crs_arc(crs::definition(&text)?)))
 }

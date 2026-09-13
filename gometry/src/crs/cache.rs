@@ -3,6 +3,8 @@
 //! invalidation, `cache_info`, and the `with_proj_pipeline`/
 //! `with_proj_operation` cached accessors. Reached via `use super::*`.
 
+use smol_str::SmolStr;
+
 use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
@@ -37,19 +39,19 @@ pub(super) fn begin_transform_observation() {
 }
 
 pub(super) struct CachedProjPipeline {
-    pub source: String,
-    pub target: String,
+    pub source: SmolStr,
+    pub target: SmolStr,
     pub options: TransformOptions,
     pub pipeline: ProjPipeline,
 }
 
 pub(super) struct CachedProjOperation {
-    pub definition: String,
+    pub definition: SmolStr,
     pub operation: ProjPipeline,
 }
 
 pub(super) struct CachedCrsInfo {
-    pub crs: String,
+    pub definition: SmolStr,
     /// `Arc` so [`info`] hands out cheap refcount clones — a `CrsInfo` is a
     /// heavy immutable struct (datum, axes, authority) and was being DEEP
     /// cloned on every lookup (~half a geodesic-distance batch's profile).
@@ -77,12 +79,12 @@ pub(super) struct CachedCelestialBodies {
 }
 
 pub(super) struct CachedAuthorityObjects {
-    pub crs: String,
+    pub definition: SmolStr,
     pub items: Vec<AuthorityObjectInfo>,
 }
 
 pub(super) struct CachedCrsAuthorityMatches {
-    pub crs: String,
+    pub definition: SmolStr,
     pub authority: Option<String>,
     pub min_confidence: Confidence,
     pub items: Vec<IdentifyCandidate>,
@@ -95,18 +97,18 @@ pub(super) struct CachedCrsSearch {
 }
 
 pub(super) struct CachedCrsOperations {
-    pub source: String,
-    pub target: String,
+    pub source: SmolStr,
+    pub target: SmolStr,
     pub options: TransformOptions,
     pub items: Vec<OperationInfo>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct CrsComparisonKey {
-    /// Canonically ordered first CRS string (`min(left, right)` by `str` order).
-    pub left: String,
-    /// Canonically ordered second CRS string (`max(left, right)` by `str` order).
-    pub right: String,
+    /// Ordered first CRS definition (`min(left, right)` by `str` order).
+    pub left: SmolStr,
+    /// Ordered second CRS definition (`max(left, right)` by `str` order).
+    pub right: SmolStr,
     /// Gometry comparison mode — not a raw PROJ criterion — so normalize+compare
     /// and strict paths cannot collide under the same cache key.
     pub mode: CrsComparison,
@@ -118,23 +120,23 @@ pub(super) struct CachedCrsComparison {
 }
 
 pub(super) struct CachedProjectionFactorsObject {
-    pub crs: String,
+    pub definition: SmolStr,
     pub object: ProjObject,
 }
 
 pub(super) struct CachedGeodesicObject {
-    pub crs: String,
+    pub definition: SmolStr,
     pub object: Geodesic,
 }
 
 pub(in crate::crs) struct CachedRhumbEllipsoid {
-    pub crs: String,
+    pub definition: SmolStr,
     pub ellipsoid: super::rhumb::RhumbEllipsoid,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CrsExportKey {
-    pub crs: String,
+    pub definition: SmolStr,
     pub kind: CrsExportKind,
 }
 
@@ -283,7 +285,6 @@ crs_cache! {
     reported CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CachedProjectionFactorsObject, 256, "crs_factors";
     reported CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, 256, "crs_geodesic";
     internal CRS_RHUMB_CACHE, CRS_RHUMB_CACHE_CAPACITY, CachedRhumbEllipsoid, 256;
-    internal CRS_CANONICAL_CACHE, CRS_CANONICAL_CACHE_CAPACITY, (String, smol_str::SmolStr), 256;
     internal CRS_IN_CORE_DESCRIPTOR_CACHE, CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, super::in_core::CachedInCoreDescriptor, 256;
     reported CRS_EXPORT_CACHE, CRS_EXPORT_CACHE_CAPACITY, CachedCrsExport, 32, "crs_export";
 }
@@ -380,8 +381,8 @@ pub(super) fn with_proj_pipeline_indexed_at<R>(
             || {
                 options.validate()?;
                 Ok(CachedProjPipeline {
-                    source: source.to_owned(),
-                    target: target.to_owned(),
+                    source: source.into(),
+                    target: target.into(),
                     options: options.clone(),
                     pipeline: ProjPipeline::new_with_state(source, target, options, state)?,
                 })
@@ -459,8 +460,8 @@ pub(super) fn with_proj_diagnostic_pipeline_at<R>(
             |item| item.source == source && item.target == target && item.options == *options,
             || {
                 Ok(CachedProjPipeline {
-                    source: source.to_owned(),
-                    target: target.to_owned(),
+                    source: source.into(),
+                    target: target.into(),
                     options: options.clone(),
                     pipeline: ProjPipeline::new_with_state(source, target, options, state)?,
                 })
@@ -494,7 +495,7 @@ pub(super) fn with_proj_operation_at<R>(
             |item| item.definition == definition,
             || {
                 Ok(CachedProjOperation {
-                    definition: definition.to_owned(),
+                    definition: definition.into(),
                     operation: ProjPipeline::from_definition_with_state(definition, state)?,
                 })
             },
@@ -546,7 +547,7 @@ mod tests {
         (x[0], y[0])
     }
 
-    fn thread_cache_lengths() -> [usize; 18] {
+    fn thread_cache_lengths() -> [usize; 17] {
         [
             PROJ_CACHE.with(|cache| cache.borrow().len()),
             PROJ_DIAGNOSTIC_CACHE.with(|cache| cache.borrow().len()),
@@ -563,14 +564,13 @@ mod tests {
             CRS_FACTOR_CACHE.with(|cache| cache.borrow().len()),
             CRS_GEODESIC_CACHE.with(|cache| cache.borrow().len()),
             CRS_RHUMB_CACHE.with(|cache| cache.borrow().len()),
-            CRS_CANONICAL_CACHE.with(|cache| cache.borrow().len()),
             CRS_IN_CORE_DESCRIPTOR_CACHE.with(|cache| cache.borrow().len()),
             CRS_EXPORT_CACHE.with(|cache| cache.borrow().len()),
         ]
     }
 
     fn assert_thread_caches_are_empty() {
-        assert_eq!(thread_cache_lengths(), [0; 18]);
+        assert_eq!(thread_cache_lengths(), [0; 17]);
     }
 
     fn assert_some_thread_cache_is_warm() {
@@ -884,8 +884,8 @@ mod tests {
         CRS_FACTOR_CACHE.with(|cache| {
             let cache = cache.borrow();
             assert_eq!(cache.len(), CRS_FACTOR_CACHE_CAPACITY);
-            assert!(cache.iter().any(|item| item.crs == first));
-            assert!(!cache.iter().any(|item| item.crs == second));
+            assert!(cache.iter().any(|item| item.definition == first));
+            assert!(!cache.iter().any(|item| item.definition == second));
         });
     }
 
@@ -968,8 +968,8 @@ mod tests {
         CRS_GEODESIC_CACHE.with(|cache| {
             let cache = cache.borrow();
             assert_eq!(cache.len(), CRS_GEODESIC_CACHE_CAPACITY);
-            assert!(cache.iter().any(|item| item.crs == first));
-            assert!(!cache.iter().any(|item| item.crs == second));
+            assert!(cache.iter().any(|item| item.definition == first));
+            assert!(!cache.iter().any(|item| item.definition == second));
         });
     }
 

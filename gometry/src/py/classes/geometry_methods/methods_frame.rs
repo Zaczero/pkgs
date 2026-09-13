@@ -41,7 +41,7 @@ impl PyGeometry {
         let source = self.crs_str().ok_or_else(|| {
             CRSError::new_err("estimate_local_crs requires a CRS-tagged geometry")
         })?;
-        Ok(PyCrs::from_canonical(crs_arc(crs::estimate_local_crs(
+        Ok(PyCrs::from_definition(crs_arc(crs::estimate_local_crs(
             &self.shape,
             source,
         )?)))

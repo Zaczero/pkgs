@@ -100,11 +100,13 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert 'DATABASE.LAYOUT.VERSION.MAJOR' in cast(
         'dict[str, str]', engine['database_metadata']
     )
-    assert gm.CRS('epsg:4326').canonical == 'EPSG:4326'
+    assert gm.CRS('epsg:4326').definition == 'EPSG:4326'
     assert projjson_dict == projjson
     assert projjson_dict['type'] == 'GeographicCRS'
     assert projjson_dict['name'] == 'WGS 84'
-    assert gm.CRS(projjson_dict).canonical == 'EPSG:4326'
+    parsed_projjson = gm.CRS(projjson_dict)
+    assert json.loads(parsed_projjson.definition) == projjson_dict
+    assert parsed_projjson.to_epsg() == 4326
     assert 'EPSG' in gm.crs_authorities()
     assert '4326' in gm.crs_codes('EPSG', kind='geographic_2d')
     assert '3857' in gm.crs_codes('EPSG', kind='projected')
@@ -282,8 +284,8 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert geographic_cf['prime_meridian_name'] == 'Greenwich'
     assert geographic_cf['geographic_crs_name'] == 'WGS 84'
     assert cast('str', geographic_cf['crs_wkt']).startswith('GEOGCRS["WGS 84"')
-    assert gm.CRS(geographic_cf).canonical == 'EPSG:4326'
-    assert gm.Point(21.0, 52.0, crs=geographic_cf).crs == 'EPSG:4326'
+    assert gm.CRS(geographic_cf).definition == geographic_cf['crs_wkt']
+    assert gm.Point(21.0, 52.0, crs=geographic_cf).crs == geographic_cf['crs_wkt']
     geographic_cf_without_wkt = dict(geographic_cf)
     del geographic_cf_without_wkt['crs_wkt']
     assert gm.CRS(geographic_cf_without_wkt).to_authority() == ('OGC', 'CRS84')
@@ -370,9 +372,15 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     utm_cf_without_wkt = dict(utm_cf)
     del utm_cf_without_wkt['crs_wkt']
     assert gm.CRS(utm_cf_without_wkt).to_epsg() == 32634
-    assert gm.CRS(utm_cf_without_wkt).canonical == 'EPSG:32634'
-    assert gm.Point(500000.0, 5750000.0, crs=utm_cf_without_wkt).crs == 'EPSG:32634'
-    assert gm.Point(500000.0, 5750000.0).set_crs(utm_cf_without_wkt).crs == 'EPSG:32634'
+    assert gm.CRS(utm_cf_without_wkt).definition.startswith('+proj=tmerc ')
+    assert (
+        gm.Point(500000.0, 5750000.0, crs=utm_cf_without_wkt).crs
+        == gm.CRS(utm_cf_without_wkt).definition
+    )
+    assert (
+        gm.Point(500000.0, 5750000.0).set_crs(utm_cf_without_wkt).crs
+        == gm.CRS(utm_cf_without_wkt).definition
+    )
     assert gm.crs_transform(
         utm_cf_without_wkt, 4326, 500000.0, 5750000.0
     ) == pytest.approx(gm.crs_transform(32634, 4326, 500000.0, 5750000.0))
@@ -387,7 +395,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert laea_cf['longitude_of_projection_origin'] == pytest.approx(10.0)
     laea_cf_without_wkt = dict(laea_cf)
     del laea_cf_without_wkt['crs_wkt']
-    assert gm.CRS(laea_cf_without_wkt).canonical == 'IGNF:ETRS89LAEA'
+    assert gm.CRS(laea_cf_without_wkt).definition.startswith('+proj=laea ')
     assert gm.crs_transform(4326, laea_cf_without_wkt, 10.0, 52.0) == pytest.approx(
         gm.crs_transform(4326, 3035, 10.0, 52.0)
     )
@@ -396,7 +404,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert lcc_cf['standard_parallel'] == pytest.approx([35.0, 65.0])
     lcc_cf_without_wkt = dict(lcc_cf)
     del lcc_cf_without_wkt['crs_wkt']
-    assert gm.CRS(lcc_cf_without_wkt).canonical == 'IGNF:ETRS89LCC'
+    assert gm.CRS(lcc_cf_without_wkt).definition.startswith('+proj=lcc ')
     assert gm.crs_transform(4326, lcc_cf_without_wkt, 10.0, 52.0) == pytest.approx(
         gm.crs_transform(4326, 3034, 10.0, 52.0)
     )
@@ -590,7 +598,7 @@ def test_cf_ellipsoid_descriptors_are_coherent() -> None:
             'grid_mapping_name': 'latitude_longitude',
             'semi_major_axis': 6_378_137.0,
             'inverse_flattening': 298.257_223_563,
-        }).canonical
+        }).definition
         == 'OGC:CRS84'
     )
     with pytest.raises(ValueError, match='earth_radius cannot be combined'):
@@ -619,23 +627,24 @@ def _assert_crs_namespace_input_objects_and_serialization() -> None:
     projjson = json.loads(gm.CRS(4326).to_projjson())
     wkt = _WKT_4326
     assert wkt.startswith('GEOGCRS["WGS 84"')
-    assert gm.CRS(4326) == wkt
-    assert gm.CRS(('EPSG', '4326')).canonical == 'EPSG:4326'
-    assert gm.CRS(('EPSG', 4326)).canonical == 'EPSG:4326'
-    assert gm.CRS(['EPSG', '4326']).canonical == 'EPSG:4326'
-    assert gm.CRS(WktCrsObject()).canonical == 'EPSG:4326'
-    assert gm.CRS(AuthorityCrsObject()).canonical == 'EPSG:4326'
+    assert gm.CRS(4326) != wkt
+    assert gm.CRS(wkt).definition == wkt
+    assert gm.CRS(('EPSG', '4326')).definition == 'EPSG:4326'
+    assert gm.CRS(('EPSG', 4326)).definition == 'EPSG:4326'
+    assert gm.CRS(['EPSG', '4326']).definition == 'EPSG:4326'
+    assert gm.CRS(WktCrsObject()).definition == wkt
+    assert gm.CRS(AuthorityCrsObject()).definition == 'EPSG:4326'
     authority_preferred = AuthorityPreferredCrsObject()
-    assert gm.CRS(authority_preferred).canonical == 'EPSG:4326'
+    assert gm.CRS(authority_preferred).definition == 'EPSG:4326'
     assert authority_preferred.calls == ['authority']
-    assert gm.CRS(AuthorityFallbackWktCrsObject()).canonical == 'EPSG:4326'
+    assert gm.CRS(AuthorityFallbackWktCrsObject()).definition == wkt
     assert gm.CRS(cast('Any', ProjjsonCrsObject())).to_epsg() == 4326
-    assert gm.CRS(EpsgCrsObject()).canonical == 'EPSG:4326'
-    assert gm.CRS(CrsHolderObject()).canonical == 'EPSG:4326'
-    assert gm.CRS(SrsHolderObject()).canonical == 'EPSG:4326'
-    assert gm.CRS(NestedCrsHolderObject()).canonical == 'EPSG:4326'
+    assert gm.CRS(EpsgCrsObject()).definition == 'EPSG:4326'
+    assert gm.CRS(CrsHolderObject()).definition == 'EPSG:4326'
+    assert gm.CRS(SrsHolderObject()).definition == 'EPSG:4326'
+    assert gm.CRS(NestedCrsHolderObject()).definition == 'EPSG:4326'
     assert gm.Point(-1.0, 50.0, crs=('EPSG', '4326')).crs == 'EPSG:4326'
-    assert gm.Point(-1.0, 50.0, crs=WktCrsObject()).crs == 'EPSG:4326'
+    assert gm.Point(-1.0, 50.0, crs=WktCrsObject()).crs == wkt
     assert gm.Point(-1.0, 50.0, crs=cast('Any', CrsHolderObject())).crs == 'EPSG:4326'
     assert gm.crs_transform(WktCrsObject(), 3857, -1.0, 50.0) == pytest.approx(
         tuple(gm.Point(-1.0, 50.0, crs=4326).to_crs(3857).coords.to_nested())
@@ -688,10 +697,10 @@ def _assert_crs_namespace_input_objects_and_serialization() -> None:
         gm.CRS(4326).to_proj(max_line_length=-1)
     assert projjson['type'] == 'GeographicCRS'
     assert projjson['name'] == 'WGS 84'
-    assert gm.CRS(projjson).canonical == 'EPSG:4326'
+    assert json.loads(gm.CRS(projjson).definition) == projjson
     assert gm.crs_info(projjson)['code'] == '4326'
-    assert gm.CRS(projjson) == 4326
-    assert gm.Point(-1.0, 50.0, crs=projjson).crs == 'EPSG:4326'
+    assert gm.CRS(projjson) != 4326
+    assert json.loads(gm.Point(-1.0, 50.0, crs=projjson).crs.definition) == projjson
     assert json.loads(gm.CRS(projjson).to_projjson()) == projjson
     dict_transform = gm.crs_transform(projjson, 3857, -1.0, 50.0)
     assert dict_transform == pytest.approx(
@@ -734,8 +743,8 @@ def _assert_crs_namespace_input_objects_and_serialization() -> None:
         }
     ]
     assert gm.CRS(projjson).to_epsg() == 4326
-    assert gm.CRS(4979).to_2d() == 'EPSG:4326'
-    assert gm.CRS(4326).to_3d() == 'EPSG:4979'
+    assert gm.CRS(4979).to_2d().to_epsg() == 4326
+    assert gm.CRS(4326).to_3d().to_epsg() == 4979
     projected_3d = gm.CRS(3857).to_3d()
     assert gm.CRS(projected_3d).same_as(gm.CRS('EPSG:3857').to_3d(), mode='exact')
     assert gm.CRS(projected_3d).to_authority() is None

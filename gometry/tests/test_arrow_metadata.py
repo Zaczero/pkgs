@@ -52,7 +52,7 @@ def test_geoarrow_extension_types_and_arrays_pickle_round_trip() -> None:
     assert restored_type == arrow.type
     assert restored_array == arrow
     assert restored_array.type == arrow.type
-    assert gm.from_arrow(restored_array).crs == 'EPSG:4326'
+    assert gm.from_arrow(restored_array).crs.to_epsg() == 4326
     assert gm.from_arrow(restored_array).epoch == 2020.0
 
 
@@ -325,9 +325,9 @@ def test_from_arrow_rejects_extension_type_vs_field_metadata_conflict_pyarrow_pa
 
     # Capsule of the bare ExtensionArray still has only ExtensionType (no field).
     bare = gm.points([1.0], [2.0], crs=4326).to_arrow()
-    assert gm.from_arrow(bare).crs == 'EPSG:4326'
-    assert gm.from_arrow(_ArrowCArrayOnly(bare)).crs == 'EPSG:4326'
-    assert gm.from_arrow(_pure_array_freevar(bare)).crs == 'EPSG:4326'
+    assert gm.from_arrow(bare).crs.to_epsg() == 4326
+    assert gm.from_arrow(_ArrowCArrayOnly(bare)).crs.to_epsg() == 4326
+    assert gm.from_arrow(_pure_array_freevar(bare)).crs.to_epsg() == 4326
 
 
 def test_from_arrow_honest_capsule_ignores_unrelated_conflicted_globals() -> None:
@@ -354,7 +354,7 @@ def test_from_arrow_honest_capsule_ignores_unrelated_conflicted_globals() -> Non
 
     for provider in (HonestArrayProvider(), HonestStreamProvider()):
         restored = gm.from_arrow(provider)
-        assert restored.crs == 'EPSG:4326'
+        assert restored.crs.to_epsg() == 4326
         assert restored.to_wkt() == ['POINT (1 2)']
 
     # Positive: when BAD itself is the PyArrow carrier, dual-source still errors.
@@ -398,13 +398,13 @@ def test_from_arrow_extension_only_and_field_only_crs_agree_across_frontends() -
     # ExtensionType-only (field metadata absent).
     arr = gm.points([1.0], [2.0], crs=4326).to_arrow()
     table = pa.table({'geometry': arr})
-    assert gm.from_arrow(table).crs == 'EPSG:4326'
-    assert gm.from_arrow(arr).crs == 'EPSG:4326'
-    assert gm.from_arrow(_ArrowCArrayOnly(arr)).crs == 'EPSG:4326'
-    assert gm.from_arrow(_ArrowCStreamOnly(table)).crs == 'EPSG:4326'
-    assert gm.from_arrow(_pure_stream_freevar(table)).crs == 'EPSG:4326'
+    assert gm.from_arrow(table).crs.to_epsg() == 4326
+    assert gm.from_arrow(arr).crs.to_epsg() == 4326
+    assert gm.from_arrow(_ArrowCArrayOnly(arr)).crs.to_epsg() == 4326
+    assert gm.from_arrow(_ArrowCStreamOnly(table)).crs.to_epsg() == 4326
+    assert gm.from_arrow(_pure_stream_freevar(table)).crs.to_epsg() == 4326
     reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
-    assert gm.from_arrow(reader).crs == 'EPSG:4326'
+    assert gm.from_arrow(reader).crs.to_epsg() == 4326
 
     # Field-metadata-only (no ExtensionType wrapper).
     storage = pa.StructArray.from_arrays(
@@ -419,13 +419,13 @@ def test_from_arrow_extension_only_and_field_only_crs_agree_across_frontends() -
         },
     )
     field_table = pa.Table.from_arrays([storage], schema=pa.schema([field]))
-    assert gm.from_arrow(field_table).crs == 'EPSG:4326'
-    assert gm.from_arrow(_ArrowCStreamOnly(field_table)).crs == 'EPSG:4326'
-    assert gm.from_arrow(_pure_stream_freevar(field_table)).crs == 'EPSG:4326'
+    assert gm.from_arrow(field_table).crs.to_epsg() == 4326
+    assert gm.from_arrow(_ArrowCStreamOnly(field_table)).crs.to_epsg() == 4326
+    assert gm.from_arrow(_pure_stream_freevar(field_table)).crs.to_epsg() == 4326
     field_reader = pa.RecordBatchReader.from_batches(
         field_table.schema, field_table.to_batches()
     )
-    assert gm.from_arrow(field_reader).crs == 'EPSG:4326'
+    assert gm.from_arrow(field_reader).crs.to_epsg() == 4326
     assert gm.from_arrow(field_table).to_wkt() == ['POINT (1 2)']
 
     # Agreeing dual sources (same CRS) must not reject on any frontend.
@@ -438,9 +438,9 @@ def test_from_arrow_extension_only_and_field_only_crs_agree_across_frontends() -
         },
     )
     agree_table = pa.Table.from_arrays([arr], schema=pa.schema([agree]))
-    assert gm.from_arrow(agree_table).crs == 'EPSG:4326'
-    assert gm.from_arrow(_ArrowCStreamOnly(agree_table)).crs == 'EPSG:4326'
-    assert gm.from_arrow(_pure_stream_freevar(agree_table)).crs == 'EPSG:4326'
+    assert gm.from_arrow(agree_table).crs.to_epsg() == 4326
+    assert gm.from_arrow(_ArrowCStreamOnly(agree_table)).crs.to_epsg() == 4326
+    assert gm.from_arrow(_pure_stream_freevar(agree_table)).crs.to_epsg() == 4326
 
 
 def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> None:
@@ -460,17 +460,17 @@ def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> N
     table = pa.Table.from_arrays([arrow], schema=pa.schema([field]))
 
     restored = gm.from_arrow(table)
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
     assert restored.to_wkt() == ['POINT (1 2)']
 
 
 def test_from_arrow_plain_stream_preserves_crs() -> None:
     """D07 positive: plain crs=4326 through pure stream keeps EPSG:4326."""
     table = pa.table({'geometry': gm.points([1.0], [2.0], crs=4326).to_arrow()})
-    assert gm.from_arrow(_pure_stream_freevar(table)).crs == 'EPSG:4326'
-    assert gm.from_arrow(_ArrowCStreamOnly(table)).crs == 'EPSG:4326'
+    assert gm.from_arrow(_pure_stream_freevar(table)).crs.to_epsg() == 4326
+    assert gm.from_arrow(_ArrowCStreamOnly(table)).crs.to_epsg() == 4326
     reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
-    assert gm.from_arrow(reader).crs == 'EPSG:4326'
+    assert gm.from_arrow(reader).crs.to_epsg() == 4326
 
 
 def test_from_arrow_empty_and_zero_batch_preserve_crs_epoch() -> None:
@@ -478,25 +478,25 @@ def test_from_arrow_empty_and_zero_batch_preserve_crs_epoch() -> None:
     arr = gm.points([1.0], [2.0], crs=4326, epoch=2020.0).to_arrow()
     table = pa.table({'geometry': arr})
     full = gm.from_arrow(table)
-    assert full.crs == 'EPSG:4326'
+    assert full.crs.to_epsg() == 4326
     assert full.epoch == 2020.0
 
     empty_reader = pa.RecordBatchReader.from_batches(table.schema, [])
     empty = gm.from_arrow(empty_reader)
     assert len(empty) == 0
-    assert empty.crs == 'EPSG:4326'
+    assert empty.crs.to_epsg() == 4326
     assert empty.epoch == 2020.0
 
     empty_table = table.slice(0, 0)
     via_stream = gm.from_arrow(_pure_stream_freevar(empty_table))
     assert len(via_stream) == 0
-    assert via_stream.crs == 'EPSG:4326'
+    assert via_stream.crs.to_epsg() == 4326
     assert via_stream.epoch == 2020.0
 
     empty_arr = arr.slice(0, 0)
     via_arr = gm.from_arrow(empty_arr)
     assert len(via_arr) == 0
-    assert via_arr.crs == 'EPSG:4326'
+    assert via_arr.crs.to_epsg() == 4326
     assert via_arr.epoch == 2020.0
 
 

@@ -2,6 +2,8 @@
 runtime config, cache info, and the PROJ authority metadata surface.
 """
 
+import json
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -37,7 +39,7 @@ def test_crs_rejects_invalid_epsg_code_with_parse_diagnostic(value: str) -> None
 def test_crs_epsg_parse_diagnostic_stays_distinct_from_lookup() -> None:
     with pytest.raises(gm.CRSError, match='could not resolve CRS'):
         gm.CRS('EPSG:999999')
-    assert gm.CRS('epsg:4326').canonical == 'EPSG:4326'
+    assert gm.CRS('epsg:4326').definition == 'EPSG:4326'
 
 
 def test_crs_public_type_hints_resolve() -> None:
@@ -231,10 +233,15 @@ def test_crs_input_forms_are_accepted_across_representative_params() -> None:
     projjson = gm.CRS(4326).to_projjson_dict()
     forms = [4326, 'EPSG:4326', ('EPSG', 4326), projjson, pyproj_crs]
     for form in forms:
-        assert gm.Point(0, 0, crs=form).crs == 'EPSG:4326'
-        assert gm.Point(0, 0).set_crs(form).crs == 'EPSG:4326'
-        assert gm.points([0.0], [0.0], crs=form).crs == 'EPSG:4326'
-        assert gm.require(gm.Point(0, 0, crs=4326), crs=form).crs == 'EPSG:4326'
+        definition = gm.CRS(form).definition
+        if isinstance(form, dict):
+            assert json.loads(definition) == projjson
+        else:
+            assert definition == 'EPSG:4326'
+        assert gm.Point(0, 0, crs=form).crs.definition == definition
+        assert gm.Point(0, 0).set_crs(form).crs.definition == definition
+        assert gm.points([0.0], [0.0], crs=form).crs.definition == definition
+        assert gm.require(gm.Point(0, 0, crs=4326), crs=form).crs.definition == definition
     planar = gm.crs_transform_bounds(pyproj_crs, gm.CRS(3857), (-1.0, 50.0, 1.0, 51.0))
     assert planar[0] == pytest.approx(-111319.4907932736)
 
@@ -245,7 +252,7 @@ def test_crs_transform_bounds_accepts_one_dimensional_numpy_float_array() -> Non
     assert transformed == pytest.approx(tuple(bounds.astype(np.float64)))
 
 
-def test_raw_transform_canonicalizes_equivalent_crs_spellings() -> None:
+def test_raw_transform_accepts_equivalent_crs_definitions() -> None:
     wkt = gm.CRS(4326).to_wkt()
     int_matrix = gm.crs_transform(4326, 3857, [10.0], [50.0])
     str_matrix = gm.crs_transform('EPSG:4326', 'EPSG:3857', [10.0], [50.0])

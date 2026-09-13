@@ -193,7 +193,7 @@ pub(crate) fn cached_export(
 ) -> Result<String> {
     let normalized = normalize(value)?;
     let key = CrsExportKey {
-        crs: normalized,
+        definition: normalized.into(),
         kind: kind(),
     };
     cached_crs_export_with_state(&key, state, produce)
@@ -203,8 +203,8 @@ fn wkt_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::Wkt { version, options } = &key.kind else {
         unreachable!("WKT cache key");
     };
-    ProjObject::new_with_state(&key.crs, state)?.to_wkt_with_options(
-        key.crs.clone(),
+    ProjObject::new_with_state(&key.definition, state)?.to_wkt_with_options(
+        key.definition.to_string(),
         version.to_proj(),
         options,
     )
@@ -214,15 +214,16 @@ fn projjson_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::ProjJson { options } = &key.kind else {
         unreachable!("PROJJSON export cache key has PROJJSON options")
     };
-    ProjObject::new_with_state(&key.crs, state)?.to_projjson(key.crs.clone(), options)
+    ProjObject::new_with_state(&key.definition, state)?
+        .to_projjson(key.definition.to_string(), options)
 }
 
 fn proj_string_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::Proj { version, options } = &key.kind else {
         unreachable!("PROJ string cache key");
     };
-    ProjObject::new_with_state(&key.crs, state)?.to_proj_string(
-        key.crs.clone(),
+    ProjObject::new_with_state(&key.definition, state)?.to_proj_string(
+        key.definition.to_string(),
         version.to_proj(),
         options,
     )
@@ -232,14 +233,16 @@ pub(crate) fn crs_to_2d_export_at(key: &CrsExportKey, state: &RuntimeState) -> R
     let CrsExportKind::To2d { name } = &key.kind else {
         unreachable!("2D CRS cache key");
     };
-    ProjObject::new_with_state(&key.crs, state)?.to_2d(key.crs.clone(), name.as_deref())
+    ProjObject::new_with_state(&key.definition, state)?
+        .to_2d(key.definition.to_string(), name.as_deref())
 }
 
 pub(crate) fn crs_to_3d_export_at(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::To3d { name } = &key.kind else {
         unreachable!("3D CRS cache key");
     };
-    ProjObject::new_with_state(&key.crs, state)?.to_3d(key.crs.clone(), name.as_deref())
+    ProjObject::new_with_state(&key.definition, state)?
+        .to_3d(key.definition.to_string(), name.as_deref())
 }
 
 pub(crate) fn same(left: &str, right: &str, comparison: CrsComparison) -> Result<bool> {
@@ -259,9 +262,9 @@ pub(crate) fn same_with_state(
     // Order the pair so (A,B) and (B,A) share one cache entry (comparison is
     // commutative for both exact and ignore-axis-order modes).
     let (left, right) = if left <= right {
-        (left, right)
+        (left.into(), right.into())
     } else {
-        (right, left)
+        (right.into(), left.into())
     };
     let key = CrsComparisonKey {
         left,

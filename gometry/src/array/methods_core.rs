@@ -268,7 +268,7 @@ impl PyGeometryArray {
             ));
         }
         let collection = Shape::geometry_collection(shapes)?;
-        Ok(PyCrs::from_canonical(crs_arc(crs::estimate_local_crs(
+        Ok(PyCrs::from_definition(crs_arc(crs::estimate_local_crs(
             &collection,
             source,
         )?)))
@@ -431,7 +431,7 @@ impl PyGeometryArray {
     /// CRS or None
     #[getter]
     pub fn crs(&self) -> Option<PyCrs> {
-        self.crs_ref().cloned().map(PyCrs::from_canonical)
+        self.crs_ref().cloned().map(PyCrs::from_definition)
     }
     /// Coordinate epoch shared by the array, if set.
     ///

@@ -1,11 +1,13 @@
 use std::env;
 use std::fs::{self, File};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use tar::Archive;
 
 const MINIMUM_PROJ_VERSION: &str = "9.6.2";
+const PROJ_ARCHIVE_SIZE: usize = 6_394_614;
+const PROJ_ARCHIVE_FNV1A64: u64 = 0x0F8C94421730578E;
 
 #[cfg(feature = "nobuild")]
 fn main() {} // Skip the build script on docs.rs
@@ -99,12 +101,16 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
         }
     }
 
-    let path = format!("PROJSRC/proj-{MINIMUM_PROJ_VERSION}.tar.gz");
+    let path = PathBuf::from(format!("PROJSRC/proj-{MINIMUM_PROJ_VERSION}.tar.gz"));
+    verify_pinned_proj_archive(&path)?;
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let tar_gz = File::open(path)?;
+    let tar_gz = File::open(&path)?;
     let tar = GzDecoder::new(tar_gz);
     let mut archive = Archive::new(tar);
     let source_root = out_path.join("PROJSRC/proj");
+    if source_root.exists() {
+        fs::remove_dir_all(&source_root)?;
+    }
     archive.unpack(&source_root)?;
     let source_dir = source_root.join(format!("proj-{MINIMUM_PROJ_VERSION}"));
     let patch_dir = PathBuf::from(format!("PROJSRC/patches/proj-{MINIMUM_PROJ_VERSION}"));
@@ -123,6 +129,7 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
         }
         fs::copy(patch_path, source_dir.join(destination))?;
     }
+    apply_pinned_semantic_patches(&source_dir)?;
     let source_list = source_dir.join("src/lib_proj.cmake");
     let source_list_contents = fs::read_to_string(&source_list)?;
     let source_list_marker = "  ctx.cpp\n";
@@ -238,6 +245,547 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     }
 
     Ok(proj.join("include"))
+}
+
+fn verify_pinned_proj_archive(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = fs::read(path)?;
+    if bytes.len() != PROJ_ARCHIVE_SIZE {
+        return Err(format!(
+            "bundled PROJ {MINIMUM_PROJ_VERSION} archive size changed: expected {}, got {}",
+            PROJ_ARCHIVE_SIZE,
+            bytes.len()
+        )
+        .into());
+    }
+    let hash = bytes.iter().fold(0xCBF29CE484222325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001B3)
+    });
+    if hash != PROJ_ARCHIVE_FNV1A64 {
+        return Err(format!(
+            "bundled PROJ {MINIMUM_PROJ_VERSION} archive hash changed: expected {PROJ_ARCHIVE_FNV1A64:016x}, got {hash:016x}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn replace_pinned_source(
+    source_dir: &Path,
+    relative: &str,
+    before: &str,
+    after: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = source_dir.join(relative);
+    let text = fs::read_to_string(&path)?;
+    let count = text.matches(before).count();
+    if count != 1 {
+        return Err(format!(
+            "bundled PROJ {MINIMUM_PROJ_VERSION} source anchor is not unique in {relative}: expected 1, got {count}"
+        )
+        .into());
+    }
+    fs::write(path, text.replacen(before, after, 1))?;
+    Ok(())
+}
+
+fn replace_pinned_source_section(
+    source_dir: &Path,
+    relative: &str,
+    start: &str,
+    end: &str,
+    replacement: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = source_dir.join(relative);
+    let text = fs::read_to_string(&path)?;
+    if text.matches(start).count() != 1 {
+        return Err(format!(
+            "bundled PROJ {MINIMUM_PROJ_VERSION} section start anchor is not unique in {relative}"
+        )
+        .into());
+    }
+    let start_index = text.find(start).expect("checked unique section start");
+    let suffix = &text[start_index..];
+    if suffix.matches(end).count() != 1 {
+        return Err(format!(
+            "bundled PROJ {MINIMUM_PROJ_VERSION} section end anchor is not unique after its start in {relative}"
+        )
+        .into());
+    }
+    let end_index = suffix
+        .find(end)
+        .map(|offset| start_index + offset)
+        .ok_or_else(|| {
+            format!(
+                "bundled PROJ {MINIMUM_PROJ_VERSION} section end is before its start in {relative}"
+            )
+        })?;
+    fs::write(
+        path,
+        format!(
+            "{}{}{}",
+            &text[..start_index],
+            replacement,
+            &text[end_index..]
+        ),
+    )?;
+    Ok(())
+}
+
+fn remove_pinned_source_section(
+    source_dir: &Path,
+    relative: &str,
+    start: &str,
+    end: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    replace_pinned_source_section(source_dir, relative, start, end, "")
+}
+
+/// Apply the exact-meaning CRS fixes to the pinned PROJ source.
+///
+/// These edits intentionally stay as small source anchors rather than copying
+/// generated upstream files. A changed archive, version, or anchor fails the
+/// build instead of silently producing a different CRS engine.
+fn apply_pinned_semantic_patches(source_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "    double xy_factor; /* unit conversion factor for horizontal components */",
+        "    double x_factor;\n    double y_factor; /* unit conversion factor for horizontal components */",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "    point.xy.x *= Q->xy_factor;\n    point.xy.y *= Q->xy_factor;",
+        "    point.xy.x *= Q->x_factor;\n    point.xy.y *= Q->y_factor;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "    point.xy.x /= Q->xy_factor;\n    point.xy.y /= Q->xy_factor;",
+        "    point.xy.x /= Q->x_factor;\n    point.xy.y /= Q->y_factor;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "    Q->xy_factor = 1.0;",
+        "    Q->x_factor = 1.0;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "        Q->xy_factor = f;",
+        "        Q->x_factor = f;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "        Q->xy_factor /= f;",
+        "        Q->x_factor /= f;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "    if ((name = pj_param(P->ctx, P->params, \"sz_in\").s) != nullptr) {",
+        r#"    Q->y_factor = Q->x_factor;
+    auto axisFactor = [P](const char *key, const char *numericKey, double &factor, bool inverse) {
+        const char *name = pj_param(P->ctx, P->params, key).s;
+        if (!name) return;
+        double value = get_unit_conversion_factor(name, nullptr, nullptr);
+        if (value == 0) value = pj_param(P->ctx, P->params, numericKey).f;
+        factor = inverse ? factor / value : factor * value;
+    };
+    axisFactor("sx_in", "dx_in", Q->x_factor, false);
+    axisFactor("sy_in", "dy_in", Q->y_factor, false);
+    axisFactor("sx_out", "dx_out", Q->x_factor, true);
+    axisFactor("sy_out", "dy_out", Q->y_factor, true);
+    if ((name = pj_param(P->ctx, P->params, "sz_in").s) != nullptr) {"#,
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/common.cpp",
+        "    return name() == other.name();",
+        "    return name() == other.name() && type() == other.type() && conversionToSI() == other.conversionToSI();",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/common.cpp",
+        "    return name() != other.name();",
+        "    return !operator==(other);",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/common.cpp",
+        r#"            if (::fabs(proj_units[i].factor - conversionToSI()) <
+                1e-10 * conversionToSI()) {"#,
+        "            if (proj_units[i].factor == conversionToSI()) {",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/common.cpp",
+        r#"            if (::fabs(proj_angular_units[i].factor - conversionToSI()) <
+                1e-10 * conversionToSI()) {"#,
+        "            if (proj_angular_units[i].factor == conversionToSI()) {",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/common.cpp",
+        r#"    return std::fabs(conversionToSI() - other.conversionToSI()) <=
+           1e-10 * std::fabs(conversionToSI());"#,
+        "    return type() == other.type() && conversionToSI() == other.conversionToSI();",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/common.cpp",
+        "           maxRelativeError * std::fabs(SIValue);",
+        "           0.0 * std::fabs(SIValue);",
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/coordinatesystem.cpp",
+        r#"    // For approximate comparison, only care about axis direction and unit.
+    if (!(*(d->direction) == *(otherCSA->d->direction) &&
+          d->unit._isEquivalentTo(otherCSA->d->unit, criterion))) {"#,
+        r#"    const auto &m1 = meridian();
+    const auto &m2 = otherCSA->meridian();
+    if (bool(m1) != bool(m2) ||
+        (m1 && m1->longitude().getSIValue() != m2->longitude().getSIValue()))
+        return false;
+    // Direction and scale define the coordinate mapping.
+    if (!(*(d->direction) == *(otherCSA->d->direction) &&
+          d->unit._isEquivalentTo(otherCSA->d->unit, criterion))) {"#,
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/crs.cpp",
+        r#"    if (&dir0 == &cs::AxisDirection::NORTH &&
+        &dir1 == &cs::AxisDirection::EAST) {"#,
+        r#"    if ((&dir0 == &cs::AxisDirection::NORTH || &dir0 == &cs::AxisDirection::SOUTH) &&
+        (&dir1 == &cs::AxisDirection::EAST || &dir1 == &cs::AxisDirection::WEST)) {"#,
+    )?;
+    replace_pinned_source_section(
+        source_dir,
+        "src/iso19111/crs.cpp",
+        "        const auto &unitHoriz = axisList[0]->unit();",
+        "    if (axisList.size() == 3 && !formatter->omitZUnitConversion())",
+        r#"        const auto &unit0 = axisList[0]->unit();
+        const auto &unit1 = axisList[1]->unit();
+        if (unit0.conversionToSI() == unit1.conversionToSI()) {
+            const auto token = unit0.exportToPROJString();
+            if (token.empty()) formatter->addParam("xy_out", unit0.conversionToSI());
+            else formatter->addParam("xy_out", token);
+        } else {
+            const auto &direction0 = axisList[0]->direction();
+            const bool latitudeFirst = &direction0 == &cs::AxisDirection::NORTH ||
+                                       &direction0 == &cs::AxisDirection::SOUTH;
+            formatter->addParam("x_out", (latitudeFirst ? unit1 : unit0).conversionToSI());
+            formatter->addParam("y_out", (latitudeFirst ? unit0 : unit1).conversionToSI());
+        }
+    }
+"#,
+    )?;
+    replace_pinned_source_section(
+        source_dir,
+        "src/iso19111/crs.cpp",
+        "    const auto &unit = axisListIn[0]->unit();",
+        "\n    if (!axisSpecFound &&",
+        r#"    const auto &unit0 = axisListIn[0]->unit();
+    const auto &unit1 = axisListIn[1]->unit();
+    const auto *zUnit = axisListIn.size() == 3 ? &axisListIn[2]->unit() : nullptr;
+    if (unit0.conversionToSI() != 1.0 || unit1.conversionToSI() != 1.0 ||
+        (zUnit && zUnit->conversionToSI() != 1.0)) {
+        if (formatter->getCRSExport()) {
+            const auto token = unit0.exportToPROJString();
+            if (token.empty()) formatter->addParam("to_meter", unit0.conversionToSI());
+            else formatter->addParam("units", token);
+        } else {
+            formatter->addStep("unitconvert");
+            formatter->addParam("xy_in", "m");
+            if (unit0.conversionToSI() == unit1.conversionToSI()) {
+                const auto token = unit0.exportToPROJString();
+                if (token.empty()) formatter->addParam("xy_out", unit0.conversionToSI());
+                else formatter->addParam("xy_out", token);
+            } else {
+                const auto &dir0 = axisListIn[0]->direction();
+                const auto &dir1 = axisListIn[1]->direction();
+                const bool swap = (&dir0 == &cs::AxisDirection::NORTH ||
+                                   &dir0 == &cs::AxisDirection::SOUTH) &&
+                                  (&dir1 == &cs::AxisDirection::EAST ||
+                                   &dir1 == &cs::AxisDirection::WEST);
+                formatter->addParam("x_out", (swap ? unit1 : unit0).conversionToSI());
+                formatter->addParam("y_out", (swap ? unit0 : unit1).conversionToSI());
+            }
+            if (zUnit) {
+                formatter->addParam("z_in", "m");
+                formatter->addParam("z_out", zUnit->conversionToSI());
+            }
+        }
+    } else if (formatter->getCRSExport() && !formatter->getLegacyCRSToCRSContext()) {
+        formatter->addParam("units", "m");
+    }
+"#,
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/datum.cpp",
+        "        if (::fabs(valRad - valRefRad) < 1e-10) {",
+        "        if (valRad == valRefRad) {",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/datum.cpp",
+        "        if (::fabs(a - a_iter) < 1e-10 * a_iter) {",
+        "        if (a == a_iter) {",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/datum.cpp",
+        "                if (::fabs(b - b_iter) < 1e-10 * b_iter) {",
+        "                if (b == b_iter) {",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/datum.cpp",
+        "                if (::fabs(rf - rf_iter) < 1e-10 * rf_iter) {",
+        "                if (rf == rf_iter) {",
+    )?;
+    remove_pinned_source_section(
+        source_dir,
+        "src/iso19111/datum.cpp",
+        r#"    // PROJ "clrk80" name is "Clarke 1880 mod.""#,
+        "    if (!semiMajorAxis()._isEquivalentTo",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/datum.cpp",
+        r#"        if (l_primeMeridian->nameStr() != "Greenwich") {"#,
+        "        if (l_primeMeridian->longitude().getSIValue() != 0.0) {",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/datum.cpp",
+        r#"    if (l_primeMeridian->nameStr() != "Greenwich") {"#,
+        "    if (l_primeMeridian->longitude().getSIValue() != 0.0) {",
+    )?;
+    remove_pinned_source_section(
+        source_dir,
+        "src/iso19111/datum.cpp",
+        "    if (dbContext) {\n        if (!l_identifiers.empty()) {",
+        "    std::string l_name(nameStr());\n    if (grf) {",
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/internal.cpp",
+        "/******************************************************************************\n",
+        "#include <charconv>\n/******************************************************************************\n",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/internal.cpp",
+        r#"std::string toString(double val, int precision) {
+    std::ostringstream buffer;
+    buffer.imbue(std::locale::classic());
+    buffer << std::setprecision(precision);
+    buffer << val;
+    auto str = buffer.str();
+    if (precision == 15 && str.find("9999999999") != std::string::npos) {
+        buffer.str("");
+        buffer.clear();
+        buffer << std::setprecision(14);
+        buffer << val;
+        return buffer.str();
+    }
+    return str;
+}"#,
+        r#"std::string toString(double val, int) {
+    char buffer[64];
+    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), val);
+    return std::string(buffer, result.ptr);
+}"#,
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/internal.cpp",
+        r#"std::string toString(double val, int precision) {
+    // use sqlite3 API that is slightly faster than std::ostringstream
+    // with forcing the C locale. sqlite3_snprintf() emulates a C locale.
+    constexpr int BUF_SIZE = 32;
+    char szBuffer[BUF_SIZE];
+    sqlite3_snprintf(BUF_SIZE, szBuffer, "%.*g", precision, val);
+    if (precision == 15 && strstr(szBuffer, "9999999999")) {
+        sqlite3_snprintf(BUF_SIZE, szBuffer, "%.14g", val);
+    }
+    return szBuffer;
+}"#,
+        r#"std::string toString(double val, int) {
+    char buffer[64];
+    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), val);
+    return std::string(buffer, result.ptr);
+}"#,
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/io.cpp",
+        r#"        constexpr double US_FOOT_CONV_FACTOR = 12.0 / 39.37;
+        constexpr double REL_ERROR = 1e-10;
+        // Fix common rounding errors
+        if (std::fabs(convFactor - UnitOfMeasure::DEGREE.conversionToSI()) <
+            REL_ERROR * convFactor) {
+            convFactor = UnitOfMeasure::DEGREE.conversionToSI();
+        } else if (std::fabs(convFactor - US_FOOT_CONV_FACTOR) <
+                   REL_ERROR * convFactor) {
+            convFactor = US_FOOT_CONV_FACTOR;
+        }
+"#,
+        r#"        // WKT1/ESRI records carry rounded legacy unit factors. Normalize only
+        // that parser dialect; authored WKT2 and PROJJSON factors remain exact.
+        if (esriStyle_ && dbContext_ &&
+            (ci_equal(unitName, "degree") || code == "9002" || code == "9003")) {
+            constexpr double US_FOOT_CONV_FACTOR = 12.0 / 39.37;
+            constexpr double REL_ERROR = 1e-10;
+            if (std::fabs(convFactor - UnitOfMeasure::DEGREE.conversionToSI()) <
+                REL_ERROR * convFactor) {
+                convFactor = UnitOfMeasure::DEGREE.conversionToSI();
+            } else if (std::fabs(convFactor - US_FOOT_CONV_FACTOR) <
+                       REL_ERROR * convFactor) {
+                convFactor = US_FOOT_CONV_FACTOR;
+            }
+        }
+"#,
+    )?;
+    remove_pinned_source_section(
+        source_dir,
+        "src/iso19111/io.cpp",
+        "        // Correct for GDAL WKT1 and WKT1-ESRI departure",
+        "        auto &properties = buildProperties(node);",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/io.cpp",
+        "                } else if (dbCRS) {",
+        "                } else if (dbCRS && isNull(csNode) &&\n                           node->countChildrenOfName(WKTConstants::AXIS) == 0) {",
+    )?;
+    remove_pinned_source_section(
+        source_dir,
+        "src/iso19111/io.cpp",
+        "        if (dbContext_ && memberJ.contains(\"id\")) {",
+        "        if (!datumAdded) {",
+    )?;
+    remove_pinned_source_section(
+        source_dir,
+        "src/iso19111/io.cpp",
+        "    if (std::abs(val * 10 - std::round(val * 10)) < 1e-8) {",
+        "    return normalizeSerializedString(internal::toString(val));",
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/conversion.cpp",
+        r#"                } else if (param->unit_type ==
+                           common::UnitOfMeasure::Type::ANGULAR) {
+                    valueConverted =
+                        value.convertToUnit(common::UnitOfMeasure::DEGREE);
+                } else {"#,
+        r#"                } else if (param->unit_type ==
+                           common::UnitOfMeasure::Type::ANGULAR) {
+                    valueConverted =
+                        value.value() *
+                        (value.unit().conversionToSI() /
+                         common::UnitOfMeasure::DEGREE.conversionToSI());
+                } else {"#,
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/conversion.cpp",
+        r#"std::fabs(measure.value() -
+                                  UTM_LATITUDE_OF_NATURAL_ORIGIN) < 1e-10"#,
+        "measure.value() == UTM_LATITUDE_OF_NATURAL_ORIGIN",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/conversion.cpp",
+        "std::abs(dfZone - std::round(dfZone)) < 1e-10",
+        "measure.value() == 6.0 * std::round(dfZone) - 183.0",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/conversion.cpp",
+        "std::fabs(measure.value() - UTM_SCALE_FACTOR) < 1e-10",
+        "measure.value() == UTM_SCALE_FACTOR",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/conversion.cpp",
+        r#"std::fabs(measure.value() -
+                                      UTM_NORTH_FALSE_NORTHING) < 1e-10"#,
+        "measure.value() == UTM_NORTH_FALSE_NORTHING",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/conversion.cpp",
+        r#"std::fabs(measure.value() -
+                                             UTM_SOUTH_FALSE_NORTHING) <
+                                   1e-10"#,
+        "measure.value() == UTM_SOUTH_FALSE_NORTHING",
+    )?;
+
+    remove_pinned_source_section(
+        source_dir,
+        "src/iso19111/operation/coordinateoperationfactory.cpp",
+        "        std::map<std::pair<io::AuthorityFactory::ObjectType, std::string>,",
+        "        // Normally there should be at most one element",
+    )?;
+    remove_pinned_source_section(
+        source_dir,
+        "src/iso19111/operation/coordinateoperationfactory.cpp",
+        "            const std::pair<io::AuthorityFactory::ObjectType, std::string> key(",
+        "            const auto &authFactoryName",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/coordinateoperationfactory.cpp",
+        "            context.cacheNameToCRS[key] = ids;\n",
+        "",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/coordinateoperationfactory.cpp",
+        "        if (offset_pm.value() == 0 && !axisReversal2D && !axisReversal3D) {",
+        "        if (offset_pm.value() == 0 && !axisReversal2D && !axisReversal3D &&\n            srcAxisList[0]->_isEquivalentTo(dstAxisList[0].get(), util::IComparable::Criterion::EQUIVALENT) &&\n            srcAxisList[1]->_isEquivalentTo(dstAxisList[1].get(), util::IComparable::Criterion::EQUIVALENT)) {",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/coordinateoperationfactory.cpp",
+        "    if (sameDatum && (axisReversal2D || axisReversal3D)) {",
+        "    if (sameDatum && (axisReversal2D || axisReversal3D) &&\n        offset_pm.value() == 0 &&\n        srcAxisList[0]->unit().conversionToSI() == dstAxisList[1]->unit().conversionToSI() &&\n        srcAxisList[1]->unit().conversionToSI() == dstAxisList[0]->unit().conversionToSI()) {",
+    )?;
+    replace_pinned_source_section(
+        source_dir,
+        "src/iso19111/operation/singleoperation.cpp",
+        "    if (isAxisOrderReversal(methodEPSGCode)) {\n        formatter->addStep(\"axisswap\");\n        formatter->addParam(\"order\", \"2,1\");\n        auto sourceCRSGeog =",
+        "\n        return true;\n    }\n\n    if (methodEPSGCode == EPSG_CODE_METHOD_GEOGRAPHIC_GEOCENTRIC)",
+        "    if (isAxisOrderReversal(methodEPSGCode)) {\n        formatter->addStep(\"axisswap\");\n        formatter->addParam(\"order\", \"2,1\");",
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/proj_json_streaming_writer.cpp",
+        "/******************************************************************************\n",
+        "#define FROM_PROJ_CPP\n#include <proj/internal/internal.hpp>\n/******************************************************************************\n",
+    )?;
+    replace_pinned_source_section(
+        source_dir,
+        "src/proj_json_streaming_writer.cpp",
+        "    } else if (dfVal >= std::numeric_limits<int>::min() &&",
+        "\n    }\n}",
+        "    } else {\n        Print(internal::toString(dfVal, 17));",
+    )?;
+    Ok(())
 }
 
 fn configure_path_remapping(config: &mut cmake::Config) {

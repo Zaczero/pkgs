@@ -370,7 +370,7 @@ def _register_extension_types_if_available() -> None:
 
 
 def _crs_projjson(crs: str | CRS) -> dict[str, Any]:
-    """The PROJJSON form of a canonical CRS string — GeoArrow's recommended
+    """The PROJJSON form of a stored CRS definition — GeoArrow's recommended
     in-memory CRS encoding, and the one GeoParquet 1.1 requires when columns
     land in a lakehouse.
     """
@@ -405,7 +405,7 @@ def _extension_type(
 ) -> Any:
     """One GeoArrow extension type, parametrized by layout and frame metadata.
 
-    The CRS (authority:code string) and coordinate epoch are serialized into
+    The CRS definition (as an inline PROJJSON object) and coordinate epoch are serialized into
     the extension metadata, so both survive a gometry Arrow round trip. The
     ``epoch`` key is a gometry extension and may be ignored by other readers.
     """

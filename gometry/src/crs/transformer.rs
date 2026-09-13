@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use smol_str::SmolStr;
+
 use crate::crs::transform::{
     BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, canonical_identity_longitudes,
     transform_in_core_xy_with_domains, transform_in_core_xy_with_domains_indexed,
@@ -64,8 +66,8 @@ impl TransformPlan {
             TransformOperation::InCore(transform)
         } else {
             TransformOperation::Proj {
-                source: source.to_owned(),
-                target: target.to_owned(),
+                source: source.into(),
+                target: target.into(),
                 options,
             }
         };
@@ -600,8 +602,8 @@ pub(super) enum TransformOperation {
     },
     InCore(InCoreTransform),
     Proj {
-        source: String,
-        target: String,
+        source: SmolStr,
+        target: SmolStr,
         options: TransformOptions,
     },
 }

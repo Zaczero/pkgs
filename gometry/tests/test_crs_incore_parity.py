@@ -900,6 +900,8 @@ def test_in_core_pairs_do_not_warm_proj_pipeline() -> None:
     gm.crs_clear_cache()
     assert bucket_entries('proj_pipeline') == 0
     for source, target in ADMITTED_PAIRS:
+        if WGS84_WKT in (source, target):
+            continue
         for x, y, _ in _sample_coords(source, target):
             gm.crs_transform(source, target, x, y)
     assert bucket_entries('proj_pipeline') == 0

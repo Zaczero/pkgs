@@ -24,7 +24,7 @@ fn pickle_size_overflow(message: &'static str) -> crate::error::Error {
 // --- Pickle support ----------------------------------------------------------
 //
 // `__reduce__` payloads round-trip geometry rows through plain WKB (Z/M
-// preserved; the frame travels separately as the canonical CRS string plus
+// preserved; the frame travels separately as the stored CRS definition plus
 // epoch) and packed point/line/polygon arrays through their raw f64 columns
 // (plus CSR offsets for lineal storage). Data types
 // pickle; derived engines (spatial indexes, prepared geometries, coverages)
@@ -90,19 +90,19 @@ fn rebased_i32_offsets_le_bytes(
     Ok(out)
 }
 
-/// Canonicalize a CRS string arriving from a pickle payload through the same
+/// Resolve a CRS string arriving from a pickle payload through the same
 /// PROJ-backed parser public constructors use. Rejects `"NOT_A_CRS"` at unpickle
 /// rather than deferring failure to a later CRS operation.
 fn deserialized_crs(crs: Option<String>) -> crate::error::Result<Option<Crs>> {
     match crs {
         None => Ok(None),
         Some(text) => {
-            let canonical = crate::crs::canonicalize(&text).map_err(|err| {
+            let definition = crate::crs::definition(&text).map_err(|err| {
                 crate::crs::CrsError::message(format!(
                     "invalid CRS in geometry pickle payload: {err}"
                 ))
             })?;
-            Ok(Some(canonical))
+            Ok(Some(definition))
         },
     }
 }
@@ -138,7 +138,7 @@ fn snapshot_optional_bytes(bytes: Option<&[u8]>) -> PyResult<Option<Vec<u8>>> {
 )]
 /// Rebuild a pickled `Geometry` (internal; see ``Geometry.__reduce__``).
 ///
-/// Frame strings are canonicalized through PROJ. Embedded EWKB SRIDs reuse the
+/// Frame strings are resolved through PROJ. Embedded EWKB SRIDs reuse the
 /// public `from_wkb` reconciliation (conflict with the payload CRS is rejected;
 /// an embedded SRID is kept when the payload CRS is absent).
 #[pyfunction]
@@ -165,7 +165,7 @@ pub(crate) fn _unpickle_geometry(
 /// Always builds Mixed storage: WKB intentionally preserves malformed rings
 /// for `validate()`, and must never enter trusted packed columns.
 ///
-/// Frame strings are canonicalized; per-row EWKB SRIDs reconcile against the
+/// Frame strings are resolved; per-row EWKB SRIDs reconcile against the
 /// array frame (same rules as bulk `from_wkb`).
 #[pyfunction]
 pub(crate) fn _unpickle_geometry_array(

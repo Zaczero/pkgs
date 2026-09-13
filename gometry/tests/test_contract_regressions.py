@@ -773,7 +773,9 @@ def test_arrow_c_nonzero_offset_and_sliced_geoarrow_struct() -> None:
     # Coordinate child fields of a sliced GeoArrow struct inherit parent offset
     # so the visible span matches the slice, not the full parent allocation.
     assert len(gm.from_arrow(sliced)) == 2
-    assert restored.crs == values.crs
+    assert restored.crs is not None
+    assert values.crs is not None
+    assert restored.crs.same_as(values.crs, mode='exact')
 
 
 def test_true_nonzero_offset_c_array_capsule_binary() -> None:
@@ -1042,7 +1044,9 @@ def test_capsule_only_geoarrow_struct_slice_nested_list() -> None:
     points = gm.points([0, 1, 2, 3], [0, 1, 2, 3], crs=4326)
     restored = gm.from_arrow(_capsule_only_from_gometry(points))
     assert restored.to_wkt() == points.to_wkt()
-    assert restored.crs == points.crs
+    assert restored.crs is not None
+    assert points.crs is not None
+    assert restored.crs.same_as(points.crs, mode='exact')
 
     # Empty WKB capsule path (zero-sized buffers may be null).
     empty_wkb = gm.from_arrow(

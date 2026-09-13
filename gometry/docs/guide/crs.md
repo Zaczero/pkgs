@@ -115,10 +115,13 @@ for name, crs, period in cases:
 
 ```
 
-The native values are admitted and canonicalized in their own frame. The
+The native values are admitted and interpreted in their own frame. The
 geodesic kernels receive a normalized degree/Greenwich value only at the metric
 boundary; callers do not convert geometry coordinates before using `area`,
-`length`, `distance`, `dwithin`, or exact geographic topology.
+`length`, `distance`, `dwithin`, or exact geographic topology. A CRS object keeps
+the normalized input text as [`CRS.definition`][gometry.CRS.definition]; an
+authority ID discovered inside WKT or PROJJSON is metadata, not a replacement
+for the authored definition.
 
 The prime meridian is part of the same frame. EPSG:4807's 400-grad alias reaches
 the same physical location as its zero-grad spelling when transformed to WGS 84:
@@ -190,7 +193,9 @@ place on Earth.
 You can pass any CRS spelling PROJ can resolve to either call — an EPSG integer,
 an `"EPSG:4326"` string, a CRS name, WKT, or PROJJSON. CRS metadata supplied at a
 constructor or via `set_crs` is validated through PROJ *before* it is stored, so a
-typo fails fast at the boundary rather than deep inside a later transform:
+typo fails fast at the boundary rather than deep inside a later transform. WKT,
+PROJJSON, and PROJ definitions retain their normalized input text and numeric
+meaning; use `crs.definition` when the stored label matters:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -904,8 +909,9 @@ print("to Poland CS92 (static):", observed.to_crs(2180).epoch)
 
 ## The `CRS` object and standards export
 
-[`geom.crs`][gometry.Geometry.crs] returns a [`gm.CRS`][gometry.CRS] object rather than a string. It
-compares equal to both its authority string and its EPSG code, and exposes PROJ's
+[`geom.crs`][gometry.Geometry.crs] returns a [`gm.CRS`][gometry.CRS] object rather than a string. Its
+`definition` property is the exact stored CRS text; authority strings and EPSG
+codes are equal only when that is the stored spelling. It exposes PROJ's
 introspection surface as properties and methods.
 
 ```python exec="on" source="block" result="text"
@@ -916,18 +922,19 @@ print(repr(c))
 print(c == "EPSG:4326", c == 4326)
 print("name:", c.name, "| kind:", c.kind)
 print("geographic?", c.is_geographic, "| projected?", gm.CRS(3857).is_projected)
-print("normalize 'epsg:4326':", gm.CRS("epsg:4326").canonical)
+print("normalize 'epsg:4326':", gm.CRS("epsg:4326").definition)
 print("local EPSG:", gm.box(20, 51, 22, 53, crs=4326).estimate_local_crs().to_epsg())
 
 ```
 
-`CRS.__eq__` is structural and compares the stored canonical label. Use
+`CRS.__eq__` is structural and compares the exact stored definition. Use
 [`same_as(..., mode="ignore_axis_order")`][gometry.CRS.same_as] when asking whether two labels are
-operationally interchangeable; `EPSG:4326` and `OGC:CRS84` remain unequal as
-stored CRS values even though geometry operations accept their shared X/Y
-frame.
+operationally interchangeable; authority and code are metadata queries, not
+replacement definitions. `EPSG:4326` and `OGC:CRS84` remain unequal as stored
+CRS values even though geometry operations accept their shared X/Y frame.
 
-Per-CRS introspection lives on the object as properties — [`is_geographic`][gometry.CRS.is_geographic],
+Per-CRS introspection lives on the object as properties — [`definition`][gometry.CRS.definition],
+[`is_geographic`][gometry.CRS.is_geographic],
 [`is_projected`][gometry.CRS.is_projected], [`kind`][gometry.CRS.kind], [`name`][gometry.CRS.name], [`authority`][gometry.CRS.authority], [`code`][gometry.CRS.code], [`axis_order`][gometry.CRS.axis_order], [`axes`][gometry.CRS.axes],
 [`area_of_use`][gometry.CRS.area_of_use], [`ellipsoid`][gometry.CRS.ellipsoid], [`datum`][gometry.CRS.datum], and more — plus methods like
 [`to_wkt`][gometry.CRS.to_wkt], [`to_proj`][gometry.CRS.to_proj],

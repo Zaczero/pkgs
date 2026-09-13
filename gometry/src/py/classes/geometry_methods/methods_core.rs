@@ -60,7 +60,7 @@ impl PyGeometry {
     /// CRS or None
     #[getter]
     pub fn crs(&self) -> Option<PyCrs> {
-        self.crs_ref().cloned().map(PyCrs::from_canonical)
+        self.crs_ref().cloned().map(PyCrs::from_definition)
     }
     /// Coordinate epoch of this geometry, if set.
     ///

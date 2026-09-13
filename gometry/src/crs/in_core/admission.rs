@@ -16,7 +16,7 @@ use crate::error::Result;
 use crate::numeric::AxisScale;
 
 pub(in crate::crs) struct CachedInCoreDescriptor {
-    pub crs: String,
+    pub definition: smol_str::SmolStr,
     pub descriptor: Option<InCoreDescriptor>,
 }
 
@@ -153,17 +153,24 @@ const fn descriptor_to_setup(kind: &InCoreCrsKind) -> Option<ProjSetup> {
 
 fn resolve_in_core_descriptor(crs: &str, state: &RuntimeState) -> Result<Option<InCoreDescriptor>> {
     let normalized = normalize(crs)?;
+    // Closed-form kernels are complete only for literal authority records
+    // whose full meaning is known by the admission table. An authored WKT,
+    // PROJJSON, or PROJ definition may carry the same metadata ID with
+    // different axes, units, signs, ellipsoid, or conversion parameters.
+    if parse_epsg(&normalized).is_none() {
+        return Ok(None);
+    }
     ensure_thread_caches_current(state);
     CRS_IN_CORE_DESCRIPTOR_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
             &mut cache,
             CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY,
-            |item| item.crs == normalized,
+            |item| item.definition == normalized,
             || {
                 let descriptor = admit_in_core_descriptor(&normalized, state)?;
                 Ok(CachedInCoreDescriptor {
-                    crs: normalized.clone(),
+                    definition: normalized.clone().into(),
                     descriptor,
                 })
             },
@@ -190,14 +197,6 @@ fn admit_in_core_descriptor(crs: &str, state: &RuntimeState) -> Result<Option<In
         }
         InCoreCrsKind::Geographic
     } else if info.is_projected() {
-        // Descriptor admission is keyed on PROJ `info()` operation parameters.
-        // ProjJSON (and other non-authority definitions) can canonicalize to a
-        // database EPSG record with different conversion params than the
-        // definition PROJ actually transforms — refuse so the pipeline path
-        // uses the caller's CRS string verbatim.
-        if parse_epsg(crs).is_none() {
-            return Ok(None);
-        }
         let Some(axis_scale) = projected_axis_scale(&info) else {
             return Ok(None);
         };

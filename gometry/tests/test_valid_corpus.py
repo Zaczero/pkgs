@@ -132,12 +132,16 @@ def _corpus_geometries() -> list[tuple[str, gm.Geometry]]:
 def _assert_same_shape(
     label: str, original: gm.Geometry, restored: gm.Geometry
 ) -> None:
-    """Exact self-output identity: WKT body, coordinate axes, CRS, epoch."""
+    """Exact self-output identity: WKT body, coordinate axes, CRS meaning, epoch."""
     assert str(restored) == str(original), f'{label}: wkt mismatch'
     assert restored.coordinate_axes == original.coordinate_axes, f'{label}: axes'
-    assert restored.crs == original.crs, (
-        f'{label}: crs {restored.crs!r} vs {original.crs!r}'
-    )
+    if original.crs is None:
+        assert restored.crs is None, f'{label}: unexpected CRS {restored.crs!r}'
+    else:
+        assert restored.crs is not None
+        assert restored.crs.same_as(original.crs, mode='exact'), (
+            f'{label}: crs {restored.crs!r} vs {original.crs!r}'
+        )
     assert restored.epoch == original.epoch, f'{label}: epoch'
 
 
@@ -335,7 +339,8 @@ def test_corpus_geoparquet_wkb_and_native_roundtrips(tmp_path: Path) -> None:
     wkb_restored, wkb_attrs = gm.from_geoparquet(str(wkb_path))
     assert wkb_restored.to_wkt() == values.to_wkt()
     assert [int(v) for v in wkb_attrs['id']] == [1, 2]
-    assert wkb_restored.crs in ('EPSG:4326', 'OGC:CRS84')
+    assert wkb_restored.crs is not None
+    assert wkb_restored.crs.to_epsg() == 4326
 
     native_path = tmp_path / 'native.parquet'
     values.to_geoparquet(str(native_path), encoding='native', attributes=attributes)

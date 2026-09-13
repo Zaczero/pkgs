@@ -144,7 +144,6 @@ pub(crate) fn exported_owned_crs(
             proj_context_error_message(context),
         ));
     };
-    let authority = id_authority(&object).map(|(authority, code)| format!("{authority}:{code}"));
     // SAFETY: DOC-H. Typed owners; PROJ returns object-lifetime WKT string.
     let wkt = unsafe {
         copy_proj_c_string(proj_sys::proj_as_wkt(
@@ -156,9 +155,6 @@ pub(crate) fn exported_owned_crs(
     };
     // `object` drops here after strings are copied (OwnedPj Drop).
     drop(object);
-    if let Some(authority) = authority {
-        return Ok(authority);
-    }
     wkt.ok_or_else(|| CrsError::export(crs, format, proj_context_error_message(context)))
 }
 
@@ -195,6 +191,7 @@ pub(crate) fn authority_object_info(
         };
         AuthorityObjectInfo {
             crs,
+            definition: None,
             authority,
             code,
             name: copy_proj_c_string(proj_sys::proj_get_name(object.as_ptr())),
@@ -203,6 +200,28 @@ pub(crate) fn authority_object_info(
             area_of_use: area_of_use(context, object),
         }
     }
+}
+
+fn object_definition(context: &ProjContext, object: &OwnedPj) -> Option<smol_str::SmolStr> {
+    // SAFETY: DOC-H. Typed live context/object; PROJ returns an object-lifetime
+    // PROJJSON string copied before the owned object can drop.
+    let definition = unsafe {
+        copy_proj_c_string(proj_sys::proj_as_projjson(
+            context.as_ptr(),
+            object.as_ptr(),
+            ptr::null(),
+        ))
+    }?;
+    Some(definition.into())
+}
+
+fn authority_object_info_with_definition(
+    context: &ProjContext,
+    object: &OwnedPj,
+) -> AuthorityObjectInfo {
+    let mut info = authority_object_info(context, object);
+    info.definition = object_definition(context, object);
+    info
 }
 
 pub(crate) fn owned_authority_object_info(
@@ -256,7 +275,7 @@ pub(crate) fn sub_crs_infos(
         if live_crs_admits_geometry_epoch(context, child, normalized)? {
             admits_geometry_epoch = true;
         }
-        items.push(authority_object_info(context, child));
+        items.push(authority_object_info_with_definition(context, child));
         Ok(())
     })?;
     Ok((items, admits_geometry_epoch))

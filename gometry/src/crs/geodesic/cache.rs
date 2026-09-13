@@ -77,7 +77,7 @@ fn cached_geodesic_object(crs: &str, state: &RuntimeState) -> Result<CachedGeode
         flattening,
     )?;
     Ok(CachedGeodesicObject {
-        crs: crs.to_owned(),
+        definition: crs.into(),
         object: Geodesic::new(ellipsoid.semi_major_metre, flattening),
     })
 }
@@ -103,7 +103,7 @@ pub(crate) fn with_geodesic_cache_at<T, E>(
     // invalidate every thread-local cache, including this one.
     let hit = CRS_GEODESIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let Some(index) = cache.iter().position(|item| item.crs == crs) else {
+        let Some(index) = cache.iter().position(|item| item.definition == crs) else {
             return false;
         };
         if index + 1 != cache.len() {
@@ -126,7 +126,7 @@ pub(crate) fn with_geodesic_cache_at<T, E>(
         let index = lru_resolve(
             &mut cache,
             CRS_GEODESIC_CACHE_CAPACITY,
-            |item| item.crs == crs,
+            |item| item.definition == crs,
             || Ok(entry),
         )
         .map_err(&map_err)?;

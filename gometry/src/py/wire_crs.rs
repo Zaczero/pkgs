@@ -82,7 +82,8 @@ pub(crate) struct SridFrameAdmission {
     storage: Option<Crs>,
     /// First present row's normalized SRID agreement.
     shared_srid: SharedSrid,
-    /// One canonicalize per distinct nonzero code (finish + conflict messages).
+    /// One definition resolution per distinct nonzero code (finish + conflict
+    /// messages).
     cache: io::SridCrsCache,
 }
 

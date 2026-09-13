@@ -145,14 +145,14 @@ impl PyCrs {
         Ok(self.cached_info()?.code.clone())
     }
 
-    /// Canonical identifier string for this CRS.
+    /// Stored definition string for this CRS.
     ///
     /// Returns
     /// -------
     /// str
     #[getter]
-    fn canonical(&self) -> String {
-        self.canonical.to_string()
+    fn definition(&self) -> String {
+        self.definition.to_string()
     }
 
     /// Axis roles in CRS order (lowercase, e.g. ``["lat", "lon"]`` for a

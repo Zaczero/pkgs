@@ -997,6 +997,7 @@ CrsAreaInput: TypeAlias = (
 
 class CrsAuthorityObject(TypedDict):
     crs: str
+    definition: NotRequired[str]
     authority: str | None
     code: str | None
     name: str | None

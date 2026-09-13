@@ -40,7 +40,7 @@ def test_geometry_dtype_from_arrow_roundtrip(points: gm.GeometryArray) -> None:
     restored = GeometryDtype().__from_arrow__(table['geometry'])
 
     assert canon(restored.geometry_array) == canon(points)
-    assert restored.geometry_array.crs == points.crs
+    assert restored.geometry_array.crs.same_as(points.crs, mode='exact')
 
     arrow = points.to_arrow()
     chunked = pa.chunked_array([arrow.slice(0, 1), arrow.slice(1)])

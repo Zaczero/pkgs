@@ -720,18 +720,23 @@ def test_crs_factories_from_wkt_proj_authority() -> None:
     from_proj = gm.CRS(epsg.to_proj())
     from_authority = gm.CRS(('EPSG', '4326'))
 
-    assert from_wkt == epsg
+    assert from_wkt != epsg
+    assert from_wkt.definition == epsg.to_wkt()
+    assert from_wkt.to_epsg() == 4326
     assert from_authority == epsg
-    assert from_authority.canonical == 'EPSG:4326'
+    assert from_authority.definition == 'EPSG:4326'
     # PROJ string form often identifies as OGC:CRS84 (lon/lat axis order) rather
     # than EPSG:4326; it must still be a geographic CRS on the WGS84 ellipsoid.
     assert from_proj.is_geographic
     assert from_proj.ellipsoid is not None
     assert from_proj.ellipsoid['name'] == epsg.ellipsoid['name']
-    assert from_proj == epsg or from_proj.celestial_body == epsg.celestial_body
+    assert from_proj != epsg
+    assert from_proj.to_epsg() == 4326
+    assert from_proj.celestial_body == epsg.celestial_body
 
     projected = gm.CRS(2263)
-    assert gm.CRS(projected.to_wkt()) == projected
+    assert gm.CRS(projected.to_wkt()) != projected
+    assert gm.CRS(projected.to_wkt()).to_epsg() == 2263
     assert gm.CRS(('EPSG', '2263')) == projected
     assert gm.CRS(projected.to_proj()).is_projected
 
@@ -752,7 +757,7 @@ def test_crs_direct_metadata_properties(
     crs = gm.CRS(code)
     assert crs.authority == expect_authority
     assert crs.code == str(code)
-    assert crs.canonical == f'{expect_authority}:{code}'
+    assert crs.definition == f'{expect_authority}:{code}'
     assert crs.celestial_body == 'Earth'
     assert crs.ellipsoid is not None
     assert isinstance(crs.ellipsoid, dict)

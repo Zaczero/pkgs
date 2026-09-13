@@ -31,7 +31,10 @@ def parquet_path() -> str:
 
 def _assert_roundtrip(original: gm.GeometryArray, restored: gm.GeometryArray) -> None:
     assert canon(restored) == canon(original)
-    assert restored.crs == original.crs
+    if restored.crs is None or original.crs is None:
+        assert restored.crs is original.crs
+    else:
+        assert restored.crs.same_as(original.crs, mode='exact')
 
 
 def _read_geometry(path: str, **kwargs: object) -> gm.GeometryArray:
@@ -126,7 +129,7 @@ def test_geoparquet_nullable_packed_roundtrip_preserves_frame_and_rows(
     restored = _read_geometry(parquet_path)
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
     assert restored.is_missing.tolist() == [False, True, False]
-    assert restored.crs == values.crs
+    assert restored.crs.same_as(values.crs, mode='exact')
     assert restored.epoch == values.epoch
 
 
@@ -155,7 +158,7 @@ def test_from_geoparquet_reads_geopandas_written_file(parquet_path: str) -> None
     )
     gdf.to_parquet(parquet_path)
     restored = _read_geometry(parquet_path)
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
     assert canon(restored) == ['POINT (0 0)', 'POINT (10 20)']
 
 
@@ -179,7 +182,7 @@ def test_to_geoparquet_array_crs_attaches_metadata(parquet_path: str) -> None:
     geometries = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
     geometries.set_crs(4326).to_geoparquet(parquet_path)
     restored = _read_geometry(parquet_path)
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
     assert canon(restored) == ['POINT (0 0)', 'POINT (1 1)']
 
 
@@ -472,7 +475,7 @@ def test_geoparquet_native_point_roundtrip(parquet_path: str) -> None:
     values.to_geoparquet(parquet_path, encoding='native')
     restored = _read_geometry(parquet_path)
     assert canon(restored) == ['POINT (1 2)', 'POINT (3 4)']
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
 
 
 def _write_native_list_of_points_parquet(
@@ -939,7 +942,7 @@ def test_r15_dictionary_encoded_wkb_geoparquet_accepted(parquet_path: str) -> No
 
     restored, _ = gm.from_geoparquet(parquet_path)
     assert restored.to_wkt() == values.to_wkt()
-    assert restored.crs == values.crs
+    assert restored.crs.same_as(values.crs, mode='exact')
 
     # Exact audit option: read_dictionary=['geometry'].
     restored_dict, _ = gm.from_geoparquet(parquet_path, read_dictionary=['geometry'])
@@ -1059,9 +1062,14 @@ except Exception as error:
         "format": getattr(error, "format", None),
     }}, sort_keys=True))
 else:
+    authority = result.crs.to_authority() if result.crs is not None else None
     print(json.dumps({{
         "status": "accepted",
-        "crs": str(result.crs) if result.crs is not None else None,
+        "crs": (
+            f"{{authority[0]}}:{{authority[1]}}"
+            if authority is not None
+            else result.crs.definition if result.crs is not None else None
+        ),
         "epoch": result.epoch,
         "wkt": result.to_wkt(drop_epoch=True),
     }}, sort_keys=True))
@@ -1236,7 +1244,7 @@ def test_native_geoarrow_extension_without_frame_opinion_accepts_declared() -> N
             pa, chunked, 'point', 'EPSG:3857', None, field=field
         )
         restored = gm.from_arrow(labeled)
-        assert restored.crs == 'EPSG:3857'
+        assert restored.crs.to_epsg() == 3857
         assert restored.to_wkt() == ['POINT (1 2)']
 
 
@@ -1585,13 +1593,13 @@ def test_d13_public_roundtrip_preserves_attributes(parquet_path: str) -> None:
     restored, restored_attrs = gm.from_geoparquet(parquet_path)
     _assert_roundtrip(values, restored)
     assert restored_attrs.equals(attributes)
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
 
     values.to_geoparquet(parquet_path, attributes=attributes, encoding='native')
     restored_n, restored_attrs_n = gm.from_geoparquet(parquet_path)
     _assert_roundtrip(values, restored_n)
     assert restored_attrs_n.equals(attributes)
-    assert restored_n.crs == 'EPSG:4326'
+    assert restored_n.crs.to_epsg() == 4326
 
 
 def test_geoparquet_sized_array_like_attributes_preserve_native_types(
@@ -2283,7 +2291,7 @@ def test_d14_3_generator_columns_and_row_groups_public_path(
     assert restored.to_wkt() == ['POINT (1 2)', 'POINT (5 6)']
     assert attrs.column_names == ['id']
     assert attrs['id'].to_pylist() == [10, 30]
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
 
 
 # --- Cross-defect positives: WKB + native public round-trips stay green ---
@@ -2499,7 +2507,7 @@ def test_admit_preserves_raw_field_extension_frame() -> None:
         storage.type, 'point', 'geometry', field
     )
     assert has_ext is True
-    assert crs == 'EPSG:4326'
+    assert json.loads(crs) == gm.CRS(4326).to_projjson_dict()
     assert epoch is None
 
     # Rewrap with matching geoparquet frame succeeds; mismatched raises.
@@ -2508,7 +2516,7 @@ def test_admit_preserves_raw_field_extension_frame() -> None:
         pa, chunked, 'point', 'EPSG:4326', None, field=field
     )
     restored = gm.from_arrow(labeled)
-    assert restored.crs == 'EPSG:4326'
+    assert restored.crs.to_epsg() == 4326
     assert restored.to_wkt() == ['POINT (1 2)']
 
     with pytest.raises(
@@ -2529,7 +2537,7 @@ def test_parse_geoparquet_column_frame_mapping_contract() -> None:
     crs, epoch = _parse_geoparquet_column_frame(
         {'crs': gm.CRS(4326).to_projjson_dict(), 'epoch': -0.0}, 'geometry'
     )
-    assert crs == 'EPSG:4326'
+    assert json.loads(crs) == gm.CRS(4326).to_projjson_dict()
     assert epoch == 0.0
     assert str(epoch) == '0.0'  # not -0.0
 
@@ -2544,7 +2552,7 @@ def test_parse_geoparquet_column_frame_mapping_contract() -> None:
     crs, _ = _parse_geoparquet_column_frame(
         {'crs': gm.CRS(4326).to_projjson_dict(), 'edges': 'planar'}, 'geometry'
     )
-    assert crs == 'EPSG:4326'
+    assert json.loads(crs) == gm.CRS(4326).to_projjson_dict()
     with pytest.raises(
         gm.ParseError,
         match=r"edges 'spherical' are unsupported; only planar edges are accepted",

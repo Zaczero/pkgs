@@ -669,7 +669,7 @@ def test_crs_equality_is_semantic_and_unhashable() -> None:
         hash(crs)
     with pytest.raises(TypeError, match='unhashable'):
         _ = {crs: 1}
-    values = {crs.canonical: 1}
+    values = {crs.definition: 1}
     assert values['EPSG:4326'] == 1
 
 

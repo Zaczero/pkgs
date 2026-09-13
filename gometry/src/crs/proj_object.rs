@@ -217,7 +217,7 @@ impl ProjObject {
             datum.as_ref().is_some_and(datum_admits_geometry_epoch)
         };
         Ok(CrsInfo {
-            crs: normalized,
+            definition: normalized.into(),
             name,
             authority,
             code,

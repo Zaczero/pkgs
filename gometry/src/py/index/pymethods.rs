@@ -130,7 +130,7 @@ impl PySpatialIndex {
             .as_ref()
             .and_then(crate::Frame::crs_ref)
             .cloned()
-            .map(crate::py::crs::PyCrs::from_canonical)
+            .map(crate::py::crs::PyCrs::from_definition)
     }
 
     /// Coordinate epoch shared by the indexed geometries, if set.

@@ -16,13 +16,13 @@ use crate::py::crs::{
 /// authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 ///
 /// Equality is structural — a ``CRS`` compares equal only to the same
-/// canonical stored label (``crs == 4326`` and ``crs == 'EPSG:4326'``).
+/// stored definition (``crs == 4326`` and ``crs == 'EPSG:4326'``).
 /// Operational equivalence, including axis-order-only differences, is the
 /// explicit ``same_as(..., mode='ignore_axis_order')`` query. It is therefore
-/// unhashable; key mappings by ``crs.canonical`` instead.
+/// unhashable; key mappings by ``crs.definition`` instead.
 #[pyclass(name = "CRS", frozen, immutable_type, weakref, module = "gometry")]
 pub struct PyCrs {
-    pub(crate) canonical: Crs,
+    pub(crate) definition: Crs,
     /// Shared with the process-wide CRS info cache — store the `Arc`, never
     /// deep-clone the heavy `CrsInfo` into this cell. Stamped with
     /// [`crs::RuntimeState::generation`] so ``crs_clear_cache`` /
@@ -43,9 +43,9 @@ pub struct PyCrs {
 type IdentifyMemo = Mutex<Option<(u64, Option<String>, Vec<crs::IdentifyCandidate>)>>;
 
 impl PyCrs {
-    pub(crate) const fn from_canonical(canonical: Crs) -> Self {
+    pub(crate) const fn from_definition(definition: Crs) -> Self {
         Self {
-            canonical,
+            definition,
             info: Mutex::new(None),
             info_py: Mutex::new(None),
             identify: Mutex::new(None),
@@ -53,7 +53,7 @@ impl PyCrs {
     }
 
     pub(crate) fn resolve(value: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Ok(Self::from_canonical(crs_parse_required(value)?))
+        Ok(Self::from_definition(crs_parse_required(value)?))
     }
 
     /// Lazily resolved, generation-stamped PROJ description of this CRS.
@@ -79,7 +79,7 @@ impl PyCrs {
             }
         }
         // Resolve outside the lock (PROJ may take its own locks).
-        let resolved = crs::info_with_state(&self.canonical, state)?;
+        let resolved = crs::info_with_state(&self.definition, state)?;
         {
             let mut guard = self
                 .info
@@ -116,7 +116,7 @@ impl PyCrs {
                 return Ok(candidates.clone());
             }
         }
-        let candidates = crs::identify_with_state(&self.canonical, authority, &state)?;
+        let candidates = crs::identify_with_state(&self.definition, authority, &state)?;
         *self
             .identify
             .lock()
@@ -171,14 +171,14 @@ impl PyCrs {
     }
 
     fn retained_heap_bytes(&self) -> usize {
-        self.canonical.heap_bytes() + self.info.heap_bytes()
+        self.definition.heap_bytes() + self.info.heap_bytes()
     }
 }
 
 #[pymethods]
 impl PyCrs {
     /// ``sys.getsizeof`` support: the wrapper plus owned Rust-side CRS text
-    /// retained by this object. This includes the canonical CRS string when it
+    /// retained by this object. This includes the stored CRS definition when it
     /// spills out of `SmolStr` inline storage and any heap strings/vectors in
     /// the lazily cached `CrsInfo`. Opaque PROJ process-global caches are not
     /// owned by the Python object and are not counted.
@@ -210,6 +210,7 @@ impl HeapSize for crs::AuthorityObjectInfo {
     fn heap_bytes(&self) -> usize {
         let Self {
             crs,
+            definition,
             authority,
             code,
             name,
@@ -218,6 +219,7 @@ impl HeapSize for crs::AuthorityObjectInfo {
             area_of_use,
         } = self;
         crs.heap_bytes()
+            + definition.heap_bytes()
             + authority.heap_bytes()
             + code.heap_bytes()
             + name.heap_bytes()
@@ -375,7 +377,7 @@ impl HeapSize for crs::CrsCoordinateOperationInfo {
 impl HeapSize for crs::CrsInfo {
     fn heap_bytes(&self) -> usize {
         let Self {
-            crs,
+            definition,
             name,
             authority,
             code,
@@ -402,7 +404,7 @@ impl HeapSize for crs::CrsInfo {
             prime_meridian,
             ..
         } = self;
-        crs.heap_bytes()
+        definition.heap_bytes()
             + name.heap_bytes()
             + authority.heap_bytes()
             + code.heap_bytes()

@@ -47,7 +47,7 @@ pub(crate) use functions_geodesic::{
 pub(crate) use functions_misc::{crs_engine, crs_normalize, crs_parse_required};
 pub(crate) use functions_transform::{
     crs_apply, crs_grid, crs_operation, crs_operation_at, crs_operations, crs_roundtrip,
-    crs_transform, crs_transform_bounds, drain_accuracy_warning,
+    crs_transform, crs_transform_bounds, discard_accuracy_warning, drain_accuracy_warning,
 };
 pub(crate) use parsing::parse_crs_inner;
 pub(crate) use py_crs::PyCrs;

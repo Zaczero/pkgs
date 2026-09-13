@@ -199,7 +199,7 @@ def test_ewkb_srid_bidirectional() -> None:
     # alone — pin that coordinates still parse under an explicit CRS.
     tagged = gm.from_wkb(shapely_ewkb, crs=4326)
     assert tagged.crs is not None
-    assert tagged.crs.canonical == 'EPSG:4326'
+    assert tagged.crs.definition == 'EPSG:4326'
 
 
 def test_ewkb_nested_collection_with_srid() -> None:

@@ -278,8 +278,8 @@ impl PyCrs {
     /// >>> gm.CRS(4979).to_2d().to_epsg()
     /// 4326
     fn to_2d(slf: &Bound<'_, Self>, name: Option<&str>) -> PyResult<Self> {
-        Ok(Self::from_canonical(crs_arc(crs::to_2d(
-            &slf.get().canonical,
+        Ok(Self::from_definition(crs_arc(crs::to_2d(
+            &slf.get().definition,
             name,
         )?)))
     }
@@ -306,8 +306,8 @@ impl PyCrs {
     /// >>> gm.CRS(4326).to_3d().to_epsg()
     /// 4979
     fn to_3d(slf: &Bound<'_, Self>, name: Option<&str>) -> PyResult<Self> {
-        Ok(Self::from_canonical(crs_arc(crs::to_3d(
-            &slf.get().canonical,
+        Ok(Self::from_definition(crs_arc(crs::to_3d(
+            &slf.get().definition,
             name,
         )?)))
     }

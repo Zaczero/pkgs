@@ -785,8 +785,8 @@ pub(crate) fn parse_geoarrow_extension_metadata_for(
     let _edges = parse_geoarrow_edges(&object, encoding)?;
     // The CRS is a PROJJSON object (this encoder's output and the GeoArrow
     // recommendation) or an authority string from other producers; both
-    // canonicalize through the CRS engine. PROJJSON declaring an identity
-    // canonicalizes to its authority:code rather than the full definition.
+    // resolve through the CRS engine while retaining the full authored
+    // PROJJSON object; an embedded ID is metadata, not a replacement label.
     let crs = match object.get("crs") {
         Some(Value::String(_)) if crs_type == Some("projjson") => {
             return Err(geoarrow_parse_error(
@@ -807,19 +807,7 @@ pub(crate) fn parse_geoarrow_extension_metadata_for(
                 crs_type.expect("matched a present crs_type")
             )));
         },
-        Some(crs @ Value::Object(object)) => {
-            let identity = object.get("id").and_then(|id| {
-                let authority = id.get("authority")?.as_str()?;
-                let code = id.get("code")?;
-                let code = code
-                    .as_i64()
-                    .map(|value| value.to_string())
-                    .or_else(|| code.as_str().map(ToOwned::to_owned))?;
-                Some(format!("{authority}:{code}"))
-            });
-            let reference = identity.unwrap_or_else(|| crs.to_string());
-            Some(normalize_geoarrow_crs(&reference)?)
-        },
+        Some(crs @ Value::Object(_)) => Some(normalize_geoarrow_crs(&crs.to_string())?),
         // GeoArrow forbids explicit ``{"crs": null}`` (use absent key for
         // CRS-free). GeoParquet keeps its own omitted-vs-null contract.
         Some(Value::Null) => {
@@ -1362,19 +1350,10 @@ fn parse_geoparquet_column_frame_value_typed(
     let crs = match object.get("crs") {
         None => Some(normalize_geoparquet_crs_typed("OGC:CRS84", column_name)?),
         Some(Value::Null) => None,
-        Some(crs @ Value::Object(projjson)) => {
-            let identity = projjson.get("id").and_then(|id| {
-                let authority = id.get("authority")?.as_str()?;
-                let code = id.get("code")?;
-                let code = code
-                    .as_i64()
-                    .map(|value| value.to_string())
-                    .or_else(|| code.as_str().map(ToOwned::to_owned))?;
-                Some(format!("{authority}:{code}"))
-            });
-            let reference = identity.unwrap_or_else(|| crs.to_string());
-            Some(normalize_geoparquet_crs_typed(&reference, column_name)?)
-        },
+        Some(crs @ Value::Object(_)) => Some(normalize_geoparquet_crs_typed(
+            &crs.to_string(),
+            column_name,
+        )?),
         Some(_) => {
             return Err(column_error(
                 "crs must be a PROJJSON object or null".to_owned(),

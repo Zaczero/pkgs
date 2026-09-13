@@ -160,7 +160,7 @@ pub(crate) fn authority_matches_with_state(
             &mut cache,
             CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
             |item| {
-                item.crs == normalized
+                item.definition == normalized
                     && item.authority == authority
                     && item.min_confidence == min_confidence
             },
@@ -176,7 +176,7 @@ pub(crate) fn authority_matches_with_state(
                     })
                     .collect();
                 Ok(CachedCrsAuthorityMatches {
-                    crs: normalized.clone(),
+                    definition: normalized.clone().into(),
                     authority: authority.clone(),
                     min_confidence,
                     items,
@@ -415,11 +415,11 @@ pub(crate) fn non_deprecated_with_state(
         let index = lru_resolve(
             &mut cache,
             NON_DEPRECATED_CACHE_CAPACITY,
-            |item| item.crs == normalized,
+            |item| item.definition == normalized,
             || {
                 let items = ProjObject::new_with_state(&normalized, state)?.non_deprecated()?;
                 Ok(CachedAuthorityObjects {
-                    crs: normalized.clone(),
+                    definition: normalized.clone().into(),
                     items,
                 })
             },

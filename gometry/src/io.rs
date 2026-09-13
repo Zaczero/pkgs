@@ -265,7 +265,7 @@ pub(crate) fn crs_from_srid(code: u32) -> Result<Option<smol_str::SmolStr>> {
     if code == 0 {
         return Ok(None);
     }
-    Ok(Some(crs::canonicalize(&format!("EPSG:{code}"))?))
+    Ok(Some(crs::definition(&format!("EPSG:{code}"))?))
 }
 
 /// Resolve an optional normalized EWKB/EWKT SRID (`None` = CRS-free).
@@ -277,7 +277,7 @@ pub(crate) fn crs_from_optional_srid(srid: Option<u32>) -> Result<Option<smol_st
 ///
 /// Uniform multi-row ingest (the common case) hits the one-slot cache on every
 /// row after the first, so bulk `from_wkb` / EWKT / Arrow WKB no longer pay
-/// `format!("EPSG:{code}")` + canonicalize per row. A second distinct code
+/// `format!("EPSG:{code}")` + definition resolution per row. A second distinct code
 /// still resolves (and fails SharedCrs / conflict guards with the same
 /// messages) without re-canonicalizing the first.
 #[derive(Default)]
@@ -307,8 +307,8 @@ impl SridCrsCache {
 ///
 /// `srid` is `None` for plain WKB and for PostGIS SRID 0 (unknown). Nonzero
 /// codes stay numeric until a consumer resolves them through
-/// [`crs_from_srid`] / [`SridCrsCache`] so bulk ingest can canonicalize each
-/// distinct code once.
+/// [`crs_from_srid`] / [`SridCrsCache`] so bulk ingest resolves each distinct
+/// code once.
 pub(crate) struct WkbGeometry {
     pub shape: Shape,
     pub srid: Option<u32>,

@@ -662,7 +662,7 @@ pub(crate) enum LegacyGeoJsonCrsPolicy<'a> {
 /// `policy`. Matching uses
 /// [`crs::same`](crate::crs::same) with
 /// [`CrsComparison::IgnoreAxisOrder`](crate::crs::CrsComparison::IgnoreAxisOrder)
-/// so ``OGC:CRS84`` and ``EPSG:4326`` agree. Returns the resolved canonical
+/// so ``OGC:CRS84`` and ``EPSG:4326`` agree. Returns the normalized definition
 /// CRS string (or ``None`` for CRS-free).
 pub(crate) fn reconcile_legacy_geojson_crs(
     declarations: &[&Value],
@@ -700,7 +700,7 @@ pub(crate) fn reconcile_legacy_geojson_crs(
     }
 }
 
-/// Parse a pre-RFC-7946 ``crs`` member to a canonical CRS identifier.
+/// Parse a pre-RFC-7946 ``crs`` member to a normalized CRS definition.
 pub(crate) fn parse_legacy_geojson_crs(value: &Value) -> Result<Option<String>> {
     let Some(object) = value.as_object() else {
         return Ok(None);
@@ -720,7 +720,7 @@ pub(crate) fn parse_legacy_geojson_crs(value: &Value) -> Result<Option<String>> 
         "urn:ogc:def:crs:EPSG::4326" => "EPSG:4326",
         other => other,
     };
-    Ok(Some(crs::canonicalize(authority)?.to_string()))
+    Ok(Some(crs::definition(authority)?.to_string()))
 }
 
 /// Reconcile a legacy ``crs`` member with the caller's ``crs=`` frame.
@@ -742,14 +742,14 @@ pub(crate) fn validate_legacy_geojson_crs(
             "legacy GeoJSON CRS member conflicts with crs=None",
         ));
     };
-    let Some(legacy_canonical) = parse_legacy_geojson_crs(legacy)? else {
+    let Some(legacy_definition) = parse_legacy_geojson_crs(legacy)? else {
         return Err(IoError::geojson(
             "legacy GeoJSON CRS member is not supported",
         ));
     };
-    if !metadata::crs_labels_operationally_equal(&legacy_canonical, target)? {
+    if !metadata::crs_labels_operationally_equal(&legacy_definition, target)? {
         return Err(IoError::geojson(format!(
-            "legacy GeoJSON CRS member ({legacy_canonical}) conflicts with crs={target}"
+            "legacy GeoJSON CRS member ({legacy_definition}) conflicts with crs={target}"
         )));
     }
     Ok(())

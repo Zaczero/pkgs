@@ -53,12 +53,12 @@ pub(crate) fn info_with_state(
         let index = lru_resolve(
             &mut cache,
             CRS_INFO_CACHE_CAPACITY,
-            |item| item.crs == normalized,
+            |item| item.definition == normalized,
             || {
                 let info =
                     ProjObject::new_with_state(&normalized, state)?.info(normalized.clone())?;
                 Ok(CachedCrsInfo {
-                    crs: normalized.clone(),
+                    definition: normalized.clone().into(),
                     info: std::sync::Arc::new(info),
                 })
             },
@@ -121,7 +121,7 @@ fn factors_batch_with_state(
         let index = lru_resolve(
             &mut cache,
             CRS_FACTOR_CACHE_CAPACITY,
-            |item| item.crs == target,
+            |item| item.definition == target,
             || projection_factors_object(&target, state),
         )?;
         longitudes
@@ -183,7 +183,7 @@ fn factor_columns_with_state(
         let index = lru_resolve(
             &mut cache,
             CRS_FACTOR_CACHE_CAPACITY,
-            |item| item.crs == target,
+            |item| item.definition == target,
             || projection_factors_object(&target, state),
         )?;
         cache[index]
@@ -211,7 +211,7 @@ fn projection_factors_object(
     let projection_object =
         create_crs_transform_object(&context, &projection_definition, &projection, None)?;
     Ok(CachedProjectionFactorsObject {
-        crs: target.to_owned(),
+        definition: target.into(),
         object: ProjObject {
             object: projection_object,
             context,
@@ -427,7 +427,7 @@ fn owned_proj_info_snapshot() -> OwnedProjInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crs::RUNTIME_STATE_TEST_LOCK;
+    use crate::crs::{RUNTIME_STATE_TEST_LOCK, transform_coordinates};
     use crate::geographic::Latitude;
 
     fn assert_close(actual: f64, expected: f64, tolerance: f64) {
@@ -620,6 +620,168 @@ mod tests {
                 expected,
                 "dynamic classification for {crs}",
             );
+        }
+    }
+
+    fn authored_geographic_wkt(
+        latitude_first: bool,
+        longitude_direction: &str,
+        latitude_direction: &str,
+        longitude_factor: f64,
+        latitude_factor: f64,
+    ) -> String {
+        let latitude = format!(
+            r#"AXIS["latitude",{latitude_direction},ORDER[{}],ANGLEUNIT["latitude unit",{latitude_factor:?}]]"#,
+            if latitude_first { 1 } else { 2 }
+        );
+        let longitude = format!(
+            r#"AXIS["longitude",{longitude_direction},ORDER[{}],ANGLEUNIT["longitude unit",{longitude_factor:?}]]"#,
+            if latitude_first { 2 } else { 1 }
+        );
+        let axes = if latitude_first {
+            format!("{latitude},{longitude}")
+        } else {
+            format!("{longitude},{latitude}")
+        };
+        format!(
+            r#"GEOGCRS["authored",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],CS[ellipsoidal,2],{axes},ID["EPSG",4326]]"#
+        )
+    }
+
+    #[test]
+    fn authored_axis_meaning_is_preserved_in_native_forward_inverse_pipeline() {
+        let a = 6_378_137.0;
+        let degree = std::f64::consts::PI / 180.0;
+        let mercator_y = a * (0.5 * degree).tan().asinh();
+        for latitude_first in [true, false] {
+            for longitude_direction in ["east", "west"] {
+                for latitude_direction in ["north", "south"] {
+                    let source = authored_geographic_wkt(
+                        latitude_first,
+                        longitude_direction,
+                        latitude_direction,
+                        0.02,
+                        degree,
+                    );
+                    let expected_x: f64 = a
+                        * 100.0
+                        * 0.02
+                        * if longitude_direction == "west" {
+                            -1.0
+                        } else {
+                            1.0
+                        };
+                    let expected_y: f64 = mercator_y
+                        * if latitude_direction == "south" {
+                            -1.0
+                        } else {
+                            1.0
+                        };
+                    let mut x = [100.0_f64];
+                    let mut y = [0.5_f64];
+                    transform_coordinates(
+                        &source,
+                        "EPSG:3857",
+                        &mut x,
+                        &mut y,
+                        crate::Zt::None,
+                        TransformOptions::default(),
+                    )
+                    .unwrap();
+                    assert_eq!(x[0].to_bits(), expected_x.to_bits(), "{source}");
+                    assert_eq!(y[0].to_bits(), expected_y.to_bits(), "{source}");
+
+                    let mut inverse_x = [expected_x];
+                    let mut inverse_y = [expected_y];
+                    transform_coordinates(
+                        "EPSG:3857",
+                        &source,
+                        &mut inverse_x,
+                        &mut inverse_y,
+                        crate::Zt::None,
+                        TransformOptions::default(),
+                    )
+                    .unwrap();
+                    assert_close(inverse_x[0], 100.0, 4.0 * f64::EPSILON * 100.0);
+                    assert_close(inverse_y[0], 0.5, 4.0 * f64::EPSILON);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn authored_native_values_keep_near_units_prime_meridian_and_offsets() {
+        let degree = std::f64::consts::PI / 180.0;
+        for factor in [
+            f64::from_bits(degree.to_bits() - 1),
+            f64::from_bits(degree.to_bits() + 1),
+            degree - 1.0e-12,
+            degree + 1.0e-12,
+        ] {
+            let source = authored_geographic_wkt(true, "east", "north", factor, factor);
+            let mut x = [100.0_f64];
+            let mut y = [0.5_f64];
+            transform_coordinates(
+                &source,
+                "EPSG:3857",
+                &mut x,
+                &mut y,
+                crate::Zt::None,
+                TransformOptions::default(),
+            )
+            .unwrap();
+            assert_close(
+                x[0],
+                6_378_137.0 * 100.0 * factor,
+                2.0 * f64::EPSILON * 6_378_137.0 * 100.0 * factor,
+            );
+            assert_close(
+                y[0],
+                6_378_137.0 * (0.5 * factor).tan().asinh(),
+                2.0 * f64::EPSILON * 6_378_137.0,
+            );
+        }
+
+        let prime_meridian = format!(
+            r#"GEOGCRS["authored PM",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",1e-11,ANGLEUNIT["radian",1]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["degree",{degree:?}]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["degree",{degree:?}]],ID["EPSG",4326]]"#
+        );
+        let mut x = [100.0_f64];
+        let mut y = [0.5_f64];
+        transform_coordinates(
+            &prime_meridian,
+            "EPSG:3857",
+            &mut x,
+            &mut y,
+            crate::Zt::None,
+            TransformOptions::default(),
+        )
+        .unwrap();
+        assert_close(
+            x[0],
+            6_378_137.0 * (100.0 * degree + 1.0e-11),
+            2.0 * f64::EPSILON * 6_378_137.0 * 100.0 * degree,
+        );
+
+        for offset in [
+            0.100_000_000_4,
+            f64::from_bits(0.1_f64.to_bits() + 1),
+            -1.0e-11,
+        ] {
+            let target = format!(
+                r#"PROJCRS["offset",BASEGEODCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]],CONVERSION["Mercator",METHOD["Mercator (variant A)",ID["EPSG",9804]],PARAMETER["Latitude of natural origin",0,ANGLEUNIT["degree",0.017453292519943295],ID["EPSG",8801]],PARAMETER["Longitude of natural origin",0,ANGLEUNIT["degree",0.017453292519943295],ID["EPSG",8802]],PARAMETER["Scale factor at natural origin",1,SCALEUNIT["unity",1],ID["EPSG",8805]],PARAMETER["False easting",{offset:?},LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",0,LENGTHUNIT["metre",1],ID["EPSG",8807]]],CS[cartesian,2],AXIS["easting",east,ORDER[1],LENGTHUNIT["metre",1]],AXIS["northing",north,ORDER[2],LENGTHUNIT["metre",1]]] "#
+            );
+            let mut x = [0.0_f64];
+            let mut y = [0.0_f64];
+            transform_coordinates(
+                "EPSG:4326",
+                &target,
+                &mut x,
+                &mut y,
+                crate::Zt::None,
+                TransformOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(x[0].to_bits(), offset.to_bits());
         }
     }
 }

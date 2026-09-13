@@ -283,7 +283,7 @@ pub(in crate::crs) fn with_rhumb_at<T>(
     // clear this cache while another thread changes runtime configuration.
     let hit = CRS_RHUMB_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let Some(index) = cache.iter().position(|item| item.crs == crs) else {
+        let Some(index) = cache.iter().position(|item| item.definition == crs) else {
             return false;
         };
         if index + 1 != cache.len() {
@@ -300,7 +300,7 @@ pub(in crate::crs) fn with_rhumb_at<T>(
     }
 
     let entry = CachedRhumbEllipsoid {
-        crs: crs.to_owned(),
+        definition: crs.into(),
         ellipsoid: RhumbEllipsoid::for_crs_at(crs, state)?,
     };
     ensure_thread_caches_current(state);
@@ -309,7 +309,7 @@ pub(in crate::crs) fn with_rhumb_at<T>(
         let index = lru_resolve(
             &mut cache,
             CRS_RHUMB_CACHE_CAPACITY,
-            |item| item.crs == crs,
+            |item| item.definition == crs,
             || Ok(entry),
         )?;
         f(&cache[index].ellipsoid)

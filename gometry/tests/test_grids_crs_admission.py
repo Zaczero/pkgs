@@ -692,7 +692,7 @@ def test_c9_cf_projected_units_from_metadata():
             for a in axes
         )
     )
-    assert unit_ok, (rebuilt.canonical, proj, axes)
+    assert unit_ok, (rebuilt.definition, proj, axes)
     # 1000 native units east of false origin must not match a metres misread.
     origin_e, origin_n = cf['false_easting'], cf['false_northing']
     p_native = gm.Point(origin_e + 1000.0, origin_n, crs=2227)

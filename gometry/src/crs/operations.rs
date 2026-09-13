@@ -483,8 +483,8 @@ pub(crate) fn operations_info_with_state(
             || {
                 let items = operations_info_uncached(&source, &target, options, state)?;
                 Ok(CachedCrsOperations {
-                    source: source.clone(),
-                    target: target.clone(),
+                    source: source.clone().into(),
+                    target: target.clone().into(),
                     options: options.clone(),
                     items,
                 })

@@ -309,7 +309,7 @@ where
         let execution = admission.execution();
         let points = admission.admit_points(array);
         if let Some(execution) = execution {
-            crate::py::crs::drain_accuracy_warning(py, &execution)?;
+            crate::py::crs::discard_accuracy_warning(&execution);
         }
         let points = points.map_err(PyErr::from)?;
         let depth = I64Param::parse(depth, depth_kw, points.len())?;

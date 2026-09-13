@@ -28,14 +28,14 @@ impl PyCrs {
     }
 
     /// Equality against anything CRS-like (a `CRS`, authority string, EPSG
-    /// code, or ``to_wkt()``-bearing object) by canonical identity;
+    /// code, or ``to_wkt()``-bearing object) by exact stored definition;
     /// non-CRS operands defer with ``NotImplemented``.
     ///
     /// A ``CRS`` is unhashable because equal raw strings and integers have
-    /// unrelated hashes. Key mappings by ``crs.canonical`` instead.
+    /// unrelated hashes. Key mappings by ``crs.definition`` instead.
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> Py<PyAny> {
         match parse_crs(Some(other)) {
-            Ok(Some(other)) => PyBool::new(py, *other == *self.canonical)
+            Ok(Some(other)) => PyBool::new(py, *other == *self.definition)
                 .to_owned()
                 .unbind()
                 .into(),
@@ -47,18 +47,18 @@ impl PyCrs {
     const __hash__: Option<Py<PyAny>> = None;
 
     fn __str__(&self) -> String {
-        self.canonical.to_string()
+        self.definition.to_string()
     }
 
     fn __repr__(&self) -> String {
-        format!("CRS({:?})", &*self.canonical)
+        format!("CRS({:?})", &*self.definition)
     }
 
     /// HTML preview for notebooks: a compact table of `info` fields.
     fn _repr_html_(&self) -> PyResult<String> {
         let info = self.cached_info()?;
-        let mut rows = Vec::new();
-        rows.push(("CRS", info.crs.clone()));
+        let mut rows: Vec<(&str, String)> = Vec::new();
+        rows.push(("CRS", info.definition.to_string()));
         if let Some(name) = &info.name {
             rows.push(("Name", name.clone()));
         }
@@ -113,12 +113,12 @@ impl PyCrs {
         Ok(html)
     }
 
-    /// Pickle support: a CRS is its canonical string; the constructor
+    /// Pickle support: a CRS is its definition string; the constructor
     /// rebuilds everything else lazily.
     fn __reduce__(&self, py: Python<'_>) -> (Py<PyAny>, (String,)) {
         (
             py.get_type::<PyCrs>().into_any().unbind(),
-            (self.canonical.to_string(),),
+            (self.definition.to_string(),),
         )
     }
 }

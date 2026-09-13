@@ -12,6 +12,7 @@ use std::num::NonZeroUsize;
 use pyo3::IntoPyObject;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use smol_str::SmolStr;
 
 use crate::crs::Confidence;
 
@@ -112,7 +113,7 @@ pub(crate) enum CrsObjectKind {
     reason = "independent CRS catalog flags, not a mode bitfield"
 )]
 pub(crate) struct CrsInfo {
-    pub crs: String,
+    pub definition: SmolStr,
     pub name: Option<String>,
     pub authority: Option<String>,
     pub code: Option<String>,
@@ -201,7 +202,7 @@ impl<'py> IntoPyObject<'py> for CrsInfo {
         let is_engineering = self.is_engineering();
         let is_bound = self.is_bound();
         let Self {
-            crs,
+            definition,
             name,
             authority,
             code,
@@ -229,7 +230,7 @@ impl<'py> IntoPyObject<'py> for CrsInfo {
             ..
         } = self;
         let dict = PyDict::new(py);
-        dict.set_item("crs", crs)?;
+        dict.set_item("crs", definition.to_string())?;
         dict.set_item("name", name)?;
         dict.set_item("authority", authority)?;
         dict.set_item("code", code)?;
@@ -846,13 +847,47 @@ pub(crate) struct IdentifyCandidate {
     pub confidence: Confidence,
 }
 
-#[derive(Debug, Clone, IntoPyObject)]
+#[derive(Debug, Clone)]
 pub(crate) struct AuthorityObjectInfo {
     pub crs: String,
+    /// Full child definition when this object was inspected as part of a CRS
+    /// definition. The authority label remains metadata in `crs`.
+    pub(crate) definition: Option<smol_str::SmolStr>,
     pub authority: Option<String>,
     pub code: Option<String>,
     pub name: Option<String>,
     pub kind: &'static str,
     pub deprecated: bool,
     pub area_of_use: Option<AreaOfUse>,
+}
+
+impl<'py> IntoPyObject<'py> for AuthorityObjectInfo {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let Self {
+            crs,
+            definition,
+            authority,
+            code,
+            name,
+            kind,
+            deprecated,
+            area_of_use,
+        } = self;
+        let dict = PyDict::new(py);
+        dict.set_item("crs", crs)?;
+        if let Some(definition) = definition {
+            dict.set_item("definition", definition.to_string())?;
+        }
+        dict.set_item("authority", authority)?;
+        dict.set_item("code", code)?;
+        dict.set_item("name", name)?;
+        dict.set_item("kind", kind)?;
+        dict.set_item("deprecated", deprecated)?;
+        dict.set_item("area_of_use", area_of_use)?;
+        Ok(dict)
+    }
 }
