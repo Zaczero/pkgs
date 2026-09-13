@@ -31,6 +31,7 @@ Usage (from the monorepo root):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -388,19 +389,27 @@ def _native_section(package: str) -> str:
             raise _native_error(package, name, 'version must be a non-empty string')
         if not isinstance(license, str) or license not in accepted:
             raise _native_error(package, name, f'license {license!r} is not accepted')
-        archive, notice, notice_file, copyright = (
+        archive, notice, notice_file = (
             component.get('archive'),
             component.get('notice'),
             component.get('notice-file'),
-            component.get('copyright'),
         )
+        notice_sha256 = component.get('notice-sha256')
+        if notice_sha256 is not None and (
+            not isinstance(notice_sha256, str)
+            or len(notice_sha256) != hashlib.sha256().digest_size * 2
+            or any(character not in '0123456789abcdef' for character in notice_sha256)
+        ):
+            raise _native_error(
+                package, name, 'notice-sha256 must be a lowercase SHA-256 digest'
+            )
         archive_mode = archive is not None or notice is not None
         file_mode = notice_file is not None
-        if sum((archive_mode, file_mode, copyright is not None)) != 1:
+        if sum((archive_mode, file_mode)) != 1:
             raise _native_error(
                 package,
                 name,
-                'declare exactly one of archive + notice, notice-file, or copyright',
+                'declare exactly one of archive + notice or notice-file',
             )
         if archive_mode:
             if not isinstance(archive, str) or not isinstance(notice, str):
@@ -432,22 +441,19 @@ def _native_section(package: str) -> str:
                     name,
                     f'could not read notice-file {notice_file!r}: {error}',
                 ) from error
-        else:
-            if not isinstance(copyright, str) or not copyright.strip():
-                raise _native_error(
-                    package, name, 'copyright must be a non-empty string'
-                )
-            try:
-                canonical = SPDX_TEXTS[license]
-                text = canonical.format(copyright=copyright)
-                if '{copyright}' not in canonical:
-                    text = f'{copyright}\n\n{text}'
-            except KeyError as error:
-                raise _native_error(
-                    package, name, f'no canonical SPDX text for {license!r}'
-                ) from error
         if not text.strip():
             raise _native_error(package, name, 'notice is empty')
+        if notice_sha256 is not None:
+            digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+            if digest != notice_sha256:
+                raise _native_error(
+                    package,
+                    name,
+                    f'notice does not match pinned SHA-256 {notice_sha256}',
+                )
+        fence = '```'
+        while fence in text:
+            fence += '`'
         rendered.append(f'\n### {name} {version}\n')
         if 'homepage' in component:
             homepage = component['homepage']
@@ -456,10 +462,10 @@ def _native_section(package: str) -> str:
                     package, name, 'homepage must be a non-empty string'
                 )
             rendered.append(f'\n<{homepage}>\n')
-        rendered.append(f'\nLicensed under {license}.\n\n```\n{text}')
+        rendered.append(f'\nLicensed under {license}.\n\n{fence}\n{text}')
         if not text.endswith('\n'):
             rendered.append('\n')
-        rendered.append('```\n')
+        rendered.append(f'{fence}\n')
     return ''.join(rendered)
 
 

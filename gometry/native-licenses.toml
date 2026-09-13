@@ -8,18 +8,33 @@
 # payload, not coupled to a fragile registry path scan.
 
 [[component]]
-name     = "PROJ"
-version  = "9.6.2"
-license  = "MIT"
-homepage = "https://proj.org"
-copyright = "Copyright PROJ contributors"
+name          = "PROJ"
+version       = "9.6.2"
+license       = "MIT"
+homepage      = "https://proj.org"
+archive       = "native/proj-sys/PROJSRC/proj-9.6.2.tar.gz"
+notice        = "proj-9.6.2/COPYING"
+# Pinned PROJ 9.6.2 source archive; the notice is the archive member above.
+notice-sha256 = "6a8f30793e877d32e3f88b972f0970a051a3b5a26cd057d3993cb51e21c43319"
 
 [[component]]
-name      = "nlohmann/json"
-version   = "3.9.1"
-license   = "MIT"
-homepage  = "https://github.com/nlohmann/json"
-copyright = "Copyright (c) 2013-2019 Niels Lohmann"
+name          = "nlohmann/json"
+version       = "3.9.1"
+license       = "MIT"
+homepage      = "https://github.com/nlohmann/json"
+notice-file   = "native/notices/nlohmann-json-license.md"
+# https://raw.githubusercontent.com/nlohmann/json/v3.9.1/LICENSE.MIT
+notice-sha256 = "50be9457e5c9faaba5e60d9c73f8eabe9e0737a2d9c3e58357d856661862c18e"
+
+[[component]]
+name          = "nlohmann/json bundled header"
+version       = "3.9.1"
+license       = "MIT"
+homepage      = "https://github.com/nlohmann/json"
+archive       = "native/proj-sys/PROJSRC/proj-9.6.2.tar.gz"
+notice        = "proj-9.6.2/include/proj/internal/vendor/nlohmann/json.hpp"
+# The full pinned header retains the bundled header and its embedded notices.
+notice-sha256 = "1c6a0b5ff46e5967201646728e22df59185c84191f99e056c0194b4ab46160a4"
 
 [[component]]
 name        = "libtiff"
@@ -36,11 +51,14 @@ homepage    = "https://libtiff.gitlab.io/libtiff/"
 notice-file = "native/libtiff-sys/notices/libtiff-lzw-license.md"
 
 [[component]]
-name      = "zlib"
-version   = "1.3.2"
-license   = "Zlib"
-homepage  = "https://zlib.net"
-copyright = "Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler"
+name          = "zlib"
+version       = "1.3.2"
+license       = "Zlib"
+homepage      = "https://zlib.net"
+notice-file   = "native/notices/zlib-license.md"
+# libz-sys 1.1.29, Cargo.lock checksum
+# 85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9
+notice-sha256 = "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
 
 [[component]]
 name        = "SQLite"
@@ -48,3 +66,6 @@ version     = "3.50.2"
 license     = "blessing"
 homepage    = "https://sqlite.org"
 notice-file = "native/notices/sqlite-blessing.md"
+# libsqlite3-sys 0.35.0, Cargo.lock checksum
+# 133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f
+notice-sha256 = "85806d613cfda5901f848b3b5b4b04396c8c64e89c97c0af3706c42b0c44bb47"

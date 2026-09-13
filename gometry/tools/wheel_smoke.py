@@ -15,6 +15,7 @@ clean-installs it into a temporary venv, and runs a functional import/API smoke.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -189,7 +190,7 @@ def _content_leaks(
 
 
 def native_notice_markers() -> list[tuple[str, str, str]]:
-    """Component name, license ID, and notice phrase the wheel must reproduce."""
+    """Component name, license ID, and full pinned notice text."""
     manifest = ROOT / 'native-licenses.toml'
     if not manifest.exists():
         return []
@@ -198,9 +199,6 @@ def native_notice_markers() -> list[tuple[str, str, str]]:
     markers: list[tuple[str, str, str]] = []
     for component in components:
         name = component['name']
-        if copyright := component.get('copyright'):
-            markers.append((name, component['license'], copyright))
-            continue
         if notice_file := component.get('notice-file'):
             try:
                 text = (ROOT / notice_file).read_text(encoding='utf-8')
@@ -216,11 +214,39 @@ def native_notice_markers() -> list[tuple[str, str, str]]:
                         f'native component {name} has no notice member'
                     )
                 text = member.read().decode('utf-8')
+        notice_sha256 = component.get('notice-sha256')
+        if notice_sha256 is not None:
+            if (
+                not isinstance(notice_sha256, str)
+                or len(notice_sha256) != hashlib.sha256().digest_size * 2
+                or any(character not in '0123456789abcdef' for character in notice_sha256)
+            ):
+                raise AssertionError(
+                    f'native component {name} has an invalid notice-sha256'
+                )
+            digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+            if digest != notice_sha256:
+                raise AssertionError(
+                    f'native component {name} notice does not match pinned SHA-256 '
+                    f'{notice_sha256}'
+                )
         marker = next((line.strip() for line in text.splitlines() if line.strip()), '')
         if not marker:
             raise AssertionError(f'native component {name} has an empty notice')
-        markers.append((name, component['license'], marker))
+        markers.append((name, component['license'], text))
     return markers
+
+
+def verify_native_notice_texts(text: str, artifact: Path) -> None:
+    for component, license_id, notice in native_notice_markers():
+        if (
+            component not in text
+            or f'Licensed under {license_id}.' not in text
+            or notice not in text
+        ):
+            raise AssertionError(
+                f'{artifact} is missing the full native notice for {component!r}'
+            )
 
 
 def verify_libtiff_checkout() -> None:
@@ -360,6 +386,7 @@ def inspect_sdist(path: Path) -> str:
         )
     if leaks := _content_leaks(text_members):
         raise AssertionError(f'sdist text leaks absolute build paths: {leaks[:20]}')
+    verify_native_notice_texts(text_members[f'{root}/LICENSE-THIRD-PARTY.md'], path)
     return metadata_version
 
 
@@ -526,15 +553,7 @@ def inspect_wheel(path: Path) -> str:
     if len(third_party) != 1:
         raise AssertionError(f'expected one third-party license file: {third_party!r}')
     third_party_text = text_members[third_party[0]]
-    for component, license_id, marker in native_notice_markers():
-        if (
-            component not in third_party_text
-            or f'Licensed under {license_id}.' not in third_party_text
-            or marker not in third_party_text
-        ):
-            raise AssertionError(
-                f'wheel third-party license missing native component {component!r}'
-            )
+    verify_native_notice_texts(third_party_text, path)
     if generated_members:
         raise AssertionError(
             f'wheel contains generated Python bytecode: {generated_members[:20]}'
