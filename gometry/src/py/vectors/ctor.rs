@@ -151,43 +151,6 @@ impl Groups {
         Self::from_geometry_csr(Arc::new(values), offsets.into(), 0..n)
     }
 
-    /// Build coordinate-valued Groups from one fixed-width coordinate chunk per
-    /// value. CSR offsets count coordinate rows, while the backing payload is
-    /// flattened row-major for NumPy's two-dimensional row views.
-    pub(crate) fn from_coordinate_chunks(
-        dimensions: usize,
-        builder: CsrBuilder<[f64; 4]>,
-    ) -> PyResult<Self> {
-        if !(2..=4).contains(&dimensions) {
-            return Err(GeometryError::new_err(
-                "coordinate dimensions must be positive",
-            ));
-        }
-        let (chunks, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
-        let mut values =
-            crate::try_vec_with_capacity(chunks.len().checked_mul(dimensions).ok_or_else(
-                || PyOverflowError::new_err("coordinate matrix size overflows usize"),
-            )?)?;
-        for chunk in chunks {
-            for value in &chunk[..dimensions] {
-                crate::try_push(&mut values, *value)?;
-            }
-        }
-        validate_csr_offsets(&offsets, values.len() / dimensions)?;
-        let rows = offsets
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
-        Ok(Self {
-            values: GroupsValues::Coordinates {
-                values: values.into(),
-                dimensions,
-            },
-            offsets: offsets.into(),
-            rows: 0..rows,
-        })
-    }
-
     /// Element-wise self-intersection rows as one flat geometry column.
     pub fn from_self_intersection_rows(py: Python<'_>, array: &PyGeometryArray) -> PyResult<Self> {
         let domain = crate::geometry::topology_domain(&array.frame)?;

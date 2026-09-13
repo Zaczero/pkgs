@@ -26,7 +26,6 @@ use crate::geometry::Shape;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::errors::GeometryError;
-use crate::py::numpy;
 use crate::py::numpy::{ImmutableBufferOwner, frozen_buffer_owner, frozen_i64_view, int64_array};
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{CsrBuilder, HeapSize};
@@ -124,18 +123,6 @@ fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> PyR
     Ok(true)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact"
-)]
-fn coordinate_values_equal(left: &[f64], right: &[f64]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right)
-            .all(|(left, right)| left == right || (left.is_nan() && right.is_nan()))
-}
-
 fn slice_rows(
     start: isize,
     step: isize,
@@ -153,12 +140,6 @@ enum GroupsValues {
     Int64(Arc<[i64]>),
     Geometry(Arc<PyGeometryArray>),
     Cells(Arc<PyCellArray>),
-    /// Coordinate rows stored as one flat f64 payload. Offsets count
-    /// coordinate rows; each row has the same number of dimensions.
-    Coordinates {
-        values: Arc<[f64]>,
-        dimensions: usize,
-    },
 }
 
 /// Shared CSR ragged container: one flat `values` payload plus row `offsets`.
@@ -189,11 +170,10 @@ enum GroupsContainsNeedle {
     Int64(Vec<i64>),
     Geometry(PyGeometryArray),
     Cells(PyCellArray),
-    Coordinates(Vec<f64>),
 }
 
-// Frozen + immutable Arc-backed storage: the only owner admitted to the
-// owner-derived NumPy views. A mutable pyclass cannot implement Sealed.
+// Frozen + immutable Arc<[i64]> backing: the only owner admitted to
+// `frozen_i64_view` (Item C). A mutable pyclass cannot implement Sealed.
 impl frozen_buffer_owner::Sealed for Groups {}
 impl ImmutableBufferOwner for Groups {}
 
@@ -230,35 +210,6 @@ impl Groups {
         values.logical_row_range(self.row_values_window(row))
     }
 
-    fn coordinate_values_window(&self, row: usize) -> Range<usize> {
-        let rows = self.row_values_window(row);
-        let GroupsValues::Coordinates { dimensions, .. } = &self.values else {
-            unreachable!("coordinate_values_window requires Coordinates backing");
-        };
-        rows.start * dimensions..rows.end * dimensions
-    }
-
-    fn coordinate_row_array(&self, slf: Bound<'_, Self>, row: usize) -> PyResult<Py<PyAny>> {
-        let GroupsValues::Coordinates { dimensions, .. } = &self.values else {
-            unreachable!("coordinate_row_array requires Coordinates backing");
-        };
-        let rows = self.row_values_window(row);
-        numpy::frozen_f64_matrix_view(
-            slf,
-            |this| {
-                let GroupsValues::Coordinates { values, dimensions } = &this.values else {
-                    unreachable!("coordinate_row_array requires Coordinates backing");
-                };
-                let rows = this.row_values_window(row);
-                let start = rows.start * *dimensions;
-                let end = rows.end * *dimensions;
-                &values[start..end]
-            },
-            rows.len(),
-            *dimensions,
-        )
-    }
-
     fn slice_rows(&self, rows: Range<usize>) -> Self {
         Self {
             values: self.values.clone(),
@@ -293,11 +244,6 @@ impl Groups {
                 values.logical_coordinate_bytes_range(self.values_window())
             },
             GroupsValues::Cells(_) => self.values_window().len() * std::mem::size_of::<u64>(),
-            GroupsValues::Coordinates { dimensions, .. } => self
-                .values_window()
-                .len()
-                .saturating_mul(*dimensions)
-                .saturating_mul(std::mem::size_of::<f64>()),
         };
         values_bytes + self.logical_offsets_bytes()
     }
@@ -307,11 +253,6 @@ impl Groups {
             GroupsValues::Int64(_) => self.values_window().len() * std::mem::size_of::<i64>(),
             GroupsValues::Geometry(values) => values.logical_heap_bytes_range(self.values_window()),
             GroupsValues::Cells(_) => self.values_window().len() * std::mem::size_of::<u64>(),
-            GroupsValues::Coordinates { dimensions, .. } => self
-                .values_window()
-                .len()
-                .saturating_mul(*dimensions)
-                .saturating_mul(std::mem::size_of::<f64>()),
         };
         values_bytes + self.logical_offsets_bytes()
     }
@@ -326,7 +267,6 @@ impl Groups {
             GroupsValues::Int64(_) => frozen_i64_view(slf, |this| this.int64_row_slice(row)),
             GroupsValues::Geometry(_) => self.geometry_row_view(row)?.into_py_any(py),
             GroupsValues::Cells(_) => self.cell_row_view(row)?.into_py_any(py),
-            GroupsValues::Coordinates { .. } => self.coordinate_row_array(slf, row),
         }
     }
 
@@ -353,26 +293,6 @@ impl Groups {
             (GroupsValues::Cells(left), GroupsValues::Cells(right)) => Ok(left
                 .logical_row_range(self.values_window())?
                 .logical_eq(&right.logical_row_range(other.values_window())?)),
-            (
-                GroupsValues::Coordinates {
-                    values: left,
-                    dimensions: left_dimensions,
-                },
-                GroupsValues::Coordinates {
-                    values: right,
-                    dimensions: right_dimensions,
-                },
-            ) => {
-                if left_dimensions != right_dimensions {
-                    return Ok(false);
-                }
-                let left_rows = self.values_window();
-                let right_rows = other.values_window();
-                Ok(coordinate_values_equal(
-                    &left[left_rows.start * left_dimensions..left_rows.end * left_dimensions],
-                    &right[right_rows.start * right_dimensions..right_rows.end * right_dimensions],
-                ))
-            },
             _ => Ok(false),
         }
     }
@@ -409,7 +329,9 @@ impl Groups {
                 Ok(index) => index,
                 Err(error)
                     if error.is_instance_of::<PyTypeError>(item.py())
-                        && !crate::py_index_check(&candidate) =>
+                        && candidate
+                            .getattr_opt(pyo3::intern!(item.py(), "__index__"))?
+                            .is_none() =>
                 {
                     return Ok(None);
                 },
@@ -444,19 +366,6 @@ impl Groups {
                 };
                 Ok(self.cell_row_view(row)?.logical_eq(other.get()))
             },
-            GroupsValues::Coordinates { values, dimensions } => {
-                let Ok(expected) = item.extract::<Vec<Vec<f64>>>() else {
-                    return Ok(false);
-                };
-                if expected.iter().any(|values| values.len() != *dimensions) {
-                    return Ok(false);
-                }
-                let actual = &values[self.coordinate_values_window(row)];
-                Ok(coordinate_values_equal(
-                    actual,
-                    &expected.into_iter().flatten().collect::<Vec<_>>(),
-                ))
-            },
         }
     }
 
@@ -476,17 +385,6 @@ impl Groups {
                 .map_or(GroupsContainsNeedle::NoMatch, |other| {
                     GroupsContainsNeedle::Cells(other.get().clone())
                 })),
-            GroupsValues::Coordinates { dimensions, .. } => {
-                let Ok(expected) = item.extract::<Vec<Vec<f64>>>() else {
-                    return Ok(GroupsContainsNeedle::NoMatch);
-                };
-                if expected.iter().any(|values| values.len() != *dimensions) {
-                    return Ok(GroupsContainsNeedle::NoMatch);
-                }
-                Ok(GroupsContainsNeedle::Coordinates(
-                    expected.into_iter().flatten().collect(),
-                ))
-            },
         }
     }
 
@@ -511,19 +409,6 @@ impl Groups {
                     }
                 }
                 Ok(false)
-            },
-            GroupsContainsNeedle::Coordinates(values) => {
-                let GroupsValues::Coordinates {
-                    values: actual_values,
-                    ..
-                } = &self.values
-                else {
-                    unreachable!("coordinate needle requires Coordinates backing");
-                };
-                Ok((0..self.rows.len()).any(|row| {
-                    let actual = &actual_values[self.coordinate_values_window(row)];
-                    actual.len() == values.len() && coordinate_values_equal(actual, &values)
-                }))
             },
         }
     }
@@ -601,8 +486,8 @@ impl Groups {
         std::mem::size_of::<Self>() + self.logical_heap_bytes()
     }
 
-    /// The flat backing column (int64 ndarray, coordinate matrix, or
-    /// `GeometryArray`).
+    /// The flat backing column (int64 ndarray, `GeometryArray`, or
+    /// `CellArray`).
     #[getter]
     fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         match &slf.borrow().values {
@@ -639,30 +524,6 @@ impl Groups {
                 } else {
                     values.logical_row_range(start..end)?.into_py_any(py)
                 }
-            },
-            GroupsValues::Coordinates { .. } => {
-                let this = slf.borrow();
-                let rows = this.values_window();
-                let row_count = rows.len();
-                let GroupsValues::Coordinates { dimensions, .. } = &this.values else {
-                    unreachable!("values getter coordinate branch");
-                };
-                let dimensions = *dimensions;
-                drop(this);
-                numpy::frozen_f64_matrix_view(
-                    slf,
-                    |this| {
-                        let GroupsValues::Coordinates { values, dimensions } = &this.values else {
-                            unreachable!("values getter coordinate branch");
-                        };
-                        let rows = this.values_window();
-                        let start = rows.start * *dimensions;
-                        let end = rows.end * *dimensions;
-                        &values[start..end]
-                    },
-                    row_count,
-                    dimensions,
-                )
             },
         }
     }
@@ -886,31 +747,6 @@ impl Groups {
                             let (ids, offsets) = builder.finish().map_err(PyErr::from)?;
                             Self::from_cell_flat(kind, ids, offsets)?
                         },
-                        GroupsValues::Coordinates { values, dimensions } => {
-                            let value_count = rows.clone().try_fold(0_usize, |total, row| {
-                                total
-                                    .checked_add(this.row_values_window(row).len())
-                                    .ok_or_else(|| {
-                                        PyOverflowError::new_err(
-                                            "Groups values size overflows usize",
-                                        )
-                                    })
-                            })?;
-                            let mut builder =
-                                CsrBuilder::<[f64; 4]>::with_capacity(value_count, count)
-                                    .map_err(PyErr::from)?;
-                            for row in rows {
-                                let values = &values[this.coordinate_values_window(row)];
-                                for chunk in values.chunks(*dimensions) {
-                                    let mut value = [0.0; 4];
-                                    value[..*dimensions].copy_from_slice(chunk);
-                                    builder.push(value).map_err(PyErr::from)?;
-                                }
-                                let end = builder.len();
-                                builder.push_end(end).map_err(PyErr::from)?;
-                            }
-                            Self::from_coordinate_chunks(*dimensions, builder)?
-                        },
                     }
                 };
                 groups.into_py_any(slf.py())
@@ -1065,17 +901,6 @@ impl Groups {
                 self.rows.len(),
                 "Groups",
             ),
-            GroupsValues::Coordinates { values, dimensions } => preview(
-                (0..self.rows.len()).map(|row| {
-                    let values = values[self.coordinate_values_window(row)]
-                        .chunks(*dimensions)
-                        .map(|chunk| chunk.to_vec())
-                        .collect::<Vec<_>>();
-                    Ok(format!("{values:?}"))
-                }),
-                self.rows.len(),
-                "Groups",
-            ),
         }
     }
 
@@ -1111,15 +936,6 @@ impl Groups {
                 GroupsValues::Cells(_) => {
                     let items = self.cell_row_view(row)?.to_cell_list(py)?;
                     PyList::new(py, items)?.into_py_any(py)?
-                },
-                GroupsValues::Coordinates { values, dimensions } => {
-                    let source = &values[self.coordinate_values_window(row)];
-                    numpy::float64_matrix(
-                        py,
-                        source.to_vec(),
-                        source.len() / *dimensions,
-                        *dimensions,
-                    )?
                 },
             };
             crate::try_push(&mut rows, value)?;
@@ -1186,21 +1002,6 @@ impl Groups {
                     args,
                 ))
             },
-            GroupsValues::Coordinates { values, dimensions } => {
-                let start = start * *dimensions;
-                let end = end * *dimensions;
-                let mut copied = crate::try_vec_with_capacity(end - start)?;
-                for &value in &values[start..end] {
-                    crate::try_push(&mut copied, value)?;
-                }
-                let args = (copied, rebased, *dimensions).into_py_any(py)?;
-                Ok((
-                    module
-                        .getattr(pyo3::intern!(py, "_unpickle_coordinate_groups"))?
-                        .unbind(),
-                    args,
-                ))
-            },
         }
     }
 }
@@ -1262,33 +1063,6 @@ pub(crate) fn _unpickle_cell_groups(
         let offsets: Arc<[i64]> = offsets.into();
         let rows = 0..offsets.len() - 1;
         Groups::from_cell_csr(Arc::new(array), offsets, rows)
-    })
-}
-
-#[expect(
-    clippy::used_underscore_items,
-    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
-)]
-#[pyfunction]
-pub(crate) fn _unpickle_coordinate_groups(
-    values: &Bound<'_, PyAny>,
-    offsets: &Bound<'_, PyAny>,
-    dimensions: usize,
-) -> PyResult<Groups> {
-    let values = crate::collect_py_iter(values, |value| value.extract::<f64>())?;
-    let offsets = crate::collect_i64_sequence(offsets, "coordinate Groups pickle offsets")?;
-    if !(2..=4).contains(&dimensions) || values.len() % dimensions != 0 {
-        return Err(PyValueError::new_err("invalid coordinate group shape"));
-    }
-    validate_csr_offsets(&offsets, values.len() / dimensions)?;
-    let rows = offsets.len() - 1;
-    Ok(Groups {
-        values: GroupsValues::Coordinates {
-            values: values.into(),
-            dimensions,
-        },
-        offsets: offsets.into(),
-        rows: 0..rows,
     })
 }
 
@@ -1402,6 +1176,5 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_unpickle_int64_groups, module)?)?;
     module.add_function(wrap_pyfunction!(_unpickle_geometry_groups, module)?)?;
     module.add_function(wrap_pyfunction!(_unpickle_cell_groups, module)?)?;
-    module.add_function(wrap_pyfunction!(_unpickle_coordinate_groups, module)?)?;
     Ok(())
 }

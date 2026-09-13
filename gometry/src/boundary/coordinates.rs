@@ -28,8 +28,9 @@ pub enum CoordinateAxis {
     M,
 }
 
-/// Stable provenance for a flattened coordinate — enough to reconstruct
-/// `coords(return_index=True)` and richer indexes without changing order.
+/// Stable provenance for a flattened coordinate — enough to reconstruct the
+/// source-row index for `Coordinates` and `get_coordinates` without changing
+/// order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CoordinatePath {
     /// Geometry row for array owners; `None` for a scalar geometry owner.
@@ -549,9 +550,8 @@ impl CoordinateView {
         points
     }
 
-    /// Per-coordinate geometry-row index (all `0` for a scalar geometry; grows
-    /// to real rows when `array.coords` lands). Backs
-    /// `coords(return_index=True)`.
+    /// Per-coordinate geometry-row index (all `0` for a scalar geometry; the
+    /// logical source row for an array owner). Backs `coords.row_index`.
     pub fn row_index(&self) -> crate::error::Result<Vec<usize>> {
         self.row_index_cast(|row| row)
     }

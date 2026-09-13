@@ -2,7 +2,6 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 
@@ -178,139 +177,24 @@ pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates
     }
 }
 
-fn coordinate_groups(
-    array: &PyGeometryArray,
-    order: &[CoordinateAxis],
-) -> crate::error::Result<crate::CsrBuilder<[f64; 4]>> {
-    let view = array.coordinate_view();
-    let mut builder = crate::CsrBuilder::<[f64; 4]>::new();
-    let mut active_row = None;
-    let mut next_row = 0_usize;
-    let result = view.try_for_each_point(&mut |coord| {
-        let row = coord.path.geometry.expect("array view tags every point");
-        if active_row != Some(row) {
-            if active_row.is_some() {
-                let end = builder.len();
-                if let Err(error) = builder.push_end(end) {
-                    return std::ops::ControlFlow::Break(error);
-                }
-                next_row += 1;
-            }
-            while next_row < row {
-                let end = builder.len();
-                if let Err(error) = builder.push_end(end) {
-                    return std::ops::ControlFlow::Break(error);
-                }
-                next_row += 1;
-            }
-            active_row = Some(row);
-        }
-        let mut values = [0.0; 4];
-        for (index, &axis) in order.iter().enumerate() {
-            values[index] = coordinate_ordinate(coord.point, axis).unwrap_or(f64::NAN);
-        }
-        match builder.push(values) {
-            Ok(()) => std::ops::ControlFlow::Continue(()),
-            Err(error) => std::ops::ControlFlow::Break(error),
-        }
-    });
-    if let std::ops::ControlFlow::Break(error) = result {
-        return Err(error);
-    }
-    if active_row.is_some() {
-        let end = builder.len();
-        builder.push_end(end)?;
-        next_row += 1;
-    }
-    while next_row < array.len() {
-        let end = builder.len();
-        builder.push_end(end)?;
-        next_row += 1;
-    }
-    Ok(builder)
-}
-
-#[cfg(test)]
-mod coordinate_groups_tests {
-    use super::*;
-    use crate::boundary::Frame;
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::geometry::Shape;
-
-    #[test]
-    fn mixed_empty_rows_preserve_coordinate_spans() {
-        let array = PyGeometryArray::from_shapes(
-            vec![
-                Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-                Shape::empty_polygon(),
-                Shape::Point(Point::new_raw_xy(3.0, 4.0)),
-                Shape::empty_polygon(),
-            ],
-            Frame::None,
-        )
-        .unwrap();
-        let (values, offsets) = coordinate_groups(&array, &[CoordinateAxis::X, CoordinateAxis::Y])
-            .unwrap()
-            .finish()
-            .unwrap();
-        assert_eq!(offsets, [0, 1, 1, 2, 2]);
-        assert_eq!(values, [[1.0, 2.0, 0.0, 0.0], [3.0, 4.0, 0.0, 0.0]]);
-    }
-
-    #[test]
-    fn csr_reserve_failure_after_array_setup_is_native() {
-        let array = PyGeometryArray::packed_points(
-            CoordSeq::try_from_vecs(vec![1.0, 3.0], vec![2.0, 4.0], None, None).unwrap(),
-            Frame::None,
-        )
-        .unwrap();
-        let error = crate::test_support::fail_allocations_after(0, || {
-            coordinate_groups(&array, &[CoordinateAxis::X, CoordinateAxis::Y])
-                .err()
-                .unwrap()
-        });
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-
-        let view = array.coordinate_view();
-        let mut builder = crate::CsrBuilder::new();
-        let mut visited = 0;
-        let result = crate::test_support::fail_allocations_after(0, || {
-            view.try_for_each_point(&mut |coord| {
-                visited += 1;
-                match builder.push(coord.point) {
-                    Ok(()) => std::ops::ControlFlow::Continue(()),
-                    Err(error) => std::ops::ControlFlow::Break(error),
-                }
-            })
-        });
-        assert_eq!(visited, 1);
-        assert!(matches!(result, std::ops::ControlFlow::Break(error)
-            if matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation))));
-    }
-}
-
-/// Extract scalar coordinates as a dense matrix, or array coordinates as
-/// row-preserving `Groups` of matrices.
+/// Extract coordinates as one flat dense matrix.
 ///
 /// Parameters
 /// ----------
 /// values : Geometry, GeometryArray, or iterable of Geometry/None
-///     Scalar values are flattened depth-first; a `GeometryArray` keeps one
-///     matrix per source row.
+///     Values are flattened depth-first in source-row order. Missing and empty
+///     geometries contribute no rows, but array and iterable source indexes
+///     remain available through `return_index=True`.
 /// axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
 ///     Output coordinate columns. ``None`` means ``'XY'``.
 /// return_index : bool, default False
-///     Return a scalar source-row index alongside the matrix. For arrays,
-///     `Groups.offsets` already carries the row map and this flag is ignored.
+///     Return a source-row index alongside the matrix. Scalar geometries use
+///     index zero for every coordinate.
 ///
 /// Returns
 /// -------
-/// numpy.ndarray, tuple of numpy.ndarray, or Groups
-///     Scalar dense output, scalar `(matrix, index)` output, or one dense
-///     matrix per array row. Empty and missing rows remain empty groups.
+/// numpy.ndarray or tuple of numpy.ndarray
+///     A dense matrix, or `(matrix, index)` when `return_index=True`.
 ///
 /// Raises
 /// ------
@@ -324,6 +208,11 @@ mod coordinate_groups_tests {
 /// >>> import gometry as gm
 /// >>> gm.get_coordinates(gm.Point(1, 2)).tolist()
 /// [[1.0, 2.0]]
+/// >>> matrix, indexes = gm.get_coordinates(
+/// ...     [gm.Point(1, 2), None], return_index=True
+/// ... )
+/// >>> matrix.tolist(), indexes.tolist()
+/// ([[1.0, 2.0]], [0])
 pub(crate) fn get_coordinates(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
@@ -331,19 +220,15 @@ pub(crate) fn get_coordinates(
     return_index: bool,
 ) -> PyResult<Py<PyAny>> {
     let array;
-    let (input, grouped) = if let Ok(input) = classify_required(values) {
-        (input, matches!(input, GeometryInput::Many(_)))
+    let input = if let Ok(input) = classify_required(values) {
+        input
     } else {
         array = PyGeometryArray::new(values, None, None)?;
-        (GeometryInput::Many(&array), false)
+        GeometryInput::Many(&array)
     };
     let axes = axes.unwrap_or(CoordinateAxes::XY);
     let (order, dims) = coordinate_axis_order(axes);
     let order = &order[..dims];
-    if grouped && let GeometryInput::Many(array) = input {
-        let builder = coordinate_groups(array, order)?;
-        return crate::py::vectors::Groups::from_coordinate_chunks(dims, builder)?.into_py_any(py);
-    }
     let view = coordinate_view_for_input(input);
     let rows = view.len();
     // Coordinate matrix: always ride the SoA interleave when the view is one

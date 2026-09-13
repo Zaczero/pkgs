@@ -563,9 +563,7 @@ class Features:
             raise TypeError('geometries must be a GeometryArray')
         rows = len(geometries)
         if properties is None:
-            property_rows: tuple[dict[str, Any] | None, ...] = tuple(
-                {} for _ in range(rows)
-            )
+            property_rows: tuple[dict[str, Any] | None, ...] = (None,) * rows
         elif isinstance(properties, Mapping) or callable(
             getattr(properties, 'keys', None)
         ):

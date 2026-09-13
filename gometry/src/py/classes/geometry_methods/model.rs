@@ -620,7 +620,8 @@ impl PyGeometry {
     ///
     /// Simple geometries expose themselves as a one-row view; multipart and
     /// collection geometries expose their members. Use free function ``parts`` for
-    /// the materialized `GeometryArray` form.
+    /// a materialized `GeometryArray` on scalar input or row-preserving
+    /// `Groups` on collection input.
     ///
     /// Returns
     /// -------

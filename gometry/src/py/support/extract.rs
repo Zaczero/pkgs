@@ -47,13 +47,13 @@ impl CoercedCollectedGeometryItems {
     }
 }
 
-/// One canonical boundary representation for APIs that accept a geometry,
-/// ``GeometryArray``, or general iterable of geometry-like values.
+/// One canonical boundary representation for APIs that reduce a geometry,
+/// ``GeometryArray``, or general iterable to present geometry items.
 ///
 /// Borrow native scalar/array inputs until an owning collection is actually
 /// required; only the foreign/general iterable lane is coerced eagerly. This
-/// keeps the pleasant scalar-or-collection API without making each aggregate,
-/// index, or collection function rediscover the same three-way classification.
+/// keeps aggregate and index-like operations from rediscovering the same
+/// three-way classification.
 pub(crate) enum GeometryValues<'a> {
     One(&'a PyGeometry),
     Array(&'a PyGeometryArray),
@@ -256,14 +256,14 @@ pub(crate) fn coerce_collected_geometry_items(
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry, GeometryArray, or iterable of geometry-like values
-///     The geometry, array, or iterable materialized as an array.
+/// geom : Geometry, GeometryArray, or iterable of geometry-like values/None
+///     A scalar geometry or a collection materialized as a geometry array.
 ///
 /// Returns
 /// -------
 /// GeometryArray or Groups
-///     A scalar or raw iterable returns a flat `GeometryArray`; a
-///     `GeometryArray` input returns one geometry group per source row.
+///     A scalar returns a flat `GeometryArray`; any collection returns one
+///     geometry group per source row.
 ///
 /// Examples
 /// --------
@@ -274,36 +274,25 @@ pub(crate) fn coerce_collected_geometry_items(
 /// ...     print(part.to_wkt())
 /// POINT (0 0)
 /// POINT (1 1)
+/// >>> groups = gm.parts([multi, None])
+/// >>> groups.offsets.tolist()
+/// [0, 2, 2]
 #[pyfunction]
 pub(crate) fn parts(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    match crate::GeometryValues::parse(geom)? {
-        crate::GeometryValues::One(geometry) => PyGeometryArray::from_shapes(
+    match classify_input(geom) {
+        Some(GeometryInput::One(geometry)) => PyGeometryArray::from_shapes(
             part_shapes(geometry.shape.shape()).map_err(pyo3::PyErr::from)?,
             geometry.frame.clone(),
         )?
         .into_py_any(py),
-        crate::GeometryValues::Array(array) => array
+        Some(GeometryInput::Many(array)) => array
             .flat_map_shapes_groups(py, part_shapes)
             .and_then(|groups| groups.into_py_any(py)),
-        crate::GeometryValues::Collected(items) => {
-            let mut items = items.into_items();
-            let frame = crate::Frame::resolve_items(
-                &mut items,
-                crate::FrameAdoption {
-                    crs: None,
-                    epoch: None,
-                },
-                "GeometryArray",
-            )?;
-            let array = PyGeometryArray::pack_or_mixed(items, frame)?;
-            let mut parts = Vec::new();
-            for row in array.present_shape_rows() {
-                let (_, shape) = row.map_err(PyErr::from)?;
-                for part in part_shapes(&shape).map_err(pyo3::PyErr::from)? {
-                    crate::try_push_vec(&mut parts, part).map_err(pyo3::PyErr::from)?;
-                }
-            }
-            PyGeometryArray::from_shapes(parts, array.frame)?.into_py_any(py)
+        None => {
+            let array = PyGeometryArray::new(geom, None, None)?;
+            array
+                .flat_map_shapes_groups(py, part_shapes)
+                .and_then(|groups| groups.into_py_any(py))
         },
     }
 }
@@ -320,14 +309,14 @@ fn part_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry, GeometryArray, or iterable of geometry-like values
-///     The geometry, array, or iterable materialized as an array.
+/// geom : Geometry, GeometryArray, or iterable of geometry-like values/None
+///     A scalar geometry or a collection materialized as a geometry array.
 ///
 /// Returns
 /// -------
 /// GeometryArray or Groups
-///     A scalar or raw iterable returns a flat `GeometryArray`; a
-///     `GeometryArray` input returns one ring group per source row.
+///     A scalar returns a flat `GeometryArray`; any collection returns one
+///     ring group per source row.
 ///
 /// Examples
 /// --------
@@ -339,35 +328,24 @@ fn part_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
 /// 2
 #[pyfunction]
 pub(crate) fn rings(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    match crate::GeometryValues::parse(geom)? {
-        crate::GeometryValues::One(geometry) => {
+    match classify_input(geom) {
+        Some(GeometryInput::One(geometry)) => {
             let mut rings = Vec::new();
             push_ring_shapes(geometry.shape.shape(), &mut rings)?;
             PyGeometryArray::from_shapes(rings, geometry.frame.clone())?.into_py_any(py)
         },
-        crate::GeometryValues::Array(array) => {
+        Some(GeometryInput::Many(array)) => {
             validate_ring_shapes(array)?;
             array
                 .flat_map_shapes_groups(py, ring_shapes)
                 .and_then(|groups| groups.into_py_any(py))
         },
-        crate::GeometryValues::Collected(items) => {
-            let mut items = items.into_items();
-            let frame = crate::Frame::resolve_items(
-                &mut items,
-                crate::FrameAdoption {
-                    crs: None,
-                    epoch: None,
-                },
-                "GeometryArray",
-            )?;
-            let array = PyGeometryArray::pack_or_mixed(items, frame)?;
-            let mut rings = Vec::new();
-            for row in array.present_shape_rows() {
-                let (_, shape) = row.map_err(PyErr::from)?;
-                push_ring_shapes(&shape, &mut rings)?;
-            }
-            PyGeometryArray::from_shapes(rings, array.frame)?.into_py_any(py)
+        None => {
+            let array = PyGeometryArray::new(geom, None, None)?;
+            validate_ring_shapes(&array)?;
+            array
+                .flat_map_shapes_groups(py, ring_shapes)
+                .and_then(|groups| groups.into_py_any(py))
         },
     }
 }
