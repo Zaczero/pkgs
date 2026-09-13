@@ -11,6 +11,7 @@
 
 use h3o::{CellIndex, LatLng, Resolution};
 
+use crate::collections::HashMap;
 use crate::geometry::Shape;
 use crate::grid::affine_source::{
     GeographicCoverageSource, GridDegreePoint, GridPointClass, RectClass, SphericalGridTarget,
@@ -19,8 +20,7 @@ use crate::grid::affine_source::{
 use crate::grid::coverer::dissolved_polygonal_area;
 use crate::grid::spherical_arc::{
     ArcContact, Bound, CertifiedH3DescendantCap, DegreeWindowResult, H3ArcSet, H3CellPlan,
-    H3FanPlan, H3FanPointClass, classify_h3_arc_contact, exact_h3_bbox_for_cell,
-    h3_bbox_positive_witnesses, h3_cell_plan,
+    H3FanPlan, H3FanPointClass, classify_h3_arc_contact, h3_bbox_positive_witnesses, h3_cell_plan,
 };
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 
@@ -43,6 +43,208 @@ pub(crate) enum H3CoverError {
     Allocation,
     CapacityOverflow,
     Geometry(crate::error::Error),
+}
+
+/// Keep the first atomic cover in its already sorted vector.  Once a second
+/// component contributes, promote exactly once and retain only unique cells.
+#[derive(Debug)]
+enum H3CoverAccumulatorState {
+    Empty,
+    Single(Vec<H3CoveredCell>),
+    Many(H3UniqueCells),
+}
+
+#[derive(Debug)]
+struct H3UniqueCells {
+    cells: HashMap<CellIndex, bool>,
+}
+
+impl H3UniqueCells {
+    fn with_capacity(
+        first_len: usize,
+        second_len: usize,
+        max_cells: Option<usize>,
+    ) -> Result<Self, H3CoverError> {
+        let occurrences = first_len
+            .checked_add(second_len)
+            .ok_or(H3CoverError::CapacityOverflow)?;
+        let reservation = occurrences.min(max_cells.unwrap_or(usize::MAX));
+        let mut cells = HashMap::with_hasher(
+            crate::collections::collection_hash_state()
+                .map_err(|_| H3CoverError::Allocation)?
+                .clone(),
+        );
+        cells
+            .try_reserve(reservation)
+            .map_err(|_| H3CoverError::Allocation)?;
+        Ok(Self { cells })
+    }
+
+    fn reserve_for_component(
+        &mut self,
+        component_len: usize,
+        max_cells: Option<usize>,
+    ) -> Result<(), H3CoverError> {
+        // The component length is an upper bound on new keys; reserving only
+        // the remaining budget avoids allocating beyond a caller's ceiling
+        // while duplicates still remain admissible.
+        let remaining = max_cells
+            .map(|limit| limit.saturating_sub(self.cells.len()))
+            .unwrap_or(usize::MAX);
+        self.cells
+            .try_reserve(component_len.min(remaining))
+            .map_err(|_| H3CoverError::Allocation)
+    }
+
+    fn insert(
+        &mut self,
+        entry: H3CoveredCell,
+        max_cells: Option<usize>,
+    ) -> Result<bool, H3CoverError> {
+        let next_len = self
+            .cells
+            .len()
+            .checked_add(1)
+            .ok_or(H3CoverError::CapacityOverflow)?;
+        match self.cells.entry(entry.cell) {
+            std::collections::hash_map::Entry::Occupied(mut existing) => {
+                *existing.get_mut() |= entry.interior;
+                Ok(true)
+            },
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                ensure_cover_budget(next_len, max_cells).map_err(H3CoverError::Budget)?;
+                slot.insert(entry.interior);
+                Ok(false)
+            },
+        }
+    }
+
+    fn finish(self) -> Result<Vec<H3CoveredCell>, H3CoverError> {
+        let mut output = Vec::new();
+        crate::try_reserve_vec(&mut output, self.cells.len())
+            .map_err(|_| H3CoverError::Allocation)?;
+        output.extend(
+            self.cells
+                .into_iter()
+                .map(|(cell, interior)| H3CoveredCell { cell, interior }),
+        );
+        output.sort_unstable_by_key(|entry| u64::from(entry.cell));
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+struct H3CoverAccumulator {
+    state: H3CoverAccumulatorState,
+    #[cfg(test)]
+    stats: H3AggregationStats,
+}
+
+impl Default for H3CoverAccumulator {
+    fn default() -> Self {
+        Self {
+            state: H3CoverAccumulatorState::Empty,
+            #[cfg(test)]
+            stats: H3AggregationStats::default(),
+        }
+    }
+}
+
+impl H3CoverAccumulator {
+    fn add_component(
+        &mut self,
+        component: Vec<H3CoveredCell>,
+        max_cells: Option<usize>,
+    ) -> Result<(), H3CoverError> {
+        if component.is_empty() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        {
+            self.stats.submitted_occurrences += component.len();
+        }
+        let state = std::mem::replace(&mut self.state, H3CoverAccumulatorState::Empty);
+        match state {
+            H3CoverAccumulatorState::Empty => {
+                ensure_cover_budget(component.len(), max_cells).map_err(H3CoverError::Budget)?;
+                #[cfg(test)]
+                {
+                    self.stats.unique_cells = component.len();
+                    self.stats.accumulator_peak_entries = component.len();
+                }
+                self.state = H3CoverAccumulatorState::Single(component);
+            },
+            H3CoverAccumulatorState::Single(previous) => {
+                #[cfg(test)]
+                {
+                    self.stats.old_equivalent_prefix_entries_copied += previous.len();
+                }
+                let mut unique =
+                    H3UniqueCells::with_capacity(previous.len(), component.len(), max_cells)?;
+                self.insert_entries(&mut unique, previous, max_cells)?;
+                self.insert_entries(&mut unique, component, max_cells)?;
+                self.state = H3CoverAccumulatorState::Many(unique);
+            },
+            H3CoverAccumulatorState::Many(mut unique) => {
+                #[cfg(test)]
+                {
+                    self.stats.old_equivalent_prefix_entries_copied += unique.cells.len();
+                }
+                unique.reserve_for_component(component.len(), max_cells)?;
+                self.insert_entries(&mut unique, component, max_cells)?;
+                self.state = H3CoverAccumulatorState::Many(unique);
+            },
+        }
+        Ok(())
+    }
+
+    fn insert_entries(
+        &mut self,
+        unique: &mut H3UniqueCells,
+        entries: impl IntoIterator<Item = H3CoveredCell>,
+        max_cells: Option<usize>,
+    ) -> Result<(), H3CoverError> {
+        for entry in entries {
+            #[cfg(test)]
+            {
+                let duplicate = unique.insert(entry, max_cells)?;
+                self.stats.accumulator_entries_moved += 1;
+                if duplicate {
+                    self.stats.duplicate_merges += 1;
+                }
+                self.stats.unique_cells = unique.cells.len();
+                self.stats.accumulator_peak_entries =
+                    self.stats.accumulator_peak_entries.max(unique.cells.len());
+            }
+            #[cfg(not(test))]
+            unique.insert(entry, max_cells)?;
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Vec<H3CoveredCell>, H3CoverError> {
+        match self.state {
+            H3CoverAccumulatorState::Empty => Ok(Vec::new()),
+            H3CoverAccumulatorState::Single(cells) => Ok(cells),
+            H3CoverAccumulatorState::Many(cells) => cells.finish(),
+        }
+    }
+
+    #[cfg(test)]
+    fn stats(&self) -> H3AggregationStats {
+        self.stats
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct H3AggregationStats {
+    pub(crate) submitted_occurrences: usize,
+    pub(crate) unique_cells: usize,
+    pub(crate) duplicate_merges: usize,
+    pub(crate) old_equivalent_prefix_entries_copied: usize,
+    pub(crate) accumulator_entries_moved: usize,
+    pub(crate) accumulator_peak_entries: usize,
 }
 
 /// Target-wide cap state.  A cap that cannot certify is never approximated:
@@ -90,7 +292,7 @@ pub(crate) fn h3_cover_shape(
         .map_err(|_| H3CoverError::Allocation)?;
         return h3_cover(&source, plan, rule, max_cells);
     }
-    let mut merged = Vec::new();
+    let mut merged = H3CoverAccumulator::default();
     visit_grid_cover_components(shape, &mut |component| {
         let source = GeographicCoverageSource::from_validated(
             component,
@@ -104,70 +306,9 @@ pub(crate) fn h3_cover_shape(
         if covered.is_empty() {
             return Ok(());
         }
-        if merged.is_empty() {
-            merged = covered;
-            Ok(())
-        } else {
-            merge_h3_component(&mut merged, &covered, max_cells)
-        }
+        merged.add_component(covered, max_cells)
     })?;
-    Ok(merged)
-}
-
-fn merge_h3_component(
-    merged: &mut Vec<H3CoveredCell>,
-    component: &[H3CoveredCell],
-    max_cells: Option<usize>,
-) -> Result<(), H3CoverError> {
-    let previous = std::mem::take(merged);
-    let mut result = Vec::new();
-    let capacity = previous
-        .len()
-        .saturating_add(component.len())
-        .min(max_cells.unwrap_or(usize::MAX));
-    result.reserve(capacity);
-    let (mut left, mut right) = (0, 0);
-    while left < previous.len() || right < component.len() {
-        let entry = match (previous.get(left), component.get(right)) {
-            (Some(a), Some(b)) if a.cell < b.cell => {
-                left += 1;
-                *a
-            },
-            (Some(a), Some(b)) if b.cell < a.cell => {
-                right += 1;
-                *b
-            },
-            (Some(a), Some(b)) => {
-                left += 1;
-                right += 1;
-                H3CoveredCell {
-                    cell: a.cell,
-                    interior: a.interior || b.interior,
-                }
-            },
-            (Some(a), None) => {
-                left += 1;
-                *a
-            },
-            (None, Some(b)) => {
-                right += 1;
-                *b
-            },
-            (None, None) => break,
-        };
-        if result
-            .last()
-            .is_some_and(|last: &H3CoveredCell| last.cell == entry.cell)
-        {
-            result.last_mut().expect("just checked").interior |= entry.interior;
-        } else {
-            ensure_cover_budget(result.len().saturating_add(1), max_cells)
-                .map_err(H3CoverError::Budget)?;
-            result.push(entry);
-        }
-    }
-    *merged = result;
-    Ok(())
+    merged.finish()
 }
 
 /// All-root H3 bbox enumeration.  Leaf negatives require the exact logical
@@ -294,11 +435,11 @@ fn emit_bbox_leaf(
                 source.classify_rect(DegreeWindowResult::Windows(window)) == RectClass::Interior
             })
         });
-    let relation = if witness_is_interior {
-        RectClass::Interior
-    } else {
-        source.classify_rect(exact_h3_bbox_for_cell(cell))
-    };
+    if witness_is_interior {
+        return emit_leaf(cell, false, max_cells, covered);
+    }
+    let cell_plan = h3_cell_plan(cell, cell.resolution());
+    let relation = source.classify_rect(cell_plan.bbox());
     if relation == RectClass::Outside {
         return Ok(());
     }
@@ -361,10 +502,14 @@ pub(crate) fn classify_h3_overlap(
     source: &GeographicCoverageSource,
     cell: &H3CellPlan,
 ) -> H3LeafClass {
-    let (Some(arcs), fan) = (cell.arcs(), cell.fan()) else {
+    if source.is_unknown() {
+        return H3LeafClass::Boundary;
+    }
+    let Some(arcs) = cell.arcs() else {
         return H3LeafClass::Boundary;
     };
-    classify_h3_overlap_parts(source, cell.cell(), arcs, fan)
+    let fan = cell.fan();
+    classify_h3_overlap_parts(source, cell.cell(), arcs, &fan)
 }
 
 /// Relation body split from the plan accessor so the entry guard is directly

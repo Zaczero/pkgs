@@ -5,12 +5,13 @@ use crate::grid::affine_source::{
     GeographicCoverageSource, GridPointClass, RectClass, SphericalGridTarget,
 };
 use crate::grid::h3_coverer::{
-    H3CoverError, H3CoverPlan, H3LeafClass, H3TraversalRule, classify_h3_overlap,
-    classify_h3_overlap_parts, fan_retains_point, h3_cover, h3_cover_shape,
+    H3CoverAccumulator, H3CoverError, H3CoverPlan, H3CoveredCell, H3LeafClass, H3TraversalRule,
+    classify_h3_overlap, classify_h3_overlap_parts, emit_bbox_leaf, emit_overlap_leaf,
+    fan_retains_point, h3_cover, h3_cover_shape,
 };
 use crate::grid::spherical_arc::{
     ArcContact, Bound, H3FanPlan, H3FanPointClass, classify_h3_arc_contact, exact_h3_bbox_for_cell,
-    h3_cell_plan,
+    h3_cell_plan, h3_fan_plan_construction_count, reset_h3_fan_plan_construction_count,
 };
 
 const CELL: u64 = 0x0827_54FF_FFFF_FFFF;
@@ -60,6 +61,318 @@ fn classify(shape: &Shape) -> H3LeafClass {
 }
 
 #[test]
+fn h3_accumulator_promotes_once_and_moves_each_submitted_cell_once() {
+    const COUNT: usize = 32;
+    let cells: Vec<_> = CellIndex::base_cells().take(COUNT).collect();
+    let components: Vec<_> = cells
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, cell)| {
+            vec![H3CoveredCell {
+                cell,
+                interior: index.is_multiple_of(2),
+            }]
+        })
+        .collect();
+    let ((stats, output), allocations) = crate::test_support::allocation_count(|| {
+        let mut accumulator = H3CoverAccumulator::default();
+        for component in components {
+            accumulator.add_component(component, None).unwrap();
+        }
+        let stats = accumulator.stats();
+        let output = accumulator.finish().unwrap();
+        (stats, output)
+    });
+
+    assert_eq!(output.len(), COUNT);
+    assert!(
+        output
+            .array_windows::<2>()
+            .all(|pair| u64::from(pair[0].cell) < u64::from(pair[1].cell))
+    );
+    assert_eq!(stats.submitted_occurrences, COUNT);
+    assert_eq!(stats.unique_cells, COUNT);
+    assert_eq!(stats.duplicate_merges, 0);
+    assert_eq!(stats.accumulator_entries_moved, COUNT);
+    assert_eq!(stats.accumulator_peak_entries, COUNT);
+    assert!(allocations > 0);
+    assert_eq!(
+        stats.old_equivalent_prefix_entries_copied,
+        COUNT * (COUNT - 1) / 2,
+        "the old sorted-prefix merge copied the full accumulated prefix each time"
+    );
+}
+
+#[test]
+fn h3_accumulator_doubling_families_keep_unique_work_linear() {
+    for count in [1, 2, 4, 8, 16, 32] {
+        let cells: Vec<_> = CellIndex::base_cells().take(count).collect();
+        let mut disjoint = H3CoverAccumulator::default();
+        for (index, cell) in cells.iter().copied().enumerate() {
+            disjoint
+                .add_component(
+                    vec![H3CoveredCell {
+                        cell,
+                        interior: index == count - 1,
+                    }],
+                    None,
+                )
+                .unwrap();
+        }
+        let disjoint_stats = disjoint.stats();
+        assert_eq!(disjoint.finish().unwrap().len(), count);
+        assert_eq!(disjoint_stats.unique_cells, count);
+        assert_eq!(
+            disjoint_stats.accumulator_entries_moved,
+            if count == 1 { 0 } else { count }
+        );
+        assert_eq!(
+            disjoint_stats.old_equivalent_prefix_entries_copied,
+            count * (count - 1) / 2
+        );
+
+        let mut repeated = H3CoverAccumulator::default();
+        for index in 0..count {
+            repeated
+                .add_component(
+                    vec![H3CoveredCell {
+                        cell: cells[0],
+                        interior: index == count - 1,
+                    }],
+                    Some(1),
+                )
+                .unwrap();
+        }
+        let repeated_stats = repeated.stats();
+        assert_eq!(repeated.finish().unwrap(), vec![H3CoveredCell {
+            cell: cells[0],
+            interior: true
+        }]);
+        assert_eq!(repeated_stats.unique_cells, 1);
+        assert_eq!(repeated_stats.duplicate_merges, count - 1);
+        assert_eq!(
+            repeated_stats.accumulator_entries_moved,
+            if count == 1 { 0 } else { count }
+        );
+        assert_eq!(
+            repeated_stats.old_equivalent_prefix_entries_copied,
+            count - 1
+        );
+
+        let shared: Vec<_> = CellIndex::base_cells().take(4).collect();
+        let mut overlapping = H3CoverAccumulator::default();
+        for index in 0..count {
+            overlapping
+                .add_component(
+                    shared
+                        .iter()
+                        .copied()
+                        .map(|cell| H3CoveredCell {
+                            cell,
+                            interior: index == count - 1,
+                        })
+                        .collect(),
+                    Some(shared.len()),
+                )
+                .unwrap();
+        }
+        let overlapping_stats = overlapping.stats();
+        assert_eq!(overlapping.finish().unwrap().len(), shared.len());
+        assert_eq!(overlapping_stats.unique_cells, shared.len());
+        assert_eq!(
+            overlapping_stats.duplicate_merges,
+            shared.len() * (count - 1)
+        );
+        assert_eq!(
+            overlapping_stats.accumulator_entries_moved,
+            if count == 1 { 0 } else { shared.len() * count }
+        );
+        assert_eq!(
+            overlapping_stats.old_equivalent_prefix_entries_copied,
+            shared.len() * (count - 1)
+        );
+
+        let mut mixed = H3CoverAccumulator::default();
+        mixed
+            .add_component(
+                cells
+                    .iter()
+                    .copied()
+                    .map(|cell| H3CoveredCell {
+                        cell,
+                        interior: false,
+                    })
+                    .collect(),
+                Some(count + count),
+            )
+            .unwrap();
+        for cell in CellIndex::base_cells().skip(count).take(count) {
+            mixed
+                .add_component(
+                    vec![H3CoveredCell {
+                        cell,
+                        interior: true,
+                    }],
+                    Some(count + count),
+                )
+                .unwrap();
+        }
+        let mixed_stats = mixed.stats();
+        assert_eq!(mixed.finish().unwrap().len(), count * 2);
+        assert_eq!(mixed_stats.unique_cells, count * 2);
+        assert_eq!(mixed_stats.accumulator_entries_moved, count * 2);
+    }
+}
+
+#[test]
+fn h3_accumulator_budget_counts_unique_cells_not_submissions() {
+    let cell = CellIndex::base_cells().next().unwrap();
+    let mut duplicates = H3CoverAccumulator::default();
+    for interior in [false, false, true, false, true] {
+        duplicates
+            .add_component(vec![H3CoveredCell { cell, interior }], Some(1))
+            .unwrap();
+    }
+    let duplicate_stats = duplicates.stats();
+    let duplicate_output = duplicates.finish().unwrap();
+    assert_eq!(duplicate_output, vec![H3CoveredCell {
+        cell,
+        interior: true
+    }]);
+    assert_eq!(duplicate_stats.submitted_occurrences, 5);
+    assert_eq!(duplicate_stats.unique_cells, 1);
+    assert_eq!(duplicate_stats.duplicate_merges, 4);
+    assert_eq!(duplicate_stats.accumulator_peak_entries, 1);
+
+    let cells: Vec<_> = CellIndex::base_cells().take(4).collect();
+    let mut within_budget = H3CoverAccumulator::default();
+    for cell in cells.iter().copied() {
+        within_budget
+            .add_component(
+                vec![H3CoveredCell {
+                    cell,
+                    interior: false,
+                }],
+                Some(4),
+            )
+            .unwrap();
+    }
+    assert_eq!(within_budget.finish().unwrap().len(), 4);
+
+    let mut over_budget = H3CoverAccumulator::default();
+    for (index, cell) in cells.iter().copied().enumerate() {
+        let result = over_budget.add_component(
+            vec![H3CoveredCell {
+                cell,
+                interior: index == 3,
+            }],
+            Some(3),
+        );
+        if index < 3 {
+            result.unwrap();
+        } else {
+            assert!(matches!(result, Err(H3CoverError::Budget(_))));
+            assert!(over_budget.finish().unwrap().is_empty());
+            break;
+        }
+    }
+}
+
+#[test]
+fn h3_accumulator_allocation_failures_discard_partial_state() {
+    let cells: Vec<_> = CellIndex::base_cells().take(3).collect();
+    let component = |cell| {
+        vec![H3CoveredCell {
+            cell,
+            interior: false,
+        }]
+    };
+
+    let mut promotion = H3CoverAccumulator::default();
+    promotion.add_component(component(cells[0]), None).unwrap();
+    let second = component(cells[1]);
+    let error =
+        crate::test_support::fail_allocations_after(0, || promotion.add_component(second, None))
+            .unwrap_err();
+    assert!(matches!(error, H3CoverError::Allocation));
+    assert!(promotion.finish().unwrap().is_empty());
+
+    let mut reserve = H3CoverAccumulator::default();
+    reserve.add_component(component(cells[0]), None).unwrap();
+    reserve.add_component(component(cells[1]), None).unwrap();
+    let third: Vec<_> = CellIndex::base_cells()
+        .skip(2)
+        .take(64)
+        .map(|cell| H3CoveredCell {
+            cell,
+            interior: false,
+        })
+        .collect();
+    let error =
+        crate::test_support::fail_allocations_after(0, || reserve.add_component(third, None))
+            .unwrap_err();
+    assert!(matches!(error, H3CoverError::Allocation));
+    assert!(reserve.finish().unwrap().is_empty());
+
+    let mut final_output = H3CoverAccumulator::default();
+    final_output
+        .add_component(component(cells[0]), None)
+        .unwrap();
+    final_output
+        .add_component(component(cells[1]), None)
+        .unwrap();
+    let error =
+        crate::test_support::fail_allocations_after(0, || final_output.finish()).unwrap_err();
+    assert!(matches!(error, H3CoverError::Allocation));
+}
+
+#[test]
+fn h3_fans_are_built_only_after_overlap_bounds_survive() {
+    let cell = CellIndex::try_from(CELL).unwrap();
+    let plan = H3CoverPlan::new(Resolution::Two);
+    let far_source = GeographicCoverageSource::new(
+        &Shape::Point(Point::new(100.0, 40.0).unwrap()),
+        SphericalGridTarget::H3(Resolution::Two),
+    )
+    .unwrap();
+    let mut covered = Vec::new();
+
+    reset_h3_fan_plan_construction_count();
+    emit_overlap_leaf(&far_source, &plan, cell, None, &mut covered).unwrap();
+    assert!(covered.is_empty());
+    assert_eq!(h3_fan_plan_construction_count(), 0);
+
+    reset_h3_fan_plan_construction_count();
+    emit_bbox_leaf(&far_source, cell, None, &mut covered).unwrap();
+    assert_eq!(h3_fan_plan_construction_count(), 0);
+
+    let interior_source = GeographicCoverageSource::new(
+        &Shape::Polygon(polygon(-3.0, -3.0, 3.0, 3.0)),
+        SphericalGridTarget::H3(Resolution::Two),
+    )
+    .unwrap();
+    covered.clear();
+    reset_h3_fan_plan_construction_count();
+    emit_overlap_leaf(&interior_source, &plan, cell, None, &mut covered).unwrap();
+    assert_eq!(h3_fan_plan_construction_count(), 1);
+    assert_eq!(covered.len(), 1);
+    assert!(covered[0].interior);
+
+    let boundary_source = GeographicCoverageSource::new(
+        &Shape::Polygon(polygon(0.52, -0.47, 0.55, -0.44)),
+        SphericalGridTarget::H3(Resolution::Two),
+    )
+    .unwrap();
+    covered.clear();
+    reset_h3_fan_plan_construction_count();
+    emit_overlap_leaf(&boundary_source, &plan, cell, None, &mut covered).unwrap();
+    assert_eq!(h3_fan_plan_construction_count(), 1);
+    assert_eq!(covered.len(), 1);
+    assert!(!covered[0].interior);
+}
+
+#[test]
 fn big_fixture_enters_each_area_proof_before_its_leaf_verdict() {
     let cell = CellIndex::try_from(CELL).unwrap();
     let source = GeographicCoverageSource::new(
@@ -68,10 +381,11 @@ fn big_fixture_enters_each_area_proof_before_its_leaf_verdict() {
     )
     .unwrap();
     let plan = h3_cell_plan(cell, Resolution::Two);
+    let fan = plan.fan();
     let center = h3o::LatLng::from(cell);
     assert!(!source.is_unknown());
     assert_eq!(
-        plan.fan().kernel_point_class(
+        fan.kernel_point_class(
             Bound::exact(center.lng()).unwrap(),
             Bound::exact(center.lat()).unwrap()
         ),
@@ -90,16 +404,15 @@ fn big_fixture_enters_each_area_proof_before_its_leaf_verdict() {
         .filter(|piece| piece.is_polygon())
     {
         assert!(
-            arcs.iter().all(|arc| {
-                classify_h3_arc_contact(piece.arc(), arc, plan.fan()) == ArcContact::None
-            }),
+            arcs.iter()
+                .all(|arc| { classify_h3_arc_contact(piece.arc(), arc, &fan) == ArcContact::None }),
             "BIG boundary is certified disjoint from every ordered H3 arc"
         );
     }
     for (_, _, point) in source.polygon_authority_witnesses() {
         let point = point.unwrap();
         assert_eq!(
-            plan.fan().point_class(point.longitude, point.latitude),
+            fan.point_class(point.longitude, point.latitude),
             H3FanPointClass::Outside,
             "BIG's stored shell witness is outside the H3 fan"
         );
@@ -222,6 +535,7 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
     let far = h3o::LatLng::new(0.0, 0.0).unwrap().to_cell(Resolution::Two);
     let far_center = h3o::LatLng::from(far);
     let far_plan = h3_cell_plan(far, Resolution::Two);
+    let far_fan = far_plan.fan();
     assert_eq!(
         source.positive_selection_point_class(far_center.lng(), far_center.lat()),
         GridPointClass::Exterior,
@@ -234,7 +548,7 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
                 .unwrap()
                 .filter(|piece| piece.is_polygon() && piece.is_positive_only())
                 .all(|piece| {
-                    classify_h3_arc_contact(piece.arc(), arc, far_plan.fan()) == ArcContact::None
+                    classify_h3_arc_contact(piece.arc(), arc, &far_fan) == ArcContact::None
                 })
         }),
         "the distant fan has no exact reflected-boundary contact"
@@ -291,6 +605,7 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
         )
         .unwrap();
         let pole_witnesses: Vec<_> = source.selection_pole_witnesses().collect();
+        let fan = plan.fan();
         assert!(
             !pole_witnesses.is_empty(),
             "the {longitude} crossing materializes its exact selection pole witness"
@@ -298,7 +613,7 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
         assert!(
             pole_witnesses.into_iter().any(|point| {
                 point.latitude == Bound::exact(90.0).unwrap()
-                    && fan_retains_point(plan.fan(), Some(point))
+                    && fan_retains_point(&fan, Some(point))
             }),
             "the exact {longitude} pole crossing reaches the native fan without a seam spelling"
         );

@@ -6,6 +6,9 @@
 //! negative.  Every operation here either returns an outward enclosure or
 //! declines to decide.
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use h3o::{CapLatticeProfile, Hex2Int, ProjectionSeed, Resolution};
 
 /// The two adjacent binary64 values bracketing mathematical pi.
@@ -1550,13 +1553,13 @@ impl H3BboxWitnesses {
 }
 
 /// One native H3 cell preparation.  Build the raw ordered boundary once and
-/// share it between the fan and the exact logical-bbox certificate.
+/// share it between the exact logical-bbox certificate and the fan, which is
+/// derived only when an exact overlap classification survives cheap bounds.
 #[derive(Debug)]
 pub(crate) struct H3CellPlan {
     cell: h3o::CellIndex,
     arcs: Option<H3ArcSet>,
     bbox: DegreeWindowResult,
-    fan: H3FanPlan,
 }
 
 impl H3CellPlan {
@@ -1572,8 +1575,13 @@ impl H3CellPlan {
         self.bbox
     }
 
-    pub(crate) const fn fan(&self) -> &H3FanPlan {
-        &self.fan
+    /// Derive the exact fan from the shared raw boundary.  The returned fan
+    /// belongs to the caller's operation; it is intentionally not retained in
+    /// the cell plan because bbox and cap exclusions do not need it.
+    pub(crate) fn fan(&self) -> H3FanPlan {
+        self.arcs.as_ref().map_or(H3FanPlan::Uncertain, |arcs| {
+            h3_fan_plan_from_arcs(self.cell, arcs)
+        })
     }
 }
 
@@ -1811,6 +1819,7 @@ fn exact_h3_bbox(arcs: &H3ArcSet) -> DegreeWindowResult {
 /// Exact H3 logical bbox without constructing a centre fan.  Bbox traversal
 /// needs only the ordered native boundary; fan ambiguity belongs solely to
 /// the overlap relation and may not widen this independent path.
+#[cfg(test)]
 pub(crate) fn exact_h3_bbox_for_cell(cell: h3o::CellIndex) -> DegreeWindowResult {
     h3_ordered_arcs(cell).map_or(DegreeWindowResult::Boundary, |arcs| exact_h3_bbox(&arcs))
 }
@@ -2009,6 +2018,11 @@ fn plane_value(nx: f64, ny: f64, nz: f64, lon: f64, lat: f64) -> f64 {
 pub(crate) enum H3FanPlan {
     Certified(H3Fan),
     Uncertain,
+}
+
+#[cfg(test)]
+thread_local! {
+    static H3_FAN_PLAN_CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The only point-in-cell answers a certified H3 fan may make.  An enclosing
@@ -2213,25 +2227,27 @@ impl H3Fan {
 /// assumption.
 #[cfg(test)]
 pub(crate) fn h3_fan_plan(cell: h3o::CellIndex) -> H3FanPlan {
-    h3_cell_plan(cell, cell.resolution()).fan
+    h3_cell_plan(cell, cell.resolution()).fan()
+}
+
+#[cfg(test)]
+pub(crate) fn reset_h3_fan_plan_construction_count() {
+    H3_FAN_PLAN_CONSTRUCTIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn h3_fan_plan_construction_count() -> usize {
+    H3_FAN_PLAN_CONSTRUCTIONS.with(Cell::get)
 }
 
 pub(crate) fn h3_cell_plan(cell: h3o::CellIndex, target: Resolution) -> H3CellPlan {
     let arcs = (target == cell.resolution())
         .then(|| h3_ordered_arcs(cell))
         .flatten();
-    let fan = arcs.as_ref().map_or(H3FanPlan::Uncertain, |arcs| {
-        h3_fan_plan_from_arcs(cell, arcs)
-    });
     let bbox = arcs
         .as_ref()
         .map_or(DegreeWindowResult::Boundary, exact_h3_bbox);
-    H3CellPlan {
-        cell,
-        arcs,
-        bbox,
-        fan,
-    }
+    H3CellPlan { cell, arcs, bbox }
 }
 
 #[expect(
@@ -2239,6 +2255,9 @@ pub(crate) fn h3_cell_plan(cell: h3o::CellIndex, target: Resolution) -> H3CellPl
     reason = "the fixed fan certificate is one auditable proof pipeline; splitting it would obscure its fail-open exits"
 )]
 fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
+    #[cfg(test)]
+    H3_FAN_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+
     let Some(center) = cell
         .target_substrate_center_seed(cell.resolution())
         .and_then(project_h3_seed)
@@ -5126,11 +5145,11 @@ mod tests {
         assert_eq!(plan.cell, cell);
         assert_eq!(plan.arcs.as_ref().map(H3ArcSet::len), Some(arcs.len()));
         assert!(matches!(plan.bbox, DegreeWindowResult::Windows(_)));
-        assert!(matches!(plan.fan, H3FanPlan::Certified(_)));
+        assert!(matches!(plan.fan(), H3FanPlan::Certified(_)));
         let mismatched = h3_cell_plan(cell, Resolution::Two);
         assert!(mismatched.arcs.is_none());
         assert_eq!(mismatched.bbox, DegreeWindowResult::Boundary);
-        assert!(matches!(mismatched.fan, H3FanPlan::Uncertain));
+        assert!(matches!(mismatched.fan(), H3FanPlan::Uncertain));
         assert!(matches!(h3_fan_plan(cell), H3FanPlan::Certified(_)));
     }
 
