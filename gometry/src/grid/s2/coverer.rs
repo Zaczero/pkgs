@@ -1137,15 +1137,12 @@ fn classify_one(
     Ok(out.pop().expect("one candidate was classified"))
 }
 
-/// The native test helper retains its old scalar shape while the traversal
-/// consumes the full certificate.
+/// Native tests inspect only the class while preserving allocation failures.
 #[cfg(test)]
-fn classify(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
+fn classify(ctx: &CoverContext<'_>, id: CellId) -> Result<CellClass, CoverError> {
     let mut stats = CoverStats::default();
     classify_one(ctx, id, &mut stats)
-        .expect("test candidate classification")
-        .certificate
-        .class
+        .map(|candidate| candidate.certificate.class)
 }
 
 struct LocalProbe {

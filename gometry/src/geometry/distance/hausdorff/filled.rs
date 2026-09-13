@@ -1428,7 +1428,11 @@ mod tests {
             &[],
         );
         assert!(source.has_area_parts());
-        assert!(source.area_covers_point(Point::new_raw_xy(0.5, 1.5)));
+        assert!(
+            source
+                .area_covers_point(Point::new_raw_xy(0.5, 1.5))
+                .unwrap()
+        );
         assert!(HausdorffTarget::build(&source).unwrap().has_filled_area());
     }
 

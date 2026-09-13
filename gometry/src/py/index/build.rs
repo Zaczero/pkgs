@@ -26,27 +26,30 @@ fn spatial_index_rows(
         .transpose()?
         .unwrap_or(TopologyDomain::Cartesian);
     let mut entries = Vec::new();
+    let mut live = Vec::new();
+    crate::try_reserve_vec(&mut live, items.len()).map_err(pyo3::PyErr::from)?;
+    let mut non_prunable_live = 0;
     for (idx, item) in items.iter().enumerate() {
-        let Some(item) = item else { continue };
-        let Some(bounds) = item.shape.bounds() else {
+        let Some(item) = item else {
+            crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
             continue;
         };
+        let Some(bounds) = item.shape.bounds() else {
+            crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
+            continue;
+        };
+        if domain == TopologyDomain::Cartesian
+            && !crate::geometry::cartesian_support_nonempty(item.shape.shape())?
+        {
+            return Err(GeometryError::new_err("cannot index empty geometry"));
+        }
         let cover = index_envelopes(item.shape.shape(), bounds, domain)?;
         for &envelope in cover.entries() {
             crate::try_push(&mut entries, IndexEntry { idx, envelope })?;
         }
+        crate::try_push_vec(&mut live, 1).map_err(pyo3::PyErr::from)?;
+        non_prunable_live += usize::from(!geodesic_prunable_point(&item.shape));
     }
-    let non_prunable_live = items
-        .iter()
-        .flatten()
-        .filter(|item| item.shape.bounds().is_some() && !geodesic_prunable_point(&item.shape))
-        .count();
-    let live = crate::try_collect_results(items.iter().map(|item| {
-        Ok::<_, pyo3::PyErr>(u8::from(
-            item.as_ref()
-                .is_some_and(|item| item.shape.bounds().is_some()),
-        ))
-    }))?;
     let live_count = live.iter().map(|&live| usize::from(live != 0)).sum();
     // `total_rows` spans every input row (incl. skipped empties) so the
     // tombstone bitmap and tree/overflow handle boundary stay aligned to the
@@ -678,7 +681,8 @@ mod ownership_tests {
             for entry in entries {
                 crate::try_push_vec(&mut owned_entries, entry)?;
             }
-            let tree = StaticStrTree::build_dense(owned_entries)?;
+            let total_rows = owned_entries.len();
+            let tree = StaticStrTree::build(owned_entries, total_rows)?;
             let mut matches = Vec::new();
             tree.each_intersecting(&[1, 1], &query, |index| {
                 crate::try_push_vec(&mut matches, index)
