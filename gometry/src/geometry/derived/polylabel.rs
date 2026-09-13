@@ -220,9 +220,10 @@ impl CertifiedDisk {
             .try_product(&dx)?
             .try_add(dy.try_product(&dy)?)?
             .try_product(&self.radius_squared_denominator)?;
+        let center_w_squared = self.center_w.try_product(&self.center_w)?;
         let radius_squared = self
             .radius_squared_numerator
-            .try_product(&self.radius_squared_denominator)?;
+            .try_product(&center_w_squared)?;
         Ok(distance_squared.cmp(&radius_squared) == Ordering::Greater)
     }
 
@@ -257,9 +258,10 @@ impl CertifiedDisk {
         let left_side = self
             .radius_squared_denominator
             .try_product(&h.try_product(&h)?)?;
+        let center_w_squared = self.center_w.try_product(&self.center_w)?;
         let right_side = self
             .radius_squared_numerator
-            .try_product(&self.radius_squared_denominator)?
+            .try_product(&center_w_squared)?
             .try_product(&edge_squared)?;
         Ok(left_side.cmp(&right_side) != Ordering::Less)
     }
@@ -433,7 +435,13 @@ fn unrepresentable_minimum_circle() -> crate::error::Error {
 }
 
 fn circle_emission_error(error: crate::error::Error) -> crate::error::Error {
-    if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) {
+    if matches!(
+        error.kind(),
+        crate::error::ErrorKind::Resource(_)
+            | crate::error::ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge { .. }
+            )
+    ) {
         error
     } else {
         unrepresentable_minimum_circle()
@@ -627,22 +635,26 @@ fn tangent_circle_polygon(
 }
 
 /// Emit a regular tangent-intersection polygon at a candidate disk radius,
-/// then certify the stored output before publishing it. A bounded binary64
-/// retry covers the one-ULP loss at the tangent boundary; the requested
-/// segment count never changes.
+/// then certify the stored output before publishing it. Every retry charges
+/// the existing operation-wide generated-work budget; the requested segment
+/// count never changes. The loop ends only when the next radius is
+/// non-finite or that declared resource bound is reached.
 pub(crate) fn emit_minimum_bounding_circle(
     disk: &CertifiedDisk,
     quadrant_segments: NonZeroU32,
 ) -> Result<Shape> {
-    const MAX_CIRCUMRADIUS_ULP_RETRIES: usize = 32;
     let radius = disk.radius().map_err(circle_emission_error)?;
     let center = disk.center().map_err(circle_emission_error)?;
     if !center.x.is_finite() || !center.y.is_finite() || !radius.is_finite() || radius <= 0.0 {
         return Err(unrepresentable_minimum_circle());
     }
-    let mut budget = ExpansionBudget::new("minimum_bounding_circle", "quadrant_segments");
+    // `tangent_circle_polygon` commits one complete fixed-size ring before
+    // allocating it. The existing generated-item budget therefore bounds the
+    // number of retries by `GENERATED_ITEM_LIMIT / (4 * quadrants + 1)`;
+    // there is no separate retry-fuel cap.
+    let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
     let mut candidate_radius = radius;
-    for _ in 0..=MAX_CIRCUMRADIUS_ULP_RETRIES {
+    loop {
         let output = match tangent_circle_polygon(
             center,
             candidate_radius,
@@ -2013,7 +2025,7 @@ mod tests {
         let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
         let circle = smallest_enclosing_circle(&source).expect("diameter support");
         let disk = circle.certified_disk(&source).expect("exact disk");
-        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "quadrant_segments");
+        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
         let output = crate::geometry::constructive::point_buffer(
             disk.center().expect("finite center"),
             1.0 + 1.0e-6,
@@ -2077,6 +2089,40 @@ mod tests {
     }
 
     #[test]
+    fn minimum_circle_certificate_does_not_assume_radius_denominator_is_center_weight_squared() {
+        let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
+        let circle = smallest_enclosing_circle(&source).expect("diameter support");
+        let disk = circle.certified_disk(&source).expect("exact disk");
+        let two = ExactDyadic::try_from_f64(2.0).expect("exact two");
+        let equivalent = CertifiedDisk {
+            center_x: disk.center_x.try_clone().expect("center x"),
+            center_y: disk.center_y.try_clone().expect("center y"),
+            center_w: disk.center_w.try_clone().expect("center weight"),
+            radius_squared_numerator: disk
+                .radius_squared_numerator
+                .try_product(&two)
+                .expect("scaled numerator"),
+            radius_squared_denominator: disk
+                .radius_squared_denominator
+                .try_product(&two)
+                .expect("scaled denominator"),
+            source_center: disk.source_center,
+            exact_zero_radius: disk.exact_zero_radius,
+        };
+        let quadrants = NonZeroU32::new(16).expect("non-zero");
+        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
+        let output = tangent_circle_polygon(
+            equivalent.center().expect("finite center"),
+            equivalent.radius().expect("finite radius"),
+            quadrants,
+            &mut budget,
+        )
+        .expect("equivalent disk polygon");
+        certify_minimum_circle_polygon(&output, &equivalent, quadrants)
+            .expect("equivalent S/T representation must certify");
+    }
+
+    #[test]
     fn minimum_circle_emission_keeps_the_requested_quadrant_count() {
         let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
         let circle = smallest_enclosing_circle(&source).expect("diameter support");
@@ -2101,7 +2147,7 @@ mod tests {
         let circle = smallest_enclosing_circle(&source).expect("diameter support");
         let disk = circle.certified_disk(&source).expect("exact disk");
         let quadrants = NonZeroU32::new(16).expect("non-zero");
-        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "quadrant_segments");
+        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
         let candidate = tangent_circle_polygon(
             disk.center().expect("finite center"),
             disk.radius().expect("finite radius"),
@@ -2119,7 +2165,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_circle_polygon_rejects_a_collapsed_output_ring() {
+    fn minimum_circle_polygon_reports_the_realization_budget_for_a_collapsed_ring() {
         let points = [
             Point::new_raw_xy(2.0_f64.powi(60), 2.0_f64.powi(60)),
             Point::new_raw_xy(2.0_f64.powi(60) + 1024.0, 2.0_f64.powi(60)),
@@ -2138,9 +2184,13 @@ mod tests {
         let error = shape.minimum_bounding_circle().unwrap_err();
         assert!(matches!(
             error.kind(),
-            ErrorKind::Geometry(crate::geometry::GeometryErrorKind::UnrepresentableOutput {
-                operation: "minimum_bounding_circle"
-            })
+            ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge {
+                    operation: "minimum_bounding_circle",
+                    parameter: "realization",
+                    ..
+                }
+            )
         ));
     }
 

@@ -244,20 +244,40 @@ def test_zero_exact_radius_returns_the_source_point(name: str) -> None:
     assert (result.x, result.y) == (float(source[0]), float(source[1]))
 
 
-@pytest.mark.parametrize(
-    'name',
-    [
-        'adjacent-at-one',
-        'adjacent-at-2^60',
-        'minsub',
-        'minsub-adjacent',
-        'translated-acute',
-    ],
-)
-def test_planar_circle_rejects_unrepresentable_rounded_polygon(name: str) -> None:
-    with pytest.raises(gm.GeometryError, match='contained geometry') as caught:
+@pytest.mark.parametrize('name', ['adjacent-at-one', 'adjacent-at-2^60', 'translated-acute'])
+def test_planar_circle_reports_the_declared_realization_budget(name: str) -> None:
+    with pytest.raises(gm.GeometryError, match='reduce realization') as caught:
         gm.MultiPoint(CASES[name]).minimum_bounding_circle(unit='planar')
     assert caught.value.operation == 'minimum_bounding_circle'
+    assert caught.value.parameter == 'realization'
+    assert caught.value.produced == 16_000_010
+    assert caught.value.limit == 16_000_000
+
+
+def test_planar_circle_rejects_a_positive_radius_below_the_minimum_subnormal() -> None:
+    with pytest.raises(gm.GeometryError, match='contained geometry') as caught:
+        gm.MultiPoint(CASES['minsub-adjacent']).minimum_bounding_circle(unit='planar')
+    assert caught.value.operation == 'minimum_bounding_circle'
+
+
+def test_planar_circle_emits_a_minimum_subnormal_diameter() -> None:
+    points = CASES['minsub']
+    expected = exhaustive(points)
+    assert expected is not None
+    circle = gm.MultiPoint(points).minimum_bounding_circle(unit='planar')
+    assert circle.geometry_type == 'Polygon'
+    vertices = [q((x, y)) for x, y in list(circle.coords)[:-1]]
+    assert len(vertices) == 64
+    assert all(
+        distance_squared(expected.center, point) > expected.radius_squared
+        for point in vertices
+    )
+    assert all(
+        orientation(left, right, expected.center) >= 0
+        and orientation(left, right, expected.center) ** 2
+        >= expected.radius_squared * distance_squared(left, right)
+        for left, right in zip(vertices, vertices[1:] + vertices[:1], strict=True)
+    )
 
 
 def test_planar_circle_rejects_overflowed_output_without_changing_radius() -> None:

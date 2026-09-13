@@ -429,6 +429,8 @@ is a certified circumscribed 64-gon around that minimum disk: its edges enclose
 the disk and its vertices lie outside it. It raises `GeometryError` rather than
 silently changing the scalar radius or publishing a non-finite, invalid, or
 non-enclosing result when binary64 cannot represent the polygon.
+The existing realization-work budget also bounds recovery from intermediate
+rounding failures without changing the requested segment count.
 For a projected CRS with `unit='meters'`, the exact squared radius is scaled
 before the single binary64 radius rounding.
 Geographic multi-point radii retain their documented local/ellipsoidal

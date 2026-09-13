@@ -2807,7 +2807,8 @@ class Geometry:
         GeometryError
             If the correctly rounded circle cannot be emitted as a finite, valid,
             source-enclosing polygon without changing its mathematical center or scalar
-            radius.
+            radius, or if the existing realization work budget is exhausted while
+            finding representable vertices.
         InvalidGeometryError
             If the bounding circle cannot be computed.
 
@@ -8205,7 +8206,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryError
             If the correctly rounded circle cannot be emitted as a finite, valid,
             source-enclosing polygon without changing its mathematical center or scalar
-            radius.
+            radius, or if the existing realization work budget is exhausted while
+            finding representable vertices.
         InvalidGeometryError
             If the bounding circle cannot be computed.
 
