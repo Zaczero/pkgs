@@ -1,12 +1,10 @@
 use crate::geometry::distance::{
     GeodesicSweepCapsAccum, HausdorffFeature, HausdorffTarget, Result, any_parts_within,
-    collect_geodesic_segments_into, collect_point_only_into, compact_hausdorff_params,
-    directed_hausdorff_distance_squared_shapes, discrete_frechet_distance,
-    discrete_frechet_distance_with_scratch, ensure_geodesic_linework, filled_hausdorff_distance,
-    geodesic_cap_streaming, geodesic_capped_sweep, geodesic_capped_witness_sweep,
-    geodesic_directed_hausdorff_distance, geodesic_scratch, geodesic_segments_cross_streaming,
-    min_parts_to_parts, push_equidistant_roots_on_interval, push_point_on_line_breakpoint,
-    push_segment_projection_breakpoints, squared_space_safe,
+    collect_point_only_into, compact_hausdorff_params, directed_hausdorff_distance_squared_shapes,
+    discrete_frechet_distance, discrete_frechet_distance_with_scratch, ensure_geodesic_linework,
+    filled_hausdorff_distance, geodesic_cap_streaming, geodesic_directed_hausdorff_distance,
+    geodesic_scratch, min_parts_to_parts, push_equidistant_roots_on_interval,
+    push_point_on_line_breakpoint, push_segment_projection_breakpoints, squared_space_safe,
 };
 use crate::geometry::frame::SimilarityFrame;
 use crate::geometry::{
@@ -117,62 +115,6 @@ impl Shape {
         geodesic_cap_streaming(self, metric)
     }
 
-    pub(crate) fn geodesic_distance(
-        &self,
-        other: &Self,
-        metric: &impl GeodesicMetric,
-    ) -> Result<f64> {
-        ensure_geodesic_linework(self, metric)?;
-        ensure_geodesic_linework(other, metric)?;
-        // Point pairs reduce to ONE Karney inverse (`segment_length` IS the
-        // point distance; the degenerate-segment spelling would burn three).
-        if let (Self::Point(a), Self::Point(b)) = (self, other) {
-            return Ok(metric.segment_length(*a, *b));
-        }
-        if self.geodesic_segments_cross(other, metric)? {
-            return Ok(0.0);
-        }
-        let mut scratch = geodesic_scratch();
-        let scratch = &mut *scratch;
-        scratch.left_points.clear();
-        crate::boundary::try_reserve_vec(&mut scratch.left_points, self.coord_count())?;
-        self.collect_points_into(&mut scratch.left_points)?;
-        scratch.right_points.clear();
-        crate::boundary::try_reserve_vec(&mut scratch.right_points, other.coord_count())?;
-        other.collect_points_into(&mut scratch.right_points)?;
-        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
-        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
-        collect_point_only_into(self, &mut scratch.left_point_only)?;
-        collect_point_only_into(other, &mut scratch.right_point_only)?;
-        // Cap-bounded best-first sweeps: ONE inverse per target segment
-        // turns every vertex x target pair into a no-Karney lower bound
-        // (auxiliary-sphere cap separation); pairs evaluate in ascending
-        // bound order, so the first bound past the running best prunes the
-        // sweep's whole remainder. Far pairs never pay a Karney call.
-        let mut best = f64::INFINITY;
-        best = geodesic_capped_sweep(
-            &scratch.left_points,
-            &scratch.right_edges,
-            &scratch.right_point_only,
-            metric,
-            best,
-            &mut scratch.cap_groups,
-            &mut scratch.rows,
-            &mut scratch.segment,
-        )?;
-        best = geodesic_capped_sweep(
-            &scratch.right_points,
-            &scratch.left_edges,
-            &scratch.left_point_only,
-            metric,
-            best,
-            &mut scratch.cap_groups,
-            &mut scratch.rows,
-            &mut scratch.segment,
-        )?;
-        Ok(best)
-    }
-
     /// Directed and symmetric geodesic Hausdorff distance (meters) — the
     /// segment-aware sibling of [`Shape::hausdorff_distance`]. Each directed
     /// sweep evaluates source vertices and a global along-track frontier over
@@ -198,85 +140,6 @@ impl Shape {
         let reverse =
             geodesic_directed_hausdorff_distance(&target_parts, &source_parts, metric, scratch)?;
         Ok(forward.distance.max(reverse.distance))
-    }
-
-    /// The closest pair of points (one on each geometry) under the geodesic
-    /// metric — the geodesic sibling of `Shape::nearest_points`. Geodesic
-    /// segment intersections return one witness on each segment; otherwise
-    /// both directed vertex-to-segment witness sweeps run, carrying the
-    /// running best so the metric can prune segments that cannot improve it.
-    /// `None` only when an operand is empty.
-    pub(crate) fn geodesic_nearest_points(
-        &self,
-        other: &Self,
-        metric: &impl GeodesicMetric,
-    ) -> Result<Option<(Point, Point)>> {
-        ensure_geodesic_linework(self, metric)?;
-        ensure_geodesic_linework(other, metric)?;
-        let mut scratch = geodesic_scratch();
-        let scratch = &mut *scratch;
-        scratch.left_points.clear();
-        crate::boundary::try_reserve_vec(&mut scratch.left_points, self.coord_count())?;
-        self.collect_points_into(&mut scratch.left_points)?;
-        scratch.right_points.clear();
-        crate::boundary::try_reserve_vec(&mut scratch.right_points, other.coord_count())?;
-        other.collect_points_into(&mut scratch.right_points)?;
-        if scratch.left_points.is_empty() || scratch.right_points.is_empty() {
-            return Ok(None);
-        }
-        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
-        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
-        for left_segment in &scratch.left_edges {
-            for right_segment in &scratch.right_edges {
-                if let Some(witness) = metric.segment_intersection(
-                    left_segment.start,
-                    left_segment.end,
-                    right_segment.start,
-                    right_segment.end,
-                )? {
-                    return Ok(Some(witness));
-                }
-            }
-        }
-        collect_point_only_into(self, &mut scratch.left_point_only)?;
-        collect_point_only_into(other, &mut scratch.right_point_only)?;
-        let reverse_order_offset = scratch.left_points.len()
-            * (scratch.right_edges.len() + scratch.right_point_only.len());
-        let best = geodesic_capped_witness_sweep(
-            &scratch.left_points,
-            &scratch.right_edges,
-            &scratch.right_point_only,
-            metric,
-            None,
-            0,
-            false,
-            &mut scratch.cap_groups,
-            &mut scratch.rows,
-            &mut scratch.segment,
-        )?;
-        let best = geodesic_capped_witness_sweep(
-            &scratch.right_points,
-            &scratch.left_edges,
-            &scratch.left_point_only,
-            metric,
-            best,
-            reverse_order_offset,
-            true,
-            &mut scratch.cap_groups,
-            &mut scratch.rows,
-            &mut scratch.segment,
-        )?;
-        Ok(best.map(|candidate| {
-            if candidate.swapped {
-                (candidate.target, candidate.probe)
-            } else {
-                (candidate.probe, candidate.target)
-            }
-        }))
-    }
-
-    fn geodesic_segments_cross(&self, other: &Self, metric: &impl GeodesicMetric) -> Result<bool> {
-        geodesic_segments_cross_streaming(self, other, metric)
     }
 
     pub fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {

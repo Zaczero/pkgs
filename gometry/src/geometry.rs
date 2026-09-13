@@ -45,13 +45,13 @@ pub(crate) use types::{
     FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicParts,
     GeodesicPreparedSegment, GeodesicSegment, GeodesicSegmentDerivative, GeodesicSegmentMinimum,
     GeodesicSegmentQuery, GeodesicSegmentQueryResult, GeodesicSegmentSample,
-    GeodesicSegmentScratch, GeodesicThresholdCompletion, GeodesicWitnessNeed, GeometryErrorKind,
-    GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq, MAX_NESTING, MColumn,
-    MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointKey, Polygon,
-    PolygonLevel, PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod, Ring, RingLevel,
-    Segment, Shape, ShapeData, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
-    VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
-    concat_coord_columns, ordered_edge, segment_midpoint, try_copy_slice,
+    GeodesicSegmentScratch, GeodesicWitnessNeed, GeometryErrorKind, GeometryKind, HasM, HasZ,
+    IndexedSegment, IntoSharedShape, LineSeq, MAX_NESTING, MColumn, MOrdinate, MultiLineString,
+    MultiMember, MultiPoint, MultiPolygon, Point, PointKey, Polygon, PolygonLevel, PolygonizeFull,
+    PolylabelCell, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeData,
+    SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
+    canonical_f64_bits, coerce_to_common_axes, concat_coord_columns, ordered_edge,
+    segment_midpoint, try_copy_slice,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{

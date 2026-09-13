@@ -92,34 +92,6 @@ impl PreparedPlan {
     }
 }
 
-pub(crate) fn geodesic_segments_cross_streaming(
-    left: &Shape,
-    right: &Shape,
-    metric: &impl GeodesicMetric,
-) -> Result<bool> {
-    let mut cross = false;
-    let mut error = None;
-    left.for_each_vertex_pair(|l_start, l_end| {
-        if cross || error.is_some() {
-            return;
-        }
-        right.for_each_vertex_pair(|r_start, r_end| {
-            if cross || error.is_some() {
-                return;
-            }
-            match metric.segments_cross(l_start, l_end, r_start, r_end) {
-                Ok(true) => cross = true,
-                Ok(false) => {},
-                Err(value) => error = Some(value),
-            }
-        });
-    });
-    if let Some(error) = error {
-        return Err(error);
-    }
-    Ok(cross)
-}
-
 pub(crate) fn geodesic_segments_cross_parts(
     left: &GeodesicParts,
     right: &GeodesicParts,

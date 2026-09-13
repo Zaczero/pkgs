@@ -13,8 +13,8 @@ use crate::collections::HashMap;
 use crate::error::{ResourceError, Result};
 use crate::geometry::{
     BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentQuery,
-    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicThresholdCompletion,
-    GeodesicWitnessNeed, HashMapExt as _, Point,
+    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicWitnessNeed, HashMapExt as _,
+    Point,
 };
 
 const GEODESIC_LEAF_SEGMENTS: usize = 8;
@@ -405,22 +405,18 @@ impl GeodesicFacetBvh {
                             segment,
                             GeodesicSegmentQuery::Threshold {
                                 limit,
-                                completion: GeodesicThresholdCompletion::Complete,
                                 witness: GeodesicWitnessNeed::No,
                             },
                             segment_scratch,
                         )?;
                         match result {
                             GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
-                            GeodesicSegmentQueryResult::ThresholdOutside { .. } => {},
+                            GeodesicSegmentQueryResult::ThresholdOutside => {},
                             GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
                                 debug_assert!(minimum > limit);
                             },
-                            GeodesicSegmentQueryResult::Excluded { .. } => {
+                            GeodesicSegmentQueryResult::Excluded => {
                                 unreachable!("threshold query returned a minimum exclusion")
-                            },
-                            GeodesicSegmentQueryResult::ThresholdUnresolved => {
-                                unreachable!("complete threshold query returned unresolved")
                             },
                         }
                     }

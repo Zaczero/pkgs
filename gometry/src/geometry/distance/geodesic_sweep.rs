@@ -127,42 +127,6 @@ impl GeodesicSweepCaps {
     }
 }
 
-pub(crate) fn geodesic_sweep_caps_into<'a>(
-    segments: &[GeodesicSegment],
-    point_only: &[Point],
-    metric: &impl GeodesicMetric,
-    groups: &'a mut Vec<CapGroup>,
-) -> Option<GeodesicSweepCapsView<'a>> {
-    groups.clear();
-    let anchor = segments
-        .first()
-        .map(|segment| segment.start)
-        .or_else(|| point_only.first().copied())?;
-    let mut global_reach = 0.0_f64;
-    groups.reserve(segments.len().div_ceil(GEODESIC_CAP_GROUP));
-    for chunk in segments.chunks(GEODESIC_CAP_GROUP) {
-        let group_anchor = chunk[0].start;
-        let mut reach = 0.0_f64;
-        for segment in chunk {
-            let from_group = metric.segment_length(group_anchor, segment.start);
-            reach = reach.max(from_group + segment.length);
-        }
-        global_reach = global_reach.max(metric.segment_length(anchor, group_anchor) + reach);
-        groups.push(CapGroup {
-            anchor: group_anchor,
-            reach,
-        });
-    }
-    for &point in point_only {
-        global_reach = global_reach.max(metric.segment_length(anchor, point));
-    }
-    Some(GeodesicSweepCapsView {
-        anchor,
-        global_reach,
-        groups,
-    })
-}
-
 pub(crate) fn geodesic_ordered_rows_into(
     vertices: &[Point],
     caps: GeodesicSweepCapsView<'_>,
@@ -189,31 +153,6 @@ pub(crate) fn geodesic_ordered_rows_into(
     } else {
         rows.sort_unstable_by(|left, right| left.bound.total_cmp(&right.bound));
     }
-}
-
-pub(crate) fn geodesic_capped_sweep(
-    vertices: &[Point],
-    segments: &[GeodesicSegment],
-    point_only: &[Point],
-    metric: &impl GeodesicMetric,
-    best: f64,
-    cap_groups: &mut Vec<CapGroup>,
-    rows: &mut Vec<RowProbe>,
-    segment_scratch: &mut GeodesicSegmentScratch,
-) -> Result<f64> {
-    let Some(caps) = geodesic_sweep_caps_into(segments, point_only, metric, cap_groups) else {
-        return Ok(best);
-    };
-    geodesic_capped_distance_sweep_core(
-        vertices,
-        segments,
-        point_only,
-        caps,
-        metric,
-        best,
-        rows,
-        segment_scratch,
-    )
 }
 
 pub(crate) fn geodesic_capped_sweep_with_parts(
@@ -349,22 +288,18 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
                     segment,
                     GeodesicSegmentQuery::Threshold {
                         limit: distance,
-                        completion: crate::geometry::GeodesicThresholdCompletion::Complete,
                         witness: GeodesicWitnessNeed::No,
                     },
                     segment_scratch,
                 )?;
                 match result {
                     GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
-                    GeodesicSegmentQueryResult::ThresholdOutside { .. } => {},
+                    GeodesicSegmentQueryResult::ThresholdOutside => {},
                     GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
                         debug_assert!(minimum > distance);
                     },
-                    GeodesicSegmentQueryResult::Excluded { .. } => {
+                    GeodesicSegmentQueryResult::Excluded => {
                         unreachable!("threshold query returned a minimum exclusion")
-                    },
-                    GeodesicSegmentQueryResult::ThresholdUnresolved => {
-                        unreachable!("complete threshold query returned unresolved")
                     },
                 }
             }
@@ -379,39 +314,6 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
         }
     }
     Ok(false)
-}
-
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-pub(crate) fn geodesic_capped_witness_sweep(
-    vertices: &[Point],
-    segments: &[GeodesicSegment],
-    point_only: &[Point],
-    metric: &impl GeodesicMetric,
-    best: Option<GeodesicWitnessCandidate>,
-    order_offset: usize,
-    swapped: bool,
-    cap_groups: &mut Vec<CapGroup>,
-    rows: &mut Vec<RowProbe>,
-    segment_scratch: &mut GeodesicSegmentScratch,
-) -> Result<Option<GeodesicWitnessCandidate>> {
-    let Some(caps) = geodesic_sweep_caps_into(segments, point_only, metric, cap_groups) else {
-        return Ok(best);
-    };
-    geodesic_capped_witness_sweep_core(
-        vertices,
-        segments,
-        point_only,
-        caps,
-        metric,
-        best,
-        order_offset,
-        swapped,
-        rows,
-        segment_scratch,
-    )
 }
 
 #[expect(

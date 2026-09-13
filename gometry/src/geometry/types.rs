@@ -39,10 +39,9 @@ pub(crate) use shape::{
 pub(crate) use shape_data::{
     FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicPreparedSegment,
     GeodesicSegmentDerivative, GeodesicSegmentMinimum, GeodesicSegmentQuery,
-    GeodesicSegmentQueryResult, GeodesicSegmentSample, GeodesicSegmentScratch,
-    GeodesicThresholdCompletion, GeodesicWitnessNeed, IndexedSegment, IntoSharedShape, PointKey,
-    PolygonizeFull, PolylabelCell, PreparedPlan, ShapeData, ValidationIssue, canonical_f64_bits,
-    ordered_edge,
+    GeodesicSegmentQueryResult, GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed,
+    IndexedSegment, IntoSharedShape, PointKey, PolygonizeFull, PolylabelCell, PreparedPlan,
+    ShapeData, ValidationIssue, canonical_f64_bits, ordered_edge,
 };
 pub(crate) use shared_slice::{SharedSlice, SharedSliceIter};
 

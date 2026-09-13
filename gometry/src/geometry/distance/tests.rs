@@ -305,12 +305,11 @@ fn point_segment_distance_value(
         GeodesicSegmentQueryResult::Attained { foot: Some(_), .. } => {
             panic!("distance query unexpectedly materialized a witness")
         },
-        GeodesicSegmentQueryResult::Excluded { .. } => {
+        GeodesicSegmentQueryResult::Excluded => {
             panic!("unbounded minimum query was unexpectedly excluded")
         },
-        GeodesicSegmentQueryResult::ThresholdOutside { .. }
-        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
-        | GeodesicSegmentQueryResult::ThresholdUnresolved => {
+        GeodesicSegmentQueryResult::ThresholdOutside
+        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. } => {
             panic!("minimum query returned a threshold outcome")
         },
     }
@@ -345,12 +344,11 @@ fn geodesic_segment_witness(
         GeodesicSegmentQueryResult::Attained { foot: None, .. } => {
             panic!("witness query did not materialize a foot")
         },
-        GeodesicSegmentQueryResult::Excluded { .. } => {
+        GeodesicSegmentQueryResult::Excluded => {
             panic!("unpruned witness query was unexpectedly excluded")
         },
-        GeodesicSegmentQueryResult::ThresholdOutside { .. }
-        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
-        | GeodesicSegmentQueryResult::ThresholdUnresolved => {
+        GeodesicSegmentQueryResult::ThresholdOutside
+        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. } => {
             panic!("minimum query returned a threshold outcome")
         },
     }

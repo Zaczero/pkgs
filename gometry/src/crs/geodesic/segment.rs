@@ -14,8 +14,8 @@ use crate::crs::geodesic::{
 use crate::error::Result;
 use crate::geometry::{
     GeodesicInnerInterval, GeodesicSegment, GeodesicSegmentMinimum, GeodesicSegmentQuery,
-    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicThresholdCompletion,
-    GeodesicWitnessNeed, MOrdinate, Point, ZOrdinate,
+    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicWitnessNeed, MOrdinate, Point,
+    ZOrdinate,
 };
 
 const POINT_SEGMENT_BOUND_ROUNDING_ULPS: f64 = 128.0;
@@ -23,7 +23,6 @@ const POINT_SEGMENT_DERIVATIVE_ROUNDING_ULPS: f64 = 256.0;
 // Endpoint lower bounds and the attained sample each carry the backend floor;
 // keep two further terms for the conservative bound/square-root path.
 const POINT_SEGMENT_BACKEND_SLACK_MULTIPLIER: f64 = 4.0;
-const POINT_SEGMENT_PROBE_INTERVALS: usize = 8;
 const POINT_SEGMENT_LINE_CAPS: u64 = caps::LATITUDE
     | caps::LONGITUDE
     | caps::AZIMUTH
@@ -140,7 +139,7 @@ pub(crate) fn geodesic_segment_intersection_with_solver(
 ///
 /// The interval queue owns only parameter cells. It never returns a pruning
 /// bound as a distance: an attained result carries its value and optional foot,
-/// while exclusion and unresolved probe state have distinct variants.
+/// while exclusion and threshold-outside state have distinct variants.
 #[expect(
     clippy::large_types_passed_by_value,
     reason = "the segment is an owned Copy snapshot consumed by the geodesic query"
@@ -176,16 +175,14 @@ pub(crate) fn geodesic_point_segment_query(
                 return if 0.0 < cutoff {
                     attained_contact_result(&prepared, minimum, witness, point)
                 } else {
-                    Ok(GeodesicSegmentQueryResult::Excluded { lower_bound: 0.0 })
+                    Ok(GeodesicSegmentQueryResult::Excluded)
                 };
             }
             if segment.length == 0.0 {
                 return if endpoint_minimum.distance < cutoff {
                     attained_result(&prepared, endpoint_minimum, witness)
                 } else {
-                    Ok(GeodesicSegmentQueryResult::Excluded {
-                        lower_bound: endpoint_minimum.distance,
-                    })
+                    Ok(GeodesicSegmentQueryResult::Excluded)
                 };
             }
             if let Some(minimum) =
@@ -194,9 +191,7 @@ pub(crate) fn geodesic_point_segment_query(
                 if minimum.distance < cutoff {
                     return attained_result(&prepared, minimum, witness);
                 }
-                return Ok(GeodesicSegmentQueryResult::Excluded {
-                    lower_bound: minimum.distance,
-                });
+                return Ok(GeodesicSegmentQueryResult::Excluded);
             }
             search_point_segment(
                 &prepared,
@@ -209,16 +204,12 @@ pub(crate) fn geodesic_point_segment_query(
                 scratch,
             )
         },
-        GeodesicSegmentQuery::Threshold {
-            limit,
-            completion,
-            witness,
-        } => {
+        GeodesicSegmentQuery::Threshold { limit, witness } => {
             if limit.is_nan() {
                 return Err(CrsError::message("geodesic dwithin limit is not finite"));
             }
             if limit < 0.0 || limit.is_infinite() && limit.is_sign_negative() {
-                return Ok(GeodesicSegmentQueryResult::ThresholdOutside { lower_bound: 0.0 });
+                return Ok(GeodesicSegmentQueryResult::ThresholdOutside);
             }
             if let Some(along) = exact_segment_contact(geodesic, point, &prepared) {
                 return attained_contact_result(
@@ -240,9 +231,7 @@ pub(crate) fn geodesic_point_segment_query(
                 ));
             }
             if segment.length == 0.0 {
-                return Ok(GeodesicSegmentQueryResult::ThresholdOutside {
-                    lower_bound: endpoint_minimum.distance,
-                });
+                return Ok(GeodesicSegmentQueryResult::ThresholdOutside);
             }
             if let Some(minimum) =
                 exact_family_minimum(geodesic, point, &prepared, endpoint_minimum)?
@@ -250,13 +239,8 @@ pub(crate) fn geodesic_point_segment_query(
                 return if minimum.distance <= limit {
                     attained_result(&prepared, minimum, witness)
                 } else {
-                    Ok(GeodesicSegmentQueryResult::ThresholdOutside {
-                        lower_bound: minimum.distance,
-                    })
+                    Ok(GeodesicSegmentQueryResult::ThresholdOutside)
                 };
-            }
-            if matches!(completion, GeodesicThresholdCompletion::Probe) {
-                return probe_point_segment(&prepared, point, limit, witness);
             }
             search_point_segment(
                 &prepared,
@@ -546,14 +530,10 @@ fn search_point_segment(
 
     match query {
         GeodesicSegmentQuery::Minimum { cutoff, .. } if initial.lower >= cutoff => {
-            Ok(GeodesicSegmentQueryResult::Excluded {
-                lower_bound: initial.lower,
-            })
+            Ok(GeodesicSegmentQueryResult::Excluded)
         },
         GeodesicSegmentQuery::Threshold { limit, .. } if initial.lower > limit => {
-            Ok(GeodesicSegmentQueryResult::ThresholdOutside {
-                lower_bound: initial.lower,
-            })
+            Ok(GeodesicSegmentQueryResult::ThresholdOutside)
         },
         _ => {
             scratch.clear();
@@ -589,12 +569,7 @@ fn search_point_segment(
                     return attained_result(prepared, minimum, query_witness(query));
                 }
                 if !can_subdivide(interval.left, interval.right) {
-                    if matches!(query, GeodesicSegmentQuery::Threshold {
-                        completion: GeodesicThresholdCompletion::Complete,
-                        ..
-                    }) {
-                        backend_limited = true;
-                    }
+                    backend_limited = true;
                     continue;
                 }
                 #[cfg(test)]
@@ -667,16 +642,10 @@ fn finish_query(
             if minimum.distance < cutoff {
                 attained_result(prepared, minimum, witness)
             } else {
-                Ok(GeodesicSegmentQueryResult::Excluded {
-                    lower_bound: cutoff,
-                })
+                Ok(GeodesicSegmentQueryResult::Excluded)
             }
         },
-        GeodesicSegmentQuery::Threshold {
-            limit,
-            completion: GeodesicThresholdCompletion::Complete,
-            witness,
-        } => {
+        GeodesicSegmentQuery::Threshold { limit, witness } => {
             if minimum.distance <= limit {
                 attained_result(prepared, minimum, witness)
             } else if backend_limited {
@@ -684,39 +653,10 @@ fn finish_query(
                     minimum: minimum.distance,
                 })
             } else {
-                Ok(GeodesicSegmentQueryResult::ThresholdOutside {
-                    lower_bound: limit.next_up(),
-                })
+                Ok(GeodesicSegmentQueryResult::ThresholdOutside)
             }
         },
-        GeodesicSegmentQuery::Threshold {
-            completion: GeodesicThresholdCompletion::Probe,
-            ..
-        } => unreachable!("probe threshold queries do not enter global search"),
     }
-}
-
-fn probe_point_segment(
-    prepared: &PreparedSegment,
-    point: Point,
-    limit: f64,
-    witness: GeodesicWitnessNeed,
-) -> Result<GeodesicSegmentQueryResult> {
-    for index in 1..POINT_SEGMENT_PROBE_INTERVALS {
-        let along = prepared.segment.length * index as f64 / POINT_SEGMENT_PROBE_INTERVALS as f64;
-        let sample = prepared.sample(point, along, false)?;
-        if sample.distance <= limit {
-            return attained_result(
-                prepared,
-                GeodesicSegmentMinimum {
-                    distance: sample.distance,
-                    along,
-                },
-                witness,
-            );
-        }
-    }
-    Ok(GeodesicSegmentQueryResult::ThresholdUnresolved)
 }
 
 fn attained_result(

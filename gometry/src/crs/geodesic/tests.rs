@@ -11,8 +11,7 @@ use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{
     CoordSeq, Coordinates, FrameDependentCaches, FrechetDpScratch, GeodesicMetric, GeodesicSegment,
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
-    GeodesicSegmentScratch, GeodesicThresholdCompletion, GeodesicWitnessNeed, LineSeq, Point,
-    PreparedPlan, Shape, XY,
+    GeodesicSegmentScratch, GeodesicWitnessNeed, LineSeq, Point, PreparedPlan, Shape, XY,
 };
 
 // Independent oracle provenance for the fixed fixtures below: GeographicLib
@@ -66,12 +65,11 @@ fn raw_minimum(
         GeodesicSegmentQueryResult::Attained { foot: Some(_), .. } => {
             panic!("distance query unexpectedly materialized a witness")
         },
-        GeodesicSegmentQueryResult::Excluded { .. } => {
+        GeodesicSegmentQueryResult::Excluded => {
             panic!("unpruned test query was unexpectedly excluded")
         },
-        GeodesicSegmentQueryResult::ThresholdOutside { .. }
-        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
-        | GeodesicSegmentQueryResult::ThresholdUnresolved => {
+        GeodesicSegmentQueryResult::ThresholdOutside
+        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. } => {
             panic!("minimum query returned a threshold outcome")
         },
     }
@@ -111,12 +109,11 @@ fn metric_witness(
         GeodesicSegmentQueryResult::Attained { foot: None, .. } => {
             panic!("witness query did not materialize a foot")
         },
-        GeodesicSegmentQueryResult::Excluded { .. } => {
+        GeodesicSegmentQueryResult::Excluded => {
             panic!("unpruned test query was unexpectedly excluded")
         },
-        GeodesicSegmentQueryResult::ThresholdOutside { .. }
-        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
-        | GeodesicSegmentQueryResult::ThresholdUnresolved => {
+        GeodesicSegmentQueryResult::ThresholdOutside
+        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. } => {
             panic!("minimum query returned a threshold outcome")
         },
     }
@@ -140,7 +137,6 @@ fn metric_threshold(
                 segment,
                 GeodesicSegmentQuery::Threshold {
                     limit,
-                    completion: GeodesicThresholdCompletion::Complete,
                     witness: GeodesicWitnessNeed::No,
                 },
                 &mut scratch,
@@ -469,10 +465,9 @@ fn typed_queries_keep_attainment_exclusion_and_probe_state_distinct() {
             &mut scratch,
         )
         .expect("equal cutoff query should succeed");
-    let GeodesicSegmentQueryResult::Excluded { lower_bound } = equal_cutoff else {
+    let GeodesicSegmentQueryResult::Excluded = equal_cutoff else {
         panic!("equal cutoff must not be an attained strict improvement");
     };
-    assert!(lower_bound >= minimum.distance);
 
     let equal_limit = metric
         .point_segment_query(
@@ -480,7 +475,6 @@ fn typed_queries_keep_attainment_exclusion_and_probe_state_distinct() {
             segment,
             GeodesicSegmentQuery::Threshold {
                 limit: minimum.distance,
-                completion: GeodesicThresholdCompletion::Complete,
                 witness: GeodesicWitnessNeed::No,
             },
             &mut scratch,
@@ -497,36 +491,14 @@ fn typed_queries_keep_attainment_exclusion_and_probe_state_distinct() {
             segment,
             GeodesicSegmentQuery::Threshold {
                 limit: 0.0,
-                completion: GeodesicThresholdCompletion::Complete,
                 witness: GeodesicWitnessNeed::No,
             },
             &mut scratch,
         )
         .expect("outside threshold query should succeed");
-    let GeodesicSegmentQueryResult::ThresholdOutside { lower_bound } = outside else {
+    let GeodesicSegmentQueryResult::ThresholdOutside = outside else {
         panic!("zero threshold must be proven outside");
     };
-    assert!(lower_bound > 0.0);
-
-    let probe_segment = metric
-        .make_segment(p(30.0, -20.0), p(40.0, -10.0))
-        .expect("probe segment is unique");
-    let unresolved = metric
-        .point_segment_query(
-            p(-120.0, 70.0),
-            probe_segment,
-            GeodesicSegmentQuery::Threshold {
-                limit: 0.0,
-                completion: GeodesicThresholdCompletion::Probe,
-                witness: GeodesicWitnessNeed::No,
-            },
-            &mut scratch,
-        )
-        .expect("probe query should succeed");
-    assert!(matches!(
-        unresolved,
-        GeodesicSegmentQueryResult::ThresholdUnresolved
-    ));
 }
 
 #[test]
@@ -754,7 +726,6 @@ fn point_segment_global_frontier_keeps_multiple_local_minima() {
             segment,
             GeodesicSegmentQuery::Threshold {
                 limit: 10_000_000.0,
-                completion: GeodesicThresholdCompletion::Complete,
                 witness: GeodesicWitnessNeed::Yes,
             },
             &mut GeodesicSegmentScratch::default(),
