@@ -39,6 +39,56 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/matrix.py "$PACKAGE"
 
+  source:
+    needs: resolve
+    if: inputs.package == 'gometry'
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE: ${{ inputs.package }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
+          cache-key: ${{ env.PACKAGE }}-source
+          cache-on-failure: false
+          cache-save-if: false
+          rustflags: ""
+
+      - name: Install cargo-about
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-about@0.8.4
+
+      - name: Install Maturin
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv tool run --from maturin==1.14.1 maturin --version
+
+      - name: Stage source distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gometry-source"
+          python3 gometry/tools/wheel_smoke.py \
+            --stage-sdist "$RUNNER_TEMP/gometry-source"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gometry-source
+          path: ${{ runner.temp }}/gometry-source
+          if-no-files-found: error
+
   test-rust:
     needs: resolve
     if: needs.resolve.outputs.is-rusty == 'true'
@@ -207,7 +257,11 @@ jobs:
             python tools/check.py
 
   build:
-    needs: resolve
+    needs: [resolve, source]
+    if: >-
+      always()
+      && needs.resolve.result == 'success'
+      && (inputs.package != 'gometry' || needs.source.result == 'success')
     strategy:
       fail-fast: false
       matrix:
@@ -223,12 +277,18 @@ jobs:
       CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
       CIBW_ENVIRONMENT_PASS_LINUX: ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN MATURIN_PEP517_ARGS RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH
-      CIBW_TEST_COMMAND: python -c "import ${{ needs.resolve.outputs.import-name }}"
+      CIBW_TEST_COMMAND: >-
+        ${{ inputs.package == 'gometry'
+            && 'python "{project}/tools/wheel_smoke.py" --installed'
+            || format('python -c "import {0}"', needs.resolve.outputs.import-name) }}
       # Wheels built here are what publish. maturin's PEP 517 default is `--release`,
       # which is now the fast local profile (thin LTO, unstripped) — publishing that
       # would ship a ~5x larger artifact. `release-dist` is the published configuration:
       # fat LTO, one codegen unit, DWARF dropped, symbol table kept for named frames.
-      MATURIN_PEP517_ARGS: "--profile release-dist"
+      MATURIN_PEP517_ARGS: >-
+        ${{ inputs.package == 'gometry'
+            && '--locked --profile release-dist'
+            || '--profile release-dist' }}
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
@@ -241,6 +301,13 @@ jobs:
         with:
           submodules: true
           persist-credentials: false
+
+      - name: Download staged gometry source
+        if: inputs.package == 'gometry'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gometry-source
+          path: source
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -261,10 +328,6 @@ jobs:
         shell: bash
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
-      - name: Rewrite README for PyPI
-        shell: bash
-        run: python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "${{ github.ref_name }}"
-
       - name: Install Rust toolchain
         if: needs.resolve.outputs.is-rusty == 'true'
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
@@ -275,6 +338,42 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-targets: ${{ runner.os != 'Linux' }}
           rustflags: ""
+
+      - name: Rewrite README for PyPI
+        if: inputs.package != 'gometry'
+        shell: bash
+        run: python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "${{ github.ref_name }}"
+
+      - name: Verify staged gometry source
+        if: inputs.package == 'gometry'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          sdists=(source/gometry-*.tar.gz)
+          if [ "${#sdists[@]}" -ne 1 ]; then
+            echo "expected exactly one staged gometry sdist" >&2
+            exit 1
+          fi
+          python3 gometry/tools/wheel_smoke.py \
+            --verify-source "${sdists[0]}" source/gometry-source-manifest.json
+
+      - name: Plan gometry wheels
+        if: inputs.package == 'gometry'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          sdists=(source/gometry-*.tar.gz)
+          if [ "${#sdists[@]}" -ne 1 ]; then
+            echo "expected exactly one staged gometry sdist" >&2
+            exit 1
+          fi
+          uv tool run \
+            --from "cibuildwheel==$CIBUILDWHEEL_VERSION" cibuildwheel \
+            --print-build-identifiers "${sdists[0]}" \
+            > "$RUNNER_TEMP/gometry-identifiers.txt"
+          test -s "$RUNNER_TEMP/gometry-identifiers.txt"
 
       - name: Install cargo-about
         if: needs.resolve.outputs.is-rusty == 'true'
@@ -299,7 +398,11 @@ jobs:
           fi
 
           sccache_dir=$(dirname "$SCCACHE_PATH")
-          test_command="python -c \"import ${{ needs.resolve.outputs.import-name }}\""
+          if [ "$PACKAGE" = gometry ]; then
+            test_command='python "{project}/tools/wheel_smoke.py" --installed'
+          else
+            test_command='python -c "import ${{ needs.resolve.outputs.import-name }}"'
+          fi
           if [ "$SCCACHE_GHA_RW_MODE" = READ_WRITE ]; then
             test_command+=" && /opt/sccache/sccache --show-stats"
           fi
@@ -310,7 +413,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Generate license files
-        if: needs.resolve.outputs.is-release == 'true'
+        if: needs.resolve.outputs.is-release == 'true' && inputs.package != 'gometry'
         shell: bash
         run: |
           set -euo pipefail
@@ -328,24 +431,114 @@ jobs:
           if [ -z "${CIBW_ENABLE}" ]; then
             unset CIBW_ENABLE
           fi
+          package_path="$PACKAGE"
+          if [ "$PACKAGE" = gometry ]; then
+            shopt -s nullglob
+            sdists=(source/gometry-*.tar.gz)
+            if [ "${#sdists[@]}" -ne 1 ]; then
+              echo "expected exactly one staged gometry sdist" >&2
+              exit 1
+            fi
+            package_path="${sdists[0]}"
+          fi
           uv tool run \
             --from "cibuildwheel==$CIBUILDWHEEL_VERSION" cibuildwheel \
             --output-dir dist \
-            "$PACKAGE"
+            "$package_path"
 
       - name: Build package
         if: needs.resolve.outputs.is-rusty == 'false'
         shell: bash
         run: uv build -o dist "$PACKAGE"
 
+      - name: Write gometry wheel receipt
+        if: inputs.package == 'gometry'
+        env:
+          GOMETRY_BUILD_RUNNER: ${{ matrix.runner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 gometry/tools/wheel_smoke.py \
+            --write-wheel-receipt \
+            dist "$RUNNER_TEMP/gometry-identifiers.txt" source/gometry-source-manifest.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: inputs.package == 'gometry'
+        with:
+          name: gometry-wheels-${{ matrix.runner }}
+          path: dist
+          if-no-files-found: error
+
       - name: Build sdist
-        if: needs.resolve.outputs.is-rusty == 'true' && matrix.runner == 'ubuntu-latest'
+        if: needs.resolve.outputs.is-rusty == 'true' && matrix.runner == 'ubuntu-latest' && inputs.package != 'gometry'
         shell: bash
         run: uv build --sdist -o dist "$PACKAGE"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && inputs.package != 'gometry'
         with:
           name: dist-${{ env.PACKAGE }}-${{ matrix.runner }}
+          path: dist
+          if-no-files-found: error
+
+  aggregate:
+    needs: [resolve, source, build]
+    if: >-
+      always()
+      && inputs.package == 'gometry'
+      && needs.resolve.result == 'success'
+      && needs.source.result == 'success'
+      && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: ${{ needs.resolve.outputs.rust-toolchain }}
+          cache-key: gometry-aggregate
+          cache-on-failure: false
+          cache-save-if: false
+          rustflags: ""
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gometry-source
+          path: source
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: gometry-wheels-*
+          path: runners
+          merge-multiple: false
+
+      - name: Validate and assemble gometry distributions
+        shell: bash
+        env:
+          EXPECTED_RUNNERS: ${{ needs.resolve.outputs.build-runners }}
+        run: |
+          set -euo pipefail
+          python3 - "$EXPECTED_RUNNERS" "$RUNNER_TEMP/gometry-runners.json" <<'PY'
+          import json
+          import sys
+          runners = json.loads(sys.argv[1])
+          with open(sys.argv[2], 'w', encoding='utf-8') as stream:
+              json.dump({'runners': runners}, stream)
+          PY
+          python3 gometry/tools/wheel_smoke.py \
+            --assemble-release dist source runners \
+            --expected-runners "$RUNNER_TEMP/gometry-runners.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: gometry-release-distributions
           path: dist
           if-no-files-found: error
