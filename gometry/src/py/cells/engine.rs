@@ -78,7 +78,7 @@ pub(super) struct BoundingQueryRegion {
 pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<BoundingQueryRegion> {
     use crate::geometry::Bounds;
     if let Some(geometry) = exact_geometry(value) {
-        let admitted = admit_grid_geometry(value.py(), geometry)?;
+        let admitted = admit_grid_geometry(geometry)?;
         let shape = admitted.shape.as_ref();
         let bounds = if shape.crosses_antimeridian() {
             crate::geometry::geographic_crossing_bounds(shape)
@@ -101,13 +101,12 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
     }
     if let Some(array) = exact_geometry_array(value) {
         let array = array.clone();
-        let (result, execution) = value.py().detach(move || {
+        let result = value.py().detach(move || {
             let admission = match GridSourceAdmission::new_for_array(&array) {
                 Ok(admission) => admission,
-                Err(error) => return (Err(GridCoverError::Native(error)), None),
+                Err(error) => return Err(GridCoverError::Native(error)),
             };
-            let execution = admission.execution();
-            let result = admission.admit_array_shapes(&array).and_then(|shapes| {
+            admission.admit_array_shapes(&array).and_then(|shapes| {
                 let mut nonempty = Vec::new();
                 for shape in shapes {
                     let Some(shape) = shape? else {
@@ -118,12 +117,8 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
                     }
                 }
                 Ok::<_, GridCoverError>(nonempty)
-            });
-            (result, execution)
+            })
         });
-        if let Some(execution) = execution {
-            crate::py::crs::drain_accuracy_warning(value.py(), &execution)?;
-        }
         let mut shapes = result?;
         let shape = match shapes.len() {
             0 => {
@@ -204,20 +199,15 @@ pub(crate) fn grid_cover_dispatch<'py>(
 ) -> PyResult<Py<PyAny>> {
     if let Some(geometry) = exact_geometry(geom) {
         let geometry = geometry.clone();
-        let (result, execution) = py.detach(move || {
+        let result = py.detach(move || {
             let admission = match GridSourceAdmission::new(&geometry.frame) {
                 Ok(admission) => admission,
-                Err(error) => return (Err(GridCoverError::Native(error)), None),
+                Err(error) => return Err(GridCoverError::Native(error)),
             };
-            let execution = admission.execution();
-            let result = admission
+            admission
                 .admit_geometry(&geometry)
-                .and_then(|admitted| build(&admitted, max_cells));
-            (result, execution)
+                .and_then(|admitted| build(&admitted, max_cells))
         });
-        if let Some(execution) = execution {
-            crate::py::crs::drain_accuracy_warning(py, &execution)?;
-        }
         let coverage = result?;
         return PyCellArray::from_ids(kind, coverage).into_py_any(py);
     }
@@ -225,13 +215,12 @@ pub(crate) fn grid_cover_dispatch<'py>(
         return Err(expected_geometry_or_array());
     };
     let array = array.clone();
-    let (result, execution) = py.detach(move || {
+    let result = py.detach(move || {
         let admission = match GridSourceAdmission::new_for_array(&array) {
             Ok(admission) => admission,
-            Err(error) => return (Err(GridCoverError::Native(error)), None),
+            Err(error) => return Err(GridCoverError::Native(error)),
         };
-        let execution = admission.execution();
-        let result = admission.admit_array_shapes(&array).and_then(|shapes| {
+        admission.admit_array_shapes(&array).and_then(|shapes| {
             let mut admitted = Vec::new();
             for (logical, shape) in shapes.into_iter().enumerate() {
                 let geometry = match shape {
@@ -247,12 +236,8 @@ pub(crate) fn grid_cover_dispatch<'py>(
                 crate::try_push_vec(&mut admitted, geometry)?;
             }
             cover_array_rows(admitted, max_cells, build)
-        });
-        (result, execution)
+        })
     });
-    if let Some(execution) = execution {
-        crate::py::crs::drain_accuracy_warning(py, &execution)?;
-    }
     let rows = result?;
     crate::py::vectors::Groups::from_cell_rows(kind, rows)?.into_py_any(py)
 }

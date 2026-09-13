@@ -80,7 +80,7 @@ fn cell_from_lonlat_or_point<C>(
         return from_xy(lon, lat);
     }
     if let Some(geometry) = exact_geometry(lon) {
-        let admitted = admit_grid_geometry(lon.py(), geometry)?;
+        let admitted = admit_grid_geometry(geometry)?;
         let shape = admitted.shape.as_ref();
         let (lon, lat) = point_xy(shape)?;
         return from_xy(lon, lat);
@@ -225,7 +225,7 @@ pub(crate) fn construct_tile(
                     "zoom with value requires a Point geometry; use lon=/lat=/zoom= for geographic coordinates",
                 )
             })?;
-            let admitted = admit_grid_geometry(value.py(), geometry)?;
+            let admitted = admit_grid_geometry(geometry)?;
             let shape = admitted.shape.as_ref();
             let (lon, lat) = point_xy(shape)?;
             let zoom = parse_tile_zoom(zoom)?;
@@ -306,12 +306,7 @@ where
             ));
         }
         let admission = GridSourceAdmission::new_for_array(array).map_err(PyErr::from)?;
-        let execution = admission.execution();
-        let points = admission.admit_points(array);
-        if let Some(execution) = execution {
-            crate::py::crs::discard_accuracy_warning(&execution);
-        }
-        let points = points.map_err(PyErr::from)?;
+        let points = admission.admit_points(array).map_err(PyErr::from)?;
         let depth = I64Param::parse(depth, depth_kw, points.len())?;
         let mut ids = Vec::new();
         let mut missing = Vec::new();

@@ -32,15 +32,6 @@ pub(crate) fn drain_accuracy_warning(
     Ok(())
 }
 
-/// Consume a diagnostic produced by an internal grid-source reprojection.
-///
-/// Grid constructors already own the operation and do not expose its
-/// intermediate transform; leaving the diagnostic queued would make it appear
-/// on a later unrelated public transform.
-pub(crate) fn discard_accuracy_warning(execution: &crs::TransformExecution) {
-    let _ = execution.take_diagnostic();
-}
-
 /// Information about a transformation grid.
 ///
 /// Parameters

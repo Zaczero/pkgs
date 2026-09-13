@@ -88,6 +88,158 @@ def test_internal_transform_diagnostic_does_not_leak_to_next_call() -> None:
 
 
 @pytest.mark.parametrize(
+    'operation',
+    [
+        pytest.param(
+            lambda _point, values: gm.h3_cells(values, resolution=5),
+            id='h3-cells-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.s2_cells(values, level=5),
+            id='s2-cells-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.geohash_cells(values, precision=5),
+            id='geohash-cells-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.tile_cells(values, zoom=5),
+            id='tile-cells-array',
+        ),
+        pytest.param(
+            lambda point, _values: gm.H3Cell(point, resolution=5),
+            id='h3-constructor',
+        ),
+        pytest.param(
+            lambda point, _values: gm.S2Cell(point, level=5),
+            id='s2-constructor',
+        ),
+        pytest.param(
+            lambda point, _values: gm.GeohashCell(point, precision=5),
+            id='geohash-constructor',
+        ),
+        pytest.param(
+            lambda point, _values: gm.Tile(point, zoom=5),
+            id='tile-constructor',
+        ),
+        pytest.param(
+            lambda point, _values: gm.h3_cover(point, resolution=1),
+            id='h3-cover',
+        ),
+        pytest.param(
+            lambda point, _values: gm.s2_cover(point, level=1),
+            id='s2-cover',
+        ),
+        pytest.param(
+            lambda point, _values: gm.geohash_cover(point, precision=1),
+            id='geohash-cover',
+        ),
+        pytest.param(
+            lambda point, _values: gm.tile_cover(point, zoom=1),
+            id='tile-cover',
+        ),
+        pytest.param(
+            lambda _point, values: gm.h3_cover(values, resolution=1),
+            id='h3-cover-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.s2_cover(values, level=1),
+            id='s2-cover-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.geohash_cover(values, precision=1),
+            id='geohash-cover-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.tile_cover(values, zoom=1),
+            id='tile-cover-array',
+        ),
+        pytest.param(
+            lambda point, _values: gm.h3_bounding_cell(point),
+            id='h3-bounding-cell',
+        ),
+        pytest.param(
+            lambda point, _values: gm.s2_bounding_cell(point),
+            id='s2-bounding-cell',
+        ),
+        pytest.param(
+            lambda point, _values: gm.geohash_bounding_cell(point),
+            id='geohash-bounding-cell',
+        ),
+        pytest.param(
+            lambda point, _values: gm.tile_bounding_cell(point),
+            id='tile-bounding-cell',
+        ),
+        pytest.param(
+            lambda _point, values: gm.h3_bounding_cell(values),
+            id='h3-bounding-cell-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.s2_bounding_cell(values),
+            id='s2-bounding-cell-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.geohash_bounding_cell(values),
+            id='geohash-bounding-cell-array',
+        ),
+        pytest.param(
+            lambda _point, values: gm.tile_bounding_cell(values),
+            id='tile-bounding-cell-array',
+        ),
+    ],
+)
+def test_internal_grid_operations_consume_reprojection_diagnostics(operation) -> None:
+    point = gm.Point(-104.0, 40.0, crs=4267)
+    values = gm.GeometryArray([point])
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter('always')
+        operation(point, values)
+        gm.Point(0.0, 0.0, crs=4326).to_crs(3857)
+    assert not [item for item in seen if item.category is gm.AccuracyWarning]
+
+
+def test_internal_grid_error_consumes_reprojection_diagnostic() -> None:
+    values = gm.GeometryArray(
+        [
+            gm.Point(-104.0, 40.0, crs=4267),
+            gm.Point(-104.0, 89.0, crs=4267),
+        ]
+    )
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter('always')
+        with pytest.raises(gm.InvalidGeometryError, match='square Web Mercator tile grid'):
+            gm.tile_cells(values, zoom=5)
+        gm.Point(0.0, 0.0, crs=4326).to_crs(3857)
+    assert not [item for item in seen if item.category is gm.AccuracyWarning]
+
+
+def test_internal_transform_error_preserves_error_and_consumes_diagnostic() -> None:
+    values = gm.GeometryArray(
+        [
+            gm.Point(-104.0, 40.0, crs=4267),
+            gm.Point(-104.0, 91.0, crs=4267),
+        ]
+    )
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter('always')
+        with pytest.raises(gm.InvalidGeometryError, match='invalid longitude/latitude'):
+            gm.tile_cells(values, zoom=5)
+        gm.Point(0.0, 0.0, crs=4326).to_crs(3857)
+    assert not [item for item in seen if item.category is gm.AccuracyWarning]
+
+
+def test_internal_grid_diagnostic_does_not_survive_cache_lifecycle() -> None:
+    point = gm.Point(-104.0, 40.0, crs=4267)
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter('always')
+        gm.H3Cell(point, resolution=5)
+        gm.crs_clear_cache()
+        gm.crs_reset()
+        gm.Point(0.0, 0.0, crs=4326).to_crs(3857)
+    assert not [item for item in seen if item.category is gm.AccuracyWarning]
+
+
+@pytest.mark.parametrize(
     'transform',
     [
         lambda: gm.crs_transform(4267, 4326, -104.0, 40.0),
@@ -245,3 +397,39 @@ def test_free_threaded_grid_diagnostics_do_not_cross_threads() -> None:
         assert message is not None
         expected = 'us_noaa_conus.tif' if index % 2 == 0 else 'ca_nrc_ntv2_0.tif'
         assert expected in message
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
+    reason='requires free-threaded CPython',
+)
+def test_free_threaded_internal_grid_diagnostics_stay_owned() -> None:
+    assert sys._is_gil_enabled() is False
+    barrier = threading.Barrier(8)
+    warning_counts: list[int | None] = [None] * 8
+
+    def worker(index: int) -> None:
+        point = gm.Point(
+            -104.0 if index % 2 == 0 else -100.0,
+            40.0 if index % 2 == 0 else 55.0,
+            crs=4267,
+        )
+        barrier.wait()
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter('always')
+            if index % 2 == 0:
+                gm.H3Cell(point, resolution=5)
+            else:
+                gm.s2_cells(gm.GeometryArray([point]), level=5)
+            gm.Point(0.0, 0.0, crs=4326).to_crs(3857)
+        warning_counts[index] = sum(
+            item.category is gm.AccuracyWarning for item in seen
+        )
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert warning_counts == [0] * 8

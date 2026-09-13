@@ -359,10 +359,6 @@ impl GridSourceAdmission {
         }
     }
 
-    pub(crate) fn execution(&self) -> Option<crs::TransformExecution> {
-        self.transformer.as_ref().map(crs::TransformPlan::execution)
-    }
-
     fn transform_shapes(
         &self,
         shapes: &[&Shape],
@@ -393,7 +389,7 @@ impl GridSourceAdmission {
     }
 
     pub(crate) fn admit_geometry(
-        &self,
+        self,
         geometry: &PyGeometry,
     ) -> Result<PyGeometry, GridCoverError> {
         let shape = if let Some(transformer) = &self.transformer {
@@ -405,7 +401,7 @@ impl GridSourceAdmission {
     }
 
     pub(crate) fn admit_array_shapes(
-        &self,
+        self,
         array: &PyGeometryArray,
     ) -> Result<Vec<Result<Option<Shape>, GridCoverError>>, GridCoverError> {
         let mut source_rows = Vec::new();
@@ -455,7 +451,7 @@ impl GridSourceAdmission {
     }
 
     pub(crate) fn admit_points(
-        &self,
+        self,
         array: &PyGeometryArray,
     ) -> Result<Vec<Option<Point>>, GridCoverError> {
         let mut output = Vec::new();
@@ -530,16 +526,21 @@ impl GridSourceAdmission {
     }
 }
 
-/// Admit one scalar grid source at a Python boundary and drain its diagnostic
-/// once, including when the native admission fails.
-pub(crate) fn admit_grid_geometry(py: Python<'_>, geometry: &PyGeometry) -> PyResult<PyGeometry> {
-    let admission = GridSourceAdmission::new(&geometry.frame).map_err(PyErr::from)?;
-    let execution = admission.execution();
-    let result = admission.admit_geometry(geometry);
-    if let Some(execution) = execution {
-        crate::py::crs::drain_accuracy_warning(py, &execution)?;
+impl Drop for GridSourceAdmission {
+    fn drop(&mut self) {
+        // Internal grid operations own this reprojection. Consume its
+        // execution diagnostic when the admission operation ends, including
+        // native errors and early returns; it is never a public warning.
+        if let Some(transformer) = &self.transformer {
+            let _ = transformer.execution().take_diagnostic();
+        }
     }
-    result.map_err(PyErr::from)
+}
+
+/// Admit one scalar grid source at its internal operation boundary.
+pub(crate) fn admit_grid_geometry(geometry: &PyGeometry) -> PyResult<PyGeometry> {
+    let admission = GridSourceAdmission::new(&geometry.frame).map_err(PyErr::from)?;
+    admission.admit_geometry(geometry).map_err(PyErr::from)
 }
 
 /// Fallible identity collect of cover cell ids. Prior ids drop before the
@@ -666,6 +667,7 @@ pub(crate) fn rect_cell_array_for<S: RectCoverSpec>(
 #[cfg(test)]
 mod tests {
     use super::{GridCoverError, GridSourceAdmission, SortedCells, try_collect_cover_ids};
+    use crate::Frame;
     use crate::error::{ErrorKind, ResourceError};
     use crate::geographic::{GeographicFrame, ScalarGeographicView};
     use crate::geometry::{GeometryErrorKind, Point, Shape};
@@ -719,6 +721,34 @@ mod tests {
                 .contains("invalid longitude/latitude (0, 95)"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn internal_admission_drop_consumes_live_transform_diagnostic() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::crs::clear_cache();
+        let geometry = crate::PyGeometry::with_frame(
+            Shape::Point(Point::new_raw_xy(-104.0, 40.0)),
+            Frame::Crs(crate::boundary::crs_arc_static("EPSG:4267")),
+        )
+        .unwrap();
+        let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
+        let execution = admission
+            .transformer
+            .as_ref()
+            .expect("tagged source has a transform")
+            .execution();
+
+        admission
+            .transformer
+            .as_ref()
+            .expect("tagged source has a transform")
+            .transform_shape(geometry.shape.shape())
+            .unwrap();
+        assert!(execution.diagnostic().is_some());
+
+        drop(admission);
+        assert!(execution.diagnostic().is_none());
     }
 
     #[test]

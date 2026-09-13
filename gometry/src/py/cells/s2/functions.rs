@@ -147,7 +147,7 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
 
     // Kernel routes single-point → L30 leaf and multi-point/region → R18 bbox.
     if let Some(geometry) = exact_geometry(value) {
-        let admitted = admit_grid_geometry(value.py(), geometry)?;
+        let admitted = admit_grid_geometry(geometry)?;
         let shape = admitted.shape.as_ref();
         if shape.is_empty() {
             return Err(InvalidGeometryError::new_err(
@@ -158,13 +158,12 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
     }
     if let Some(array) = exact_geometry_array(value) {
         let array = array.clone();
-        let (result, execution) = value.py().detach(move || {
+        let result = value.py().detach(move || {
             let admission = match GridSourceAdmission::new_for_array(&array) {
                 Ok(admission) => admission,
-                Err(error) => return (Err(GridCoverError::Native(error)), None),
+                Err(error) => return Err(GridCoverError::Native(error)),
             };
-            let execution = admission.execution();
-            let result = admission.admit_array_shapes(&array).and_then(|shapes| {
+            admission.admit_array_shapes(&array).and_then(|shapes| {
                 let mut parts = Vec::new();
                 for shape in shapes {
                     let Some(shape) = shape? else {
@@ -175,12 +174,8 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
                     }
                 }
                 Ok::<_, GridCoverError>(parts)
-            });
-            (result, execution)
+            })
         });
-        if let Some(execution) = execution {
-            crate::py::crs::drain_accuracy_warning(value.py(), &execution)?;
-        }
         let mut parts = result?;
         if parts.is_empty() {
             return Err(InvalidGeometryError::new_err(
