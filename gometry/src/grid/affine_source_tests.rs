@@ -5,7 +5,7 @@ use h3o::Resolution;
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape, is_axis_aligned_rectangle};
 use crate::grid::affine_source::{
     CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactParentParameter,
-    ExactPlanarCoordinates, ExactPlanarPoint, ExactRatio, FULL_TURN_DEGREES,
+    ExactPlanarCoordinates as _, ExactPlanarPoint, ExactRatio, FULL_TURN_DEGREES,
     GeographicCoverageSource, GridPointClass, LiftKind, LiftedChain, LiftedLongitude,
     ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass, SourceEdgeKey,
     SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge, authority_edge_proxy_envelopes,

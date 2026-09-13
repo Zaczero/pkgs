@@ -394,9 +394,9 @@ mod tests {
             };
             let (a, b, c) = (p(&mut next), p(&mut next), p(&mut next));
             if agree(a, b, c) {
-                certified += 1
+                certified += 1;
             } else {
-                declined += 1
+                declined += 1;
             }
         }
         assert!(

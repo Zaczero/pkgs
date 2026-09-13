@@ -1,4 +1,5 @@
 use crate::geometry::arrangement::*;
+use crate::geometry::overlay::self_node_segments_sourced;
 use crate::geometry::{predicates, *};
 
 fn loop_segments(points: &[(f64, f64)]) -> Vec<Segment> {
@@ -415,8 +416,7 @@ fn connected_chord_bridge_dfs_undo_keeps_south_body() {
         [0, 0],
     ));
     let sources: Vec<Segment> = raw.iter().map(|entry| entry.0).collect();
-    let (atomic, provenance) =
-        crate::geometry::overlay::self_node_segments_sourced(sources).expect("noded sources");
+    let (atomic, provenance) = self_node_segments_sourced(sources).expect("noded sources");
     let arrangement = Arrangement::<[i32; 2]>::build::<true>(&atomic, |piece| {
         let mut weight = [0, 0];
         for &(ordinal, reversed) in provenance.owners(piece) {

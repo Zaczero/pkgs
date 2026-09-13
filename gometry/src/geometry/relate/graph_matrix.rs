@@ -350,29 +350,28 @@ fn try_cartesian_polygon_line_relate_with_graphs(
     _left_graph: Option<&TopologyGraph>,
     _right_graph: Option<&TopologyGraph>,
 ) -> Result<Option<De9im>> {
-    Ok(match (left.shape(), right.shape()) {
-        (Shape::Polygon(polygon), Shape::LineString(line)) => {
-            if !polygon_has_nondegenerate_area(polygon)
-                || !line_has_nonzero_segment(line)
-                || left.validate_cached()?.is_some()
-                || right.validate_cached()?.is_some()
-            {
-                return Ok(None);
-            }
-            Some(exact_cartesian_relate(left.shape(), right.shape())?)
-        },
-        (Shape::LineString(line), Shape::Polygon(polygon)) => {
-            if !polygon_has_nondegenerate_area(polygon)
-                || !line_has_nonzero_segment(line)
-                || left.validate_cached()?.is_some()
-                || right.validate_cached()?.is_some()
-            {
-                return Ok(None);
-            }
-            Some(exact_cartesian_relate(left.shape(), right.shape())?)
-        },
-        _ => None,
-    })
+    let (polygon, line) = if let Shape::Polygon(polygon) = left.shape() {
+        let Shape::LineString(line) = right.shape() else {
+            return Ok(None);
+        };
+        (polygon, line)
+    } else {
+        let Shape::LineString(line) = left.shape() else {
+            return Ok(None);
+        };
+        let Shape::Polygon(polygon) = right.shape() else {
+            return Ok(None);
+        };
+        (polygon, line)
+    };
+    if !polygon_has_nondegenerate_area(polygon)
+        || !line_has_nonzero_segment(line)
+        || left.validate_cached()?.is_some()
+        || right.validate_cached()?.is_some()
+    {
+        return Ok(None);
+    }
+    Ok(Some(exact_cartesian_relate(left.shape(), right.shape())?))
 }
 
 #[cfg(test)]

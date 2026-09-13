@@ -17,6 +17,8 @@
 use super::De9im;
 use super::de9im::Loc;
 use crate::geometry::{CompiledPattern, Dimension};
+#[cfg(test)]
+use crate::predicates::engine::predicate_matrix_value;
 
 /// One cell's dimension, with `F` below every real dimension so intervals
 /// order naturally.
@@ -403,10 +405,7 @@ mod tests {
                         }
                         assert_eq!(
                             predicate_verdict(&interval, predicate, left.interior, right.interior),
-                            Some(crate::predicates::engine::predicate_matrix_value(
-                                &spec_of(predicate),
-                                matrix
-                            )),
+                            Some(predicate_matrix_value(&spec_of(predicate), matrix)),
                             "{predicate:?} on {}",
                             matrix.text()
                         );

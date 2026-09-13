@@ -3869,8 +3869,8 @@ mod tests {
                 start: XY::new(0.0, 0.0),
                 end: XY::new(4.0, 0.0),
             },
-            &[rectangle.clone()],
-            &[rectangle_xy.clone()],
+            std::slice::from_ref(&rectangle),
+            std::slice::from_ref(&rectangle_xy),
             &mut events,
         ));
         assert!(rounded_segment_covered_by_clip(
@@ -3878,8 +3878,8 @@ mod tests {
                 start: XY::new(0.5, 0.5),
                 end: XY::new(3.5, 3.5),
             },
-            &[rectangle.clone()],
-            &[rectangle_xy.clone()],
+            std::slice::from_ref(&rectangle),
+            std::slice::from_ref(&rectangle_xy),
             &mut events,
         ));
         assert!(!rounded_segment_covered_by_clip(

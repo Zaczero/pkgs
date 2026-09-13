@@ -352,7 +352,6 @@ pub(crate) fn full_noding_pass(segments: &[Segment]) -> Result<(Vec<Segment>, bo
     let NodingScan {
         events,
         overlaps_found,
-        ..
     } = full_noding_events(segments)?;
     Ok((split_by_events(segments, events), overlaps_found))
 }

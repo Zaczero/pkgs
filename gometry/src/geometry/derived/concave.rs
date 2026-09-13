@@ -355,7 +355,7 @@ mod tests {
         xy.iter().map(|&(x, y)| Point::new_raw_xy(x, y)).collect()
     }
 
-    fn assert_triangulation_error(error: crate::error::Error, message: &str) {
+    fn assert_triangulation_error(error: &crate::error::Error, message: &str) {
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::Triangulation(detail))
@@ -388,7 +388,7 @@ mod tests {
             hull: vec![0, 1, 2],
         };
         let error = extract_concave_boundary(&points, &triangulation, &[true]).unwrap_err();
-        assert_triangulation_error(error, "concave hull boundary has no live edge");
+        assert_triangulation_error(&error, "concave hull boundary has no live edge");
     }
 
     #[test]
@@ -400,14 +400,17 @@ mod tests {
             hull: vec![0, 1, 2, 3],
         };
         let error = extract_concave_boundary(&points, &triangulation, &[true, true]).unwrap_err();
-        assert_triangulation_error(error, "concave hull boundary vertices must have degree two");
+        assert_triangulation_error(
+            &error,
+            "concave hull boundary vertices must have degree two",
+        );
     }
 
     #[test]
     fn degenerate_extracted_boundary_is_an_error_after_triangulation() {
         let points = points(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
         let error = canonicalize_open_hull_indices(&points, vec![0, 1, 2]).unwrap_err();
-        assert_triangulation_error(error, "concave hull boundary is degenerate");
+        assert_triangulation_error(&error, "concave hull boundary is degenerate");
     }
 
     #[test]

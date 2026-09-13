@@ -1572,8 +1572,8 @@ mod tests {
         );
         let mut target_parts = Vec::new();
         for index in 0..9 {
-            let start = index as f64 * 10.0 / 9.0;
-            let end = (index + 1) as f64 * 10.0 / 9.0;
+            let start = f64::from(index) * 10.0 / 9.0;
+            let end = f64::from(index + 1) * 10.0 / 9.0;
             target_parts.extend([
                 line((start, 0.0), (end, 0.0)),
                 line((10.0, start), (10.0, end)),

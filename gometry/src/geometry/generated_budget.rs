@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn pairwise_limit_is_independent_of_generated_output_limit() {
-        assert!(ExpansionBudget::pairwise("frechet_distance", "densify", 1_000_000, 1_000).is_ok());
+        ExpansionBudget::pairwise("frechet_distance", "densify", 1_000_000, 1_000).unwrap();
         assert!(
             ExpansionBudget::pairwise("frechet_distance", "densify", 1_000_000, 1_001).is_err()
         );

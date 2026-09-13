@@ -124,6 +124,10 @@ impl ArealCells {
 
 #[cfg(test)]
 impl ArealSources {
+    #[expect(
+        clippy::float_cmp,
+        reason = "Ring closure is an exact coordinate identity, not an approximate comparison"
+    )]
     fn new(polygons: &[impl AsRef<Polygon>]) -> Result<Self> {
         let mut sources = Self {
             segments: Vec::new(),
@@ -6226,6 +6230,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "These assertions pin exact emitted ordinates, not approximate geometry"
+    )]
     fn selected_polygon_walks_keep_an_island_inside_a_hole_separate() {
         let case = run(&[
             seg(0.0, 0.0, 10.0, 0.0),
@@ -6374,7 +6382,7 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         let plan = faces
-            .boundary_plan(&vec![0, 1, 2, 3], &topology, &edges, &partition, &[false])
+            .boundary_plan(&[0, 1, 2, 3], &topology, &edges, &partition, &[false])
             .unwrap();
         let segments = plan.round_items(&partition, &topology).unwrap();
         let rotated: Vec<_> = segments
@@ -6544,7 +6552,7 @@ mod tests {
         let (topology, edges) = partition.local_topology().unwrap();
         let faces = partition.global_faces(&topology, &edges).unwrap();
         let plan = faces
-            .boundary_plan(&vec![0, 1, 2, 3], &topology, &edges, &partition, &[
+            .boundary_plan(&[0, 1, 2, 3], &topology, &edges, &partition, &[
                 false, false,
             ])
             .unwrap();
@@ -6566,9 +6574,7 @@ mod tests {
         );
         assert_eq!(plan.face_quotient, [0, 1]);
         let open = faces
-            .boundary_plan(&vec![0, 1, 2], &topology, &edges, &partition, &[
-                false, false,
-            ])
+            .boundary_plan(&[0, 1, 2], &topology, &edges, &partition, &[false, false])
             .unwrap();
         assert_eq!(open.face_quotient, [0, 0]);
         assert_eq!(
@@ -6581,6 +6587,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "This test distinguishes exact axis alignment from diagonal source spans"
+    )]
     fn omitted_atoms_merge_faces_and_preserve_isolated_hosts() {
         let case = run(&[
             seg(0.0, 0.0, 4.0, 0.0),

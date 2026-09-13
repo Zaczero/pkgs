@@ -528,7 +528,7 @@ mod sweep_entry_scratch {
     fn candidate_sweep_rejects_each_cold_allocation_above_brute() {
         let segments = crossing_segments(8);
         assert!(segments.len() > 6);
-        let (_, count) = cold_allocation_count({
+        let ((), count) = cold_allocation_count({
             let segments = segments.clone();
             move || {
                 let _ = for_each_candidate_pair(&segments, single_chain, |_, _| {
@@ -556,7 +556,7 @@ mod sweep_entry_scratch {
     fn overlapping_bounds_sweep_rejects_each_cold_allocation_above_brute() {
         let bounds = overlapping_boxes(8);
         assert!(bounds.len() > 6);
-        let (_, count) = cold_allocation_count({
+        let ((), count) = cold_allocation_count({
             let bounds = bounds.clone();
             move || {
                 let _ = for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(()))

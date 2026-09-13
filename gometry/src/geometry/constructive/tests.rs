@@ -2,11 +2,12 @@ use std::num::NonZeroU32;
 
 use crate::Positive;
 use crate::geometry::constructive::offset::{
-    OffsetEdge, offset_curve_points, offset_join, offset_line,
+    OffsetEdge, OffsetJoin, offset_curve_points, offset_join, offset_line,
 };
 use crate::geometry::constructive::walk::{
     WalkCount, WalkJoin, WalkPlan, close_xy_loop, convex_miter, materialize_walk, reflex_cross,
 };
+use crate::geometry::constructive::winding::raw_stroke_loop;
 use crate::geometry::constructive::{
     WalkJoinRule, reset_walk_plan_construction_count, walk_plan_construction_count, winding_buffer,
     winding_erosion, winding_stroke,
@@ -81,7 +82,7 @@ fn raw_over_limit_join_bevels_while_styled_miter_cuts() {
     let vertex = point(0.0, 0.0);
     assert!(matches!(
         offset_join(previous, current, vertex, 1.0),
-        crate::geometry::constructive::offset::OffsetJoin::Bevel { .. }
+        OffsetJoin::Bevel { .. }
     ));
     assert!(matches!(
         convex_miter(
@@ -258,7 +259,7 @@ fn stroke_reuses_each_validated_walk_plan_for_count_and_output() {
     // At distance 1 the inside offset reaches the bend endpoint and is
     // correctly demoted to an excursion; keep both leg crossings interior
     // so this fixture exercises the clean fast-path certificate.
-    let (columns, clean) = crate::geometry::constructive::winding::raw_stroke_loop(
+    let (columns, clean) = raw_stroke_loop(
         &chain,
         0.1,
         BufferCapStyle::Round,
@@ -355,16 +356,14 @@ fn raw_offset_unavailability_stays_empty_while_budget_errors_propagate() {
             .unwrap();
     let mut budget = ExpansionBudget::new("offset_curve", "quadrant_segments");
     budget.add(crate::geometry::GENERATED_ITEM_LIMIT).unwrap();
-    assert!(
-        offset_curve_points(
-            &line,
-            1.0,
-            WalkJoinRule::Arc,
-            NonZeroU32::new(1).unwrap(),
-            &mut budget,
-        )
-        .is_err()
-    );
+    offset_curve_points(
+        &line,
+        1.0,
+        WalkJoinRule::Arc,
+        NonZeroU32::new(1).unwrap(),
+        &mut budget,
+    )
+    .unwrap_err();
 }
 
 #[test]
@@ -1614,9 +1613,8 @@ mod winding_allocation_tests {
         assert!(allocations > 0, "construction must cross an owned boundary");
         for allowed in 0..allocations {
             let result = fail_allocations_after(allowed, &run);
-            let error = match result {
-                Err(error) => error,
-                Ok(_) => panic!("allocation rejection at prefix {allowed} returned Ok"),
+            let Err(error) = result else {
+                panic!("allocation rejection at prefix {allowed} returned Ok");
             };
             assert_resource(&error);
         }

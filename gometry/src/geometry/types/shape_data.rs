@@ -635,17 +635,16 @@ mod footprint_tests {
 
         let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
         assert!(plan.metric.get().is_none());
-        let error = match fail_allocations_after(0, || plan.distance_parts()) {
-            Ok(_) => panic!("distance parts allocation unexpectedly succeeded"),
-            Err(error) => error,
+        let Err(error) = fail_allocations_after(0, || plan.distance_parts()) else {
+            panic!("distance parts allocation unexpectedly succeeded");
         };
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Allocation)
         ));
         assert!(plan.metric.get().is_none());
-        let first = plan.distance_parts().expect("retry after rejection") as *const _;
-        let second = plan.distance_parts().expect("cached distance parts") as *const _;
+        let first = std::ptr::from_ref(plan.distance_parts().expect("retry after rejection"));
+        let second = std::ptr::from_ref(plan.distance_parts().expect("cached distance parts"));
         assert_eq!(first, second);
         assert!(std::ptr::eq(
             plan.metric.get().expect("published sidecar").as_ref(),
@@ -661,9 +660,8 @@ mod footprint_tests {
         let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
         plan.metric().expect("publish metric sidecar");
         assert!(plan.metric.get().expect("sidecar").distance.get().is_none());
-        let error = match fail_allocations_after(0, || plan.distance_parts()) {
-            Ok(_) => panic!("nested distance parts allocation unexpectedly succeeded"),
-            Err(error) => error,
+        let Err(error) = fail_allocations_after(0, || plan.distance_parts()) else {
+            panic!("nested distance parts allocation unexpectedly succeeded");
         };
         assert!(matches!(
             error.kind(),
@@ -677,8 +675,8 @@ mod footprint_tests {
                 .get()
                 .is_none()
         );
-        let first = plan.distance_parts().expect("retry after rejection") as *const _;
-        let second = plan.distance_parts().expect("cached distance parts") as *const _;
+        let first = std::ptr::from_ref(plan.distance_parts().expect("retry after rejection"));
+        let second = std::ptr::from_ref(plan.distance_parts().expect("cached distance parts"));
         assert_eq!(first, second);
     }
 }

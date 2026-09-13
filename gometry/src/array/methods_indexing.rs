@@ -1067,6 +1067,44 @@ fn unchanged_rows_after_replacements(
     Ok(unchanged)
 }
 
+impl PyGeometryArray {
+    /// Dense fill from a scalar shape: packed columns stay column-native;
+    /// mixed storage patches only missing rows. Never stages `PyGeometry`.
+    fn fill_missing_with_shape(&self, _mask: &ValidityMask, fill: &Shape) -> PyResult<Self> {
+        let shapes = self
+            .row_operation()
+            .rows_with_missing(|| ())
+            .map(|row| match row {
+                ArrayRow::Missing { .. } => Ok(fill.clone()),
+                ArrayRow::Present(row) => row.row().with_shape(Clone::clone),
+            })
+            .collect::<crate::error::Result<Vec<_>>>()
+            .map_err(PyErr::from)?;
+        Ok(Self::from_shapes(shapes, self.frame.clone())?)
+    }
+
+    /// Dense fill from a row-aligned array: packed point×point stays columnar;
+    /// otherwise collect shapes only (no `PyGeometry` staging).
+    fn fill_missing_with_array(&self, _mask: &ValidityMask, fill: &Self) -> PyResult<Self> {
+        let shapes = self
+            .row_operation()
+            .rows_with_missing(|| ())
+            .zip(fill.row_operation().rows_with_missing(|| ()))
+            .map(|(left, right)| match left {
+                ArrayRow::Missing { .. } => match right {
+                    ArrayRow::Present(shape) => shape.row().with_shape(Clone::clone),
+                    ArrayRow::Missing { .. } => {
+                        unreachable!("required fill rows were checked present")
+                    },
+                },
+                ArrayRow::Present(shape) => shape.row().with_shape(Clone::clone),
+            })
+            .collect::<crate::error::Result<Vec<_>>>()
+            .map_err(PyErr::from)?;
+        Ok(Self::from_shapes(shapes, self.frame.clone())?)
+    }
+}
+
 #[cfg(test)]
 mod replacement_tests {
     use super::*;
@@ -1107,43 +1145,5 @@ mod replacement_tests {
         let result_plan = result.row_products.cached_prepared_plan(1).unwrap();
         assert!(Arc::ptr_eq(&source_plan, &result_plan));
         assert!(result.row_products.cached_prepared_plan(0).is_none());
-    }
-}
-
-impl PyGeometryArray {
-    /// Dense fill from a scalar shape: packed columns stay column-native;
-    /// mixed storage patches only missing rows. Never stages `PyGeometry`.
-    fn fill_missing_with_shape(&self, _mask: &ValidityMask, fill: &Shape) -> PyResult<Self> {
-        let shapes = self
-            .row_operation()
-            .rows_with_missing(|| ())
-            .map(|row| match row {
-                ArrayRow::Missing { .. } => Ok(fill.clone()),
-                ArrayRow::Present(row) => row.row().with_shape(Clone::clone),
-            })
-            .collect::<crate::error::Result<Vec<_>>>()
-            .map_err(PyErr::from)?;
-        Ok(Self::from_shapes(shapes, self.frame.clone())?)
-    }
-
-    /// Dense fill from a row-aligned array: packed point×point stays columnar;
-    /// otherwise collect shapes only (no `PyGeometry` staging).
-    fn fill_missing_with_array(&self, _mask: &ValidityMask, fill: &Self) -> PyResult<Self> {
-        let shapes = self
-            .row_operation()
-            .rows_with_missing(|| ())
-            .zip(fill.row_operation().rows_with_missing(|| ()))
-            .map(|(left, right)| match left {
-                ArrayRow::Missing { .. } => match right {
-                    ArrayRow::Present(shape) => shape.row().with_shape(Clone::clone),
-                    ArrayRow::Missing { .. } => {
-                        unreachable!("required fill rows were checked present")
-                    },
-                },
-                ArrayRow::Present(shape) => shape.row().with_shape(Clone::clone),
-            })
-            .collect::<crate::error::Result<Vec<_>>>()
-            .map_err(PyErr::from)?;
-        Ok(Self::from_shapes(shapes, self.frame.clone())?)
     }
 }

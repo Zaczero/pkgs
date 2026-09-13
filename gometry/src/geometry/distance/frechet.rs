@@ -171,7 +171,7 @@ impl FrechetDpScratch {
     }
 
     #[cfg(test)]
-    pub(crate) fn geodesic_capacity(&self) -> (usize, usize) {
+    pub(crate) const fn geodesic_capacity(&self) -> (usize, usize) {
         (
             self.geodesic_previous.capacity(),
             self.geodesic_current.capacity(),
