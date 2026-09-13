@@ -122,7 +122,7 @@ pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use constructive::vw_keep;
 pub(crate) use constructive::{
     SegmentPlacement, affine_about_origin_ordinate, densify_points_budgeted_with_placement,
-    point_buffer, rdp_keep, segmentize_points_budgeted, stable_affine_xy, stable_snap_ordinate,
+    rdp_keep, segmentize_points_budgeted, stable_affine_xy, stable_snap_ordinate,
     verify_planar_segmentize_output, verify_planar_segmentize_shape,
 };
 use constructive::{

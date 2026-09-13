@@ -408,6 +408,19 @@ def test_local_projection_metric_accepts_foot_inputs(op: str) -> None:
     assert lo <= magnitude <= hi, (op, magnitude, lo, hi)
 
 
+def test_minimum_bounding_radius_scales_exact_squared_radius_before_rounding() -> None:
+    """Meter conversion must not round the native radius before scaling."""
+    points = gm.MultiPoint([(0.0, 0.0), (1.0, 5.0)], crs=FOOT_CRS)
+    native = points.minimum_bounding_radius()
+    meters = points.minimum_bounding_radius(unit='meters')
+
+    # The exact value is sqrt(26) / 2 * the represented EPSG:2263
+    # foot-to-metre factor. Its correctly rounded binary64 spelling was
+    # computed independently; rounding sqrt(26) / 2 first lands one ULP low.
+    assert meters.hex() == '0x1.8ddf04f7f516fp-1'
+    assert meters.hex() != (native * 0.30480060960121924).hex()
+
+
 @pytest.mark.parametrize('op', LOCAL_OPS)
 def test_local_projection_metric_crs_free_rejects_unit_meters(op: str) -> None:
     """unit='meters' on a CRS-free local-projection op raises."""

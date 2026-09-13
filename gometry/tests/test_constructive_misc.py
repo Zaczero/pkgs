@@ -294,12 +294,11 @@ def test_minimum_bounding_radius_is_crs_aware_with_planar_escape() -> None:
     circle = points.minimum_bounding_circle()
     assert circle.crs == 'EPSG:4326'
     assert circle.geometry_type == 'Polygon'
-    polygon_radius = 0.5 / math.cos(math.pi / 64.0)
     assert points.minimum_bounding_circle(unit='planar').bounds == pytest.approx((
-        -polygon_radius,
-        0.5 - polygon_radius,
-        polygon_radius,
-        0.5 + polygon_radius,
+        -0.5,
+        0.0,
+        0.5,
+        1.0,
     ))
 
 

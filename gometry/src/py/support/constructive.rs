@@ -436,7 +436,14 @@ pub(crate) fn metric_minimum_bounding_radius(
 ) -> Result<f64> {
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
-            Ok(shape.minimum_bounding_radius()? * to_metre.get())
+            let points = shape.try_unique_xy_points()?;
+            if points.is_empty() {
+                return Ok(f64::NAN);
+            }
+            let circle = smallest_enclosing_circle(&points)?;
+            circle
+                .certified_disk(&points)?
+                .radius_in_scale(to_metre.get())
         },
         crate::crs::MetricModel::Geodesic {
             crs: geodesic_crs,
@@ -465,7 +472,7 @@ fn geodesic_minimum_bounding_radius(
         }),
         _ => {
             let circle = smallest_enclosing_circle(&points)?;
-            let center = circle.rounded_center(&points)?;
+            let center = circle.certified_disk(&points)?.center()?;
             crate::crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
                 let mut radius: f64 = 0.0;
                 for point in points {

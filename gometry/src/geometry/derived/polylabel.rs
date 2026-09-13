@@ -51,13 +51,24 @@ pub(crate) struct MinimumCircle {
     support: CircleSupport,
 }
 
-/// The public-value realization of a certified support.  This is deliberately
-/// separate from [`MinimumCircle`], whose only state is source support.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RoundedMinimumCircle {
-    pub(crate) center: Point,
-    pub(crate) radius: f64,
-    pub(crate) exact_zero_radius: bool,
+/// A source-certified disk retained in exact homogeneous form until it is
+/// emitted.
+///
+/// `center_x / center_w` and `center_y / center_w` are the exact center, and
+/// `radius_squared_numerator / radius_squared_denominator` is the exact
+/// squared radius. The source spelling is retained for the zero-radius
+/// publication; positive center and radius values are rounded only at their
+/// respective publication boundaries. No predicate below derives the disk
+/// from either one.
+#[derive(Debug)]
+pub(crate) struct CertifiedDisk {
+    center_x: ExactDyadic,
+    center_y: ExactDyadic,
+    center_w: ExactDyadic,
+    radius_squared_numerator: ExactDyadic,
+    radius_squared_denominator: ExactDyadic,
+    source_center: Option<Point>,
+    exact_zero_radius: bool,
 }
 
 impl MinimumCircle {
@@ -112,37 +123,145 @@ impl MinimumCircle {
         )
     }
 
-    pub(crate) fn rounded(self, points: &[Point]) -> Result<RoundedMinimumCircle> {
+    /// Materialize the exact disk only after the enclosing-support certificate
+    /// succeeds. This is the sole path from a support candidate to a disk.
+    pub(crate) fn certified_disk(self, points: &[Point]) -> Result<CertifiedDisk> {
+        if !self.certificate(points)? {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "minimum enclosing circle support certificate failed".into(),
+            )
+            .into());
+        }
         let (support, count) = self.support_xy(points);
-        let (center, radius, exact_zero_radius) = exact::round_support_circle(&support[..count])?;
-        // Preserve the source spelling for the zero-radius case.  Exact
+        let (
+            mut center_x,
+            mut center_y,
+            mut center_w,
+            radius_squared_numerator,
+            radius_squared_denominator,
+        ) = exact::try_support_circle_components(&support[..count])?;
+        // A positive homogeneous scale makes the edge half-plane formula
+        // below match the geometric CCW sign directly.
+        if center_w.sign() == ExactSign::Negative {
+            center_x = center_x.neg();
+            center_y = center_y.neg();
+            center_w = center_w.neg();
+        }
+        if center_w.is_zero() {
+            return Err(crate::geometry::GeometryErrorKind::ExactRatioZeroDenominator.into());
+        }
+        // Preserve the source spelling for the zero-radius case. Exact
         // mathematical zero has no sign, while the derived point is still a
         // source point and therefore retains its stored coordinate bits.
-        let center = if let CircleSupport::One(index) = self.support {
-            Point::new_raw_xy(points[index].x, points[index].y)
+        let source_center = if let CircleSupport::One(index) = self.support {
+            Some(Point::new_raw_xy(points[index].x, points[index].y))
         } else {
-            Point::new_raw_xy(center.x, center.y)
+            None
         };
-        Ok(RoundedMinimumCircle {
-            center,
-            radius,
+        let exact_zero_radius = radius_squared_numerator.is_zero();
+        Ok(CertifiedDisk {
+            center_x,
+            center_y,
+            center_w,
+            radius_squared_numerator,
+            radius_squared_denominator,
+            source_center,
             exact_zero_radius,
         })
     }
+}
 
-    pub(crate) fn rounded_radius(self, points: &[Point]) -> Result<f64> {
-        let (support, count) = self.support_xy(points);
-        exact::round_support_radius(&support[..count])
+impl CertifiedDisk {
+    pub(crate) fn center(&self) -> Result<Point> {
+        self.source_center.map_or_else(
+            || {
+                Ok(Point::new_raw_xy(
+                    exact::round_ratio(&self.center_x, &self.center_w)?,
+                    exact::round_ratio(&self.center_y, &self.center_w)?,
+                ))
+            },
+            Ok,
+        )
     }
 
-    pub(crate) fn rounded_center(self, points: &[Point]) -> Result<Point> {
-        let (support, count) = self.support_xy(points);
-        let center = exact::round_support_center(&support[..count])?;
-        if let CircleSupport::One(index) = self.support {
-            Ok(Point::new_raw_xy(points[index].x, points[index].y))
-        } else {
-            Ok(Point::new_raw_xy(center.x, center.y))
+    pub(crate) fn radius(&self) -> Result<f64> {
+        self.radius_in_scale(1.0)
+    }
+
+    pub(crate) const fn is_exact_zero(&self) -> bool {
+        self.exact_zero_radius
+    }
+
+    /// Round the exact radius after applying one represented planar unit
+    /// scale. Scaling the squared-radius numerator first avoids the
+    /// rounded-native-radius-then-scale double rounding route.
+    pub(crate) fn radius_in_scale(&self, to_metre: f64) -> Result<f64> {
+        let scale = ExactDyadic::try_from_f64(to_metre)?;
+        let scaled_numerator = self
+            .radius_squared_numerator
+            .try_product(&scale)?
+            .try_product(&scale)?;
+        exact::round_sqrt_ratio(&scaled_numerator, &self.radius_squared_denominator)
+    }
+
+    /// Whether a binary64 vertex is strictly outside this exact disk.
+    fn vertex_is_strictly_outside(&self, point: XY) -> Result<bool> {
+        let point_x = ExactDyadic::try_from_f64(point.x)?;
+        let point_y = ExactDyadic::try_from_f64(point.y)?;
+        let dx = self
+            .center_x
+            .try_clone()?
+            .try_subtract(point_x.try_product(&self.center_w)?)?;
+        let dy = self
+            .center_y
+            .try_clone()?
+            .try_subtract(point_y.try_product(&self.center_w)?)?;
+        let distance_squared = dx
+            .try_product(&dx)?
+            .try_add(dy.try_product(&dy)?)?
+            .try_product(&self.radius_squared_denominator)?;
+        let radius_squared = self
+            .radius_squared_numerator
+            .try_product(&self.radius_squared_denominator)?;
+        Ok(distance_squared.cmp(&radius_squared) == Ordering::Greater)
+    }
+
+    /// Whether a CCW binary64 edge has the exact disk on its left at a
+    /// distance at least the exact radius.
+    ///
+    /// With `center = (N_x/W, N_y/W)` and `r² = S/T`, let
+    /// `H = cross(b-a, N-W*a)`. The line is a valid disk half-plane exactly
+    /// when `H >= 0` and `T*H² >= S*W²*|b-a|²`.
+    fn ccw_edge_encloses(&self, left: XY, right: XY) -> Result<bool> {
+        let edge_x = exact_difference(right.x, left.x)?;
+        let edge_y = exact_difference(right.y, left.y)?;
+        let left_x = ExactDyadic::try_from_f64(left.x)?;
+        let left_y = ExactDyadic::try_from_f64(left.y)?;
+        let center_offset_x = self
+            .center_x
+            .try_clone()?
+            .try_subtract(left_x.try_product(&self.center_w)?)?;
+        let center_offset_y = self
+            .center_y
+            .try_clone()?
+            .try_subtract(left_y.try_product(&self.center_w)?)?;
+        let h = edge_x
+            .try_product(&center_offset_y)?
+            .try_subtract(edge_y.try_product(&center_offset_x)?)?;
+        if h.sign() == ExactSign::Negative {
+            return Ok(false);
         }
+        let edge_squared = edge_x
+            .try_product(&edge_x)?
+            .try_add(edge_y.try_product(&edge_y)?)?;
+        let left_side = self
+            .radius_squared_denominator
+            .try_product(&h.try_product(&h)?)?;
+        let right_side = self
+            .radius_squared_numerator
+            .try_product(&self.radius_squared_denominator)?
+            .try_product(&edge_squared)?;
+        Ok(left_side.cmp(&right_side) != Ordering::Less)
     }
 }
 
@@ -240,12 +359,6 @@ fn solve_enclosing_circle_order(
             }
         }
     }
-    if !circle.certificate(points)? {
-        return Err(crate::geometry::GeometryErrorKind::Invalid(
-            "minimum enclosing circle support certificate failed".into(),
-        )
-        .into());
-    }
     Ok(circle)
 }
 
@@ -254,7 +367,9 @@ fn solve_enclosing_circle_order(
 /// The move-to-front loop has expected linear work after a process-keyed
 /// Fisher-Yates/LCG order.  Every containment decision is exact in the stored
 /// binary64 source coordinates, so the result is independent of the input
-/// order and is not based on a normalized or rounded candidate.
+/// order and is not based on a normalized or rounded candidate. The returned
+/// support becomes a published disk only through `certified_disk`, which
+/// performs the independent all-source certificate.
 pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> Result<MinimumCircle> {
     if points.is_empty() {
         return Err(crate::geometry::GeometryErrorKind::Invalid(
@@ -327,7 +442,7 @@ fn circle_emission_error(error: crate::error::Error) -> crate::error::Error {
 
 fn certify_minimum_circle_polygon(
     output: &Shape,
-    source: &[Point],
+    disk: &CertifiedDisk,
     quadrant_segments: NonZeroU32,
 ) -> Result<()> {
     let Shape::Polygon(polygon) = output else {
@@ -388,7 +503,7 @@ fn certify_minimum_circle_polygon(
         let previous = open[(index + open.len() - 1) % open.len()];
         let current = open[index];
         let next = open[(index + 1) % open.len()];
-        let turn = exact::try_orient2d(previous, current, next)?;
+        let turn = exact::try_orient2d(previous, current, next).map_err(circle_emission_error)?;
         if turn == ExactSign::Zero {
             return Err(unrepresentable_minimum_circle());
         }
@@ -401,66 +516,156 @@ fn certify_minimum_circle_polygon(
         }
     }
     let direction = direction.expect("three or more open circle vertices");
+    if direction != ExactSign::Positive {
+        return Err(unrepresentable_minimum_circle());
+    }
 
     for index in 0..open.len() {
         let left = open[index];
         let right = open[(index + 1) % open.len()];
-        for point in source {
-            let side = exact::try_orient2d(left, right, point.xy())?;
-            let contained = match direction {
-                ExactSign::Positive => side != ExactSign::Negative,
-                ExactSign::Negative => side != ExactSign::Positive,
-                ExactSign::Zero => unreachable!(),
-            };
-            if !contained {
-                return Err(unrepresentable_minimum_circle());
-            }
+        if !disk
+            .vertex_is_strictly_outside(left)
+            .map_err(circle_emission_error)?
+            || !disk
+                .ccw_edge_encloses(left, right)
+                .map_err(circle_emission_error)?
+        {
+            return Err(unrepresentable_minimum_circle());
         }
     }
 
-    if output.validate()?.is_some() {
+    if output.validate().map_err(circle_emission_error)?.is_some() {
         return Err(unrepresentable_minimum_circle());
     }
     Ok(())
 }
 
-/// Emit the existing regular point-circle polygon at the rounded true radius,
-/// then certify the stored output before publishing it.  The polygon radius is
-/// the circumradius needed for its apothem to reach the true radius; it is not
-/// fed back into the scalar minimum-radius result.
-pub(crate) fn emit_minimum_bounding_circle(
-    source: &[Point],
-    rounded: RoundedMinimumCircle,
+/// Build the regular tangent-intersection polygon for one candidate radius.
+fn tangent_circle_polygon(
+    center: Point,
+    radius: f64,
     quadrant_segments: NonZeroU32,
+    budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
-    if source
-        .iter()
-        .any(|point| !point.x.is_finite() || !point.y.is_finite())
-        || !rounded.center.x.is_finite()
-        || !rounded.center.y.is_finite()
-        || !rounded.radius.is_finite()
-        || rounded.radius <= 0.0
-    {
+    let quadrants = quadrant_segments.get() as usize;
+    let steps = quadrants
+        .checked_mul(4)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let vertices = steps
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    budget.add(vertices)?;
+
+    // Each edge is tangent to the candidate circle. Its two adjacent
+    // intersections are at half a step on either side of the edge normal,
+    // so the relative coordinate factors are
+    // `(cos(theta) / cos_half, sin(theta) / cos_half)`.
+    let half_angle = std::f64::consts::PI / steps as f64;
+    let (sin_half, cos_half) = half_angle.sin_cos();
+    if !cos_half.is_finite() || cos_half <= 0.0 {
         return Err(unrepresentable_minimum_circle());
     }
-    let vertex_count = 4.0 * f64::from(quadrant_segments.get());
-    let polygon_radius = rounded.radius / (std::f64::consts::PI / vertex_count).cos();
-    if !polygon_radius.is_finite() || polygon_radius <= 0.0 {
+    let tangent_half = sin_half / cos_half;
+    if !tangent_half.is_finite() {
+        return Err(unrepresentable_minimum_circle());
+    }
+    // Trigonometric construction is rounded before the exact certificate
+    // sees the edge. Two representable successors provide a finite outward
+    // construction margin without an epsilon predicate or segment inflation.
+    let outward_component = |factor: f64| {
+        if factor > 0.0 {
+            factor.next_up().next_up().min(1.0)
+        } else if factor < 0.0 {
+            factor.next_down().next_down().max(-1.0)
+        } else {
+            factor
+        }
+    };
+
+    let mut points = Vec::new();
+    crate::try_reserve_vec(&mut points, vertices)?;
+    for step in 0..steps {
+        let quadrant = step / quadrants;
+        let local_step = step % quadrants;
+        let (factor_x, factor_y) = if local_step == 0 || local_step + 1 == quadrants {
+            // Reuse the half-angle value at both ends of each quadrant.
+            // This makes factors that are mathematically one exactly one,
+            // which matters when `radius == f64::MAX`.
+            match (quadrant, local_step == 0) {
+                (0, true) => (1.0, tangent_half),
+                (0, false) => (tangent_half, 1.0),
+                (1, true) => (-tangent_half, 1.0),
+                (1, false) => (-1.0, tangent_half),
+                (2, true) => (-1.0, -tangent_half),
+                (2, false) => (-tangent_half, -1.0),
+                (3, true) => (tangent_half, -1.0),
+                (3, false) => (1.0, -tangent_half),
+                _ => unreachable!("four quadrants"),
+            }
+        } else {
+            let angle = std::f64::consts::TAU * (step as f64 + 0.5) / steps as f64;
+            let (sin, cos) = angle.sin_cos();
+            (cos / cos_half, sin / cos_half)
+        };
+        let x = center.x + radius * outward_component(factor_x);
+        let y = center.y + radius * outward_component(factor_y);
+        if !x.is_finite() || !y.is_finite() {
+            return Err(unrepresentable_minimum_circle());
+        }
+        crate::try_push_vec(&mut points, Point::new_raw_xy(x, y))?;
+    }
+    let first = points
+        .first()
+        .copied()
+        .ok_or_else(unrepresentable_minimum_circle)?;
+    crate::try_push_vec(&mut points, first)?;
+    let seq = CoordSeq::try_from_points(&points)?;
+    Ok(Shape::Polygon(Polygon::new(
+        Ring::from_closed(seq),
+        Vec::new(),
+    )?))
+}
+
+/// Emit a regular tangent-intersection polygon at a candidate disk radius,
+/// then certify the stored output before publishing it. A bounded binary64
+/// retry covers the one-ULP loss at the tangent boundary; the requested
+/// segment count never changes.
+pub(crate) fn emit_minimum_bounding_circle(
+    disk: &CertifiedDisk,
+    quadrant_segments: NonZeroU32,
+) -> Result<Shape> {
+    const MAX_CIRCUMRADIUS_ULP_RETRIES: usize = 32;
+    let radius = disk.radius().map_err(circle_emission_error)?;
+    let center = disk.center().map_err(circle_emission_error)?;
+    if !center.x.is_finite() || !center.y.is_finite() || !radius.is_finite() || radius <= 0.0 {
         return Err(unrepresentable_minimum_circle());
     }
     let mut budget = ExpansionBudget::new("minimum_bounding_circle", "quadrant_segments");
-    let output = match crate::geometry::point_buffer(
-        rounded.center,
-        polygon_radius,
-        quadrant_segments,
-        &mut budget,
-    ) {
-        Ok(Some(output)) => output,
-        Ok(None) => return Err(unrepresentable_minimum_circle()),
-        Err(error) => return Err(circle_emission_error(error)),
-    };
-    certify_minimum_circle_polygon(&output, source, quadrant_segments)?;
-    Ok(output)
+    let mut candidate_radius = radius;
+    for _ in 0..=MAX_CIRCUMRADIUS_ULP_RETRIES {
+        let output = match tangent_circle_polygon(
+            center,
+            candidate_radius,
+            quadrant_segments,
+            &mut budget,
+        ) {
+            Ok(output) => output,
+            Err(error) => return Err(circle_emission_error(error)),
+        };
+        match certify_minimum_circle_polygon(&output, disk, quadrant_segments) {
+            Ok(()) => return Ok(output),
+            Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
+                return Err(error);
+            },
+            Err(_) => {},
+        }
+        let next = candidate_radius.next_up();
+        if !next.is_finite() {
+            break;
+        }
+        candidate_radius = next;
+    }
+    Err(unrepresentable_minimum_circle())
 }
 
 /// The pole of inaccessibility, returned after denormalizing the search center.
@@ -1756,6 +1961,164 @@ mod tests {
     }
 
     #[test]
+    fn minimum_circle_emission_propagates_allocation_prefix_failures() {
+        let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
+        let circle = smallest_enclosing_circle(&source).expect("diameter support");
+        let disk = circle.certified_disk(&source).expect("exact disk");
+        let (_, allocations) = crate::test_support::allocation_count(|| {
+            emit_minimum_bounding_circle(&disk, NonZeroU32::new(16).expect("non-zero"))
+                .expect("finite circle polygon")
+        });
+        assert!(allocations > 0, "circle emission must allocate");
+        for allowed in 0..allocations.min(16) {
+            let error = crate::test_support::fail_allocations_after(allowed, || {
+                emit_minimum_bounding_circle(&disk, NonZeroU32::new(16).expect("non-zero"))
+            })
+            .expect_err("a rejected emission allocation must remain a native error");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
+    }
+
+    #[test]
+    fn minimum_circle_certified_disk_propagates_allocation_failures() {
+        let scale = 2.0_f64.powi(200);
+        let low_bit = 2.0_f64.powi(148);
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(4.0 * scale, 0.0),
+            Point::new_raw_xy(scale + low_bit, 3.0 * scale),
+        ];
+        let circle = MinimumCircle::new_three(0, 1, 2);
+        assert!(circle.certificate(&points).expect("support certificate"));
+        let (_, allocations) =
+            crate::test_support::allocation_count(|| circle.certified_disk(&points));
+        assert!(allocations > 0, "exact disk construction must allocate");
+        for allowed in 0..allocations {
+            let error = crate::test_support::fail_allocations_after(allowed, || {
+                circle.certified_disk(&points)
+            })
+            .expect_err("a rejected disk allocation must remain a native error");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
+    }
+
+    #[test]
+    fn minimum_circle_edge_certificate_rejects_an_inscribed_source_passing_ring() {
+        let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
+        let circle = smallest_enclosing_circle(&source).expect("diameter support");
+        let disk = circle.certified_disk(&source).expect("exact disk");
+        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "quadrant_segments");
+        let output = crate::geometry::constructive::point_buffer(
+            disk.center().expect("finite center"),
+            1.0 + 1.0e-6,
+            NonZeroU32::new(16).expect("non-zero"),
+            &mut budget,
+        )
+        .expect("inscribed ring construction")
+        .expect("ring");
+        let Shape::Polygon(polygon) = &output else {
+            panic!("point buffer must emit a polygon");
+        };
+        let shell = polygon.rings().next().expect("shell");
+        let vertices: Vec<_> = shell
+            .coords()
+            .iter_coords()
+            .map(|point| point.xy())
+            .collect();
+        let open = &vertices[..vertices.len() - 1];
+        assert!(
+            open.iter().enumerate().all(|(index, &left)| {
+                let right = open[(index + 1) % open.len()];
+                source.iter().all(|point| {
+                    exact::try_orient2d(left, right, point.xy()).expect("source-side predicate")
+                        != ExactSign::Negative
+                })
+            }),
+            "the old source-point-only check accepts this ring"
+        );
+        assert!(
+            certify_minimum_circle_polygon(&output, &disk, NonZeroU32::new(16).expect("non-zero"))
+                .is_err(),
+            "the exact disk edge check must reject its inward chords"
+        );
+    }
+
+    #[test]
+    fn minimum_circle_certificate_rejects_an_inward_vertex_mutation() {
+        let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
+        let circle = smallest_enclosing_circle(&source).expect("diameter support");
+        let disk = circle.certified_disk(&source).expect("exact disk");
+        let valid = emit_minimum_bounding_circle(&disk, NonZeroU32::new(16).expect("non-zero"))
+            .expect("valid ring");
+        let Shape::Polygon(polygon) = valid else {
+            panic!("minimum circle must emit a polygon");
+        };
+        let shell = polygon.rings().next().expect("shell");
+        let mut vertices: Vec<_> = shell.coords().iter_coords().collect();
+        vertices[0] = Point::new_raw_xy(0.5, 0.0);
+        let mutated = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&vertices).expect("mutated ring")),
+                Vec::new(),
+            )
+            .expect("polygon"),
+        );
+        assert!(
+            certify_minimum_circle_polygon(&mutated, &disk, NonZeroU32::new(16).expect("non-zero"))
+                .is_err(),
+            "an inward vertex must fail the exact disk certificate"
+        );
+    }
+
+    #[test]
+    fn minimum_circle_emission_keeps_the_requested_quadrant_count() {
+        let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
+        let circle = smallest_enclosing_circle(&source).expect("diameter support");
+        let disk = circle.certified_disk(&source).expect("exact disk");
+        for quadrants in [1, 2, 16] {
+            let output =
+                emit_minimum_bounding_circle(&disk, NonZeroU32::new(quadrants).expect("non-zero"))
+                    .expect("representable tangent polygon");
+            let Shape::Polygon(polygon) = output else {
+                panic!("minimum circle must emit a polygon");
+            };
+            assert_eq!(
+                polygon.rings().next().expect("shell").coords().len(),
+                quadrants as usize * 4 + 1
+            );
+        }
+    }
+
+    #[test]
+    fn minimum_circle_emission_retries_when_rounded_radius_is_below_tangent() {
+        let source = [Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 5.0)];
+        let circle = smallest_enclosing_circle(&source).expect("diameter support");
+        let disk = circle.certified_disk(&source).expect("exact disk");
+        let quadrants = NonZeroU32::new(16).expect("non-zero");
+        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "quadrant_segments");
+        let candidate = tangent_circle_polygon(
+            disk.center().expect("finite center"),
+            disk.radius().expect("finite radius"),
+            quadrants,
+            &mut budget,
+        )
+        .expect("candidate polygon");
+        assert!(
+            certify_minimum_circle_polygon(&candidate, &disk, quadrants).is_err(),
+            "the rounded-down radius must expose an inward tangent edge"
+        );
+        let emitted = emit_minimum_bounding_circle(&disk, quadrants).expect("outward radius retry");
+        certify_minimum_circle_polygon(&emitted, &disk, quadrants)
+            .expect("retry must publish a certified ring");
+    }
+
+    #[test]
     fn minimum_circle_polygon_rejects_a_collapsed_output_ring() {
         let points = [
             Point::new_raw_xy(2.0_f64.powi(60), 2.0_f64.powi(60)),
@@ -1885,11 +2248,17 @@ mod tests {
                 .unwrap();
 
         assert_eq!(
-            ordinary.rounded(&source).unwrap().radius.to_bits(),
-            adversarial
-                .rounded(&inverse_source)
+            ordinary
+                .certified_disk(&source)
                 .unwrap()
-                .radius
+                .radius()
+                .unwrap()
+                .to_bits(),
+            adversarial
+                .certified_disk(&inverse_source)
+                .unwrap()
+                .radius()
+                .unwrap()
                 .to_bits()
         );
         assert!(ordinary_work.contains > 0);

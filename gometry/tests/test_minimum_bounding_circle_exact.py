@@ -267,6 +267,27 @@ def test_planar_circle_rejects_overflowed_output_without_changing_radius() -> No
         points.minimum_bounding_circle(unit='planar')
 
 
+def test_planar_circle_emits_a_full_range_finite_diameter() -> None:
+    points = CASES['max-diameter']
+    expected = exhaustive(points)
+    assert expected is not None
+    circle = gm.MultiPoint(points).minimum_bounding_circle(unit='planar')
+    assert circle.geometry_type == 'Polygon'
+    vertices = [q((x, y)) for x, y in list(circle.coords)[:-1]]
+    assert len(vertices) == 64
+    assert all(math.isfinite(float(value)) for point in vertices for value in point)
+    assert all(
+        distance_squared(expected.center, point) > expected.radius_squared
+        for point in vertices
+    )
+    assert all(
+        (orientation(left, right, expected.center) >= 0)
+        and orientation(left, right, expected.center) ** 2
+        >= expected.radius_squared * distance_squared(left, right)
+        for left, right in zip(vertices, vertices[1:] + vertices[:1], strict=True)
+    )
+
+
 def test_planar_radius_array_matches_scalar_and_preserves_missing_rows() -> None:
     points = gm.MultiPoint(CASES['acute'])
     array = gm.GeometryArray([points, None, gm.LineString([])])

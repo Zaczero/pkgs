@@ -1365,10 +1365,6 @@ pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
     incircle_dyadic(a, b, c, d)
 }
 
-fn try_difference(left: f64, right: f64) -> Result<ExactDyadic> {
-    ExactDyadic::try_from_f64(left)?.try_subtract(ExactDyadic::try_from_f64(right)?)
-}
-
 fn try_orient2d_dyadic(a: XY, b: XY, c: XY) -> Result<ExactSign> {
     let bax = try_difference(b.x, a.x)?;
     let bay = try_difference(b.y, a.y)?;
@@ -1393,46 +1389,6 @@ pub(in crate::geometry) fn try_orient2d(a: XY, b: XY, c: XY) -> Result<ExactSign
         return Ok(sign);
     }
     try_orient2d_dyadic(a, b, c)
-}
-
-fn try_incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
-    let (adx, ady) = (try_difference(a.x, d.x)?, try_difference(a.y, d.y)?);
-    let (bdx, bdy) = (try_difference(b.x, d.x)?, try_difference(b.y, d.y)?);
-    let (cdx, cdy) = (try_difference(c.x, d.x)?, try_difference(c.y, d.y)?);
-    let alift = adx.try_product(&adx)?.try_add(ady.try_product(&ady)?)?;
-    let blift = bdx.try_product(&bdx)?.try_add(bdy.try_product(&bdy)?)?;
-    let clift = cdx.try_product(&cdx)?.try_add(cdy.try_product(&cdy)?)?;
-    let bcdet = bdx
-        .try_product(&cdy)?
-        .try_subtract(cdx.try_product(&bdy)?)?;
-    let cadet = cdx
-        .try_product(&ady)?
-        .try_subtract(adx.try_product(&cdy)?)?;
-    let abdet = adx
-        .try_product(&bdy)?
-        .try_subtract(bdx.try_product(&ady)?)?;
-    Ok(alift
-        .try_product(&bcdet)?
-        .try_add(blift.try_product(&cadet)?)?
-        .try_add(clift.try_product(&abdet)?)?
-        .sign())
-}
-
-/// Fallible exact in-circle determinant for a stored-binary64 quadruple.
-///
-/// The sign is positive for an interior point when `a,b,c` are
-/// counter-clockwise, and negative for a clockwise triple.
-pub(in crate::geometry) fn try_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
-    if let Some(sign) = incircle_float(a, b, c, d) {
-        return Ok(sign);
-    }
-    if let Some(sign) = incircle_lattice(a, b, c, d) {
-        return Ok(sign);
-    }
-    if let Some(sign) = incircle_filtered(a, b, c, d) {
-        return Ok(sign);
-    }
-    try_incircle_dyadic(a, b, c, d)
 }
 
 fn same_xy(left: XY, right: XY) -> bool {
@@ -1598,6 +1554,31 @@ fn try_support_circle(support: &[XY]) -> Result<ExactSupportCircle> {
     }
 }
 
+/// Return the exact homogeneous center and squared-radius ratio of a support.
+///
+/// The tuple is intentionally made of the arithmetic owner types rather than
+/// rounded coordinates. Callers that publish a realization can therefore
+/// carry the construction through a unit scale and round only at that
+/// publication boundary.
+pub(in crate::geometry) fn try_support_circle_components(
+    support: &[XY],
+) -> Result<(
+    ExactDyadic,
+    ExactDyadic,
+    ExactDyadic,
+    ExactDyadic,
+    ExactDyadic,
+)> {
+    let circle = try_support_circle(support)?;
+    Ok((
+        circle.center.x().try_clone()?,
+        circle.center.y().try_clone()?,
+        circle.center.w().try_clone()?,
+        circle.radius_numerator,
+        circle.radius_denominator,
+    ))
+}
+
 fn try_orient_source_center(a: XY, b: XY, center: &ExactPoint) -> Result<ExactSign> {
     let ax = ExactDyadic::try_from_f64(a.x)?;
     let ay = ExactDyadic::try_from_f64(a.y)?;
@@ -1686,21 +1667,12 @@ pub(in crate::geometry) fn try_certify_support(
 /// The center and squared radius are each rounded once from their exact
 /// constructions.  In particular, the radius is never recovered from the
 /// rounded center.
+#[cfg(test)]
 pub(in crate::geometry) fn round_support_circle(support: &[XY]) -> Result<(XY, f64, bool)> {
     let circle = try_support_circle(support)?;
     let center = circle.center.round_nearest_even()?;
     let radius = round_sqrt_ratio(&circle.radius_numerator, &circle.radius_denominator)?;
     Ok((center, radius, circle.radius_numerator.is_zero()))
-}
-
-pub(in crate::geometry) fn round_support_radius(support: &[XY]) -> Result<f64> {
-    let circle = try_support_circle(support)?;
-    round_sqrt_ratio(&circle.radius_numerator, &circle.radius_denominator)
-}
-
-pub(in crate::geometry) fn round_support_center(support: &[XY]) -> Result<XY> {
-    let circle = try_support_circle(support)?;
-    circle.center.round_nearest_even()
 }
 
 pub(super) fn try_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
@@ -2955,19 +2927,6 @@ fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Homogeneous {
         y: a[2].product(&b[0]).subtract(a[0].product(&b[2])),
         w: a[0].product(&b[1]).subtract(a[1].product(&b[0])),
     }
-}
-
-fn try_line_intersection(a: &ExactLine, b: &ExactLine) -> Result<ExactPoint> {
-    let a = &a.0;
-    let b = &b.0;
-    Ok(ExactPoint::homogeneous(
-        a[1].try_product(&b[2])?
-            .try_subtract(a[2].try_product(&b[1])?)?,
-        a[2].try_product(&b[0])?
-            .try_subtract(a[0].try_product(&b[2])?)?,
-        a[0].try_product(&b[1])?
-            .try_subtract(a[1].try_product(&b[0])?)?,
-    ))
 }
 
 fn try_intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Result<Homogeneous> {

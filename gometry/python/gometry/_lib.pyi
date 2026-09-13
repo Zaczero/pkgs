@@ -2825,7 +2825,9 @@ class Geometry:
         input yields ``NaN``; a single distinct vertex yields ``0``. Geographic point
         sets with three or more distinct vertices use the planar center and
         ellipsoidal support measurement (an approximation); two-point geographic
-        inputs are the exact geodesic half-distance.
+        inputs are the exact geodesic half-distance. For a projected
+        ``unit='meters'`` result, the exact squared radius is scaled before the one
+        binary64 rounding.
 
         Parameters
         ----------
@@ -8223,7 +8225,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         input yields ``NaN``; a single distinct vertex yields ``0``. Geographic point
         sets with three or more distinct vertices use the planar center and
         ellipsoidal support measurement (an approximation); two-point geographic
-        inputs are the exact geodesic half-distance.
+        inputs are the exact geodesic half-distance. For a projected
+        ``unit='meters'`` result, the exact squared radius is scaled before the one
+        binary64 rounding.
 
         Parameters
         ----------

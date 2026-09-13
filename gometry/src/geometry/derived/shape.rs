@@ -211,23 +211,13 @@ impl Shape {
             return Ok(Self::empty_polygon());
         }
         let circle = smallest_enclosing_circle(&points)?;
-        let rounded = match circle.rounded(&points) {
-            Ok(rounded) => rounded,
-            Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
-                return Err(error);
-            },
-            Err(_) => {
-                return Err(GeometryErrorKind::unrepresentable_output(
-                    "minimum_bounding_circle",
-                ));
-            },
-        };
-        if rounded.exact_zero_radius {
+        let disk = circle.certified_disk(&points)?;
+        if disk.is_exact_zero() {
             // A single distinct vertex: the degenerate circle is that source
             // point, including its stored signed-zero spelling.
-            return Ok(Self::Point(rounded.center));
+            return Ok(Self::Point(disk.center()?));
         }
-        emit_minimum_bounding_circle(&points, rounded, CIRCLE_QUADRANT_SEGMENTS)
+        emit_minimum_bounding_circle(&disk, CIRCLE_QUADRANT_SEGMENTS)
     }
 
     /// Radius of the smallest circle enclosing the geometry. Empty input
@@ -241,7 +231,7 @@ impl Shape {
             return Ok(f64::NAN);
         }
         let circle = smallest_enclosing_circle(&points)?;
-        circle.rounded_radius(&points)
+        circle.certified_disk(&points)?.radius()
     }
 
     /// The largest circle inscribed in a polygonal geometry: the filled disk
