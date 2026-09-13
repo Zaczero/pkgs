@@ -8,11 +8,7 @@ use crate::py::errors::InvalidGeometryError;
 // by the crate-central `parse_crs`) ----
 
 pub(super) fn crs_epsg_code(value: &Bound<'_, PyAny>) -> PyResult<Option<u32>> {
-    if value.cast_exact::<PyBool>().is_ok()
-        || value
-            .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-            .is_none()
-    {
+    if value.cast_exact::<PyBool>().is_ok() || !crate::py_index_check(value) {
         return Ok(None);
     }
     let code = crate::py_index_object("EPSG code", value)?
@@ -153,11 +149,7 @@ pub(super) fn crs_authority_tuple_part(
 }
 
 pub(super) fn crs_authority_tuple_code(value: &Bound<'_, PyAny>, label: &str) -> PyResult<String> {
-    if value.cast_exact::<PyBool>().is_err()
-        && value
-            .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-            .is_some()
-    {
+    if value.cast_exact::<PyBool>().is_err() && crate::py_index_check(value) {
         let code = crate::py_index_object("CRS authority code", value)?
             .extract::<i64>()
             .map_err(|_| CRSError::new_err(format!("{label} code is too large")))?;

@@ -263,21 +263,64 @@ def test_index_provider_errors_are_not_reclassified() -> None:
         gm.SpatialIndex([gm.Point(0, 0)]).__contains__(RaisingIndex())
 
 
+def test_index_protocol_uses_the_type_slot_once() -> None:
+    class ClassIndex:
+        def __init__(self, value: int) -> None:
+            self.value = value
+            self.calls = 0
+
+        def __index__(self) -> int:
+            self.calls += 1
+            return self.value
+
+    provider = ClassIndex(7)
+    cells = gm.h3_cover(gm.Point(0, 0), resolution=provider)
+    assert len(cells) == 1
+    assert provider.calls == 1
+
+
+def test_instance_only_index_attribute_is_not_the_index_protocol() -> None:
+    class InstanceIndex:
+        def __init__(self) -> None:
+            self.calls = 0
+
+            def index() -> int:
+                self.calls += 1
+                return 7
+
+            self.__index__ = index
+
+    provider = InstanceIndex()
+    with pytest.raises(TypeError):
+        gm.h3_cover(gm.Point(0, 0), resolution=provider)
+    assert provider.calls == 0
+
+
+def test_index_protocol_uses_the_builtin_int_slot_for_int_subclasses() -> None:
+    array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+
+    class IntSubclass(int):
+        def __new__(cls, value: int) -> 'IntSubclass':
+            return int.__new__(cls, value)
+
+        def __init__(self, value: int) -> None:
+            self.calls = 0
+
+        def __index__(self) -> int:
+            self.calls += 1
+            raise RuntimeError('int subclass provider must not run')
+
+    provider = IntSubclass(1)
+    assert array[(provider,)].to_wkt() == ['POINT (1 1)']
+    assert provider.calls == 0
+
+
 def test_positional_index_provider_exception_instances_are_preserved() -> None:
     array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
 
     class Provider:
         def __init__(self, error: BaseException) -> None:
             self.error = error
-
-        def __index__(self):
-            raise self.error
-
-    class IntProvider(int):
-        def __new__(cls, error: BaseException):
-            value = int.__new__(cls, 0)
-            value.error = error
-            return value
 
         def __index__(self):
             raise self.error
@@ -305,9 +348,6 @@ def test_positional_index_provider_exception_instances_are_preserved() -> None:
         assert_same(
             lambda error=error: array._replace_at([Provider(error)], [None]), error
         )
-
-        error = error_type('provider error')
-        assert_same(lambda error=error: array[(IntProvider(error),)], error)
 
 
 def test_list_and_tuple_keep_distinct_mixed_provider_admission_order() -> None:

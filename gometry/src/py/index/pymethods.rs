@@ -73,10 +73,7 @@ fn handle_like_or_none(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
     if value.cast_exact::<PyBool>().is_ok() {
         return Ok(None);
     }
-    if value
-        .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-        .is_none()
-    {
+    if !crate::py_index_check(value) {
         return Ok(None);
     }
     let integer = crate::py_index_object("spatial index handle", value)?;

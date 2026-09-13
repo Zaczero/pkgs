@@ -31,8 +31,8 @@ def test_integer_parameter_numpy_scalars_and_zero_d_arrays_remain_scalar(value) 
 def test_integer_parameter_rank_one_numpy_arrays_are_rowwise() -> None:
     """Rank-one signed and unsigned arrays reach the array consumers.
 
-    Mutation: restoring the scalar ``__index__`` probe before rank detection
-    makes every rank-one NumPy case fail with NumPy's scalar-index error.
+    Mutation: restoring scalar index-slot admission before rank detection makes
+    every rank-one NumPy case fail with NumPy's scalar-index error.
     """
     for dtype in (np.int64, np.uint64):
         lines = gm.GeometryArray([

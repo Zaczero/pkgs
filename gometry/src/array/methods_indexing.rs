@@ -206,8 +206,7 @@ impl FancyIndexCollector {
         let integer = match crate::py_index_object("index", bound) {
             Ok(integer) => integer,
             Err(error)
-                if error.is_instance_of::<PyTypeError>(py)
-                    && bound.getattr_opt(pyo3::intern!(py, "__index__"))?.is_none() =>
+                if error.is_instance_of::<PyTypeError>(py) && !crate::py_index_check(bound) =>
             {
                 return Ok(false);
             },

@@ -456,9 +456,7 @@ macro_rules! h3_index_array_common {
                             || (error.is_instance_of::<crate::py::errors::GeometryError>(item.py())
                                 && !(item.cast_exact::<PyBool>().is_err()
                                     && item.cast::<PyInt>().is_err()
-                                    && item
-                                        .getattr_opt(pyo3::intern!(item.py(), "__index__"))?
-                                        .is_some()))
+                                    && crate::py_index_check(item)))
                             || (error.is_instance_of::<PyTypeError>(item.py())
                                 && !custom_index) =>
                     {

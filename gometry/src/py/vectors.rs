@@ -409,9 +409,7 @@ impl Groups {
                 Ok(index) => index,
                 Err(error)
                     if error.is_instance_of::<PyTypeError>(item.py())
-                        && candidate
-                            .getattr_opt(pyo3::intern!(item.py(), "__index__"))?
-                            .is_none() =>
+                        && !crate::py_index_check(&candidate) =>
                 {
                     return Ok(None);
                 },

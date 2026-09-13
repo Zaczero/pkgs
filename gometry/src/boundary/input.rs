@@ -9,10 +9,10 @@
 )]
 
 use numpy::PyUntypedArray;
-use pyo3::FromPyObject;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString};
+use pyo3::{FromPyObject, ffi};
 
 use crate::py::errors::GeometryError;
 use crate::{Positive, Shape, crs, parameter_values_exact};
@@ -41,15 +41,10 @@ pub(crate) fn py_u64_if_index(name: &str, value: &Bound<'_, PyAny>) -> PyResult<
     if value.cast_exact::<PyBool>().is_ok() {
         return Err(PyTypeError::new_err(format!("{name} must be an integer")));
     }
-    let Some(index) = value.getattr_opt(pyo3::intern!(value.py(), "__index__"))? else {
+    if !py_index_check(value) {
         return Ok(None);
-    };
-    let integer = index.call0()?;
-    if integer.cast_exact::<PyBool>().is_ok() || integer.cast::<PyInt>().is_err() {
-        return Err(PyTypeError::new_err(format!(
-            "{name}.__index__() must return an integer"
-        )));
     }
+    let integer = call_py_number_index(value)?;
     integer.extract::<u64>().map(Some).map_err(|_| {
         GeometryError::new_err(format!("{name} must be a non-negative 64-bit integer"))
     })
@@ -111,6 +106,16 @@ pub(crate) fn strict_i128(value: &Bound<'_, PyAny>) -> PyResult<i128> {
         .map_err(|_| GeometryError::new_err("integer is too large"))
 }
 
+/// Whether Python's numeric index slot is present on the value's type.
+///
+/// This is deliberately a type-slot query rather than an attribute lookup:
+/// an instance-only ``__index__`` attribute is not part of Python's index
+/// protocol and must not be invoked or used for classification.
+pub(crate) fn py_index_check(value: &Bound<'_, PyAny>) -> bool {
+    // SAFETY: `value` is a live Python object while its `Bound` is held.
+    unsafe { ffi::PyIndex_Check(value.as_ptr()) != 0 }
+}
+
 /// Admit Python's integer protocol (`__index__`) once, rejecting the special
 /// ``bool`` subtype before conversion. NumPy integer scalars therefore follow
 /// the same path as built-in integers, while arbitrary Python integer
@@ -123,20 +128,16 @@ pub(crate) fn py_index_object<'py>(
     if value.cast_exact::<PyBool>().is_ok() {
         return Err(PyTypeError::new_err(format!("{name} must be an integer")));
     }
-    let Some(index) = value.getattr_opt(pyo3::intern!(value.py(), "__index__"))? else {
+    if !py_index_check(value) {
         return Err(PyTypeError::new_err(format!("{name} must be an integer")));
-    };
-    match index.call0() {
-        Ok(integer)
-            if integer.cast::<PyInt>().is_ok() && integer.cast_exact::<PyBool>().is_err() =>
-        {
-            Ok(integer)
-        },
-        Ok(_) => Err(PyTypeError::new_err(format!(
-            "{name}.__index__() must return an integer"
-        ))),
-        Err(error) => Err(error),
     }
+    call_py_number_index(value)
+}
+
+fn call_py_number_index<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    // SAFETY: `PyNumber_Index` borrows `value`, returns a new reference on
+    // success, and sets the active Python exception on failure.
+    unsafe { Bound::from_owned_ptr_or_err(value.py(), ffi::PyNumber_Index(value.as_ptr())) }
 }
 
 /// Try the public float-like scalar protocol without treating provider

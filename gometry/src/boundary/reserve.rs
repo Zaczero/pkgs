@@ -731,10 +731,7 @@ fn try_u64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<u64> {
     match crate::py_u64_required(what, value) {
         Ok(value) => Ok(value),
         Err(error)
-            if error.is_instance_of::<PyTypeError>(value.py())
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-                    .is_none() =>
+            if error.is_instance_of::<PyTypeError>(value.py()) && !crate::py_index_check(value) =>
         {
             Err(PyTypeError::new_err(format!(
                 "{what} elements have the wrong type"
@@ -748,10 +745,7 @@ fn try_usize_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<usize> {
     match crate::py_usize_required(what, value) {
         Ok(value) => Ok(value),
         Err(error)
-            if error.is_instance_of::<PyTypeError>(value.py())
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-                    .is_none() =>
+            if error.is_instance_of::<PyTypeError>(value.py()) && !crate::py_index_check(value) =>
         {
             Err(PyTypeError::new_err(format!(
                 "{what} elements have the wrong type"
@@ -765,10 +759,7 @@ fn try_i64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<i64> {
     match crate::py_i64_required(what, value) {
         Ok(value) => Ok(value),
         Err(error)
-            if error.is_instance_of::<PyTypeError>(value.py())
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-                    .is_none() =>
+            if error.is_instance_of::<PyTypeError>(value.py()) && !crate::py_index_check(value) =>
         {
             Err(PyTypeError::new_err(format!(
                 "{what} elements have the wrong type"

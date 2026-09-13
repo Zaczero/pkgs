@@ -369,10 +369,7 @@ impl I64Param {
                     )));
                 },
             }
-        } else if value.cast_exact::<pyo3::types::PyBool>().is_err()
-            && value
-                .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-                .is_some()
+        } else if value.cast_exact::<pyo3::types::PyBool>().is_err() && crate::py_index_check(value)
         {
             let scalar = crate::py_i64_required(name, value)?;
             return Ok(Self::Scalar(scalar));

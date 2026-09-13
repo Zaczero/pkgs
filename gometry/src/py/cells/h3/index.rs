@@ -120,11 +120,7 @@ pub(super) fn parse_h3_index<I: H3Index>(
     if let Some(index) = native(value) {
         return Ok(index);
     }
-    if value.cast_exact::<PyBool>().is_err()
-        && value
-            .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-            .is_some()
-    {
+    if value.cast_exact::<PyBool>().is_err() && crate::py_index_check(value) {
         let integer = crate::py_index_object("H3 index id", value)?;
         let id = integer.extract::<u64>().map_err(|_| {
             parse_error(

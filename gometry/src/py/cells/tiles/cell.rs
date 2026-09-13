@@ -73,11 +73,7 @@ pub(crate) fn tile_arg(cell: &Bound<'_, PyAny>) -> PyResult<Tile> {
     if let Ok(cell) = cell.cast_exact::<PyTile>() {
         return Ok(cell.get().cell);
     }
-    if cell.cast_exact::<PyBool>().is_err()
-        && cell
-            .getattr_opt(pyo3::intern!(cell.py(), "__index__"))?
-            .is_some()
-    {
+    if cell.cast_exact::<PyBool>().is_err() && crate::py_index_check(cell) {
         let integer = crate::py_index_object("tile id", cell)?;
         let id = integer.extract::<u64>().map_err(|_| {
             parse_error(

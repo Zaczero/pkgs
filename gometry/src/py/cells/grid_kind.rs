@@ -175,9 +175,7 @@ impl GridKind {
     pub(crate) fn id_from_value(self, value: &Bound<'_, PyAny>) -> PyResult<u64> {
         if self != Self::GeohashCell
             && value.cast_exact::<PyBool>().is_err()
-            && value
-                .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-                .is_some()
+            && crate::py_index_check(value)
         {
             let integer = crate::py_index_object(self.class_name(), value)?;
             let id = integer.extract::<u64>().map_err(|_| {
@@ -204,9 +202,7 @@ impl GridKind {
 pub(super) fn is_custom_index_provider(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     Ok(value.cast_exact::<PyBool>().is_err()
         && value.cast::<PyInt>().is_err()
-        && value
-            .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
-            .is_some())
+        && crate::py_index_check(value))
 }
 
 macro_rules! id_from_object {

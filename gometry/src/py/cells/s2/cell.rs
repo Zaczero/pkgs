@@ -154,11 +154,7 @@ pub(crate) fn s2_cell_id(cell: &Bound<'_, PyAny>) -> PyResult<CellId> {
         let cell = cell.get();
         return Ok(cell.cell);
     }
-    if cell.cast_exact::<PyBool>().is_err()
-        && cell
-            .getattr_opt(pyo3::intern!(cell.py(), "__index__"))?
-            .is_some()
-    {
+    if cell.cast_exact::<PyBool>().is_err() && crate::py_index_check(cell) {
         let integer = crate::py_index_object("S2 cell id", cell)?;
         let id = integer.extract::<u64>().map_err(|_| {
             parse_error(
