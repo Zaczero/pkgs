@@ -62,6 +62,29 @@ def test_segment_distance_handles_overflow_and_subnormal_rounding() -> None:
     assert gm.distance_3d(_point((0.0, 0.0, 0.0)), _point((minimum, 0.0, 0.0))) == minimum
 
 
+def test_indexed_distance_preserves_subnormal_box_gap() -> None:
+    gap = float.fromhex('0x1.8p-538')
+    middle = float.fromhex('0x1.cp-538')
+    probe = _point((0.0, middle * math.sqrt(2.0), 0.0))
+    target_lines = [
+        gm.LineString([(gap, -100.0, 0.0), (gap, 100.0, 0.0)]),
+        *[
+            gm.LineString([(1.0, -100.0, 0.0), (1.0, -100.0, 0.0)])
+            for _ in range(31)
+        ],
+        gm.LineString([(-1.0, -1.0, 0.0), (1.0, 1.0, 0.0)]),
+        *[
+            gm.LineString([(1.0, 0.0, 0.0), (1.0, 0.0, 0.0)])
+            for _ in range(31)
+        ],
+    ]
+    assert gm.distance_3d(probe, gm.MultiLineString(target_lines)) == gap
+
+
+def test_distance_3d_empty_operand_returns_infinity() -> None:
+    assert gm.distance_3d(gm.from_wkt('POINT EMPTY'), _point((0.0, 0.0, 0.0))) == math.inf
+
+
 def test_segment_distance_scalar_and_array_result_paths_match() -> None:
     left = _line((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
     right = _line((5.0, -5.0, 1.0), (5.0, 5.0, 1.0))
