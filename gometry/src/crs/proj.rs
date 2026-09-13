@@ -645,6 +645,8 @@ impl Drop for OwnedUnitList {
 }
 
 pub(crate) struct ProjPipeline {
+    // Keep the PJ before its context: Rust drops fields in declaration order,
+    // and PROJ requires child objects to be destroyed before PJ_CONTEXT.
     pub(super) transform: OwnedPj,
     pub(super) context: ProjContext,
 }
@@ -671,6 +673,7 @@ pub(super) struct ProjCrsListParameters {
 }
 
 pub(super) struct ProjObject {
+    // Keep the PJ before its context: see `ProjPipeline` above.
     pub(super) object: OwnedPj,
     pub(super) context: ProjContext,
 }

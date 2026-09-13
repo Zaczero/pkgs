@@ -177,6 +177,23 @@ def test_crs_cache_info_reports_current_thread_cache_state() -> None:
     assert cleared['total_entries'] == 0
 
 
+def test_crs_configure_noop_preserves_generation_and_products(tmp_path: Path) -> None:
+    original = gm.crs_config()
+    try:
+        gm.crs_clear_cache()
+        configured = gm.crs_configure(search_paths=tmp_path)
+        gm.crs_info(4326)
+        before = gm.crs_cache_info()
+        assert before['total_entries'] > 0
+
+        assert gm.crs_configure(search_paths=tmp_path) == configured
+        after = gm.crs_cache_info()
+        assert after['generation'] == before['generation']
+        assert after['total_entries'] == before['total_entries']
+    finally:
+        assert gm.crs_reset() == original
+
+
 def test_crs_runtime_leaves_no_proj_config_directory(tmp_path: Path) -> None:
     """A public CRS transform must not leave gometry-proj-* under TMPDIR."""
     code = f"""

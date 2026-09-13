@@ -820,7 +820,7 @@ pub(crate) struct CacheInfo {
     pub transform_invocations: usize,
 }
 
-#[derive(Debug, Clone, Default, IntoPyObject)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, IntoPyObject)]
 pub(crate) struct RuntimeConfig {
     pub search_paths: Option<Vec<String>>,
     pub user_writable_directory: Option<String>,

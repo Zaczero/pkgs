@@ -8,7 +8,7 @@ use crate::crs::{
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
     ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
-    TransformOptions, UnitInfo, WktVersion, preserve_resource_error, proj_env, runtime,
+    TransformOptions, UnitInfo, WktVersion, preserve_resource_error, runtime,
     runtime_state_snapshot,
 };
 use crate::error::Result;
@@ -185,7 +185,6 @@ macro_rules! crs_cache {
         pub(crate) fn clear_thread_caches() {
             $($clear)*
             TRANSFORM_OBSERVATION.with(|observation| observation.set((None, 0)));
-            proj_env::cleanup_thread_context();
         }
         fn crs_reported_cache_buckets() -> Vec<CacheBucketInfo> {
             vec![ $($buckets)* ]
@@ -528,6 +527,25 @@ mod tests {
         to_wkt_with_options, transform_coordinates,
     };
 
+    fn transform_known_point(
+        pipeline: &ProjPipeline,
+        execution: &TransformExecution,
+    ) -> (f64, f64) {
+        let mut x = [1.0];
+        let mut y = [2.0];
+        pipeline
+            .transform_lanes(
+                &mut x,
+                &mut y,
+                None,
+                None,
+                ProjDirection::Forward,
+                execution,
+            )
+            .unwrap();
+        (x[0], y[0])
+    }
+
     fn thread_cache_lengths() -> [usize; 18] {
         [
             PROJ_CACHE.with(|cache| cache.borrow().len()),
@@ -639,14 +657,131 @@ mod tests {
         warm_representative_thread_caches();
         assert_some_thread_cache_is_warm();
 
+        let warm_generation = runtime_state_snapshot().unwrap().generation;
         configure_runtime(None, None).unwrap();
+        assert_eq!(
+            runtime_state_snapshot().unwrap().generation,
+            warm_generation
+        );
+        assert_some_thread_cache_is_warm();
+
+        clear_cache();
         assert_thread_caches_are_empty();
+        assert_eq!(
+            runtime_state_snapshot().unwrap().generation,
+            warm_generation.wrapping_add(1)
+        );
 
         warm_representative_thread_caches();
         assert_some_thread_cache_is_warm();
 
+        configure_runtime(Some(vec!["/tmp/gometry-crs-old".to_owned()]), None).unwrap();
+        assert_thread_caches_are_empty();
+
         reset_runtime_config().unwrap();
         assert_thread_caches_are_empty();
+    }
+
+    #[test]
+    fn equal_runtime_config_preserves_generation_and_thread_cache_products() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        reset_runtime_config().unwrap();
+        info("EPSG:4326").unwrap();
+        let before = cache_info();
+        assert!(before.total_entries > 0);
+
+        let config = configure_runtime(None, None).unwrap();
+        let after = cache_info();
+
+        assert_eq!(config.search_paths, None);
+        assert_eq!(config.user_writable_directory, None);
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(after.total_entries, before.total_entries);
+        assert_some_thread_cache_is_warm();
+
+        reset_runtime_config().unwrap();
+    }
+
+    #[test]
+    fn live_pipeline_survives_other_thread_runtime_invalidation() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        reset_runtime_config().unwrap();
+        let old_state = runtime_state_snapshot().unwrap();
+        let options = TransformOptions::default();
+        let ready = Arc::new(Barrier::new(2));
+        let configured = Arc::new(Barrier::new(2));
+        let cleared = Arc::new(Barrier::new(2));
+        let reset = Arc::new(Barrier::new(2));
+        let new_pipeline_live = Arc::new(Barrier::new(2));
+
+        let worker_ready = Arc::clone(&ready);
+        let worker_configured = Arc::clone(&configured);
+        let worker_cleared = Arc::clone(&cleared);
+        let worker_reset = Arc::clone(&reset);
+        let worker_new_pipeline_live = Arc::clone(&new_pipeline_live);
+        let worker_options = options.clone();
+        let worker_state = Arc::clone(&old_state);
+        let worker = std::thread::spawn(move || {
+            let execution = TransformExecution::default();
+            with_proj_pipeline_at(
+                "EPSG:4326",
+                "EPSG:3857",
+                &worker_options,
+                &worker_state,
+                &execution,
+                |pipeline| {
+                    let initial = transform_known_point(pipeline, &execution);
+                    worker_ready.wait();
+
+                    worker_configured.wait();
+                    let after_configure = transform_known_point(pipeline, &execution);
+
+                    worker_cleared.wait();
+                    let after_clear = transform_known_point(pipeline, &execution);
+
+                    worker_reset.wait();
+                    worker_new_pipeline_live.wait();
+                    let after_reset = transform_known_point(pipeline, &execution);
+
+                    Ok([initial, after_configure, after_clear, after_reset])
+                },
+            )
+            .unwrap()
+        });
+
+        ready.wait();
+        configure_runtime(Some(vec!["/tmp/gometry-crs-live-new".to_owned()]), None).unwrap();
+        configured.wait();
+
+        clear_cache();
+        cleared.wait();
+
+        reset_runtime_config().unwrap();
+        let new_state = runtime_state_snapshot().unwrap();
+        assert_eq!(new_state.generation, old_state.generation.wrapping_add(3));
+        reset.wait();
+
+        let new_execution = TransformExecution::default();
+        let new_result = with_proj_pipeline_at(
+            "EPSG:4326",
+            "EPSG:3857",
+            &options,
+            &new_state,
+            &new_execution,
+            |pipeline| {
+                new_pipeline_live.wait();
+                Ok(transform_known_point(pipeline, &new_execution))
+            },
+        )
+        .unwrap();
+        let old_results = worker.join().unwrap();
+        let expected = (111_319.490_793_273_58, 222_684.208_505_544_55);
+        for result in old_results {
+            assert!((result.0 - expected.0).abs() < 1e-6);
+            assert!((result.1 - expected.1).abs() < 1e-6);
+        }
+        assert!((new_result.0 - expected.0).abs() < 1e-6);
+        assert!((new_result.1 - expected.1).abs() < 1e-6);
     }
 
     #[test]

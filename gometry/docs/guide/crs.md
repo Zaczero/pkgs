@@ -1021,6 +1021,16 @@ calls, so empty or validation-rejected input does not claim an execution. This
 observes the engine selected by the transform itself; it does not infer
 execution from whether a PROJ cache entry remains.
 
+[`gm.crs_configure`][gometry.crs_configure] applies only the options supplied.
+If those options already match the effective configuration, the update is a
+no-op: the generation and warm products remain available. An effective
+configuration change advances the generation and invalidates each thread's
+products when that thread next uses them. [`gm.crs_clear_cache`][gometry.crs_clear_cache]
+and [`gm.crs_reset`][gometry.crs_reset] always advance the generation. A
+transform already using a cached operation can finish while another thread
+performs any of these invalidations; invalidation releases the owned cached
+objects without shutting down PROJ's process-wide resources.
+
 [PROJ](https://proj.org/) is the bundled authority backend. [EPSG](https://epsg.org/)
 codes, datum pipelines, grid-aware transforms, [WKT](https://www.ogc.org/standard/sfa/),
 and PROJJSON are available without requiring a system PROJ shared library in the

@@ -337,6 +337,9 @@ pub(crate) fn configure_runtime(
     if let Some(user_writable_directory) = user_writable_directory {
         config.user_writable_directory = Some(user_writable_directory);
     }
+    if config == *state.config {
+        return Ok(config);
+    }
     let updated = Arc::new(RuntimeState {
         generation: state.generation.wrapping_add(1),
         config: Arc::new(config),
