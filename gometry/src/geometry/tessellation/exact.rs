@@ -3144,7 +3144,10 @@ pub(super) fn try_circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
     try_line_intersection(&first, &second)
 }
 
-fn approximate_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Option<f64> {
+fn approximate_ratio_components(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+) -> Option<(f64, i64)> {
     let leading = |value: &ExactDyadic| -> Option<(u64, i64)> {
         let (&high, rest) = value.limbs.split_last()?;
         let next = rest.last().copied().unwrap_or(0);
@@ -3168,6 +3171,10 @@ fn approximate_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Opti
         significand *= 0.5;
         exponent = exponent.checked_add(1)?;
     }
+    Some((significand, exponent))
+}
+
+fn scale_approximation(significand: f64, exponent: i64) -> Option<f64> {
     if exponent > 1023 {
         Some(f64::MAX)
     } else if exponent >= -1022 {
@@ -3177,6 +3184,24 @@ fn approximate_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Opti
         Some(0.0)
     } else {
         Some(significand * f64::MIN_POSITIVE * 2.0_f64.powi(i32::try_from(exponent + 1022).ok()?))
+    }
+}
+
+fn approximate_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Option<f64> {
+    let (significand, exponent) = approximate_ratio_components(numerator, denominator)?;
+    scale_approximation(significand, exponent)
+}
+
+/// Approximate a positive exact ratio's square root without first rounding
+/// the squared ratio. The latter can underflow to zero even when its square
+/// root is a representable normal, so the ratio exponent must be halved before
+/// the final binary64 scaling.
+fn approximate_sqrt_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Option<f64> {
+    let (significand, exponent) = approximate_ratio_components(numerator, denominator)?;
+    if exponent.rem_euclid(2) == 0 {
+        scale_approximation(significand.sqrt(), exponent / 2)
+    } else {
+        scale_approximation((significand * 2.0).sqrt(), exponent.checked_sub(1)? / 2)
     }
 }
 
@@ -3411,7 +3436,7 @@ pub(in crate::geometry) fn round_sqrt_ratio(
     if numerator.cmp(&overflow_squared) != Ordering::Less {
         return Ok(f64::INFINITY);
     }
-    if let Some(proposal) = approximate_ratio(numerator, denominator).map(f64::sqrt)
+    if let Some(proposal) = approximate_sqrt_ratio(numerator, denominator)
         && proposal.is_finite()
     {
         let proposal = if proposal == 0.0 {
@@ -3454,7 +3479,6 @@ fn exact_sqrt_ratio_bracket(
     denominator: &ExactDyadic,
     proposal: f64,
 ) -> Result<Option<(u64, u64)>> {
-    const MAX_ULP_STEPS: usize = 8;
     let max_bits = f64::MAX.to_bits();
     let compare = |bits: u64| -> Result<Ordering> {
         let candidate = ExactDyadic::try_from_f64(f64::from_bits(bits))?;
@@ -3463,39 +3487,62 @@ fn exact_sqrt_ratio_bracket(
             .try_product(denominator)?;
         Ok(square.cmp(numerator))
     };
-    let mut bits = proposal.to_bits().min(max_bits);
-    match compare(bits)? {
+    let bits = proposal.to_bits().min(max_bits);
+    let (mut lower, mut upper) = match compare(bits)? {
         Ordering::Equal => return Ok(Some((bits, bits))),
         Ordering::Less => {
-            let lower = bits;
-            for _ in 0..MAX_ULP_STEPS {
-                if bits == max_bits {
+            let mut lower = bits;
+            let mut step = 1_u64;
+            loop {
+                let distance = max_bits - lower;
+                if distance == 0 {
                     return Ok(None);
                 }
-                bits += 1;
-                match compare(bits)? {
-                    Ordering::Less => {},
-                    Ordering::Equal => return Ok(Some((bits, bits))),
-                    Ordering::Greater => return Ok(Some((lower, bits))),
+                let candidate = lower + step.min(distance);
+                match compare(candidate)? {
+                    Ordering::Less => {
+                        lower = candidate;
+                        step = step.saturating_mul(2);
+                    },
+                    Ordering::Equal => return Ok(Some((candidate, candidate))),
+                    Ordering::Greater => break (lower, candidate),
                 }
             }
         },
         Ordering::Greater => {
-            let upper = bits;
-            for _ in 0..MAX_ULP_STEPS {
-                if bits == 0 {
+            let mut upper = bits;
+            let mut step = 1_u64;
+            loop {
+                if upper == 0 {
                     return Ok(None);
                 }
-                bits -= 1;
-                match compare(bits)? {
-                    Ordering::Greater => {},
-                    Ordering::Equal => return Ok(Some((bits, bits))),
-                    Ordering::Less => return Ok(Some((bits, upper))),
+                let candidate = upper - step.min(upper);
+                match compare(candidate)? {
+                    Ordering::Greater => {
+                        upper = candidate;
+                        step = step.saturating_mul(2);
+                    },
+                    Ordering::Equal => return Ok(Some((candidate, candidate))),
+                    Ordering::Less => break (candidate, upper),
                 }
             }
         },
+    };
+
+    // Exponential search finds a finite enclosing pair without assuming that
+    // the floating proposal is close to the exact root. Refine the pair until
+    // the returned endpoints are adjacent in binary64's nonnegative bit
+    // ordering; unlike a fixed ULP walk, this also covers both subnormal and
+    // binade boundaries without an arbitrary retry limit.
+    while upper - lower > 1 {
+        let middle = lower + (upper - lower) / 2;
+        match compare(middle)? {
+            Ordering::Less => lower = middle,
+            Ordering::Equal => return Ok(Some((middle, middle))),
+            Ordering::Greater => upper = middle,
+        }
     }
-    Ok(None)
+    Ok(Some((lower, upper)))
 }
 
 fn round_sqrt_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
@@ -3567,6 +3614,265 @@ mod sqrt_ratio_tests {
     }
 
     #[test]
+    fn min_subnormal_sqrt_ratio_uses_an_adjacent_bracket() {
+        let u = f64::from_bits(1);
+        let exact_u = ExactDyadic::try_from_f64(u).expect("minimum subnormal");
+        let two = ExactDyadic::try_from_f64(2.0).expect("exact two");
+        let two_u = exact_u.try_product(&two).expect("two minimum subnormals");
+        let squared = two_u
+            .try_product(&two_u)
+            .expect("squared two minimum subnormals")
+            .try_add(
+                exact_u
+                    .try_product(&exact_u)
+                    .expect("squared minimum subnormal"),
+            )
+            .expect("sqrt five squared ratio");
+        let denominator = ExactDyadic::one();
+        let bracket = exact_sqrt_ratio_bracket(&squared, &denominator, u)
+            .unwrap()
+            .expect("finite root bracket");
+        assert_eq!(bracket, (2, 3));
+        assert_eq!(
+            bracket.1 - bracket.0,
+            1,
+            "a non-singleton bracket is adjacent"
+        );
+        assert_eq!(
+            round_sqrt_ratio(&squared, &denominator).unwrap().to_bits(),
+            2,
+            "sqrt(5)u rounds to the even 2u endpoint"
+        );
+    }
+
+    #[test]
+    fn accepting_the_nonadjacent_min_subnormal_bracket_would_change_the_result() {
+        let u = ExactDyadic::try_from_f64(f64::from_bits(1)).expect("minimum subnormal");
+        let bad_lower = u.clone();
+        let bad_upper = u
+            .try_product(&ExactDyadic::try_from_f64(3.0).expect("exact three"))
+            .expect("three minimum subnormals");
+        let exact_squared = u
+            .try_product(&u)
+            .expect("squared minimum subnormal")
+            .try_product(&ExactDyadic::try_from_f64(5.0).expect("exact five"))
+            .expect("sqrt five squared ratio");
+        let midpoint = bad_lower
+            .try_add(bad_upper)
+            .expect("nonadjacent bracket sum")
+            .try_product(&ExactDyadic::try_from_f64(0.5).expect("exact half"))
+            .expect("nonadjacent bracket midpoint");
+        assert_eq!(
+            exact_squared
+                .try_product(&ExactDyadic::try_from_f64(4.0).expect("exact four"))
+                .expect("scaled exact ratio")
+                .cmp(
+                    &midpoint
+                        .try_product(&midpoint)
+                        .expect("nonadjacent midpoint square")
+                ),
+            Ordering::Greater,
+            "sqrt(5)u lies above the midpoint of the bad [u, 3u] bracket"
+        );
+        assert_eq!(
+            round_sqrt_ratio(&exact_squared, &ExactDyadic::one())
+                .unwrap()
+                .to_bits(),
+            2,
+            "the adjacent [2u, 3u] bracket is required for the correct result"
+        );
+    }
+
+    #[test]
+    fn sqrt_brackets_are_adjacent_at_subnormal_and_normal_boundaries() {
+        let one = ExactDyadic::one();
+        assert_eq!(
+            round_sqrt_ratio(&ExactDyadic::zero(), &one)
+                .unwrap()
+                .to_bits(),
+            0
+        );
+        let square = |value: f64| {
+            let value = ExactDyadic::try_from_f64(value).expect("finite boundary value");
+            value.try_product(&value).expect("boundary square")
+        };
+        let assert_bracket = |name: &str, numerator: &ExactDyadic, proposal: f64| {
+            let (lower, upper) = exact_sqrt_ratio_bracket(numerator, &one, proposal)
+                .unwrap()
+                .expect("finite boundary bracket");
+            if lower != upper {
+                assert_eq!(
+                    upper - lower,
+                    1,
+                    "{name}: non-singleton endpoints must be adjacent"
+                );
+            }
+            let lower_value = ExactDyadic::try_from_f64(f64::from_bits(lower)).unwrap();
+            let lower_squared = lower_value
+                .try_product(&lower_value)
+                .unwrap()
+                .try_product(&one)
+                .unwrap();
+            assert_ne!(
+                lower_squared.cmp(numerator),
+                Ordering::Greater,
+                "{name}: lower endpoint is above the root"
+            );
+            let upper_value = ExactDyadic::try_from_f64(f64::from_bits(upper)).unwrap();
+            let upper_squared = upper_value
+                .try_product(&upper_value)
+                .unwrap()
+                .try_product(&one)
+                .unwrap();
+            assert_ne!(
+                upper_squared.cmp(numerator),
+                Ordering::Less,
+                "{name}: upper endpoint is below the root"
+            );
+        };
+
+        let minimum_subnormal = f64::from_bits(1);
+        let below_minimum = ExactDyadic::from_parts(false, vec![1], -1075);
+        assert_bracket(
+            "below minimum subnormal",
+            &below_minimum.square(),
+            minimum_subnormal,
+        );
+        assert_eq!(
+            round_sqrt_ratio(&below_minimum.square(), &one)
+                .unwrap()
+                .to_bits(),
+            0
+        );
+
+        let subnormal_midpoint = {
+            let lower = ExactDyadic::from_f64(minimum_subnormal);
+            let upper = ExactDyadic::from_f64(f64::from_bits(2));
+            lower
+                .try_add(upper)
+                .unwrap()
+                .try_product(&ExactDyadic::from_f64(0.5))
+                .unwrap()
+        };
+        assert_bracket(
+            "minimum subnormal midpoint",
+            &subnormal_midpoint.square(),
+            minimum_subnormal,
+        );
+        assert_eq!(
+            round_sqrt_ratio(&subnormal_midpoint.square(), &one)
+                .unwrap()
+                .to_bits(),
+            2,
+            "the even upper endpoint wins the 1u/2u tie"
+        );
+
+        let largest_subnormal = f64::from_bits(0x000F_FFFF_FFFF_FFFF);
+        let minimum_normal = f64::from_bits(0x0010_0000_0000_0000);
+        let normal_boundary_midpoint = ExactDyadic::from_f64(largest_subnormal)
+            .try_add(ExactDyadic::from_f64(minimum_normal))
+            .unwrap()
+            .try_product(&ExactDyadic::from_f64(0.5))
+            .unwrap();
+        assert_bracket(
+            "subnormal/normal midpoint",
+            &normal_boundary_midpoint.square(),
+            largest_subnormal,
+        );
+        assert_eq!(
+            round_sqrt_ratio(&normal_boundary_midpoint.square(), &one)
+                .unwrap()
+                .to_bits(),
+            minimum_normal.to_bits(),
+            "the even minimum-normal endpoint wins the tie"
+        );
+
+        let normal_midpoint = ExactDyadic::from_f64(1.0)
+            .try_add(ExactDyadic::from_f64(1.0_f64.next_up()))
+            .unwrap()
+            .try_product(&ExactDyadic::from_f64(0.5))
+            .unwrap();
+        assert_bracket("normal midpoint", &normal_midpoint.square(), 1.0);
+        assert_eq!(
+            round_sqrt_ratio(&normal_midpoint.square(), &one)
+                .unwrap()
+                .to_bits(),
+            1.0_f64.to_bits(),
+            "the even lower endpoint wins the normal tie"
+        );
+
+        assert_eq!(
+            round_sqrt_ratio(&square(largest_subnormal), &one)
+                .unwrap()
+                .to_bits(),
+            largest_subnormal.to_bits()
+        );
+        assert_eq!(
+            round_sqrt_ratio(&square(minimum_normal), &one)
+                .unwrap()
+                .to_bits(),
+            minimum_normal.to_bits()
+        );
+    }
+
+    #[test]
+    fn sqrt_ratio_rounding_handles_the_overflow_boundary() {
+        let one = ExactDyadic::one();
+        let maximum = ExactDyadic::from_f64(f64::MAX);
+        let maximum_squared = maximum.square();
+        assert_eq!(
+            round_sqrt_ratio(&maximum_squared, &one).unwrap().to_bits(),
+            f64::MAX.to_bits()
+        );
+
+        let below_overflow = maximum
+            .clone()
+            .add(ExactDyadic::from_parts(false, vec![1], 969));
+        assert_eq!(
+            round_sqrt_ratio(&below_overflow.square(), &one)
+                .unwrap()
+                .to_bits(),
+            f64::MAX.to_bits()
+        );
+
+        let overflow_midpoint = maximum.add(ExactDyadic::from_parts(false, vec![1], 970));
+        assert!(
+            round_sqrt_ratio(&overflow_midpoint.square(), &one)
+                .unwrap()
+                .is_infinite(),
+            "the exact overflow midpoint rounds to infinity"
+        );
+    }
+
+    #[test]
+    fn sqrt_bracketing_has_no_proposal_distance_limit() {
+        let numerator = ExactDyadic::from_f64(2.0);
+        let denominator = ExactDyadic::one();
+        for proposal in [0.0, f64::MAX] {
+            let (lower, upper) = exact_sqrt_ratio_bracket(&numerator, &denominator, proposal)
+                .unwrap()
+                .expect("finite root bracket");
+            assert_eq!(
+                upper - lower,
+                1,
+                "proposal {proposal:?} must still produce adjacent endpoints"
+            );
+            assert_ne!(
+                ExactDyadic::from_f64(f64::from_bits(lower))
+                    .square()
+                    .cmp(&numerator),
+                Ordering::Greater
+            );
+            assert_ne!(
+                ExactDyadic::from_f64(f64::from_bits(upper))
+                    .square()
+                    .cmp(&numerator),
+                Ordering::Less
+            );
+        }
+    }
+
+    #[test]
     fn proposed_sqrt_bracket_matches_the_complete_binary_reference() {
         for (numerator, denominator) in [
             (1.0, 1.0),
@@ -3597,14 +3903,19 @@ mod sqrt_ratio_tests {
         let (_, allocations) =
             crate::test_support::allocation_count(|| round_sqrt_ratio(&numerator, &denominator));
         assert!(allocations > 0, "exact neighbor comparison must allocate");
-        let error = crate::test_support::fail_allocations_after(0, || {
-            round_sqrt_ratio(&numerator, &denominator)
-        })
-        .unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
+        for allowed in 0..allocations {
+            let error = crate::test_support::fail_allocations_after(allowed, || {
+                round_sqrt_ratio(&numerator, &denominator)
+            })
+            .unwrap_err();
+            assert!(
+                matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+                ),
+                "allocation prefix {allowed}"
+            );
+        }
     }
 }
 

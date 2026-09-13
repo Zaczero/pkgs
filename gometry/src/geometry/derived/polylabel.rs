@@ -1948,6 +1948,23 @@ mod tests {
     }
 
     #[test]
+    fn minimum_circle_radius_rounds_min_subnormal_support_exactly() {
+        let u = f64::from_bits(1);
+        let shape = Shape::MultiPoint(
+            crate::geometry::MultiPoint::try_new(crate::geometry::CoordinateAxes::XY, vec![
+                crate::geometry::MultiMember::Value(Point::new_raw_xy(0.0, 0.0)),
+                crate::geometry::MultiMember::Value(Point::new_raw_xy(4.0 * u, 2.0 * u)),
+            ])
+            .expect("minimum-subnormal pair"),
+        );
+        assert_eq!(
+            shape.minimum_bounding_radius().unwrap().to_bits(),
+            2,
+            "the pair's exact radius sqrt(5)u rounds to 2u"
+        );
+    }
+
+    #[test]
     fn minimum_circle_polygon_propagates_emission_allocation_failures() {
         let shape = Shape::MultiPoint(
             crate::geometry::MultiPoint::try_new(crate::geometry::CoordinateAxes::XY, vec![
