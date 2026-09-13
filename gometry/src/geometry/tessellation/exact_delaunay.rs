@@ -23,8 +23,7 @@
     reason = "a, b, c, d name the vertices of a quad and e, f, t, u its slots, the geometry kernel convention"
 )]
 
-use super::exact_corner_hull_cycle;
-use crate::collections::HashSet;
+use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY};
@@ -90,32 +89,49 @@ impl Mesh {
     /// and refinement can keep inserting into it; `None` when the sites are
     /// collinear and there is no triangle to build.
     pub(super) fn delaunay(points: &[Point]) -> Option<Self> {
-        let hull = exact_corner_hull_cycle(points);
+        Self::try_delaunay(points)
+            .unwrap_or_else(|_| unreachable!("unconstrained mesh allocation failed"))
+    }
+
+    /// Fallible exact Delaunay construction for the constrained path. The
+    /// legacy infallible wrapper above remains the owner of the unconstrained
+    /// public shape, while every allocation needed before constrained
+    /// publication is returned to its caller.
+    pub(super) fn try_delaunay(points: &[Point]) -> Result<Option<Self>> {
+        let hull = super::try_exact_corner_hull_cycle(points)?;
         if hull.len() < 3 {
-            return None;
+            return Ok(None);
         }
         let xy = |site: usize| points[site].xy();
-        let mut mesh = Self::seed(&hull, points.len());
-        mesh.legalize(&xy);
+        let mut mesh = Self::try_seed(&hull, points.len())?;
+        mesh.try_legalize(&xy)?;
 
         // Interior sites: not on the hull, not an exact duplicate of a site
         // already placed, in Hilbert order over the point bounds.
-        let mut placed: HashSet<[u64; 2]> = hull.iter().map(|&s| key(xy(s))).collect();
-        let hull_sites: HashSet<usize> = hull.iter().copied().collect();
+        let mut placed = crate::collections::try_hash_set_with_capacity(points.len())?;
+        for &site in &hull {
+            placed.insert(key(xy(site)));
+        }
+        let mut hull_sites = crate::collections::try_hash_set_with_capacity(hull.len())?;
+        for &site in &hull {
+            hull_sites.insert(site);
+        }
         let (min, max) = bounds(points);
-        let mut interior: Vec<(u32, usize)> = (0..points.len())
-            .filter(|site| !hull_sites.contains(site))
-            .filter(|&site| placed.insert(key(xy(site))))
-            .map(|site| (hilbert16(xy(site), min, max), site))
-            .collect();
+        let mut interior = Vec::new();
+        crate::try_reserve_vec(&mut interior, points.len())?;
+        for site in 0..points.len() {
+            if !hull_sites.contains(&site) && placed.insert(key(xy(site))) {
+                crate::try_push_vec(&mut interior, (hilbert16(xy(site), min, max), site))?;
+            }
+        }
         interior.sort_unstable();
 
         let mut last = 0_usize;
         for (_, site) in interior {
             let located = mesh.locate(&xy, last, xy(site));
-            last = mesh.insert_with(&xy, site, located, None);
+            last = mesh.try_insert_with(&xy, site, located, None)?;
         }
-        Some(mesh)
+        Ok(Some(mesh))
     }
 }
 
@@ -204,10 +220,16 @@ pub(super) struct Mesh {
 }
 
 impl Mesh {
-    fn seed(hull: &[usize], vertex_count: usize) -> Self {
+    fn try_seed(hull: &[usize], vertex_count: usize) -> Result<Self> {
         let count = hull.len() - 2;
-        let mut triangles = Vec::with_capacity(count * 3);
-        let mut halfedges = vec![EMPTY; count * 3];
+        let slots = count
+            .checked_mul(3)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let mut triangles = Vec::new();
+        crate::try_reserve_vec(&mut triangles, slots)?;
+        let mut halfedges = Vec::new();
+        crate::try_reserve_vec(&mut halfedges, slots)?;
+        halfedges.resize(slots, EMPTY);
         for (t, index) in (1..hull.len() - 1).enumerate() {
             triangles.extend([hull[0], hull[index], hull[index + 1]]);
             // Fan triangles share the spoke `hull[0]..hull[index + 1]`: slot 2
@@ -218,21 +240,29 @@ impl Mesh {
                 halfedges[3 * (t + 1)] = 3 * t + 2;
             }
         }
-        let mut incident = vec![EMPTY; vertex_count];
+        let mut incident = Vec::new();
+        crate::try_reserve_vec(&mut incident, vertex_count)?;
+        incident.resize(vertex_count, EMPTY);
         for (slot, &v) in triangles.iter().enumerate() {
             if incident[v] == EMPTY {
                 incident[v] = slot;
             }
         }
-        Self {
+        let mut hull_copy = Vec::new();
+        crate::try_reserve_vec(&mut hull_copy, hull.len())?;
+        hull_copy.extend_from_slice(hull);
+        let mut stamp = Vec::new();
+        crate::try_reserve_vec(&mut stamp, count)?;
+        stamp.resize(count, 0);
+        Ok(Self {
             triangles,
             halfedges,
-            hull: hull.to_vec(),
+            hull: hull_copy,
             incident,
             free: Vec::new(),
-            stamp: vec![0; count],
+            stamp,
             epoch: 0,
-        }
+        })
     }
 
     pub(super) const fn triangle_count(&self) -> usize {
@@ -245,29 +275,30 @@ impl Mesh {
 
     /// Every halfedge slot leaving `u`, walking its fan both ways so a hull
     /// vertex's open fan is covered too.
-    pub(super) fn outgoing(&self, u: usize) -> Vec<usize> {
+    pub(super) fn outgoing(&self, u: usize) -> Result<Vec<usize>> {
         let start = self.incident[u];
         let mut slots = Vec::new();
+        crate::try_reserve_vec(&mut slots, self.triangle_count())?;
         if start == EMPTY || !self.alive(start / 3) || self.triangles[start] != u {
             // The remembered slot died in a cavity: fall back to a scan.
             for e in 0..self.triangles.len() {
                 if self.alive(e / 3) && self.triangles[e] == u {
-                    slots.push(e);
+                    crate::try_push_vec(&mut slots, e)?;
                 }
             }
-            return slots;
+            return Ok(slots);
         }
         // Counter-clockwise: across the edge into `u`.
         let mut e = start;
         loop {
-            slots.push(e);
+            crate::try_push_vec(&mut slots, e)?;
             let twin = self.halfedges[prev_halfedge(e)];
             if twin == EMPTY {
                 break;
             }
             e = twin;
             if e == start {
-                return slots;
+                return Ok(slots);
             }
         }
         // Clockwise from the start: across the edge out of `u`.
@@ -281,22 +312,26 @@ impl Mesh {
             if e == start {
                 break;
             }
-            slots.push(e);
+            crate::try_push_vec(&mut slots, e)?;
         }
-        slots
+        Ok(slots)
     }
 
     /// The slot of the edge between `u` and `v` in either direction, if it
     /// is an edge; a hull edge exists as one halfedge only.
-    pub(super) fn edge_slot(&self, u: usize, v: usize) -> Option<usize> {
-        self.directed_slot(u, v)
-            .or_else(|| self.directed_slot(v, u))
+    pub(super) fn edge_slot(&self, u: usize, v: usize) -> Result<Option<usize>> {
+        if let Some(slot) = self.directed_slot(u, v)? {
+            return Ok(Some(slot));
+        }
+        self.directed_slot(v, u)
     }
 
-    fn directed_slot(&self, u: usize, v: usize) -> Option<usize> {
-        self.outgoing(u)
-            .into_iter()
-            .find(|&e| self.triangles[next_halfedge(e)] == v)
+    fn directed_slot(&self, u: usize, v: usize) -> Result<Option<usize>> {
+        self.outgoing(u).map(|slots| {
+            slots
+                .into_iter()
+                .find(|&e| self.triangles[next_halfedge(e)] == v)
+        })
     }
 
     /// Lawson legalization of every interior edge: flip while the twin's apex
@@ -305,10 +340,14 @@ impl Mesh {
     /// Delaunay property only from a Delaunay start. A slot left on the stack
     /// by a flip names whatever edge now lives there; re-checking a legal
     /// edge is harmless, and every edge a flip disturbed is pushed again.
-    fn legalize(&mut self, xy: &impl Fn(usize) -> XY) {
-        let mut stack: Vec<usize> = (0..self.halfedges.len())
-            .filter(|&e| self.halfedges[e] != EMPTY && self.halfedges[e] > e)
-            .collect();
+    fn try_legalize(&mut self, xy: &impl Fn(usize) -> XY) -> Result<()> {
+        let mut stack = Vec::new();
+        crate::try_reserve_vec(&mut stack, self.halfedges.len())?;
+        for e in 0..self.halfedges.len() {
+            if self.halfedges[e] != EMPTY && self.halfedges[e] > e {
+                crate::try_push_vec(&mut stack, e)?;
+            }
+        }
         while let Some(e) = stack.pop() {
             let f = self.halfedges[e];
             if f == EMPTY {
@@ -316,18 +355,21 @@ impl Mesh {
             }
             let [a, b, c] = self.triangle(e / 3);
             let d = self.triangles[prev_halfedge(f)];
-            if exact::incircle(xy(a), xy(b), xy(c), xy(d)) != ExactSign::Positive {
+            if exact::try_incircle(xy(a), xy(b), xy(c), xy(d))? != ExactSign::Positive {
                 continue;
             }
             let g = self.flip(e);
             let h = self.halfedges[g];
-            stack.extend([
+            for edge in [
                 next_halfedge(g),
                 prev_halfedge(g),
                 next_halfedge(h),
                 prev_halfedge(h),
-            ]);
+            ] {
+                crate::try_push_vec(&mut stack, edge)?;
+            }
         }
+        Ok(())
     }
 
     /// Flip the edge at slot `e` (`a -> b`, apex `c`; twin apex `d`) to
@@ -470,43 +512,47 @@ impl Mesh {
     /// Insert `site` at `located`, returning a triangle incident to it for the
     /// next walk to start from. A cavity never crosses a slot `skip` marks:
     /// that is how a constraint, once in, stays in.
-    pub(super) fn insert_with(
+    pub(super) fn try_insert_with(
         &mut self,
         xy: &impl Fn(usize) -> XY,
         site: usize,
         located: Located,
         skip: Option<&[bool]>,
-    ) -> usize {
+    ) -> Result<usize> {
         let p = xy(site);
         // A site on a hull edge splits that edge: the cavity boundary is then
         // an open chain from the edge's end to its start, the site joins the
         // hull between them, and the two chain ends become hull edges.
         let mut split_hull: Option<(usize, usize)> = None;
-        let seeds: Vec<usize> = match located {
-            Located::OnVertex => return self.any_alive(),
-            Located::Inside(t) => vec![t],
+        let mut seeds = Vec::new();
+        crate::try_reserve_vec(&mut seeds, 2)?;
+        match located {
+            Located::OnVertex => return Ok(self.any_alive()),
+            Located::Inside(t) => crate::try_push_vec(&mut seeds, t)?,
             Located::OnEdge(e) => {
                 let twin = self.halfedges[e];
                 if twin == EMPTY {
                     split_hull = Some((self.triangles[e], self.triangles[next_halfedge(e)]));
-                    vec![e / 3]
+                    crate::try_push_vec(&mut seeds, e / 3)?;
                 } else {
-                    vec![e / 3, twin / 3]
+                    crate::try_push_vec(&mut seeds, e / 3)?;
+                    crate::try_push_vec(&mut seeds, twin / 3)?;
                 }
             },
-        };
+        }
         // The cavity: every triangle reachable from the seeds across edges
         // whose far triangle's circumcircle strictly contains p. The seeds
         // themselves are in by construction (p is inside or on them).
         self.epoch += 1;
         let epoch = self.epoch;
         let mut cavity = Vec::new();
+        crate::try_reserve_vec(&mut cavity, self.triangle_count())?;
         let mut stack = seeds;
         for &t in &stack {
             self.stamp[t] = epoch;
         }
         while let Some(t) = stack.pop() {
-            cavity.push(t);
+            crate::try_push_vec(&mut cavity, t)?;
             for i in 0..3 {
                 let e = 3 * t + i;
                 let twin = self.halfedges[e];
@@ -518,9 +564,9 @@ impl Mesh {
                     continue;
                 }
                 let [a, b, c] = self.triangle(n);
-                if exact::incircle(xy(a), xy(b), xy(c), p) == ExactSign::Positive {
+                if exact::try_incircle(xy(a), xy(b), xy(c), p)? == ExactSign::Positive {
                     self.stamp[n] = epoch;
-                    stack.push(n);
+                    crate::try_push_vec(&mut stack, n)?;
                 }
             }
         }
@@ -528,6 +574,11 @@ impl Mesh {
         // outside the cavity (or the hull). Each becomes one new triangle
         // with the site as its third vertex, in the boundary's own order.
         let mut boundary: Vec<(usize, usize, usize)> = Vec::new(); // (a, b, twin slot)
+        let boundary_capacity = cavity
+            .len()
+            .checked_mul(3)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        crate::try_reserve_vec(&mut boundary, boundary_capacity)?;
         for &t in &cavity {
             for i in 0..3 {
                 let e = 3 * t + i;
@@ -537,19 +588,16 @@ impl Mesh {
                     continue; // the split edge is not a boundary: the site lies on it
                 }
                 if twin == EMPTY || self.stamp[twin / 3] != epoch {
-                    boundary.push((ends.0, ends.1, twin));
+                    crate::try_push_vec(&mut boundary, (ends.0, ends.1, twin))?;
                 }
             }
-        }
-        for &t in &cavity {
-            self.triangles[3 * t] = EMPTY;
-            self.free.push(t);
         }
         // Chain the boundary edges: a -> b, then the edge starting at b, and
         // so on. A closed cycle around an interior site; for a hull split, an
         // open chain from the split edge's end around to its start.
         let start = split_hull.map_or(boundary[0].0, |(_, b)| b);
-        let mut ordered = Vec::with_capacity(boundary.len());
+        let mut ordered = Vec::new();
+        crate::try_reserve_vec(&mut ordered, boundary.len())?;
         let mut at = start;
         for _ in 0..boundary.len() {
             let (index, &(a, b, twin)) = boundary
@@ -557,7 +605,7 @@ impl Mesh {
                 .enumerate()
                 .find(|(_, entry)| entry.0 == at)
                 .expect("a cavity boundary is one chain");
-            ordered.push((a, b, twin));
+            crate::try_push_vec(&mut ordered, (a, b, twin))?;
             boundary.swap_remove(index);
             at = b;
         }
@@ -565,13 +613,35 @@ impl Mesh {
             split_hull.is_some_and(|(a, _)| a == at) || at == start,
             "the cavity boundary closed"
         );
+        let free_after_cavity = self
+            .free
+            .len()
+            .checked_add(cavity.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let new_slots = ordered.len().saturating_sub(free_after_cavity);
+        let new_triangles = new_slots
+            .checked_mul(3)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        self.free.try_reserve(cavity.len())?;
+        self.triangles.try_reserve(new_triangles)?;
+        self.halfedges.try_reserve(new_triangles)?;
+        self.stamp.try_reserve(new_slots)?;
+        if split_hull.is_some() {
+            self.hull.try_reserve(1)?;
+        }
+        let mut slots = Vec::new();
+        crate::try_reserve_vec(&mut slots, ordered.len())?;
+        for &t in &cavity {
+            self.triangles[3 * t] = EMPTY;
+            self.free.push(t);
+        }
         // New triangles (a, b, site): slot 0 = a->b twins the outside, slot 1 =
         // b->site twins slot 2 of the next, slot 2 = site->a twins slot 1 of
         // the previous.
         let count = ordered.len();
-        let slots: Vec<usize> = std::iter::repeat_with(|| self.take_slot())
-            .take(count)
-            .collect();
+        for _ in 0..count {
+            crate::try_push_vec(&mut slots, self.take_slot())?;
+        }
         let mut first = 0;
         for (k, &(a, b, twin)) in ordered.iter().enumerate() {
             let t = slots[k];
@@ -604,7 +674,7 @@ impl Mesh {
                 .expect("a hull edge starts on the hull");
             self.hull.insert(position + 1, site);
         }
-        first
+        Ok(first)
     }
 
     pub(super) fn insert_constrained(
@@ -613,8 +683,8 @@ impl Mesh {
         site: usize,
         located: Located,
         skip: &[bool],
-    ) -> usize {
-        self.insert_with(xy, site, located, Some(skip))
+    ) -> Result<usize> {
+        self.try_insert_with(xy, site, located, Some(skip))
     }
 
     pub(super) fn triangle(&self, t: usize) -> [usize; 3] {
@@ -639,10 +709,15 @@ impl Mesh {
 
     /// Grow the incidence table for sites appended after construction
     /// (refinement vertices).
-    pub(super) fn admit_vertex(&mut self, site: usize) {
-        if self.incident.len() <= site {
-            self.incident.resize(site + 1, EMPTY);
+    pub(super) fn admit_vertex(&mut self, site: usize) -> Result<()> {
+        let required = site
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        if self.incident.len() < required {
+            self.incident.try_reserve(required - self.incident.len())?;
+            self.incident.resize(required, EMPTY);
         }
+        Ok(())
     }
 
     /// Compact out the dead slots, remap twins, and flag cocircular edges

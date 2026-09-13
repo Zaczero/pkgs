@@ -15,7 +15,7 @@
 //! (none exists today; H3 `CellIndex` is a foreign `NonZero` wrapper without an
 //! `IsEnabled` impl).
 
-use std::hash::BuildHasher as _;
+use std::hash::{BuildHasher as _, Hash};
 use std::sync::{LazyLock, OnceLock};
 
 pub(crate) use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
@@ -24,6 +24,30 @@ static COLLECTION_HASH_STATE: OnceLock<ahash::RandomState> = OnceLock::new();
 
 pub(crate) fn collection_hash_state() -> crate::error::Result<&'static ahash::RandomState> {
     collection_hash_state_with(&COLLECTION_HASH_STATE, getrandom::fill)
+}
+
+/// Construct a crate-owned hash map with the fallible process hash state and
+/// reserve its validated element count before the caller inserts anything.
+pub(crate) fn try_hash_map_with_capacity<K, V>(
+    capacity: usize,
+) -> crate::error::Result<HashMap<K, V>>
+where
+    K: Eq + Hash,
+{
+    let mut map = HashMap::with_hasher(collection_hash_state()?.clone());
+    map.try_reserve(capacity)?;
+    Ok(map)
+}
+
+/// Construct a crate-owned hash set with the fallible process hash state and
+/// reserve its validated element count before the caller inserts anything.
+pub(crate) fn try_hash_set_with_capacity<T>(capacity: usize) -> crate::error::Result<HashSet<T>>
+where
+    T: Eq + Hash,
+{
+    let mut set = HashSet::with_hasher(collection_hash_state()?.clone());
+    set.try_reserve(capacity)?;
+    Ok(set)
 }
 
 fn collection_hash_state_with(
@@ -196,6 +220,28 @@ mod row_id_sort_tests {
             super::collection_hash_state_with(&state, |_| panic!("initialized entropy reused"))
                 .unwrap();
         assert!(std::ptr::eq(first, reused));
+    }
+
+    #[test]
+    fn fallible_hash_collections_return_allocation_errors_and_retry() {
+        use crate::error::{ErrorKind, ResourceError};
+
+        let map = crate::test_support::fail_allocations_after(0, || {
+            super::try_hash_map_with_capacity::<u64, u64>(8)
+        });
+        assert!(matches!(
+            map.unwrap_err().kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        let set = crate::test_support::fail_allocations_after(0, || {
+            super::try_hash_set_with_capacity::<u64>(8)
+        });
+        assert!(matches!(
+            set.unwrap_err().kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        super::try_hash_map_with_capacity::<u64, u64>(8).unwrap();
+        super::try_hash_set_with_capacity::<u64>(8).unwrap();
     }
 
     #[test]

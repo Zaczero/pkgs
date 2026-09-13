@@ -106,17 +106,18 @@ impl Shape {
             )
             .into());
         }
-        vertices
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|ring| {
-                Ok(Self::Polygon(Polygon::new(
+        let mut shapes = Vec::new();
+        crate::try_reserve_vec(&mut shapes, vertices.len() / 4)?;
+        for ring in vertices.as_chunks::<4>().0 {
+            crate::try_push_vec(
+                &mut shapes,
+                Self::Polygon(Polygon::new(
                     Ring::from_closed(CoordSeq::try_from_points(ring)?),
                     Vec::new(),
-                )?))
-            })
-            .collect()
+                )?),
+            )?;
+        }
+        Ok(shapes)
     }
 
     /// The Delaunay triangulation as one flat CLOSED-ring vertex stream — four
@@ -128,41 +129,39 @@ impl Shape {
         self.delaunay_triangle_vertices_budgeted(&mut budget)
     }
 
-    fn delaunay_points(&self) -> Vec<Point> {
+    fn delaunay_points(&self) -> Result<Vec<Point>> {
         // XY-unique vertices keeping FULL ordinates (first-seen Z/M): triangle
         // corners are input vertices, so carrying their Z/M here preserves it
         // directly — no post-hoc XY re-lookup (the old `carry_each` step).
         let capacity = self.coord_count();
-        let mut source_points: Vec<Point> = Vec::with_capacity(capacity);
-        self.for_each_point(|point| {
-            source_points.push(point);
-        });
-        let (points, _) = selected_source_sites(source_points);
+        let mut source_points = Vec::new();
+        crate::try_reserve_vec(&mut source_points, capacity)?;
+        self.try_for_each_point(|point| crate::try_push_vec(&mut source_points, point))?;
+        let (points, _) = selected_source_sites(source_points)?;
         if points.len() < 3 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         // The exact engine takes the unique vertices as they are: no
         // conversion, no proposal path, no repair afterwards.
-        points
+        Ok(points)
     }
 
     pub(crate) fn delaunay_triangle_vertices_budgeted(
         &self,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Point>> {
-        let points = self.delaunay_points();
+        let points = self.delaunay_points()?;
         if points.len() < 3 {
             return Ok(Vec::new());
         }
         // The triangulation's indexed faces are input-sized working state; the
         // closed-ring vertices below are the generated output. Charge their
         // exact count before reserving or emitting any of them.
-        let sites: Vec<_> = points
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(id, point)| Site { id, point })
-            .collect();
+        let mut sites = Vec::new();
+        crate::try_reserve_vec(&mut sites, points.len())?;
+        for (id, &point) in points.iter().enumerate() {
+            crate::try_push_vec(&mut sites, Site { id, point })?;
+        }
         let triangulation = certified_delaunay(&sites);
         let capacity = triangulation
             .triangles()

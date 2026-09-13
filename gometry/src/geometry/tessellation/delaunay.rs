@@ -9,7 +9,7 @@
 
 use std::cmp::Ordering;
 
-use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
+use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
 use crate::geometry::{
@@ -297,22 +297,31 @@ pub(crate) fn delaunay_triangulation(points: &[Point]) -> Triangulation {
 /// the engine fans from; without it collinear boundary sites stay on the
 /// cycle, and a wholly collinear input yields its collinear order instead.
 fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
+    try_hull_cycle(points, corners)
+        .unwrap_or_else(|_| unreachable!("exact hull construction allocation failed"))
+}
+
+fn try_hull_cycle(points: &[Point], corners: bool) -> Result<Vec<usize>> {
     let xy = |site: usize| points[site].xy();
     let orient = |a: usize, b: usize, c: usize| exact::orient2d(xy(a), xy(b), xy(c));
-    let mut order: Vec<_> = (0..points.len()).collect();
+    let mut order = Vec::new();
+    crate::try_reserve_vec(&mut order, points.len())?;
+    for site in 0..points.len() {
+        crate::try_push_vec(&mut order, site)?;
+    }
     order.sort_unstable_by(|&a, &b| {
         geometric_cmp(xy(a).x, xy(b).x).then_with(|| geometric_cmp(xy(a).y, xy(b).y))
     });
     if !corners {
         let Some(&last) = order.last() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         if order.len() < 3
             || order
                 .iter()
                 .all(|&site| orient(order[0], last, site) == ExactSign::Zero)
         {
-            return collinear_order(points);
+            return try_collinear_order(points);
         }
     }
     let pops = |sign: ExactSign| {
@@ -323,24 +332,28 @@ fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
         }
     };
     let mut lower: Vec<usize> = Vec::new();
+    crate::try_reserve_vec(&mut lower, order.len())?;
     for &site in &order {
         while lower.len() >= 2 && pops(orient(lower[lower.len() - 2], lower[lower.len() - 1], site))
         {
             lower.pop();
         }
-        lower.push(site);
+        crate::try_push_vec(&mut lower, site)?;
     }
     let mut upper: Vec<usize> = Vec::new();
+    crate::try_reserve_vec(&mut upper, order.len())?;
     for &site in order.iter().rev() {
         while upper.len() >= 2 && pops(orient(upper[upper.len() - 2], upper[upper.len() - 1], site))
         {
             upper.pop();
         }
-        upper.push(site);
+        crate::try_push_vec(&mut upper, site)?;
     }
     lower.pop();
     upper.pop();
-    lower.extend(upper);
+    for site in upper {
+        crate::try_push_vec(&mut lower, site)?;
+    }
     if let Some(start) = lower
         .iter()
         .enumerate()
@@ -349,11 +362,16 @@ fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
     {
         lower.rotate_left(start);
     }
-    lower
+    Ok(lower)
 }
 
+#[cfg(test)]
 pub(super) fn exact_corner_hull_cycle(points: &[Point]) -> Vec<usize> {
     hull_cycle(points, true)
+}
+
+pub(super) fn try_exact_corner_hull_cycle(points: &[Point]) -> Result<Vec<usize>> {
+    try_hull_cycle(points, true)
 }
 
 pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
@@ -361,8 +379,12 @@ pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
 }
 
 /// Collinear sites in order along their longer extent.
-fn collinear_order(points: &[Point]) -> Vec<usize> {
-    let mut order: Vec<_> = (0..points.len()).collect();
+fn try_collinear_order(points: &[Point]) -> Result<Vec<usize>> {
+    let mut order = Vec::new();
+    crate::try_reserve_vec(&mut order, points.len())?;
+    for site in 0..points.len() {
+        crate::try_push_vec(&mut order, site)?;
+    }
     let (minx, maxx, miny, maxy) = points.iter().fold(
         (
             f64::INFINITY,
@@ -390,7 +412,7 @@ fn collinear_order(points: &[Point]) -> Vec<usize> {
                 .then_with(|| geometric_cmp(points[left].x, points[right].x))
         });
     }
-    order
+    Ok(order)
 }
 
 /// Geometric coordinate order: values that compare equal, including mixed
@@ -455,11 +477,15 @@ fn constrained_triangle_plan<'a>(
     area: f64,
     refinement: CdtRefinement,
 ) -> Result<cdt::ConstrainedMeshPlan> {
-    let rings: Vec<&CoordSeq> = rings.collect();
+    let mut ring_list = Vec::new();
+    for ring in rings {
+        crate::try_push_vec(&mut ring_list, ring)?;
+    }
+    let rings = ring_list;
     let force_xy = refinement.active();
     let refinement = effective_refinement(area, refinement);
     validate_refinement_request(area, refinement)?;
-    let (mut vertices, occurrences, sources) = constrained_source_plan(&rings);
+    let (mut vertices, occurrences, sources) = constrained_source_plan(&rings)?;
     let Some(mut cdt) =
         cdt::ConstrainedMesh::build_with_sources(&vertices, &occurrences, &sources)?
     else {
@@ -581,40 +607,58 @@ pub(super) fn selected_triangle_points(
 /// Select the first full source point at each XY key, then order sites by XY
 /// for the exact mesh. The occurrence index remains attached to the selected
 /// point so publication never has to resolve ordinates from a second source.
-pub(super) fn selected_source_sites(points: Vec<Point>) -> (Vec<Point>, Vec<usize>) {
-    let mut selected = HashMap::with_capacity(points.len());
+pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, Vec<usize>)> {
+    let mut selected = crate::collections::try_hash_map_with_capacity(points.len())?;
     for (occurrence, point) in points.into_iter().enumerate() {
         selected
             .entry(PointKey::new(point))
             .or_insert((point, occurrence));
     }
-    let mut selected: Vec<_> = selected.into_values().collect();
+    let mut selected_values = Vec::new();
+    crate::try_reserve_vec(&mut selected_values, selected.len())?;
+    for value in selected.into_values() {
+        crate::try_push_vec(&mut selected_values, value)?;
+    }
+    let mut selected = selected_values;
     selected.sort_unstable_by(|(left, _), (right, _)| {
         left.x
             .total_cmp(&right.x)
             .then_with(|| left.y.total_cmp(&right.y))
     });
-    selected.into_iter().unzip()
+    let mut sites = Vec::new();
+    let mut occurrences = Vec::new();
+    crate::try_reserve_vec(&mut sites, selected.len())?;
+    crate::try_reserve_vec(&mut occurrences, selected.len())?;
+    for (point, occurrence) in selected {
+        crate::try_push_vec(&mut sites, point)?;
+        crate::try_push_vec(&mut occurrences, occurrence)?;
+    }
+    Ok((sites, occurrences))
 }
 
 fn constrained_source_plan(
     rings: &[&CoordSeq],
-) -> (Vec<Point>, Vec<usize>, Vec<cdt::SourceConstraint>) {
-    let capacity: usize = rings.iter().map(|ring| ring.coord_count()).sum();
-    let mut source_points = Vec::with_capacity(capacity);
+) -> Result<(Vec<Point>, Vec<usize>, Vec<cdt::SourceConstraint>)> {
+    let capacity = rings.iter().try_fold(0_usize, |total, ring| {
+        total
+            .checked_add(ring.coord_count())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    let mut source_points = Vec::new();
+    crate::try_reserve_vec(&mut source_points, capacity)?;
     for ring in rings {
         for index in 0..ring.coord_count() {
-            source_points.push(ring.nth_coord(index));
+            crate::try_push_vec(&mut source_points, ring.nth_coord(index))?;
         }
     }
-    let (vertices, occurrences) = selected_source_sites(source_points);
-    let indices: HashMap<_, _> = vertices
-        .iter()
-        .enumerate()
-        .map(|(site, point)| (PointKey::new(*point), site))
-        .collect();
+    let (vertices, occurrences) = selected_source_sites(source_points)?;
+    let mut indices = crate::collections::try_hash_map_with_capacity(vertices.len())?;
+    for (site, point) in vertices.iter().enumerate() {
+        indices.insert(PointKey::new(*point), site);
+    }
     let mut sources = Vec::new();
-    let mut seen = HashSet::with_capacity(capacity);
+    crate::try_reserve_vec(&mut sources, capacity)?;
+    let mut seen = crate::collections::try_hash_set_with_capacity(capacity)?;
     for ring in rings {
         for index in 0..ring.coord_count().saturating_sub(1) {
             let start = ring.nth_coord(index);
@@ -628,16 +672,17 @@ fn constrained_source_plan(
             }
             let start_site = indices[&PointKey::new(start)];
             let end_site = indices[&PointKey::new(end)];
-            sources.push(cdt::SourceConstraint {
-                id: sources.len(),
+            let id = sources.len();
+            crate::try_push_vec(&mut sources, cdt::SourceConstraint {
+                id,
                 start: vertices[start_site],
                 end: vertices[end_site],
                 start_site,
                 end_site,
-            });
+            })?;
         }
     }
-    (vertices, occurrences, sources)
+    Ok((vertices, occurrences, sources))
 }
 
 fn ordered_constraint_key(a: XY, b: XY) -> (PointKey, PointKey) {
@@ -652,7 +697,7 @@ fn ordered_constraint_key(a: XY, b: XY) -> (PointKey, PointKey) {
 #[cfg(test)]
 pub(crate) fn cleanup_constraint_lines(lines: Vec<[XY; 2]>) -> Vec<[XY; 2]> {
     let mut prepared: Vec<[XY; 2]> = Vec::with_capacity(lines.len());
-    let mut seen: HashSet<(PointKey, PointKey)> = HashSet::with_capacity(lines.len());
+    let mut seen = std::collections::HashSet::with_capacity(lines.len());
     for [start, end] in lines {
         if !same_point(start, end) && seen.insert(ordered_constraint_key(start, end)) {
             prepared.push([start, end]);
@@ -664,6 +709,7 @@ pub(crate) fn cleanup_constraint_lines(lines: Vec<[XY; 2]>) -> Vec<[XY; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn sites(points: &[(f64, f64)]) -> Vec<Site> {
         points
@@ -734,5 +780,76 @@ mod tests {
             }
         }
         assert_eq!(topology.hull, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn constrained_source_plan_allocation_prefixes_are_retryable() {
+        let ring = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(4.0, 0.0),
+            Point::new_raw_xy(4.0, 4.0),
+            Point::new_raw_xy(0.0, 4.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ])
+        .unwrap();
+        let rings = [&ring];
+        let (result, allocations) = allocation_count(|| constrained_source_plan(&rings));
+        result.unwrap();
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let result = fail_allocations_after(allowed, || constrained_source_plan(&rings));
+            assert!(matches!(
+                result,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        crate::error::ErrorKind::Resource(
+                            crate::error::ResourceError::Allocation
+                        )
+                    )
+            ));
+        }
+        fail_allocations_after(allocations + 8, || constrained_source_plan(&rings)).unwrap();
+    }
+
+    #[test]
+    fn constrained_plan_publication_allocation_prefixes_are_retryable() {
+        let ring = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(4.0, 0.0),
+            Point::new_raw_xy(4.0, 4.0),
+            Point::new_raw_xy(0.0, 4.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ])
+        .unwrap();
+        let plan =
+            constrained_triangle_plan([&ring].into_iter(), 16.0, CdtRefinement::Off).unwrap();
+        let (result, allocations) = allocation_count(|| {
+            let mut budget = ExpansionBudget::new("triangulate", "min_angle/max_area");
+            publish_constrained_plan(&plan, &mut budget)
+        });
+        result.unwrap();
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let result = fail_allocations_after(allowed, || {
+                let mut budget = ExpansionBudget::new("triangulate", "min_angle/max_area");
+                publish_constrained_plan(&plan, &mut budget)
+            });
+            assert!(matches!(
+                result,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        crate::error::ErrorKind::Resource(
+                            crate::error::ResourceError::Allocation
+                        )
+                    )
+            ));
+        }
+        fail_allocations_after(allocations + 8, || {
+            let mut budget = ExpansionBudget::new("triangulate", "min_angle/max_area");
+            publish_constrained_plan(&plan, &mut budget)
+        })
+        .unwrap();
     }
 }

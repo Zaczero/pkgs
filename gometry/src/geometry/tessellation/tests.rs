@@ -44,7 +44,7 @@ use crate::geometry::{
     Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_decision, orientation,
     ring_contains_interior,
 };
-use crate::test_support::fail_allocations_after;
+use crate::test_support::{allocation_count, fail_allocations_after};
 
 fn xy(x: f64, y: f64) -> Point {
     Point::new(x, y).expect("finite test coordinate")
@@ -519,6 +519,95 @@ fn triangulation_budgets_reject_before_reserving_generated_vertices() {
         .constrained_delaunay_vertices_budgeted(CdtRefinement::Off, &mut constrained_budget)
         .unwrap_err();
     assert_eq!(take_constrained_output_reserves(), 0);
+}
+
+#[test]
+fn constrained_mesh_allocation_prefixes_are_resource_errors_and_retryable() {
+    let source = Shape::Polygon(polygon(
+        vec![xy(0.0, 0.0), xy(4.0, 0.0), xy(4.0, 4.0), xy(0.0, 4.0)],
+        Vec::new(),
+    ));
+    let before = source.clone();
+    let (result, allocations) =
+        allocation_count(|| source.constrained_delaunay_vertices(CdtRefinement::Off));
+    result.unwrap();
+    assert!(allocations > 0);
+    for allowed in 0..allocations {
+        let result = fail_allocations_after(allowed, || {
+            source.constrained_delaunay_vertices(CdtRefinement::Off)
+        });
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                )
+        ));
+        assert_eq!(
+            source, before,
+            "source remains immutable after allocation failure"
+        );
+    }
+    fail_allocations_after(allocations + 8, || {
+        source.constrained_delaunay_vertices(CdtRefinement::Off)
+    })
+    .unwrap();
+
+    let refinement = CdtRefinement::On {
+        min_angle: None,
+        max_area: Some(crate::Positive::try_new("max_area", 2.0).unwrap()),
+    };
+    let (result, allocations) =
+        allocation_count(|| source.constrained_delaunay_vertices(refinement));
+    result.unwrap();
+    assert!(allocations > 0);
+    for allowed in 0..allocations {
+        let result =
+            fail_allocations_after(allowed, || source.constrained_delaunay_vertices(refinement));
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                )
+        ));
+        assert_eq!(
+            source, before,
+            "source remains immutable after refinement failure"
+        );
+    }
+    fail_allocations_after(allocations + 8, || {
+        source.constrained_delaunay_vertices(refinement)
+    })
+    .unwrap();
+
+    let (result, allocations) =
+        allocation_count(|| source.constrained_delaunay_triangles(CdtRefinement::Off));
+    result.unwrap();
+    assert!(allocations > 0);
+    for allowed in 0..allocations {
+        let result = fail_allocations_after(allowed, || {
+            source.constrained_delaunay_triangles(CdtRefinement::Off)
+        });
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                )
+        ));
+        assert_eq!(
+            source, before,
+            "source remains immutable after scalar publication failure"
+        );
+    }
+    fail_allocations_after(allocations + 8, || {
+        source.constrained_delaunay_triangles(CdtRefinement::Off)
+    })
+    .unwrap();
 }
 
 #[test]

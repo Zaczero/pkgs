@@ -273,6 +273,24 @@ impl ExactLine {
         ])
     }
 
+    pub(super) fn try_perpendicular_bisector(a: XY, b: XY) -> Result<Self> {
+        let ax = ExactDyadic::from_f64(a.x);
+        let ay = ExactDyadic::from_f64(a.y);
+        let bx = ExactDyadic::from_f64(b.x);
+        let by = ExactDyadic::from_f64(b.y);
+        Ok(Self([
+            bx.clone()
+                .try_subtract(ax.clone())?
+                .try_product(&ExactDyadic::from_f64(2.0))?,
+            by.clone()
+                .try_subtract(ay.clone())?
+                .try_product(&ExactDyadic::from_f64(2.0))?,
+            ax.try_product(&ax)?
+                .try_add(ay.try_product(&ay)?)?
+                .try_subtract(bx.try_product(&bx)?.try_add(by.try_product(&by)?)?)?,
+        ]))
+    }
+
     pub(super) fn through_points(a: &ExactPoint, b: &ExactPoint) -> Result<Self> {
         if !a.is_finite() || !b.is_finite() || a.same_position(b) {
             return Err(GeometryErrorKind::voronoi(
@@ -951,6 +969,10 @@ fn difference(left: f64, right: f64) -> ExactDyadic {
     ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right))
 }
 
+fn try_difference(left: f64, right: f64) -> Result<ExactDyadic> {
+    ExactDyadic::try_from_f64(left)?.try_subtract(ExactDyadic::try_from_f64(right)?)
+}
+
 /// An exact ratio of dyadics.
 ///
 /// Source-boundary parameters are usually dyadic, but a pre-existing mesh
@@ -959,7 +981,7 @@ fn difference(left: f64, right: f64) -> ExactDyadic {
 /// vertex a rounded source authority. Every constructor reduces the ratio, so
 /// repeated midpoint splits stay linear in their binary parameter depth rather
 /// than multiplying equivalent denominators.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(super) struct ExactRational {
     numerator: ExactDyadic,
     denominator: ExactDyadic,
@@ -1002,6 +1024,13 @@ impl ExactRational {
         }
     }
 
+    pub(super) fn try_clone(&self) -> Result<Self> {
+        Ok(Self {
+            numerator: self.numerator.try_clone()?,
+            denominator: self.denominator.try_clone()?,
+        })
+    }
+
     pub(super) fn try_add(&self, other: &Self) -> Result<Self> {
         let left = self.numerator.try_product(&other.denominator)?;
         let right = other.numerator.try_product(&self.denominator)?;
@@ -1018,12 +1047,6 @@ impl ExactRational {
                 .denominator
                 .try_product(&ExactDyadic::from_f64(2.0))?,
         )
-    }
-
-    pub(super) fn cmp(&self, other: &Self) -> Ordering {
-        self.numerator
-            .product(&other.denominator)
-            .cmp(&other.numerator.product(&self.denominator))
     }
 
     pub(super) fn try_cmp(&self, other: &Self) -> Result<Ordering> {
@@ -1051,7 +1074,7 @@ impl ExactRational {
                 "source constraint has identical endpoints",
             ));
         };
-        Self::new(difference(point, start), difference(end, start))
+        Self::new(try_difference(point, start)?, try_difference(end, start)?)
     }
 
     /// Round the exact source point at this parameter, evaluating both
@@ -1320,6 +1343,19 @@ pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
     incircle_dyadic(a, b, c, d)
 }
 
+pub(super) fn try_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
+    if let Some(sign) = incircle_float(a, b, c, d) {
+        return Ok(sign);
+    }
+    if let Some(sign) = incircle_lattice(a, b, c, d) {
+        return Ok(sign);
+    }
+    if let Some(sign) = incircle_filtered(a, b, c, d) {
+        return Ok(sign);
+    }
+    try_incircle_dyadic(a, b, c, d)
+}
+
 fn incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
     let (adx, ady) = (difference(a.x, d.x), difference(a.y, d.y));
     let (bdx, bdy) = (difference(b.x, d.x), difference(b.y, d.y));
@@ -1335,6 +1371,29 @@ fn incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
         .add(blift.product(&cadet))
         .add(clift.product(&abdet))
         .sign()
+}
+
+fn try_incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
+    let (adx, ady) = (try_difference(a.x, d.x)?, try_difference(a.y, d.y)?);
+    let (bdx, bdy) = (try_difference(b.x, d.x)?, try_difference(b.y, d.y)?);
+    let (cdx, cdy) = (try_difference(c.x, d.x)?, try_difference(c.y, d.y)?);
+    let alift = adx.try_product(&adx)?.try_add(ady.try_product(&ady)?)?;
+    let blift = bdx.try_product(&bdx)?.try_add(bdy.try_product(&bdy)?)?;
+    let clift = cdx.try_product(&cdx)?.try_add(cdy.try_product(&cdy)?)?;
+    let bcdet = bdx
+        .try_product(&cdy)?
+        .try_subtract(cdx.try_product(&bdy)?)?;
+    let cadet = cdx
+        .try_product(&ady)?
+        .try_subtract(adx.try_product(&cdy)?)?;
+    let abdet = adx
+        .try_product(&bdy)?
+        .try_subtract(bdx.try_product(&ady)?)?;
+    alift
+        .try_product(&bcdet)?
+        .try_add(blift.try_product(&cadet)?)?
+        .try_add(clift.try_product(&abdet)?)
+        .map(|determinant| determinant.sign())
 }
 
 // ---------------------------------------------------------------------------
@@ -2537,10 +2596,31 @@ fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Homogeneous {
     }
 }
 
+fn try_intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Result<Homogeneous> {
+    let a = &a.0;
+    let b = &b.0;
+    Ok(Homogeneous {
+        x: a[1]
+            .try_product(&b[2])?
+            .try_subtract(a[2].try_product(&b[1])?)?,
+        y: a[2]
+            .try_product(&b[0])?
+            .try_subtract(a[0].try_product(&b[2])?)?,
+        w: a[0]
+            .try_product(&b[1])?
+            .try_subtract(a[1].try_product(&b[0])?)?,
+    })
+}
+
 /// Cross product of two exact homogeneous lines, with certified bounds.
 pub(super) fn line_intersection(a: &ExactLine, b: &ExactLine) -> ExactPoint {
     let Homogeneous { x, y, w } = intersection_homogeneous(a, b);
     ExactPoint::homogeneous(x, y, w)
+}
+
+fn try_line_intersection(a: &ExactLine, b: &ExactLine) -> Result<ExactPoint> {
+    let Homogeneous { x, y, w } = try_intersection_homogeneous(a, b)?;
+    Ok(ExactPoint::homogeneous(x, y, w))
 }
 
 pub(super) fn signed_line_product(line: &ExactLine, point: &ExactPoint) -> ExactSign {
@@ -2715,6 +2795,20 @@ pub(super) fn circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
         &ExactLine::perpendicular_bisector(a, b),
         &ExactLine::perpendicular_bisector(a, c),
     ))
+}
+
+pub(super) fn try_circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
+    if orient2d(a, b, c) == ExactSign::Zero {
+        return Err(GeometryErrorKind::voronoi(
+            "cannot construct a circumcenter for collinear sites",
+        ));
+    }
+    if let Some(center) = super::circumcenter::certified_circumcenter(a, b, c) {
+        return Ok(ExactPoint::certified_circumcenter([a, b, c], &center));
+    }
+    let first = ExactLine::try_perpendicular_bisector(a, b)?;
+    let second = ExactLine::try_perpendicular_bisector(a, c)?;
+    try_line_intersection(&first, &second)
 }
 
 fn approximate_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Option<f64> {
@@ -3091,7 +3185,7 @@ mod tests {
 
     #[test]
     fn source_parameter_keeps_the_exact_ratio_after_rounding() {
-        let start = XY::new(0.25, 1.0000000000000002);
+        let start = XY::new(0.25, 1.000_000_000_000_000_2);
         let end = XY::new(0.25, 1.25);
         let midpoint = ExactRational::zero()
             .try_midpoint(&ExactRational::one())
@@ -3100,7 +3194,12 @@ mod tests {
             .round_segment(start, end)
             .expect("rounded source point");
         let actual = ExactRational::from_segment(start, end, rounded).expect("source parameter");
-        assert_ne!(actual.cmp(&midpoint), Ordering::Equal);
+        assert_ne!(
+            actual
+                .try_cmp(&midpoint)
+                .expect("exact parameter comparison"),
+            Ordering::Equal
+        );
         let next = ExactRational::zero()
             .try_midpoint(&actual)
             .expect("child midpoint parameter");
@@ -3478,6 +3577,31 @@ mod tests {
             sum.try_product(&ExactDyadic::one()).unwrap()
         });
         assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn exact_ratio_clone_propagates_each_allocation_failure() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::{allocation_count, fail_allocations_after};
+
+        let ratio = ExactRational::new(
+            ExactDyadic::from_parts(false, vec![1, 2, 3], -4),
+            ExactDyadic::from_parts(false, vec![1, 4, 5], -4),
+        )
+        .unwrap();
+        assert!(ratio.numerator.limbs.len() > 2);
+        assert!(ratio.denominator.limbs.len() > 2);
+
+        let (result, allocations) = allocation_count(|| ratio.try_clone());
+        result.unwrap();
+        assert!(allocations > 0);
+        for prefix in 0..allocations {
+            let error = fail_allocations_after(prefix, || ratio.try_clone()).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
     }
 
     #[test]
