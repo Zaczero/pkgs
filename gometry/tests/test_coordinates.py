@@ -2,8 +2,6 @@
 constructors, and parts/rings extraction helpers.
 """
 
-import gc
-
 import gometry as gm
 import numpy as np
 import pytest
@@ -254,6 +252,42 @@ def test_coordinate_extraction_parts_and_rings_helpers() -> None:
         gm.rings(gm.Point(0, 0))
 
 
+def test_parts_and_rings_collections_keep_groups_and_flat_values() -> None:
+    polygon = gm.Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4)],
+        holes=[[(1, 1), (3, 1), (3, 3), (1, 3)]],
+    )
+    sources = [
+        gm.MultiPoint([(0, 0), (1, 1)]),
+        gm.Point(2, 2),
+        gm.from_wkt('POINT EMPTY'),
+        gm.from_wkt('GEOMETRYCOLLECTION EMPTY'),
+        None,
+    ]
+
+    parts = gm.parts(iter(sources))
+    assert isinstance(parts, gm.Groups)
+    assert len(parts) == 5
+    assert parts.offsets.tolist() == [0, 2, 3, 4, 4, 4]
+    assert parts.values.to_wkt() == [
+        'POINT (0 0)',
+        'POINT (1 1)',
+        'POINT (2 2)',
+        'POINT EMPTY',
+    ]
+    assert parts[3].to_wkt() == []
+    assert parts[4].to_wkt() == []
+
+    rings = gm.rings(iter([polygon, gm.from_wkt('POLYGON EMPTY'), None]))
+    assert isinstance(rings, gm.Groups)
+    assert len(rings) == 3
+    assert rings.offsets.tolist() == [0, 2, 2, 2]
+    assert rings.values.to_wkt() == [
+        'LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)',
+        'LINESTRING (1 1, 3 1, 3 3, 1 3, 1 1)',
+    ]
+
+
 def test_array_ragged_helpers_retain_empty_missing_rows_and_views() -> None:
     polygons = gm.GeometryArray([
         gm.Polygon([(0, 0), (1, 0), (0, 1), (0, 0)]),
@@ -268,81 +302,25 @@ def test_array_ragged_helpers_retain_empty_missing_rows_and_views() -> None:
     assert isinstance(rings, gm.Groups)
     assert rings.offsets.tolist() == [0, 1, 1, 1, 3]
 
-    coords = gm.get_coordinates(polygons, axes='XYZ')
-    assert isinstance(coords, gm.Groups)
-    assert coords.offsets.tolist() == [0, 4, 4, 4, 12]
-    assert coords[1].shape == (0, 3)
-    assert coords[2].shape == (0, 3)
+    coords, indexes = gm.get_coordinates(polygons, axes='XYZ', return_index=True)
+    assert coords.shape == (12, 3)
+    np.testing.assert_array_equal(indexes, [0] * 4 + [3] * 8)
+    assert np.isnan(coords[:, 2]).all()
 
     selected = polygons[[3, 1, 2]]
     selected_rings = gm.rings(selected)
     assert selected_rings.offsets.tolist() == [0, 2, 2, 2]
-    selected_coords = gm.get_coordinates(selected)
-    assert selected_coords.offsets.tolist() == [0, 8, 8, 8]
+    selected_coords, selected_indexes = gm.get_coordinates(selected, return_index=True)
+    assert selected_coords.shape == (8, 2)
+    np.testing.assert_array_equal(selected_indexes, [0] * 8)
 
 
-def test_coordinate_groups_are_readonly_and_pickle_round_trip() -> None:
-    groups = gm.get_coordinates(gm.GeometryArray([gm.Point(1, 2), None]))
+def test_get_coordinates_matrix_is_readonly() -> None:
+    matrix = gm.get_coordinates(gm.GeometryArray([gm.Point(1, 2), None]))
 
-    assert groups.values.flags.writeable is False
-    assert groups[0].flags.writeable is False
+    assert matrix.flags.writeable is False
     with pytest.raises(ValueError):
-        groups[0][0, 0] = 9.0
-
-    import pickle
-
-    restored = pickle.loads(pickle.dumps(groups))
-    assert restored == groups
-
-
-def test_coordinate_group_matrix_view_retains_its_immutable_owner() -> None:
-    groups = gm.get_coordinates(
-        gm.GeometryArray([
-            gm.LineString([(1.0, 2.0), (3.0, 4.0)]),
-            gm.LineString([(5.0, 6.0), (7.0, 8.0)]),
-        ])
-    )
-    row = groups[1]
-    values = groups.values
-
-    del groups
-    gc.collect()
-
-    np.testing.assert_array_equal(row, [[5.0, 6.0], [7.0, 8.0]])
-    np.testing.assert_array_equal(
-        values,
-        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
-    )
-    assert row.flags.writeable is False
-    assert values.flags.writeable is False
-    with pytest.raises(ValueError):
-        row[0, 0] = 9.0
-
-
-def test_coordinate_groups_slice_xyz_m_rows_from_the_source_window() -> None:
-    groups = gm.get_coordinates(
-        gm.GeometryArray([
-            gm.from_wkt('LINESTRING ZM (0 0 1 10, 1 1 2 20)'),
-            None,
-            gm.from_wkt('LINESTRING ZM (2 2 3 30, 3 3 4 40, 4 4 5 50)'),
-        ]),
-        axes='XYZM',
-    )
-    assert groups.offsets.tolist() == [0, 2, 2, 5]
-
-    # The slice retains absolute source offsets, so its first nonempty row
-    # must multiply the selected coordinate-row range rather than a rebased
-    # payload position.
-    selected = groups[1:]
-    assert selected[0].shape == (0, 4)
-    np.testing.assert_array_equal(
-        selected[1],
-        [[2.0, 2.0, 3.0, 30.0], [3.0, 3.0, 4.0, 40.0], [4.0, 4.0, 5.0, 50.0]],
-    )
-    np.testing.assert_array_equal(
-        selected.values,
-        [[2.0, 2.0, 3.0, 30.0], [3.0, 3.0, 4.0, 40.0], [4.0, 4.0, 5.0, 50.0]],
-    )
+        matrix[0, 0] = 9.0
 
 
 def test_coordinate_columns_are_readonly_ndarrays() -> None:
@@ -376,15 +354,16 @@ def test_coordinate_columns_are_readonly_ndarrays() -> None:
     ('XYM', [[1, 2, np.nan], [5, 6, 7]]),
     ('XYZM', [[1, 2, 3, np.nan], [5, 6, np.nan, 7]]),
 ])
-def test_coordinate_groups_preserve_empty_rows_and_absent_ordinates(middle, axes, expected):
+def test_get_coordinates_preserves_empty_rows_and_absent_ordinates(middle, axes, expected):
     array = gm.GeometryArray([
         gm.from_wkt('POINT Z (1 2 3)'),
         middle,
         gm.from_wkt('POINT M (5 6 7)'),
     ])
-    groups = gm.get_coordinates(array, axes=axes)
-    assert groups.offsets.tolist() == [0, 1, 1, 2]
-    np.testing.assert_array_equal(groups.values, expected)
+    matrix, indexes = gm.get_coordinates(array, axes=axes, return_index=True)
+    assert matrix.shape == (2, len(expected[0]))
+    np.testing.assert_array_equal(matrix, expected)
+    np.testing.assert_array_equal(indexes, [0, 2])
 
 
 def test_get_coordinates() -> None:
@@ -393,42 +372,94 @@ def test_get_coordinates() -> None:
     assert coords.shape == (3, 2)
     assert coords.dtype == np.float64
     assert coords.tolist() == [[0.0, 0.0], [1.0, 2.0], [3.0, 4.0]]
+    scalar_coords, scalar_indexes = gm.get_coordinates(line, return_index=True)
+    np.testing.assert_array_equal(scalar_coords, coords)
+    np.testing.assert_array_equal(scalar_indexes, [0, 0, 0])
     arr = gm.GeometryArray([gm.Point(0, 0), gm.LineString([(1, 1), (2, 2)])])
     with_z = gm.get_coordinates(arr, axes='XYZ')
-    assert isinstance(with_z, gm.Groups)
-    assert with_z.offsets.tolist() == [0, 1, 3]
-    assert with_z[0].shape == (1, 3)
-    assert np.isnan(with_z[0][:, 2]).all()
-    np.testing.assert_array_equal(with_z[1], [[1, 1, np.nan], [2, 2, np.nan]])
-    grouped = gm.get_coordinates(arr, return_index=True)
-    assert isinstance(grouped, gm.Groups)
-    assert grouped.offsets.tolist() == [0, 1, 3]
-    iterable = gm.get_coordinates([gm.Point(5, 6), None, gm.Point(7, 8)])
+    assert with_z.shape == (3, 3)
+    assert np.isnan(with_z[:, 2]).all()
+    np.testing.assert_array_equal(with_z[:, :2], [[0, 0], [1, 1], [2, 2]])
+    grouped, indexes = gm.get_coordinates(arr, return_index=True)
+    np.testing.assert_array_equal(grouped, [[0, 0], [1, 1], [2, 2]])
+    assert indexes.dtype == np.int64
+    assert indexes.flags.writeable is False
+    np.testing.assert_array_equal(indexes, [0, 1, 1])
+    iterable, iterable_indexes = gm.get_coordinates(
+        [gm.Point(5, 6), None, gm.Point(7, 8)], return_index=True
+    )
     np.testing.assert_array_equal(iterable, [[5.0, 6.0], [7.0, 8.0]])
+    np.testing.assert_array_equal(iterable_indexes, [0, 2])
 
 
-def test_get_coordinates_array_values_offsets_reconstruct_row_indices() -> None:
+def test_get_coordinates_collections_are_flat_and_one_shot() -> None:
+    rows = [gm.Point(5, 6), gm.from_wkt('POINT EMPTY'), None, gm.Point(7, 8)]
+
+    class Once:
+        def __init__(self, values):
+            self.values = iter(values)
+
+        def __iter__(self):
+            values = self.values
+            self.values = None
+            if values is None:
+                raise AssertionError('iterator was consumed more than once')
+            return values
+
+    for values in (rows, Once(rows), gm.GeometryArray(rows)):
+        matrix, indexes = gm.get_coordinates(values, return_index=True)
+        np.testing.assert_array_equal(matrix, [[5.0, 6.0], [7.0, 8.0]])
+        np.testing.assert_array_equal(indexes, [0, 3])
+
+
+@pytest.mark.parametrize(
+    ('axes', 'expected'),
+    [
+        ('XY', [[1, 2], [5, 6]]),
+        ('XYZ', [[1, 2, 3], [5, 6, np.nan]]),
+        ('XYM', [[1, 2, np.nan], [5, 6, 7]]),
+        ('XYZM', [[1, 2, 3, np.nan], [5, 6, np.nan, 7]]),
+    ],
+)
+def test_get_coordinates_collection_axes_match_across_input_representations(
+    axes: str, expected: list[list[float]]
+) -> None:
+    rows = [
+        gm.from_wkt('POINT Z (1 2 3)'),
+        gm.from_wkt('POINT EMPTY'),
+        None,
+        gm.from_wkt('POINT M (5 6 7)'),
+    ]
+    for source_factory in (
+        lambda: rows,
+        lambda: iter(rows),
+        lambda: gm.GeometryArray(rows),
+    ):
+        matrix = gm.get_coordinates(source_factory(), axes=axes)
+        assert matrix.shape == (2, len(expected[0]))
+        np.testing.assert_array_equal(matrix, expected)
+        matrix, indexes = gm.get_coordinates(
+            source_factory(), axes=axes, return_index=True
+        )
+        np.testing.assert_array_equal(matrix, expected)
+        np.testing.assert_array_equal(indexes, [0, 3])
+
+
+def test_get_coordinates_array_values_reconstruct_row_indices() -> None:
     arr = gm.GeometryArray([
         gm.Point(1, 2),
         gm.from_wkt('LINESTRING EMPTY'),
         None,
         gm.LineString([(3, 4), (5, 6)]),
     ])
-    coordinates = gm.get_coordinates(arr)
-    with_index = gm.get_coordinates(arr, return_index=True)
+    coordinates, indexes = gm.get_coordinates(arr, return_index=True)
 
     np.testing.assert_array_equal(
-        coordinates.values,
+        coordinates,
         [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
     )
-    assert coordinates.offsets.tolist() == [0, 1, 1, 1, 3]
-    np.testing.assert_array_equal(with_index.values, coordinates.values)
-    np.testing.assert_array_equal(with_index.offsets, coordinates.offsets)
     np.testing.assert_array_equal(
-        np.repeat(
-            np.arange(len(with_index), dtype=np.int64),
-            np.diff(with_index.offsets),
-        ),
+        indexes,
         [0, 3, 3],
     )
 
@@ -440,13 +471,13 @@ def test_get_coordinates_return_index_packed_lines() -> None:
         gm.LineString([(2, 0), (3, 0), (4, 0)]),
         gm.LineString([(5, 0), (6, 0)]),
     ])
-    groups = gm.get_coordinates(lines, return_index=True)
-    assert isinstance(groups, gm.Groups)
-    assert groups.offsets.tolist() == [0, 2, 5, 7]
-    assert all(not row.flags.writeable for row in groups)
-    np.testing.assert_array_equal(groups[0], [[0, 0], [1, 0]])
-    np.testing.assert_array_equal(groups[1], [[2, 0], [3, 0], [4, 0]])
-    np.testing.assert_array_equal(groups[2], [[5, 0], [6, 0]])
+    matrix, indexes = gm.get_coordinates(lines, return_index=True)
+    assert matrix.shape == (7, 2)
+    np.testing.assert_array_equal(
+        matrix,
+        [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0]],
+    )
+    np.testing.assert_array_equal(indexes, [0, 0, 1, 1, 1, 2, 2])
 
 
 def test_get_coordinates_return_index_polygons_with_holes() -> None:
@@ -457,12 +488,13 @@ def test_get_coordinates_return_index_polygons_with_holes() -> None:
     )
     other = gm.Polygon([(10, 10), (11, 10), (11, 11), (10, 10)])
     arr = gm.GeometryArray([poly, other])
-    groups = gm.get_coordinates(arr, return_index=True)
-    assert groups.offsets.tolist() == [0, 10, 14]
+    matrix, indexes = gm.get_coordinates(arr, return_index=True)
+    assert matrix.shape == (14, 2)
+    np.testing.assert_array_equal(indexes, [0] * 10 + [1] * 4)
     # Shell first vertex, then hole first vertex, then second polygon.
-    np.testing.assert_array_equal(groups[0][0], [0.0, 0.0])
-    np.testing.assert_array_equal(groups[0][5], [1.0, 1.0])
-    np.testing.assert_array_equal(groups[1][0], [10.0, 10.0])
+    np.testing.assert_array_equal(matrix[0], [0.0, 0.0])
+    np.testing.assert_array_equal(matrix[5], [1.0, 1.0])
+    np.testing.assert_array_equal(matrix[10], [10.0, 10.0])
 
 
 def test_get_coordinates_return_index_mixed_array() -> None:
@@ -471,11 +503,12 @@ def test_get_coordinates_return_index_mixed_array() -> None:
         gm.LineString([(1, 1), (2, 2)]),
         gm.Polygon([(3, 3), (4, 3), (4, 4), (3, 3)]),
     ])
-    groups = gm.get_coordinates(mixed, return_index=True)
-    assert groups.offsets.tolist() == [0, 1, 3, 7]
-    np.testing.assert_array_equal(groups[0], [[0.0, 0.0]])
-    np.testing.assert_array_equal(groups[1], [[1.0, 1.0], [2.0, 2.0]])
-    np.testing.assert_array_equal(groups[2][0], [3.0, 3.0])
+    matrix, indexes = gm.get_coordinates(mixed, return_index=True)
+    assert matrix.shape == (7, 2)
+    np.testing.assert_array_equal(indexes, [0, 1, 1, 2, 2, 2, 2])
+    np.testing.assert_array_equal(matrix[0], [0.0, 0.0])
+    np.testing.assert_array_equal(matrix[1:3], [[1.0, 1.0], [2.0, 2.0]])
+    np.testing.assert_array_equal(matrix[3], [3.0, 3.0])
 
 
 def test_get_coordinates_return_index_gathered_selection() -> None:
@@ -486,13 +519,13 @@ def test_get_coordinates_return_index_gathered_selection() -> None:
         gm.LineString([(5, 0), (6, 0)]),
     ])
     gathered = base[[2, 0]]
-    groups = gm.get_coordinates(gathered, return_index=True)
-    assert groups.offsets.tolist() == [0, 2, 4]
-    np.testing.assert_array_equal(groups[0], [[5.0, 0.0], [6.0, 0.0]])
+    matrix, indexes = gm.get_coordinates(gathered, return_index=True)
+    np.testing.assert_array_equal(matrix, [[5.0, 0.0], [6.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+    np.testing.assert_array_equal(indexes, [0, 0, 1, 1])
     # Window slice also keeps logical ids starting at 0.
     window = base[1:]
-    win_groups = gm.get_coordinates(window, return_index=True)
-    assert win_groups.offsets.tolist() == [0, 3, 5]
+    _, window_indexes = gm.get_coordinates(window, return_index=True)
+    np.testing.assert_array_equal(window_indexes, [0, 0, 0, 1, 1])
 
 
 @pytest.mark.parametrize(

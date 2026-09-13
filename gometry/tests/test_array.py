@@ -559,14 +559,14 @@ def test_scalar_python_index_overflow_is_an_index_error(index: int) -> None:
 
     point = gm.Point(0, 0)
     collection = gm.GeometryCollection([point])
-    groups = gm.get_coordinates(
+    coordinates, indexes = gm.get_coordinates(
         gm.GeometryArray([point, gm.Point(1, 1)]), return_index=True
     )
     assert point.coords[0] == point.coords[-1] == (0.0, 0.0)
     assert collection.parts[0] == collection.parts[-1]
-    assert groups[0].tolist() == [[0.0, 0.0]]
-    assert groups[-1].tolist() == [[1.0, 1.0]]
-    for view in (point.coords, collection.parts, groups):
+    assert coordinates.tolist() == [[0.0, 0.0], [1.0, 1.0]]
+    assert indexes.tolist() == [0, 1]
+    for view in (point.coords, collection.parts, coordinates, indexes):
         with pytest.raises(IndexError):
             view[index]
 

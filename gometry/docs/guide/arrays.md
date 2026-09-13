@@ -22,6 +22,7 @@ relationship is a free function ([`gm.contains(a, b)`][gometry.contains]):
 | `gm.contains(poly, pts)` | scalar × array | `bool_` ndarray |
 | [`idx.query(scalar)`][gometry.SpatialIndex.query] | one geometry | `int64` ndarray |
 | `idx.query(arr)` | `GeometryArray` | [`Groups[int64]`][gometry.Groups] |
+| `gm.get_coordinates(values)` | geometry or collection | `(n, dims)` `float64` ndarray; add `return_index=True` for a row-index pair |
 
 ## GeometryArray
 
@@ -348,11 +349,13 @@ print("offsets:", groups.offsets.tolist())
 
 `Groups` is generic over the value type: index hits store `int64` rows (read-only
 `.values` / `.offsets` ndarray views over CSR storage); geometry-valued ragged
-results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices; coordinate
-extraction stores read-only `(N, dimensions)` NumPy matrices per row.
-`GeometryArray.parts`, [`parts`][gometry.parts], [`rings`][gometry.rings], and
-[`get_coordinates`][gometry.get_coordinates] keep empty and missing source rows
-as empty groups, so `offsets` remains a source-row map.
+results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
+`GeometryArray.parts`, [`parts`][gometry.parts], and [`rings`][gometry.rings]
+return one geometry group per source row for every collection form, keeping
+empty and missing rows as empty groups, so `offsets` remains a source-row map.
+Coordinate extraction is the flat numeric exception:
+[`get_coordinates`][gometry.get_coordinates] returns one matrix and, when
+requested, a parallel source-row index.
 
 !!! tip "Scalar vs array index query"
     A scalar [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] returns a dense `int64` ndarray. Pass an
@@ -385,14 +388,15 @@ coordinates = gm.get_coordinates(geoms, return_index=True)
 
 for row, geometry in enumerate(geoms.to_wkt()):
     print(row, geometry, geoms.is_missing[row], areas[row], contains[row])
-print('coordinate values:', coordinates.values.tolist())
-print('coordinate offsets:', coordinates.offsets.tolist())
+values, indexes = coordinates
+print('coordinate values:', values.tolist())
+print('coordinate indexes:', indexes.tolist())
 ```
 
-`coordinates.values` is the flattened coordinate matrix. The CSR offsets delimit
-the values for source rows 0, 1, and 2: `[0, 1, 1, 1]` gives one coordinate for
-row 0 and empty groups for both the missing and typed-empty rows. Thus offsets
-preserve source-row provenance even where no coordinate exists.
+`values` is the flattened coordinate matrix and `indexes` repeats each source
+row for its coordinates. The missing and typed-empty rows contribute no values,
+so their absence from `indexes` is the row-preserving signal; `is_missing`
+still distinguishes the two kinds of zero-coordinate row.
 
 One rule set everywhere: **predicates → `False`, measures → `NaN`, geometry results stay
 missing, aggregates skip, exports emit `None`.** Fixed-width fact lanes that cannot hold
@@ -409,10 +413,11 @@ slice, fancy indexing (`arr[[0, 2]]`), pickle, and Arrow round-trip.
 
 !!! note "Coordinates flatten present rows"
     [`arr.coords`][gometry.GeometryArray.coords] and [`gm.get_coordinates(arr)`][gometry.get_coordinates] are vertex
-    streams, not row-aligned arrays. Missing rows contribute no vertices. Use
-    `return_index=True` with `get_coordinates` when you need to map each coordinate back
-    to its source row, or call [`drop_missing()`][gometry.GeometryArray.drop_missing] first when a dense coordinate-only
-    workflow is clearer.
+    streams, not row-aligned arrays. Missing rows contribute no vertices.
+    `get_coordinates(..., return_index=True)` returns a parallel source-row
+    index when you need to map each coordinate back, or call
+    [`drop_missing()`][gometry.GeometryArray.drop_missing] first when a dense
+    coordinate-only workflow is clearer.
 
 `drop_missing()` and [`fill_missing(value)`][gometry.GeometryArray.fill_missing] convert back to dense. `fill_missing` accepts
 one scalar geometry or a row-aligned `GeometryArray` fill source; indexes and

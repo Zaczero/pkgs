@@ -196,8 +196,8 @@ def test_concat_mixed_missing_and_empty_point_preserves_logical_rows() -> None:
 
     cases = (
         (rows, expected + expected),
-        (rows[[3, 0]], expected + ['POINT (3 3)', 'POINT (1 1)']),
-        (rows[1:4], expected + [None, 'POINT EMPTY', 'POINT (3 3)']),
+        (rows[[3, 0]], [*expected, 'POINT (3 3)', 'POINT (1 1)']),
+        (rows[1:4], [*expected, None, 'POINT EMPTY', 'POINT (3 3)']),
     )
     for other, expected_wkt in cases:
         result = rows.concat(other)
@@ -976,12 +976,10 @@ def test_masked_voronoi_skips_missing_placeholder() -> None:
 
 def test_masked_coordinates_skip_missing_rows(masked: gm.GeometryArray) -> None:
     assert len(masked.coords) == 2
-    coords = gm.get_coordinates(masked, return_index=True)
-    assert isinstance(coords, gm.Groups)
-    assert coords.offsets.tolist() == [0, 1, 1, 2]
-    assert coords[0].tolist() == [[0.0, 0.0]]
-    assert coords[1].shape == (0, 2)
-    assert coords[2].tolist() == [[2.0, 2.0]]
+    coords, indexes = gm.get_coordinates(masked, return_index=True)
+    assert coords.shape == (2, 2)
+    np.testing.assert_array_equal(indexes, [0, 2])
+    np.testing.assert_array_equal(coords, [[0.0, 0.0], [2.0, 2.0]])
     assert masked.coords.x.tolist() == [0.0, 2.0]
     assert masked.coords.to_nested() == [[0.0, 0.0], [2.0, 2.0]]
 

@@ -392,11 +392,20 @@ def test_features_record_validates_alignment_and_has_bounded_repr() -> None:
 def test_features_defaults_and_mapping_broadcast_are_independent() -> None:
     geometries = gm.points([0, 1], [2, 3])
     empty = gm.Features(geometries)
-    assert empty.properties == ({}, {})
-    assert empty.properties[0] is not empty.properties[1]
-    empty.properties[0]['x'] = 1
-    assert empty.properties[1] == {}
+    assert empty.properties == (None, None)
     assert empty.ids == (None, None)
+    explicit_none = gm.Features(geometries, properties=None)
+    assert explicit_none.properties == (None, None)
+    exported = gm.to_feature_collection(empty)
+    assert [feature['properties'] for feature in exported['features']] == [None, None]
+    restored = gm.from_features(exported)
+    assert restored.properties == (None, None)
+
+    explicit = gm.Features(geometries, {})
+    assert explicit.properties == ({}, {})
+    assert explicit.properties[0] is not explicit.properties[1]
+    explicit.properties[0]['x'] = 1
+    assert explicit.properties[1] == {}
 
     nested: list[int] = []
     broadcast = gm.Features(geometries, {'nested': nested})

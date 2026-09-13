@@ -205,6 +205,7 @@ assert_type(cast('gm.Polygon', LINE.buffer(0.5)), gm.Polygon)
 assert_type(cast('gm.MultiPoint', LINE.boundary()), gm.MultiPoint)
 assert_type(POINT.centroid(), gm.Point)
 assert_type(hash(POINT), int)
+assert_type(hash(POINTS), int)
 assert_type(POLY.exterior, gm.LineString)
 
 # Scalar<->array return duality (the 32 `-> Self` lies, gated by pyo3stubs
@@ -264,12 +265,13 @@ assert_type(POINT, gm.Point)
 assert_type(POINTS, gm.GeometryArray[gm.Point])
 assert_type(gm.MultiPoint([POINT, gm.Point(2, 2)]), gm.MultiPoint)
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Hashable, Mapping
 
     import geopandas as gpd
     import pandas as pd
     import polars as pl
 
+    hashable_geometry_array: Hashable = POINTS
     pandas_series = POINTS.to_pandas()
     assert_type(pandas_series, pd.Series)
     assert_type(gm.from_pandas(pandas_series), gm.GeometryArray[gm.Geometry | None])
@@ -351,9 +353,21 @@ if TYPE_CHECKING:
     assert_type(gm.intersection_all(geometry_like_rows), gm.Geometry)
     assert_type(gm.symmetric_difference_all(geometry_like_rows), gm.Geometry)
     assert_type(gm.get_coordinates(geometry_like_rows), npt.NDArray[np.float64])
-    assert_type(gm.get_coordinates(POINTS), gm.Groups[npt.NDArray[np.float64]])
+    assert_type(gm.get_coordinates(POINTS), npt.NDArray[np.float64])
+    assert_type(
+        gm.get_coordinates(POINTS, return_index=True),
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
+    )
+    coordinate_flag: bool = bool(len(POINTS))
+    assert_type(
+        gm.get_coordinates(POINTS, return_index=coordinate_flag),
+        npt.NDArray[np.float64]
+        | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
+    )
     assert_type(gm.parts(POINTS), gm.Groups[gm.GeometryArray[gm.Point]])
     assert_type(gm.rings(POLYS), gm.Groups[gm.GeometryArray[gm.LineString]])
+    assert_type(gm.parts([POINT]), gm.Groups[gm.GeometryArray[gm.Geometry]])
+    assert_type(gm.rings([POLY]), gm.Groups[gm.GeometryArray[gm.LineString]])
     assert_type(gm.polygonize(present_geometry_like_rows), gm.GeometryArray[gm.Polygon])
     assert_type(gm.coverage_is_valid([POLY.to_wkb()]), bool)
     assert_type(POINT.scale(2.0, origin=[0.0, 0.0]), gm.Point)

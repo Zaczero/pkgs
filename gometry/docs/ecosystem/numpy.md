@@ -66,10 +66,9 @@ xs = line.coords.x                 # read-only float64 view
 print("x column:", repr(xs), "| shares storage:", np.asarray(xs).base is not None)
 
 arr = gm.GeometryArray([gm.Point(1, 2), gm.LineString([(0, 0), (1, 1)])])
-coords = gm.get_coordinates(arr)
-print("coords by row:\n", [row.tolist() for row in coords])
-print("source-row index:", arr.coords.row_index.tolist())
-print("group boundaries:", coords.offsets.tolist())
+coords, row_index = gm.get_coordinates(arr, return_index=True)
+print("coords:\n", coords.tolist())
+print("source-row index:", row_index.tolist())
 ```
 
 `coords.x` shares storage; `np.asarray(coords)` materializes a dense
@@ -81,9 +80,9 @@ axes; call `coords.select('XYZ')` or `coords.select('XYZM')` to force those
 columns, which use `NaN` where absent. For a flattened `GeometryArray.coords`
 view, use [`.row_index`][gometry.Coordinates.row_index] to map each coordinate
 back to its source geometry row. [`get_coordinates`][gometry.get_coordinates]
-takes `axes=` for scalar extraction and returns [`Groups`][gometry.Groups] for
-a `GeometryArray`; its `.offsets` delimit each source row, including empty and
-missing rows. Raw iterables retain the dense bulk extraction path.
+takes `axes=` and always returns one flat matrix; with `return_index=True` it
+also returns a parallel `int64` source-row index, including for empty and
+missing rows. Raw iterables use the same dense bulk extraction path.
 
 ## Coordinate matrices
 
@@ -155,8 +154,7 @@ from sklearn.cluster import KMeans          # not a gometry dependency
 lons = [13.35, 13.36, 13.37, 13.50, 13.51, 13.52]
 lats = [52.48, 52.49, 52.50, 52.51, 52.52, 52.53]
 pts = gm.points(lons, lats, crs=4326)
-xy_groups = gm.get_coordinates(pts.to_crs(pts.estimate_local_crs()))
-xy = np.concatenate([row for row in xy_groups], axis=0)          # planar meters
+xy = gm.get_coordinates(pts.to_crs(pts.estimate_local_crs()))    # planar meters
 labels = KMeans(n_clusters=2, n_init=10, random_state=0).fit_predict(xy)
 print("labels:", labels.tolist())
 ```

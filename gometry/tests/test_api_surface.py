@@ -860,9 +860,9 @@ def test_bulk_free_functions_accept_raw_iterables_uniformly() -> None:
     """Every bulk free function takes the same input vocabulary.
 
     Rule 4's justification for `gm.parts`/`gm.rings` existing beside `geom.parts`
-    and `GeometryArray.parts()` is precisely "a free function exists only for raw
-    iterables" — so refusing one was self-refuting. `gm.area`/`gm.bounds` always
-    accepted them.
+    and `GeometryArray.parts()` is that free functions also accept raw
+    iterables. Every collection form keeps one output group per source row;
+    `gm.area`/`gm.bounds` continue to accept the same input vocabulary.
     """
     point = gm.Point(0, 0)
     line = gm.LineString([(0, 0), (1, 1)])
@@ -871,11 +871,17 @@ def test_bulk_free_functions_accept_raw_iterables_uniformly() -> None:
     )
 
     assert gm.area([point, line]).tolist() == [0.0, 0.0]
-    assert len(gm.parts([point, line])) == 2
-    assert len(gm.rings([donut])) == 2
+    parts = gm.parts([point, line])
+    assert isinstance(parts, gm.Groups)
+    assert parts.offsets.tolist() == [0, 1, 2]
+    assert parts.values.to_wkt() == [point.to_wkt(), line.to_wkt()]
+    rings = gm.rings([donut])
+    assert isinstance(rings, gm.Groups)
+    assert rings.offsets.tolist() == [0, 2]
+    assert len(rings.values) == 2
     # generators and tuples, not just lists
     assert len(gm.parts(g for g in (point, line))) == 2
-    assert len(gm.rings((donut, donut))) == 4
+    assert gm.rings((donut, donut)).offsets.tolist() == [0, 2, 4]
     # and the array/scalar forms keep working
     assert len(gm.parts(gm.GeometryArray([point, line]))) == 2
     assert len(gm.rings(donut)) == 2

@@ -311,8 +311,8 @@ def test_points_numpy_columns_copy_values_and_preserve_zm_axes() -> None:
     assert points[0].coordinate_axes == 'XYZM'
     assert points[0].crs == 'EPSG:4326'
     coordinates = gm.get_coordinates(points, axes='XYZM')
-    assert coordinates.offsets.tolist() == [0, 1, 2]
-    np.testing.assert_array_equal(coordinates.values, np.column_stack((x, y, z, m)))
+    assert coordinates.shape == (2, 4)
+    np.testing.assert_array_equal(coordinates, np.column_stack((x, y, z, m)))
     # The packed constructor owns its columns; later producer mutation cannot
     # change an already-created immutable geometry array.
     x[0] = 99.0
@@ -366,9 +366,9 @@ def test_points_numpy_big_endian_and_strided_columns_keep_axis_order() -> None:
     y = source[::2, 1][::-1].astype('>f8')[::-1]
     points = gm.points(x, y)
     coordinates = gm.get_coordinates(points)
-    assert coordinates.offsets.tolist() == [0, 1, 2, 3]
+    assert coordinates.shape == (3, 2)
     np.testing.assert_array_equal(
-        coordinates.values,
+        coordinates,
         np.column_stack((
             np.asarray(x, dtype=np.float64),
             np.asarray(y, dtype=np.float64),

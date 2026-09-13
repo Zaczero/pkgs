@@ -329,9 +329,6 @@ def test_positional_index_provider_exception_instances_are_preserved() -> None:
     row_views = (
         point.coords,
         gm.GeometryCollection([point]).parts,
-        gm.get_coordinates(
-            gm.GeometryArray([point, gm.Point(1, 1)]), return_index=True
-        ),
     )
     for error_type in (gm.GeometryError, TypeError, RuntimeError):
         error = error_type('provider error')
@@ -513,8 +510,10 @@ def test_one_shot_coordinate_and_part_sources_are_consumed_once() -> None:
     )
     multi_polygon = gm.MultiPolygon(Once([Once([Once([(0, 0), (4, 0), (4, 4), (0, 4)])])]))
     assert len(multi_polygon.parts) == 1
-    assert len(gm.rings(Once([polygon]))) == 2
-    assert len(gm.parts(Once([polygon]))) == 1
+    rings = gm.rings(Once([polygon]))
+    assert len(rings) == 1 and len(rings[0]) == 2
+    parts = gm.parts(Once([polygon]))
+    assert len(parts) == 1 and len(parts[0]) == 1
 
 
 def test_fixed_arity_sources_stop_after_one_excess_item() -> None:

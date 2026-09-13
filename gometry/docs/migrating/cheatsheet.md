@@ -42,8 +42,8 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | — | [`geom.coordinate_axes`][gometry.Geometry.coordinate_axes] | |
 | — | [`geom.epoch`][gometry.Geometry.epoch] | |
 | `geom.crs` (n/a in Shapely) | [`geom.crs`][gometry.Geometry.crs] | |
-| `get_coordinates(geom)` | [`geom.coords`][gometry.Geometry.coords] (`list(...)`, `.x`/`.y`, `.index`) / [`gm.get_coordinates(...)`][gometry.get_coordinates] | |
-| `parts(...)` / `rings(...)` | [`gm.parts(...)`][gometry.parts] / [`gm.rings(...)`][gometry.rings] | |
+| `get_coordinates(geom)` | [`geom.coords`][gometry.Geometry.coords] (`list(...)`, `.x`/`.y`, `.index`) / [`gm.get_coordinates(...)`][gometry.get_coordinates] | Flat matrix; `return_index=True` adds a parallel source-row index. |
+| `parts(...)` / `rings(...)` | [`gm.parts(...)`][gometry.parts] / [`gm.rings(...)`][gometry.rings] | Scalar returns a `GeometryArray`; any collection returns row-preserving `Groups`. |
 | `str(geom)` / `f"{geom:.2f}"` / `f"{geom:x}"` | same | WKT text; `.Nf`/`.Ng` round for display, `x`/`X` hex WKB. |
 | `bool(geom)` | same | Falsy when empty. |
 | `match geom: case Point(x, y):` | `match geom: case gm.Point(x, y):` | **gometry addition** — leaves carry `__match_args__`; Shapely 2.x has no positional match on `Point`. Arrays match `[a, *rest]`. |

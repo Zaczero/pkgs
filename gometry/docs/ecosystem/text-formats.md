@@ -238,6 +238,9 @@ The outer [`properties`][gometry.Features.properties] and [`ids`][gometry.Featur
 drift after parsing; individual property dictionaries remain editable. A missing
 `properties` member normalizes to `{}`, while an explicit GeoJSON
 `"properties": null` remains `None` and round-trips as JSON null.
+When constructing [`Features`][gometry.Features] directly, omitted or explicit
+`properties=None` records `None` for every row; pass `properties={}` when
+independently editable empty mappings are wanted.
 
 The inverse is [`gm.to_feature_collection`][gometry.to_feature_collection] — give it
 geometries plus keyword-only `properties` (and optional `ids`) and it assembles a
