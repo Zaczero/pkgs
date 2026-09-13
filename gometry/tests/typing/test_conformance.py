@@ -740,6 +740,10 @@ assert_type(
 )
 NULLABLE_H3 = gm.CellArray([h3_cell, None])
 assert_type(NULLABLE_H3, gm.CellArray[gm.H3Cell | None])
+assert_type(
+    gm.CellArray([None, h3_cell], type=gm.H3Cell),
+    gm.CellArray[gm.H3Cell | None],
+)
 assert_type(NULLABLE_H3[0], gm.H3Cell | None)
 assert_type(NULLABLE_H3[:1], gm.CellArray[gm.H3Cell | None])
 assert_type(next(iter(NULLABLE_H3)), gm.H3Cell | None)

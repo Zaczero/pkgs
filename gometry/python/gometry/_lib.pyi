@@ -11228,17 +11228,20 @@ class CellArray(Sequence[_CellT_co]):
     """An immutable array of one grid cell type backed by a shared ``uint64`` id
     column.
 
-    Index with an integer for the typed cell object; slice or mask for a new
-    `CellArray`. Build from a non-empty homogeneous iterable of typed cell
-    objects. For raw ids, tokens, arrays, buffers, or empty inputs, pass
-    ``type=`` explicitly; every id is validated for that grid.
+    Index with an integer for the typed cell object or `None` for a missing row;
+    slice or mask for a new `CellArray`. Build from an iterable containing
+    typed cell objects and `None`; the grid is inferred from the first concrete
+    cell. Raw ids and tokens are accepted when a concrete cell supplies the
+    family. For raw-only ids/tokens, arrays, buffers, or all-missing inputs,
+    pass ``type=`` explicitly; every id is validated for that grid.
 
     Parameters
     ----------
     values : numpy.ndarray or iterable
-        Typed cell objects, or raw ids/tokens when ``type`` is supplied.
+        Typed cell objects and ``None``; raw ids/tokens are also accepted when
+        a concrete cell supplies the family.
     type : type, optional
-        Native cell class. Inferred only from non-empty homogeneous typed cells.
+        Native cell class. Inferred from a concrete typed cell when present.
     """
 
     __array_ufunc__: ClassVar[None]

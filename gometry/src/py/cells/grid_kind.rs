@@ -454,7 +454,118 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     Ok(None)
 }
 
-pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Vec<u64>> {
+pub(super) struct CollectedCellIds {
+    pub(super) ids: Vec<u64>,
+    pub(super) missing: Option<Vec<bool>>,
+}
+
+fn append_cell_row(
+    ids: &mut Vec<u64>,
+    missing: &mut Option<Vec<bool>>,
+    id: u64,
+    is_missing: bool,
+) -> PyResult<()> {
+    let previous_len = ids.len();
+    crate::try_push(ids, id)?;
+    match missing {
+        Some(missing) => crate::try_push(missing, is_missing)?,
+        None if is_missing => {
+            let mut mask = Vec::new();
+            for _ in 0..previous_len {
+                crate::try_push(&mut mask, false)?;
+            }
+            crate::try_push(&mut mask, true)?;
+            *missing = Some(mask);
+        },
+        None => {},
+    }
+    Ok(())
+}
+
+fn collect_ids_from_iter<'py>(
+    values: &Bound<'py, PyAny>,
+    iter: Bound<'py, pyo3::types::PyIterator>,
+    kind: GridKind,
+    mismatch: impl Fn(GridKind) -> PyErr,
+) -> PyResult<CollectedCellIds> {
+    let mut ids = Vec::new();
+    let mut missing = None;
+    crate::collect_py_iter_from_iter(values, iter, |item| {
+        if item.is_none() {
+            append_cell_row(&mut ids, &mut missing, 0, true)?;
+        } else {
+            if let Some(item_kind) = grid_kind_from_cell(&item)
+                && item_kind != kind
+            {
+                return Err(mismatch(item_kind));
+            }
+            let id = kind.id_from_value(&item)?;
+            append_cell_row(&mut ids, &mut missing, id, false)?;
+        }
+        Ok::<_, PyErr>(())
+    })?;
+    Ok(CollectedCellIds { ids, missing })
+}
+
+fn collect_inferred_from_iter<'py>(
+    values: &Bound<'py, PyAny>,
+    iter: Bound<'py, pyo3::types::PyIterator>,
+) -> PyResult<(GridKind, CollectedCellIds)> {
+    let mut ids = Vec::new();
+    let mut missing = None;
+    let mut kind: Option<GridKind> = None;
+    let mut pending = Vec::new();
+    crate::collect_py_iter_from_iter(values, iter, |item| {
+        if item.is_none() {
+            append_cell_row(&mut ids, &mut missing, 0, true)?;
+            return Ok::<_, PyErr>(());
+        }
+        let Some(item_kind) = grid_kind_from_cell(&item) else {
+            let Some(kind) = kind else {
+                let index = ids.len();
+                append_cell_row(&mut ids, &mut missing, 0, false)?;
+                crate::try_push(&mut pending, (index, item))?;
+                return Ok::<_, PyErr>(());
+            };
+            let id = kind.id_from_value(&item)?;
+            append_cell_row(&mut ids, &mut missing, id, false)?;
+            return Ok::<_, PyErr>(());
+        };
+        if let Some(kind) = kind
+            && item_kind != kind
+        {
+            return Err(PyTypeError::new_err(format!(
+                "cell array values must contain one cell type; found {} and {}",
+                kind.class_name(),
+                item_kind.class_name(),
+            )));
+        }
+        if kind.is_none() {
+            kind = Some(item_kind);
+            for (index, pending_item) in std::mem::take(&mut pending) {
+                ids[index] = item_kind.id_from_value(&pending_item)?;
+            }
+        }
+        let id = item_kind.id_from_value(&item)?;
+        append_cell_row(&mut ids, &mut missing, id, false)?;
+        Ok::<_, PyErr>(())
+    })?;
+    let kind = kind.ok_or_else(|| {
+        if ids.is_empty() {
+            PyTypeError::new_err("cell array type is required for an empty input")
+        } else if pending.is_empty() {
+            PyTypeError::new_err("cell array type is required for an all-missing input")
+        } else {
+            PyTypeError::new_err(
+                "cell array type is required for raw ids, tokens, and mixed or ambiguous values",
+            )
+        }
+    })?;
+    debug_assert!(pending.is_empty());
+    Ok((kind, CollectedCellIds { ids, missing }))
+}
+
+pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<CollectedCellIds> {
     if ids.is_instance_of::<pyo3::types::PyBytes>()
         || ids.is_instance_of::<pyo3::types::PyByteArray>()
         || (ids.is_instance_of::<pyo3::types::PyMemoryView>()
@@ -486,7 +597,10 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Ve
         for &id in &values {
             kind.validate_id(id)?;
         }
-        return Ok(values);
+        return Ok(CollectedCellIds {
+            ids: values,
+            missing: None,
+        });
     }
     if let Ok(buffer) = PyBuffer::<u64>::get(ids) {
         if kind == GridKind::GeohashCell {
@@ -510,7 +624,10 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Ve
         for &id in &values {
             kind.validate_id(id)?;
         }
-        return Ok(values);
+        return Ok(CollectedCellIds {
+            ids: values,
+            missing: None,
+        });
     }
     let iter = match ids.try_iter() {
         Ok(iter) => iter,
@@ -527,21 +644,18 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Ve
         },
         Err(error) => return Err(error),
     };
-    crate::collect_py_iter_from_iter(ids, iter, |item| {
-        if let Some(item_kind) = grid_kind_from_cell(&item)
-            && item_kind != kind
-        {
-            return Err(PyTypeError::new_err(format!(
-                "cell array type={} does not match {} value",
-                kind.class_name(),
-                item_kind.class_name(),
-            )));
-        }
-        kind.id_from_value(&item)
+    collect_ids_from_iter(ids, iter, kind, |item_kind| {
+        PyTypeError::new_err(format!(
+            "cell array type={} does not match {} value",
+            kind.class_name(),
+            item_kind.class_name(),
+        ))
     })
 }
 
-pub(super) fn collect_inferred_ids(values: &Bound<'_, PyAny>) -> PyResult<(GridKind, Vec<u64>)> {
+pub(super) fn collect_inferred_ids(
+    values: &Bound<'_, PyAny>,
+) -> PyResult<(GridKind, CollectedCellIds)> {
     crate::py::numpy::reject_masked_array(values)?;
     if values.is_instance_of::<pyo3::types::PyBytes>()
         || values.is_instance_of::<pyo3::types::PyByteArray>()
@@ -583,27 +697,5 @@ pub(super) fn collect_inferred_ids(values: &Bound<'_, PyAny>) -> PyResult<(GridK
         },
         Err(error) => return Err(error),
     };
-    let mut kind = None;
-    let ids = crate::collect_py_iter_from_iter(values, iter, |item| {
-        let item_kind = grid_kind_from_cell(&item).ok_or_else(|| {
-            PyTypeError::new_err(
-                "cell array type is required for raw ids, tokens, and mixed or ambiguous values",
-            )
-        })?;
-        if let Some(kind) = kind {
-            if item_kind != kind {
-                return Err(PyTypeError::new_err(format!(
-                    "cell array values must contain one cell type; found {} and {}",
-                    kind.class_name(),
-                    item_kind.class_name(),
-                )));
-            }
-        } else {
-            kind = Some(item_kind);
-        }
-        item_kind.id_from_value(&item)
-    })?;
-    let kind =
-        kind.ok_or_else(|| PyTypeError::new_err("cell array type is required for an empty input"))?;
-    Ok((kind, ids))
+    collect_inferred_from_iter(values, iter)
 }

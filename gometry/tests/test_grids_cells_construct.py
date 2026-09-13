@@ -659,6 +659,37 @@ def test_cell_array_infers_only_homogeneous_typed_cells() -> None:
         gm.CellArray([a], cell_type=gm.H3Cell)  # type: ignore[call-arg]
 
 
+def test_cell_array_infers_nullable_typed_cells_and_preserves_missing_rows() -> None:
+    a = gm.H3Cell(21.0, 52.0, resolution=7)
+    b = gm.H3Cell(22.0, 52.0, resolution=7)
+
+    for values in ([a, None, b], [None, a, None, b]):
+        cells = gm.CellArray(values)
+        assert cells.grid == 'h3'
+        assert list(cells) == values
+        assert cells.is_missing.tolist() == [value is None for value in values]
+        parents = cells.parent()
+        assert parents.is_missing.tolist() == cells.is_missing.tolist()
+        for index, value in enumerate(values):
+            if value is None:
+                assert cells[index] is None
+                assert parents[index] is None
+            else:
+                assert cells[index] == value
+                assert parents[index] == value.parent()
+
+    explicit = gm.CellArray([None, a, None], type=gm.H3Cell)
+    assert list(explicit) == [None, a, None]
+    assert explicit.is_missing.tolist() == [True, False, True]
+    assert list(gm.CellArray([a.id, None], type=gm.H3Cell)) == [a, None]
+    assert list(gm.CellArray([None, None], type=gm.H3Cell)) == [None, None]
+    assert list(gm.CellArray([a.id, None, a])) == [a, None, a]
+    assert list(gm.CellArray([a.token, None, a])) == [a, None, a]
+
+    with pytest.raises(TypeError, match='type is required'):
+        gm.CellArray([None, None])
+
+
 def test_cell_array_object_and_token_ndarrays_fall_through() -> None:
     """D31: object/token ndarrays must not hard-reject as non-uint64 columns."""
     cell = next(iter(gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=1)))

@@ -39,17 +39,20 @@ use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
 /// An immutable array of one grid cell type backed by a shared ``uint64`` id
 /// column.
 ///
-/// Index with an integer for the typed cell object; slice or mask for a new
-/// `CellArray`. Build from a non-empty homogeneous iterable of typed cell
-/// objects. For raw ids, tokens, arrays, buffers, or empty inputs, pass
-/// ``type=`` explicitly; every id is validated for that grid.
+/// Index with an integer for the typed cell object or `None` for a missing row;
+/// slice or mask for a new `CellArray`. Build from an iterable containing
+/// typed cell objects and `None`; the grid is inferred from the first concrete
+/// cell. Raw ids and tokens are accepted when a concrete cell supplies the
+/// family. For raw-only ids/tokens, arrays, buffers, or all-missing inputs,
+/// pass ``type=`` explicitly; every id is validated for that grid.
 ///
 /// Parameters
 /// ----------
 /// values : numpy.ndarray or iterable
-///     Typed cell objects, or raw ids/tokens when ``type`` is supplied.
+///     Typed cell objects and ``None``; raw ids/tokens are also accepted when
+///     a concrete cell supplies the family.
 /// type : type, optional
-///     Native cell class. Inferred only from non-empty homogeneous typed cells.
+///     Native cell class. Inferred from a concrete typed cell when present.
 #[pyclass(
     name = "CellArray",
     module = "gometry",
@@ -692,14 +695,18 @@ impl PyCellArray {
         values: &Bound<'_, PyAny>,
         r#type: Option<&Bound<'_, PyType>>,
     ) -> PyResult<Self> {
-        let (kind, ids) = if let Some(cell_type) = r#type {
+        let (kind, collected) = if let Some(cell_type) = r#type {
             let kind = grid_kind_from_type(cell_type)?;
             (kind, collect_ids(values, kind)?)
         } else {
             collect_inferred_ids(values)?
         };
+        let storage = match collected.missing {
+            Some(missing) => CellStorage::from_ids_with_missing(kind, collected.ids, missing),
+            None => CellStorage::from_ids(kind, collected.ids),
+        };
         Ok(Self {
-            storage: CellStorage::from_ids(kind, ids),
+            storage,
             selection: RowSelection::Identity,
         })
     }
@@ -1800,7 +1807,8 @@ pub(crate) fn _unpickle_cell_array(
 ) -> PyResult<PyCellArray> {
     let kind = GridKind::parse(grid)?;
     let (ids, missing) = if mask.is_none() {
-        (super::grid_kind::collect_ids(ids, kind)?, None)
+        let collected = super::grid_kind::collect_ids(ids, kind)?;
+        (collected.ids, collected.missing)
     } else {
         let mask = mask
             .cast::<PyBytes>()
@@ -1819,6 +1827,12 @@ pub(crate) fn _unpickle_cell_array(
             }
         }
         let present = super::grid_kind::collect_ids(ids, kind)?;
+        if present.missing.is_some() {
+            return Err(PyValueError::new_err(
+                "CellArray pickle identities must not contain missing rows",
+            ));
+        }
+        let present = present.ids;
         if present_count != present.len() {
             return Err(PyValueError::new_err(
                 "CellArray pickle mask present count does not match identities",
