@@ -629,7 +629,8 @@ pub(crate) fn array_crs_distances(
 /// Resolves the metric model
 /// once and, on the planar path, uses the short-circuiting [`Shape::dwithin`]
 /// (bounds-prune + intersects fast-path) rather than computing every exact
-/// distance — the geodesic path still needs the full distance.
+/// distance; geodesic rows use their threshold owner and retain its early
+/// exclusion/hit behavior.
 #[expect(
     clippy::too_many_lines,
     reason = "planar vs geodesic dwithin branches share one metric resolution; splitting would re-resolve CRS"
@@ -1075,32 +1076,8 @@ pub(crate) fn array_crs_dwithin_scalar(
             )
         },
         crs::MetricModel::Geodesic { crs, state, frame } => {
-            // Packed point lane: one geodesic cache resolve, raw columns
-            // through the same point kernel (mirrors the distances lane).
-            if let Shape::Point(target) = other.shape.shape()
-                && !array.has_missing()
-                && let Some(values) = array.reduce_packed_points_detached(py, {
-                    let crs = crs.clone();
-                    let state = Arc::clone(&state);
-                    let target = *target;
-                    move |points| {
-                        let (xs, ys) = points
-                            .geodesic_xy_lanes()
-                            .map_err(PackedColumnError::Batch)?;
-                        crs::geodesic_point_distances(&crs, &xs, &ys, target, frame, &state)
-                            .map_err(PackedColumnError::Batch)
-                    }
-                })?
-            {
-                return bool_array_mask_missing(
-                    py,
-                    values
-                        .into_iter()
-                        .map(|value| value <= distance)
-                        .collect::<Vec<_>>(),
-                    array.missing(),
-                );
-            }
+            // Packed point rows use the same threshold owner as scalar
+            // geodesic point/line queries.
             if !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = crs.clone();

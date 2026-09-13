@@ -72,6 +72,9 @@ pub(crate) fn geodesic_point_pair_dwithin(
     crate::crs::ensure_geographic_columns_in_frame(frame, left_xs, left_ys)?;
     crate::crs::ensure_geographic_columns_in_frame(frame, right_xs, right_ys)?;
     let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, 0, frame);
+    if distance.is_infinite() && distance.is_sign_positive() {
+        return Ok(std::iter::repeat_n(true, left_xs.len()).collect());
+    }
     Ok(std::iter::zip(
         std::iter::zip(left_xs, left_ys),
         std::iter::zip(right_xs, right_ys),
@@ -95,6 +98,9 @@ pub(crate) fn geodesic_point_pair_dwithin_one(
     crate::crs::ensure_geographic_lonlat_in_frame(frame, left.x, left.y)?;
     crate::crs::ensure_geographic_lonlat_in_frame(frame, right.x, right.y)?;
     let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, runtime_generation, frame);
+    if distance.is_infinite() && distance.is_sign_positive() {
+        return Ok(true);
+    }
     Ok(metric.segment_length(left, right) <= distance)
 }
 

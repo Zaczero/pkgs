@@ -4,8 +4,9 @@ use crate::geometry::distance::{
     geodesic_scratch, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicPartsKey, Point,
-    PreparedPlan, Shape, distance,
+    FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicPartsKey,
+    GeodesicTargetFeature, GeodesicWitnessCandidate, Point, PreparedPlan, SegmentContact, Shape,
+    distance, geodesic_witness_is_better,
 };
 
 /// Validate the geodesic linework domain and reject filled areal operands.
@@ -92,19 +93,42 @@ impl PreparedPlan {
     }
 }
 
-pub(crate) fn geodesic_segments_cross_parts(
+fn segment_contact_parts(
     left: &GeodesicParts,
     right: &GeodesicParts,
     metric: &impl GeodesicMetric,
-) -> Result<bool> {
-    for segment in &left.segments {
-        for other in &right.segments {
-            if metric.segments_cross(segment.start, segment.end, other.start, other.end)? {
-                return Ok(true);
+) -> Result<(bool, Option<GeodesicWitnessCandidate>)> {
+    let mut unresolved = None;
+    let width = right.segments.len();
+    for (left_index, segment) in left.segments.iter().enumerate() {
+        for (right_index, other) in right.segments.iter().enumerate() {
+            match metric.segment_contact(segment, other)? {
+                SegmentContact::Contact { .. } => return Ok((true, None)),
+                SegmentContact::Disjoint => {},
+                SegmentContact::Unresolved { candidate } => {
+                    let witness = GeodesicWitnessCandidate {
+                        probe: candidate.first,
+                        target: candidate.second,
+                        distance: candidate.distance,
+                        lower: 0.0,
+                        evaluation_error: metric
+                            .geodesic_numerical_policy()
+                            .evaluation_allowance(1.0),
+                        feature: GeodesicTargetFeature::Segment {
+                            index: right_index,
+                            along: candidate.second_along,
+                        },
+                        order: left_index * width + right_index,
+                        swapped: false,
+                    };
+                    if geodesic_witness_is_better(unresolved.as_ref(), &witness) {
+                        unresolved = Some(witness);
+                    }
+                },
             }
         }
     }
-    Ok(false)
+    Ok((false, unresolved))
 }
 
 pub(crate) fn geodesic_distance_with_parts(
@@ -114,7 +138,8 @@ pub(crate) fn geodesic_distance_with_parts(
     right_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
 ) -> Result<f64> {
-    if geodesic_segments_cross_parts(left_parts, right_parts, metric)? {
+    let (contact, unresolved) = segment_contact_parts(left_parts, right_parts, metric)?;
+    if contact {
         return Ok(0.0);
     }
     if matches!(left, Shape::Point(_)) {
@@ -123,7 +148,9 @@ pub(crate) fn geodesic_distance_with_parts(
     if matches!(right, Shape::Point(_)) {
         return geodesic_point_distance_with_parts(right_parts.points[0], left_parts, metric, None);
     }
-    let mut best = f64::INFINITY;
+    let mut best = unresolved
+        .as_ref()
+        .map_or(f64::INFINITY, |candidate| candidate.distance);
     best = geodesic_sweep_with_parts(&left_parts.points, right_parts, metric, best)?;
     geodesic_sweep_with_parts(&right_parts.points, left_parts, metric, best)
 }
@@ -136,7 +163,22 @@ pub(crate) fn geodesic_dwithin_with_parts(
     metric: &impl GeodesicMetric,
     distance: f64,
 ) -> Result<bool> {
-    if geodesic_segments_cross_parts(left_parts, right_parts, metric)? {
+    if distance.is_nan() {
+        return Err(crate::crs::CrsError::message(
+            "geodesic dwithin limit is not finite",
+        ));
+    }
+    if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative() {
+        return Ok(false);
+    }
+    if distance.is_infinite() {
+        return Ok(!left_parts.points.is_empty() && !right_parts.points.is_empty());
+    }
+    let (contact, unresolved) = segment_contact_parts(left_parts, right_parts, metric)?;
+    if contact {
+        return Ok(true);
+    }
+    if unresolved.is_some_and(|candidate| candidate.distance <= distance) {
         return Ok(true);
     }
     if matches!(left, Shape::Point(_)) {
@@ -178,12 +220,41 @@ pub(crate) fn geodesic_nearest_points_with_parts(
     if left_parts.points.is_empty() || right_parts.points.is_empty() {
         return Ok(None);
     }
-    for segment in &left_parts.segments {
-        for other in &right_parts.segments {
-            if let Some(witness) =
-                metric.segment_intersection(segment.start, segment.end, other.start, other.end)?
-            {
-                return Ok(Some(witness));
+    let mut best = None;
+    for (left_index, segment) in left_parts.segments.iter().enumerate() {
+        for (right_index, other) in right_parts.segments.iter().enumerate() {
+            match metric.segment_contact(segment, other)? {
+                SegmentContact::Contact {
+                    first_along,
+                    second_along,
+                    ..
+                } => {
+                    return Ok(Some((
+                        geodesic_segment_point(metric, *segment, first_along),
+                        geodesic_segment_point(metric, *other, second_along),
+                    )));
+                },
+                SegmentContact::Disjoint => {},
+                SegmentContact::Unresolved { candidate } => {
+                    let candidate = GeodesicWitnessCandidate {
+                        probe: candidate.first,
+                        target: candidate.second,
+                        distance: candidate.distance,
+                        lower: 0.0,
+                        evaluation_error: metric
+                            .geodesic_numerical_policy()
+                            .evaluation_allowance(1.0),
+                        feature: GeodesicTargetFeature::Segment {
+                            index: right_index,
+                            along: candidate.second_along,
+                        },
+                        order: left_index * right_parts.segments.len() + right_index,
+                        swapped: false,
+                    };
+                    if geodesic_witness_is_better(best.as_ref(), &candidate) {
+                        best = Some(candidate);
+                    }
+                },
             }
         }
     }
@@ -192,7 +263,7 @@ pub(crate) fn geodesic_nearest_points_with_parts(
             &left_parts.points,
             right_parts,
             metric,
-            None,
+            best,
             0,
             false,
         )?
@@ -203,7 +274,7 @@ pub(crate) fn geodesic_nearest_points_with_parts(
             &right_parts.points,
             left_parts,
             metric,
-            None,
+            best,
             0,
             true,
         )?
@@ -212,7 +283,7 @@ pub(crate) fn geodesic_nearest_points_with_parts(
     let reverse_order_offset =
         left_parts.points.len() * (right_parts.segments.len() + right_parts.point_only.len());
     let best =
-        geodesic_witness_sweep_with_parts(&left_parts.points, right_parts, metric, None, 0, false)?;
+        geodesic_witness_sweep_with_parts(&left_parts.points, right_parts, metric, best, 0, false)?;
     let best = geodesic_witness_sweep_with_parts(
         &right_parts.points,
         left_parts,
@@ -228,6 +299,24 @@ pub(crate) fn geodesic_nearest_points_with_parts(
             (candidate.probe, candidate.target)
         }
     }))
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "exact endpoint parameters preserve the stored geodesic witness"
+)]
+fn geodesic_segment_point(
+    metric: &impl GeodesicMetric,
+    segment: crate::geometry::GeodesicSegment,
+    along: f64,
+) -> Point {
+    if segment.length == 0.0 || along == 0.0 {
+        segment.start
+    } else if along == segment.length {
+        segment.end
+    } else {
+        metric.interpolate(segment.start, segment.end, along / segment.length)
+    }
 }
 
 pub(crate) fn geodesic_sweep_with_parts(
@@ -316,6 +405,17 @@ pub(crate) fn geodesic_dwithin_sweep_with_parts(
     metric: &impl GeodesicMetric,
     distance: f64,
 ) -> Result<bool> {
+    if distance.is_nan() {
+        return Err(crate::crs::CrsError::message(
+            "geodesic dwithin limit is not finite",
+        ));
+    }
+    if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative() {
+        return Ok(false);
+    }
+    if distance.is_infinite() {
+        return Ok(!vertices.is_empty() && !target_parts.points.is_empty());
+    }
     let mut scratch = geodesic_scratch();
     let scratch = &mut *scratch;
     if let Some(bvh) = target_parts.geodesic_bvh(metric)? {
@@ -351,6 +451,17 @@ pub(crate) fn geodesic_point_dwithin_with_parts(
     distance: f64,
     stack: Option<&mut Vec<u32>>,
 ) -> Result<bool> {
+    if distance.is_nan() {
+        return Err(crate::crs::CrsError::message(
+            "geodesic dwithin limit is not finite",
+        ));
+    }
+    if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative() {
+        return Ok(false);
+    }
+    if distance.is_infinite() {
+        return Ok(!target_parts.points.is_empty());
+    }
     let mut scratch = geodesic_scratch();
     let bvh = target_parts.geodesic_bvh(metric)?;
     geodesic_point_dwithin_with_parts_and_scratch(
@@ -373,24 +484,31 @@ pub(crate) fn geodesic_point_dwithin_with_parts_and_scratch(
     scratch: &mut distance::GeodesicScratch,
     stack: Option<&mut Vec<u32>>,
 ) -> Result<bool> {
+    if distance.is_nan() {
+        return Err(crate::crs::CrsError::message(
+            "geodesic dwithin limit is not finite",
+        ));
+    }
+    if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative() {
+        return Ok(false);
+    }
     if let Some(bvh) = bvh {
         let stack = stack.unwrap_or(&mut scratch.stack);
-        bvh.dwithin_point(
+        return bvh.dwithin_point(
             point,
             target_parts,
             metric,
             stack,
             &mut scratch.segment,
             distance,
-        )
-    } else {
-        geodesic_capped_dwithin_with_parts(
-            std::slice::from_ref(&point),
-            target_parts,
-            metric,
-            distance,
-            &mut scratch.rows,
-            &mut scratch.segment,
-        )
+        );
     }
+    geodesic_capped_dwithin_with_parts(
+        std::slice::from_ref(&point),
+        target_parts,
+        metric,
+        distance,
+        &mut scratch.rows,
+        &mut scratch.segment,
+    )
 }

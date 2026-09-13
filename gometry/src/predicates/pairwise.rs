@@ -9,7 +9,7 @@ use crate::{
     PyResult, Python, classify_required, crs, exact_geometry_array,
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
     metric_nearest_points_resolved, metric_shortest_line_resolved, nearest_point_columns_masked,
-    pyfunction, resolve_metric, validate_distance_arg,
+    pyfunction, resolve_metric, validate_dwithin_distance, validate_dwithin_distance_arg,
 };
 
 /// Return the shortest connecting line between two geometries (CRS-aware).
@@ -593,8 +593,10 @@ pub(crate) fn nearest_points(
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
-///     If ``distance`` is negative or non-finite, or ``unit='meters'`` is
-///     requested for a CRS-free geometry.
+///     If ``distance`` is negative, NaN, or negative infinity, or
+///     ``unit='meters'`` is requested for a CRS-free geometry. Positive
+///     infinity is accepted and matches every pair of admitted non-empty
+///     operands.
 /// CRSError
 ///     If a geographic operand includes a filled polygon interior.
 ///
@@ -640,7 +642,7 @@ pub(crate) fn dwithin(
         (None, None) => None,
     }) else {
         // Two scalars: a single bool, so the distance must be scalar too.
-        let distance = validate_distance_arg(distance)?.get();
+        let distance = validate_dwithin_distance_arg(distance)?;
         let left_input = classify_required(left)?;
         let right_input = classify_required(right)?;
         let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;
@@ -651,8 +653,8 @@ pub(crate) fn dwithin(
             unit,
         );
     };
-    let distance = crate::F64Param::parse(distance, "distance", len)?;
-    distance.try_validate(|value| crate::validate_distance(value).map(|_| ()))?;
+    let distance = crate::F64Param::parse_raw(distance, "distance", len)?;
+    distance.try_validate(|value| validate_dwithin_distance(value).map(|_| ()))?;
     let left_input = classify_required(left)?;
     let right_input = classify_required(right)?;
     let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;

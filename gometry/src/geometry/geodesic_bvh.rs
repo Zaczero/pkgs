@@ -4,9 +4,9 @@
 //! Nodes carry one conservative auxiliary-sphere cap: an anchor point and a
 //! true-metric reach covering every descendant segment. Traversal lower-bounds
 //! a query point by `max(aux_bound(query, anchor) - reach, 0)`, then refines
-//! only surviving leaves with the certified Karney segment kernel. The bound
-//! is purely pruning; exact distance and witness semantics
-//! stay owned by `GeodesicMetric`.
+//! only surviving leaves with the numerical Karney segment kernel. The bound
+//! is purely pruning; contact, minimum, and witness semantics stay owned by
+//! `GeodesicMetric`.
 
 use crate::HeapSize;
 use crate::collections::HashMap;
@@ -329,6 +329,8 @@ impl GeodesicFacetBvh {
                             probe: vertex,
                             target,
                             distance: minimum.distance,
+                            lower: minimum.lower,
+                            evaluation_error: minimum.evaluation_error,
                             feature: GeodesicTargetFeature::Segment {
                                 index: edge_index,
                                 along: minimum.along,
@@ -357,10 +359,13 @@ impl GeodesicFacetBvh {
                     continue;
                 }
                 let distance = metric.segment_length(vertex, point);
+                let evaluation_error = metric.geodesic_numerical_policy().evaluation_allowance(1.0);
                 let candidate = GeodesicWitnessCandidate {
                     probe: vertex,
                     target: point,
                     distance,
+                    lower: (distance - evaluation_error).max(0.0),
+                    evaluation_error,
                     feature: GeodesicTargetFeature::Point,
                     order,
                     swapped,
@@ -382,6 +387,9 @@ impl GeodesicFacetBvh {
         segment_scratch: &mut GeodesicSegmentScratch,
         limit: f64,
     ) -> Result<bool> {
+        if limit.is_infinite() && limit.is_sign_positive() {
+            return Ok(!parts.segments.is_empty() || !parts.point_only.is_empty());
+        }
         stack.clear();
         crate::try_push_vec(stack, 0)?;
         while let Some(node) = stack.pop() {
@@ -395,9 +403,9 @@ impl GeodesicFacetBvh {
                     for edge_index in self.leaf_segment_ids(leaf) {
                         let edge_index = *edge_index as usize;
                         let segment = parts.segments[edge_index];
-                        let bound = metric.point_distance_lower_bound(point, segment.start)
-                            - segment.length;
-                        if bound > limit {
+                        if metric.point_distance_lower_bound(point, segment.start) - segment.length
+                            > limit
+                        {
                             continue;
                         }
                         let result = metric.point_segment_query(
@@ -413,7 +421,9 @@ impl GeodesicFacetBvh {
                             GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
                             GeodesicSegmentQueryResult::ThresholdOutside => {},
                             GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
-                                debug_assert!(minimum > limit);
+                                if minimum <= limit {
+                                    return Ok(true);
+                                }
                             },
                             GeodesicSegmentQueryResult::Excluded => {
                                 unreachable!("threshold query returned a minimum exclusion")
@@ -515,6 +525,8 @@ pub(super) struct GeodesicWitnessCandidate {
     pub(super) probe: Point,
     pub(super) target: Point,
     pub(super) distance: f64,
+    pub(super) lower: f64,
+    pub(super) evaluation_error: f64,
     pub(super) feature: GeodesicTargetFeature,
     pub(super) order: usize,
     pub(super) swapped: bool,

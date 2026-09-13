@@ -30,9 +30,7 @@ def test_geodesic_series_domain_boundaries_reach_each_metric_path(
     )
     inverse = geodesic.geodesic_inverse(0.0, 0.0, 1.0, 0.0)
     assert float(inverse['distance']) > 0.0
-    direct = geodesic.geodesic_direct(
-        0.0, 0.0, 90.0, float(inverse['distance'])
-    )
+    direct = geodesic.geodesic_direct(0.0, 0.0, 90.0, float(inverse['distance']))
     assert float(direct['longitude']) == pytest.approx(1.0)
     assert float(direct['latitude']) == pytest.approx(0.0)
 
@@ -48,6 +46,67 @@ def test_geodesic_series_domain_boundaries_reach_each_metric_path(
     assert gm.nearest_points(start, line)[0].to_wkt() == start.to_wkt()
     assert gm.hausdorff_distance(start, end) == pytest.approx(
         float(inverse['distance'])
+    )
+
+
+def test_geodesic_parallel_proximity_is_not_segment_contact() -> None:
+    left = gm.LineString([(-1.0, 0.0), (1.0, 0.0)], crs=4326)
+    right = gm.LineString([(-1.0, 1e-14), (1.0, 1e-14)], crs=4326)
+
+    distance = gm.distance(left, right)
+
+    assert distance > 0.0
+    assert not gm.dwithin(left, right, 0.0)
+    first, second = gm.nearest_points(left, right)
+    assert first.to_wkt() != second.to_wkt()
+
+
+def test_geodesic_zero_length_line_retains_point_support() -> None:
+    line = gm.LineString([(0.0, 0.0), (0.0, 0.0)], crs=4326)
+    point = gm.Point(0.0, 0.0, crs=4326)
+
+    assert gm.distance(line, point) == 0.0
+    assert gm.dwithin(line, point, 0.0)
+    first, second = gm.nearest_points(line, point)
+    assert first.to_wkt() == second.to_wkt()
+
+
+def test_geodesic_periodic_zero_edge_uses_point_support_without_resplitting() -> None:
+    seam = gm.LineString([(-180.0, 0.0), (180.0, 0.0)], crs=4326)
+    meridian = gm.LineString([(-180.0, -1.0), (-180.0, 1.0)], crs=4326)
+
+    assert gm.distance(seam, meridian) == 0.0
+    assert gm.dwithin(seam, meridian, 0.0)
+
+
+def test_geodesic_positive_infinite_dwithin_does_not_force_distance_resolution() -> (
+    None
+):
+    left = gm.Point(0.0, 0.0, crs=4326)
+    right = gm.Point(180.0, 0.0, crs=4326)
+
+    assert gm.dwithin(left, right, math.inf)
+
+
+def test_geodesic_positive_infinite_dwithin_broadcasts_over_array_operands() -> None:
+    left = gm.points([0.0, 1.0], [0.0, 0.0], crs=4326)
+    right = gm.Point(180.0, 0.0, crs=4326)
+    empty = gm.LineString([], crs=4326)
+
+    assert gm.dwithin(left, right, math.inf).tolist() == [True, True]
+    assert gm.dwithin(left, right, [math.inf, math.inf]).tolist() == [True, True]
+    assert gm.dwithin(left, empty, math.inf).tolist() == [False, False]
+
+
+@pytest.mark.parametrize('radius', [1.0, 1e8, 1e9, 1e12])
+def test_geodesic_hausdorff_gap_scales_with_radius(radius: float) -> None:
+    crs = f'+proj=longlat +a={radius!r} +b={radius!r} +type=crs'
+    source = gm.LineString([(-1.0, 0.0), (1.0, 0.0)], crs=crs)
+    target = gm.Point(0.0, 90.0, crs=crs)
+
+    assert gm.hausdorff_distance(source, target) == pytest.approx(
+        math.pi * radius / 2.0,
+        rel=2e-15,
     )
 
 

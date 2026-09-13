@@ -16644,8 +16644,10 @@ def dwithin(
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
     GeometryError
-        If ``distance`` is negative or non-finite, or ``unit='meters'`` is
-        requested for a CRS-free geometry.
+        If ``distance`` is negative, NaN, or negative infinity, or
+        ``unit='meters'`` is requested for a CRS-free geometry. Positive
+        infinity is accepted and matches every pair of admitted non-empty
+        operands.
     CRSError
         If a geographic operand includes a filled polygon interior.
 

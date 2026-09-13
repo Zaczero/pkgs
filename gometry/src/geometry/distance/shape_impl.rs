@@ -39,11 +39,19 @@ impl Shape {
         let mut point_only = Vec::new();
         collect_point_only_into(self, &mut point_only)?;
         let segment_count = self.segment_count();
+        crate::boundary::try_reserve_vec(&mut point_only, segment_count)?;
         let mut segments = Vec::new();
         crate::boundary::try_reserve_vec(&mut segments, segment_count)?;
         let mut caps_accum = GeodesicSweepCapsAccum::try_new(segment_count)?;
         self.try_for_each_vertex_pair(|start, end| {
             let segment = metric.make_segment(start, end)?;
+            if segment.length == 0.0 {
+                if points.last().is_some_and(|point| *point == end) {
+                    points.pop();
+                }
+                crate::try_push_vec(&mut point_only, start)?;
+                return Ok::<_, crate::error::Error>(());
+            }
             caps_accum.push_segment(segment, metric);
             segments.push(segment);
             Ok::<_, crate::error::Error>(())

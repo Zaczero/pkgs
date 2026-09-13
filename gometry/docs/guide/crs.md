@@ -412,16 +412,24 @@ subdivided and returned to the same global frontier. When a witness is
 requested, gometry materializes the actual foot on the prepared line and
 preserves the segment's along-track position and optional ordinates.
 
-The geodesic owner reserves an internal backend floor of `1e-11 × a` for
-bound and convex-cell decisions, where `a` is the ellipsoid's semi-major axis.
-This floor scales with the ellipsoid radius. It is a conservative implementation
-allowance for the admitted binary64 backend, not a per-call error certificate.
+The geodesic owner resolves a binary64 numerical minimum with one
+radius-relative policy: the point-to-segment search gap is `4e-11 × a`,
+while backend position and inverse allowances are tracked separately. These
+are numerical quality budgets, not universal real-arithmetic error
+certificates. Segment candidates are witnesses, not contact assertions:
+exact represented endpoint/equator/meridian families and strictly verified
+regular transverse roots may establish zero, while a merely close or
+unresolved candidate retains its attained positive separation. A backend zero
+for distinct point inputs remains the selected numerical answer and is not
+relabelled as certified contact.
 The [Geographic geodesic numerical domain](#geographic-geodesic-numerical-domain)
 section describes the scope of the underlying GeographicLib primitive; that
 primitive scope does not certify this composite point-to-segment query.
-`dwithin` compares the resolved backend minimum inclusively with the supplied
-radius. It does not add a contact tolerance or widen the radius by pruning
-slack.
+`dwithin` uses that same deterministic minimum resolver and compares its
+returned value inclusively with the supplied radius. It does not add a contact
+tolerance or widen the radius by pruning slack. A positive infinite radius
+returns `True` for admitted non-empty operands without forcing an
+unrepresentable distance result.
 
 Geodesic Hausdorff evaluates every source vertex and uses one global
 along-track frontier for each source segment. Each target query is complete
@@ -429,11 +437,19 @@ over the target's segments and isolated points, and the returned pair is an
 actual source/target witness rather than an interval upper bound. Regular
 finite-foot branches, near-coincident moving witnesses, and exact
 spherical/equatorial/polar families can close a source interval directly;
-other intervals use a conservative `0.01 m` interval-value budget. The scalar
-is selected from an attained source/target sample; it is not the interval
-upper bound. The underlying binary64 backend allowance remains the
-radius-scaled floor described above, so neither this budget nor the floor is
-a per-call error certificate or an additional contact tolerance.
+other intervals use the radius-relative algorithmic gap
+`a * (0.01 / 6_378_137)`. The complete target minimum contributes its lower
+estimate to the outer lower bound, while its attained witness supplies the
+upper estimate. Backend position/inverse and parameter/arithmetic allowances
+remain separate from that algorithmic gap. The scalar is selected from an
+attained source/target sample; it is not an interval upper bound or a contact
+certificate.
+
+Segment construction, curvature bounds, and search parameters are normalized
+to semi-major axis `1` and rescaled only for final metric outputs. Positive
+finite axes are admitted when the requested binary64 result is representable;
+an unrepresentable final distance is an explicit error rather than an
+intermediate squared-axis rejection.
 
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a

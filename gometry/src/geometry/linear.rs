@@ -492,6 +492,7 @@ impl MeasuredLineIndex {
         let target = target.clamp(self.first.m().unwrap_or(0.0), self.last.m().unwrap_or(0.0));
         let mut result = None;
         self.for_each_window(|start, end| -> Result<bool> {
+            let _ = metric.admitted_length(start, end)?;
             let (start_m, end_m) = (start.m().unwrap_or(0.0), end.m().unwrap_or(0.0));
             if target > end_m {
                 return Ok(true);
@@ -525,7 +526,7 @@ impl MeasuredLineIndex {
                     continue;
                 };
                 let length = if M::LOCATE_WITH_MEASURE_NEEDS_LENGTH {
-                    metric.length(start, end)
+                    metric.admitted_length(start, end)?
                 } else {
                     0.0
                 };
@@ -561,6 +562,7 @@ impl MeasuredLineIndex {
         }
         let mut result = Vec::new();
         self.for_each_window(|segment_start, segment_end| -> Result<bool> {
+            let _ = metric.admitted_length(segment_start, segment_end)?;
             let (start_m, end_m) = (
                 segment_start.m().unwrap_or(0.0),
                 segment_end.m().unwrap_or(0.0),

@@ -10,6 +10,7 @@ use crate::geometry::{
 };
 
 /// Maximum branch-and-bound gap for the geodesic Hausdorff extremum.
+#[cfg(test)]
 pub(crate) const GEODESIC_HAUSDORFF_TOLERANCE: f64 = 0.01;
 
 #[cfg(test)]
@@ -129,34 +130,25 @@ pub(crate) mod geodesic_hausdorff_counters {
 struct TargetEvaluation {
     source: Point,
     distance: f64,
+    lower: f64,
+    evaluation_error: f64,
     target: Point,
     feature: GeodesicTargetFeature,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GeodesicHausdorffWitness {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "source and target are inspected by geodesic witness tests"
-        )
-    )]
     pub(crate) source: Point,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "source and target are inspected by geodesic witness tests"
-        )
-    )]
     pub(crate) target: Point,
     pub(crate) distance: f64,
+    pub(crate) lower: f64,
+    pub(crate) upper: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HausdorffInterval {
     upper: f64,
+    lower: f64,
     left: f64,
     right: f64,
     left_value: TargetEvaluation,
@@ -207,9 +199,7 @@ pub(crate) fn geodesic_directed_hausdorff_distance<M: GeodesicMetric>(
         update_maximum(&mut best, &candidate);
     }
     for &segment in &source_parts.segments {
-        let cmax = best.map_or(0.0, |candidate: GeodesicHausdorffWitness| {
-            candidate.distance
-        });
+        let cmax = best.map_or(0.0, |candidate: GeodesicHausdorffWitness| candidate.lower);
         let candidate = geodesic_max_min_on_source_segment(
             &segment,
             target_parts,
@@ -261,18 +251,21 @@ pub(crate) fn geodesic_max_min_on_source_segment<M: GeodesicMetric>(
 
     scratch.outer.clear();
     let initial = source_interval(0.0, segment.length, &left, &right, metric);
-    if initial.upper <= completion_limit(cmax.max(best.distance)) {
+    best.upper = initial.upper;
+    if initial.upper <= completion_limit(metric, cmax.max(best.lower)) {
         return Ok(best);
     }
     crate::boundary::try_push_heap(&mut scratch.outer, initial)?;
     while let Some(interval) = scratch.outer.pop() {
         #[cfg(test)]
         geodesic_hausdorff_counters::interval_pop();
-        if interval.upper <= completion_limit(cmax.max(best.distance)) {
+        best.lower = best.lower.max(interval.lower);
+        if interval.upper <= completion_limit(metric, cmax.max(best.lower)) {
             break;
         }
         let middle = f64::midpoint(interval.left, interval.right);
         if !(middle > interval.left && middle < interval.right) {
+            best.upper = best.upper.max(interval.upper);
             continue;
         }
         let middle_point = source.position(middle)?;
@@ -291,10 +284,11 @@ pub(crate) fn geodesic_max_min_on_source_segment<M: GeodesicMetric>(
             scratch,
         )?;
         if let Some(upper) = support
-            && upper <= completion_limit(cmax.max(best.distance))
+            && upper <= completion_limit(metric, cmax.max(best.lower))
         {
             #[cfg(test)]
             geodesic_hausdorff_counters::support_closure();
+            best.upper = best.upper.max(upper);
             continue;
         }
 
@@ -314,10 +308,10 @@ pub(crate) fn geodesic_max_min_on_source_segment<M: GeodesicMetric>(
         );
         #[cfg(test)]
         geodesic_hausdorff_counters::interval_split();
-        if left.upper > completion_limit(cmax.max(best.distance)) {
+        if left.upper > completion_limit(metric, cmax.max(best.lower)) {
             crate::boundary::try_push_heap(&mut scratch.outer, left)?;
         }
-        if right.upper > completion_limit(cmax.max(best.distance)) {
+        if right.upper > completion_limit(metric, cmax.max(best.lower)) {
             crate::boundary::try_push_heap(&mut scratch.outer, right)?;
         }
     }
@@ -347,6 +341,8 @@ fn source_target_evaluation<M: GeodesicMetric>(
     Ok(TargetEvaluation {
         source: point,
         distance: candidate.distance,
+        lower: candidate.lower,
+        evaluation_error: candidate.evaluation_error,
         target: candidate.target,
         feature: candidate.feature,
     })
@@ -357,6 +353,8 @@ const fn target_evaluation_witness(evaluation: &TargetEvaluation) -> GeodesicHau
         source: evaluation.source,
         target: evaluation.target,
         distance: evaluation.distance,
+        lower: evaluation.lower,
+        upper: evaluation.distance,
     }
 }
 
@@ -364,7 +362,15 @@ fn update_maximum(
     best: &mut Option<GeodesicHausdorffWitness>,
     candidate: &GeodesicHausdorffWitness,
 ) {
-    if best.is_none_or(|current| candidate.distance > current.distance) {
+    if let Some(current) = best {
+        if candidate.distance > current.distance {
+            current.source = candidate.source;
+            current.target = candidate.target;
+            current.distance = candidate.distance;
+        }
+        current.lower = current.lower.max(candidate.lower);
+        current.upper = current.upper.max(candidate.upper);
+    } else {
         *best = Some(*candidate);
     }
 }
@@ -374,8 +380,12 @@ fn update_witness_maximum(
     candidate: &GeodesicHausdorffWitness,
 ) {
     if candidate.distance > best.distance {
-        *best = *candidate;
+        best.source = candidate.source;
+        best.target = candidate.target;
+        best.distance = candidate.distance;
     }
+    best.lower = best.lower.max(candidate.lower);
+    best.upper = best.upper.max(candidate.upper);
 }
 
 fn source_interval<M: GeodesicMetric>(
@@ -392,6 +402,9 @@ fn source_interval<M: GeodesicMetric>(
             right - left,
             metric,
         ),
+        lower: (left_value.lower - left_value.evaluation_error)
+            .max(right_value.lower - right_value.evaluation_error)
+            .max(0.0),
         left,
         right,
         left_value: *left_value,
@@ -406,8 +419,8 @@ fn lipschitz_upper<M: GeodesicMetric>(left: f64, right: f64, width: f64, metric:
     outward_upper(raw, metric, raw + width)
 }
 
-fn completion_limit(best: f64) -> f64 {
-    best + GEODESIC_HAUSDORFF_TOLERANCE
+fn completion_limit<M: GeodesicMetric>(metric: &M, best: f64) -> f64 {
+    best + metric.geodesic_numerical_policy().hausdorff_gap()
 }
 
 fn outward_upper<M: GeodesicMetric>(value: f64, metric: &M, scale: f64) -> f64 {
@@ -415,7 +428,7 @@ fn outward_upper<M: GeodesicMetric>(value: f64, metric: &M, scale: f64) -> f64 {
         return f64::INFINITY;
     }
     let rounding = 128.0 * f64::EPSILON * scale.abs().max(1.0);
-    let allowance = 4.0 * metric.geodesic_backend_floor() + rounding;
+    let allowance = metric.geodesic_numerical_policy().evaluation_allowance(4.0) + rounding;
     (value + allowance).next_up()
 }
 
@@ -555,8 +568,18 @@ fn moving_witness_support<M: GeodesicMetric>(
         return Ok(None);
     };
     let target_length = target.segment().length;
+    let radius = metric.geodesic_radius();
     let half_width = (interval.right - interval.left) / 2.0;
-    if !(half_width > 0.0 && along >= half_width && target_length - along >= half_width) {
+    let half_width_normalized = half_width / radius;
+    let along_normalized = along / radius;
+    let target_length_normalized = target_length / radius;
+    let center_distance_normalized = center_value.distance / radius;
+    if !(radius.is_finite()
+        && radius > 0.0
+        && half_width_normalized > 0.0
+        && along_normalized >= half_width_normalized
+        && target_length_normalized - along_normalized >= half_width_normalized)
+    {
         return Ok(None);
     }
     let (Some(source_tangent), Some(target_tangent)) =
@@ -573,14 +596,16 @@ fn moving_witness_support<M: GeodesicMetric>(
         return Ok(None);
     };
     let rho = (dot_difference(source_tangent, target_tangent, direction)
-        + kappa * center_value.distance
+        + kappa * center_distance_normalized
         + tangent_allowance(metric))
     .min(2.0);
     if !(omega.is_finite() && omega > 0.0 && rho.is_finite()) {
         return Ok(None);
     }
-    let omega_h = omega * half_width;
-    let upper = center_value.distance * omega_h.cosh() + (rho / omega) * omega_h.sinh();
+    let omega_h = omega * half_width_normalized;
+    let upper_normalized =
+        center_distance_normalized * omega_h.cosh() + (rho / omega) * omega_h.sinh();
+    let upper = upper_normalized * radius;
     if !upper.is_finite() {
         return Ok(None);
     }
@@ -609,8 +634,15 @@ fn regular_branch_support<M: GeodesicMetric>(
     #[cfg(test)]
     geodesic_hausdorff_counters::regular_attempt();
     let target_length = target_segment.length;
-    let half_width = (interval.right - interval.left) / 2.0;
-    if half_width.partial_cmp(&0.0) != Some(Ordering::Greater) {
+    let radius = metric.geodesic_radius();
+    let half_width_meters = (interval.right - interval.left) / 2.0;
+    let half_width = half_width_meters / radius;
+    let along_normalized = along / radius;
+    let target_length_normalized = target_length / radius;
+    if !(radius.is_finite()
+        && radius > 0.0
+        && half_width.partial_cmp(&0.0) == Some(Ordering::Greater))
+    {
         return Ok(None);
     }
     if center_value
@@ -622,7 +654,7 @@ fn regular_branch_support<M: GeodesicMetric>(
         geodesic_hausdorff_counters::regular_near_zero_decline();
         return Ok(None);
     }
-    if !(along > 0.0 && along < target_length) {
+    if !(along_normalized > 0.0 && along_normalized < target_length_normalized) {
         #[cfg(test)]
         geodesic_hausdorff_counters::regular_foot_endpoint_decline();
         return Ok(None);
@@ -630,12 +662,14 @@ fn regular_branch_support<M: GeodesicMetric>(
     let Some((omega, _, d_star)) = metric.geodesic_curvature_domain() else {
         return Ok(None);
     };
-    let patch_half = (2.0 * half_width).min(along.min(target_length - along));
+    let patch_half =
+        (2.0 * half_width).min(along_normalized.min(target_length_normalized - along_normalized));
+    let patch_half_meters = patch_half * radius;
     if patch_half.partial_cmp(&0.0) != Some(Ordering::Greater) {
         return Ok(None);
     }
-    let patch_left = along - patch_half;
-    let patch_right = along + patch_half;
+    let patch_left = along - patch_half_meters;
+    let patch_right = along + patch_half_meters;
     let center_point = source.position(center)?;
     let left_sample = target.sample(center_point, patch_left, true)?;
     let right_sample = target.sample(center_point, patch_right, true)?;
@@ -646,7 +680,7 @@ fn regular_branch_support<M: GeodesicMetric>(
         geodesic_hausdorff_counters::regular_derivative_decline();
         return Ok(None);
     };
-    let d = center_value.distance + half_width + patch_half;
+    let d = center_value.distance / radius + half_width + patch_half;
     if !(d.is_finite() && d < d_star) {
         #[cfg(test)]
         geodesic_hausdorff_counters::regular_domain_decline();
@@ -665,9 +699,13 @@ fn regular_branch_support<M: GeodesicMetric>(
         return Ok(None);
     }
     let mixed = omega_d / sine;
-    let derivative_allowance = derivative_allowance(metric, center_value.distance);
-    if !(left_derivative.value + left_derivative.error + mixed * half_width < -derivative_allowance
-        && right_derivative.value - right_derivative.error - mixed * half_width
+    let derivative_allowance = derivative_allowance(metric, center_value.distance) / radius;
+    let left_derivative_value = left_derivative.value / radius;
+    let left_derivative_error = left_derivative.error / radius;
+    let right_derivative_value = right_derivative.value / radius;
+    let right_derivative_error = right_derivative.error / radius;
+    if !(left_derivative_value + left_derivative_error + mixed * half_width < -derivative_allowance
+        && right_derivative_value - right_derivative_error - mixed * half_width
             > derivative_allowance)
     {
         #[cfg(test)]
@@ -675,14 +713,18 @@ fn regular_branch_support<M: GeodesicMetric>(
         return Ok(None);
     }
     let p = 1.0 + derivative_allowance / half_width;
-    let radius_bound = center_value.distance + p * half_width + metric.geodesic_backend_floor();
+    let radius_bound = center_value.distance / radius
+        + p * half_width
+        + metric
+            .geodesic_numerical_policy()
+            .normalized_backend_floor();
     let max_radius = std::f64::consts::PI / (2.0 * omega);
     if !(radius_bound.is_finite() && radius_bound < max_radius) {
         return Ok(None);
     }
     let curvature = omega * (omega * radius_bound).tan();
     let same_side_margin =
-        center_value.distance - p * half_width - 0.5 * curvature * half_width * half_width;
+        center_value.distance / radius - p * half_width - 0.5 * curvature * half_width * half_width;
     if !(curvature.is_finite() && curvature >= 0.0 && same_side_margin > derivative_allowance) {
         return Ok(None);
     }
@@ -709,11 +751,11 @@ fn regular_branch_support<M: GeodesicMetric>(
         return Ok(None);
     };
     let upper = concave_branch_upper(
-        left_branch,
-        right_branch,
-        interval.right - interval.left,
+        left_branch / radius,
+        right_branch / radius,
+        (interval.right - interval.left) / radius,
         curvature,
-    );
+    ) * radius;
     Ok(Some(outward_upper(upper, metric, upper)))
 }
 

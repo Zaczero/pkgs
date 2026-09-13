@@ -371,9 +371,12 @@ pub(super) fn brute_geodesic_distance(
     let right_edges = full_edges(right, metric);
     if left_edges.iter().any(|left| {
         right_edges.iter().any(|right| {
-            metric
-                .segments_cross(left.start, left.end, right.start, right.end)
-                .expect("intersection supported")
+            matches!(
+                metric
+                    .segment_contact(left, right)
+                    .expect("intersection supported"),
+                SegmentContact::Contact { .. }
+            )
         })
     }) {
         return 0.0;
@@ -443,16 +446,26 @@ pub(super) fn brute_geodesic_nearest_points(
     let right_edges = full_edges(right, metric);
     for left_segment in &left_edges {
         for right_segment in &right_edges {
-            if let Some(witness) = metric
-                .segment_intersection(
-                    left_segment.start,
-                    left_segment.end,
-                    right_segment.start,
-                    right_segment.end,
-                )
+            if let SegmentContact::Contact {
+                first_along,
+                second_along,
+                ..
+            } = metric
+                .segment_contact(left_segment, right_segment)
                 .expect("intersection supported")
             {
-                return Some(witness);
+                return Some((
+                    metric.interpolate(
+                        left_segment.start,
+                        left_segment.end,
+                        first_along / left_segment.length,
+                    ),
+                    metric.interpolate(
+                        right_segment.start,
+                        right_segment.end,
+                        second_along / right_segment.length,
+                    ),
+                ));
             }
         }
     }

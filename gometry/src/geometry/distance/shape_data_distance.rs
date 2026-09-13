@@ -1,10 +1,10 @@
 use super::RequiredPointTester;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
-    coordinate_squared_safe, geodesic_distance_with_parts, geodesic_dwithin_with_parts,
-    geodesic_point_distance_with_parts_and_scratch, geodesic_point_dwithin_with_parts_and_scratch,
-    parts_boundary_contact, parts_covers_point, puntal_brute_distance,
-    puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
+    coordinate_squared_safe, ensure_geodesic_linework, geodesic_distance_with_parts,
+    geodesic_dwithin_with_parts, geodesic_point_distance_with_parts_and_scratch,
+    geodesic_point_dwithin_with_parts_and_scratch, parts_boundary_contact, parts_covers_point,
+    puntal_brute_distance, puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
     DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point,
@@ -157,6 +157,11 @@ impl PreparedPlan {
         metric: &impl GeodesicMetric,
         distance: f64,
     ) -> Result<bool> {
+        if distance.is_infinite() && distance.is_sign_positive() {
+            ensure_geodesic_linework(self.shape(), metric)?;
+            ensure_geodesic_linework(other.shape(), metric)?;
+            return Ok(!self.shape().is_empty() && !other.shape().is_empty());
+        }
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
             metric.ensure_shape(self.shape())?;
             metric.ensure_shape(other.shape())?;
@@ -443,6 +448,16 @@ impl PreparedPlan {
         distance: f64,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Vec<bool>> {
+        if distance.is_infinite() && distance.is_sign_positive() {
+            ensure_geodesic_linework(self.shape(), metric)?;
+            let present = !self.shape().is_empty();
+            return probes
+                .map(|(x, y)| {
+                    crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
+                    Ok(present)
+                })
+                .collect();
+        }
         let key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,

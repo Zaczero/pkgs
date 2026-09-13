@@ -24,6 +24,11 @@ use crate::geometry::{
 pub(crate) trait SegmentMetric {
     /// Length of the segment `start`–`end` in this metric.
     fn length(&self, start: Point, end: Point) -> f64;
+    /// Admit the segment and return its length. Geodesic metrics use this
+    /// boundary to reject non-unique shortest arcs before an index is cached.
+    fn admitted_length(&self, start: Point, end: Point) -> Result<f64> {
+        Ok(self.length(start, end))
+    }
     /// The point at `fraction` (`[0, 1]`) along the segment.
     fn interpolate(&self, start: Point, end: Point, fraction: f64) -> Point;
     /// Whether locate sweeps should refine segments in cheap-lower-bound
@@ -144,6 +149,10 @@ impl SegmentMetric for PlanarMetric {
 /// Any [`GeodesicMetric`] is a [`SegmentMetric`] (lengths in meters).
 impl<M: GeodesicMetric> SegmentMetric for M {
     const ORDERED_LOCATE: bool = true;
+
+    fn admitted_length(&self, start: Point, end: Point) -> Result<f64> {
+        Ok(self.make_segment(start, end)?.length)
+    }
 
     fn locate_bound(&self, probe: Point, start: Point, end: Point, length: f64) -> f64 {
         // Triangle inequality off the auxiliary-sphere endpoint bounds: the
@@ -271,7 +280,7 @@ impl LineIndex {
         for line in &lines {
             for [start, end] in line.segment_pairs() {
                 last = end;
-                let length = metric.length(start, end);
+                let length = metric.admitted_length(start, end)?;
                 // Non-finite lengths (overflowed extreme segments) would poison
                 // every subsequent prefix entry — reject construction.
                 if !length.is_finite() {
@@ -324,7 +333,7 @@ impl LineIndex {
         let mut last = first;
         for [start, end] in coords.segment_pairs() {
             last = end;
-            let length = metric.length(start, end);
+            let length = metric.admitted_length(start, end)?;
             if !length.is_finite() {
                 return Err(GeometryErrorKind::message(
                     "line index cannot include a non-finite segment length",

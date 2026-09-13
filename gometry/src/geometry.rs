@@ -52,6 +52,21 @@ pub(crate) use types::{
     SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
     canonical_f64_bits, coerce_to_common_axes, ordered_edge, segment_midpoint, try_copy_slice,
 };
+pub(crate) use types::{
+    Bounds, Bounds3D, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder,
+    CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
+    FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
+    GeodesicNumericalPolicy, GeodesicParts, GeodesicPreparedSegment, GeodesicSegment,
+    GeodesicSegmentDerivative, GeodesicSegmentMinimum, GeodesicSegmentQuery,
+    GeodesicSegmentQueryResult, GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
+    MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
+    PointKey, Polygon, PolygonLevel, PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod,
+    Ring, RingLevel, Segment, SegmentContact, SegmentPairWitness, Shape, ShapeData, SharedSlice,
+    SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
+    canonical_f64_bits, coerce_to_common_axes, concat_coord_columns, ordered_edge,
+    segment_midpoint, try_copy_slice,
+};
 mod antimeridian;
 pub(crate) use antimeridian::{
     DerivedPointStrategy, crosses_antimeridian_coords_in_frame, crosses_antimeridian_in_frame,

@@ -385,17 +385,29 @@ fn split_geodesic_operands(
         let a_crosses = crate::geometry::crosses_antimeridian_in_frame(a.shape(), frame);
         let b_crosses = crate::geometry::crosses_antimeridian_in_frame(b.shape(), frame);
         if a_crosses || b_crosses {
-            let normalize =
-                |x: &PreparedPlan, crosses: bool| -> crate::error::Result<PreparedPlan> {
-                    Ok(if crosses {
-                        PreparedPlan::new(ShapeData::from(
-                            x.shape().split_antimeridian_in_frame(frame)?,
-                        ))?
+            let normalize = |x: &PreparedPlan,
+                             crosses: bool|
+             -> crate::error::Result<(PreparedPlan, bool)> {
+                if !crosses {
+                    return Ok((PreparedPlan::new(ShapeData::new(x.shape().clone()))?, false));
+                }
+                let normalized_shape = x.shape().split_antimeridian_in_frame(frame)?;
+                let changed = normalized_shape != *x.shape()
+                    && !crate::geometry::crosses_antimeridian_in_frame(&normalized_shape, frame);
+                Ok((
+                    PreparedPlan::new(ShapeData::from(if changed {
+                        normalized_shape
                     } else {
-                        PreparedPlan::new(ShapeData::new(x.shape().clone()))?
-                    })
-                };
-            return Ok(Some((normalize(a, a_crosses)?, normalize(b, b_crosses)?)));
+                        x.shape().clone()
+                    }))?,
+                    changed,
+                ))
+            };
+            let (a, a_changed) = normalize(a, a_crosses)?;
+            let (b, b_changed) = normalize(b, b_crosses)?;
+            if a_changed || b_changed {
+                return Ok(Some((a, b)));
+            }
         }
     }
     Ok(None)
@@ -463,8 +475,12 @@ pub(crate) fn pair_dwithin_planar(
     b: &PreparedPlan,
     distance: f64,
 ) -> crate::error::Result<bool> {
-    let distance = NonNegative::try_new("distance", distance)?;
-    a.dwithin(b, distance.get() / to_metre)
+    let distance = if distance.is_infinite() && distance.is_sign_positive() {
+        distance
+    } else {
+        NonNegative::try_new("distance", distance)?.get()
+    };
+    a.dwithin(b, distance / to_metre)
 }
 
 pub(crate) fn pair_dwithin_geodesic(
@@ -475,7 +491,11 @@ pub(crate) fn pair_dwithin_geodesic(
     b_cache: &FrameDependentCaches,
     distance: f64,
 ) -> crate::error::Result<bool> {
-    let distance = NonNegative::try_new("distance", distance)?.get();
+    let distance = if distance.is_infinite() && distance.is_sign_positive() {
+        distance
+    } else {
+        NonNegative::try_new("distance", distance)?.get()
+    };
     if let Some((a, b)) = split_geodesic_operands(metric.frame, a, b)? {
         return pair_dwithin_geodesic(
             metric,

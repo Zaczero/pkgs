@@ -130,6 +130,8 @@ def test_geodesic_metrics_reject_filled_polygon_interiors() -> None:
         gm.nearest_points(probe, target)
     with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
         gm.shortest_line(probe, target)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.dwithin(gm.points([0.0], [0.0], crs=4326), target, math.inf)
 
     # The explicit planar escape still measures filled polygon interiors.
     assert gm.distance(probe, target, unit='planar') == 0.0

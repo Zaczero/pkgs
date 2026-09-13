@@ -37,11 +37,12 @@ pub(crate) use shape::{
     VoronoiBoundary,
 };
 pub(crate) use shape_data::{
-    FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicPreparedSegment,
-    GeodesicSegmentDerivative, GeodesicSegmentMinimum, GeodesicSegmentQuery,
-    GeodesicSegmentQueryResult, GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed,
-    IndexedSegment, IntoSharedShape, PointKey, PolygonizeFull, PolylabelCell, PreparedPlan,
-    ShapeData, ValidationIssue, canonical_f64_bits, ordered_edge,
+    FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
+    GeodesicNumericalPolicy, GeodesicPreparedSegment, GeodesicSegmentDerivative,
+    GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
+    GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, IndexedSegment,
+    IntoSharedShape, PointKey, PolygonizeFull, PolylabelCell, PreparedPlan, SegmentContact,
+    SegmentPairWitness, ShapeData, ValidationIssue, canonical_f64_bits, ordered_edge,
 };
 pub(crate) use shared_slice::{SharedSlice, SharedSliceIter};
 

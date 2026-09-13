@@ -1138,11 +1138,54 @@ pub(crate) enum GeodesicWitnessNeed {
     Yes,
 }
 
-/// Attained point-to-segment minimum in the segment's along-track parameter.
+/// Attained point-to-segment witness in the segment's along-track parameter.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GeodesicSegmentMinimum {
     pub(crate) distance: f64,
     pub(crate) along: f64,
+}
+
+impl GeodesicSegmentMinimum {
+    pub(crate) const fn new(distance: f64, along: f64) -> Self {
+        Self { distance, along }
+    }
+}
+
+/// A resolved geodesic numerical minimum.
+///
+/// `witness` is the attained value and parameter. `lower` is the completed
+/// search lower estimate, while `evaluation_error` names the position/inverse
+/// allowance used to attain the witness. Neither field is a universal
+/// real-arithmetic certificate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GeodesicMinimum {
+    pub(crate) witness: GeodesicSegmentMinimum,
+    pub(crate) lower: f64,
+    pub(crate) evaluation_error: f64,
+}
+
+impl GeodesicMinimum {
+    pub(crate) const fn from_witness(witness: GeodesicSegmentMinimum) -> Self {
+        Self {
+            witness,
+            lower: 0.0,
+            evaluation_error: 0.0,
+        }
+    }
+}
+
+impl std::ops::Deref for GeodesicMinimum {
+    type Target = GeodesicSegmentMinimum;
+
+    fn deref(&self) -> &Self::Target {
+        &self.witness
+    }
+}
+
+impl std::ops::DerefMut for GeodesicMinimum {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.witness
+    }
 }
 
 /// Typed result of a point-to-segment query.
@@ -1150,16 +1193,87 @@ pub(crate) struct GeodesicSegmentMinimum {
 pub(crate) enum GeodesicSegmentQueryResult {
     /// An attained value, with an optional actual foot when requested.
     Attained {
-        minimum: GeodesicSegmentMinimum,
+        minimum: GeodesicMinimum,
         foot: Option<Point>,
     },
     /// A pruning fact, never a metric value.
     Excluded,
     /// The standing conservative backend lower bound is above the threshold.
     ThresholdOutside,
-    /// The resolved backend minimum is outside a threshold. This result is
-    /// floor-limited and is not a real-arithmetic lower-bound certificate.
+    /// The resolved numerical minimum is outside a threshold. This result is
+    /// not a real-arithmetic lower-bound certificate.
     ThresholdResolvedOutside { minimum: f64 },
+}
+
+/// The contact state of two admitted finite geodesic segments.
+///
+/// `Unresolved` deliberately retains an attained candidate rather than
+/// promoting proximity to structural contact. It is an internal numerical
+/// state; callers that need a value can use its witness and lower estimate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SegmentContact {
+    Contact { first_along: f64, second_along: f64 },
+    Disjoint,
+    Unresolved { candidate: SegmentPairWitness },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SegmentPairWitness {
+    pub(crate) first: Point,
+    pub(crate) second: Point,
+    pub(crate) first_along: f64,
+    pub(crate) second_along: f64,
+    pub(crate) distance: f64,
+}
+
+/// Numerical budgets shared by the geodesic minimum, threshold, and Hausdorff
+/// resolvers. Search runs in normalized units; public metric values use
+/// `semi_major`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GeodesicNumericalPolicy {
+    semi_major: f64,
+}
+
+impl GeodesicNumericalPolicy {
+    pub(crate) const BACKEND_RELATIVE: f64 = 1e-11;
+    pub(crate) const MINIMUM_GAP_RELATIVE: f64 = 4e-11;
+    pub(crate) const HAUSDORFF_GAP_RELATIVE: f64 = 0.01 / 6_378_137.0;
+
+    pub(crate) const fn new(semi_major: f64) -> Self {
+        Self { semi_major }
+    }
+
+    pub(crate) const fn semi_major(self) -> f64 {
+        self.semi_major
+    }
+
+    pub(crate) const fn normalized_backend_floor(self) -> f64 {
+        Self::BACKEND_RELATIVE
+    }
+
+    pub(crate) const fn normalized_minimum_gap(self) -> f64 {
+        Self::MINIMUM_GAP_RELATIVE
+    }
+
+    pub(crate) const fn normalized_hausdorff_gap(self) -> f64 {
+        Self::HAUSDORFF_GAP_RELATIVE
+    }
+
+    pub(crate) fn backend_floor(self) -> f64 {
+        self.semi_major * Self::BACKEND_RELATIVE
+    }
+
+    pub(crate) fn minimum_gap(self) -> f64 {
+        self.semi_major * Self::MINIMUM_GAP_RELATIVE
+    }
+
+    pub(crate) fn hausdorff_gap(self) -> f64 {
+        self.semi_major * self.normalized_hausdorff_gap()
+    }
+
+    pub(crate) fn evaluation_allowance(self, evaluations: f64) -> f64 {
+        self.backend_floor() * evaluations.max(1.0)
+    }
 }
 
 /// Reusable inner branch-and-bound frontier for one geodesic operation.
@@ -1299,19 +1413,14 @@ pub(crate) trait GeodesicMetric {
         scratch: &mut GeodesicSegmentScratch,
     ) -> Result<GeodesicSegmentQueryResult>;
 
-    /// Whether the selected shortest geodesic segments `a`–`b` and `c`–`d`
-    /// intersect on the ellipsoid.
-    fn segments_cross(&self, a: Point, b: Point, c: Point, d: Point) -> Result<bool>;
-
-    /// Certified intersection witness for two geodesic segments. `None` means
-    /// the documented segment solver found no intersection.
-    fn segment_intersection(
+    /// Resolve contact for two already-admitted geodesic segments. The
+    /// segments retain their source-frame endpoints and metric along-track
+    /// lengths; an implementation may only convert that frame here.
+    fn segment_contact(
         &self,
-        a: Point,
-        b: Point,
-        c: Point,
-        d: Point,
-    ) -> Result<Option<(Point, Point)>>;
+        first: &GeodesicSegment,
+        second: &GeodesicSegment,
+    ) -> Result<SegmentContact>;
 
     /// Geodesic length (meters) of segment `a`–`b`.
     fn segment_length(&self, a: Point, b: Point) -> f64;
@@ -1328,11 +1437,18 @@ pub(crate) trait GeodesicMetric {
     /// Curvature and injectivity bounds for the admitted ellipsoid.
     fn geodesic_curvature_domain(&self) -> Option<(f64, f64, f64)>;
 
+    /// Shared numerical policy for this ellipsoid.
+    fn geodesic_numerical_policy(&self) -> GeodesicNumericalPolicy;
+
     /// Radius-scaled allowance for the binary64 geodesic backend.
-    fn geodesic_backend_floor(&self) -> f64;
+    fn geodesic_backend_floor(&self) -> f64 {
+        self.geodesic_numerical_policy().backend_floor()
+    }
 
     /// Semi-major radius used by exact spherical family formulas.
-    fn geodesic_radius(&self) -> f64;
+    fn geodesic_radius(&self) -> f64 {
+        self.geodesic_numerical_policy().semi_major()
+    }
 
     /// Unit surface vector in the ellipsoid's canonical Cartesian frame.
     fn surface_unit(&self, point: Point) -> Option<[f64; 3]>;

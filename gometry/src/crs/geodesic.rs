@@ -15,6 +15,7 @@ use crate::crs::{
     normalize,
 };
 use crate::error::Result;
+use crate::geometry::GeodesicNumericalPolicy;
 
 const GEODESIC_LINE_CAPS: u64 = caps::LATITUDE
     | caps::LONGITUDE
@@ -27,9 +28,10 @@ const GEODESIC_LINE_OUTMASK: u64 =
 const GEODESIC_LINE_CACHE_CAPACITY: usize = 4096;
 const REDUCED_LAT_TABLE_CELLS: usize = 8192;
 const REDUCED_LAT_MIN_ONE_MINUS_F: f64 = 0.9;
-// This deliberate rounded envelope covers measured near-cut line-position
-// stress with margin; it is not a universal certificate.
-pub(crate) const GEODESIC_BACKEND_RELATIVE_FLOOR: f64 = 1e-11;
+// Compatibility name for existing native tests. The numerical values live in
+// `GeodesicNumericalPolicy`, which is shared by distance, threshold, and
+// Hausdorff completion.
+pub(crate) const GEODESIC_BACKEND_RELATIVE_FLOOR: f64 = GeodesicNumericalPolicy::BACKEND_RELATIVE;
 
 #[cfg(test)]
 pub(crate) mod geodesic_counters {
@@ -46,6 +48,7 @@ pub(crate) mod geodesic_counters {
         pub segment_interval_splits: u64,
         pub segment_convex_closures: u64,
         pub segment_derivative_declines: u64,
+        pub segment_admissions: u64,
     }
 
     thread_local! {
@@ -58,6 +61,7 @@ pub(crate) mod geodesic_counters {
         static SEGMENT_INTERVAL_SPLITS: Cell<u64> = const { Cell::new(0) };
         static SEGMENT_CONVEX_CLOSURES: Cell<u64> = const { Cell::new(0) };
         static SEGMENT_DERIVATIVE_DECLINES: Cell<u64> = const { Cell::new(0) };
+        static SEGMENT_ADMISSIONS: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(super) fn line_cache_hit() {
@@ -96,6 +100,10 @@ pub(crate) mod geodesic_counters {
         SEGMENT_DERIVATIVE_DECLINES.set(SEGMENT_DERIVATIVE_DECLINES.get() + 1);
     }
 
+    pub(super) fn segment_admission() {
+        SEGMENT_ADMISSIONS.set(SEGMENT_ADMISSIONS.get() + 1);
+    }
+
     pub(crate) fn reset() {
         LINE_CACHE_HITS.set(0);
         LINE_CACHE_MISSES.set(0);
@@ -106,6 +114,7 @@ pub(crate) mod geodesic_counters {
         SEGMENT_INTERVAL_SPLITS.set(0);
         SEGMENT_CONVEX_CLOSURES.set(0);
         SEGMENT_DERIVATIVE_DECLINES.set(0);
+        SEGMENT_ADMISSIONS.set(0);
     }
 
     pub(crate) fn snapshot() -> Snapshot {
@@ -119,6 +128,7 @@ pub(crate) mod geodesic_counters {
             segment_interval_splits: SEGMENT_INTERVAL_SPLITS.get(),
             segment_convex_closures: SEGMENT_CONVEX_CLOSURES.get(),
             segment_derivative_declines: SEGMENT_DERIVATIVE_DECLINES.get(),
+            segment_admissions: SEGMENT_ADMISSIONS.get(),
         }
     }
 }
@@ -223,6 +233,5 @@ pub(crate) use nearest_lrs::{
     with_geodesic_erased_at,
 };
 use segment::{
-    IntersectSolver, checked_geodesic_segment, geodesic_point_segment_query,
-    geodesic_segment_intersection_with_solver, geodesic_unit_vector,
+    IntersectSolver, checked_geodesic_segment, geodesic_point_segment_query, geodesic_unit_vector,
 };

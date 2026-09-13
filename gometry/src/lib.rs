@@ -162,17 +162,7 @@ use py::support::{
     metric_constructive_shape, metric_constructive_shape_budgeted, metric_interpolate_m,
     metric_maximum_inscribed_circle, metric_minimum_bounding_circle,
     metric_minimum_bounding_radius, metric_optional_constructive_shape,
-    missing_geometry_items_error, nearest_point_columns_masked, note_array_row,
-    optional_coordinates, owned_voronoi_boundary, parse_crs, parse_crs_epoch, parse_curve_bounds,
-    parse_geojson_geometry_value, parse_geojson_slice, parse_interpolate_plan, parse_precision,
-    parse_spatial_index_handle, parse_wkt_output_dimension, parts, point_from_bounds,
-    py_polygonize_full, py_text_borrow, py_to_json_value, require_geojson_crs,
-    require_locate_point, require_locate_points, resolve_line_metric, rings,
-    validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
-    validate_distance, validate_distance_arg, validate_equals_exact_tolerance,
-    validate_max_segment_length, validate_nearest_k, validate_smooth_iterations,
-    voronoi_edges_flatten, voronoi_flatten, wrapped_box,
-};
+    missing_geometry_items_error, nearest_point_columns_masked, note_array_row, optional_coordinates, owned_voronoi_boundary, parse_crs, parse_crs_epoch, parse_curve_bounds, parse_geojson_geometry_value, parse_geojson_slice, parse_interpolate_plan, parse_precision, parse_spatial_index_handle, parse_wkt_output_dimension, parts, point_from_bounds, py_polygonize_full, py_text_borrow, py_to_json_value, require_geojson_crs, require_locate_point, require_locate_points, resolve_line_metric, rings, validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction, validate_distance, validate_distance_arg, validate_equals_exact_tolerance, validate_max_segment_length, validate_nearest_k, validate_smooth_iterations, voronoi_edges_flatten, voronoi_flatten, wrapped_box, py_nearest_points, validate_dwithin_distance, validate_dwithin_distance_arg, };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;

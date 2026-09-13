@@ -17,7 +17,7 @@ use crate::dispatch::kernels;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::{GeometryKind, PreparedPlan};
 use crate::predicates::engine::Predicate;
-use crate::{DistanceUnit, NonNegative, OverlayOp};
+use crate::{DistanceUnit, OverlayOp};
 
 /// Predicate array-lane fast path using the shared batch engine.
 pub(crate) struct PredicateFastPath {
@@ -320,7 +320,7 @@ pub(crate) fn dispatch_dwithin_admitted(
         MetricOp::Dwithin,
         unit,
         move |scale, left, right| {
-            crate::broadcast::pair_dwithin_planar(scale, left, right, distance.get())
+            crate::broadcast::pair_dwithin_planar(scale, left, right, distance)
         },
         move |left, right, ctx| kernels::binary_dwithin(left, right, ctx, distance.get()),
         move |py, array, other, frame, op, unit| {

@@ -249,6 +249,18 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
     rows: &mut Vec<RowProbe>,
     segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<bool> {
+    if distance.is_nan() {
+        return Err(crate::crs::CrsError::message(
+            "geodesic dwithin limit is not finite",
+        ));
+    }
+    if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative() {
+        return Ok(false);
+    }
+    if distance.is_infinite() {
+        return Ok(!vertices.is_empty()
+            && (!target_parts.segments.is_empty() || !target_parts.point_only.is_empty()));
+    }
     let Some(caps) = target_parts.caps.as_ref() else {
         return Ok(false);
     };
@@ -296,7 +308,9 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
                     GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
                     GeodesicSegmentQueryResult::ThresholdOutside => {},
                     GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
-                        debug_assert!(minimum > distance);
+                        if minimum <= distance {
+                            return Ok(true);
+                        }
                     },
                     GeodesicSegmentQueryResult::Excluded => {
                         unreachable!("threshold query returned a minimum exclusion")
@@ -395,6 +409,8 @@ pub(crate) fn geodesic_target_witness(
             probe: point,
             target,
             distance: minimum.distance,
+            lower: minimum.lower,
+            evaluation_error: minimum.evaluation_error,
             feature: GeodesicTargetFeature::Segment {
                 index,
                 along: minimum.along,
@@ -413,10 +429,13 @@ pub(crate) fn geodesic_target_witness(
             continue;
         }
         let distance = metric.segment_length(point, target);
+        let evaluation_error = metric.geodesic_numerical_policy().evaluation_allowance(1.0);
         let candidate = GeodesicWitnessCandidate {
             probe: point,
             target,
             distance,
+            lower: (distance - evaluation_error).max(0.0),
+            evaluation_error,
             feature: GeodesicTargetFeature::Point,
             order,
             swapped: false,
@@ -499,6 +518,8 @@ fn geodesic_capped_witness_sweep_core(
                     probe: vertex,
                     target,
                     distance: minimum.distance,
+                    lower: minimum.lower,
+                    evaluation_error: minimum.evaluation_error,
                     feature: GeodesicTargetFeature::Segment {
                         index: edge_index,
                         along: minimum.along,
@@ -518,10 +539,13 @@ fn geodesic_capped_witness_sweep_core(
                 continue;
             }
             let distance = metric.segment_length(vertex, point);
+            let evaluation_error = metric.geodesic_numerical_policy().evaluation_allowance(1.0);
             let candidate = GeodesicWitnessCandidate {
                 probe: vertex,
                 target: point,
                 distance,
+                lower: (distance - evaluation_error).max(0.0),
+                evaluation_error,
                 feature: GeodesicTargetFeature::Point,
                 order,
                 swapped,

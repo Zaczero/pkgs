@@ -246,6 +246,18 @@ pub(crate) fn validate_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<NonNeg
     validate_distance(finite_f64_required("distance", value)?)
 }
 
+pub(crate) fn validate_dwithin_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<f64> {
+    validate_dwithin_distance(crate::f64_required("distance", value)?)
+}
+
+pub(crate) fn validate_dwithin_distance(distance: f64) -> PyResult<f64> {
+    if distance.is_infinite() && distance.is_sign_positive() {
+        Ok(distance)
+    } else {
+        Ok(NonNegative::try_new("distance", distance)?.get())
+    }
+}
+
 pub(crate) fn validate_distance(distance: f64) -> PyResult<NonNegative> {
     Ok(NonNegative::try_new("distance", distance)?)
 }

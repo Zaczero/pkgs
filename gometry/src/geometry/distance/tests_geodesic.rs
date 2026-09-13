@@ -2,7 +2,7 @@
     clippy::panic_in_result_fn,
     reason = "tests assert, and return Result only to propagate setup errors"
 )]
-use crate::crs::with_ellipsoid_metric;
+use crate::crs::{geodesic_counters, with_ellipsoid_metric};
 use crate::error::{ErrorKind, ResourceError, Result};
 use crate::geometry::distance::frechet::frechet_dp_columns;
 use crate::geometry::distance::geodesic_parts::{
@@ -20,7 +20,7 @@ use crate::geometry::distance::{
     GEODESIC_HAUSDORFF_TOLERANCE, GeodesicHausdorffWitness, GeodesicScratch,
     collect_point_only_into, geodesic_capped_dwithin_with_parts, geodesic_capped_sweep_with_parts,
     geodesic_directed_hausdorff_distance, geodesic_distance_with_parts,
-    geodesic_hausdorff_counters, geodesic_max_min_on_source_segment,
+    geodesic_dwithin_with_parts, geodesic_hausdorff_counters, geodesic_max_min_on_source_segment,
     geodesic_nearest_points_with_parts, geodesic_scratch, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
@@ -188,6 +188,102 @@ fn geodesic_point_collection_preserves_nested_source_order() {
         p(3.0, 0.0),
         p(4.0, 0.0)
     ]);
+}
+
+#[test]
+fn geodesic_parts_retain_all_degenerate_line_support() -> Result<()> {
+    let degenerate = line(vec![p(0.0, 0.0), p(0.0, 0.0)]);
+    let point = Shape::Point(p(0.0, 0.0));
+    with_ellipsoid_metric("EPSG:4326", &[&degenerate, &point], |metric| {
+        let parts = degenerate.geodesic_parts(metric)?;
+        assert!(parts.segments.is_empty());
+        assert_eq!(parts.point_only.len(), 1);
+        assert_eq!(
+            geodesic_distance_with_parts(
+                &degenerate,
+                &parts,
+                &point,
+                &point.geodesic_parts(metric)?,
+                metric,
+            )?,
+            0.0
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geodesic_contact_consumes_prepared_parts_without_reconstruction() -> Result<()> {
+    let first_shape = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
+    let second_shape = line(vec![p(5.0, -1.0), p(5.0, 1.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&first_shape, &second_shape], |metric| {
+        geodesic_counters::reset();
+        let first = first_shape.geodesic_parts(metric)?;
+        let second = second_shape.geodesic_parts(metric)?;
+        let admissions = geodesic_counters::snapshot().segment_admissions;
+        assert_eq!(admissions, 2);
+        assert!(matches!(
+            metric.segment_contact(&first.segments[0], &second.segments[0])?,
+            crate::geometry::SegmentContact::Contact { .. }
+        ));
+        assert_eq!(geodesic_counters::snapshot().segment_admissions, admissions);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geodesic_dwithin_short_circuits_before_full_distance_sweep() -> Result<()> {
+    let probes = multipoint(vec![
+        p(0.0, 0.500_001),
+        p(0.0, 0.500_002),
+        p(0.0, 0.500_003),
+    ]);
+    let target = line(vec![p(-1.0, 0.0), p(1.0, 1.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&probes, &target], |metric| {
+        let probe_parts = probes.geodesic_parts(metric)?;
+        let target_parts = target.geodesic_parts(metric)?;
+
+        geodesic_counters::reset();
+        assert!(geodesic_dwithin_with_parts(
+            &probes,
+            &probe_parts,
+            &target,
+            &target_parts,
+            metric,
+            200.0,
+        )?);
+        let threshold_work = geodesic_counters::snapshot();
+
+        geodesic_counters::reset();
+        let _ =
+            geodesic_distance_with_parts(&probes, &probe_parts, &target, &target_parts, metric)?;
+        let distance_work = geodesic_counters::snapshot();
+
+        let work = |stats: &geodesic_counters::Snapshot| {
+            stats.segment_value_evaluations
+                + stats.segment_derivative_evaluations
+                + stats.segment_interval_pops
+                + stats.segment_interval_splits
+                + stats.segment_convex_closures
+                + stats.segment_derivative_declines
+        };
+        assert!(work(&threshold_work) < work(&distance_work));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geodesic_parts_collapse_periodic_zero_edge_support() -> Result<()> {
+    let seam = line(vec![p(-180.0, 0.0), p(180.0, 0.0)]);
+    let meridian = line(vec![p(-180.0, -1.0), p(-180.0, 1.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&seam, &meridian], |metric| {
+        assert_eq!(live_geodesic_distance(&seam, &meridian, metric)?, 0.0);
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[test]
