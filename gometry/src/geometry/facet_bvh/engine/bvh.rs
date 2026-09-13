@@ -50,7 +50,7 @@ pub(super) fn refine_facet_nearest(
                 probe,
                 target,
                 distance_squared: selection.distance_squared,
-                distance_key: selection.distance_key(probe.xy(), segment)?,
+                distance_key: selection.distance_key(probe.xy(), segment),
             });
         }
     }

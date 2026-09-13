@@ -1234,7 +1234,7 @@ mod exact_projection_allocation_tests {
             end: XY::new(1.0, 1.0),
         };
         let point = XY::new(1.0, 1.0_f64.next_down());
-        prefix_sweep(1, || {
+        prefix_sweep(0, || {
             super::super::classify_segment_projection_exact(point, segment).map(|classification| {
                 assert!(matches!(
                     classification,
@@ -1258,7 +1258,7 @@ mod exact_projection_allocation_tests {
                 .unwrap()
                 .uses_exact_ratio()
         );
-        prefix_sweep(2, || {
+        prefix_sweep(1, || {
             selection.projection(point, segment).map(|projection| {
                 assert!(projection.uses_exact_ratio());
             })
@@ -1331,7 +1331,7 @@ mod exact_projection_allocation_tests {
         ));
         let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(Some(3.0)));
         let end = Point::new_raw_axes(13.0, 13.0, ZOrdinate(Some(5.0)), MOrdinate(Some(9.0)));
-        prefix_sweep(3, || projection.interpolate_point(start, end).map(|_| ()));
+        prefix_sweep(0, || projection.interpolate_point(start, end).map(|_| ()));
     }
 
     #[test]

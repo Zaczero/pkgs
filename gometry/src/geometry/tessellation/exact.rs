@@ -513,6 +513,27 @@ impl ExactDyadic {
 
     fn try_add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Result<CompactLimbs> {
         let length = left.len.max(right.len);
+        if length <= INLINE_DYADIC_LIMBS {
+            // The extra limb is needed only when the final word carries. The
+            // previous unconditional `length + 1` reservation made a
+            // no-carry two-limb result spill even though it fit inline.
+            let mut words = [0_u64; INLINE_DYADIC_LIMBS + 1];
+            let mut carry = 0_u128;
+            for (index, word) in words.iter_mut().take(length).enumerate() {
+                let sum = u128::from(left.word(index)) + u128::from(right.word(index)) + carry;
+                *word = sum as u64;
+                carry = sum >> 64;
+            }
+            let result_length = length + usize::from(carry != 0);
+            if carry != 0 {
+                words[length] = carry as u64;
+            }
+            let mut result = CompactLimbs::try_with_capacity(result_length)?;
+            for &word in &words[..result_length] {
+                result.push(word);
+            }
+            return Ok(result);
+        }
         let needed = length.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         let mut result = CompactLimbs::try_with_capacity(needed)?;
         Self::write_sum_aligned(left, right, &mut result);
@@ -3579,6 +3600,29 @@ mod tests {
             sum.try_product(&ExactDyadic::one()).unwrap()
         });
         assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn exact_sum_spills_only_when_an_inline_result_carries() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::{allocation_count, fail_allocations_after};
+
+        let left = ExactDyadic::from_parts(false, vec![u64::MAX, u64::MAX - 1], 0);
+        let no_carry = ExactDyadic::from_parts(false, vec![1], 0);
+        let (sum, allocations) =
+            allocation_count(|| left.clone().try_add(no_carry.clone()).unwrap());
+        assert_eq!(allocations, 0);
+        assert_eq!(sum, ExactDyadic::from_parts(false, vec![u64::MAX], 64));
+
+        let carry = ExactDyadic::from_parts(false, vec![1, 1], 0);
+        let (sum, allocations) = allocation_count(|| left.clone().try_add(carry.clone()).unwrap());
+        assert_eq!(allocations, 1);
+        assert_eq!(sum, ExactDyadic::from_parts(false, vec![1], 128));
+        let error = fail_allocations_after(0, || left.try_add(carry)).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
     }
 
     #[test]

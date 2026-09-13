@@ -388,7 +388,7 @@ impl PreparedPlan {
         self.metric()?
             .measured_line_index
             .get_or_try_init(|| {
-                Box::try_new(MeasuredLineIndexSlot::build(self.shape()))
+                Box::try_new(MeasuredLineIndexSlot::build(self.shape())?)
                     .map_err(crate::error::Error::from)
             })?
             .get()
@@ -781,18 +781,199 @@ mod frame_cache_tests {
         );
         assert_eq!(first, second);
         assert!(shape.retained_heap_bytes() > 0);
-        let (_, interpolation_allocations) = allocation_count(|| {
+        let (interpolation, interpolation_allocations) = allocation_count(|| {
             shape
                 .line_interpolate_point_m_with(1.5, &PlanarMetric)
                 .expect("measured interpolation")
         });
-        let (_, locate_allocations) = allocation_count(|| {
+        let (repeat_interpolation, repeat_interpolation_allocations) = allocation_count(|| {
+            shape
+                .line_interpolate_point_m_with(1.5, &PlanarMetric)
+                .expect("repeated measured interpolation")
+        });
+        let (located, locate_allocations) = allocation_count(|| {
             shape
                 .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
                 .expect("measured locate")
         });
+        let (repeat_located, repeat_locate_allocations) = allocation_count(|| {
+            shape
+                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+                .expect("repeated measured locate")
+        });
+        assert_eq!(interpolation, repeat_interpolation);
+        assert_eq!(located, repeat_located);
         assert_eq!(interpolation_allocations, 0);
+        assert_eq!(repeat_interpolation_allocations, 0);
         assert_eq!(locate_allocations, 0);
+        assert_eq!(repeat_locate_allocations, 0);
+        let Shape::Point(interpolation) = interpolation else {
+            panic!("measured interpolation must return a point");
+        };
+        assert_eq!(interpolation.x.to_bits(), 1.5_f64.to_bits());
+        assert_eq!(interpolation.y.to_bits(), 0.5_f64.to_bits());
+        assert_eq!(interpolation.m().unwrap().to_bits(), 1.5_f64.to_bits());
+    }
+
+    #[test]
+    fn measured_planar_lrs_clamps_endpoints_and_carries_zm() {
+        let shape = PreparedPlan::new(Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(
+                    vec![0.0, 1.0, 2.0],
+                    vec![0.0, 1.0, 0.0],
+                    Some(vec![10.0, 20.0, 30.0]),
+                    Some(vec![0.0, 1.0, 2.0]),
+                )
+                .unwrap(),
+            )
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ))
+        .unwrap();
+        shape.measured_line_index().expect("measured line index");
+
+        let (interpolation, allocations) = allocation_count(|| {
+            shape
+                .line_interpolate_point_m_with(1.5, &PlanarMetric)
+                .expect("interior measured interpolation")
+        });
+        assert_eq!(allocations, 0);
+        let Shape::Point(interpolation) = interpolation else {
+            panic!("interior measured interpolation must return a point");
+        };
+        assert_eq!(interpolation.x.to_bits(), 1.5_f64.to_bits());
+        assert_eq!(interpolation.y.to_bits(), 0.5_f64.to_bits());
+        assert_eq!(interpolation.z().unwrap().to_bits(), 25.0_f64.to_bits());
+        assert_eq!(interpolation.m().unwrap().to_bits(), 1.5_f64.to_bits());
+
+        let Shape::Point(first) = shape
+            .line_interpolate_point_m_with(-1.0, &PlanarMetric)
+            .expect("lower measured clamp")
+        else {
+            panic!("lower measured clamp must return a point");
+        };
+        let Shape::Point(last) = shape
+            .line_interpolate_point_m_with(3.0, &PlanarMetric)
+            .expect("upper measured clamp")
+        else {
+            panic!("upper measured clamp must return a point");
+        };
+        assert_eq!(first.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(first.z().unwrap().to_bits(), 10.0_f64.to_bits());
+        assert_eq!(first.m().unwrap().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(last.x.to_bits(), 2.0_f64.to_bits());
+        assert_eq!(last.z().unwrap().to_bits(), 30.0_f64.to_bits());
+        assert_eq!(last.m().unwrap().to_bits(), 2.0_f64.to_bits());
+
+        let (located, allocations) = allocation_count(|| {
+            shape
+                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+                .expect("interior measured locate")
+        });
+        assert_eq!(located.to_bits(), 0.5_f64.to_bits());
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn measured_planar_lrs_skips_duplicate_zero_length_segment() {
+        let shape = PreparedPlan::new(Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(
+                    vec![0.0, 0.0, 2.0],
+                    vec![0.0, 0.0, 0.0],
+                    Some(vec![7.0, 7.0, 9.0]),
+                    Some(vec![0.0, 0.0, 2.0]),
+                )
+                .unwrap(),
+            )
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ))
+        .unwrap();
+        shape.measured_line_index().expect("measured line index");
+
+        let (located, allocations) = allocation_count(|| {
+            shape
+                .line_locate_point_m_with(Point::new_raw_xy(1.0, 1.0), &PlanarMetric)
+                .expect("locate past duplicate segment")
+        });
+        assert_eq!(located.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(allocations, 0);
+
+        let Shape::Point(interpolated) = shape
+            .line_interpolate_point_m_with(0.0, &PlanarMetric)
+            .expect("duplicate endpoint interpolation")
+        else {
+            panic!("duplicate endpoint interpolation must return a point");
+        };
+        assert_eq!(interpolated.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(interpolated.z().unwrap().to_bits(), 7.0_f64.to_bits());
+        assert_eq!(interpolated.m().unwrap().to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn measured_planar_lrs_exact_locate_preserves_subnormal_projection() {
+        let minimum = f64::from_bits(1);
+        let maximum = f64::MAX;
+        let shape = PreparedPlan::new(Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(
+                    vec![0.0, maximum],
+                    vec![0.0, 0.0],
+                    None,
+                    Some(vec![0.0, maximum]),
+                )
+                .unwrap(),
+            )
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ))
+        .unwrap();
+        shape.measured_line_index().expect("measured line index");
+
+        let located = shape
+            .line_locate_point_m_with(Point::new_raw_xy(minimum, 1.0), &PlanarMetric)
+            .expect("exact subnormal measured locate");
+        assert_eq!(located.to_bits(), minimum.to_bits());
+    }
+
+    #[test]
+    fn cold_measured_line_product_allocation_failure_is_retryable() {
+        let shape = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 1.0], None, Some(vec![0.0, 1.0]))
+                    .unwrap(),
+            )
+            .expect("line coordinate sequence must contain at least two vertices"),
+        );
+        let new_plan = || PreparedPlan::new(shape.clone()).expect("prepared line");
+        let plan = new_plan();
+        let (_, allocations) =
+            allocation_count(|| plan.measured_line_index().expect("measured line product"));
+        assert!(allocations > 0);
+        for prefix in 0..allocations {
+            let plan = new_plan();
+            let Err(error) = fail_allocations_after(prefix, || plan.measured_line_index()) else {
+                panic!("measured line product allocation unexpectedly succeeded");
+            };
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            assert!(
+                plan.metric
+                    .get()
+                    .is_none_or(|metric| metric.measured_line_index.get().is_none())
+            );
+        }
+
+        let shape = new_plan();
+        let first =
+            std::ptr::from_ref(shape.measured_line_index().expect("retry measured product"));
+        let second = std::ptr::from_ref(
+            shape
+                .measured_line_index()
+                .expect("cached measured product"),
+        );
+        assert_eq!(first, second);
     }
 
     #[test]

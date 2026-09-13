@@ -311,7 +311,7 @@ impl Shape {
         metric: &M,
     ) -> Result<Self> {
         let m = Finite::try_new("m", m)?.get();
-        let index = MeasuredLineIndex::build(self).map_err(crate::error::Error::from)?;
+        let index = MeasuredLineIndex::build(self)?;
         Ok(Self::Point(index.interpolate_finite(m, metric)?))
     }
 
@@ -326,7 +326,7 @@ impl Shape {
         point: Point,
         metric: &M,
     ) -> Result<f64> {
-        let index = MeasuredLineIndex::build(self).map_err(crate::error::Error::from)?;
+        let index = MeasuredLineIndex::build(self)?;
         index.locate(point, metric)
     }
 
@@ -343,7 +343,7 @@ impl Shape {
         range: MeasureRange,
         metric: &M,
     ) -> Result<Self> {
-        let index = MeasuredLineIndex::build(self).map_err(crate::error::Error::from)?;
+        let index = MeasuredLineIndex::build(self)?;
         index.substring(range, metric)
     }
 }
@@ -410,19 +410,41 @@ pub(crate) struct MeasuredLineIndex {
 }
 
 impl MeasuredLineIndex {
-    pub(crate) fn build(shape: &Shape) -> std::result::Result<Self, MeasuredLineAdmission> {
+    fn try_boxed_parts<I>(mut parts: I, len: usize) -> Result<Box<[CoordSeq]>>
+    where
+        I: Iterator<Item = CoordSeq>,
+    {
+        // Build the final boxed table directly. A Vec followed by
+        // `into_boxed_slice` may perform an infallible shrink allocation after
+        // the fallible growth has succeeded, which would turn a recoverable
+        // cache-initialization failure into an abort.
+        let mut output =
+            Box::<[CoordSeq]>::try_new_uninit_slice(len).map_err(crate::error::Error::from)?;
+        for slot in &mut *output {
+            slot.write(
+                parts
+                    .next()
+                    .expect("measured part count matches allocation"),
+            );
+        }
+        // SAFETY: every slot was initialized by the exact-length iterator
+        // above, and no slot is observed before this conversion.
+        Ok(unsafe { output.assume_init() })
+    }
+
+    pub(crate) fn build(shape: &Shape) -> Result<Self> {
         let parts = match shape {
-            Shape::LineString(line) => vec![line.as_coords().clone()].into_boxed_slice(),
-            Shape::MultiLineString(lines) => lines
-                .iter()
-                .map(LineSeq::as_coords)
-                .cloned()
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-            Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
-                return Err(MeasuredLineAdmission::Empty);
+            Shape::LineString(line) => {
+                Self::try_boxed_parts(std::iter::once(line.as_coords().clone()), 1)?
             },
-            _ => return Err(MeasuredLineAdmission::NotLineal),
+            Shape::MultiLineString(lines) => Self::try_boxed_parts(
+                lines.iter().map(|line| line.as_coords().clone()),
+                lines.len(),
+            )?,
+            Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
+                return Err(MeasuredLineAdmission::Empty.into());
+            },
+            _ => return Err(MeasuredLineAdmission::NotLineal.into()),
         };
         let mut first = None;
         let mut last = None;
@@ -430,12 +452,12 @@ impl MeasuredLineIndex {
         for part in &parts {
             for point in part {
                 if point.m().is_none() {
-                    return Err(MeasuredLineAdmission::MissingMeasure);
+                    return Err(MeasuredLineAdmission::MissingMeasure.into());
                 }
                 if let Some(previous) = previous
                     && point.m().unwrap_or(0.0) < previous.m().unwrap_or(0.0)
                 {
-                    return Err(MeasuredLineAdmission::NonMonotonic);
+                    return Err(MeasuredLineAdmission::NonMonotonic.into());
                 }
                 first.get_or_insert(point);
                 last = Some(point);
@@ -443,10 +465,10 @@ impl MeasuredLineIndex {
             }
         }
         let Some(first) = first else {
-            return Err(MeasuredLineAdmission::Empty);
+            return Err(MeasuredLineAdmission::Empty.into());
         };
         let Some(last) = last else {
-            return Err(MeasuredLineAdmission::Empty);
+            return Err(MeasuredLineAdmission::Empty.into());
         };
         Ok(Self { parts, first, last })
     }
@@ -576,10 +598,26 @@ pub(crate) enum MeasuredLineIndexSlot {
 }
 
 impl MeasuredLineIndexSlot {
-    pub(crate) fn build(shape: &Shape) -> Self {
+    pub(crate) fn build(shape: &Shape) -> Result<Self> {
+        use crate::error::ErrorKind;
+
         match MeasuredLineIndex::build(shape) {
-            Ok(index) => Self::Index(index),
-            Err(admission) => Self::Rejected(admission),
+            Ok(index) => Ok(Self::Index(index)),
+            Err(error) => match error.kind() {
+                ErrorKind::Geometry(GeometryErrorKind::EmptyLinework) => {
+                    Ok(Self::Rejected(MeasuredLineAdmission::Empty))
+                },
+                ErrorKind::Geometry(GeometryErrorKind::LineStringRequired) => {
+                    Ok(Self::Rejected(MeasuredLineAdmission::NotLineal))
+                },
+                ErrorKind::Geometry(GeometryErrorKind::MissingMeasure) => {
+                    Ok(Self::Rejected(MeasuredLineAdmission::MissingMeasure))
+                },
+                ErrorKind::Geometry(GeometryErrorKind::NonMonotonicMeasure) => {
+                    Ok(Self::Rejected(MeasuredLineAdmission::NonMonotonic))
+                },
+                _ => Err(error),
+            },
         }
     }
 
@@ -727,7 +765,7 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
         if selection.distance() > tolerance {
             continue;
         }
-        let key = selection.distance_key(point.xy(), segment)?;
+        let key = selection.distance_key(point.xy(), segment);
         if tolerance == 0.0 && !key.is_exact_zero()? {
             continue;
         }

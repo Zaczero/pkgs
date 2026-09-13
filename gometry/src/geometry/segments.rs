@@ -83,7 +83,10 @@ impl SourcePair {
 
 fn source_difference(left: f64, right: f64) -> Option<f64> {
     let difference = left - right;
-    (difference.is_normal() || left == right).then_some(difference)
+    (difference.is_normal()
+        || left.to_bits() == right.to_bits()
+        || (left.to_bits() << 1 == 0 && right.to_bits() << 1 == 0))
+        .then_some(difference)
 }
 
 fn source_product(left: f64, right: f64) -> Option<f64> {
@@ -524,7 +527,7 @@ fn nearest_point_with_segments(
                     .projection(point.xy(), segment)?
                     .interpolate_point(pair.0, pair.1)?,
             );
-            best_key = Some(selection.distance_key(point.xy(), segment)?);
+            best_key = Some(selection.distance_key(point.xy(), segment));
         }
     }
     geometry.try_for_each_point(|candidate| {
@@ -1562,8 +1565,7 @@ fn source_fast_interior_measurement(
     // Equal-sign determinant products cancel. Let the DD tier retain their
     // original subtraction tails; opposite signs and exact zero terms are
     // the cheap source-aware path.
-    if !determinant.terms_do_not_cancel() && !(determinant.left == 0.0 && determinant.right == 0.0)
-    {
+    if !(determinant.terms_do_not_cancel() || determinant.left == 0.0 && determinant.right == 0.0) {
         return None;
     }
     if determinant.value == 0.0 && !(determinant.left == 0.0 && determinant.right == 0.0) {
@@ -1583,44 +1585,38 @@ fn source_fast_interior_measurement(
 fn source_interior_measurement(
     point: XY,
     segment: Segment,
-) -> Result<Option<(f64, SquaredDistanceFilter)>> {
+) -> Option<(f64, SquaredDistanceFilter)> {
     if let Some(measurement) = source_fast_interior_measurement(point, segment) {
-        return Ok(Some(measurement));
+        return Some(measurement);
     }
-    let Some((_numerator, denominator, determinant)) = source_dd_terms(point, segment) else {
-        return Ok(None);
-    };
+    let (_numerator, denominator, determinant) = source_dd_terms(point, segment)?;
     if denominator.is_exact_zero() {
-        return Ok(None);
+        return None;
     }
     if determinant.is_exact_zero() {
-        return Ok(Some((
+        return Some((
             0.0,
             SquaredDistanceFilter::source_squared(0.0, 16.0 * (f64::EPSILON / 2.0)),
-        )));
+        ));
     }
-    let Some(determinant) = determinant.rounded_common() else {
-        return Ok(None);
-    };
-    let Some(denominator) = denominator.rounded_common() else {
-        return Ok(None);
-    };
+    let determinant = determinant.rounded_common()?;
+    let denominator = denominator.rounded_common()?;
     if determinant == 0.0 || !denominator.is_sign_positive() {
-        return Ok(None);
+        return None;
     }
     let distance = determinant.abs() / denominator.sqrt();
     let squared = distance * distance;
     if !squared_norm_is_trustworthy(squared, false) {
-        return Ok(None);
+        return None;
     }
-    Ok(Some((
+    Some((
         squared,
         SquaredDistanceFilter::source_squared(squared, 8.0 * (f64::EPSILON / 2.0)),
-    )))
+    ))
 }
 
 fn source_projection_distance(point: XY, segment: Segment) -> Result<f64> {
-    if let Some((squared, _)) = source_interior_measurement(point, segment)? {
+    if let Some((squared, _)) = source_interior_measurement(point, segment) {
         return Ok(squared.sqrt());
     }
     let squared = exact_source_squared(point, segment)?;
@@ -1628,7 +1624,7 @@ fn source_projection_distance(point: XY, segment: Segment) -> Result<f64> {
 }
 
 fn source_projection_squared(point: XY, segment: Segment) -> Result<f64> {
-    if let Some((squared, _)) = source_interior_measurement(point, segment)? {
+    if let Some((squared, _)) = source_interior_measurement(point, segment) {
         return Ok(squared);
     }
     exact_source_squared(point, segment)?.rounded()
@@ -1689,18 +1685,18 @@ impl PointSegmentSelection {
         }
     }
 
-    fn witness(&self, point: XY, segment: Segment) -> Result<ExactDistanceWitness> {
-        Ok(match self.witness_kind {
+    const fn witness(&self, point: XY, segment: Segment) -> ExactDistanceWitness {
+        match self.witness_kind {
             PointSegmentWitnessKind::Start => ExactDistanceWitness::PointPair(point, segment.start),
             PointSegmentWitnessKind::Interior => {
                 ExactDistanceWitness::ProjectedPointPair(point, segment)
             },
             PointSegmentWitnessKind::End => ExactDistanceWitness::PointPair(point, segment.end),
-        })
+        }
     }
 
-    pub(crate) fn distance_key(&self, point: XY, segment: Segment) -> Result<SquaredDistanceKey> {
-        Ok(self.filter.bind(self.witness(point, segment)?))
+    pub(crate) const fn distance_key(&self, point: XY, segment: Segment) -> SquaredDistanceKey {
+        self.filter.bind(self.witness(point, segment))
     }
 
     pub(crate) fn cmp(
@@ -1709,12 +1705,10 @@ impl PointSegmentSelection {
         segment: Segment,
         incumbent: &SquaredDistanceKey,
     ) -> Result<Ordering> {
-        match self.filter.disjoint_cmp(incumbent.filter) {
-            Some(order) => Ok(order),
-            None => {
-                exact_witness_cmp_with_identity(self.witness(point, segment)?, incumbent.witness)
-            },
-        }
+        self.filter.disjoint_cmp(incumbent.filter).map_or_else(
+            || exact_witness_cmp_with_identity(self.witness(point, segment), incumbent.witness),
+            Ok,
+        )
     }
 }
 
@@ -1757,8 +1751,7 @@ fn point_segment_metric(point: XY, segment: Segment) -> Result<PointSegmentMetri
                 segment,
                 ClassifiedSegmentProjection::FilteredInterior(filtered),
             )?;
-            if let Some((measurement_squared, filter)) =
-                source_interior_measurement(point, segment)?
+            if let Some((measurement_squared, filter)) = source_interior_measurement(point, segment)
             {
                 PointSegmentMetric::Squared {
                     measurement_squared,
@@ -1987,7 +1980,7 @@ pub(super) fn point_segment_distance_key(
     point: XY,
     segment: Segment,
 ) -> Result<SquaredDistanceKey> {
-    point_segment_selection(point, segment)?.distance_key(point, segment)
+    Ok(point_segment_selection(point, segment)?.distance_key(point, segment))
 }
 
 pub(crate) fn point_segment_selection(
