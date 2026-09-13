@@ -26,7 +26,7 @@ use crate::geometry::Shape;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::errors::GeometryError;
-use crate::py::numpy::{ImmutableBufferOwner, frozen_buffer_owner, frozen_i64_view, int64_array};
+use crate::py::numpy::{ImmutableI64Owner, frozen_i64_owner, frozen_i64_view, int64_array};
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{CsrBuilder, HeapSize};
 
@@ -174,8 +174,8 @@ enum GroupsContainsNeedle {
 
 // Frozen + immutable Arc<[i64]> backing: the only owner admitted to
 // `frozen_i64_view` (Item C). A mutable pyclass cannot implement Sealed.
-impl frozen_buffer_owner::Sealed for Groups {}
-impl ImmutableBufferOwner for Groups {}
+impl frozen_i64_owner::Sealed for Groups {}
+impl ImmutableI64Owner for Groups {}
 
 mod ctor;
 

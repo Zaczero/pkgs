@@ -176,11 +176,11 @@ pub(crate) fn bounds3d_array(
 
 // Production seal lives in a std-only module so compile-fail fixtures can
 // `#[path]`-include it (see `py/arrow_c/compile_fail/item_c_mutable_pyclass.rs`).
-#[path = "frozen_buffer_bound.rs"]
-mod frozen_buffer_bound;
+#[path = "frozen_i64_bound.rs"]
+mod frozen_i64_bound;
 
-pub(crate) use frozen_buffer_bound::{ImmutableBufferOwner, frozen_buffer_owner};
-use frozen_buffer_bound::{owner_derived_slice, require_immutable_buffer_owner};
+pub(crate) use frozen_i64_bound::{ImmutableI64Owner, frozen_i64_owner};
+use frozen_i64_bound::{owner_derived_i64_slice, require_immutable_i64_owner};
 
 /// Safe read-only `NumPy` view over immutable Arc i64 storage.
 ///
@@ -189,56 +189,27 @@ use frozen_buffer_bound::{owner_derived_slice, require_immutable_buffer_owner};
 ///
 /// 1. **`PyClass<Frozen = True>`** — the language-level PyO3 frozen marker; a
 ///    mutable `#[pyclass]` cannot satisfy this bound at all.
-/// 2. **`ImmutableBufferOwner`** — sealed opt-in for immutable backing
+/// 2. **`ImmutableI64Owner`** — sealed opt-in for immutable i64 backing
 ///    (only `Groups` implements it today).
 ///
-/// The [`require_immutable_buffer_owner`] call couples this function to the seal
+/// The [`require_immutable_i64_owner`] call couples this function to the seal
 /// module so the where-clause cannot silently drop that half of the bound.
 pub(crate) fn frozen_i64_view<T>(
     slf: Bound<'_, T>,
     pick: impl for<'a> FnOnce(&'a T) -> &'a [i64],
 ) -> PyResult<Py<PyAny>>
 where
-    T: ImmutableBufferOwner + PyClass<Frozen = pyo3::pyclass::boolean_struct::True>,
+    T: ImmutableI64Owner + PyClass<Frozen = pyo3::pyclass::boolean_struct::True>,
 {
     let owner = slf.clone().into_any();
     let borrowed = slf.borrow();
     // Production seal gate — same trait the compile-fail fixture path-includes.
-    require_immutable_buffer_owner(&*borrowed);
-    let values = owner_derived_slice(&*borrowed, pick);
-    // SAFETY: `ImmutableBufferOwner` + frozen `PyClass` prove immutable
+    require_immutable_i64_owner(&*borrowed);
+    let values = owner_derived_i64_slice(&*borrowed, pick);
+    // SAFETY: `ImmutableI64Owner` + frozen `PyClass` prove immutable
     // backing; `pick` ties the slice lifetime to `slf`; `owner` is that same
     // object pinned as the NumPy base.
     unsafe { int64_slice_array(owner, values) }
-}
-
-/// Safe read-only `NumPy` view over an immutable row-major `f64` matrix.
-///
-/// The closure derives the matrix slice from the same frozen owner retained as
-/// the NumPy base. This keeps the storage/lifetime proof attached to the owner
-/// instead of accepting an unrelated owner and slice pair.
-pub(crate) fn frozen_f64_matrix_view<T>(
-    slf: Bound<'_, T>,
-    pick: impl for<'a> FnOnce(&'a T) -> &'a [f64],
-    rows: usize,
-    columns: usize,
-) -> PyResult<Py<PyAny>>
-where
-    T: ImmutableBufferOwner + PyClass<Frozen = pyo3::pyclass::boolean_struct::True>,
-{
-    let owner = slf.clone().into_any();
-    let borrowed = slf.borrow();
-    // Production seal gate — same trait the compile-fail fixture path-includes.
-    require_immutable_buffer_owner(&*borrowed);
-    let values = owner_derived_slice(&*borrowed, pick);
-    let view = ArrayView2::from_shape((rows, columns), values)
-        .map_err(|_| PyValueError::new_err("matrix values do not match shape"))?;
-    // SAFETY: `ImmutableBufferOwner` + frozen `PyClass` prove immutable
-    // backing; `pick` derives the slice from `slf`; `owner` is that same
-    // object pinned as the NumPy base.
-    let array = unsafe { PyArray2::borrow_from_array(&view, owner) };
-    freeze(&array)?;
-    Ok(array.into_any().unbind())
 }
 
 /// Read-only `NumPy` view over an `i64` slice owned by `owner`.

@@ -6,19 +6,19 @@
 //!
 //! Expected: E0515 — cannot return reference to local variable `values`.
 
-#[path = "../../frozen_buffer_bound.rs"]
-mod frozen_buffer_bound;
+#[path = "../../frozen_i64_bound.rs"]
+mod frozen_i64_bound;
 
-use frozen_buffer_bound::{ImmutableBufferOwner, frozen_buffer_owner, owner_derived_slice};
+use frozen_i64_bound::{ImmutableI64Owner, frozen_i64_owner, owner_derived_i64_slice};
 
 struct FrozenGroups;
-impl frozen_buffer_owner::Sealed for FrozenGroups {}
-impl ImmutableBufferOwner for FrozenGroups {}
+impl frozen_i64_owner::Sealed for FrozenGroups {}
+impl ImmutableI64Owner for FrozenGroups {}
 
 fn main() {
     let owner = FrozenGroups;
-    let _: &[f64] = owner_derived_slice(&owner, |_| {
-        let values = vec![1.0, 2.0];
+    let _: &[i64] = owner_derived_i64_slice(&owner, |_| {
+        let values = vec![1_i64, 2_i64];
         // ERROR: the returned slice cannot outlive this temporary vector.
         &values
     });
