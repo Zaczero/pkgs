@@ -19,9 +19,8 @@ impl From<H3CoverError> for GridCoverError {
     fn from(error: H3CoverError) -> Self {
         match error {
             H3CoverError::Budget(error) => Self::Budget(error),
-            H3CoverError::Allocation => Self::Native(ResourceError::Allocation.into()),
+            H3CoverError::Native(error) => Self::Native(error),
             H3CoverError::CapacityOverflow => Self::H3Capacity,
-            H3CoverError::Geometry(error) => Self::Native(error),
         }
     }
 }

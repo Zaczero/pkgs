@@ -40,9 +40,20 @@ pub(crate) struct H3CoveredCell {
 #[derive(Debug)]
 pub(crate) enum H3CoverError {
     Budget(CoverBudgetExceeded),
-    Allocation,
+    Native(crate::error::Error),
     CapacityOverflow,
-    Geometry(crate::error::Error),
+}
+
+fn try_reserve_h3<T>(values: &mut Vec<T>, additional: usize) -> Result<(), H3CoverError> {
+    let required = values
+        .len()
+        .checked_add(additional)
+        .ok_or(H3CoverError::CapacityOverflow)?;
+    let element_size = std::mem::size_of::<T>();
+    if element_size != 0 && required > (isize::MAX as usize) / element_size {
+        return Err(H3CoverError::CapacityOverflow);
+    }
+    crate::try_reserve_vec(values, additional).map_err(H3CoverError::Native)
 }
 
 /// Keep the first atomic cover in its already sorted vector.  Once a second
@@ -65,18 +76,28 @@ impl H3UniqueCells {
         second_len: usize,
         max_cells: Option<usize>,
     ) -> Result<Self, H3CoverError> {
+        Self::with_capacity_using(
+            first_len,
+            second_len,
+            max_cells,
+            crate::collections::collection_hash_state,
+        )
+    }
+
+    fn with_capacity_using(
+        first_len: usize,
+        second_len: usize,
+        max_cells: Option<usize>,
+        hash_state: impl FnOnce() -> crate::error::Result<&'static ahash::RandomState>,
+    ) -> Result<Self, H3CoverError> {
         let occurrences = first_len
             .checked_add(second_len)
             .ok_or(H3CoverError::CapacityOverflow)?;
         let reservation = occurrences.min(max_cells.unwrap_or(usize::MAX));
-        let mut cells = HashMap::with_hasher(
-            crate::collections::collection_hash_state()
-                .map_err(|_| H3CoverError::Allocation)?
-                .clone(),
-        );
+        let mut cells = HashMap::with_hasher(hash_state().map_err(H3CoverError::Native)?.clone());
         cells
             .try_reserve(reservation)
-            .map_err(|_| H3CoverError::Allocation)?;
+            .map_err(|error| H3CoverError::Native(error.into()))?;
         Ok(Self { cells })
     }
 
@@ -91,9 +112,17 @@ impl H3UniqueCells {
         let remaining = max_cells
             .map(|limit| limit.saturating_sub(self.cells.len()))
             .unwrap_or(usize::MAX);
+        self.try_reserve(component_len.min(remaining))
+    }
+
+    fn try_reserve(&mut self, additional: usize) -> Result<(), H3CoverError> {
         self.cells
-            .try_reserve(component_len.min(remaining))
-            .map_err(|_| H3CoverError::Allocation)
+            .len()
+            .checked_add(additional)
+            .ok_or(H3CoverError::CapacityOverflow)?;
+        self.cells
+            .try_reserve(additional)
+            .map_err(|error| H3CoverError::Native(error.into()))
     }
 
     fn insert(
@@ -121,8 +150,7 @@ impl H3UniqueCells {
 
     fn finish(self) -> Result<Vec<H3CoveredCell>, H3CoverError> {
         let mut output = Vec::new();
-        crate::try_reserve_vec(&mut output, self.cells.len())
-            .map_err(|_| H3CoverError::Allocation)?;
+        try_reserve_h3(&mut output, self.cells.len())?;
         output.extend(
             self.cells
                 .into_iter()
@@ -281,15 +309,14 @@ pub(crate) fn h3_cover_shape(
     // aggregate would miss a cell jointly covered by touching components even
     // though neither component contains it alone.
     if rule == H3TraversalRule::Within {
-        let Some(dissolved) = dissolved_polygonal_area(shape).map_err(H3CoverError::Geometry)?
-        else {
+        let Some(dissolved) = dissolved_polygonal_area(shape).map_err(H3CoverError::Native)? else {
             return Ok(Vec::new());
         };
         let source = GeographicCoverageSource::from_validated(
             &dissolved,
             SphericalGridTarget::H3(plan.target),
         )
-        .map_err(|_| H3CoverError::Allocation)?;
+        .map_err(H3CoverError::Native)?;
         return h3_cover(&source, plan, rule, max_cells);
     }
     let mut merged = H3CoverAccumulator::default();
@@ -298,7 +325,7 @@ pub(crate) fn h3_cover_shape(
             component,
             SphericalGridTarget::H3(plan.target),
         )
-        .map_err(|_| H3CoverError::Allocation)?;
+        .map_err(H3CoverError::Native)?;
         // A component is a subset of the union, so it may use the same limit.
         // Merge immediately and enforce the budget again against the realized
         // deduplicated aggregate.
@@ -322,7 +349,7 @@ pub(crate) fn h3_cover(
 ) -> Result<Vec<H3CoveredCell>, H3CoverError> {
     const MAX_DFS_FRONTIER: usize = 212; // 122 roots + 6 * 15 depth-first growth.
     let mut stack = Vec::new();
-    stack.reserve_exact(MAX_DFS_FRONTIER);
+    try_reserve_h3(&mut stack, MAX_DFS_FRONTIER)?;
     stack.extend(CellIndex::base_cells());
     debug_assert_eq!(stack.len(), 122, "vendor base-cell partition changed");
 
@@ -353,7 +380,7 @@ pub(crate) fn h3_cover(
                     .map_err(|_| H3CoverError::CapacityOverflow)?;
                 let count = usize::try_from(cell.children_count(next))
                     .map_err(|_| H3CoverError::CapacityOverflow)?;
-                stack.reserve(count);
+                try_reserve_h3(&mut stack, count)?;
                 stack.extend(cell.children(next));
             },
         }
@@ -457,7 +484,7 @@ fn emit_leaf(
         .checked_add(1)
         .ok_or(H3CoverError::CapacityOverflow)?;
     ensure_cover_budget(next_len, max_cells).map_err(H3CoverError::Budget)?;
-    covered.reserve(1);
+    try_reserve_h3(covered, 1)?;
     covered.push(H3CoveredCell { cell, interior });
     Ok(())
 }
@@ -475,7 +502,7 @@ fn emit_interior_descendants(
         .checked_add(count)
         .ok_or(H3CoverError::CapacityOverflow)?;
     ensure_cover_budget(total, max_cells).map_err(H3CoverError::Budget)?;
-    covered.reserve_exact(count);
+    try_reserve_h3(covered, count)?;
     let start = covered.len();
     covered.extend(cell.children(target).map(|cell| H3CoveredCell {
         cell,

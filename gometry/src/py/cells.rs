@@ -36,6 +36,8 @@ pub(crate) use construct::{
     construct_geohash_cell, construct_h3_cell, construct_s2_cell, construct_tile,
     dispatch_grid_cell_array,
 };
+#[cfg(test)]
+pub(crate) use coverage_ops::GridCoverError;
 pub(super) use engine::grid_cover_dispatch;
 use engine::{
     bounding_query_bounds, bounding_query_region, cell_items, coverage_to_polygon,
