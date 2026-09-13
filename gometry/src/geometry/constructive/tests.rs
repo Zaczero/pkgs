@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use crate::Positive;
 use crate::geometry::constructive::offset::{
-    OffsetEdge, OffsetJoin, offset_curve_points, offset_join, offset_line,
+    OffsetEdge, OffsetJoin, line_intersection, offset_curve_points, offset_join, offset_line,
 };
 use crate::geometry::constructive::walk::{
     WalkCount, WalkJoin, WalkPlan, close_xy_loop, convex_miter, materialize_walk, reflex_cross,
@@ -14,7 +14,8 @@ use crate::geometry::constructive::{
 };
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, CoordSeq, ExpansionBudget, LineSeq, MAX_NESTING, MultiPolygon,
-    Point, Polygon, Ring, Segment, Shape, XY, affine_about_origin_ordinate,
+    Point, Polygon, Ring, Segment, Shape, XY, affine_about_origin_ordinate, axis_pow2_scale,
+    scaled_residual,
 };
 
 #[test]
@@ -35,6 +36,22 @@ fn reflex_cross_retains_an_exact_endpoint_local_parameter() {
     assert!(!t_in.is_start() && !t_in.is_end());
     assert_eq!(t_in.fraction().to_bits(), 0.0_f64.to_bits());
     assert_eq!(t_out.fraction().to_bits(), 0.5_f64.to_bits());
+}
+
+#[test]
+fn carrier_intersection_scales_opposite_extreme_source_differences() {
+    let crossing = line_intersection(
+        Segment {
+            start: XY::new(-1.5e308, 0.0),
+            end: XY::new(1.5e308, 0.0),
+        },
+        Segment {
+            start: XY::new(0.0, -1.0),
+            end: XY::new(0.0, 1.0),
+        },
+    )
+    .expect("finite carrier crossing");
+    assert_eq!(crossing, XY::new(0.0, 0.0));
 }
 
 #[test]
@@ -364,6 +381,121 @@ fn raw_offset_unavailability_stays_empty_while_budget_errors_propagate() {
         &mut budget,
     )
     .unwrap_err();
+}
+
+#[test]
+fn buffer_accepts_an_edge_whose_raw_delta_overflows_when_offsets_are_finite() {
+    // Mutation: restoring the removed raw-delta admission guard rejects this
+    // source before the constructive path gets to its representable offsets.
+    let start = Point::new_raw_xy(-1.5e308, 0.0);
+    let end = Point::new_raw_xy(1.5e308, 0.0);
+    assert!(!(end.x - start.x).is_finite());
+    let line = Shape::LineString(
+        LineSeq::try_new(CoordSeq::try_from_points(&[start, end]).unwrap()).unwrap(),
+    );
+    let radius = 1.0e300;
+    let buffered = line
+        .buffer_with_style(
+            radius,
+            BufferCapStyle::Round,
+            BufferJoinStyle::Round,
+            NonZeroU32::new(8).unwrap(),
+            Positive::try_new("miter_limit", 5.0).unwrap(),
+        )
+        .expect("finite emitted offsets");
+
+    assert!(!buffered.is_empty());
+    let scale = axis_pow2_scale(start.x.abs().max(end.x.abs()).max(radius));
+    let end_x = scaled_residual(end.x, start.x, scale);
+    let radius = radius * scale;
+    buffered
+        .try_for_each_point::<()>(|point| {
+            assert!(point.x.is_finite() && point.y.is_finite());
+            let x = scaled_residual(point.x, start.x, scale);
+            let y = scaled_residual(point.y, 0.0, scale);
+            let distance = (x - x.clamp(0.0, end_x)).hypot(y);
+            assert!(
+                distance <= radius + 32.0 * f64::EPSILON,
+                "vertex is outside its scaled source buffer: {distance} > {radius}"
+            );
+            Ok(())
+        })
+        .expect("all buffered vertices are finite");
+}
+
+#[test]
+fn buffer_keeps_vertical_diagonal_and_tiny_source_geometry_finite() {
+    let cases = [
+        (
+            Point::new_raw_xy(-1.5e308, -1.5e308),
+            Point::new_raw_xy(1.5e308, 1.5e308),
+            1.0e300,
+        ),
+        (
+            Point::new_raw_xy(1.5e308, -1.5e308),
+            Point::new_raw_xy(1.5e308, 1.5e308),
+            1.0e300,
+        ),
+        (
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0e-200, 2.0e-200),
+            1.0e-200,
+        ),
+    ];
+    for (start, end, radius) in cases {
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::try_from_points(&[start, end]).unwrap()).unwrap(),
+        );
+        for cap_style in [
+            BufferCapStyle::Round,
+            BufferCapStyle::Flat,
+            BufferCapStyle::Square,
+        ] {
+            let buffered = line
+                .buffer_with_style(
+                    radius,
+                    cap_style,
+                    BufferJoinStyle::Miter,
+                    NonZeroU32::new(4).unwrap(),
+                    Positive::try_new("miter_limit", 5.0).unwrap(),
+                )
+                .expect("representable buffer output");
+            assert!(!buffered.is_empty());
+            buffered
+                .try_for_each_point::<()>(|point| {
+                    assert!(point.x.is_finite() && point.y.is_finite());
+                    Ok(())
+                })
+                .expect("all emitted coordinates are finite");
+        }
+    }
+}
+
+#[test]
+fn buffer_rejects_a_coordinate_that_the_requested_offset_cannot_represent() {
+    let line = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(1.5e308, 0.0),
+                Point::new_raw_xy(1.5e308, 1.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let error = line.buffer_with_style(
+        1.5e308,
+        BufferCapStyle::Flat,
+        BufferJoinStyle::Round,
+        NonZeroU32::new(1).unwrap(),
+        Positive::try_new("miter_limit", 5.0).unwrap(),
+    );
+    assert!(
+        error
+            .expect_err("the right-side offset exceeds binary64")
+            .to_string()
+            .contains("non-finite")
+    );
 }
 
 #[test]

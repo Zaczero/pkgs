@@ -317,9 +317,9 @@ def test_buffer_rejects_nonfinite_derived_coordinates_without_empty_fallback() -
         (-1e308, -1e308),
     ])
     with pytest.raises(gm.InvalidGeometryError, match='non-finite'):
-        polygon.buffer(1e300)
+        polygon.buffer(1e308)
     with pytest.raises(gm.InvalidGeometryError, match='non-finite'):
-        gm.GeometryArray([polygon]).buffer(1e300)
+        gm.GeometryArray([polygon]).buffer(1e308)
     assert polygon.buffer(0).to_wkt() == polygon.to_wkt()
 
     line = gm.LineString([(1e308, 0.0), (1e308, 1.0)])
@@ -331,6 +331,94 @@ def test_buffer_rejects_nonfinite_derived_coordinates_without_empty_fallback() -
     ordinary = gm.Point(1e150, -1e150).buffer(1e150)
     assert not ordinary.is_empty
     assert all(np.isfinite(value) for point in ordinary.coords for value in point[:2])
+
+
+def test_buffer_keeps_a_finite_extreme_edge_after_raw_delta_overflow() -> None:
+    """The removed raw-delta guard must not reject a representable buffer.
+
+    Mutation: restore that guard and the overflowing ``end - start`` below
+    rejects before this production-path assertion.
+    """
+    start = -1.5e308
+    end = 1.5e308
+    radius = 1e300
+    assert not math.isfinite(end - start)
+
+    line = gm.LineString([(start, 0.0), (end, 0.0)])
+    buffered = line.buffer(radius)
+    sided = line.buffer(radius, side='left')
+    offset = line.offset_curve(radius)
+    for result in (buffered, sided, offset):
+        assert not result.is_empty
+        assert all(np.isfinite(value) for point in result.coords for value in point[:2])
+
+    # Measure the boundary in a frame whose origin is the source's left
+    # endpoint. The fallback residual is the independent reference for the
+    # old overflowing subtraction, not a finite-only assertion.
+    _, exponent = math.frexp(max(abs(start), abs(end), radius))
+    scale = math.ldexp(1.0, -exponent)
+
+    def residual(value: float, origin: float) -> float:
+        difference = value - origin
+        return difference * scale if math.isfinite(difference) else value * scale - origin * scale
+
+    source_span = residual(end, start)
+    scaled_radius = radius * scale
+    for point in buffered.coords:
+        x = residual(point[0], start)
+        y = point[1] * scale
+        distance = math.hypot(x - min(max(x, 0.0), source_span), y)
+        assert distance <= scaled_radius + 32 * np.finfo(float).eps
+
+
+def test_buffer_accepts_tiny_mixed_scale_and_oriented_edges() -> None:
+    cases = [
+        ([(-1.5e308, 0.0), (1.5e308, 0.0)], 1e300),
+        ([(1.5e308, -1.5e308), (1.5e308, 1.5e308)], 1e300),
+        ([(-1.5e308, -1.5e308), (1.5e308, 1.5e308)], 1e300),
+        ([(0.0, 0.0), (5e-324, 0.0)], 5e-324),
+        ([(1e308, 1e308), (1e308, 1.0000000000000002e308)], 1e292),
+    ]
+    for coordinates, radius in cases:
+        line = gm.LineString(coordinates)
+        for cap_style in ('round', 'flat', 'square'):
+            result = line.buffer(radius, cap_style=cap_style, quadrant_segments=4)
+            assert not result.is_empty
+            assert all(
+                np.isfinite(value) for point in result.coords for value in point[:2]
+            )
+
+    joined = gm.LineString([
+        (-1.5e308, 0.0),
+        (0.0, 1e300),
+        (1.5e308, 0.0),
+    ])
+    for join_style in ('round', 'bevel', 'miter'):
+        result = joined.buffer(1e299, join_style=join_style, quadrant_segments=4)
+        assert not result.is_empty
+        assert all(np.isfinite(value) for point in result.coords for value in point[:2])
+
+
+def test_buffer_keeps_extreme_polygon_shell_and_hole_finite() -> None:
+    shell = [
+        (-1.5e308, -1.5e308),
+        (1.5e308, -1.5e308),
+        (1.5e308, 1.5e308),
+        (-1.5e308, 1.5e308),
+        (-1.5e308, -1.5e308),
+    ]
+    hole = [
+        (-1e301, -1e301),
+        (1e301, -1e301),
+        (1e301, 1e301),
+        (-1e301, 1e301),
+        (-1e301, -1e301),
+    ]
+    polygon = gm.Polygon(shell, holes=[hole])
+    for distance in (1e300, -1e300):
+        result = polygon.buffer(distance)
+        assert not result.is_empty
+        assert all(np.isfinite(value) for point in result.coords for value in point[:2])
 
 
 def test_snap_dedups_only_identical_projected_positions() -> None:

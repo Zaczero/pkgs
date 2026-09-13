@@ -5,13 +5,13 @@
 use std::num::NonZeroU32;
 
 use crate::geometry::constructive::{
-    Result, WalkJoinRule, WalkPlan, materialize_walk, unit_right_normal,
+    Result, WalkJoinRule, WalkPlan, materialize_walk, source_vector, unit_right_normal,
 };
 use crate::geometry::{
     BufferJoinStyle, CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, GeometryKind,
     LineSeq, MOrdinate, MultiLineString, Point, Polygon, RepairMethod, Ring, Segment, Shape,
-    Strictness, XY, ZOrdinate, column_all_finite, dedup_consecutive_points,
-    interpolate_segment_point, push_distinct_point, same_point, same_topological_coordinate,
+    Strictness, XY, ZOrdinate, axis_pow2_scale, column_all_finite, dedup_consecutive_points,
+    interpolate_f64, push_distinct_point, same_point, same_topological_coordinate, scaled_residual,
     wrap_index,
 };
 use crate::{Finite, Positive};
@@ -521,15 +521,17 @@ pub(crate) fn miter_join(
 fn miter_within_limit(point: XY, vertex: Point, distance: f64, limit: f64) -> bool {
     let distance = distance.abs();
     let same = same_point(point, vertex);
-    if distance == 0.0 {
-        return same;
-    }
-    let dx = point.x - vertex.x;
-    let dy = point.y - vertex.y;
+    let Some((dx, dy, source_scale)) = source_vector(vertex.xy(), point) else {
+        return false;
+    };
     let reach = dx.hypot(dy);
-    let allowed = distance * limit;
+    let scaled_distance = distance * source_scale;
+    let allowed = scaled_distance * limit;
     if same {
         return true;
+    }
+    if distance == 0.0 {
+        return false;
     }
     if reach.is_normal() && allowed.is_normal() {
         return reach <= allowed;
@@ -540,19 +542,11 @@ fn miter_within_limit(point: XY, vertex: Point, distance: f64, limit: f64) -> bo
     if reach.is_infinite() && allowed.is_finite() {
         return false;
     }
-    let scale = point
-        .x
-        .abs()
-        .max(point.y.abs())
-        .max(vertex.x.abs())
-        .max(vertex.y.abs())
-        .max(distance);
+    let scale = dx.abs().max(dy.abs()).max(scaled_distance);
     if scale == 0.0 || !scale.is_finite() {
-        return false;
+        return scaled_distance.is_infinite();
     }
-    let scaled_dx = point.x / scale - vertex.x / scale;
-    let scaled_dy = point.y / scale - vertex.y / scale;
-    scaled_dx.hypot(scaled_dy) <= (distance / scale) * limit
+    (dx / scale).hypot(dy / scale) <= (scaled_distance / scale) * limit
 }
 
 fn clipped_miter(
@@ -583,74 +577,62 @@ fn clipped_miter(
 }
 
 fn unit_direction(point: XY, vertex: Point) -> Option<(f64, f64)> {
-    let dx = point.x - vertex.x;
-    let dy = point.y - vertex.y;
+    let (dx, dy, _) = source_vector(vertex.xy(), point)?;
     let scale = dx.abs().max(dy.abs());
     let (dx, dy) = if scale.is_finite() && scale > 0.0 {
         (dx / scale, dy / scale)
     } else {
-        let scale = point
-            .x
-            .abs()
-            .max(point.y.abs())
-            .max(vertex.x.abs())
-            .max(vertex.y.abs());
-        if scale == 0.0 || !scale.is_finite() {
-            return None;
-        }
-        (
-            point.x / scale - vertex.x / scale,
-            point.y / scale - vertex.y / scale,
-        )
+        return None;
     };
     let length = dx.hypot(dy);
     (length > 0.0 && length.is_finite()).then_some((dx / length, dy / length))
 }
 
 pub(crate) fn line_intersection(left: Segment, right: Segment) -> Option<XY> {
-    let left_dx = left.end.x - left.start.x;
-    let left_dy = left.end.y - left.start.y;
-    let right_dx = right.end.x - right.start.x;
-    let right_dy = right.end.y - right.start.y;
-    let denominator = left_dx * right_dy - left_dy * right_dx;
-    // Nonzero finite determinants stay on the fast path. Zero / subnormal /
-    // nonfinite (near-parallel or scale-collapsed) reject without an absolute
-    // epsilon — a fixed 1e-12 bevelled valid right-angle miters at 1e-6 scale.
-    if denominator == 0.0 || !denominator.is_normal() {
-        // Subnormal-but-nonzero can still yield a usable fraction after
-        // max-abs normalization of the two direction vectors.
-        let scale = left_dx
-            .abs()
-            .max(left_dy.abs())
-            .max(right_dx.abs())
-            .max(right_dy.abs());
-        if scale == 0.0 || !scale.is_finite() {
-            return None;
-        }
-        let (ldx, ldy) = (left_dx / scale, left_dy / scale);
-        let (rdx, rdy) = (right_dx / scale, right_dy / scale);
-        let denom = ldx * rdy - ldy * rdx;
-        if denom == 0.0 || !denom.is_finite() {
-            return None;
-        }
-        let offset_x = (right.start.x - left.start.x) / scale;
-        let offset_y = (right.start.y - left.start.y) / scale;
-        let fraction = (offset_x * rdy - offset_y * rdx) / denom;
-        if !fraction.is_finite() {
-            return None;
-        }
-        return Some(interpolate_segment_point(left.start, left.end, fraction));
-    }
-    let offset_x = right.start.x - left.start.x;
-    let offset_y = right.start.y - left.start.y;
-    let fraction = (offset_x * right_dy - offset_y * right_dx) / denominator;
-    if !fraction.is_finite() {
-        // Coordinates large enough to saturate the numerator leave the
-        // intersection parameter undefined; treat the segments as having no
-        // usable crossing rather than interpolating a non-finite point.
+    let x_extent = left
+        .start
+        .x
+        .abs()
+        .max(left.end.x.abs())
+        .max(right.start.x.abs())
+        .max(right.end.x.abs());
+    let y_extent = left
+        .start
+        .y
+        .abs()
+        .max(left.end.y.abs())
+        .max(right.start.y.abs())
+        .max(right.end.y.abs());
+    if !x_extent.is_finite() || !y_extent.is_finite() {
         return None;
     }
-    Some(interpolate_segment_point(left.start, left.end, fraction))
+    let (x_scale, y_scale) = (axis_pow2_scale(x_extent), axis_pow2_scale(y_extent));
+    let left_dx = scaled_residual(left.end.x, left.start.x, x_scale);
+    let left_dy = scaled_residual(left.end.y, left.start.y, y_scale);
+    let right_dx = scaled_residual(right.end.x, right.start.x, x_scale);
+    let right_dy = scaled_residual(right.end.y, right.start.y, y_scale);
+    let offset_x = scaled_residual(right.start.x, left.start.x, x_scale);
+    let offset_y = scaled_residual(right.start.y, left.start.y, y_scale);
+    if ![left_dx, left_dy, right_dx, right_dy, offset_x, offset_y]
+        .into_iter()
+        .all(f64::is_finite)
+    {
+        return None;
+    }
+    let denominator = left_dx * right_dy - left_dy * right_dx;
+    if denominator == 0.0 || !denominator.is_finite() {
+        return None;
+    }
+    let numerator = offset_x * right_dy - offset_y * right_dx;
+    let fraction = numerator / denominator;
+    if !fraction.is_finite() {
+        return None;
+    }
+    let point = XY::new(
+        interpolate_f64(left.start.x, left.end.x, fraction),
+        interpolate_f64(left.start.y, left.end.y, fraction),
+    );
+    (point.x.is_finite() && point.y.is_finite()).then_some(point)
 }
 
 pub(crate) fn reversed_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {

@@ -39,7 +39,7 @@ pub(crate) use walk::{reset_walk_plan_construction_count, walk_plan_construction
 pub(crate) use winding::{convex_buffer, winding_buffer, winding_erosion, winding_stroke};
 pub(crate) use winding::{
     convex_buffer_budgeted, degenerate_polygonal_as_linework, emit_arc, multipoint_loops,
-    point_buffer, unit_right_normal,
+    point_buffer, source_vector, unit_right_normal,
 };
 pub(in crate::geometry) use winding::{
     winding_buffer_budgeted, winding_collection_budgeted, winding_erosion_budgeted,

@@ -11,10 +11,12 @@ use crate::geometry::constructive::{
     emit_cap, extend_cleaned, materialize_walk, raw_offset_loop, strict_cycle, winding_region,
 };
 use crate::geometry::{
-    BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, HashSet, LineSeq,
-    MultiPoint, Orientation, Point, Polygon, Ring, Shape, canonical_f64_bits, column_all_finite,
-    dedup_consecutive_points, line_is_simple, orientation, polygon_parts_to_shape, ring_winding,
-    same_point, shell_is_convex,
+    BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind,
+    HashSet, LineSeq, MultiPoint, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale,
+    canonical_f64_bits, column_all_finite, dedup_consecutive_points, interpolate_f64,
+    line_is_simple, orientation, polygon_parts_to_shape, power_of_two_exponent, ring_winding,
+    same_point, same_topological_coordinate, scale_by_power_of_two, scaled_residual,
+    shell_is_convex,
 };
 
 /// A polygon encloses no interior when every ring has zero signed area — it
@@ -293,7 +295,8 @@ pub(in crate::geometry) fn winding_erosion_budgeted(
 /// `winding >= 1` selection. Caps follow the style: round (a pi arc),
 /// flat (the direct chord), square (extended by the distance); outside
 /// joins follow `rule`; zero-length chains are disks (GEOS semantics).
-/// `None` falls back to the geo engine (overflow).
+/// `None` means that no usable constructive loop remained; non-finite
+/// derived coordinates are returned as typed errors.
 pub(in crate::geometry) fn winding_stroke_budgeted(
     chains: &[&CoordSeq],
     distance: f64,
@@ -885,32 +888,28 @@ pub(crate) fn collection_erosion_loops(
 /// would not (see the caller in [`stroke_loops`]).
 pub(crate) fn collinear_extent(chain: &[Point]) -> Option<[Point; 2]> {
     let anchor = chain[0];
-    // The vertex farthest from the anchor fixes a non-degenerate direction
-    // (post-dedup the chain has ≥ 2 distinct vertices, so this is never the
-    // anchor itself).
-    let dist2 = |point: &Point| {
-        let dx = point.x - anchor.x;
-        let dy = point.y - anchor.y;
-        dx * dx + dy * dy
-    };
-    let far = *chain[1..]
+    let direction = *chain[1..]
         .iter()
-        .max_by(|left, right| dist2(left).total_cmp(&dist2(right)))?;
+        .find(|point| !same_point(**point, anchor))?;
     if chain
         .iter()
-        .any(|&point| orientation(anchor, far, point) != Orientation::Collinear)
+        .any(|&point| orientation(anchor, direction, point) != Orientation::Collinear)
     {
         return None;
     }
-    let projection = |point: &Point| {
-        (point.x - anchor.x) * (far.x - anchor.x) + (point.y - anchor.y) * (far.y - anchor.y)
+    // One non-constant ordinate orders every point on a collinear chain.
+    // Comparing stored coordinates avoids the distance square and dot
+    // product, both of which can overflow for finite opposite-sign sources.
+    let axis_x = !same_topological_coordinate(direction.x, anchor.x);
+    let ordinate = |point: &Point| {
+        if axis_x { point.x } else { point.y }
     };
     let lo = *chain
         .iter()
-        .min_by(|left, right| projection(left).total_cmp(&projection(right)))?;
+        .min_by(|left, right| ordinate(left).total_cmp(&ordinate(right)))?;
     let hi = *chain
         .iter()
-        .max_by(|left, right| projection(left).total_cmp(&projection(right)))?;
+        .max_by(|left, right| ordinate(left).total_cmp(&ordinate(right)))?;
     Some([lo, hi])
 }
 
@@ -1072,10 +1071,36 @@ fn emit_stroke_loop<S: WalkSink>(
     Ok(right_clean && left_clean)
 }
 
+/// Source vector in a power-of-two frame. Preserve a finite world-space
+/// residual when it exists; only an overflowing subtraction scales both
+/// operands before forming the residual. The returned scale is the frame
+/// factor applied to both components.
+pub(crate) fn source_vector(from: XY, to: XY) -> Option<(f64, f64, f64)> {
+    let raw_dx = to.x - from.x;
+    let raw_dy = to.y - from.y;
+    let scale = if raw_dx.is_finite() && raw_dy.is_finite() {
+        1.0
+    } else {
+        let extent = from
+            .x
+            .abs()
+            .max(from.y.abs())
+            .max(to.x.abs())
+            .max(to.y.abs());
+        if !extent.is_finite() {
+            return None;
+        }
+        axis_pow2_scale(extent)
+    };
+    let dx = scaled_residual(to.x, from.x, scale);
+    let dy = scaled_residual(to.y, from.y, scale);
+    (dx.is_finite() && dy.is_finite()).then_some((dx, dy, scale))
+}
+
 /// Unit right-side normal of the edge `from -> to` (`None` for degenerate
-/// or overflowing edges).
+/// or unrepresentable source coordinates).
 pub(crate) fn unit_right_normal(from: Point, to: Point) -> Option<(f64, f64)> {
-    let (dx, dy) = (to.x - from.x, to.y - from.y);
+    let (dx, dy, _) = source_vector(from.xy(), to.xy())?;
     let squared = dx * dx + dy * dy;
     // Ordinary finite normal: fast squared-length path (bit-stable).
     if squared.is_normal() {
@@ -1153,7 +1178,7 @@ fn emit_cap_with_peer<S: WalkSink>(
         return emit_cap(tip, nx, ny, distance, cap_style, step_angle, source, sink);
     }
     let from_angle = ny.atan2(nx);
-    let breaks = cap_circle_intersections(tip, peer, distance.abs(), from_angle);
+    let breaks = cap_circle_intersections(tip, peer, distance.abs(), from_angle)?;
     if breaks.iter().all(Option::is_none) {
         return emit_cap(tip, nx, ny, distance, cap_style, step_angle, source, sink);
     }
@@ -1177,38 +1202,104 @@ fn cap_circle_intersections(
     peer: Point,
     radius: f64,
     from_angle: f64,
-) -> [Option<(f64, Point)>; 2] {
+) -> Result<[Option<(f64, Point)>; 2]> {
     let mut result = [None, None];
     if !radius.is_finite() || radius <= 0.0 {
-        return result;
+        return Ok(result);
     }
     let (first, second) = match center.x.total_cmp(&peer.x) {
         Ordering::Less => (center, peer),
         Ordering::Equal if center.y.total_cmp(&peer.y).is_le() => (center, peer),
         _ => (peer, center),
     };
-    let (dx, dy) = (second.x - first.x, second.y - first.y);
+    let raw_dx = second.x - first.x;
+    let raw_dy = second.y - first.y;
+    let extent = if raw_dx.is_finite() && raw_dy.is_finite() {
+        raw_dx.abs().max(raw_dy.abs()).max(radius)
+    } else {
+        first
+            .x
+            .abs()
+            .max(first.y.abs())
+            .max(second.x.abs())
+            .max(second.y.abs())
+            .max(radius)
+    };
+    if !extent.is_finite() {
+        return Err(GeometryErrorKind::message(
+            "buffer calculation produced non-finite coordinates",
+        ));
+    }
+    let scale = axis_pow2_scale(extent);
+    let (dx, dy) = (
+        scaled_residual(second.x, first.x, scale),
+        scaled_residual(second.y, first.y, scale),
+    );
+    let scaled_radius = radius * scale;
     let separation = dx.hypot(dy);
+    if ![dx, dy, scaled_radius, separation]
+        .into_iter()
+        .all(f64::is_finite)
+    {
+        return Err(GeometryErrorKind::message(
+            "buffer calculation produced non-finite coordinates",
+        ));
+    }
+    if separation == 0.0 {
+        return Ok(result);
+    }
     let half = separation * 0.5;
-    if !separation.is_finite() || !half.is_finite() || half >= radius {
-        return result;
+    if half >= scaled_radius {
+        return Ok(result);
     }
-    let height = (radius - half).sqrt() * (radius + half).sqrt();
-    if !height.is_finite() || height == 0.0 {
-        return result;
+    let height = (scaled_radius - half).sqrt() * (scaled_radius + half).sqrt();
+    if !height.is_finite() {
+        return Err(GeometryErrorKind::message(
+            "buffer calculation produced non-finite coordinates",
+        ));
     }
-    let midpoint = Point::new_raw_xy(first.x + dx * 0.5, first.y + dy * 0.5);
+    if height == 0.0 {
+        return Ok(result);
+    }
+    let midpoint = Point::new_raw_xy(
+        interpolate_f64(first.x, second.x, 0.5),
+        interpolate_f64(first.y, second.y, 0.5),
+    );
+    if !midpoint.x.is_finite() || !midpoint.y.is_finite() {
+        return Err(GeometryErrorKind::message(
+            "buffer calculation produced non-finite coordinates",
+        ));
+    }
     let (px, py) = (-dy / separation, dx / separation);
-    let candidates = [
-        Point::new_raw_xy(midpoint.x + px * height, midpoint.y + py * height),
-        Point::new_raw_xy(midpoint.x - px * height, midpoint.y - py * height),
-    ];
     let mut count = 0;
-    for point in candidates {
-        let offset = ((point.y - center.y).atan2(point.x - center.x) - from_angle)
-            .rem_euclid(std::f64::consts::TAU);
+    for index in 0..2 {
+        let sign = if index == 0 { 1.0 } else { -1.0 };
+        let (dir_x, dir_y) = if same_point(center, first) {
+            (dx * 0.5 + sign * px * height, dy * 0.5 + sign * py * height)
+        } else {
+            (
+                -dx * 0.5 + sign * px * height,
+                -dy * 0.5 + sign * py * height,
+            )
+        };
+        let offset = (dir_y.atan2(dir_x) - from_angle).rem_euclid(std::f64::consts::TAU);
         if offset <= 1e-12 || offset >= std::f64::consts::PI - 1e-12 {
             continue;
+        }
+        let height_world = scale_by_power_of_two(height, -power_of_two_exponent(scale));
+        if !height_world.is_finite() {
+            return Err(GeometryErrorKind::message(
+                "buffer calculation produced non-finite coordinates",
+            ));
+        }
+        let point = Point::new_raw_xy(
+            midpoint.x + sign * px * height_world,
+            midpoint.y + sign * py * height_world,
+        );
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Err(GeometryErrorKind::message(
+                "buffer calculation produced non-finite coordinates",
+            ));
         }
         result[count] = Some((offset, point));
         count += 1;
@@ -1225,7 +1316,7 @@ fn cap_circle_intersections(
             result.swap(0, 1);
         }
     }
-    result
+    Ok(result)
 }
 
 /// Emit an arc whose interior contains exact circle intersections. Ordinary
@@ -1318,4 +1409,30 @@ pub(crate) fn stroke_side<S: WalkSink>(
         .all(|join| !matches!(join, WalkJoin::Excursion));
     plan.emit_into(step_angle, sink)?;
     Ok(excursion_free)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extreme_cap_contacts_stay_on_their_scaled_distance_circles() {
+        let center = Point::new_raw_xy(-1.5e308, 0.0);
+        let peer = Point::new_raw_xy(1.5e308, 0.0);
+        let radius = 1.6e308;
+        let contacts = cap_circle_intersections(center, peer, radius, -std::f64::consts::FRAC_PI_2)
+            .expect("finite circle contacts");
+
+        assert_eq!(contacts.iter().flatten().count(), 2);
+        let scale = axis_pow2_scale(radius);
+        let radius = radius * scale;
+        for (_, point) in contacts.into_iter().flatten() {
+            let distance = scaled_residual(point.x, center.x, scale)
+                .hypot(scaled_residual(point.y, center.y, scale));
+            assert!(
+                (distance - radius).abs() <= 16.0 * f64::EPSILON * radius,
+                "distance {distance} differs from radius {radius}"
+            );
+        }
+    }
 }
