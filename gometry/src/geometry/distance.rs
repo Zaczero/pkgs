@@ -29,6 +29,7 @@ pub(crate) use geodesic_hausdorff_helpers::geodesic_directed_hausdorff_distance;
 #[cfg(test)]
 pub(crate) use geodesic_hausdorff_helpers::{
     GEODESIC_HAUSDORFF_TOLERANCE, GeodesicHausdorffWitness, geodesic_hausdorff_counters,
+    geodesic_max_min_on_source_segment,
 };
 pub(crate) use geodesic_parts::{
     ensure_geodesic_linework, geodesic_cap_streaming, geodesic_distance_with_parts,

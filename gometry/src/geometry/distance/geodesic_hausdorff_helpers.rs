@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 
 use super::geodesic_scratch::GeodesicScratch;
 use super::geodesic_sweep::geodesic_target_witness;
@@ -26,6 +25,12 @@ pub(crate) mod geodesic_hausdorff_counters {
         pub outer_bvh_target_queries: u64,
         pub outer_support_closures: u64,
         pub outer_regular_supports: u64,
+        pub outer_regular_attempts: u64,
+        pub outer_regular_foot_endpoint_declines: u64,
+        pub outer_regular_near_zero_declines: u64,
+        pub outer_regular_domain_declines: u64,
+        pub outer_regular_derivative_declines: u64,
+        pub outer_regular_branch_endpoint_declines: u64,
         pub outer_moving_supports: u64,
         pub outer_family_supports: u64,
     }
@@ -38,6 +43,12 @@ pub(crate) mod geodesic_hausdorff_counters {
         static OUTER_BVH_TARGET_QUERIES: Cell<u64> = const { Cell::new(0) };
         static OUTER_SUPPORT_CLOSURES: Cell<u64> = const { Cell::new(0) };
         static OUTER_REGULAR_SUPPORTS: Cell<u64> = const { Cell::new(0) };
+        static OUTER_REGULAR_ATTEMPTS: Cell<u64> = const { Cell::new(0) };
+        static OUTER_REGULAR_FOOT_ENDPOINT_DECLINES: Cell<u64> = const { Cell::new(0) };
+        static OUTER_REGULAR_NEAR_ZERO_DECLINES: Cell<u64> = const { Cell::new(0) };
+        static OUTER_REGULAR_DOMAIN_DECLINES: Cell<u64> = const { Cell::new(0) };
+        static OUTER_REGULAR_DERIVATIVE_DECLINES: Cell<u64> = const { Cell::new(0) };
+        static OUTER_REGULAR_BRANCH_ENDPOINT_DECLINES: Cell<u64> = const { Cell::new(0) };
         static OUTER_MOVING_SUPPORTS: Cell<u64> = const { Cell::new(0) };
         static OUTER_FAMILY_SUPPORTS: Cell<u64> = const { Cell::new(0) };
     }
@@ -57,6 +68,21 @@ pub(crate) mod geodesic_hausdorff_counters {
     define_counter!(bvh_target_query, OUTER_BVH_TARGET_QUERIES);
     define_counter!(support_closure, OUTER_SUPPORT_CLOSURES);
     define_counter!(regular_support, OUTER_REGULAR_SUPPORTS);
+    define_counter!(regular_attempt, OUTER_REGULAR_ATTEMPTS);
+    define_counter!(
+        regular_foot_endpoint_decline,
+        OUTER_REGULAR_FOOT_ENDPOINT_DECLINES
+    );
+    define_counter!(regular_near_zero_decline, OUTER_REGULAR_NEAR_ZERO_DECLINES);
+    define_counter!(regular_domain_decline, OUTER_REGULAR_DOMAIN_DECLINES);
+    define_counter!(
+        regular_derivative_decline,
+        OUTER_REGULAR_DERIVATIVE_DECLINES
+    );
+    define_counter!(
+        regular_branch_endpoint_decline,
+        OUTER_REGULAR_BRANCH_ENDPOINT_DECLINES
+    );
     define_counter!(moving_support, OUTER_MOVING_SUPPORTS);
     define_counter!(family_support, OUTER_FAMILY_SUPPORTS);
 
@@ -68,6 +94,12 @@ pub(crate) mod geodesic_hausdorff_counters {
         OUTER_BVH_TARGET_QUERIES.set(0);
         OUTER_SUPPORT_CLOSURES.set(0);
         OUTER_REGULAR_SUPPORTS.set(0);
+        OUTER_REGULAR_ATTEMPTS.set(0);
+        OUTER_REGULAR_FOOT_ENDPOINT_DECLINES.set(0);
+        OUTER_REGULAR_NEAR_ZERO_DECLINES.set(0);
+        OUTER_REGULAR_DOMAIN_DECLINES.set(0);
+        OUTER_REGULAR_DERIVATIVE_DECLINES.set(0);
+        OUTER_REGULAR_BRANCH_ENDPOINT_DECLINES.set(0);
         OUTER_MOVING_SUPPORTS.set(0);
         OUTER_FAMILY_SUPPORTS.set(0);
     }
@@ -81,6 +113,12 @@ pub(crate) mod geodesic_hausdorff_counters {
             outer_bvh_target_queries: OUTER_BVH_TARGET_QUERIES.get(),
             outer_support_closures: OUTER_SUPPORT_CLOSURES.get(),
             outer_regular_supports: OUTER_REGULAR_SUPPORTS.get(),
+            outer_regular_attempts: OUTER_REGULAR_ATTEMPTS.get(),
+            outer_regular_foot_endpoint_declines: OUTER_REGULAR_FOOT_ENDPOINT_DECLINES.get(),
+            outer_regular_near_zero_declines: OUTER_REGULAR_NEAR_ZERO_DECLINES.get(),
+            outer_regular_domain_declines: OUTER_REGULAR_DOMAIN_DECLINES.get(),
+            outer_regular_derivative_declines: OUTER_REGULAR_DERIVATIVE_DECLINES.get(),
+            outer_regular_branch_endpoint_declines: OUTER_REGULAR_BRANCH_ENDPOINT_DECLINES.get(),
             outer_moving_supports: OUTER_MOVING_SUPPORTS.get(),
             outer_family_supports: OUTER_FAMILY_SUPPORTS.get(),
         }
@@ -117,7 +155,7 @@ pub(crate) struct GeodesicHausdorffWitness {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct HausdorffInterval {
+pub(crate) struct HausdorffInterval {
     upper: f64,
     left: f64,
     right: f64,
@@ -221,13 +259,13 @@ pub(crate) fn geodesic_max_min_on_source_segment<M: GeodesicMetric>(
         return Ok(best);
     }
 
-    let mut live = BinaryHeap::new();
+    scratch.outer.clear();
     let initial = source_interval(0.0, segment.length, &left, &right, metric);
     if initial.upper <= completion_limit(cmax.max(best.distance)) {
         return Ok(best);
     }
-    crate::boundary::try_push_heap(&mut live, initial)?;
-    while let Some(interval) = live.pop() {
+    crate::boundary::try_push_heap(&mut scratch.outer, initial)?;
+    while let Some(interval) = scratch.outer.pop() {
         #[cfg(test)]
         geodesic_hausdorff_counters::interval_pop();
         if interval.upper <= completion_limit(cmax.max(best.distance)) {
@@ -277,10 +315,10 @@ pub(crate) fn geodesic_max_min_on_source_segment<M: GeodesicMetric>(
         #[cfg(test)]
         geodesic_hausdorff_counters::interval_split();
         if left.upper > completion_limit(cmax.max(best.distance)) {
-            crate::boundary::try_push_heap(&mut live, left)?;
+            crate::boundary::try_push_heap(&mut scratch.outer, left)?;
         }
         if right.upper > completion_limit(cmax.max(best.distance)) {
-            crate::boundary::try_push_heap(&mut live, right)?;
+            crate::boundary::try_push_heap(&mut scratch.outer, right)?;
         }
     }
     Ok(best)
@@ -487,16 +525,15 @@ fn sphere_fixed_target_upper<M: GeodesicMetric>(
     };
     let a = dot3(left_unit, target_unit);
     let b = dot3(tangent, target_unit);
-    let left_angle = interval.left / radius;
-    let right_angle = interval.right / radius;
+    let width_angle = (interval.right - interval.left) / radius;
     let phase = b.atan2(a) + std::f64::consts::PI;
     let mut maximum = metric.segment_length(left_point, target);
     let right_point = source.position(interval.right)?;
     maximum = maximum.max(metric.segment_length(right_point, target));
     for shift in -1..=1 {
-        let angle = phase + f64::from(shift) * std::f64::consts::TAU;
-        if angle > left_angle && angle < right_angle {
-            let point = source.position(angle * radius)?;
+        let relative_angle = phase + f64::from(shift) * std::f64::consts::TAU;
+        if relative_angle > 0.0 && relative_angle < width_angle {
+            let point = source.position(interval.left + relative_angle * radius)?;
             maximum = maximum.max(metric.segment_length(point, target));
         }
     }
@@ -569,13 +606,25 @@ fn regular_branch_support<M: GeodesicMetric>(
     let Some(target_segment) = target_parts.segments.get(index).copied() else {
         return Ok(None);
     };
+    #[cfg(test)]
+    geodesic_hausdorff_counters::regular_attempt();
     let target_length = target_segment.length;
     let half_width = (interval.right - interval.left) / 2.0;
-    if !(half_width > 0.0
-        && center_value.distance > metric.geodesic_backend_floor()
-        && along > 0.0
-        && along < target_length)
+    if half_width.partial_cmp(&0.0) != Some(Ordering::Greater) {
+        return Ok(None);
+    }
+    if center_value
+        .distance
+        .partial_cmp(&metric.geodesic_backend_floor())
+        != Some(Ordering::Greater)
     {
+        #[cfg(test)]
+        geodesic_hausdorff_counters::regular_near_zero_decline();
+        return Ok(None);
+    }
+    if !(along > 0.0 && along < target_length) {
+        #[cfg(test)]
+        geodesic_hausdorff_counters::regular_foot_endpoint_decline();
         return Ok(None);
     }
     let Some((omega, _, d_star)) = metric.geodesic_curvature_domain() else {
@@ -593,10 +642,14 @@ fn regular_branch_support<M: GeodesicMetric>(
     let (Some(left_derivative), Some(right_derivative)) =
         (left_sample.derivative, right_sample.derivative)
     else {
+        #[cfg(test)]
+        geodesic_hausdorff_counters::regular_derivative_decline();
         return Ok(None);
     };
     let d = center_value.distance + half_width + patch_half;
     if !(d.is_finite() && d < d_star) {
+        #[cfg(test)]
+        geodesic_hausdorff_counters::regular_domain_decline();
         return Ok(None);
     }
     let omega_d = omega * d;
@@ -607,6 +660,8 @@ fn regular_branch_support<M: GeodesicMetric>(
         omega_d / omega_d.tan()
     };
     if !(sine.is_finite() && sine > 0.0 && cotangent.is_finite() && cotangent > 0.0) {
+        #[cfg(test)]
+        geodesic_hausdorff_counters::regular_domain_decline();
         return Ok(None);
     }
     let mixed = omega_d / sine;
@@ -615,6 +670,8 @@ fn regular_branch_support<M: GeodesicMetric>(
         && right_derivative.value - right_derivative.error - mixed * half_width
             > derivative_allowance)
     {
+        #[cfg(test)]
+        geodesic_hausdorff_counters::regular_derivative_decline();
         return Ok(None);
     }
     let p = 1.0 + derivative_allowance / half_width;
@@ -684,7 +741,13 @@ fn branch_endpoint_value<M: GeodesicMetric>(
     else {
         return Ok(None);
     };
-    Ok((minimum.along >= patch_left && minimum.along <= patch_right).then_some(minimum.distance))
+    if minimum.along > patch_left && minimum.along < patch_right {
+        Ok(Some(minimum.distance))
+    } else {
+        #[cfg(test)]
+        geodesic_hausdorff_counters::regular_branch_endpoint_decline();
+        Ok(None)
+    }
 }
 
 fn concave_branch_upper(left: f64, right: f64, width: f64, curvature: f64) -> f64 {
@@ -720,4 +783,53 @@ fn tangent_allowance<M: GeodesicMetric>(metric: &M) -> f64 {
 
 fn derivative_allowance<M: GeodesicMetric>(metric: &M, distance: f64) -> f64 {
     8.0 * f64::EPSILON * distance.max(1.0) + metric.geodesic_backend_floor()
+}
+
+#[cfg(test)]
+mod tests {
+    use geographiclib_rs::Geodesic;
+
+    use super::*;
+    use crate::crs::EllipsoidMetric;
+
+    #[test]
+    fn regular_branch_endpoint_boundary_is_not_admitted() {
+        let geodesic = Geodesic::wgs84();
+        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+        let point = Point::new_raw_xy(5.0, 1.0);
+        let segment = metric
+            .make_segment(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(10.0, 0.0))
+            .expect("equatorial segment is unique");
+        let mut scratch = GeodesicSegmentScratch::default();
+        let minimum = match metric
+            .point_segment_query(
+                point,
+                segment,
+                GeodesicSegmentQuery::Minimum {
+                    cutoff: f64::INFINITY,
+                    witness: GeodesicWitnessNeed::Yes,
+                },
+                &mut scratch,
+            )
+            .expect("point-segment minimum should succeed")
+        {
+            GeodesicSegmentQueryResult::Attained { minimum, .. } => minimum,
+            result => panic!("unexpected point-segment result: {result:?}"),
+        };
+
+        geodesic_hausdorff_counters::reset();
+        let branch = branch_endpoint_value(
+            point,
+            &segment,
+            minimum.along,
+            minimum.along + 1.0,
+            &metric,
+            &mut scratch,
+        );
+        assert!(branch.expect("boundary probe should not fail").is_none());
+        assert_eq!(
+            geodesic_hausdorff_counters::snapshot().outer_regular_branch_endpoint_declines,
+            1
+        );
+    }
 }

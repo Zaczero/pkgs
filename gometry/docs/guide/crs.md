@@ -424,9 +424,11 @@ over the target's segments and isolated points, and the returned pair is an
 actual source/target witness rather than an interval upper bound. Regular
 finite-foot branches, near-coincident moving witnesses, and exact
 spherical/equatorial/polar families can close a source interval directly;
-other intervals use a conservative `0.01 m` coverage gap. The underlying
-binary64 backend allowance remains the radius-scaled floor described above,
-not an additional contact tolerance.
+other intervals use a conservative `0.01 m` interval-value budget. The scalar
+is selected from an attained source/target sample; it is not the interval
+upper bound. The underlying binary64 backend allowance remains the
+radius-scaled floor described above, so neither this budget nor the floor is
+a per-call error certificate or an additional contact tolerance.
 
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a

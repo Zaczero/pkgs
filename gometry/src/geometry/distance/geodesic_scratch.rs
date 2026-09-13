@@ -1,3 +1,6 @@
+use std::collections::BinaryHeap;
+
+use super::geodesic_hausdorff_helpers::HausdorffInterval;
 use crate::error::Result;
 use crate::geometry::distance::{CapGroup, RowProbe};
 use crate::geometry::{GeodesicMetric, GeodesicSegment, GeodesicSegmentScratch, Point, Shape};
@@ -12,6 +15,7 @@ pub(crate) struct GeodesicScratch {
     pub(crate) cap_groups: Vec<CapGroup>,
     pub(crate) rows: Vec<RowProbe>,
     pub(crate) stack: Vec<u32>,
+    pub(crate) outer: BinaryHeap<HausdorffInterval>,
     pub(crate) segment: GeodesicSegmentScratch,
 }
 
@@ -27,6 +31,7 @@ impl GeodesicScratch {
             cap_groups: Vec::new(),
             rows: Vec::new(),
             stack: Vec::new(),
+            outer: BinaryHeap::new(),
             segment: GeodesicSegmentScratch::new(),
         }
     }
@@ -43,6 +48,7 @@ impl crate::scratch_pool::RetainScratch for GeodesicScratch {
         self.cap_groups.clear();
         self.rows.clear();
         self.stack.clear();
+        self.outer.clear();
         self.segment.clear();
     }
 
@@ -68,6 +74,11 @@ impl crate::scratch_pool::RetainScratch for GeodesicScratch {
             ))
             .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.rows))
             .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.stack))
+            .saturating_add(
+                self.outer
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<HausdorffInterval>()),
+            )
             .saturating_add(self.segment.retained_bytes())
     }
 }
