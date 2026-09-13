@@ -6,7 +6,10 @@ use crate::Typed;
 use crate::geometry::CoordSeq;
 use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::CellId;
-use crate::py::cells::coverage_ops::{GridDissolver, SortedCells, dissolve_grid_cells};
+use crate::py::cells::coverage_ops::{
+    GridCoverError, GridDissolver, GridSourceAdmission, SortedCells, admit_grid_geometry,
+    dissolve_grid_cells,
+};
 use crate::py::cells::s2::parse::S2LevelBudget;
 use crate::py::cells::s2::{
     PyS2Cell, cell_pole_side, parse_s2_level_budget, parse_s2_level_value, s2_boundary_geometry,
@@ -140,11 +143,12 @@ pub(crate) fn _unpickle_s2_cell(
 #[pyfunction]
 pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
     use crate::py::errors::InvalidGeometryError;
-    use crate::{exact_geometry, exact_geometry_array, lonlat_shape};
+    use crate::{exact_geometry, exact_geometry_array};
 
     // Kernel routes single-point → L30 leaf and multi-point/region → R18 bbox.
     if let Some(geometry) = exact_geometry(value) {
-        let shape = lonlat_shape(geometry)?;
+        let admitted = admit_grid_geometry(value.py(), geometry)?;
+        let shape = admitted.shape.as_ref();
         if shape.is_empty() {
             return Err(InvalidGeometryError::new_err(
                 "bounding cell requires a non-empty geometry",
@@ -153,7 +157,31 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
         return bounding_cell_result(crate::grid::s2::bounding::bounding_cell(&shape));
     }
     if let Some(array) = exact_geometry_array(value) {
-        let mut parts = crate::lonlat_nonempty_shapes(array)?;
+        let array = array.clone();
+        let (result, execution) = value.py().detach(move || {
+            let admission = match GridSourceAdmission::new_for_array(&array) {
+                Ok(admission) => admission,
+                Err(error) => return (Err(GridCoverError::Native(error)), None),
+            };
+            let execution = admission.execution();
+            let result = admission.admit_array_shapes(&array).and_then(|shapes| {
+                let mut parts = Vec::new();
+                for shape in shapes {
+                    let Some(shape) = shape? else {
+                        continue;
+                    };
+                    if !shape.is_empty() {
+                        crate::try_push_vec(&mut parts, shape)?;
+                    }
+                }
+                Ok::<_, GridCoverError>(parts)
+            });
+            (result, execution)
+        });
+        if let Some(execution) = execution {
+            crate::py::crs::drain_accuracy_warning(value.py(), &execution)?;
+        }
+        let mut parts = result?;
         if parts.is_empty() {
             return Err(InvalidGeometryError::new_err(
                 "bounding cell requires a non-empty geometry",

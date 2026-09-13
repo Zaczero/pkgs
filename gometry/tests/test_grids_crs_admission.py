@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import gometry as gm
@@ -209,6 +210,103 @@ def test_b2_compound_9707_is_dynamic_for_epoch():
     pt = gm.Point(10.0, 50.0, crs=4326, epoch=2020.0)
     out = pt.to_crs(9707)
     assert out.epoch == 2020.0
+
+
+def _cell_keys(values):
+    keys = []
+    for value in values:
+        token = getattr(value, 'token', None)
+        keys.append(token if token is not None else getattr(value, 'id', str(value)))
+    return keys
+
+
+def _dynamic_grid_source() -> tuple[gm.Geometry, gm.Geometry]:
+    # Build the installed EPSG:7912 -> EPSG:7665 time-dependent operation into
+    # a BoundCRS whose target is WGS 84 (G1762). PROJ then follows that bound
+    # operation before the final explicit to_crs(4326), rather than selecting
+    # the epoch-insensitive WGS 84 ensemble shortcut. The source latitude is a
+    # z29 tile boundary witness: epochs 2000 and 2020 must choose different
+    # emitted cells.
+    from pyproj.transformer import TransformerGroup
+
+    operation = TransformerGroup(
+        7912,
+        7665,
+        always_xy=True,
+        allow_ballpark=False,
+    ).transformers[0].to_json_dict()
+    crs = json.dumps({
+        'type': 'BoundCRS',
+        'source_crs': json.loads(gm.CRS(7912).to_projjson()),
+        'target_crs': json.loads(gm.CRS(7665).to_projjson()),
+        'transformation': operation['steps'][2],
+    })
+    boundary_latitude = 49.99008996175559
+    return (
+        gm.Point(10.0, boundary_latitude, z=100.0, crs=crs, epoch=2020.0),
+        gm.Point(10.0, boundary_latitude, z=100.0, crs=crs, epoch=2000.0),
+    )
+
+
+@pytest.mark.parametrize(
+    ('cover', 'kwargs'),
+    [
+        (gm.h3_cover, {'resolution': 7}),
+        (gm.s2_cover, {'level': 12}),
+        (gm.geohash_cover, {'precision': 8}),
+        (gm.tile_cover, {'zoom': 29}),
+    ],
+    ids=['h3', 's2', 'geohash', 'tile'],
+)
+def test_grid_cover_admits_dynamic_source_frame_once(cover, kwargs) -> None:
+    source, _ = _dynamic_grid_source()
+    explicit = source.to_crs(4326)
+    assert _cell_keys(cover(source, max_cells=None, **kwargs)) == _cell_keys(
+        cover(explicit, max_cells=None, **kwargs)
+    )
+
+
+@pytest.mark.parametrize(
+    ('factory', 'kwargs'),
+    [
+        (gm.h3_cells, {'resolution': 7}),
+        (gm.s2_cells, {'level': 12}),
+        (gm.geohash_cells, {'precision': 8}),
+        (gm.tile_cells, {'zoom': 29}),
+    ],
+    ids=['h3', 's2', 'geohash', 'tile'],
+)
+def test_point_cell_array_admits_dynamic_source_frame_once(factory, kwargs) -> None:
+    source, _ = _dynamic_grid_source()
+    values = gm.GeometryArray([source, None])
+    explicit = values.to_crs(4326)
+    assert _cell_keys(factory(values, **kwargs)) == _cell_keys(factory(explicit, **kwargs))
+
+
+@pytest.mark.parametrize(
+    ('factory', 'kwargs'),
+    [
+        (gm.h3_bounding_cell, {}),
+        (gm.s2_bounding_cell, {}),
+        (gm.geohash_bounding_cell, {}),
+        (gm.tile_bounding_cell, {}),
+    ],
+    ids=['h3', 's2', 'geohash', 'tile'],
+)
+def test_bounding_cell_admits_dynamic_source_frame_once(factory, kwargs) -> None:
+    source, _ = _dynamic_grid_source()
+    explicit = source.to_crs(4326)
+    assert factory(source, **kwargs) == factory(explicit, **kwargs)
+
+
+def test_dynamic_source_epoch_changes_a_boundary_cell() -> None:
+    current, old = _dynamic_grid_source()
+    current_lon = current.to_crs(4326)
+    old_lon = old.to_crs(4326)
+    assert abs(current_lon.x - old_lon.x) > 1e-9 or abs(current_lon.y - old_lon.y) > 1e-9
+    assert _cell_keys(gm.tile_cover(current, zoom=29)) != _cell_keys(
+        gm.tile_cover(old, zoom=29)
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -3,9 +3,7 @@ use h3o::CellIndex;
 use super::tile::H3TileError;
 use crate::error::ResourceError;
 use crate::grid::h3_coverer::{H3CoverError, H3CoverPlan, H3TraversalRule, h3_cover_shape};
-use crate::py::cells::coverage_ops::{
-    GridCoverError, coverage_factory_geometry, coverage_factory_shapes,
-};
+use crate::py::cells::coverage_ops::{GridCoverError, coverage_factory_shapes};
 use crate::py::cells::h3::{
     _unpickle_h3_cell, _unpickle_h3_edge, _unpickle_h3_edge_array, _unpickle_h3_vertex,
     _unpickle_h3_vertex_array, PyH3Cell, PyH3Edge, PyH3EdgeArray, PyH3EdgeArrayIter, PyH3Vertex,
@@ -65,21 +63,24 @@ pub(super) fn build_coverage(
     cell_rule: CellRule,
     max_cells: Option<usize>,
 ) -> Result<Vec<CellIndex>, GridCoverError> {
+    if geometry.shape.is_empty() {
+        return Err(GridCoverError::Empty("H3"));
+    }
     match cell_rule {
         // Center retains its specialized native tiler. The split shape is only
         // a traversal/seed working image; membership stays unsplit and normalized.
         CellRule::Center => {
-            let (membership_geometry, cover_shape) = coverage_factory_shapes(geometry, "H3")?;
-            let authority = membership_geometry.plan_or_transient()?;
+            let cover_shape = coverage_factory_shapes(geometry, "H3")?;
+            let authority = geometry.plan_or_transient()?;
             let crate::geometry::TopologyDomain::Geographic(frame) =
-                crate::geometry::topology_domain(&membership_geometry.frame)?
+                crate::geometry::topology_domain(&geometry.frame)?
             else {
                 unreachable!("H3 membership geometry has a geographic frame")
             };
             let annotated = h3_tile(
                 &cover_shape,
                 &authority,
-                &*membership_geometry.frame_cache()?,
+                &*geometry.frame_cache()?,
                 frame,
                 resolution,
                 max_cells,
@@ -91,8 +92,7 @@ pub(super) fn build_coverage(
             Ok(cells)
         },
         CellRule::Within | CellRule::Overlap | CellRule::Bbox => {
-            let membership_geometry = coverage_factory_geometry(geometry, "H3")?;
-            let unsplit = membership_geometry.shape.as_ref();
+            let unsplit = geometry.shape.as_ref();
             let annotated = h3_cover_shape(
                 unsplit,
                 &H3CoverPlan::new(resolution),

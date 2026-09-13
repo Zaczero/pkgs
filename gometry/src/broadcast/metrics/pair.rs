@@ -211,7 +211,7 @@ pub(crate) fn resolve_metric_3d(
 /// WGS84 inputs borrow straight through, any other CRS reprojects. The
 /// shape-level seam behind [`lonlat_shape`] — array lanes call it row by row
 /// without materializing wrappers.
-pub(crate) fn lonlat_shape_under<'a>(
+fn lonlat_shape_under<'a>(
     shape: &'a Shape,
     crs: Option<&str>,
 ) -> crate::error::Result<std::borrow::Cow<'a, Shape>> {
@@ -225,27 +225,6 @@ pub(crate) fn lonlat_shape_under<'a>(
 
 pub(crate) fn lonlat_shape(geometry: &PyGeometry) -> PyResult<Shape> {
     Ok(lonlat_shape_under(geometry.shape.shape(), geometry.crs_str())?.into_owned())
-}
-
-/// Present rows admitted to WGS84 lon/lat, skipping empties. The current input
-/// `Cow`, transform `Cow`, and accumulator drop before the caller converts
-/// [`crate::error::Error`] to `PyErr`.
-pub(crate) fn lonlat_nonempty_shapes(array: &PyGeometryArray) -> crate::error::Result<Vec<Shape>> {
-    let crs = array.crs_str();
-    let mut out = Vec::new();
-    for row in array.present_shape_rows() {
-        let (_, input) = row?;
-        let resolved = lonlat_shape_under(&input, crs)?;
-        if resolved.is_empty() {
-            continue;
-        }
-        let owned = match resolved {
-            std::borrow::Cow::Owned(shape) => shape,
-            std::borrow::Cow::Borrowed(_) => input,
-        };
-        crate::try_push_vec(&mut out, owned)?;
-    }
-    Ok(out)
 }
 
 /// Array sibling of [`lonlat_shape`]: validated lon/lat points at logical rows.
@@ -1155,131 +1134,5 @@ mod lonlat_shape_under_tests {
         let expected = format!("invalid longitude/latitude ({}, {})", point.x, point.y);
         let message = error.to_string();
         assert!(message.contains(&expected), "{message}");
-    }
-}
-
-#[cfg(test)]
-mod lonlat_nonempty_shapes_tests {
-    use super::lonlat_nonempty_shapes;
-    use crate::array::{PyGeometryArray, ValidityMask};
-    use crate::boundary::Frame;
-    use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Polygon, Ring, Shape};
-
-    fn packed_xy(xs: Vec<f64>, ys: Vec<f64>, frame: Frame) -> PyGeometryArray {
-        PyGeometryArray::packed_points(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap(), frame)
-            .unwrap()
-    }
-
-    fn square() -> Shape {
-        Shape::Polygon(
-            Polygon::new(
-                Ring::closed_coordseq(
-                    CoordSeq::try_from_vecs(
-                        vec![0.0, 1.0, 1.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 1.0, 1.0, 0.0],
-                        None,
-                        None,
-                    )
-                    .unwrap(),
-                )
-                .unwrap(),
-                vec![],
-            )
-            .unwrap(),
-        )
-    }
-
-    fn domain_error(array: &PyGeometryArray) -> crate::error::Error {
-        lonlat_nonempty_shapes(array).expect_err("expected a domain error")
-    }
-
-    #[test]
-    fn later_row_invalid_is_native_result() {
-        let array = packed_xy(vec![13.4, 0.0], vec![52.5, 95.0], Frame::None);
-        let error = domain_error(&array);
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-        ));
-        let message = error.to_string();
-        assert!(
-            message.contains("invalid longitude/latitude (0, 95)"),
-            "{message}"
-        );
-        assert!(
-            !message.contains("(13.4, 52.5)"),
-            "earlier in-domain row must not replace the first invalid: {message}"
-        );
-    }
-
-    #[test]
-    fn empty_and_missing_rows_are_skipped() {
-        let present = PyGeometryArray::from_shapes(
-            vec![
-                Shape::empty_polygon(),
-                Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-            ],
-            Frame::None,
-        )
-        .unwrap();
-        let mask = ValidityMask::from_vec(3, vec![false, true, false])
-            .unwrap()
-            .expect("mask");
-        let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
-        let shapes = lonlat_nonempty_shapes(&array).expect("empty and missing skip");
-        assert_eq!(shapes.len(), 1);
-        assert_eq!(shapes[0], Shape::Point(Point::new_raw_xy(1.0, 2.0)));
-    }
-
-    #[test]
-    fn mixed_polygon_order_reports_later_ring_vertex() {
-        let array = PyGeometryArray::from_shapes(
-            vec![
-                square(),
-                Shape::Polygon(
-                    Polygon::new(
-                        Ring::closed_coordseq(
-                            CoordSeq::try_from_vecs(
-                                vec![0.0, 1.0, 1.0, 0.0, 0.0],
-                                vec![95.0, 0.0, 1.0, 1.0, 95.0],
-                                None,
-                                None,
-                            )
-                            .unwrap(),
-                        )
-                        .unwrap(),
-                        vec![],
-                    )
-                    .unwrap(),
-                ),
-            ],
-            Frame::None,
-        )
-        .unwrap();
-        let message = domain_error(&array).to_string();
-        assert!(
-            message.contains("invalid longitude/latitude (0, 95)"),
-            "{message}"
-        );
-    }
-
-    #[test]
-    fn all_empty_is_ok_empty_vec() {
-        let array =
-            PyGeometryArray::from_shapes(vec![Shape::empty_polygon()], Frame::None).unwrap();
-        let shapes = lonlat_nonempty_shapes(&array).expect("empty filter is Ok");
-        assert!(shapes.is_empty());
-    }
-
-    #[test]
-    fn allocation_failure_after_fixture_is_resource() {
-        let array = packed_xy(vec![1.0, 2.0], vec![3.0, 4.0], Frame::None);
-        let error = crate::test_support::fail_allocations_after(0, || {
-            lonlat_nonempty_shapes(&array).expect_err("first collect allocation must fail")
-        });
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
     }
 }

@@ -18,7 +18,9 @@ use crate::grid::{CoverBudgetExceeded, CoverError};
 use crate::py::cells::cell_ops::cell_array_from_keys;
 use crate::py::cells::{CellRule, GridKind, PyCellArray, coverage_to_polygon};
 use crate::py::errors::{GeometryError, InvalidGeometryError, integer_parameter_error};
-use crate::{PyGeometry, Typed, lonlat_shape_under};
+use crate::{
+    Frame, GeometryTransformFrame, Point, PyGeometry, PyGeometryArray, Typed, crs, crs_arc,
+};
 
 /// Cell ids in the order required by dissolve membership searches.
 ///
@@ -228,8 +230,11 @@ pub(crate) trait RectCoverSpec {
 #[derive(Debug)]
 pub(crate) enum GridCoverError {
     Native(Error),
+    NativeRow { row: usize, error: Error },
+    Row { row: usize, error: Box<Self> },
     Budget(CoverBudgetExceeded),
     Empty(&'static str),
+    Type,
     TileLatitude(f64),
     Geographic(Box<GeographicDiagnostic>),
     H3Capacity,
@@ -273,23 +278,268 @@ impl From<GeographicViewError> for GridCoverError {
 
 impl From<GridCoverError> for PyErr {
     fn from(error: GridCoverError) -> Self {
-        match error {
-            GridCoverError::Native(error) => error.into(),
-            GridCoverError::Budget(error) => cover_budget_err(error),
-            GridCoverError::Empty(label) => empty_coverage_err(label),
-            GridCoverError::TileLatitude(lat) => InvalidGeometryError::new_err(format!(
-                "latitude {lat} is outside the square Web Mercator tile grid ±85.05112878 degrees"
-            )),
-            GridCoverError::Geographic(diagnostic) => {
-                let message = diagnostic.to_string();
-                drop(diagnostic);
-                InvalidGeometryError::new_err(message)
-            },
-            GridCoverError::H3Capacity => {
-                GeometryError::new_err("H3 coverage traversal exceeded its representable capacity")
-            },
+        grid_cover_error_py(error)
+    }
+}
+
+fn grid_cover_error_py(error: GridCoverError) -> PyErr {
+    match error {
+        GridCoverError::Native(error) => error.into(),
+        GridCoverError::NativeRow { row, error } => crate::note_array_row(error.into(), row),
+        GridCoverError::Row { row, error } => {
+            crate::note_array_row(grid_cover_error_py(*error), row)
+        },
+        GridCoverError::Budget(error) => cover_budget_err(error),
+        GridCoverError::Empty(label) => empty_coverage_err(label),
+        GridCoverError::Type => crate::py::errors::geometry_type_err("expected Point geometry"),
+        GridCoverError::TileLatitude(lat) => InvalidGeometryError::new_err(format!(
+            "latitude {lat} is outside the square Web Mercator tile grid ±85.05112878 degrees"
+        )),
+        GridCoverError::Geographic(diagnostic) => {
+            let message = diagnostic.to_string();
+            drop(diagnostic);
+            InvalidGeometryError::new_err(message)
+        },
+        GridCoverError::H3Capacity => {
+            GeometryError::new_err("H3 coverage traversal exceeded its representable capacity")
+        },
+    }
+}
+
+impl GridCoverError {
+    pub(crate) fn at_row(self, row: usize) -> Self {
+        Self::Row {
+            row,
+            error: Box::new(self),
         }
     }
+}
+
+/// One grid operation's source admission plan.
+///
+/// CRS-free coordinates are already admitted WGS84 lon/lat and therefore have
+/// no invented frame or transform plan. Tagged coordinates use the complete
+/// source [`Frame`] to build one plan to EPSG:4326; the plan retains the
+/// runtime snapshot and source epoch for the whole scalar or array operation.
+pub(crate) struct GridSourceAdmission {
+    transformer: Option<crs::TransformPlan>,
+}
+
+impl GridSourceAdmission {
+    pub(crate) fn new(frame: &Frame) -> crate::error::Result<Self> {
+        let Some(_) = frame.crs_ref() else {
+            return Ok(Self { transformer: None });
+        };
+        let resolved = GeometryTransformFrame::new(
+            frame,
+            crs_arc("EPSG:4326"),
+            None,
+            crs::TransformOptions::default(),
+        )?;
+        let transformer = crs::TransformPlan::new_with_options_at(
+            resolved.source.as_str(),
+            resolved.target.as_str(),
+            resolved.options,
+            resolved.state,
+        )?;
+        Ok(Self {
+            transformer: Some(transformer),
+        })
+    }
+
+    pub(crate) fn new_for_array(array: &PyGeometryArray) -> crate::error::Result<Self> {
+        let has_present = array.len() != 0
+            && array
+                .missing()
+                .is_none_or(|missing| missing.present_count() != 0);
+        if has_present {
+            Self::new(&array.frame)
+        } else {
+            Ok(Self { transformer: None })
+        }
+    }
+
+    pub(crate) fn execution(&self) -> Option<crs::TransformExecution> {
+        self.transformer.as_ref().map(crs::TransformPlan::execution)
+    }
+
+    fn transform_shapes(
+        &self,
+        shapes: &[&Shape],
+        logical_rows: Option<&[usize]>,
+    ) -> Result<Vec<Shape>, GridCoverError> {
+        if let Some(transformer) = &self.transformer {
+            return transformer
+                .transform_shapes_indexed(shapes)
+                .map_err(|failure| {
+                    let row = failure
+                        .coordinate
+                        .and_then(|rank| logical_rows.and_then(|rows| rows.get(rank).copied()));
+                    let error = failure.error;
+                    match row {
+                        Some(row) => GridCoverError::NativeRow { row, error },
+                        None => GridCoverError::Native(error),
+                    }
+                });
+        }
+        Ok(shapes.iter().map(|shape| (**shape).clone()).collect())
+    }
+
+    fn normalize_shape(shape: Shape) -> Result<Shape, GridCoverError> {
+        crate::validate_lonlat_shape(&shape)?;
+        let normalized = normalize_grid_source(&shape);
+        ScalarGeographicView::try_new(GeographicFrame::crs84(), &normalized)?;
+        Ok(normalized)
+    }
+
+    pub(crate) fn admit_geometry(
+        &self,
+        geometry: &PyGeometry,
+    ) -> Result<PyGeometry, GridCoverError> {
+        let shape = if let Some(transformer) = &self.transformer {
+            transformer.transform_shape(geometry.shape.shape())?
+        } else {
+            geometry.shape.shape().clone()
+        };
+        Ok(PyGeometry::wgs84(Self::normalize_shape(shape)?)?)
+    }
+
+    pub(crate) fn admit_array_shapes(
+        &self,
+        array: &PyGeometryArray,
+    ) -> Result<Vec<Result<Option<Shape>, GridCoverError>>, GridCoverError> {
+        let mut source_rows = Vec::new();
+        for row in array.row_operation().present_rows() {
+            let logical = row.logical();
+            let shape =
+                row.row()
+                    .with_shape(Clone::clone)
+                    .map_err(|error| GridCoverError::NativeRow {
+                        row: logical,
+                        error,
+                    })?;
+            crate::try_push_vec(&mut source_rows, (logical, shape))?;
+        }
+        let logical_rows: Vec<_> = source_rows.iter().map(|(logical, _)| *logical).collect();
+        let source_shapes: Vec<_> = source_rows.iter().map(|(_, shape)| shape).collect();
+        let mut output = Vec::new();
+        crate::try_reserve_vec(&mut output, array.len())?;
+        for _ in 0..array.len() {
+            crate::try_push_vec(&mut output, Ok(None))?;
+        }
+        let transformed = match self.transform_shapes(&source_shapes, Some(&logical_rows)) {
+            Ok(transformed) => transformed,
+            Err(GridCoverError::NativeRow { row, error }) => {
+                let rank = logical_rows
+                    .iter()
+                    .position(|&logical| logical == row)
+                    .expect("transform failure row came from the source batch");
+                let prefix =
+                    self.transform_shapes(&source_shapes[..rank], Some(&logical_rows[..rank]))?;
+                for ((logical, _), shape) in source_rows[..rank].iter().zip(prefix) {
+                    output[*logical] = Self::normalize_shape(shape)
+                        .map(|shape| Some(shape))
+                        .map_err(|error| error.at_row(*logical));
+                }
+                output[row] = Err(GridCoverError::NativeRow { row, error });
+                return Ok(output);
+            },
+            Err(error) => return Err(error),
+        };
+        for ((logical, _), shape) in source_rows.into_iter().zip(transformed) {
+            output[logical] = Self::normalize_shape(shape)
+                .map(|shape| Some(shape))
+                .map_err(|error| error.at_row(logical));
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn admit_points(
+        &self,
+        array: &PyGeometryArray,
+    ) -> Result<Vec<Option<Point>>, GridCoverError> {
+        let mut output = Vec::new();
+        crate::try_reserve_vec(&mut output, array.len())?;
+        for _ in 0..array.len() {
+            crate::try_push_vec(&mut output, None)?;
+        }
+        let mut logical_rows = Vec::new();
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        crate::try_reserve_vec(&mut logical_rows, array.len())?;
+        crate::try_reserve_pair(&mut xs, &mut ys, array.len())?;
+
+        if array.is_compact_nullable() {
+            if !matches!(
+                array.storage(),
+                crate::array::GeometryArrayStorage::Packed(
+                    crate::array::PackedStorage::Points { .. }
+                )
+            ) {
+                return Err(GridCoverError::Type);
+            }
+            for row in array.row_operation().rows_with_missing(|| ()) {
+                let crate::array::ArrayRow::Present(row) = row else {
+                    continue;
+                };
+                let logical = row.logical();
+                let crate::array::ShapeRow::Point(point) = row.row() else {
+                    unreachable!("compact point storage yields point rows")
+                };
+                crate::try_push_vec(&mut logical_rows, logical)?;
+                crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)?;
+            }
+        } else {
+            let Some(points) = array.storage().point_rows() else {
+                return Err(GridCoverError::Type);
+            };
+            for logical in 0..array.len() {
+                if array.is_row_missing(logical) {
+                    continue;
+                }
+                let point = points.get(logical);
+                crate::try_push_vec(&mut logical_rows, logical)?;
+                crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)?;
+            }
+        }
+
+        if let Some(transformer) = &self.transformer {
+            transformer
+                .transform_coordinates_indexed(&mut xs, &mut ys, crate::Zt::None)
+                .map_err(|failure| {
+                    let row = failure
+                        .coordinate
+                        .and_then(|rank| logical_rows.get(rank).copied());
+                    let error = failure.error;
+                    match row {
+                        Some(row) => GridCoverError::NativeRow { row, error },
+                        None => GridCoverError::Native(error),
+                    }
+                })?;
+        }
+        for (rank, &logical) in logical_rows.iter().enumerate() {
+            crate::boundary::geographic::validate_lonlat_xy(xs[rank], ys[rank]).map_err(
+                |error| GridCoverError::NativeRow {
+                    row: logical,
+                    error,
+                },
+            )?;
+            output[logical] = Some(Point::new_raw_xy(xs[rank], ys[rank]));
+        }
+        Ok(output)
+    }
+}
+
+/// Admit one scalar grid source at a Python boundary and drain its diagnostic
+/// once, including when the native admission fails.
+pub(crate) fn admit_grid_geometry(py: Python<'_>, geometry: &PyGeometry) -> PyResult<PyGeometry> {
+    let admission = GridSourceAdmission::new(&geometry.frame).map_err(PyErr::from)?;
+    let execution = admission.execution();
+    let result = admission.admit_geometry(geometry);
+    if let Some(execution) = execution {
+        crate::py::crs::drain_accuracy_warning(py, &execution)?;
+    }
+    result.map_err(PyErr::from)
 }
 
 /// Fallible identity collect of cover cell ids. Prior ids drop before the
@@ -389,46 +639,21 @@ pub(crate) fn cover_working_shape(
     }
 }
 
-/// Normalize caller-owned source geometry to canonical WGS84 lon/lat
-/// membership geometry. New certified coverers consume this exact source
-/// directly; only the historical planar tilers need a split working image.
-pub(crate) fn coverage_factory_geometry(
-    geometry: &PyGeometry,
-    label: &'static str,
-) -> Result<PyGeometry, GridCoverError> {
-    let source = lonlat_shape_under(geometry.shape.shape(), geometry.crs_str())?.into_owned();
-    // This is the sole public grid-source normalization point.  Every grid
-    // lane receives the same physical-pole spelling before it can derive a
-    // working image, a rectangle certificate, or aggregate components.
-    let normalized = normalize_grid_source(&source);
-    drop(source);
-    if let Err(error) = ScalarGeographicView::try_new(GeographicFrame::crs84(), &normalized) {
-        drop(normalized);
-        return Err(error.into());
-    }
-    if normalized.is_empty() {
-        drop(normalized);
-        return Err(GridCoverError::Empty(label));
-    }
-    Ok(PyGeometry::wgs84(normalized)?)
-}
-
-/// Prepare the historical planar cover lanes with caller-owned WGS84
-/// membership geometry (unsplit) plus their split-normalized working shape.
-///
-/// Returns the admitted membership geometry and its split working shape.
+/// Derive the historical planar cover lanes' split working shape from an
+/// already admitted WGS84 membership geometry.
 pub(crate) fn coverage_factory_shapes(
     geometry: &PyGeometry,
     label: &'static str,
-) -> Result<(PyGeometry, Shape), GridCoverError> {
-    let membership_geometry = coverage_factory_geometry(geometry, label)?;
-    let shape = membership_geometry.shape.as_ref();
+) -> Result<Shape, GridCoverError> {
+    let shape = geometry.shape.as_ref();
+    if shape.is_empty() {
+        return Err(GridCoverError::Empty(label));
+    }
     // `membership_geometry` is the admitted WGS84 source. Derive the working
     // image from that frame, never from the caller's pre-reprojection frame:
     // a projected source may become antimeridian-crossing only after this
     // conversion.
-    let cover_shape = cover_working_shape(&membership_geometry.frame, shape)?;
-    Ok((membership_geometry, cover_shape))
+    cover_working_shape(&geometry.frame, shape)
 }
 
 /// Build a `CellArray` from source cell ids through the public factory path.
@@ -440,7 +665,7 @@ pub(crate) fn rect_cell_array_for<S: RectCoverSpec>(
 
 #[cfg(test)]
 mod tests {
-    use super::{GridCoverError, SortedCells, coverage_factory_geometry, try_collect_cover_ids};
+    use super::{GridCoverError, GridSourceAdmission, SortedCells, try_collect_cover_ids};
     use crate::error::{ErrorKind, ResourceError};
     use crate::geographic::{GeographicFrame, ScalarGeographicView};
     use crate::geometry::{GeometryErrorKind, Point, Shape};
@@ -467,7 +692,9 @@ mod tests {
     #[test]
     fn scalar_empty_is_empty_coverage() {
         let geometry = crate::PyGeometry::wgs84(Shape::empty_polygon()).unwrap();
-        let error = coverage_factory_geometry(&geometry, "H3").expect_err("empty scalar");
+        let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
+        let admitted = admission.admit_geometry(&geometry).unwrap();
+        let error = super::coverage_factory_shapes(&admitted, "H3").expect_err("empty scalar");
         assert!(matches!(error, GridCoverError::Empty("H3")), "{error:?}");
     }
 
@@ -475,7 +702,10 @@ mod tests {
     fn invalid_lonlat_is_native_geometry() {
         let geometry =
             crate::PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(0.0, 95.0))).unwrap();
-        let error = coverage_factory_geometry(&geometry, "H3").expect_err("out of domain");
+        let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
+        let error = admission
+            .admit_geometry(&geometry)
+            .expect_err("out of domain");
         let GridCoverError::Native(error) = error else {
             panic!("expected native lonlat error, got {error:?}");
         };

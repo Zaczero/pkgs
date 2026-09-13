@@ -13,7 +13,7 @@ use crate::py::support::mark_sequence_flag;
 use crate::py::vectors::Groups;
 use crate::{
     H3_MAX_RESOLUTION, PyCoordinates, PyGeometry, PyGeometryArray, PyGeometryParts, Typed,
-    lonlat_shape, py_i64_required,
+    py_i64_required,
 };
 
 mod array;

@@ -101,12 +101,12 @@ pub(super) fn tile_cover(
         GridKind::Tile,
         max_cells,
         |geometry, effective_max_cells| {
-            let (membership, cover_shape) = coverage_factory_shapes(geometry, "Tile")?;
+            let cover_shape = coverage_factory_shapes(geometry, "Tile")?;
             if let Err(lat) = ensure_cover_shape_in_tile_domain(&cover_shape) {
                 return Err(GridCoverError::TileLatitude(lat));
             }
             build_rect_coverage_ids::<TileCoverSpec>(
-                &membership,
+                geometry,
                 &cover_shape,
                 zoom,
                 cell_rule,

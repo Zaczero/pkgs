@@ -93,12 +93,11 @@ use broadcast::{
     CollectRows, DistanceUnit, GeometryInput, LonLatPointsError, array_binary_geometry, broadcast2,
     broadcast2_geometry, classify_input, classify_required, coerce_geometry,
     crs_metric_binary_geometry_broadcast, ensure_same_len, exact_geometry, exact_geometry_array,
-    expected_geometry_or_array, lonlat_nonempty_shapes, lonlat_points, lonlat_shape,
-    lonlat_shape_under, metric_maximum_inscribed_radius, metric_minimum_clearance,
-    metric_minimum_clearance_line, metric_nearest_points, metric_shortest_line,
-    multipoint_splitter_from_array, pair_distance_geodesic, pair_distance_planar,
-    pair_dwithin_geodesic, pair_dwithin_planar, paired_arrays, parse_wkb_geometry,
-    predicate_broadcast, push_ring_shapes, py_bool, relate_pattern_broadcast,
+    expected_geometry_or_array, lonlat_points, lonlat_shape, metric_maximum_inscribed_radius,
+    metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points,
+    metric_shortest_line, multipoint_splitter_from_array, pair_distance_geodesic,
+    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, paired_arrays,
+    parse_wkb_geometry, predicate_broadcast, push_ring_shapes, py_bool, relate_pattern_broadcast,
     relate_string_broadcast, require_point, resolve_metric, rows_err, xy_predicate,
 };
 mod dispatch;

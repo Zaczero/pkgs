@@ -449,7 +449,7 @@ pub(crate) fn build_coverage(
     budget: S2LevelBudget,
     cell_rule: CellRule,
 ) -> Result<Vec<CellId>, GridCoverError> {
-    let (membership_geometry, cover_shape) = coverage_factory_shapes(geometry, "S2")?;
+    let cover_shape = coverage_factory_shapes(geometry, "S2")?;
     let (tagged, bbox_visible) = if cell_rule == CellRule::Bbox {
         // Cover each non-wrapped lon/lat window separately and deduplicate.
         // A multipolygon / multipartite seam band has full-world merged bounds
@@ -489,7 +489,7 @@ pub(crate) fn build_coverage(
             CellRule::Bbox => unreachable!("bbox uses window covering"),
         };
         let tagged = cover_s2_components(
-            membership_geometry.shape.as_ref(),
+            geometry.shape.as_ref(),
             budget.min_level,
             budget.max_level,
             budget.level_mod,

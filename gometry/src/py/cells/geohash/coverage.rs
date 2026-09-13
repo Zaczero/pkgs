@@ -99,9 +99,9 @@ pub(super) fn geohash_cover(
         GridKind::GeohashCell,
         max_cells,
         |geometry, effective_max_cells| {
-            let (membership, cover_shape) = coverage_factory_shapes(geometry, "geohash")?;
+            let cover_shape = coverage_factory_shapes(geometry, "geohash")?;
             build_rect_coverage_ids::<GeohashCoverSpec>(
-                &membership,
+                geometry,
                 &cover_shape,
                 precision,
                 cell_rule,
