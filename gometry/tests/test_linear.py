@@ -438,7 +438,7 @@ def test_measured_lrs_handles_opposite_sign_extreme_m_with_z_and_arrays() -> Non
     assert (midpoint.x, midpoint.y, midpoint.z, midpoint.m) == (1.0, 0.0, 15.0, 0.0)
     substring = cast('gm.LineString', line.line_substring(-maximum, 0.0, basis='m'))
     assert list(substring.coords)[1] == (1.0, 0.0, 15.0, 0.0)
-    assert list(substring.coords)[0] == (0.0, 0.0, 10.0, -maximum)
+    assert next(iter(substring.coords)) == (0.0, 0.0, 10.0, -maximum)
 
     rows = gm.GeometryArray([line], crs=4326)
     array_midpoint = rows.line_interpolate(0.0, basis='m')[0]

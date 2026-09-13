@@ -196,8 +196,7 @@ def test_planar_segmentize_translated_unit_vertices_are_rounded() -> None:
 
     expected = [
         float(
-            Fraction.from_float(start) * Fraction(7 - step, 7)
-            + Fraction.from_float(end) * Fraction(step, 7)
+            Fraction(start) * Fraction(7 - step, 7) + Fraction(end) * Fraction(step, 7)
         )
         for step in range(8)
     ]

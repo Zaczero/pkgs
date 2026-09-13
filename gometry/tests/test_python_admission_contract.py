@@ -8,6 +8,7 @@ import math
 import subprocess
 import sys
 import textwrap
+from typing import Self
 
 import gometry as gm
 import pytest
@@ -300,7 +301,7 @@ def test_index_protocol_uses_the_builtin_int_slot_for_int_subclasses() -> None:
     array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
 
     class IntSubclass(int):
-        def __new__(cls, value: int) -> 'IntSubclass':
+        def __new__(cls, value: int) -> Self:
             return int.__new__(cls, value)
 
         def __init__(self, value: int) -> None:

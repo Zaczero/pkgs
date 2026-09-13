@@ -50,7 +50,7 @@ def test_crs_roundtrip_admitted_in_core_pair_scalar_and_zt_batch() -> None:
 def test_crs_roundtrip_web_mercator_world_edge_xy_matches_zt() -> None:
     # WGS 84 ellipsoid a (EPSG:7030) is the Web Mercator sphere radius R.
     # The projected plane spans one world width 2Rπ. Canonicalize maps +Rπ to
-    # −Rπ, so the Euclidean X residual is that one world width.
+    # -Rπ, so the Euclidean X residual is that one world width.
     world_half = 6_378_137.0 * math.pi
     gm.crs_clear_cache()
     xy = gm.crs_roundtrip(3857, 4326, world_half, 0.0)

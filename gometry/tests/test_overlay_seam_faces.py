@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import gometry as gm
+import pytest
 
 
 def _thin_seam_polygon(west: float, east: float, height: float) -> gm.Polygon:

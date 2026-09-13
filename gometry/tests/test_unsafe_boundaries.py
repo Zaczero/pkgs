@@ -158,13 +158,15 @@ def test_stream_capsule_is_consumed_before_callbacks_and_reentrancy() -> None:
     reentrant_attempted = False
 
     class Provider:
-        def __arrow_c_stream__(self, requested_schema=None):
+        def __arrow_c_stream__(self, requested_schema=None, capsule=capsule):
             return capsule
 
     provider = Provider()
 
     @GET_SCHEMA
-    def wrapped_get_schema(stream_address: int, out_address: int) -> int:
+    def wrapped_get_schema(
+        stream_address: int, out_address: int, provider=provider
+    ) -> int:
         nonlocal reentrant_attempted
         counts['schema'] += 1
         if not reentrant_attempted:

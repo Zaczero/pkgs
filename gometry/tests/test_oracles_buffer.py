@@ -4,6 +4,7 @@ import gometry as gm
 import pytest
 import shapely
 from gometry._types import CapStyle, JoinStyle
+
 from tests.test_kernel_parity_snapshot import INPUT_BUILDERS
 
 

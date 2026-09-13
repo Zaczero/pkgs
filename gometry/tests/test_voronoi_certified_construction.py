@@ -6,7 +6,7 @@ import itertools
 import math
 import random
 from fractions import Fraction
-from itertools import combinations
+from itertools import combinations, pairwise
 
 import gometry as gm
 import numpy as np
@@ -57,7 +57,7 @@ def _outcome(
         segments = set()
         for edge in source.voronoi_edges(clip=clip):
             coords = [tuple(xy[:2]) for xy in edge.coords]
-            for start, end in zip(coords, coords[1:], strict=False):
+            for start, end in pairwise(coords):
                 segments.add((start, end) if start <= end else (end, start))
         return (
             'ok',
@@ -335,15 +335,15 @@ def test_sloped_clip_has_one_valid_checked_rounded_partition_for_every_order(
         (0.0, 0.0),
     ])
     contact_x = 0.3
-    exact_y = Fraction.from_float(contact_x) * Fraction.from_float(stored_far)
+    exact_y = Fraction(contact_x) * Fraction(stored_far)
     contact_y = float(exact_y)
     assert contact_y == float.fromhex('0x1.9999999999999p-4')
-    contact_err = abs(exact_y - Fraction.from_float(contact_y))
+    contact_err = abs(exact_y - Fraction(contact_y))
     for neighbor in (
         math.nextafter(contact_y, -math.inf),
         math.nextafter(contact_y, math.inf),
     ):
-        assert contact_err < abs(exact_y - Fraction.from_float(neighbor))
+        assert contact_err < abs(exact_y - Fraction(neighbor))
     contact = (contact_x, contact_y)
     slope = gm.LineString([(0.0, 0.0), (1.0, stored_far)])
     assert not gm.covers(slope, gm.Point(*contact))
