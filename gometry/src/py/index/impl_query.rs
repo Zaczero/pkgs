@@ -140,7 +140,7 @@ impl PySpatialIndex {
         for &i in &live {
             // Symmetric relation: keep only j > i *before* the exact refine,
             // so each unordered pair is refined exactly once.
-            let row = products.row(i);
+            let row = products.row(i)?;
             let prepared = plan.row(self, row, crate::array::BoundsSeed::Unset)?;
             let (predicate, distance, metric) = plan.candidate_parts();
             candidates.clear();
@@ -174,8 +174,8 @@ impl PySpatialIndex {
                     retain_row(&mut candidates, 0, |idx| match domain {
                         TopologyDomain::Cartesian => {
                             if let Some(verdict) = spec.pre_topology(
-                                GateOperand::cartesian(products.row(i), None),
-                                GateOperand::cartesian(products.row(idx), None),
+                                GateOperand::cartesian(products.row(i)?, None),
+                                GateOperand::cartesian(products.row(idx)?, None),
                             )? {
                                 return Ok(verdict);
                             }
@@ -190,8 +190,8 @@ impl PySpatialIndex {
                         },
                         TopologyDomain::Geographic(frame) => {
                             if let Some(verdict) = spec.predicate.kind_gate(
-                                row_kind_empty(products.row(i)).0,
-                                row_kind_empty(products.row(idx)).0,
+                                row_kind_empty(products.row(i)?).0,
+                                row_kind_empty(products.row(idx)?).0,
                             ) {
                                 return Ok(verdict);
                             }
@@ -475,15 +475,19 @@ impl PySpatialIndex {
         let order = BinaryHeap::from(order);
         let mut products = self.rows.operation();
         let exact = |idx| {
+            if let Some(exclude) = exclude
+                && products.row(idx)?.with_shape(|other| *other == *exclude)?
+            {
+                return Ok(None);
+            }
             let data = products.prepared(idx)?;
-            pair_distance_geodesic(
+            Ok(Some(pair_distance_geodesic(
                 metric,
                 &data,
                 &*products.frame_cache(idx)?,
                 query,
                 &query_cache_owner,
-            )
-            .map_err(Into::into)
+            )?))
         };
         if k == 1 {
             return self.geodesic_capped_nearest_shared(
@@ -491,7 +495,6 @@ impl PySpatialIndex {
                 exact,
                 OneNearest::default(),
                 max_distance,
-                exclude,
             );
         }
         self.geodesic_capped_nearest_shared(
@@ -499,17 +502,15 @@ impl PySpatialIndex {
             exact,
             HeapNearest::new(k, self.rows.len())?,
             max_distance,
-            exclude,
         )
     }
 
     fn geodesic_capped_nearest_shared<S: NearestState>(
         &self,
         mut order: BinaryHeap<CapBound>,
-        mut exact: impl FnMut(usize) -> PyResult<f64>,
+        mut exact: impl FnMut(usize) -> PyResult<Option<f64>>,
         mut state: S,
         max_distance: Option<NonNegative>,
-        exclude: Option<&Shape>,
     ) -> PyResult<Option<Vec<NearestCandidate>>> {
         while let Some(CapBound { bound, idx }) = order.pop() {
             if state
@@ -518,7 +519,7 @@ impl PySpatialIndex {
             {
                 break;
             }
-            self.consider_nearest_candidate(idx, &mut exact, max_distance, exclude, &mut state)?;
+            self.consider_nearest_candidate(idx, &mut exact, max_distance, &mut state)?;
         }
         Ok(Some(state.finish()?))
     }
@@ -1027,7 +1028,7 @@ impl PySpatialIndex {
                                 ShapeRow::Shape(query_plan.shape()),
                                 query_plan.bounds(),
                             ),
-                            GateOperand::cartesian(products.row(idx), None),
+                            GateOperand::cartesian(products.row(idx)?, None),
                         )? {
                             return Ok(verdict);
                         }
@@ -1043,7 +1044,7 @@ impl PySpatialIndex {
                     TopologyDomain::Geographic(frame) => {
                         if let Some(verdict) = spec.predicate.kind_gate(
                             row_kind_empty(ShapeRow::Shape(query_plan.shape())).0,
-                            row_kind_empty(products.row(idx)).0,
+                            row_kind_empty(products.row(idx)?).0,
                         ) {
                             return Ok(verdict);
                         }
@@ -1174,7 +1175,7 @@ impl PySpatialIndex {
             TopologyDomain::Cartesian => {
                 if let Some(verdict) = spec.pre_topology(
                     GateOperand::cartesian(ShapeRow::Shape(shape.shape()), Some(query_bounds)),
-                    GateOperand::cartesian(products.row(idx), None),
+                    GateOperand::cartesian(products.row(idx)?, None),
                 )? {
                     return Ok(verdict);
                 }
@@ -1190,7 +1191,7 @@ impl PySpatialIndex {
             TopologyDomain::Geographic(frame) => {
                 if let Some(verdict) = spec.predicate.kind_gate(
                     row_kind_empty(ShapeRow::Shape(shape.shape())).0,
-                    row_kind_empty(products.row(idx)).0,
+                    row_kind_empty(products.row(idx)?).0,
                 ) {
                     return Ok(verdict);
                 }
@@ -1363,7 +1364,7 @@ impl PySpatialIndex {
                                     ShapeRow::Shape(query.shape()),
                                     query.bounds(),
                                 ),
-                                GateOperand::cartesian(index_products.row(idx), None),
+                                GateOperand::cartesian(index_products.row(idx)?, None),
                             )? {
                                 return Ok(verdict);
                             }
@@ -1379,7 +1380,7 @@ impl PySpatialIndex {
                         TopologyDomain::Geographic(frame) => {
                             if let Some(verdict) = spec.predicate.kind_gate(
                                 row_kind_empty(ShapeRow::Shape(query.shape())).0,
-                                row_kind_empty(index_products.row(idx)).0,
+                                row_kind_empty(index_products.row(idx)?).0,
                             ) {
                                 return Ok(verdict);
                             }
@@ -1501,8 +1502,9 @@ fn dedup_row_ids(ids: &mut Vec<usize>, start: usize) {
 mod tests {
     use super::*;
     use crate::array::BoundsSeed;
-    use crate::geometry::{CoordSeq, LineSeq};
+    use crate::geometry::{CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel};
     use crate::py::index::spatial_index;
+    use crate::test_support::fail_allocations_after;
 
     #[test]
     fn refinement_kind_gate_precedes_geographic_admission() {
@@ -1571,5 +1573,43 @@ mod tests {
 
         assert_eq!(matches, [0]);
         assert_eq!(array.row_products.initialized_counts(), (0, 0, 0));
+    }
+
+    #[test]
+    fn projected_candidate_preparation_does_not_materialize_polygon_shape() {
+        let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:3857")), None).unwrap();
+        let array = PyGeometryArray::packed_polygons(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 1.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 1.0, 0.0],
+                None,
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5], 5).unwrap(),
+            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap(),
+            frame.clone(),
+        )
+        .unwrap();
+        let index = spatial_index(vec![
+            PyGeometry::with_frame(
+                ShapeData::new(Shape::Point(Point::new_raw_xy(10.0, 10.0))),
+                frame,
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        let plan = PreparedIndexQuery::for_array(&index, &array, None, None, None).unwrap();
+        let row = array
+            .row_operation()
+            .present_row_at(0)
+            .unwrap()
+            .expect("polygon row")
+            .row();
+        let bounds = row.quick_bounds().expect("polygon bounds");
+        let prepared =
+            fail_allocations_after(0, || plan.row(&index, row, BoundsSeed::Value(Some(bounds))))
+                .expect("seeded projected candidate preparation must not allocate");
+        assert_eq!(prepared.bounds, Some(bounds));
     }
 }

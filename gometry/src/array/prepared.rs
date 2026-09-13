@@ -148,10 +148,6 @@ pub(crate) struct RowProductsHandle {
 pub(crate) struct ArrayRowOperation<'a> {
     array: &'a PyGeometryArray,
     products: RowProductsHandle,
-    #[allow(
-        dead_code,
-        reason = "the dependent nullable index owner consumes this arbitrary-order rank directory"
-    )]
     compact_rank: Option<crate::array::ValidityRank<'a>>,
 }
 
@@ -235,10 +231,6 @@ impl<'a> ArrayRowOperation<'a> {
     /// indexed and other arbitrary-order operations. Compact points build one
     /// directory for this operation; sequential callers should keep using
     /// [`Self::rows_with_missing`] so they can use the cheaper validity cursor.
-    #[allow(
-        dead_code,
-        reason = "the dependent nullable index owner consumes this arbitrary-order row seam"
-    )]
     pub(crate) fn present_row_at(
         &mut self,
         logical: usize,

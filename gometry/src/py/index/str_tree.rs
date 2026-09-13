@@ -52,17 +52,6 @@ impl StaticStrTree {
         Self::build_with_len(entries, total_rows)
     }
 
-    /// Build a dense bulk tree whose every input row has an entry. Packed
-    /// arrays prove this at admission.
-    pub(super) fn build_dense(entries: Vec<IndexEntry>) -> crate::error::Result<Self> {
-        let total_rows = entries
-            .iter()
-            .map(|entry| entry.idx)
-            .max()
-            .map_or(0, |idx| idx + 1);
-        Self::build_with_len(entries, total_rows)
-    }
-
     fn build_with_len(
         mut entries: Vec<IndexEntry>,
         total_rows: usize,

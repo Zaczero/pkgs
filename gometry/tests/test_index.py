@@ -970,6 +970,60 @@ def test_spatial_index_read_only_mapping_views_and_lazy_iterator() -> None:
         next(invalidated)
 
 
+def test_spatial_index_compact_nullable_rows_keep_logical_handles_through_mutation() -> None:
+    values = gm.GeometryArray([
+        None,
+        gm.Point(0.0, 0.0),
+        None,
+        gm.Point(2.0, 2.0),
+    ])
+    index = gm.SpatialIndex(values)
+
+    assert len(index) == 2
+    assert list(index) == [1, 3]
+    assert ids(index.query(gm.Point(0.0, 0.0))) == [1]
+    assert ids(index.candidates(gm.box(-1.0, -1.0, 1.0, 1.0))) == [1]
+    assert ids(index.nearest(gm.Point(2.0, 2.0))) == [3]
+    assert ids(index.query(values[[3, 0, 3]])) == [[3], [], [3]]
+    assert index[1].to_wkt() == 'POINT (0 0)'
+
+    window = values[1:4]
+    window_index = gm.SpatialIndex(window)
+    assert list(window_index) == [0, 2]
+    assert ids(window_index.query(window[2])) == [2]
+
+    assert index.remove(1)
+    assert list(index) == [3]
+    inserted = index.insert(gm.Point(4.0, 4.0))
+    assert inserted == 4
+    assert list(index) == [3, 4]
+
+    clone = copy.copy(index)
+    assert list(clone) == [3, 4]
+    assert ids(clone.query(gm.Point(4.0, 4.0))) == [4]
+
+    import pickle
+
+    restored = pickle.loads(pickle.dumps(index))
+    assert list(restored) == [3, 4]
+    assert ids(restored.query(gm.Point(4.0, 4.0))) == [4]
+
+
+def test_spatial_index_all_missing_compact_owner_stays_unframed_until_append() -> None:
+    source = gm.GeometryArray([gm.Point(1.0, 2.0, crs=4326), None])
+    all_missing = source[[1, 1, 1]]
+    index = gm.SpatialIndex(all_missing)
+
+    assert len(index) == 0
+    assert index.crs is None
+    assert index.epoch is None
+    assert list(index) == []
+
+    assert index.insert(gm.Point(9.0, 10.0, crs=3857)) == 3
+    assert index.crs == 'EPSG:3857'
+    assert ids(index.query(gm.Point(9.0, 10.0, crs=3857))) == [3]
+
+
 def test_polygon_build_preserves_dense_and_sparse_handles_through_mutation() -> None:
     packed = gm.GeometryArray([
         gm.box(30, 30, 31, 31, crs=32634),

@@ -292,8 +292,13 @@ impl PySpatialIndex {
                 * to_metre
         };
         let exact = |idx| {
+            if let Some(exclude) = exclude
+                && rows.row(idx)?.with_shape(|other| *other == *exclude)?
+            {
+                return Ok(None);
+            }
             let data = rows.prepared(idx)?;
-            Ok(pair_distance_planar(to_metre, &data, query)?)
+            Ok(Some(pair_distance_planar(to_metre, &data, query)?))
         };
         if k == 1 {
             return self.bound_ordered_nearest_shared(
@@ -301,7 +306,6 @@ impl PySpatialIndex {
                 exact,
                 OneNearest::default(),
                 max_distance,
-                exclude,
                 frontier,
                 leaf_frontier,
                 visited,
@@ -312,7 +316,6 @@ impl PySpatialIndex {
             exact,
             k,
             max_distance,
-            exclude,
             frontier,
             leaf_frontier,
             visited,
@@ -404,15 +407,19 @@ impl PySpatialIndex {
             // sound lower bound instead of Karney-evaluating every entry.
             let bound = |envelope: &AABB<[f64; 2]>| pruner.envelope_lower_bound(envelope);
             let exact = |idx| {
+                if let Some(exclude) = exclude
+                    && rows.row(idx)?.with_shape(|other| *other == *exclude)?
+                {
+                    return Ok(None);
+                }
                 let data = rows.prepared(idx)?;
-                pair_distance_geodesic(
+                Ok(Some(pair_distance_geodesic(
                     resolved,
                     &data,
                     &*rows.frame_cache(idx)?,
                     query,
                     &query_cache_owner,
-                )
-                .map_err(Into::into)
+                )?))
             };
             if k == 1 {
                 return self.bound_ordered_nearest_shared(
@@ -420,7 +427,6 @@ impl PySpatialIndex {
                     exact,
                     OneNearest::default(),
                     max_distance,
-                    exclude,
                     frontier,
                     leaf_frontier,
                     visited,
@@ -431,7 +437,6 @@ impl PySpatialIndex {
                 exact,
                 k,
                 max_distance,
-                exclude,
                 frontier,
                 leaf_frontier,
                 visited,
@@ -484,27 +489,25 @@ impl PySpatialIndex {
         let query_cache_owner = query_cache()?;
         let mut rows = self.rows.operation();
         let mut exact = |idx| {
+            if let Some(exclude) = exclude
+                && rows.row(idx)?.with_shape(|other| *other == *exclude)?
+            {
+                return Ok(None);
+            }
             let data = rows.prepared(idx)?;
-            pair_distance_geodesic(
+            Ok(Some(pair_distance_geodesic(
                 resolved,
                 &data,
                 &*rows.frame_cache(idx)?,
                 query,
                 &query_cache_owner,
-            )
-            .map_err(Into::into)
+            )?))
         };
         for entry in self.live_entries() {
             if !visited.visit(entry.idx)? {
                 continue;
             }
-            self.consider_nearest_candidate(
-                entry.idx,
-                &mut exact,
-                max_distance,
-                exclude,
-                &mut state,
-            )?;
+            self.consider_nearest_candidate(entry.idx, &mut exact, max_distance, &mut state)?;
         }
         state.finish()
     }
@@ -520,10 +523,9 @@ impl PySpatialIndex {
     pub(crate) fn bound_ordered_nearest<'a>(
         &'a self,
         bound: impl Fn(&AABB<[f64; 2]>) -> f64,
-        exact: impl FnMut(usize) -> PyResult<f64>,
+        exact: impl FnMut(usize) -> PyResult<Option<f64>>,
         k: usize,
         max_distance: Option<NonNegative>,
-        exclude: Option<&Shape>,
         frontier: &mut BinaryHeap<FrontierNode<'a>>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
@@ -533,7 +535,6 @@ impl PySpatialIndex {
             exact,
             HeapNearest::new(k, self.rows.len())?,
             max_distance,
-            exclude,
             frontier,
             leaf_frontier,
             visited,
@@ -543,10 +544,9 @@ impl PySpatialIndex {
     fn bound_ordered_nearest_shared<'a, S: NearestState>(
         &'a self,
         bound: impl Fn(&AABB<[f64; 2]>) -> f64,
-        mut exact: impl FnMut(usize) -> PyResult<f64>,
+        mut exact: impl FnMut(usize) -> PyResult<Option<f64>>,
         mut state: S,
         max_distance: Option<NonNegative>,
-        exclude: Option<&Shape>,
         frontier: &mut BinaryHeap<FrontierNode<'a>>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
@@ -601,7 +601,6 @@ impl PySpatialIndex {
                         entry.idx,
                         &mut exact,
                         max_distance,
-                        exclude,
                         &mut state,
                     )?;
                 },
@@ -613,7 +612,6 @@ impl PySpatialIndex {
                         entry_idx,
                         &mut exact,
                         max_distance,
-                        exclude,
                         &mut state,
                     )?;
                 },
@@ -626,20 +624,13 @@ impl PySpatialIndex {
     pub(super) fn consider_nearest_candidate<S: NearestState>(
         &self,
         entry_idx: usize,
-        exact: &mut impl FnMut(usize) -> PyResult<f64>,
+        exact: &mut impl FnMut(usize) -> PyResult<Option<f64>>,
         max_distance: Option<NonNegative>,
-        exclude: Option<&Shape>,
         state: &mut S,
     ) -> PyResult<()> {
-        if let Some(shape) = exclude
-            && self
-                .rows
-                .row(entry_idx)
-                .with_shape(|other| *other == *shape)?
-        {
+        let Some(distance) = exact(entry_idx)? else {
             return Ok(());
-        }
-        let distance = exact(entry_idx)?;
+        };
         if max_distance.is_some_and(|max| distance > max.get()) {
             return Ok(());
         }

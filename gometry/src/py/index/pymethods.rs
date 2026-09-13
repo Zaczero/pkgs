@@ -91,7 +91,9 @@ impl PySpatialIndex {
     ///     later ``insert`` calls. Every indexed geometry must share one CRS
     ///     and coordinate epoch. Missing rows are skipped but retain their
     ///     original positions as stable, non-live handles, so query and join
-    ///     results always refer to the input row ids.
+    ///     results always refer to the input row ids. Packed arrays retain
+    ///     their immutable column storage; empty rows likewise have no live
+    ///     tree entry.
     ///
     /// Raises
     /// ------
@@ -156,17 +158,59 @@ impl PySpatialIndex {
     /// consumed by ``remove``/``__getitem__``; round-tripping must therefore
     /// preserve tombstones instead of compactly renumbering live rows.
     pub(crate) fn __reduce__(&self, py: Python<'_>) -> PyResult<SpatialIndexReduce> {
-        let shapes = crate::try_collect_results((0..self.rows.len()).map(|handle| {
-            self.rows
-                .row(handle)
-                .with_shape(std::clone::Clone::clone)
-                .map_err(PyErr::from)
-        }))?;
         let frame = self.metadata.clone().unwrap_or_default();
-        let array = crate::PyGeometryArray::from_shapes(shapes, frame)?;
         let callable = crate::gometry_lib_module(py)?
             .getattr(pyo3::intern!(py, "_unpickle_spatial_index"))?
             .unbind();
+        if self.rows.boxed.is_empty()
+            && let Some(packed) = &self.rows.packed
+        {
+            return Ok((
+                callable,
+                (packed.source.clone(), self.live_handles_sorted()?),
+            ));
+        }
+        let array = if let Some(packed) = &self.rows.packed {
+            let mut shapes = Vec::new();
+            let mut missing = Vec::new();
+            crate::try_reserve_pair(&mut shapes, &mut missing, self.rows.len())?;
+            let mut rows = packed.source.row_operation();
+            for logical in 0..packed.source.len() {
+                let Some(row) = rows.present_row_at(logical)? else {
+                    crate::try_push_vec(&mut missing, true).map_err(PyErr::from)?;
+                    continue;
+                };
+                crate::try_push_vec(&mut missing, false).map_err(PyErr::from)?;
+                crate::try_push_vec(
+                    &mut shapes,
+                    row.row()
+                        .with_shape(std::clone::Clone::clone)
+                        .map_err(PyErr::from)?,
+                )
+                .map_err(PyErr::from)?;
+            }
+            for item in &self.rows.boxed {
+                crate::try_push_vec(&mut missing, false).map_err(PyErr::from)?;
+                crate::try_push_vec(&mut shapes, item.shape.shape().clone())
+                    .map_err(PyErr::from)?;
+            }
+            let present = crate::PyGeometryArray::from_shapes(shapes, frame.clone())?;
+            let missing = crate::array::ValidityMask::from_vec(self.rows.len(), missing)
+                .map_err(PyErr::from)?;
+            if let Some(missing) = missing {
+                crate::PyGeometryArray::scatter_present_rows(&present, missing)?
+            } else {
+                present
+            }
+        } else {
+            let shapes = crate::try_collect_results(
+                self.rows
+                    .boxed
+                    .iter()
+                    .map(|item| Ok::<_, pyo3::PyErr>(item.shape.shape().clone())),
+            )?;
+            crate::PyGeometryArray::from_shapes(shapes, frame)?
+        };
         Ok((callable, (array, self.live_handles_sorted()?)))
     }
 
@@ -1022,17 +1066,26 @@ impl PySpatialIndex {
     /// True
     pub(crate) fn remove(&mut self, handle: &Bound<'_, PyAny>) -> PyResult<bool> {
         let handle = parse_handle_like(handle)?;
-        let Some(row) = self.rows.get(handle) else {
+        if !self.rows.is_live(handle) {
             return Ok(false);
+        }
+        let non_prunable = {
+            let mut rows = self.rows.operation();
+            rows.row(handle)?
+                .with_shape(|shape| !geodesic_prunable_point(shape))?
         };
-        let non_prunable = row.with_shape(|shape| !geodesic_prunable_point(shape))?;
         let removed = if handle < self.bulk.initial_len() {
             self.rows.mark_removed(handle)
         } else {
-            let Some(bounds) = row.with_shape(Shape::bounds)? else {
-                return Ok(false);
+            let (bounds, shape) = {
+                let mut rows = self.rows.operation();
+                let row = rows.row(handle)?;
+                let Some(bounds) = row.with_shape(Shape::bounds)? else {
+                    return Ok(false);
+                };
+                let shape = row.with_shape(std::clone::Clone::clone)?;
+                (bounds, shape)
             };
-            let shape = row.with_shape(std::clone::Clone::clone)?;
             let frame = self.metadata.as_ref().expect("live index has a frame");
             // Removal has to name the entries insertion made, so this reads
             // the same cover the same way.

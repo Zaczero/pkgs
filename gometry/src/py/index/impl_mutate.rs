@@ -50,7 +50,7 @@ impl PySpatialIndex {
             return Ok(crate::Typed(geometry.with_prepared_plan(plan)?));
         }
         Ok(crate::Typed(crate::PyGeometry::with_frame(
-            crate::ShapeData::new(self.rows.row(handle).with_shape(std::clone::Clone::clone)?),
+            crate::ShapeData::new(geometry.shape.shape().clone()),
             frame,
         )?))
     }

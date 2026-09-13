@@ -21,7 +21,7 @@ use pyo3::types::PyModule;
 use rstar::{AABB, PointDistance, RTree, RTreeNode, RTreeObject};
 use str_tree::StaticStrTree;
 
-use crate::array::BoundsSeed;
+use crate::array::{ArrayRowOperation, BoundsSeed};
 use crate::collections::sort_row_ids;
 use crate::geometry::{Bounds, Point, Shape, ShapeData};
 use crate::py::errors::{GeometryError, native_memory_error, parameter_error};
@@ -357,9 +357,6 @@ impl PreparedIndexQuery {
             BoundsSeed::Unset => row.quick_bounds(),
             BoundsSeed::Value(bounds) => bounds,
         };
-        let bounds = bounds
-            .map(|bounds| row.with_shape(|_| bounds))
-            .transpose()?;
         Ok(PreparedIndexRow {
             bounds,
             pruner_point,
@@ -453,7 +450,7 @@ pub(crate) struct IndexEntry {
 
 /// Column-shared storage retained by an index built from a packed array.
 /// The array remains the sole owner of packed row interpretation; the index
-/// borrows rows through `GeometryArrayStorage::row` instead of cloning every
+/// resolves rows through its owner-bound operation instead of cloning every
 /// component and duplicating CSR/selection logic.
 #[derive(Clone, Debug)]
 pub(crate) struct PackedStore {
@@ -476,51 +473,57 @@ pub(crate) struct IndexRows {
 
 /// Operation-scoped access to the index's arbitrary live handles.
 ///
-/// Unlike [`crate::array::ArrayRowOperation`], this domain has no logical
-/// missing rows or sequential traversal: candidate refinement visits handles
-/// in tree/order-dependent sequences and also serves boxed overflow rows.
-/// Keeping that distinction explicit avoids making the array adapter carry an
-/// optional product owner or index-specific lifetime rules.
+/// Candidate refinement visits handles in tree/order-dependent sequences and
+/// also serves boxed overflow rows. The packed side delegates arbitrary
+/// logical-row resolution to one owner-bound array operation, including the
+/// compact-point validity rank directory.
 pub(crate) struct IndexRowOperation<'a> {
     rows: &'a IndexRows,
-    products: Option<crate::array::RowProductsHandle>,
+    packed: Option<ArrayRowOperation<'a>>,
 }
 
 impl<'a> IndexRowOperation<'a> {
     fn new(rows: &'a IndexRows) -> Self {
         Self {
             rows,
-            products: rows
+            packed: rows
                 .packed
                 .as_ref()
-                .map(|packed| packed.source.row_products.operation()),
+                .map(|packed| packed.source.row_operation()),
         }
     }
 
-    pub(crate) fn row(&self, handle: usize) -> ShapeRow<'a> {
-        self.rows.row(handle)
+    fn missing_handle(handle: usize) -> crate::error::Error {
+        crate::geometry::GeometryErrorKind::message(format!(
+            "spatial index handle {handle} does not contain a present geometry"
+        ))
+    }
+
+    pub(crate) fn row(&mut self, handle: usize) -> crate::error::Result<ShapeRow<'a>> {
+        let packed_len = self.rows.packed_len();
+        if handle < packed_len
+            && let Some(packed) = &mut self.packed
+        {
+            return packed
+                .present_row_at(handle)?
+                .map(|row| row.row())
+                .ok_or_else(|| Self::missing_handle(handle));
+        }
+        Ok(self.rows.boxed_row(handle))
     }
 
     pub(crate) fn prepared(
         &mut self,
         handle: usize,
     ) -> crate::error::Result<crate::array::PreparedRow<'a>> {
-        let packed_len = self
-            .rows
-            .packed
-            .as_ref()
-            .map_or(0, |packed| packed.source.len());
-        if let Some(packed) = &self.rows.packed
-            && handle < packed_len
+        let packed_len = self.rows.packed_len();
+        if handle < packed_len
+            && let Some(packed) = &mut self.packed
         {
-            let row = packed.source.storage().row(handle);
-            return packed.source.prepared_row_with(
-                self.products
-                    .as_mut()
-                    .expect("packed rows have a product handle"),
-                handle,
-                row,
-            );
+            let row = packed
+                .present_row_at(handle)?
+                .ok_or_else(|| Self::missing_handle(handle))?;
+            return packed.prepared(row);
         }
         let geometry = &self.rows.boxed[handle - packed_len];
         Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()?))
@@ -530,17 +533,14 @@ impl<'a> IndexRowOperation<'a> {
         &mut self,
         handle: usize,
     ) -> crate::error::Result<Arc<crate::geometry::FrameDependentCaches>> {
-        let packed_len = self
-            .rows
-            .packed
-            .as_ref()
-            .map_or(0, |packed| packed.source.len());
-        if self.rows.packed.is_some() && handle < packed_len {
-            return self
-                .products
-                .as_mut()
-                .expect("packed rows have a product handle")
-                .frame_cache(handle);
+        let packed_len = self.rows.packed_len();
+        if handle < packed_len
+            && let Some(packed) = &mut self.packed
+        {
+            let _ = packed
+                .present_row_at(handle)?
+                .ok_or_else(|| Self::missing_handle(handle))?;
+            return packed.frame_cache(handle);
         }
         self.rows.boxed[handle - packed_len].frame_cache()
     }
@@ -560,30 +560,19 @@ impl IndexRows {
         len
     }
 
-    /// The row behind `handle` — a stack point / column-window line for
-    /// packed rows, the persistent handle (prepared caches intact) for
-    /// boxed rows.
-    fn get(&self, handle: usize) -> Option<ShapeRow<'_>> {
-        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.source.len());
-        if let Some(packed) = &self.packed
-            && handle < packed.source.len()
-        {
-            return Some(packed.source.storage().row(handle));
-        }
-        self.boxed
-            .get(handle - packed_len)
-            .map(|item| ShapeRow::Shape(item.shape.shape()))
+    fn packed_len(&self) -> usize {
+        self.packed.as_ref().map_or(0, |packed| packed.source.len())
     }
 
-    fn row(&self, handle: usize) -> ShapeRow<'_> {
-        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.source.len());
-        if let Some(packed) = &self.packed
-            && handle < packed.source.len()
-        {
-            return packed.source.storage().row(handle);
-        }
-        let item = &self.boxed[handle - packed_len];
-        ShapeRow::Shape(item.shape.shape())
+    /// The boxed row behind `handle` (packed rows are resolved through the
+    /// operation-owned array cursor above).
+    fn boxed_row(&self, handle: usize) -> ShapeRow<'_> {
+        let packed_len = self.packed_len();
+        debug_assert!(handle >= packed_len);
+        self.boxed.get(handle - packed_len).map_or_else(
+            || panic!("boxed spatial index handle {handle} is out of range"),
+            |item| ShapeRow::Shape(item.shape.shape()),
+        )
     }
 
     fn prepared_row(&self, handle: usize) -> crate::error::Result<crate::array::PreparedRow<'_>> {
