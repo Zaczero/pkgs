@@ -15,6 +15,16 @@ use crate::geometry::{
     PreparedPlan, Shape, XY,
 };
 
+// Independent oracle provenance for the fixed fixtures below: GeographicLib
+// v2.7 at commit 15cddd7eed9f7f61ead6dba2229d45b271dbdeda, built with
+// GEOGRAPHICLIB_PRECISION=3, where GeodesicExact and GeodesicLineExact use
+// long-double arithmetic. The one-off reference calculation promotes the
+// stored binary64 literals in each fixture without re-parsing source decimal
+// text, evaluates the exact line with GeodesicLineExact, and measures each
+// query-to-foot separation with GeodesicExact::Inverse in metres. Foot
+// comparisons therefore use physical geodesic distance, not raw longitude or
+// latitude differences; no generator or runtime reference dependency ships.
+
 fn p(x: f64, y: f64) -> Point {
     Point::new_raw_xy(x, y)
 }
@@ -641,10 +651,6 @@ fn point_segment_global_subdivision_matches_exact_reference() {
         "fixture must retain an interior local minimum"
     );
 
-    // Reference values were generated from the fixed binary64 inputs above by
-    // /tmp/opencode/segment_exact_nearcontact-normal10um.cpp, linked against the
-    // pinned GeographicLib 2.7 GeodesicExact/GeodesicLineExact build recorded
-    // in /tmp/opencode/geodesic-backend-profile/COMMANDS.txt.
     let reference_distance = 0.000_009_999_993_325_465_93;
     let reference_along = 78_449.784_145_670_39;
     let reference_foot = p(0.499_962_174_793_668_95, 0.500_019_548_865_860_5);
@@ -661,6 +667,13 @@ fn point_segment_global_subdivision_matches_exact_reference() {
     assert!(
         (witness.distance - reference_distance).abs() <= floor,
         "distance {} vs {reference_distance}, floor {floor}",
+        witness.distance
+    );
+    // The 64 µm floor is wider than this 10 µm fixture; a floor-only check
+    // would admit a fabricated zero-contact result.
+    assert!(
+        witness.distance > 0.5 * reference_distance && witness.distance < 1.5 * reference_distance,
+        "positive near-contact distance {} is outside the oracle range around {reference_distance}",
         witness.distance
     );
     assert!(
@@ -705,10 +718,6 @@ fn point_segment_global_frontier_keeps_multiple_local_minima() {
         .count();
     assert_eq!(local_minima, 2, "fixture must retain both local minima");
 
-    // The global distance was generated from these fixed binary64 inputs by
-    // /tmp/opencode/segment_exact_candidate_stored.cpp, linked against the
-    // pinned GeographicLib 2.7 GeodesicExact/GeodesicLineExact build recorded
-    // in /tmp/opencode/geodesic-backend-profile/COMMANDS.txt.
     let reference_distance = 9_975_904.231_800_672;
     let floor = GEODESIC_BACKEND_RELATIVE_FLOOR * semi_major;
 

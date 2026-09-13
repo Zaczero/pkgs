@@ -387,7 +387,7 @@ pub(crate) struct GeodesicParts {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct GeodesicSegment {
+pub(crate) struct GeodesicSegment {
     pub(crate) start: Point,
     pub(crate) end: Point,
     pub(crate) length: f64,
