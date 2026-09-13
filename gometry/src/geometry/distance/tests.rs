@@ -51,7 +51,7 @@ fn point_segment_distance_divides_before_unscaling_tiny_area() {
     let end = 1e-200_f64;
     let midpoint = end / 2.0;
     let offset_y = f64::from_bits(midpoint.to_bits() + 1);
-    let actual = shape_impl::robust_point_segment_distance(XY::new(midpoint, offset_y), Segment {
+    let actual = point_segment_distance(XY::new(midpoint, offset_y), Segment {
         start: XY::new(0.0, 0.0),
         end: XY::new(end, end),
     })
@@ -120,7 +120,7 @@ fn continuous_hausdorff_finds_reciprocal_axis_gap_between_target_parts() {
             p(length, 0.0),
         ]]);
         assert_eq!(
-            shape_impl::robust_point_segment_distance(XY::new(0.0, 0.0), Segment {
+            point_segment_distance(XY::new(0.0, 0.0), Segment {
                 start: XY::new(-length, 0.0),
                 end: XY::new(-half_gap, 0.0),
             },)

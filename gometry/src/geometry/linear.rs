@@ -12,8 +12,8 @@ use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
     HasZ, LineIndex, LineSeq, MColumn, MultiLineString, Ordering, PlanarMetric, Point,
     PreparedPlan, Segment, SegmentMetric, SegmentProjection, Shape, SharedSlice,
-    distance_3d_with_parts, interpolate_fraction, point_distance, same_point, segment_projection,
-    shape_axes_all_z, squared_norm_is_trustworthy,
+    distance_3d_with_parts, interpolate_fraction, point_distance, point_segment_selection,
+    same_point, shape_axes_all_z, squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
 
@@ -713,7 +713,7 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
     tolerance: f64,
 ) -> crate::error::Result<Option<(usize, SegmentProjection)>> {
     let mut best = None;
-    let mut best_distance = f64::INFINITY;
+    let mut best_key = None;
     for (segment_index, [start, end]) in line.segment_pairs().enumerate() {
         let length = point_distance(start, end);
         if length == 0.0 {
@@ -723,11 +723,21 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
             start: start.xy(),
             end: end.xy(),
         };
-        let projection = segment_projection(point, segment)?;
-        let projected = projection.interpolate_point(start, end)?;
-        let distance = point_distance(point, projected);
-        if distance <= tolerance && distance < best_distance {
-            best_distance = distance;
+        let selection = point_segment_selection(point.xy(), segment)?;
+        if selection.distance() > tolerance {
+            continue;
+        }
+        let key = selection.distance_key(point.xy(), segment)?;
+        if tolerance == 0.0 && !key.is_exact_zero()? {
+            continue;
+        }
+        let closer = match best_key.as_ref() {
+            None => true,
+            Some(incumbent) => key.cmp(incumbent)?.is_lt(),
+        };
+        if closer {
+            let projection = selection.projection(point.xy(), segment)?;
+            best_key = Some(key);
             best = Some((segment_index, projection));
         }
     }

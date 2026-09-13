@@ -10,7 +10,8 @@ use crate::geometry::topology::TopologyGraph;
 use crate::geometry::{
     CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
     OverlayOp, Point, PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay,
-    point_distance, point_on_segment, same_point, scaled_residual, segment_projection,
+    point_distance, point_on_segment, point_segment_distance_and_projection, same_point,
+    scaled_residual, segment_projection,
 };
 
 /// Z/M lookup table built from an operation's input vertices and segments,
@@ -235,18 +236,16 @@ pub(super) fn segment_ordinate_at(
         if dx == 0.0 && dy == 0.0 {
             return Ok(same_point(start, point).then_some((start.z(), start.m())));
         }
-        // A live reciprocal axis can have a zero squared length.  Reuse the
-        // segment owner's anisotropic residual rescue, then certify the
-        // projected witness in source distance space before carrying Z/M.
+        // A live reciprocal axis can have a zero squared length. Reuse the
+        // segment owner's source distance before carrying Z/M.
         let segment = Segment {
             start: start.xy(),
             end: end.xy(),
         };
-        let projection = segment_projection(point, segment)?;
-        let witness = projection.interpolate_xy(segment)?;
+        let (distance, projection) = point_segment_distance_and_projection(point.xy(), segment)?;
         let length = point_distance(segment.start, segment.end);
         let allowed = (ON_SEGMENT_EPSILON * length).max(tolerance);
-        if point_distance(point.xy(), witness) > allowed {
+        if distance > allowed {
             return Ok(None);
         }
         let lifted = projection.interpolate_point(start, end)?;

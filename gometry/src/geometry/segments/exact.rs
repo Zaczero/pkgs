@@ -260,6 +260,24 @@ impl DdInterval {
         let midpoint = self.tail.lo * 0.5 + self.tail.hi * 0.5;
         (self.head, midpoint)
     }
+
+    /// Round the enclosed value only when both outward endpoints land in the
+    /// same binary64 cell. The endpoints stay in double-double form until
+    /// this comparison; flattening the tail first would make the certificate
+    /// circular.
+    pub(in crate::geometry) fn rounded_common(self) -> Option<f64> {
+        if !self.head.is_finite() || !self.tail.is_finite() {
+            return None;
+        }
+        let lower = self.head + self.tail.lo;
+        let upper = self.head + self.tail.hi;
+        (lower.is_finite() && upper.is_finite() && lower.to_bits() == upper.to_bits())
+            .then_some(lower)
+    }
+
+    pub(in crate::geometry) const fn is_exact_zero(self) -> bool {
+        binary_zero(self.head) && interval_is_exact_zero(self.tail)
+    }
 }
 
 fn signed_sum_order(left: f64, right: f64) -> Ordering {

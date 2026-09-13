@@ -15,9 +15,9 @@ use crate::error::Result;
 use crate::geometry::{
     CoordSeq, Coordinates as _, GeodesicMetric, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentScratch, GeodesicWitnessNeed, GeometryErrorKind, LineSeq, MeasureRange,
-    Ordering, Point, Segment, SegmentProjection, Shape, interpolate_f64, lerp_point,
-    linework_first_point, normalize_line_distance, point_distance, push_distinct_point,
-    segment_projection,
+    Ordering, Point, Segment, Shape, interpolate_f64, lerp_point, linework_first_point,
+    normalize_line_distance, point_distance, point_segment_distance_and_projection,
+    push_distinct_point,
 };
 
 /// Per-segment measurement for the linear-referencing engine.
@@ -112,7 +112,10 @@ impl SegmentMetric for PlanarMetric {
         _best: f64,
         _scratch: &mut GeodesicSegmentScratch,
     ) -> Result<Option<(f64, f64)>> {
-        let (distance, projection) = planar_projection(probe, start, end)?;
+        let (distance, projection) = point_segment_distance_and_projection(probe.xy(), Segment {
+            start: start.into(),
+            end: end.into(),
+        })?;
         Ok(Some((distance, projection.scale(length)?)))
     }
 
@@ -125,7 +128,10 @@ impl SegmentMetric for PlanarMetric {
         _best: f64,
         _scratch: &mut GeodesicSegmentScratch,
     ) -> Result<Option<(f64, f64)>> {
-        let (distance, projection) = planar_projection(probe, start, end)?;
+        let (distance, projection) = point_segment_distance_and_projection(probe.xy(), Segment {
+            start: start.into(),
+            end: end.into(),
+        })?;
         // Keep the certified projection ratio until measure interpolation;
         // converting a subnormal ratio to along-distance and back loses it.
         Ok(Some((
@@ -133,42 +139,6 @@ impl SegmentMetric for PlanarMetric {
             projection.interpolate_point(start, end)?.m().unwrap_or(0.0),
         )))
     }
-}
-
-fn planar_projection(
-    probe: Point,
-    start: Point,
-    end: Point,
-) -> crate::error::Result<(f64, SegmentProjection)> {
-    // Projection classification, witness placement, and along-segment
-    // reconstruction share the segment kernel's certified owner. The
-    // exact fallback retains its ratio until `interpolate_xy` / `scale`,
-    // so an interior parameter that rounds to an endpoint cannot erase
-    // either the residual distance or the locate offset.
-    let segment = Segment {
-        start: start.into(),
-        end: end.into(),
-    };
-    let projection = segment_projection(probe, segment)?;
-    let foot = projection.interpolate_xy(segment)?;
-    let ex = probe.x - foot.x;
-    let ey = probe.y - foot.y;
-    let squared = ex * ex + ey * ey;
-    let distance = if crate::geometry::squared_norm_is_trustworthy(squared, ex == 0.0 && ey == 0.0)
-    {
-        squared.sqrt()
-    } else {
-        ex.hypot(ey)
-    };
-    // No outer finite-rescue on `distance`: it can only go non-finite
-    // when a DELTA itself overflows (segment span or probe offset past
-    // ~1.8e308) — and a segment that long has an infinite metric length,
-    // which already poisons the prefix table (old path included), making
-    // every LRS result on such inputs degenerate. The ~1e150-class
-    // extremes the suite covers resolve correctly through the scaled
-    // projection + `hypot` rescues above; guarding the last class was
-    // measured at +14% on every real locate.
-    Ok((distance, projection))
 }
 
 /// Any [`GeodesicMetric`] is a [`SegmentMetric`] (lengths in meters).
@@ -635,5 +605,28 @@ impl HeapSize for LineIndexSlot {
 impl HeapSize for LineIndex {
     fn heap_bytes(&self) -> usize {
         self.segments.heap_bytes() + self.prefix.heap_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn planar_locate_orders_segments_by_source_distance() {
+        let points = [
+            Point::new_raw_xy(-1.0, (-1.0_f64).next_up()),
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(0.5, 0.5),
+        ];
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+        );
+        let index = LineIndex::build(&line, &PlanarMetric).unwrap();
+
+        assert_eq!(
+            index.locate_point(points[2], true, &PlanarMetric).unwrap(),
+            1.0
+        );
     }
 }

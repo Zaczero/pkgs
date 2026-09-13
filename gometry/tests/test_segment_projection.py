@@ -112,7 +112,10 @@ def test_utm_polygon_distance_uses_segment_local_residual() -> None:
 
     actual = gm.distance(gm.Point(*point_xy), gm.Polygon(exterior, [hole]))
 
-    assert actual == expected == 0.7411226985789381
+    assert expected == 0.7411226985789381
+    # The source-aware rounded determinant tier permits a bounded metric
+    # reduction; the independent exact projection remains the oracle.
+    assert actual == pytest.approx(expected, rel=2e-15)
 
 
 def test_indexed_facet_metric_retains_small_distance_at_large_base() -> None:
@@ -314,7 +317,10 @@ def test_cancellation_damaged_projection_declines_to_exact_ratio() -> None:
         '0x1.f131891718eb6p-49',
     )
     for left, right, line_is_left in ((line, point, True), (point, line, False)):
-        assert gm.distance(left, right) == expected_distance
+        # The source-aware determinant measurement is bounded by the adopted
+        # 16u relative reduction allowance, while the Fraction result remains
+        # the independent source-distance oracle.
+        assert gm.distance(left, right) == pytest.approx(expected_distance, rel=2e-15)
         nearest = gm.nearest_points(left, right)
         assert _coords(nearest[0 if line_is_left else 1]) == foot
         shortest = gm.shortest_line(left, right)
@@ -465,27 +471,73 @@ def test_faithful_witness_contract_publishes_correctly_rounded_foot() -> None:
     assert gm.distance(line, point).hex() == '0x1.9c38bb13b0b5fp-508'
 
 
-def test_exact_selection_compares_the_emitted_witness_in_mixed_carriers() -> None:
+def test_line_locate_orders_segments_by_source_distance() -> None:
+    first = (-1.0, math.nextafter(-1.0, math.inf))
+    middle = (1.0, 1.0)
+    point_xy = (0.5, 0.5)
+    point = gm.Point(*point_xy)
+    line = gm.LineString([first, middle, point_xy])
+    measured = gm.LineString([first, middle, point_xy], m=[0.0, 1.0, 2.0])
+
+    # The first segment's emitted foot rounds to the query point, but its
+    # source projection has a positive residual. The final vertex is the true
+    # minimum and therefore wins at normalized location 1.
+    assert line.line_locate(point, normalized=True) == 1.0
+    assert measured.line_locate(point, basis='m') == 2.0
+
+    query_rows = gm.points([point_xy[0], point_xy[0]], [point_xy[1], point_xy[1]])
+    assert line.line_locate(query_rows, normalized=True) == pytest.approx([1.0, 1.0])
+    np.testing.assert_array_equal(
+        gm.GeometryArray([line, line]).line_locate(point, normalized=True),
+        [1.0, 1.0],
+    )
+    np.testing.assert_array_equal(
+        gm.GeometryArray([measured, measured]).line_locate(point, basis='m'),
+        [2.0, 2.0],
+    )
+
+
+def test_line_locate_keeps_first_segment_on_a_true_distance_tie() -> None:
+    line = gm.LineString([(0.0, 0.0), (10.0, 0.0), (0.0, 0.0)])
+    measured = gm.LineString(
+        [(0.0, 0.0), (10.0, 0.0), (0.0, 0.0)],
+        m=[0.0, 10.0, 20.0],
+    )
+    point = gm.Point(5.0, 1.0)
+
+    assert line.line_locate(point) == 5.0
+    assert measured.line_locate(point, basis='m') == 5.0
+    np.testing.assert_array_equal(
+        gm.GeometryArray([line, line]).line_locate(point),
+        [5.0, 5.0],
+    )
+    np.testing.assert_array_equal(
+        gm.GeometryArray([measured, measured]).line_locate(point, basis='m'),
+        [5.0, 5.0],
+    )
+
+
+def test_source_selection_compares_the_continuum_foot_in_mixed_carriers() -> None:
     start = (-2.5049672666597784, -0.22855985577211868)
     end = (-2.640447616310041, 2.361006325545838)
     point_xy = (-2.506180295312065, -0.18635112572983203)
     closer_point = (-2.5065331214448894, -0.1854219813304938)
-    farther_foot = (-2.507172816964488, -0.18640305225770984)
+    source_foot = (-2.5071728169644873, -0.18640305225770984)
     point = gm.Point(*point_xy)
     line = gm.LineString([start, end])
     target = gm.GeometryCollection([line, gm.Point(*closer_point)])
 
-    assert _exact_distance_squared(point_xy, closer_point) < _exact_distance_squared(
-        point_xy, farther_foot
+    assert _exact_distance_squared(point_xy, closer_point) > _exact_distance_squared(
+        point_xy, source_foot
     )
     for left, right, target_is_left in (
         (target, point, True),
         (point, target, False),
     ):
         nearest = gm.nearest_points(left, right)
-        assert _coords(nearest[0 if target_is_left else 1]) == closer_point
+        assert _coords(nearest[0 if target_is_left else 1]) == source_foot
         shortest = gm.shortest_line(left, right)
-        assert tuple(shortest.coords[0 if target_is_left else 1]) == closer_point
+        assert tuple(shortest.coords[0 if target_is_left else 1]) == source_foot
 
     targets = gm.GeometryArray([target, target])
     points = gm.GeometryArray([point, point])
@@ -496,10 +548,10 @@ def test_exact_selection_compares_the_emitted_witness_in_mixed_carriers() -> Non
         nearest = gm.nearest_points(left, right)
         shortest = gm.shortest_line(left, right)
         for row in range(2):
-            assert _coords(nearest[0 if targets_are_left else 1][row]) == closer_point
+            assert _coords(nearest[0 if targets_are_left else 1][row]) == source_foot
             assert (
                 tuple(shortest[row].coords[0 if targets_are_left else 1])
-                == closer_point
+                == source_foot
             )
 
 

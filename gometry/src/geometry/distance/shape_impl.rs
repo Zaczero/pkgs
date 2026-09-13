@@ -445,66 +445,6 @@ pub(super) fn robust_directed_hausdorff_with_target(
     Ok(best)
 }
 
-pub(super) fn robust_point_segment_distance(point: XY, segment: Segment) -> Result<f64> {
-    let projection = segment_projection(point, segment)?;
-    if projection.is_start() {
-        return Ok(point_distance(point, segment.start));
-    }
-    if projection.is_end() {
-        return Ok(point_distance(point, segment.end));
-    }
-    if segment.start.y.to_bits() == segment.end.y.to_bits() {
-        return Ok((point.y - segment.start.y).abs());
-    }
-    if segment.start.x.to_bits() == segment.end.x.to_bits() {
-        return Ok((point.x - segment.start.x).abs());
-    }
-    let max_delta = (segment.end.x - segment.start.x)
-        .abs()
-        .max((segment.end.y - segment.start.y).abs())
-        .max((point.x - segment.start.x).abs())
-        .max((point.y - segment.start.y).abs());
-    let scale = axis_pow2_scale(max_delta);
-    if scale == 0.0 {
-        return Ok(0.0);
-    }
-    let local_end = XY::new(
-        scaled_residual(segment.end.x, segment.start.x, scale),
-        scaled_residual(segment.end.y, segment.start.y, scale),
-    );
-    let local_point = XY::new(
-        scaled_residual(point.x, segment.start.x, scale),
-        scaled_residual(point.y, segment.start.y, scale),
-    );
-    let t1 = local_end.x * local_point.y;
-    let t2 = local_end.y * local_point.x;
-    let determinant = t1 - t2;
-    // The adaptive predicate's arithmetic model excludes range errors. Use
-    // its accurate determinant magnitude only when both products and their
-    // difference are normal; underflow, overflow, and cancellation outside
-    // that model decline to the independently scaled distance owner.
-    if t1.is_normal() && t2.is_normal() && determinant.is_normal() {
-        let local_area = robust::orient2d(
-            robust::Coord { x: 0.0, y: 0.0 },
-            robust::Coord {
-                x: local_end.x,
-                y: local_end.y,
-            },
-            robust::Coord {
-                x: local_point.x,
-                y: local_point.y,
-            },
-        )
-        .abs();
-        let local_distance = local_area / local_end.x.hypot(local_end.y);
-        return Ok(scale_by_power_of_two(
-            local_distance,
-            -power_of_two_exponent(scale),
-        ));
-    }
-    point_segment_distance(point, segment)
-}
-
 fn robust_hausdorff_segment_params(
     source: Segment,
     features: &[HausdorffFeature],
@@ -647,34 +587,26 @@ fn hausdorff_segment_graph(baseline: &Shape, graph: &Shape) -> Result<Option<f64
         .map(|point| segment_projection(point.xy(), baseline))
         .collect::<Result<Vec<_>>>()?
         .into_iter();
-    let Some(first) = projections.next() else {
+    let Some(mut previous) = projections.next() else {
         return Ok(None);
     };
-    if !first.is_start() {
+    if !previous.is_start() {
         return Ok(None);
     }
-    let mut previous = first.fraction();
     let mut ended = false;
     for projection in projections {
-        // This is only a shortcut certificate. A parameter whose interval
-        // declined must retain its exact ratio for ordering; the general
-        // Hausdorff kernel is the simpler owner of that uncommon case.
-        if projection.uses_exact_ratio() {
+        if projection.cmp_along(&previous)?.is_lt() {
             return Ok(None);
         }
-        let fraction = projection.fraction();
-        if fraction < previous {
-            return Ok(None);
-        }
-        previous = fraction;
         ended = projection.is_end();
+        previous = projection;
     }
     if !ended {
         return Ok(None);
     }
     let mut best = 0.0_f64;
     for point in graph {
-        best = best.max(robust_point_segment_distance(point.xy(), baseline)?);
+        best = best.max(point_segment_distance(point.xy(), baseline)?);
     }
     Ok(Some(best))
 }

@@ -276,15 +276,14 @@ pub(in crate::geometry) use segment_index::{
     single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
-pub(crate) use segments::clip_segment;
 pub(in crate::geometry) use segments::try_sort_by;
 use segments::{
     CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SharedSpan, SquaredDistanceKey,
     interpolate_segment_point, nearest_points, orientation_xy, point_pair_distance_key,
-    point_segment_distance, point_segment_distance_and_projection, point_segment_distance_key,
-    point_segment_distance_squared, point_segment_selection, ray_crossing_is_right,
-    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segment_projection, segments_intersect, shared_segment_part, try_point_distance_squared,
+    point_segment_distance_and_projection, point_segment_distance_key,
+    point_segment_distance_squared, ray_crossing_is_right, segment_contact_exact,
+    segment_contact_point, segment_cross_point, segment_envelopes_disjoint, segment_projection,
+    segments_intersect, shared_segment_part, try_point_distance_squared,
     try_point_segment_distance_squared, undirected_edge_key, undirected_segment_edge_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
@@ -294,6 +293,7 @@ pub(crate) use segments::{
     point_distance_squared, point_on_segment, points_dwithin, segment_vs_rect,
     squared_norm_is_trustworthy,
 };
+pub(crate) use segments::{clip_segment, point_segment_distance, point_segment_selection};
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
 pub(crate) use segments::{

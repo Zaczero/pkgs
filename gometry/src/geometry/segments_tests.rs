@@ -810,13 +810,13 @@ fn faithful_case_a_keeps_the_exactly_closer_lerp_witness() {
             .unwrap()
             .cmp(&point_segment_distance_key(point, reversed).unwrap())
             .unwrap()
-            .is_lt(),
-        "selection must compare the two emitted coordinates, not identify reversed supports",
+            .is_eq(),
+        "source selection must identify equal reversed-support distances",
     );
 }
 
 #[test]
-fn exact_selection_compares_the_emitted_foot_against_a_point_candidate() {
+fn source_selection_compares_the_continuum_foot_against_a_point_candidate() {
     let segment = Segment {
         start: XY::new(-2.504_967_266_659_778_4, -0.228_559_855_772_118_68),
         end: XY::new(-2.640_447_616_310_041, 2.361_006_325_545_838),
@@ -829,14 +829,14 @@ fn exact_selection_compares_the_emitted_foot_against_a_point_candidate() {
         .unwrap();
     assert_eq!(
         emitted,
-        XY::new(-2.507_172_816_964_488, -0.186_403_052_257_709_84),
+        XY::new(-2.507_172_816_964_487_3, -0.186_403_052_257_709_84),
     );
     assert!(
         point_pair_distance_key(probe, point_candidate)
             .cmp(&point_segment_distance_key(probe, segment).unwrap())
             .unwrap()
-            .is_lt(),
-        "the rejected point is exactly closer than the emitted line foot",
+            .is_gt(),
+        "the source projection is exactly closer than the point candidate",
     );
 }
 
@@ -1042,8 +1042,8 @@ fn exact_source_distance_survives_a_coincident_emitted_foot() {
             .unwrap()
             .cmp(&super::point_pair_distance_key(point, point))
             .unwrap()
-            .is_lt(),
-        "selection keeps the projected identity on an emitted-XY tie"
+            .is_gt(),
+        "source selection must rank a positive separation after true contact"
     );
     assert_eq!(
         super::point_segment_distance_squared(point, segment)
@@ -1051,6 +1051,46 @@ fn exact_source_distance_survives_a_coincident_emitted_foot() {
             .to_bits(),
         0,
         "the source square is below the binary64 normal range, while the source distance remains positive"
+    );
+}
+
+#[test]
+fn source_distance_uses_the_original_determinant_for_ulp_skew() {
+    let segment = Segment {
+        start: XY::new(-1.0, (-1.0_f64).next_up()),
+        end: XY::new(1.0, 1.0),
+    };
+    let point = XY::new(0.5, 0.5);
+    let (distance, projection) =
+        super::point_segment_distance_and_projection(point, segment).unwrap();
+
+    assert_eq!(distance.to_bits(), 0x3C76_A09E_667F_3BCD);
+    assert!(!projection.is_start() && !projection.is_end());
+    assert!(
+        super::point_segment_distance_key(point, segment)
+            .unwrap()
+            .cmp(&super::point_pair_distance_key(point, point))
+            .unwrap()
+            .is_gt()
+    );
+}
+
+#[test]
+fn source_key_retains_positive_distance_when_scalar_underflows() {
+    let minimum = f64::from_bits(1);
+    let segment = Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(f64::MAX, minimum),
+    };
+    let point = XY::new(minimum, 0.0);
+    let (distance, _) = super::point_segment_distance_and_projection(point, segment).unwrap();
+    assert_eq!(distance, 0.0);
+    assert!(
+        super::point_segment_distance_key(point, segment)
+            .unwrap()
+            .cmp(&super::point_pair_distance_key(point, point))
+            .unwrap()
+            .is_gt()
     );
 }
 
@@ -1150,7 +1190,7 @@ mod exact_projection_allocation_tests {
             f64::from_bits(0xA018_FBE4_C3D7_9F2E),
             f64::from_bits(0x2039_6423_3D01_E367),
         );
-        prefix_sweep(5, || {
+        prefix_sweep(6, || {
             segment_projection(point, segment).map(|projection| {
                 assert!(matches!(
                     projection,
@@ -1291,7 +1331,7 @@ mod exact_projection_allocation_tests {
         ));
         let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(Some(3.0)));
         let end = Point::new_raw_axes(13.0, 13.0, ZOrdinate(Some(5.0)), MOrdinate(Some(9.0)));
-        prefix_sweep(2, || projection.interpolate_point(start, end).map(|_| ()));
+        prefix_sweep(3, || projection.interpolate_point(start, end).map(|_| ()));
     }
 
     #[test]
