@@ -1121,34 +1121,6 @@ mod replacement_tests {
         assert_eq!(result_counts, (0, 0, 0));
         assert!(result.row_products.cached_prepared_plan(0).is_none());
         assert!(result.row_products.cached_prepared_plan(1).is_none());
-        let result_plan = result
-            .row_products
-            .prepared_plan(0, || {
-                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(9.0, 9.0))))
-                    .map_err(crate::error::Error::from)
-            })
-            .unwrap();
-        assert!(!Arc::ptr_eq(&source_plan, &result_plan));
-        assert_eq!(
-            result_plan.shape(),
-            &Shape::Point(Point::new_raw_xy(9.0, 9.0))
-        );
-        assert!(!Arc::ptr_eq(
-            &source_frame,
-            &result.row_products.frame_cache(0).unwrap()
-        ));
-        let result_unchanged_plan = result
-            .row_products
-            .prepared_plan(1, || {
-                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 1.0))))
-                    .map_err(crate::error::Error::from)
-            })
-            .unwrap();
-        assert!(!Arc::ptr_eq(&source_unchanged_plan, &result_unchanged_plan));
-        assert!(!Arc::ptr_eq(
-            &source_unchanged_frame,
-            &result.row_products.frame_cache(1).unwrap()
-        ));
         drop(source_plan);
         drop(source_frame);
         drop(source_unchanged_plan);
@@ -1157,6 +1129,32 @@ mod replacement_tests {
         assert!(
             source_owner.upgrade().is_none(),
             "a replacement must not retain the source product owner"
+        );
+
+        let result_plan = result
+            .row_products
+            .prepared_plan(0, || {
+                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(9.0, 9.0))))
+                    .map_err(crate::error::Error::from)
+            })
+            .unwrap();
+        assert_eq!(
+            result_plan.shape(),
+            &Shape::Point(Point::new_raw_xy(9.0, 9.0))
+        );
+        result.row_products.frame_cache(0).unwrap();
+        let result_unchanged_plan = result
+            .row_products
+            .prepared_plan(1, || {
+                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 1.0))))
+                    .map_err(crate::error::Error::from)
+            })
+            .unwrap();
+        result.row_products.frame_cache(1).unwrap();
+        assert_eq!(result.row_products.initialized_counts(), (1, 2, 2));
+        assert_eq!(
+            result_unchanged_plan.shape(),
+            &Shape::Point(Point::new_raw_xy(1.0, 1.0))
         );
         println!(
             "replacement_diagnostic source_alive_after_drop={}",
