@@ -11,6 +11,8 @@
 //! nodes, and canonical atoms are generated items. Sweep scratch is
 //! [`ResourceError`], not the item cap.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::mem;
 use std::ops::{ControlFlow, Range};
@@ -29,11 +31,26 @@ use crate::geometry::tessellation::exact::{
 };
 use crate::geometry::{
     Bounds, Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget,
-    GeometryErrorKind, HashMap, LineSeq, Loc, Point, PointKey, Polygon, PolygonizeFull, Result,
-    Ring, RingKind, Segment, Shape, XY, for_each_candidate_pair, same_point, segment_contact_exact,
-    single_chain,
+    GeometryErrorKind, GeometryKind, HashMap, LineSeq, Loc, Point, PointKey, Polygon,
+    PolygonizeFull, Result, Ring, RingKind, Segment, Shape, XY, for_each_candidate_pair,
+    same_point, segment_contact_exact, single_chain,
 };
 use crate::{try_push_vec, try_reserve_vec};
+
+#[cfg(test)]
+thread_local! {
+    static PARTITION_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_partition_calls() {
+    PARTITION_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn partition_calls() -> usize {
+    PARTITION_CALLS.with(Cell::get)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(in crate::geometry) struct NodeId(pub u32);
@@ -645,18 +662,62 @@ impl BoundaryPlan {
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
     ) -> Result<NodeParts> {
-        // Round and certify once, while retaining the exact node identities for
-        // the publication pass.  No emitted coordinate is used to rediscover
-        // its source node.
         let items = self.incident_items(topology)?;
         let rounded_segments = self.round_items(partition, topology)?;
+        self.emit_node_parts_with_segments(partition, topology, &items, &rounded_segments)
+    }
+
+    fn emit_node_parts_with_coordinates(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        coordinates: &[Option<XY>],
+    ) -> Result<NodeParts> {
+        let items = self.incident_items(topology)?;
+        let mut rounded_segments = Vec::new();
+        try_reserve_vec(&mut rounded_segments, items.len())?;
+        for &[start, end] in &items {
+            let start = coordinates
+                .get(start.0 as usize)
+                .and_then(Option::as_ref)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact subdivision output lost a rounded start node".into(),
+                    )
+                })?;
+            let end = coordinates
+                .get(end.0 as usize)
+                .and_then(Option::as_ref)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact subdivision output lost a rounded end node".into(),
+                    )
+                })?;
+            try_push_vec(&mut rounded_segments, Segment { start, end })?;
+        }
+        self.check_emitted_fans(topology, &rounded_segments)?;
+        self.check_global_faces(partition, &items, &rounded_segments)?;
+        self.emit_node_parts_with_segments(partition, topology, &items, &rounded_segments)
+    }
+
+    fn emit_node_parts_with_segments(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        items: &[[NodeId; 2]],
+        rounded_segments: &[Segment],
+    ) -> Result<NodeParts> {
+        // Keep exact node identities through the publication pass. No emitted
+        // coordinate is used to rediscover its source node.
         let mut rounded = Vec::new();
         let rounded_capacity = items
             .len()
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?;
         try_reserve_vec(&mut rounded, rounded_capacity)?;
-        for (&[start, end], segment) in items.iter().zip(&rounded_segments) {
+        for (&[start, end], segment) in items.iter().zip(rounded_segments.iter()) {
             try_push_vec(&mut rounded, (start, segment.start))?;
             try_push_vec(&mut rounded, (end, segment.end))?;
         }
@@ -1583,6 +1644,8 @@ impl ExactSourceInventory {
         &self,
         budget: &mut ExpansionBudget,
     ) -> Result<ExactPartition<'_>> {
+        #[cfg(test)]
+        PARTITION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         let mut partition =
             partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)?;
         partition.protect_stored = self.polygon_rings.iter().all(Vec::is_empty);
@@ -2019,29 +2082,345 @@ impl ExactSourceInventory {
         rounded
             .try_reserve(parts.rounded.len())
             .map_err(crate::error::Error::from)?;
-        for (node, point) in parts.rounded {
+        for &(node, point) in &parts.rounded {
             rounded.entry(node).or_insert(point);
         }
         let by_node = self.resolve_node_points(partition, &nodes, &rounded, declared_axes)?;
-        let point_axes = bucket_axes(
-            &parts.points,
+        self.node_parts_to_shape_resolved(parts, &by_node, declared_axes, strict, operation.name())
+    }
+
+    /// Select both closed children of one subdivision cut from one exact
+    /// arrangement. The cut rectangles are separate polygon operands, but
+    /// their seam and every source crossing share the same node recipes,
+    /// topology, rounding pass, and ordinate resolution.
+    pub(in crate::geometry) fn subdivision_parts(
+        &self,
+        partition: &ExactPartition<'_>,
+        source_shape: &Shape,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+        clip_operands: [usize; 2],
+    ) -> Result<[Shape; 2]> {
+        let source_operand = 0;
+        let operands = self.operand_count();
+        if clip_operands
+            .iter()
+            .any(|&operand| operand >= operands || operand == source_operand)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "exact subdivision clip operand is out of range".into(),
+            )
+            .into());
+        }
+
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let winding_rings = self.winding_source_rings()?;
+        let facts =
+            self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
+        if matches!(
+            source_shape,
+            Shape::LineString(_) | Shape::MultiLineString(_)
+        ) {
+            return self.subdivision_line_parts(
+                partition,
+                source_shape,
+                &topology,
+                &global,
+                &facts,
+                declared_axes,
+                strict,
+                clip_operands,
+            );
+        }
+        let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
+
+        let mut plans = Vec::new();
+        try_reserve_vec(&mut plans, clip_operands.len())?;
+        for &clip_operand in &clip_operands {
+            let cells = self.select_subdivision_cells(
+                partition,
+                &topology,
+                &global,
+                &facts,
+                source_operand,
+                clip_operand,
+            )?;
+            try_push_vec(
+                &mut plans,
+                cells.emission_plan_with_protected(
+                    partition,
+                    &topology,
+                    &edges,
+                    &global,
+                    ordinate_protected.as_deref(),
+                )?,
+            )?;
+        }
+
+        let mut seen = Vec::new();
+        try_reserve_vec(&mut seen, partition.recipes.len())?;
+        seen.resize(partition.recipes.len(), false);
+        let mut nodes = Vec::new();
+        for plan in &plans {
+            for [start, end] in plan.incident_items(&topology)? {
+                for node in [start, end] {
+                    if !seen[node.0 as usize] {
+                        seen[node.0 as usize] = true;
+                        try_push_vec(&mut nodes, node)?;
+                    }
+                }
+            }
+        }
+        let rounded_nodes = partition.round_nodes(&nodes)?;
+        ExactPartition::check_node_injectivity(&nodes, &rounded_nodes)?;
+        let mut coordinates = Vec::new();
+        try_reserve_vec(&mut coordinates, partition.recipes.len())?;
+        coordinates.resize(partition.recipes.len(), None);
+        for (&node, &coordinate) in nodes.iter().zip(&rounded_nodes) {
+            coordinates[node.0 as usize] = Some(coordinate);
+        }
+
+        let mut node_parts = Vec::new();
+        try_reserve_vec(&mut node_parts, plans.len())?;
+        for plan in plans {
+            try_push_vec(
+                &mut node_parts,
+                plan.emit_node_parts_with_coordinates(partition, &topology, &coordinates)?,
+            )?;
+        }
+
+        let mut rounded =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        rounded
+            .try_reserve(nodes.len())
+            .map_err(crate::error::Error::from)?;
+        let mut output_nodes = Vec::new();
+        try_reserve_vec(&mut output_nodes, nodes.len())?;
+        let mut output_seen = Vec::new();
+        try_reserve_vec(&mut output_seen, partition.recipes.len())?;
+        output_seen.resize(partition.recipes.len(), false);
+        for parts in &node_parts {
+            for &(node, point) in &parts.rounded {
+                rounded.entry(node).or_insert(point);
+                if !output_seen[node.0 as usize] {
+                    output_seen[node.0 as usize] = true;
+                    try_push_vec(&mut output_nodes, node)?;
+                }
+            }
+        }
+        let by_node =
+            self.resolve_node_points(partition, &output_nodes, &rounded, declared_axes)?;
+        let mut parts = node_parts.into_iter();
+        let first = self.node_parts_to_shape_resolved(
+            parts
+                .next()
+                .expect("two subdivision plans produce two outputs"),
             &by_node,
             declared_axes,
             strict,
-            operation.name(),
+            "subdivide",
         )?;
+        let second = self.node_parts_to_shape_resolved(
+            parts
+                .next()
+                .expect("two subdivision plans produce two outputs"),
+            &by_node,
+            declared_axes,
+            strict,
+            "subdivide",
+        )?;
+        Ok([first, second])
+    }
+
+    fn subdivision_line_parts(
+        &self,
+        partition: &ExactPartition<'_>,
+        source_shape: &Shape,
+        topology: &IndexedTopology,
+        global: &GlobalFaces,
+        facts: &CellFacts,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+        clip_operands: [usize; 2],
+    ) -> Result<[Shape; 2]> {
+        let mut selected = Vec::new();
+        try_reserve_vec(&mut selected, clip_operands.len())?;
+        for &clip_operand in &clip_operands {
+            let cells =
+                self.select_subdivision_cells(partition, topology, global, facts, 0, clip_operand)?;
+            try_push_vec(&mut selected, cells.spans)?;
+        }
+
+        let mut seen = Vec::new();
+        try_reserve_vec(&mut seen, partition.recipes.len())?;
+        seen.resize(partition.recipes.len(), false);
+        let mut nodes = Vec::new();
+        for spans in &selected {
+            for (index, &is_selected) in spans.iter().enumerate() {
+                if !is_selected {
+                    continue;
+                }
+                let span = partition.spans[index];
+                for node in [span.start, span.end] {
+                    if !seen[node.0 as usize] {
+                        seen[node.0 as usize] = true;
+                        try_push_vec(&mut nodes, node)?;
+                    }
+                }
+            }
+        }
+        let rounded_nodes = partition.round_nodes(&nodes)?;
+        ExactPartition::check_node_injectivity(&nodes, &rounded_nodes)?;
+        let mut rounded =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        rounded
+            .try_reserve(nodes.len())
+            .map_err(crate::error::Error::from)?;
+        for (&node, &coordinate) in nodes.iter().zip(&rounded_nodes) {
+            rounded.insert(node, coordinate);
+        }
+        let by_node = self.resolve_node_points(partition, &nodes, &rounded, declared_axes)?;
+        let views = partition.source_span_views(&self.source_segments)?;
+        let ranges = source_line_ranges(source_shape)?;
+        let mut outputs = Vec::new();
+        try_reserve_vec(&mut outputs, selected.len())?;
+        for spans in selected {
+            try_push_vec(
+                &mut outputs,
+                self.emit_source_line_shape(
+                    partition,
+                    source_shape,
+                    &ranges,
+                    &views,
+                    &spans,
+                    &by_node,
+                    declared_axes,
+                    strict,
+                )?,
+            )?;
+        }
+        let mut outputs = outputs.into_iter();
+        Ok([
+            outputs.next().expect("two subdivision line selections"),
+            outputs.next().expect("two subdivision line selections"),
+        ])
+    }
+
+    fn emit_source_line_shape(
+        &self,
+        partition: &ExactPartition<'_>,
+        source_shape: &Shape,
+        ranges: &[Range<usize>],
+        views: &[Vec<(u32, bool)>],
+        selected: &[bool],
+        by_node: &HashMap<NodeId, Point>,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+    ) -> Result<Shape> {
+        let mut node_runs = Vec::new();
+        try_reserve_vec(&mut node_runs, selected.len())?;
+        let mut source_offset = 0;
+        for range in ranges {
+            debug_assert_eq!(range.start, source_offset);
+            source_offset = range.end;
+            let mut run = Vec::new();
+            for source in range.clone() {
+                for &(span_id, reversed) in views.get(source).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact subdivision line provenance lost a source segment".into(),
+                    )
+                })? {
+                    if !selected.get(span_id as usize).copied().unwrap_or(false) {
+                        if run.len() >= 2 {
+                            try_push_vec(&mut node_runs, std::mem::take(&mut run))?;
+                        } else {
+                            run.clear();
+                        }
+                        continue;
+                    }
+                    let span = partition.spans[span_id as usize];
+                    let (start, end) = if reversed {
+                        (span.end, span.start)
+                    } else {
+                        (span.start, span.end)
+                    };
+                    if run.last().copied() != Some(start) && run.len() >= 2 {
+                        try_push_vec(&mut node_runs, std::mem::take(&mut run))?;
+                    }
+                    if run.is_empty() {
+                        try_reserve_vec(&mut run, 2)?;
+                        try_push_vec(&mut run, start)?;
+                    }
+                    if run.last().copied() != Some(end) {
+                        try_push_vec(&mut run, end)?;
+                    }
+                }
+            }
+            if run.len() >= 2 {
+                try_push_vec(&mut node_runs, run)?;
+            }
+        }
+
+        let mut line_nodes = Vec::new();
+        for run in &node_runs {
+            try_reserve_vec(&mut line_nodes, run.len())?;
+            line_nodes.extend(run.iter().copied());
+        }
+        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, strict, "subdivide")?;
+        let mut lines = Vec::new();
+        try_reserve_vec(&mut lines, node_runs.len())?;
+        for run in node_runs {
+            let mut points = Vec::new();
+            try_reserve_vec(&mut points, run.len())?;
+            for node in run {
+                try_push_vec(&mut points, with_axes(by_node[&node], line_axes))?;
+            }
+            try_push_vec(
+                &mut lines,
+                LineSeq::from_proven(CoordSeq::try_from_points(&points)?),
+            )?;
+        }
+        if lines.is_empty() {
+            return Ok(Shape::typed_empty(
+                match source_shape {
+                    Shape::LineString(_) => GeometryKind::LineString,
+                    Shape::MultiLineString(_) => GeometryKind::MultiLineString,
+                    _ => unreachable!("line subdivision source is lineal"),
+                },
+                declared_axes,
+            ));
+        }
+        Shape::narrow_lines(line_axes, lines)
+    }
+
+    fn node_parts_to_shape_resolved(
+        &self,
+        parts: NodeParts,
+        by_node: &HashMap<NodeId, Point>,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+        operation: &str,
+    ) -> Result<Shape> {
+        let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
+            count
+                .checked_add(line.len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        let polygon_node_count = parts.polygons.iter().try_fold(0_usize, |count, polygon| {
+            polygon.iter().try_fold(count, |count, ring| {
+                count
+                    .checked_add(ring.len())
+                    .ok_or(ResourceError::SizeOverflow)
+            })
+        })?;
+        let point_axes = bucket_axes(&parts.points, by_node, declared_axes, strict, operation)?;
         let mut line_nodes = Vec::new();
         try_reserve_vec(&mut line_nodes, line_node_count)?;
         for line in &parts.lines {
             line_nodes.extend(line.iter().copied());
         }
-        let line_axes = bucket_axes(
-            &line_nodes,
-            &by_node,
-            declared_axes,
-            strict,
-            operation.name(),
-        )?;
+        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, strict, operation)?;
         let mut polygon_nodes = Vec::new();
         try_reserve_vec(&mut polygon_nodes, polygon_node_count)?;
         for polygon in &parts.polygons {
@@ -2049,13 +2428,8 @@ impl ExactSourceInventory {
                 polygon_nodes.extend(ring.iter().copied());
             }
         }
-        let polygon_axes = bucket_axes(
-            &polygon_nodes,
-            &by_node,
-            declared_axes,
-            strict,
-            operation.name(),
-        )?;
+        let polygon_axes = bucket_axes(&polygon_nodes, by_node, declared_axes, strict, operation)?;
+
         let mut points = Vec::new();
         try_reserve_vec(&mut points, parts.points.len())?;
         for node in parts.points {
@@ -2119,6 +2493,61 @@ impl ExactSourceInventory {
             Ok([single]) => Ok(single),
             Err(parts) => Shape::geometry_collection(parts),
         }
+    }
+
+    fn select_subdivision_cells(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        global: &GlobalFaces,
+        facts: &CellFacts,
+        source_operand: usize,
+        clip_operand: usize,
+    ) -> Result<ArealCells> {
+        let operands = self.operand_count();
+        let mut cells = ArealCells {
+            faces: Vec::new(),
+            spans: Vec::new(),
+            nodes: Vec::new(),
+        };
+        try_reserve_vec(&mut cells.faces, global.count as usize)?;
+        cells.faces.resize(global.count as usize, false);
+        for face in 0..global.count as usize {
+            cells.faces[face] = facts.face_membership[face * operands + source_operand]
+                && facts.face_membership[face * operands + clip_operand];
+        }
+        try_reserve_vec(&mut cells.spans, partition.spans.len())?;
+        cells.spans.resize(partition.spans.len(), false);
+        try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
+        cells.nodes.resize(partition.recipes.len(), false);
+        for span in 0..partition.spans.len() {
+            cells.spans[span] = facts.span_support[span * operands + source_operand]
+                && facts.span_support[span * operands + clip_operand];
+            if cells.spans[span] {
+                let span = partition.spans[span];
+                cells.nodes[span.start.0 as usize] = true;
+                cells.nodes[span.end.0 as usize] = true;
+            }
+        }
+
+        for node in 0..partition.recipes.len() {
+            let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
+            let memberships = |operand: usize| {
+                let face_membership = if range.is_empty() {
+                    let component = topology.component_of[node] as usize;
+                    let host = global.component_hosts[component] as usize;
+                    facts.face_membership[host * operands + operand]
+                } else {
+                    range.clone().any(|slot| {
+                        let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
+                        facts.face_membership[face * operands + operand]
+                    })
+                };
+                face_membership || facts.point_membership[node * operands + operand]
+            };
+            cells.nodes[node] |= memberships(source_operand) && memberships(clip_operand);
+        }
+        Ok(cells)
     }
 
     pub(in crate::geometry) fn structure_parts(
@@ -3613,6 +4042,35 @@ const fn node_source_range(records: &[(NodeId, u32)], node: NodeId) -> Range<usi
         high += 1;
     }
     start..high
+}
+
+fn source_line_ranges(source: &Shape) -> Result<Vec<Range<usize>>> {
+    let mut ranges = Vec::new();
+    try_reserve_vec(&mut ranges, source.part_count())?;
+    let mut offset = 0_usize;
+    let mut push = |length: usize| -> Result<()> {
+        let end = offset
+            .checked_add(length.saturating_sub(1))
+            .ok_or(ResourceError::SizeOverflow)?;
+        try_push_vec(&mut ranges, offset..end)?;
+        offset = end;
+        Ok(())
+    };
+    match source {
+        Shape::LineString(line) => push(line.len())?,
+        Shape::MultiLineString(lines) => {
+            for line in lines.iter() {
+                push(line.len())?;
+            }
+        },
+        _ => {
+            return Err(GeometryErrorKind::Invalid(
+                "exact subdivision line ranges require lineal source".into(),
+            )
+            .into());
+        },
+    }
+    Ok(ranges)
 }
 
 fn next_incident_span(

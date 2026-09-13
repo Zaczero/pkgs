@@ -2,12 +2,15 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+#[cfg(test)]
+use std::cell::Cell;
 use std::simd::Select as _;
 use std::simd::cmp::SimdPartialOrd as _;
 
 use crate::NonNegative;
 use crate::error::Result;
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
+use crate::geometry::overlay::{ExactSourceInventory, rect_polygon};
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq, MultiLineString,
     MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, REDUCE_LANES, ReduceSimd,
@@ -16,6 +19,21 @@ use crate::geometry::{
     point_segment_distance_squared, same_point, simplified_polygon_delta_is_simple,
     simplify_chain_guarded, triangle_area, vw_area_tolerance, wrap_index,
 };
+
+#[cfg(test)]
+thread_local! {
+    static SUBDIVISION_WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+fn reset_subdivision_work() {
+    SUBDIVISION_WORK.with(|work| work.set((0, 0)));
+}
+
+#[cfg(test)]
+fn subdivision_work() -> (usize, usize) {
+    SUBDIVISION_WORK.with(Cell::get)
+}
 
 /// The Douglas-Peucker keep mask over raw columns: `keep` and `stack` are
 /// cleared and refilled (reusable across packed-array rows); `Ok(Some(kept_count))`
@@ -304,26 +322,33 @@ pub(crate) const fn axis_halves(bounds: Bounds, split_x: bool, cut: f64) -> [Bou
     }
 }
 
-/// A cut between the two distinct vertex ordinates straddling the
-/// sorted median — both sides keep at least one vertex strictly,
-/// so a clip sheds vertices regardless of how skewed the bounds
-/// are. `None` when the axis has fewer than two distinct ordinates
-/// or the midpoint collapses onto an endpoint.
-pub(crate) fn median_cut(shape: &Shape, split_x: bool, bounds: Bounds) -> Option<f64> {
-    let mut ordinates = Vec::with_capacity(shape.coord_count());
-    shape.for_each_point(|point| ordinates.push(if split_x { point.x } else { point.y }));
+/// Choose a representable cut between source-coordinate ordinates around the
+/// median. The source values, rather than a rounded child, own this decision:
+/// a dense cluster beside a remote vertex therefore gets a finite complexity
+/// split without a second median retry.
+fn source_median_cut(shape: &Shape, split_x: bool, bounds: Bounds) -> Result<Option<f64>> {
+    let mut ordinates = Vec::new();
+    crate::try_reserve_vec(&mut ordinates, shape.coord_count())?;
+    shape.for_each_point(|point| {
+        ordinates.push(if split_x { point.x } else { point.y });
+    });
     ordinates.sort_unstable_by(f64::total_cmp);
     let middle = ordinates.len() / 2;
-    let pair = (1..ordinates.len())
-        .filter(|&index| ordinates[index - 1] < ordinates[index])
-        .min_by_key(|&index| index.abs_diff(middle))?;
-    let cut = f64::midpoint(ordinates[pair - 1], ordinates[pair]);
     let (low, high) = if split_x {
         (bounds.minx(), bounds.maxx())
     } else {
         (bounds.miny(), bounds.maxy())
     };
-    (low < cut && cut < high).then_some(cut)
+    Ok((1..ordinates.len())
+        .filter_map(|index| {
+            if ordinates[index - 1] >= ordinates[index] {
+                return None;
+            }
+            let cut = f64::midpoint(ordinates[index - 1], ordinates[index]);
+            (low < cut && cut < high).then_some((index.abs_diff(middle), index, cut))
+        })
+        .min_by_key(|&(distance, index, _)| (distance, index))
+        .map(|(_, _, cut)| cut))
 }
 
 pub(crate) fn split(
@@ -331,90 +356,115 @@ pub(crate) fn split(
     max_vertices: usize,
     drop: bool,
     out: &mut Vec<Shape>,
+    budget: &mut ExpansionBudget,
 ) -> Result<()> {
-    if shape.is_empty() {
-        return Ok(());
+    struct WorkItem {
+        shape: Shape,
+        bounds: Option<Bounds>,
+        terminal: bool,
     }
-    let count = shape.coord_count();
-    if count <= max_vertices {
-        out.push(shape);
-        return Ok(());
-    }
-    let Some(bounds) = shape.bounds() else {
-        return Ok(());
-    };
-    // Cut the longer axis at its midpoint, falling back to the other
-    // axis when the float midpoint cannot strictly split the
-    // interval; a cluster degenerate on both axes cannot be cut.
-    let x_mid = f64::midpoint(bounds.minx(), bounds.maxx());
-    let y_mid = f64::midpoint(bounds.miny(), bounds.maxy());
-    let x_splits = bounds.minx() < x_mid && x_mid < bounds.maxx();
-    let y_splits = bounds.miny() < y_mid && y_mid < bounds.maxy();
-    if !x_splits && !y_splits {
-        out.push(shape);
-        return Ok(());
-    }
-    let x_longer = bounds.maxx() - bounds.minx() >= bounds.maxy() - bounds.miny();
-    let split_x = if x_longer {
-        x_splits
-    } else {
-        !y_splits && x_splits
-    };
-    let cut = if split_x { x_mid } else { y_mid };
-    let halves = axis_halves(bounds, split_x, cut);
-    let clipped = [
-        shape.clip_by_rect(halves[0], drop)?,
-        shape.clip_by_rect(halves[1], drop)?,
-    ];
-    // A midpoint cut that fails to shed vertices on some half (cut
-    // vertices appearing as fast as detail separates — the dense-
-    // cluster-in-huge-bounds shape) would burn one recursion per
-    // float halving of the bounds; a cut that loses the shape entirely
-    // (extreme-aspect clips can numerically drop both halves) must never
-    // drop coverage. Both re-cut at the vertex median, which always
-    // sheds. A half the median cut *still* cannot shrink (every dropped
-    // vertex traded for a crossing) is spatially unsplittable: emit it.
-    let stalled = clipped.iter().any(|half| half.coord_count() >= count)
-        || clipped.iter().all(Shape::is_empty);
-    if stalled {
-        let median = median_cut(&shape, split_x, bounds)
-            .map(|cut| (split_x, cut))
-            .or_else(|| {
-                let other = !split_x;
-                median_cut(&shape, other, bounds).map(|cut| (other, cut))
-            });
-        let Some((split_x, cut)) = median else {
-            out.push(shape);
-            return Ok(());
+
+    let mut work = Vec::new();
+    let mut staged = Vec::new();
+    let shape_bounds = shape.bounds();
+    crate::try_reserve_vec(&mut work, 1)?;
+    crate::try_push_vec(&mut work, WorkItem {
+        shape,
+        bounds: shape_bounds,
+        terminal: false,
+    })?;
+    while let Some(item) = work.pop() {
+        #[cfg(test)]
+        SUBDIVISION_WORK.with(|work| {
+            let (items, splits) = work.get();
+            work.set((items.saturating_add(1), splits));
+        });
+        if item.shape.is_empty() {
+            continue;
+        }
+        if item.terminal || item.shape.coord_count() <= max_vertices {
+            crate::try_push_vec(&mut staged, item.shape)?;
+            continue;
+        }
+        let Some(bounds) = item.bounds else {
+            crate::try_push_vec(&mut staged, item.shape)?;
+            continue;
+        };
+
+        let x_cut = source_median_cut(&item.shape, true, bounds)?;
+        let y_cut = source_median_cut(&item.shape, false, bounds)?;
+        let x_longer = (bounds.maxx() - bounds.minx()) >= (bounds.maxy() - bounds.miny());
+        let candidate = if x_longer {
+            x_cut
+                .map(|cut| (true, cut))
+                .or_else(|| y_cut.map(|cut| (false, cut)))
+        } else {
+            y_cut
+                .map(|cut| (false, cut))
+                .or_else(|| x_cut.map(|cut| (true, cut)))
+        };
+        let Some((split_x, cut)) = candidate else {
+            crate::try_push_vec(&mut staged, item.shape)?;
+            continue;
         };
         let halves = axis_halves(bounds, split_x, cut);
-        let halves = [
-            shape.clip_by_rect(halves[0], drop)?,
-            shape.clip_by_rect(halves[1], drop)?,
-        ];
-        if halves.iter().all(Shape::is_empty) {
-            // The median cut lost coverage too: emit the input whole
-            // rather than silently dropping it.
-            out.push(shape);
-            return Ok(());
+        let left_rect = Shape::Polygon(rect_polygon(halves[0])?);
+        let right_rect = Shape::Polygon(rect_polygon(halves[1])?);
+        let sources = [&item.shape, &left_rect, &right_rect];
+        let inventory = ExactSourceInventory::from_shapes(&sources)?;
+        let partition = inventory.partition(budget)?;
+        let children =
+            inventory
+                .subdivision_parts(&partition, &item.shape, item.shape.axes(), drop, [1, 2])?;
+        if children.iter().all(Shape::is_empty) {
+            // A cut that cannot be represented by the exact arrangement must
+            // not silently lose the source support.
+            crate::try_push_vec(&mut staged, item.shape)?;
+            continue;
         }
-        for half in halves {
-            if half.is_empty() {
+        let mut progressed = false;
+        for child in children.into_iter().rev() {
+            if child.is_empty() {
                 continue;
             }
-            if half.coord_count() >= count {
-                out.push(half);
-            } else {
-                split(half, max_vertices, drop, out)?;
-            }
+            let child_bounds = child.bounds();
+            let progress = child_bounds.is_some_and(|child_bounds| {
+                let envelope_progress = if split_x {
+                    if child_bounds.maxx() <= cut {
+                        child_bounds.maxx() < bounds.maxx()
+                    } else {
+                        child_bounds.minx() > bounds.minx()
+                    }
+                } else if child_bounds.maxy() <= cut {
+                    child_bounds.maxy() < bounds.maxy()
+                } else {
+                    child_bounds.miny() > bounds.miny()
+                };
+                let source_complexity_progress = child.coord_count() < item.shape.coord_count();
+                matches!(
+                    &item.shape,
+                    Shape::LineString(_) | Shape::MultiLineString(_)
+                ) && envelope_progress
+                    || source_complexity_progress
+            });
+            progressed |= progress;
+            let terminal = child.coord_count() <= max_vertices || !progress;
+            crate::try_push_vec(&mut work, WorkItem {
+                shape: child,
+                bounds: child_bounds,
+                terminal,
+            })?;
         }
-        return Ok(());
-    }
-    for half in clipped {
-        if !half.is_empty() {
-            split(half, max_vertices, drop, out)?;
+        #[cfg(test)]
+        if progressed {
+            SUBDIVISION_WORK.with(|work| {
+                let (items, splits) = work.get();
+                work.set((items, splits.saturating_add(1)));
+            });
         }
     }
+    crate::try_reserve_vec(out, staged.len())?;
+    out.append(&mut staged);
     Ok(())
 }
 
@@ -1702,5 +1752,197 @@ mod keep_mask_scratch_tests {
         let error = fail_allocations_after(0, || vw_keep(&xs, &ys, 1.0, &mut keep))
             .expect_err("growing a reused VW keep mask must not abort in resize");
         assert_allocation_error(&error);
+    }
+}
+
+#[cfg(test)]
+mod subdivision_tests {
+    use super::*;
+    use crate::geometry::overlay::{partition_calls, reset_partition_calls};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn ring_shape(points: &[Point]) -> Shape {
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn line_shape(points: &[Point]) -> Shape {
+        Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_points(points).unwrap(),
+        ))
+    }
+
+    fn all_points(shape: &Shape) -> Vec<Point> {
+        let mut points = Vec::new();
+        shape.for_each_point(|point| points.push(point));
+        points
+    }
+
+    #[test]
+    fn one_exact_partition_emits_both_children() {
+        let shape = ring_shape(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(2.0, 1.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(0.0, 2.0),
+            Point::new_raw_xy(0.0, 1.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ]);
+        reset_partition_calls();
+        reset_subdivision_work();
+        let parts = shape.subdivide(8, false).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(partition_calls(), 1);
+        assert_eq!(subdivision_work(), (3, 1));
+        assert!(parts.iter().all(|part| part.coord_count() <= 8));
+    }
+
+    #[test]
+    fn allocation_prefix_failure_publishes_no_subdivision_parts() {
+        let shape = ring_shape(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(2.0, 1.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(0.0, 2.0),
+            Point::new_raw_xy(0.0, 1.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ]);
+        let (parts, allocations) = allocation_count(|| shape.subdivide(8, false).unwrap());
+        assert_eq!(parts.len(), 2);
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let result = fail_allocations_after(allowed, || shape.subdivide(8, false));
+            match result {
+                Ok(parts) => assert_eq!(
+                    parts.len(),
+                    2,
+                    "retry at allocation prefix {allowed}/{allocations} published a partial result",
+                ),
+                Err(error) => assert!(matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+                )),
+            }
+        }
+        assert_eq!(shape.coord_count(), 9);
+    }
+
+    #[test]
+    fn source_gap_search_skips_an_unrepresentable_cluster_gap() {
+        let mut points = Vec::new();
+        for index in 0..8 {
+            points.push(Point::new_raw_xy(
+                f64::from_bits(1.0_f64.to_bits() + index),
+                0.0,
+            ));
+        }
+        points.push(Point::new_raw_xy(1_000_000.0, 0.0));
+        let shape = Shape::multi_point(
+            crate::geometry::CoordinateAxes::XY,
+            CoordSeq::try_from_points(&points).unwrap(),
+        );
+        reset_partition_calls();
+        let parts = shape.subdivide(8, false).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(partition_calls(), 1);
+        assert!(parts.iter().all(|part| !part.is_empty()));
+    }
+
+    #[test]
+    fn adjacent_sub_ulp_cluster_is_documented_unsplittable() {
+        let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
+        let points = (0..9)
+            .map(|index| Point::new_raw_xy(if index % 2 == 0 { 1.0 } else { adjacent }, 0.0))
+            .collect::<Vec<_>>();
+        let shape = line_shape(&points);
+        reset_partition_calls();
+        let parts = shape.subdivide(8, false).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].coord_count(), shape.coord_count());
+        assert_eq!(partition_calls(), 0);
+    }
+
+    #[test]
+    fn mixed_dimension_subdivision_keeps_each_selected_dimension() {
+        let polygon = ring_shape(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(0.0, 2.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ]);
+        let line = line_shape(&[Point::new_raw_xy(-1.0, 1.0), Point::new_raw_xy(3.0, 1.0)]);
+        let shape = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_raw_xy(1.0, 1.0)),
+            line,
+            polygon,
+        ])
+        .unwrap();
+        let parts = shape.subdivide(7, false).unwrap();
+        assert!(parts.len() >= 2);
+        assert!(parts.iter().all(|part| !part.is_empty()));
+        assert!(parts.iter().any(|part| {
+            matches!(part, Shape::GeometryCollection(_))
+                || matches!(part, Shape::Polygon(_))
+                || matches!(part, Shape::LineString(_))
+        }));
+    }
+
+    #[test]
+    fn exact_seam_rounding_and_zm_resolution_are_shared() {
+        let coordinates = CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 2.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 1.0, 0.0],
+            Some(vec![0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 0.0]),
+            Some(vec![
+                100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 100.0,
+            ]),
+        )
+        .unwrap();
+        let shape =
+            Shape::Polygon(Polygon::new(Ring::from_closed(coordinates), Vec::new()).unwrap());
+        let parts = shape.subdivide(8, false).unwrap();
+        assert_eq!(parts.len(), 2);
+        let source = all_points(&shape);
+        let mut new_shared = 0;
+        for left in all_points(&parts[0]) {
+            for right in all_points(&parts[1]) {
+                if left.x.to_bits() != right.x.to_bits() || left.y.to_bits() != right.y.to_bits() {
+                    continue;
+                }
+                assert_eq!(left.z().map(f64::to_bits), right.z().map(f64::to_bits));
+                assert_eq!(left.m().map(f64::to_bits), right.m().map(f64::to_bits));
+                if !source.iter().any(|point| {
+                    point.x.to_bits() == left.x.to_bits() && point.y.to_bits() == left.y.to_bits()
+                }) {
+                    new_shared += 1;
+                }
+            }
+        }
+        assert!(new_shared > 0);
+    }
+
+    #[test]
+    fn tangent_holes_and_collapsed_support_follow_exact_selection() {
+        for wkt in [
+            "POLYGON ((0 0,1 0,2 0,3 0,4 0,4 4,0 4,0 0),(2 1,3 1,3 2,2 2,2 1))",
+            "POLYGON ((0 0,4 0,2 0,0 0),(1 1,3 1,3 3,1 3,1 1))",
+        ] {
+            let shape = crate::io::parse_wkt(wkt).unwrap();
+            let parts = shape.subdivide(8, false).unwrap();
+            assert!(!parts.is_empty(), "{wkt}");
+            assert!(parts.iter().all(|part| !part.is_empty()), "{wkt}");
+        }
     }
 }

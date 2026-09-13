@@ -157,6 +157,8 @@ pub(crate) use exact_partition::{
     cartesian_support_nonempty, exact_intersects_bounds, occupied_cartesian_area,
     occupied_cartesian_support,
 };
+#[cfg(test)]
+pub(crate) use exact_partition::{partition_calls, reset_partition_calls};
 pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
 pub(in crate::geometry) use nary::{overlay_all_geographic_from, overlay_view_error};
 #[cfg(test)]
