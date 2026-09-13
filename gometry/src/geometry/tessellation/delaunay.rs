@@ -13,9 +13,9 @@ use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
 use crate::geometry::{
-    AreaSign, CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
-    Orientation, Point, PointKey, Result, XY, open_xy_cycle_magnitude, orientation,
-    ring_decision_area, same_point,
+    CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
+    GeometryErrorKind, HasM, HasZ, MOrdinate, Orientation, Point, PointKey, Result, XY, ZOrdinate,
+    open_xy_cycle_magnitude, orientation, same_point,
 };
 
 #[path = "cdt.rs"]
@@ -444,66 +444,25 @@ fn delaunay_euler_complete(n: usize, triangulation: &Triangulation) -> bool {
     h >= 3 && t == n.saturating_mul(2).saturating_sub(2).saturating_sub(h)
 }
 
-/// Constrained Delaunay triangulation of an areal geometry (`rings` = every
-/// shell and hole as a closed coordinate sequence) as a flat
-/// `[a, b, c, a]`-per-kept-face vertex stream: the ring edges become
-/// constraints, the faces inside the rings are kept, and refinement, when
-/// requested, has to be met within the generated-vertex limit or the request
-/// is rejected. The packed array surface builds a `Polygons` layout from this
-/// in one pass; the `Vec<Shape>` form wraps it.
-pub(crate) fn constrained_triangle_vertices<'a>(
+/// Build the constrained mesh plan shared by scalar and packed publication.
+///
+/// `rings` contains every shell and hole as a closed coordinate sequence.
+/// Source sites retain the first full `Point` occurrence for each XY key, while
+/// every nonzero constraint keeps its original endpoint points and stable
+/// source identity for exact refinement certificates.
+fn constrained_triangle_plan<'a>(
     rings: impl Iterator<Item = &'a CoordSeq>,
     area: f64,
     refinement: CdtRefinement,
-    budget: &mut ExpansionBudget,
-) -> Result<Vec<Point>> {
+) -> Result<cdt::ConstrainedMeshPlan> {
     let rings: Vec<&CoordSeq> = rings.collect();
+    let force_xy = refinement.active();
     let refinement = effective_refinement(area, refinement);
     validate_refinement_request(area, refinement)?;
-    // A nondegenerate three-corner shell is itself its sole constrained
-    // Delaunay face; this is a topology decision, so it uses the exact
-    // ring-area sign rather than the public inexact area measurement.
-    if !refinement.active()
-        && rings.len() == 1
-        && rings[0].coord_count() == 4
-        && ring_decision_area(rings[0]).sign() != AreaSign::Zero
-    {
-        let ring = rings[0];
-        let (a, b, c, close) = (
-            ring.nth_coord(0),
-            ring.nth_coord(1),
-            ring.nth_coord(2),
-            ring.nth_coord(3),
-        );
-        if same_point(a.xy(), close.xy()) {
-            budget.check_additional(4)?;
-            let mut output = Vec::new();
-            crate::try_reserve_vec(&mut output, 4)?;
-            for point in [a, b, c, a] {
-                crate::try_push_vec(&mut output, point)?;
-            }
-            budget.add(4)?;
-            return Ok(output);
-        }
-    }
-    let mut lines: Vec<[XY; 2]> = Vec::new();
-    for ring in rings {
-        let count = ring.coord_count();
-        for index in 0..count.saturating_sub(1) {
-            lines.push([ring.nth_coord(index).xy(), ring.nth_coord(index + 1).xy()]);
-        }
-    }
-    let lines = cleanup_constraint_lines(lines);
-    let mut vertices: Vec<Point> = Vec::new();
-    let mut vertex_indices: HashMap<PointKey, usize> = HashMap::with_capacity(lines.len() * 2);
-    let mut edges = Vec::with_capacity(lines.len());
-    for [start, end] in lines {
-        let start = constraint_vertex_index(start, &mut vertices, &mut vertex_indices);
-        let end = constraint_vertex_index(end, &mut vertices, &mut vertex_indices);
-        edges.push([start, end]);
-    }
-
-    let Some(mut cdt) = cdt::ConstrainedMesh::build(&vertices, &edges) else {
+    let (mut vertices, occurrences, sources) = constrained_source_plan(&rings);
+    let Some(mut cdt) =
+        cdt::ConstrainedMesh::build_with_sources(&vertices, &occurrences, &sources)?
+    else {
         return Err(GeometryErrorKind::triangulation(
             "constrained triangulation needs three non-collinear vertices",
         ));
@@ -529,25 +488,48 @@ pub(crate) fn constrained_triangle_vertices<'a>(
             )));
         }
     }
-    let inside = cdt.inside_faces();
-    let faces: Vec<[usize; 3]> = (0..cdt.mesh.triangle_count())
-        .filter(|&t| cdt.mesh.alive(t) && inside[t])
-        .map(|t| cdt.mesh.triangle(t))
-        .collect();
+    cdt.finish_plan(vertices, refinement, force_xy)
+}
+
+/// Constrained Delaunay triangulation of an areal geometry as a flat
+/// `[a, b, c, a]`-per-kept-face vertex stream. This is the one publisher used
+/// by both scalar and packed surfaces; it consumes one checked mesh plan and
+/// applies the active-refinement XY policy before emitting.
+pub(crate) fn constrained_triangle_vertices<'a>(
+    rings: impl Iterator<Item = &'a CoordSeq>,
+    area: f64,
+    refinement: CdtRefinement,
+    budget: &mut ExpansionBudget,
+) -> Result<Vec<Point>> {
+    let plan = constrained_triangle_plan(rings, area, refinement)?;
+    publish_constrained_plan(&plan, budget)
+}
+
+fn publish_constrained_plan(
+    plan: &cdt::ConstrainedMeshPlan,
+    budget: &mut ExpansionBudget,
+) -> Result<Vec<Point>> {
+    plan.validate_certificate()?;
+    let faces = &plan.faces;
     let capacity = faces
         .len()
         .checked_mul(4)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    for [a, b, c] in &faces {
-        validate_refined_triangle(vertices[*a], vertices[*b], vertices[*c], refinement)?;
+    for &[a, b, c] in faces {
+        validate_refined_triangle(
+            plan.vertices[a],
+            plan.vertices[b],
+            plan.vertices[c],
+            plan.refinement,
+        )?;
     }
     budget.check_additional(capacity)?;
     #[cfg(test)]
     note_constrained_output_reserve();
     let mut output = Vec::new();
     crate::try_reserve_vec(&mut output, capacity)?;
-    for [a, b, c] in faces {
-        let (a, b, c) = (vertices[a], vertices[b], vertices[c]);
+    for &[a, b, c] in faces {
+        let [a, b, c, _] = selected_triangle_points(&plan.vertices, [a, b, c], plan.force_xy);
         match orientation(a.xy(), b.xy(), c.xy()) {
             Orientation::CounterClockwise => output.extend_from_slice(&[a, b, c, a]),
             Orientation::Clockwise => output.extend_from_slice(&[a, c, b, a]),
@@ -562,33 +544,117 @@ pub(crate) fn constrained_triangle_vertices<'a>(
     Ok(output)
 }
 
-fn constraint_vertex_index(
-    point: XY,
-    vertices: &mut Vec<Point>,
-    vertex_indices: &mut HashMap<PointKey, usize>,
-) -> usize {
-    let next_index = vertices.len();
-    *vertex_indices
-        .entry(PointKey::new(point))
-        .or_insert_with(|| {
-            vertices.push(Point::new_raw_xy(point.x, point.y));
-            next_index
-        })
+pub(super) fn selected_triangle_points(
+    points: &[Point],
+    [a, b, c]: [usize; 3],
+    force_xy: bool,
+) -> [Point; 4] {
+    let points = [points[a], points[b], points[c]];
+    if force_xy {
+        return [
+            points[0].to_xy(),
+            points[1].to_xy(),
+            points[2].to_xy(),
+            points[0].to_xy(),
+        ];
+    }
+    let axes = CoordinateAxes::new(
+        HasZ(points.iter().all(|point| point.axes.has_z())),
+        HasM(points.iter().all(|point| point.axes.has_m())),
+    );
+    let point = |point: Point| {
+        Point::new_raw_axes(
+            point.x,
+            point.y,
+            ZOrdinate(axes.has_z().then(|| point.z().expect("shared Z axis"))),
+            MOrdinate(axes.has_m().then(|| point.m().expect("shared M axis"))),
+        )
+    };
+    [
+        point(points[0]),
+        point(points[1]),
+        point(points[2]),
+        point(points[0]),
+    ]
+}
+
+/// Select the first full source point at each XY key, then order sites by XY
+/// for the exact mesh. The occurrence index remains attached to the selected
+/// point so publication never has to resolve ordinates from a second source.
+pub(super) fn selected_source_sites(points: Vec<Point>) -> (Vec<Point>, Vec<usize>) {
+    let mut selected = HashMap::with_capacity(points.len());
+    for (occurrence, point) in points.into_iter().enumerate() {
+        selected
+            .entry(PointKey::new(point))
+            .or_insert((point, occurrence));
+    }
+    let mut selected: Vec<_> = selected.into_values().collect();
+    selected.sort_unstable_by(|(left, _), (right, _)| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.y.total_cmp(&right.y))
+    });
+    selected.into_iter().unzip()
+}
+
+fn constrained_source_plan(
+    rings: &[&CoordSeq],
+) -> (Vec<Point>, Vec<usize>, Vec<cdt::SourceConstraint>) {
+    let capacity: usize = rings.iter().map(|ring| ring.coord_count()).sum();
+    let mut source_points = Vec::with_capacity(capacity);
+    for ring in rings {
+        for index in 0..ring.coord_count() {
+            source_points.push(ring.nth_coord(index));
+        }
+    }
+    let (vertices, occurrences) = selected_source_sites(source_points);
+    let indices: HashMap<_, _> = vertices
+        .iter()
+        .enumerate()
+        .map(|(site, point)| (PointKey::new(*point), site))
+        .collect();
+    let mut sources = Vec::new();
+    let mut seen = HashSet::with_capacity(capacity);
+    for ring in rings {
+        for index in 0..ring.coord_count().saturating_sub(1) {
+            let start = ring.nth_coord(index);
+            let end = ring.nth_coord(index + 1);
+            if same_point(start.xy(), end.xy()) {
+                continue;
+            }
+            let key = ordered_constraint_key(start.xy(), end.xy());
+            if !seen.insert(key) {
+                continue;
+            }
+            let start_site = indices[&PointKey::new(start)];
+            let end_site = indices[&PointKey::new(end)];
+            sources.push(cdt::SourceConstraint {
+                id: sources.len(),
+                start: vertices[start_site],
+                end: vertices[end_site],
+                start_site,
+                end_site,
+            });
+        }
+    }
+    (vertices, occurrences, sources)
+}
+
+fn ordered_constraint_key(a: XY, b: XY) -> (PointKey, PointKey) {
+    let (a, b) = (PointKey::new(a), PointKey::new(b));
+    if a <= b { (a, b) } else { (b, a) }
 }
 
 /// Prepare constraint segments: exact endpoint-key deduplication
 /// (bit-identical XY only) and drop zero-length / duplicate undirected edges.
 /// Absolute proximity snapping was deleted — a scale-free 1e-4 radius
 /// annihilated valid small polygons (5e-5 square → zero triangles).
+#[cfg(test)]
 pub(crate) fn cleanup_constraint_lines(lines: Vec<[XY; 2]>) -> Vec<[XY; 2]> {
-    let edge_key = |a: XY, b: XY| -> (PointKey, PointKey) {
-        let (ka, kb) = (PointKey::new(a), PointKey::new(b));
-        if ka <= kb { (ka, kb) } else { (kb, ka) }
-    };
     let mut prepared: Vec<[XY; 2]> = Vec::with_capacity(lines.len());
     let mut seen: HashSet<(PointKey, PointKey)> = HashSet::with_capacity(lines.len());
     for [start, end] in lines {
-        if !same_point(start, end) && seen.insert(edge_key(start, end)) {
+        if !same_point(start, end) && seen.insert(ordered_constraint_key(start, end)) {
             prepared.push([start, end]);
         }
     }

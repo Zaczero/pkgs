@@ -11,8 +11,8 @@ from gometry import GeometryError
 
 
 def _sliver_polygon() -> gm.Polygon:
-    """Quadrilateral with a very acute corner — sliver-prone for CDT."""
-    return gm.Polygon([(0, 0), (20, 0), (20, 0.2), (0.1, 0.05)])
+    """Dyadic sliver whose exact boundary midpoints are representable."""
+    return gm.Polygon([(0, 0), (20, 0), (20, 0.25), (0.125, 0.0625)])
 
 
 def _triangle_coords(triangle: gm.Polygon) -> list[tuple[float, float]]:
@@ -74,16 +74,16 @@ def test_max_area_caps_triangle_areas(sliver: gm.Polygon) -> None:
 @pytest.mark.parametrize(
     'coords',
     [
-        [(1e16, 1.0), (1.0, 0.0), (2.0, 1e-8)],
-        [(1.0, 0.0), (2.0, 1e-8), (1e16, 1.0)],
-        [(2.0, 1e-8), (1e16, 1.0), (1.0, 0.0)],
+        [(1e16, 1.0), (2.0, 0.0), (3.0, 1e-8)],
+        [(2.0, 0.0), (3.0, 1e-8), (1e16, 1.0)],
+        [(3.0, 1e-8), (1e16, 1.0), (2.0, 0.0)],
     ],
     ids=['A-first', 'B-first', 'C-first'],
 )
 def test_max_area_named_triangle_keeps_limit_across_ring_rotations(
     coords: list[tuple[float, float]],
 ) -> None:
-    """Refine and post-check share ExactSum magnitude; A-first must not skip then throw."""
+    """A representable source midpoint keeps the exact area admission stable."""
     max_area = 49999999.249974996
     poly = gm.Polygon(coords)
     assert poly.area > max_area
@@ -159,3 +159,77 @@ def test_free_and_array_surfaces_match(sliver: gm.Polygon) -> None:
     assert len(method) == len(free) == len(array)
     assert [t.to_wkt() for t in method] == [t.to_wkt() for t in free]
     assert [t.to_wkt() for t in method] == [t.to_wkt() for t in array]
+
+
+def test_rounded_source_midpoint_is_an_unrepresentable_output() -> None:
+    next_x = math.nextafter(1.0, math.inf)
+    polygon = gm.Polygon([(1.0, 0.0), (next_x, 1.0), (1.0, 0.5)])
+    before = polygon.to_wkt()
+
+    with pytest.raises(GeometryError) as raised:
+        polygon.triangulate(method='constrained', max_area=1.0e-20)
+
+    assert raised.value.operation == 'triangulate'
+    assert polygon.to_wkt() == before
+
+
+@pytest.mark.parametrize(
+    ('first_z', 'first_m'),
+    [(1.0, 10.0), (2.0, 20.0)],
+)
+def test_constrained_duplicate_xy_uses_first_source_point(
+    first_z: float, first_m: float
+) -> None:
+    second_z = 3.0 - first_z
+    second_m = 30.0 - first_m
+    source = gm.from_wkt(
+        'POLYGON ZM (('
+        f'0 0 {first_z:g} {first_m:g}, '
+        f'0 0 {second_z:g} {second_m:g}, '
+        '4 0 4 40, 0 4 5 50, '
+        f'0 0 {first_z:g} {first_m:g}))'
+    )
+    scalar = source.triangulate(method='constrained')
+    assert scalar
+    assert all(triangle.coordinate_axes == 'XYZM' for triangle in scalar)
+    assert all(
+        f'0 0 {first_z:g} {first_m:g}' in triangle.to_wkt() for triangle in scalar
+    )
+
+    array = gm.GeometryArray([source]).triangulate(method='constrained')[0]
+    assert [triangle.to_wkt() for triangle in array] == [
+        triangle.to_wkt() for triangle in scalar
+    ]
+    refined = source.triangulate(method='constrained', max_area=2.0)
+    assert refined
+    assert all(triangle.coordinate_axes == 'XY' for triangle in refined)
+
+
+def test_constrained_array_mixed_missing_and_empty_rows_match_scalar() -> None:
+    zm = gm.from_wkt('POLYGON ZM ((0 0 1 10, 4 0 2 20, 0 4 3 30, 0 0 1 10))')
+    xy = gm.from_wkt('POLYGON ((0 0, 4 0, 0 4, 0 0))')
+    rows = gm.GeometryArray([zm, xy, gm.from_wkt('POLYGON EMPTY'), None])
+    groups = rows.triangulate(method='constrained')
+
+    assert [triangle.to_wkt() for triangle in groups[0]] == [
+        triangle.to_wkt() for triangle in zm.triangulate(method='constrained')
+    ]
+    assert [triangle.to_wkt() for triangle in groups[1]] == [
+        triangle.to_wkt() for triangle in xy.triangulate(method='constrained')
+    ]
+    assert len(groups[2]) == len(groups[3]) == 0
+
+
+def test_delaunay_duplicate_xy_uses_the_same_source_site_for_scalar_and_array() -> None:
+    source = gm.from_wkt(
+        'MULTIPOINT ZM (0 0 1 10, 0 0 2 20, 4 0 3 30, 0 4 4 40, 4 4 5 50)'
+    )
+    scalar = source.triangulate(method='delaunay')
+    array = gm.GeometryArray([source]).triangulate(method='delaunay')[0]
+
+    assert scalar
+    assert [triangle.to_wkt() for triangle in array] == [
+        triangle.to_wkt() for triangle in scalar
+    ]
+    assert all(triangle.coordinate_axes == 'XYZM' for triangle in scalar)
+    assert all('0 0 1 10' in triangle.to_wkt() for triangle in scalar)

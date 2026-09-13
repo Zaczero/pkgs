@@ -5,8 +5,8 @@ use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
     CdtRefinement, CertifiedDelaunay, Site, certified_delaunay, collect_sample_triangles,
     constrained_triangle_vertices, earcut_polygon_with, line_boundary, multiline_boundary,
-    rings_to_boundary, sample_weighted, snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel,
-    weight_scale,
+    rings_to_boundary, sample_weighted, selected_source_sites, selected_triangle_points,
+    snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
@@ -95,21 +95,28 @@ impl Shape {
         &self,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Self>> {
-        let shapes = self
-            .delaunay_triangle_vertices_budgeted(budget)?
+        let vertices = self.delaunay_triangle_vertices_budgeted(budget)?;
+        Self::triangle_shapes_from_vertices(&vertices)
+    }
+
+    pub(crate) fn triangle_shapes_from_vertices(vertices: &[Point]) -> Result<Vec<Self>> {
+        if !vertices.len().is_multiple_of(4) {
+            return Err(GeometryErrorKind::Invalid(
+                "triangle vertex stream is not a multiple of four".into(),
+            )
+            .into());
+        }
+        vertices
             .as_chunks::<4>()
             .0
             .iter()
             .map(|ring| {
-                let ring = ring.map(Point::to_xy);
                 Ok(Self::Polygon(Polygon::new(
-                    Ring::from_closed(CoordSeq::try_from_points(&ring)?),
+                    Ring::from_closed(CoordSeq::try_from_points(ring)?),
                     Vec::new(),
                 )?))
             })
-            .collect::<Result<Vec<_>>>()?;
-        // Triangle vertices are input vertices: Z/M always resolve.
-        carry_each(shapes, &[self], "delaunay_triangles", false)
+            .collect()
     }
 
     /// The Delaunay triangulation as one flat CLOSED-ring vertex stream — four
@@ -126,21 +133,14 @@ impl Shape {
         // corners are input vertices, so carrying their Z/M here preserves it
         // directly — no post-hoc XY re-lookup (the old `carry_each` step).
         let capacity = self.coord_count();
-        let mut seen = HashSet::with_capacity(capacity);
-        let mut points: Vec<Point> = Vec::with_capacity(capacity);
+        let mut source_points: Vec<Point> = Vec::with_capacity(capacity);
         self.for_each_point(|point| {
-            if seen.insert(PointKey::new(point)) {
-                points.push(point);
-            }
+            source_points.push(point);
         });
+        let (points, _) = selected_source_sites(source_points);
         if points.len() < 3 {
             return Vec::new();
         }
-        points.sort_unstable_by(|left, right| {
-            left.x
-                .total_cmp(&right.x)
-                .then_with(|| left.y.total_cmp(&right.y))
-        });
         // The exact engine takes the unique vertices as they are: no
         // conversion, no proposal path, no repair afterwards.
         points
@@ -183,12 +183,7 @@ impl Shape {
             key
         });
         for triangle in triangles {
-            vertices.extend_from_slice(&[
-                points[triangle[0]],
-                points[triangle[1]],
-                points[triangle[2]],
-                points[triangle[0]],
-            ]);
+            vertices.extend_from_slice(&selected_triangle_points(&points, triangle, false));
         }
         budget.add(capacity)?;
         Ok(vertices)
@@ -207,36 +202,16 @@ impl Shape {
         refinement: CdtRefinement,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Self>> {
-        // The "is this face inside the polygon?" filter runs once per triangle
-        // (~one per vertex), so build the hierarchical `PointBatchTester` ONCE
-        // and reuse it: an uncached `contains_point` per face is an
-        // O(faces x edges) brute sweep that dominates large inputs.
+        // Build and publish one constrained mesh plan; packed and per-shape
+        // callers consume the same selected source sites and face IDs.
         let vertices = self.constrained_delaunay_vertices_budgeted(refinement, budget)?;
-        let shapes = vertices
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|ring| {
-                let ring = ring.map(Point::to_xy);
-                Ok(Self::Polygon(Polygon::new(
-                    Ring::from_closed(CoordSeq::try_from_points(&ring)?),
-                    Vec::new(),
-                )?))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        // Triangle vertices are input vertices when refinement is inactive;
-        // resolve their Z/M only after the shared budget admitted the output.
-        if refinement.active() {
-            Ok(shapes)
-        } else {
-            carry_each(shapes, &[self], "triangulate", false)
-        }
+        Self::triangle_shapes_from_vertices(&vertices)
     }
 
     /// Constrained-Delaunay interior as a flat `[a, b, c, a]`-per-triangle
-    /// vertex stream (XY) — the packed `Polygons` builder's input. Z/M callers
-    /// use [`Self::constrained_delaunay_triangles`] (which resolves ordinates);
-    /// this 2D form is exact for XY operands.
+    /// vertex stream. Each ring is emitted from the shared mesh plan: inactive
+    /// refinement preserves selected source-site axes, while active refinement
+    /// emits uniform XY.
     pub(crate) fn constrained_delaunay_vertices(
         &self,
         refinement: CdtRefinement,

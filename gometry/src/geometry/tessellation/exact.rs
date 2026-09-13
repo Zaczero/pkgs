@@ -951,6 +951,126 @@ fn difference(left: f64, right: f64) -> ExactDyadic {
     ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right))
 }
 
+/// An exact ratio of dyadics.
+///
+/// Source-boundary parameters are usually dyadic, but a pre-existing mesh
+/// vertex can lie at a non-dyadic ratio of two stored binary64 endpoints.
+/// Keeping the numerator and denominator as exact integers avoids making that
+/// vertex a rounded source authority. Every constructor reduces the ratio, so
+/// repeated midpoint splits stay linear in their binary parameter depth rather
+/// than multiplying equivalent denominators.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ExactRational {
+    numerator: ExactDyadic,
+    denominator: ExactDyadic,
+}
+
+impl ExactRational {
+    pub(super) fn new(numerator: ExactDyadic, denominator: ExactDyadic) -> Result<Self> {
+        if denominator.is_zero() {
+            return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
+        }
+        if numerator.is_zero() {
+            return Ok(Self {
+                numerator: ExactDyadic::zero(),
+                denominator: ExactDyadic::one(),
+            });
+        }
+        let (numerator, denominator) = if denominator.sign() == ExactSign::Negative {
+            (numerator.neg(), denominator.neg())
+        } else {
+            (numerator, denominator)
+        };
+        let common = numerator.try_gcd(&denominator)?;
+        Ok(Self {
+            numerator: numerator.try_exact_quotient(&common)?,
+            denominator: denominator.try_exact_quotient(&common)?,
+        })
+    }
+
+    pub(super) fn zero() -> Self {
+        Self {
+            numerator: ExactDyadic::zero(),
+            denominator: ExactDyadic::one(),
+        }
+    }
+
+    pub(super) fn one() -> Self {
+        Self {
+            numerator: ExactDyadic::one(),
+            denominator: ExactDyadic::one(),
+        }
+    }
+
+    pub(super) fn try_add(&self, other: &Self) -> Result<Self> {
+        let left = self.numerator.try_product(&other.denominator)?;
+        let right = other.numerator.try_product(&self.denominator)?;
+        let numerator = left.try_add(right)?;
+        let denominator = self.denominator.try_product(&other.denominator)?;
+        Self::new(numerator, denominator)
+    }
+
+    pub(super) fn try_midpoint(&self, other: &Self) -> Result<Self> {
+        let numerator = self.try_add(other)?;
+        Self::new(
+            numerator.numerator.try_clone()?,
+            numerator
+                .denominator
+                .try_product(&ExactDyadic::from_f64(2.0))?,
+        )
+    }
+
+    pub(super) fn cmp(&self, other: &Self) -> Ordering {
+        self.numerator
+            .product(&other.denominator)
+            .cmp(&other.numerator.product(&self.denominator))
+    }
+
+    pub(super) fn try_cmp(&self, other: &Self) -> Result<Ordering> {
+        Ok(self
+            .numerator
+            .try_product(&other.denominator)?
+            .cmp(&other.numerator.try_product(&self.denominator)?))
+    }
+
+    /// The exact parameter of `point` on the stored segment `start -> end`.
+    ///
+    /// The caller establishes collinearity; this routine only chooses the
+    /// nonzero axis and preserves its exact ratio.
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact coordinate equality selects the nonzero source axis; tolerance would change the parameter"
+    )]
+    pub(super) fn from_segment(start: XY, end: XY, point: XY) -> Result<Self> {
+        let (start, end, point) = if start.x != end.x {
+            (start.x, end.x, point.x)
+        } else if start.y != end.y {
+            (start.y, end.y, point.y)
+        } else {
+            return Err(GeometryErrorKind::triangulation(
+                "source constraint has identical endpoints",
+            ));
+        };
+        Self::new(difference(point, start), difference(end, start))
+    }
+
+    /// Round the exact source point at this parameter, evaluating both
+    /// coordinates from the original endpoints before either is emitted.
+    pub(super) fn round_segment(&self, start: XY, end: XY) -> Result<XY> {
+        let remainder = self.denominator.try_subtract_ref(&self.numerator)?;
+        let x = ExactDyadic::from_f64(start.x)
+            .try_product(&remainder)?
+            .try_add(ExactDyadic::from_f64(end.x).try_product(&self.numerator)?)?;
+        let y = ExactDyadic::from_f64(start.y)
+            .try_product(&remainder)?
+            .try_add(ExactDyadic::from_f64(end.y).try_product(&self.numerator)?)?;
+        Ok(XY::new(
+            round_ratio(&x, &self.denominator)?,
+            round_ratio(&y, &self.denominator)?,
+        ))
+    }
+}
+
 /// Shewchuk's stage-A orientation filter: the plain float determinant is the
 /// answer whenever its magnitude clears an a-priori bound on its rounding
 /// error, `(3 + 16ε)ε` times the sum of the term magnitudes, which covers
@@ -2967,6 +3087,28 @@ mod tests {
                 assert_eq!(sign, ExactSign::Positive, "incircle exponent {exponent}");
             }
         }
+    }
+
+    #[test]
+    fn source_parameter_keeps_the_exact_ratio_after_rounding() {
+        let start = XY::new(0.25, 1.0000000000000002);
+        let end = XY::new(0.25, 1.25);
+        let midpoint = ExactRational::zero()
+            .try_midpoint(&ExactRational::one())
+            .expect("midpoint parameter");
+        let rounded = midpoint
+            .round_segment(start, end)
+            .expect("rounded source point");
+        let actual = ExactRational::from_segment(start, end, rounded).expect("source parameter");
+        assert_ne!(actual.cmp(&midpoint), Ordering::Equal);
+        let next = ExactRational::zero()
+            .try_midpoint(&actual)
+            .expect("child midpoint parameter");
+        assert_eq!(
+            next.round_segment(start, end)
+                .expect("rounded child source point"),
+            XY::new(0.25, 1.0625)
+        );
     }
 
     fn check_cocircular_underflow(exponent: i32) {

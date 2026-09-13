@@ -1118,8 +1118,9 @@ min_angle : float, optional
 max_area : float, optional
     Maximum triangle area in square coordinate units; valid only with
     ``method='constrained'``. Setting either option enables refinement;
-    without either option, triangle corners preserve input ordinates.
-    Refinement inserts Steiner vertices and therefore returns XY.
+    without either option, duplicate XY sites use their first source
+    occurrence and triangle corners preserve the selected source ordinates.
+    Refinement inserts Steiner vertices and therefore returns uniform XY.
 
 Returns
 -------
@@ -1155,7 +1156,8 @@ min_angle : float or sequence of float, optional
 max_area : float or sequence of float, optional
     Maximum triangle area in square coordinate units; valid only with
     ``method='constrained'``. Setting either option enables refinement;
-    inserted Steiner vertices can return XY.
+    inserted Steiner vertices return uniform XY. Scalar and array rows use
+    the same first-occurrence source-site and ordinate policy.
 
 Returns
 -------

@@ -142,8 +142,7 @@ impl PyGeometry {
         }
         let axes = vertices.first().map(|point| point.axes);
         if vertices.iter().any(|point| Some(point.axes) != axes) {
-            let shape = Arc::clone(&self.shape);
-            let triangles = py.detach(move || shape.delaunay_triangles())?;
+            let triangles = py.detach(move || Shape::triangle_shapes_from_vertices(&vertices))?;
             return self.parts_to_array(triangles);
         }
         PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
@@ -156,9 +155,9 @@ impl PyGeometry {
         max_area: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyGeometryArray> {
         let refinement = parse_cdt_refinement(min_angle, max_area)?;
-        // Refinement inserts Steiner vertices, so output is XY-only. The 2D
-        // fast path also applies to plain XY inputs; Z/M inputs keep the
-        // per-shape path whose `carry_each` resolves corners when not refining.
+        // Refinement inserts Steiner vertices, so output is XY-only. The
+        // source-site mesh plan supplies the same selected points and axes to
+        // both the packed and per-shape publication paths.
         if refinement.active() || (!self.shape.has_z() && !self.shape.has_m()) {
             let shape = Arc::clone(&self.shape);
             let vertices = py.detach(move || shape.constrained_delaunay_vertices(refinement))?;

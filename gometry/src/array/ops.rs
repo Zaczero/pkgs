@@ -441,9 +441,10 @@ impl PyGeometryArray {
                 )
             })
             .collect::<PyResult<Vec<_>>>()?;
-        // Unrefined Z/M rows preserve their axes while refined rows are XY, so
-        // a mixed-axis batch uses the shape collector. Pure-XY batches retain
-        // the packed triangle builder.
+        // Unrefined rows preserve the selected source-site axes while refined
+        // rows are XY, so a batch carrying Z/M uses the shape collector.
+        // Pure-XY batches retain the packed triangle builder; both consume the
+        // same constrained mesh publisher.
         if self.has_z() || self.has_m() {
             return self.flat_map_shapes_groups_budgeted(
                 py,

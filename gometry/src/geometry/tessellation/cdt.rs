@@ -10,7 +10,9 @@
 //! Ruppert's: a retained face that misses the angle or area target has its
 //! circumcenter inserted, unless that center encroaches a constraint's
 //! diametral circle, in which case the constraint is split at its midpoint
-//! instead. A center outside binary64 uses the explicit longest-edge midpoint
+//! instead. A constrained split evaluates the original source segment at an
+//! exact parameter and rejects a rounded point that is not on that segment. A
+//! center outside binary64 uses the explicit longest-edge midpoint
 //! construction; resource and invariant failures remain errors. The vertex
 //! budget bounds the loop, and a mesh the budget could not finish is rejected
 //! rather than returned as if it met the request.
@@ -20,7 +22,7 @@
     reason = "a, b, c, d name the vertices of a quad and e, f, t, u its slots, the geometry kernel convention"
 )]
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::exact_delaunay::{EMPTY, Located, Mesh, next_halfedge, prev_halfedge};
 use crate::error::{ErrorKind, Result};
@@ -28,34 +30,287 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{GeometryErrorKind, Point, XY, open_xy_cycle_magnitude};
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct RefinementWorkCounters {
+    pub(super) inside_label_passes: usize,
+    pub(super) bad_face_scans: usize,
+    pub(super) constraint_reconstruction_passes: usize,
+    pub(super) flag_remark_passes: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static REFINEMENT_WORK: std::cell::Cell<RefinementWorkCounters> =
+        const { std::cell::Cell::new(RefinementWorkCounters {
+            inside_label_passes: 0,
+            bad_face_scans: 0,
+            constraint_reconstruction_passes: 0,
+            flag_remark_passes: 0,
+        }) };
+}
+
+#[cfg(test)]
+fn update_work(update: impl FnOnce(&mut RefinementWorkCounters)) {
+    REFINEMENT_WORK.with(|cell| {
+        let mut counters = cell.get();
+        update(&mut counters);
+        cell.set(counters);
+    });
+}
+
+#[cfg(test)]
+pub(super) fn take_refinement_work_counters() -> RefinementWorkCounters {
+    REFINEMENT_WORK.with(|cell| cell.replace(RefinementWorkCounters::default()))
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SourceConstraint {
+    pub(super) id: usize,
+    pub(super) start: Point,
+    pub(super) end: Point,
+    pub(super) start_site: usize,
+    pub(super) end_site: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SourcePiece {
+    pub(super) source: usize,
+    pub(super) start_site: usize,
+    pub(super) end_site: usize,
+    pub(super) lo: exact::ExactRational,
+    pub(super) hi: exact::ExactRational,
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum NodeProvenance {
+    SourceSite {
+        occurrence: usize,
+    },
+    ConstraintSplit {
+        source: usize,
+        parameter: exact::ExactRational,
+    },
+    Generated,
+}
+
+/// One constrained mesh and its checked publication inputs.
+///
+/// The source points, faces, source intervals, generated-node provenance, and
+/// cocircular decisions are all retained together so scalar and packed
+/// publishers cannot independently reconstruct a different mesh result.
+#[derive(Clone, Debug)]
+pub(super) struct ConstrainedMeshPlan {
+    pub(super) vertices: Vec<Point>,
+    pub(super) faces: Vec<[usize; 3]>,
+    pub(super) provenance: Vec<NodeProvenance>,
+    pub(super) source_constraints: Vec<SourceConstraint>,
+    pub(super) constraint_pieces: Vec<SourcePiece>,
+    pub(super) cocircular: Vec<bool>,
+    pub(super) refinement: super::CdtRefinement,
+    pub(super) force_xy: bool,
+}
+
+impl ConstrainedMeshPlan {
+    /// Consume the retained source certificate immediately before publication.
+    ///
+    /// The topology builder performs the same checks while the live mesh is
+    /// available. Rechecking the detached product prevents a future publisher
+    /// from silently dropping source intervals, selected-site provenance, or
+    /// the exact cocircular pass.
+    pub(super) fn validate_certificate(&self) -> Result<()> {
+        if self.provenance.len() != self.vertices.len() || !self.cocircular.len().is_multiple_of(3)
+        {
+            return Err(GeometryErrorKind::triangulation(
+                "constrained mesh certificate has inconsistent node or edge state",
+            ));
+        }
+        let source_occurrence_count = self
+            .provenance
+            .iter()
+            .filter_map(|provenance| match provenance {
+                NodeProvenance::SourceSite { occurrence } => occurrence.checked_add(1),
+                NodeProvenance::ConstraintSplit { .. } | NodeProvenance::Generated => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let zero = exact::ExactRational::zero();
+        let one = exact::ExactRational::one();
+        for provenance in &self.provenance {
+            match provenance {
+                NodeProvenance::SourceSite { occurrence } => {
+                    if *occurrence >= source_occurrence_count {
+                        return Err(GeometryErrorKind::triangulation(
+                            "constrained mesh certificate has an invalid source occurrence",
+                        ));
+                    }
+                },
+                NodeProvenance::ConstraintSplit { source, parameter } => {
+                    if *source >= self.source_constraints.len()
+                        || parameter.cmp(&zero) != std::cmp::Ordering::Greater
+                        || parameter.cmp(&one) != std::cmp::Ordering::Less
+                    {
+                        return Err(GeometryErrorKind::triangulation(
+                            "constrained mesh certificate has an invalid split provenance",
+                        ));
+                    }
+                },
+                NodeProvenance::Generated => {},
+            }
+        }
+        for (id, source) in self.source_constraints.iter().enumerate() {
+            if source.id != id
+                || source.start_site >= self.vertices.len()
+                || source.end_site >= self.vertices.len()
+                || source.start_site == source.end_site
+                || !source.start.xy().x.is_finite()
+                || !source.start.xy().y.is_finite()
+                || !source.end.xy().x.is_finite()
+                || !source.end.xy().y.is_finite()
+                || self.vertices[source.start_site].xy() != source.start.xy()
+                || self.vertices[source.end_site].xy() != source.end.xy()
+            {
+                return Err(GeometryErrorKind::triangulation(
+                    "constrained mesh certificate has an invalid source site",
+                ));
+            }
+        }
+        let mut source_id = 0;
+        let mut cursor = zero.clone();
+        for piece in &self.constraint_pieces {
+            if self.source_constraints.get(piece.source).is_none()
+                || self.vertices.get(piece.start_site).is_none()
+                || self.vertices.get(piece.end_site).is_none()
+                || piece.start_site == piece.end_site
+                || piece.lo.cmp(&piece.hi) != std::cmp::Ordering::Less
+            {
+                return Err(GeometryErrorKind::triangulation(
+                    "constrained mesh certificate has an invalid source piece",
+                ));
+            }
+            if piece.source != source_id {
+                if piece.source != source_id + 1 || cursor.cmp(&one) != std::cmp::Ordering::Equal {
+                    return Err(GeometryErrorKind::triangulation(
+                        "constrained mesh certificate has a discontinuous source chain",
+                    ));
+                }
+                source_id = piece.source;
+                cursor = zero.clone();
+            }
+            if piece.lo.cmp(&cursor) != std::cmp::Ordering::Equal {
+                return Err(GeometryErrorKind::triangulation(
+                    "constrained mesh certificate has an unordered source chain",
+                ));
+            }
+            cursor = piece.hi.clone();
+        }
+        if source_id + usize::from(!self.constraint_pieces.is_empty())
+            != self.source_constraints.len()
+            || (!self.constraint_pieces.is_empty() && cursor.cmp(&one) != std::cmp::Ordering::Equal)
+        {
+            return Err(GeometryErrorKind::triangulation(
+                "constrained mesh certificate does not cover all sources",
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct PreparedSplit {
+    candidate: XY,
+    located: Located,
+    source: Option<(SourcePiece, exact::ExactRational)>,
+}
+
 /// The mesh with its constraint flags, one per halfedge slot.
 pub(super) struct ConstrainedMesh {
     pub(super) mesh: Mesh,
     pub(super) constrained: Vec<bool>,
+    source_constraints: Vec<SourceConstraint>,
+    source_pieces: HashMap<(usize, usize), SourcePiece>,
+    provenance: Vec<NodeProvenance>,
 }
 
 impl ConstrainedMesh {
     /// Delaunay-triangulate `points`, then force every `edges` pair in.
+    #[cfg(test)]
     pub(super) fn build(points: &[Point], edges: &[[usize; 2]]) -> Option<Self> {
-        let mesh = Mesh::delaunay(points)?;
+        let sources: Vec<_> = edges
+            .iter()
+            .enumerate()
+            .map(|(id, &[start_site, end_site])| SourceConstraint {
+                id,
+                start: points[start_site],
+                end: points[end_site],
+                start_site,
+                end_site,
+            })
+            .collect();
+        Self::build_with_sources(points, &(0..points.len()).collect::<Vec<_>>(), &sources)
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn build_with_sources(
+        points: &[Point],
+        occurrences: &[usize],
+        sources: &[SourceConstraint],
+    ) -> Result<Option<Self>> {
+        let Some(mesh) = Mesh::delaunay(points) else {
+            return Ok(None);
+        };
         let constrained = vec![false; mesh.halfedges.len()];
-        let mut this = Self { mesh, constrained };
+        let mut this = Self {
+            mesh,
+            constrained,
+            source_constraints: sources.to_vec(),
+            source_pieces: HashMap::with_capacity(sources.len()),
+            provenance: occurrences
+                .iter()
+                .copied()
+                .map(|occurrence| NodeProvenance::SourceSite { occurrence })
+                .collect(),
+        };
         let xy = |site: usize| points[site].xy();
-        for &[u, v] in edges {
-            this.insert_constraint(&xy, u, v);
+        for source in sources {
+            this.insert_constraint(
+                &xy,
+                source.start_site,
+                source.end_site,
+                source.id,
+                exact::ExactRational::zero(),
+                exact::ExactRational::one(),
+            )?;
         }
-        Some(this)
+        Ok(Some(this))
     }
 
     /// Force the segment `u -> v` to be an edge, splitting it at any vertex it
     /// passes through exactly, and flipping every edge it crosses.
-    fn insert_constraint(&mut self, xy: &impl Fn(usize) -> XY, u: usize, v: usize) {
+    fn insert_constraint(
+        &mut self,
+        xy: &impl Fn(usize) -> XY,
+        u: usize,
+        v: usize,
+        source: usize,
+        lo: exact::ExactRational,
+        hi: exact::ExactRational,
+    ) -> Result<()> {
         if u == v {
-            return;
+            return Ok(());
         }
         if let Some(slot) = self.mesh.edge_slot(u, v) {
             self.mark(slot);
-            return;
+            self.source_pieces
+                .entry(ordered(u, v))
+                .or_insert(SourcePiece {
+                    source,
+                    start_site: u,
+                    end_site: v,
+                    lo,
+                    hi,
+                });
+            return Ok(());
         }
         // Walk the fan around `u` to find the triangle the segment leaves
         // through, or a vertex it passes through exactly.
@@ -72,14 +327,24 @@ impl ConstrainedMesh {
             let sa = exact::orient2d(pu, xy(a), pv);
             let sb = exact::orient2d(pu, xy(b), pv);
             if sa == ExactSign::Zero && between(pu, pv, xy(a)) {
-                self.insert_constraint(xy, u, a);
-                self.insert_constraint(xy, a, v);
-                return;
+                let split = exact::ExactRational::from_segment(
+                    self.source(source).start.xy(),
+                    self.source(source).end.xy(),
+                    xy(a),
+                )?;
+                self.insert_constraint(xy, u, a, source, lo, split.clone())?;
+                self.insert_constraint(xy, a, v, source, split, hi)?;
+                return Ok(());
             }
             if sb == ExactSign::Zero && between(pu, pv, xy(b)) {
-                self.insert_constraint(xy, u, b);
-                self.insert_constraint(xy, b, v);
-                return;
+                let split = exact::ExactRational::from_segment(
+                    self.source(source).start.xy(),
+                    self.source(source).end.xy(),
+                    xy(b),
+                )?;
+                self.insert_constraint(xy, u, b, source, lo, split.clone())?;
+                self.insert_constraint(xy, b, v, source, split, hi)?;
+                return Ok(());
             }
             if sa == ExactSign::Positive && sb == ExactSign::Negative {
                 start = Some(next_halfedge(slot)); // the edge a -> b
@@ -109,8 +374,14 @@ impl ConstrainedMesh {
                 // Passes exactly through `apex`: constrain u->apex by flipping
                 // what we have so far, then continue from apex.
                 self.flip_until_clear(xy, u, apex, crossing);
-                self.insert_constraint(xy, apex, v);
-                return;
+                let split = exact::ExactRational::from_segment(
+                    self.source(source).start.xy(),
+                    self.source(source).end.xy(),
+                    pa,
+                )?;
+                self.insert_constraint(xy, u, apex, source, lo, split.clone())?;
+                self.insert_constraint(xy, apex, v, source, split, hi)?;
+                return Ok(());
             }
             edge = if s == ExactSign::Positive {
                 // apex is left of u->v: exit through edge (twin.next: apex-side)
@@ -120,6 +391,13 @@ impl ConstrainedMesh {
             };
         }
         self.flip_until_clear(xy, u, v, crossing);
+        Ok(())
+    }
+
+    fn source(&self, id: usize) -> &SourceConstraint {
+        self.source_constraints
+            .get(id)
+            .expect("source constraint ids are dense")
     }
 
     /// Flip the crossed edges until none cross `u -> v`, then mark the edge.
@@ -185,6 +463,8 @@ impl ConstrainedMesh {
     /// Faces inside the constraint polygon: the hull faces are outside, and
     /// crossing a constraint toggles, crossing anything else does not.
     pub(super) fn inside_faces(&self) -> Vec<bool> {
+        #[cfg(test)]
+        update_work(|counters| counters.inside_label_passes += 1);
         let count = self.mesh.triangle_count();
         let mut label: Vec<Option<bool>> = vec![None; count];
         let mut queue = VecDeque::new();
@@ -231,6 +511,8 @@ impl ConstrainedMesh {
             let inside = self.inside_faces();
             let xy = |site: usize, points: &[Point]| points[site].xy();
             let mut bad = None;
+            #[cfg(test)]
+            update_work(|counters| counters.bad_face_scans += 1);
             for (t, &kept) in inside.iter().enumerate() {
                 if !kept || !self.mesh.alive(t) {
                     continue;
@@ -262,9 +544,9 @@ impl ConstrainedMesh {
             // Ruppert: a constraint whose diametral circle holds the center is
             // split at its midpoint instead, and so is any constraint, or the
             // hull, that the walk toward the center would have to cross: a
-            // center beyond a constraint is one that encroaches it. A split
-            // is topological, so the midpoint's rounded position decides only
-            // which face receives it.
+            // center beyond a constraint is one that encroaches it. A source
+            // split is emitted from its original exact parameter; a generated
+            // edge midpoint only needs a valid topological placement.
             let encroached = (0..self.mesh.halfedges.len()).find(|&e| {
                 self.constrained[e] && self.mesh.alive(e / 3) && {
                     let (s, t2) = (
@@ -274,31 +556,31 @@ impl ConstrainedMesh {
                     in_diametral_circle(xy(s, points), xy(t2, points), center)
                 }
             });
-            let midpoint = |e: usize, points: &[Point]| {
-                let (s, t2) = (
-                    self.mesh.triangles[e],
-                    self.mesh.triangles[next_halfedge(e)],
-                );
-                let (ps, pt) = (xy(s, points), xy(t2, points));
-                XY::new(f64::midpoint(ps.x, pt.x), f64::midpoint(ps.y, pt.y))
-            };
             let xy_now = |s: usize| points[s].xy();
-            let split = |e: usize| {
-                let m = midpoint(e, points);
-                self.locate_split(&xy_now, e, m).map(|located| (m, located))
-            };
             let placed = if let Some(e) = encroached {
-                split(e)
+                self.prepare_split(&xy_now, points, e)?
             } else {
                 match self
                     .mesh
                     .locate_bounded(&xy_now, t, center, &self.constrained)
                 {
-                    Ok(located) => Some((center, located)),
-                    Err(e) => split(e),
+                    Ok(Located::OnEdge(e)) if self.constrained[e] => {
+                        self.prepare_split(&xy_now, points, e)?
+                    },
+                    Ok(located) => Some(PreparedSplit {
+                        candidate: center,
+                        located,
+                        source: None,
+                    }),
+                    Err(e) => self.prepare_split(&xy_now, points, e)?,
                 }
             };
-            let Some((candidate, located)) = placed else {
+            let Some(PreparedSplit {
+                candidate,
+                located,
+                source,
+            }) = placed
+            else {
                 return Ok(false);
             };
             if matches!(located, Located::OnVertex) {
@@ -309,49 +591,143 @@ impl ConstrainedMesh {
             // and re-mark from those once the mesh has settled; a split
             // constraint becomes its two halves.
             let mut pairs = self.constrained_pairs();
-            if let Located::OnEdge(e) = located
-                && self.constrained[e]
-            {
-                let (s, t2) = (
-                    self.mesh.triangles[e],
-                    self.mesh.triangles[next_halfedge(e)],
-                );
-                pairs.remove(&ordered(s, t2));
-                pairs.insert(ordered(s, site));
-                pairs.insert(ordered(site, t2));
+            if let Some((piece, _)) = &source {
+                pairs.remove(&ordered(piece.start_site, piece.end_site));
+                pairs.insert(ordered(piece.start_site, site));
+                pairs.insert(ordered(site, piece.end_site));
             }
+            crate::try_reserve_vec(points, 1)?;
+            crate::try_reserve_vec(&mut self.provenance, 1)?;
             points.push(Point::new_raw_xy(candidate.x, candidate.y));
             self.mesh.admit_vertex(site);
+            self.provenance.push(match &source {
+                Some((piece, parameter)) => NodeProvenance::ConstraintSplit {
+                    source: piece.source,
+                    parameter: parameter.clone(),
+                },
+                None => NodeProvenance::Generated,
+            });
             let xy2 = |s: usize| points[s].xy();
             let skip = self.constrained.clone();
             self.mesh.insert_constrained(&xy2, site, located, &skip);
             self.remark(&pairs);
+            if let Some((piece, parameter)) = source {
+                self.source_pieces
+                    .remove(&ordered(piece.start_site, piece.end_site));
+                self.source_pieces
+                    .insert(ordered(piece.start_site, site), SourcePiece {
+                        source: piece.source,
+                        start_site: piece.start_site,
+                        end_site: site,
+                        lo: piece.lo,
+                        hi: parameter.clone(),
+                    });
+                self.source_pieces
+                    .insert(ordered(site, piece.end_site), SourcePiece {
+                        source: piece.source,
+                        start_site: site,
+                        end_site: piece.end_site,
+                        lo: parameter,
+                        hi: piece.hi,
+                    });
+            }
             inserted += 1;
         }
     }
 
-    /// Where the midpoint `m` of edge `e` goes. A split is topological: `m`
-    /// stands on `e` whenever its rounded position is on `e` or inside either
-    /// face beside it, and only a midpoint that rounding carried onto another
-    /// edge or vertex, or out of both faces, is refused.
-    fn locate_split(&self, xy: &impl Fn(usize) -> XY, e: usize, m: XY) -> Option<Located> {
-        let twin = self.mesh.halfedges[e];
-        let faces = [Some(e / 3), (twin != EMPTY).then_some(twin / 3)];
-        for face in faces.into_iter().flatten() {
-            match self.mesh.classify(xy, face, m) {
-                Err(crossed) if crossed == e || crossed == twin => {},
-                Ok(Located::Inside(_)) => return Some(Located::OnEdge(e)),
-                Ok(Located::OnEdge(slot)) => {
-                    return (slot == e || slot == twin).then_some(Located::OnEdge(e));
+    fn prepare_split(
+        &self,
+        xy: &impl Fn(usize) -> XY,
+        points: &[Point],
+        e: usize,
+    ) -> Result<Option<PreparedSplit>> {
+        let (start, end) = (
+            self.mesh.triangles[e],
+            self.mesh.triangles[next_halfedge(e)],
+        );
+        if self.constrained[e] {
+            let Some(piece) = self.source_pieces.get(&ordered(start, end)) else {
+                return Err(GeometryErrorKind::triangulation(
+                    "constrained edge has no source interval",
+                ));
+            };
+            let source = self.source(piece.source);
+            let requested = piece.lo.try_midpoint(&piece.hi)?;
+            let candidate = match requested.round_segment(source.start.xy(), source.end.xy()) {
+                Ok(candidate) => candidate,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::Geometry(GeometryErrorKind::ExactCoordinateOutOfRange)
+                    ) =>
+                {
+                    return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
                 },
-                Ok(Located::OnVertex) | Err(_) => return None,
-            }
+                Err(error) => return Err(error),
+            };
+            let parameter = self.certify_source_split(piece, candidate)?;
+            let Some(located) = self.locate_split(xy, e, candidate) else {
+                return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
+            };
+            return Ok(Some(PreparedSplit {
+                candidate,
+                located,
+                source: Some((piece.clone(), parameter)),
+            }));
         }
-        // Across `e` from both sides can only be rounding on a hull edge.
-        Some(Located::OnEdge(e))
+        let ps = points[start].xy();
+        let pt = points[self.mesh.triangles[next_halfedge(e)]].xy();
+        let midpoint = XY::new(f64::midpoint(ps.x, pt.x), f64::midpoint(ps.y, pt.y));
+        let located = match self
+            .mesh
+            .locate_bounded(xy, e / 3, midpoint, &self.constrained)
+        {
+            Ok(Located::OnEdge(slot)) if slot == e || slot == self.mesh.halfedges[e] => {
+                Located::OnEdge(e)
+            },
+            Ok(Located::Inside(face)) => Located::Inside(face),
+            Ok(Located::OnVertex | Located::OnEdge(_)) | Err(_) => return Ok(None),
+        };
+        Ok(Some(PreparedSplit {
+            candidate: midpoint,
+            located,
+            source: None,
+        }))
+    }
+
+    fn certify_source_split(
+        &self,
+        piece: &SourcePiece,
+        candidate: XY,
+    ) -> Result<exact::ExactRational> {
+        let source = self.source(piece.source);
+        if exact::orient2d(source.start.xy(), source.end.xy(), candidate) != ExactSign::Zero {
+            return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
+        }
+        let parameter =
+            exact::ExactRational::from_segment(source.start.xy(), source.end.xy(), candidate)?;
+        if parameter.try_cmp(&piece.lo)? != std::cmp::Ordering::Greater
+            || parameter.try_cmp(&piece.hi)? != std::cmp::Ordering::Less
+        {
+            return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
+        }
+        Ok(parameter)
+    }
+
+    /// A source split is topologically on an edge only after exact
+    /// classification says so. An adjacent-face hit is an interior point, not
+    /// evidence that the source edge can be replaced by two edges.
+    fn locate_split(&self, xy: &impl Fn(usize) -> XY, e: usize, point: XY) -> Option<Located> {
+        let twin = self.mesh.halfedges[e];
+        match self.mesh.classify(xy, e / 3, point) {
+            Ok(Located::OnEdge(slot)) => (slot == e || slot == twin).then_some(Located::OnEdge(e)),
+            Ok(Located::Inside(_) | Located::OnVertex) | Err(_) => None,
+        }
     }
 
     fn constrained_pairs(&self) -> HashSet<(usize, usize)> {
+        #[cfg(test)]
+        update_work(|counters| counters.constraint_reconstruction_passes += 1);
         (0..self.mesh.halfedges.len())
             .filter(|&e| self.constrained[e] && self.mesh.alive(e / 3))
             .map(|e| {
@@ -366,6 +742,8 @@ impl ConstrainedMesh {
     /// Re-derive the per-slot flags from the constrained vertex pairs after
     /// an insertion has renumbered the cavity's slots.
     fn remark(&mut self, pairs: &HashSet<(usize, usize)>) {
+        #[cfg(test)]
+        update_work(|counters| counters.flag_remark_passes += 1);
         self.constrained = vec![false; self.mesh.halfedges.len()];
         for e in 0..self.mesh.halfedges.len() {
             if !self.mesh.alive(e / 3) {
@@ -378,6 +756,138 @@ impl ConstrainedMesh {
                 self.constrained[e] = true;
             }
         }
+    }
+
+    fn validate_source_chains(&self, points: &[Point]) -> Result<()> {
+        let zero = exact::ExactRational::zero();
+        let one = exact::ExactRational::one();
+        let constrained = self.constrained_pairs();
+        for source in &self.source_constraints {
+            let mut pieces: Vec<&SourcePiece> = self
+                .source_pieces
+                .values()
+                .filter(|piece| piece.source == source.id)
+                .collect();
+            if pieces.is_empty() {
+                return Err(GeometryErrorKind::triangulation(format!(
+                    "source constraint {} has no emitted boundary chain",
+                    source.id
+                )));
+            }
+            pieces.sort_unstable_by(|left, right| {
+                left.lo.cmp(&right.lo).then_with(|| left.hi.cmp(&right.hi))
+            });
+            let mut cursor = zero.clone();
+            for piece in pieces {
+                if piece.lo.cmp(&cursor) != std::cmp::Ordering::Equal
+                    || piece.lo.cmp(&piece.hi) != std::cmp::Ordering::Less
+                {
+                    return Err(GeometryErrorKind::triangulation(format!(
+                        "source constraint {} has a non-ordered parameter chain",
+                        source.id
+                    )));
+                }
+                let Some(&start) = points.get(piece.start_site) else {
+                    return Err(GeometryErrorKind::triangulation(
+                        "source constraint references a missing start site",
+                    ));
+                };
+                let Some(&end) = points.get(piece.end_site) else {
+                    return Err(GeometryErrorKind::triangulation(
+                        "source constraint references a missing end site",
+                    ));
+                };
+                if exact::orient2d(source.start.xy(), source.end.xy(), start.xy())
+                    != ExactSign::Zero
+                    || exact::orient2d(source.start.xy(), source.end.xy(), end.xy())
+                        != ExactSign::Zero
+                {
+                    return Err(GeometryErrorKind::triangulation(format!(
+                        "source constraint {} has an off-line emitted vertex",
+                        source.id
+                    )));
+                }
+                let start_parameter = exact::ExactRational::from_segment(
+                    source.start.xy(),
+                    source.end.xy(),
+                    start.xy(),
+                )?;
+                let end_parameter = exact::ExactRational::from_segment(
+                    source.start.xy(),
+                    source.end.xy(),
+                    end.xy(),
+                )?;
+                if start_parameter.cmp(&piece.lo) != std::cmp::Ordering::Equal
+                    || end_parameter.cmp(&piece.hi) != std::cmp::Ordering::Equal
+                    || !constrained.contains(&ordered(piece.start_site, piece.end_site))
+                {
+                    return Err(GeometryErrorKind::triangulation(format!(
+                        "source constraint {} does not match its emitted edge",
+                        source.id
+                    )));
+                }
+                cursor = piece.hi.clone();
+            }
+            if cursor.cmp(&one) != std::cmp::Ordering::Equal {
+                return Err(GeometryErrorKind::triangulation(format!(
+                    "source constraint {} does not cover its source interval",
+                    source.id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish_plan(
+        self,
+        points: Vec<Point>,
+        refinement: super::CdtRefinement,
+        force_xy: bool,
+    ) -> Result<ConstrainedMeshPlan> {
+        self.validate_source_chains(&points)?;
+        let inside = self.inside_faces();
+        let faces = (0..self.mesh.triangle_count())
+            .filter(|&t| self.mesh.alive(t) && inside[t])
+            .map(|t| self.mesh.triangle(t))
+            .collect();
+        let mut cocircular = vec![false; self.mesh.halfedges.len()];
+        for e in 0..self.mesh.halfedges.len() {
+            let twin = self.mesh.halfedges[e];
+            if twin == EMPTY || twin < e || !self.mesh.alive(e / 3) || !self.mesh.alive(twin / 3) {
+                continue;
+            }
+            let [a, b, c] = self.mesh.triangle(e / 3);
+            let opposite = self.mesh.triangles[prev_halfedge(twin)];
+            if exact::incircle(
+                points[a].xy(),
+                points[b].xy(),
+                points[c].xy(),
+                points[opposite].xy(),
+            ) == ExactSign::Zero
+            {
+                cocircular[e] = true;
+                cocircular[twin] = true;
+            }
+        }
+        let mut constraint_pieces: Vec<_> = self.source_pieces.into_values().collect();
+        constraint_pieces.sort_unstable_by(|left, right| {
+            left.source
+                .cmp(&right.source)
+                .then_with(|| left.lo.cmp(&right.lo))
+                .then_with(|| left.hi.cmp(&right.hi))
+                .then_with(|| left.start_site.cmp(&right.start_site))
+                .then_with(|| left.end_site.cmp(&right.end_site))
+        });
+        Ok(ConstrainedMeshPlan {
+            vertices: points,
+            faces,
+            provenance: self.provenance,
+            source_constraints: self.source_constraints,
+            constraint_pieces,
+            cocircular,
+            refinement,
+            force_xy,
+        })
     }
 }
 
@@ -522,6 +1032,53 @@ mod tests {
     }
 
     #[test]
+    fn refinement_rebuild_work_counters_cover_the_existing_passes() {
+        let _ = take_refinement_work_counters();
+        let mut pts = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
+        let edges: Vec<[usize; 2]> = (0..4).map(|i| [i, (i + 1) % 4]).collect();
+        let mut mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
+        assert!(mesh.refine(&mut pts, None, Some(100.0), 100).unwrap());
+        let counters = take_refinement_work_counters();
+        assert!(counters.inside_label_passes > 0);
+        assert!(counters.bad_face_scans > 0);
+        assert!(counters.constraint_reconstruction_passes > 0);
+        assert!(counters.flag_remark_passes > 0);
+    }
+
+    #[test]
+    fn rounded_source_midpoint_is_rejected_before_mesh_mutation() {
+        let next = 1.0_f64.next_up();
+        let mut pts = points(&[(1.0, 0.0), (next, 1.0), (1.0, 0.5)]);
+        let before = pts.clone();
+        let edges = vec![[0, 1], [1, 2], [2, 0]];
+        let mut mesh = ConstrainedMesh::build(&pts, &edges).expect("non-collinear source");
+        let error = mesh
+            .refine(&mut pts, None, Some(1.0e-30), 32)
+            .expect_err("the rounded midpoint is not on the source edge");
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
+                operation: "triangulate"
+            })
+        ));
+        assert_eq!(pts, before, "rejected source split does not append a site");
+    }
+
+    #[test]
+    fn rounded_point_inside_the_adjacent_face_is_not_an_edge_split() {
+        let next = 1.0_f64.next_up();
+        let pts = points(&[(1.0, 0.0), (next, 1.0), (0.0, 0.5)]);
+        let mesh = ConstrainedMesh::build(&pts, &[[0, 1], [1, 2], [2, 0]]).unwrap();
+        let edge = mesh.mesh.edge_slot(0, 1).unwrap();
+        let xy = |site: usize| pts[site].xy();
+        assert_eq!(
+            mesh.locate_split(&xy, edge, XY::new(1.0, 0.5)),
+            None,
+            "face containment is not proof of source incidence"
+        );
+    }
+
+    #[test]
     fn unrepresentable_circumcenter_is_an_explicit_midpoint_case() {
         let a = XY::new(0.0, 0.0);
         let b = XY::new(1.0, 0.0);
@@ -601,7 +1158,7 @@ mod regressions {
 
     #[test]
     fn sliver_refines_to_the_angle_without_leaving_the_hull() {
-        let mut points = pts(&[(0.0, 0.0), (20.0, 0.0), (20.0, 0.2), (0.1, 0.05)]);
+        let mut points = pts(&[(0.0, 0.0), (20.0, 0.0), (20.0, 0.25), (0.125, 0.0625)]);
         let mut cdt = ConstrainedMesh::build(&points, &ring_edges(4)).unwrap();
         let before = inside_count(&cdt);
         assert!(
