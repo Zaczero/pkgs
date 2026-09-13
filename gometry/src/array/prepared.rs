@@ -148,10 +148,16 @@ pub(crate) struct RowProductsHandle {
 pub(crate) struct ArrayRowOperation<'a> {
     array: &'a PyGeometryArray,
     products: RowProductsHandle,
+    #[allow(
+        dead_code,
+        reason = "the dependent nullable index owner consumes this arbitrary-order rank directory"
+    )]
+    compact_rank: Option<crate::array::ValidityRank<'a>>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct PresentRow<'a> {
+    source: &'a PyGeometryArray,
     logical: usize,
     row: ShapeRow<'a>,
 }
@@ -163,6 +169,14 @@ pub(crate) enum ArrayRow<'a, T> {
 }
 
 impl<'a> PresentRow<'a> {
+    fn new(source: &'a PyGeometryArray, logical: usize, row: ShapeRow<'a>) -> Self {
+        Self {
+            source,
+            logical,
+            row,
+        }
+    }
+
     pub(crate) const fn logical(self) -> usize {
         self.logical
     }
@@ -177,6 +191,7 @@ impl<'a> ArrayRowOperation<'a> {
         Self {
             array,
             products: array.row_products.operation(),
+            compact_rank: None,
         }
     }
 
@@ -186,21 +201,80 @@ impl<'a> ArrayRowOperation<'a> {
         &self,
         missing: impl Fn() -> T + Copy + 'a,
     ) -> impl ExactSizeIterator<Item = ArrayRow<'a, T>> + 'a {
-        self.array.logical_rows().map(move |row| match row {
+        let array = self.array;
+        array.logical_rows().map(move |row| match row {
             LogicalRow::Missing { logical } => ArrayRow::Missing {
                 logical,
                 value: missing(),
             },
-            LogicalRow::Present { logical, row } => ArrayRow::Present(PresentRow { logical, row }),
+            LogicalRow::Present { logical, row } => {
+                ArrayRow::Present(PresentRow::new(array, logical, row))
+            },
         })
     }
 
     /// Present-only traversal for operations that intentionally skip missing
     /// rows, such as index joins and sparse geometry collection builders.
     pub(crate) fn present_rows(&self) -> impl Iterator<Item = PresentRow<'a>> + 'a {
-        self.array.logical_rows().filter_map(|row| match row {
+        let array = self.array;
+        array.logical_rows().filter_map(move |row| match row {
             LogicalRow::Missing { .. } => None,
-            LogicalRow::Present { logical, row } => Some(PresentRow { logical, row }),
+            LogicalRow::Present { logical, row } => Some(PresentRow::new(array, logical, row)),
+        })
+    }
+
+    /// Publish a scalar geometry from an already-resolved row. The source
+    /// owner and logical identity travel with the row, so compact nullable
+    /// points are never ranked a second time by a bulk caller.
+    pub(crate) fn geometry(&mut self, row: PresentRow<'a>) -> crate::error::Result<PyGeometry> {
+        row.source
+            .geometry_from_present_row(&mut self.products, row)
+    }
+
+    /// Resolve one logical row into the owner-bound present-row value used by
+    /// indexed and other arbitrary-order operations. Compact points build one
+    /// directory for this operation; sequential callers should keep using
+    /// [`Self::rows_with_missing`] so they can use the cheaper validity cursor.
+    #[allow(
+        dead_code,
+        reason = "the dependent nullable index owner consumes this arbitrary-order row seam"
+    )]
+    pub(crate) fn present_row_at(
+        &mut self,
+        logical: usize,
+    ) -> crate::error::Result<Option<PresentRow<'a>>> {
+        if logical >= self.array.len() {
+            return Ok(None);
+        }
+        if self.array.is_compact_nullable()
+            && let Some(mask) = self.array.missing()
+            && matches!(
+                self.array.storage(),
+                GeometryArrayStorage::Packed(crate::array::PackedStorage::Points { .. })
+            )
+        {
+            if self.compact_rank.is_none() {
+                self.compact_rank = Some(mask.full_rank()?);
+            }
+            let Some(present) = self
+                .compact_rank
+                .as_ref()
+                .expect("compact rank was initialized")
+                .resolve(logical)
+            else {
+                return Ok(None);
+            };
+            return Ok(Some(PresentRow::new(
+                self.array,
+                logical,
+                self.array.storage().row(present),
+            )));
+        }
+        Ok(match self.array.logical_row(logical) {
+            Some(LogicalRow::Missing { .. }) | None => None,
+            Some(LogicalRow::Present { row, .. }) => {
+                Some(PresentRow::new(self.array, logical, row))
+            },
         })
     }
 
@@ -733,42 +807,41 @@ impl PyGeometryArray {
     /// Scalar geometry for a logical row: mixed rows share one array-cached
     /// [`PreparedPlan`]; packed rows build a fresh handle (same as before).
     pub(crate) fn geometry_at(&self, index: usize) -> crate::error::Result<PyGeometry> {
+        let crate::array::LogicalRow::Present { row, .. } = self
+            .logical_row(index)
+            .expect("geometry row must be in bounds")
+        else {
+            unreachable!("missing rows are rejected before scalar extraction")
+        };
+        let mut operation = self.row_operation();
+        operation.geometry(PresentRow::new(self, index, row))
+    }
+
+    fn geometry_from_present_row(
+        &self,
+        products: &mut RowProductsHandle,
+        row: PresentRow<'_>,
+    ) -> crate::error::Result<PyGeometry> {
         let frame = self.frame.clone();
-        match self.storage() {
-            GeometryArrayStorage::Mixed(shapes) => {
-                let plan = self.row_products.prepared_plan(index, || {
-                    Arc::try_new(ShapeData::new(shapes[index].clone()))
-                        .map_err(crate::error::Error::from)
-                })?;
-                Ok(PyGeometry::with_row_products(
-                    Arc::clone(plan.shape_arc()),
-                    frame,
-                    self.row_products.clone(),
-                    index,
-                ))
-            },
-            _ if self.rows.is_compact_nullable() => {
-                let crate::array::LogicalRow::Present { row, .. } = self
-                    .logical_row(index)
-                    .expect("geometry row must be in bounds")
-                else {
-                    unreachable!("missing rows are rejected before scalar extraction")
-                };
-                Ok(PyGeometry::with_row_products(
-                    Arc::try_new(ShapeData::new(row.with_shape(Clone::clone)?))
-                        .map_err(crate::error::Error::from)?,
-                    frame,
-                    self.row_products.clone(),
-                    index,
-                ))
-            },
-            GeometryArrayStorage::Packed(_) => Ok(PyGeometry::with_row_products(
-                self.storage().shape_data_at(index)?,
+        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
+            let plan = products.prepared_plan(row.logical, || {
+                Arc::try_new(ShapeData::new(row.row.with_shape(Clone::clone)?))
+                    .map_err(crate::error::Error::from)
+            })?;
+            return Ok(PyGeometry::with_row_products(
+                Arc::clone(plan.shape_arc()),
                 frame,
                 self.row_products.clone(),
-                index,
-            )),
+                row.logical,
+            ));
         }
+        Ok(PyGeometry::with_row_products(
+            Arc::try_new(ShapeData::new(row.row.with_shape(Clone::clone)?))
+                .map_err(crate::error::Error::from)?,
+            frame,
+            self.row_products.clone(),
+            row.logical,
+        ))
     }
 }
 
@@ -883,6 +956,32 @@ mod frame_cache_row_tests {
             Some(2.0),
             None
         ]);
+    }
+
+    #[test]
+    fn arbitrary_present_row_resolution_keeps_logical_and_payload_identity() {
+        let source = PyGeometryArray::scatter_present_rows(
+            &points(),
+            crate::array::ValidityMask::from_vec(5, vec![false, true, false, true, false])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let mut operation = source.row_operation();
+        let rows = [3, 0, 3, 2];
+        let actual = rows
+            .iter()
+            .map(|&logical| {
+                operation.present_row_at(logical).unwrap().map(|row| {
+                    let point = match row.row() {
+                        ShapeRow::Point(point) => point,
+                        _ => unreachable!("point fixture yields point rows"),
+                    };
+                    (row.logical(), point.x)
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, [None, Some((0, 0.0)), None, Some((2, 1.0)),]);
     }
 
     #[test]

@@ -390,7 +390,7 @@ pub(crate) fn from_polyline(
             .map_err(|_| error())?
             .to_cow()?;
         rows.try_push(decode_tagged(text.as_ref())?)?;
-        Ok(StreamedRow::Present {
+        Ok(StreamedRow {
             crs: None,
             epoch: None,
         })

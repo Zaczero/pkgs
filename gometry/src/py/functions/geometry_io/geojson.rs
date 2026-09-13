@@ -15,7 +15,7 @@ use serde_json::Value;
 use serde_json::value::RawValue;
 
 use crate::array::ValidityMask;
-use crate::py::functions::bulk_rows::{StreamedRow, StreamedShape, batch_bulk, stream_bulk_owned};
+use crate::py::functions::bulk_rows::{StreamedShape, batch_bulk, stream_bulk_owned};
 use crate::{
     Crs, Frame, GeoJsonDecodeContext, OwnedBytes, PyGeometry, PyGeometryArray, ScalarOrIterator,
     Shape, Typed, Wgs84DefaultCrs, classify_scalar_or_iterator, coerce_geojson_geometry_value,
@@ -109,10 +109,7 @@ fn parse_geojson_row_owned(
     crs: Option<&Crs>,
 ) -> crate::error::Result<StreamedShape> {
     let Some(value) = value else {
-        return Ok(StreamedShape {
-            shape: None,
-            row: StreamedRow::Missing,
-        });
+        return Ok(StreamedShape::Missing);
     };
     let path = format!("$[{row}]");
     let Some((shape, _)) = coerce_geojson_geometry_value_at(
@@ -123,17 +120,12 @@ fn parse_geojson_row_owned(
         &path,
     )?
     else {
-        return Ok(StreamedShape {
-            shape: None,
-            row: StreamedRow::Missing,
-        });
+        return Ok(StreamedShape::Missing);
     };
-    Ok(StreamedShape {
-        shape: Some(shape),
-        row: StreamedRow::Present {
-            crs: None,
-            epoch: None,
-        },
+    Ok(StreamedShape::Present {
+        shape,
+        crs: None,
+        epoch: None,
     })
 }
 

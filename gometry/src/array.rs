@@ -30,7 +30,7 @@ use crate::{
     DefaultedF64Input, DistanceUnit, F64Param, Frame, FrameAdoption, FrameEdit, GeometryKind,
     GeometryTransformFrame, HeapSize, I64Param, InterpolatePlan, OriginSpec, OverlayOp, Point,
     Polygon, PyCoordinates, PyCrs, PyGeometry, PyTypeError, PyValidationReport, PyValueError,
-    RepairMethod, Ring, SVG_ARRAY_PREVIEW, Shape, ShapeData, SimplifyMethod, SpatialCurve,
+    RepairMethod, Ring, SVG_ARRAY_PREVIEW, Shape, SimplifyMethod, SpatialCurve,
     TransformOptionArgs, Typed, VoronoiClipInput, array_binary_geometry, cdt_refinement_values,
     coerce_collected_geometry_items, coordinate_epoch_option, coordinates, crs, crs_arc, crs_label,
     curves, exact_geometry, exact_geometry_array, expected_geometry_or_array,
@@ -262,7 +262,7 @@ impl ArrayRows {
         })
     }
 
-    fn logical_rows(&self) -> LogicalRows<'_> {
+    fn logical_rows<'a>(&'a self) -> LogicalRows<'a> {
         let remaining = self.len();
         let state = match self {
             Self::Dense(storage) => LogicalRowsState::Dense(storage.iter_rows()),
@@ -358,7 +358,7 @@ mod methods_measures;
 mod methods_predicates;
 mod methods_topology;
 pub(crate) mod missing;
-pub(crate) use missing::ValidityMask;
+pub(crate) use missing::{ValidityMask, ValidityRank};
 
 mod methods_unary_io;
 mod ops;

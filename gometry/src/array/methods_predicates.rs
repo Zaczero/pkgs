@@ -46,13 +46,15 @@ impl PyGeometryArray {
     /// 'POINT (1 2)'
     pub fn to_numpy(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let len = self.len();
-        let mut values = Vec::with_capacity(len);
-        for index in 0..len {
-            if self.is_row_missing(index) {
-                values.push(py.None());
-            } else {
-                let geometry = Typed(self.geometry_at(index).map_err(crate::PyErr::from)?);
-                values.push(geometry.into_py_any(py)?);
+        let mut values = crate::try_vec_with_capacity(len)?;
+        let mut rows = self.row_operation();
+        for row in rows.rows_with_missing(|| ()) {
+            match row {
+                ArrayRow::Missing { .. } => values.push(py.None()),
+                ArrayRow::Present(row) => {
+                    let geometry = Typed(rows.geometry(row).map_err(crate::PyErr::from)?);
+                    values.push(geometry.into_py_any(py)?);
+                },
             }
         }
         let array =

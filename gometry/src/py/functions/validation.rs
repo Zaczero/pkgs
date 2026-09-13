@@ -131,7 +131,7 @@ pub(crate) fn require(
                         None,
                     )?;
                     rows.try_push(geometry.shape.shape().clone())?;
-                    Ok(StreamedRow::Present {
+                    Ok(StreamedRow {
                         crs: geometry.crs_ref().cloned(),
                         epoch: geometry.epoch(),
                     })

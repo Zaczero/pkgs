@@ -2,17 +2,14 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::sync::Arc;
-
 use crate::array::{
     Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, LineRows, PackedStorage, PointRows,
-    Polygon, Ring, RowSelectionRef, RowsIter, Shape, ShapeData, ShapeRow, ShapesIter,
-    column_window, line_logical_len, packed_lines_coord_len, packed_polygons_coord_len,
-    packed_polygons_ring_len, physical_row, point_logical_len, polygon_logical_len,
-    polygon_rings_range,
+    Polygon, Ring, RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window,
+    line_logical_len, packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len,
+    physical_row, point_logical_len, polygon_logical_len, polygon_rings_range,
 };
 use crate::error::Result;
-use crate::geometry::{CoordWindow, LineSeq};
+use crate::geometry::CoordWindow;
 
 const fn coordseq_logical_bytes(coords: &CoordSeq, count: usize) -> usize {
     coords.axes().byte_width(count)
@@ -577,7 +574,7 @@ impl GeometryArrayStorage {
                 row_map,
             }) => {
                 let window = row_map.as_deref().csr_window(offsets.as_slice(), index);
-                ShapeRow::Line(coords, window.start, window.end)
+                ShapeRow::line(coords, CoordWindow::from_range(window, coords.len()))
             },
             Self::Packed(PackedStorage::Polygons {
                 coords,
@@ -587,44 +584,9 @@ impl GeometryArrayStorage {
             }) => {
                 let rings =
                     polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index);
-                ShapeRow::Rings(coords, ring_offsets, rings.start, rings.end)
+                ShapeRow::rings(coords, ring_offsets, rings)
             },
         }
-    }
-
-    /// Build a scalar shape payload for a packed row (always fresh ShapeData).
-    ///
-    /// Mixed rows must go through [`PyGeometryArray::geometry_at`] so the
-    /// array-side prepared cache owns the plan and its ShapeData.
-    pub(crate) fn shape_data_at(&self, index: usize) -> Result<Arc<ShapeData>> {
-        use crate::geometry::IntoSharedShape as _;
-        let shape = match self {
-            Self::Mixed(shapes) => shapes[index].clone(),
-            Self::Packed(PackedStorage::Points { coords, row_map }) => {
-                Shape::Point(coords.point_at(physical_row(row_map.as_deref(), index)))
-            },
-            Self::Packed(PackedStorage::Polygons {
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map,
-            }) => Shape::Polygon(Self::polygon_view(
-                coords,
-                ring_offsets,
-                polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
-            )?),
-            Self::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) => Shape::LineString(LineSeq::from_proven(Self::line_view(
-                coords,
-                offsets,
-                row_map.as_deref(),
-                index,
-            ))),
-        };
-        shape.try_into_shared()
     }
 }
 

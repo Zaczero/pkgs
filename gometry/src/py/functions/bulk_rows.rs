@@ -10,20 +10,21 @@ use crate::{Crs, Frame, PyGeometryArray, Shape, guard_epoch_frame};
 
 const DETACHED_BATCH_ROWS: usize = 0x4000;
 
-pub(crate) enum StreamedRow {
-    Present {
-        crs: Option<Crs>,
-        epoch: Option<f64>,
-    },
-    Missing,
+pub(crate) struct StreamedRow {
+    pub(crate) crs: Option<Crs>,
+    pub(crate) epoch: Option<f64>,
 }
 
 /// The attached half of a streamed row owns all data that detached parsing
-/// needs. Python traversal and protocol errors stay at the ingress; the shape,
-/// metadata admission, and row packing happen after the boundary.
-pub(crate) struct StreamedShape {
-    pub(crate) shape: Option<Shape>,
-    pub(crate) row: StreamedRow,
+/// needs. A sum type keeps missing rows from carrying a shape and present rows
+/// from carrying absent metadata.
+pub(crate) enum StreamedShape {
+    Missing,
+    Present {
+        shape: Shape,
+        crs: Option<Crs>,
+        epoch: Option<f64>,
+    },
 }
 
 /// Bulk stream row carrying a raw normalized SRID (`None` = CRS-free).
@@ -123,14 +124,13 @@ where
             .py()
             .detach(move || -> crate::error::Result<BulkState> {
                 let parsed = parse_row_ref(owned, row)?;
-                if let Some(shape) = parsed.shape {
-                    rows.try_push(shape)?;
-                }
-                match parsed.row {
-                    StreamedRow::Present {
+                match parsed {
+                    StreamedShape::Present {
+                        shape,
                         crs: row_crs,
                         epoch,
                     } => {
+                        rows.try_push(shape)?;
                         if let Some(context) = crs_context {
                             first_crs.admit(row_crs, fallback.as_ref(), row, context)?;
                         }
@@ -164,7 +164,7 @@ where
                             }
                         }
                     },
-                    StreamedRow::Missing => {
+                    StreamedShape::Missing => {
                         crate::try_push_vec(&mut missing_rows, row)?;
                         rows.try_push_missing()?;
                     },
@@ -235,60 +235,46 @@ pub(crate) fn stream_bulk<'py>(
             rows.try_push_missing()?;
             continue;
         }
-        match parse_row(&item, &mut rows, row).map_err(|err| crate::note_array_row(err, row))? {
-            StreamedRow::Present {
-                crs: row_crs,
-                epoch,
-            } => {
-                if let Some(context) = crs_context {
-                    first_crs
-                        .admit(row_crs, fallback.as_ref(), row, context)
-                        .map_err(|err| crate::note_array_row(err.into(), row))?;
-                }
-                if let Some(explicit) = explicit_epoch
-                    && let Some(row_epoch) = epoch
-                    && !crate::boundary::metadata::epochs_equal(row_epoch, explicit)
-                {
-                    return Err(crate::note_array_row(
-                        crate::error::Error::from(
-                            crate::boundary::metadata::FrameError::SharedEpoch {
-                                context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
-                                index: row,
-                                first: Some(explicit),
-                                other: Some(row_epoch),
-                            },
-                        )
-                        .into(),
-                        row,
-                    ));
-                }
-                if explicit_epoch.is_none() {
-                    if !have_present_row {
-                        first_epoch = epoch;
-                        have_present_row = true;
-                    } else if first_epoch != epoch {
-                        return Err(crate::note_array_row(
-                            crate::error::Error::from(
-                                crate::boundary::metadata::FrameError::SharedEpoch {
-                                    context: crs_context
-                                        .unwrap_or("GeometryArray")
-                                        .to_owned()
-                                        .into(),
-                                    index: row,
-                                    first: first_epoch,
-                                    other: epoch,
-                                },
-                            )
-                            .into(),
-                            row,
-                        ));
-                    }
-                }
-            },
-            StreamedRow::Missing => {
-                crate::try_push(&mut missing_rows, row)?;
-                rows.try_push_missing()?;
-            },
+        let StreamedRow {
+            crs: row_crs,
+            epoch,
+        } = parse_row(&item, &mut rows, row).map_err(|err| crate::note_array_row(err, row))?;
+        if let Some(context) = crs_context {
+            first_crs
+                .admit(row_crs, fallback.as_ref(), row, context)
+                .map_err(|err| crate::note_array_row(err.into(), row))?;
+        }
+        if let Some(explicit) = explicit_epoch
+            && let Some(row_epoch) = epoch
+            && !crate::boundary::metadata::epochs_equal(row_epoch, explicit)
+        {
+            return Err(crate::note_array_row(
+                crate::error::Error::from(crate::boundary::metadata::FrameError::SharedEpoch {
+                    context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
+                    index: row,
+                    first: Some(explicit),
+                    other: Some(row_epoch),
+                })
+                .into(),
+                row,
+            ));
+        }
+        if explicit_epoch.is_none() {
+            if !have_present_row {
+                first_epoch = epoch;
+                have_present_row = true;
+            } else if first_epoch != epoch {
+                return Err(crate::note_array_row(
+                    crate::error::Error::from(crate::boundary::metadata::FrameError::SharedEpoch {
+                        context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
+                        index: row,
+                        first: first_epoch,
+                        other: epoch,
+                    })
+                    .into(),
+                    row,
+                ));
+            }
         }
     }
     py_finish_attached(
@@ -504,14 +490,12 @@ where
 {
     for (row, owned) in chunk {
         let parsed = parse_row(owned, row).map_err(|error| BatchError::Row(row, error))?;
-        if let Some(shape) = parsed.shape {
-            state
-                .rows
-                .try_push(shape)
-                .map_err(|error| BatchError::Row(row, error))?;
-        }
-        match parsed.row {
-            StreamedRow::Present { crs, epoch } => {
+        match parsed {
+            StreamedShape::Present { shape, crs, epoch } => {
+                state
+                    .rows
+                    .try_push(shape)
+                    .map_err(|error| BatchError::Row(row, error))?;
                 if let Some(context) = crs_context {
                     state
                         .first_crs
@@ -551,7 +535,7 @@ where
                     }
                 }
             },
-            StreamedRow::Missing => {
+            StreamedShape::Missing => {
                 crate::try_push_vec(&mut state.missing_rows, row)
                     .map_err(|error| BatchError::Row(row, error))?;
                 state

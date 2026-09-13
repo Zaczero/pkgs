@@ -8,6 +8,15 @@
 use crate::geometry::SharedSlice;
 use crate::heap_size::HeapSize;
 
+const RANK_BLOCK_BITS: usize = 512;
+#[cfg(test)]
+const RANK_BLOCK_BYTES: usize = RANK_BLOCK_BITS / 8;
+
+#[cfg(test)]
+std::thread_local! {
+    static COUNT_VALID_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Immutable row validity for a `GeometryArray` (`1 = present`, `0 = missing`).
 #[derive(Clone, Debug)]
 pub(crate) struct ValidityMask {
@@ -116,6 +125,47 @@ impl ValidityMask {
     pub(crate) fn present_before(&self, logical: usize) -> usize {
         assert!(logical <= self.len, "validity rank must be in bounds");
         count_valid(&self.bytes, self.bit_offset, logical)
+    }
+
+    /// Resolve a batch of logical rows with the cheapest operation-local rank
+    /// strategy for that batch. A short batch keeps the scalar prefix walk;
+    /// larger or repeated-prefix batches build a 512-bit directory once and
+    /// then scan at most one block for each query.
+    pub(crate) fn rank_for_rows(&self, rows: &[usize]) -> crate::error::Result<ValidityRank<'_>> {
+        let scalar_work = rows.iter().fold(0_usize, |work, &logical| {
+            assert!(logical < self.len, "validity row must be in bounds");
+            if self.is_valid(logical) {
+                work.saturating_add(rank_scan_bytes(self.bit_offset, logical))
+            } else {
+                work
+            }
+        });
+        let directory_work =
+            self.bytes
+                .len()
+                .saturating_add(rows.iter().fold(0_usize, |work, &logical| {
+                    work.saturating_add(rank_block_scan_bytes(self.bit_offset, logical))
+                }));
+        if rows.len() <= 1 || scalar_work <= directory_work {
+            return Ok(ValidityRank {
+                mask: self,
+                blocks: None,
+            });
+        }
+        Ok(ValidityRank {
+            mask: self,
+            blocks: Some(build_rank_blocks(self)?),
+        })
+    }
+
+    /// Build the operation-local directory used by full compact-point
+    /// traversals. The directory is intentionally not retained on the mask:
+    /// random scalar lookup and one-off gathers do not pay for it.
+    pub(crate) fn full_rank(&self) -> crate::error::Result<ValidityRank<'_>> {
+        Ok(ValidityRank {
+            mask: self,
+            blocks: Some(build_rank_blocks(self)?),
+        })
     }
 
     pub(crate) fn cursor(&self) -> ValidityCursor<'_> {
@@ -238,6 +288,83 @@ impl ValidityMask {
     }
 }
 
+/// Operation-local rank resolver for one immutable validity mask.
+///
+/// `blocks` stores the number of present bits before each 512-bit block.
+/// Its lifetime is limited to the operation that requested it, so ordinary
+/// masks retain no index or cache state.
+pub(crate) struct ValidityRank<'a> {
+    mask: &'a ValidityMask,
+    blocks: Option<Vec<usize>>,
+}
+
+impl ValidityRank<'_> {
+    pub(crate) fn resolve(&self, logical: usize) -> Option<usize> {
+        if !self.mask.is_valid(logical) {
+            return None;
+        }
+        Some(self.rank(logical))
+    }
+
+    pub(crate) fn rank(&self, logical: usize) -> usize {
+        assert!(logical <= self.mask.len, "validity rank must be in bounds");
+        let Some(blocks) = &self.blocks else {
+            return self.mask.present_before(logical);
+        };
+        let block = logical / RANK_BLOCK_BITS;
+        let block_start = block * RANK_BLOCK_BITS;
+        blocks[block]
+            + count_valid(
+                &self.mask.bytes,
+                self.mask.bit_offset + block_start,
+                logical - block_start,
+            )
+    }
+}
+
+fn build_rank_blocks(mask: &ValidityMask) -> crate::error::Result<Vec<usize>> {
+    let block_count = mask.len.div_ceil(RANK_BLOCK_BITS);
+    let mut blocks = Vec::new();
+    crate::try_reserve_vec(&mut blocks, block_count + 1)?;
+    blocks.push(0);
+    let mut present = 0;
+    for block in 0..block_count {
+        let start = block * RANK_BLOCK_BITS;
+        let len = (mask.len - start).min(RANK_BLOCK_BITS);
+        present += count_valid(&mask.bytes, mask.bit_offset + start, len);
+        crate::try_push_vec(&mut blocks, present)?;
+    }
+    Ok(blocks)
+}
+
+fn rank_scan_bytes(bit_offset: usize, logical: usize) -> usize {
+    if logical == 0 {
+        return 0;
+    }
+    let first = bit_offset / 8;
+    let last = (bit_offset + logical - 1) / 8;
+    last - first + 1
+}
+
+fn rank_block_scan_bytes(bit_offset: usize, logical: usize) -> usize {
+    let within = logical % RANK_BLOCK_BITS;
+    if within == 0 {
+        0
+    } else {
+        (within + bit_offset % 8).div_ceil(8)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_count_valid_bytes() {
+    COUNT_VALID_BYTES.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn count_valid_bytes() -> usize {
+    COUNT_VALID_BYTES.with(std::cell::Cell::get)
+}
+
 impl PartialEq for ValidityMask {
     fn eq(&self, other: &Self) -> bool {
         self.len == other.len && self.iter().eq(other.iter())
@@ -344,6 +471,10 @@ fn count_valid(bytes: &[u8], offset: usize, len: usize) -> usize {
     let end = offset + len;
     let first_byte = offset / 8;
     let last_byte = (end - 1) / 8;
+    #[cfg(test)]
+    COUNT_VALID_BYTES.with(|count| {
+        count.set(count.get().saturating_add(last_byte - first_byte + 1));
+    });
     if first_byte == last_byte {
         let low = (offset % 8) as u32;
         let high = (end % 8) as u32;
@@ -468,7 +599,10 @@ mod tests {
         assert_eq!(window.iter().collect::<Vec<_>>(), [true, false, false]);
     }
 
-    use super::{ValidityMask, union_many, union_pair};
+    use super::{
+        RANK_BLOCK_BYTES, ValidityMask, count_valid_bytes, reset_count_valid_bytes, union_many,
+        union_pair,
+    };
     use crate::heap_size::HeapSize as _;
 
     #[test]
@@ -528,6 +662,74 @@ mod tests {
             );
         }
         assert_eq!(mask.present_before(mask.len()), mask.present_count());
+    }
+
+    #[test]
+    fn operation_rank_directory_is_linear_for_unaligned_large_batches() {
+        let len = 10_000;
+        let mask = ValidityMask::from_sparse(len, &[len - 1]).unwrap().unwrap();
+        let rows: Vec<_> = (0..len).collect();
+
+        reset_count_valid_bytes();
+        let rank = mask.rank_for_rows(&rows).unwrap();
+        let resolved = rows
+            .iter()
+            .map(|&row| rank.resolve(row))
+            .collect::<Vec<_>>();
+        let directory_bytes = count_valid_bytes();
+
+        reset_count_valid_bytes();
+        let scalar = rows
+            .iter()
+            .map(|&row| mask.is_valid(row).then(|| mask.present_before(row)))
+            .collect::<Vec<_>>();
+        let scalar_bytes = count_valid_bytes();
+
+        assert_eq!(resolved, scalar);
+        assert!(directory_bytes < scalar_bytes);
+        assert!(
+            directory_bytes <= mask.bytes.len() + rows.len() * RANK_BLOCK_BYTES,
+            "directory visited {directory_bytes} bytes for {} rows",
+            rows.len()
+        );
+    }
+
+    #[test]
+    fn operation_rank_directory_scales_linearly_across_batch_sizes() {
+        for len in [10_000, 100_000, 1_000_000] {
+            let mask = ValidityMask::from_sparse(len, &[len - 1]).unwrap().unwrap();
+            let rows: Vec<_> = (0..len).collect();
+            reset_count_valid_bytes();
+            let rank = mask.rank_for_rows(&rows).unwrap();
+            for &row in &rows {
+                let _ = rank.resolve(row);
+            }
+            let bytes = count_valid_bytes();
+            eprintln!("rank_directory len={len} count_valid_bytes={bytes}");
+            assert!(
+                bytes <= mask.bytes.len() + len * RANK_BLOCK_BYTES,
+                "directory visited {bytes} bytes for {len} rows"
+            );
+        }
+    }
+
+    #[test]
+    fn operation_rank_directory_handles_bit_seven_windows_and_duplicates() {
+        let source = ValidityMask::from_sparse(64, &[2, 9, 31, 62])
+            .unwrap()
+            .unwrap();
+        let mask = source.window(7, 41).unwrap();
+        let rows = [40, 0, 40, 1, 17, 39];
+        let rank = mask.rank_for_rows(&rows).unwrap();
+        let expected = rows
+            .iter()
+            .map(|&row| mask.is_valid(row).then(|| mask.present_before(row)))
+            .collect::<Vec<_>>();
+        let actual = rows
+            .iter()
+            .map(|&row| rank.resolve(row))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 
     #[test]

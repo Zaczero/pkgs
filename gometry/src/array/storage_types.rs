@@ -785,15 +785,13 @@ impl<'a> Iterator for RowsIter<'a> {
         match self.rows.next()? {
             PhysicalRow::Mixed(shape) => Some(ShapeRow::Shape(shape)),
             PhysicalRow::Point(point) => Some(ShapeRow::Point(point)),
-            PhysicalRow::Line(coords, window) => {
-                Some(ShapeRow::Line(coords, window.start, window.end))
-            },
-            PhysicalRow::Polygon(coords, ring_offsets, rings) => Some(ShapeRow::Rings(
+            PhysicalRow::Line(coords, window) => Some(ShapeRow::line(
                 coords,
-                ring_offsets,
-                rings.start,
-                rings.end,
+                CoordWindow::from_range(window, coords.len()),
             )),
+            PhysicalRow::Polygon(coords, ring_offsets, rings) => {
+                Some(ShapeRow::rings(coords, ring_offsets, rings))
+            },
         }
     }
 

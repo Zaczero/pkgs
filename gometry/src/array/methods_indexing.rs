@@ -408,6 +408,24 @@ impl PyGeometryArray {
         let Some(mask) = self.missing() else {
             return Ok(self.clone());
         };
+        if self.is_compact_nullable()
+            && matches!(
+                self.storage(),
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+            )
+        {
+            let source_rows = mask
+                .cursor()
+                .filter_map(|(logical, present)| present.map(|_| logical));
+            return Self::from_selected_storage(
+                self,
+                Arc::clone(self.storage_arc()),
+                self.frame.clone(),
+                None,
+                StorageLayout::LogicalRows,
+                source_rows,
+            );
+        }
         let mut rows = Vec::new();
         crate::boundary::try_reserve_vec(&mut rows, mask.present_count())?;
         rows.extend(

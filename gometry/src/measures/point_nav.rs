@@ -7,7 +7,7 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use crate::array::{GeometryArrayStorage, PackedStorage, ValidityMask};
+use crate::array::{GeometryArrayStorage, PackedStorage, ValidityMask, ValidityRank};
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
@@ -596,22 +596,31 @@ enum PointOperand<'a> {
     },
 }
 
-impl PointOperand<'_> {
-    fn get(&self, row: usize) -> Point {
+enum PreparedPointOperand<'a> {
+    One(Point),
+    Compact {
+        array: &'a PyGeometryArray,
+        rank: ValidityRank<'a>,
+    },
+    Many(PointRows<'a>),
+}
+
+impl<'a> PointOperand<'a> {
+    fn prepare(self) -> crate::error::Result<PreparedPointOperand<'a>> {
         match self {
-            Self::One(point) => *point,
-            Self::Compact(array) => match array.logical_row(row) {
-                Some(crate::array::LogicalRow::Present {
-                    row: crate::array::ShapeRow::Point(point),
-                    ..
-                }) => point,
-                _ => unreachable!("point kernels read only present compact rows"),
-            },
-            Self::Many { points, .. } => points.get(row),
+            Self::One(point) => Ok(PreparedPointOperand::One(point)),
+            Self::Compact(array) => Ok(PreparedPointOperand::Compact {
+                array,
+                rank: array
+                    .missing()
+                    .expect("compact point rows carry validity")
+                    .full_rank()?,
+            }),
+            Self::Many { points, .. } => Ok(PreparedPointOperand::Many(points)),
         }
     }
 
-    const fn missing(&self) -> Option<&ValidityMask> {
+    const fn missing(&self) -> Option<&'a ValidityMask> {
         match self {
             Self::One(_) => None,
             Self::Compact(array) => array.missing(),
@@ -620,43 +629,55 @@ impl PointOperand<'_> {
     }
 }
 
+impl PreparedPointOperand<'_> {
+    fn get(&self, row: usize) -> Point {
+        match self {
+            Self::One(point) => *point,
+            Self::Compact { array, rank } => {
+                let present = rank
+                    .resolve(row)
+                    .expect("point kernels read only present compact rows");
+                let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
+                    array.storage()
+                else {
+                    unreachable!("compact point rows are packed points");
+                };
+                coords.point_at(crate::array::physical_row(row_map.as_deref(), present))
+            },
+            Self::Many(points) => points.get(row),
+        }
+    }
+}
+
 trait PointRowSource: Send {
     fn point_at(&self, row: usize) -> Point;
 }
 
-impl PointRowSource for Point {
-    fn point_at(&self, _row: usize) -> Point {
-        *self
-    }
-}
-
-impl PointRowSource for PointRows<'_> {
-    fn point_at(&self, row: usize) -> Point {
-        self.get(row)
-    }
-}
-
-impl PointRowSource for PointOperand<'_> {
+impl PointRowSource for PreparedPointOperand<'_> {
     fn point_at(&self, row: usize) -> Point {
         self.get(row)
     }
 }
 
 trait PointPairRowsSink {
-    type Output;
+    type Value;
 
-    fn run<L, R>(self, left: L, right: R) -> Self::Output
-    where
-        L: PointRowSource,
-        R: PointRowSource;
+    fn run(
+        self,
+        left: PreparedPointOperand<'_>,
+        right: PreparedPointOperand<'_>,
+    ) -> PyResult<Self::Value>;
 }
 
 fn dispatch_point_pair_rows<S: PointPairRowsSink>(
     left: PointOperand<'_>,
     right: PointOperand<'_>,
     sink: S,
-) -> S::Output {
-    sink.run(left, right)
+) -> PyResult<S::Value> {
+    sink.run(
+        left.prepare().map_err(PyErr::from)?,
+        right.prepare().map_err(PyErr::from)?,
+    )
 }
 
 fn input_len(input: GeometryInput<'_>) -> Option<usize> {
@@ -1551,9 +1572,9 @@ fn destination_scalar_coords_dispatch(
 fn cross_track_point_rows<const HAS_MISSING: bool>(
     radius: f64,
     frame: GeographicFrame,
-    points: &PointOperand<'_>,
-    starts: &PointOperand<'_>,
-    ends: &PointOperand<'_>,
+    points: &PreparedPointOperand<'_>,
+    starts: &PreparedPointOperand<'_>,
+    ends: &PreparedPointOperand<'_>,
     len: usize,
     missing: Option<&ValidityMask>,
 ) -> PyResult<Vec<f64>> {
@@ -1572,15 +1593,20 @@ fn cross_track_point_rows<const HAS_MISSING: bool>(
 fn cross_track_point_rows_dispatch(
     radius: f64,
     frame: GeographicFrame,
-    points: &PointOperand<'_>,
-    starts: &PointOperand<'_>,
-    ends: &PointOperand<'_>,
+    points: PointOperand<'_>,
+    starts: PointOperand<'_>,
+    ends: PointOperand<'_>,
     len: usize,
     missing: Option<&ValidityMask>,
 ) -> PyResult<Vec<f64>> {
+    let points = points.prepare().map_err(PyErr::from)?;
+    let starts = starts.prepare().map_err(PyErr::from)?;
+    let ends = ends.prepare().map_err(PyErr::from)?;
     missing.map_or_else(
-        || cross_track_point_rows::<false>(radius, frame, points, starts, ends, len, None),
-        |mask| cross_track_point_rows::<true>(radius, frame, points, starts, ends, len, Some(mask)),
+        || cross_track_point_rows::<false>(radius, frame, &points, &starts, &ends, len, None),
+        |mask| {
+            cross_track_point_rows::<true>(radius, frame, &points, &starts, &ends, len, Some(mask))
+        },
     )
 }
 
@@ -1994,13 +2020,13 @@ struct PointBinaryNumericRowsSink<'py, K> {
 }
 
 impl<K: PointBinaryF64Kernel> PointPairRowsSink for PointBinaryNumericRowsSink<'_, K> {
-    type Output = PyResult<Py<PyAny>>;
+    type Value = Py<PyAny>;
 
-    fn run<L, R>(self, left: L, right: R) -> Self::Output
-    where
-        L: PointRowSource,
-        R: PointRowSource,
-    {
+    fn run(
+        self,
+        left: PreparedPointOperand<'_>,
+        right: PreparedPointOperand<'_>,
+    ) -> PyResult<Self::Value> {
         let Self {
             py,
             model,
@@ -2033,13 +2059,13 @@ where
     K: PointBinaryGeometryKernel,
     F: Fn(&PyGeometry, &PyGeometry, usize) -> PyResult<Shape> + Copy + Send + Sync,
 {
-    type Output = PyResult<Py<PyAny>>;
+    type Value = Py<PyAny>;
 
-    fn run<L, R>(self, left: L, right: R) -> Self::Output
-    where
-        L: PointRowSource,
-        R: PointRowSource,
-    {
+    fn run(
+        self,
+        left: PreparedPointOperand<'_>,
+        right: PreparedPointOperand<'_>,
+    ) -> PyResult<Self::Value> {
         let Self {
             py,
             plan,
@@ -2377,9 +2403,9 @@ fn cross_track_broadcast(
                         cross_track_point_rows_dispatch(
                             radius,
                             metric.frame,
-                            &points,
-                            &starts,
-                            &ends,
+                            points,
+                            starts,
+                            ends,
                             len,
                             missing_for_rows.as_ref(),
                         )

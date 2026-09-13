@@ -24,7 +24,23 @@ pub enum ShapeRow<'a> {
     Rings(&'a CoordSeq, &'a [i32], usize, usize),
 }
 
-impl ShapeRow<'_> {
+impl<'a> ShapeRow<'a> {
+    pub(crate) fn line(coords: &'a CoordSeq, window: CoordWindow) -> Self {
+        Self::Line(coords, window.start(), window.end())
+    }
+
+    pub(crate) fn rings(
+        coords: &'a CoordSeq,
+        ring_offsets: &'a [i32],
+        rings: std::ops::Range<usize>,
+    ) -> Self {
+        assert!(
+            rings.start <= rings.end && rings.end < ring_offsets.len(),
+            "polygon row must reference admitted ring offsets"
+        );
+        Self::Rings(coords, ring_offsets, rings.start, rings.end)
+    }
+
     fn line_shape(coords: &CoordSeq, start: usize, end: usize) -> Shape {
         let window = CoordWindow::from_range(start..end, coords.len());
         Shape::LineString(LineSeq::row_view(coords, window))

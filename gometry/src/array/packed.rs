@@ -78,7 +78,7 @@ impl PyGeometryArray {
         self.rows.logical_row(logical)
     }
 
-    pub(crate) fn logical_rows(&self) -> LogicalRows<'_> {
+    pub(crate) fn logical_rows<'a>(&'a self) -> LogicalRows<'a> {
         self.rows.logical_rows()
     }
 
@@ -1241,6 +1241,79 @@ mod compact_nullable_tests {
             array.geometry_at(3).unwrap().shape.shape(),
             &Shape::Point(Point::new_raw_xy(3.0, 4.0))
         );
+    }
+
+    #[test]
+    fn drop_missing_reuses_compact_points_without_prefix_rank_work() {
+        let present = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(
+                (0..10_000).map(|row| row as f64).collect(),
+                (0..10_000).map(|row| (row * 2) as f64).collect(),
+                None,
+                None,
+            )
+            .unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let array = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(10_001, (0..10_001).map(|row| row == 9_999).collect())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let source_coords = match array.storage() {
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) => {
+                Arc::clone(coords)
+            },
+            _ => panic!("nullable point fixture must remain packed"),
+        };
+
+        crate::array::missing::reset_count_valid_bytes();
+        let dense = array.try_drop_missing().unwrap();
+
+        assert_eq!(dense.len(), 10_000);
+        assert!(!dense.has_missing());
+        assert_eq!(crate::array::missing::count_valid_bytes(), 0);
+        assert!(matches!(
+            dense.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. })
+                if Arc::ptr_eq(coords, &source_coords)
+        ));
+    }
+
+    #[test]
+    fn compact_bulk_publication_and_validation_use_the_cursor() {
+        let present = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(
+                (0..10_000).map(|row| row as f64).collect(),
+                (0..10_000).map(|row| (row * 2) as f64).collect(),
+                None,
+                None,
+            )
+            .unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let array = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(10_001, (0..10_001).map(|row| row == 9_999).collect())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+
+        crate::array::missing::reset_count_valid_bytes();
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| {
+            let _ = array.to_numpy(py).unwrap();
+        });
+        assert_eq!(crate::array::missing::count_valid_bytes(), 0);
+
+        crate::array::missing::reset_count_valid_bytes();
+        array.validate_impl().unwrap();
+        assert_eq!(crate::array::missing::count_valid_bytes(), 0);
     }
 
     #[test]

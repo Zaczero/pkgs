@@ -25,7 +25,7 @@ use crate::array::{
     polygon_rings_range, pymethods, replace_shape_coordinates, require_geojson_crs,
     slice_replacement_for_shape, total_bounds_from_columns,
 };
-use crate::py::functions::bulk_rows::{StreamedRow, StreamedShape, stream_bulk_owned};
+use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
 use crate::py::support::{own_geometry_item, parse_owned_geometry_item};
 
 fn try_collect_values<T>(values: impl IntoIterator<Item = T>, capacity: usize) -> PyResult<Vec<T>> {
@@ -326,12 +326,10 @@ impl PyGeometryArray {
                         explicit_epoch,
                         row,
                     )?;
-                    Ok(StreamedShape {
-                        shape: Some(geometry.shape.shape().clone()),
-                        row: StreamedRow::Present {
-                            crs: geometry.crs_ref().cloned(),
-                            epoch: geometry.epoch(),
-                        },
+                    Ok(StreamedShape::Present {
+                        shape: geometry.shape.shape().clone(),
+                        crs: geometry.crs_ref().cloned(),
+                        epoch: geometry.epoch(),
                     })
                 },
             );
