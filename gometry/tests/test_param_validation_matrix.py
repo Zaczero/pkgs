@@ -271,17 +271,6 @@ NON_FINITE_CASES: list[NonFinite] = [
         gm.GeometryError,
     ),
     (
-        'hausdorff_densify_nan',
-        lambda: gm.hausdorff_distance(
-            _three_lines()[0], _three_lines()[1], densify=NAN
-        ),
-        lambda: gm.hausdorff_distance(
-            _three_lines(), _three_lines(), densify=[0.0, NAN, 0.0]
-        ),
-        'densify must be finite',
-        gm.GeometryError,
-    ),
-    (
         'frechet_densify_nan',
         lambda: gm.frechet_distance(_three_lines()[0], _three_lines()[1], densify=NAN),
         lambda: gm.frechet_distance(

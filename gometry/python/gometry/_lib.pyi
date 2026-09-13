@@ -9646,7 +9646,9 @@ class SpatialIndex(Mapping[int, Geometry]):
             later ``insert`` calls. Every indexed geometry must share one CRS
             and coordinate epoch. Missing rows are skipped but retain their
             original positions as stable, non-live handles, so query and join
-            results always refer to the input row ids.
+            results always refer to the input row ids. Packed arrays retain
+            their immutable column storage; empty rows likewise have no live
+            tree entry.
 
         Raises
         ------
@@ -16126,7 +16128,6 @@ def hausdorff_distance(
     left: Geometry,
     right: Geometry,
     *,
-    densify: float | None = None,
     unit: DistanceUnit | None = None,
 ) -> float: ...
 @overload
@@ -16134,7 +16135,6 @@ def hausdorff_distance(
     left: GeometryArray[Geometry | None],
     right: Geometry | GeometryArray[Geometry | None],
     *,
-    densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
@@ -16142,7 +16142,6 @@ def hausdorff_distance(
     left: Geometry,
     right: GeometryArray[Geometry | None],
     *,
-    densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
@@ -16150,7 +16149,6 @@ def hausdorff_distance(
     left: Geometry | GeometryArray[Geometry | None],
     right: Geometry | GeometryArray[Geometry | None],
     *,
-    densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
     """Compute the continuous Hausdorff (set-to-set) distance between ``left``
@@ -16166,11 +16164,6 @@ def hausdorff_distance(
     left, right : Geometry or GeometryArray
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
-    densify : float, optional
-        Subdivide every segment into pieces no longer than this fraction of
-        its length (in ``(0, 1]``) before measuring. The metric remains the
-        continuous Hausdorff distance; gometry does not offer a discrete,
-        vertex-only Hausdorff variant.
     unit : {'planar', 'meters'}, default None
         Omitted follows the CRS: geodesic meters on a geographic CRS, native
         units on a projected one, coordinate units without a CRS.
@@ -16194,8 +16187,7 @@ def hausdorff_distance(
         If either operand is empty; Hausdorff distance is undefined for an
         empty support.
     GeometryError
-        If ``densify`` is outside ``(0, 1]``, or ``unit='meters'`` is
-        requested for a CRS-free geometry.
+        If ``unit='meters'`` is requested for a CRS-free geometry.
 
     See Also
     --------
@@ -18199,9 +18191,9 @@ def from_arrow(
         encoding cannot be classified, or it has no geometry column.
     OSError
         If an Arrow C stream schema or batch callback returns a nonzero status
-        other than 12; the callback status is exposed as ``errno``.
+        other than ``ENOMEM``; the callback status is exposed as ``errno``.
     MemoryError
-        If an Arrow C stream callback returns status 12 (ENOMEM), or native
+        If an Arrow C stream callback returns ``ENOMEM``, or native
         storage allocation fails.
     OverflowError
         If Arrow lengths or offsets exceed representable native sizes.

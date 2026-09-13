@@ -353,10 +353,9 @@ pub(crate) fn dispatch_hausdorff_distance(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
-    densify: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    dispatch_similarity_metric(py, left, right, densify, unit, SimilarityOp::hausdorff())
+    dispatch_similarity_metric(py, left, right, unit, |_| Ok(SimilarityOp::hausdorff()))
 }
 
 /// Fréchet-distance free-function dispatch through the spine.
@@ -367,16 +366,17 @@ pub(crate) fn dispatch_frechet_distance(
     densify: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    dispatch_similarity_metric(py, left, right, densify, unit, SimilarityOp::frechet())
+    dispatch_similarity_metric(py, left, right, unit, |len| {
+        SimilarityOp::frechet_with_densify(densify, len)
+    })
 }
 
 fn dispatch_similarity_metric(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
-    densify: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
-    op: SimilarityOp,
+    make_operation: impl Fn(usize) -> PyResult<SimilarityOp>,
 ) -> PyResult<Py<PyAny>> {
     let left_array = crate::broadcast::exact_geometry_array(left);
     let right_array = crate::broadcast::exact_geometry_array(right);
@@ -385,7 +385,7 @@ fn dispatch_similarity_metric(
         (None, None) => None,
     };
     let Some(len) = array_len else {
-        let operation = op.with_scalar_densify(SimilarityOp::parse_scalar_densify(densify)?);
+        let operation = make_operation(1)?;
         let metric_op = operation.metric_op();
         let left_input = classify_required(left)?;
         let right_input = classify_required(right)?;
@@ -400,19 +400,17 @@ fn dispatch_similarity_metric(
             move |left, right, ctx| operation.eval_scalar(left, right, ctx),
         );
     };
-    let metric_op = op.metric_op();
-    let operation = op.parse_array_densify(densify, len)?;
+    let operation = make_operation(len)?;
+    let metric_op = operation.metric_op();
     let left_input = classify_required(left)?;
     let right_input = classify_required(right)?;
     let admission = super::binary::admit_binary_inputs(left_input, right_input, metric_op.name())?;
     dispatch_similarity_array_lane(py, &admission, operation, unit)
 }
 
-/// Shared array lane for the densify-aware similarity metrics (Hausdorff and
-/// Fréchet). Both differ only by their operation name, the per-element
-/// densified kernel, and the scalar lane that runs the packed column kernels —
-/// everything else (per-element vs scalar branch, the array-operand flip when
-/// the array is the right operand) is identical.
+/// Shared array lane for the similarity metrics. Fréchet's per-element
+/// densification and the scalar lane's packed column kernels are the only
+/// operation-specific branches; the array-operand flip is common.
 fn dispatch_similarity_array_lane(
     py: Python<'_>,
     admission: &super::binary::BinaryAdmission<'_>,
@@ -424,7 +422,7 @@ fn dispatch_similarity_array_lane(
         (GeometryInput::One(_), GeometryInput::One(_)) => unreachable!(),
     };
     if operation.is_per_element() {
-        return crate::broadcast::array_crs_similarity_metric_per_densify(
+        return crate::broadcast::array_crs_frechet_metric_per_densify(
             py,
             array,
             other,
@@ -553,7 +551,7 @@ mod tests {
             let right = Bound::new(py, right).unwrap().into_any();
 
             reset_shape_iter_materializations();
-            let result = super::dispatch_hausdorff_distance(py, &left, &right, None, None)
+            let result = super::dispatch_hausdorff_distance(py, &left, &right, None)
                 .expect("masked pair is a valid Hausdorff broadcast");
             let values = result
                 .bind(py)

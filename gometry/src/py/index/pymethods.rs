@@ -194,7 +194,7 @@ impl PySpatialIndex {
                 crate::try_push_vec(&mut shapes, item.shape.shape().clone())
                     .map_err(PyErr::from)?;
             }
-            let present = crate::PyGeometryArray::from_shapes(shapes, frame.clone())?;
+            let present = crate::PyGeometryArray::from_shapes(shapes, frame)?;
             let missing = crate::array::ValidityMask::from_vec(self.rows.len(), missing)
                 .map_err(PyErr::from)?;
             if let Some(missing) = missing {

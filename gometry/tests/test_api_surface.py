@@ -469,6 +469,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         'gm.point_between': str(inspect.signature(gm.point_between)),
         'gm.h3_cover': str(inspect.signature(gm.h3_cover)),
         'gm.s2_cover': str(inspect.signature(gm.s2_cover)),
+        'gm.hausdorff_distance': str(inspect.signature(gm.hausdorff_distance)),
         'GeometryArray': str(inspect.signature(gm.GeometryArray)),
         'Point': str(inspect.signature(gm.Point)),
         'LineString': str(inspect.signature(gm.LineString)),
@@ -497,6 +498,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     )
     assert "cell_rule='overlap'" in signatures['gm.h3_cover']
     assert 'max_cells=1000000' in signatures['gm.s2_cover']
+    assert signatures['gm.hausdorff_distance'] == '(left, right, *, unit=None)'
     assert signatures['GeometryArray'] == '(values, *, crs=None, epoch=None)'
     assert (
         signatures['Point']

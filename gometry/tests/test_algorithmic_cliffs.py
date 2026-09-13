@@ -322,9 +322,6 @@ def test_frechet_densify_refuses_an_unreachable_dp() -> None:
     with pytest.raises(gm.GeometryError, match=r'densify'):
         gm.frechet_distance(left, right, densify=1e-5)
 
-    # Hausdorff shares the `densify` parameter but not the quadratic DP.
-    assert gm.hausdorff_distance(left, right, densify=1e-2) > 0.0
-
 
 def test_hausdorff_does_not_run_a_brute_force_oracle_per_call() -> None:
     """The exact continuous kernel is the implementation, not a cross-check.

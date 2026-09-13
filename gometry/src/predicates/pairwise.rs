@@ -285,11 +285,6 @@ pub(crate) fn distance_3d(
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
-/// densify : float, optional
-///     Subdivide every segment into pieces no longer than this fraction of
-///     its length (in ``(0, 1]``) before measuring. The metric remains the
-///     continuous Hausdorff distance; gometry does not offer a discrete,
-///     vertex-only Hausdorff variant.
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
@@ -313,8 +308,7 @@ pub(crate) fn distance_3d(
 ///     If either operand is empty; Hausdorff distance is undefined for an
 ///     empty support.
 /// GeometryError
-///     If ``densify`` is outside ``(0, 1]``, or ``unit='meters'`` is
-///     requested for a CRS-free geometry.
+///     If ``unit='meters'`` is requested for a CRS-free geometry.
 ///
 /// See Also
 /// --------
@@ -332,15 +326,14 @@ pub(crate) fn distance_3d(
 /// >>> gm.hausdorff_distance(a, b)
 /// 3.0
 #[pyfunction]
-#[pyo3(signature = (left, right, *, densify = None, unit = None))]
+#[pyo3(signature = (left, right, *, unit = None))]
 pub(crate) fn hausdorff_distance(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
-    densify: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    crate::dispatch::dispatch_hausdorff_distance(py, left, right, densify, unit)
+    crate::dispatch::dispatch_hausdorff_distance(py, left, right, unit)
 }
 
 /// Discrete Fréchet distance between two linestrings.

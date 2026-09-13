@@ -52,53 +52,6 @@ fn prepare_geodesic_pair<'a>(
     Ok((metric, semi_major, flattening))
 }
 
-/// Densify-refined metric over two shapes — the shared driver behind Hausdorff
-/// and Fréchet (identical apart from the kernel).
-fn metric_densified(
-    model: &crs::MetricModel,
-    a: &Shape,
-    b: &Shape,
-    densify: Option<f64>,
-    kernel: impl FnOnce(&crs::MetricModel, &Shape, &Shape) -> crate::error::Result<f64>,
-) -> crate::error::Result<f64> {
-    match densify {
-        None => kernel(model, a, b),
-        Some(fraction) => match model {
-            crs::MetricModel::Planar { .. } => {
-                let a = a.densified(fraction)?;
-                let b = b.densified(fraction)?;
-                kernel(model, &a, &b)
-            },
-            crs::MetricModel::Geodesic { crs, frame, state } => {
-                crs::ensure_geographic_domain_in_frame(*frame, a)?;
-                crs::ensure_geographic_domain_in_frame(*frame, b)?;
-                // Copy the cached ellipsoid out before running the kernel: the
-                // geodesic metric kernel may acquire the same thread-local
-                // cache, and holding its RefCell borrow across that call would
-                // panic on the similarity path.
-                let geodesic = crs::with_geodesic_cache_at(
-                    crs,
-                    state,
-                    |error| error,
-                    |geodesic| Ok(*geodesic),
-                )?;
-                let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
-                let a = a.densified_budgeted_with_placement(
-                    fraction,
-                    crate::geometry::SegmentPlacement::Geodesic(&geodesic, *frame),
-                    &mut budget,
-                )?;
-                let b = b.densified_budgeted_with_placement(
-                    fraction,
-                    crate::geometry::SegmentPlacement::Geodesic(&geodesic, *frame),
-                    &mut budget,
-                )?;
-                kernel(model, &a, &b)
-            },
-        },
-    }
-}
-
 pub(crate) fn geodesic_point_columns_to_shape_values(
     crs: &str,
     xs: &[f64],
@@ -677,20 +630,6 @@ pub(crate) fn metric_frechet_with_scratch(
     }
 }
 
-/// [`metric_hausdorff`] over `densify`-refined operands: each segment gains
-/// evenly spaced vertices along the active metric curve before the continuous
-/// Hausdorff kernel.
-/// `None` preserves the operands' original segmentization; there is no
-/// discrete Hausdorff lane.
-pub(crate) fn metric_hausdorff_densified(
-    model: &crs::MetricModel,
-    a: &Shape,
-    b: &Shape,
-    densify: Option<f64>,
-) -> crate::error::Result<f64> {
-    metric_densified(model, a, b, densify, metric_hausdorff)
-}
-
 /// The discrete Fréchet DP is `n · m` cells, so `densify` amplifies
 /// quadratically: on a pair of two-vertex lines, `1e-5` is 10¹⁰ cells and
 /// `1e-6` is 10¹². Charge the product so an unreachable answer is a typed
@@ -712,10 +651,46 @@ pub(crate) fn metric_frechet_densified_with_scratch(
     densify: Option<f64>,
     scratch: &mut crate::geometry::FrechetDpScratch,
 ) -> crate::error::Result<f64> {
-    metric_densified(model, a, b, densify, |model, a, b| {
-        charge_frechet_dp(a, b)?;
-        metric_frechet_with_scratch(model, a, b, scratch)
-    })
+    match densify {
+        None => {
+            charge_frechet_dp(a, b)?;
+            metric_frechet_with_scratch(model, a, b, scratch)
+        },
+        Some(fraction) => {
+            let (a, b) = match model {
+                crs::MetricModel::Planar { .. } => (a.densified(fraction)?, b.densified(fraction)?),
+                crs::MetricModel::Geodesic { crs, frame, state } => {
+                    crs::ensure_geographic_domain_in_frame(*frame, a)?;
+                    crs::ensure_geographic_domain_in_frame(*frame, b)?;
+                    // Copy the cached ellipsoid out before running the kernel: the
+                    // geodesic metric kernel may acquire the same thread-local
+                    // cache, and holding its RefCell borrow across that call would
+                    // panic on the similarity path.
+                    let geodesic = crs::with_geodesic_cache_at(
+                        crs,
+                        state,
+                        |error| error,
+                        |geodesic| Ok(*geodesic),
+                    )?;
+                    let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
+                    (
+                        a.densified_budgeted_with_placement(
+                            fraction,
+                            crate::geometry::SegmentPlacement::Geodesic(&geodesic, *frame),
+                            &mut budget,
+                        )?,
+                        b.densified_budgeted_with_placement(
+                            fraction,
+                            crate::geometry::SegmentPlacement::Geodesic(&geodesic, *frame),
+                            &mut budget,
+                        )?,
+                    )
+                },
+            };
+            charge_frechet_dp(&a, &b)?;
+            metric_frechet_with_scratch(model, &a, &b, scratch)
+        },
+    }
 }
 
 /// `metric_nearest_points` against an already-resolved metric. `None` when an

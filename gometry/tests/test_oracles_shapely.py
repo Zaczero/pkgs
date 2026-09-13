@@ -433,38 +433,26 @@ def test_h3_edges_match_h3py_oracle() -> None:
     assert {e.token for e in cell.edges} == set(h3.origin_to_directed_edges(origin))
 
 
-def test_densified_hausdorff_frechet_match_shapely_oracle() -> None:
+def test_densified_frechet_matches_shapely_oracle() -> None:
     import shapely
 
     a = gm.LineString([(0, 0), (10, 0)])
     b = gm.LineString([(0, 1), (5, 8), (10, 1)])
     sa, sb = (shapely.from_wkt(a.to_wkt()), shapely.from_wkt(b.to_wkt()))
     for densify in (0.5, 0.1, 0.01):
-        assert gm.hausdorff_distance(a, b, densify=densify) == pytest.approx(
-            shapely.hausdorff_distance(sa, sb, densify=densify)
-        )
         assert gm.frechet_distance(a, b, densify=densify) == pytest.approx(
             shapely.frechet_distance(sa, sb, densify=densify)
         )
-    coarse = gm.hausdorff_distance(a, b)
-    fine = gm.hausdorff_distance(a, b, densify=0.01)
-    assert coarse == pytest.approx(8)
-    assert fine <= coarse + 1e-09
-    with pytest.raises(gm.GeometryError, match='densify must be in'):
-        gm.hausdorff_distance(a, b, densify=1.5)
 
 
-def test_geographic_densified_hausdorff_uses_geodesic_path() -> None:
+def test_geographic_hausdorff_uses_geodesic_path() -> None:
     geo_peak = gm.LineString([(0, 0), (0.01, 0)], crs=4326)
     geo_far = gm.LineString([(0, 0.001), (0.005, 0.05), (0.01, 0.001)], crs=4326)
     raw = gm.hausdorff_distance(geo_peak, geo_far)
     assert raw > 5000
-    geodesic_half = gm.hausdorff_distance(geo_peak, geo_far, densify=0.5)
-    assert geodesic_half > 5000
-    assert geodesic_half == pytest.approx(raw)
-    assert gm.hausdorff_distance(
-        geo_peak, geo_far, densify=0.5, unit='planar'
-    ) == pytest.approx(0.05)
+    assert gm.hausdorff_distance(geo_peak, geo_far, unit='planar') == pytest.approx(
+        0.05
+    )
 
 
 def test_repair_matches_geos_make_valid_oracle() -> None:

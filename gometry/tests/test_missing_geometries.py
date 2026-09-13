@@ -468,7 +468,7 @@ def test_similarity_metrics_degrade_missing_rows_to_nan() -> None:
         assert math.isnan(pair[1])
         assert math.isnan(pair[2])
 
-        densified = metric(masked, dense, densify=[0.5, 0.5, 0.5])
+        densified = gm.frechet_distance(masked, dense, densify=[0.5, 0.5, 0.5])
         assert densified[0] == pytest.approx(0.0)
         assert math.isnan(densified[1])
         assert densified[2] == pytest.approx(0.0)

@@ -7,6 +7,7 @@
 use pyo3::types::{PyAny, PyAnyMethods as _};
 
 use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
+use crate::broadcast::metrics::pair::metric_hausdorff;
 use crate::broadcast::metrics::{
     Arc, Bound, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Py,
     PyGeometryArray, PyResult, Python, Shape, crs, float64_array, resolve_metric, rows_err,
@@ -17,7 +18,7 @@ use crate::geometry::{FrechetDpScratch, PackedLineColumnView, PreparedPlan};
 
 #[derive(Clone, Debug)]
 pub(crate) enum SimilarityOp {
-    Hausdorff { densify: SimilarityDensify },
+    Hausdorff,
     Frechet { densify: SimilarityDensify },
 }
 
@@ -28,102 +29,69 @@ pub(crate) enum SimilarityDensify {
     PerElement(Box<[f64]>),
 }
 
+impl SimilarityDensify {
+    fn at(&self, row: usize) -> Option<f64> {
+        match self {
+            Self::None => None,
+            Self::Scalar(fraction) => Some(*fraction),
+            Self::PerElement(fractions) => Some(fractions[row]),
+        }
+    }
+}
+
 impl SimilarityOp {
     pub(crate) const fn hausdorff() -> Self {
-        Self::Hausdorff {
-            densify: SimilarityDensify::None,
-        }
+        Self::Hausdorff
     }
 
-    pub(crate) const fn frechet() -> Self {
-        Self::Frechet {
-            densify: SimilarityDensify::None,
-        }
-    }
-
-    pub(crate) fn with_scalar_densify(self, densify: Option<f64>) -> Self {
-        let densify = densify.map_or(SimilarityDensify::None, SimilarityDensify::Scalar);
-        match self {
-            Self::Hausdorff { .. } => Self::Hausdorff { densify },
-            Self::Frechet { .. } => Self::Frechet { densify },
-        }
-    }
-
-    pub(crate) fn parse_array_densify(
-        self,
+    pub(crate) fn frechet_with_densify(
         value: Option<&Bound<'_, PyAny>>,
         len: usize,
     ) -> PyResult<Self> {
         let densify = parse_densify(value, len)?;
-        Ok(match self {
-            Self::Hausdorff { .. } => Self::Hausdorff { densify },
-            Self::Frechet { .. } => Self::Frechet { densify },
-        })
-    }
-
-    pub(crate) fn parse_scalar_densify(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<f64>> {
-        let densify = parse_densify(value, 1)?;
-        Ok(match densify {
-            SimilarityDensify::None => None,
-            SimilarityDensify::Scalar(fraction) => Some(fraction),
-            SimilarityDensify::PerElement(fractions) => Some(fractions[0]),
-        })
+        Ok(Self::Frechet { densify })
     }
 
     pub(crate) const fn metric_op(&self) -> MetricOp {
         match self {
-            Self::Hausdorff { .. } => MetricOp::HausdorffDistance,
+            Self::Hausdorff => MetricOp::HausdorffDistance,
             Self::Frechet { .. } => MetricOp::FrechetDistance,
         }
     }
 
-    pub(crate) const fn scalar_densify(&self) -> Option<f64> {
+    pub(crate) const fn is_undensified(&self) -> bool {
         match self {
-            Self::Hausdorff { densify } | Self::Frechet { densify } => match densify {
-                SimilarityDensify::Scalar(fraction) => Some(*fraction),
-                SimilarityDensify::None | SimilarityDensify::PerElement(_) => None,
-            },
-        }
-    }
-
-    pub(crate) fn densify_at(&self, row: usize) -> Option<f64> {
-        match self {
-            Self::Hausdorff { densify } | Self::Frechet { densify } => match densify {
-                SimilarityDensify::None => None,
-                SimilarityDensify::Scalar(fraction) => Some(*fraction),
-                SimilarityDensify::PerElement(fractions) => Some(fractions[row]),
-            },
+            Self::Hausdorff => true,
+            Self::Frechet { densify } => matches!(densify, SimilarityDensify::None),
         }
     }
 
     pub(crate) const fn is_per_element(&self) -> bool {
         match self {
-            Self::Hausdorff { densify } | Self::Frechet { densify } => {
+            Self::Hausdorff => false,
+            Self::Frechet { densify } => {
                 matches!(densify, SimilarityDensify::PerElement(_))
             },
         }
     }
 
-    /// Evaluate one shape pair through the operation's complete metric path.
-    ///
-    /// The densify value is supplied separately so the same operation can own
-    /// either its scalar parameter or one array row's parameter without
-    /// constructing a second operation axis.
-    pub(crate) fn eval_shapes(
+    pub(crate) fn eval_shapes_at(
         &self,
         model: &crs::MetricModel,
         left: &Shape,
         right: &Shape,
-        densify: Option<f64>,
+        row: usize,
         scratch: &mut FrechetDpScratch,
     ) -> crate::error::Result<f64> {
         match self {
-            Self::Hausdorff { .. } => {
-                crate::broadcast::metrics::metric_hausdorff_densified(model, left, right, densify)
-            },
-            Self::Frechet { .. } => {
+            Self::Hausdorff => metric_hausdorff(model, left, right),
+            Self::Frechet { densify } => {
                 crate::broadcast::metrics::metric_frechet_densified_with_scratch(
-                    model, left, right, densify, scratch,
+                    model,
+                    left,
+                    right,
+                    densify.at(row),
+                    scratch,
                 )
             },
         }
@@ -137,13 +105,7 @@ impl SimilarityOp {
     ) -> crate::error::Result<f64> {
         let model = context.metric.require_model(self.metric_op())?;
         let mut scratch = FrechetDpScratch::default();
-        self.eval_shapes(
-            model,
-            left.shape(),
-            right.shape(),
-            self.scalar_densify(),
-            &mut scratch,
-        )
+        self.eval_shapes_at(model, left.shape(), right.shape(), 0, &mut scratch)
     }
 
     pub(crate) fn try_same_storage_identity(
@@ -152,7 +114,7 @@ impl SimilarityOp {
         storage: &GeometryArrayStorage,
         missing: Option<&ValidityMask>,
     ) -> crate::error::Result<Option<Vec<f64>>> {
-        if !matches!(self, Self::Hausdorff { .. }) {
+        if !matches!(self, Self::Hausdorff) {
             return Ok(None);
         }
         let identity = match storage {
@@ -194,7 +156,7 @@ impl SimilarityOp {
     ) -> crate::error::Result<Vec<f64>> {
         let mut values = vec![0.0; len];
         match self {
-            Self::Hausdorff { .. } => {
+            Self::Hausdorff => {
                 crate::geometry::hausdorff_distance_line_columns_batch(left, right, &mut values)?;
             },
             Self::Frechet { .. } => {
@@ -214,7 +176,7 @@ impl SimilarityOp {
         scale: f64,
     ) -> crate::error::Result<f64> {
         let value = match self {
-            Self::Hausdorff { .. } => crate::geometry::hausdorff_distance_line_columns(
+            Self::Hausdorff => crate::geometry::hausdorff_distance_line_columns(
                 left_xs, left_ys, right_xs, right_ys,
             )?,
             Self::Frechet { .. } => {
@@ -240,7 +202,7 @@ impl SimilarityOp {
             return Some(Ok(0.0));
         }
         match self {
-            Self::Hausdorff { .. } => Some(Err(crate::geometry::GeometryErrorKind::message(
+            Self::Hausdorff => Some(Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty geometries",
             ))),
             Self::Frechet { .. } => Some(Ok(f64::INFINITY * scale)),
@@ -274,8 +236,8 @@ fn validate_densify(densify: Option<f64>) -> PyResult<Option<f64>> {
     Ok(densify)
 }
 
-/// Per-element ``densify=`` lane for array Hausdorff/Fréchet.
-pub(crate) fn array_crs_similarity_metric_per_densify(
+/// Per-element ``densify=`` lane for array Fréchet.
+pub(crate) fn array_crs_frechet_metric_per_densify(
     py: Python<'_>,
     array: &PyGeometryArray,
     other: GeometryInput<'_>,
@@ -299,11 +261,11 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
                             ArrayRow::Present(left) => {
                                 let logical = left.logical();
                                 left.row().try_with_shape(|left| {
-                                    operation.eval_shapes(
+                                    operation.eval_shapes_at(
                                         &model,
                                         left,
                                         right.shape(),
-                                        operation.densify_at(logical),
+                                        logical,
                                         &mut scratch,
                                     )
                                 })
@@ -330,11 +292,11 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
                                 let logical = left.logical();
                                 left.row().try_with_shape(|left| {
                                     right.row().try_with_shape(|right| {
-                                        operation.eval_shapes(
+                                        operation.eval_shapes_at(
                                             &model,
                                             left,
                                             right,
-                                            operation.densify_at(logical),
+                                            logical,
                                             &mut scratch,
                                         )
                                     })

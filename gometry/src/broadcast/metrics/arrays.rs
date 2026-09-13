@@ -34,9 +34,9 @@ fn float64_array_mask_missing(
     mask_missing(&mut values, missing, f64::NAN);
     float64_array(py, values)
 }
-/// CRS-aware array float metric used by the spine-routed Hausdorff/Fréchet
-/// lanes. The operation owns both the metric identity and its densify shape;
-/// row traversal only supplies the logical row's value.
+/// CRS-aware array float metric used by the spine-routed similarity lanes.
+/// Fréchet owns its optional densification; Hausdorff evaluates its original
+/// continuous supports.
 #[expect(
     clippy::too_many_lines,
     reason = "scalar/array operand dispatch plus packed-line batch and per-pair lanes"
@@ -65,11 +65,11 @@ pub(crate) fn array_crs_metric_float(
                             ArrayRow::Present(row) => {
                                 let logical = row.logical();
                                 row.row().try_with_shape(|left| {
-                                    operation.eval_shapes(
+                                    operation.eval_shapes_at(
                                         &model,
                                         left,
                                         right.shape(),
-                                        operation.densify_at(logical),
+                                        logical,
                                         &mut scratch,
                                     )
                                 })
@@ -92,7 +92,7 @@ pub(crate) fn array_crs_metric_float(
                 return float64_array_mask_missing(py, values, missing.as_ref());
             }
             if let crs::MetricModel::Planar { to_metre } = &model
-                && operation.scalar_densify().is_none()
+                && operation.is_undensified()
                 && let (Some(left_lines), Some(right_lines)) =
                     (lefts.line_rows(), rights.line_rows())
                 && left_lines.is_packed_pair(&right_lines)
@@ -165,11 +165,11 @@ pub(crate) fn array_crs_metric_float(
                                 let logical = left.logical();
                                 left.row().try_with_shape(|left| {
                                     right.row().try_with_shape(|right| {
-                                        operation.eval_shapes(
+                                        operation.eval_shapes_at(
                                             &model,
                                             left,
                                             right,
-                                            operation.densify_at(logical),
+                                            logical,
                                             &mut scratch,
                                         )
                                     })
