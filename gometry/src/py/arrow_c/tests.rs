@@ -3,6 +3,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use libc::{EINVAL, ENOMEM};
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::ffi;
 use pyo3::types::{PyList, PyModule};
@@ -16,6 +17,7 @@ use crate::py::arrow_c::*;
 static NATIVE_SIGNAL_STREAM_TEST_LOCK: Mutex<()> = Mutex::new(());
 static NATIVE_SCHEMA_TEST_LOCK: Mutex<()> = Mutex::new(());
 static NATIVE_SIGNAL_ARRAY_RELEASES: AtomicUsize = AtomicUsize::new(0);
+static NATIVE_FAULT_SCHEMA_RELEASES: AtomicUsize = AtomicUsize::new(0);
 
 fn release_twice(export: ExportedArray) {
     let mut schema = export.schema;
@@ -186,6 +188,12 @@ unsafe extern "C" fn counted_array_release(array: *mut ArrowArray) {
     unsafe { release_array(array) }
 }
 
+unsafe extern "C" fn counted_fault_schema_release(schema: *mut ArrowSchema) {
+    NATIVE_FAULT_SCHEMA_RELEASES.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: the callback receives the consumer-owned schema shell.
+    unsafe { release_schema(schema) }
+}
+
 struct NativeSignalStreamState {
     schema: SchemaNode,
     batches: Vec<Option<Box<ArrowArray>>>,
@@ -219,20 +227,20 @@ unsafe extern "C" fn native_signal_stream_get_schema(
     out: *mut ArrowSchema,
 ) -> c_int {
     if stream.is_null() || out.is_null() {
-        return -1;
+        return EINVAL;
     }
     // SAFETY: the importer calls this with the live test stream and a writable
     // output shell. private_data is the NativeSignalStreamState box installed
     // by native_signal_stream and is not released until native_signal_stream_release.
     let state = unsafe { (*stream).private_data.cast::<NativeSignalStreamState>() };
     if state.is_null() {
-        return -1;
+        return EINVAL;
     }
     // SAFETY: private_data is non-null and uniquely owned by this stream for
     // the callback; the schema node is borrowed only until materialize_schema returns.
     let state = unsafe { &*state };
     let Ok(schema) = state.schema.materialize_schema() else {
-        return -1;
+        return ENOMEM;
     };
     // SAFETY: `schema` is an independent production-built Arrow schema shell
     // whose ownership transfers to the importer through `out`.
@@ -247,14 +255,14 @@ unsafe extern "C" fn native_signal_stream_get_next(
     out: *mut ArrowArray,
 ) -> c_int {
     if stream.is_null() || out.is_null() {
-        return -1;
+        return EINVAL;
     }
     // SAFETY: the importer calls this serially while the stream release slot is
     // live; private_data is the NativeSignalStreamState box installed by
     // native_signal_stream and is not released until native_signal_stream_release.
     let state = unsafe { (*stream).private_data.cast::<NativeSignalStreamState>() };
     if state.is_null() {
-        return -1;
+        return EINVAL;
     }
     // SAFETY: private_data is non-null and uniquely owned by this serial
     // callback sequence until release; the mutable borrow does not outlive
@@ -295,7 +303,7 @@ unsafe extern "C" fn native_signal_stream_release(stream: *mut ArrowArrayStream)
     if stream.is_null() {
         return;
     }
-    // SAFETY: release is called once by ImportedStreamGuard for this test-owned
+    // SAFETY: release is called once by the moved stream shell for this test-owned
     // stream, and the private box is the allocation installed below.
     unsafe {
         let state = (*stream).private_data.cast::<NativeSignalStreamState>();
@@ -357,6 +365,129 @@ fn native_signal_stream(
         remaining_at_release,
         released,
     )
+}
+
+struct FaultAfterBatchStreamState {
+    schema: SchemaNode,
+    batch: Option<Box<ArrowArray>>,
+    allocation_failure: Option<crate::test_support::AllocationFailureGuard>,
+    stream_releases: Arc<AtomicUsize>,
+}
+
+impl Drop for FaultAfterBatchStreamState {
+    fn drop(&mut self) {
+        if let Some(mut batch) = self.batch.take()
+            && let Some(release) = batch.release
+        {
+            // SAFETY: the stream state uniquely owns any batch not yet
+            // transferred to the callback output.
+            unsafe { release(batch.as_mut()) }
+        }
+        // Restore the allocator after producer-owned cleanup has completed.
+        drop(self.allocation_failure.take());
+        self.stream_releases.fetch_add(1, Ordering::Release);
+    }
+}
+
+unsafe extern "C" fn fault_after_batch_get_schema(
+    stream: *mut ArrowArrayStream,
+    out: *mut ArrowSchema,
+) -> c_int {
+    if stream.is_null() || out.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: the importer owns the serialized callback sequence and keeps
+    // the stream shell live until the callback returns.
+    let state = unsafe { (*stream).private_data.cast::<FaultAfterBatchStreamState>() };
+    if state.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: private_data is the state installed by fault_after_batch_stream.
+    let state = unsafe { &*state };
+    let Ok(mut schema) = state.schema.materialize_schema() else {
+        return ENOMEM;
+    };
+    schema.as_mut().release = Some(counted_fault_schema_release);
+    // SAFETY: the independent schema shell transfers to the callback output.
+    unsafe { ptr::write(out, *schema.into_box()) }
+    0
+}
+
+unsafe extern "C" fn fault_after_batch_get_next(
+    stream: *mut ArrowArrayStream,
+    out: *mut ArrowArray,
+) -> c_int {
+    if stream.is_null() || out.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: the importer owns the serialized callback sequence and keeps
+    // the stream shell live until the callback returns.
+    let state = unsafe { (*stream).private_data.cast::<FaultAfterBatchStreamState>() };
+    if state.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: private_data is uniquely borrowed for this callback.
+    let state = unsafe { &mut *state };
+    if let Some(batch) = state.batch.take() {
+        // SAFETY: the batch shell transfers to the callback output.
+        unsafe { ptr::write(out, *batch) }
+        // The next allocation belongs to moved-shell admission, immediately
+        // after this successful callback returns.
+        state.allocation_failure = Some(crate::test_support::AllocationFailureGuard::new(0));
+    } else {
+        // SAFETY: the output shell is writable and EOF is release == NULL.
+        unsafe { ptr::write(out, empty_array()) }
+    }
+    0
+}
+
+unsafe extern "C" fn fault_after_batch_last_error(_stream: *mut ArrowArrayStream) -> *const c_char {
+    c"".as_ptr()
+}
+
+unsafe extern "C" fn fault_after_batch_release(stream: *mut ArrowArrayStream) {
+    if stream.is_null() {
+        return;
+    }
+    // SAFETY: release is called once for this test-owned stream shell.
+    unsafe {
+        let state = (*stream).private_data.cast::<FaultAfterBatchStreamState>();
+        (*stream).release = None;
+        (*stream).private_data = ptr::null_mut();
+        if !state.is_null() {
+            drop(Box::from_raw(state));
+        }
+    }
+}
+
+fn fault_after_batch_stream(geometry: &PyGeometry) -> (Box<ArrowArrayStream>, Arc<AtomicUsize>) {
+    let export = exported(geometry);
+    let schema = export.schema_node.clone();
+    let ExportedArray {
+        schema: mut exported_schema,
+        array,
+        ..
+    } = export;
+    // SAFETY: the standalone schema is replaced by the cloned description in
+    // the stream state and is no longer externally visible.
+    unsafe { release_schema(exported_schema.as_mut()) }
+    let mut batch = array.into_box();
+    batch.release = Some(counted_array_release);
+    let stream_releases = Arc::new(AtomicUsize::new(0));
+    let state = Box::new(FaultAfterBatchStreamState {
+        schema,
+        batch: Some(batch),
+        allocation_failure: None,
+        stream_releases: Arc::clone(&stream_releases),
+    });
+    let stream = Box::new(ArrowArrayStream {
+        get_schema: Some(fault_after_batch_get_schema),
+        get_next: Some(fault_after_batch_get_next),
+        get_last_error: Some(fault_after_batch_last_error),
+        release: Some(fault_after_batch_release),
+        private_data: Box::into_raw(state).cast(),
+    });
+    (stream, stream_releases)
 }
 
 #[test]
@@ -665,6 +796,51 @@ fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
         Ok(())
     })
     .expect("native Arrow stream signal test");
+}
+
+#[test]
+fn stream_batch_move_allocation_failure_releases_schema_batch_and_stream_once() {
+    let _test_lock = NATIVE_SIGNAL_STREAM_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    NATIVE_SIGNAL_ARRAY_RELEASES.store(0, Ordering::Relaxed);
+    NATIVE_FAULT_SCHEMA_RELEASES.store(0, Ordering::Relaxed);
+    crate::test_support::initialize_python();
+    Python::attach(|py| -> PyResult<()> {
+        let point = PyGeometry::with_frame(
+            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+            crate::boundary::Frame::None,
+        )
+        .unwrap();
+        let (mut stream, stream_releases) = fault_after_batch_stream(&point);
+        let stream_ptr = std::ptr::from_mut::<ArrowArrayStream>(stream.as_mut());
+        let result = super::import::import_stream(py, stream_ptr, None, None);
+        let Err(error) = result else {
+            panic!("the post-get_next allocation must fail");
+        };
+        assert!(error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py));
+        assert_eq!(
+            NATIVE_FAULT_SCHEMA_RELEASES.load(Ordering::Relaxed),
+            1,
+            "the live stream schema output is released once"
+        );
+        assert_eq!(
+            NATIVE_SIGNAL_ARRAY_RELEASES.load(Ordering::Relaxed),
+            1,
+            "the live batch output is released once after shell allocation fails"
+        );
+        assert_eq!(
+            stream_releases.load(Ordering::Acquire),
+            1,
+            "the consumed stream shell is released once"
+        );
+        assert!(
+            stream.release.is_none(),
+            "the original stream shell is inert after consumption"
+        );
+        Ok(())
+    })
+    .expect("post-get_next Arrow allocation failure test");
 }
 
 // Compile-fail fixtures for arrow_c / frozen-i64 are driven by the crate-root

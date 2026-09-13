@@ -10,14 +10,15 @@
 
 use std::ptr;
 
+use libc::ENOMEM;
 use pyo3::exceptions::{PyOSError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyCapsule, PyString, PyTuple};
 
 use crate::py::arrow::NativeArrowAccumulator;
 use crate::py::arrow_c::{
-    ArrowArrayStream, ArrowSchema, NativeArrowClassification, empty_array, ffi, release_imported,
-    stream_capsule_name,
+    ArrowArrayStream, ArrowReleaseGuard, ArrowSchema, MovedArrowShell, NativeArrowClassification,
+    empty_array, ffi, stream_capsule_name,
 };
 
 pub(crate) fn geometries_from_arrow_c(
@@ -88,20 +89,6 @@ pub(crate) fn capsule_pointer<T>(
         return Err(PyErr::fetch(capsule.py()));
     }
     Ok(ptr)
-}
-
-/// # Safety
-/// See [`release_imported`].
-pub(crate) unsafe fn release_imported_schema(schema: *mut ArrowSchema) {
-    // SAFETY: forwarded from caller.
-    unsafe { release_imported(schema) }
-}
-
-/// # Safety
-/// See [`release_imported`].
-pub(crate) unsafe fn release_imported_stream(stream: *mut ArrowArrayStream) {
-    // SAFETY: forwarded from caller.
-    unsafe { release_imported(stream) }
 }
 
 type OwnedMetadataPairs = Vec<(Box<[u8]>, Box<[u8]>)>;
@@ -181,10 +168,18 @@ pub(crate) fn import_stream(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<Py<PyAny>>> {
-    let _stream_guard = crate::py::arrow_c::ImportedStreamGuard::new(stream);
     if stream.is_null() {
         return Ok(None);
     }
+    // The capsule normally remains the fallback owner if moving the stream
+    // shell cannot allocate. Keep an explicit stack owner as well so direct
+    // native callers have the same failure-path guarantee.
+    let _stream_guard = unsafe { ArrowReleaseGuard::from_raw(stream) }?;
+    // Consume the capsule-owned stream shell before inspecting callback
+    // pointers. The original capsule remains only as an inert box whose
+    // release slot is NULL, so reentrant or repeated imports cannot callback.
+    let mut stream_owner = unsafe { MovedArrowShell::take(stream) }?;
+    let stream = stream_owner.as_mut_ptr();
     // SAFETY: a valid stream provides function pointers while unreleased.
     unsafe {
         let Some(get_schema) = (*stream).get_schema else {
@@ -195,6 +190,10 @@ pub(crate) fn import_stream(
         };
         let mut stream_schema = empty_schema();
         let schema_status = get_schema(stream, &raw mut stream_schema);
+        // Install this before inspecting status or attempting schema
+        // admission. If the producer initialized a live output and a later
+        // allocation fails, this stack owner releases it exactly once.
+        let schema_guard = ArrowReleaseGuard::from_raw(&raw mut stream_schema)?;
         if schema_status != 0 {
             return Err(stream_callback_error(
                 py,
@@ -204,17 +203,7 @@ pub(crate) fn import_stream(
             ));
         }
         let (admitted_schema, classified) =
-            match crate::py::arrow_c::admit_and_classify_raw_schema(&raw mut stream_schema) {
-                Ok(plan) => plan,
-                Err(error) => {
-                    // SAFETY: stream_schema is the live producer shell when
-                    // schema admission failed before it could take ownership.
-                    if stream_schema.release.is_some() {
-                        release_imported_schema(&raw mut stream_schema);
-                    }
-                    return Err(error);
-                },
-            };
+            crate::py::arrow_c::admit_and_classify_raw_schema(schema_guard.as_ptr())?;
         let (classification, struct_child) = NativeArrowClassification::from_schema(&classified)?;
         let mut accumulator = NativeArrowAccumulator::new();
         accumulator.admit_classification(&classification)?;
@@ -225,6 +214,10 @@ pub(crate) fn import_stream(
             let mut array = empty_array();
             let next_status = get_next(stream, &raw mut array);
             if next_status != 0 {
+                // A producer may have populated an output before reporting
+                // failure. Install the non-allocating guard before consulting
+                // its diagnostic.
+                let _array_guard = ArrowReleaseGuard::from_raw(&raw mut array)?;
                 return Err(stream_callback_error(
                     py,
                     stream,
@@ -261,11 +254,11 @@ unsafe fn stream_callback_error(
     status: i32,
     fallback: &str,
 ) -> PyErr {
-    // SAFETY: `ImportedStreamGuard` keeps the producer stream live and
+    // SAFETY: `MovedArrowShell` keeps the producer stream live and
     // unmodified through this exception construction.
     let detail =
         unsafe { stream.as_mut() }.and_then(|stream| unsafe { stream_last_error_detail(stream) });
-    if status == 12 {
+    if status == ENOMEM {
         return native_stream_memory_error(py, detail.unwrap_or(fallback).as_bytes());
     }
     let detail = detail.map_or_else(|| fallback.to_owned(), str::to_owned);

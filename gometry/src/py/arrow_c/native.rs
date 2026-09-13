@@ -33,7 +33,7 @@ use pyo3::prelude::{Bound, PyAny, PyResult};
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::admitted::{
-    AdmittedArrowSchema, MovedArrowShell, classify_admitted_geometry_schema,
+    AdmittedArrowSchema, ArrowReleaseGuard, MovedArrowShell, classify_admitted_geometry_schema,
 };
 use crate::py::arrow_c::foreign_buffer::ForeignArrowBuffer;
 use crate::py::arrow_c::{
@@ -604,6 +604,9 @@ pub(crate) unsafe fn native_arrow_batch_from_raw_array(
     classification: NativeArrowClassification,
     struct_child: Option<usize>,
 ) -> PyResult<NativeArrowBatch> {
+    // The stream callback has just initialized this output shell. Install a
+    // non-allocating owner before the moved-shell allocation can fail.
+    let _output_guard = unsafe { ArrowReleaseGuard::from_raw(array) }?;
     // SAFETY: caller guarantees a live producer batch array.
     let array_shell = unsafe { MovedArrowShell::take(array) }?;
     // SAFETY: the shell pins every selected buffer and child table until the

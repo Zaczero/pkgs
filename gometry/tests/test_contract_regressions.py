@@ -6,6 +6,7 @@ their corresponding fixes.
 from __future__ import annotations
 
 import collections.abc
+import errno
 import json
 import pickle
 import struct
@@ -2465,7 +2466,7 @@ def _f5_build_id_geometry_schema(ctypes, ArrowSchema, release_fn):
 
 @pytest.mark.parametrize(
     ('status', 'expected'),
-    [(12, MemoryError), (5, OSError), (22, OSError)],
+    [(errno.ENOMEM, MemoryError), (errno.EIO, OSError), (errno.EINVAL, OSError)],
     ids=['enomem', 'eio', 'errno_fallback'],
 )
 def test_arrow_c_stream_callback_errno_maps_to_python_error(

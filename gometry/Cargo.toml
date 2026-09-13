@@ -44,6 +44,7 @@ h3o = { git = "https://github.com/Zaczero/h3o.git", rev = "2b5bde491449c776cb9c1
 lexical-core = { version = "1.0.6", default-features = false, features = [
   "parse-floats"
 ] }
+libc = { version = "0.2", default-features = false }
 # Keep bundled SQLite linked into bundled PROJ; this direct dependency is the
 # feature-unification lever used by proj-sys.
 libsqlite3-sys = { version = "0.35.0", default-features = false, features = [

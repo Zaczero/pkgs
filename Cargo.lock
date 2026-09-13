@@ -551,6 +551,7 @@ dependencies = [
  "getrandom 0.3.4",
  "h3o",
  "lexical-core",
+ "libc",
  "libsqlite3-sys",
  "numpy",
  "proj-sys",

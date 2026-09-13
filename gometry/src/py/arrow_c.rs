@@ -200,10 +200,6 @@ pub(crate) struct ExportedArray {
     array: GometryArrowArray,
 }
 
-struct ImportedStreamGuard {
-    stream: *mut ArrowArrayStream,
-}
-
 pub(crate) const fn schema_capsule_name() -> *const c_char {
     c"arrow_schema".as_ptr()
 }
@@ -240,7 +236,9 @@ mod release;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use admitted::{ClassifiedGeometrySchema, admit_and_classify_raw_schema};
+pub(crate) use admitted::{
+    ArrowReleaseGuard, ClassifiedGeometrySchema, MovedArrowShell, admit_and_classify_raw_schema,
+};
 pub(crate) use build::{
     GometryArrowArray, GometryArrowSchema, OwnedBufferSlot, admitted_binary_array,
     admitted_list_array_windowed, apply_prebuilt_top_level_validity, coordinate_array,
@@ -251,7 +249,7 @@ pub(crate) use build::{reset_schema_guard_drops, schema_guard_drops};
 pub(crate) use capsule_lifecycle::{
     ArrowReleaseSlot, array_to_array_capsules, array_to_schema_capsule, array_to_stream_capsule,
     capsule_destructor, geometry_to_array_capsules, geometry_to_schema_capsule,
-    geometry_to_stream_capsule, pyarrow_array_from_export, release_imported,
+    geometry_to_stream_capsule, pyarrow_array_from_export,
 };
 pub(crate) use export::{apply_exported_validity_plan, export_with_schema_node};
 #[cfg(test)]
@@ -262,7 +260,7 @@ pub(crate) use export_plan::{
 };
 #[cfg(test)]
 pub(crate) use export_plan::{describe_shapes, payload_events, reset_payload_events};
-pub(crate) use import::{capsule_pointer, geometries_from_arrow_c, release_imported_stream};
+pub(crate) use import::{capsule_pointer, geometries_from_arrow_c};
 pub(crate) use native::{
     NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
     NativeDecodedStorage, native_arrow_batch_from_capsules,

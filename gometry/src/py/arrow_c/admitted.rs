@@ -62,7 +62,8 @@ impl<T: ArrowReleaseSlot> MovedArrowShell<T> {
     ///
     /// `source` must be a live ABI-conforming base structure. After return the
     /// producer source has a null release slot; this owner releases exactly once
-    /// on drop. No nested provider call or Python detach until drop.
+    /// on drop. Access through the owner is exclusive, and producer-backed
+    /// borrows must not outlive the operation that created them.
     pub(crate) unsafe fn take(source: *mut T) -> PyResult<Self> {
         if source.is_null() {
             return Err(PyTypeError::new_err("Arrow base structure pointer is null"));
@@ -91,12 +92,66 @@ impl<T: ArrowReleaseSlot> MovedArrowShell<T> {
     pub(crate) const fn as_ptr(&self) -> *const T {
         self.ptr.as_ptr()
     }
+
+    /// Return the owned shell for one serialized producer callback.
+    ///
+    /// The caller must not retain a borrow of the shell after the callback or
+    /// access it concurrently. A stream owner may remain live while detached
+    /// batch decoding runs, provided that decoding does not access the stream.
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr.as_ptr()
+    }
 }
 
 impl<T: ArrowReleaseSlot> Drop for MovedArrowShell<T> {
     fn drop(&mut self) {
         // SAFETY: unique ownership of the moved shell.
         unsafe { drop_moved_arrow(self.ptr.as_ptr()) }
+    }
+}
+
+/// Keep a live callback-bearing output shell owned until moved admission takes
+/// over. The guard itself performs no allocation, so it can be installed
+/// immediately after a foreign callback returns.
+pub(crate) struct ArrowReleaseGuard<T: ArrowReleaseSlot> {
+    ptr: NonNull<T>,
+    _not_send_sync: PhantomData<Rc<()>>,
+}
+
+impl<T: ArrowReleaseSlot> ArrowReleaseGuard<T> {
+    /// Borrow a callback output whose release slot may be populated by the
+    /// producer. A missing slot is the Arrow empty/end-of-stream state and is
+    /// harmless on drop.
+    ///
+    /// # Safety
+    ///
+    /// `source` must point to a writable, ABI-conforming Arrow base structure
+    /// whose callback and owned fields remain valid until this guard drops or a
+    /// moved shell takes over.
+    pub(crate) unsafe fn from_raw(source: *mut T) -> PyResult<Self> {
+        let ptr = NonNull::new(source)
+            .ok_or_else(|| PyTypeError::new_err("Arrow base structure pointer is null"))?;
+        Ok(Self {
+            ptr,
+            _not_send_sync: PhantomData,
+        })
+    }
+
+    pub(crate) const fn as_ptr(&self) -> *mut T {
+        self.ptr.as_ptr()
+    }
+}
+
+impl<T: ArrowReleaseSlot> Drop for ArrowReleaseGuard<T> {
+    fn drop(&mut self) {
+        // SAFETY: the guard owns the callback-bearing output until a moved
+        // shell clears this source release slot.
+        unsafe {
+            if let Some(release) = *T::release_slot(self.ptr.as_ptr()) {
+                release(self.ptr.as_ptr());
+                *T::release_slot(self.ptr.as_ptr()) = None;
+            }
+        }
     }
 }
 

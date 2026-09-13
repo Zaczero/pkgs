@@ -76,6 +76,25 @@ impl Drop for AllocationCountGuard {
     }
 }
 
+/// Keep allocation rejection active across a callback boundary.
+///
+/// Most tests should use [`fail_allocations_after`]. A foreign callback test
+/// can retain this guard in its producer state so the next allocation after
+/// the callback returns is the deliberately rejected operation.
+pub(crate) struct AllocationFailureGuard(Option<usize>);
+
+impl AllocationFailureGuard {
+    pub(crate) fn new(count: usize) -> Self {
+        Self(FAIL_AFTER.with(|remaining| remaining.replace(Some(count))))
+    }
+}
+
+impl Drop for AllocationFailureGuard {
+    fn drop(&mut self) {
+        FAIL_AFTER.with(|remaining| remaining.set(self.0));
+    }
+}
+
 /// Count allocation requests from one test operation on the current thread.
 pub(crate) fn allocation_count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     ALLOCATIONS.with(|allocations| allocations.set(0));
@@ -88,13 +107,7 @@ pub(crate) fn allocation_count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
 
 /// Reject this thread's allocations persistently after the allowed prefix.
 pub(crate) fn fail_allocations_after<T>(count: usize, operation: impl FnOnce() -> T) -> T {
-    struct Restore(Option<usize>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            FAIL_AFTER.with(|remaining| remaining.set(self.0));
-        }
-    }
-    let guard = Restore(FAIL_AFTER.with(|remaining| remaining.replace(Some(count))));
+    let guard = AllocationFailureGuard::new(count);
     let result = operation();
     drop(guard);
     result

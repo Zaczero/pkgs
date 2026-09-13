@@ -2,6 +2,8 @@
 use std::cell::Cell;
 use std::ptr;
 
+use libc::{EINVAL, ENOMEM};
+
 use crate::py::arrow_c::{
     ArrayPrivate, ArrowArray, ArrowArrayStream, ArrowReleaseSlot, ArrowSchema, SchemaPrivate,
     StreamPrivate, array_capsule_name, c_char, c_int, c_void, capsule_destructor, empty_array, ffi,
@@ -171,7 +173,7 @@ pub(crate) unsafe extern "C" fn stream_get_schema(
     out: *mut ArrowSchema,
 ) -> c_int {
     if stream.is_null() || out.is_null() {
-        return -1;
+        return EINVAL;
     }
     // SAFETY: `private_data` is a `StreamPrivate` while release is present.
     // `SchemaNode::into_schema` allocates an independent schema tree for the
@@ -179,11 +181,11 @@ pub(crate) unsafe extern "C" fn stream_get_schema(
     unsafe {
         let private = (*stream).private_data.cast::<StreamPrivate>();
         if private.is_null() {
-            return -1;
+            return EINVAL;
         }
         let Ok(schema) = (*private).schema.materialize_schema() else {
             (*private).last_error = c"failed to materialize Arrow schema";
-            return -1;
+            return ENOMEM;
         };
         ptr::write(out, *schema.into_box());
     }
@@ -200,14 +202,14 @@ pub(crate) unsafe extern "C" fn stream_get_next(
     out: *mut ArrowArray,
 ) -> c_int {
     if stream.is_null() || out.is_null() {
-        return -1;
+        return EINVAL;
     }
     // SAFETY: the single prebuilt array is moved exactly once into `out`.
     // Exhaustion is represented by the Arrow convention `release = NULL`.
     unsafe {
         let private = (*stream).private_data.cast::<StreamPrivate>();
         if private.is_null() {
-            return -1;
+            return EINVAL;
         }
         if let Some(array) = (*private).array.take() {
             ptr::write(out, *array.into_box());

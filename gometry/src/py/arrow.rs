@@ -842,9 +842,9 @@ pub(crate) use export::{array_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow};
 ///     encoding cannot be classified, or it has no geometry column.
 /// OSError
 ///     If an Arrow C stream schema or batch callback returns a nonzero status
-///     other than 12; the callback status is exposed as ``errno``.
+///     other than ``ENOMEM``; the callback status is exposed as ``errno``.
 /// MemoryError
-///     If an Arrow C stream callback returns status 12 (ENOMEM), or native
+///     If an Arrow C stream callback returns ``ENOMEM``, or native
 ///     storage allocation fails.
 /// OverflowError
 ///     If Arrow lengths or offsets exceed representable native sizes.

@@ -5,12 +5,12 @@
 use std::ptr;
 
 use crate::py::arrow_c::{
-    ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray,
-    ImportedStreamGuard, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray,
-    PyResult, PyTuple, Python, StreamPrivate, array_capsule_destructor, array_capsule_name, c_char,
-    ffi, release_array, release_imported_stream, release_schema, release_stream,
-    schema_capsule_destructor, schema_capsule_name, stream_capsule_destructor, stream_capsule_name,
-    stream_get_last_error, stream_get_next, stream_get_schema,
+    ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray, Py, PyAny,
+    PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTuple, Python,
+    StreamPrivate, array_capsule_destructor, array_capsule_name, c_char, ffi, release_array,
+    release_schema, release_stream, schema_capsule_destructor, schema_capsule_name,
+    stream_capsule_destructor, stream_capsule_name, stream_get_last_error, stream_get_next,
+    stream_get_schema,
 };
 
 pub(crate) type ArrowReleaseCallback<T> = unsafe extern "C" fn(*mut T);
@@ -24,20 +24,6 @@ pub(crate) trait ArrowReleaseSlot: Sized {
     /// `ptr` must be non-null, properly aligned, and point to a live Arrow C
     /// base structure of `Self` whose fields remain accessible for the call.
     unsafe fn release_slot(ptr: *mut Self) -> *mut Option<ArrowReleaseCallback<Self>>;
-}
-
-impl ImportedStreamGuard {
-    pub(crate) const fn new(stream: *mut ArrowArrayStream) -> Self {
-        Self { stream }
-    }
-}
-
-impl Drop for ImportedStreamGuard {
-    fn drop(&mut self) {
-        // SAFETY: this guard uniquely owns the stream for its lifetime; no
-        // retained producer borrows remain when Drop runs.
-        unsafe { release_imported_stream(self.stream) }
-    }
 }
 
 impl ArrowReleaseSlot for ArrowSchema {
@@ -107,26 +93,6 @@ pub(crate) unsafe fn capsule_destructor<T>(
         }
         release(ptr);
         drop(Box::from_raw(ptr));
-    }
-}
-
-/// Release an imported Arrow C base structure through its producer callback.
-///
-/// # Safety
-///
-/// - `ptr` is null **or** a live producer-owned base structure whose release
-///   slot is still set (or already cleared — then this is a no-op).
-/// - No safe borrow of `*ptr` (or any field/table it owns) remains live across
-///   this call. Release-while-borrowed is undefined behaviour.
-/// - The caller does not release the same live structure twice concurrently.
-pub(crate) unsafe fn release_imported<T: ArrowReleaseSlot>(ptr: *mut T) {
-    // SAFETY: caller guarantees no live borrows and a valid (or null) pointer.
-    unsafe {
-        if !ptr.is_null()
-            && let Some(release) = *T::release_slot(ptr)
-        {
-            release(ptr);
-        }
     }
 }
 

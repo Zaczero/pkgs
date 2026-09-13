@@ -124,6 +124,90 @@ def _poison_on_array_release(
     return Provider(), flag
 
 
+def test_stream_capsule_is_consumed_before_callbacks_and_reentrancy() -> None:
+    """Stream capsules are one-shot before producer callbacks can reenter."""
+    import ctypes
+
+    source = gm.GeometryArray([gm.Point(1.0, 2.0)])
+    capsule = source.__arrow_c_stream__()
+    get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
+    get_pointer.restype = ctypes.c_void_p
+    get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+    stream_ptr = get_pointer(capsule, b'arrow_array_stream')
+    assert stream_ptr
+
+    class ArrowArrayStream(ctypes.Structure):
+        _fields_ = [
+            ('get_schema', ctypes.c_void_p),
+            ('get_next', ctypes.c_void_p),
+            ('get_last_error', ctypes.c_void_p),
+            ('release', ctypes.c_void_p),
+            ('private_data', ctypes.c_void_p),
+        ]
+
+    stream = ArrowArrayStream.from_address(stream_ptr)
+    original_get_schema = stream.get_schema
+    original_get_next = stream.get_next
+    original_release = stream.release
+    assert original_get_schema and original_get_next and original_release
+    GET_SCHEMA = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    GET_NEXT = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    RELEASE = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    counts = {'schema': 0, 'next': 0, 'release': 0}
+    reentrant_errors: list[str] = []
+    reentrant_attempted = False
+
+    class Provider:
+        def __arrow_c_stream__(self, requested_schema=None):
+            return capsule
+
+    provider = Provider()
+
+    @GET_SCHEMA
+    def wrapped_get_schema(stream_address: int, out_address: int) -> int:
+        nonlocal reentrant_attempted
+        counts['schema'] += 1
+        if not reentrant_attempted:
+            reentrant_attempted = True
+            try:
+                gm.from_arrow(provider)
+            except TypeError as error:
+                reentrant_errors.append(str(error))
+            else:
+                reentrant_errors.append('reentrant import unexpectedly succeeded')
+        return GET_SCHEMA(original_get_schema)(stream_address, out_address)
+
+    @GET_NEXT
+    def wrapped_get_next(stream_address: int, out_address: int) -> int:
+        counts['next'] += 1
+        return GET_NEXT(original_get_next)(stream_address, out_address)
+
+    @RELEASE
+    def wrapped_release(stream_address: int) -> None:
+        counts['release'] += 1
+        RELEASE(original_release)(stream_address)
+
+    keep = (wrapped_get_schema, wrapped_get_next, wrapped_release, capsule)
+    Provider._keep = keep  # type: ignore[attr-defined]
+    stream.get_schema = ctypes.cast(wrapped_get_schema, ctypes.c_void_p).value
+    stream.get_next = ctypes.cast(wrapped_get_next, ctypes.c_void_p).value
+    stream.release = ctypes.cast(wrapped_release, ctypes.c_void_p).value
+
+    decoded = gm.from_arrow(provider)
+    assert decoded.to_wkt() == ['POINT (1 2)']
+    assert not stream.release, 'consuming the stream must clear the capsule slot'
+    assert reentrant_errors and 'already released' in reentrant_errors[0]
+    first_counts = counts.copy()
+    with pytest.raises(TypeError, match='already released'):
+        gm.from_arrow(provider)
+    assert counts == first_counts, 'reconsumption must not invoke producer callbacks'
+    assert counts['release'] == 1
+
+    del decoded, provider, Provider, capsule, source, keep
+    gc.collect()
+    assert counts['release'] == 1, 'the original capsule destructor must not release twice'
+
+
 def test_native_admission_wkb_is_owned_before_release() -> None:
     """WKB import owns buffers before producer release (design-1 §7).
 
