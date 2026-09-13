@@ -3,7 +3,9 @@ use geographiclib_rs::Geodesic;
 use super::distance::{geodesic_frechet_dp, geodesic_frechet_dp_with_scratch};
 use super::lower_bound::{LowerBoundKernel, exact_auxiliary_sphere_bound};
 use super::segment::geodesic_point_segment_query;
-use super::{EllipsoidMetric, GEODESIC_LINE_CACHE, geodesic_counters};
+use super::{
+    EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, GEODESIC_LINE_CACHE, geodesic_counters,
+};
 use crate::error::{ErrorKind, ResourceError, Result};
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{
@@ -58,6 +60,7 @@ fn raw_minimum(
             panic!("unpruned test query was unexpectedly excluded")
         },
         GeodesicSegmentQueryResult::ThresholdOutside { .. }
+        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
         | GeodesicSegmentQueryResult::ThresholdUnresolved => {
             panic!("minimum query returned a threshold outcome")
         },
@@ -102,6 +105,7 @@ fn metric_witness(
             panic!("unpruned test query was unexpectedly excluded")
         },
         GeodesicSegmentQueryResult::ThresholdOutside { .. }
+        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
         | GeodesicSegmentQueryResult::ThresholdUnresolved => {
             panic!("minimum query returned a threshold outcome")
         },
@@ -609,6 +613,144 @@ fn prolate_boundary_point_segment_matches_dense_differential() {
 }
 
 #[test]
+fn point_segment_global_subdivision_matches_exact_reference() {
+    let semi_major = 6_378_137.0;
+    let geodesic = Geodesic::new(semi_major, 1.0 / 298.257_223_563);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let start = p(0.0, 0.0);
+    let end = p(1.0, 1.0);
+    let query = p(0.499_962_174_856_978_1, 0.500_019_548_801_697_6);
+    // The nonzero flattening and diagonal segment bypass the exact equatorial,
+    // meridian, and spherical families. The 10 µm normal offset also declines
+    // the first derivative enclosure, forcing the general interval split.
+    let segment = metric
+        .make_segment(start, end)
+        .expect("fixture segment is unique");
+
+    let samples = (0..=256)
+        .map(|index| {
+            let fraction = f64::from(index) / 256.0;
+            metric.segment_length(query, metric.interpolate(start, end, fraction))
+        })
+        .collect::<Vec<_>>();
+    let local_minima = (1..256)
+        .filter(|&index| samples[index] < samples[index - 1] && samples[index] < samples[index + 1])
+        .count();
+    assert!(
+        local_minima > 0,
+        "fixture must retain an interior local minimum"
+    );
+
+    // Reference values were generated from the fixed binary64 inputs above by
+    // /tmp/opencode/segment_exact_nearcontact-normal10um.cpp, linked against the
+    // pinned GeographicLib 2.7 GeodesicExact/GeodesicLineExact build recorded
+    // in /tmp/opencode/geodesic-backend-profile/COMMANDS.txt.
+    let reference_distance = 0.000_009_999_993_325_465_93;
+    let reference_along = 78_449.784_145_670_39;
+    let reference_foot = p(0.499_962_174_793_668_95, 0.500_019_548_865_860_5);
+    let floor = GEODESIC_BACKEND_RELATIVE_FLOOR * semi_major;
+
+    geodesic_counters::reset();
+    let witness = metric_witness(&metric, query, segment, f64::INFINITY);
+    let stats = geodesic_counters::snapshot();
+    assert!(
+        stats.segment_interval_splits > 0,
+        "expected global subdivision, got {stats:?}"
+    );
+    assert!(stats.segment_interval_pops >= stats.segment_interval_splits);
+    assert!(
+        (witness.distance - reference_distance).abs() <= floor,
+        "distance {} vs {reference_distance}, floor {floor}",
+        witness.distance
+    );
+    assert!(
+        (witness.along - reference_along).abs() <= floor,
+        "along {} vs {reference_along}, floor {floor}; foot {:?} vs {reference_foot:?}",
+        witness.along,
+        witness.foot
+    );
+    assert!(
+        metric.segment_length(witness.foot, reference_foot) <= floor,
+        "foot {:?} vs {reference_foot:?}, floor {floor}",
+        witness.foot
+    );
+
+    assert!(
+        (witness.distance - metric.segment_length(query, witness.foot)).abs()
+            <= 32.0 * f64::EPSILON * witness.distance.max(1.0)
+    );
+    assert!(witness.along >= 0.0 && witness.along <= segment.length);
+}
+
+#[test]
+fn point_segment_global_frontier_keeps_multiple_local_minima() {
+    let semi_major = 6_378_137.0;
+    let geodesic = Geodesic::new(semi_major, -0.02);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let start = p(0.0, -20.0);
+    let end = p(179.9, 10.0);
+    let query = p(90.0, 0.0);
+    let segment = metric
+        .make_segment(start, end)
+        .expect("fixture segment is unique");
+
+    let samples = (0..=256)
+        .map(|index| {
+            let fraction = f64::from(index) / 256.0;
+            metric.segment_length(query, metric.interpolate(start, end, fraction))
+        })
+        .collect::<Vec<_>>();
+    let local_minima = (1..256)
+        .filter(|&index| samples[index] < samples[index - 1] && samples[index] < samples[index + 1])
+        .count();
+    assert_eq!(local_minima, 2, "fixture must retain both local minima");
+
+    // The global distance was generated from these fixed binary64 inputs by
+    // /tmp/opencode/segment_exact_candidate_stored.cpp, linked against the
+    // pinned GeographicLib 2.7 GeodesicExact/GeodesicLineExact build recorded
+    // in /tmp/opencode/geodesic-backend-profile/COMMANDS.txt.
+    let reference_distance = 9_975_904.231_800_672;
+    let floor = GEODESIC_BACKEND_RELATIVE_FLOOR * semi_major;
+
+    geodesic_counters::reset();
+    let witness = metric_witness(&metric, query, segment, f64::INFINITY);
+    let stats = geodesic_counters::snapshot();
+    assert!(stats.segment_interval_splits > 1);
+    assert!(stats.segment_interval_pops >= stats.segment_interval_splits);
+    assert!((witness.distance - reference_distance).abs() <= floor);
+    assert!(
+        (witness.distance - metric.segment_length(query, witness.foot)).abs()
+            <= 32.0 * f64::EPSILON * witness.distance
+    );
+    assert!(witness.along >= 0.0 && witness.along <= segment.length);
+
+    let threshold = metric
+        .point_segment_query(
+            query,
+            segment,
+            GeodesicSegmentQuery::Threshold {
+                limit: 10_000_000.0,
+                completion: GeodesicThresholdCompletion::Complete,
+                witness: GeodesicWitnessNeed::Yes,
+            },
+            &mut GeodesicSegmentScratch::default(),
+        )
+        .expect("complete threshold query should process the global frontier");
+    let GeodesicSegmentQueryResult::Attained {
+        minimum,
+        foot: Some(foot),
+    } = threshold
+    else {
+        panic!("the global minimum must satisfy the threshold");
+    };
+    assert!(minimum.distance <= 10_000_000.0);
+    assert!(
+        (minimum.distance - metric.segment_length(query, foot)).abs()
+            <= 32.0 * f64::EPSILON * minimum.distance
+    );
+}
+
+#[test]
 fn geodesic_segment_intersection_uses_ellipsoidal_solver() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
@@ -819,10 +961,10 @@ fn brute_geodesic_distance_and_nearest_points(
     reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
 )]
 fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result<()> {
-    let semi_major = 6_378_137.0;
-    let semi_minor = 7_000_000.0;
-    let flattening = 1.0 - semi_minor / semi_major;
-    assert!(flattening < 0.0);
+    let semi_major: f64 = 6_378_137.0;
+    let flattening: f64 = -0.02;
+    let semi_minor = semi_major * (1.0 - flattening);
+    assert!((semi_minor - 6_505_699.74).abs() <= 1e-2);
     let geodesic = Geodesic::new(semi_major, flattening);
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
 

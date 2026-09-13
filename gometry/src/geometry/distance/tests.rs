@@ -309,6 +309,7 @@ fn point_segment_distance_value(
             panic!("unbounded minimum query was unexpectedly excluded")
         },
         GeodesicSegmentQueryResult::ThresholdOutside { .. }
+        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
         | GeodesicSegmentQueryResult::ThresholdUnresolved => {
             panic!("minimum query returned a threshold outcome")
         },
@@ -348,6 +349,7 @@ fn geodesic_segment_witness(
             panic!("unpruned witness query was unexpectedly excluded")
         },
         GeodesicSegmentQueryResult::ThresholdOutside { .. }
+        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
         | GeodesicSegmentQueryResult::ThresholdUnresolved => {
             panic!("minimum query returned a threshold outcome")
         },

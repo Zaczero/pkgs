@@ -27,8 +27,9 @@ const GEODESIC_LINE_OUTMASK: u64 =
 const GEODESIC_LINE_CACHE_CAPACITY: usize = 4096;
 const REDUCED_LAT_TABLE_CELLS: usize = 8192;
 const REDUCED_LAT_MIN_ONE_MINUS_F: f64 = 0.9;
-/// Relative allowance reserved for the admitted binary64 geodesic backend.
-pub(crate) const GEODESIC_BACKEND_RELATIVE_FLOOR: f64 = 8.7e-12;
+// This deliberate rounded envelope covers measured near-cut line-position
+// stress with margin; it is not a universal certificate.
+pub(crate) const GEODESIC_BACKEND_RELATIVE_FLOOR: f64 = 1e-11;
 
 #[cfg(test)]
 pub(crate) mod geodesic_counters {

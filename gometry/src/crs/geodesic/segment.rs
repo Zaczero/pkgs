@@ -525,7 +525,7 @@ fn search_point_segment(
             scratch.clear();
             crate::boundary::try_push_heap(&mut scratch.inner, initial)?;
             let mut minimum = endpoint_minimum;
-            let mut unresolved = false;
+            let mut backend_limited = false;
             while let Some(interval) = scratch.inner.pop() {
                 #[cfg(test)]
                 geodesic_counters::segment_interval_pop();
@@ -541,20 +541,25 @@ fn search_point_segment(
                     #[cfg(test)]
                     geodesic_counters::segment_convex_closure();
                     update_minimum(&mut minimum, closed.distance, closed.along);
-                    if threshold_hit(query, closed.distance) {
-                        return attained_result(prepared, closed, query_witness(query));
+                    if let GeodesicSegmentQuery::Threshold { limit, .. } = query
+                        && minimum.distance <= limit
+                    {
+                        return attained_result(prepared, minimum, query_witness(query));
                     }
                     continue;
                 }
-                if minimum.distance == 0.0 && query_accepts_attained(query, minimum.distance) {
+                if matches!(query, GeodesicSegmentQuery::Minimum { .. })
+                    && minimum.distance == 0.0
+                    && query_accepts_attained(query, minimum.distance)
+                {
                     return attained_result(prepared, minimum, query_witness(query));
                 }
                 if !can_subdivide(interval.left, interval.right) {
-                    if threshold_hit(query, minimum.distance) {
-                        return attained_result(prepared, minimum, query_witness(query));
-                    }
-                    if matches!(query, GeodesicSegmentQuery::Threshold { .. }) {
-                        unresolved = true;
+                    if matches!(query, GeodesicSegmentQuery::Threshold {
+                        completion: GeodesicThresholdCompletion::Complete,
+                        ..
+                    }) {
+                        backend_limited = true;
                     }
                     continue;
                 }
@@ -563,7 +568,15 @@ fn search_point_segment(
                 let middle = f64::midpoint(interval.left, interval.right);
                 let middle_value = prepared.sample(geodesic, point, middle, false)?;
                 update_minimum(&mut minimum, middle_value.distance, middle);
-                if minimum.distance == 0.0 && query_accepts_attained(query, minimum.distance) {
+                if let GeodesicSegmentQuery::Threshold { limit, .. } = query
+                    && minimum.distance <= limit
+                {
+                    return attained_result(prepared, minimum, query_witness(query));
+                }
+                if matches!(query, GeodesicSegmentQuery::Minimum { .. })
+                    && minimum.distance == 0.0
+                    && query_accepts_attained(query, minimum.distance)
+                {
                     return attained_result(prepared, minimum, query_witness(query));
                 }
                 let left = GeodesicInnerInterval {
@@ -597,7 +610,7 @@ fn search_point_segment(
                     crate::boundary::try_push_heap(&mut scratch.inner, right)?;
                 }
             }
-            finish_query(prepared, query, minimum, unresolved)
+            finish_query(prepared, query, minimum, backend_limited)
         },
     }
 }
@@ -613,7 +626,7 @@ fn finish_query(
     prepared: &PreparedSegment,
     query: GeodesicSegmentQuery,
     minimum: GeodesicSegmentMinimum,
-    unresolved: bool,
+    backend_limited: bool,
 ) -> Result<GeodesicSegmentQueryResult> {
     match query {
         GeodesicSegmentQuery::Minimum { cutoff, witness } => {
@@ -630,11 +643,12 @@ fn finish_query(
             completion: GeodesicThresholdCompletion::Complete,
             witness,
         } => {
-            if unresolved {
-                return Ok(GeodesicSegmentQueryResult::ThresholdUnresolved);
-            }
             if minimum.distance <= limit {
                 attained_result(prepared, minimum, witness)
+            } else if backend_limited {
+                Ok(GeodesicSegmentQueryResult::ThresholdResolvedOutside {
+                    minimum: minimum.distance,
+                })
             } else {
                 Ok(GeodesicSegmentQueryResult::ThresholdOutside {
                     lower_bound: limit.next_up(),
@@ -642,20 +656,9 @@ fn finish_query(
             }
         },
         GeodesicSegmentQuery::Threshold {
-            limit,
             completion: GeodesicThresholdCompletion::Probe,
-            witness,
-        } => {
-            if unresolved {
-                Ok(GeodesicSegmentQueryResult::ThresholdUnresolved)
-            } else if minimum.distance <= limit {
-                attained_result(prepared, minimum, witness)
-            } else {
-                Ok(GeodesicSegmentQueryResult::ThresholdOutside {
-                    lower_bound: limit.next_up(),
-                })
-            }
-        },
+            ..
+        } => unreachable!("probe threshold queries do not enter global search"),
     }
 }
 
@@ -701,13 +704,6 @@ const fn query_witness(query: GeodesicSegmentQuery) -> GeodesicWitnessNeed {
         GeodesicSegmentQuery::Minimum { witness, .. }
         | GeodesicSegmentQuery::Threshold { witness, .. } => witness,
     }
-}
-
-fn threshold_hit(query: GeodesicSegmentQuery, distance: f64) -> bool {
-    matches!(
-        query,
-        GeodesicSegmentQuery::Threshold { limit, .. } if distance <= limit
-    )
 }
 
 fn interval_is_excluded(

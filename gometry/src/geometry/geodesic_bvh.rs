@@ -11,7 +11,6 @@
 use crate::HeapSize;
 use crate::collections::HashMap;
 use crate::error::{ResourceError, Result};
-use crate::geometry::distance::geodesic_threshold_hit;
 use crate::geometry::{
     BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentQuery,
     GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicThresholdCompletion,
@@ -406,15 +405,18 @@ impl GeodesicFacetBvh {
                             },
                             segment_scratch,
                         )?;
-                        if geodesic_threshold_hit(
-                            result,
-                            point,
-                            segment,
-                            metric,
-                            limit,
-                            segment_scratch,
-                        )? {
-                            return Ok(true);
+                        match result {
+                            GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
+                            GeodesicSegmentQueryResult::ThresholdOutside { .. } => {},
+                            GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
+                                debug_assert!(minimum > limit);
+                            },
+                            GeodesicSegmentQueryResult::Excluded { .. } => {
+                                unreachable!("threshold query returned a minimum exclusion")
+                            },
+                            GeodesicSegmentQueryResult::ThresholdUnresolved => {
+                                unreachable!("complete threshold query returned unresolved")
+                            },
                         }
                     }
                 },

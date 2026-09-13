@@ -398,24 +398,26 @@ composite algorithms.
 
 ### Geographic point-to-segment accuracy
 
-Point-to-linework distance and its nearest-feature witness use a binary64
-along-track search. The search refines the argument bracket until another
-representable midpoint is unavailable, then evaluates the reported distance
-and witness at that same argument. Rounding in the underlying point-to-point
-inverse still contributes to the result; the search does not provide a
-per-call error certificate.
-`dwithin` compares the refined distance inclusively with the supplied radius;
-it does not widen that radius by the search's pruning slack.
+Point-to-linework distance and its nearest-feature witness use one prepared
+geodesic line and a global interval query over its along-track parameter. The
+query keeps conservative endpoint-cone and squared-distance lower bounds in a
+priority frontier. It closes short, well-conditioned convex cells with a
+stationary-point solve; cells that do not meet that admission test are
+subdivided and returned to the same global frontier. When a witness is
+requested, gometry materializes the actual foot on the prepared line and
+preserves the segment's along-track position and optional ordinates.
 
-As a measured scope rather than a universal bound, the WGS 84 validation sweep
-used equatorial segments of `0.25°`, `1°`, `5°`, `10°`, and `30°`, with query
-latitudes from `1e-9°` through `20°`. Across its 35 cases, the returned
-distance was no more than `1.8e-16 m` above the independently exhibited
-midpoint, the recomputed distance to the returned witness matched the reported
-value bit-for-bit, and the largest along-track difference from the midpoint
-was `4.7e-10 m`. GeographicLib's inverse-distance accuracy statement applies
-to each inverse solution; it does not extend this measured point-to-segment
-search or its nearest witness.
+The geodesic owner reserves an internal backend floor of `1e-11 × a` for
+bound and convex-cell decisions, where `a` is the ellipsoid's semi-major axis.
+This floor scales with the ellipsoid radius. It is a conservative implementation
+allowance for the admitted binary64 backend, not a per-call error certificate.
+The [Geographic geodesic numerical domain](#geographic-geodesic-numerical-domain)
+section describes the scope of the underlying GeographicLib primitive; that
+primitive scope does not certify this composite point-to-segment query.
+`dwithin` compares the resolved backend minimum inclusively with the supplied
+radius. It does not add a contact tolerance or widen the radius by pruning
+slack.
+
 Geodesic Hausdorff refinement uses a `0.01 m` interval gap. In the three
 analytic WGS 84 line-versus-two-point cases used for validation, its shortfall
 from the exhibited source midpoint was `0.33–0.53 cm`; this is measured

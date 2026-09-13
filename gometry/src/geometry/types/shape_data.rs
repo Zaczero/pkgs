@@ -945,8 +945,9 @@ pub(crate) enum GeodesicSegmentQuery {
         cutoff: f64,
         witness: GeodesicWitnessNeed,
     },
-    /// Return an attained threshold hit. `Complete` also searches for a
-    /// complete outside proof; either mode may return `ThresholdUnresolved`.
+    /// Return an attained threshold hit. `Complete` globally processes the
+    /// live interval frontier and always resolves against the backend result;
+    /// only `Probe` may return `ThresholdUnresolved`.
     Threshold {
         limit: f64,
         completion: GeodesicThresholdCompletion,
@@ -962,7 +963,9 @@ pub(crate) enum GeodesicWitnessNeed {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum GeodesicThresholdCompletion {
+    /// Run the global owner; this mode always resolves the backend result.
     Complete,
+    /// Probe a fixed set of positions; this mode may remain unresolved.
     Probe,
 }
 
@@ -983,9 +986,12 @@ pub(crate) enum GeodesicSegmentQueryResult {
     },
     /// A pruning fact, never a metric value.
     Excluded { lower_bound: f64 },
-    /// A complete proof that the segment is outside a threshold.
+    /// The standing conservative backend lower bound is above the threshold.
     ThresholdOutside { lower_bound: f64 },
-    /// No threshold decision was established; never treat this as outside.
+    /// The resolved backend minimum is outside a threshold. This result is
+    /// floor-limited and is not a real-arithmetic lower-bound certificate.
+    ThresholdResolvedOutside { minimum: f64 },
+    /// A probe did not establish a threshold hit; never treat this as outside.
     ThresholdUnresolved,
 }
 

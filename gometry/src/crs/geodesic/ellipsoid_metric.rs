@@ -180,6 +180,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
             },
             GeodesicSegmentQueryResult::Excluded { .. }
             | GeodesicSegmentQueryResult::ThresholdOutside { .. }
+            | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
             | GeodesicSegmentQueryResult::ThresholdUnresolved => result,
         })
     }

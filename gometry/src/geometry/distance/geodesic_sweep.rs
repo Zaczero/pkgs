@@ -351,15 +351,18 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
                     },
                     segment_scratch,
                 )?;
-                if geodesic_threshold_hit(
-                    result,
-                    vertex,
-                    segment,
-                    metric,
-                    distance,
-                    segment_scratch,
-                )? {
-                    return Ok(true);
+                match result {
+                    GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
+                    GeodesicSegmentQueryResult::ThresholdOutside { .. } => {},
+                    GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
+                        debug_assert!(minimum > distance);
+                    },
+                    GeodesicSegmentQueryResult::Excluded { .. } => {
+                        unreachable!("threshold query returned a minimum exclusion")
+                    },
+                    GeodesicSegmentQueryResult::ThresholdUnresolved => {
+                        unreachable!("complete threshold query returned unresolved")
+                    },
                 }
             }
         }
@@ -373,50 +376,6 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
         }
     }
     Ok(false)
-}
-
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned result is consumed once to preserve its typed branch semantics"
-)]
-pub(crate) fn geodesic_threshold_hit(
-    result: GeodesicSegmentQueryResult,
-    point: Point,
-    segment: GeodesicSegment,
-    metric: &impl GeodesicMetric,
-    limit: f64,
-    scratch: &mut GeodesicSegmentScratch,
-) -> Result<bool> {
-    match result {
-        GeodesicSegmentQueryResult::Attained { minimum, .. } => Ok(minimum.distance <= limit),
-        GeodesicSegmentQueryResult::ThresholdOutside { .. } => Ok(false),
-        GeodesicSegmentQueryResult::ThresholdUnresolved => {
-            let result = metric.point_segment_query(
-                point,
-                segment,
-                GeodesicSegmentQuery::Minimum {
-                    cutoff: f64::INFINITY,
-                    witness: GeodesicWitnessNeed::No,
-                },
-                scratch,
-            )?;
-            match result {
-                GeodesicSegmentQueryResult::Attained { minimum, .. } => {
-                    Ok(minimum.distance <= limit)
-                },
-                GeodesicSegmentQueryResult::Excluded { .. } => {
-                    unreachable!("unbounded minimum query was excluded")
-                },
-                GeodesicSegmentQueryResult::ThresholdOutside { .. }
-                | GeodesicSegmentQueryResult::ThresholdUnresolved => {
-                    unreachable!("minimum query returned a threshold outcome")
-                },
-            }
-        },
-        GeodesicSegmentQueryResult::Excluded { .. } => {
-            unreachable!("threshold query returned a minimum exclusion")
-        },
-    }
 }
 
 #[expect(
