@@ -359,13 +359,13 @@ impl GeodesicPartsKey {
         semi_major: f64,
         flattening: f64,
         runtime_generation: u64,
-    ) -> Self {
-        Self {
-            crs: crs.into(),
+    ) -> crate::error::Result<Self> {
+        Ok(Self {
+            crs: crate::boundary::try_boxed_str(crs)?,
             semi_major_bits: semi_major.to_bits(),
             flattening_bits: flattening.to_bits(),
             runtime_generation,
-        }
+        })
     }
 }
 

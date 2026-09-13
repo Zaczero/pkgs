@@ -9,7 +9,7 @@ use crate::geometry::distance::geodesic_parts::{
     geodesic_cap_from_parts, geodesic_dwithin_sweep_with_parts, geodesic_sweep_with_parts,
 };
 use crate::geometry::distance::geodesic_sweep::{
-    geodesic_capped_witness_sweep_with_parts, geodesic_target_witness,
+    geodesic_capped_witness_sweep_with_parts, geodesic_ordered_rows_into, geodesic_target_witness,
 };
 use crate::geometry::distance::tests::{
     assert_geodesic_close, assert_same_witness, brute_geodesic_distance,
@@ -270,6 +270,118 @@ fn geodesic_dwithin_short_circuits_before_full_distance_sweep() -> Result<()> {
                 + stats.segment_derivative_declines
         };
         assert!(work(&threshold_work) < work(&distance_work));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::needless_borrows_for_generic_args,
+    reason = "the test retries one closure across every allocator prefix"
+)]
+fn geodesic_ordered_rows_reservation_is_fallible_and_retryable() -> Result<()> {
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    let target = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
+    let vertices = [p(2.0, 0.0), p(3.0, 0.0), p(4.0, 0.0)];
+    with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
+        let parts = target.geodesic_parts(metric)?;
+        let caps = parts
+            .caps
+            .as_ref()
+            .expect("non-empty target has caps")
+            .view();
+        let run = || -> Result<Vec<_>> {
+            let mut rows = Vec::new();
+            geodesic_ordered_rows_into(&vertices, caps, metric, false, &mut rows)?;
+            Ok(rows)
+        };
+        let expected = run()?;
+        let (_, allocations) = allocation_count(&run);
+        assert!(
+            allocations > 0,
+            "ordered rows did not reserve output storage"
+        );
+        for allowed in 0..allocations {
+            let result = fail_allocations_after(allowed, &run);
+            let error = result
+                .err()
+                .unwrap_or_else(|| panic!("ordered-row prefix {allowed} unexpectedly succeeded"));
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            assert_eq!(run()?, expected, "ordered-row retry at {allowed}");
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::needless_borrows_for_generic_args,
+    reason = "the test retries one closure across every allocator prefix"
+)]
+fn scalar_geodesic_dwithin_allocations_are_resource_and_retryable() -> Result<()> {
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    let left_shape = line(vec![p(-2.0, 0.0), p(2.0, 0.0)]);
+    let right_shape = line(vec![p(-2.0, 1.0), p(2.0, 1.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&left_shape, &right_shape], |metric| {
+        let left = PreparedPlan::new(left_shape.clone())?;
+        let right = PreparedPlan::new(right_shape.clone())?;
+        let (semi_major, flattening) = metric.ellipsoid_parameters();
+        let run = || {
+            let left_cache = FrameDependentCaches::default();
+            let right_cache = FrameDependentCaches::default();
+            left.geodesic_dwithin_cached(
+                &left_cache,
+                &right,
+                &right_cache,
+                "EPSG:4326",
+                semi_major,
+                flattening,
+                metric,
+                100_000.0,
+            )
+        };
+        let expected = run()?;
+        let (_, allocations) = allocation_count(&run);
+        assert!(allocations > 0, "scalar dwithin had no fallible setup");
+        for allowed in 0..allocations {
+            let result = fail_allocations_after(allowed, &run);
+            let error = result
+                .err()
+                .unwrap_or_else(|| panic!("scalar prefix {allowed} unexpectedly succeeded"));
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            assert_eq!(run()?, expected, "scalar retry at {allowed}");
+        }
+
+        let infinite = || {
+            let left_cache = FrameDependentCaches::default();
+            let right_cache = FrameDependentCaches::default();
+            left.geodesic_dwithin_cached(
+                &left_cache,
+                &right,
+                &right_cache,
+                "EPSG:4326",
+                semi_major,
+                flattening,
+                metric,
+                f64::INFINITY,
+            )
+        };
+        assert!(infinite()?);
+        let (_, infinite_allocations) = allocation_count(&infinite);
+        assert_eq!(
+            infinite_allocations, 0,
+            "scalar positive-infinity dwithin should not allocate"
+        );
         Ok(())
     })?;
     Ok(())
@@ -1101,6 +1213,108 @@ fn geodesic_bvh_none_remains_for_empty_and_below_threshold_parts() -> Result<()>
         assert!(matches!(empty_parts.geodesic_bvh(metric), Ok(None)));
         Ok(())
     })?;
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::needless_borrows_for_generic_args,
+    reason = "the test retries one closure across every allocator prefix"
+)]
+fn fixed_geodesic_point_rows_propagate_allocation_failures_and_retry() -> Result<()> {
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    let cases = [
+        ("non_bvh", line(vec![p(-1.0, 0.0), p(1.0, 0.0)]), 1.0),
+        ("bvh", disconnected_bvh_target(), 1.0),
+    ];
+    for (name, target, limit) in cases {
+        with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
+            let data = PreparedPlan::new(target.clone())?;
+            let frame_cache = FrameDependentCaches::default();
+            let (semi_major, flattening) = metric.ellipsoid_parameters();
+            let xs = [0.0, 10.0];
+            let ys = [0.0, 0.0];
+            let run = || {
+                data.geodesic_dwithin_points(
+                    &frame_cache,
+                    std::iter::zip(xs.iter().copied(), ys.iter().copied()),
+                    "EPSG:4326",
+                    semi_major,
+                    flattening,
+                    metric,
+                    limit,
+                    metric.frame(),
+                )
+            };
+            let expected = run()?;
+            let (_, allocations) = allocation_count(&run);
+            assert!(
+                allocations > 0,
+                "{name}: point-row output was not allocated"
+            );
+            for allowed in 0..allocations {
+                let result = fail_allocations_after(allowed, &run);
+                let error = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{name}: prefix {allowed} unexpectedly succeeded"));
+                assert!(matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                ));
+                assert_eq!(run()?, expected, "{name}: retry at {allowed}");
+            }
+
+            let inf_run = || {
+                data.geodesic_dwithin_points(
+                    &frame_cache,
+                    std::iter::zip(xs.iter().copied(), ys.iter().copied()),
+                    "EPSG:4326",
+                    semi_major,
+                    flattening,
+                    metric,
+                    f64::INFINITY,
+                    metric.frame(),
+                )
+            };
+            let inf_expected = inf_run()?;
+            let (_, inf_allocations) = allocation_count(&inf_run);
+            assert!(
+                inf_allocations > 0,
+                "{name}: infinite point-row output was not allocated"
+            );
+            for allowed in 0..inf_allocations {
+                let result = fail_allocations_after(allowed, &inf_run);
+                let error = result.err().unwrap_or_else(|| {
+                    panic!("{name}: infinite prefix {allowed} unexpectedly succeeded")
+                });
+                assert!(matches!(
+                    error.kind(),
+                    ErrorKind::Resource(ResourceError::Allocation)
+                ));
+                assert_eq!(
+                    inf_run()?,
+                    inf_expected,
+                    "{name}: infinite retry at {allowed}"
+                );
+            }
+            let invalid_ys = [0.0, 95.0];
+            let error = data
+                .geodesic_dwithin_points(
+                    &frame_cache,
+                    std::iter::zip(xs[..2].iter().copied(), invalid_ys.iter().copied()),
+                    "EPSG:4326",
+                    semi_major,
+                    flattening,
+                    metric,
+                    f64::INFINITY,
+                    metric.frame(),
+                )
+                .expect_err("invalid point-row latitude must be rejected");
+            assert!(error.to_string().contains("invalid longitude/latitude"));
+            Ok(())
+        })?;
+    }
     Ok(())
 }
 

@@ -419,14 +419,12 @@ impl GeodesicFacetBvh {
                         )?;
                         match result {
                             GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
-                            GeodesicSegmentQueryResult::ThresholdOutside => {},
+                            GeodesicSegmentQueryResult::ThresholdOutside
+                            | GeodesicSegmentQueryResult::Excluded => {},
                             GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
                                 if minimum <= limit {
                                     return Ok(true);
                                 }
-                            },
-                            GeodesicSegmentQueryResult::Excluded => {
-                                unreachable!("threshold query returned a minimum exclusion")
                             },
                         }
                     }

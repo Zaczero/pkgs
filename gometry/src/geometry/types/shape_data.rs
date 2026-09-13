@@ -404,7 +404,7 @@ impl PreparedPlan {
         metric: &impl SegmentMetric,
     ) -> Result<Arc<LineIndex>> {
         let key =
-            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, runtime_generation);
+            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, runtime_generation)?;
         let cached = frame_cache.get(&key).and_then(|entry| entry.line_index);
         if let Some(index) = cached {
             return Ok(index);
@@ -456,7 +456,7 @@ impl PreparedPlan {
             semi_major,
             flattening,
             metric.runtime_generation(),
-        );
+        )?;
         self.geodesic_parts(frame_cache, key, metric).map(|_| ())
     }
 
@@ -693,18 +693,37 @@ mod frame_cache_tests {
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
         let base =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4);
+            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4)
+                .expect("test cache key");
         assert_ne!(
             base,
-            GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_137.0, 1.0 / 298.257_223_563, 4)
+            GeodesicPartsKey::new_at_generation(
+                "EPSG:4267",
+                6_378_137.0,
+                1.0 / 298.257_223_563,
+                4,
+            )
+            .expect("test cache key")
         );
         assert_ne!(
             base,
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_136.0, 1.0 / 298.257_223_563, 4)
+            GeodesicPartsKey::new_at_generation(
+                "EPSG:4326",
+                6_378_136.0,
+                1.0 / 298.257_223_563,
+                4,
+            )
+            .expect("test cache key")
         );
         assert_ne!(
             base,
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5)
+            GeodesicPartsKey::new_at_generation(
+                "EPSG:4326",
+                6_378_137.0,
+                1.0 / 298.257_223_563,
+                5,
+            )
+            .expect("test cache key")
         );
     }
 
@@ -712,11 +731,14 @@ mod frame_cache_tests {
     fn differing_frame_or_generation_replaces_the_single_entry() {
         let cache = FrameDependentCaches::default();
         let first =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4);
+            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4)
+                .expect("test cache key");
         let next_generation =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5);
+            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5)
+                .expect("test cache key");
         let other_frame =
-            GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_206.4, 1.0 / 294.978_698_2, 5);
+            GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_206.4, 1.0 / 294.978_698_2, 5)
+                .expect("test cache key");
         let _ = cache.merge(first.clone(), |_| {});
         assert!(cache.get(&first).is_some());
         let _ = cache.merge(next_generation.clone(), |_| {});
@@ -730,8 +752,10 @@ mod frame_cache_tests {
     #[test]
     fn stale_generation_cannot_replace_a_newer_entry() {
         let cache = FrameDependentCaches::default();
-        let older = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 4);
-        let newer = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 5);
+        let older = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 4)
+            .expect("test key");
+        let newer = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 5)
+            .expect("test key");
         assert!(cache.merge(newer.clone(), |_| {}).is_some());
         assert!(cache.merge(older.clone(), |_| {}).is_none());
         assert!(cache.get(&newer).is_some());
@@ -1065,11 +1089,12 @@ mod frame_cache_tests {
     #[test]
     fn single_entry_container_adds_no_heap_allocation() {
         let cache = FrameDependentCaches::default();
-        let key = GeodesicPartsKey::new_at_generation("TEST", 1.0, 0.0, 0);
+        let key = GeodesicPartsKey::new_at_generation("TEST", 1.0, 0.0, 0).expect("test cache key");
         let key_heap = key.heap_bytes();
         let _ = cache.merge(key, |_| {});
-        // The key is inline and the entry has no products: unlike the former
-        // Vec-backed LRU, the container itself retains no heap allocation.
+        // The key's existing string storage and the empty entry account for
+        // all retained bytes; unlike the former Vec-backed LRU, the container
+        // itself retains no additional heap allocation.
         assert_eq!(cache.heap_bytes(), key_heap);
     }
 
@@ -1086,7 +1111,8 @@ mod frame_cache_tests {
                             6_378_137.0,
                             1.0 / 298.257_223_563,
                             generation + worker,
-                        );
+                        )
+                        .expect("test cache key");
                         let _ = cache.merge(key, |_| {});
                     }
                 });
@@ -1097,7 +1123,8 @@ mod frame_cache_tests {
             6_378_137.0,
             1.0 / 298.257_223_563,
             70,
-        );
+        )
+        .expect("test cache key");
         assert!(cache.get(&latest).is_some());
     }
 }

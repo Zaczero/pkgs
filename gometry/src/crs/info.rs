@@ -55,11 +55,14 @@ pub(crate) fn info_with_state(
             CRS_INFO_CACHE_CAPACITY,
             |item| item.definition == normalized,
             || {
-                let info =
-                    ProjObject::new_with_state(&normalized, state)?.info(normalized.clone())?;
+                let info_crs = crate::boundary::try_string_from_str(&normalized)
+                    .map_err(|()| crate::error::ResourceError::Allocation)?;
+                let cache_crs = crate::boundary::try_string_from_str(&normalized)
+                    .map_err(|()| crate::error::ResourceError::Allocation)?;
+                let info = ProjObject::new_with_state(&normalized, state)?.info(info_crs)?;
                 Ok(CachedCrsInfo {
-                    definition: normalized.clone().into(),
-                    info: std::sync::Arc::new(info),
+                    definition: cache_crs,
+                    info: std::sync::Arc::try_new(info).map_err(crate::error::Error::from)?,
                 })
             },
         )?;

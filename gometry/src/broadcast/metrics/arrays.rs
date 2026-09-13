@@ -19,6 +19,14 @@ use crate::broadcast::metrics::{
     pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, point_distance,
     resolve_metric, rows_err,
 };
+use crate::broadcast::metrics::{
+    Arc, Bound, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Point, Py,
+    PyGeometry, PyGeometryArray, PyResult, Python, Shape, SimilarityOp, binary_frame_crs,
+    bool_array, broadcast2_geometry, classify_required, crs, ensure_geodesic_shape, float64_array,
+    geodesic_point_columns_dwithin_shape_values, geodesic_point_columns_to_shape_values,
+    mask_missing, pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic,
+    pair_dwithin_planar, paired_arrays, point_distance, resolve_metric, rows_err,
+};
 use crate::dispatch::MetricOp;
 use crate::geometry::packed_line_metrics::scale_metric_values;
 use crate::geometry::{
@@ -416,7 +424,9 @@ pub(crate) fn array_crs_distances(
                 (&model, right.shape.shape())
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
-                    let crs = crs.clone();
+                    let crs = crate::boundary::try_string_from_str(crs).map_err(|()| {
+                        crate::error::Error::from(crate::error::ResourceError::Allocation)
+                    })?;
                     let state = Arc::clone(state);
                     let target = *target;
                     move |points| {
@@ -435,7 +445,9 @@ pub(crate) fn array_crs_distances(
             if let crs::MetricModel::Geodesic { crs, state, frame } = &model
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
-                    let crs = crs.clone();
+                    let crs = crate::boundary::try_string_from_str(crs).map_err(|()| {
+                        crate::error::Error::from(crate::error::ResourceError::Allocation)
+                    })?;
                     let state = Arc::clone(state);
                     let right_shape = right.plan_or_transient()?;
                     let right_cache = right.frame_cache()?;
@@ -526,7 +538,9 @@ pub(crate) fn array_crs_distances(
                     let packed_planar = Some(move |a, b| Ok(point_distance(a, b) * to_metre.get()));
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
-                            let mut values = vec![0.0; lx.len()];
+                            let mut values = Vec::new();
+                            crate::boundary::try_reserve_vec(&mut values, lx.len())?;
+                            values.resize(lx.len(), 0.0);
                             pair_map4_guarded_f64(
                                 lx,
                                 ly,
@@ -576,6 +590,8 @@ pub(crate) fn array_crs_distances(
                     )
                 },
                 crs::ResolvedMetric::Geodesic(metric) => {
+                    ensure_geodesic_array_rows(array, metric.frame)?;
+                    ensure_geodesic_array_rows(right, metric.frame)?;
                     let geodesic = *metric.geodesic;
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
@@ -660,7 +676,9 @@ pub(crate) fn array_crs_dwithin(
                     let packed_planar = Some(move |a, b| Ok(points_dwithin(a, b, limit)));
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
-                            let mut out = vec![false; lx.len()];
+                            let mut out = Vec::new();
+                            crate::boundary::try_reserve_vec(&mut out, lx.len())?;
+                            out.resize(lx.len(), false);
                             // A positive-subnormal limit square quantizes the
                             // boundary; keep the packed lane in distance space
                             // until the square is a normal f64.
@@ -721,6 +739,8 @@ pub(crate) fn array_crs_dwithin(
                     )
                 },
                 crs::ResolvedMetric::Geodesic(metric) => {
+                    ensure_geodesic_array_rows(array, metric.frame)?;
+                    ensure_geodesic_array_rows(right, metric.frame)?;
                     let geodesic = *metric.geodesic;
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
@@ -785,10 +805,47 @@ fn dwithin_box_refutes(left: Option<Bounds>, right: Option<Bounds>, limit: f64) 
     limit_sq.is_finite() && bounds_distance_squared(left, right) > limit_sq
 }
 
+/// Admit every present row in a geographic array before a dwithin result
+/// buffer is reserved. Domain errors and unsupported filled interiors must
+/// therefore win over a later injected output-allocation failure.
+fn ensure_geodesic_array_rows(
+    array: &PyGeometryArray,
+    frame: crate::geographic::GeographicFrame,
+) -> crate::error::Result<()> {
+    let rows = array.row_operation();
+    for row in rows.rows_with_missing(|| ()) {
+        let ArrayRow::Present(row) = row else {
+            continue;
+        };
+        row.row()
+            .try_with_shape(|shape| ensure_geodesic_shape(frame, shape))?;
+    }
+    Ok(())
+}
+
+fn try_collect_dwithin_rows(
+    row_count: usize,
+    values: impl IntoIterator<Item = crate::error::Result<bool>>,
+) -> crate::error::Result<Vec<bool>, (usize, crate::error::Error)> {
+    let mut output = Vec::new();
+    crate::boundary::try_reserve_vec(&mut output, row_count).map_err(|error| (0, error))?;
+    for (row, value) in values.into_iter().enumerate() {
+        let value = match value {
+            Ok(value) => value,
+            Err(error) => {
+                drop(output);
+                return Err((row, error));
+            },
+        };
+        crate::try_push_vec(&mut output, value).map_err(|error| (row, error))?;
+    }
+    Ok(output)
+}
+
 /// Per-element `dwithin`: one distance threshold PER geometry (the cold
 /// scalar-or-array lane; a scalar keeps the optimized [`array_crs_dwithin`]
-/// packed/refuter path). Runs under the GIL — the geodesic pair kernel builds
-/// `PyErr` — which is fine for this rare per-row form. Mirrors the scalar
+/// packed/refuter path). Runs under the GIL because this rare row lane retains
+/// native error context until the final Python boundary. Mirrors the scalar
 /// dispatch's scalar-operand / array-operand split.
 pub(crate) fn array_crs_dwithin_per_element(
     py: Python<'_>,
@@ -799,19 +856,35 @@ pub(crate) fn array_crs_dwithin_per_element(
     operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
+    let values = array_crs_dwithin_per_element_values(array, other, distance, operation, unit)?;
+    bool_array(py, values)
+}
+
+ fn array_crs_dwithin_per_element_values(
+    array: &PyGeometryArray,
+    other: &Bound<'_, PyAny>,
+    distance: &F64Param,
+    operation: MetricOp,
+    unit: Option<DistanceUnit>,
+) -> PyResult<Vec<bool>> {
     match other {
         GeometryInput::One(right) => {
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let right_plan = right.plan_or_transient()?;
             let right_cache = right.frame_cache()?;
+            if let crs::ResolvedMetric::Geodesic(metric) = &resolved {
+                ensure_geodesic_array_rows(array, metric.frame)?;
+                ensure_geodesic_shape(metric.frame, right_plan.shape())?;
+            }
             let results: Vec<bool> = match &resolved {
                 crs::ResolvedMetric::Planar { to_metre } => {
                     let right_bounds = right_plan.bounds();
                     let left_bounds = array.existing_element_bounds();
                     let mut rows = array.row_operation();
-                    rows.rows_with_missing(|| false)
-                        .map(|left| {
+                    try_collect_dwithin_rows(
+                        array.len(),
+                        rows.rows_with_missing(|| false).map(|left| {
                             let ArrayRow::Present(left) = left else {
                                 return Ok(false);
                             };
@@ -834,14 +907,15 @@ pub(crate) fn array_crs_dwithin_per_element(
                                 &right_plan,
                                 distance.get(row),
                             )
-                            .map_err(Into::into)
-                        })
-                        .collect::<PyResult<_>>()?
+                        }),
+                    )
+                    .map_err(rows_err)?
                 },
                 crs::ResolvedMetric::Geodesic(metric) => {
                     let mut rows = array.row_operation();
-                    rows.rows_with_missing(|| false)
-                        .map(|left| {
+                    try_collect_dwithin_rows(
+                        array.len(),
+                        rows.rows_with_missing(|| false).map(|left| {
                             let ArrayRow::Present(left) = left else {
                                 return Ok(false);
                             };
@@ -856,12 +930,12 @@ pub(crate) fn array_crs_dwithin_per_element(
                                 &right_cache,
                                 distance.get(row),
                             )
-                            .map_err(Into::into)
-                        })
-                        .collect::<PyResult<_>>()?
+                        }),
+                    )
+                    .map_err(rows_err)?
                 },
             };
-            bool_array(py, results)
+            Ok(results)
         },
         GeometryInput::Many(right) => {
             let model = resolve_metric(array.crs_str(), unit, operation)?;
@@ -872,76 +946,82 @@ pub(crate) fn array_crs_dwithin_per_element(
                     let right_bounds = right.existing_element_bounds();
                     let mut left_rows = array.row_operation();
                     let mut right_rows = right.row_operation();
-                    left_rows
-                        .rows_with_missing(|| false)
-                        .zip(right_rows.rows_with_missing(|| false))
-                        .map(|(left, right_row)| {
-                            let (ArrayRow::Present(left), ArrayRow::Present(right_row)) =
-                                (left, right_row)
-                            else {
-                                return Ok(false);
-                            };
-                            let row = left.logical();
-                            let left = left.row();
-                            let right_row = right_row.row();
-                            if dwithin_box_refutes(
-                                left_bounds
-                                    .as_ref()
-                                    .and_then(|bounds| bounds.get(row).copied().flatten())
-                                    .or_else(|| left.quick_bounds()),
-                                right_bounds
-                                    .as_ref()
-                                    .and_then(|bounds| bounds.get(row).copied().flatten())
-                                    .or_else(|| right_row.quick_bounds()),
-                                distance.get(row) / to_metre.get(),
-                            ) {
-                                return Ok(false);
-                            }
-                            let left = left_rows.prepared_at(row, left)?;
-                            let right_data = right_rows.prepared_at(row, right_row)?;
-                            pair_dwithin_planar(
-                                to_metre.get(),
-                                &left,
-                                &right_data,
-                                distance.get(row),
-                            )
-                            .map_err(Into::into)
-                        })
-                        .collect::<PyResult<_>>()?
+                    try_collect_dwithin_rows(
+                        array.len(),
+                        left_rows
+                            .rows_with_missing(|| false)
+                            .zip(right_rows.rows_with_missing(|| false))
+                            .map(|(left, right_row)| {
+                                let (ArrayRow::Present(left), ArrayRow::Present(right_row)) =
+                                    (left, right_row)
+                                else {
+                                    return Ok(false);
+                                };
+                                let row = left.logical();
+                                let left = left.row();
+                                let right_row = right_row.row();
+                                if dwithin_box_refutes(
+                                    left_bounds
+                                        .as_ref()
+                                        .and_then(|bounds| bounds.get(row).copied().flatten())
+                                        .or_else(|| left.quick_bounds()),
+                                    right_bounds
+                                        .as_ref()
+                                        .and_then(|bounds| bounds.get(row).copied().flatten())
+                                        .or_else(|| right_row.quick_bounds()),
+                                    distance.get(row) / to_metre.get(),
+                                ) {
+                                    return Ok(false);
+                                }
+                                let left = left_rows.prepared_at(row, left)?;
+                                let right_data = right_rows.prepared_at(row, right_row)?;
+                                pair_dwithin_planar(
+                                    to_metre.get(),
+                                    &left,
+                                    &right_data,
+                                    distance.get(row),
+                                )
+                            }),
+                    )
+                    .map_err(rows_err)?
                 },
                 crs::ResolvedMetric::Geodesic(metric) => {
                     let mut left_rows = array.row_operation();
                     let mut right_rows = right.row_operation();
-                    left_rows
-                        .rows_with_missing(|| false)
-                        .zip(right_rows.rows_with_missing(|| false))
-                        .map(|(left, right_row)| {
-                            let (ArrayRow::Present(left), ArrayRow::Present(right_row)) =
-                                (left, right_row)
-                            else {
-                                return Ok(false);
-                            };
-                            let row = left.logical();
-                            let left = left.row();
-                            let right_row = right_row.row();
-                            let left = left_rows.prepared_at(row, left)?;
-                            let right_data = right_rows.prepared_at(row, right_row)?;
-                            let left_cache = left_rows.frame_cache(row)?;
-                            let right_cache = right_rows.frame_cache(row)?;
-                            pair_dwithin_geodesic(
-                                metric,
-                                &left,
-                                &left_cache,
-                                &right_data,
-                                &right_cache,
-                                distance.get(row),
-                            )
-                            .map_err(Into::into)
-                        })
-                        .collect::<PyResult<_>>()?
+                    ensure_geodesic_array_rows(array, metric.frame)?;
+                    ensure_geodesic_array_rows(right, metric.frame)?;
+                    try_collect_dwithin_rows(
+                        array.len(),
+                        left_rows
+                            .rows_with_missing(|| false)
+                            .zip(right_rows.rows_with_missing(|| false))
+                            .map(|(left, right_row)| {
+                                let (ArrayRow::Present(left), ArrayRow::Present(right_row)) =
+                                    (left, right_row)
+                                else {
+                                    return Ok(false);
+                                };
+                                let row = left.logical();
+                                let left = left.row();
+                                let right_row = right_row.row();
+                                let left = left_rows.prepared_at(row, left)?;
+                                let right_data = right_rows.prepared_at(row, right_row)?;
+                                let left_cache = left_rows.frame_cache(row)?;
+                                let right_cache = right_rows.frame_cache(row)?;
+                                pair_dwithin_geodesic(
+                                    metric,
+                                    &left,
+                                    &left_cache,
+                                    &right_data,
+                                    &right_cache,
+                                    distance.get(row),
+                                )
+                            }),
+                    )
+                    .map_err(rows_err)?
                 },
             };
-            bool_array(py, results)
+            Ok(results)
         },
     }
 }
@@ -971,24 +1051,30 @@ pub(crate) fn array_crs_dwithin_scalar(
         let array_owned = array.clone();
         let other_shape = other.plan_or_transient()?;
         let other_cache = other.frame_cache()?;
+        if let crs::ResolvedMetric::Geodesic(metric) = &resolved {
+            ensure_geodesic_array_rows(array, metric.frame)?;
+            ensure_geodesic_shape(metric.frame, other_shape.shape())?;
+        }
         let rows = match &resolved {
             crs::ResolvedMetric::Planar { to_metre } => {
                 let mut rows = array_owned.row_operation();
-                rows.rows_with_missing(|| false)
-                    .map(|row| {
+                try_collect_dwithin_rows(
+                    array.len(),
+                    rows.rows_with_missing(|| false).map(|row| {
                         let ArrayRow::Present(row) = row else {
                             return Ok(false);
                         };
                         let left = rows.prepared(row)?;
                         pair_dwithin_planar(to_metre.get(), &left, &other_shape, distance)
-                            .map_err(Into::into)
-                    })
-                    .collect::<PyResult<Vec<_>>>()?
+                    }),
+                )
+                .map_err(rows_err)?
             },
             crs::ResolvedMetric::Geodesic(metric) => {
                 let mut rows = array_owned.row_operation();
-                rows.rows_with_missing(|| false)
-                    .map(|row| {
+                try_collect_dwithin_rows(
+                    array.len(),
+                    rows.rows_with_missing(|| false).map(|row| {
                         let ArrayRow::Present(row) = row else {
                             return Ok(false);
                         };
@@ -1003,9 +1089,9 @@ pub(crate) fn array_crs_dwithin_scalar(
                             &other_cache,
                             distance,
                         )
-                        .map_err(Into::into)
-                    })
-                    .collect::<PyResult<Vec<_>>>()?
+                    }),
+                )
+                .map_err(rows_err)?
             },
         };
         return bool_array(py, rows);
@@ -1041,6 +1127,7 @@ pub(crate) fn array_crs_dwithin_scalar(
         crs::MetricModel::Planar { to_metre } => {
             let array = array.clone();
             let missing = array.missing().cloned();
+            let row_count = array.len();
             let limit = distance / to_metre.get();
             let other_shape = other.plan_or_transient()?;
             // Box-separation reject against the FIXED operand's box, from the
@@ -1053,8 +1140,9 @@ pub(crate) fn array_crs_dwithin_scalar(
                 py,
                 py.detach(move || {
                     let mut rows = array.row_operation();
-                    rows.rows_with_missing(|| false)
-                        .map(|row| {
+                    try_collect_dwithin_rows(
+                        row_count,
+                        rows.rows_with_missing(|| false).map(|row| {
                             let ArrayRow::Present(row) = row else {
                                 return Ok(false);
                             };
@@ -1069,9 +1157,10 @@ pub(crate) fn array_crs_dwithin_scalar(
                             }
                             let left = rows.prepared_at(index, row)?;
                             left.dwithin(&other_shape, limit)
-                        })
-                        .collect::<crate::error::Result<Vec<bool>>>()
-                })?,
+                        }),
+                    )
+                })
+                .map_err(rows_err)?,
                 missing.as_ref(),
             )
         },
@@ -1080,7 +1169,9 @@ pub(crate) fn array_crs_dwithin_scalar(
             // geodesic point/line queries.
             if !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
-                    let crs = crs.clone();
+                    let crs = crate::boundary::try_string_from_str(&crs).map_err(|()| {
+                        crate::error::Error::from(crate::error::ResourceError::Allocation)
+                    })?;
                     let state = Arc::clone(&state);
                     let other_shape = other.plan_or_transient()?;
                     let other_cache = other.frame_cache()?;
@@ -1107,13 +1198,15 @@ pub(crate) fn array_crs_dwithin_scalar(
             let array_owned = array.clone();
             let other_shape = other.plan_or_transient()?;
             let other_cache = other.frame_cache()?;
+            let row_count = array_owned.len();
             let rows = py.detach(move || {
-                let mut rows = array_owned.row_operation();
                 crs::with_resolved_ellipsoid_metric_at(
                     &crs,
                     &[other_shape.shape()],
                     &state,
                     |crs, metric| {
+                        ensure_geodesic_array_rows(&array_owned, metric.frame())?;
+                        ensure_geodesic_shape(metric.frame(), other_shape.shape())?;
                         let (semi_major, flattening) = metric.ellipsoid_parameters();
                         other_shape.prepare_geodesic_parts(
                             &other_cache,
@@ -1122,9 +1215,10 @@ pub(crate) fn array_crs_dwithin_scalar(
                             flattening,
                             metric,
                         )?;
-                        Ok(rows
-                            .rows_with_missing(|| false)
-                            .map(|row| {
+                        let mut rows = array_owned.row_operation();
+                        Ok(try_collect_dwithin_rows(
+                            row_count,
+                            rows.rows_with_missing(|| false).map(|row| {
                                 let ArrayRow::Present(row) = row else {
                                     return Ok(false);
                                 };
@@ -1141,12 +1235,135 @@ pub(crate) fn array_crs_dwithin_scalar(
                                     metric,
                                     distance,
                                 )
-                            })
-                            .collect_rows())
+                            }),
+                        ))
                     },
                 )
             })?;
             bool_array_mask_missing(py, rows.map_err(rows_err)?, array.missing())
         },
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use pyo3::exceptions::PyMemoryError;
+    use pyo3::prelude::Py;
+
+    use super::*;
+    use crate::boundary::{Frame, crs_arc_static};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    #[test]
+    #[expect(
+        clippy::needless_borrows_for_generic_args,
+        reason = "the test retries one closure across every allocator prefix"
+    )]
+    fn per_element_dwithin_output_allocation_is_fallible_and_retryable() {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| -> PyResult<()> {
+            let frame = Frame::Crs(crs_arc_static("EPSG:4326"));
+            let array = PyGeometryArray::from_shapes(
+                vec![
+                    Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+                    Shape::Point(Point::new_raw_xy(1.0, 0.0)),
+                ],
+                frame,
+            )?;
+            let right = Py::new(
+                py,
+                PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(180.0, 0.0)))?,
+            )?;
+            let right = right.bind(py).as_any();
+            let distance = F64Param::PerElement(vec![f64::INFINITY, f64::INFINITY].into());
+            let run = || {
+                array_crs_dwithin_per_element_values(
+                    &array,
+                    right,
+                    &distance,
+                    MetricOp::Dwithin,
+                    None,
+                )
+            };
+
+            let expected = run()?;
+            let (_, allocations) = allocation_count(&run);
+            assert!(allocations > 0, "per-element output was not allocated");
+            for allowed in 0..allocations {
+                let result = fail_allocations_after(allowed, &run);
+                let error = result.err().unwrap_or_else(|| {
+                    panic!("per-element prefix {allowed} unexpectedly succeeded")
+                });
+                assert!(error.is_instance_of::<PyMemoryError>(py));
+                let retry = run()?;
+                assert_eq!(retry, expected, "per-element retry at {allowed}");
+            }
+            Ok(())
+        })
+        .expect("per-element allocation test should complete");
+    }
+
+    #[test]
+    #[expect(
+        clippy::needless_borrows_for_generic_args,
+        reason = "the test retries one closure across every allocator prefix"
+    )]
+    fn packed_dwithin_mask_allocation_is_fallible_and_retryable() {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| -> PyResult<()> {
+            let left = PyGeometryArray::from_shapes(
+                vec![
+                    Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+                    Shape::Point(Point::new_raw_xy(2.0, 0.0)),
+                ],
+                Frame::None,
+            )?;
+            let right = PyGeometryArray::from_shapes(
+                vec![
+                    Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+                    Shape::Point(Point::new_raw_xy(4.0, 0.0)),
+                ],
+                Frame::None,
+            )?;
+            let run = || {
+                array_pair_metric(
+                    py,
+                    &left,
+                    &right,
+                    Some(|left, right| Ok(points_dwithin(left, right, 1.0))),
+                    Some(|lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
+                        let mut values = Vec::new();
+                        crate::boundary::try_reserve_vec(&mut values, lx.len())?;
+                        values.resize(lx.len(), false);
+                        for (index, value) in values.iter_mut().enumerate() {
+                            *value = points_dwithin(
+                                Point::new_raw_xy(lx[index], ly[index]),
+                                Point::new_raw_xy(rx[index], ry[index]),
+                                1.0,
+                            );
+                        }
+                        Ok(values)
+                    }),
+                    None::<fn(Bounds, Bounds) -> Option<bool>>,
+                    false,
+                    |_row, _left, _right, _left_products, _right_products| Ok(false),
+                )
+            };
+
+            let expected = run()?;
+            let (_, allocations) = allocation_count(&run);
+            assert!(allocations > 0, "packed dwithin mask was not allocated");
+            for allowed in 0..allocations {
+                let result = fail_allocations_after(allowed, &run);
+                let error = result.err().unwrap_or_else(|| {
+                    panic!("packed mask prefix {allowed} unexpectedly succeeded")
+                });
+                assert!(error.is_instance_of::<PyMemoryError>(py));
+                let retry = run()?;
+                assert_eq!(retry, expected, "packed mask retry at {allowed}");
+            }
+            Ok(())
+        })
+        .expect("packed mask allocation test should complete");
     }
 }

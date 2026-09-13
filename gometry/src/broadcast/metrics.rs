@@ -32,11 +32,7 @@ pub(crate) use arrays::{
     array_crs_distances, array_crs_dwithin, array_crs_dwithin_per_element, array_crs_metric_float,
 };
 pub(crate) use pair::{
-    LonLatPointsError, geodesic_point_columns_dwithin_shape_values,
-    geodesic_point_columns_to_shape_values, lonlat_points, lonlat_shape,
-    metric_frechet_densified_with_scratch, metric_maximum_inscribed_radius,
-    metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points_resolved,
-    metric_shortest_line_resolved, pair_distance_geodesic, pair_distance_planar,
+    LonLatPointsError, geodesic_point_columns_dwithin_shape_values, geodesic_point_columns_to_shape_values, lonlat_points, lonlat_shape, metric_frechet_densified_with_scratch, metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points_resolved, metric_shortest_line_resolved, ensure_geodesic_shape, pair_distance_geodesic, pair_distance_planar,
     pair_dwithin_geodesic, pair_dwithin_planar, require_nonempty_hausdorff, require_point,
     resolve_metric, resolve_metric_3d, same_storage_similarity_metric_zeros,
 };

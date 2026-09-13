@@ -51,7 +51,7 @@ pub(super) struct CachedProjOperation {
 }
 
 pub(super) struct CachedCrsInfo {
-    pub definition: SmolStr,
+    pub definition: String,
     /// `Arc` so [`info`] hands out cheap refcount clones — a `CrsInfo` is a
     /// heavy immutable struct (datum, axes, authority) and was being DEEP
     /// cloned on every lookup (~half a geodesic-distance batch's profile).
@@ -125,7 +125,7 @@ pub(super) struct CachedProjectionFactorsObject {
 }
 
 pub(super) struct CachedGeodesicObject {
-    pub definition: SmolStr,
+    pub definition: String,
     pub object: Geodesic,
 }
 
@@ -342,10 +342,11 @@ pub(crate) fn lru_resolve<E>(
         cache.push(entry);
         return Ok(cache.len() - 1);
     }
+    let entry = make()?;
     if cache.len() == capacity {
         cache.remove(0);
     }
-    cache.push(make()?);
+    crate::boundary::try_push_vec(cache, entry)?;
     Ok(cache.len() - 1)
 }
 

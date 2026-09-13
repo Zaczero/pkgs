@@ -127,14 +127,20 @@ impl PreparedPlan {
             metric.ensure_shape(other.shape())?;
             return Ok(metric.segment_length(*a, *b));
         }
-        let key = GeodesicPartsKey::new_at_generation(
+        let self_key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
-        );
-        let self_parts = self.geodesic_parts(self_cache, key.clone(), metric)?;
-        let other_parts = other.geodesic_parts(other_cache, key, metric)?;
+        )?;
+        let other_key = GeodesicPartsKey::new_at_generation(
+            crs,
+            semi_major,
+            flattening,
+            metric.runtime_generation(),
+        )?;
+        let self_parts = self.geodesic_parts(self_cache, self_key, metric)?;
+        let other_parts = other.geodesic_parts(other_cache, other_key, metric)?;
         geodesic_distance_with_parts(
             self.shape(),
             &self_parts,
@@ -167,14 +173,20 @@ impl PreparedPlan {
             metric.ensure_shape(other.shape())?;
             return Ok(metric.segment_length(*a, *b) <= distance);
         }
-        let key = GeodesicPartsKey::new_at_generation(
+        let self_key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
-        );
-        let self_parts = self.geodesic_parts(self_cache, key.clone(), metric)?;
-        let other_parts = other.geodesic_parts(other_cache, key, metric)?;
+        )?;
+        let other_key = GeodesicPartsKey::new_at_generation(
+            crs,
+            semi_major,
+            flattening,
+            metric.runtime_generation(),
+        )?;
+        let self_parts = self.geodesic_parts(self_cache, self_key, metric)?;
+        let other_parts = other.geodesic_parts(other_cache, other_key, metric)?;
         geodesic_dwithin_with_parts(
             self.shape(),
             &self_parts,
@@ -403,36 +415,41 @@ impl PreparedPlan {
     pub(crate) fn geodesic_distance_points(
         &self,
         frame_cache: &FrameDependentCaches,
-        probes: impl Iterator<Item = (f64, f64)>,
+        probes: impl ExactSizeIterator<Item = (f64, f64)> + Clone,
         crs: &str,
         semi_major: f64,
         flattening: f64,
         metric: &impl GeodesicMetric,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Vec<f64>> {
+        let probe_count = probes.len();
+        for (x, y) in probes.clone() {
+            crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
+        }
         let key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
-        );
+        )?;
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
         let bvh = parts.geodesic_bvh(metric)?;
         let mut scratch = distance::geodesic_scratch();
         let mut stack = Vec::new();
-        probes
-            .map(|(x, y)| {
-                crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
-                geodesic_point_distance_with_parts_and_scratch(
-                    Point::new_raw_xy(x, y),
-                    &parts,
-                    metric,
-                    bvh,
-                    &mut scratch,
-                    Some(&mut stack),
-                )
-            })
-            .collect()
+        let mut values = Vec::new();
+        crate::boundary::try_reserve_vec(&mut values, probe_count)?;
+        for (x, y) in probes {
+            let value = geodesic_point_distance_with_parts_and_scratch(
+                Point::new_raw_xy(x, y),
+                &parts,
+                metric,
+                bvh,
+                &mut scratch,
+                Some(&mut stack),
+            )?;
+            crate::try_push_vec(&mut values, value)?;
+        }
+        Ok(values)
     }
 
     /// Per-row geodesic `dwithin` from lon/lat point probes to this fixed
@@ -440,7 +457,7 @@ impl PreparedPlan {
     pub(crate) fn geodesic_dwithin_points(
         &self,
         frame_cache: &FrameDependentCaches,
-        probes: impl Iterator<Item = (f64, f64)>,
+        probes: impl ExactSizeIterator<Item = (f64, f64)> + Clone,
         crs: &str,
         semi_major: f64,
         flattening: f64,
@@ -448,40 +465,45 @@ impl PreparedPlan {
         distance: f64,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Vec<bool>> {
+        let probe_count = probes.len();
+        for (x, y) in probes.clone() {
+            crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
+        }
         if distance.is_infinite() && distance.is_sign_positive() {
             ensure_geodesic_linework(self.shape(), metric)?;
             let present = !self.shape().is_empty();
-            return probes
-                .map(|(x, y)| {
-                    crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
-                    Ok(present)
-                })
-                .collect();
+            let mut values = Vec::new();
+            crate::boundary::try_reserve_vec(&mut values, probe_count)?;
+            for _ in 0..probe_count {
+                crate::try_push_vec(&mut values, present)?;
+            }
+            return Ok(values);
         }
         let key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
-        );
+        )?;
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
         let bvh = parts.geodesic_bvh(metric)?;
         let mut scratch = distance::geodesic_scratch();
         let mut stack = Vec::new();
-        probes
-            .map(|(x, y)| {
-                crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
-                geodesic_point_dwithin_with_parts_and_scratch(
-                    Point::new_raw_xy(x, y),
-                    &parts,
-                    metric,
-                    distance,
-                    bvh,
-                    &mut scratch,
-                    Some(&mut stack),
-                )
-            })
-            .collect()
+        let mut values = Vec::new();
+        crate::boundary::try_reserve_vec(&mut values, probe_count)?;
+        for (x, y) in probes {
+            let value = geodesic_point_dwithin_with_parts_and_scratch(
+                Point::new_raw_xy(x, y),
+                &parts,
+                metric,
+                distance,
+                bvh,
+                &mut scratch,
+                Some(&mut stack),
+            )?;
+            crate::try_push_vec(&mut values, value)?;
+        }
+        Ok(values)
     }
 
     /// Planar `intersects` on cached prepared state — the facet trees built

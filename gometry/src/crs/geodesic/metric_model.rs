@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use geographiclib_rs::Geodesic;
-use smol_str::SmolStr;
 
 use crate::crs::geodesic::{
-    CrsError, CrsInfo, Result, ensure_geodesic_lonlat_crs_at, normalize, with_geodesic_cache_at,
+    CrsError, CrsInfo, Result, ensure_geodesic_lonlat_crs_at, with_geodesic_cache_at,
 };
 use crate::crs::info_with_state;
 use crate::geographic::GeographicFrame;
@@ -53,7 +52,7 @@ pub(crate) enum MetricModel {
     Planar { to_metre: PositiveFiniteScale },
     /// Geodesic on the named (normalized) CRS's ellipsoid; results in meters.
     Geodesic {
-        crs: SmolStr,
+        crs: Arc<String>,
         frame: GeographicFrame,
         state: Arc<crate::crs::RuntimeState>,
     },
@@ -96,7 +95,7 @@ impl MetricModel {
 /// metric would hold across a GIL-released loop.
 #[derive(Clone)]
 pub(crate) struct GeodesicMetric {
-    pub(crate) crs: SmolStr,
+    pub(crate) crs: Arc<String>,
     pub(crate) geodesic: Box<Geodesic>,
     pub(crate) frame: GeographicFrame,
     pub(crate) state: Arc<crate::crs::RuntimeState>,
@@ -108,15 +107,14 @@ impl GeodesicMetric {
             return Err(CrsError::invalid("expected a geodesic metric model"));
         };
         ensure_geodesic_lonlat_crs_at(crs, state)?;
-        let crs = normalize(crs)?;
         let geodesic = with_geodesic_cache_at(
-            &crs,
+            crs,
             state,
             |error| error,
             |g| Box::try_new(*g).map_err(crate::error::Error::from),
         )?;
         Ok(Self {
-            crs: crs.into(),
+            crs: Arc::clone(crs),
             geodesic,
             frame: *frame,
             state: Arc::clone(state),
@@ -175,7 +173,7 @@ pub(crate) fn metric_model_at(
 enum HorizontalComponent {
     /// A geographic CRS: measured geodesically on its own ellipsoid.
     Geodesic {
-        crs: SmolStr,
+        crs: Arc<String>,
         frame: GeographicFrame,
     },
     /// A projected/engineering CRS, with the info its axis validation needs.
@@ -197,7 +195,11 @@ fn horizontal_component(
         && let Some(frame) = info.geographic_frame()
     {
         return Ok(HorizontalComponent::Geodesic {
-            crs: info.definition.clone(),
+            crs: Arc::try_new(
+                crate::boundary::try_string_from_str(&info.definition)
+                    .map_err(|()| crate::error::ResourceError::Allocation)?,
+            )
+            .map_err(crate::error::Error::from)?,
             frame,
         });
     }
@@ -208,7 +210,11 @@ fn horizontal_component(
                 CrsError::crs_create(crs, "geographic CRS has no typed native frame")
             })?;
             return Ok(HorizontalComponent::Geodesic {
-                crs: info.definition.clone(),
+                crs: Arc::try_new(
+                    crate::boundary::try_string_from_str(&info.definition)
+                        .map_err(|()| crate::error::ResourceError::Allocation)?,
+                )
+                .map_err(crate::error::Error::from)?,
                 frame,
             });
         }
@@ -250,7 +256,7 @@ pub(crate) fn metric_model_for_at(
         HorizontalComponent::Geodesic { crs, frame } => MetricModel::Geodesic {
             crs,
             frame,
-            state: Arc::new(state.clone()),
+            state: Arc::try_new(state.clone()).map_err(crate::error::Error::from)?,
         },
         // Validate the axes, then discard the scale: the CRS-natural default
         // reports native coordinate units, not metres.
@@ -280,7 +286,7 @@ pub(crate) fn metric_model_meters_at(
         HorizontalComponent::Geodesic { crs, frame } => MetricModel::Geodesic {
             crs,
             frame,
-            state: Arc::new(state.clone()),
+            state: Arc::try_new(state.clone()).map_err(crate::error::Error::from)?,
         },
         // Same walk as the CRS-natural resolver; here the axis factor is kept
         // so outputs scale to SI metres.

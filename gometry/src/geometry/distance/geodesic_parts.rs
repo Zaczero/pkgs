@@ -85,7 +85,7 @@ impl PreparedPlan {
         state: &crate::crs::RuntimeState,
     ) -> Result<Option<(Point, f64)>> {
         let key =
-            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, state.generation);
+            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, state.generation)?;
         if let Some(parts) = self.cached_geodesic_parts(frame_cache, &key) {
             return Ok(geodesic_cap_from_parts(&parts, metric));
         }

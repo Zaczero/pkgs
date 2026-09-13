@@ -133,9 +133,11 @@ pub(crate) fn geodesic_ordered_rows_into(
     metric: &impl GeodesicMetric,
     deterministic_ties: bool,
     rows: &mut Vec<RowProbe>,
-) {
+) -> Result<()> {
     rows.clear();
-    rows.reserve(vertices.len());
+    // The iterator emits exactly `vertices.len()` rows, so this checked
+    // reservation makes the following append allocation-free.
+    crate::boundary::try_reserve_vec(rows, vertices.len())?;
     rows.extend(vertices.iter().enumerate().map(|(index, &vertex)| {
         let bound =
             (metric.point_distance_lower_bound(vertex, caps.anchor) - caps.global_reach).max(0.0);
@@ -153,6 +155,7 @@ pub(crate) fn geodesic_ordered_rows_into(
     } else {
         rows.sort_unstable_by(|left, right| left.bound.total_cmp(&right.bound));
     }
+    Ok(())
 }
 
 pub(crate) fn geodesic_capped_sweep_with_parts(
@@ -188,7 +191,7 @@ fn geodesic_capped_distance_sweep_core(
     rows: &mut Vec<RowProbe>,
     segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<f64> {
-    geodesic_ordered_rows_into(vertices, caps, metric, false, rows);
+    geodesic_ordered_rows_into(vertices, caps, metric, false, rows)?;
     for &RowProbe {
         bound: row_bound,
         vertex: vertex_index,
@@ -266,7 +269,7 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
     };
     let segments = &target_parts.segments;
     let point_only = &target_parts.point_only;
-    geodesic_ordered_rows_into(vertices, caps.view(), metric, false, rows);
+    geodesic_ordered_rows_into(vertices, caps.view(), metric, false, rows)?;
     for &RowProbe {
         bound: row_bound,
         vertex: vertex_index,
@@ -306,14 +309,12 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
                 )?;
                 match result {
                     GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
-                    GeodesicSegmentQueryResult::ThresholdOutside => {},
+                    GeodesicSegmentQueryResult::ThresholdOutside
+                    | GeodesicSegmentQueryResult::Excluded => {},
                     GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
                         if minimum <= distance {
                             return Ok(true);
                         }
-                    },
-                    GeodesicSegmentQueryResult::Excluded => {
-                        unreachable!("threshold query returned a minimum exclusion")
                     },
                 }
             }
@@ -459,7 +460,7 @@ fn geodesic_capped_witness_sweep_core(
     rows: &mut Vec<RowProbe>,
     segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<Option<GeodesicWitnessCandidate>> {
-    geodesic_ordered_rows_into(vertices, caps, metric, true, rows);
+    geodesic_ordered_rows_into(vertices, caps, metric, true, rows)?;
     let width = segments.len() + point_only.len();
     for &RowProbe {
         bound: row_bound,

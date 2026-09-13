@@ -45,11 +45,24 @@ fn prepare_geodesic_pair<'a>(
     frame: GeographicFrame,
     runtime_generation: u64,
 ) -> crate::error::Result<(crs::EllipsoidMetric<'a>, f64, f64)> {
-    crs::ensure_geographic_domain_in_frame(frame, a.shape())?;
-    crs::ensure_geographic_domain_in_frame(frame, b.shape())?;
+    ensure_geodesic_shape(frame, a.shape())?;
+    ensure_geodesic_shape(frame, b.shape())?;
     let metric = crs::EllipsoidMetric::for_geodesic_at_frame(geodesic, runtime_generation, frame);
     let (semi_major, flattening) = metric.ellipsoid_parameters();
     Ok((metric, semi_major, flattening))
+}
+
+pub(crate) fn ensure_geodesic_shape(
+    frame: GeographicFrame,
+    shape: &Shape,
+) -> crate::error::Result<()> {
+    crs::ensure_geographic_domain_in_frame(frame, shape)?;
+    if contains_filled_area(shape) {
+        return Err(crs::CrsError::message(
+            "geodesic distance for polygon interiors is unsupported",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn geodesic_point_columns_to_shape_values(
