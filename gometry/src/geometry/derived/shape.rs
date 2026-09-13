@@ -189,9 +189,10 @@ impl Shape {
     /// The smallest circle enclosing the geometry, as a `Polygon` — the
     /// standard shape. A single distinct vertex returns itself (a radius-zero
     /// circle); empty
-    /// input returns `POLYGON EMPTY`. Computed with an exact-support Welzl
-    /// algorithm over the geometry's vertices, then realized as a round 64-gon
-    /// about the correctly rounded center and true minimum radius.
+    /// input returns `POLYGON EMPTY`. The scalar minimum radius is the
+    /// correctly rounded mathematical source minimum. The geometry is a
+    /// certified circumscribed 64-gon whose edges enclose that minimum disk and
+    /// whose vertices lie outside it.
     pub fn minimum_bounding_circle(&self) -> Result<Self> {
         if self.is_empty() {
             return Ok(Self::empty_polygon());

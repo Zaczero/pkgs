@@ -1441,6 +1441,26 @@ fn same_xy(left: XY, right: XY) -> bool {
             == crate::geometry::canonical_f64_bits(right.y)
 }
 
+fn diameter_contains_filtered(a: XY, b: XY, point: XY) -> Option<bool> {
+    let exact = Interval::exact;
+    let pa = (
+        exact(point.x).sub(exact(a.x)),
+        exact(point.y).sub(exact(a.y)),
+    );
+    let pb = (
+        exact(point.x).sub(exact(b.x)),
+        exact(point.y).sub(exact(b.y)),
+    );
+    if !(pa.0.is_finite() && pa.1.is_finite() && pb.0.is_finite() && pb.1.is_finite()) {
+        return None;
+    }
+    let dot = pa.0.mul(pb.0).add(pa.1.mul(pb.1));
+    dot.is_finite()
+        .then(|| dot.sign())
+        .flatten()
+        .map(|sign| sign != ExactSign::Positive)
+}
+
 /// Exact containment in the circle through one, two, or three source points.
 ///
 /// A one-point candidate is an identity test.  A two-point candidate is the
@@ -1450,6 +1470,9 @@ pub(in crate::geometry) fn try_circle_contains(support: &[XY], point: XY) -> Res
     match support {
         [only] => Ok(same_xy(*only, point)),
         [a, b] => {
+            if let Some(contains) = diameter_contains_filtered(*a, *b, point) {
+                return Ok(contains);
+            }
             let pa = (try_difference(point.x, a.x)?, try_difference(point.y, a.y)?);
             let pb = (try_difference(point.x, b.x)?, try_difference(point.y, b.y)?);
             let dot = pa.0.try_product(&pb.0)?.try_add(pa.1.try_product(&pb.1)?)?;
@@ -3429,6 +3452,94 @@ pub(in crate::geometry) fn round_sqrt_ratio(
     if numerator.cmp(&overflow_squared) != Ordering::Less {
         return Ok(f64::INFINITY);
     }
+    if let Some(proposal) = approximate_ratio(numerator, denominator).map(f64::sqrt)
+        && proposal.is_finite()
+    {
+        let proposal = if proposal == 0.0 {
+            f64::from_bits(1)
+        } else {
+            proposal
+        };
+        if let Some((low, high)) = exact_sqrt_ratio_bracket(numerator, denominator, proposal)? {
+            if low == high {
+                return Ok(f64::from_bits(low));
+            }
+            let lower = f64::from_bits(low);
+            let upper = f64::from_bits(high);
+            // Compare the exact squared ratio with the square of the
+            // midpoint without rounding the midpoint itself.
+            let midpoint_sum =
+                ExactDyadic::try_from_f64(lower)?.try_add(ExactDyadic::try_from_f64(upper)?)?;
+            let midpoint_squared = midpoint_sum
+                .try_product(&midpoint_sum)?
+                .try_product(denominator)?;
+            let four_numerator = numerator.try_product(&ExactDyadic::try_from_f64(4.0)?)?;
+            return Ok(match four_numerator.cmp(&midpoint_squared) {
+                Ordering::Less => lower,
+                Ordering::Greater => upper,
+                Ordering::Equal => {
+                    if low & 1 == 0 {
+                        lower
+                    } else {
+                        upper
+                    }
+                },
+            });
+        }
+    }
+    round_sqrt_ratio_binary(numerator, denominator)
+}
+
+fn exact_sqrt_ratio_bracket(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+    proposal: f64,
+) -> Result<Option<(u64, u64)>> {
+    const MAX_ULP_STEPS: usize = 8;
+    let max_bits = f64::MAX.to_bits();
+    let compare = |bits: u64| -> Result<Ordering> {
+        let candidate = ExactDyadic::try_from_f64(f64::from_bits(bits))?;
+        let square = candidate
+            .try_product(&candidate)?
+            .try_product(denominator)?;
+        Ok(square.cmp(numerator))
+    };
+    let mut bits = proposal.to_bits().min(max_bits);
+    match compare(bits)? {
+        Ordering::Equal => return Ok(Some((bits, bits))),
+        Ordering::Less => {
+            let lower = bits;
+            for _ in 0..MAX_ULP_STEPS {
+                if bits == max_bits {
+                    return Ok(None);
+                }
+                bits += 1;
+                match compare(bits)? {
+                    Ordering::Less => {},
+                    Ordering::Equal => return Ok(Some((bits, bits))),
+                    Ordering::Greater => return Ok(Some((lower, bits))),
+                }
+            }
+        },
+        Ordering::Greater => {
+            let upper = bits;
+            for _ in 0..MAX_ULP_STEPS {
+                if bits == 0 {
+                    return Ok(None);
+                }
+                bits -= 1;
+                match compare(bits)? {
+                    Ordering::Greater => {},
+                    Ordering::Equal => return Ok(Some((bits, bits))),
+                    Ordering::Less => return Ok(Some((bits, upper))),
+                }
+            }
+        },
+    }
+    Ok(None)
+}
+
+fn round_sqrt_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
@@ -3494,6 +3605,47 @@ mod sqrt_ratio_tests {
             round_sqrt_ratio(&squared, &ExactDyadic::try_from_f64(1.0).unwrap()).unwrap(),
             2.0_f64.sqrt()
         );
+    }
+
+    #[test]
+    fn proposed_sqrt_bracket_matches_the_complete_binary_reference() {
+        for (numerator, denominator) in [
+            (1.0, 1.0),
+            (2.0, 1.0),
+            (3.0, 1.0),
+            (1.0, 3.0),
+            (f64::from_bits(1), 1.0),
+            (f64::MAX, 1.0),
+            (f64::MAX, 3.0),
+        ] {
+            let numerator = ExactDyadic::try_from_f64(numerator).unwrap();
+            let denominator = ExactDyadic::try_from_f64(denominator).unwrap();
+            assert_eq!(
+                round_sqrt_ratio(&numerator, &denominator)
+                    .unwrap()
+                    .to_bits(),
+                round_sqrt_ratio_binary(&numerator, &denominator)
+                    .unwrap()
+                    .to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn proposed_sqrt_bracket_preserves_allocation_failure_reporting() {
+        let numerator = ExactDyadic::try_from_f64(3.0).unwrap();
+        let denominator = ExactDyadic::one();
+        let (_, allocations) =
+            crate::test_support::allocation_count(|| round_sqrt_ratio(&numerator, &denominator));
+        assert!(allocations > 0, "exact neighbor comparison must allocate");
+        let error = crate::test_support::fail_allocations_after(0, || {
+            round_sqrt_ratio(&numerator, &denominator)
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+        ));
     }
 }
 
@@ -4634,6 +4786,14 @@ mod tests {
     #[test]
     fn minimum_circle_support_predicates_use_exact_diameter_and_incircle_signs() {
         let diameter = [XY::new(-1.0, 0.0), XY::new(1.0, 0.0)];
+        assert_eq!(
+            diameter_contains_filtered(diameter[0], diameter[1], diameter[0]),
+            None
+        );
+        assert_eq!(
+            diameter_contains_filtered(diameter[0], diameter[1], XY::new(0.0, 0.5)),
+            Some(true)
+        );
         assert!(try_circle_contains(&diameter, XY::new(0.0, 1.0)).unwrap());
         assert!(!try_circle_contains(&diameter, XY::new(0.0, 1.0 + 2.5e-13)).unwrap());
 
@@ -4668,22 +4828,20 @@ mod tests {
     }
 
     #[test]
-    fn minimum_circle_exact_diameter_fallback_propagates_allocation_failure() {
-        let support = [XY::new(-f64::MAX, 0.0), XY::new(f64::MAX, 0.0)];
-        let point = XY::new(0.0, f64::from_bits(1));
-        let (_, allocations) =
+    fn minimum_circle_diameter_filter_handles_mixed_exponents_without_allocation() {
+        let scale = 2.0_f64.powi(200);
+        let support = [
+            XY::new(-scale, -scale),
+            XY::new(scale, -scale + 2.0_f64.powi(148)),
+        ];
+        let point = XY::new(0.0, 0.0);
+        let (result, allocations) =
             crate::test_support::allocation_count(|| try_circle_contains(&support, point));
-        assert!(
-            allocations > 0,
-            "mixed-exponent diameter must use exact storage"
+        assert!(result.unwrap());
+        assert_eq!(
+            allocations, 0,
+            "the certified interval path is allocation-free"
         );
-        let error =
-            crate::test_support::fail_allocations_after(0, || try_circle_contains(&support, point))
-                .unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
     }
 
     #[test]

@@ -2781,8 +2781,10 @@ class Geometry:
         unit: DistanceUnit | None = None,
     ) -> Point | Polygon:
         """Smallest circle enclosing the geometry, as a polygon. The standard shape:
-        for planar/projected input, the enclosing circle is a round 64-gon about the
-        correctly rounded source center and true minimum radius. A single distinct vertex returns itself; empty input returns
+        for planar/projected input, ``minimum_bounding_radius`` is the correctly rounded
+        mathematical minimum radius and this method realizes that disk as a certified
+        circumscribed 64-gon. Every edge encloses the disk and every vertex lies outside
+        it. A single distinct vertex returns itself; empty input returns
         ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
         geographic CRS; projected CRS distances default to the CRS's native unit
         and scale through the CRS linear unit only with ``unit='meters'``.
@@ -2804,7 +2806,8 @@ class Geometry:
         ------
         GeometryError
             If the correctly rounded circle cannot be emitted as a finite, valid,
-            source-enclosing polygon without changing its center or radius.
+            source-enclosing polygon without changing its mathematical center or scalar
+            radius.
         InvalidGeometryError
             If the bounding circle cannot be computed.
 
@@ -8174,8 +8177,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | Polygon | None]:
         """Smallest circle enclosing the geometry, as a polygon. The standard shape:
-        for planar/projected input, the enclosing circle is a round 64-gon about the
-        correctly rounded source center and true minimum radius. A single distinct vertex returns itself; empty input returns
+        for planar/projected input, ``minimum_bounding_radius`` is the correctly rounded
+        mathematical minimum radius and this method realizes that disk as a certified
+        circumscribed 64-gon. Every edge encloses the disk and every vertex lies outside
+        it. A single distinct vertex returns itself; empty input returns
         ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
         geographic CRS; projected CRS distances default to the CRS's native unit
         and scale through the CRS linear unit only with ``unit='meters'``.
@@ -8197,7 +8202,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If the correctly rounded circle cannot be emitted as a finite, valid,
-            source-enclosing polygon without changing its center or radius.
+            source-enclosing polygon without changing its mathematical center or scalar
+            radius.
         InvalidGeometryError
             If the bounding circle cannot be computed.
 
