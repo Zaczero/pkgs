@@ -4,17 +4,18 @@ use h3o::Resolution;
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape, is_axis_aligned_rectangle};
 use crate::grid::affine_source::{
-    CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactFailure,
+    AuthorityCarrier, CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactFailure,
     ExactParentParameter, ExactPlanarCoordinates as _, ExactPlanarPoint, ExactRatio,
     FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass, INLINE_EXPANSION_LIMBS, LiftKind,
     LiftedChain, LiftedLongitude, ParentCrossing, ParentParameterKey, PartitionConstraint,
-    RectClass, SourceEdgeKey, SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge,
-    authority_edge_exact_refinements, authority_edge_proxy_envelopes, build_authority_edge_index,
-    classify_lifted_ring_bucket, closed_between, closed_between_expansion, closed_between_raw,
-    combine_polygon_point_classes, exact_affine_level, exact_axis_rectangle,
-    exact_segment_touches_rectangle, integer_levels_between, lifted_step,
-    reset_authority_edge_exact_refinements, selection_closed_between,
-    subdivided_axis_aligned_rectangle,
+    RectClass, SelectionCarrier, SourceEdgeKey, SourceVertexKey, SphericalGridTarget,
+    SymbolicAffineEdge, authority_edge_exact_refinements, authority_edge_proxy_envelopes,
+    build_authority_edge_index, classify_lifted_ring_bucket, closed_between,
+    closed_between_expansion, closed_between_raw, combine_polygon_point_classes,
+    exact_affine_level, exact_axis_rectangle, exact_segment_touches_rectangle,
+    integer_levels_between, lifted_step, rectangular_candidate_admissions,
+    reset_authority_edge_exact_refinements, reset_rectangular_candidate_admissions,
+    selection_closed_between, subdivided_axis_aligned_rectangle,
 };
 use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
@@ -442,11 +443,18 @@ fn geographic_coverage_source_canonicalizes_accepted_pole_rounding_before_wrappi
     )
     .unwrap();
     assert!(!source.is_unknown());
-    assert_eq!(source.authority_points.len(), 2);
-    assert_eq!(source.selection_points.len(), 2);
-    let over_north = &source.selection_points[0];
+    assert_eq!(source.points.len(), 2);
+    assert!(
+        source
+            .points
+            .iter()
+            .all(|record| record.selection.is_some())
+    );
+    let over_north = &source.points[0].selection.as_ref().unwrap().point;
     assert_eq!(
-        source.authority_points[0]
+        source.points[0]
+            .authority
+            .point
             .latitude
             .checked_estimate()
             .unwrap()
@@ -467,7 +475,7 @@ fn geographic_coverage_source_canonicalizes_accepted_pole_rounding_before_wrappi
         180.0_f64.to_bits()
     );
 
-    let over_east = &source.selection_points[1];
+    let over_east = &source.points[1].selection.as_ref().unwrap().point;
     assert_eq!(
         over_east.longitude.checked_estimate().unwrap().to_bits(),
         (180.0_f64.next_up() - FULL_TURN_DEGREES).to_bits()
@@ -476,8 +484,26 @@ fn geographic_coverage_source_canonicalizes_accepted_pole_rounding_before_wrappi
         over_east.latitude.checked_estimate().unwrap().to_bits(),
         0.0_f64.to_bits()
     );
-    assert_eq!(source.selection_points[0].key.component, 0);
-    assert_eq!(source.selection_points[1].key.ordinal, 1);
+    assert_eq!(
+        source.points[0]
+            .selection
+            .as_ref()
+            .unwrap()
+            .point
+            .key
+            .component,
+        0
+    );
+    assert_eq!(
+        source.points[1]
+            .selection
+            .as_ref()
+            .unwrap()
+            .point
+            .key
+            .ordinal,
+        1
+    );
 }
 
 #[test]
@@ -489,13 +515,15 @@ fn geographic_coverage_source_retains_point_features_for_later_bbox_traversal() 
     .unwrap();
     assert!(!source.is_unknown());
     assert!(source.chains.is_empty());
-    assert!(source.authority_edges.is_empty());
-    assert!(source.selection_edges.is_empty());
-    assert_eq!(source.authority_points.len(), 1);
-    assert_eq!(source.selection_points.len(), 1);
-    assert_eq!(source.authority_points[0].key.component, 0);
+    assert!(source.authority.edges.is_empty());
+    assert!(source.selection.edges.is_empty());
+    assert_eq!(source.points.len(), 1);
+    assert!(source.points[0].selection.is_some());
+    assert_eq!(source.points[0].authority.point.key.component, 0);
     assert_eq!(
-        source.authority_points[0]
+        source.points[0]
+            .authority
+            .point
             .longitude
             .checked_estimate()
             .unwrap()
@@ -503,12 +531,47 @@ fn geographic_coverage_source_retains_point_features_for_later_bbox_traversal() 
         (-170.0_f64).to_bits()
     );
     assert_eq!(
-        source.selection_points[0]
+        source.points[0]
+            .selection
+            .as_ref()
+            .unwrap()
+            .point
             .latitude
             .checked_estimate()
             .unwrap()
             .to_bits(),
         74.0_f64.to_bits()
+    );
+}
+
+#[test]
+fn admitted_split_rectangle_is_prepared_once_before_both_window_classifications() {
+    let source = GeographicCoverageSource::new(
+        &Shape::Point(Point::new(0.0, 0.0).unwrap()),
+        SphericalGridTarget::H3(Resolution::Zero),
+    )
+    .unwrap();
+    let windows = DegreeWindowResult::Windows(CertifiedDegreeWindows {
+        latitude: Bound::new(-1.0, 1.0).unwrap(),
+        longitude: CertifiedLongitudeDegrees::Two([
+            Bound::new(170.0, 180.0).unwrap(),
+            Bound::new(-180.0, -170.0).unwrap(),
+        ]),
+    });
+
+    reset_rectangular_candidate_admissions();
+    let candidate = source.admit_rectangular_candidate(windows);
+    assert_eq!(candidate.windows(), windows);
+    assert_eq!(
+        source
+            .classify_rect(&candidate)
+            .expect("exact split rectangle classification"),
+        RectClass::Outside
+    );
+    assert_eq!(
+        rectangular_candidate_admissions(),
+        1,
+        "the split windows share one admitted candidate"
     );
 }
 
@@ -600,11 +663,11 @@ fn geographic_coverage_source_keeps_authority_and_selection_edges_separate() {
     )
     .unwrap();
     assert!(!source.is_unknown());
-    assert_eq!(source.authority_edges.len(), 1);
-    assert_eq!(source.selection_edges.len(), 1);
+    assert_eq!(source.authority.edges.len(), 1);
+    assert_eq!(source.selection.edges.len(), 1);
     assert_eq!(source.selection_arcs().unwrap().len(), 1);
-    assert_eq!(source.authority_edges[0].endpoints[0].ordinal, 0);
-    assert_eq!(source.authority_edges[0].endpoints[1].ordinal, 1);
+    assert_eq!(source.authority.edges[0].endpoints[0].ordinal, 0);
+    assert_eq!(source.authority.edges[0].endpoints[1].ordinal, 1);
 }
 
 #[test]
@@ -627,8 +690,8 @@ fn north_pole_neighbour_line_stays_in_a_certified_selection_strip() {
     )
     .unwrap();
     assert!(!source.is_unknown());
-    assert_eq!(source.authority_edges.len(), 1);
-    assert_eq!(source.selection_edges.len(), 1);
+    assert_eq!(source.authority.edges.len(), 1);
+    assert_eq!(source.selection.edges.len(), 1);
 }
 
 #[test]
@@ -744,7 +807,7 @@ fn periodic_pole_roof_blocks_raw_latitude_pruning() {
         });
         assert_ne!(
             source
-                .classify_rect(candidate)
+                .classify_rect(&source.admit_rectangular_candidate(candidate))
                 .expect("exact rectangle classification"),
             RectClass::Outside
         );
@@ -1264,21 +1327,21 @@ fn exact_axis_rectangle_precedes_the_global_unknown_veto_for_cap_windows() {
     };
     assert_eq!(
         source
-            .classify_rect(windows(75.0, 80.0))
+            .classify_rect(&source.admit_rectangular_candidate(windows(75.0, 80.0)))
             .expect("exact rectangle classification"),
         RectClass::Interior,
         "a full-longitude cap strictly inside the stored rectangle is a complete proof"
     );
     assert_eq!(
         source
-            .classify_rect(windows(0.0, 60.0))
+            .classify_rect(&source.admit_rectangular_candidate(windows(0.0, 60.0)))
             .expect("exact rectangle classification"),
         RectClass::Outside,
         "strict latitude separation still prunes under the unknown general lift"
     );
     assert_eq!(
         source
-            .classify_rect(windows(60.0, 70.0))
+            .classify_rect(&source.admit_rectangular_candidate(windows(60.0, 70.0)))
             .expect("exact rectangle classification"),
         RectClass::Boundary,
         "closed contact is retained rather than converted to a strict negative"
@@ -1520,7 +1583,7 @@ fn authority_edge_index_matches_exhaustive_exact_classification() {
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
-    assert!(source.authority_edge_index.is_some());
+    assert!(source.authority.edge_index.is_some());
     assert_eq!(source.chains[0].vertices.len(), 4_000);
 
     // The indexed classification is checked against the exhaustive one. The
@@ -1572,7 +1635,7 @@ fn authority_edge_index_matches_polar_cap_interior() {
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
-    assert!(source.authority_edge_index.is_some());
+    assert!(source.authority.edge_index.is_some());
     let longitude = Bound::new(-10.0, 10.0).unwrap();
     let latitude = Bound::new(74.0, 75.0).unwrap();
     let indexed = source
@@ -1599,7 +1662,7 @@ fn authority_edge_index_matches_seam_endpoint_contact_on_both_sheets() {
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
-    assert!(source.authority_edge_index.is_some());
+    assert!(source.authority.edge_index.is_some());
     for longitude in [
         Bound::new(-179.0, -179.0).unwrap(),
         Bound::new(179.0, 179.0).unwrap(),
@@ -1630,7 +1693,7 @@ fn authority_edge_index_matches_an_unwrapped_longitude_alias() {
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
-    assert!(source.authority_edge_index.is_some());
+    assert!(source.authority.edge_index.is_some());
     let longitude = Bound::new(84.0, 86.0).unwrap();
     let latitude = Bound::new(54.0, 56.0).unwrap();
     let indexed = source
@@ -1657,7 +1720,7 @@ fn authority_edge_index_deduplicates_full_turn_sheet_hits() {
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
-    assert!(source.authority_edge_index.is_some());
+    assert!(source.authority.edge_index.is_some());
     let longitude = Bound::new(-180.0, 180.0).unwrap();
     let latitude = Bound::new(-1.0, 1.0).unwrap();
     let indexed = source
@@ -1686,15 +1749,16 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
         authority_latitude: None,
         chains: Vec::new(),
         ring_fills: Vec::new(),
-        authority_points: Vec::new(),
-        authority_point_bounds: Vec::new(),
-        selection_points: Vec::new(),
-        selection_point_bounds: Vec::new(),
-        selection_poles: Vec::new(),
-        authority_edges: vec![edge],
-        authority_edge_index: None,
-        authority_pieces: Vec::new(),
-        selection_edges: Vec::new(),
+        points: Vec::new(),
+        authority: AuthorityCarrier {
+            edges: vec![edge],
+            edge_index: None,
+            pieces: Vec::new(),
+        },
+        selection: SelectionCarrier {
+            edges: Vec::new(),
+            poles: Vec::new(),
+        },
         unknown: false,
     };
     assert_eq!(

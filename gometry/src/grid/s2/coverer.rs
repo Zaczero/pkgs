@@ -35,8 +35,8 @@ use std::sync::Arc;
 
 use crate::geometry::{Bounds, Point, PointBatchTester, Shape, same_point};
 use crate::grid::affine_source::{
-    GeographicCoverageSource, RectClass as AffineRectClass, SphericalGridTarget,
-    WorkingShapeRelation,
+    GeographicCoverageSource, RectClass as AffineRectClass, RectangularCandidate,
+    SphericalGridTarget, WorkingShapeRelation,
 };
 pub(crate) use crate::grid::coverer::CellClass;
 use crate::grid::coverer::{NativeRectClassifier, RectClass};
@@ -1193,7 +1193,7 @@ struct LocalProbe {
 struct PendingCandidate {
     id: CellId,
     cell: Cell,
-    rect: super::cell::LatLngRect,
+    rectangular: Option<RectangularCandidate>,
     affine: Option<AffineRectClass>,
     probe_indices: [usize; 5],
     membership_known: bool,
@@ -1280,11 +1280,12 @@ fn classify_ids(
                 stats.productive_path_reuse(level);
             }
         }
-        let affine = if reused.is_none() && ctx.point_leaves.is_none() {
-            Some(ctx.affine.classify_rect(certified_rect_windows(rect))?)
-        } else {
-            None
-        };
+        let rectangular = (reused.is_none() && ctx.point_leaves.is_none())
+            .then(|| ctx.affine.admit_rectangular_candidate(rect_bounds(rect)));
+        let affine = rectangular
+            .as_ref()
+            .map(|candidate| ctx.affine.classify_rect(candidate))
+            .transpose()?;
         let mut probe_indices = [0_usize; 5];
         let known_membership = reused
             .as_ref()
@@ -1318,7 +1319,7 @@ fn classify_ids(
         crate::try_push_vec(&mut pending, PendingCandidate {
             id,
             cell,
-            rect,
+            rectangular,
             affine,
             probe_indices,
             membership_known: probe_count != 0,
@@ -1364,7 +1365,7 @@ fn classify_ids(
             ctx,
             pending.id,
             pending.cell,
-            pending.rect,
+            pending.rectangular.as_ref(),
             pending.affine,
             membership,
             stats,
@@ -1408,7 +1409,7 @@ fn classify_candidate(
     ctx: &CoverContext<'_>,
     id: CellId,
     cell: Cell,
-    rect: super::cell::LatLngRect,
+    rectangular: Option<&RectangularCandidate>,
     affine: Option<AffineRectClass>,
     membership: Option<PointMembership>,
     stats: &mut CoverStats,
@@ -1431,6 +1432,7 @@ fn classify_candidate(
     if affine == AffineRectClass::Outside {
         return Ok(CellClass::Outside);
     }
+    let rectangular = rectangular.expect("non-point candidate carries its rectangle");
     let membership = membership.expect("non-outside candidate carries point facts");
     let proposed = {
         let covered = membership
@@ -1446,8 +1448,15 @@ fn classify_candidate(
         // remaining ambiguity fails open to Boundary.
         // Still certify Interior when every positive-width bound window is
         // interior (full-cap / seam-crossing within).
-        if rect.crosses_seam() || rect.is_full_lng() {
-            if covered == 4 && wrapped_rect_is_interior(ctx, rect)? {
+        let wrapped = matches!(
+            rectangular.windows(),
+            DegreeWindowResult::Windows(CertifiedDegreeWindows {
+                longitude: CertifiedLongitudeDegrees::Full | CertifiedLongitudeDegrees::Two(_),
+                ..
+            })
+        );
+        if wrapped {
+            if covered == 4 && wrapped_rect_is_interior(ctx, rectangular)? {
                 CellClass::Interior
             } else {
                 // Seam-crossing rects: planar Outside is unsound → fail-open
@@ -1462,7 +1471,7 @@ fn classify_candidate(
             // hits fails open to Boundary — `boundary_shape` is a planar
             // chord and may only witness positively, so a negative proxy
             // result must not prune whole subtrees.
-            let rect_class = ctx.rects.classify_bounds(rect_bounds(rect))?;
+            let rect_class = ctx.rects.classify_bounds(rectangular.bounds())?;
             if covered == 4 && rect_class == RectClass::Interior {
                 CellClass::Interior
             } else if covered > 0 || center_hit {
@@ -1492,39 +1501,6 @@ fn classify_candidate(
     ))
 }
 
-/// Convert the exact S2 cell enclosure into a degree certificate for the
-/// unsplit affine source.  A wrapped bound becomes its two closed canonical
-/// sheets; a polar closure becomes the closed full-longitude enclosure.  Each
-/// still contains the true spherical cell, so agreement with the working
-/// proposal can certify either result without treating a chord proxy as a
-/// negative.
-fn certified_rect_windows(rect: super::cell::LatLngRect) -> DegreeWindowResult {
-    let Some(latitude) = Bound::new(rect.lat_lo, rect.lat_hi) else {
-        return DegreeWindowResult::Boundary;
-    };
-    let longitude = if rect.is_full_lng() {
-        CertifiedLongitudeDegrees::Full
-    } else if rect.crosses_seam() {
-        let (west, Some(east)) = rect.lng_windows() else {
-            return DegreeWindowResult::Boundary;
-        };
-        let (Some(west), Some(east)) = (Bound::new(west.0, west.1), Bound::new(east.0, east.1))
-        else {
-            return DegreeWindowResult::Boundary;
-        };
-        CertifiedLongitudeDegrees::Two([west, east])
-    } else {
-        let Some(longitude) = Bound::new(rect.lng_lo, rect.lng_hi) else {
-            return DegreeWindowResult::Boundary;
-        };
-        CertifiedLongitudeDegrees::One(longitude)
-    };
-    DegreeWindowResult::Windows(CertifiedDegreeWindows {
-        latitude,
-        longitude,
-    })
-}
-
 /// Intersect the working-shape proposal with the retained affine authority.
 /// Neither source may establish a negative alone on a hazard input; a native
 /// raw endpoint owner also vetoes a proposed Outside result.
@@ -1548,43 +1524,46 @@ const fn merge_certified_rect(
 /// interior. Never used to certify Outside (that stays fail-open Boundary).
 fn wrapped_rect_is_interior(
     ctx: &CoverContext<'_>,
-    rect: super::cell::LatLngRect,
+    candidate: &RectangularCandidate,
 ) -> crate::error::Result<bool> {
-    if rect.is_full_lng() {
-        return Ok(ctx.rects.classify_bounds(Bounds::new_raw(
-            -180.0,
-            rect.lat_lo,
-            180.0,
-            rect.lat_hi,
-        ))? == RectClass::Interior);
-    }
-    let ((lo0, hi0), second) = rect.lng_windows();
-    if !window_interior(ctx, lo0, rect.lat_lo, hi0, rect.lat_hi)? {
+    let DegreeWindowResult::Windows(CertifiedDegreeWindows {
+        latitude,
+        longitude,
+    }) = candidate.windows()
+    else {
         return Ok(false);
-    }
-    match second {
-        Some((lo1, hi1)) => window_interior(ctx, lo1, rect.lat_lo, hi1, rect.lat_hi),
-        None => Ok(true),
+    };
+    match longitude {
+        CertifiedLongitudeDegrees::Full => {
+            Ok(ctx.rects.classify_bounds(candidate.bounds())? == RectClass::Interior)
+        },
+        CertifiedLongitudeDegrees::Two([west, east]) => {
+            if !window_interior(ctx, west, latitude)? {
+                return Ok(false);
+            }
+            window_interior(ctx, east, latitude)
+        },
+        CertifiedLongitudeDegrees::One(_) => Ok(false),
     }
 }
 
 fn window_interior(
     ctx: &CoverContext<'_>,
-    west: f64,
-    south: f64,
-    east: f64,
-    north: f64,
+    longitude: Bound,
+    latitude: Bound,
 ) -> crate::error::Result<bool> {
     // Degenerate zero-width lon strip (seam edge only) cannot host area;
     // treat as vacuously interior so a single-side polar spelling still
     // certifies when its positive-width sibling does.
-    if east <= west {
+    if longitude.hi <= longitude.lo {
         return Ok(true);
     }
-    Ok(ctx
-        .rects
-        .classify_bounds(Bounds::new_raw(west, south, east, north))?
-        == RectClass::Interior)
+    Ok(ctx.rects.classify_bounds(Bounds::new_raw(
+        longitude.lo,
+        latitude.lo,
+        longitude.hi,
+        latitude.hi,
+    ))? == RectClass::Interior)
 }
 
 const fn rect_bounds(rect: super::cell::LatLngRect) -> Bounds {

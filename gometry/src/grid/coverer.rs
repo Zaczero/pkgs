@@ -22,10 +22,7 @@ use crate::geometry::{
 };
 use crate::grid::affine_source::{
     GeographicCoverageSource, PackedBvh, PackedBvhEntry, RectClass as AffineRectClass,
-    SphericalGridTarget,
-};
-use crate::grid::spherical_arc::{
-    Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
+    RectangularCandidate, SphericalGridTarget,
 };
 use crate::grid::{CoverError, ensure_cover_budget};
 use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
@@ -197,21 +194,38 @@ impl<'a> GeographicCandidateClassifier<'a> {
         })
     }
 
-    fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass, crate::error::Error> {
-        let working = self.working.classify_bounds(bounds)?;
-        let candidate = self.authority.classify_rect(rectangle_windows(bounds))?;
-        match (candidate, working) {
+    fn admit_bounds(&self, bounds: Bounds) -> RectangularCandidate {
+        self.authority.admit_rectangular_candidate(bounds)
+    }
+
+    fn classify_candidate(
+        &self,
+        candidate: &RectangularCandidate,
+    ) -> Result<RectClass, crate::error::Error> {
+        let working = self.working.classify_bounds(candidate.bounds())?;
+        let affine = self.authority.classify_rect(candidate)?;
+        match (affine, working) {
             (AffineRectClass::Outside, RectClass::Outside) => Ok(RectClass::Outside),
             (AffineRectClass::Interior, RectClass::Interior) => Ok(RectClass::Interior),
             _ => Ok(RectClass::Boundary),
         }
     }
 
+    #[cfg(test)]
+    fn classify_bounds(&self, bounds: Bounds) -> Result<RectClass, crate::error::Error> {
+        let candidate = self.admit_bounds(bounds);
+        self.classify_candidate(&candidate)
+    }
+
     /// Refine a provisional rectangle against the source-owned geographic
     /// graph. A pre-certified interior remains on the fast path; every other
     /// candidate reaches the cached authority graph.
-    fn refine_bounds(&self, bounds: Bounds) -> Result<RectClass, crate::error::Error> {
+    fn refine_candidate(
+        &self,
+        candidate: &RectangularCandidate,
+    ) -> Result<RectClass, crate::error::Error> {
         let graph = self.authority_graph()?;
+        let bounds = candidate.bounds();
         Ok(match graph.covers_rectangle(bounds) {
             Some(true) => RectClass::Interior,
             Some(false) => {
@@ -244,6 +258,12 @@ impl<'a> GeographicCandidateClassifier<'a> {
         })
     }
 
+    #[cfg(test)]
+    fn refine_bounds(&self, bounds: Bounds) -> Result<RectClass, crate::error::Error> {
+        let candidate = self.admit_bounds(bounds);
+        self.refine_candidate(&candidate)
+    }
+
     fn authority_graph(&self) -> crate::error::Result<&crate::geometry::TopologyGraph> {
         self.authority_graph
             .get_or_try_init(|| self.prepared.graph())
@@ -253,19 +273,6 @@ impl<'a> GeographicCandidateClassifier<'a> {
     fn covers_point(&self, point: Point) -> crate::error::Result<bool> {
         Ok(self.authority_graph()?.covers_point(point.xy()))
     }
-}
-
-const fn rectangle_windows(bounds: Bounds) -> DegreeWindowResult {
-    let (Some(longitude), Some(latitude)) = (
-        Bound::new(bounds.minx(), bounds.maxx()),
-        Bound::new(bounds.miny(), bounds.maxy()),
-    ) else {
-        return DegreeWindowResult::Boundary;
-    };
-    DegreeWindowResult::Windows(CertifiedDegreeWindows {
-        latitude,
-        longitude: CertifiedLongitudeDegrees::One(longitude),
-    })
 }
 
 struct AreaRectClassifier {
@@ -579,7 +586,8 @@ pub(crate) fn cover<C: RectCell>(
         let Some((cell, bounds)) = boundary.pop() else {
             break;
         };
-        match classifier.classify_bounds(bounds)? {
+        let candidate = classifier.admit_bounds(bounds);
+        match classifier.classify_candidate(&candidate)? {
             RectClass::Outside => {},
             RectClass::Interior => {
                 if cell.depth() >= target_depth {
@@ -591,7 +599,7 @@ pub(crate) fn cover<C: RectCell>(
                 }
             },
             RectClass::Boundary => {
-                match classifier.refine_bounds(bounds)? {
+                match classifier.refine_candidate(&candidate)? {
                     RectClass::Outside => {},
                     RectClass::Interior => {
                         if cell.depth() >= target_depth {
@@ -645,8 +653,12 @@ pub(crate) enum CellClass {
 mod tests {
     use super::*;
     use crate::error::ErrorKind;
-    use crate::geometry::GeometryErrorKind;
-    use crate::grid::geohash;
+    use crate::geometry::{GeometryErrorKind, Ring};
+    use crate::grid::affine_source::{
+        rectangular_candidate_admissions, reset_rectangular_candidate_admissions,
+    };
+    use crate::grid::{geohash, tile};
+    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn contact(start: (f64, f64), end: (f64, f64)) -> RectContact {
         let unit = Bounds::new_raw(0.0, 0.0, 1.0, 1.0);
@@ -655,6 +667,74 @@ mod tests {
             end: crate::geometry::XY::new(end.0, end.1),
         };
         segment_vs_rect(segment, unit)
+    }
+
+    fn full_world_shape() -> Shape {
+        let shell = [
+            Point::new_raw_xy(-180.0, -90.0),
+            Point::new_raw_xy(180.0, -90.0),
+            Point::new_raw_xy(180.0, 90.0),
+            Point::new_raw_xy(-180.0, 90.0),
+            Point::new_raw_xy(-180.0, -90.0),
+        ];
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn assert_rect_cover_allocation_prefixes<C>(
+        source: &Shape,
+        roots: impl Fn() -> crate::error::Result<Vec<C>> + Copy,
+        depth: u8,
+    ) where
+        C: RectCell + std::fmt::Debug,
+    {
+        let plan = PreparedPlan::new(source.clone()).expect("source preparation");
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let run = || -> Result<Vec<C>, CoverError> {
+            cover(
+                source,
+                source,
+                &plan,
+                &cache,
+                crate::geographic::GeographicFrame::crs84(),
+                RectCoverRule::Overlap,
+                roots()?,
+                depth,
+                None,
+            )
+        };
+        reset_rectangular_candidate_admissions();
+        let expected = run().expect("unrestricted rectangular cover");
+        assert!(
+            rectangular_candidate_admissions() > 0,
+            "the cover must admit at least one rectangular candidate"
+        );
+        let (_, allocations) = allocation_count(run);
+        assert!(allocations > 0, "fixture must allocate during cover");
+
+        for prefix in 0..allocations {
+            let failed = fail_allocations_after(prefix, run);
+            let Err(CoverError::Preparation(error)) = failed else {
+                panic!("allocation prefix {prefix} published a partial cover");
+            };
+            assert!(
+                matches!(
+                    error.kind(),
+                    ErrorKind::Resource(crate::error::ResourceError::Allocation)
+                ),
+                "unexpected allocation error: {error:?}"
+            );
+            assert_eq!(
+                run().expect("retry after rectangular cover allocation failure"),
+                expected,
+                "allocation prefix {prefix}"
+            );
+        }
     }
 
     #[test]
@@ -815,6 +895,24 @@ mod tests {
             },
             Err(CoverError::Preparation(err)) => panic!("unexpected preparation error: {err}"),
         }
+    }
+
+    #[test]
+    fn geohash_cover_allocation_prefixes_retry_without_partial_candidates() {
+        assert_rect_cover_allocation_prefixes(&full_world_shape(), geohash::roots, 2);
+    }
+
+    #[test]
+    fn tile_cover_allocation_prefixes_retry_without_partial_candidates() {
+        assert_rect_cover_allocation_prefixes(
+            &full_world_shape(),
+            || {
+                let mut roots = Vec::new();
+                crate::try_push_vec(&mut roots, tile::root())?;
+                Ok(roots)
+            },
+            2,
+        );
     }
 
     #[test]

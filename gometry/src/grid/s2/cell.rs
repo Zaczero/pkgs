@@ -105,6 +105,7 @@ impl LatLngRect {
     }
 
     /// Whether the bound crosses the antimeridian (wrapped reading).
+    #[cfg(test)]
     pub(crate) fn crosses_seam(self) -> bool {
         self.lng_lo > self.lng_hi
     }
@@ -116,6 +117,7 @@ impl LatLngRect {
 
     /// The bound's longitude intervals in `[-180, 180]` (two when wrapped);
     /// the second is `None` for plain bounds.
+    #[cfg(test)]
     pub(crate) fn lng_windows(self) -> ((f64, f64), Option<(f64, f64)>) {
         if self.crosses_seam() {
             ((self.lng_lo, 180.0), Some((-180.0, self.lng_hi)))

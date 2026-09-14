@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::geometry::{
-    CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, Strictness,
+    Bounds, CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, Strictness,
 };
 use crate::grid::CoverError;
 use crate::grid::affine_source::{
@@ -12,8 +12,7 @@ use crate::grid::coverer::CellClass;
 use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::{CellId, Face};
 use crate::grid::s2::coverer::{
-    AffineRectClass, CoverContext, CoverRule, CoverStats, Coverer, Covering,
-    certified_rect_windows, classify,
+    AffineRectClass, CoverContext, CoverRule, CoverStats, Coverer, Covering, classify,
 };
 use crate::grid::s2::projection::MAX_LEVEL;
 use crate::grid::spherical_arc::{
@@ -182,7 +181,10 @@ fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
     let rect = cell.rect_bound(&vertices);
     if ctx
         .authority
-        .classify_rect(certified_rect_windows(rect))
+        .classify_rect(
+            &ctx.authority
+                .admit_rectangular_candidate(super::rect_bounds(rect)),
+        )
         .expect("exact rectangle classification")
         == AffineRectClass::Outside
     {
@@ -1006,7 +1008,7 @@ fn split_working_window_cannot_prune_the_retained_seam_owner() {
     assert!(affine.s2_needs_corroboration(WorkingShapeRelation::AntimeridianSplit));
     assert_eq!(
         affine
-            .classify_rect(certified_rect_windows(rect))
+            .classify_rect(&affine.admit_rectangular_candidate(super::rect_bounds(rect)))
             .expect("exact rectangle classification"),
         AffineRectClass::Boundary,
         "the retained raw affine edge meets the candidate enclosure"
@@ -1056,7 +1058,7 @@ fn split_seam_carrier_can_exclude_the_far_sheet() {
     let rect = cell.rect_bound(&cell.vertices_lonlat());
     assert_eq!(
         affine
-            .classify_rect(certified_rect_windows(rect))
+            .classify_rect(&affine.admit_rectangular_candidate(super::rect_bounds(rect)))
             .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the continuous seam lift excludes lon 0 from a 179/-179 strip"
@@ -1067,7 +1069,7 @@ fn split_seam_carrier_can_exclude_the_far_sheet() {
     let far_rect = far_cell.rect_bound(&far_cell.vertices_lonlat());
     assert_eq!(
         affine
-            .classify_rect(certified_rect_windows(far_rect))
+            .classify_rect(&affine.admit_rectangular_candidate(super::rect_bounds(far_rect)))
             .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the exact seam carrier excludes a far-latitude seam cell"
@@ -1100,7 +1102,8 @@ fn sub_ulp_seam_sheet_can_certify_retained_authority_interior() {
     let cell = Cell::from_id(id);
     let rect = cell.rect_bound(&cell.vertices_lonlat());
     assert!(rect.crosses_seam());
-    let windows = certified_rect_windows(rect);
+    let candidate = affine.admit_rectangular_candidate(super::rect_bounds(rect));
+    let windows = candidate.windows();
     let DegreeWindowResult::Windows(CertifiedDegreeWindows {
         longitude: CertifiedLongitudeDegrees::Two([_, seam]),
         ..
@@ -1116,7 +1119,7 @@ fn sub_ulp_seam_sheet_can_certify_retained_authority_interior() {
     );
     assert_eq!(
         affine
-            .classify_rect(windows)
+            .classify_rect(&candidate)
             .expect("exact rectangle classification"),
         AffineRectClass::Interior,
         "candidate={windows:?} rect={rect:?}"
@@ -1135,7 +1138,7 @@ fn polar_cap_affine_certificate_prunes_the_south() {
     let rect = cell.rect_bound(&cell.vertices_lonlat());
     assert_eq!(
         affine
-            .classify_rect(certified_rect_windows(rect))
+            .classify_rect(&affine.admit_rectangular_candidate(super::rect_bounds(rect)))
             .expect("exact rectangle classification"),
         AffineRectClass::Outside,
         "the full-longitude cap's exact carrier excludes a south cell"
@@ -1154,33 +1157,30 @@ fn polar_cap_affine_certificate_prunes_the_south() {
 }
 
 #[test]
-fn certified_rect_windows_preserve_circular_s2_enclosures() {
-    let ordinary = super::super::cell::LatLngRect {
-        lat_lo: 13.0,
-        lat_hi: 14.0,
-        lng_lo: -5.0,
-        lng_hi: 6.0,
-    };
+fn admitted_rectangular_candidate_preserves_circular_s2_enclosures() {
+    let source =
+        GeographicCoverageSource::new(&box_shape(-5.0, 13.0, 6.0, 14.0), SphericalGridTarget::S2)
+            .expect("test source carrier allocates");
+    let ordinary = Bounds::new_raw(-5.0, 13.0, 6.0, 14.0);
+    let ordinary = source.admit_rectangular_candidate(ordinary);
     let DegreeWindowResult::Windows(CertifiedDegreeWindows {
         latitude,
         longitude: CertifiedLongitudeDegrees::One(longitude),
-    }) = certified_rect_windows(ordinary)
+    }) = ordinary.windows()
     else {
         panic!("ordinary S2 rectangle has a certified degree window");
     };
-    assert_eq!(latitude.lo.to_bits(), ordinary.lat_lo.to_bits());
-    assert_eq!(latitude.hi.to_bits(), ordinary.lat_hi.to_bits());
-    assert_eq!(longitude.lo.to_bits(), ordinary.lng_lo.to_bits());
-    assert_eq!(longitude.hi.to_bits(), ordinary.lng_hi.to_bits());
+    assert_eq!(latitude.lo.to_bits(), 13.0_f64.to_bits());
+    assert_eq!(latitude.hi.to_bits(), 14.0_f64.to_bits());
+    assert_eq!(longitude.lo.to_bits(), (-5.0_f64).to_bits());
+    assert_eq!(longitude.hi.to_bits(), 6.0_f64.to_bits());
 
     let DegreeWindowResult::Windows(CertifiedDegreeWindows {
         longitude: CertifiedLongitudeDegrees::Two([west, east]),
         ..
-    }) = certified_rect_windows(super::super::cell::LatLngRect {
-        lng_lo: 170.0,
-        lng_hi: -170.0,
-        ..ordinary
-    })
+    }) = source
+        .admit_rectangular_candidate(Bounds::new_raw(170.0, 13.0, -170.0, 14.0))
+        .windows()
     else {
         panic!("a seam enclosure retains both canonical longitude sheets");
     };
@@ -1192,11 +1192,9 @@ fn certified_rect_windows_preserve_circular_s2_enclosures() {
     let DegreeWindowResult::Windows(CertifiedDegreeWindows {
         longitude: CertifiedLongitudeDegrees::Full,
         ..
-    }) = certified_rect_windows(super::super::cell::LatLngRect {
-        lng_lo: -180.0,
-        lng_hi: 180.0,
-        ..ordinary
-    })
+    }) = source
+        .admit_rectangular_candidate(Bounds::new_raw(-180.0, 13.0, 180.0, 14.0))
+        .windows()
     else {
         panic!("a polar closure retains its full-longitude enclosure");
     };

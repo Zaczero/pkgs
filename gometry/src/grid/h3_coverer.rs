@@ -19,8 +19,8 @@ use crate::grid::affine_source::{
 };
 use crate::grid::coverer::dissolved_polygonal_area;
 use crate::grid::spherical_arc::{
-    ArcContact, Bound, CertifiedH3DescendantCap, DegreeWindowResult, H3ArcSet, H3CellPlan,
-    H3FanPlan, H3FanPointClass, classify_h3_arc_contact, h3_bbox_positive_witnesses, h3_cell_plan,
+    ArcContact, Bound, CertifiedH3DescendantCap, H3ArcSet, H3CellPlan, H3FanPlan, H3FanPointClass,
+    classify_h3_arc_contact, h3_bbox_positive_witnesses, h3_cell_plan,
 };
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 
@@ -364,7 +364,7 @@ pub(crate) fn h3_cover(
         let depth = cell.resolution();
         let relation = match plan.cap.as_ref() {
             Some(cap) => source
-                .classify_rect(cap.descendant_windows(cell))
+                .classify_rect(&source.admit_rectangular_candidate(cap.descendant_windows(cell)))
                 .map_err(H3CoverError::Native)?,
             None => RectClass::Boundary,
         };
@@ -413,7 +413,7 @@ fn emit_within_leaf(
 ) -> Result<(), H3CoverError> {
     let cell_plan = h3_cell_plan(cell, plan.target);
     match source
-        .classify_rect(cell_plan.bbox())
+        .classify_rect(&source.admit_rectangular_candidate(cell_plan.bbox()))
         .map_err(H3CoverError::Native)?
     {
         RectClass::Interior => return emit_leaf(cell, true, max_cells, covered),
@@ -445,7 +445,7 @@ fn emit_overlap_leaf(
     }
     let cell_plan = h3_cell_plan(cell, plan.target);
     if source
-        .classify_rect(cell_plan.bbox())
+        .classify_rect(&source.admit_rectangular_candidate(cell_plan.bbox()))
         .map_err(H3CoverError::Native)?
         == RectClass::Outside
     {
@@ -478,7 +478,7 @@ fn emit_bbox_leaf(
                 let mut interior = false;
                 for window in witnesses.iter() {
                     if source
-                        .classify_rect(DegreeWindowResult::Windows(window))
+                        .classify_rect(&source.admit_rectangular_candidate(window))
                         .map_err(H3CoverError::Native)?
                         == RectClass::Interior
                     {
@@ -498,7 +498,7 @@ fn emit_bbox_leaf(
     }
     let cell_plan = h3_cell_plan(cell, cell.resolution());
     let relation = source
-        .classify_rect(cell_plan.bbox())
+        .classify_rect(&source.admit_rectangular_candidate(cell_plan.bbox()))
         .map_err(H3CoverError::Native)?;
     if relation == RectClass::Outside {
         return Ok(());

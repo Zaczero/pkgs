@@ -16,7 +16,7 @@
 //!   lift), `vertex.longitude.raw`/`.turns` (exact-point reads lift),
 //!   `chain.edges`/`.vertices` (classifier reads lift),
 //!   `.numerator.ordering()` (selection reads substrate),
-//!   `self.start.longitude.raw` (edge reads lift), `piece.arc`/`.selection`
+//!   `self.start.longitude.raw` (edge reads lift), `piece.carrier.arc`/`.selection`
 //!   (facade reads selection — directly, though `SelectionAffinePiece::arc()`
 //!   exists), and `append_lifted_chain` reading `LiftedChain`.
 //! - The module tests read ~50 private fields spanning every group — and
@@ -65,6 +65,8 @@ const ORIENTATION_ERRBOUND: f64 = 128.0 * f64::EPSILON;
 std::thread_local! {
     static AUTHORITY_EDGE_EXACT_REFINEMENTS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    static RECTANGULAR_CANDIDATE_ADMISSIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -75,6 +77,16 @@ fn reset_authority_edge_exact_refinements() {
 #[cfg(test)]
 fn authority_edge_exact_refinements() -> usize {
     AUTHORITY_EDGE_EXACT_REFINEMENTS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_rectangular_candidate_admissions() {
+    RECTANGULAR_CANDIDATE_ADMISSIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn rectangular_candidate_admissions() -> usize {
+    RECTANGULAR_CANDIDATE_ADMISSIONS.with(std::cell::Cell::get)
 }
 
 /// Canonical grid-topology spelling of a geographically admitted source.
@@ -198,6 +210,95 @@ impl GridDegreePoint {
     pub(crate) const fn is_proven_physical_latitude(self) -> bool {
         -90.0 <= self.latitude.lo && self.latitude.hi <= 90.0
     }
+}
+
+/// The one candidate representation admitted by the affine source owner.
+///
+/// `bounds` retains the caller's conservative raw rectangle for native
+/// refinement. `windows` is the canonical physical longitude representation
+/// used by exact affine classification; unlike `bounds`, it preserves a
+/// seam split instead of enclosing the omitted middle sheet. The source axis
+/// certificate is copied into the product at admission so a candidate carries
+/// all facts needed by its later classification.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RectangularCandidate {
+    bounds: Bounds,
+    windows: DegreeWindowResult,
+    exact_axis: Option<Bounds>,
+}
+
+impl RectangularCandidate {
+    pub(crate) const fn bounds(&self) -> Bounds {
+        self.bounds
+    }
+
+    pub(crate) const fn windows(&self) -> DegreeWindowResult {
+        self.windows
+    }
+}
+
+/// Native candidate forms produced by the four grid lanes. The conversion into
+/// [`RectangularCandidate`] is deliberately owned by [`GeographicCoverageSource`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RectangularCandidateInput {
+    Bounds(Bounds),
+    Windows(DegreeWindowResult),
+}
+
+impl From<Bounds> for RectangularCandidateInput {
+    fn from(bounds: Bounds) -> Self {
+        Self::Bounds(bounds)
+    }
+}
+
+impl From<DegreeWindowResult> for RectangularCandidateInput {
+    fn from(windows: DegreeWindowResult) -> Self {
+        Self::Windows(windows)
+    }
+}
+
+impl From<CertifiedDegreeWindows> for RectangularCandidateInput {
+    fn from(windows: CertifiedDegreeWindows) -> Self {
+        Self::Windows(DegreeWindowResult::Windows(windows))
+    }
+}
+
+fn degree_windows_from_bounds(bounds: Bounds) -> DegreeWindowResult {
+    let (Some(latitude), Some(longitude)) = (
+        Bound::new(bounds.miny(), bounds.maxy()),
+        if bounds.minx() <= -HALF_TURN_DEGREES && bounds.maxx() >= HALF_TURN_DEGREES {
+            Some(CertifiedLongitudeDegrees::Full)
+        } else if bounds.minx() > bounds.maxx() {
+            Bound::new(bounds.minx(), HALF_TURN_DEGREES)
+                .zip(Bound::new(-HALF_TURN_DEGREES, bounds.maxx()))
+                .map(|(west, east)| CertifiedLongitudeDegrees::Two((west, east).into()))
+        } else {
+            Bound::new(bounds.minx(), bounds.maxx()).map(CertifiedLongitudeDegrees::One)
+        },
+    ) else {
+        return DegreeWindowResult::Boundary;
+    };
+    DegreeWindowResult::Windows(CertifiedDegreeWindows {
+        latitude,
+        longitude,
+    })
+}
+
+fn conservative_bounds_from_windows(windows: DegreeWindowResult) -> Bounds {
+    let DegreeWindowResult::Windows(CertifiedDegreeWindows {
+        latitude,
+        longitude,
+    }) = windows
+    else {
+        return Bounds::new_raw(-HALF_TURN_DEGREES, -90.0, HALF_TURN_DEGREES, 90.0);
+    };
+    let (minx, maxx) = match longitude {
+        CertifiedLongitudeDegrees::Full | CertifiedLongitudeDegrees::Two(_) => {
+            (-HALF_TURN_DEGREES, HALF_TURN_DEGREES)
+        },
+        CertifiedLongitudeDegrees::One(longitude) => (longitude.lo, longitude.hi),
+    };
+    Bounds::new_raw(minx, latitude.lo, maxx, latitude.hi)
 }
 
 fn degree_bounds_overlap(left: Bound, right: Bound) -> bool {
@@ -2769,10 +2870,22 @@ struct SymbolicAffineEdge {
     parameters: Vec<ExactParentParameter>,
 }
 
-#[derive(Debug)]
-pub(crate) struct SelectionAffinePiece {
+/// Fields shared by an authority piece and its corresponding selection image.
+///
+/// Authority and selection remain distinct records because only selection
+/// carries reflection/wrap intervals and can contribute positive-only
+/// witnesses. Keeping their common identity in one value prevents the two
+/// records from drifting on edge identity, dimensional kind, or spherical arc.
+#[derive(Clone, Copy, Debug)]
+struct AffinePieceCarrier {
     edge: SourceEdgeKey,
     polygon: bool,
+    arc: AffineSourceArc,
+}
+
+#[derive(Debug)]
+pub(crate) struct SelectionAffinePiece {
+    carrier: AffinePieceCarrier,
     #[cfg_attr(
         not(test),
         expect(
@@ -2792,7 +2905,6 @@ pub(crate) struct SelectionAffinePiece {
     // veto an authority negative only through its own affine planar PIP;
     // reconstructing them from rounded radians would create a second source.
     selection: [ExactSelectionPoint; 2],
-    arc: AffineSourceArc,
 }
 
 /// A split either does not cross the parent interval or has one exact parent
@@ -3230,13 +3342,15 @@ impl SymbolicAffineEdge {
         ];
         let arc = self.selection_arc(&interval, zone, longitude_wrap, start_point, end_point)?;
         Ok(Some(SelectionAffinePiece {
-            edge: self.key,
-            polygon: self.polygon,
+            carrier: AffinePieceCarrier {
+                edge: self.key,
+                polygon: self.polygon,
+                arc,
+            },
             interval,
             latitude_zone: zone,
             longitude_wrap,
             selection,
-            arc,
         }))
     }
 
@@ -3352,13 +3466,15 @@ impl SymbolicAffineEdge {
                 continue;
             }
             let piece = AuthorityAffinePiece {
-                edge: self.key,
-                polygon: self.polygon,
-                arc: self.authority_arc(
-                    &ParentInterval { start, end },
-                    &start_point,
-                    &end_point,
-                )?,
+                carrier: AffinePieceCarrier {
+                    edge: self.key,
+                    polygon: self.polygon,
+                    arc: self.authority_arc(
+                        &ParentInterval { start, end },
+                        &start_point,
+                        &end_point,
+                    )?,
+                },
             };
             exact_allocation(crate::try_push_vec(output, piece))?;
         }
@@ -3492,32 +3608,26 @@ impl SymbolicAffineEdge {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AuthorityAffinePiece {
-    #[expect(
-        dead_code,
-        reason = "retained for authority-to-source unit certificates"
-    )]
-    edge: SourceEdgeKey,
-    polygon: bool,
-    arc: AffineSourceArc,
+    carrier: AffinePieceCarrier,
 }
 
 impl AuthorityAffinePiece {
     pub(crate) const fn is_polygon(&self) -> bool {
-        self.polygon
+        self.carrier.polygon
     }
 
     pub(crate) const fn arc(&self) -> AffineSourceArc {
-        self.arc
+        self.carrier.arc
     }
 }
 
 impl SelectionAffinePiece {
     pub(crate) const fn is_polygon(&self) -> bool {
-        self.polygon
+        self.carrier.polygon
     }
 
     pub(crate) const fn arc(&self) -> AffineSourceArc {
-        self.arc
+        self.carrier.arc
     }
 
     /// Identity and pure longitude-wrap pieces are already represented by the
@@ -3872,6 +3982,41 @@ struct SelectionPoint {
     latitude: ExactExpansion,
 }
 
+/// One exact point and its conservative degree witness. The type parameter
+/// keeps authority and selection point semantics distinct while making the
+/// point/bounds relationship a single owned value.
+#[derive(Debug)]
+struct GridPointRecord<T> {
+    point: T,
+    bounds: Option<GridDegreePoint>,
+}
+
+type AuthorityPointRecord = GridPointRecord<SourcePoint>;
+type SelectionPointRecord = GridPointRecord<SelectionPoint>;
+
+/// Authority and selection point records for one source occurrence. A
+/// selection transform can be arithmetically uncertain while the retained
+/// authority point remains exact, so the selection side is explicitly
+/// optional rather than silently shortening a parallel vector.
+#[derive(Debug)]
+struct SourcePointRecord {
+    authority: AuthorityPointRecord,
+    selection: Option<SelectionPointRecord>,
+}
+
+#[derive(Debug)]
+struct AuthorityCarrier {
+    edges: Vec<SymbolicAffineEdge>,
+    edge_index: Option<AuthorityEdgeIndex>,
+    pieces: Vec<AuthorityAffinePiece>,
+}
+
+#[derive(Debug)]
+struct SelectionCarrier {
+    edges: Vec<SelectionAffinePiece>,
+    poles: Vec<GridDegreePoint>,
+}
+
 fn selection_image_point(point: &SourcePoint) -> ExactResult<SelectionPoint> {
     // `zone` is floor((latitude + 90) / 180), found by an exact sign walk.
     // This is the shared spherical selection image for H3 and S2: reflect
@@ -4132,21 +4277,15 @@ pub(crate) struct GeographicCoverageSource {
     authority_latitude: Option<Bound>,
     chains: Vec<LiftedChain>,
     ring_fills: Vec<LiftedRingFill>,
-    authority_points: Vec<SourcePoint>,
-    authority_point_bounds: Vec<Option<GridDegreePoint>>,
-    selection_points: Vec<SelectionPoint>,
-    selection_point_bounds: Vec<Option<GridDegreePoint>>,
-    selection_poles: Vec<GridDegreePoint>,
+    points: Vec<SourcePointRecord>,
     // R15-S authority-identity disposition: selection differs from authority
     // only for a nonzero latitude reflection zone (`is_positive_only` below).
     // Public H3/S2 cover ingress rejects every such source before this carrier
     // is constructed, so the draft incident-owner fixture was unreachable and
     // its deferred mutation was deleted rather than left as a vacuous claim.
     // The two images stay structurally separate for private fail-open paths.
-    authority_edges: Vec<SymbolicAffineEdge>,
-    authority_edge_index: Option<AuthorityEdgeIndex>,
-    authority_pieces: Vec<AuthorityAffinePiece>,
-    selection_edges: Vec<SelectionAffinePiece>,
+    authority: AuthorityCarrier,
+    selection: SelectionCarrier,
     unknown: bool,
 }
 
@@ -4208,29 +4347,27 @@ impl GeographicCoverageSource {
         let mut unknown = false;
         let mut lifted = Vec::new();
         let mut ring_fills = Vec::new();
-        let mut authority_points = Vec::new();
-        let mut authority_point_bounds = Vec::new();
-        let mut selection_points = Vec::new();
-        let mut selection_point_bounds = Vec::new();
-        let mut selection_poles = Vec::new();
-        let mut authority_edges = Vec::new();
-        let mut authority_pieces = Vec::new();
-        let mut selection_edges = Vec::new();
+        let mut point_records = Vec::new();
+        let mut authority = AuthorityCarrier {
+            edges: Vec::new(),
+            edge_index: None,
+            pieces: Vec::new(),
+        };
+        let mut selection = SelectionCarrier {
+            edges: Vec::new(),
+            poles: Vec::new(),
+        };
         crate::try_reserve_vec(&mut lifted, chains.len())?;
         crate::try_reserve_vec(&mut ring_fills, chains.len())?;
-        crate::try_reserve_vec(&mut authority_points, points.len())?;
-        crate::try_reserve_vec(&mut authority_point_bounds, points.len())?;
-        crate::try_reserve_vec(&mut selection_points, points.len())?;
-        crate::try_reserve_vec(&mut selection_point_bounds, points.len())?;
-        crate::try_reserve_vec(&mut authority_pieces, chains.len())?;
+        crate::try_reserve_vec(&mut point_records, points.len())?;
+        crate::try_reserve_vec(&mut authority.pieces, chains.len())?;
         for input in &chains {
             append_lifted_chain(
                 input,
                 &mut lifted,
                 &mut ring_fills,
-                &mut authority_edges,
-                &mut authority_pieces,
-                &mut selection_edges,
+                &mut authority,
+                &mut selection,
                 &mut unknown,
             )?;
         }
@@ -4272,45 +4409,46 @@ impl GeographicCoverageSource {
                         return Err(crate::error::ResourceError::Allocation.into());
                     },
                 };
-            append_source_point(
-                &point,
-                &mut selection_points,
-                &mut selection_point_bounds,
-                &mut unknown,
-            )?;
-            crate::try_push_vec(&mut authority_points, point)?;
-            crate::try_push_vec(&mut authority_point_bounds, authority_bound)?;
+            let selection = append_source_point(&point, &mut unknown)?;
+            crate::try_push_vec(&mut point_records, SourcePointRecord {
+                authority: GridPointRecord {
+                    point,
+                    bounds: authority_bound,
+                },
+                selection,
+            })?;
         }
-        let pole_capacity = selection_edges
+        let selection_point_count = point_records
+            .iter()
+            .filter(|record| record.selection.is_some())
+            .count();
+        let pole_capacity = selection
+            .edges
             .len()
             .checked_mul(2)
-            .and_then(|count| count.checked_add(selection_points.len()))
+            .and_then(|count| count.checked_add(selection_point_count))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        crate::try_reserve_vec(&mut selection_poles, pole_capacity)?;
-        for point in &selection_points {
-            append_selection_pole_witness(point, &mut selection_poles, &mut unknown)?;
-        }
-        for piece in &selection_edges {
-            for point in &piece.selection {
-                append_selection_planar_pole_witness(point, &mut selection_poles, &mut unknown)?;
+        crate::try_reserve_vec(&mut selection.poles, pole_capacity)?;
+        for record in &point_records {
+            if let Some(point) = &record.selection {
+                append_selection_pole_witness(point, &mut selection.poles, &mut unknown)?;
             }
         }
-        let authority_edge_index = build_authority_edge_index(&authority_edges)?;
+        for piece in &selection.edges {
+            for point in &piece.selection {
+                append_selection_planar_pole_witness(point, &mut selection.poles, &mut unknown)?;
+            }
+        }
+        authority.edge_index = build_authority_edge_index(&authority.edges)?;
         Ok(Self {
             target,
             exact_axis_rect,
             authority_latitude,
             chains: lifted,
             ring_fills,
-            authority_points,
-            authority_point_bounds,
-            selection_points,
-            selection_point_bounds,
-            selection_poles,
-            authority_edges,
-            authority_edge_index,
-            authority_pieces,
-            selection_edges,
+            points: point_records,
+            authority,
+            selection,
             unknown,
         })
     }
@@ -4321,6 +4459,34 @@ impl GeographicCoverageSource {
 
     pub(crate) const fn is_unknown(&self) -> bool {
         self.unknown
+    }
+
+    /// Admit one rectangular candidate into the source-owned representation.
+    ///
+    /// Raw `Bounds` retain the caller's conservative rectangle, including a
+    /// wrapped longitude spelling. H3's certified windows retain their
+    /// canonical one/full/split longitude form and receive a conservative
+    /// enclosing `Bounds` for consumers that need one. In both cases the
+    /// source's complete axis certificate is carried with the product.
+    pub(crate) fn admit_rectangular_candidate(
+        &self,
+        input: impl Into<RectangularCandidateInput>,
+    ) -> RectangularCandidate {
+        #[cfg(test)]
+        RECTANGULAR_CANDIDATE_ADMISSIONS.with(|count| count.set(count.get() + 1));
+        let (bounds, windows) = match input.into() {
+            RectangularCandidateInput::Bounds(bounds) => {
+                (bounds, degree_windows_from_bounds(bounds))
+            },
+            RectangularCandidateInput::Windows(windows) => {
+                (conservative_bounds_from_windows(windows), windows)
+            },
+        };
+        RectangularCandidate {
+            bounds,
+            windows,
+            exact_axis: self.exact_axis_rect,
+        }
     }
 
     /// Whether S2's historical planar working-shape proposals need an exact
@@ -4376,14 +4542,16 @@ impl GeographicCoverageSource {
             candidate.contains_point(s2_lonlat_to_point(longitude, latitude))
         };
         self.unknown
-            || self.authority_points.iter().any(|point| {
-                point
+            || self.points.iter().any(|record| {
+                record
+                    .authority
+                    .point
                     .longitude
                     .checked_estimate()
-                    .zip(point.latitude.checked_estimate())
+                    .zip(record.authority.point.latitude.checked_estimate())
                     .is_none_or(|(longitude, latitude)| contains_raw(longitude, latitude))
             })
-            || self.authority_edges.iter().any(|edge| {
+            || self.authority.edges.iter().any(|edge| {
                 contains_raw(edge.start.longitude.raw, edge.start.latitude)
                     || contains_raw(edge.end.longitude.raw, edge.end.latitude)
             })
@@ -4415,14 +4583,14 @@ impl GeographicCoverageSource {
     /// true cell.  A reflected selection image can only retain a candidate.
     pub(crate) fn classify_rect(
         &self,
-        candidate: DegreeWindowResult,
+        candidate: &RectangularCandidate,
     ) -> crate::error::Result<RectClass> {
         // This certificate models the whole source exactly.  It must run
         // before the general lift's global uncertainty veto: that veto is a
         // fail-open fallback for symbolic sources, not a reason to discard a
         // complete rectangle proof.
-        if let Some(bounds) = self.exact_axis_rect {
-            return Ok(classify_exact_axis_rectangle(bounds, candidate));
+        if let Some(bounds) = candidate.exact_axis {
+            return Ok(classify_exact_axis_rectangle(bounds, candidate.windows));
         }
         if self.unknown
             || self.has_positive_selection_polygon()
@@ -4433,7 +4601,7 @@ impl GeographicCoverageSource {
         let DegreeWindowResult::Windows(CertifiedDegreeWindows {
             latitude,
             longitude,
-        }) = candidate
+        }) = candidate.windows
         else {
             return Ok(RectClass::Boundary);
         };
@@ -4511,7 +4679,7 @@ impl GeographicCoverageSource {
             }
         }
         let edge_ordinals = if use_index {
-            match self.authority_edge_index.as_ref() {
+            match self.authority.edge_index.as_ref() {
                 Some(index) => match canonical_proxy_window(longitude) {
                     Err(ExactFailure::Arithmetic) | Ok(None) => None,
                     Err(ExactFailure::Allocation) => {
@@ -4537,7 +4705,7 @@ impl GeographicCoverageSource {
         };
         if let Some(edge_ordinals) = edge_ordinals {
             for ordinal in edge_ordinals {
-                let Some(edge) = self.authority_edges.get(ordinal) else {
+                let Some(edge) = self.authority.edges.get(ordinal) else {
                     return Ok(RectClass::Boundary);
                 };
                 match exact_authority_edge_touches_rectangle(edge, longitude, latitude) {
@@ -4549,7 +4717,7 @@ impl GeographicCoverageSource {
                 }
             }
         } else {
-            for edge in &self.authority_edges {
+            for edge in &self.authority.edges {
                 match exact_authority_edge_touches_rectangle(edge, longitude, latitude) {
                     Ok(true) | Err(ExactFailure::Arithmetic) => return Ok(RectClass::Boundary),
                     Ok(false) => {},
@@ -4596,19 +4764,19 @@ impl GeographicCoverageSource {
         )
     )]
     pub(crate) fn selection_arcs(&self) -> Option<impl ExactSizeIterator<Item = &AffineSourceArc>> {
-        (!self.unknown).then(|| self.selection_edges.iter().map(|piece| &piece.arc))
+        (!self.unknown).then(|| self.selection.edges.iter().map(|piece| &piece.carrier.arc))
     }
 
     pub(crate) fn authority_pieces(
         &self,
     ) -> Option<impl ExactSizeIterator<Item = &AuthorityAffinePiece>> {
-        (!self.unknown).then(|| self.authority_pieces.iter())
+        (!self.unknown).then(|| self.authority.pieces.iter())
     }
 
     pub(crate) fn selection_pieces(
         &self,
     ) -> Option<impl ExactSizeIterator<Item = &SelectionAffinePiece>> {
-        (!self.unknown).then(|| self.selection_edges.iter())
+        (!self.unknown).then(|| self.selection.edges.iter())
     }
 
     pub(crate) const fn has_polygon(&self) -> bool {
@@ -4642,8 +4810,10 @@ impl GeographicCoverageSource {
     /// as a universal witness; a missing selected ring remains fail-open.
     pub(crate) fn selection_ring_is_represented(&self, component: usize, ring: usize) -> bool {
         !self.unknown
-            && self.selection_edges.iter().any(|piece| {
-                piece.polygon && piece.edge.component == component && piece.edge.ring == ring
+            && self.selection.edges.iter().any(|piece| {
+                piece.carrier.polygon
+                    && piece.carrier.edge.component == component
+                    && piece.carrier.edge.ring == ring
             })
     }
 
@@ -4662,7 +4832,7 @@ impl GeographicCoverageSource {
     pub(crate) fn authority_points(
         &self,
     ) -> impl ExactSizeIterator<Item = Option<GridDegreePoint>> + '_ {
-        self.authority_point_bounds.iter().copied()
+        self.points.iter().map(|record| record.authority.bounds)
     }
 
     #[expect(
@@ -4672,35 +4842,39 @@ impl GeographicCoverageSource {
     pub(crate) fn selection_points(
         &self,
     ) -> impl ExactSizeIterator<Item = Option<GridDegreePoint>> + '_ {
-        self.selection_point_bounds.iter().copied()
+        self.points.iter().map(|record| {
+            record
+                .selection
+                .as_ref()
+                .and_then(|selection| selection.bounds)
+        })
     }
 
     pub(crate) fn positive_selection_points(
         &self,
     ) -> impl Iterator<Item = Option<GridDegreePoint>> + '_ {
-        self.selection_points
-            .iter()
-            .zip(&self.authority_points)
-            .zip(&self.selection_point_bounds)
-            .filter(|((selection, authority), _)| {
-                // A 360-degree longitude rewrite is the same unit-sphere
-                // point and is already represented by the authority lift's
-                // periodic PIP and the ordered arc seam shifts. Reflection
-                // changes latitude and is the only point transform that adds
-                // positive-only H3 authority.
-                selection.latitude != authority.latitude
-            })
-            .map(|((..), point)| *point)
+        self.points.iter().filter_map(|record| {
+            let selection = record.selection.as_ref()?;
+            // A 360-degree longitude rewrite is the same unit-sphere
+            // point and is already represented by the authority lift's
+            // periodic PIP and the ordered arc seam shifts. Reflection
+            // changes latitude and is the only point transform that adds
+            // positive-only H3 authority.
+            (selection.point.latitude != record.authority.point.latitude)
+                .then_some(selection.bounds)
+        })
     }
 
     pub(crate) fn has_positive_selection_polygon(&self) -> bool {
-        self.selection_edges
+        self.selection
+            .edges
             .iter()
             .any(|piece| piece.is_polygon() && piece.is_positive_only())
     }
 
     pub(crate) fn has_positive_selection_lower(&self) -> bool {
-        self.selection_edges
+        self.selection
+            .edges
             .iter()
             .any(|piece| !piece.is_polygon() && piece.is_positive_only())
             || self.positive_selection_points().next().is_some()
@@ -4738,8 +4912,10 @@ impl GeographicCoverageSource {
         let mut aggregate = GridPointClass::Exterior;
         for shell in self.ring_fills.iter().filter(|fill| fill.ring == 0) {
             let component = shell.component;
-            if !self.selection_edges.iter().any(|piece| {
-                piece.polygon && piece.edge.component == component && piece.is_positive_only()
+            if !self.selection.edges.iter().any(|piece| {
+                piece.carrier.polygon
+                    && piece.carrier.edge.component == component
+                    && piece.is_positive_only()
             }) {
                 continue;
             }
@@ -4773,7 +4949,7 @@ impl GeographicCoverageSource {
     /// at a pole, so the witness intentionally stores the one canonical zero
     /// longitude rather than choosing an antimeridian spelling.
     pub(crate) fn selection_pole_witnesses(&self) -> impl Iterator<Item = GridDegreePoint> + '_ {
-        self.selection_poles.iter().copied()
+        self.selection.poles.iter().copied()
     }
 
     /// Exact retained-authority PIP for a non-pole stored degree point.  The
@@ -4890,10 +5066,13 @@ impl GeographicCoverageSource {
         query: &ExactPlanarPoint,
     ) -> ExactResult<GridPointClass> {
         let edge_count = self
-            .selection_edges
+            .selection
+            .edges
             .iter()
             .filter(|piece| {
-                piece.polygon && piece.edge.component == component && piece.edge.ring == ring
+                piece.carrier.polygon
+                    && piece.carrier.edge.component == component
+                    && piece.carrier.edge.ring == ring
             })
             .count();
         if edge_count == 0 {
@@ -4909,8 +5088,10 @@ impl GeographicCoverageSource {
             Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
             Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         };
-        for piece in self.selection_edges.iter().filter(|piece| {
-            piece.polygon && piece.edge.component == component && piece.edge.ring == ring
+        for piece in self.selection.edges.iter().filter(|piece| {
+            piece.carrier.polygon
+                && piece.carrier.edge.component == component
+                && piece.carrier.edge.ring == ring
         }) {
             match bucket_selection_edge(
                 &piece.selection[0],
@@ -4992,9 +5173,8 @@ fn append_lifted_chain(
     input: &SourceChainInput,
     lifted: &mut Vec<LiftedChain>,
     ring_fills: &mut Vec<LiftedRingFill>,
-    authority_edges: &mut Vec<SymbolicAffineEdge>,
-    authority_pieces: &mut Vec<AuthorityAffinePiece>,
-    selection_edges: &mut Vec<SelectionAffinePiece>,
+    authority: &mut AuthorityCarrier,
+    selection: &mut SelectionCarrier,
     unknown: &mut bool,
 ) -> crate::error::Result<()> {
     let chain = match LiftedChain::from_points(&input.points, input.closed) {
@@ -5046,21 +5226,21 @@ fn append_lifted_chain(
                 return Err(crate::error::ResourceError::Allocation.into());
             },
         };
-        match edge.selection_pieces(selection_edges) {
+        match edge.selection_pieces(&mut selection.edges) {
             Ok(()) => {},
             Err(ExactFailure::Arithmetic) => *unknown = true,
             Err(ExactFailure::Allocation) => {
                 return Err(crate::error::ResourceError::Allocation.into());
             },
         }
-        match edge.authority_pieces(authority_pieces) {
+        match edge.authority_pieces(&mut authority.pieces) {
             Ok(()) => {},
             Err(ExactFailure::Arithmetic) => *unknown = true,
             Err(ExactFailure::Allocation) => {
                 return Err(crate::error::ResourceError::Allocation.into());
             },
         }
-        crate::try_push_vec(authority_edges, edge)?;
+        crate::try_push_vec(&mut authority.edges, edge)?;
     }
     debug_assert_eq!(chain_index, lifted.len());
     if input.closed {
@@ -5081,15 +5261,13 @@ fn append_lifted_chain(
 /// point would turn a fail-open source into an empty source.
 fn append_source_point(
     point: &SourcePoint,
-    selection_points: &mut Vec<SelectionPoint>,
-    selection_point_bounds: &mut Vec<Option<GridDegreePoint>>,
     unknown: &mut bool,
-) -> crate::error::Result<()> {
+) -> crate::error::Result<Option<SelectionPointRecord>> {
     let selection = match selection_image_point(point) {
         Ok(selection) => selection,
         Err(ExactFailure::Arithmetic) => {
             *unknown = true;
-            return Ok(());
+            return Ok(None);
         },
         Err(ExactFailure::Allocation) => {
             return Err(crate::error::ResourceError::Allocation.into());
@@ -5103,16 +5281,18 @@ fn append_source_point(
                 return Err(crate::error::ResourceError::Allocation.into());
             },
         };
-    crate::try_push_vec(selection_points, selection)?;
-    crate::try_push_vec(selection_point_bounds, bound)
+    Ok(Some(SelectionPointRecord {
+        point: selection,
+        bounds: bound,
+    }))
 }
 
 fn append_selection_pole_witness(
-    point: &SelectionPoint,
+    point: &SelectionPointRecord,
     output: &mut Vec<GridDegreePoint>,
     unknown: &mut bool,
 ) -> crate::error::Result<()> {
-    let witness = match selection_pole_witness_fallible(point) {
+    let witness = match selection_pole_witness_fallible(&point.point) {
         Ok(Some(witness)) => witness,
         Ok(None) => return Ok(()),
         Err(ExactFailure::Arithmetic) => {

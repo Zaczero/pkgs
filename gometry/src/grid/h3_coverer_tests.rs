@@ -963,13 +963,15 @@ fn periodic_polar_annulus_cap_never_prunes_an_intersecting_leaf() {
     let cell = CellIndex::try_from(0x0820_007F_FFFF_FFFF_u64).unwrap();
     let cap = plan.cap.as_ref().unwrap().descendant_windows(cell);
     assert_ne!(
-        source.classify_rect(cap).expect("exact cap classification"),
+        source
+            .classify_rect(&source.admit_rectangular_candidate(cap))
+            .expect("exact cap classification"),
         RectClass::Outside,
         "the target cap contains an annulus cell that the analytic universe intersects; cap={cap:?}"
     );
     assert_ne!(
         source
-            .classify_rect(exact_h3_bbox_for_cell(cell))
+            .classify_rect(&source.admit_rectangular_candidate(exact_h3_bbox_for_cell(cell)))
             .expect("exact bbox classification"),
         RectClass::Outside,
         "the exact logical bbox retains the same annulus cell"
@@ -996,7 +998,9 @@ fn periodic_polar_winding_caps_retain_each_analytic_owner() {
         let plan = H3CoverPlan::new(Resolution::Two);
         let cap = plan.cap.as_ref().unwrap().descendant_windows(owner);
         assert_ne!(
-            source.classify_rect(cap).expect("exact cap classification"),
+            source
+                .classify_rect(&source.admit_rectangular_candidate(cap))
+                .expect("exact cap classification"),
             RectClass::Outside
         );
         assert!(
@@ -1280,7 +1284,7 @@ fn global_unknown_veto_cannot_suppress_north_cap_bulk_certificates() {
         .to_cell(Resolution::Two);
     let relation = plan.cap.as_ref().map_or(RectClass::Boundary, |cap| {
         source
-            .classify_rect(cap.descendant_windows(bulk_parent))
+            .classify_rect(&source.admit_rectangular_candidate(cap.descendant_windows(bulk_parent)))
             .expect("exact cap classification")
     });
     assert_eq!(
