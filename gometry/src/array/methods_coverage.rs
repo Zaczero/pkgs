@@ -202,7 +202,10 @@ impl PyGeometryArray {
     /// overlap_rule : str, default 'longest_border'
     ///     Which row keeps a region covered more than once:
     ///     ``'longest_border'``, ``'max_area'``, ``'min_area'``, ``'min_index'``.
-    ///     Cleaning rebuilds faces and returns their natural 2D geometry.
+    ///     Cleaning rebuilds faces from one exact partition. Source Z/M
+    ///     ordinates are retained for rows whose emitted nodes have one
+    ///     consistent source value; an unavailable or conflicting axis is
+    ///     dropped for that row.
     ///
     /// Returns
     /// -------

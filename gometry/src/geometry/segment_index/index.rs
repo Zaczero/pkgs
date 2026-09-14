@@ -74,26 +74,6 @@ impl SegmentIndex {
         })
     }
 
-    /// The realizing segment of the minimum [`point_segment_distance_squared`]
-    /// from `point` to any indexed segment that improves on `best`, with its
-    /// squared distance — or `None` when no candidate beats `best`. `keep`
-    /// filters which computed candidate distances participate (minimum
-    /// clearance skips zero/endpoint contacts); pruning uses the running
-    /// accepted minimum, so filtered-out zeros never poison the bound.
-    /// Equal rounded distances stay open long enough for the exact witness
-    /// key, then segment ordinal, to select the same witness as a brute scan.
-    /// Squared space — callers own the finite-range guarantee.
-    pub(crate) fn nearest_segment_if(
-        &self,
-        point: Point,
-        best: f64,
-        keep: impl Fn(&Segment, f64) -> bool,
-    ) -> crate::error::Result<Option<(Segment, f64)>> {
-        Ok(self
-            .nearest_segment_ordinal_if(point, best, keep)?
-            .map(|(_, segment, distance)| (segment, distance)))
-    }
-
     pub(crate) fn nearest_segment_ordinal_if(
         &self,
         point: Point,

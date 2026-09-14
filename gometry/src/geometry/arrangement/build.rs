@@ -1,6 +1,4 @@
 use super::walk::arrangement_faces;
-#[cfg(test)]
-use crate::geometry::arrangement::Face;
 use crate::geometry::arrangement::{
     Arrangement, ArrangementSpares, TypedSpares, WindingWeight, arrangement_spares, build_csr,
     dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts, positional_loop_pieces,
@@ -354,13 +352,6 @@ impl<W: WindingWeight> Arrangement<W> {
             component_count,
             thread_bound: std::marker::PhantomData,
         }
-    }
-
-    /// Mutable face access — lets consumers `take` the rings they keep
-    /// instead of cloning them out.
-    #[cfg(test)]
-    pub(crate) fn faces_mut(&mut self) -> &mut [Face] {
-        &mut self.faces
     }
 
     /// Winding number per face from one `seed` value per component

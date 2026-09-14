@@ -414,7 +414,9 @@ pub(crate) fn snap_column_simd(
     size: f64,
 ) -> Result<Box<[f64]>, crate::error::Error> {
     let n = column.len();
-    let mut out = vec![0.0_f64; n].into_boxed_slice();
+    let mut out = Vec::new();
+    crate::try_reserve_vec(&mut out, n)?;
+    out.resize(n, 0.0_f64);
     let (vorigin, vsize) = (ReduceSimd::splat(origin), ReduceSimd::splat(size));
     let infinity = ReduceSimd::splat(f64::INFINITY);
     try_simd_map_f64::<crate::error::Error>(
@@ -456,7 +458,7 @@ pub(crate) fn snap_column_simd(
             Ok(changed.select(snapped, value))
         },
     )?;
-    Ok(out)
+    Ok(out.into_boxed_slice())
 }
 
 #[expect(

@@ -305,7 +305,13 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
     // line id through `member_of` (with adjacency disabled — same-member
     // pairs across rings must never read as chained neighbors).
     let mut chains = LineworkChains::default();
-    let mut member_of: Vec<usize> = Vec::new();
+    let ring_count = polygons.iter().try_fold(0_usize, |count, polygon| {
+        count
+            .checked_add(polygon.rings().count())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    let mut member_of = Vec::new();
+    crate::try_reserve_vec(&mut member_of, ring_count)?;
     for (member, polygon) in polygons.iter().enumerate() {
         for ring in
             std::iter::once(polygon.shell.coords()).chain(polygon.holes.iter().map(Ring::coords))
@@ -313,7 +319,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
             if chains.push_line(ring)?.is_none() {
                 return Ok(None);
             }
-            member_of.push(member);
+            crate::try_push_vec(&mut member_of, member)?;
         }
     }
     let as_member = |seg: &IndexedSegment| IndexedSegment {
@@ -342,19 +348,19 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
     // inside another's hole is valid). Only OVERLAPPING member bounds are
     // visited — the shared bounds sweep replaces the O(N²) all-pairs
     // compare that paid even for provably disjoint multipolygon parts.
-    let member_bounds: Vec<Bounds> = polygons
-        .iter()
-        .map(|polygon| {
-            Bounds::from_coords(polygon.shell.coords()).unwrap_or_else(|| {
-                Bounds::new_raw(
-                    f64::INFINITY,
-                    f64::INFINITY,
-                    f64::NEG_INFINITY,
-                    f64::NEG_INFINITY,
-                )
-            })
-        })
-        .collect();
+    let mut member_bounds = Vec::new();
+    crate::try_reserve_vec(&mut member_bounds, polygons.len())?;
+    for polygon in polygons {
+        let bounds = Bounds::from_coords(polygon.shell.coords()).unwrap_or_else(|| {
+            Bounds::new_raw(
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            )
+        });
+        crate::try_push_vec(&mut member_bounds, bounds)?;
+    }
     let mut nest_issue: Option<ValidationIssue> = None;
     let _ = for_each_overlapping_bounds_pair(&member_bounds, |index, other_index| {
         // A shell vertex OFF the other member's whole boundary decides

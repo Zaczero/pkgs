@@ -159,6 +159,8 @@ pub(crate) use exact_partition::{
 };
 #[cfg(test)]
 pub(crate) use exact_partition::{partition_calls, reset_partition_calls};
+#[cfg(test)]
+pub(in crate::geometry) use exact_partition::{partition_builds, reset_partition_builds};
 pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
 pub(in crate::geometry) use nary::{overlay_all_geographic_from, overlay_view_error};
 #[cfg(test)]

@@ -1,43 +1,20 @@
-use ahash::HashSetExt as _;
-
-use crate::geometry::coverage::{AABB, HashMap, HashMapExt as _, HashSet, RTreeObject, Result};
+use crate::collections::{try_hash_map_with_capacity, try_hash_set_with_capacity};
+use crate::geometry::coverage::{HashMap, Result};
 use crate::geometry::{
-    Bounds, BulkRTree, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point, PointKey,
-    Polygon, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, line_segments, same_point,
-    segment_cross_point, undirected_segment_edge_key,
+    Bounds, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point, PointKey, Polygon,
+    Segment, Shape, XY, canonical_f64_bits, line_segments, same_point, segment_cross_point,
+    undirected_segment_edge_key,
 };
 
-/// One row's boundary segments plus the prepared per-row machinery the
-/// validator probes (envelope filter, segment index, point membership).
-/// The shape is borrowed and the segment index built lazily: only the
-/// validator probes it, so `coverage_simplify`/`coverage_clean` never pay
-/// for 400 R-trees (or clone 400 shapes) they would not use.
+/// One row's boundary segments plus its envelope.
+///
+/// The validator keeps the source walk as its only row product. Coverage
+/// cleaning sends admitted source segments to `ExactPartition`; it must not
+/// build a second per-row spatial graph before that owner is reached.
 pub(crate) struct CoverageRow<'a> {
     pub(crate) shape: &'a Shape,
     pub(crate) segments: Vec<Segment>,
-    index: std::cell::OnceCell<SegmentIndex>,
     pub(crate) bounds: Option<Bounds>,
-}
-
-impl CoverageRow<'_> {
-    pub(crate) fn index(&self) -> crate::error::Result<&SegmentIndex> {
-        self.index
-            .get_or_try_init(|| SegmentIndex::build(&self.segments))
-    }
-}
-
-/// Envelope entry for the row broad-phase.
-struct RowEnvelope {
-    row: usize,
-    envelope: AABB<[f64; 2]>,
-}
-
-impl RTreeObject for RowEnvelope {
-    type Envelope = AABB<[f64; 2]>;
-
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
-    }
 }
 
 /// Collect each row's boundary segments (every ring of every polygon part).
@@ -49,49 +26,58 @@ pub(crate) fn coverage_rows<S: std::borrow::Borrow<Shape>>(
     if !(gap_width.is_finite() && gap_width >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("gap_width", gap_width).into());
     }
-    rows.iter()
-        .map(std::borrow::Borrow::borrow)
-        .map(|shape| {
-            let mut segments = Vec::new();
-            match shape {
-                Shape::Polygon(polygon) => collect_polygon_segments(polygon, &mut segments),
-                Shape::MultiPolygon(polygons) => {
-                    for polygon in polygons {
-                        collect_polygon_segments(polygon, &mut segments);
-                    }
-                },
-                Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {},
-                _ => return Err(GeometryErrorKind::CoveragePolygonalRequired.into()),
-            }
-            // The grown envelope makes the broad-phase see gap_width-near
-            // rows too, so narrow-gap detection never misses a candidate.
-            let bounds = shape.bounds();
-            Ok(CoverageRow {
-                shape,
-                segments,
-                index: std::cell::OnceCell::new(),
-                bounds,
-            })
-        })
-        .collect()
+    let mut prepared = Vec::new();
+    crate::try_reserve_vec(&mut prepared, rows.len())?;
+    for row in rows {
+        let shape = row.borrow();
+        let mut segments = Vec::new();
+        match shape {
+            Shape::Polygon(polygon) => collect_polygon_segments(polygon, &mut segments)?,
+            Shape::MultiPolygon(polygons) => {
+                for polygon in polygons {
+                    collect_polygon_segments(polygon, &mut segments)?;
+                }
+            },
+            Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {},
+            _ => return Err(GeometryErrorKind::CoveragePolygonalRequired.into()),
+        }
+        crate::try_push_vec(&mut prepared, CoverageRow {
+            shape,
+            segments,
+            bounds: shape.bounds(),
+        })?;
+    }
+    Ok(prepared)
 }
 
-pub(crate) fn collect_polygon_segments(polygon: &Polygon, out: &mut Vec<Segment>) {
+pub(crate) fn collect_polygon_segments(polygon: &Polygon, out: &mut Vec<Segment>) -> Result<()> {
     for ring in polygon.rings() {
         // Elide zero-length stutter (repeated consecutive vertices): a
         // degenerate edge is removable redundancy, not a coverage boundary, so
         // it must not register as a coverage edge or it would surface as a
         // false invalid edge. Consistent with the validity model.
-        out.extend(line_segments(&ring).filter(|segment| !same_point(segment.start, segment.end)));
+        for segment in
+            line_segments(&ring).filter(|segment| !same_point(segment.start, segment.end))
+        {
+            crate::try_push_vec(out, segment)?;
+        }
     }
+    Ok(())
 }
 
 /// How many distinct rows carry each undirected segment (at most once per
 /// row, even when a ring lists the same edge more than once).
-pub(crate) fn edge_row_occurrences(rows: &[CoverageRow<'_>]) -> HashMap<(PointKey, PointKey), u32> {
-    let mut map = HashMap::new();
+pub(crate) fn edge_row_occurrences(
+    rows: &[CoverageRow<'_>],
+) -> Result<HashMap<(PointKey, PointKey), u32>> {
+    let segment_capacity = rows.iter().try_fold(0_usize, |count, row| {
+        count
+            .checked_add(row.segments.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    let mut map = try_hash_map_with_capacity(segment_capacity)?;
     for row in rows {
-        let mut seen = HashSet::new();
+        let mut seen = try_hash_set_with_capacity(row.segments.len())?;
         for &segment in &row.segments {
             let key = undirected_segment_edge_key(segment);
             if seen.insert(key) {
@@ -99,7 +85,7 @@ pub(crate) fn edge_row_occurrences(rows: &[CoverageRow<'_>]) -> HashMap<(PointKe
             }
         }
     }
-    map
+    Ok(map)
 }
 
 /// Successful validation product for check-and-do ops: prepared rows plus the
@@ -130,16 +116,17 @@ pub(crate) fn coverage_invalid_segments_prepared(
     rows: &[CoverageRow<'_>],
     gap_width: f64,
 ) -> Result<Vec<Vec<Segment>>> {
-    let occurrences = edge_row_occurrences(rows);
-    let mut invalid = vec![Vec::new(); rows.len()];
+    let occurrences = edge_row_occurrences(rows)?;
+    let mut invalid = Vec::new();
+    crate::try_reserve_vec(&mut invalid, rows.len())?;
+    for _ in rows {
+        crate::try_push_vec(&mut invalid, Vec::new())?;
+    }
     coverage_invalid_with_count(
         rows,
         |key| occurrences[&key],
         gap_width,
-        |index, segment| {
-            invalid[index].push(segment);
-            true
-        },
+        |index, segment| crate::try_push_vec(&mut invalid[index], segment).map(|()| true),
     )?;
     Ok(invalid)
 }
@@ -151,42 +138,28 @@ pub(crate) fn coverage_invalid_segments_prepared(
 /// offending segment was found.
 #[expect(
     clippy::iter_over_hash_type,
-    reason = "bucket iteration only marks per-row coincidence flags; its order cannot affect the returned rows"
+    reason = "hash buckets only carry coincidence groups; their order cannot affect validity"
 )]
 fn coverage_invalid_with_count(
     rows: &[CoverageRow<'_>],
     mut count_of: impl FnMut((PointKey, PointKey)) -> u32,
     gap_width: f64,
-    mut report_invalid: impl FnMut(usize, Segment) -> bool,
+    mut report_invalid: impl FnMut(usize, Segment) -> Result<bool>,
 ) -> Result<bool> {
-    let envelope_tree = BulkRTree::bulk_load_with_params(
-        rows.iter()
-            .enumerate()
-            .filter_map(|(row, data)| {
-                data.bounds.map(|bounds| RowEnvelope {
-                    row,
-                    envelope: AABB::from_corners(
-                        [bounds.minx() - gap_width, bounds.miny() - gap_width],
-                        [bounds.maxx() + gap_width, bounds.maxy() + gap_width],
-                    ),
-                })
-            })
-            .collect(),
-    );
-
     // Two coincident polygon rows are an overlap, not a valid shared
     // interface. Their edges occur exactly twice, which otherwise looks just
     // like two adjacent polygons and would take the fast shared-edge path
-    // below. Coincident pairs always share exact bounds (the probe below
-    // previously required `bounds ==`), so group by bit-exact bounds instead of
-    // an all-row envelope scan — unique-bounds coverages (parcels) pay one
-    // HashMap insert each and never call `equals`.
-    let mut coincident = vec![false; rows.len()];
+    // below. Coincident pairs always share exact bounds, so group by bit-exact
+    // bounds instead of an all-row geometry comparison — unique-bounds
+    // coverages (parcels) pay one HashMap insert each and never call `equals`.
+    let mut coincident = Vec::new();
+    crate::try_reserve_vec(&mut coincident, rows.len())?;
+    coincident.resize(rows.len(), false);
     // Group by canonical bounds bits so +0.0/−0.0 land in one bucket
     // (`f64::to_bits` alone splits them and misses coincident duplicates —
     // edges then all look like shared interfaces and coverage_union empties).
-    let mut by_bounds: HashMap<[u64; 4], usize> = HashMap::with_capacity(rows.len());
-    let mut duplicate_bounds: HashMap<[u64; 4], Vec<usize>> = HashMap::new();
+    let mut by_bounds = try_hash_map_with_capacity(rows.len())?;
+    let mut duplicate_bounds = try_hash_map_with_capacity(rows.len())?;
     for (index, row) in rows.iter().enumerate() {
         let Some(bounds) = row.bounds else { continue };
         let key = [
@@ -200,10 +173,19 @@ fn coverage_invalid_with_count(
                 entry.insert(index);
             },
             std::collections::hash_map::Entry::Occupied(entry) => {
-                duplicate_bounds
-                    .entry(key)
-                    .or_insert_with(|| vec![*entry.get()])
-                    .push(index);
+                let existing = *entry.get();
+                match duplicate_bounds.entry(key) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let mut members = Vec::new();
+                        crate::try_reserve_vec(&mut members, 2)?;
+                        crate::try_push_vec(&mut members, existing)?;
+                        crate::try_push_vec(&mut members, index)?;
+                        entry.insert(members);
+                    },
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        crate::try_push_vec(entry.get_mut(), index)?;
+                    },
+                }
             },
         }
     }
@@ -214,16 +196,25 @@ fn coverage_invalid_with_count(
         if group.len() < 2 {
             continue;
         }
-        let mut by_edges: HashMap<Vec<(PointKey, PointKey)>, Vec<usize>> = HashMap::new();
+        let mut by_edges = try_hash_map_with_capacity(group.len())?;
         for &index in group {
-            let mut edges: Vec<(PointKey, PointKey)> = rows[index]
-                .segments
-                .iter()
-                .copied()
-                .map(undirected_segment_edge_key)
-                .collect();
+            let mut edges = Vec::new();
+            crate::try_reserve_vec(&mut edges, rows[index].segments.len())?;
+            for &segment in &rows[index].segments {
+                crate::try_push_vec(&mut edges, undirected_segment_edge_key(segment))?;
+            }
             edges.sort_unstable();
-            by_edges.entry(edges).or_default().push(index);
+            match by_edges.entry(edges) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut members = Vec::new();
+                    crate::try_reserve_vec(&mut members, 1)?;
+                    crate::try_push_vec(&mut members, index)?;
+                    entry.insert(members);
+                },
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    crate::try_push_vec(entry.get_mut(), index)?;
+                },
+            }
         }
         for members in by_edges.values() {
             if members.len() < 2 {
@@ -239,7 +230,7 @@ fn coverage_invalid_with_count(
         if coincident[index] {
             for &segment in &row.segments {
                 any_invalid = true;
-                if !report_invalid(index, segment) {
+                if !report_invalid(index, segment)? {
                     return Ok(true);
                 }
             }
@@ -249,20 +240,21 @@ fn coverage_invalid_with_count(
             if count_of(undirected_segment_edge_key(segment)) == 2 {
                 continue; // exactly shared interface — the valid case
             }
-            let query = AABB::from_corners(
-                [
-                    segment.start.x.min(segment.end.x) - gap_width,
-                    segment.start.y.min(segment.end.y) - gap_width,
-                ],
-                [
-                    segment.start.x.max(segment.end.x) + gap_width,
-                    segment.start.y.max(segment.end.y) + gap_width,
-                ],
-            );
+            let query_min_x = segment.start.x.min(segment.end.x) - gap_width;
+            let query_min_y = segment.start.y.min(segment.end.y) - gap_width;
+            let query_max_x = segment.start.x.max(segment.end.x) + gap_width;
+            let query_max_y = segment.start.y.max(segment.end.y) + gap_width;
             let mut offending = false;
-            for candidate in envelope_tree.locate_in_envelope_intersecting(query) {
-                if candidate.row != index
-                    && segment_offends_row(segment, &rows[candidate.row], gap_width)?
+            for (candidate_row, candidate) in rows.iter().enumerate() {
+                let Some(bounds) = candidate.bounds else {
+                    continue;
+                };
+                if candidate_row != index
+                    && bounds.maxx() >= query_min_x
+                    && bounds.minx() <= query_max_x
+                    && bounds.maxy() >= query_min_y
+                    && bounds.miny() <= query_max_y
+                    && segment_offends_row(segment, candidate, gap_width)?
                 {
                     offending = true;
                     break;
@@ -270,7 +262,7 @@ fn coverage_invalid_with_count(
             }
             if offending {
                 any_invalid = true;
-                if !report_invalid(index, segment) {
+                if !report_invalid(index, segment)? {
                     return Ok(true);
                 }
             }
@@ -294,9 +286,13 @@ pub(crate) fn valid_coverage_rows<'a, S: std::borrow::Borrow<Shape>>(
     // safe skip — the edge cancels in dissolve too), and count==1 survivors
     // feed XOR dissolve. The is_valid path keeps the lighter distinct-row
     // map via `edge_row_occurrences` (no dissolve product needed).
-    let segment_capacity: usize = prepared.iter().map(|row| row.segments.len()).sum();
+    let segment_capacity = prepared.iter().try_fold(0_usize, |count, row| {
+        count
+            .checked_add(row.segments.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
     let mut incidences: HashMap<(PointKey, PointKey), (Segment, u32)> =
-        HashMap::with_capacity(segment_capacity.div_ceil(2));
+        try_hash_map_with_capacity(segment_capacity)?;
     for row in &prepared {
         for &segment in &row.segments {
             let key = undirected_segment_edge_key(segment);
@@ -306,7 +302,7 @@ pub(crate) fn valid_coverage_rows<'a, S: std::borrow::Borrow<Shape>>(
                 .or_insert((segment, 1));
         }
     }
-    if coverage_invalid_with_count(&prepared, |key| incidences[&key].1, 0.0, |_, _| false)? {
+    if coverage_invalid_with_count(&prepared, |key| incidences[&key].1, 0.0, |_, _| Ok(false))? {
         return Err(GeometryErrorKind::InvalidCoverage { operation }.into());
     }
     Ok(ValidCoverage {
@@ -314,11 +310,6 @@ pub(crate) fn valid_coverage_rows<'a, S: std::borrow::Borrow<Shape>>(
         edge_incidences: incidences,
     })
 }
-
-/// Small boundaries (parcel rectangles, admin tiles) brute-force the few
-/// segments — building a SegmentIndex R-tree for 4 edges is pure overhead on
-/// the valid-coverage exterior-probe path. Larger rings keep the lazy index.
-const BRUTE_OFFEND_SEGMENTS: usize = 32;
 
 /// Whether an unmatched boundary segment interacts with `other`'s area or
 /// boundary in a way a valid coverage forbids.
@@ -342,48 +333,27 @@ pub(crate) fn segment_offends_row(
     // THIS segment: a shared corner vertex is legal, and a neighbor vertex
     // landing mid-segment (the T-join) is each side's own interior contact,
     // so both rows flag symmetrically.
-    let crossing = if other.segments.len() <= BRUTE_OFFEND_SEGMENTS {
-        other.segments.iter().any(|&other_seg| {
-            segment_cross_point(segment, other_seg).is_some_and(|point| {
-                !same_point(point, segment.start) && !same_point(point, segment.end)
-            })
+    let crossing = other.segments.iter().any(|&other_seg| {
+        segment_cross_point(segment, other_seg).is_some_and(|point| {
+            !same_point(point, segment.start) && !same_point(point, segment.end)
         })
-    } else {
-        other
-            .index()?
-            .intersecting_candidates(segment)
-            .any(|entry| {
-                segment_cross_point(segment, entry.segment).is_some_and(|point| {
-                    !same_point(point, segment.start) && !same_point(point, segment.end)
-                })
-            })
-    };
+    });
     if crossing {
         return Ok(true);
     }
     // Narrow gap: the segment faces another row's unmatched boundary closer
-    // than gap_width without touching it. Nearest-segment needs the index
-    // (or a full scan); only pay when gap_width is active.
+    // than gap_width without touching it.
     if gap_width > 0.0 {
         let near = |point: XY| -> Result<bool> {
-            let limit_squared = gap_width * gap_width;
-            if !limit_squared.is_normal() {
-                // Squared space cannot represent a small (or very large)
-                // tolerance faithfully. In distance space the same
-                // point-to-segment test retains endpoint-governed gaps
-                // instead of treating a positive separation as zero.
-                for &candidate in &other.segments {
-                    let distance = crate::geometry::point_segment_distance(point, candidate)?;
-                    if distance > 0.0 && distance < gap_width {
-                        return Ok(true);
-                    }
+            // Distance space retains endpoint-governed gaps when a very small
+            // or very large tolerance cannot be squared faithfully.
+            for &candidate in &other.segments {
+                let distance = crate::geometry::point_segment_distance(point, candidate)?;
+                if distance > 0.0 && distance < gap_width {
+                    return Ok(true);
                 }
-                return Ok(false);
             }
-            Ok(other
-                .index()?
-                .nearest_segment_if(point.point(), limit_squared, |_, distance| distance > 0.0)?
-                .is_some())
+            Ok(false)
         };
         if near(midpoint.into())? || near(segment.start)? || near(segment.end)? {
             return Ok(true);
@@ -398,12 +368,12 @@ pub(crate) fn coverage_is_valid<S: std::borrow::Borrow<Shape>>(
     gap_width: f64,
 ) -> Result<bool> {
     let rows = coverage_rows(rows, gap_width)?;
-    let occurrences = edge_row_occurrences(&rows);
+    let occurrences = edge_row_occurrences(&rows)?;
     Ok(!coverage_invalid_with_count(
         &rows,
         |key| occurrences[&key],
         gap_width,
-        |_, _| false,
+        |_, _| Ok(false),
     )?)
 }
 
@@ -413,20 +383,29 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     gap_width: f64,
 ) -> Result<Vec<Shape>> {
-    coverage_invalid_segments(rows, gap_width)?
-        .into_iter()
-        .map(|segments| {
-            if segments.is_empty() {
-                return Ok(Shape::typed_empty(
-                    GeometryKind::LineString,
-                    CoordinateAxes::XY,
-                ));
-            }
-            let lines = segments
-                .into_iter()
-                .map(|segment| LineSeq::segment(segment.start.point(), segment.end.point()))
-                .collect::<Result<Vec<_>>>()?;
-            Shape::multi_line_string(CoordinateAxes::XY, lines)?.line_merge()
-        })
-        .collect()
+    let invalid = coverage_invalid_segments(rows, gap_width)?;
+    let mut output = Vec::new();
+    crate::try_reserve_vec(&mut output, invalid.len())?;
+    for segments in invalid {
+        if segments.is_empty() {
+            crate::try_push_vec(
+                &mut output,
+                Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
+            )?;
+            continue;
+        }
+        let mut lines = Vec::new();
+        crate::try_reserve_vec(&mut lines, segments.len())?;
+        for segment in segments {
+            crate::try_push_vec(
+                &mut lines,
+                LineSeq::segment(segment.start.point(), segment.end.point())?,
+            )?;
+        }
+        crate::try_push_vec(
+            &mut output,
+            Shape::multi_line_string(CoordinateAxes::XY, lines)?.line_merge()?,
+        )?;
+    }
+    Ok(output)
 }

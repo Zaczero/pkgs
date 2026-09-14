@@ -34,8 +34,7 @@ pub(crate) use area::{
     AreaSign, ExactRationalArea, RingWinding, closed_columns_winding, cmp_area_keys_then_closed,
     cmp_area_keys_then_open_columns, open_point_cycle_decision, open_point_cycle_winding,
     open_xy_cycle_decision, open_xy_cycle_magnitude, open_xy_cycle_sign, open_xy_cycle_winding,
-    polygon_area_measure_columns, polygon_area_measure_with, ring_area_measure, ring_decision_area,
-    ring_winding,
+    polygon_area_measure_columns, polygon_area_measure_with, ring_decision_area, ring_winding,
 };
 pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod types;

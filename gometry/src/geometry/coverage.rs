@@ -14,7 +14,7 @@ use std::cmp::Reverse;
 
 pub(crate) use rstar::{AABB, RTreeObject};
 
-pub(crate) use crate::collections::{HashMap, HashMapExt, HashSet, sort_row_ids};
+pub(crate) use crate::collections::{HashMap, HashMapExt};
 use crate::error::Result;
 
 mod clean;
@@ -25,19 +25,6 @@ pub(crate) use clean::{CoverageOverlapRule, coverage_clean, coverage_union_topo}
 pub(in crate::geometry) use simplify::{TopologyGuard, simplify_chain_guarded, triangle_area};
 pub(crate) use simplify::{vw_area_tolerance, *};
 pub(crate) use validate::{
-    CoverageRow, coverage_invalid_edges, coverage_invalid_segments_prepared, coverage_is_valid,
-    coverage_rows, valid_coverage_rows,
+    coverage_invalid_edges, coverage_invalid_segments_prepared, coverage_is_valid, coverage_rows,
+    valid_coverage_rows,
 };
-
-#[cfg(test)]
-pub(crate) fn minimal_positive_face_rings(
-    segments: &[crate::geometry::Segment],
-) -> Vec<Vec<crate::geometry::XY>> {
-    let mut arrangement = crate::geometry::Arrangement::new_with_rings(segments);
-    arrangement
-        .faces_mut()
-        .iter_mut()
-        .filter(|face| crate::geometry::open_xy_cycle_winding(&face.ring).is_ccw())
-        .map(|face| std::mem::take(&mut face.ring))
-        .collect()
-}

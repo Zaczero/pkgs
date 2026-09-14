@@ -1088,15 +1088,17 @@ impl Shape {
                 Self::LineString(LineSeq::try_new(seq_fn(points)?).map_err(E::from)?)
             },
             Self::MultiLineString(lines) => {
-                let members = lines
-                    .members()
-                    .map(|member| match member {
-                        MultiMember::Empty => Ok(MultiMember::Empty),
-                        MultiMember::Value(index) => seq_fn(&lines.as_slice()[index])
-                            .and_then(|coords| LineSeq::try_new(coords).map_err(E::from))
-                            .map(MultiMember::Value),
-                    })
-                    .collect::<Result<Vec<_>, E>>()?;
+                let mut members = Vec::new();
+                crate::try_reserve_vec(&mut members, lines.len()).map_err(E::from)?;
+                for member in lines.members() {
+                    let member = match member {
+                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Value(index) => MultiMember::Value(
+                            LineSeq::try_new(seq_fn(&lines.as_slice()[index])?).map_err(E::from)?,
+                        ),
+                    };
+                    crate::try_push_vec(&mut members, member).map_err(E::from)?;
+                }
                 let axes = members
                     .iter()
                     .find_map(|member| match member {
@@ -1108,15 +1110,17 @@ impl Shape {
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
             Self::MultiPolygon(polygons) => {
-                let members = polygons
-                    .members()
-                    .map(|member| match member {
-                        MultiMember::Empty => Ok(MultiMember::Empty),
-                        MultiMember::Value(index) => polygons.as_slice()[index]
-                            .try_map_ring_seqs(seq_fn)
-                            .map(MultiMember::Value),
-                    })
-                    .collect::<Result<Vec<_>, E>>()?;
+                let mut members = Vec::new();
+                crate::try_reserve_vec(&mut members, polygons.len()).map_err(E::from)?;
+                for member in polygons.members() {
+                    let member = match member {
+                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Value(index) => MultiMember::Value(
+                            polygons.as_slice()[index].try_map_ring_seqs(seq_fn)?,
+                        ),
+                    };
+                    crate::try_push_vec(&mut members, member).map_err(E::from)?;
+                }
                 let axes = members
                     .iter()
                     .find_map(|member| match member {
@@ -1212,18 +1216,22 @@ impl Shape {
     /// drop collapsed parts, and degrade below-minimum linework/rings to
     /// the representable empty.
     fn collapse_snapped(self) -> Result<Self> {
-        fn dedup_line<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
-            let mut vertices: Vec<Point> = points.iter_coords().collect();
+        fn dedup_line<C: Coordinates + ?Sized>(points: &C) -> Result<Vec<Point>> {
+            let mut vertices = Vec::new();
+            crate::try_reserve_vec(&mut vertices, points.coord_count())?;
+            for point in points.iter_coords() {
+                crate::try_push_vec(&mut vertices, point)?;
+            }
             dedup_consecutive_points(&mut vertices);
-            vertices
+            Ok(vertices)
         }
         fn dedup_ring(ring: &Ring) -> Result<Option<Ring>> {
-            let mut vertices = dedup_line(ring);
+            let mut vertices = dedup_line(ring)?;
             // Re-close: the closure duplicate just got deduped away.
             if let Some(first) = vertices.first().copied()
                 && (!same_point(first, *vertices.last().expect("non-empty")) || vertices.len() == 1)
             {
-                vertices.push(first);
+                crate::try_push_vec(&mut vertices, first)?;
             }
             // A ring needs three distinct vertices plus the closure.
             if vertices.len() < 4 {
@@ -1236,7 +1244,7 @@ impl Shape {
         }
         Ok(match self {
             Self::LineString(points) => {
-                let vertices = dedup_line(&points);
+                let vertices = dedup_line(&points)?;
                 if vertices.len() >= 2 {
                     Self::LineString(LineSeq::try_new(CoordSeq::try_from_points(&vertices)?)?)
                 } else {
@@ -1244,62 +1252,64 @@ impl Shape {
                 }
             },
             Self::MultiLineString(lines) => {
-                let members = lines
-                    .members()
-                    .map(|member| match member {
-                        MultiMember::Empty => Ok(MultiMember::Empty),
+                let mut members = Vec::new();
+                crate::try_reserve_vec(&mut members, lines.len())?;
+                for member in lines.members() {
+                    let member = match member {
+                        MultiMember::Empty => MultiMember::Empty,
                         MultiMember::Value(index) => {
-                            let vertices = dedup_line(&lines.as_slice()[index]);
+                            let vertices = dedup_line(&lines.as_slice()[index])?;
                             if vertices.len() >= 2 {
-                                Ok(MultiMember::Value(LineSeq::try_new(
-                                    CoordSeq::try_from_points(&vertices)?,
-                                )?))
+                                MultiMember::Value(LineSeq::try_new(CoordSeq::try_from_points(
+                                    &vertices,
+                                )?)?)
                             } else {
-                                Ok(MultiMember::Empty)
+                                MultiMember::Empty
                             }
                         },
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                    };
+                    crate::try_push_vec(&mut members, member)?;
+                }
                 Self::MultiLineString(MultiLineString::from_values(lines.axes(), members)?)
             },
             Self::Polygon(polygon) => match dedup_ring(&polygon.shell)? {
-                Some(shell) => Self::Polygon(Polygon::new(
-                    shell,
-                    polygon
-                        .holes
-                        .iter()
-                        .map(dedup_ring)
-                        .collect::<Result<Vec<_>>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect(),
-                )?),
+                Some(shell) => {
+                    let mut holes = Vec::new();
+                    crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
+                    for hole in polygon.holes.iter() {
+                        if let Some(hole) = dedup_ring(hole)? {
+                            crate::try_push_vec(&mut holes, hole)?;
+                        }
+                    }
+                    Self::Polygon(Polygon::new(shell, holes)?)
+                },
                 None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
             },
             Self::MultiPolygon(polygons) => {
-                let members = polygons
-                    .members()
-                    .map(|member| match member {
-                        MultiMember::Empty => Ok(MultiMember::Empty),
+                let mut members = Vec::new();
+                crate::try_reserve_vec(&mut members, polygons.len())?;
+                for member in polygons.members() {
+                    let member = match member {
+                        MultiMember::Empty => MultiMember::Empty,
                         MultiMember::Value(index) => {
                             let polygon = &polygons.as_slice()[index];
-                            Ok(match dedup_ring(&polygon.shell)? {
-                                Some(shell) => MultiMember::Value(Polygon::new(
-                                    shell,
-                                    polygon
-                                        .holes
-                                        .iter()
-                                        .map(dedup_ring)
-                                        .collect::<Result<Vec<_>>>()?
-                                        .into_iter()
-                                        .flatten()
-                                        .collect(),
-                                )?),
+                            match dedup_ring(&polygon.shell)? {
+                                Some(shell) => {
+                                    let mut holes = Vec::new();
+                                    crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
+                                    for hole in polygon.holes.iter() {
+                                        if let Some(hole) = dedup_ring(hole)? {
+                                            crate::try_push_vec(&mut holes, hole)?;
+                                        }
+                                    }
+                                    MultiMember::Value(Polygon::new(shell, holes)?)
+                                },
                                 None => MultiMember::Empty,
-                            })
+                            }
                         },
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                    };
+                    crate::try_push_vec(&mut members, member)?;
+                }
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => {

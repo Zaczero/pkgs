@@ -30,10 +30,10 @@ use crate::geometry::tessellation::exact::{
     ExactDyadic, outward_ratio_bounds, round_ratio, try_compare_ratios,
 };
 use crate::geometry::{
-    Bounds, Contact, CoordSeq, Coordinates as _, De9im, Dimension, ExpansionBudget,
-    GeometryErrorKind, GeometryKind, HashMap, LineSeq, Loc, Point, PointKey, Polygon,
-    PolygonizeFull, Result, Ring, RingKind, Segment, Shape, XY, for_each_candidate_pair,
-    same_point, segment_contact_exact, single_chain,
+    Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, CoverageOverlapRule, De9im,
+    Dimension, ExactRationalArea, ExpansionBudget, GeometryErrorKind, GeometryKind, HashMap,
+    LineSeq, Loc, Point, PointKey, Polygon, PolygonizeFull, Result, Ring, RingKind, Segment, Shape,
+    XY, for_each_candidate_pair, point_distance, same_point, segment_contact_exact, single_chain,
 };
 use crate::{try_push_vec, try_reserve_vec};
 
@@ -50,6 +50,21 @@ pub(crate) fn reset_partition_calls() {
 #[cfg(test)]
 pub(crate) fn partition_calls() -> usize {
     PARTITION_CALLS.with(Cell::get)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PARTITION_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn reset_partition_builds() {
+    PARTITION_BUILDS.with(|builds| builds.set(0));
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn partition_builds() -> usize {
+    PARTITION_BUILDS.with(std::cell::Cell::get)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -476,6 +491,95 @@ struct NodeParts {
     rounded: Vec<(NodeId, XY)>,
 }
 
+struct CoverageFaceState {
+    polygon_occupied: Vec<bool>,
+    row_polygon_counts: Vec<usize>,
+    active_positions: Vec<usize>,
+    active_rows: Vec<usize>,
+}
+
+impl CoverageFaceState {
+    fn new(polygon_count: usize, row_count: usize) -> Result<Self> {
+        let mut polygon_occupied = Vec::new();
+        try_reserve_vec(&mut polygon_occupied, polygon_count)?;
+        polygon_occupied.resize(polygon_count, false);
+        let mut row_polygon_counts = Vec::new();
+        try_reserve_vec(&mut row_polygon_counts, row_count)?;
+        row_polygon_counts.resize(row_count, 0_usize);
+        let mut active_positions = Vec::new();
+        try_reserve_vec(&mut active_positions, row_count)?;
+        active_positions.resize(row_count, usize::MAX);
+        let mut active_rows = Vec::new();
+        try_reserve_vec(&mut active_rows, row_count)?;
+        Ok(Self {
+            polygon_occupied,
+            row_polygon_counts,
+            active_positions,
+            active_rows,
+        })
+    }
+
+    fn update_ring(
+        &mut self,
+        inventory: &ExactSourceInventory,
+        winding: &mut [i64],
+        ring: u32,
+        delta: i64,
+    ) -> Result<()> {
+        let ring_index = ring as usize;
+        let before = winding[ring_index] != 0;
+        winding[ring_index] += delta;
+        let after = winding[ring_index] != 0;
+        if before == after {
+            return Ok(());
+        }
+        let polygon = *inventory.ring_polygons.get(ring_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("exact coverage winding references an unknown ring".into())
+        })? as usize;
+        let occupied = rings_occupied(
+            winding,
+            inventory.polygon_ring_ranges[polygon].clone(),
+            false,
+        );
+        if occupied == self.polygon_occupied[polygon] {
+            return Ok(());
+        }
+        self.polygon_occupied[polygon] = occupied;
+        let row = inventory.polygon_operands[polygon] as usize;
+        if occupied {
+            let count = self.row_polygon_counts.get_mut(row).ok_or_else(|| {
+                GeometryErrorKind::Invalid("exact coverage polygon operand is out of range".into())
+            })?;
+            let was_empty = *count == 0;
+            *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            if was_empty {
+                let position = self.active_rows.len();
+                try_push_vec(&mut self.active_rows, row)?;
+                self.active_positions[row] = position;
+            }
+        } else {
+            let count = self.row_polygon_counts.get_mut(row).ok_or_else(|| {
+                GeometryErrorKind::Invalid("exact coverage polygon operand is out of range".into())
+            })?;
+            *count = count.checked_sub(1).ok_or_else(|| {
+                GeometryErrorKind::Invalid("exact coverage polygon occupancy underflow".into())
+            })?;
+            if *count == 0 {
+                let position = self.active_positions[row];
+                let last = self.active_rows.pop().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("exact coverage active rows are out of sync".into())
+                })?;
+                if position != self.active_rows.len() {
+                    self.active_rows[position] = last;
+                    self.active_positions[last] = position;
+                }
+                self.active_positions[row] = usize::MAX;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl BoundaryPlan {
     fn line_walks(&self, topology: &IndexedTopology) -> Result<Vec<Vec<(usize, bool)>>> {
         if self.lines.is_empty() {
@@ -664,7 +768,13 @@ impl BoundaryPlan {
     ) -> Result<NodeParts> {
         let items = self.incident_items(topology)?;
         let rounded_segments = self.round_items(partition, topology)?;
-        self.emit_node_parts_with_segments(partition, topology, &items, &rounded_segments)
+        self.emit_node_parts_from_segments(
+            partition,
+            topology,
+            &items,
+            &rounded_segments,
+            true,
+        )
     }
 
     fn emit_node_parts_with_coordinates(
@@ -699,27 +809,57 @@ impl BoundaryPlan {
         }
         self.check_emitted_fans(topology, &rounded_segments)?;
         self.check_global_faces(partition, &items, &rounded_segments)?;
-        self.emit_node_parts_with_segments(partition, topology, &items, &rounded_segments)
+        self.emit_node_parts_from_segments(
+            partition,
+            topology,
+            &items,
+            &rounded_segments,
+            true,
+        )
     }
 
-    fn emit_node_parts_with_segments(
+    fn emit_node_parts_with_shared_rounding(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        rounded: &HashMap<NodeId, XY>,
+    ) -> Result<NodeParts> {
+        let items = self.incident_items(topology)?;
+        let mut rounded_segments = Vec::new();
+        try_reserve_vec(&mut rounded_segments, items.len())?;
+        for &[start, end] in &items {
+            let start = *rounded.get(&start).ok_or_else(|| {
+                GeometryErrorKind::Invalid("exact coverage output lost a rounded node".into())
+            })?;
+            let end = *rounded.get(&end).ok_or_else(|| {
+                GeometryErrorKind::Invalid("exact coverage output lost a rounded node".into())
+            })?;
+            try_push_vec(&mut rounded_segments, Segment { start, end })?;
+        }
+        self.check_emitted_fans(topology, &rounded_segments)?;
+        self.check_global_faces(partition, &items, &rounded_segments)?;
+        self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, false)
+    }
+
+    fn emit_node_parts_from_segments(
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
         items: &[[NodeId; 2]],
         rounded_segments: &[Segment],
+        retain_rounded: bool,
     ) -> Result<NodeParts> {
-        // Keep exact node identities through the publication pass. No emitted
-        // coordinate is used to rediscover its source node.
         let mut rounded = Vec::new();
-        let rounded_capacity = items
-            .len()
-            .checked_mul(2)
-            .ok_or(ResourceError::SizeOverflow)?;
-        try_reserve_vec(&mut rounded, rounded_capacity)?;
-        for (&[start, end], segment) in items.iter().zip(rounded_segments.iter()) {
-            try_push_vec(&mut rounded, (start, segment.start))?;
-            try_push_vec(&mut rounded, (end, segment.end))?;
+        if retain_rounded {
+            let rounded_capacity = items
+                .len()
+                .checked_mul(2)
+                .ok_or(ResourceError::SizeOverflow)?;
+            try_reserve_vec(&mut rounded, rounded_capacity)?;
+            for (&[start, end], segment) in items.iter().zip(rounded_segments) {
+                try_push_vec(&mut rounded, (start, segment.start))?;
+                try_push_vec(&mut rounded, (end, segment.end))?;
+            }
         }
         let node_chord = |chord: &PlannedChord| {
             let first = self.source_darts[chord.sources.start] as usize;
@@ -1646,6 +1786,8 @@ impl ExactSourceInventory {
     ) -> Result<ExactPartition<'_>> {
         #[cfg(test)]
         PARTITION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+        #[cfg(test)]
+        PARTITION_BUILDS.with(|builds| builds.set(builds.get() + 1));
         let mut partition =
             partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)?;
         partition.protect_stored = self.polygon_rings.iter().all(Vec::is_empty);
@@ -2703,6 +2845,404 @@ impl ExactSourceInventory {
         Ok(polygons)
     }
 
+    /// Visit each global face with the rows whose exact areal supports occupy
+    /// that face. The active row list is updated from sparse ring crossings,
+    /// avoiding a face-by-row membership matrix for disjoint coverage.
+    fn visit_coverage_face_rows(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+        row_count: usize,
+        mut visit: impl FnMut(u32, &[usize]) -> Result<()>,
+    ) -> Result<()> {
+        let winding_rings = self.winding_source_rings()?;
+        let mut state = CoverageFaceState::new(self.polygon_count, row_count)?;
+        partition.visit_face_windings_with_hook(
+            topology,
+            edges,
+            global,
+            &winding_rings,
+            self.ring_count,
+            &mut state,
+            |winding, ring, direction, state| state.update_ring(self, winding, ring, direction),
+            |face, _, state| visit(face, &state.active_rows),
+        )
+    }
+
+    /// Label every bounded global face and publish each coverage row from that
+    /// one exact partition.
+    ///
+    /// Face membership and gap ownership are decided from stored-ring
+    /// windings and exact span provenance.  Boundary plans are then built one
+    /// row at a time, but all of them consume the same rounded node map and
+    /// the same resolved ordinate map.  No emitted coordinate participates in
+    /// selection, and no row is sent through a second partition.
+    pub(in crate::geometry) fn coverage_clean_rows(
+        &self,
+        partition: &mut ExactPartition<'_>,
+        row_areas: &[f64],
+        gap_width: f64,
+        overlaps: CoverageOverlapRule,
+        declared_axes: CoordinateAxes,
+    ) -> Result<Vec<Shape>> {
+        let row_count = self.operand_count();
+        if row_areas.len() != row_count {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage row areas are out of sync with exact operands".into(),
+            )
+            .into());
+        }
+        let row_count_u32 = u32::try_from(row_count).map_err(|_| ResourceError::SizeOverflow)?;
+        // Cleaning historically kept every source node while extracting
+        // minimal faces. Keep that identity and provenance contract in the
+        // direct partition publisher rather than relying on emitted geometry
+        // to preserve a source vertex.
+        partition.protect_stored = true;
+        partition.protect_all = true;
+
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let (face_starts, face_slots) = self.global_face_slots(&topology, &edges, &global)?;
+        let mut face_owners = Vec::new();
+        try_reserve_vec(&mut face_owners, global.count as usize)?;
+        face_owners.resize(global.count as usize, u32::MAX);
+        let mut face_seen = Vec::new();
+        try_reserve_vec(&mut face_seen, global.count as usize)?;
+        face_seen.resize(global.count as usize, false);
+
+        let mut candidates = Vec::new();
+        try_reserve_vec(&mut candidates, row_count)?;
+        let mut border_lengths = Vec::new();
+        try_reserve_vec(&mut border_lengths, row_count)?;
+        border_lengths.resize(row_count, 0.0);
+        let mut seen_rows = Vec::new();
+
+        self.visit_coverage_face_rows(
+            partition,
+            &topology,
+            &edges,
+            &global,
+            row_count,
+            |face, active_rows| {
+                let face_index = face as usize;
+                let seen = face_seen.get_mut(face_index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact coverage winding visited an unknown global face".into(),
+                    )
+                })?;
+                *seen = true;
+                if face == 0 {
+                    return Ok(());
+                }
+                candidates.clear();
+                for &row in active_rows {
+                    try_push_vec(&mut candidates, row)?;
+                }
+                candidates.sort_unstable();
+                let needs_stats = candidates.is_empty() && gap_width > 0.0
+                    || candidates.len() > 1
+                        && matches!(overlaps, CoverageOverlapRule::LongestBorder);
+                let (area, perimeter) = if needs_stats {
+                    let measure_area = candidates.is_empty();
+                    self.coverage_face_stats(
+                        partition,
+                        &topology,
+                        &edges,
+                        &face_starts,
+                        &face_slots,
+                        face as usize,
+                        &mut border_lengths,
+                        &mut seen_rows,
+                        measure_area,
+                    )?
+                } else {
+                    (0.0, 0.0)
+                };
+                let owner = match candidates.as_slice() {
+                    [] if gap_width > 0.0
+                        && perimeter > 0.0
+                        && 2.0 * area / perimeter < gap_width =>
+                    {
+                        (0..row_count)
+                            .filter_map(|row| {
+                                let border = border_lengths[row];
+                                (border > 0.0).then_some((row, border))
+                            })
+                            // The ascending scan and ordinary `max_by` tie
+                            // behavior retain the historical highest row on
+                            // equal gap borders.
+                            .max_by(|left, right| left.1.total_cmp(&right.1))
+                            .map(|(row, _)| row)
+                    },
+                    [] => None,
+                    [only] => Some(*only),
+                    _ => Some(match overlaps {
+                        CoverageOverlapRule::MinIndex => candidates[0],
+                        CoverageOverlapRule::MaxArea => candidates
+                            .iter()
+                            .copied()
+                            .max_by(|left, right| row_areas[*left].total_cmp(&row_areas[*right]))
+                            .expect("non-empty face candidates"),
+                        CoverageOverlapRule::MinArea => candidates
+                            .iter()
+                            .copied()
+                            .min_by(|left, right| row_areas[*left].total_cmp(&row_areas[*right]))
+                            .expect("non-empty face candidates"),
+                        CoverageOverlapRule::LongestBorder => candidates
+                            .iter()
+                            .copied()
+                            .map(|row| (row, border_lengths[row]))
+                            // Reversed row comparison retains the historical
+                            // lowest row on equal overlap borders.
+                            .max_by(|left, right| {
+                                left.1.total_cmp(&right.1).then(right.0.cmp(&left.0))
+                            })
+                            .map(|(row, _)| row)
+                            .expect("non-empty face candidates"),
+                    }),
+                };
+                if let Some(owner) = owner {
+                    face_owners[face as usize] =
+                        u32::try_from(owner).map_err(|_| ResourceError::SizeOverflow)?;
+                }
+                Ok(())
+            },
+        )?;
+
+        let output_nodes = self.certify_coverage_partition(
+            partition,
+            &face_owners,
+            &face_seen,
+            row_count,
+            &topology,
+            &edges,
+            &global,
+        )?;
+        let rounded_coordinates = partition.round_nodes(&output_nodes)?;
+        ExactPartition::check_node_injectivity(&output_nodes, &rounded_coordinates)?;
+        let mut rounded =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        rounded
+            .try_reserve(output_nodes.len())
+            .map_err(crate::error::Error::from)?;
+        for (&node, &coordinate) in output_nodes.iter().zip(&rounded_coordinates) {
+            rounded.insert(node, coordinate);
+        }
+        let by_node =
+            self.resolve_node_points(partition, &output_nodes, &rounded, declared_axes)?;
+
+        let mut outputs = Vec::new();
+        try_reserve_vec(&mut outputs, row_count)?;
+        for row in 0..row_count_u32 {
+            let mut cells = ArealCells {
+                faces: Vec::new(),
+                spans: Vec::new(),
+                nodes: Vec::new(),
+            };
+            try_reserve_vec(&mut cells.faces, face_owners.len())?;
+            for &owner in &face_owners {
+                try_push_vec(&mut cells.faces, owner == row)?;
+            }
+            try_reserve_vec(&mut cells.spans, partition.spans.len())?;
+            cells.spans.resize(partition.spans.len(), false);
+            try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
+            cells.nodes.resize(partition.recipes.len(), false);
+            let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
+            let parts =
+                plan.emit_node_parts_with_shared_rounding(partition, &topology, &rounded)?;
+            try_push_vec(
+                &mut outputs,
+                self.coverage_shape_from_node_parts(parts, &by_node, declared_axes)?,
+            )?;
+        }
+        Ok(outputs)
+    }
+
+    fn certify_coverage_partition(
+        &self,
+        partition: &ExactPartition<'_>,
+        face_owners: &[u32],
+        face_seen: &[bool],
+        row_count: usize,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+    ) -> Result<Vec<NodeId>> {
+        if face_owners.len() != global.count as usize
+            || face_owners.first().copied() != Some(u32::MAX)
+            || face_seen.len() != global.count as usize
+            || face_seen.iter().any(|&seen| !seen)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "exact coverage face labels are out of sync with global faces".into(),
+            )
+            .into());
+        }
+        for &owner in &face_owners[1..] {
+            if owner != u32::MAX && owner as usize >= row_count {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact coverage face owner is out of range".into(),
+                )
+                .into());
+            }
+        }
+        let mut boundary_spans = 0_usize;
+        for (slot, _) in edges.iter().enumerate() {
+            let twin = topology.twins[slot] as usize;
+            if slot > twin {
+                continue;
+            }
+            let left = face_owners[global.walk_faces[topology.face_of[slot] as usize] as usize];
+            let right = face_owners[global.walk_faces[topology.face_of[twin] as usize] as usize];
+            if left != right && (left != u32::MAX || right != u32::MAX) {
+                boundary_spans = boundary_spans
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+            }
+        }
+        let mut output_nodes = Vec::new();
+        let node_capacity = boundary_spans
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        try_reserve_vec(&mut output_nodes, node_capacity)?;
+        for (slot, &edge) in edges.iter().enumerate() {
+            let twin = topology.twins[slot] as usize;
+            if slot > twin {
+                continue;
+            }
+            let left = face_owners[global.walk_faces[topology.face_of[slot] as usize] as usize];
+            let right = face_owners[global.walk_faces[topology.face_of[twin] as usize] as usize];
+            if left == right || (left == u32::MAX && right == u32::MAX) {
+                continue;
+            }
+            let span = partition.spans[edge as usize];
+            try_push_vec(&mut output_nodes, span.start)?;
+            try_push_vec(&mut output_nodes, span.end)?;
+        }
+        output_nodes.sort_unstable_by_key(|node| node.0);
+        output_nodes.dedup_by_key(|node| node.0);
+        Ok(output_nodes)
+    }
+
+    fn coverage_face_stats(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        face_starts: &[u32],
+        face_slots: &[u32],
+        face: usize,
+        border_lengths: &mut [f64],
+        seen_rows: &mut Vec<u32>,
+        measure_area: bool,
+    ) -> Result<(f64, f64)> {
+        border_lengths.fill(0.0);
+        let start = face_starts[face] as usize;
+        let end = face_starts[face + 1] as usize;
+        let mut area = measure_area.then(ExactRationalArea::new).transpose()?;
+        let mut perimeter = 0.0;
+        for &slot in &face_slots[start..end] {
+            let slot = slot as usize;
+            let span_index = edges[slot] as usize;
+            let span = partition.spans[span_index];
+            let start_xy = partition.node_xy(span.start)?;
+            let end_xy = partition.node_xy(span.end)?;
+            let length = point_distance(start_xy, end_xy);
+            perimeter += length;
+            if let Some(area) = &mut area {
+                area.add_homogeneous_cross(
+                    partition.homogeneous(NodeId(topology.owners[slot]))?,
+                    partition.homogeneous(NodeId(topology.targets[slot]))?,
+                )?;
+            }
+            seen_rows.clear();
+            for &(source, _) in partition.owners(span_index) {
+                let operand = *self.source_operands.get(source as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact partition provenance references an unknown source".into(),
+                    )
+                })?;
+                if seen_rows.contains(&operand) {
+                    continue;
+                }
+                try_push_vec(seen_rows, operand)?;
+                let operand = operand as usize;
+                let border = border_lengths.get_mut(operand).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact coverage provenance operand is out of range".into(),
+                    )
+                })?;
+                *border += length;
+            }
+        }
+        let area = match area {
+            Some(area) => area.round_abs_half()?,
+            None => 0.0,
+        };
+        Ok((area, perimeter))
+    }
+
+    fn coverage_shape_from_node_parts(
+        &self,
+        parts: NodeParts,
+        by_node: &HashMap<NodeId, Point>,
+        declared_axes: CoordinateAxes,
+    ) -> Result<Shape> {
+        debug_assert!(parts.points.is_empty());
+        debug_assert!(parts.lines.is_empty());
+        let node_count = parts
+            .polygons
+            .iter()
+            .flat_map(|polygon| polygon.iter())
+            .map(Vec::len)
+            .try_fold(0_usize, |count, ring| {
+                count.checked_add(ring).ok_or(ResourceError::SizeOverflow)
+            })?;
+        let mut nodes = Vec::new();
+        try_reserve_vec(&mut nodes, node_count)?;
+        for polygon in &parts.polygons {
+            for ring in polygon {
+                for &node in ring {
+                    try_push_vec(&mut nodes, node)?;
+                }
+            }
+        }
+        let axes = bucket_axes(&nodes, by_node, declared_axes, false, "coverage_clean")?;
+        let mut polygons = Vec::new();
+        try_reserve_vec(&mut polygons, parts.polygons.len())?;
+        for polygon in parts.polygons {
+            let mut rings = Vec::new();
+            try_reserve_vec(&mut rings, polygon.len())?;
+            for ring in polygon {
+                let mut points = Vec::new();
+                try_reserve_vec(&mut points, ring.len())?;
+                for node in ring {
+                    let point = by_node.get(&node).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "exact coverage output lost a rounded node".into(),
+                        )
+                    })?;
+                    try_push_vec(&mut points, with_axes(*point, axes))?;
+                }
+                try_push_vec(
+                    &mut rings,
+                    Ring::from_closed(CoordSeq::try_from_points(&points)?),
+                )?;
+            }
+            let mut rings = rings.into_iter();
+            let shell = rings.next().expect("coverage polygon has a shell");
+            let mut holes = Vec::new();
+            try_reserve_vec(&mut holes, rings.size_hint().0)?;
+            for ring in rings {
+                try_push_vec(&mut holes, ring)?;
+            }
+            try_push_vec(&mut polygons, Polygon::new(shell, holes)?)?;
+        }
+        Shape::narrow_polygons(axes, polygons)
+    }
+
     pub(in crate::geometry) fn winding_polygons(
         &self,
         partition: &ExactPartition<'_>,
@@ -3396,17 +3936,9 @@ impl ExactSourceInventory {
     }
 
     fn operand_occupied(&self, winding: &[i64], operand: usize, odd: bool) -> bool {
-        self.polygon_rings[operand].iter().any(|rings| {
-            let mut rings = rings.clone();
-            let filled = |ring| {
-                if odd {
-                    winding[ring] % 2 != 0
-                } else {
-                    winding[ring] != 0
-                }
-            };
-            rings.next().is_some_and(filled) && !rings.any(filled)
-        })
+        self.polygon_rings[operand]
+            .iter()
+            .any(|rings| rings_occupied(winding, rings.clone(), odd))
     }
 }
 
@@ -3851,6 +4383,13 @@ fn select_operation(operation: crate::geometry::OverlayOp, membership: &[bool]) 
 
 const fn ring_occupied(winding: i64, odd: bool) -> bool {
     if odd { winding % 2 != 0 } else { winding != 0 }
+}
+
+fn rings_occupied(winding: &[i64], mut rings: Range<usize>, odd: bool) -> bool {
+    rings
+        .next()
+        .is_some_and(|ring| ring_occupied(winding[ring], odd))
+        && rings.all(|ring| !ring_occupied(winding[ring], odd))
 }
 
 fn bucket_axes(
@@ -4869,6 +5408,33 @@ impl ExactPartition<'_> {
         })
     }
 
+    fn cross_face_winding<T>(
+        &self,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        source_rings: &[Option<u32>],
+        winding: &mut [i64],
+        slot: u32,
+        direction: i64,
+        state: &mut T,
+        cross_ring: &mut impl FnMut(&mut [i64], u32, i64, &mut T) -> Result<()>,
+    ) -> Result<()> {
+        let slot = slot as usize;
+        let edge = edges[slot] as usize;
+        let backward = topology.owners[slot] != self.spans[edge].start.0;
+        for &(source, reversed) in self.owners(edge) {
+            if let Some(ring) = source_rings[source as usize] {
+                let direction = if reversed ^ backward {
+                    direction
+                } else {
+                    -direction
+                };
+                cross_ring(winding, ring, direction, state)?;
+            }
+        }
+        Ok(())
+    }
+
     fn visit_face_windings(
         &self,
         topology: &IndexedTopology,
@@ -4877,6 +5443,33 @@ impl ExactPartition<'_> {
         source_rings: &[Option<u32>],
         ring_count: usize,
         mut visit: impl FnMut(u32, &[i64]) -> Result<()>,
+    ) -> Result<()> {
+        let mut state = ();
+        self.visit_face_windings_with_hook(
+            topology,
+            edges,
+            faces,
+            source_rings,
+            ring_count,
+            &mut state,
+            |winding, ring, direction, ()| {
+                winding[ring as usize] += direction;
+                Ok(())
+            },
+            |face, winding, ()| visit(face, winding),
+        )
+    }
+
+    fn visit_face_windings_with_hook<T>(
+        &self,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        faces: &GlobalFaces,
+        source_rings: &[Option<u32>],
+        ring_count: usize,
+        state: &mut T,
+        mut cross_ring: impl FnMut(&mut [i64], u32, i64, &mut T) -> Result<()>,
+        mut visit: impl FnMut(u32, &[i64], &T) -> Result<()>,
     ) -> Result<()> {
         let count = faces.count as usize;
         let mut starts = Vec::new();
@@ -4903,32 +5496,27 @@ impl ExactPartition<'_> {
         let mut winding = Vec::new();
         try_reserve_vec(&mut winding, ring_count)?;
         winding.resize(ring_count, 0_i64);
-        let cross = |winding: &mut [i64], slot: u32, direction: i64| {
-            let slot = slot as usize;
-            let edge = edges[slot] as usize;
-            let backward = topology.owners[slot] != self.spans[edge].start.0;
-            for &(source, reversed) in self.owners(edge) {
-                if let Some(ring) = source_rings[source as usize] {
-                    winding[ring as usize] += if reversed ^ backward {
-                        direction
-                    } else {
-                        -direction
-                    };
-                }
-            }
-        };
         let mut visited = Vec::new();
         try_reserve_vec(&mut visited, count)?;
         visited.resize(count, false);
         let mut stack = Vec::new();
         try_reserve_vec(&mut stack, count)?;
         visited[0] = true;
-        visit(0, &winding)?;
+        visit(0, &winding, state)?;
         try_push_vec(&mut stack, (0_u32, starts[0], None))?;
         while let Some((face, next, incoming)) = stack.last_mut() {
             if *next == starts[*face as usize + 1] {
                 if let Some(slot) = *incoming {
-                    cross(&mut winding, slot, -1);
+                    self.cross_face_winding(
+                        topology,
+                        edges,
+                        source_rings,
+                        &mut winding,
+                        slot,
+                        -1,
+                        state,
+                        &mut cross_ring,
+                    )?;
                 }
                 stack.pop();
                 continue;
@@ -4940,9 +5528,18 @@ impl ExactPartition<'_> {
             if visited[neighbor as usize] {
                 continue;
             }
-            cross(&mut winding, slot, 1);
+            self.cross_face_winding(
+                topology,
+                edges,
+                source_rings,
+                &mut winding,
+                slot,
+                1,
+                state,
+                &mut cross_ring,
+            )?;
             visited[neighbor as usize] = true;
-            visit(neighbor, &winding)?;
+            visit(neighbor, &winding, state)?;
             try_push_vec(
                 &mut stack,
                 (neighbor, starts[neighbor as usize], Some(slot)),

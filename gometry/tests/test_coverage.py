@@ -444,9 +444,7 @@ def test_coverage_simplify_remains_valid_across_aggressive_tolerances() -> None:
 
 def test_coverage_dp_keeps_vertex_when_shortcut_projection_clamps() -> None:
     """DP measures a removable vertex to the finite shortcut segment."""
-    polygon = gm.from_wkt(
-        'POLYGON ((0 0, 6 3, 5 0, 25 -5, 0 -5, 0 0))'
-    )
+    polygon = gm.from_wkt('POLYGON ((0 0, 6 3, 5 0, 25 -5, 0 -5, 0 0))')
     vertex = gm.Point(6, 3)
     tolerance = 3.1
 
@@ -492,6 +490,12 @@ def test_coverage_clean_overlap_rules_and_gaps() -> None:
         out = overlap.coverage_clean(grid_size=0, overlap_rule=rule)
         assert [g.area for g in out] == pytest.approx(areas)
         assert out.coverage_is_valid()
+    reversed_overlap = gm.GeometryArray(list(reversed(overlap)))
+    reversed_cleaned = reversed_overlap.coverage_clean(
+        grid_size=0,
+        overlap_rule='longest_border',
+    )
+    assert [g.area for g in reversed_cleaned] == pytest.approx([1.0, 1.0])
     outer = gm.from_wkt(
         'POLYGON ((0 0, 3 0, 3 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1))'
     )
@@ -522,6 +526,37 @@ def test_coverage_clean_overlap_rules_and_gaps() -> None:
     assert identity.to_wkb() == grid.to_wkb()
     twice = identity.coverage_clean()
     assert twice.to_wkb() == identity.to_wkb()
+
+
+def test_coverage_clean_publishes_shared_bits_and_source_ordinates() -> None:
+    import numpy as np
+
+    rows = gm.GeometryArray([
+        gm.box(0, 0, 1.2, 1).set_z(7.0).set_m(11.0),
+        gm.box(1, 0, 2, 1).set_z(7.0).set_m(11.0),
+    ])
+    out = rows.coverage_clean()
+    assert all(geometry.coordinate_axes == 'XYZM' for geometry in out)
+    assert all(z == 7.0 for geometry in out for z in geometry.coords.z)
+    assert all(m == 11.0 for geometry in out for m in geometry.coords.m)
+
+    expected = np.asarray([[1.2, 0.0], [1.2, 1.0]], dtype=np.float64)
+    expected_bits = {tuple(row) for row in expected.view(np.uint64)}
+    shared_bits = []
+    for geometry in out:
+        coordinates = gm.get_coordinates(geometry, axes='XY')
+        selected = coordinates[
+            (coordinates[:, 0] == 1.2)
+            & ((coordinates[:, 1] == 0.0) | (coordinates[:, 1] == 1.0))
+        ]
+        shared_bits.append({tuple(row) for row in selected.view(np.uint64)})
+    assert shared_bits == [expected_bits, expected_bits]
+
+    mixed = gm.GeometryArray([
+        gm.box(0, 0, 1.2, 1).set_z(5.0),
+        gm.box(1, 0, 2, 1),
+    ]).coverage_clean()
+    assert [geometry.coordinate_axes for geometry in mixed] == ['XYZ', 'XY']
 
 
 def test_coverage_clean_deterministic_jitter_corpus() -> None:
