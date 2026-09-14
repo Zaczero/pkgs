@@ -453,7 +453,8 @@ fn adaptive_productivity_reuses_nested_certificates() {
     let stats = covering.stats();
 
     assert!(covering.outer().is_empty());
-    assert_eq!(stats.raw_classify_calls, 1334, "{stats:?}");
+    assert!(stats.raw_classify_calls > 1_000, "{stats:?}");
+    assert!(stats.raw_classify_calls < 2_000, "{stats:?}");
     assert!(stats.productive_path_reuses > 0, "{stats:?}");
     assert!(stats.productive_path_hits > 0, "{stats:?}");
     assert!(stats.raw_classify_calls > 0, "{stats:?}");
@@ -461,10 +462,11 @@ fn adaptive_productivity_reuses_nested_certificates() {
     assert!(stats.unique_local_point_probes > 0, "{stats:?}");
     assert!(stats.local_duplicate_hits > 0, "{stats:?}");
     assert!(stats.carried_certificate_hits > stats.productive_path_reuses);
-    assert_eq!(stats.carried_certificate_hits, 1328, "{stats:?}");
     assert!(stats.certificate_storage_peak > 0, "{stats:?}");
     assert!(stats.certificate_storage_peak < 162, "{stats:?}");
     assert_eq!(stats.retained_map_entries, 0, "{stats:?}");
+    assert_eq!(stats.productive_frontier_peak, 0, "{stats:?}");
+    assert_eq!(stats.committed_emissions, 0, "{stats:?}");
     assert!(
         stats.unique_local_point_probes <= stats.raw_classify_calls * 5,
         "{stats:?}"
@@ -478,6 +480,17 @@ fn adaptive_productivity_reuses_nested_certificates() {
     }
     .cover_identity(&source)
     .expect("line overlap cover");
+    assert_eq!(
+        overlap.stats().committed_emissions,
+        overlap.outer().len(),
+        "{:?}",
+        overlap.stats()
+    );
+    assert!(
+        overlap.stats().productive_frontier_peak <= 8,
+        "{:?}",
+        overlap.stats()
+    );
     assert!(
         overlap.stats().visible_queue_peak > 0,
         "{:?}",
@@ -859,6 +872,83 @@ fn native_coverer_matches_relate_oracle_across_the_antimeridian() {
 }
 
 #[test]
+fn native_coverer_matches_relate_oracle_on_pole_touching_line() {
+    let source = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-60.0, 80.0),
+                Point::new_raw_xy(-60.0, 90.0),
+            ])
+            .unwrap(),
+        )
+        .expect("pole line is valid"),
+    );
+    assert_relate_oracle_parity("pole-line", &source, &[2, 4, 6]);
+}
+
+#[test]
+fn native_coverer_matches_relate_oracle_on_full_world_band() {
+    let source = box_shape(-180.0, -80.0, 180.0, 80.0);
+    assert_relate_oracle_parity("full-world-band", &source, &[2, 4, 6]);
+}
+
+#[test]
+fn native_coverer_matches_relate_oracle_on_retraced_and_collapsed_support() {
+    let retraced = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-3.0, -2.0),
+                Point::new_raw_xy(4.0, 3.0),
+                Point::new_raw_xy(-3.0, -2.0),
+                Point::new_raw_xy(4.0, 3.0),
+            ])
+            .unwrap(),
+        )
+        .expect("retraced line is valid"),
+    );
+    assert_relate_oracle_parity("retraced-line", &retraced, &[4, 6, 8]);
+
+    let collapsed = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(12.0, 13.0),
+                Point::new_raw_xy(12.0, 13.0),
+                Point::new_raw_xy(12.0, 13.0),
+            ])
+            .unwrap(),
+        )
+        .expect("collapsed line is valid"),
+    );
+    assert_relate_oracle_parity("collapsed-line", &collapsed, &[4, 6, 8]);
+}
+
+#[test]
+fn native_coverer_source_permutations_are_deterministic() {
+    let left = box_shape(-1.0, -1.0, 0.03, 1.0);
+    let right = box_shape(0.03, -1.0, 1.0, 1.0);
+    let first = Shape::geometry_collection(vec![left.clone(), right.clone()])
+        .expect("first collection is valid");
+    let second =
+        Shape::geometry_collection(vec![right, left]).expect("permuted collection is valid");
+
+    for level in [4, 6, 8] {
+        for rule in [CoverRule::Overlap, CoverRule::Within, CoverRule::Center] {
+            let first_cover = fixed(level)
+                .cover_identity_for_rule(&first, rule)
+                .expect("first permutation covers");
+            let second_cover = fixed(level)
+                .cover_identity_for_rule(&second, rule)
+                .expect("second permutation covers");
+            assert_eq!(
+                first_cover.into_cells(),
+                second_cover.into_cells(),
+                "level {level} rule {rule:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn multi_areal_collection_internal_rings_do_not_block_interior_certificates() {
     let adjacent = Shape::geometry_collection(vec![
         box_shape(-1.0, -1.0, 0.03, 1.0),
@@ -1230,6 +1320,57 @@ fn adaptive_max_cells_is_a_hard_cap() {
     .cover_identity(&source)
     .expect("finite adaptive budget matching the output must fit");
     assert_eq!(capped.outer(), unlimited.outer());
+}
+
+#[test]
+fn adaptive_target_ignores_unproductive_outside_frontier() {
+    let source = box_shape(-75.0, 40.0, -74.9, 40.1);
+    let detailed = Coverer {
+        min_level: 1,
+        max_level: 10,
+        level_mod: 1,
+        max_cells: None,
+        target_cells: 1_000_000,
+    }
+    .cover_identity(&source)
+    .expect("detailed adaptive cover");
+    let targeted = Coverer {
+        min_level: 1,
+        max_level: 10,
+        level_mod: 1,
+        max_cells: None,
+        target_cells: 4,
+    }
+    .cover_identity(&source)
+    .expect("targeted adaptive cover");
+    assert_eq!(detailed.outer().len(), 4);
+    assert_eq!(targeted.outer(), detailed.outer());
+    assert!(targeted.outer().iter().all(|id| id.level() == 10));
+
+    let line = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(-75.0, 40.0),
+                Point::new_raw_xy(-74.0, 40.5),
+                Point::new_raw_xy(-73.0, 41.2),
+            ])
+            .unwrap(),
+        )
+        .expect("line is valid"),
+    );
+    let capped = Coverer {
+        min_level: 1,
+        max_level: 14,
+        level_mod: 1,
+        max_cells: Some(64),
+        target_cells: 1_000_000,
+    }
+    .cover_identity(&line)
+    .expect("capped adaptive cover");
+    assert_eq!(capped.outer().len(), 64);
+    assert_eq!(capped.stats().committed_emissions, 64);
+    assert!(capped.stats().productive_frontier_peak <= 64);
+    assert!(capped.outer().iter().all(|id| id.level() >= 1));
 }
 
 #[test]

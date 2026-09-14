@@ -145,6 +145,10 @@ pub(crate) struct CoverStats {
     #[cfg(test)]
     visible_queue_peak: usize,
     #[cfg(test)]
+    productive_frontier_peak: usize,
+    #[cfg(test)]
+    committed_emissions: usize,
+    #[cfg(test)]
     invisible_stack_peak: usize,
     #[cfg(test)]
     certificate_storage_peak: usize,
@@ -227,6 +231,27 @@ impl CoverStats {
             if len > self.visible_queue_peak {
                 self.visible_queue_peak = len;
             }
+        }
+    }
+
+    #[inline]
+    const fn productive_frontier(&mut self, emitted: usize, queued: usize) {
+        #[cfg(not(test))]
+        let _ = (emitted, queued);
+        #[cfg(test)]
+        {
+            let len = emitted.saturating_add(queued);
+            if len > self.productive_frontier_peak {
+                self.productive_frontier_peak = len;
+            }
+        }
+    }
+
+    #[inline]
+    const fn committed_emission(&mut self) {
+        #[cfg(test)]
+        {
+            self.committed_emissions += 1;
         }
     }
 
@@ -612,6 +637,7 @@ impl Coverer {
                                 ),
                             )?;
                             stats.visible_queue_peak(queue.len());
+                            stats.productive_frontier(cells.len(), queue.len());
                             stats.observe_frontier(dfs, queue, invisible, &[]);
                         } else {
                             crate::try_push_vec(invisible, candidate)?;
@@ -660,7 +686,9 @@ impl Coverer {
                         certificate.id.level(),
                         proven,
                         cells,
+                        stats,
                     )?;
+                    stats.productive_frontier(cells.len(), queue.len());
                     debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
                 },
                 CellClass::Boundary => {
@@ -696,6 +724,7 @@ impl Coverer {
                                     ),
                                 )?;
                                 stats.visible_queue_peak(queue.len());
+                                stats.productive_frontier(cells.len(), queue.len());
                                 stats.observe_frontier(dfs, queue, invisible, &[]);
                             } else {
                                 crate::try_push_vec(invisible, child)?;
@@ -826,6 +855,7 @@ impl Coverer {
                             ),
                         )?;
                         stats.visible_queue_peak(queue.len());
+                        stats.productive_frontier(cells.len(), queue.len());
                         stats.observe_frontier(&[], queue, invisible, &[]);
                     } else {
                         crate::try_push_vec(invisible, child)?;
@@ -847,6 +877,8 @@ impl Coverer {
                 cells,
                 (certificate.id, certificate.class == CellClass::Interior),
             )?;
+            stats.committed_emission();
+            stats.productive_frontier(cells.len(), queue.len());
         }
         Ok(())
     }
@@ -913,6 +945,9 @@ fn productive_state(
             stage_children_at(ctx, root.id, target, None, &mut children, stats)?;
             for index in 0..children.len() {
                 let child_certificate = children[index].certificate;
+                if child_certificate.class == CellClass::Outside {
+                    continue;
+                }
                 if child_certificate.class == CellClass::Interior
                     || !coverer.can_refine(child_certificate.id.level(), child_certificate.class)
                 {
@@ -1030,6 +1065,7 @@ fn emit_interior_descendants(
     level: u8,
     base: usize,
     cells: &mut Vec<(CellId, bool)>,
+    stats: &mut CoverStats,
 ) -> Result<(), CoverError> {
     // Required terminals: exactly 4^(min_level - level). Preflight the
     // projected count before enumerating so a tiny budget never walks a
@@ -1045,6 +1081,7 @@ fn emit_interior_descendants(
     let mut cursor = id.child_begin_at(coverer.min_level);
     while cursor != end {
         crate::try_push_vec(cells, (cursor, true))?;
+        stats.committed_emission();
         cursor = cursor.next();
     }
     // Unlimited path: still honor a finite budget if set mid-enumeration
