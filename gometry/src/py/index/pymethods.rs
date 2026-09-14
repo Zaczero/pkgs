@@ -214,7 +214,7 @@ impl PySpatialIndex {
     }
 
     pub(crate) fn __copy__(&self, py: Python<'_>) -> PyResult<Py<Self>> {
-        Py::new(py, self.clone())
+        Py::new(py, self.try_clone().map_err(PyErr::from)?)
     }
 
     #[pyo3(signature = (memo))]
@@ -224,7 +224,7 @@ impl PySpatialIndex {
         memo: &Bound<'_, PyAny>,
     ) -> PyResult<Py<Self>> {
         let _ = memo;
-        Py::new(py, self.clone())
+        Py::new(py, self.try_clone().map_err(PyErr::from)?)
     }
 
     /// Return the geometry at a live handle.

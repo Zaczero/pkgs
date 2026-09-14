@@ -31,7 +31,7 @@ pub(super) struct StrNode {
 /// The immutable bulk tree. Each `entries[*].idx` is a stable build handle in
 /// `0..initial_len()`; rows with no entry (skipped empties) still occupy a
 /// handle in the row liveness table, so `remove` never searches the tree.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(super) struct StaticStrTree {
     /// STR-ordered entries (leaf children).
     entries: Vec<IndexEntry>,
@@ -58,6 +58,34 @@ impl StaticStrTree {
     )]
     pub(super) fn heap_bytes(&self) -> usize {
         HeapSize::heap_bytes(self)
+    }
+
+    /// Clone the immutable tree through the crate's fallible allocation
+    /// boundary. The clone keeps the logical entries and levels but reserves
+    /// only their initialized lengths, not incidental source spare capacity.
+    pub(super) fn try_clone(&self) -> crate::error::Result<Self> {
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(self.entries.len())?;
+        for &entry in &self.entries {
+            crate::try_push_vec(&mut entries, entry)?;
+        }
+
+        let mut levels = Vec::new();
+        levels.try_reserve_exact(self.levels.len())?;
+        for level in &self.levels {
+            let mut copied = Vec::new();
+            copied.try_reserve_exact(level.len())?;
+            for node in level {
+                crate::try_push_vec(&mut copied, node.clone())?;
+            }
+            crate::try_push_vec(&mut levels, copied)?;
+        }
+
+        Ok(Self {
+            entries,
+            levels,
+            initial_len: self.initial_len,
+        })
     }
 
     /// Bulk-load with the STR layout. `total_rows` is the input row count —
@@ -321,7 +349,7 @@ impl HeapSize for StaticStrTree {
 /// `live_entries` and `dead_entries` count physical entries, while
 /// `entry_counts` records how many envelopes each never-reused overflow handle
 /// contributed.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct StaticStrForest {
     runs: Vec<Option<StaticStrTree>>,
     handle_start: usize,
@@ -349,6 +377,33 @@ impl StaticStrForest {
     )]
     pub(super) fn heap_bytes(&self) -> usize {
         HeapSize::heap_bytes(self)
+    }
+
+    /// Fallible deep clone of the immutable runs and their physical-entry
+    /// accounting. No geodesic cache belongs here; it remains an index-level
+    /// cache and is intentionally rebuilt empty by [`PySpatialIndex`].
+    pub(super) fn try_clone(&self) -> crate::error::Result<Self> {
+        let mut runs = Vec::new();
+        runs.try_reserve_exact(self.runs.len())?;
+        for run in &self.runs {
+            let copied = run.as_ref().map(StaticStrTree::try_clone).transpose()?;
+            crate::try_push_vec(&mut runs, copied)?;
+        }
+
+        let mut entry_counts = Vec::new();
+        entry_counts.try_reserve_exact(self.entry_counts.len())?;
+        for &count in &self.entry_counts {
+            crate::try_push_vec(&mut entry_counts, count)?;
+        }
+
+        Ok(Self {
+            runs,
+            handle_start: self.handle_start,
+            entry_counts,
+            total_entries: self.total_entries,
+            live_entries: self.live_entries,
+            dead_entries: self.dead_entries,
+        })
     }
 
     #[cfg(test)]

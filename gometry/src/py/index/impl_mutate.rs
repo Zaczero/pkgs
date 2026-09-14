@@ -365,11 +365,13 @@ impl PySpatialIndex {
 mod tests {
     use pyo3::Python;
     use pyo3::exceptions::PyMemoryError;
+    use rstar::AABB;
 
     use super::*;
     use crate::boundary::Frame;
+    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, LineSeq, Point, Shape, ShapeData};
-    use crate::py::index::spatial_index;
+    use crate::py::index::{DistanceUnit, NearestOptions, spatial_index};
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn point(x: f64, y: f64) -> PyGeometry {
@@ -399,13 +401,94 @@ mod tests {
         PyGeometry::with_frame(ShapeData::new(shape), frame).expect("geographic line")
     }
 
+    fn framed_point(x: f64, y: f64, frame: &Frame) -> PyGeometry {
+        PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(x, y))),
+            frame.clone(),
+        )
+        .expect("framed point")
+    }
+
+    fn clone_fixture() -> PySpatialIndex {
+        let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)
+            .expect("geographic frame");
+        let bulk = (0..4)
+            .map(|handle| framed_point(f64::from(handle), 0.0, &frame))
+            .collect();
+        let mut index = spatial_index(bulk).expect("bulk index");
+        let overflow = (4..17)
+            .map(|handle| framed_point(f64::from(handle), 0.0, &frame))
+            .collect();
+        assert_eq!(
+            index.insert_items(overflow).expect("overflow batch"),
+            (4..17).collect::<Vec<_>>()
+        );
+        for handle in 4..10 {
+            assert!(index.remove_handle(handle).expect("tombstone"));
+        }
+        assert!(index.remove_handle(10).expect("compacting tombstone"));
+        assert_eq!(index.overflow.dead_entry_count(), 0);
+        assert!(index.remove_handle(11).expect("retained tombstone"));
+        assert_eq!(index.overflow.dead_entry_count(), 1);
+        assert_eq!(
+            index.insert_one(&crossing_line()).expect("crossing insert"),
+            17
+        );
+        let additions = (18..21)
+            .map(|handle| framed_point(f64::from(handle), 0.0, &frame))
+            .collect();
+        assert_eq!(
+            index
+                .insert_items(additions)
+                .expect("post-compaction batch"),
+            (18..21).collect::<Vec<_>>()
+        );
+        assert_eq!(index.overflow.total_entries(), 11);
+        assert_eq!(index.overflow.live_entry_count(), 10);
+        assert_eq!(index.overflow.dead_entry_count(), 1);
+        index
+    }
+
+    fn run_weights(index: &PySpatialIndex) -> Vec<(usize, usize)> {
+        index
+            .overflow
+            .occupied_runs()
+            .map(|(rank, tree)| (rank, tree.entry_count()))
+            .collect()
+    }
+
+    fn assert_allocation_error(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+    }
+
+    fn assert_copy_state(index: &PySpatialIndex, handles: &[usize], weights: &[(usize, usize)]) {
+        assert_eq!(index.live_handles_sorted().expect("live handles"), handles);
+        assert_eq!(run_weights(index), weights);
+        assert_eq!(index.overflow.total_entries(), 11);
+        assert_eq!(index.overflow.live_entry_count(), 10);
+        assert_eq!(index.overflow.dead_entry_count(), 1);
+        assert_eq!(index.rows.live_count(), 13);
+        assert_eq!(index.mutation_gen, 11);
+        assert!(
+            index
+                .geodesic_caps
+                .lock()
+                .expect("caps lock")
+                .caps
+                .is_none()
+        );
+    }
+
     #[test]
     fn scalar_insert_allocation_prefixes_leave_state_retryable() {
         Python::initialize();
         Python::attach(|py| {
             let base = empty_index();
             let counting_geometry = point(1.0, 2.0);
-            let mut counted = base.clone();
+            let mut counted = base.try_clone().expect("clone");
             let (result, allocations) =
                 allocation_count(|| counted.insert_one(&counting_geometry).expect("insert"));
             assert_eq!(result, 0);
@@ -413,7 +496,7 @@ mod tests {
 
             let mut prefix = 0;
             loop {
-                let mut candidate = base.clone();
+                let mut candidate = base.try_clone().expect("clone");
                 let geometry = point(1.0, 2.0);
                 let result = fail_allocations_after(prefix, || candidate.insert_one(&geometry));
                 let Ok(handle) = result else {
@@ -451,7 +534,7 @@ mod tests {
                 );
             }
             let counting_items = points(7, 16);
-            let mut counted = base.clone();
+            let mut counted = base.try_clone().expect("clone");
             let (result, allocations) =
                 allocation_count(|| counted.insert_items(counting_items).expect("batch insert"));
             assert_eq!(result, (7..16).collect::<Vec<_>>());
@@ -459,7 +542,7 @@ mod tests {
 
             let mut prefix = 0;
             loop {
-                let mut candidate = base.clone();
+                let mut candidate = base.try_clone().expect("clone");
                 let batch = points(7, 16);
                 let result = fail_allocations_after(prefix, || candidate.insert_items(batch));
                 let Err(error) = result else {
@@ -490,7 +573,7 @@ mod tests {
         Python::attach(|py| {
             let base = empty_index();
             let counting_geometry = crossing_line();
-            let mut counted = base.clone();
+            let mut counted = base.try_clone().expect("clone");
             let (handle, allocations) =
                 allocation_count(|| counted.insert_one(&counting_geometry).expect("insert"));
             assert_eq!(handle, 0);
@@ -500,7 +583,7 @@ mod tests {
 
             let mut prefix = 0;
             loop {
-                let mut candidate = base.clone();
+                let mut candidate = base.try_clone().expect("clone");
                 let geometry = crossing_line();
                 let result = fail_allocations_after(prefix, || candidate.insert_one(&geometry));
                 let Ok(handle) = result else {
@@ -558,7 +641,7 @@ mod tests {
             }
             assert!(base.remove_handle(0).expect("first removal"));
             assert!(base.remove_handle(1).expect("second removal"));
-            let mut counted = base.clone();
+            let mut counted = base.try_clone().expect("clone");
             let (removed, allocations) =
                 allocation_count(|| counted.remove_handle(2).expect("compact removal"));
             assert!(removed);
@@ -569,7 +652,7 @@ mod tests {
 
             let mut prefix = 0;
             loop {
-                let mut candidate = base.clone();
+                let mut candidate = base.try_clone().expect("clone");
                 let result = fail_allocations_after(prefix, || candidate.remove_handle(2));
                 let Err(error) = result else {
                     assert!(result.expect("successful compaction removal"));
@@ -600,12 +683,120 @@ mod tests {
     fn cloned_forests_mutate_independently() {
         let mut left = empty_index();
         assert_eq!(left.insert_one(&point(0.0, 0.0)).unwrap(), 0);
-        let mut right = left.clone();
+        let mut right = left.try_clone().expect("clone");
         assert_eq!(left.insert_one(&point(10.0, 0.0)).unwrap(), 1);
         assert_eq!(right.overflow.total_entries(), 1);
         assert_eq!(right.rows.live_count(), 1);
         assert_eq!(right.insert_one(&point(20.0, 0.0)).unwrap(), 1);
         assert_eq!(left.overflow.total_entries(), 2);
         assert_eq!(right.overflow.total_entries(), 2);
+    }
+
+    #[test]
+    fn populated_index_try_clone_is_fallible_and_preserves_all_state() {
+        let source = clone_fixture();
+        let handles = source.live_handles_sorted().expect("source handles");
+        let weights = run_weights(&source);
+        assert_eq!(weights, [(0, 1), (1, 2), (3, 8)]);
+        let counted = source.try_clone().expect("unrestricted clone");
+        assert_copy_state(&counted, &handles, &weights);
+        let spatial_query = AABB::from_corners([11.5, -1.0], [19.5, 1.0]);
+        let mut source_hits = Vec::new();
+        source
+            .collect_intersecting(&spatial_query, &mut source_hits)
+            .expect("source query");
+        let mut clone_hits = Vec::new();
+        counted
+            .collect_intersecting(&spatial_query, &mut clone_hits)
+            .expect("clone query");
+        assert_eq!(source_hits, clone_hits);
+
+        let query_frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)
+            .expect("query frame");
+        let query = framed_point(14.25, 0.0, &query_frame);
+        let source_nearest = source
+            .nearest_one(
+                &query,
+                4,
+                Some(DistanceUnit::Planar),
+                None,
+                NearestOptions {
+                    exclude_equal: false,
+                    include_ties: false,
+                },
+            )
+            .expect("source nearest");
+        let clone_nearest = counted
+            .nearest_one(
+                &query,
+                4,
+                Some(DistanceUnit::Planar),
+                None,
+                NearestOptions {
+                    exclude_equal: false,
+                    include_ties: false,
+                },
+            )
+            .expect("clone nearest");
+        assert_eq!(source_nearest, clone_nearest);
+
+        let allocations = crate::test_support::allocation_count(|| {
+            source.try_clone().expect("counted clone");
+        })
+        .1;
+        assert!(allocations > 0);
+        let mut prefix = 0;
+        let mut cloned = loop {
+            let result = fail_allocations_after(prefix, || source.try_clone());
+            let Err(error) = result else {
+                break result.expect("successful clone");
+            };
+            assert_allocation_error(&error);
+            assert_copy_state(&source, &handles, &weights);
+            prefix += 1;
+            assert!(prefix <= allocations + 8);
+        };
+        assert_copy_state(&cloned, &handles, &weights);
+        let new_handle = cloned
+            .insert_one(&framed_point(100.0, 0.0, &query_frame))
+            .expect("clone insert");
+        assert_eq!(new_handle, 21);
+        assert!(source.rows.is_live(12));
+        assert!(cloned.remove_handle(12).expect("clone remove"));
+        assert!(source.rows.is_live(12));
+        assert!(!cloned.rows.is_live(12));
+    }
+
+    #[test]
+    fn public_copy_protocols_report_native_memory_failure_before_publication() {
+        Python::initialize();
+        Python::attach(|py| {
+            let source = clone_fixture();
+            let copy = source.__copy__(py).expect("copy");
+            let memo = py.None().bind(py).clone();
+            let deep = source.__deepcopy__(py, &memo).expect("deepcopy");
+            assert_eq!(
+                copy.bind(py)
+                    .borrow()
+                    .live_handles_sorted()
+                    .expect("copy handles"),
+                source.live_handles_sorted().expect("source handles")
+            );
+            assert_eq!(
+                deep.bind(py)
+                    .borrow()
+                    .live_handles_sorted()
+                    .expect("deepcopy handles"),
+                source.live_handles_sorted().expect("source handles")
+            );
+            let copy_error = fail_allocations_after(0, || source.__copy__(py))
+                .expect_err("copy must fail before Python publication");
+            assert!(copy_error.is_instance_of::<PyMemoryError>(py));
+            let deep_error = fail_allocations_after(0, || source.__deepcopy__(py, &memo))
+                .expect_err("deepcopy must fail before Python publication");
+            assert!(deep_error.is_instance_of::<PyMemoryError>(py));
+            assert_eq!(source.overflow.total_entries(), 11);
+            assert_eq!(source.overflow.dead_entry_count(), 1);
+        });
     }
 }

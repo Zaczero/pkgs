@@ -426,19 +426,21 @@ pub(crate) struct PySpatialIndex {
     non_prunable_live: usize,
 }
 
-impl Clone for PySpatialIndex {
-    fn clone(&self) -> Self {
-        Self {
-            rows: self.rows.clone(),
-            bulk: self.bulk.clone(),
-            overflow: self.overflow.clone(),
-            // A clone is independently mutable. Rebuilding this lazy cache is
-            // cheap relative to risking caps derived from a divergent clone.
+impl PySpatialIndex {
+    /// Fallible deep clone for Python copy protocols. Mutable forest runs and
+    /// row/liveness buffers get independent owners; immutable geometry payloads
+    /// retain their Arc-backed sharing. The lazy cap cache is intentionally
+    /// empty because a clone may diverge on its next mutation.
+    pub(crate) fn try_clone(&self) -> crate::error::Result<Self> {
+        Ok(Self {
+            rows: self.rows.try_clone()?,
+            bulk: self.bulk.try_clone()?,
+            overflow: self.overflow.try_clone()?,
             geodesic_caps: std::sync::Mutex::default(),
             mutation_gen: self.mutation_gen,
             metadata: self.metadata.clone(),
             non_prunable_live: self.non_prunable_live,
-        }
+        })
     }
 }
 
@@ -452,7 +454,7 @@ pub(crate) struct IndexEntry {
 /// The array remains the sole owner of packed row interpretation; the index
 /// resolves rows through its owner-bound operation instead of cloning every
 /// component and duplicating CSR/selection logic.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct PackedStore {
     pub(crate) source: PyGeometryArray,
 }
@@ -461,7 +463,7 @@ pub(crate) struct PackedStore {
 /// coordinate columns zero-copy (no per-row boxing); Mixed-array rows,
 /// iterable rows, and every later `insert` are boxed handles. A handle is
 /// its build/insert position: packed rows first, then boxed rows.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct IndexRows {
     pub(crate) packed: Option<PackedStore>,
     boxed: Vec<PyGeometry>,
@@ -547,6 +549,38 @@ impl<'a> IndexRowOperation<'a> {
 }
 
 impl IndexRows {
+    /// Fallible copy of index-owned row storage. Geometry and packed-array
+    /// payloads are immutable Arc-backed owners, while the boxed handle and
+    /// liveness vectors are copied into exact-sized independent buffers.
+    pub(crate) fn try_clone(&self) -> crate::error::Result<Self> {
+        let packed = self.packed.as_ref().map(|packed| PackedStore {
+            // PyGeometryArray is immutable; its storage, validity, bounds,
+            // and row-product owners all clone by Arc handle.
+            source: packed.source.clone(),
+        });
+
+        let mut boxed = Vec::new();
+        boxed.try_reserve_exact(self.boxed.len())?;
+        for geometry in &self.boxed {
+            // PyGeometry's shape, row products, and CRS frame are immutable
+            // Arc/SmolStr handles; cloning them does not allocate.
+            crate::try_push_vec(&mut boxed, geometry.clone())?;
+        }
+
+        let mut live = Vec::new();
+        live.try_reserve_exact(self.live.len())?;
+        for &value in &self.live {
+            crate::try_push_vec(&mut live, value)?;
+        }
+
+        Ok(Self {
+            packed,
+            boxed,
+            live,
+            live_count: self.live_count,
+        })
+    }
+
     pub(crate) fn operation(&self) -> IndexRowOperation<'_> {
         IndexRowOperation::new(self)
     }
