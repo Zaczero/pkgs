@@ -422,6 +422,7 @@ pub(crate) fn split(
             crate::try_push_vec(&mut staged, item.shape)?;
             continue;
         }
+        #[cfg(test)]
         let mut progressed = false;
         for child in children.into_iter().rev() {
             if child.is_empty() {
@@ -447,7 +448,10 @@ pub(crate) fn split(
                 ) && envelope_progress
                     || source_complexity_progress
             });
-            progressed |= progress;
+            #[cfg(test)]
+            {
+                progressed |= progress;
+            }
             let terminal = child.coord_count() <= max_vertices || !progress;
             crate::try_push_vec(&mut work, WorkItem {
                 shape: child,

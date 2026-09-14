@@ -14,18 +14,10 @@ use crate::broadcast::bool_array_mask_missing;
 use crate::broadcast::metrics::{
     Arc, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Point, Py,
     PyGeometry, PyGeometryArray, PyResult, Python, Shape, SimilarityOp, bool_array, crs,
-    float64_array, geodesic_point_columns_dwithin_shape_values,
+    ensure_geodesic_shape, float64_array, geodesic_point_columns_dwithin_shape_values,
     geodesic_point_columns_to_shape_values, mask_missing, pair_distance_geodesic,
     pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, point_distance,
     resolve_metric, rows_err,
-};
-use crate::broadcast::metrics::{
-    Arc, Bound, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Point, Py,
-    PyGeometry, PyGeometryArray, PyResult, Python, Shape, SimilarityOp, binary_frame_crs,
-    bool_array, broadcast2_geometry, classify_required, crs, ensure_geodesic_shape, float64_array,
-    geodesic_point_columns_dwithin_shape_values, geodesic_point_columns_to_shape_values,
-    mask_missing, pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic,
-    pair_dwithin_planar, paired_arrays, point_distance, resolve_metric, rows_err,
 };
 use crate::dispatch::MetricOp;
 use crate::geometry::packed_line_metrics::scale_metric_values;
@@ -860,9 +852,9 @@ pub(crate) fn array_crs_dwithin_per_element(
     bool_array(py, values)
 }
 
- fn array_crs_dwithin_per_element_values(
+fn array_crs_dwithin_per_element_values(
     array: &PyGeometryArray,
-    other: &Bound<'_, PyAny>,
+    other: GeometryInput<'_>,
     distance: &F64Param,
     operation: MetricOp,
     unit: Option<DistanceUnit>,
@@ -1275,6 +1267,9 @@ mod allocation_tests {
                 PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(180.0, 0.0)))?,
             )?;
             let right = right.bind(py).as_any();
+            let right = GeometryInput::One(
+                crate::exact_geometry(right).expect("test value is an exact geometry"),
+            );
             let distance = F64Param::PerElement(vec![f64::INFINITY, f64::INFINITY].into());
             let run = || {
                 array_crs_dwithin_per_element_values(

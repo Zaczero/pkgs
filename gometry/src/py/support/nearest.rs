@@ -4,7 +4,6 @@
 )]
 use std::sync::Arc;
 
-use crate::Crs;
 use crate::array::{ArrayRow, ValidityMask};
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
@@ -209,7 +208,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     fixed: &PyGeometry,
     array: &PyGeometryArray,
     fixed_is_left: bool,
-    crs: Crs,
+    crs: Arc<String>,
     frame: GeographicFrame,
     state: Arc<crate::crs::RuntimeState>,
 ) -> PyResult<PyGeometryArray> {

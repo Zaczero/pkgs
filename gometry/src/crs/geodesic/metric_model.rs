@@ -536,6 +536,7 @@ mod tests {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let state = runtime_state_snapshot()?;
         let mut info = (*info_with_state("EPSG:7405", &state)?).clone();
+        info.sub_crs[0].definition = None;
         info.sub_crs[0].crs = "EPSG:0".to_owned();
         let error = metric_axis_factors_at(&info, &state)
             .expect_err("a failed compound child must not become a nonmetric result");
