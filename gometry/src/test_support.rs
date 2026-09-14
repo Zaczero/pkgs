@@ -8,10 +8,38 @@ use pyo3::sync::MutexExt as _;
 
 pub(crate) struct CountingAllocator;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AllocationPhase {
+    Admission,
+    SourceStaging,
+    CandidatePairs,
+    OverlapContacts,
+    TopologyFaces,
+    Publication,
+}
+
+impl AllocationPhase {
+    const COUNT: usize = 6;
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Admission => 0,
+            Self::SourceStaging => 1,
+            Self::CandidatePairs => 2,
+            Self::OverlapContacts => 3,
+            Self::TopologyFaces => 4,
+            Self::Publication => 5,
+        }
+    }
+}
+
 thread_local! {
     static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
     static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+    static ALLOCATION_PHASE: Cell<Option<AllocationPhase>> = const { Cell::new(None) };
+    static PHASE_ALLOCATIONS: Cell<[usize; AllocationPhase::COUNT]> =
+        const { Cell::new([0; AllocationPhase::COUNT]) };
 }
 
 fn reject_allocation() -> bool {
@@ -29,6 +57,15 @@ fn count_allocation() {
     COUNT_ALLOCATIONS.with(|enabled| {
         if enabled.get() {
             ALLOCATIONS.with(|allocations| allocations.set(allocations.get() + 1));
+            ALLOCATION_PHASE.with(|phase| {
+                if let Some(phase) = phase.get() {
+                    PHASE_ALLOCATIONS.with(|allocations| {
+                        let mut current = allocations.get();
+                        current[phase.index()] += 1;
+                        allocations.set(current);
+                    });
+                }
+            });
         }
     });
 }
@@ -98,11 +135,31 @@ impl Drop for AllocationFailureGuard {
 /// Count allocation requests from one test operation on the current thread.
 pub(crate) fn allocation_count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     ALLOCATIONS.with(|allocations| allocations.set(0));
+    PHASE_ALLOCATIONS.with(|allocations| allocations.set([0; AllocationPhase::COUNT]));
+    ALLOCATION_PHASE.with(|phase| phase.set(None));
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
     let guard = AllocationCountGuard;
     let result = operation();
     drop(guard);
     (result, ALLOCATIONS.with(Cell::get))
+}
+
+/// Attribute subsequent counted allocations to one production phase.
+pub(crate) fn allocation_phase(phase: AllocationPhase) -> AllocationPhaseGuard {
+    AllocationPhaseGuard(ALLOCATION_PHASE.with(|current| current.replace(Some(phase))))
+}
+
+pub(crate) struct AllocationPhaseGuard(Option<AllocationPhase>);
+
+impl Drop for AllocationPhaseGuard {
+    fn drop(&mut self) {
+        ALLOCATION_PHASE.with(|phase| phase.set(self.0));
+    }
+}
+
+/// Return allocation requests attributed to the six coverage lifecycle phases.
+pub(crate) fn allocation_phase_counts() -> [usize; AllocationPhase::COUNT] {
+    PHASE_ALLOCATIONS.with(Cell::get)
 }
 
 /// Reject this thread's allocations persistently after the allowed prefix.

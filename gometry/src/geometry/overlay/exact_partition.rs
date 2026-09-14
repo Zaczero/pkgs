@@ -54,17 +54,89 @@ pub(crate) fn partition_calls() -> usize {
 
 #[cfg(test)]
 std::thread_local! {
-    static PARTITION_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PARTITION_METRICS: std::cell::Cell<PartitionMetrics> =
+        const { std::cell::Cell::new(PartitionMetrics::ZERO) };
 }
 
 #[cfg(test)]
 pub(in crate::geometry) fn reset_partition_builds() {
-    PARTITION_BUILDS.with(|builds| builds.set(0));
+    PARTITION_METRICS.with(|metrics| metrics.set(PartitionMetrics::ZERO));
 }
 
 #[cfg(test)]
 pub(in crate::geometry) fn partition_builds() -> usize {
-    PARTITION_BUILDS.with(std::cell::Cell::get)
+    PARTITION_METRICS.with(|metrics| metrics.get().partition_builds)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::geometry) struct PartitionMetrics {
+    pub partition_builds: usize,
+    pub source_segments: usize,
+    pub unique_source_segments: usize,
+    pub candidate_pairs_attempted: usize,
+    pub candidate_pairs_distinct: usize,
+    pub candidate_pool_items: usize,
+    pub overlap_contacts: usize,
+    pub overlap_cuts: usize,
+    pub source_cut_entries: usize,
+    pub canonical_spans: usize,
+    pub canonical_nodes: usize,
+    pub global_faces: usize,
+    pub topology_halfedges: usize,
+    pub publication_nodes: usize,
+    pub published_rows: usize,
+}
+
+#[cfg(test)]
+impl PartitionMetrics {
+    const ZERO: Self = Self {
+        partition_builds: 0,
+        source_segments: 0,
+        unique_source_segments: 0,
+        candidate_pairs_attempted: 0,
+        candidate_pairs_distinct: 0,
+        candidate_pool_items: 0,
+        overlap_contacts: 0,
+        overlap_cuts: 0,
+        source_cut_entries: 0,
+        canonical_spans: 0,
+        canonical_nodes: 0,
+        global_faces: 0,
+        topology_halfedges: 0,
+        publication_nodes: 0,
+        published_rows: 0,
+    };
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn partition_metrics() -> PartitionMetrics {
+    PARTITION_METRICS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn update_partition_metrics(update: impl FnOnce(&mut PartitionMetrics)) {
+    PARTITION_METRICS.with(|metrics| {
+        let mut current = metrics.get();
+        update(&mut current);
+        metrics.set(current);
+    });
+}
+
+#[cfg(test)]
+fn record_candidate_pair() {
+    update_partition_metrics(|metrics| {
+        metrics.candidate_pairs_attempted += 1;
+        metrics.candidate_pairs_distinct += 1;
+    });
+}
+
+#[cfg(test)]
+fn record_overlap(cuts: usize) {
+    update_partition_metrics(|metrics| {
+        metrics.overlap_contacts += 1;
+        metrics.overlap_cuts += cuts;
+    });
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -1787,9 +1859,18 @@ impl ExactSourceInventory {
         #[cfg(test)]
         PARTITION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         #[cfg(test)]
-        PARTITION_BUILDS.with(|builds| builds.set(builds.get() + 1));
+        update_partition_metrics(|metrics| {
+            metrics.partition_builds += 1;
+            metrics.source_segments = self.source_segments.len();
+            metrics.unique_source_segments = self.unique.len();
+        });
         let mut partition =
             partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)?;
+        #[cfg(test)]
+        update_partition_metrics(|metrics| {
+            metrics.canonical_spans = partition.spans.len();
+            metrics.canonical_nodes = partition.recipes.len();
+        });
         partition.protect_stored = self.polygon_rings.iter().all(Vec::is_empty);
         partition.protect_all = partition.protect_stored;
         Ok(partition)
@@ -2902,8 +2983,17 @@ impl ExactSourceInventory {
         partition.protect_stored = true;
         partition.protect_all = true;
 
+        #[cfg(test)]
+        let _topology_faces_phase = crate::test_support::allocation_phase(
+            crate::test_support::AllocationPhase::TopologyFaces,
+        );
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
+        #[cfg(test)]
+        update_partition_metrics(|metrics| {
+            metrics.topology_halfedges = topology.face_of.len();
+            metrics.global_faces = global.count as usize;
+        });
         let (face_starts, face_slots) = self.global_face_slots(&topology, &edges, &global)?;
         let mut face_owners = Vec::new();
         try_reserve_vec(&mut face_owners, global.count as usize)?;
@@ -3010,6 +3100,8 @@ impl ExactSourceInventory {
                 Ok(())
             },
         )?;
+        #[cfg(test)]
+        drop(_topology_faces_phase);
 
         let output_nodes = self.certify_coverage_partition(
             partition,
@@ -3020,6 +3112,14 @@ impl ExactSourceInventory {
             &edges,
             &global,
         )?;
+        #[cfg(test)]
+        let _publication_phase = crate::test_support::allocation_phase(
+            crate::test_support::AllocationPhase::Publication,
+        );
+        #[cfg(test)]
+        update_partition_metrics(|metrics| {
+            metrics.publication_nodes = output_nodes.len();
+        });
         let rounded_coordinates = partition.round_nodes(&output_nodes)?;
         ExactPartition::check_node_injectivity(&output_nodes, &rounded_coordinates)?;
         let mut rounded =
@@ -3057,6 +3157,10 @@ impl ExactSourceInventory {
                 self.coverage_shape_from_node_parts(parts, &by_node, declared_axes)?,
             )?;
         }
+        #[cfg(test)]
+        update_partition_metrics(|metrics| {
+            metrics.published_rows = outputs.len();
+        });
         Ok(outputs)
     }
 
@@ -5938,9 +6042,18 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             end: point,
         })?;
     }
+    #[cfg(test)]
+    update_partition_metrics(|metrics| {
+        metrics.candidate_pool_items = pool.len();
+    });
     let unique_len = unique.len();
     let mut pair_error = None;
+    #[cfg(test)]
+    let _candidate_phase =
+        crate::test_support::allocation_phase(crate::test_support::AllocationPhase::CandidatePairs);
     match for_each_candidate_pair(&pool, single_chain, |left, right| {
+        #[cfg(test)]
+        record_candidate_pair();
         match visit_pool_pair(
             unique,
             unique_len,
@@ -5969,6 +6082,12 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         },
         ControlFlow::Continue(()) => {},
     }
+    #[cfg(test)]
+    drop(_candidate_phase);
+    #[cfg(test)]
+    update_partition_metrics(|metrics| {
+        metrics.source_cut_entries = cuts.iter().map(Vec::len).sum();
+    });
 
     let mut order: Vec<Vec<u32>> = Vec::new();
     try_reserve_vec(&mut order, unique.len())?;
@@ -6299,7 +6418,12 @@ fn classify_pair_into(
     if segment_envelopes_disjoint(a, b) {
         return Ok(());
     }
-    match classify_pair(a, b, zero, one)? {
+    #[cfg(test)]
+    let _contact_phase = crate::test_support::allocation_phase(
+        crate::test_support::AllocationPhase::OverlapContacts,
+    );
+    let contact = classify_pair(a, b, zero, one)?;
+    match contact {
         PairContact::None => Ok(()),
         PairContact::Touch {
             source,
@@ -6313,6 +6437,8 @@ fn classify_pair_into(
             push_contact_cut(&mut cuts[source], param, handle)
         },
         PairContact::Overlap { cuts: overlap } => {
+            #[cfg(test)]
+            record_overlap(overlap.len());
             for cut in overlap {
                 let source = pair_index(cut.source, left, right);
                 let handle_source = pair_index(cut.handle_source, left, right);

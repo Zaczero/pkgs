@@ -40,6 +40,9 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     if !(grid_size.is_finite() && grid_size >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("grid_size", grid_size).into());
     }
+    #[cfg(test)]
+    let _admission_phase =
+        crate::test_support::allocation_phase(crate::test_support::AllocationPhase::Admission);
     let mut snapped = Vec::new();
     crate::try_reserve_vec(&mut snapped, rows.len())?;
     if grid_size > 0.0 {
@@ -69,6 +72,11 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
         return Ok(snapped);
     }
 
+    #[cfg(test)]
+    drop(_admission_phase);
+    #[cfg(test)]
+    let _source_staging_phase =
+        crate::test_support::allocation_phase(crate::test_support::AllocationPhase::SourceStaging);
     let mut shape_refs = Vec::new();
     crate::try_reserve_vec(&mut shape_refs, snapped.len())?;
     for shape in &snapped {
@@ -77,6 +85,8 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
+    #[cfg(test)]
+    drop(_source_staging_phase);
     let mut row_areas = Vec::new();
     crate::try_reserve_vec(&mut row_areas, prepared.len())?;
     for row in &prepared {
@@ -281,6 +291,45 @@ mod tests {
         Shape::Polygon(rectangle_polygon(minx, miny, maxx, maxy))
     }
 
+    fn dense_rectangle_with_subdivisions(
+        minx: f64,
+        miny: f64,
+        maxx: f64,
+        maxy: f64,
+        subdivisions: usize,
+    ) -> Shape {
+        let mut points = Vec::new();
+        points.reserve(subdivisions * 4 + 1);
+        for index in 0..=subdivisions {
+            let fraction = index as f64 / subdivisions as f64;
+            points.push(Point::new_raw_xy(minx + (maxx - minx) * fraction, miny));
+        }
+        for index in 1..=subdivisions {
+            let fraction = index as f64 / subdivisions as f64;
+            points.push(Point::new_raw_xy(maxx, miny + (maxy - miny) * fraction));
+        }
+        for index in 1..=subdivisions {
+            let fraction = index as f64 / subdivisions as f64;
+            points.push(Point::new_raw_xy(maxx - (maxx - minx) * fraction, maxy));
+        }
+        for index in 1..subdivisions {
+            let fraction = index as f64 / subdivisions as f64;
+            points.push(Point::new_raw_xy(minx, maxy - (maxy - miny) * fraction));
+        }
+        points.push(points[0]);
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn dense_rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
+        dense_rectangle_with_subdivisions(minx, miny, maxx, maxy, 256)
+    }
+
     fn assert_allocation_prefixes(rows: &[Shape], grid_size: f64, gap_width: f64) {
         let run = || {
             coverage_clean(
@@ -390,5 +439,83 @@ mod tests {
             rows_with_shared_node.push(found);
         }
         assert_eq!(rows_with_shared_node, [true, true]);
+    }
+
+    #[test]
+    fn coverage_clean_collinear_overlap_work_stays_below_quadratic_materialization() {
+        let rows = [
+            dense_rectangle(0.0, 0.0, 10.2, 10.0),
+            dense_rectangle(10.0, 0.0, 20.0, 10.0),
+        ];
+        crate::geometry::overlay::reset_partition_builds();
+        let (output, allocations) = crate::test_support::allocation_count(|| {
+            coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
+                .expect("dense collinear coverage clean")
+        });
+        let metrics = crate::geometry::overlay::partition_metrics();
+        let phase_allocations = crate::test_support::allocation_phase_counts();
+        assert!(phase_allocations.iter().sum::<usize>() <= allocations);
+        assert_eq!(metrics.partition_builds, 1);
+        assert_eq!(metrics.source_segments, 2048);
+        assert_eq!(metrics.unique_source_segments, 2048);
+        assert_eq!(metrics.candidate_pool_items, 2048);
+        assert_eq!(
+            metrics.candidate_pairs_attempted,
+            metrics.candidate_pairs_distinct
+        );
+        assert!(metrics.candidate_pairs_attempted < 100_000);
+        assert!(metrics.overlap_contacts < 10_000);
+        assert!(metrics.overlap_cuts < 40_000);
+        assert!(metrics.source_cut_entries >= metrics.overlap_cuts);
+        assert!(metrics.canonical_spans > 0);
+        assert!(metrics.canonical_nodes > 0);
+        assert!(metrics.global_faces > 0);
+        assert_eq!(metrics.topology_halfedges, metrics.canonical_spans * 2);
+        assert!(metrics.publication_nodes <= metrics.canonical_nodes);
+        assert_eq!(metrics.published_rows, 2);
+        assert_eq!(output.len(), 2);
+        assert!(output.iter().all(|shape| !shape.is_empty()));
+        assert!(
+            (output.iter().map(Shape::area).sum::<f64>() - 200.0).abs() < 1.0e-9,
+            "dense coverage area changed: {output:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_clean_dense_collinear_allocation_prefixes_are_retryable() {
+        let rows = [
+            dense_rectangle_with_subdivisions(0.0, 0.0, 10.2, 10.0, 8),
+            dense_rectangle_with_subdivisions(10.0, 0.0, 20.0, 10.0, 8),
+        ];
+        assert_allocation_prefixes(&rows, 0.0, 0.0);
+    }
+
+    #[test]
+    fn coverage_clean_preserves_reversed_duplicate_and_cancelled_collinear_support() {
+        let other = rectangle(2.0, 0.0, 6.0, 4.0);
+        for wkt in [
+            "POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))",
+            "POLYGON ((0 0, 2 0, 4 0, 4 4, 0 4, 0 0))",
+            "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0, -2 0, 0 0))",
+        ] {
+            let left = crate::io::parse_wkt(wkt).expect("collinear traversal fixture");
+            let rows = [left, other.clone()];
+            let output = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
+                .expect("coverage clean");
+            assert_eq!(output.len(), 2);
+            assert!(
+                (output.iter().map(Shape::area).sum::<f64>() - 24.0).abs() < 1.0e-9,
+                "collinear traversal changed support: {output:?}"
+            );
+            assert!(crate::geometry::coverage_is_valid(&output, 0.0).unwrap());
+            for shape in &output {
+                shape
+                    .try_for_each_point(|point| {
+                        assert!(point.x >= 0.0);
+                        Ok::<_, crate::error::Error>(())
+                    })
+                    .expect("collinear support output points");
+            }
+        }
     }
 }
