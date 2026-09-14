@@ -899,8 +899,14 @@ impl ExactDyadic {
         if self.is_zero() {
             return Ok(Self::zero());
         }
-        if divisor.limbs.as_slice() == [1] && divisor.exponent == 0 {
-            return self.try_clone();
+        if divisor.limbs.as_slice() == [1] {
+            let mut value = self.try_clone()?;
+            value.negative = self.negative != divisor.negative;
+            value.exponent = self
+                .exponent
+                .checked_sub(divisor.exponent)
+                .ok_or(ResourceError::SizeOverflow)?;
+            return Ok(value);
         }
         let (limbs, remainder) = Self::try_div_rem_unsigned(&self.limbs, &divisor.limbs)?;
         if !remainder.is_empty() {
@@ -1003,13 +1009,16 @@ fn try_difference(left: f64, right: f64) -> Result<ExactDyadic> {
 /// repeated midpoint splits stay linear in their binary parameter depth rather
 /// than multiplying equivalent denominators.
 #[derive(Debug, Eq, PartialEq)]
-pub(super) struct ExactRational {
+pub(in crate::geometry) struct ExactRational {
     numerator: ExactDyadic,
     denominator: ExactDyadic,
 }
 
 impl ExactRational {
-    pub(super) fn new(numerator: ExactDyadic, denominator: ExactDyadic) -> Result<Self> {
+    pub(in crate::geometry) fn new(
+        numerator: ExactDyadic,
+        denominator: ExactDyadic,
+    ) -> Result<Self> {
         if denominator.is_zero() {
             return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
         }
@@ -1031,28 +1040,50 @@ impl ExactRational {
         })
     }
 
-    pub(super) fn zero() -> Self {
+    pub(in crate::geometry) fn zero() -> Self {
         Self {
             numerator: ExactDyadic::zero(),
             denominator: ExactDyadic::one(),
         }
     }
 
-    pub(super) fn one() -> Self {
+    pub(in crate::geometry) fn one() -> Self {
         Self {
             numerator: ExactDyadic::one(),
             denominator: ExactDyadic::one(),
         }
     }
 
-    pub(super) fn try_clone(&self) -> Result<Self> {
+    pub(in crate::geometry) fn from_f64(value: f64) -> Result<Self> {
+        Self::from_dyadic(ExactDyadic::try_from_f64(value)?)
+    }
+
+    pub(in crate::geometry) fn from_dyadic(value: ExactDyadic) -> Result<Self> {
+        if value.is_zero() {
+            return Ok(Self::zero());
+        }
+        Ok(Self {
+            numerator: value,
+            denominator: ExactDyadic::one(),
+        })
+    }
+
+    pub(in crate::geometry) fn is_zero(&self) -> bool {
+        self.numerator.is_zero()
+    }
+
+    pub(in crate::geometry) fn sign(&self) -> ExactSign {
+        self.numerator.sign()
+    }
+
+    pub(in crate::geometry) fn try_clone(&self) -> Result<Self> {
         Ok(Self {
             numerator: self.numerator.try_clone()?,
             denominator: self.denominator.try_clone()?,
         })
     }
 
-    pub(super) fn try_add(&self, other: &Self) -> Result<Self> {
+    pub(in crate::geometry) fn try_add(&self, other: &Self) -> Result<Self> {
         let left = self.numerator.try_product(&other.denominator)?;
         let right = other.numerator.try_product(&self.denominator)?;
         let numerator = left.try_add(right)?;
@@ -1060,7 +1091,33 @@ impl ExactRational {
         Self::new(numerator, denominator)
     }
 
-    pub(super) fn try_midpoint(&self, other: &Self) -> Result<Self> {
+    pub(in crate::geometry) fn try_subtract(&self, other: &Self) -> Result<Self> {
+        let left = self.numerator.try_product(&other.denominator)?;
+        let right = other.numerator.try_product(&self.denominator)?;
+        let numerator = left.try_subtract(right)?;
+        let denominator = self.denominator.try_product(&other.denominator)?;
+        Self::new(numerator, denominator)
+    }
+
+    pub(in crate::geometry) fn try_product(&self, other: &Self) -> Result<Self> {
+        Self::new(
+            self.numerator.try_product(&other.numerator)?,
+            self.denominator.try_product(&other.denominator)?,
+        )
+    }
+
+    pub(in crate::geometry) fn try_square(&self) -> Result<Self> {
+        self.try_product(self)
+    }
+
+    pub(in crate::geometry) fn try_quotient(&self, other: &Self) -> Result<Self> {
+        Self::new(
+            self.numerator.try_product(&other.denominator)?,
+            self.denominator.try_product(&other.numerator)?,
+        )
+    }
+
+    pub(in crate::geometry) fn try_midpoint(&self, other: &Self) -> Result<Self> {
         let numerator = self.try_add(other)?;
         Self::new(
             numerator.numerator.try_clone()?,
@@ -1070,11 +1127,28 @@ impl ExactRational {
         )
     }
 
-    pub(super) fn try_cmp(&self, other: &Self) -> Result<Ordering> {
+    pub(in crate::geometry) fn try_cmp(&self, other: &Self) -> Result<Ordering> {
         Ok(self
             .numerator
             .try_product(&other.denominator)?
             .cmp(&other.numerator.try_product(&self.denominator)?))
+    }
+
+    pub(in crate::geometry) fn round(&self) -> Result<f64> {
+        round_ratio(&self.numerator, &self.denominator)
+    }
+
+    pub(in crate::geometry) fn outward_bounds(&self) -> Result<(f64, f64)> {
+        outward_ratio_bounds(&self.numerator, &self.denominator)
+    }
+
+    pub(in crate::geometry) fn round_sqrt(&self) -> Result<f64> {
+        if self.sign() == ExactSign::Negative {
+            return Err(
+                GeometryErrorKind::Invalid("negative exact squared distance".into()).into(),
+            );
+        }
+        round_sqrt_ratio(&self.numerator, &self.denominator)
     }
 
     /// The exact parameter of `point` on the stored segment `start -> end`.
@@ -4398,6 +4472,109 @@ mod tests {
                 ErrorKind::Resource(ResourceError::Allocation)
             ));
         }
+    }
+
+    #[test]
+    fn exact_rational_arithmetic_reduces_and_rounds() {
+        let third = ExactRational::new(ExactDyadic::one(), ExactDyadic::from_f64(3.0)).unwrap();
+        let sixth = ExactRational::new(ExactDyadic::one(), ExactDyadic::from_f64(6.0)).unwrap();
+        let half = third.try_add(&sixth).unwrap();
+        assert_eq!(half.numerator, ExactDyadic::one());
+        assert_eq!(half.denominator, ExactDyadic::from_f64(2.0));
+        assert_eq!(half.sign(), ExactSign::Positive);
+        assert!(!half.is_zero());
+        assert_eq!(half.round().unwrap().to_bits(), 0.5_f64.to_bits());
+        assert_eq!(
+            half.outward_bounds().unwrap(),
+            (0.5_f64, 0.5_f64),
+            "an exactly representable ratio has a singleton outward interval"
+        );
+        assert_eq!(
+            half.try_square().unwrap().round().unwrap().to_bits(),
+            0.25_f64.to_bits()
+        );
+
+        let zero = half.try_subtract(&half).unwrap();
+        assert!(zero.is_zero());
+        assert_eq!(zero, ExactRational::zero());
+    }
+
+    #[test]
+    fn exact_rational_quotient_rejects_zero_and_negative_squares() {
+        let error = ExactRational::one()
+            .try_quotient(&ExactRational::zero())
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactRatioZeroDenominator)
+        ));
+
+        let error = ExactRational::from_f64(-1.0)
+            .unwrap()
+            .round_sqrt()
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn exact_dyadic_power_two_quotients_preserve_signs() {
+        for (numerator, divisor, expected) in [
+            (1.0, -1.0, -1.0),
+            (-1.0, 1.0, -1.0),
+            (-1.0, -1.0, 1.0),
+            (8.0, -1.0, -8.0),
+            (-8.0, 1.0, -8.0),
+            (-8.0, -1.0, 8.0),
+            (1.0, 8.0, 0.125),
+            (-1.0, 8.0, -0.125),
+            (1.0, -8.0, -0.125),
+            (-1.0, -8.0, 0.125),
+            (1.0, 0.125, 8.0),
+            (-1.0, -0.125, 8.0),
+        ] {
+            let actual = ExactDyadic::from_f64(numerator)
+                .try_exact_quotient(&ExactDyadic::from_f64(divisor))
+                .unwrap();
+            assert_eq!(
+                actual,
+                ExactDyadic::from_f64(expected),
+                "{numerator:?} / {divisor:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_dyadic_power_two_quotients_preserve_extreme_exponents() {
+        let upper = ExactDyadic::from_parts(false, vec![1], i64::MAX);
+        let upper_divisor = ExactDyadic::from_parts(true, vec![1], i64::MAX - 3);
+        assert_eq!(
+            upper.try_exact_quotient(&upper_divisor).unwrap(),
+            ExactDyadic::from_parts(true, vec![1], 3)
+        );
+
+        let lower = ExactDyadic::from_parts(true, vec![1], i64::MIN + 3);
+        let lower_divisor = ExactDyadic::from_parts(false, vec![1], i64::MIN);
+        assert_eq!(
+            lower.try_exact_quotient(&lower_divisor).unwrap(),
+            ExactDyadic::from_parts(true, vec![1], 3)
+        );
+
+        let ratio = ExactRational::from_dyadic(upper).unwrap();
+        let divisor =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![1], i64::MAX - 3))
+                .unwrap();
+        let quotient = ratio.try_quotient(&divisor).unwrap();
+        assert_eq!(
+            quotient,
+            ExactRational::new(
+                ExactDyadic::from_parts(false, vec![1], 3),
+                ExactDyadic::one()
+            )
+            .unwrap()
+        );
     }
 
     #[test]
