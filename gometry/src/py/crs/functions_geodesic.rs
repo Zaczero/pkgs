@@ -640,3 +640,132 @@ pub(crate) fn optional_geodesic_coordinate_input_with_expected(
     }
     geodesic_coordinate_input_with_expected(py, value, name, expected).map(Some)
 }
+
+#[cfg(test)]
+mod allocation_tests {
+    use pyo3::exceptions::PyMemoryError;
+    use pyo3::prelude::*;
+    use pyo3::types::PyString;
+
+    use super::*;
+    use crate::crs::RUNTIME_STATE_TEST_LOCK;
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the helper uses assertions to classify every injected allocation failure"
+    )]
+    fn assert_bulk_public_publication_allocations<T, F, P>(
+        name: &str,
+        assemble: F,
+        publish: P,
+    ) -> PyResult<()>
+    where
+        F: Fn() -> crate::error::Result<T>,
+        P: Fn(T) -> PyResult<Py<PyDict>>,
+    {
+        // Fault injection covers the Rust-owned bulk result. Publication is
+        // performed after the guard is dropped because NumPy owns its C-side
+        // allocation; the public Python suite exercises that boundary.
+        drop(publish(assemble().map_err(PyErr::from)?)?);
+        let (_, allocations) = allocation_count(&assemble);
+        assert!(allocations > 0, "{name} did not allocate native output");
+        for allowed in 0..allocations {
+            let result = fail_allocations_after(allowed, &assemble);
+            let Err(error) = result else {
+                panic!("{name} prefix {allowed} unexpectedly succeeded");
+            };
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            drop(publish(assemble().map_err(PyErr::from)?)?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        clippy::needless_borrows_for_generic_args,
+        reason = "the test classifies every injected normalization failure and retries the same closure"
+    )]
+    fn crs_normalization_allocation_failures_return_memory_error() -> PyResult<()> {
+        Python::initialize();
+        Python::attach(|py| {
+            let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+            let value = PyString::new(py, "EPSG:4326");
+            let run = || crs_normalize(value.as_any());
+            drop(run()?);
+            let (_, allocations) = allocation_count(&run);
+            assert!(allocations > 0, "CRS normalization did not allocate");
+            for allowed in 0..allocations {
+                let result = fail_allocations_after(allowed, &run);
+                let Err(error) = result else {
+                    panic!("CRS normalization prefix {allowed} unexpectedly succeeded");
+                };
+                assert!(error.is_instance_of::<PyMemoryError>(py));
+                drop(error);
+                drop(run()?);
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn public_geodesic_column_operations_propagate_allocation_failures() -> PyResult<()> {
+        Python::initialize();
+        Python::attach(|py| {
+            let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+            assert_bulk_public_publication_allocations(
+                "inverse",
+                || {
+                    crs::geodesic_inverses(
+                        "EPSG:4326",
+                        &[-73.0, -72.0, -71.0],
+                        &[41.0, 42.0, 43.0],
+                        &[-74.0, -73.0, -72.0],
+                        &[42.0, 43.0, 44.0],
+                        None,
+                        None,
+                        crs::AngleUnit::Degrees,
+                    )
+                },
+                |items| geodesic_rows_to_dict(py, &items, false, &GEODESIC_INVERSE_FIELDS),
+            )?;
+
+            assert_bulk_public_publication_allocations(
+                "direct",
+                || {
+                    crs::geodesic_direct_columns(
+                        "EPSG:4326",
+                        &[-73.0, -72.0, -71.0],
+                        &[41.0, 42.0, 43.0],
+                        &[45.0, 90.0, 135.0],
+                        &[1_000.0, 2_000.0, 3_000.0],
+                        crs::AngleUnit::Degrees,
+                    )
+                },
+                |columns| geodesic_direct_columns_to_dict(py, columns),
+            )?;
+
+            assert_bulk_public_publication_allocations(
+                "interpolate",
+                || {
+                    crs::geodesic_interpolates(
+                        "EPSG:4326",
+                        &[-73.0, -72.0, -71.0],
+                        &[41.0, 42.0, 43.0],
+                        &[-74.0, -73.0, -72.0],
+                        &[42.0, 43.0, 44.0],
+                        &[0.0, 1_000.0, -500.0],
+                        crs::DistanceMode::Absolute,
+                        crs::AngleUnit::Degrees,
+                    )
+                },
+                |items| geodesic_rows_to_dict(py, &items, false, &GEODESIC_INTERPOLATE_FIELDS),
+            )
+        })
+    }
+}

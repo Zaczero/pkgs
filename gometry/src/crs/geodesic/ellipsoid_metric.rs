@@ -243,7 +243,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         let geodesic_segment = self.to_geodesic_segment(*segment);
         Ok(PreparedMetricSegment {
             source_segment: *segment,
-            inner: PreparedSegment::new(self.normalized(), &geodesic_segment),
+            inner: PreparedSegment::new(self.normalized(), &geodesic_segment)?,
             frame: self.frame,
             semi_major: self.geodesic.a,
         })
@@ -407,24 +407,24 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
             .expect("geodesic interpolation is finite")
     }
 
-    fn point_distance_lower_bound(&self, a: Point, b: Point) -> f64 {
+    fn point_distance_lower_bound(&self, a: Point, b: Point) -> crate::error::Result<f64> {
         let kernel = self
             .lower_bound
-            .get_or_init(|| cached_lower_bound_kernel(self.normalized()));
+            .get_or_try_init(|| cached_lower_bound_kernel(self.normalized()))?;
         let first = self.to_geodesic_point(a);
         let second = self.to_geodesic_point(b);
         let exact = exact_auxiliary_sphere_bound(self.geodesic, first, second);
         if matches!(&**kernel, LowerBoundKernel::ExactOblate) {
-            return exact;
+            return Ok(exact);
         }
         let bound = kernel
             .bound(self.normalized(), first, second)
             .mul_add(self.geodesic.a, 0.0);
-        if bound > 0.0 && bound.is_finite() {
+        Ok(if bound > 0.0 && bound.is_finite() {
             bound.next_down().min(exact)
         } else {
             bound.max(0.0).min(exact)
-        }
+        })
     }
 
     fn geodesic_curvature_domain(&self) -> Option<(f64, f64, f64)> {

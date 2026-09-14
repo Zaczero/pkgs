@@ -75,6 +75,8 @@ fn cached_auxiliary_unit(
             .map_err(crate::error::Error::from)?;
     }
     let auxiliary = metric.auxiliary_unit(point);
+    // A successful reserve (or a pre-existing spare slot) makes this insert
+    // allocation-free.
     aux_cache.insert(key, auxiliary);
     Ok(auxiliary)
 }
@@ -108,6 +110,8 @@ impl GeodesicFacetBvh {
         for (index, segment) in segments.iter().enumerate() {
             let start_aux = cached_auxiliary_unit(&mut aux_cache, segment.start.xy(), metric)?;
             let end_aux = cached_auxiliary_unit(&mut aux_cache, segment.end.xy(), metric)?;
+            // `ids` receives exactly one entry per segment after the exact
+            // reservation above.
             ids.push(SegmentBuild {
                 index: index as u32,
                 centroid: [
@@ -229,7 +233,7 @@ impl GeodesicFacetBvh {
         crate::try_push_vec(stack, 0)?;
         while let Some(node) = stack.pop() {
             let node = node as usize;
-            if self.bound(point, node, metric) > best {
+            if self.bound(point, node, metric)? > best {
                 continue;
             }
             match BvhCode::new(self.codes[node]).decode() {
@@ -238,7 +242,7 @@ impl GeodesicFacetBvh {
                     for edge_index in self.leaf_segment_ids(leaf) {
                         let edge_index = *edge_index as usize;
                         let segment = parts.segments[edge_index];
-                        let bound = metric.point_distance_lower_bound(point, segment.start)
+                        let bound = metric.point_distance_lower_bound(point, segment.start)?
                             - segment.length;
                         if bound <= best {
                             let result = metric.point_segment_query(
@@ -262,7 +266,7 @@ impl GeodesicFacetBvh {
             }
         }
         for &target in &parts.point_only {
-            if metric.point_distance_lower_bound(point, target) <= best {
+            if metric.point_distance_lower_bound(point, target)? <= best {
                 best = best.min(metric.segment_length(point, target));
             }
         }
@@ -293,7 +297,7 @@ impl GeodesicFacetBvh {
             let best_distance = best
                 .as_ref()
                 .map_or(f64::INFINITY, |candidate| candidate.distance);
-            if self.bound(vertex, node, metric) > best_distance {
+            if self.bound(vertex, node, metric)? > best_distance {
                 continue;
             }
             match BvhCode::new(self.codes[node]).decode() {
@@ -304,7 +308,7 @@ impl GeodesicFacetBvh {
                         let segment = parts.segments[edge_index];
                         let order = order_offset + vertex_index as usize * width + edge_index;
                         let best_distance = witness_refine_limit(best.as_ref(), order);
-                        let bound = metric.point_distance_lower_bound(vertex, segment.start)
+                        let bound = metric.point_distance_lower_bound(vertex, segment.start)?
                             - segment.length;
                         if bound > best_distance {
                             continue;
@@ -355,7 +359,7 @@ impl GeodesicFacetBvh {
                     + parts.segments.len()
                     + point_index;
                 let best_distance = witness_refine_limit(best.as_ref(), order);
-                if metric.point_distance_lower_bound(vertex, point) > best_distance {
+                if metric.point_distance_lower_bound(vertex, point)? > best_distance {
                     continue;
                 }
                 let distance = metric.segment_length(vertex, point);
@@ -394,7 +398,7 @@ impl GeodesicFacetBvh {
         crate::try_push_vec(stack, 0)?;
         while let Some(node) = stack.pop() {
             let node = node as usize;
-            if self.bound(point, node, metric) > limit {
+            if self.bound(point, node, metric)? > limit {
                 continue;
             }
             match BvhCode::new(self.codes[node]).decode() {
@@ -403,7 +407,7 @@ impl GeodesicFacetBvh {
                     for edge_index in self.leaf_segment_ids(leaf) {
                         let edge_index = *edge_index as usize;
                         let segment = parts.segments[edge_index];
-                        if metric.point_distance_lower_bound(point, segment.start) - segment.length
+                        if metric.point_distance_lower_bound(point, segment.start)? - segment.length
                             > limit
                         {
                             continue;
@@ -436,10 +440,14 @@ impl GeodesicFacetBvh {
                 },
             }
         }
-        Ok(parts.point_only.iter().any(|&target| {
-            metric.point_distance_lower_bound(point, target) <= limit
+        for &target in &parts.point_only {
+            if metric.point_distance_lower_bound(point, target)? <= limit
                 && metric.segment_length(point, target) <= limit
-        }))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn push_nearer_last(
@@ -451,8 +459,8 @@ impl GeodesicFacetBvh {
     ) -> Result<()> {
         let left = first_child as usize;
         let right = left + 1;
-        let left_bound = self.bound(point, left, metric);
-        let right_bound = self.bound(point, right, metric);
+        let left_bound = self.bound(point, left, metric)?;
+        let right_bound = self.bound(point, right, metric)?;
         if left_bound < right_bound {
             crate::try_push_vec(stack, first_child + 1)?;
             crate::try_push_vec(stack, first_child)?;
@@ -463,8 +471,11 @@ impl GeodesicFacetBvh {
         Ok(())
     }
 
-    fn bound(&self, point: Point, node: usize, metric: &impl GeodesicMetric) -> f64 {
-        (metric.point_distance_lower_bound(point, self.anchors[node]) - self.reaches[node]).max(0.0)
+    fn bound(&self, point: Point, node: usize, metric: &impl GeodesicMetric) -> Result<f64> {
+        Ok(
+            (metric.point_distance_lower_bound(point, self.anchors[node])? - self.reaches[node])
+                .max(0.0),
+        )
     }
 
     fn leaf_segment_ids(&self, leaf: GeodesicLeaf) -> &[u32] {

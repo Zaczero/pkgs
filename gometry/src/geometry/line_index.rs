@@ -17,7 +17,6 @@ use crate::geometry::{
     GeodesicSegmentScratch, GeodesicWitnessNeed, GeometryErrorKind, LineSeq, MeasureRange,
     Ordering, Point, Segment, Shape, interpolate_f64, lerp_point, linework_first_point,
     normalize_line_distance, point_distance, point_segment_distance_and_projection,
-    push_distinct_point,
 };
 
 /// Per-segment measurement for the linear-referencing engine.
@@ -43,9 +42,10 @@ pub(crate) trait SegmentMetric {
     const LOCATE_WITH_MEASURE_NEEDS_LENGTH: bool = true;
 
     /// Cheap lower bound on this segment's locate distance (`0.0` when the
-    /// metric has none). Sound: never exceeds the true distance.
-    fn locate_bound(&self, _probe: Point, _start: Point, _end: Point, _length: f64) -> f64 {
-        0.0
+    /// metric has none). Sound: never exceeds the true distance; preparation
+    /// failures are returned instead of disabling the bound.
+    fn locate_bound(&self, _probe: Point, _start: Point, _end: Point, _length: f64) -> Result<f64> {
+        Ok(0.0)
     }
 
     /// `(distance to probe, along-segment offset of the projection)`, or
@@ -154,14 +154,14 @@ impl<M: GeodesicMetric> SegmentMetric for M {
         Ok(self.make_segment(start, end)?.length)
     }
 
-    fn locate_bound(&self, probe: Point, start: Point, end: Point, length: f64) -> f64 {
+    fn locate_bound(&self, probe: Point, start: Point, end: Point, length: f64) -> Result<f64> {
         // Triangle inequality off the auxiliary-sphere endpoint bounds: the
         // foot is at least the farther-bounded endpoint minus the segment.
-        (self
-            .point_distance_lower_bound(probe, start)
-            .max(self.point_distance_lower_bound(probe, end))
+        Ok((self
+            .point_distance_lower_bound(probe, start)?
+            .max(self.point_distance_lower_bound(probe, end)?)
             - length)
-            .max(0.0)
+            .max(0.0))
     }
 
     fn length(&self, start: Point, end: Point) -> f64 {
@@ -213,18 +213,21 @@ pub(crate) enum LineIndexSlot {
     NotLineal,
     Empty,
     /// Fallible construction (non-finite segment/total length, etc.).
-    Invalid(Box<str>),
+    Invalid(String),
 }
 
 impl LineIndexSlot {
-    pub(crate) fn build(shape: &Shape, metric: &impl SegmentMetric) -> Self {
+    pub(crate) fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
         use crate::error::ErrorKind;
         match LineIndex::build(shape, metric) {
-            Ok(index) => Self::Index(index),
+            Ok(index) => Ok(Self::Index(index)),
             Err(error) => match error.kind() {
-                ErrorKind::Geometry(GeometryErrorKind::EmptyLinework) => Self::Empty,
-                ErrorKind::Geometry(GeometryErrorKind::LineStringRequired) => Self::NotLineal,
-                other => Self::Invalid(format!("{other}").into()),
+                ErrorKind::Geometry(GeometryErrorKind::EmptyLinework) => Ok(Self::Empty),
+                ErrorKind::Geometry(GeometryErrorKind::LineStringRequired) => Ok(Self::NotLineal),
+                ErrorKind::Resource(_) => Err(error),
+                _ => Ok(Self::Invalid(crate::boundary::try_format(format_args!(
+                    "{error}"
+                ))?)),
             },
         }
     }
@@ -234,7 +237,9 @@ impl LineIndexSlot {
             Self::Index(index) => Ok(index),
             Self::NotLineal => Err(GeometryErrorKind::LineStringRequired.into()),
             Self::Empty => Err(GeometryErrorKind::EmptyLinework.into()),
-            Self::Invalid(msg) => Err(GeometryErrorKind::message(msg.as_ref())),
+            Self::Invalid(msg) => Err(GeometryErrorKind::message(crate::boundary::try_boxed_str(
+                msg,
+            )?)),
         }
     }
 }
@@ -264,6 +269,23 @@ pub(crate) struct LineIndex {
 }
 
 impl LineIndex {
+    fn try_storage(upper: usize) -> Result<(Vec<OrdinateSegment>, Vec<f64>)> {
+        let prefix_len = upper
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let mut segments = Vec::new();
+        let mut prefix = Vec::new();
+        if let Err(error) = crate::boundary::try_reserve_vec(&mut segments, upper) {
+            drop(prefix);
+            return Err(error);
+        }
+        if let Err(error) = crate::boundary::try_reserve_vec(&mut prefix, prefix_len) {
+            drop(segments);
+            return Err(error);
+        }
+        Ok((segments, prefix))
+    }
+
     /// Build over `shape`'s linework. `LineStringRequired` for non-lineal
     /// shapes, `EmptyLinework` when there is no first vertex (the zero-total
     /// degeneracies — all-zero-length linework — build fine and resolve to
@@ -272,9 +294,8 @@ impl LineIndex {
         let lines = shape.linework()?;
         let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = shape.segment_count();
-        let mut segments = Vec::with_capacity(upper);
-        let mut prefix = Vec::with_capacity(upper + 1);
-        prefix.push(0.0);
+        let (mut segments, mut prefix) = Self::try_storage(upper)?;
+        crate::boundary::try_push_vec(&mut prefix, 0.0)?;
         let mut total = 0.0;
         let mut last = first;
         for line in &lines {
@@ -300,8 +321,8 @@ impl LineIndex {
                         "line index total length must be finite",
                     ));
                 }
-                segments.push(OrdinateSegment { start, end });
-                prefix.push(total);
+                crate::boundary::try_push_vec(&mut segments, OrdinateSegment { start, end })?;
+                crate::boundary::try_push_vec(&mut prefix, total)?;
             }
         }
         // The walks fall back to the linework's last vertex (zero-length tail
@@ -311,9 +332,17 @@ impl LineIndex {
             .rev()
             .find_map(|line| line.last())
             .unwrap_or(last);
+        let segments = try_boxed_slice(segments)?;
+        let prefix = match try_boxed_slice(prefix) {
+            Ok(prefix) => prefix,
+            Err(error) => {
+                drop(segments);
+                return Err(error);
+            },
+        };
         Ok(Self {
-            segments: segments.into_boxed_slice(),
-            prefix: prefix.into_boxed_slice(),
+            segments,
+            prefix,
             total,
             first,
             last,
@@ -326,9 +355,8 @@ impl LineIndex {
     pub(crate) fn build_coordseq(coords: &CoordSeq, metric: &impl SegmentMetric) -> Result<Self> {
         let first = coords.first().ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = coords.len().saturating_sub(1);
-        let mut segments = Vec::with_capacity(upper);
-        let mut prefix = Vec::with_capacity(upper + 1);
-        prefix.push(0.0);
+        let (mut segments, mut prefix) = Self::try_storage(upper)?;
+        crate::boundary::try_push_vec(&mut prefix, 0.0)?;
         let mut total = 0.0;
         let mut last = first;
         for [start, end] in coords.segment_pairs() {
@@ -348,13 +376,21 @@ impl LineIndex {
                     "line index total length must be finite",
                 ));
             }
-            segments.push(OrdinateSegment { start, end });
-            prefix.push(total);
+            crate::boundary::try_push_vec(&mut segments, OrdinateSegment { start, end })?;
+            crate::boundary::try_push_vec(&mut prefix, total)?;
         }
         let last = coords.last().unwrap_or(last);
+        let segments = try_boxed_slice(segments)?;
+        let prefix = match try_boxed_slice(prefix) {
+            Ok(prefix) => prefix,
+            Err(error) => {
+                drop(segments);
+                return Err(error);
+            },
+        };
         Ok(Self {
-            segments: segments.into_boxed_slice(),
-            prefix: prefix.into_boxed_slice(),
+            segments,
+            prefix,
             total,
             first,
             last,
@@ -466,8 +502,8 @@ impl LineIndex {
                     )
                 }
             };
-            push_distinct_point(&mut result, at(from));
-            push_distinct_point(&mut result, at(to));
+            try_push_distinct_point(&mut result, at(from))?;
+            try_push_distinct_point(&mut result, at(to))?;
         }
 
         Ok(match result.len() {
@@ -524,16 +560,17 @@ impl LineIndex {
                         .then_with(|| other.index.cmp(&self.index))
                 }
             }
-            let mut entries = Vec::with_capacity(self.segments.len());
+            let mut entries = Vec::new();
+            crate::boundary::try_reserve_vec(&mut entries, self.segments.len())?;
             for (index, (segment, &offset)) in
                 std::iter::zip(&self.segments, &self.prefix).enumerate()
             {
                 let length = self.prefix[index + 1] - offset;
-                let bound = metric.locate_bound(probe, segment.start, segment.end, length);
-                entries.push(BoundEntry {
+                let bound = metric.locate_bound(probe, segment.start, segment.end, length)?;
+                crate::boundary::try_push_vec(&mut entries, BoundEntry {
                     bound,
                     index: index as u32,
-                });
+                })?;
             }
             // O(n) heapify; pop ascending-bound until the ceiling is met.
             let mut order = std::collections::BinaryHeap::from(entries);
@@ -606,7 +643,7 @@ impl HeapSize for LineIndexSlot {
         match self {
             Self::Index(index) => index.heap_bytes(),
             Self::NotLineal | Self::Empty => 0,
-            Self::Invalid(msg) => msg.len(),
+            Self::Invalid(msg) => msg.capacity(),
         }
     }
 }
@@ -615,6 +652,41 @@ impl HeapSize for LineIndex {
     fn heap_bytes(&self) -> usize {
         self.segments.heap_bytes() + self.prefix.heap_bytes()
     }
+}
+
+fn try_boxed_slice<T>(mut values: Vec<T>) -> Result<Box<[T]>> {
+    if values.try_shrink_to_fit().is_err() {
+        drop(values);
+        return Err(crate::error::ResourceError::Allocation.into());
+    }
+    if values.capacity() == values.len() {
+        // With no spare capacity this conversion only transfers ownership and
+        // cannot request another allocation.
+        return Ok(values.into_boxed_slice());
+    }
+    // An allocator may retain padding after a successful shrink. Move into an
+    // exact fallible box rather than letting `into_boxed_slice` retry that
+    // shrink infallibly.
+    let len = values.len();
+    let Ok(mut boxed) = Box::<[T]>::try_new_uninit_slice(len) else {
+        drop(values);
+        return Err(crate::error::ResourceError::Allocation.into());
+    };
+    for (slot, value) in boxed.iter_mut().zip(values) {
+        slot.write(value);
+    }
+    // SAFETY: the loop moved one initialized value into every slot.
+    Ok(unsafe { boxed.assume_init() })
+}
+
+fn try_push_distinct_point(points: &mut Vec<Point>, point: Point) -> Result<()> {
+    if points
+        .last()
+        .is_none_or(|last| !crate::geometry::same_point(*last, point))
+    {
+        crate::boundary::try_push_vec(points, point)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

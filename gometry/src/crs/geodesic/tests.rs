@@ -4,8 +4,10 @@ use super::distance::{
     geodesic_frechet_dp, geodesic_frechet_dp_with_scratch, geodesic_point_distances,
     geodesic_point_pair_distances, geodesic_point_pair_dwithin,
 };
-use super::lower_bound::{LowerBoundKernel, exact_auxiliary_sphere_bound};
-use super::segment::geodesic_point_segment_query;
+use super::lower_bound::{
+    LowerBoundKernel, clear_cached_lower_bound_kernel, exact_auxiliary_sphere_bound,
+};
+use super::segment::{cached_geodesic_line, geodesic_point_segment_query};
 use super::{
     EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, GEODESIC_LINE_CACHE, geodesic_counters,
 };
@@ -14,7 +16,8 @@ use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{
     CoordSeq, Coordinates, FrameDependentCaches, FrechetDpScratch, GeodesicMetric, GeodesicSegment,
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
-    GeodesicSegmentScratch, GeodesicWitnessNeed, LineSeq, Point, PreparedPlan, Shape, XY,
+    GeodesicSegmentScratch, GeodesicWitnessNeed, LineIndex, LineSeq, Point, PreparedPlan, Shape,
+    XY,
 };
 
 // Independent oracle provenance for the fixed fixtures below: GeographicLib
@@ -661,6 +664,63 @@ fn point_segment_query_propagates_scratch_allocation_failure() {
 #[expect(
     clippy::panic_in_result_fn,
     clippy::needless_borrows_for_generic_args,
+    reason = "the test retries geodesic-line cache insertion across every allocator prefix"
+)]
+fn geodesic_line_cache_allocation_failures_retry_without_publication() -> Result<()> {
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let segment = metric.make_segment(p(-1.0, 0.0), p(1.0, 0.0))?;
+    let reset = || {
+        GEODESIC_LINE_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.clear();
+            cache.shrink_to_fit();
+        });
+    };
+    reset();
+    let run = || cached_geodesic_line(&geodesic, segment);
+    let (expected, allocations) = allocation_count(&run);
+    let expected = expected?;
+    let (_, expected_lat, expected_lon, expected_azimuth, ..) =
+        expected._gen_position(false, 1_000.0, super::GEODESIC_LINE_OUTMASK);
+    assert!(allocations > 0, "geodesic-line cache did not allocate");
+    for allowed in 0..allocations {
+        reset();
+        let result = fail_allocations_after(allowed, &run);
+        let error = result
+            .err()
+            .unwrap_or_else(|| panic!("line-cache prefix {allowed} unexpectedly succeeded"));
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        reset();
+        let actual = run()?;
+        let (_, actual_lat, actual_lon, actual_azimuth, ..) =
+            actual._gen_position(false, 1_000.0, super::GEODESIC_LINE_OUTMASK);
+        assert_eq!(
+            (
+                actual_lat.to_bits(),
+                actual_lon.to_bits(),
+                actual_azimuth.to_bits()
+            ),
+            (
+                expected_lat.to_bits(),
+                expected_lon.to_bits(),
+                expected_azimuth.to_bits()
+            ),
+            "line-cache retry at {allowed}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    clippy::needless_borrows_for_generic_args,
     clippy::similar_names,
     reason = "the test returns Result for fallible geodesic setup and retries one closure across allocation prefixes"
 )]
@@ -1121,7 +1181,7 @@ fn tabulated_lower_bound_never_exceeds_exact_auxiliary_bound_dense_sweep() {
 
     for (name, geodesic, max_allowed_loss) in cases {
         let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-        let LowerBoundKernel::Tabulated(_) = LowerBoundKernel::for_geodesic(&geodesic) else {
+        let Ok(LowerBoundKernel::Tabulated(_)) = LowerBoundKernel::for_geodesic(&geodesic) else {
             panic!("{name} should use the tabulated lower-bound kernel");
         };
         let mut max_loss = 0.0_f64;
@@ -1131,7 +1191,9 @@ fn tabulated_lower_bound_never_exceeds_exact_auxiliary_bound_dense_sweep() {
                 for delta_lon in deltas {
                     let a = p(-123.456_789, lat1);
                     let b = p(-123.456_789 + delta_lon, lat2);
-                    let tabulated = metric.point_distance_lower_bound(a, b);
+                    let tabulated = metric
+                        .point_distance_lower_bound(a, b)
+                        .expect("tabulated lower-bound query");
                     let exact = exact_auxiliary_sphere_bound(&geodesic, a, b);
                     assert!(
                         tabulated <= exact,
@@ -1155,7 +1217,10 @@ fn non_tabulated_flattening_uses_exact_oblate_lane() {
     let a = p(-12.0, -45.0);
     let b = p(78.0, 41.0);
     assert_eq!(
-        exact_metric.point_distance_lower_bound(a, b).to_bits(),
+        exact_metric
+            .point_distance_lower_bound(a, b)
+            .expect("exact oblate lower-bound query")
+            .to_bits(),
         exact_auxiliary_sphere_bound(&high_flattening, a, b).to_bits()
     );
 }
@@ -1172,11 +1237,96 @@ fn disabled_lower_bound_is_zero_across_latitudes() {
     ];
     for (name, a, b) in cases {
         assert_eq!(
-            metric.point_distance_lower_bound(a, b).to_bits(),
+            metric
+                .point_distance_lower_bound(a, b)
+                .expect("disabled lower-bound query")
+                .to_bits(),
             0.0_f64.to_bits(),
             "{name}: disabled lower bound"
         );
     }
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    clippy::needless_borrows_for_generic_args,
+    reason = "the test retries one real line-index query across every allocator prefix"
+)]
+fn lower_bound_cache_allocation_failures_retry_without_publication() -> Result<()> {
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    let shape = line(&[
+        p(-4.0, 0.0),
+        p(-2.0, 1.0),
+        p(0.0, 0.0),
+        p(2.0, -1.0),
+        p(4.0, 0.0),
+    ]);
+    let probe = p(0.0, 2.0);
+    let run = || {
+        clear_cached_lower_bound_kernel();
+        let geodesic = Geodesic::new(6_378_137.0, 0.005);
+        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+        let index = LineIndex::build(&shape, &metric)?;
+        index.locate_point(probe, false, &metric)
+    };
+    let expected = run()?;
+    let (_, allocations) = allocation_count(&run);
+    assert!(
+        allocations > 0,
+        "line-index lower-bound route did not allocate"
+    );
+    for allowed in 0..allocations {
+        let result = fail_allocations_after(allowed, &run);
+        let error = result
+            .err()
+            .unwrap_or_else(|| panic!("lower-bound prefix {allowed} unexpectedly succeeded"));
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        assert_eq!(run()?, expected, "lower-bound retry at {allowed}");
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    clippy::needless_borrows_for_generic_args,
+    reason = "the test retries lower-bound cache construction across every allocator prefix"
+)]
+fn lower_bound_cache_does_not_publish_a_failed_kernel() -> Result<()> {
+    use super::lower_bound::cached_lower_bound_kernel;
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    let geodesic = Geodesic::new(6_378_137.0, 0.005);
+    let run = || {
+        clear_cached_lower_bound_kernel();
+        cached_lower_bound_kernel(&geodesic)
+    };
+    let expected = run()?;
+    assert!(matches!(&*expected, LowerBoundKernel::Tabulated(_)));
+    let (_, allocations) = allocation_count(&run);
+    assert!(allocations > 0, "lower-bound cache did not allocate");
+    for allowed in 0..allocations {
+        let result = fail_allocations_after(allowed, &run);
+        let error = result
+            .err()
+            .unwrap_or_else(|| panic!("kernel prefix {allowed} unexpectedly succeeded"));
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        let (retry, retry_allocations) = allocation_count(|| cached_lower_bound_kernel(&geodesic));
+        assert!(retry.is_ok(), "kernel retry after prefix {allowed} failed");
+        assert!(
+            retry_allocations > 0,
+            "failed kernel prefix {allowed} was published"
+        );
+    }
+    Ok(())
 }
 
 fn brute_geodesic_distance_and_nearest_points(

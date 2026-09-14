@@ -325,7 +325,7 @@ pub(crate) fn planar_to_metre(
             "planar metrics require two horizontal axes, but an axis is vertical or temporal",
         );
     }
-    let Some(factors) = metric_axis_factors_at(info, state) else {
+    let Some(factors) = metric_axis_factors_at(info, state)? else {
         return fail("planar metrics require linear (length) axis units, but the axes are angular");
     };
     let horizontal = &factors[..factors.len().min(2)];
@@ -385,7 +385,7 @@ pub(crate) fn ensure_3d_metric_at(
     };
     let fail = |message: &str| CrsError::vertical_units(crs, message);
     let crs_info = info_with_state(crs, state)?;
-    let Some(factors) = metric_axis_factors_at(&crs_info, state) else {
+    let Some(factors) = metric_axis_factors_at(&crs_info, state)? else {
         return Err(fail(
             "axes are angular (geographic); reproject to a projected CRS with to_crs",
         ));
@@ -407,36 +407,51 @@ pub(crate) fn ensure_3d_metric_at(
 }
 
 /// Linear (length) unit conversion factors of every axis, recursing into the
-/// sub-CRS of a compound CRS. `None` if any axis is angular (degree/radian) or
-/// has no usable unit — i.e. the CRS is not a pure linear/metric system.
+/// sub-CRS of a compound CRS. `Ok(None)` if any axis is angular (degree/radian)
+/// or has no usable unit — i.e. the CRS is not a pure linear/metric system.
+/// Resource failures from recursive CRS lookup or factor storage are returned
+/// unchanged.
 pub(crate) fn metric_axis_factors_at(
     crs_info: &CrsInfo,
     state: &crate::crs::RuntimeState,
-) -> Option<Vec<f64>> {
+) -> Result<Option<Vec<f64>>> {
     if crs_info.kind.starts_with("geographic") {
-        return None;
+        return Ok(None);
     }
     if crs_info.kind == "compound" {
         let mut factors = Vec::new();
         for sub in &crs_info.sub_crs {
             let definition = sub.definition.as_deref().unwrap_or(sub.crs.as_str());
             if definition.is_empty() {
-                return None;
+                return Ok(None);
             }
-            let sub_info = info_with_state(definition, state).ok()?;
-            factors.extend(metric_axis_factors_at(&sub_info, state)?);
+            let sub_info = info_with_state(definition, state)?;
+            let Some(sub_factors) = metric_axis_factors_at(&sub_info, state)? else {
+                return Ok(None);
+            };
+            if let Err(error) = crate::boundary::try_reserve_vec(&mut factors, sub_factors.len()) {
+                drop(sub_factors);
+                return Err(error);
+            }
+            // The exact reservation above covers every element moved from the
+            // child, so extending the aggregate cannot grow it.
+            factors.extend(sub_factors);
         }
-        return (!factors.is_empty()).then_some(factors);
+        return Ok((!factors.is_empty()).then_some(factors));
     }
-    let mut factors = Vec::with_capacity(crs_info.axes.len());
     for axis in &crs_info.axes {
-        let unit = axis.unit_name.as_deref()?;
+        let Some(unit) = axis.unit_name.as_deref() else {
+            return Ok(None);
+        };
         if is_angular_unit(unit) || axis.unit_conversion_factor <= 0.0 {
-            return None;
+            return Ok(None);
         }
-        factors.push(axis.unit_conversion_factor);
     }
-    (!factors.is_empty()).then_some(factors)
+    let mut factors = Vec::new();
+    crate::boundary::try_reserve_vec(&mut factors, crs_info.axes.len())?;
+    // The validated axis count is the exact append count.
+    factors.extend(crs_info.axes.iter().map(|axis| axis.unit_conversion_factor));
+    Ok((!factors.is_empty()).then_some(factors))
 }
 
 /// Whether an axis direction is horizontal (part of the X/Y plane). Unknown
@@ -466,4 +481,65 @@ pub(crate) fn is_angular_unit(unit: &str) -> bool {
     ANGULAR
         .iter()
         .any(|angular| str_contains_ignore_ascii_case(unit, angular))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::metric_axis_factors_at;
+    use crate::crs::{RUNTIME_STATE_TEST_LOCK, info_with_state, runtime_state_snapshot};
+    use crate::error::{ErrorKind, ResourceError, Result};
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        clippy::needless_borrows_for_generic_args,
+        reason = "the test retries compound factor construction across every allocator prefix"
+    )]
+    fn compound_metric_factors_propagate_allocation_failures_and_retry() -> Result<()> {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = runtime_state_snapshot()?;
+        let info = info_with_state("EPSG:7405", &state)?;
+        let expected =
+            metric_axis_factors_at(&info, &state)?.expect("EPSG:7405 has linear compound axes");
+        assert!(expected.len() >= 3);
+        let expected_scale = super::ensure_3d_metric_at(Some("EPSG:7405"), &state)?;
+
+        let run = || super::ensure_3d_metric_at(Some("EPSG:7405"), &state);
+        let (actual, allocations) = allocation_count(&run);
+        assert_eq!(actual?.get(), expected_scale.get());
+        assert!(allocations > 0, "compound factors did not allocate");
+        for allowed in 0..allocations {
+            let result = fail_allocations_after(allowed, &run);
+            let error = result
+                .err()
+                .unwrap_or_else(|| panic!("compound prefix {allowed} unexpectedly succeeded"));
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+            assert_eq!(
+                run()?.get(),
+                expected_scale.get(),
+                "compound retry at {allowed}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the test uses assertions to distinguish a failed child CRS from a nonmetric result"
+    )]
+    fn compound_factor_lookup_does_not_hide_a_failed_child_crs() -> Result<()> {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = runtime_state_snapshot()?;
+        let mut info = (*info_with_state("EPSG:7405", &state)?).clone();
+        info.sub_crs[0].crs = "EPSG:0".to_owned();
+        let error = metric_axis_factors_at(&info, &state)
+            .expect_err("a failed compound child must not become a nonmetric result");
+        assert!(matches!(error.kind(), ErrorKind::Crs(_)));
+        Ok(())
+    }
 }

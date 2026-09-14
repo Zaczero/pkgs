@@ -1,4 +1,5 @@
 use crate::py::crs::{Bound, CRSError, Crs, PyAny, PyResult, crs, parse_crs_inner, pyfunction};
+use crate::py::errors::native_memory_error;
 /// Name/version of the underlying CRS engine (PROJ).
 ///
 /// Returns
@@ -28,5 +29,12 @@ pub(crate) fn crs_parse_required(value: &Bound<'_, PyAny>) -> PyResult<Crs> {
 // geometry `to_crs`, so syntax-only spellings ("Epsg:4326", "EPSG:4326") share
 // one stored authority spelling without rewriting authored definitions.
 pub(crate) fn crs_normalize(value: &Bound<'_, PyAny>) -> PyResult<String> {
-    Ok(crs_parse_required(value)?.to_string())
+    let crs = crs_parse_required(value)?;
+    crate::boundary::try_string_from_str(crs.as_str()).map_or_else(
+        |()| {
+            drop(crs);
+            Err(native_memory_error())
+        },
+        Ok,
+    )
 }

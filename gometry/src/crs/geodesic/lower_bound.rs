@@ -1,4 +1,5 @@
 use crate::crs::geodesic::{Geodesic, Point, REDUCED_LAT_MIN_ONE_MINUS_F, REDUCED_LAT_TABLE_CELLS};
+use crate::error::{ResourceError, Result};
 use crate::geographic::GeographicFrame;
 
 pub(crate) enum LowerBoundKernel {
@@ -14,34 +15,43 @@ pub(crate) enum LowerBoundKernel {
 /// first build on each ellipsoid.
 type CachedKernelSlot = Option<((f64, f64), std::rc::Rc<LowerBoundKernel>)>;
 
-pub(crate) fn cached_lower_bound_kernel(geodesic: &Geodesic) -> std::rc::Rc<LowerBoundKernel> {
-    thread_local! {
-        static LAST_KERNEL: std::cell::RefCell<CachedKernelSlot> =
-            const { std::cell::RefCell::new(None) };
-    }
+thread_local! {
+    static LAST_KERNEL: std::cell::RefCell<CachedKernelSlot> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn cached_lower_bound_kernel(
+    geodesic: &Geodesic,
+) -> Result<std::rc::Rc<LowerBoundKernel>> {
     let key = (geodesic.a, geodesic.f);
-    LAST_KERNEL.with(|cell| {
+    LAST_KERNEL.with(|cell| -> Result<std::rc::Rc<LowerBoundKernel>> {
         let mut slot = cell.borrow_mut();
         if let Some((cached_key, kernel)) = slot.as_ref()
             && *cached_key == key
         {
-            return std::rc::Rc::clone(kernel);
+            return Ok(std::rc::Rc::clone(kernel));
         }
-        let kernel = std::rc::Rc::new(LowerBoundKernel::for_geodesic(geodesic));
+        let kernel = std::rc::Rc::try_new(LowerBoundKernel::for_geodesic(geodesic)?)
+            .map_err(crate::error::Error::from)?;
         *slot = Some((key, std::rc::Rc::clone(&kernel)));
-        kernel
+        Ok(kernel)
     })
 }
 
+#[cfg(test)]
+pub(crate) fn clear_cached_lower_bound_kernel() {
+    LAST_KERNEL.with(|cell| *cell.borrow_mut() = None);
+}
+
 impl LowerBoundKernel {
-    pub(crate) fn for_geodesic(geodesic: &Geodesic) -> Self {
+    pub(crate) fn for_geodesic(geodesic: &Geodesic) -> Result<Self> {
         let one_minus_f = 1.0 - geodesic.f;
         if geodesic.f < 0.0 || geodesic.f >= 1.0 {
-            Self::Disabled
+            Ok(Self::Disabled)
         } else if one_minus_f < REDUCED_LAT_MIN_ONE_MINUS_F {
-            Self::ExactOblate
+            Ok(Self::ExactOblate)
         } else {
-            Self::Tabulated(ReducedLatitudeTable::new(one_minus_f))
+            Ok(Self::Tabulated(ReducedLatitudeTable::new(one_minus_f)?))
         }
     }
 
@@ -62,11 +72,12 @@ pub(crate) struct ReducedLatitudeTable {
 }
 
 impl ReducedLatitudeTable {
-    fn new(one_minus_f: f64) -> Self {
+    fn new(one_minus_f: f64) -> Result<Self> {
         let step = std::f64::consts::PI / REDUCED_LAT_TABLE_CELLS as f64;
         let inv_step = 1.0 / step;
-        let mut beta = Vec::with_capacity(REDUCED_LAT_TABLE_CELLS + 1);
-        for index in 0..=REDUCED_LAT_TABLE_CELLS {
+        let mut beta = Box::<[f64]>::try_new_uninit_slice(REDUCED_LAT_TABLE_CELLS + 1)
+            .map_err(|_| ResourceError::Allocation)?;
+        for (index, slot) in beta.iter_mut().enumerate() {
             let value = if index == 0 {
                 -std::f64::consts::FRAC_PI_2
             } else if index == REDUCED_LAT_TABLE_CELLS {
@@ -75,8 +86,10 @@ impl ReducedLatitudeTable {
                 let phi = -std::f64::consts::FRAC_PI_2 + index as f64 * step;
                 (one_minus_f * phi.tan()).atan()
             };
-            beta.push(value);
+            slot.write(value);
         }
+        // SAFETY: every element was initialized exactly once by the loop above.
+        let beta = unsafe { beta.assume_init() };
         let k = one_minus_f;
         let m = if k.to_bits() == 1.0_f64.to_bits() {
             0.0
@@ -84,12 +97,12 @@ impl ReducedLatitudeTable {
             (1.0 - k * k) / (k * k * k)
         };
         let max_interp_error = m * step * step / 8.0 + 64.0 * f64::EPSILON;
-        Self {
+        Ok(Self {
             one_minus_f,
             inv_step,
             max_interp_error,
-            beta: beta.into_boxed_slice(),
-        }
+            beta,
+        })
     }
 
     fn beta_interval(&self, lat_degrees: f64) -> Option<(f64, f64)> {

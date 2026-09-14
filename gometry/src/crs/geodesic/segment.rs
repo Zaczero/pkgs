@@ -179,7 +179,7 @@ pub(crate) fn geodesic_segment_contact(
     else {
         return Ok(SegmentContact::Disjoint);
     };
-    if regular_root_inclusion(geodesic, first, second, &candidate) {
+    if regular_root_inclusion(geodesic, first, second, &candidate)? {
         return Ok(SegmentContact::Contact {
             first_along: candidate.first_along,
             second_along: candidate.second_along,
@@ -323,16 +323,16 @@ fn regular_root_inclusion(
     first: GeodesicSegment,
     second: GeodesicSegment,
     candidate: &SegmentPairWitness,
-) -> bool {
+) -> Result<bool> {
     if !(candidate.first_along > 0.0
         && candidate.first_along < first.length
         && candidate.second_along > 0.0
         && candidate.second_along < second.length)
     {
-        return false;
+        return Ok(false);
     }
-    let first_line = cached_geodesic_line(geodesic, first);
-    let second_line = cached_geodesic_line(geodesic, second);
+    let first_line = cached_geodesic_line(geodesic, first)?;
+    let second_line = cached_geodesic_line(geodesic, second)?;
     let (_, first_lat, first_lon, first_azimuth, ..) =
         first_line._gen_position(false, candidate.first_along, INTERSECT_LINE_OUTMASK);
     let (_, second_lat, second_lon, second_azimuth, ..) =
@@ -341,20 +341,20 @@ fn regular_root_inclusion(
         surface_ecef(geodesic, first_lat, first_lon),
         surface_ecef(geodesic, second_lat, second_lon),
     ) else {
-        return false;
+        return Ok(false);
     };
     let (Some(first_tangent), Some(second_tangent)) = (
         geodesic_tangent_ecef(geodesic, first_lat, first_lon, first_azimuth),
         geodesic_tangent_ecef(geodesic, second_lat, second_lon, second_azimuth),
     ) else {
-        return false;
+        return Ok(false);
     };
     let cross_norm = norm3(cross3(first_tangent, second_tangent));
     if !(cross_norm.is_finite()
         && cross_norm > 1024.0 * f64::EPSILON
         && dot3(first_position, second_position) > 0.0)
     {
-        return false;
+        return Ok(false);
     }
 
     let axis0 = first_tangent;
@@ -366,7 +366,7 @@ fn regular_root_inclusion(
     ];
     let axis1_norm = norm3(axis1_raw);
     if !(axis1_norm.is_finite() && axis1_norm > 0.0) {
-        return false;
+        return Ok(false);
     }
     let axis1 = [
         axis1_raw[0] / axis1_norm,
@@ -380,7 +380,7 @@ fn regular_root_inclusion(
     ];
     let f0 = [dot3(delta, axis0), dot3(delta, axis1)];
     if f0.iter().any(|value| !value.is_finite()) {
-        return false;
+        return Ok(false);
     }
 
     let jacobian = [[1.0, -dot3(second_tangent, axis0)], [
@@ -389,7 +389,7 @@ fn regular_root_inclusion(
     ]];
     let determinant = jacobian[0][0] * jacobian[1][1] - jacobian[0][1] * jacobian[1][0];
     if !(determinant.is_finite() && determinant.abs() > 1024.0 * f64::EPSILON) {
-        return false;
+        return Ok(false);
     }
     let inverse = [
         [jacobian[1][1] / determinant, -jacobian[0][1] / determinant],
@@ -404,7 +404,7 @@ fn regular_root_inclusion(
         && candidate.second_along - half > 0.0
         && candidate.second_along + half < second.length)
     {
-        return false;
+        return Ok(false);
     }
     let curvature = (1.0 / (1.0 - geodesic.f).abs().max(f64::MIN_POSITIVE)).max(1.0);
     let tangent_radius = curvature * half + 64.0 * f64::EPSILON;
@@ -427,10 +427,10 @@ fn regular_root_inclusion(
             + (inverse[row][0].abs() + inverse[row][1].abs()) * tangent_radius * half;
         let image_radius = remainder[row][0] * half + remainder[row][1] * half + interval_radius;
         if !(correction[row].abs() + image_radius < half) {
-            return false;
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 fn surface_ecef(geodesic: &Geodesic, latitude: f64, longitude: f64) -> Option<[f64; 3]> {
@@ -473,8 +473,8 @@ pub(crate) fn geodesic_segment_intersection_with_solver(
     first: GeodesicSegment,
     second: GeodesicSegment,
 ) -> Result<Option<SegmentPairWitness>> {
-    let line_x = cached_geodesic_line(geodesic, first);
-    let line_y = cached_geodesic_line(geodesic, second);
+    let line_x = cached_geodesic_line(geodesic, first)?;
+    let line_y = cached_geodesic_line(geodesic, second)?;
     let mut mode = 0;
     let q = solver.segment(&line_x, first.length, &line_y, second.length, &mut mode)?;
     let first_along = q.x.clamp(0.0, first.length);
@@ -524,7 +524,7 @@ pub(crate) fn geodesic_point_segment_query(
     if !segment.length.is_finite() || segment.length < 0.0 {
         return Err(CrsError::message("geodesic segment length is not finite"));
     }
-    let prepared = PreparedSegment::new(geodesic, &segment);
+    let prepared = PreparedSegment::new(geodesic, &segment)?;
     let (left_value, right_value) = prepared.endpoint_values(geodesic, point)?;
     let endpoint_minimum = prepared.endpoint_minimum(left_value, right_value);
 
@@ -638,12 +638,12 @@ pub(crate) struct Derivative {
 }
 
 impl PreparedSegment {
-    pub(crate) fn new(geodesic: &Geodesic, segment: &GeodesicSegment) -> Self {
-        Self {
+    pub(crate) fn new(geodesic: &Geodesic, segment: &GeodesicSegment) -> Result<Self> {
+        Ok(Self {
             geodesic: *geodesic,
             segment: *segment,
-            line: cached_point_segment_line(geodesic, *segment),
-        }
+            line: cached_point_segment_line(geodesic, *segment)?,
+        })
     }
 
     fn endpoint_values(&self, geodesic: &Geodesic, point: Point) -> Result<(f64, f64)> {
@@ -811,7 +811,10 @@ impl PreparedSegment {
     clippy::large_types_passed_by_value,
     reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
 )]
-pub(crate) fn cached_geodesic_line(geodesic: &Geodesic, segment: GeodesicSegment) -> GeodesicLine {
+pub(crate) fn cached_geodesic_line(
+    geodesic: &Geodesic,
+    segment: GeodesicSegment,
+) -> Result<GeodesicLine> {
     cached_geodesic_line_with_caps(geodesic, segment, GEODESIC_LINE_CAPS)
 }
 
@@ -819,7 +822,10 @@ pub(crate) fn cached_geodesic_line(geodesic: &Geodesic, segment: GeodesicSegment
     clippy::large_types_passed_by_value,
     reason = "the segment is a hot Copy snapshot used to key and build the cached line"
 )]
-fn cached_point_segment_line(geodesic: &Geodesic, segment: GeodesicSegment) -> GeodesicLine {
+fn cached_point_segment_line(
+    geodesic: &Geodesic,
+    segment: GeodesicSegment,
+) -> Result<GeodesicLine> {
     cached_geodesic_line_with_caps(geodesic, segment, POINT_SEGMENT_LINE_CAPS)
 }
 
@@ -831,7 +837,7 @@ fn cached_geodesic_line_with_caps(
     geodesic: &Geodesic,
     segment: GeodesicSegment,
     caps: u64,
-) -> GeodesicLine {
+) -> Result<GeodesicLine> {
     let key = GeodesicLineKey {
         semi_major_bits: geodesic.a.to_bits(),
         flattening_bits: geodesic.f.to_bits(),
@@ -844,13 +850,15 @@ fn cached_geodesic_line_with_caps(
         let mut cache = cache.borrow_mut();
         if let Some(line) = cache.get(&key) {
             count_line_cache_hit!();
-            return *line;
+            return Ok(*line);
         }
         count_line_cache_miss!();
-        if cache.len() == GEODESIC_LINE_CACHE_CAPACITY
-            && let Some(evict) = cache.keys().next().copied()
-        {
-            cache.remove(&evict);
+        if cache.len() == GEODESIC_LINE_CACHE_CAPACITY {
+            if let Some(evict) = cache.keys().next().copied() {
+                cache.remove(&evict);
+            }
+        } else {
+            cache.try_reserve(1).map_err(crate::error::Error::from)?;
         }
         let line = GeodesicLine::new(
             geodesic,
@@ -861,8 +869,10 @@ fn cached_geodesic_line_with_caps(
             None,
             None,
         );
+        // The miss path reserved one map slot above, or removed an entry from
+        // a full cache, so insertion cannot grow the map.
         cache.insert(key, line);
-        line
+        Ok(line)
     })
 }
 

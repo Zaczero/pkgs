@@ -378,7 +378,7 @@ impl PreparedPlan {
         self.metric()?
             .line_index
             .get_or_try_init(|| {
-                Box::try_new(LineIndexSlot::build(self.shape(), &PlanarMetric))
+                Box::try_new(LineIndexSlot::build(self.shape(), &PlanarMetric)?)
                     .map_err(crate::error::Error::from)
             })?
             .get()
@@ -1458,8 +1458,9 @@ pub(crate) trait GeodesicMetric {
 
     /// A cheap (no-inverse) lower bound on the geodesic distance between two
     /// points — the auxiliary-sphere reduced-latitude bound. Drives the
-    /// segment pruning in batch locate sweeps; `0.0` is always sound.
-    fn point_distance_lower_bound(&self, a: Point, b: Point) -> f64;
+    /// segment pruning in batch locate sweeps; preparation failures propagate
+    /// instead of disabling the bound.
+    fn point_distance_lower_bound(&self, a: Point, b: Point) -> Result<f64>;
 
     /// Curvature and injectivity bounds for the admitted ellipsoid.
     fn geodesic_curvature_domain(&self) -> Option<(f64, f64, f64)>;

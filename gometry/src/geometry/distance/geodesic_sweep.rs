@@ -78,6 +78,7 @@ impl GeodesicSweepCapsAccum {
         self.global_reach = self
             .global_reach
             .max(metric.segment_length(anchor, group_anchor) + self.group_reach);
+        // `try_new` reserved the ceiling of the number of complete groups.
         self.groups.push(CapGroup {
             anchor: group_anchor,
             reach: self.group_reach,
@@ -135,17 +136,22 @@ pub(crate) fn geodesic_ordered_rows_into(
     rows: &mut Vec<RowProbe>,
 ) -> Result<()> {
     rows.clear();
-    // The iterator emits exactly `vertices.len()` rows, so this checked
-    // reservation makes the following append allocation-free.
+    // The loop emits exactly `vertices.len()` rows, so this checked
+    // reservation makes the following appends allocation-free.
     crate::boundary::try_reserve_vec(rows, vertices.len())?;
-    rows.extend(vertices.iter().enumerate().map(|(index, &vertex)| {
-        let bound =
-            (metric.point_distance_lower_bound(vertex, caps.anchor) - caps.global_reach).max(0.0);
-        RowProbe {
+    for (index, &vertex) in vertices.iter().enumerate() {
+        let bound = match metric.point_distance_lower_bound(vertex, caps.anchor) {
+            Ok(bound) => (bound - caps.global_reach).max(0.0),
+            Err(error) => {
+                *rows = Vec::new();
+                return Err(error);
+            },
+        };
+        crate::boundary::try_push_vec(rows, RowProbe {
             bound,
             vertex: index as u32,
-        }
-    }));
+        })?;
+    }
     if deterministic_ties {
         rows.sort_unstable_by(|left, right| {
             left.bound
@@ -209,14 +215,14 @@ fn geodesic_capped_distance_sweep_core(
             },
         ) in caps.groups.iter().enumerate()
         {
-            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > best {
+            if metric.point_distance_lower_bound(vertex, group_anchor)? - reach > best {
                 continue;
             }
             let first = group_index * GEODESIC_CAP_GROUP;
             let chunk = &segments[first..segments.len().min(first + GEODESIC_CAP_GROUP)];
             for &segment in chunk {
                 let bound =
-                    metric.point_distance_lower_bound(vertex, segment.start) - segment.length;
+                    metric.point_distance_lower_bound(vertex, segment.start)? - segment.length;
                 if bound > best {
                     continue;
                 }
@@ -235,7 +241,7 @@ fn geodesic_capped_distance_sweep_core(
             }
         }
         for &point in point_only {
-            if metric.point_distance_lower_bound(vertex, point) > best {
+            if metric.point_distance_lower_bound(vertex, point)? > best {
                 continue;
             }
             best = best.min(metric.segment_length(vertex, point));
@@ -287,14 +293,14 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
             },
         ) in caps.groups.iter().enumerate()
         {
-            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > distance {
+            if metric.point_distance_lower_bound(vertex, group_anchor)? - reach > distance {
                 continue;
             }
             let first = group_index * GEODESIC_CAP_GROUP;
             let chunk = &segments[first..segments.len().min(first + GEODESIC_CAP_GROUP)];
             for &segment in chunk {
                 let bound =
-                    metric.point_distance_lower_bound(vertex, segment.start) - segment.length;
+                    metric.point_distance_lower_bound(vertex, segment.start)? - segment.length;
                 if bound > distance {
                     continue;
                 }
@@ -320,7 +326,7 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
             }
         }
         for &point in point_only {
-            if metric.point_distance_lower_bound(vertex, point) > distance {
+            if metric.point_distance_lower_bound(vertex, point)? > distance {
                 continue;
             }
             if metric.segment_length(vertex, point) <= distance {
@@ -426,7 +432,7 @@ pub(crate) fn geodesic_target_witness(
     for (index, &target) in target_parts.point_only.iter().enumerate() {
         let order = target_parts.segments.len() + index;
         let cutoff = witness_refine_limit(best.as_ref(), order);
-        if metric.point_distance_lower_bound(point, target) > cutoff {
+        if metric.point_distance_lower_bound(point, target)? > cutoff {
             continue;
         }
         let distance = metric.segment_length(point, target);
@@ -485,7 +491,7 @@ fn geodesic_capped_witness_sweep_core(
             let best_distance = best
                 .as_ref()
                 .map_or(f64::INFINITY, |candidate| candidate.distance);
-            if metric.point_distance_lower_bound(vertex, group_anchor) - reach > best_distance {
+            if metric.point_distance_lower_bound(vertex, group_anchor)? - reach > best_distance {
                 continue;
             }
             let first = group_index * GEODESIC_CAP_GROUP;
@@ -495,7 +501,7 @@ fn geodesic_capped_witness_sweep_core(
                 let order = order_offset + vertex_index as usize * width + edge_index;
                 let best_distance = witness_refine_limit(best.as_ref(), order);
                 let bound =
-                    metric.point_distance_lower_bound(vertex, segment.start) - segment.length;
+                    metric.point_distance_lower_bound(vertex, segment.start)? - segment.length;
                 if bound > best_distance {
                     continue;
                 }
@@ -536,7 +542,7 @@ fn geodesic_capped_witness_sweep_core(
         for (point_index, &point) in point_only.iter().enumerate() {
             let order = order_offset + vertex_index as usize * width + segments.len() + point_index;
             let best_distance = witness_refine_limit(best.as_ref(), order);
-            if metric.point_distance_lower_bound(vertex, point) > best_distance {
+            if metric.point_distance_lower_bound(vertex, point)? > best_distance {
                 continue;
             }
             let distance = metric.segment_length(vertex, point);

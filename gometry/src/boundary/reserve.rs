@@ -140,6 +140,32 @@ pub(crate) fn try_reserve_pair<T, U>(
     Ok(())
 }
 
+/// Reserve three parallel output columns as one fallible operation. Any
+/// earlier reservation is released before the resource error is returned.
+pub(crate) fn try_reserve_triple<T, U, V>(
+    first: &mut Vec<T>,
+    second: &mut Vec<U>,
+    third: &mut Vec<V>,
+    additional: usize,
+) -> Result<()> {
+    if let Err(error) = try_reserve_vec(first, additional) {
+        *second = Vec::new();
+        *third = Vec::new();
+        return Err(error);
+    }
+    if let Err(error) = try_reserve_vec(second, additional) {
+        *first = Vec::new();
+        *third = Vec::new();
+        return Err(error);
+    }
+    if let Err(error) = try_reserve_vec(third, additional) {
+        *first = Vec::new();
+        *second = Vec::new();
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Append one item to each of two parallel output columns. A failure in the
 /// second append releases both columns before the error is converted.
 pub(crate) fn try_push_pair<T, U>(
@@ -428,6 +454,28 @@ pub(crate) fn try_string_from_str(s: &str) -> Result<String, ()> {
     buf.extend_from_slice(s.as_bytes());
     // SAFETY: `s` is valid UTF-8; we only copied its bytes into reserved space.
     Ok(unsafe { String::from_utf8_unchecked(buf) })
+}
+
+/// Format into a `String` whose growth is reported instead of aborting.
+pub(crate) fn try_format(args: std::fmt::Arguments<'_>) -> crate::error::Result<String> {
+    struct FallibleString(String);
+
+    impl std::fmt::Write for FallibleString {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            self.0
+                .try_reserve(value.len())
+                .map_err(|_| std::fmt::Error)?;
+            self.0.push_str(value);
+            Ok(())
+        }
+    }
+
+    let mut output = FallibleString(String::new());
+    if std::fmt::write(&mut output, args).is_err() {
+        drop(output);
+        return Err(ResourceError::Allocation.into());
+    }
+    Ok(output.0)
 }
 
 /// Copy a valid UTF-8 slice into one exact, fallible `Box<str>` allocation.

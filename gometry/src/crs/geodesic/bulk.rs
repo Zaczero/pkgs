@@ -118,16 +118,20 @@ fn geodesic_inverses_impl<const RADIANS: bool, const HEIGHT: bool>(
     z1: &[f64],
     z2: &[f64],
 ) -> Result<Vec<GeodesicInverseInfo>> {
-    let mut result = Vec::with_capacity(lon1.len());
+    let mut result = Vec::new();
+    crate::boundary::try_reserve_vec(&mut result, lon1.len())?;
     for row in 0..lon1.len() {
         let (za, zb) = if HEIGHT {
             (z1[row], z2[row])
         } else {
             (0.0, 0.0)
         };
-        result.push(geodesic_inverse_on_ellipsoid_const::<RADIANS, HEIGHT>(
-            geodesic, lon1[row], lat1[row], lon2[row], lat2[row], za, zb,
-        )?);
+        crate::boundary::try_push_vec(
+            &mut result,
+            geodesic_inverse_on_ellipsoid_const::<RADIANS, HEIGHT>(
+                geodesic, lon1[row], lat1[row], lon2[row], lat2[row], za, zb,
+            )?,
+        )?;
     }
     Ok(result)
 }
@@ -222,10 +226,16 @@ fn geodesic_direct_columns_impl<const RADIANS: bool>(
     distance: &[f64],
 ) -> Result<GeodesicDirectColumns> {
     let mut columns = GeodesicDirectColumns {
-        longitude: Vec::with_capacity(longitude.len()),
-        latitude: Vec::with_capacity(longitude.len()),
-        final_azimuth: Vec::with_capacity(longitude.len()),
+        longitude: Vec::new(),
+        latitude: Vec::new(),
+        final_azimuth: Vec::new(),
     };
+    crate::boundary::try_reserve_triple(
+        &mut columns.longitude,
+        &mut columns.latitude,
+        &mut columns.final_azimuth,
+        longitude.len(),
+    )?;
     for row in 0..longitude.len() {
         let info = geodesic_direct_on_ellipsoid_const::<RADIANS>(
             geodesic,
@@ -234,9 +244,9 @@ fn geodesic_direct_columns_impl<const RADIANS: bool>(
             azimuth[row],
             distance[row],
         )?;
-        columns.longitude.push(info.longitude);
-        columns.latitude.push(info.latitude);
-        columns.final_azimuth.push(info.final_azimuth);
+        crate::boundary::try_push_vec(&mut columns.longitude, info.longitude)?;
+        crate::boundary::try_push_vec(&mut columns.latitude, info.latitude)?;
+        crate::boundary::try_push_vec(&mut columns.final_azimuth, info.final_azimuth)?;
     }
     Ok(columns)
 }
@@ -326,7 +336,8 @@ fn geodesic_interpolates_impl<const RADIANS: bool, const NORMALIZED: bool>(
         info
     };
 
-    let mut result = Vec::with_capacity(lon1.len());
+    let mut result = Vec::new();
+    crate::boundary::try_reserve_vec(&mut result, lon1.len())?;
     if lon1.len() > 1 && endpoints_are_repeated(lon1, lat1, lon2, lat2) {
         let line =
             geodesic_line_solution_const::<RADIANS>(geodesic, lon1[0], lat1[0], lon2[0], lat2[0])?;
@@ -334,13 +345,10 @@ fn geodesic_interpolates_impl<const RADIANS: bool, const NORMALIZED: bool>(
             let info =
                 geodesic_interpolate_on_line_const::<RADIANS, NORMALIZED>(geodesic, line, value)?;
             let target = target_along::<NORMALIZED>(value, line.3);
-            result.push(carry_endpoint(
-                info,
-                target,
-                line.3,
-                (lon1[0], lat1[0]),
-                (lon2[0], lat2[0]),
-            ));
+            crate::boundary::try_push_vec(
+                &mut result,
+                carry_endpoint(info, target, line.3, (lon1[0], lat1[0]), (lon2[0], lat2[0])),
+            )?;
         }
         return Ok(result);
     }
@@ -354,13 +362,16 @@ fn geodesic_interpolates_impl<const RADIANS: bool, const NORMALIZED: bool>(
             distance[row],
         )?;
         let target = target_along::<NORMALIZED>(distance[row], line.3);
-        result.push(carry_endpoint(
-            info,
-            target,
-            line.3,
-            (lon1[row], lat1[row]),
-            (lon2[row], lat2[row]),
-        ));
+        crate::boundary::try_push_vec(
+            &mut result,
+            carry_endpoint(
+                info,
+                target,
+                line.3,
+                (lon1[row], lat1[row]),
+                (lon2[row], lat2[row]),
+            ),
+        )?;
     }
     Ok(result)
 }
