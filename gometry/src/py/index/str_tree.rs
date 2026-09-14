@@ -1,15 +1,20 @@
-//! Immutable STR-packed envelope tree — the bulk half of the spatial index.
+//! Immutable STR-packed envelope trees for both halves of the spatial index.
 //!
-//! Built once with the sort-tile-recursive layout (one global x-sort, one
-//! y-sort per strip, flat level arrays — no per-node heap graph). Liveness is
-//! owned by the index row table; post-build inserts live in its small dynamic
-//! overflow tree. Node fields are `pub(super)` — the nearest
-//! frontier and the convex descent in `mod.rs` walk levels directly.
+//! Built with the sort-tile-recursive layout (one global x-sort, one y-sort
+//! per strip, flat level arrays — no per-node heap graph). Liveness is owned
+//! by the index row table. Post-build inserts live in a binary forest of these
+//! immutable runs, so rebuilding work is carried only by binary carries rather
+//! than by one tree rebuilt for every mutation.
 
 use rstar::{AABB, Envelope as _};
 
 use crate::HeapSize;
 use crate::py::index::IndexEntry;
+
+#[cfg(test)]
+thread_local! {
+    static BUILD_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// STR node fan-out. 16 keeps the tree shallow (100k rows ≈ 6.7k nodes over
 /// 4 levels) while each node's children still scan as one cache line burst.
@@ -37,6 +42,16 @@ pub(super) struct StaticStrTree {
 }
 
 impl StaticStrTree {
+    #[cfg(test)]
+    pub(super) fn reset_build_work() {
+        BUILD_WORK.with(|work| work.set(0));
+    }
+
+    #[cfg(test)]
+    pub(super) fn build_work() -> usize {
+        BUILD_WORK.with(std::cell::Cell::get)
+    }
+
     #[expect(
         clippy::same_name_method,
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
@@ -57,6 +72,8 @@ impl StaticStrTree {
         total_rows: usize,
     ) -> crate::error::Result<Self> {
         let entry_count = entries.len();
+        #[cfg(test)]
+        BUILD_WORK.with(|work| work.set(work.get().saturating_add(entry_count)));
         let mut tree = Self {
             entries: Vec::new(),
             levels: Vec::new(),
@@ -124,6 +141,20 @@ impl StaticStrTree {
     /// index's overflow inserts.
     pub(super) const fn initial_len(&self) -> usize {
         self.initial_len
+    }
+
+    /// Number of physical envelope entries in this immutable run.
+    pub(super) const fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Entries in this run's STR storage order.
+    ///
+    /// The forest copies these entries only while preparing a binary carry or
+    /// a compaction. Keeping the copy surface here avoids exposing the tree's
+    /// level representation to its owner.
+    pub(super) fn entries(&self) -> &[IndexEntry] {
+        &self.entries
     }
 
     /// Every live entry, in STR storage order.
@@ -283,6 +314,347 @@ impl HeapSize for StaticStrTree {
     }
 }
 
+/// An immutable-run forest for post-build index entries.
+///
+/// `runs[rank]`, when occupied, contains exactly `2.pow(rank)` physical
+/// envelope entries. The row table remains the sole liveness authority:
+/// `live_entries` and `dead_entries` count physical entries, while
+/// `entry_counts` records how many envelopes each never-reused overflow handle
+/// contributed.
+#[derive(Clone, Debug)]
+pub(super) struct StaticStrForest {
+    runs: Vec<Option<StaticStrTree>>,
+    handle_start: usize,
+    entry_counts: Vec<usize>,
+    total_entries: usize,
+    live_entries: usize,
+    dead_entries: usize,
+}
+
+impl StaticStrForest {
+    pub(super) const fn new(handle_start: usize) -> Self {
+        Self {
+            runs: Vec::new(),
+            handle_start,
+            entry_counts: Vec::new(),
+            total_entries: 0,
+            live_entries: 0,
+            dead_entries: 0,
+        }
+    }
+
+    #[expect(
+        clippy::same_name_method,
+        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
+    )]
+    pub(super) fn heap_bytes(&self) -> usize {
+        HeapSize::heap_bytes(self)
+    }
+
+    #[cfg(test)]
+    pub(super) const fn total_entries(&self) -> usize {
+        self.total_entries
+    }
+
+    #[cfg(test)]
+    pub(super) const fn live_entry_count(&self) -> usize {
+        self.live_entries
+    }
+
+    #[cfg(test)]
+    pub(super) const fn dead_entry_count(&self) -> usize {
+        self.dead_entries
+    }
+
+    /// Number of occupied binary ranks. This is deliberately not a
+    /// configurable compaction or fan-out threshold.
+    #[cfg(test)]
+    pub(super) fn occupied_run_count(&self) -> usize {
+        self.runs.iter().filter(|run| run.is_some()).count()
+    }
+
+    /// Every occupied run with its exact binary rank.
+    pub(super) fn occupied_runs(&self) -> impl Iterator<Item = (usize, &StaticStrTree)> {
+        self.runs
+            .iter()
+            .enumerate()
+            .filter_map(|(rank, run)| run.as_ref().map(|run| (rank, run)))
+    }
+
+    pub(super) fn root_count(&self) -> usize {
+        self.occupied_runs().map(|(_, run)| run.roots().len()).sum()
+    }
+
+    /// Roots of every occupied run, tagged with the run rank and level for a
+    /// shared best-first frontier.
+    pub(super) fn roots(&self) -> impl Iterator<Item = (usize, usize, u32, &StrNode)> + '_ {
+        self.occupied_runs().flat_map(|(run, tree)| {
+            let level = tree.root_level();
+            tree.roots()
+                .iter()
+                .enumerate()
+                .map(move |(index, node)| (run, level, index as u32, node))
+        })
+    }
+
+    pub(super) fn run(&self, rank: usize) -> &StaticStrTree {
+        self.runs
+            .get(rank)
+            .and_then(Option::as_ref)
+            .expect("occupied forest rank")
+    }
+
+    /// Every live physical entry in run order. Periodic envelope aliases are
+    /// intentionally retained; row-level callers deduplicate them where the
+    /// query contract returns logical handles.
+    pub(super) fn live_entries<'a>(
+        &'a self,
+        live: &'a [u8],
+    ) -> impl Iterator<Item = &'a IndexEntry> {
+        self.runs
+            .iter()
+            .filter_map(Option::as_ref)
+            .flat_map(move |run| run.live_entries(live))
+    }
+
+    pub(super) fn each_intersecting(
+        &self,
+        live: &[u8],
+        query: &AABB<[f64; 2]>,
+        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
+        for run in self.runs.iter().filter_map(Option::as_ref) {
+            run.each_intersecting(live, query, &mut visit)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn each_within_distance_2(
+        &self,
+        live: &[u8],
+        point: [f64; 2],
+        max_distance_2: f64,
+        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
+        for run in self.runs.iter().filter_map(Option::as_ref) {
+            run.each_within_distance_2(live, point, max_distance_2, &mut visit)?;
+        }
+        Ok(())
+    }
+
+    /// Fallibly reserve the persistent per-overflow-row count column. No
+    /// logical state changes if the allocator rejects this request.
+    pub(super) fn try_reserve_entry_counts(
+        &mut self,
+        additional: usize,
+    ) -> crate::error::Result<()> {
+        self.entry_counts.try_reserve(additional)?;
+        Ok(())
+    }
+
+    pub(super) fn entry_count_for_handle(&self, handle: usize) -> usize {
+        debug_assert!(handle >= self.handle_start);
+        self.entry_counts
+            .get(handle.saturating_sub(self.handle_start))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Prepare the binary forest after adding `entries`, without touching this
+    /// forest. The returned runs are complete enough to publish by a
+    /// non-fallible move once all other mutation-owned reserves succeed.
+    pub(super) fn prepare_insert(
+        &self,
+        entries: &[IndexEntry],
+        total_rows: usize,
+    ) -> crate::error::Result<PreparedForest> {
+        let total_entries = self
+            .total_entries
+            .checked_add(entries.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        if entries.is_empty() {
+            return Ok(PreparedForest {
+                runs: Vec::new(),
+                consumed: Vec::new(),
+                total_entries,
+            });
+        }
+
+        let rank_count = required_rank_count(self.runs.len(), total_entries);
+        let mut runs = Vec::new();
+        runs.try_reserve(rank_count)?;
+        runs.resize_with(rank_count, || None);
+        let mut consumed = Vec::new();
+        consumed.try_reserve(rank_count)?;
+        consumed.resize(rank_count, false);
+
+        let mut offset = 0;
+        while offset < entries.len() {
+            let chunk_len = highest_power_of_two(entries.len() - offset);
+            let chunk = copy_entries(&entries[offset..offset + chunk_len])?;
+            let mut carry = StaticStrTree::build(chunk, total_rows)?;
+            let mut rank = chunk_len.trailing_zeros() as usize;
+            offset += chunk_len;
+
+            loop {
+                debug_assert!(rank < runs.len());
+                if let Some(staged) = runs[rank].take() {
+                    carry = merge_trees(&staged, &carry, total_rows)?;
+                    rank += 1;
+                    continue;
+                }
+                if rank < self.runs.len()
+                    && !consumed[rank]
+                    && let Some(existing) = self.runs[rank].as_ref()
+                {
+                    consumed[rank] = true;
+                    carry = merge_trees(existing, &carry, total_rows)?;
+                    rank += 1;
+                    continue;
+                }
+                runs[rank] = Some(carry);
+                break;
+            }
+        }
+
+        Ok(PreparedForest {
+            runs,
+            consumed,
+            total_entries,
+        })
+    }
+
+    /// Publish a previously prepared insertion. Every operation after this
+    /// point is a move, drop, or infallible push into capacity reserved by the
+    /// caller.
+    pub(super) fn commit_insert(&mut self, prepared: PreparedForest, entry_counts: &[usize]) {
+        let added_entries = prepared.total_entries - self.total_entries;
+        debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), added_entries);
+        if !prepared.runs.is_empty() {
+            let old_runs = std::mem::take(&mut self.runs);
+            let mut runs = prepared.runs;
+            debug_assert!(old_runs.len() <= runs.len());
+            for (rank, old) in old_runs.into_iter().enumerate() {
+                if runs[rank].is_none() && !prepared.consumed[rank] {
+                    runs[rank] = old;
+                } else {
+                    debug_assert!(old.is_none() || prepared.consumed[rank]);
+                }
+            }
+            while runs.last().is_some_and(Option::is_none) {
+                runs.pop();
+            }
+            self.runs = runs;
+        }
+        for &count in entry_counts {
+            self.entry_counts.push(count);
+        }
+        self.total_entries = prepared.total_entries;
+        self.live_entries += added_entries;
+        debug_assert_eq!(self.total_entries, self.live_entries + self.dead_entries);
+    }
+
+    pub(super) const fn should_compact(&self, removed_entries: usize) -> bool {
+        let live_after = self
+            .live_entries
+            .checked_sub(removed_entries)
+            .expect("removed overflow entries are live");
+        self.dead_entries
+            .checked_add(removed_entries)
+            .expect("overflow entry counters fit usize")
+            > live_after
+    }
+
+    pub(super) fn mark_removed(&mut self, removed_entries: usize) {
+        debug_assert!(removed_entries <= self.live_entries);
+        self.live_entries -= removed_entries;
+        self.dead_entries += removed_entries;
+        debug_assert_eq!(self.total_entries, self.live_entries + self.dead_entries);
+    }
+
+    /// Prepare a fresh forest containing every currently live entry except
+    /// `removed_handle`. The row tombstone is intentionally not published
+    /// until this fallible construction succeeds.
+    pub(super) fn prepare_compaction(
+        &self,
+        live: &[u8],
+        removed_handle: usize,
+        total_rows: usize,
+        removed_entries: usize,
+    ) -> crate::error::Result<PreparedForest> {
+        debug_assert!(removed_entries <= self.live_entries);
+        let remaining = self.live_entries - removed_entries;
+        let mut entries = Vec::new();
+        entries.try_reserve(remaining)?;
+        for entry in self.live_entries(live) {
+            if entry.idx != removed_handle {
+                crate::try_push_vec(&mut entries, *entry)?;
+            }
+        }
+        debug_assert_eq!(entries.len(), remaining);
+        let empty = Self::new(self.handle_start);
+        empty.prepare_insert(&entries, total_rows)
+    }
+
+    pub(super) fn commit_compaction(&mut self, prepared: PreparedForest) {
+        let _old_runs = std::mem::replace(&mut self.runs, prepared.runs);
+        self.total_entries = prepared.total_entries;
+        self.live_entries = prepared.total_entries;
+        self.dead_entries = 0;
+        debug_assert_eq!(self.total_entries, self.live_entries + self.dead_entries);
+    }
+}
+
+/// A fully constructed candidate run set. `runs` may contain `None` slots
+/// where an unchanged old run is filled during insertion publication.
+pub(super) struct PreparedForest {
+    runs: Vec<Option<StaticStrTree>>,
+    consumed: Vec<bool>,
+    total_entries: usize,
+}
+
+impl HeapSize for StaticStrForest {
+    fn heap_bytes(&self) -> usize {
+        self.runs.heap_bytes() + self.entry_counts.heap_bytes()
+    }
+}
+
+fn required_rank_count(existing: usize, total_entries: usize) -> usize {
+    let highest_rank = (usize::BITS - 1 - total_entries.leading_zeros()) as usize;
+    existing.max(highest_rank + 1)
+}
+
+fn highest_power_of_two(value: usize) -> usize {
+    debug_assert!(value != 0);
+    1_usize << (usize::BITS - 1 - value.leading_zeros())
+}
+
+fn copy_entries(entries: &[IndexEntry]) -> crate::error::Result<Vec<IndexEntry>> {
+    let mut copied = Vec::new();
+    copied.try_reserve(entries.len())?;
+    for &entry in entries {
+        crate::try_push_vec(&mut copied, entry)?;
+    }
+    Ok(copied)
+}
+
+fn merge_trees(
+    left: &StaticStrTree,
+    right: &StaticStrTree,
+    total_rows: usize,
+) -> crate::error::Result<StaticStrTree> {
+    let count = left
+        .entry_count()
+        .checked_add(right.entry_count())
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let mut entries = Vec::new();
+    entries.try_reserve(count)?;
+    for &entry in left.entries().iter().chain(right.entries()) {
+        crate::try_push_vec(&mut entries, entry)?;
+    }
+    StaticStrTree::build(entries, total_rows)
+}
+
 /// The half-open child range of chunk `node` (every chunk before it is
 /// full).
 const fn range_at(node: usize, len: usize) -> std::ops::Range<u32> {
@@ -403,5 +775,204 @@ mod tests {
         )
         .unwrap();
         assert_eq!(negative_hits, [0]);
+    }
+
+    fn forest_entries(start: usize, count: usize) -> Vec<IndexEntry> {
+        (0..count)
+            .map(|offset| entry(start + offset, [offset as f64, 0.0], [offset as f64, 0.0]))
+            .collect()
+    }
+
+    fn commit_forest_batch(forest: &mut StaticStrForest, entries: &[IndexEntry], counts: &[usize]) {
+        let prepared = forest
+            .prepare_insert(entries, 128)
+            .expect("prepared forest");
+        forest
+            .try_reserve_entry_counts(counts.len())
+            .expect("entry-count reserve");
+        forest.commit_insert(prepared, counts);
+    }
+
+    #[test]
+    fn binary_forest_keeps_exact_occupied_weights_for_arbitrary_batches() {
+        let mut forest = StaticStrForest::new(10);
+        let entries = forest_entries(10, 13);
+        let counts = vec![1; entries.len()];
+        commit_forest_batch(&mut forest, &entries, &counts);
+
+        let runs: Vec<_> = forest
+            .occupied_runs()
+            .map(|(rank, tree)| (rank, tree.entry_count()))
+            .collect();
+        assert_eq!(runs, [(0, 1), (2, 4), (3, 8)]);
+        assert_eq!(forest.total_entries(), 13);
+        assert_eq!(forest.live_entry_count(), 13);
+        assert_eq!(forest.dead_entry_count(), 0);
+        assert_eq!(forest.occupied_run_count(), 3);
+    }
+
+    #[test]
+    fn binary_forest_carries_across_preoccupied_ranks_without_losing_entries() {
+        let mut forest = StaticStrForest::new(20);
+        let first = forest_entries(20, 7);
+        commit_forest_batch(&mut forest, &first, &[1; 7]);
+        let second = forest_entries(27, 9);
+        commit_forest_batch(&mut forest, &second, &[1; 9]);
+
+        let weights: Vec<_> = forest
+            .occupied_runs()
+            .map(|(rank, tree)| (rank, tree.entry_count()))
+            .collect();
+        assert_eq!(weights, [(4, 16)]);
+        assert_eq!(forest.total_entries(), 16);
+        let live = vec![1_u8; 36];
+        let ids: Vec<_> = forest.live_entries(&live).map(|entry| entry.idx).collect();
+        assert_eq!(ids.len(), 16);
+        assert!(ids.into_iter().all(|idx| (20..36).contains(&idx)));
+    }
+
+    #[test]
+    fn binary_forest_small_batch_matrix_preserves_every_entry() {
+        for initial_count in 0..16 {
+            for batch_count in 0..16 {
+                let mut forest = StaticStrForest::new(50);
+                let initial = forest_entries(50, initial_count);
+                commit_forest_batch(&mut forest, &initial, &vec![1; initial_count]);
+                let batch = forest_entries(50 + initial_count, batch_count);
+                commit_forest_batch(&mut forest, &batch, &vec![1; batch_count]);
+
+                let total = initial_count + batch_count;
+                let live = vec![1_u8; 50 + total];
+                let mut ids: Vec<_> = forest.live_entries(&live).map(|entry| entry.idx).collect();
+                ids.sort_unstable();
+                let expected: Vec<_> = (50..50 + total).collect();
+                assert_eq!(ids, expected);
+                let weights: usize = forest
+                    .occupied_runs()
+                    .map(|(rank, tree)| {
+                        assert_eq!(tree.entry_count(), 1_usize << rank);
+                        tree.entry_count()
+                    })
+                    .sum();
+                assert_eq!(weights, total);
+                assert_eq!(
+                    forest.occupied_run_count(),
+                    (0..usize::BITS as usize)
+                        .filter(|rank| total & (1_usize << rank) != 0)
+                        .count()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn forest_spatial_traversal_matches_exhaustive_physical_oracle() {
+        let mut forest = StaticStrForest::new(60);
+        let entries = forest_entries(60, 37);
+        commit_forest_batch(&mut forest, &entries, &[1; 37]);
+        let mut live = vec![1_u8; 97];
+        for handle in [63, 74, 91] {
+            live[handle] = 0;
+        }
+        forest.mark_removed(3);
+
+        let intersects_queries = [
+            AABB::from_corners([0.0, 0.0], [8.0, 0.0]),
+            AABB::from_corners([16.0, 0.0], [27.0, 0.0]),
+            AABB::from_corners([100.0, 100.0], [110.0, 110.0]),
+        ];
+        for query in intersects_queries {
+            let mut actual = Vec::new();
+            forest
+                .each_intersecting(&live, &query, |handle| {
+                    actual.push(handle);
+                    Ok(())
+                })
+                .expect("forest intersection traversal");
+            actual.sort_unstable();
+            let mut expected: Vec<_> = entries
+                .iter()
+                .filter(|entry| live[entry.idx] != 0 && intersects(&entry.envelope, &query))
+                .map(|entry| entry.idx)
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(actual, expected);
+        }
+
+        for (point, radius_2) in [([2.0, 0.0], 4.0), ([29.0, 0.0], 1.0), ([100.0, 0.0], 1.0)] {
+            let mut actual = Vec::new();
+            forest
+                .each_within_distance_2(&live, point, radius_2, |handle| {
+                    actual.push(handle);
+                    Ok(())
+                })
+                .expect("forest distance traversal");
+            actual.sort_unstable();
+            let mut expected: Vec<_> = entries
+                .iter()
+                .filter(|entry| {
+                    live[entry.idx] != 0 && distance_2(&entry.envelope, &point) <= radius_2
+                })
+                .map(|entry| entry.idx)
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn compaction_rebuilds_only_live_entries_and_resets_dead_count() {
+        let mut forest = StaticStrForest::new(30);
+        let entries = forest_entries(30, 8);
+        commit_forest_batch(&mut forest, &entries, &[1; 8]);
+        let mut live = vec![1_u8; 38];
+        live[30] = 0;
+        live[31] = 0;
+        live[32] = 0;
+        live[33] = 0;
+        forest.mark_removed(4);
+        assert!(forest.should_compact(1));
+        let prepared = forest
+            .prepare_compaction(&live, 34, 38, 1)
+            .expect("compaction");
+        forest.commit_compaction(prepared);
+        assert_eq!(forest.total_entries(), 3);
+        assert_eq!(forest.live_entry_count(), 3);
+        assert_eq!(forest.dead_entry_count(), 0);
+        assert!(forest.live_entries(&live).all(|entry| entry.idx != 34));
+    }
+
+    #[test]
+    fn scalar_insert_remove_work_is_not_quadratic() {
+        let count = 256;
+        let mut forest = StaticStrForest::new(40);
+        let mut live = vec![0_u8; 40 + count];
+        StaticStrTree::reset_build_work();
+        for (handle, row) in live.iter_mut().enumerate().skip(40).take(count) {
+            let entries = [entry(handle, [handle as f64, 0.0], [handle as f64, 0.0])];
+            commit_forest_batch(&mut forest, &entries, &[1]);
+            *row = 1;
+        }
+        let mut handle = 40;
+        while handle < 40 + count {
+            if forest.should_compact(1) {
+                let prepared = forest
+                    .prepare_compaction(&live, handle, live.len(), 1)
+                    .expect("compaction");
+                live[handle] = 0;
+                forest.commit_compaction(prepared);
+            } else {
+                live[handle] = 0;
+                forest.mark_removed(1);
+            }
+            handle += 1;
+        }
+        assert_eq!(forest.live_entry_count(), 0);
+        assert_eq!(forest.dead_entry_count(), 0);
+        let work = StaticStrTree::build_work();
+        // A full accumulated rebuild per scalar insert would process
+        // count * (count + 1) / 2 entries. Binary carries and geometric
+        // tombstone compactions stay far below that quadratic work.
+        assert!(work * 4 < count * count, "entry rebuild work: {work}");
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! A sound, tight lower bound on the ellipsoidal geodesic distance between a
 //! query point and any point inside a lon/lat envelope, so geographic
-//! nearest/`dwithin` queries prune the R-tree instead of Karney-evaluating
-//! every entry.
+//! nearest/`dwithin` queries prune the immutable runs instead of
+//! Karney-evaluating every entry.
 //!
 //! **Soundness.** Karney's auxiliary-sphere construction gives the geodesic
 //! length as `s = b · ∫√(1 + k²sin²σ′) dσ′ ≥ b · σ`, where `b` is the
@@ -397,7 +397,7 @@ mod tests {
 /// on the row's angular reach from it in meters (`σ ≤ s/b` turns
 /// `s(anchor, segment.start) + length` into a bound that covers bowed
 /// geodesic edges — which can leave their lon/lat envelope, the reason the
-/// planar R-tree bound is unsound here). Gives a sound lower bound on the
+/// planar envelope bound is unsound here). Gives a sound lower bound on the
 /// geodesic distance from any query cap to any point of the row.
 #[derive(Debug)]
 pub(crate) struct GeodesicRowCaps {

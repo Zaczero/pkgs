@@ -6,55 +6,38 @@ use pyo3::IntoPyObjectExt as _;
 
 use crate::NonNegative;
 use crate::py::index::{
-    AABB, BinaryHeap, IndexEntry, Ordering, PointDistance, Py, PyAny, PyErr, PyResult, Python,
-    RTreeNode, RTreeObject, float64_array, int64_array,
+    AABB, BinaryHeap, Ordering, Py, PyAny, PyErr, PyResult, Python, float64_array, int64_array,
 };
 use crate::py::vectors::Groups;
-/// A frontier node of the best-first nearest traversal — a bulk STR node
-/// (level, index), an overflow R-tree node, or an evaluated-bound entry —
-/// with its envelope's distance lower bound, min-ordered by that bound.
-pub(crate) enum Frontier<'a> {
+/// A frontier node of the best-first nearest traversal — a bulk STR node, an
+/// immutable overflow-run node, or an evaluated-bound entry — with its
+/// envelope's distance lower bound, min-ordered by that bound.
+pub(crate) enum Frontier {
     Bulk(usize, u32),
-    Overflow(&'a RTreeNode<IndexEntry>),
+    Run(usize, usize, u32),
     Entry(usize),
 }
 
-pub(crate) struct FrontierNode<'a> {
+pub(crate) struct FrontierNode {
     pub(crate) bound: f64,
-    pub(crate) node: Frontier<'a>,
+    pub(crate) node: Frontier,
 }
 
-impl<'a> FrontierNode<'a> {
-    pub(crate) fn overflow(
-        bound: &impl Fn(&AABB<[f64; 2]>) -> f64,
-        node: &'a RTreeNode<IndexEntry>,
-    ) -> Self {
-        let envelope = match node {
-            RTreeNode::Parent(parent) => parent.envelope(),
-            RTreeNode::Leaf(entry) => entry.envelope,
-        };
-        Self {
-            bound: bound(&envelope),
-            node: Frontier::Overflow(node),
-        }
-    }
-}
-
-impl PartialEq for FrontierNode<'_> {
+impl PartialEq for FrontierNode {
     fn eq(&self, other: &Self) -> bool {
         self.bound.total_cmp(&other.bound).is_eq()
     }
 }
 
-impl Eq for FrontierNode<'_> {}
+impl Eq for FrontierNode {}
 
-impl PartialOrd for FrontierNode<'_> {
+impl PartialOrd for FrontierNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for FrontierNode<'_> {
+impl Ord for FrontierNode {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reversed: BinaryHeap is a max-heap, the traversal needs min-bound
         // first.
@@ -250,20 +233,6 @@ pub(crate) fn format_nearest(
         return (ids, distances).into_py_any(py);
     }
     ids.into_py_any(py)
-}
-
-impl RTreeObject for IndexEntry {
-    type Envelope = AABB<[f64; 2]>;
-
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
-    }
-}
-
-impl PointDistance for IndexEntry {
-    fn distance_2(&self, point: &[f64; 2]) -> f64 {
-        self.envelope.distance_2(point)
-    }
 }
 
 #[cfg(test)]

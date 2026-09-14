@@ -1,8 +1,8 @@
 use crate::geometry::TopologyDomain;
 use crate::py::index::{
     Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore, PyAny,
-    PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python, RTree,
-    ShapeData, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
+    PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python, ShapeData,
+    StaticStrForest, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
     geodesic_prunable_point, index_envelopes,
 };
 pub(crate) fn spatial_index(items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
@@ -73,7 +73,7 @@ fn spatial_index_rows(
             live_count,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
-        overflow: RTree::new(),
+        overflow: StaticStrForest::new(total_rows),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,
@@ -154,10 +154,10 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
     if array.len() == 0 || !matches!(array.storage(), GeometryArrayStorage::Packed(_)) {
         return Ok(None);
     }
-    let metadata = (!array
+    let metadata = array
         .missing()
-        .is_some_and(|missing| missing.present_count() == 0))
-    .then(|| array.frame.clone());
+        .is_none_or(|missing| missing.present_count() != 0)
+        .then(|| array.frame.clone());
     let domain = metadata
         .as_ref()
         .map(crate::geometry::topology_domain)
@@ -176,7 +176,7 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
             live_count,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
-        overflow: RTree::new(),
+        overflow: StaticStrForest::new(total_rows),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,
@@ -366,7 +366,7 @@ pub(crate) fn restore_spatial_index(
             live_count: live_handles.len(),
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
-        overflow: RTree::new(),
+        overflow: StaticStrForest::new(total_rows),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,

@@ -54,11 +54,11 @@ fn admitted_query<'a>(
 
 impl PySpatialIndex {
     /// Every live entry — the STR bulk (row liveness skipped) then the
-    /// dynamic overflow.
+    /// immutable overflow runs.
     pub(crate) fn live_entries(&self) -> impl Iterator<Item = &IndexEntry> {
         self.bulk
             .live_entries(&self.rows.live)
-            .chain(self.overflow.iter())
+            .chain(self.overflow.live_entries(&self.rows.live))
     }
 
     /// Append every live handle whose envelope intersects `query`.
@@ -70,9 +70,8 @@ impl PySpatialIndex {
         let start = out.len();
         self.bulk
             .each_intersecting(&self.rows.live, query, |idx| try_push_vec(out, idx))?;
-        for entry in self.overflow.locate_in_envelope_intersecting(*query) {
-            try_push_vec(out, entry.idx)?;
-        }
+        self.overflow
+            .each_intersecting(&self.rows.live, query, |idx| try_push_vec(out, idx))?;
         dedup_row_ids(out, start);
         Ok(())
     }
@@ -90,9 +89,10 @@ impl PySpatialIndex {
             .each_within_distance_2(&self.rows.live, point, max_distance_2, |idx| {
                 try_push_vec(out, idx)
             })?;
-        for entry in self.overflow.locate_within_distance(point, max_distance_2) {
-            try_push_vec(out, entry.idx)?;
-        }
+        self.overflow
+            .each_within_distance_2(&self.rows.live, point, max_distance_2, |idx| {
+                try_push_vec(out, idx)
+            })?;
         dedup_row_ids(out, start);
         Ok(())
     }

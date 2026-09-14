@@ -86,20 +86,23 @@ impl PySpatialIndex {
             return Err(GeometryError::new_err("cannot index empty geometry"));
         }
         let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
+        let non_prunable_live = usize::from(!geodesic_prunable_point(&geometry.shape));
+        let adopt_frame = self.metadata.is_none().then(|| geometry.frame.clone());
+        let mut entry_counts = [0_usize; 1];
+        let mut entries = Vec::new();
+        crate::try_reserve_vec(&mut entries, cover.entries().len())?;
         let idx = self.rows.len();
-        self.rows.try_reserve(1)?;
-        // The geometry is indexable — adopt the frame only after all fallible
-        // preparation for this mutation has succeeded.
-        if self.metadata.is_none() {
-            self.metadata = Some(geometry.frame.clone());
-        }
         for &envelope in cover.entries() {
-            self.overflow.insert(IndexEntry { idx, envelope });
+            crate::try_push_vec(&mut entries, IndexEntry { idx, envelope })?;
         }
-        self.non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
-        self.rows.push(geometry.clone());
-        self.mutation_gen = self.mutation_gen.wrapping_add(1);
-        Ok(idx)
+        entry_counts[0] = entries.len();
+        self.insert_prepared_rows(
+            std::iter::once(geometry),
+            entries,
+            &entry_counts,
+            non_prunable_live,
+            adopt_frame,
+        )
     }
 
     pub(crate) fn insert_items(&mut self, items: Vec<PyGeometry>) -> PyResult<Vec<usize>> {
@@ -118,7 +121,8 @@ impl PySpatialIndex {
         let adopt_frame = self.metadata.is_none().then(|| frame.clone()).flatten();
         let start = self.rows.len();
         let mut entries = Vec::new();
-        if let Err(error) = crate::try_reserve_vec(&mut entries, items.len()) {
+        let mut entry_counts = Vec::new();
+        if let Err(error) = crate::try_reserve_pair(&mut entries, &mut entry_counts, items.len()) {
             drop(items);
             return Err(pyo3::PyErr::from(error));
         }
@@ -149,9 +153,19 @@ impl PySpatialIndex {
                     return Err(pyo3::PyErr::from(error));
                 }
             }
+            if let Err(error) = crate::try_push_vec(&mut entry_counts, cover.entries().len()) {
+                drop(items);
+                return Err(pyo3::PyErr::from(error));
+            }
             non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
         }
-        self.insert_prepared_batch(items, entries, non_prunable_live, adopt_frame)
+        self.insert_prepared_batch(
+            items,
+            entries,
+            &entry_counts,
+            non_prunable_live,
+            adopt_frame,
+        )
     }
 
     pub(crate) fn insert_array(&mut self, array: &PyGeometryArray) -> PyResult<Vec<usize>> {
@@ -173,7 +187,11 @@ impl PySpatialIndex {
         let start = self.rows.len();
         let mut entries = Vec::new();
         let mut items = Vec::new();
-        if let Err(error) = crate::try_reserve_pair(&mut entries, &mut items, len) {
+        let mut entry_counts = Vec::new();
+        if let Err(error) = crate::try_reserve_vec(&mut entries, len) {
+            return Err(pyo3::PyErr::from(error));
+        }
+        if let Err(error) = crate::try_reserve_pair(&mut items, &mut entry_counts, len) {
             return Err(pyo3::PyErr::from(error));
         }
         let domain = crate::geometry::topology_domain(&array.frame)?;
@@ -198,6 +216,10 @@ impl PySpatialIndex {
                     return Err(pyo3::PyErr::from(error));
                 }
             }
+            if let Err(error) = crate::try_push_vec(&mut entry_counts, cover.entries().len()) {
+                drop(entries);
+                return Err(pyo3::PyErr::from(error));
+            }
             let plan = array.prepared_row(offset, row)?.into_owned_plan()?;
             non_prunable_live += usize::from(!geodesic_prunable_point(plan.shape()));
             if let Err(error) = crate::try_push_vec(
@@ -208,7 +230,13 @@ impl PySpatialIndex {
                 return Err(pyo3::PyErr::from(error));
             }
         }
-        self.insert_prepared_batch(items, entries, non_prunable_live, adopt_frame)
+        self.insert_prepared_batch(
+            items,
+            entries,
+            &entry_counts,
+            non_prunable_live,
+            adopt_frame,
+        )
     }
 
     pub(crate) fn check_insert_frame(&self, frame: &Frame) -> PyResult<()> {
@@ -225,22 +253,55 @@ impl PySpatialIndex {
         &mut self,
         items: Vec<PyGeometry>,
         entries: Vec<IndexEntry>,
+        entry_counts: &[usize],
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
     ) -> PyResult<Vec<usize>> {
-        debug_assert!(
-            entries
-                .iter()
-                .all(|entry| entry.idx >= self.rows.len()
-                    && entry.idx < self.rows.len() + items.len())
-        );
         let start = self.rows.len();
         let count = items.len();
+        debug_assert_eq!(entry_counts.len(), count);
+        debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
         let mut handles = crate::try_vec_with_capacity(count)?;
         for offset in 0..count {
             crate::try_push(&mut handles, start + offset)?;
         }
+        self.insert_prepared_rows(
+            items.into_iter(),
+            entries,
+            entry_counts,
+            non_prunable_live,
+            adopt_frame,
+        )?;
+        Ok(handles)
+    }
+
+    fn insert_prepared_rows(
+        &mut self,
+        items: impl ExactSizeIterator<Item = PyGeometry>,
+        entries: Vec<IndexEntry>,
+        entry_counts: &[usize],
+        non_prunable_live: usize,
+        adopt_frame: Option<Frame>,
+    ) -> PyResult<usize> {
+        let start = self.rows.len();
+        let count = items.len();
+        debug_assert_eq!(entry_counts.len(), count);
+        debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
+        debug_assert!(
+            entries
+                .iter()
+                .all(|entry| entry.idx >= start && entry.idx < start + count)
+        );
+        let total_rows = start
+            .checked_add(count)
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+            .map_err(crate::error::Error::from)
+            .map_err(pyo3::PyErr::from)?;
+        let prepared = self.overflow.prepare_insert(&entries, total_rows)?;
         self.rows.try_reserve(count)?;
+        self.overflow
+            .try_reserve_entry_counts(count)
+            .map_err(pyo3::PyErr::from)?;
         if let Some(frame) = adopt_frame {
             self.metadata = Some(frame);
         }
@@ -248,15 +309,303 @@ impl PySpatialIndex {
             let handle = self.rows.push(geometry);
             debug_assert_eq!(handle, start + offset);
         }
-        if self.overflow.size() == 0 {
-            self.overflow = rstar::RTree::bulk_load(entries);
-        } else {
-            for entry in entries {
-                self.overflow.insert(entry);
-            }
-        }
+        self.overflow.commit_insert(prepared, entry_counts);
         self.non_prunable_live += non_prunable_live;
         self.mutation_gen = self.mutation_gen.wrapping_add(1);
-        Ok(handles)
+        Ok(start)
+    }
+
+    pub(crate) fn remove_handle(&mut self, handle: usize) -> PyResult<bool> {
+        if !self.rows.is_live(handle) {
+            return Ok(false);
+        }
+        let non_prunable = {
+            let mut rows = self.rows.operation();
+            rows.row(handle)?
+                .with_shape(|shape| !geodesic_prunable_point(shape))?
+        };
+        let removed = if handle < self.bulk.initial_len() {
+            self.rows.mark_removed(handle)
+        } else {
+            // The forest records the physical cover size when the row is
+            // inserted, so removal only consults that count. It never
+            // re-materializes the geometry or recomputes its cover.
+            let removed_entries = self.overflow.entry_count_for_handle(handle);
+            let prepared = if self.overflow.should_compact(removed_entries) {
+                Some(self.overflow.prepare_compaction(
+                    &self.rows.live,
+                    handle,
+                    self.rows.len(),
+                    removed_entries,
+                )?)
+            } else {
+                None
+            };
+            let removed = self.rows.mark_removed(handle);
+            debug_assert!(removed);
+            if let Some(prepared) = prepared {
+                self.overflow.commit_compaction(prepared);
+            } else {
+                self.overflow.mark_removed(removed_entries);
+            }
+            removed
+        };
+        if removed {
+            if non_prunable {
+                debug_assert!(self.non_prunable_live > 0);
+                self.non_prunable_live -= 1;
+            }
+            self.mutation_gen = self.mutation_gen.wrapping_add(1);
+        }
+        Ok(removed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::Python;
+    use pyo3::exceptions::PyMemoryError;
+
+    use super::*;
+    use crate::boundary::Frame;
+    use crate::geometry::{CoordSeq, LineSeq, Point, Shape, ShapeData};
+    use crate::py::index::spatial_index;
+    use crate::test_support::{allocation_count, fail_allocations_after};
+
+    fn point(x: f64, y: f64) -> PyGeometry {
+        PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(x, y))),
+            Frame::None,
+        )
+        .expect("point geometry")
+    }
+
+    fn empty_index() -> PySpatialIndex {
+        spatial_index(Vec::new()).expect("empty index")
+    }
+
+    fn points(start: usize, end: usize) -> Vec<PyGeometry> {
+        (start..end)
+            .map(|handle| point(handle as f64, 0.0))
+            .collect()
+    }
+
+    fn crossing_line() -> PyGeometry {
+        let coordinates = CoordSeq::try_from_vecs(vec![170.0, -170.0], vec![0.0, 0.0], None, None)
+            .expect("crossing coordinates");
+        let shape = Shape::LineString(LineSeq::try_new(coordinates).expect("crossing line"));
+        let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)
+            .expect("geographic frame");
+        PyGeometry::with_frame(ShapeData::new(shape), frame).expect("geographic line")
+    }
+
+    #[test]
+    fn scalar_insert_allocation_prefixes_leave_state_retryable() {
+        Python::initialize();
+        Python::attach(|py| {
+            let base = empty_index();
+            let counting_geometry = point(1.0, 2.0);
+            let mut counted = base.clone();
+            let (result, allocations) =
+                allocation_count(|| counted.insert_one(&counting_geometry).expect("insert"));
+            assert_eq!(result, 0);
+            assert!(allocations > 0);
+
+            let mut prefix = 0;
+            loop {
+                let mut candidate = base.clone();
+                let geometry = point(1.0, 2.0);
+                let result = fail_allocations_after(prefix, || candidate.insert_one(&geometry));
+                let Ok(handle) = result else {
+                    let error = result.expect_err("allocation failure result");
+                    assert!(error.is_instance_of::<PyMemoryError>(py));
+                    assert_eq!(candidate.rows.len(), 0);
+                    assert_eq!(candidate.rows.live_count(), 0);
+                    assert_eq!(candidate.overflow.total_entries(), 0);
+                    assert_eq!(candidate.overflow.live_entry_count(), 0);
+                    assert_eq!(candidate.overflow.dead_entry_count(), 0);
+                    assert!(candidate.metadata.is_none());
+                    assert_eq!(candidate.mutation_gen, 0);
+                    let geometry = point(1.0, 2.0);
+                    assert_eq!(candidate.insert_one(&geometry).expect("retry"), 0);
+                    prefix += 1;
+                    assert!(prefix <= allocations + 8);
+                    continue;
+                };
+                assert_eq!(handle, 0);
+                break;
+            }
+        });
+    }
+
+    #[test]
+    fn arbitrary_batch_insert_allocation_prefixes_preserve_carries() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut base = empty_index();
+            for handle in 0..7 {
+                assert_eq!(
+                    base.insert_one(&point(handle as f64, 0.0))
+                        .expect("base insert"),
+                    handle
+                );
+            }
+            let counting_items = points(7, 16);
+            let mut counted = base.clone();
+            let (result, allocations) =
+                allocation_count(|| counted.insert_items(counting_items).expect("batch insert"));
+            assert_eq!(result, (7..16).collect::<Vec<_>>());
+            assert!(allocations > 0);
+
+            let mut prefix = 0;
+            loop {
+                let mut candidate = base.clone();
+                let batch = points(7, 16);
+                let result = fail_allocations_after(prefix, || candidate.insert_items(batch));
+                let Err(error) = result else {
+                    let handles = result.expect("successful batch");
+                    assert_eq!(handles, (7..16).collect::<Vec<_>>());
+                    break;
+                };
+                assert!(error.is_instance_of::<PyMemoryError>(py));
+                assert_eq!(candidate.rows.len(), 7);
+                assert_eq!(candidate.rows.live_count(), 7);
+                assert_eq!(candidate.overflow.total_entries(), 7);
+                assert_eq!(candidate.overflow.live_entry_count(), 7);
+                assert_eq!(candidate.overflow.dead_entry_count(), 0);
+                assert_eq!(candidate.mutation_gen, 7);
+                let retry = candidate
+                    .insert_items(points(7, 16))
+                    .expect("batch retry after allocation failure");
+                assert_eq!(retry, (7..16).collect::<Vec<_>>());
+                prefix += 1;
+                assert!(prefix <= allocations + 8);
+            }
+        });
+    }
+
+    #[test]
+    fn geographic_duplicate_envelopes_are_fallible_and_retryable() {
+        Python::initialize();
+        Python::attach(|py| {
+            let base = empty_index();
+            let counting_geometry = crossing_line();
+            let mut counted = base.clone();
+            let (handle, allocations) =
+                allocation_count(|| counted.insert_one(&counting_geometry).expect("insert"));
+            assert_eq!(handle, 0);
+            assert!(allocations > 0);
+            assert_eq!(counted.overflow.entry_count_for_handle(0), 2);
+            assert_eq!(counted.overflow.total_entries(), 2);
+
+            let mut prefix = 0;
+            loop {
+                let mut candidate = base.clone();
+                let geometry = crossing_line();
+                let result = fail_allocations_after(prefix, || candidate.insert_one(&geometry));
+                let Ok(handle) = result else {
+                    let error = result.expect_err("allocation failure result");
+                    assert!(error.is_instance_of::<PyMemoryError>(py));
+                    assert!(candidate.metadata.is_none());
+                    assert_eq!(candidate.rows.len(), 0);
+                    assert_eq!(candidate.overflow.total_entries(), 0);
+                    assert_eq!(candidate.insert_one(&crossing_line()).expect("retry"), 0);
+                    assert_eq!(candidate.overflow.entry_count_for_handle(0), 2);
+                    prefix += 1;
+                    assert!(prefix <= allocations + 8);
+                    continue;
+                };
+                assert_eq!(handle, 0);
+                assert_eq!(candidate.overflow.entry_count_for_handle(0), 2);
+                break;
+            }
+        });
+    }
+
+    #[test]
+    fn removal_without_compaction_only_tombstones_the_row() {
+        let mut index = empty_index();
+        for handle in 0..3 {
+            assert_eq!(
+                index
+                    .insert_one(&point(handle as f64, 0.0))
+                    .expect("insert"),
+                handle
+            );
+        }
+        let generation = index.mutation_gen;
+        let removed = crate::test_support::fail_allocations_after(0, || {
+            index.remove_handle(0).expect("remove")
+        });
+        assert!(removed);
+        assert!(!index.rows.is_live(0));
+        assert_eq!(index.overflow.total_entries(), 3);
+        assert_eq!(index.overflow.live_entry_count(), 2);
+        assert_eq!(index.overflow.dead_entry_count(), 1);
+        assert_eq!(index.mutation_gen, generation + 1);
+    }
+
+    #[test]
+    fn compaction_allocation_prefixes_leave_tombstone_unpublished() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut base = empty_index();
+            for handle in 0..4 {
+                assert_eq!(
+                    base.insert_one(&point(handle as f64, 0.0)).expect("insert"),
+                    handle
+                );
+            }
+            assert!(base.remove_handle(0).expect("first removal"));
+            assert!(base.remove_handle(1).expect("second removal"));
+            let mut counted = base.clone();
+            let (removed, allocations) =
+                allocation_count(|| counted.remove_handle(2).expect("compact removal"));
+            assert!(removed);
+            assert!(allocations > 0);
+            assert_eq!(counted.overflow.total_entries(), 1);
+            assert_eq!(counted.overflow.live_entry_count(), 1);
+            assert_eq!(counted.overflow.dead_entry_count(), 0);
+
+            let mut prefix = 0;
+            loop {
+                let mut candidate = base.clone();
+                let result = fail_allocations_after(prefix, || candidate.remove_handle(2));
+                let Err(error) = result else {
+                    assert!(result.expect("successful compaction removal"));
+                    assert!(!candidate.rows.is_live(2));
+                    assert_eq!(candidate.overflow.total_entries(), 1);
+                    assert_eq!(candidate.overflow.live_entry_count(), 1);
+                    assert_eq!(candidate.overflow.dead_entry_count(), 0);
+                    break;
+                };
+                assert!(error.is_instance_of::<PyMemoryError>(py));
+                assert!(candidate.rows.is_live(2));
+                assert_eq!(candidate.overflow.total_entries(), 4);
+                assert_eq!(candidate.overflow.live_entry_count(), 2);
+                assert_eq!(candidate.overflow.dead_entry_count(), 2);
+                assert_eq!(candidate.mutation_gen, base.mutation_gen);
+                assert!(candidate.remove_handle(2).expect("compaction retry"));
+                assert!(!candidate.rows.is_live(2));
+                assert_eq!(candidate.overflow.total_entries(), 1);
+                assert_eq!(candidate.overflow.live_entry_count(), 1);
+                assert_eq!(candidate.overflow.dead_entry_count(), 0);
+                prefix += 1;
+                assert!(prefix <= allocations + 8);
+            }
+        });
+    }
+
+    #[test]
+    fn cloned_forests_mutate_independently() {
+        let mut left = empty_index();
+        assert_eq!(left.insert_one(&point(0.0, 0.0)).unwrap(), 0);
+        let mut right = left.clone();
+        assert_eq!(left.insert_one(&point(10.0, 0.0)).unwrap(), 1);
+        assert_eq!(right.overflow.total_entries(), 1);
+        assert_eq!(right.rows.live_count(), 1);
+        assert_eq!(right.insert_one(&point(20.0, 0.0)).unwrap(), 1);
+        assert_eq!(left.overflow.total_entries(), 2);
+        assert_eq!(right.overflow.total_entries(), 2);
     }
 }

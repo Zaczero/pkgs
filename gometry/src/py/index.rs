@@ -6,7 +6,7 @@
 //! (`crate::predicates::engine`), and exact refinement runs through the shared
 //! the shared predicate matrix owner, so the index cannot drift from the
 //! broadcast/prepared surfaces. Geographic nearest/`dwithin` queries prune the
-//! R-tree with the sound geodesic lower bound in [`geodesic`].
+//! immutable runs with the sound geodesic lower bound in [`geodesic`].
 
 mod geodesic;
 mod str_tree;
@@ -18,8 +18,8 @@ use std::sync::Arc;
 use geodesic::{GeodesicPruner, GeodesicRowCaps};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
-use rstar::{AABB, PointDistance, RTree, RTreeNode, RTreeObject};
-use str_tree::StaticStrTree;
+use rstar::AABB;
+use str_tree::{StaticStrForest, StaticStrTree};
 
 use crate::array::{ArrayRowOperation, BoundsSeed};
 use crate::collections::sort_row_ids;
@@ -364,7 +364,7 @@ impl PreparedIndexQuery {
         })
     }
 }
-// ---- SpatialIndex pyclass + RTree entry + builders ----
+// ---- SpatialIndex pyclass + STR entry + builders ----
 
 #[derive(Debug, Default)]
 pub(crate) struct GeodesicCapsCache {
@@ -396,13 +396,13 @@ pub(crate) struct GeodesicCapsCache {
 #[derive(Debug)]
 pub(crate) struct PySpatialIndex {
     // `rows` is append-only so a handle (its index) stays stable across mutation;
-    // `remove` tombstones bulk handles (overflow entries delete), which
-    // excludes them from every query.
+    // `remove` tombstones handles; overflow entries stay in their immutable
+    // runs until the dead-entry invariant triggers compaction.
     rows: IndexRows,
     /// The immutable STR-packed bulk (build-time rows; tombstone removal).
     bulk: StaticStrTree,
-    /// Post-build inserts — a small dynamic R-tree (usually empty).
-    overflow: RTree<IndexEntry>,
+    /// Post-build inserts — immutable STR runs maintained by binary carries.
+    overflow: StaticStrForest,
     /// Lazy per-row geodesic caps (anchor + proven aux reach), built on the
     /// first geodesic nearest over non-point rows. Each mutable index owns its
     /// cache: clones may subsequently diverge while retaining equal row counts
@@ -627,20 +627,6 @@ impl IndexRows {
 }
 
 impl PySpatialIndex {
-    fn overflow_heap_bytes(&self) -> usize {
-        fn node_bytes(node: &RTreeNode<IndexEntry>) -> usize {
-            match node {
-                RTreeNode::Leaf(_) => std::mem::size_of::<RTreeNode<IndexEntry>>(),
-                RTreeNode::Parent(parent) => {
-                    std::mem::size_of::<RTreeNode<IndexEntry>>()
-                        + parent.children().iter().map(node_bytes).sum::<usize>()
-                },
-            }
-        }
-
-        self.overflow.root().children().iter().map(node_bytes).sum()
-    }
-
     fn metadata_heap_bytes(&self) -> usize {
         self.metadata
             .as_ref()
@@ -655,7 +641,7 @@ impl PySpatialIndex {
     fn retained_heap_bytes(&self) -> usize {
         self.rows.heap_bytes()
             + self.bulk.heap_bytes()
-            + self.overflow_heap_bytes()
+            + self.overflow.heap_bytes()
             + self.metadata_heap_bytes()
             + self.geodesic_caps_heap_bytes()
     }

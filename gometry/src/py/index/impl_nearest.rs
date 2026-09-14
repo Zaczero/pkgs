@@ -1,8 +1,8 @@
-use super::str_tree::StrNode;
+use super::str_tree::{StaticStrTree, StrNode};
 use crate::geometry::PreparedPlan;
 use crate::py::index::{
     AABB, BinaryHeap, DistanceUnit, Frontier, FrontierNode, NearestCandidate, NearestOptions,
-    NonNegative, PyGeometry, PyResult, PySpatialIndex, RTreeNode, Shape, aabb_box_distance_2, crs,
+    NonNegative, PyGeometry, PyResult, PySpatialIndex, Shape, aabb_box_distance_2, crs,
     index_envelopes, nearest_candidates_from_heap, pair_distance_geodesic, pair_distance_planar,
     push_nearest_candidate, resolve_metric, shape_pruner_point,
 };
@@ -135,23 +135,23 @@ impl HeapLeafPolicy<'_> {
     #[inline]
     fn visit_leaf<B>(
         &mut self,
-        index: &PySpatialIndex,
+        tree: &StaticStrTree,
+        live: &[u8],
         node: &StrNode,
         ceiling: Option<f64>,
         bound: &B,
-        frontier: &mut BinaryHeap<FrontierNode<'_>>,
+        frontier: &mut BinaryHeap<FrontierNode>,
     ) -> PyResult<()>
     where
         B: Fn(&AABB<[f64; 2]>) -> f64,
     {
         self.leaf_frontier.clear();
-        try_reserve_vec(self.leaf_frontier, index.bulk.leaf_entries(node).len())
+        try_reserve_vec(self.leaf_frontier, tree.leaf_entries(node).len())
             .map_err(pyo3::PyErr::from)?;
-        for entry in index
-            .bulk
+        for entry in tree
             .leaf_entries(node)
             .iter()
-            .filter(|entry| index.rows.is_live(entry.idx))
+            .filter(|entry| live[entry.idx] != 0)
         {
             try_push_vec(self.leaf_frontier, LeafFrontierEntry {
                 bound: bound(&entry.envelope),
@@ -222,14 +222,14 @@ impl PySpatialIndex {
         }
     }
 
-    pub(crate) fn planar_nearest_core_ties<'a>(
-        &'a self,
+    pub(crate) fn planar_nearest_core_ties(
+        &self,
         to_metre: f64,
         query: &PreparedPlan,
         k: usize,
         max_distance: Option<NonNegative>,
         options: NearestOptions,
-        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
     ) -> PyResult<Vec<NearestCandidate>> {
@@ -259,14 +259,14 @@ impl PySpatialIndex {
         )
     }
 
-    fn planar_nearest_core<'a>(
-        &'a self,
+    fn planar_nearest_core(
+        &self,
         to_metre: f64,
         query: &PreparedPlan,
         k: usize,
         max_distance: Option<NonNegative>,
         exclusive: bool,
-        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
     ) -> PyResult<Vec<NearestCandidate>> {
@@ -331,12 +331,12 @@ impl PySpatialIndex {
     /// it under exact comparison — shapely `all_matches` / geopandas
     /// `return_all` parity, opt-in.
     ///
-    /// `frontier` is a batch-local R-tree work heap: cleared and reused across
+    /// `frontier` is a batch-local spatial-index work heap: cleared and reused across
     /// array query rows (free-threading: never a receiver cache or lock).
     /// `leaf_frontier` is bounded scratch for one static leaf and is likewise
     /// reused across rows.
-    pub(crate) fn geodesic_nearest_core_ties<'a>(
-        &'a self,
+    pub(crate) fn geodesic_nearest_core_ties(
+        &self,
         metric: &crs::MetricModel,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
@@ -346,7 +346,7 @@ impl PySpatialIndex {
         k: usize,
         max_distance: Option<NonNegative>,
         options: NearestOptions,
-        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
     ) -> PyResult<Vec<NearestCandidate>> {
@@ -381,8 +381,8 @@ impl PySpatialIndex {
         )
     }
 
-    pub(crate) fn geodesic_nearest_core<'a>(
-        &'a self,
+    pub(crate) fn geodesic_nearest_core(
+        &self,
         metric: &crs::MetricModel,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
@@ -392,7 +392,7 @@ impl PySpatialIndex {
         k: usize,
         max_distance: Option<NonNegative>,
         exclusive: bool,
-        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
     ) -> PyResult<Vec<NearestCandidate>> {
@@ -512,21 +512,22 @@ impl PySpatialIndex {
         state.finish()
     }
 
-    /// Best-first nearest traversal over the R-tree nodes: pop envelopes by
-    /// ascending lower bound, descend parents, exact-evaluate leaves, and stop
-    /// once the lower bound exceeds the relevant ceiling (the k-th best so
-    /// far, or `max_distance`). Yields the identical k-nearest as a full scan
-    /// for any `bound` that never exceeds the true distance.
+    /// Best-first nearest traversal over the bulk and immutable-run nodes:
+    /// pop envelopes by ascending lower bound, descend parents,
+    /// exact-evaluate leaves, and stop once the lower bound exceeds the
+    /// relevant ceiling (the k-th best so far, or `max_distance`). Yields the
+    /// identical k-nearest as a full scan for any `bound` that never exceeds
+    /// the true distance.
     ///
     /// `frontier` is cleared and reused across rows on the array path — batch
     /// local only (no receiver cache, no lock).
-    pub(crate) fn bound_ordered_nearest<'a>(
-        &'a self,
+    pub(crate) fn bound_ordered_nearest(
+        &self,
         bound: impl Fn(&AABB<[f64; 2]>) -> f64,
         exact: impl FnMut(usize) -> PyResult<Option<f64>>,
         k: usize,
         max_distance: Option<NonNegative>,
-        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
     ) -> PyResult<Vec<NearestCandidate>> {
@@ -541,13 +542,13 @@ impl PySpatialIndex {
         )
     }
 
-    fn bound_ordered_nearest_shared<'a, S: NearestState>(
-        &'a self,
+    fn bound_ordered_nearest_shared<S: NearestState>(
+        &self,
         bound: impl Fn(&AABB<[f64; 2]>) -> f64,
         mut exact: impl FnMut(usize) -> PyResult<Option<f64>>,
         mut state: S,
         max_distance: Option<NonNegative>,
-        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        frontier: &mut BinaryHeap<FrontierNode>,
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
     ) -> PyResult<Vec<NearestCandidate>> {
@@ -555,7 +556,12 @@ impl PySpatialIndex {
         visited.reset(self.rows.len())?;
         frontier.clear();
         let root_level = self.bulk.root_level();
-        try_reserve_heap(frontier, self.bulk.roots().len()).map_err(pyo3::PyErr::from)?;
+        let root_count = self
+            .bulk
+            .roots()
+            .len()
+            .saturating_add(self.overflow.root_count());
+        try_reserve_heap(frontier, root_count).map_err(pyo3::PyErr::from)?;
         for (index, root) in self.bulk.roots().iter().enumerate() {
             try_push_heap(frontier, FrontierNode {
                 bound: bound(&root.envelope),
@@ -563,9 +569,12 @@ impl PySpatialIndex {
             })
             .map_err(pyo3::PyErr::from)?;
         }
-        for child in self.overflow.root().children() {
-            try_push_heap(frontier, FrontierNode::overflow(&bound, child))
-                .map_err(pyo3::PyErr::from)?;
+        for (run, root_level, index, root) in self.overflow.roots() {
+            try_push_heap(frontier, FrontierNode {
+                bound: bound(&root.envelope),
+                node: Frontier::Run(run, root_level, index),
+            })
+            .map_err(pyo3::PyErr::from)?;
         }
         while let Some(node) = frontier.pop() {
             let ceiling = state.ceiling(max_distance);
@@ -576,7 +585,14 @@ impl PySpatialIndex {
                 Frontier::Bulk(level, index) => {
                     let bulk_node = self.bulk.node(level, index);
                     if level == 0 {
-                        leaf_policy.visit_leaf(self, bulk_node, ceiling, &bound, frontier)?;
+                        leaf_policy.visit_leaf(
+                            &self.bulk,
+                            &self.rows.live,
+                            bulk_node,
+                            ceiling,
+                            &bound,
+                            frontier,
+                        )?;
                     } else {
                         for child in bulk_node.children.clone() {
                             try_push_heap(frontier, FrontierNode {
@@ -587,22 +603,28 @@ impl PySpatialIndex {
                         }
                     }
                 },
-                Frontier::Overflow(RTreeNode::Parent(parent)) => {
-                    for child in parent.children() {
-                        try_push_heap(frontier, FrontierNode::overflow(&bound, child))
+                Frontier::Run(run, level, index) => {
+                    let tree = self.overflow.run(run);
+                    let run_node = tree.node(level, index);
+                    if level == 0 {
+                        leaf_policy.visit_leaf(
+                            tree,
+                            &self.rows.live,
+                            run_node,
+                            ceiling,
+                            &bound,
+                            frontier,
+                        )?;
+                    } else {
+                        for child in run_node.children.clone() {
+                            let child_node = tree.node(level - 1, child);
+                            try_push_heap(frontier, FrontierNode {
+                                bound: bound(&child_node.envelope),
+                                node: Frontier::Run(run, level - 1, child),
+                            })
                             .map_err(pyo3::PyErr::from)?;
+                        }
                     }
-                },
-                Frontier::Overflow(RTreeNode::Leaf(entry)) => {
-                    if !visited.visit(entry.idx)? {
-                        continue;
-                    }
-                    self.consider_nearest_candidate(
-                        entry.idx,
-                        &mut exact,
-                        max_distance,
-                        &mut state,
-                    )?;
                 },
                 Frontier::Entry(entry_idx) => {
                     if !visited.visit(entry_idx)? {
@@ -646,9 +668,12 @@ mod tests {
     use pyo3::Python;
     use pyo3::exceptions::PyMemoryError;
 
-    use super::{HeapNearest, NearestState as _, NearestVisited, OneNearest};
+    use super::{
+        BinaryHeap, HeapNearest, NearestOptions, NearestState as _, NearestVisited, OneNearest,
+    };
     use crate::crs::{RUNTIME_STATE_TEST_LOCK, ResolvedMetric, metric_model};
     use crate::geometry::{FrameDependentCaches, PreparedPlan, ShapeData};
+    use crate::pair_distance_planar;
     use crate::py::index::{
         Frame, NearestCandidate, Point, PyGeometry, Shape, parse_max_distance, spatial_index,
     };
@@ -726,6 +751,79 @@ mod tests {
             });
             assert!(error.is_instance_of::<PyMemoryError>(py));
             assert_eq!(cache_calls, 0);
+        });
+    }
+
+    #[test]
+    fn overflow_run_nearest_frontier_growth_is_fallible_and_retryable() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut index = spatial_index(Vec::new()).expect("empty index");
+            for handle in 0..128 {
+                let geometry = PyGeometry::with_frame(
+                    ShapeData::new(Shape::Point(Point::new_raw_xy(handle as f64, 0.0))),
+                    Frame::None,
+                )
+                .expect("point");
+                assert_eq!(index.insert_one(&geometry).expect("insert"), handle);
+            }
+            let query =
+                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(63.25, 0.0))))
+                    .expect("query");
+            let model = metric_model(None).expect("planar metric");
+            let ResolvedMetric::Planar { to_metre } =
+                ResolvedMetric::from_model(&model).expect("resolved planar metric")
+            else {
+                panic!("CRS-free metric must be planar");
+            };
+            let execute = || {
+                let mut frontier = BinaryHeap::new();
+                let mut leaf_frontier = Vec::new();
+                let mut visited = NearestVisited::default();
+                index.planar_nearest_core_ties(
+                    to_metre.get(),
+                    &query,
+                    8,
+                    None,
+                    NearestOptions {
+                        exclude_equal: false,
+                        include_ties: false,
+                    },
+                    &mut frontier,
+                    &mut leaf_frontier,
+                    &mut visited,
+                )
+            };
+            let mut rows = index.rows.operation();
+            let mut expected: Vec<_> = index
+                .live_handles_sorted()
+                .expect("live handles")
+                .into_iter()
+                .map(|handle| {
+                    let data = rows.prepared(handle).expect("prepared row");
+                    NearestCandidate::new(
+                        pair_distance_planar(to_metre.get(), &data, &query)
+                            .expect("planar distance"),
+                        handle,
+                    )
+                })
+                .collect();
+            expected.sort_unstable();
+            expected.truncate(8);
+            let (_, allocations) = allocation_count(|| execute().expect("counted nearest"));
+            assert!(allocations > 0);
+
+            let mut prefix = 0;
+            loop {
+                let result = fail_allocations_after(prefix, execute);
+                let Err(error) = result else {
+                    assert_eq!(result.expect("nearest retry"), expected);
+                    break;
+                };
+                assert!(error.is_instance_of::<PyMemoryError>(py));
+                prefix += 1;
+                assert!(prefix <= allocations + 8);
+            }
         });
     }
 }

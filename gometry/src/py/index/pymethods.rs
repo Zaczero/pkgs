@@ -9,11 +9,10 @@ use pyo3::{IntoPyObjectExt as _, PyErr};
 use super::impl_nearest::NearestVisited;
 use crate::collections::RowIdSortScratch;
 use crate::py::index::{
-    BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexEntry,
-    IndexPredicate, IntoPyObject as _, NearestOptions, PreparedIndexQuery, Py, PyAny,
-    PyAnyMethods as _, PyResult, PySpatialIndex, Python, Shape, build_spatial_index,
-    exact_geometry, exact_geometry_array, format_nearest, format_nearest_rows,
-    geodesic_prunable_point, geometry_items, index_envelopes, join_indexed, parse_max_distance,
+    BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexPredicate,
+    IntoPyObject as _, NearestOptions, PreparedIndexQuery, Py, PyAny, PyAnyMethods as _, PyResult,
+    PySpatialIndex, Python, build_spatial_index, exact_geometry, exact_geometry_array,
+    format_nearest, format_nearest_rows, geometry_items, join_indexed, parse_max_distance,
     pyfunction, pymethods, query_distance, resolve_metric, restore_spatial_index, spatial_index,
     usize_array, validate_nearest_k,
 };
@@ -374,11 +373,8 @@ impl PySpatialIndex {
 
     /// `sys.getsizeof` support: the wrapper plus the retained Rust-side
     /// index payload — packed or boxed row geometry coordinates, the immutable
-    /// STR tree, overflow R-tree entries, frame metadata, and any built
-    /// geodesic cap cache. The overflow R-tree contributes occupied nodes
-    /// only: unused capacity reserved inside its child vectors is not counted,
-    /// so a mutated index's reported total is a lower bound on actual
-    /// retention. Shared buffers are reported as this index's logical retained
+    /// STR tree, overflow STR runs, frame metadata, and any built geodesic cap
+    /// cache. Shared buffers are reported as this index's logical retained
     /// footprint.
     pub(crate) fn __sizeof__(&self) -> usize {
         self.total_size()
@@ -884,7 +880,7 @@ impl PySpatialIndex {
             // One frame check and metric resolution for the whole array;
             // every storage's rows drive `nearest_core` on stack handles —
             // no per-row `PyGeometry` materialization anywhere.
-            // Batch-local R-tree frontier heap reused across rows (clear+push;
+            // Batch-local frontier heap reused across rows (clear+push;
             // free-threading: not a receiver cache / lock).
             self.ensure_frame_compatible(array.crs_ref(), array.epoch(), "spatial index nearest")?;
             let metric = resolve_metric(
@@ -1066,54 +1062,6 @@ impl PySpatialIndex {
     /// True
     pub(crate) fn remove(&mut self, handle: &Bound<'_, PyAny>) -> PyResult<bool> {
         let handle = parse_handle_like(handle)?;
-        if !self.rows.is_live(handle) {
-            return Ok(false);
-        }
-        let non_prunable = {
-            let mut rows = self.rows.operation();
-            rows.row(handle)?
-                .with_shape(|shape| !geodesic_prunable_point(shape))?
-        };
-        let removed = if handle < self.bulk.initial_len() {
-            self.rows.mark_removed(handle)
-        } else {
-            let (bounds, shape) = {
-                let mut rows = self.rows.operation();
-                let row = rows.row(handle)?;
-                let Some(bounds) = row.with_shape(Shape::bounds)? else {
-                    return Ok(false);
-                };
-                let shape = row.with_shape(std::clone::Clone::clone)?;
-                (bounds, shape)
-            };
-            let frame = self.metadata.as_ref().expect("live index has a frame");
-            // Removal has to name the entries insertion made, so this reads
-            // the same cover the same way.
-            let domain = crate::geometry::topology_domain(frame)?;
-            let cover = index_envelopes(&shape, bounds, domain)?;
-            let mut removed = false;
-            for &envelope in cover.entries() {
-                removed |= self
-                    .overflow
-                    .remove(&IndexEntry {
-                        idx: handle,
-                        envelope,
-                    })
-                    .is_some();
-            }
-            removed
-        };
-        if removed {
-            if handle >= self.bulk.initial_len() {
-                let marked = self.rows.mark_removed(handle);
-                debug_assert!(marked);
-            }
-            if non_prunable {
-                debug_assert!(self.non_prunable_live > 0);
-                self.non_prunable_live -= 1;
-            }
-            self.mutation_gen = self.mutation_gen.wrapping_add(1);
-        }
-        Ok(removed)
+        self.remove_handle(handle)
     }
 }
