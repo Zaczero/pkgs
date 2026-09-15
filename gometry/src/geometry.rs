@@ -140,7 +140,9 @@ pub(crate) use distance::{
 };
 use distance::{GeodesicSweepCaps, line_length_3d};
 #[doc(hidden)]
-pub(crate) use distance::{frechet_distance_line_columns, hausdorff_distance_line_columns};
+pub(crate) use distance::{
+    frechet_distance_line_columns, hausdorff_distance, hausdorff_distance_line_columns,
+};
 pub(crate) use facet_bvh::{
     BVH_MIN_INDEXED_SEGMENTS, FacetBvh, NearestCandidate, PreparedLinework,
 };

@@ -1134,6 +1134,7 @@ impl ExactRational {
             .cmp(&other.numerator.try_product(&self.denominator)?))
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn round(&self) -> Result<f64> {
         round_ratio(&self.numerator, &self.denominator)
     }

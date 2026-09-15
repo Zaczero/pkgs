@@ -49,7 +49,7 @@ pub(crate) struct PreparedLinework {
 /// Packed `u32` index count: `base + additional` must fit in `u32`, so the last
 /// real index is `<= u32::MAX - 1` and `u32::MAX` stays the absent-witness
 /// sentinel.
-pub(crate) fn packed_index_count(base: usize, additional: usize) -> Result<usize> {
+fn packed_index_count(base: usize, additional: usize) -> Result<usize> {
     let total = base
         .checked_add(additional)
         .ok_or(ResourceError::SizeOverflow)?;
@@ -297,57 +297,6 @@ impl PreparedLinework {
         }
     }
 
-    /// One probe's minimum distance to the linework and the witness segment
-    /// index (global, `u32::MAX` when empty). `SQUARED` selects squared space
-    /// or overflow-safe `hypot`; both the min and the index come from the
-    /// same kernel. Callers that publish a squared field square once at their
-    /// boundary.
-    pub(crate) fn min_point_distance_with_witness<const SQUARED: bool>(
-        &self,
-        x: f64,
-        y: f64,
-        mut best: f64,
-    ) -> crate::error::Result<(f64, u32)> {
-        let Some(aabb) = self.aabb else {
-            return Ok((best, u32::MAX));
-        };
-        let gate = if SQUARED {
-            aabb_distance_squared(aabb, point_aabb(x, y))
-        } else {
-            aabb_distance(aabb, point_aabb(x, y))
-        };
-        if gate >= best {
-            return Ok((best, u32::MAX));
-        }
-        let mut witness = u32::MAX;
-        for &facet in &self.facets {
-            let (candidate, index) = self.facet_min_with_witness::<SQUARED>(facet, x, y)?;
-            if candidate < best {
-                best = candidate;
-                witness = index;
-            }
-        }
-        Ok((best, witness))
-    }
-
-    /// Batch flat-scan point queries with per-probe witness segment indices.
-    pub(crate) fn batch_min_point_distance_with_witness<const SQUARED: bool>(
-        &self,
-        probes: &[(f64, f64)],
-        out_dist: &mut [f64],
-        out_witness: &mut [u32],
-    ) -> crate::error::Result<()> {
-        debug_assert_eq!(probes.len(), out_dist.len());
-        debug_assert_eq!(probes.len(), out_witness.len());
-        for (index, &(x, y)) in probes.iter().enumerate() {
-            let (distance, witness) =
-                self.min_point_distance_with_witness::<SQUARED>(x, y, f64::INFINITY)?;
-            out_dist[index] = distance;
-            out_witness[index] = witness;
-        }
-        Ok(())
-    }
-
     /// Flat-scan minimum distance from a probe coordinate stream (below the
     /// BVH crossover): the total-bounds gate skips far probes in O(1), then
     /// the SIMD facet kernel folds the rest. `SQUARED` selects squared space
@@ -474,34 +423,6 @@ impl PreparedLinework {
             }
         }
         None
-    }
-
-    /// Minimum distance from `(px, py)` to one facet's segments and the
-    /// global index of the argmin edge. `SQUARED` selects the kernel; min and
-    /// index always come from that same walk so a SIMD facet min cannot name
-    /// a different witness. Hausdorff therefore does not use
-    /// [`Self::facet_point_distance_squared`] on this path.
-    pub(crate) fn facet_min_with_witness<const SQUARED: bool>(
-        &self,
-        facet: Facet,
-        px: f64,
-        py: f64,
-    ) -> crate::error::Result<(f64, u32)> {
-        let point = Point::new_raw_xy(px, py);
-        let mut best = f64::INFINITY;
-        let mut witness = facet.first_segment;
-        for index in 0..facet.segment_count as usize {
-            let candidate = if SQUARED {
-                point_segment_distance_squared(point, self.segment(facet, index))?
-            } else {
-                point_segment_distance(point, self.segment(facet, index))?
-            };
-            if candidate < best {
-                best = candidate;
-                witness = facet.first_segment + index as u32;
-            }
-        }
-        Ok((best, witness))
     }
 
     /// Exact minimum squared distance from `(px, py)` to one facet's

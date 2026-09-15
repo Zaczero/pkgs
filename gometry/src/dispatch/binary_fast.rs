@@ -554,7 +554,7 @@ mod tests {
             let right = Bound::new(py, right).unwrap().into_any();
 
             reset_shape_iter_materializations();
-            let max_error = Bound::new(py, 1e-12).unwrap().into_any();
+            let max_error = 1e-12_f64.into_pyobject(py).unwrap().into_any();
             let result =
                 super::dispatch_hausdorff_distance(py, &left, &right, Some(&max_error), None)
                     .expect("masked pair is a valid Hausdorff broadcast");

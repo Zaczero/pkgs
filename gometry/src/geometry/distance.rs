@@ -43,22 +43,11 @@ pub(crate) use geodesic_sweep::{
     geodesic_capped_sweep_with_parts, geodesic_witness_sweep_with_parts,
 };
 pub(crate) use hausdorff::{
-    HausdorffFeature, HausdorffTarget, compact_hausdorff_params,
-    directed_hausdorff_distance_squared_shapes, filled_hausdorff_distance,
-    hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
-    push_equidistant_roots_on_interval, push_point_on_line_breakpoint,
-    push_segment_projection_breakpoints,
-};
-#[cfg(test)]
-pub(crate) use hausdorff::{
-    directed_hausdorff_distance_squared_with_target_columns, hausdorff_distance_4v_exact,
-    hausdorff_distance_4v_fused, hausdorff_distance_squared_line_columns,
-    max_point_to_target_squared_on_segment_culled_legacy_for_test, sample_hausdorff_on_segment,
-    should_build_index,
+    hausdorff_distance, hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
 };
 pub(super) use intersects::{
-    SQUARED_SPACE_MAX_MAGNITUDE, area_overlap_probe, bounds_squared_safe, coordinate_squared_safe,
-    parts_boundary_contact, squared_space_safe,
+    area_overlap_probe, bounds_squared_safe, coordinate_squared_safe, parts_boundary_contact,
+    squared_space_safe,
 };
 pub(crate) use misc::{bounds_distance_squared, line_length_3d};
 pub(super) use nearest::{nearest_probe_to_parts, parts_boundary_witness};
@@ -66,8 +55,6 @@ pub(crate) use parts_sweep::{
     any_parts_within, min_parts_to_parts, parts_covers_point, parts_segments_cross,
     puntal_brute_distance, puntal_brute_distance_squared, quick_area_overlap,
 };
-#[cfg(test)]
-mod hausdorff_stats_test;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

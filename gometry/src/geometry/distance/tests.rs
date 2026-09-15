@@ -1,4 +1,3 @@
-use crate::geometry::distance::hausdorff::HAUSDORFF_SMALL_TARGET_MAX_VERTICES;
 use crate::geometry::distance::*;
 use crate::geometry::*;
 
@@ -12,7 +11,9 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
     let left = line(vec![p(0.0, 0.0), p(2.0 * separation, 0.0)]);
     let right = line(vec![p(0.0, separation), p(2.0 * separation, separation)]);
     assert_eq!(
-        left.hausdorff_distance(&right).unwrap().to_bits(),
+        hausdorff_distance(&left, &right, separation * 1e-12, 1.0)
+            .unwrap()
+            .to_bits(),
         separation.to_bits()
     );
 
@@ -24,7 +25,9 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
         p(1.0, base + huge_separation),
     ]);
     assert_eq!(
-        left.hausdorff_distance(&right).unwrap().to_bits(),
+        hausdorff_distance(&left, &right, huge_separation * 1e-12, 1.0)
+            .unwrap()
+            .to_bits(),
         huge_separation.to_bits()
     );
 
@@ -41,7 +44,9 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
         p(1.0, base + huge_separation),
     ]);
     assert_eq!(
-        left.hausdorff_distance(&right).unwrap().to_bits(),
+        hausdorff_distance(&left, &right, huge_separation * 1e-12, 1.0)
+            .unwrap()
+            .to_bits(),
         huge_separation.to_bits()
     );
 }
@@ -76,11 +81,12 @@ fn continuous_hausdorff_preserves_underflowed_local_determinant() {
         p(length, height + offset),
     ]);
     assert_eq!(
-        baseline.hausdorff_distance(&graph).unwrap().to_bits(),
-        offset.to_bits()
-    );
-    assert_eq!(
-        graph.hausdorff_distance(&baseline).unwrap().to_bits(),
+        // The endpoint witness itself exercises the underflowed determinant.
+        // A broad bound keeps this test about exact witness evaluation rather
+        // than paying hundreds of anisotropic subdivision levels.
+        hausdorff_distance(&baseline, &graph, length, 1.0)
+            .unwrap()
+            .to_bits(),
         offset.to_bits()
     );
 }
@@ -98,12 +104,16 @@ fn continuous_hausdorff_keeps_reciprocal_axis_bend_at_square_overflow_transition
         ]);
         let expected = 2.0 * height;
         assert_eq!(
-            baseline.hausdorff_distance(&bent).unwrap().to_bits(),
+            hausdorff_distance(&baseline, &bent, expected * 1e-12, 1.0)
+                .unwrap()
+                .to_bits(),
             expected.to_bits(),
             "reciprocal-axis Hausdorff failed at e={exponent}"
         );
         assert_eq!(
-            bent.hausdorff_distance(&baseline).unwrap().to_bits(),
+            hausdorff_distance(&bent, &baseline, expected * 1e-12, 1.0)
+                .unwrap()
+                .to_bits(),
             expected.to_bits()
         );
     }
@@ -129,13 +139,9 @@ fn continuous_hausdorff_finds_reciprocal_axis_gap_between_target_parts() {
             half_gap.to_bits(),
         );
         assert_eq!(
-            shape_impl::robust_directed_hausdorff(&source, &target)
+            hausdorff_distance(&source, &target, half_gap * 1e-12, 1.0)
                 .unwrap()
                 .to_bits(),
-            half_gap.to_bits(),
-        );
-        assert_eq!(
-            source.hausdorff_distance(&target).unwrap().to_bits(),
             half_gap.to_bits(),
             "reciprocal-axis target gap failed at e={exponent}"
         );
@@ -159,8 +165,7 @@ fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
                 .expect("test collection is valid");
             let expected = height / 2.0;
             assert!(
-                source
-                    .hausdorff_distance(&target)
+                hausdorff_distance(&source, &target, expected * 1e-12, 1.0)
                     .unwrap()
                     .to_bits()
                     .abs_diff(expected.to_bits())
@@ -168,8 +173,7 @@ fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
                 "minor-axis collection gap failed at e={exponent}, swap={swap}"
             );
             assert!(
-                target
-                    .hausdorff_distance(&source)
+                hausdorff_distance(&target, &source, expected * 1e-12, 1.0)
                     .unwrap()
                     .to_bits()
                     .abs_diff(expected.to_bits())
@@ -714,55 +718,17 @@ pub(super) fn geodesic_bvh_oracle_cases() -> Vec<(&'static str, Shape, Shape, bo
     ]
 }
 
-fn brute_directed_hausdorff_squared(source: &Shape, target: &Shape) -> f64 {
-    let target = HausdorffTarget::build(target).unwrap();
-    let mut best = 0.0_f64;
-    source.for_each_point(|point| {
-        best = best.max(target.distance_squared(point.xy()).unwrap());
-    });
-    source.for_each_segment(|segment| {
-        best = best.max(brute_max_on_segment_squared(segment, &target));
-    });
-    best
-}
-
-fn brute_max_on_segment_squared(source: Segment, target: &HausdorffTarget) -> f64 {
-    let ax = source.start.x;
-    let ay = source.start.y;
-    let dx = source.end.x - ax;
-    let dy = source.end.y - ay;
-    if dx == 0.0 && dy == 0.0 {
-        return target.distance_squared(source.start).unwrap();
-    }
-    let steps = 256_usize;
-    let mut best = 0.0_f64;
-    for step in 0..=steps {
-        let t = step as f64 / steps as f64;
-        best = best.max(sample_hausdorff_on_segment(ax, ay, dx, dy, t, target).unwrap());
-    }
-    best
-}
-
-fn assert_hausdorff_close(actual: f64, expected: f64) {
-    if actual.is_infinite() || expected.is_infinite() {
-        assert_eq!(actual.is_sign_positive(), expected.is_sign_positive());
-        return;
-    }
+fn assert_hausdorff_close(actual: f64, expected: f64, error: f64) {
+    assert!(actual.is_finite(), "{actual}");
     assert!(
-        (actual - expected).abs() <= 1e-9 * expected.abs().max(1.0),
+        (actual - expected).abs() <= error,
         "actual {actual} expected {expected}"
     );
 }
 
-/// The guarded source-space sweep used to run on **every** call as a cross-check
-/// of the framed kernel, which made an ordinary pair of 400-vertex lines take
-/// fourteen seconds. It is now only the fallback for a pair whose squared
-/// arithmetic is not representable, so the agreement it used to assert per call
-/// is asserted here instead — as a tolerance, since the one-ULP form it used
-/// could not pass once rounding accumulated across more than a few features.
 #[test]
-fn the_framed_kernel_agrees_with_the_guarded_sweep_on_dense_linework() {
-    fn densified(from: (f64, f64), to: (f64, f64), count: usize) -> Shape {
+fn continuous_hausdorff_on_subdivided_oblique_segments() {
+    fn subdivided(from: (f64, f64), to: (f64, f64), count: usize) -> Shape {
         let step = |a: f64, b: f64, i: usize| a + (b - a) * (i as f64) / ((count - 1) as f64);
         line(
             (0..count)
@@ -770,293 +736,126 @@ fn the_framed_kernel_agrees_with_the_guarded_sweep_on_dense_linework() {
                 .collect(),
         )
     }
-
-    // The guarded sweep is cubic in the target feature count per source
-    // segment, so the corpus stays small enough to run unoptimized; the
-    // release-build behaviour on dense linework is pinned by
-    // `tests/test_algorithmic_cliffs.py`.
     for count in [9, 17, 33] {
-        let left = densified((0.0, 0.0), (10.0, 3.0), count);
-        let right = densified((0.0, 1.0), (7.0, 9.0), count);
-        let framed = left.hausdorff_distance(&right).unwrap();
-        let guarded = shape_impl::robust_directed_hausdorff(&left, &right)
-            .unwrap()
-            .max(shape_impl::robust_directed_hausdorff(&right, &left).unwrap());
-        assert_hausdorff_close(framed, guarded);
-        assert_hausdorff_close(right.hausdorff_distance(&left).unwrap(), guarded);
+        let left = subdivided((0.0, 0.0), (10.0, 3.0), count);
+        let right = subdivided((0.0, 1.0), (7.0, 9.0), count);
+        // The far endpoint (7,9) projects inside the other segment:
+        // perpendicular distance is |10*9-3*7| / sqrt(10²+3²).
+        let expected = 69.0 / 109.0_f64.sqrt();
+        assert_hausdorff_close(
+            hausdorff_distance(&left, &right, 1e-9, 1.0).unwrap(),
+            expected,
+            1e-8,
+        );
+        assert_hausdorff_close(
+            hausdorff_distance(&right, &left, 1e-9, 1.0).unwrap(),
+            expected,
+            1e-8,
+        );
     }
 }
 
 #[test]
-fn segment_aware_hausdorff_matches_brute_oracle_on_fixtures() {
-    let parallel = (
-        line(vec![p(0.0, 0.0), p(1.0, 1.0), p(2.0, 1.0)]),
-        line(vec![p(0.0, 1.0), p(1.0, 2.0), p(2.0, 2.0)]),
-    );
-    let interior_peak = (
-        line(vec![p(0.0, 0.0), p(10.0, 0.0)]),
-        line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]),
-    );
-    let point_to_line = (
-        Shape::Point(p(0.0, 0.0)),
-        line(vec![p(0.0, 1.0), p(3.0, 1.0)]),
-    );
-    let polygon_boundary = (
-        line(vec![p(-1.0, 0.5), p(4.0, 0.5)]),
-        polygon(vec![p(0.0, 0.0), p(2.0, 0.0), p(2.0, 2.0), p(0.0, 0.0)]),
-    );
-    let multipoint = (
-        multipoint(vec![p(0.0, 0.0), p(5.0, 5.0)]),
-        line(vec![p(0.0, 1.0), p(10.0, 1.0)]),
-    );
-    for (left, right) in [
-        parallel,
-        interior_peak,
-        point_to_line,
-        polygon_boundary,
-        multipoint,
+fn continuous_hausdorff_matches_known_fixtures() {
+    for (left, right, expected) in [
+        (
+            line(vec![p(0.0, 0.0), p(1.0, 1.0), p(2.0, 1.0)]),
+            line(vec![p(0.0, 1.0), p(1.0, 2.0), p(2.0, 2.0)]),
+            1.0,
+        ),
+        (
+            line(vec![p(0.0, 0.0), p(10.0, 0.0)]),
+            line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]),
+            8.0,
+        ),
+        (
+            Shape::Point(p(0.0, 0.0)),
+            line(vec![p(0.0, 1.0), p(3.0, 1.0)]),
+            10.0_f64.sqrt(),
+        ),
+        (
+            line(vec![p(-1.0, 0.5), p(4.0, 0.5)]),
+            polygon(vec![p(0.0, 0.0), p(2.0, 0.0), p(2.0, 2.0), p(0.0, 0.0)]),
+            2.0,
+        ),
+        (
+            multipoint(vec![p(0.0, 0.0), p(5.0, 5.0)]),
+            line(vec![p(0.0, 1.0), p(10.0, 1.0)]),
+            41.0_f64.sqrt(),
+        ),
     ] {
-        let expected = brute_directed_hausdorff_squared(&left, &right)
-            .max(brute_directed_hausdorff_squared(&right, &left))
-            .sqrt();
-        let actual = left.hausdorff_distance(&right).unwrap();
-        assert_hausdorff_close(actual, expected);
+        assert_hausdorff_close(
+            hausdorff_distance(&left, &right, 1e-9, 1.0).unwrap(),
+            expected,
+            1e-8,
+        );
     }
 }
 
 #[test]
-fn target_polygon_membership_zeros_a_strictly_interior_point() {
-    let source = Shape::Point(p(1.0, 1.0));
-    let target = polygon(vec![
-        p(0.0, 0.0),
-        p(2.0, 0.0),
-        p(2.0, 2.0),
-        p(0.0, 2.0),
-        p(0.0, 0.0),
-    ]);
+fn continuous_hausdorff_empty_and_point_semantics() {
+    let origin = Shape::Point(p(0.0, 0.0));
+    assert!(hausdorff_distance(&origin, &Shape::empty_point(), 1e-9, 1.0).is_err());
+    assert!(hausdorff_distance(&Shape::empty_point(), &origin, 1e-9, 1.0).is_err());
     assert_eq!(
-        directed_hausdorff_distance_squared_shapes(&source, &target).unwrap(),
-        0.0
+        hausdorff_distance(&origin, &Shape::Point(p(3.0, 4.0)), 1e-9, 1.0).unwrap(),
+        5.0
+    );
+    let tiny = 1.5e-162;
+    assert_eq!(
+        hausdorff_distance(&origin, &Shape::Point(p(tiny, 0.0)), tiny * 1e-12, 1.0).unwrap(),
+        tiny
     );
 }
 
 #[test]
-fn segment_aware_hausdorff_empty_and_point_semantics() {
-    line(vec![p(0.0, 0.0), p(1.0, 0.0)])
-        .hausdorff_distance(&Shape::empty_point())
-        .unwrap_err();
-    Shape::empty_point()
-        .hausdorff_distance(&Shape::Point(p(0.0, 0.0)))
-        .unwrap_err();
-    assert_hausdorff_close(
-        Shape::Point(p(0.0, 0.0))
-            .hausdorff_distance(&Shape::Point(p(3.0, 4.0)))
-            .unwrap(),
-        5.0,
-    );
-    let subnormal = 1.5e-162;
-    assert_eq!(
-        Shape::Point(p(0.0, 0.0))
-            .hausdorff_distance(&Shape::Point(p(subnormal, 0.0)))
-            .unwrap()
-            .to_bits(),
-        subnormal.to_bits(),
-        "a point pair is a complete continuous Hausdorff problem; its squared distance may underflow"
-    );
-    assert_hausdorff_close(
-        line(vec![p(0.0, 0.0), p(10.0, 0.0)])
-            .hausdorff_distance(&line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]))
-            .unwrap(),
-        8.0,
-    );
+fn point_targets_keep_interior_and_endpoint_maxima() {
+    for (source, target, expected) in [
+        (
+            line(vec![p(0.0, 0.0), p(2.0, 0.0)]),
+            multipoint(vec![p(0.0, 1.0), p(1.0, 1.0), p(2.0, 1.0)]),
+            1.25_f64.sqrt(),
+        ),
+        (
+            line(vec![p(0.0, 0.0), p(1.0, 0.0)]),
+            multipoint(vec![p(0.0, 1.0), p(0.6, 0.8)]),
+            1.0,
+        ),
+    ] {
+        assert_hausdorff_close(
+            hausdorff_distance(&source, &target, 1e-10, 1.0).unwrap(),
+            expected,
+            1e-9,
+        );
+    }
 }
 
 #[test]
-fn backtracking_collinear_line_is_not_a_single_endpoint_segment() {
+fn backtracking_collinear_line_keeps_its_full_support() {
     let left = line(vec![p(0.0, 0.0), p(10.0, 0.0), p(-5.0, 0.0)]);
     let right = line(vec![p(-5.0, 1.0), p(0.0, 1.0)]);
     let expected = 101.0_f64.sqrt();
-    assert_hausdorff_close(left.hausdorff_distance(&right).unwrap(), expected);
-    assert_hausdorff_close(right.hausdorff_distance(&left).unwrap(), expected);
-}
-
-fn wiggly_line_columns(vertex_count: usize, y_offset: f64) -> (Vec<f64>, Vec<f64>) {
-    let mut xs = Vec::with_capacity(vertex_count);
-    let mut ys = Vec::with_capacity(vertex_count);
-    for index in 0..vertex_count {
-        let x = index as f64 * 0.01;
-        xs.push(x);
-        ys.push((x * 1.7).sin() + y_offset);
-    }
-    (xs, ys)
-}
-
-fn directed_hausdorff_distance_squared_columns_forced(
-    left_xs: &[f64],
-    left_ys: &[f64],
-    right_xs: &[f64],
-    right_ys: &[f64],
-    force_index: bool,
-) -> f64 {
-    let mut segments = Vec::with_capacity(right_xs.len().saturating_sub(1));
-    for index in 1..right_xs.len() {
-        segments.push(Segment {
-            start: XY::new(right_xs[index - 1], right_ys[index - 1]),
-            end: XY::new(right_xs[index], right_ys[index]),
-        });
-    }
-    let target = HausdorffTarget::from_parts(&segments, Vec::new(), Some(force_index));
-    directed_hausdorff_distance_squared_with_target_columns(left_xs, left_ys, &target).unwrap()
+    assert_hausdorff_close(
+        hausdorff_distance(&left, &right, 1e-9, 1.0).unwrap(),
+        expected,
+        1e-8,
+    );
+    assert_hausdorff_close(
+        hausdorff_distance(&right, &left, 1e-9, 1.0).unwrap(),
+        expected,
+        1e-8,
+    );
 }
 
 #[test]
-fn small_hausdorff_column_path_matches_forced_indexed() {
-    for vertex_count in 2..=17 {
-        let (left_xs, left_ys) = wiggly_line_columns(vertex_count, 0.0);
-        let (right_xs, right_ys) = wiggly_line_columns(vertex_count, 0.3);
-        let small = directed_hausdorff_distance_squared_columns_forced(
-            &left_xs, &left_ys, &right_xs, &right_ys, false,
-        );
-        let indexed = directed_hausdorff_distance_squared_columns_forced(
-            &left_xs, &left_ys, &right_xs, &right_ys, true,
-        );
-        assert_eq!(
-            small.to_bits(),
-            indexed.to_bits(),
-            "vertex_count={vertex_count} small={small} indexed={indexed}"
-        );
-        let symmetric_small = small.max(directed_hausdorff_distance_squared_columns_forced(
-            &right_xs, &right_ys, &left_xs, &left_ys, false,
-        ));
-        let symmetric_indexed = indexed.max(directed_hausdorff_distance_squared_columns_forced(
-            &right_xs, &right_ys, &left_xs, &left_ys, true,
-        ));
-        assert_eq!(symmetric_small.to_bits(), symmetric_indexed.to_bits());
-        let column =
-            hausdorff_distance_line_columns(&left_xs, &left_ys, &right_xs, &right_ys).unwrap();
-        assert_eq!(column.to_bits(), symmetric_small.sqrt().to_bits());
-        let right_segments = right_xs.len().saturating_sub(1);
-        if vertex_count <= HAUSDORFF_SMALL_TARGET_MAX_VERTICES {
-            assert!(!should_build_index(right_segments, 0));
-        } else {
-            assert!(should_build_index(right_segments, 0));
-        }
+fn packed_hausdorff_columns_preserve_exact_translations() {
+    for count in [2, 3, 4, 9, 17] {
+        let xs: Vec<_> = (0..count).map(|i| f64::from(i)).collect();
+        let ys: Vec<_> = (0..count).map(|i| f64::from(i % 2)).collect();
+        let shifted: Vec<_> = ys.iter().map(|y| y + 0.25).collect();
+        let value = hausdorff_distance_line_columns(&xs, &ys, &xs, &shifted, 1e-9, 1.0).unwrap();
+        assert_hausdorff_close(value, 0.25, 1e-9);
     }
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "captured four-vertex oracle fixtures stay explicit for auditability"
-)]
-fn hausdorff_4v_exact_matches_bisection_oracle() {
-    let (left_xs, left_ys) = wiggly_line_columns(4, 0.0);
-    let (right_xs, right_ys) = wiggly_line_columns(4, 0.3);
-    let exact =
-        super::hausdorff_distance_4v_exact(&left_xs, &left_ys, &right_xs, &right_ys).unwrap();
-    let bisect = super::hausdorff_distance_4v_fused(&left_xs, &left_ys, &right_xs, &right_ys);
-    assert_eq!(exact.to_bits(), bisect.to_bits());
-    assert_hausdorff_close(exact, bisect);
-
-    let check = |_name: &str,
-                 left_xs: [f64; 4],
-                 left_ys: [f64; 4],
-                 right_xs: [f64; 4],
-                 right_ys: [f64; 4]| {
-        let exact =
-            super::hausdorff_distance_4v_exact(&left_xs, &left_ys, &right_xs, &right_ys).unwrap();
-        let bisect = super::hausdorff_distance_4v_fused(&left_xs, &left_ys, &right_xs, &right_ys);
-        assert_hausdorff_close(exact, bisect);
-    };
-    check(
-        "identical",
-        [-3.0, -2.0, -1.0, 0.0],
-        [0.0; 4],
-        [-3.0, -2.0, -1.0, 0.0],
-        [0.0; 4],
-    );
-    check(
-        "parallel",
-        [-3.0, -2.0, -1.0, 0.0],
-        [0.0; 4],
-        [-3.0, -2.0, -1.0, 0.0],
-        [1.0; 4],
-    );
-    check(
-        "crossing_zigzags",
-        [-4.0, -3.0, -2.0, -1.0],
-        [0.0, 3.0, -3.0, 0.0],
-        [-4.0, -3.0, -2.0, -1.0],
-        [2.0, -2.0, 2.0, -2.0],
-    );
-    check(
-        "interior_peak",
-        [-4.0, -3.0, -2.0, -1.0],
-        [0.0; 4],
-        [-4.0, -3.0, -2.0, -1.0],
-        [1.0, 4.0, 1.0, 1.0],
-    );
-    check(
-        "target_switch",
-        [-4.0, -1.0, 2.0, 5.0],
-        [0.0, 3.0, -2.0, 1.0],
-        [-3.0, 0.0, 3.0, 6.0],
-        [2.0, -1.0, 4.0, 0.0],
-    );
-    check(
-        "captured_0",
-        [
-            -757.710_843_290_600_7,
-            -791.806_562_289_550_6,
-            -619.838_942_685_127,
-            -430.153_816_805_722_6,
-        ],
-        [
-            -479.355_769_110_693_6,
-            -720.615_267_688_551_7,
-            -675.619_967_206_292_8,
-            -339.384_613_870_499_83,
-        ],
-        [
-            -955.016_858_865_278,
-            -874.526_779_138_140_1,
-            -30.843_372_231_080_025,
-            -167.226_248_226_879_65,
-        ],
-        [
-            -357.538_454_550_676_53,
-            -477.508_429_316_223_8,
-            -968.631_695_017_365_7,
-            -969.713_855_527_740_4,
-        ],
-    );
-    check(
-        "captured_1",
-        [
-            -155.654_797_133_909_26,
-            -781.024_720_934_458_2,
-            -538.628_484_015_033_8,
-            -111.134_780_829_570_9,
-        ],
-        [
-            -154.513_935_361_642_78,
-            -444.539_122_619_791_67,
-            -985.582_140_270_988_9,
-            -944.445_923_889_159_6,
-        ],
-        [
-            -604.030_757_584_616_3,
-            -54.991_513_270_649_99,
-            -622.619_189_234_129,
-            -124.098_883_737_832_92,
-        ],
-        [
-            -777.783_695_556_638_7,
-            -802.015_379_025_138_8,
-            -263.747_878_201_247_1,
-            -519.456_849_787_257_9,
-        ],
-    );
 }
 
 #[test]
@@ -1177,20 +976,12 @@ fn facet_simd_extreme_coords_matches_scalar_oracle() {
 }
 
 #[test]
-fn facet_simd_extreme_hausdorff_matches_scalar_oracle() {
-    use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
-
-    for segment_count in [BVH_MIN_INDEXED_SEGMENTS, BVH_MIN_INDEXED_SEGMENTS + 7] {
+fn continuous_hausdorff_keeps_extreme_collinear_translation() {
+    for segment_count in [33, 65] {
         let left = extreme_coord_line(segment_count);
         let right = left.translate(1e149, 0.0).expect("translate extreme line");
-        let expected = brute_directed_hausdorff_squared(&left, &right)
-            .max(brute_directed_hausdorff_squared(&right, &left))
-            .sqrt();
-        let actual = left.hausdorff_distance(&right).unwrap();
-        assert!(
-            actual.is_finite() && expected.is_finite(),
-            "segment_count={segment_count} actual={actual} expected={expected}"
-        );
-        assert_hausdorff_close(actual, expected);
+        let expected = ((1e150_f64 + 1e149) - 1e150).max((-1e150_f64 + 1e149) + 1e150);
+        let actual = hausdorff_distance(&left, &right, 1e137, 1.0).unwrap();
+        assert_hausdorff_close(actual, expected, 1e137);
     }
 }

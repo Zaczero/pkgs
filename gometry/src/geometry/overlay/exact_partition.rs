@@ -400,6 +400,27 @@ pub(in crate::geometry) struct ExactSpan {
     pub unique: u32,
 }
 
+#[derive(Debug)]
+pub(in crate::geometry) struct ExactMetricNode {
+    pub homogeneous: [ExactDyadic; 3],
+}
+
+#[derive(Debug)]
+pub(in crate::geometry) struct ExactMetricSpan {
+    pub start: ExactMetricNode,
+    pub end: ExactMetricNode,
+    pub start_parameter: [ExactDyadic; 2],
+    pub end_parameter: [ExactDyadic; 2],
+    pub source: Segment,
+}
+
+#[derive(Debug)]
+pub(in crate::geometry) struct ExactMetricSupport {
+    pub spans: Vec<ExactMetricSpan>,
+    pub points: Vec<ExactMetricNode>,
+    pub faces: Vec<Vec<Vec<ExactMetricNode>>>,
+}
+
 /// One maximal walk over exact spans, cut at an incidence junction or at a
 /// change in the caller's ownership class. `nodes` contains the span
 /// endpoints in walk order; a cyclic walk repeats its first node at the end.
@@ -840,13 +861,7 @@ impl BoundaryPlan {
     ) -> Result<NodeParts> {
         let items = self.incident_items(topology)?;
         let rounded_segments = self.round_items(partition, topology)?;
-        self.emit_node_parts_from_segments(
-            partition,
-            topology,
-            &items,
-            &rounded_segments,
-            true,
-        )
+        self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, true)
     }
 
     fn emit_node_parts_with_coordinates(
@@ -881,13 +896,7 @@ impl BoundaryPlan {
         }
         self.check_emitted_fans(topology, &rounded_segments)?;
         self.check_global_faces(partition, &items, &rounded_segments)?;
-        self.emit_node_parts_from_segments(
-            partition,
-            topology,
-            &items,
-            &rounded_segments,
-            true,
-        )
+        self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, true)
     }
 
     fn emit_node_parts_with_shared_rounding(
@@ -1882,6 +1891,108 @@ impl ExactSourceInventory {
 
     pub(in crate::geometry) fn source_operands(&self) -> &[u32] {
         &self.source_operands
+    }
+
+    /// Exact closed support for scalar metrics, before coordinate publication.
+    ///
+    /// Face walks carry filled membership; selected spans retain their original
+    /// carriers and exact parameter windows.
+    pub(in crate::geometry) fn metric_support(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<ExactMetricSupport> {
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let cells = self.select_cells(
+            partition,
+            &topology,
+            &edges,
+            &global,
+            crate::geometry::OverlayOp::Union,
+            false,
+        )?;
+        let parameter = |unique: u32, homogeneous: &[ExactDyadic; 3]| -> Result<[ExactDyadic; 2]> {
+            let source = partition.unique[unique as usize];
+            let [x, y, w] = homogeneous;
+            let (coordinate, start, end) = if source.start.x != source.end.x {
+                (x, source.start.x, source.end.x)
+            } else {
+                (y, source.start.y, source.end.y)
+            };
+            let start = ExactDyadic::try_from_f64(start)?;
+            let direction = ExactDyadic::try_from_f64(end)?.try_subtract(start.try_clone()?)?;
+            Ok([
+                coordinate
+                    .try_clone()?
+                    .try_subtract(start.try_product(w)?)?,
+                w.try_product(&direction)?,
+            ])
+        };
+        let mut spans = Vec::new();
+        try_reserve_vec(
+            &mut spans,
+            cells.spans.iter().filter(|&&value| value).count(),
+        )?;
+        let mut covered = Vec::new();
+        try_reserve_vec(&mut covered, partition.recipes.len())?;
+        covered.resize(partition.recipes.len(), false);
+        for (index, &selected) in cells.spans.iter().enumerate() {
+            if !selected {
+                continue;
+            }
+            let span = partition.spans[index];
+            let start = partition.homogeneous(span.start)?;
+            let end = partition.homogeneous(span.end)?;
+            let start_parameter = parameter(span.unique, &start)?;
+            let end_parameter = parameter(span.unique, &end)?;
+            covered[span.start.0 as usize] = true;
+            covered[span.end.0 as usize] = true;
+            try_push_vec(&mut spans, ExactMetricSpan {
+                start: ExactMetricNode { homogeneous: start },
+                end: ExactMetricNode { homogeneous: end },
+                start_parameter,
+                end_parameter,
+                source: partition.unique[span.unique as usize],
+            })?;
+        }
+        let mut points = Vec::new();
+        try_reserve_vec(
+            &mut points,
+            cells.nodes.iter().filter(|&&value| value).count(),
+        )?;
+        for (index, &selected) in cells.nodes.iter().enumerate() {
+            if selected && !covered[index] {
+                try_push_vec(&mut points, ExactMetricNode {
+                    homogeneous: partition.homogeneous(NodeId(index as u32))?,
+                })?;
+            }
+        }
+        let mut faces = Vec::new();
+        try_reserve_vec(&mut faces, global.count as usize)?;
+        faces.resize_with(global.count as usize, Vec::new);
+        for walk in 0..topology.face_starts.len().saturating_sub(1) {
+            let face = global.walk_faces[walk] as usize;
+            if face == 0 || !cells.faces[face] {
+                continue;
+            }
+            let start = topology.face_starts[walk] as usize;
+            let end = topology.face_starts[walk + 1] as usize;
+            let mut cycle = Vec::new();
+            try_reserve_vec(&mut cycle, end - start)?;
+            for &slot in &topology.face_slots[start..end] {
+                let node = NodeId(topology.owners[slot as usize]);
+                try_push_vec(&mut cycle, ExactMetricNode {
+                    homogeneous: partition.homogeneous(node)?,
+                })?;
+            }
+            try_push_vec(&mut faces[face], cycle)?;
+        }
+        faces.retain(|cycles| !cycles.is_empty());
+        Ok(ExactMetricSupport {
+            spans,
+            points,
+            faces,
+        })
     }
 
     fn node_bindings<'a>(
