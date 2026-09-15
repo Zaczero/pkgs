@@ -359,8 +359,8 @@ tolerance : float or sequence of float, optional
 Returns
 -------
 GeometryArray
-    The filled inscribed circle `Polygon` (or center `Point` when
-    degenerate) per row.
+    The fixed-resolution filled polygonal approximation (or center `Point`
+    when degenerate) per row.
 
 ");
     post: r"unit : {'planar', 'meters'}, default None
@@ -369,7 +369,7 @@ GeometryArray
     raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.";
     tail: r"See Also
 --------
- polylabel : Approximate pole-of-inaccessibility label point.
+polylabel : Approximate pole-of-inaccessibility label point.
 maximum_inscribed_radius : The radius alone.
 point_on_surface : A guaranteed-interior representative point.
 centroid : Area/length-weighted center (may fall outside).
@@ -377,8 +377,8 @@ centroid : Area/length-weighted center (may fall outside).
 Raises
 ------
 GeometryError
-    If a finite planar/projected result cannot be represented as a contained
-    polygon without changing its center or radius.
+    If ``tolerance`` is not positive and finite, or a finite planar/projected
+    result cannot be certified and represented as a contained polygon.
 InvalidGeometryError
     If invalid polygonal structure prevents the operation from completing.
 
@@ -434,7 +434,7 @@ numpy.ndarray of float
     tail: r"
 See Also
 --------
-maximum_inscribed_circle : The filled inscribed circle (center and radius).
+maximum_inscribed_circle : The contained polygonal approximation.
 
 Examples
 --------

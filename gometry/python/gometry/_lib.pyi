@@ -2721,7 +2721,7 @@ class Geometry:
 
         See Also
         --------
-         polylabel : Approximate pole-of-inaccessibility label point.
+        polylabel : Approximate pole-of-inaccessibility label point.
         maximum_inscribed_radius : The radius alone.
         point_on_surface : A guaranteed-interior representative point.
         centroid : Area/length-weighted center (may fall outside).
@@ -2729,8 +2729,8 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If a finite planar/projected result cannot be represented as a contained
-            polygon without changing its center or radius.
+            If ``tolerance`` is not positive and finite, or a finite planar/projected
+            result cannot be certified and represented as a contained polygon.
         InvalidGeometryError
             If invalid polygonal structure prevents the operation from completing.
 
@@ -2773,7 +2773,7 @@ class Geometry:
 
         See Also
         --------
-        maximum_inscribed_circle : The filled inscribed circle (center and radius).
+        maximum_inscribed_circle : The contained polygonal approximation.
 
         Examples
         --------
@@ -8119,12 +8119,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Returns
         -------
         GeometryArray
-            The filled inscribed circle `Polygon` (or center `Point` when
-            degenerate) per row.
+            The fixed-resolution filled polygonal approximation (or center `Point`
+            when degenerate) per row.
 
         See Also
         --------
-         polylabel : Approximate pole-of-inaccessibility label point.
+        polylabel : Approximate pole-of-inaccessibility label point.
         maximum_inscribed_radius : The radius alone.
         point_on_surface : A guaranteed-interior representative point.
         centroid : Area/length-weighted center (may fall outside).
@@ -8132,8 +8132,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If a finite planar/projected result cannot be represented as a contained
-            polygon without changing its center or radius.
+            If ``tolerance`` is not positive and finite, or a finite planar/projected
+            result cannot be certified and represented as a contained polygon.
         InvalidGeometryError
             If invalid polygonal structure prevents the operation from completing.
 
@@ -8174,7 +8174,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         See Also
         --------
-        maximum_inscribed_circle : The filled inscribed circle (center and radius).
+        maximum_inscribed_circle : The contained polygonal approximation.
 
         Examples
         --------
