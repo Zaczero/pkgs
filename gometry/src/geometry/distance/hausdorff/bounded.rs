@@ -1657,6 +1657,72 @@ fn point_in_box(point: &ExactPoint, bounds: FloatBox) -> Result<bool> {
         && point.y.try_cmp(&max_y)? != Ordering::Greater)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoxSplitStrategy {
+    FourWay,
+    LongestAxis,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoxSplitAxis {
+    X,
+    Y,
+}
+
+fn normalized_box_extent(min: f64, max: f64, scale: f64) -> Option<(f64, f64)> {
+    let min = min / scale;
+    let max = max / scale;
+    if !(min.is_finite() && max.is_finite()) {
+        return None;
+    }
+    let lower = (max.next_down() - min.next_up()).next_down().max(0.0);
+    let upper = (max.next_up() - min.next_down()).next_up();
+    (lower.is_finite() && upper.is_finite() && lower <= upper).then_some((lower, upper))
+}
+
+fn compare_box_extents(bounds: FloatBox) -> Option<Ordering> {
+    let x = DdInterval::difference(bounds.max_x, bounds.min_x).map(DdInterval::outward_bounds);
+    let y = DdInterval::difference(bounds.max_y, bounds.min_y).map(DdInterval::outward_bounds);
+    if let (Some(x), Some(y)) = (x, y) {
+        if x.0 > y.1 {
+            return Some(Ordering::Greater);
+        }
+        if y.0 > x.1 {
+            return Some(Ordering::Less);
+        }
+        if x.0.to_bits() == x.1.to_bits()
+            && y.0.to_bits() == y.1.to_bits()
+            && x.0.to_bits() == y.0.to_bits()
+        {
+            return Some(Ordering::Equal);
+        }
+    }
+
+    let scale = bounds
+        .min_x
+        .abs()
+        .max(bounds.max_x.abs())
+        .max(bounds.min_y.abs())
+        .max(bounds.max_y.abs());
+    if scale == 0.0 {
+        return Some(Ordering::Equal);
+    }
+    let x = normalized_box_extent(bounds.min_x, bounds.max_x, scale)?;
+    let y = normalized_box_extent(bounds.min_y, bounds.max_y, scale)?;
+    if x.0 > y.1 {
+        Some(Ordering::Greater)
+    } else if y.0 > x.1 {
+        Some(Ordering::Less)
+    } else if x.0.to_bits() == x.1.to_bits()
+        && y.0.to_bits() == y.1.to_bits()
+        && x.0.to_bits() == y.0.to_bits()
+    {
+        Some(Ordering::Equal)
+    } else {
+        None
+    }
+}
+
 fn exact_segment_enters_candidate(
     start: &ExactPoint,
     end: &ExactPoint,
@@ -1827,6 +1893,14 @@ impl SourcePatch {
     }
 
     fn split(self, budget: &mut ExpansionBudget) -> Result<Option<Vec<Self>>> {
+        self.split_with_strategy(budget, BoxSplitStrategy::FourWay)
+    }
+
+    fn split_with_strategy(
+        self,
+        budget: &mut ExpansionBudget,
+        strategy: BoxSplitStrategy,
+    ) -> Result<Option<Vec<Self>>> {
         match self {
             Self::Span { span, lo, hi } => {
                 budget.add(2)?;
@@ -1845,45 +1919,124 @@ impl SourcePatch {
                 })?;
                 Ok(Some(children))
             },
-            Self::Box(bounds) => {
-                let mid_x = f64::midpoint(bounds.min_x, bounds.max_x);
-                let mid_y = f64::midpoint(bounds.min_y, bounds.max_y);
-                let split_x = bounds.min_x < mid_x && mid_x < bounds.max_x;
-                let split_y = bounds.min_y < mid_y && mid_y < bounds.max_y;
-                if !split_x && !split_y {
-                    return Ok(None);
-                }
-                let count = (1 + usize::from(split_x)) * (1 + usize::from(split_y));
-                budget.add(count)?;
-                let mut children = Vec::new();
-                try_reserve_vec(&mut children, count)?;
-                let xs = if split_x {
-                    [(bounds.min_x, mid_x), (mid_x, bounds.max_x)]
-                } else {
-                    [(bounds.min_x, bounds.max_x); 2]
-                };
-                let ys = if split_y {
-                    [(bounds.min_y, mid_y), (mid_y, bounds.max_y)]
-                } else {
-                    [(bounds.min_y, bounds.max_y); 2]
-                };
-                for &(min_x, max_x) in &xs[..if split_x { 2 } else { 1 }] {
-                    for &(min_y, max_y) in &ys[..if split_y { 2 } else { 1 }] {
-                        try_push_vec(
-                            &mut children,
-                            Self::Box(FloatBox {
-                                min_x,
-                                max_x,
-                                min_y,
-                                max_y,
-                            }),
-                        )?;
-                    }
-                }
-                Ok(Some(children))
+            Self::Box(bounds) => match strategy {
+                BoxSplitStrategy::FourWay => Self::split_box_four_way(bounds, budget),
+                BoxSplitStrategy::LongestAxis => Self::split_box_longest_axis(bounds, budget),
             },
             Self::Point(_) => Ok(None),
         }
+    }
+
+    fn split_box_four_way(
+        bounds: FloatBox,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Option<Vec<Self>>> {
+        let mid_x = f64::midpoint(bounds.min_x, bounds.max_x);
+        let mid_y = f64::midpoint(bounds.min_y, bounds.max_y);
+        let split_x = bounds.min_x < mid_x && mid_x < bounds.max_x;
+        let split_y = bounds.min_y < mid_y && mid_y < bounds.max_y;
+        if !split_x && !split_y {
+            return Ok(None);
+        }
+        let count = (1 + usize::from(split_x)) * (1 + usize::from(split_y));
+        budget.add(count)?;
+        let mut children = Vec::new();
+        try_reserve_vec(&mut children, count)?;
+        let xs = if split_x {
+            [(bounds.min_x, mid_x), (mid_x, bounds.max_x)]
+        } else {
+            [(bounds.min_x, bounds.max_x); 2]
+        };
+        let ys = if split_y {
+            [(bounds.min_y, mid_y), (mid_y, bounds.max_y)]
+        } else {
+            [(bounds.min_y, bounds.max_y); 2]
+        };
+        for &(min_x, max_x) in &xs[..if split_x { 2 } else { 1 }] {
+            for &(min_y, max_y) in &ys[..if split_y { 2 } else { 1 }] {
+                try_push_vec(
+                    &mut children,
+                    Self::Box(FloatBox {
+                        min_x,
+                        max_x,
+                        min_y,
+                        max_y,
+                    }),
+                )?;
+            }
+        }
+        Ok(Some(children))
+    }
+
+    fn split_box_longest_axis(
+        bounds: FloatBox,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Option<Vec<Self>>> {
+        let mid_x = f64::midpoint(bounds.min_x, bounds.max_x);
+        let mid_y = f64::midpoint(bounds.min_y, bounds.max_y);
+        let split_x = bounds.min_x < mid_x && mid_x < bounds.max_x;
+        let split_y = bounds.min_y < mid_y && mid_y < bounds.max_y;
+        if !split_x && !split_y {
+            return Ok(None);
+        }
+        let preferred = match compare_box_extents(bounds) {
+            Some(Ordering::Less) => BoxSplitAxis::Y,
+            Some(Ordering::Equal | Ordering::Greater) => BoxSplitAxis::X,
+            None => return Self::split_box_four_way(bounds, budget),
+        };
+        let axis = match (preferred, split_x, split_y) {
+            (BoxSplitAxis::X, true, _) => BoxSplitAxis::X,
+            (BoxSplitAxis::X, false, true) => BoxSplitAxis::Y,
+            (BoxSplitAxis::Y, _, true) => BoxSplitAxis::Y,
+            (BoxSplitAxis::Y, true, false) => BoxSplitAxis::X,
+            _ => return Ok(None),
+        };
+        budget.add(2)?;
+        let mut children = Vec::new();
+        try_reserve_vec(&mut children, 2)?;
+        match axis {
+            BoxSplitAxis::X => {
+                try_push_vec(
+                    &mut children,
+                    Self::Box(FloatBox {
+                        min_x: bounds.min_x,
+                        max_x: mid_x,
+                        min_y: bounds.min_y,
+                        max_y: bounds.max_y,
+                    }),
+                )?;
+                try_push_vec(
+                    &mut children,
+                    Self::Box(FloatBox {
+                        min_x: mid_x,
+                        max_x: bounds.max_x,
+                        min_y: bounds.min_y,
+                        max_y: bounds.max_y,
+                    }),
+                )?;
+            },
+            BoxSplitAxis::Y => {
+                try_push_vec(
+                    &mut children,
+                    Self::Box(FloatBox {
+                        min_x: bounds.min_x,
+                        max_x: bounds.max_x,
+                        min_y: bounds.min_y,
+                        max_y: mid_y,
+                    }),
+                )?;
+                try_push_vec(
+                    &mut children,
+                    Self::Box(FloatBox {
+                        min_x: bounds.min_x,
+                        max_x: bounds.max_x,
+                        min_y: mid_y,
+                        max_y: bounds.max_y,
+                    }),
+                )?;
+            },
+        }
+        Ok(Some(children))
     }
 }
 
@@ -2971,6 +3124,7 @@ fn run_directed(
     source: &PreparedSupport,
     target: &PreparedSupport,
     context: &mut SearchContext<'_>,
+    box_split_strategy: BoxSplitStrategy,
 ) -> Result<DirectedCandidate> {
     context.require_positive_witness = source.has_positive_area()?;
     let mut queue = PatchQueue::new(context.exact_upper);
@@ -3000,7 +3154,10 @@ fn run_directed(
         }
         #[cfg(test)]
         count_refinement_work()?;
-        let Some(children) = record.patch.split(&mut context.budget)? else {
+        let Some(children) = record
+            .patch
+            .split_with_strategy(&mut context.budget, box_split_strategy)?
+        else {
             return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
                 "maximum_inscribed_circle",
             ));
@@ -3039,7 +3196,12 @@ pub(crate) fn directed_inradius_scaled(
     let mut context = SearchContext::new_directed(&accuracy, output_scale, output_tolerance);
     let source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget)?;
     let target = source.boundary_clone()?;
-    let candidate = run_directed(&source, &target, &mut context)?;
+    let candidate = run_directed(
+        &source,
+        &target,
+        &mut context,
+        BoxSplitStrategy::LongestAxis,
+    )?;
     Ok(DirectedOptimizationResult {
         center: candidate.center,
         center_squared: candidate.center_squared,
@@ -3225,6 +3387,8 @@ impl ExactPoint {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use crate::geometry::{CoordSeq, LineSeq, Point};
 
@@ -3247,7 +3411,72 @@ mod tests {
         )
     }
 
+    fn adjacent_box_union(count: usize) -> Shape {
+        let mut wkt = String::from("MULTIPOLYGON (");
+        for index in 0..count {
+            if index != 0 {
+                wkt.push(',');
+            }
+            write!(
+                wkt,
+                "(({} 0,{} 0,{} 1,{} 1,{} 0))",
+                index,
+                index + 1,
+                index + 1,
+                index,
+                index
+            )
+            .unwrap();
+        }
+        wkt.push(')');
+        crate::io::parse_wkt(&wkt).expect("valid adjacent-box union")
+    }
+
+    fn adjacent_box_prepared_support(count: usize) -> (PreparedSupport, PreparedSupport) {
+        let extent = count as f64;
+        let source = PreparedSupport::from_parts(Vec::new(), Vec::new(), vec![vec![vec![
+            exact_point_xy(0.0, 0.0).unwrap(),
+            exact_point_xy(extent, 0.0).unwrap(),
+            exact_point_xy(extent, 1.0).unwrap(),
+            exact_point_xy(0.0, 1.0).unwrap(),
+        ]]])
+        .unwrap();
+        let mut spans = Vec::with_capacity(2 * count + 2);
+        for index in 0..count {
+            let start = index as f64;
+            let end = start + 1.0;
+            spans.push(test_span(Segment {
+                start: XY::new(start, 0.0),
+                end: XY::new(end, 0.0),
+            }));
+            spans.push(test_span(Segment {
+                start: XY::new(start, 1.0),
+                end: XY::new(end, 1.0),
+            }));
+        }
+        spans.push(test_span(Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(0.0, 1.0),
+        }));
+        spans.push(test_span(Segment {
+            start: XY::new(extent, 1.0),
+            end: XY::new(extent, 0.0),
+        }));
+        let boundary = PreparedSupport::from_parts(spans, Vec::new(), Vec::new()).unwrap();
+        (source, boundary)
+    }
+
     fn directed_candidate_for(shape: &Shape, tolerance: f64, scale: f64) -> DirectedCandidate {
+        directed_candidate_for_strategy(shape, tolerance, scale, BoxSplitStrategy::LongestAxis)
+            .unwrap()
+    }
+
+    fn directed_candidate_for_strategy(
+        shape: &Shape,
+        tolerance: f64,
+        scale: f64,
+        box_split_strategy: BoxSplitStrategy,
+    ) -> Result<DirectedCandidate> {
         let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
         let mut context = SearchContext::new_directed(
             &accuracy,
@@ -3256,7 +3485,7 @@ mod tests {
         );
         let source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget).unwrap();
         let boundary = source.boundary_clone().unwrap();
-        run_directed(&source, &boundary, &mut context).unwrap()
+        run_directed(&source, &boundary, &mut context, box_split_strategy)
     }
 
     fn test_span(source: Segment) -> SupportSpan {
@@ -3351,6 +3580,58 @@ mod tests {
             work <= limit,
             "ordinary L-shape used {work} refinements, limit {limit}"
         );
+    }
+
+    #[test]
+    fn directed_adjacent_box_refinement_work_scales_with_boundary_spans() {
+        for count in [8, 16, 32, 64] {
+            let shape = adjacent_box_union(count);
+            let tolerance =
+                crate::geometry::derived::scale_aware_default_tolerance(&shape).unwrap();
+            let (source, boundary) = adjacent_box_prepared_support(count);
+            let limit = count * 64;
+            let (result, work) = {
+                let _guard = limit_refinement_work(limit);
+                let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
+                let mut context = SearchContext::new_directed(
+                    &accuracy,
+                    Rational::one(),
+                    Rational::from_f64(tolerance).unwrap(),
+                );
+                let result = run_directed(
+                    &source,
+                    &boundary,
+                    &mut context,
+                    BoxSplitStrategy::LongestAxis,
+                );
+                let work = refinement_work();
+                (result, work)
+            };
+            let result = result.unwrap();
+            let radius = downward_sqrt(&result.center_squared).unwrap();
+            assert_eq!(radius, 0.5);
+            assert!(
+                work <= limit,
+                "adjacent boxes used {work} refinements, limit {limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn directed_four_way_adjacent_box_refinement_exceeds_linear_work_envelope() {
+        let count = 16;
+        let shape = adjacent_box_union(count);
+        let tolerance = crate::geometry::derived::scale_aware_default_tolerance(&shape).unwrap();
+        let limit = count * 64;
+        let _guard = limit_refinement_work(limit);
+        let result =
+            directed_candidate_for_strategy(&shape, tolerance, 1.0, BoxSplitStrategy::FourWay);
+        let work = refinement_work();
+        assert!(
+            result.is_err(),
+            "four-way directed refinement unexpectedly closed"
+        );
+        assert_eq!(work, limit + 1);
     }
 
     #[test]
@@ -3821,6 +4102,91 @@ mod tests {
                 (bounds.min_y, bounds.max_y),
                 if index == 0 { (0.0, 1.0) } else { (1.0, 2.0) }
             );
+        }
+    }
+
+    #[test]
+    fn longest_axis_box_split_handles_extreme_equal_and_unrepresentable_axes() {
+        let mut ordinary_budget = ExpansionBudget::new("hausdorff_distance", "max_error");
+        let ordinary_children = SourcePatch::Box(FloatBox {
+            min_x: 0.0,
+            max_x: 1.0,
+            min_y: 0.0,
+            max_y: 1.0,
+        })
+        .split(&mut ordinary_budget)
+        .unwrap()
+        .unwrap();
+        assert_eq!(ordinary_children.len(), 4);
+        assert_eq!(ordinary_budget.used(), 4);
+
+        let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "tolerance");
+        let children = SourcePatch::Box(FloatBox {
+            min_x: -f64::MAX,
+            max_x: f64::MAX,
+            min_y: -1.0,
+            max_y: 1.0,
+        })
+        .split_with_strategy(&mut budget, BoxSplitStrategy::LongestAxis)
+        .unwrap()
+        .unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(budget.used(), 2);
+        for child in children {
+            let SourcePatch::Box(bounds) = child else {
+                panic!("longest-axis split produced a non-box child");
+            };
+            assert_eq!((bounds.min_y, bounds.max_y), (-1.0, 1.0));
+            assert!(bounds.min_x < bounds.max_x);
+        }
+
+        let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "tolerance");
+        let children = SourcePatch::Box(FloatBox {
+            min_x: 0.0,
+            max_x: 1.0,
+            min_y: 0.0,
+            max_y: 1.0,
+        })
+        .split_with_strategy(&mut budget, BoxSplitStrategy::LongestAxis)
+        .unwrap()
+        .unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(budget.used(), 2);
+        let first = children.into_iter().next().unwrap();
+        let children = first
+            .split_with_strategy(&mut budget, BoxSplitStrategy::LongestAxis)
+            .unwrap()
+            .unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(budget.used(), 4);
+        for child in children {
+            let SourcePatch::Box(bounds) = child else {
+                panic!("longest-axis split produced a non-box child");
+            };
+            assert!(bounds.min_y < bounds.max_y);
+            assert!(bounds.max_x - bounds.min_x < 1.0);
+        }
+
+        let y_min = 1.0e-10_f64;
+        let y_max = y_min.next_up().next_up();
+        let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "tolerance");
+        let children = SourcePatch::Box(FloatBox {
+            min_x: 1.0,
+            max_x: 1.0_f64.next_up(),
+            min_y: y_min,
+            max_y: y_max,
+        })
+        .split_with_strategy(&mut budget, BoxSplitStrategy::LongestAxis)
+        .unwrap()
+        .unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(budget.used(), 2);
+        for child in children {
+            let SourcePatch::Box(bounds) = child else {
+                panic!("longest-axis fallback produced a non-box child");
+            };
+            assert_eq!((bounds.min_x, bounds.max_x), (1.0, 1.0_f64.next_up()));
+            assert!(bounds.min_y < bounds.max_y);
         }
     }
 
@@ -4419,7 +4785,13 @@ mod tests {
             .budget
             .add(crate::geometry::generated_budget::GENERATED_ITEM_LIMIT)
             .unwrap();
-        let error = run_directed(&source, &target, &mut context).unwrap_err();
+        let error = run_directed(
+            &source,
+            &target,
+            &mut context,
+            BoxSplitStrategy::LongestAxis,
+        )
+        .unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(
