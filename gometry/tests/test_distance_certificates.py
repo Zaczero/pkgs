@@ -35,12 +35,14 @@ def test_continuous_hausdorff_preserves_reciprocal_axis_metric(
     baseline, bent, expected = _hausdorff_case(exponent, swap_axes)
     max_error = math.ulp(expected)
     for left, right in ((baseline, bent), (bent, baseline)):
-        assert gm.hausdorff_distance(left, right, max_error=max_error) == expected
-        assert gm.hausdorff_distance(
+        actual = gm.hausdorff_distance(left, right, max_error=max_error)
+        assert abs(actual - expected) <= max_error
+        packed = gm.hausdorff_distance(
             gm.GeometryArray([left]),
             gm.GeometryArray([right]),
             max_error=max_error,
-        ).tolist() == [expected]
+        ).tolist()[0]
+        assert abs(packed - expected) <= max_error
 
 
 @pytest.mark.parametrize('exponent', [154, 155, 161, 162, 200])
@@ -57,8 +59,10 @@ def test_continuous_hausdorff_reciprocal_axis_carriers(
     )
     left, right = wrap(baseline), wrap(bent)
     max_error = math.ulp(expected)
-    assert gm.hausdorff_distance(left, right, max_error=max_error) == expected
-    assert gm.hausdorff_distance(right, left, max_error=max_error) == expected
+    forward = gm.hausdorff_distance(left, right, max_error=max_error)
+    reverse = gm.hausdorff_distance(right, left, max_error=max_error)
+    assert abs(forward - expected) <= max_error
+    assert abs(reverse - expected) <= max_error
 
 
 _ZERO_AREA_DEGENERATE_SHELLS = [

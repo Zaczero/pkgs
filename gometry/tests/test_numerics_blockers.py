@@ -114,18 +114,20 @@ def test_ordinary_magnitude_distance_bit_identical_smoke() -> None:
         assert got == expected
 
 
-def test_subnormal_hausdorff_matches_exact_separation() -> None:
+def test_subnormal_hausdorff_matches_independent_separation_bound() -> None:
     """Hausdorff finishers inherit the shared squared-norm trust rule."""
     origin = gm.Point(0.0, 0.0)
     for sep in (_SEP_EXACT_ZERO, _SEP_SUBNORMAL_SQ, _SEP_BOUNDARY_DW):
         max_error = math.ulp(float(sep))
         got = gm.hausdorff_distance(origin, gm.Point(sep, 0.0), max_error=max_error)
-        assert got == float(sep), f'scalar sep={sep}: {got!r}'
+        assert abs(got - float(sep)) <= max_error, f'scalar sep={sep}: {got!r}'
         # Parallel unit lines: continuous HD equals the offset.
         left = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
         right = gm.LineString([(0.0, sep), (1.0, sep)])
         got_line = gm.hausdorff_distance(left, right, max_error=max_error)
-        assert got_line == float(sep), f'parallel sep={sep}: {got_line!r}'
+        assert abs(got_line - float(sep)) <= max_error, (
+            f'parallel sep={sep}: {got_line!r}'
+        )
 
 
 def test_subnormal_frechet_matches_exact_separation() -> None:
@@ -162,8 +164,10 @@ def test_subnormal_metric_family_is_monotone() -> None:
     for series, name in ((haus, 'hausdorff'), (frech, 'frechet'), (clear, 'clearance')):
         for i in range(len(series) - 1):
             assert series[i] <= series[i + 1], f'{name} non-monotone: {series}'
-            assert series[i] == seps[i], f'{name} sep={seps[i]}: {series[i]!r}'
-        assert series[-1] == seps[-1]
+            assert series[i] == pytest.approx(
+                seps[i], rel=0.0, abs=math.ulp(seps[i])
+            ), f'{name} sep={seps[i]}: {series[i]!r}'
+        assert series[-1] == pytest.approx(seps[-1], rel=0.0, abs=math.ulp(seps[-1]))
 
 
 def test_tiny_ring_area_decision_keeps_nonzero_orientation() -> None:

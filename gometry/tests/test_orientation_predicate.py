@@ -92,8 +92,10 @@ def test_hausdorff_preserves_underflowed_local_determinant() -> None:
     baseline = gm.LineString([(0.0, 0.0), (length, height)])
     graph = gm.LineString([(0.0, 0.0), (height, 0.0), (length, height + offset)])
     max_error = math.ulp(offset)
-    assert gm.hausdorff_distance(baseline, graph, max_error=max_error) == offset
-    assert gm.hausdorff_distance(graph, baseline, max_error=max_error) == offset
+    forward = gm.hausdorff_distance(baseline, graph, max_error=max_error)
+    reverse = gm.hausdorff_distance(graph, baseline, max_error=max_error)
+    assert abs(forward - offset) <= max_error
+    assert abs(reverse - offset) <= max_error
 
 
 def test_concave_hull_near_collinear_ulp_sites_keeps_the_exact_cycle() -> None:

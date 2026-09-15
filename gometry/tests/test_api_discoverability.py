@@ -23,12 +23,14 @@ def test_hausdorff_rejects_densify_and_preserves_continuous_support() -> None:
     with pytest.raises(TypeError, match=r"unexpected keyword argument 'densify'"):
         gm.hausdorff_distance(gm.GeometryArray([baseline]), peak, densify=[0.5])
 
-    assert gm.hausdorff_distance(baseline, peak, max_error=1e-12) == pytest.approx(8.0)
+    assert gm.hausdorff_distance(baseline, peak, max_error=1e-12) == pytest.approx(
+        8.0, rel=0.0, abs=1e-12
+    )
     assert gm.hausdorff_distance(
         gm.GeometryArray([baseline, baseline]),
         gm.GeometryArray([peak, gm.LineString([(0, 1), (10, 1)])]),
         max_error=1e-12,
-    ) == pytest.approx([8.0, 1.0])
+    ) == pytest.approx([8.0, 1.0], rel=0.0, abs=1e-12)
 
 
 def test_array_frechet_densify_per_row() -> None:

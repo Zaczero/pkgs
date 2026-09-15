@@ -8,6 +8,8 @@ structural property that the cliffs stay dead.
 
 from __future__ import annotations
 
+import math
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -339,9 +341,13 @@ def test_hausdorff_does_not_run_a_brute_force_oracle_per_call() -> None:
     left = gm.LineString(np.column_stack([10.0 * t, 3.0 * t]))
     right = gm.LineString(np.column_stack([7.0 * t, 1.0 + 8.0 * t]))
 
-    # 6.60900136802594491... is the exact continuous Hausdorff distance for
-    # this pair. The requested bound is tight enough to exclude the previous
-    # answer, which sat about 1.8e-14 away.
-    exact = 6.609001368025945
-    assert abs(gm.hausdorff_distance(left, right, max_error=1e-15) - exact) < 5e-15
-    assert abs(gm.hausdorff_distance(right, left, max_error=1e-15) - exact) < 5e-15
+    # The right endpoint (7, 9) is farthest from the left segment. Its
+    # point-to-line distance is |10*9 - 3*7| / sqrt(10² + 3²).
+    expected = 69.0 / math.sqrt(109.0)
+    max_error = 1e-15
+    assert abs(gm.hausdorff_distance(left, right, max_error=max_error) - expected) <= (
+        max_error
+    )
+    assert abs(gm.hausdorff_distance(right, left, max_error=max_error) - expected) <= (
+        max_error
+    )
