@@ -171,7 +171,15 @@ impl PyCrs {
     }
 
     fn retained_heap_bytes(&self) -> usize {
-        self.definition.heap_bytes() + self.info.heap_bytes()
+        let identify = self
+            .identify
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |(_, authority, candidates)| {
+                authority.heap_bytes() + candidates.heap_bytes()
+            });
+        self.definition.heap_bytes() + self.info.heap_bytes() + identify
     }
 }
 
@@ -424,5 +432,33 @@ impl HeapSize for crs::CrsInfo {
             + datum.heap_bytes()
             + ellipsoid.heap_bytes()
             + prime_meridian.heap_bytes()
+    }
+}
+
+impl HeapSize for crs::IdentifyCandidate {
+    fn heap_bytes(&self) -> usize {
+        self.crs.heap_bytes()
+            + self.name.heap_bytes()
+            + self.authority.heap_bytes()
+            + self.code.heap_bytes()
+    }
+}
+
+#[cfg(test)]
+mod footprint_tests {
+    use super::*;
+
+    #[test]
+    fn identify_memo_heap_is_reported_after_resolution() {
+        let crs = PyCrs::from_definition("EPSG:3857".into());
+        let cold = crs.heap_bytes();
+        let candidates = crs
+            .cached_identify(None)
+            .expect("EPSG:3857 identify must resolve");
+        assert!(!candidates.is_empty());
+        assert!(
+            crs.heap_bytes() > cold,
+            "identify memoization retains native candidates"
+        );
     }
 }

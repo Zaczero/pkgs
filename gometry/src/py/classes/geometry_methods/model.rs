@@ -53,8 +53,7 @@ pub struct PyGeometry {
 
 impl HeapSize for PyGeometry {
     fn heap_bytes(&self) -> usize {
-        let shape_bytes =
-            std::mem::size_of_val(self.shape.as_ref()) + self.shape.retained_heap_bytes();
+        let shape_bytes = HeapSize::heap_bytes(&self.shape);
         let product_bytes = self.row_products.heap_bytes_at(self.product_row);
         // A scalar prepared plan borrows this exact ShapeData Arc. Its retained
         // size includes the shape, which the scalar already reports above.
@@ -62,7 +61,9 @@ impl HeapSize for PyGeometry {
             .cached_prepared_plan()
             .filter(|plan| Arc::ptr_eq(plan.shape_arc(), &self.shape))
             .map_or(0, |_| shape_bytes);
-        shape_bytes + product_bytes.saturating_sub(prepared_shape_bytes)
+        shape_bytes
+            + product_bytes.saturating_sub(prepared_shape_bytes)
+            + self.frame.crs_ref().map_or(0, HeapSize::heap_bytes)
     }
 }
 

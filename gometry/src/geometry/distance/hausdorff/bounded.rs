@@ -3194,8 +3194,13 @@ pub(crate) fn directed_inradius_scaled(
     let output_scale = Rational::from_f64(output_scale)?;
     let output_tolerance = Rational::from_f64(tolerance)?;
     let mut context = SearchContext::new_directed(&accuracy, output_scale, output_tolerance);
-    let source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget)?;
+    let mut source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget)?;
     let target = source.boundary_clone()?;
+    // Boundary incidence is only needed while constructing the independent
+    // boundary view. The directed result keeps the source support for final
+    // containment, but that path reads its spans/faces/index, not these flags.
+    source.boundary_spans = None;
+    source.boundary_points = None;
     let candidate = run_directed(
         &source,
         &target,
@@ -4727,6 +4732,25 @@ mod tests {
             Ordering::Equal
         );
         assert!(result.source.contains_area(&center).unwrap());
+    }
+
+    #[test]
+    fn directed_result_drops_boundary_incidence_after_boundary_clone() {
+        let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let result = directed_inradius_scaled(&shape, 1e-3, 1.0).unwrap();
+
+        assert!(
+            result.source.boundary_spans.is_none(),
+            "source support no longer needs boundary-span incidence after cloning"
+        );
+        assert!(
+            result.source.boundary_points.is_none(),
+            "source support no longer needs boundary-point incidence after cloning"
+        );
+        assert!(
+            result.boundary.boundary_spans.is_none() && result.boundary.boundary_points.is_none(),
+            "boundary clone carries geometry only"
+        );
     }
 
     #[test]

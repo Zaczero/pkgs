@@ -31,6 +31,12 @@ impl crate::HeapSize for Ring {
 }
 
 impl Ring {
+    pub(crate) fn logical_heap_bytes(&self) -> usize {
+        self.0.logical_heap_bytes()
+    }
+}
+
+impl Ring {
     /// Minimum distinct vertices for an open ring (before closing).
     pub const MIN_VERTICES_OPEN: usize = 3;
     /// Minimum stored vertices for a closed ring (includes repeated endpoint).

@@ -26,6 +26,13 @@ impl crate::HeapSize for Polygon {
     }
 }
 
+impl Polygon {
+    pub(crate) fn logical_heap_bytes(&self) -> usize {
+        self.shell.logical_heap_bytes()
+            + self.holes.heap_bytes_with(|ring| ring.logical_heap_bytes())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Point {
     pub x: f64,

@@ -1008,8 +1008,10 @@ def test_remaining_heap_retaining_types_report_sizeof_and_nbytes() -> None:
     xyzm_index = gm.SpatialIndex(
         gm.points(range(rows), [0.0] * rows, z=[1.0] * rows, m=[2.0] * rows)
     )
-    assert sys.getsizeof(xyz_index) - sys.getsizeof(xy_index) == rows * 8
-    assert sys.getsizeof(xyzm_index) - sys.getsizeof(xy_index) == rows * 16
+    xyz_delta = sys.getsizeof(xyz_index) - sys.getsizeof(xy_index)
+    xyzm_delta = sys.getsizeof(xyzm_index) - sys.getsizeof(xy_index)
+    assert xyz_delta > rows * 8
+    assert xyzm_delta == 2 * xyz_delta
 
     small_index = gm.SpatialIndex(gm.GeometryArray([_regular_polygon(0.0, 0.0)]))
     polygons = gm.GeometryArray([

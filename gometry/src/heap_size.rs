@@ -97,7 +97,7 @@ impl<T: HeapSize> HeapSize for Box<[T]> {
 /// parent must NOT route through these blanket impls for the parent's full
 /// slot table — they use logical/selected accounting instead (see
 /// `RowProducts::heap_bytes`, `GeometryArrayStorage::logical_heap_bytes`).
-const ARC_CONTROL_BYTES: usize = size_of::<usize>() * 2;
+pub(crate) const ARC_CONTROL_BYTES: usize = size_of::<usize>() * 2;
 
 impl<T: HeapSize> HeapSize for Arc<T> {
     fn heap_bytes(&self) -> usize {
@@ -170,5 +170,14 @@ mod tests {
         assert!(result.is_err());
 
         assert_eq!(value.heap_bytes(), before);
+    }
+
+    #[test]
+    fn arc_vec_heap_bytes_includes_header_capacity_and_control_block() {
+        let value = Arc::new(Vec::<u8>::with_capacity(17));
+        assert_eq!(
+            value.heap_bytes(),
+            ARC_CONTROL_BYTES + size_of::<Vec<u8>>() + value.capacity() * size_of::<u8>()
+        );
     }
 }

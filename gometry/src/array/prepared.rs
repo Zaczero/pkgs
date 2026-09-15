@@ -37,6 +37,64 @@ impl RowProductChunk {
         cells.resize_with(ROWS_PER_CHUNK, RowProductCell::default);
         Ok(Self { cells })
     }
+
+    fn heap_bytes_for_cell(&self, offset: usize) -> usize {
+        crate::heap_size::ARC_CONTROL_BYTES
+            + std::mem::size_of::<Self>()
+            + self.cells.capacity() * std::mem::size_of::<RowProductCell>()
+            + self.cells[offset].heap_bytes()
+    }
+
+    fn heap_bytes_for_selection(
+        &self,
+        selection: crate::array::RowSelectionRef<'_>,
+        chunk_index: usize,
+    ) -> usize {
+        let mut retained = crate::heap_size::ARC_CONTROL_BYTES
+            + std::mem::size_of::<Self>()
+            + self.cells.capacity() * std::mem::size_of::<RowProductCell>();
+        let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
+        match selection {
+            crate::array::RowSelectionRef::Window { start, len } => {
+                let end = start.saturating_add(len);
+                let first = start.saturating_sub(chunk_start);
+                let last = end.saturating_sub(chunk_start).min(self.cells.len());
+                if first < last {
+                    retained += self.cells[first..last]
+                        .iter()
+                        .map(HeapSize::heap_bytes)
+                        .sum::<usize>();
+                }
+            },
+            crate::array::RowSelectionRef::Gather(rows) => {
+                let mut selected = 0_u64;
+                for &row in rows {
+                    if row / ROWS_PER_CHUNK == chunk_index {
+                        selected |= 1_u64 << (row - chunk_start);
+                    }
+                }
+                for (offset, cell) in self.cells.iter().enumerate() {
+                    if selected & (1_u64 << offset) != 0 {
+                        retained += cell.heap_bytes();
+                    }
+                }
+            },
+            crate::array::RowSelectionRef::Identity => unreachable!(),
+        }
+        retained
+    }
+}
+
+impl HeapSize for RowProductCell {
+    fn heap_bytes(&self) -> usize {
+        self.prepared.heap_bytes() + self.frame.heap_bytes()
+    }
+}
+
+impl HeapSize for RowProductChunk {
+    fn heap_bytes(&self) -> usize {
+        self.cells.heap_bytes()
+    }
 }
 
 /// Demand-allocated products owned by one immutable physical row source.
@@ -391,16 +449,15 @@ impl RowProducts {
     pub(crate) fn heap_bytes_at(&self, logical: usize) -> usize {
         let mut products = self.operation();
         let Some((chunk, offset)) = products.existing_cell(logical) else {
-            return 0;
+            return crate::heap_size::ARC_CONTROL_BYTES
+                + std::mem::size_of::<RowProductOwner>()
+                + self.selection.heap_bytes();
         };
-        std::mem::size_of::<RowProductChunk>()
-            + chunk.cells.capacity() * std::mem::size_of::<RowProductCell>()
-            + chunk.cells[offset].prepared.get().map_or(0, |plan| {
-                std::mem::size_of_val(plan.as_ref()) + plan.retained_heap_bytes()
-            })
-            + chunk.cells[offset].frame.get().map_or(0, |cache| {
-                std::mem::size_of_val(cache.as_ref()) + cache.heap_bytes()
-            })
+        crate::heap_size::ARC_CONTROL_BYTES
+            + std::mem::size_of::<RowProductOwner>()
+            + std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
+            + chunk.heap_bytes_for_cell(offset)
+            + self.selection.heap_bytes()
     }
 
     pub(crate) fn install_prepared_plan(
@@ -553,23 +610,37 @@ impl HeapSize for RowProducts {
             .chunks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let retained = chunks.values().fold(0, |total, chunk| {
-            total
-                + std::mem::size_of::<RowProductChunk>()
-                + chunk.cells.capacity() * std::mem::size_of::<RowProductCell>()
-                + chunk.cells.iter().fold(0, |cell_total, cell| {
-                    cell_total
-                        + cell.prepared.get().map_or(0, |plan| {
-                            std::mem::size_of_val(plan.as_ref()) + plan.retained_heap_bytes()
-                        })
-                        + cell.frame.get().map_or(0, |cache| {
-                            std::mem::size_of_val(cache.as_ref()) + cache.heap_bytes()
-                        })
-                })
-        });
-        retained
-            + chunks.capacity() * std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
-            + self.selection.heap_bytes()
+        let mut retained =
+            crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<RowProductOwner>();
+        match self.selection.as_deref() {
+            crate::array::RowSelectionRef::Identity => {
+                retained +=
+                    chunks.capacity() * std::mem::size_of::<(usize, Arc<RowProductChunk>)>();
+                retained += chunks.values().map(HeapSize::heap_bytes).sum::<usize>();
+            },
+            selection => {
+                for (&chunk_index, chunk) in &*chunks {
+                    let selected = match selection {
+                        crate::array::RowSelectionRef::Window { start, len } => {
+                            let end = start.saturating_add(len);
+                            let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
+                            let chunk_end = chunk_start.saturating_add(chunk.cells.len());
+                            start < chunk_end && chunk_start < end
+                        },
+                        crate::array::RowSelectionRef::Gather(rows) => {
+                            rows.iter().any(|&row| row / ROWS_PER_CHUNK == chunk_index)
+                        },
+                        crate::array::RowSelectionRef::Identity => unreachable!(),
+                    };
+                    if !selected {
+                        continue;
+                    }
+                    retained += std::mem::size_of::<(usize, Arc<RowProductChunk>)>();
+                    retained += chunk.heap_bytes_for_selection(selection, chunk_index);
+                }
+            },
+        }
+        retained + self.selection.heap_bytes()
     }
 }
 
@@ -911,7 +982,10 @@ mod frame_cache_row_tests {
         for len in [1_000_000, 100_000_000] {
             let products = RowProducts::fresh(len).unwrap();
             assert!(products.owner.chunks.lock().unwrap().is_empty());
-            assert_eq!(products.heap_bytes(), 0);
+            assert_eq!(
+                products.heap_bytes(),
+                crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<RowProductOwner>()
+            );
         }
 
         let products = RowProducts::fresh(100_000_000).unwrap();
@@ -923,6 +997,52 @@ mod frame_cache_row_tests {
         let row_64 = (Arc::as_ptr(chunk), offset);
         assert_eq!(products.owner.chunks.lock().unwrap().len(), 2);
         assert_ne!(row_63.0, row_64.0);
+    }
+
+    #[test]
+    fn packed_scalar_size_uses_its_visible_coordinate_window() {
+        let rows = 10_000;
+        let array = PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(
+                (0..rows * 2).map(|value| value as f64).collect(),
+                vec![0.0; rows * 2],
+                None,
+                None,
+            )
+            .unwrap(),
+            crate::geometry::CsrOffsetColumn::try_new(
+                (0..=rows).map(|row| row * 2).collect(),
+                rows * 2,
+            )
+            .unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let scalar = array.geometry_at(0).unwrap();
+
+        assert!(
+            scalar.heap_bytes() < array.heap_bytes(),
+            "a packed scalar must not retain its whole parent coordinate payload"
+        );
+    }
+
+    #[test]
+    fn selected_row_products_do_not_charge_warmed_sibling_cells() {
+        let source = RowProducts::fresh(128).unwrap();
+        source.frame_cache(0).unwrap();
+        source.frame_cache(1).unwrap();
+        source.frame_cache(64).unwrap();
+        let selected = source.selected([1, 1]).unwrap();
+        let unpopulated = RowProducts::fresh(128).unwrap();
+        let _ = unpopulated.operation().cell(1).unwrap();
+        unpopulated.frame_cache(1).unwrap();
+        let selected_without_products = unpopulated.selected([1, 1]).unwrap();
+
+        assert_eq!(
+            selected.heap_bytes(),
+            selected_without_products.heap_bytes(),
+            "a logical row view must not charge cached products for unselected rows"
+        );
     }
 
     #[test]
@@ -1111,6 +1231,27 @@ mod frame_cache_row_tests {
             Frame::None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn mixed_storage_accounts_nested_shape_owners() {
+        use crate::heap_size::HeapSize as _;
+
+        let shape = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 1.0], None, None).unwrap(),
+            )
+            .unwrap(),
+        );
+        let array = PyGeometryArray::mixed_shapes(vec![shape.clone()], Frame::None).unwrap();
+        let nested_owners = shape.heap_bytes().saturating_sub(shape.coordinate_bytes());
+        let expected = crate::heap_size::ARC_CONTROL_BYTES
+            + std::mem::size_of::<GeometryArrayStorage>()
+            + shape.coordinate_bytes()
+            + std::mem::size_of::<Shape>()
+            + nested_owners;
+
+        assert_eq!(array.storage().logical_heap_bytes(), expected);
     }
 
     #[test]

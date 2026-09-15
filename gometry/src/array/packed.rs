@@ -1280,6 +1280,49 @@ mod compact_nullable_tests {
     }
 
     #[test]
+    fn compact_nullable_storage_charges_present_coordinates_once() {
+        let present = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(vec![1.0, 3.0], vec![2.0, 4.0], None, None).unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let compact = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(3, vec![false, true, false])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(compact.nbytes(), present.nbytes());
+        assert_eq!(
+            compact.storage().logical_heap_bytes(),
+            present.storage().logical_heap_bytes(),
+            "logical nullable rows must not be charged as physical coordinates"
+        );
+    }
+
+    #[test]
+    fn compact_point_ranges_ignore_missing_logical_rows() {
+        let present =
+            PyGeometryArray::packed_points(CoordSeq::empty(CoordinateAxes::XY), Frame::None)
+                .unwrap();
+        let compact = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(3, vec![true, true, true])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            compact.logical_heap_bytes_range(0..3),
+            compact.logical_heap_bytes_range(0..0),
+            "compact point ranges must not turn missing rows into coordinates"
+        );
+    }
+
+    #[test]
     fn drop_missing_reuses_compact_points_without_prefix_rank_work() {
         let present = PyGeometryArray::packed_points(
             CoordSeq::try_from_vecs(
@@ -1503,12 +1546,18 @@ mod compact_nullable_tests {
             matches!(missing.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) if coords.is_empty())
         );
         assert_eq!(logical_point_xs(&missing), [None, None, None]);
-        assert_eq!(missing.row_products.heap_bytes(), 0);
+        assert_eq!(
+            missing.row_products.heap_bytes(),
+            crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<prepared::RowProductOwner>()
+        );
         assert!(matches!(
             missing.logical_row(1),
             Some(LogicalRow::Missing { .. })
         ));
-        assert_eq!(missing.row_products.heap_bytes(), 0);
+        assert_eq!(
+            missing.row_products.heap_bytes(),
+            crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<prepared::RowProductOwner>()
+        );
     }
 
     #[test]
@@ -1961,6 +2010,7 @@ mod element_bounds_cache_tests {
     use crate::array::BoundsSeed;
     use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::Bounds;
+    use crate::heap_size::HeapSize as _;
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn lines() -> PyGeometryArray {
@@ -2015,6 +2065,17 @@ mod element_bounds_cache_tests {
         assert_eq!(lookup.len(), 2);
         assert_eq!(lookup[0], Some(Bounds::new_raw(0.0, 0.0, 1.0, 0.0)));
         assert_eq!(lookup[1], Some(Bounds::new_raw(10.0, 10.0, 11.0, 10.0)));
+    }
+
+    #[test]
+    fn retained_size_includes_published_element_bounds() {
+        let array = lines();
+        let cold = array.heap_bytes();
+        array
+            .try_element_bounds()
+            .expect("element bounds")
+            .expect("non-empty lines publish bounds");
+        assert!(array.heap_bytes() > cold);
     }
 
     #[test]

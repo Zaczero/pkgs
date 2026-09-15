@@ -296,6 +296,15 @@ impl PyCellArray {
         self.selection_ref().len(self.storage.ids().len())
     }
 
+    pub(crate) fn logical_heap_bytes_range(&self, range: Range<usize>) -> usize {
+        debug_assert!(range.end <= self.len());
+        let ids = crate::heap_size::ARC_CONTROL_BYTES + range.len() * size_of::<u64>();
+        let missing = self.storage.missing.as_ref().map_or(0, |_| {
+            crate::heap_size::ARC_CONTROL_BYTES + range.len() * size_of::<bool>()
+        });
+        ids + missing
+    }
+
     /// The grid kind of these cells.
     pub(crate) const fn kind(&self) -> GridKind {
         self.storage.kind()
@@ -636,7 +645,7 @@ enum CellNumpyArrayKind {
 
 impl HeapSize for PyCellArray {
     fn heap_bytes(&self) -> usize {
-        self.nbytes() + self.selection.heap_bytes()
+        self.logical_heap_bytes_range(0..self.len()) + self.selection.heap_bytes()
     }
 }
 
@@ -712,10 +721,11 @@ impl PyCellArray {
     }
 
     /// ``sys.getsizeof`` support: the wrapper plus this array's logical
-    /// ``uint64`` id payload and any row-selection map. Shared backing buffers
-    /// are reported like NumPy views, not as the full parent allocation.
+    /// ``uint64`` id payload, missing flags, and any row-selection map. Shared
+    /// backing buffers are reported like NumPy views, not as the full parent
+    /// allocation.
     fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>() + self.nbytes() + self.selection.heap_bytes()
+        self.total_size()
     }
 
     /// Grid-system token for the stored cell type.
@@ -1991,5 +2001,25 @@ mod tests {
                 Err(error) => panic!("{error}"),
             }
         });
+    }
+
+    #[test]
+    fn cell_array_heap_bytes_counts_ids_and_missing_flags_once() {
+        use crate::HeapSize;
+
+        let cells = PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![1, 2, 3], vec![
+            false, true, false,
+        ]);
+        let arc = crate::heap_size::ARC_CONTROL_BYTES;
+        assert_eq!(
+            cells.heap_bytes(),
+            arc + 3 * std::mem::size_of::<u64>() + arc + 3 * std::mem::size_of::<bool>()
+        );
+
+        let selected = cells.slice(1, 2, 1).unwrap();
+        assert_eq!(
+            selected.heap_bytes(),
+            arc + std::mem::size_of::<u64>() + arc + std::mem::size_of::<bool>()
+        );
     }
 }

@@ -47,9 +47,7 @@ impl HeapSize for FrameDependentCaches {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .graph
                 .as_ref()
-                .map_or(0, |graph| {
-                    std::mem::size_of_val(graph.as_ref()) + graph.heap_bytes()
-                })
+                .map_or(0, HeapSize::heap_bytes)
     }
 }
 
@@ -238,10 +236,6 @@ pub struct PreparedPlan {
 }
 
 impl ShapeData {
-    pub(crate) fn retained_heap_bytes(&self) -> usize {
-        self.heap_bytes()
-    }
-
     pub const fn new(shape: Shape) -> Self {
         Self {
             shape,
@@ -484,10 +478,6 @@ impl PreparedPlan {
         self.shape.seed_bounds(bounds);
         self
     }
-
-    pub(crate) fn retained_heap_bytes(&self) -> usize {
-        self.heap_bytes()
-    }
 }
 
 impl std::ops::Deref for PreparedPlan {
@@ -506,7 +496,7 @@ impl fmt::Debug for PreparedPlan {
 
 impl HeapSize for ShapeData {
     fn heap_bytes(&self) -> usize {
-        self.shape.heap_bytes()
+        self.shape.logical_heap_bytes()
     }
 }
 
@@ -527,10 +517,7 @@ impl HeapSize for MetricPlan {
 
 impl HeapSize for PreparedPlan {
     fn heap_bytes(&self) -> usize {
-        std::mem::size_of_val(self.shape.as_ref())
-            + self.shape.as_ref().heap_bytes()
-            + self.topology.heap_bytes()
-            + self.metric.heap_bytes()
+        self.shape.heap_bytes() + self.topology.heap_bytes() + self.metric.heap_bytes()
     }
 }
 
@@ -614,18 +601,18 @@ mod footprint_tests {
     #[test]
     fn retained_heap_bytes_does_not_force_caches() {
         let data = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
-        let cold = data.retained_heap_bytes();
+        let cold = data.heap_bytes();
         assert!(data.metric.get().is_none());
         assert!(data.topology.get().is_none());
-        assert_eq!(data.retained_heap_bytes(), cold);
+        assert_eq!(data.heap_bytes(), cold);
         let _ = data.bounds();
         // Bounds are owned by ShapeData; they do not force a boxed product.
         assert!(data.metric.get().is_none());
         assert!(data.topology.get().is_none());
-        assert_eq!(data.retained_heap_bytes(), cold);
+        assert_eq!(data.heap_bytes(), cold);
         let _ = data.distance_parts().unwrap();
         assert!(data.metric.get().is_some());
-        assert!(data.retained_heap_bytes() > cold);
+        assert!(data.heap_bytes() > cold);
     }
 
     #[test]
@@ -804,7 +791,7 @@ mod frame_cache_tests {
                 .expect("cached measured line index"),
         );
         assert_eq!(first, second);
-        assert!(shape.retained_heap_bytes() > 0);
+        assert!(shape.heap_bytes() > 0);
         let (interpolation, interpolation_allocations) = allocation_count(|| {
             shape
                 .line_interpolate_point_m_with(1.5, &PlanarMetric)
@@ -1071,7 +1058,7 @@ mod frame_cache_tests {
             crate::geometry::TopologyGraph::cartesian(&Shape::Point(Point::new_raw_xy(1.0, 2.0)))
                 .unwrap(),
         );
-        let expected = std::mem::size_of_val(graph.as_ref()) + graph.heap_bytes();
+        let expected = HeapSize::heap_bytes(&graph);
         assert!(expected > 0);
         cache.geographic_topology.lock().unwrap().graph = Some(Arc::clone(&graph));
         let before = cache.heap_bytes();

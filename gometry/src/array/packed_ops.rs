@@ -4,6 +4,7 @@
 )]
 use std::sync::Arc;
 
+use crate::HeapSize as _;
 use crate::array::{
     ArrayRow, Bound, CoordSeq, GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point,
     PyAny, PyGeometry, PyGeometryArray, PyResult, Python, Result, RowSelectionRef, Shape,
@@ -53,11 +54,21 @@ impl PyGeometryArray {
     pub(crate) fn logical_coordinate_bytes_range(&self, rows: std::ops::Range<usize>) -> usize {
         debug_assert!(rows.end <= self.len());
         match self.storage() {
-            GeometryArrayStorage::Mixed(shapes) => {
-                shapes[rows].iter().map(Shape::coordinate_bytes).sum()
-            },
+            GeometryArrayStorage::Mixed(shapes) => rows
+                .filter(|&logical| !self.is_row_missing(logical))
+                .map(|logical| shapes[logical].coordinate_bytes())
+                .sum(),
             GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) => {
-                coords.axes().byte_width(rows.len())
+                let count = if self.is_compact_nullable() {
+                    if let Some(missing) = self.missing() {
+                        rows.filter(|&logical| missing.is_valid(logical)).count()
+                    } else {
+                        rows.len()
+                    }
+                } else {
+                    rows.len()
+                };
+                coords.axes().byte_width(count)
             },
             GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
@@ -96,34 +107,90 @@ impl PyGeometryArray {
     /// materializing its row-selection metadata.
     pub(crate) fn logical_heap_bytes_range(&self, rows: std::ops::Range<usize>) -> usize {
         let coordinate_bytes = self.logical_coordinate_bytes_range(rows.clone());
-        match self.storage() {
-            GeometryArrayStorage::Mixed(_) => {
-                coordinate_bytes + rows.len() * std::mem::size_of::<Shape>()
-            },
-            GeometryArrayStorage::Packed(PackedStorage::Points { row_map, .. }) => {
-                coordinate_bytes + selected_row_map_heap_bytes(row_map.as_deref(), rows)
-            },
-            GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. }) => {
-                coordinate_bytes
-                    + (rows.len() + 1) * std::mem::size_of::<i32>()
-                    + selected_row_map_heap_bytes(row_map.as_deref(), rows)
-            },
-            GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                polygon_offsets,
-                row_map,
-                ..
-            }) => {
-                let map = row_map.as_deref();
-                let rings: usize = rows
-                    .clone()
-                    .map(|logical| map.csr_window(polygon_offsets, logical).len())
-                    .sum();
-                coordinate_bytes
-                    + (rings + 1) * std::mem::size_of::<i32>()
-                    + (rows.len() + 1) * std::mem::size_of::<i32>()
-                    + selected_row_map_heap_bytes(map, rows)
-            },
-        }
+        let owner =
+            crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<GeometryArrayStorage>();
+        owner
+            + match self.storage() {
+                GeometryArrayStorage::Mixed(shapes) => {
+                    // Keep the range's visible coordinate payload separate
+                    // from nested mixed-shape owners.
+                    let selected_shapes = &shapes[rows.clone()];
+                    coordinate_bytes
+                        + rows.len() * std::mem::size_of::<Shape>()
+                        + selected_shapes
+                            .iter()
+                            .zip(rows)
+                            .filter(|(_, logical)| !self.is_row_missing(*logical))
+                            .map(|(shape, _)| {
+                                shape.heap_bytes().saturating_sub(shape.coordinate_bytes())
+                            })
+                            .sum::<usize>()
+                },
+                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
+                    let count = if self.is_compact_nullable() {
+                        self.missing().map_or_else(
+                            || rows.len(),
+                            |missing| {
+                                rows.clone()
+                                    .filter(|&logical| missing.is_valid(logical))
+                                    .count()
+                            },
+                        )
+                    } else {
+                        rows.len()
+                    };
+                    crate::heap_size::ARC_CONTROL_BYTES
+                        + std::mem::size_of::<CoordSeq>()
+                        + coords.logical_heap_bytes_for_count(count)
+                        + selected_row_map_heap_bytes(row_map.as_deref(), rows)
+                },
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
+                    coords,
+                    offsets,
+                    row_map,
+                }) => {
+                    let map = row_map.as_deref();
+                    let vertices: usize = rows
+                        .clone()
+                        .map(|logical| map.csr_window(offsets, logical).len())
+                        .sum();
+                    crate::heap_size::ARC_CONTROL_BYTES
+                        + std::mem::size_of::<CoordSeq>()
+                        + coords.logical_heap_bytes_for_count(vertices)
+                        + offsets.logical_heap_bytes_for_count(rows.len() + 1)
+                        + selected_row_map_heap_bytes(row_map.as_deref(), rows)
+                },
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                    coords,
+                    ring_offsets,
+                    polygon_offsets,
+                    row_map,
+                }) => {
+                    let map = row_map.as_deref();
+                    let rings: usize = rows
+                        .clone()
+                        .map(|logical| map.csr_window(polygon_offsets, logical).len())
+                        .sum();
+                    let vertices: usize = rows
+                        .clone()
+                        .map(|logical| {
+                            let rings = map.csr_window(polygon_offsets, logical);
+                            if rings.is_empty() {
+                                0
+                            } else {
+                                ring_offsets[rings.end] as usize
+                                    - ring_offsets[rings.start] as usize
+                            }
+                        })
+                        .sum();
+                    crate::heap_size::ARC_CONTROL_BYTES
+                        + std::mem::size_of::<CoordSeq>()
+                        + coords.logical_heap_bytes_for_count(vertices)
+                        + ring_offsets.logical_heap_bytes_for_count(rings + 1)
+                        + polygon_offsets.logical_heap_bytes_for_count(rows.len() + 1)
+                        + selected_row_map_heap_bytes(map, rows)
+                },
+            }
     }
 
     /// Gather logical packed-line rows into fresh CSR columns in logical order,

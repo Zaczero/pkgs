@@ -359,7 +359,8 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     /// container allocations such as multipart ``Vec``s, polygon hole
     /// ``Arc``s, and nested collection members), any attached
     /// *already-initialized* ``PreparedPlan`` products, and the Arc-owned
-    /// frame-cache sidecar with any products already built on it.
+    /// frame-cache sidecar with any products already built on it. Spilled CRS
+    /// frame text is included; inline CRS text is already part of the struct.
     /// Uninitialized lazy caches are not counted and this method never
     /// builds them — so two cold ``__sizeof__`` reads report the same
     /// size, and warming (``bounds``, ``prepare``, distance, …) can only

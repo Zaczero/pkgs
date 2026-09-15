@@ -6,6 +6,7 @@ use std::ops::Range;
 use std::simd::cmp::SimdPartialEq as _;
 use std::simd::num::SimdFloat as _;
 
+use crate::HeapSize as _;
 use crate::error::{ResourceError, Result};
 use crate::geometry::types::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, SharedSlice, XY, ZOrdinate,
@@ -246,9 +247,87 @@ impl crate::HeapSize for MColumn {
     }
 }
 
+impl MColumn {
+    fn logical_heap_bytes(&self, range: Range<usize>) -> usize {
+        match self {
+            Self::Shared(owner) => owner.logical_heap_bytes(range),
+            Self::Local { owner, offset } => {
+                owner.logical_heap_bytes(*offset..*offset + range.len())
+            },
+        }
+    }
+
+    fn is_full_owner(&self, physical_len: usize) -> bool {
+        match self {
+            Self::Shared(owner) => owner.len() == physical_len,
+            Self::Local { owner, offset } => *offset == 0 && owner.len() == physical_len,
+        }
+    }
+}
+
 impl crate::HeapSize for CoordSeq {
     fn heap_bytes(&self) -> usize {
         self.xs.heap_bytes() + self.ys.heap_bytes() + self.zs.heap_bytes() + self.ms.heap_bytes()
+    }
+}
+
+impl CoordSeq {
+    /// Fixed owner overhead for a logical view into these shared columns.
+    /// Coordinate payload is supplied separately because a packed array can
+    /// select fewer rows than the physical sequence owns.
+    pub(crate) fn logical_owner_heap_bytes(&self) -> usize {
+        let column = |present: bool| {
+            if present {
+                crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<Vec<f64>>()
+            } else {
+                0
+            }
+        };
+        column(!self.xs.is_empty())
+            + column(!self.ys.is_empty())
+            + column(self.zs.as_ref().is_some_and(|column| !column.is_empty()))
+            + column(self.ms.as_ref().is_some_and(|column| match column {
+                MColumn::Shared(owner) | MColumn::Local { owner, .. } => !owner.is_empty(),
+            }))
+    }
+
+    /// Retained bytes for this coordinate sequence's visible row window.
+    /// Full-owner sequences preserve vector capacity; sub-sequences charge
+    /// their visible payload instead of the entire shared parent columns.
+    pub(crate) fn logical_heap_bytes(&self) -> usize {
+        let range = self.range.start as usize..self.range.end as usize;
+        self.xs.logical_heap_bytes(range.clone())
+            + self.ys.logical_heap_bytes(range.clone())
+            + self
+                .zs
+                .as_ref()
+                .map_or(0, |column| column.logical_heap_bytes(range.clone()))
+            + self
+                .ms
+                .as_ref()
+                .map_or(0, |column| column.logical_heap_bytes(range))
+    }
+
+    /// Retained bytes for a packed coordinate owner exposing `count` rows.
+    /// This keeps full capacity only when the sequence is the complete owner;
+    /// selected/rebased views use their logical payload.
+    pub(crate) fn logical_heap_bytes_for_count(&self, count: usize) -> usize {
+        if count == self.len()
+            && self.range.start == 0
+            && self.range.end as usize == self.xs.len()
+            && self
+                .zs
+                .as_ref()
+                .is_none_or(|column| column.len() == self.xs.len())
+            && self
+                .ms
+                .as_ref()
+                .is_none_or(|column| column.is_full_owner(self.xs.len()))
+        {
+            self.heap_bytes()
+        } else {
+            self.logical_owner_heap_bytes() + self.axes().byte_width(count)
+        }
     }
 }
 

@@ -351,7 +351,7 @@ impl CoordinateView {
     /// Logical Rust-side heap retained by the view's owner.
     pub fn logical_heap_bytes(&self) -> usize {
         match &self.owner {
-            CoordinateOwner::Shape(shape) => crate::HeapSize::heap_bytes(shape.shape()),
+            CoordinateOwner::Shape(shape) => shape.shape().logical_heap_bytes(),
             CoordinateOwner::Array { storage, .. } => storage.logical_heap_bytes(),
         }
     }

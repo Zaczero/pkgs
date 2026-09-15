@@ -347,6 +347,12 @@ impl HeapSize for PyGeometryArray {
         self.storage().logical_heap_bytes()
             + self.missing().map_or(0, HeapSize::heap_bytes)
             + self.row_products.heap_bytes()
+            + self.bounds_cache.heap_bytes()
+            // This cache's value is an inline four-f64 tuple, so its Arc and
+            // OnceLock owner are the only heap bytes in either state.
+            + crate::heap_size::ARC_CONTROL_BYTES
+            + std::mem::size_of::<std::sync::OnceLock<Option<(f64, f64, f64, f64)>>>()
+            + self.frame.crs_ref().map_or(0, HeapSize::heap_bytes)
     }
 }
 
@@ -965,7 +971,9 @@ impl PyGeometryArray {
 
     /// `sys.getsizeof` support: the wrapper plus this array's logical
     /// Rust-side heap — coordinate payload, CSR offsets, row maps, missing
-    /// mask, and any already-materialized prepared-geometry / frame sidecars.
+    /// mask, cache owners and their already-materialized contents, spilled CRS
+    /// frame text, and any already-materialized prepared-geometry / frame
+    /// sidecars.
     /// Lazy cache slots that have not been populated do not inflate the total.
     /// Shared backing buffers are accounted like NumPy views: the logical view
     /// is reported, not the whole shared parent allocation.

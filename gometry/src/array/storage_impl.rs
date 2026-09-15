@@ -2,6 +2,7 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::HeapSize as _;
 use crate::array::{
     Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, LineRows, PackedStorage, PointRows,
     Polygon, Ring, RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window,
@@ -280,38 +281,67 @@ impl GeometryArrayStorage {
     }
 
     pub(crate) fn logical_heap_bytes(&self) -> usize {
-        match self {
-            // Shape payload + the Vec's own allocation. Prepared ShapeData
-            // (array-side cache) is counted on PyGeometryArray::heap_bytes
-            // once chunks initialize — see RowProducts::heap_bytes.
-            Self::Mixed(shapes) => {
-                self.logical_coordinate_bytes() + shapes.len() * std::mem::size_of::<Shape>()
-            },
-            Self::Packed(PackedStorage::Points { row_map, .. }) => {
-                self.logical_coordinate_bytes() + row_map.heap_bytes()
-            },
-            Self::Packed(PackedStorage::Lines {
-                offsets, row_map, ..
-            }) => {
-                let rows = line_logical_len(offsets.as_slice(), row_map.as_deref());
-                self.logical_coordinate_bytes()
-                    + (rows + 1) * std::mem::size_of::<i32>()
-                    + row_map.heap_bytes()
-            },
-            Self::Packed(PackedStorage::Polygons {
-                polygon_offsets,
-                row_map,
-                ..
-            }) => {
-                let rows = polygon_logical_len(polygon_offsets.as_slice(), row_map.as_deref());
-                let rings =
-                    packed_polygons_ring_len(polygon_offsets.as_slice(), row_map.as_deref());
-                self.logical_coordinate_bytes()
-                    + (rings + 1) * std::mem::size_of::<i32>()
-                    + (rows + 1) * std::mem::size_of::<i32>()
-                    + row_map.heap_bytes()
-            },
-        }
+        let owner = crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<Self>();
+        owner
+            + match self {
+                // Shape payload + the Vec's own allocation. Prepared ShapeData
+                // (array-side cache) is counted on PyGeometryArray::heap_bytes
+                // once chunks initialize — see RowProducts::heap_bytes.
+                Self::Mixed(shapes) => {
+                    // `Shape::heap_bytes` includes its coordinate payload for
+                    // scalar accounting; subtract that part so this array
+                    // adds only nested owners and container allocations.
+                    self.logical_coordinate_bytes()
+                        + shapes.capacity() * std::mem::size_of::<Shape>()
+                        + shapes
+                            .iter()
+                            .map(|shape| {
+                                shape.heap_bytes().saturating_sub(shape.coordinate_bytes())
+                            })
+                            .sum::<usize>()
+                },
+                Self::Packed(PackedStorage::Points { coords, row_map }) => {
+                    let rows = point_logical_len(coords, row_map.as_deref());
+                    crate::heap_size::ARC_CONTROL_BYTES
+                        + std::mem::size_of::<CoordSeq>()
+                        + coords.logical_heap_bytes_for_count(rows)
+                        + row_map.heap_bytes()
+                },
+                Self::Packed(PackedStorage::Lines {
+                    coords,
+                    offsets,
+                    row_map,
+                }) => {
+                    let rows = line_logical_len(offsets.as_slice(), row_map.as_deref());
+                    let vertices = packed_lines_coord_len(offsets.as_slice(), row_map.as_deref());
+                    crate::heap_size::ARC_CONTROL_BYTES
+                        + std::mem::size_of::<CoordSeq>()
+                        + coords.logical_heap_bytes_for_count(vertices)
+                        + offsets.logical_heap_bytes_for_count(rows + 1)
+                        + row_map.heap_bytes()
+                },
+                Self::Packed(PackedStorage::Polygons {
+                    coords,
+                    ring_offsets,
+                    polygon_offsets,
+                    row_map,
+                }) => {
+                    let rows = polygon_logical_len(polygon_offsets.as_slice(), row_map.as_deref());
+                    let rings =
+                        packed_polygons_ring_len(polygon_offsets.as_slice(), row_map.as_deref());
+                    let vertices = packed_polygons_coord_len(
+                        ring_offsets.as_slice(),
+                        polygon_offsets.as_slice(),
+                        row_map.as_deref(),
+                    );
+                    crate::heap_size::ARC_CONTROL_BYTES
+                        + std::mem::size_of::<CoordSeq>()
+                        + coords.logical_heap_bytes_for_count(vertices)
+                        + ring_offsets.logical_heap_bytes_for_count(rings + 1)
+                        + polygon_offsets.logical_heap_bytes_for_count(rows + 1)
+                        + row_map.heap_bytes()
+                },
+            }
     }
 
     pub(crate) fn line_view<'a>(

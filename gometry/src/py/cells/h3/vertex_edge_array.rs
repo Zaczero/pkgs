@@ -313,7 +313,9 @@ macro_rules! h3_index_array_common {
 
         impl HeapSize for $array {
             fn heap_bytes(&self) -> usize {
-                self.len() * size_of::<u64>() + self.selection.heap_bytes()
+                crate::heap_size::ARC_CONTROL_BYTES
+                    + self.len() * size_of::<u64>()
+                    + self.selection.heap_bytes()
             }
         }
 
@@ -353,7 +355,7 @@ macro_rules! h3_index_array_common {
             }
 
             fn __sizeof__(&self) -> usize {
-                std::mem::size_of::<Self>() + self.nbytes() + self.selection.heap_bytes()
+                self.total_size()
             }
 
             /// Logical id payload in bytes (``len * 8``).

@@ -150,6 +150,16 @@ impl HeapSize for Shape {
     }
 }
 
+impl Shape {
+    pub(crate) fn logical_heap_bytes(&self) -> usize {
+        match self {
+            Self::LineString(line) => line.logical_heap_bytes(),
+            Self::Polygon(polygon) => polygon.logical_heap_bytes(),
+            _ => self.heap_bytes(),
+        }
+    }
+}
+
 fn try_mapped_vec<T, E>(
     capacity: usize,
     items: impl IntoIterator<Item = std::result::Result<T, E>>,
@@ -278,6 +288,12 @@ impl Coordinates for LineSeq {
 impl crate::HeapSize for LineSeq {
     fn heap_bytes(&self) -> usize {
         self.as_coords().heap_bytes()
+    }
+}
+
+impl LineSeq {
+    pub(crate) fn logical_heap_bytes(&self) -> usize {
+        self.as_coords().logical_heap_bytes()
     }
 }
 

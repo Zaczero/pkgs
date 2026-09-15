@@ -250,11 +250,22 @@ impl Groups {
 
     fn logical_heap_bytes(&self) -> usize {
         let values_bytes = match &self.values {
-            GroupsValues::Int64(_) => self.values_window().len() * std::mem::size_of::<i64>(),
-            GroupsValues::Geometry(values) => values.logical_heap_bytes_range(self.values_window()),
-            GroupsValues::Cells(_) => self.values_window().len() * std::mem::size_of::<u64>(),
+            GroupsValues::Int64(_) => {
+                crate::heap_size::ARC_CONTROL_BYTES
+                    + self.values_window().len() * std::mem::size_of::<i64>()
+            },
+            GroupsValues::Geometry(values) => {
+                crate::heap_size::ARC_CONTROL_BYTES
+                    + std::mem::size_of::<PyGeometryArray>()
+                    + values.logical_heap_bytes_range(self.values_window())
+            },
+            GroupsValues::Cells(values) => {
+                crate::heap_size::ARC_CONTROL_BYTES
+                    + std::mem::size_of::<PyCellArray>()
+                    + values.logical_heap_bytes_range(self.values_window())
+            },
         };
-        values_bytes + self.logical_offsets_bytes()
+        values_bytes + crate::heap_size::ARC_CONTROL_BYTES + self.logical_offsets_bytes()
     }
 
     fn row_pyobject(

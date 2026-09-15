@@ -78,6 +78,38 @@ impl<T> SharedSlice<T> {
             index: 0,
         }
     }
+
+    /// Retained bytes for this owner with caller-supplied nested accounting.
+    /// The allocation keeps its actual vector capacity; only the nested
+    /// values vary between full owners and logical views.
+    pub(crate) fn heap_bytes_with(&self, nested: impl Fn(&T) -> usize) -> usize {
+        self.owner.as_ref().map_or(0, |owner| {
+            crate::heap_size::ARC_CONTROL_BYTES
+                + std::mem::size_of::<Vec<T>>()
+                + owner.capacity() * std::mem::size_of::<T>()
+                + owner.iter().map(nested).sum::<usize>()
+        })
+    }
+
+    /// Logical bytes for a contiguous view into this owner. A full-owner view
+    /// retains the vector's capacity; a sub-view retains only its visible
+    /// element payload and the shared owner/header.
+    pub(crate) fn logical_heap_bytes(&self, range: std::ops::Range<usize>) -> usize
+    where
+        T: HeapSize,
+    {
+        let Some(owner) = self.owner.as_ref() else {
+            return 0;
+        };
+        debug_assert!(range.end <= owner.len());
+        if range.start == 0 && range.end == owner.len() {
+            return self.heap_bytes();
+        }
+        crate::heap_size::ARC_CONTROL_BYTES
+            + std::mem::size_of::<Vec<T>>()
+            + range.len() * std::mem::size_of::<T>()
+            + owner[range].iter().map(HeapSize::heap_bytes).sum::<usize>()
+    }
 }
 
 pub struct SharedSliceIter<T> {
@@ -140,7 +172,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for SharedSlice<T> {
 
 impl<T: HeapSize> HeapSize for SharedSlice<T> {
     fn heap_bytes(&self) -> usize {
-        self.owner.heap_bytes()
+        self.heap_bytes_with(HeapSize::heap_bytes)
     }
 }
 
