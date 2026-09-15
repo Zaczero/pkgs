@@ -315,13 +315,12 @@ pub(crate) fn distance_3d(
 /// InvalidGeometryError
 ///     If either operand is empty; Hausdorff distance is undefined for an
 ///     empty support.
-/// ValueError
-///     If ``max_error`` is not a positive finite scalar or is supplied for a
-///     geodesic result.
 /// GeometryError
-///     If ``unit='meters'`` is requested for a CRS-free geometry, or a finite
-///     planar result cannot be certified within representable output and the
-///     available generated-work or memory resources.
+///     If ``max_error`` is not a positive finite scalar or is supplied for a
+///     geodesic result; if ``unit='meters'`` is requested for a CRS-free
+///     geometry; or if a finite planar result cannot be certified within
+///     representable output and the available generated-work or memory
+///     resources.
 ///
 /// See Also
 /// --------
