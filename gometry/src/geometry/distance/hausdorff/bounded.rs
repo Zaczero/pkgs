@@ -884,6 +884,81 @@ fn nonnegative_upper_bound(value: &Rational) -> Result<f64> {
     }
 }
 
+fn square_f64(value: f64) -> Result<Rational> {
+    let value = ExactDyadic::try_from_f64(value)?;
+    Rational::from_dyadic(value.try_product(&value)?)
+}
+
+#[cfg(test)]
+fn dyadic_as_f64(value: &ExactDyadic) -> Result<f64> {
+    Rational::from_dyadic(value.try_clone()?)?.round()
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SqrtStats {
+    fast_admissions: usize,
+    fallbacks: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SQRT_STATS: std::cell::Cell<SqrtStats> =
+        const { std::cell::Cell::new(SqrtStats {
+            fast_admissions: 0,
+            fallbacks: 0,
+        }) };
+    static FORCE_EXACT_SQRT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn exact_sqrt_path_forced() -> bool {
+    FORCE_EXACT_SQRT.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn record_sqrt_fast_admission() {
+    SQRT_STATS.with(|stats| {
+        let mut value = stats.get();
+        value.fast_admissions += 1;
+        stats.set(value);
+    });
+}
+
+#[cfg(test)]
+fn record_sqrt_fallback() {
+    SQRT_STATS.with(|stats| {
+        let mut value = stats.get();
+        value.fallbacks += 1;
+        stats.set(value);
+    });
+}
+
+#[cfg(test)]
+fn reset_sqrt_stats() {
+    SQRT_STATS.with(|stats| stats.set(SqrtStats::default()));
+}
+
+#[cfg(test)]
+fn sqrt_stats() -> SqrtStats {
+    SQRT_STATS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+struct ExactSqrtPathGuard(bool);
+
+#[cfg(test)]
+impl Drop for ExactSqrtPathGuard {
+    fn drop(&mut self) {
+        FORCE_EXACT_SQRT.with(|forced| forced.set(self.0));
+    }
+}
+
+#[cfg(test)]
+fn force_exact_sqrt_path(force: bool) -> ExactSqrtPathGuard {
+    ExactSqrtPathGuard(FORCE_EXACT_SQRT.with(|forced| forced.replace(force)))
+}
+
 fn box_distance_lower(left: FloatBox, right: FloatBox) -> f64 {
     let gaps = [
         right.min_x - left.max_x,
@@ -1200,43 +1275,232 @@ fn span_radius_squared(span: &SupportSpan, lo: &Rational, hi: &Rational) -> Resu
 struct SqrtInterval {
     lower: ExactDyadic,
     upper: Option<ExactDyadic>,
+    overflow_upper: Option<Rational>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FloatSqrtBracket {
+    lower: f64,
+    upper: Option<f64>,
+}
+
+impl FloatSqrtBracket {
+    fn into_interval(self, squared: &Rational) -> Result<SqrtInterval> {
+        match self.upper {
+            None => SqrtInterval::overflow(squared),
+            Some(upper) if self.lower.to_bits() == upper.to_bits() => {
+                SqrtInterval::singleton(self.lower)
+            },
+            Some(upper) => SqrtInterval::adjacent(self.lower, upper),
+        }
+    }
+
+    fn nearest_candidate(self, squared: &Rational) -> Result<Option<f64>> {
+        let Some(upper) = self.upper else {
+            debug_assert_eq!(self.lower.to_bits(), f64::MAX.to_bits());
+            return Ok(Some(self.lower));
+        };
+        if self.lower.to_bits() == upper.to_bits() {
+            return Ok(Some(self.lower));
+        }
+        let midpoint = ExactDyadic::try_from_f64(self.lower)?
+            .try_add(ExactDyadic::try_from_f64(upper)?)?
+            .try_product(&ExactDyadic::try_from_f64(0.5)?)?;
+        let midpoint_squared = Rational::from_dyadic(midpoint.try_product(&midpoint)?)?;
+        Ok(Some(match squared.try_cmp(&midpoint_squared)? {
+            Ordering::Less => self.lower,
+            Ordering::Equal if self.lower.to_bits() & 1 == 0 => self.lower,
+            Ordering::Greater | Ordering::Equal => upper,
+        }))
+    }
 }
 
 impl SqrtInterval {
     fn from_squared(squared: &Rational) -> Result<Self> {
+        #[cfg(test)]
+        if exact_sqrt_path_forced() {
+            record_sqrt_fallback();
+            return Self::from_squared_exact(squared);
+        }
+
+        if let Some(bracket) = Self::from_squared_fast(squared)? {
+            #[cfg(test)]
+            record_sqrt_fast_admission();
+            return bracket.into_interval(squared);
+        }
+
+        #[cfg(test)]
+        record_sqrt_fallback();
+        Self::from_squared_exact(squared)
+    }
+
+    /// Seed a bracket from the rounded squared value, then certify each
+    /// endpoint against the original exact squared value. A platform sqrt
+    /// estimate that is not close enough simply takes the exact fallback.
+    fn from_squared_fast(squared: &Rational) -> Result<Option<FloatSqrtBracket>> {
+        const MAX_ULP_STEPS: usize = 4;
+        let rounded_squared = match squared.round() {
+            Ok(value) => value,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        crate::geometry::GeometryErrorKind::ExactCoordinateOutOfRange
+                    )
+                ) =>
+            {
+                return Ok(None);
+            },
+            Err(error) => return Err(error),
+        };
+        if !(rounded_squared.is_finite() && rounded_squared > 0.0) {
+            return Ok(None);
+        }
+
+        let proposal = rounded_squared.sqrt();
+        if !(proposal.is_finite() && proposal > 0.0) {
+            return Ok(None);
+        }
+
+        let mut order = squared.try_cmp(&square_f64(proposal)?)?;
+        if order == Ordering::Equal {
+            return Ok(Some(FloatSqrtBracket {
+                lower: proposal,
+                upper: Some(proposal),
+            }));
+        }
+
+        match order {
+            Ordering::Less => {
+                let mut upper = proposal;
+                for _ in 0..MAX_ULP_STEPS {
+                    let lower = upper.next_down();
+                    order = squared.try_cmp(&square_f64(lower)?)?;
+                    match order {
+                        Ordering::Greater => {
+                            return Ok(Some(FloatSqrtBracket {
+                                lower,
+                                upper: Some(upper),
+                            }));
+                        },
+                        Ordering::Equal => {
+                            return Ok(Some(FloatSqrtBracket {
+                                lower,
+                                upper: Some(lower),
+                            }));
+                        },
+                        Ordering::Less => upper = lower,
+                    }
+                }
+            },
+            Ordering::Greater => {
+                let mut lower = proposal;
+                for _ in 0..MAX_ULP_STEPS {
+                    if lower.to_bits() == f64::MAX.to_bits() {
+                        return Ok(Some(FloatSqrtBracket { lower, upper: None }));
+                    }
+                    let upper = lower.next_up();
+                    order = squared.try_cmp(&square_f64(upper)?)?;
+                    match order {
+                        Ordering::Less => {
+                            return Ok(Some(FloatSqrtBracket {
+                                lower,
+                                upper: Some(upper),
+                            }));
+                        },
+                        Ordering::Equal => {
+                            return Ok(Some(FloatSqrtBracket {
+                                lower: upper,
+                                upper: Some(upper),
+                            }));
+                        },
+                        Ordering::Greater => lower = upper,
+                    }
+                }
+            },
+            Ordering::Equal => unreachable!("the equal square was returned above"),
+        }
+        Ok(None)
+    }
+
+    fn from_squared_exact(squared: &Rational) -> Result<Self> {
+        if squared.try_cmp(&square_f64(f64::MAX)?)? == Ordering::Greater {
+            return Self::overflow(squared);
+        }
         let value = squared.try_clone()?;
         let rounded = value.round_sqrt()?;
         if rounded.is_infinite() {
-            return Ok(Self {
-                lower: ExactDyadic::try_from_f64(f64::MAX)?,
-                upper: None,
-            });
+            return Self::overflow(squared);
         }
-        let exact = ExactDyadic::try_from_f64(rounded)?;
-        let exact_squared = Rational::from_dyadic(exact.try_clone()?)?;
-        let exact_squared = (&(&exact_squared).try_square()?).try_add(&Rational::zero())?;
-        match squared.try_cmp(&exact_squared)? {
-            Ordering::Equal => Ok(Self {
-                lower: exact.try_clone()?,
-                upper: Some(exact),
-            }),
-            Ordering::Less => Ok(Self {
-                lower: ExactDyadic::try_from_f64(rounded.next_down())?,
-                upper: Some(exact),
-            }),
+        match squared.try_cmp(&square_f64(rounded)?)? {
+            Ordering::Equal => Self::singleton(rounded),
+            // The predecessor of +0 is negative in total binary64 order,
+            // but a squared-distance bracket must stay in the nonnegative root domain.
+            Ordering::Less if rounded == 0.0 => Self::adjacent(0.0, f64::from_bits(1)),
+            Ordering::Less => Self::adjacent(rounded.next_down(), rounded),
             Ordering::Greater => {
-                if rounded == f64::MAX {
-                    return Ok(Self {
-                        lower: exact,
-                        upper: None,
-                    });
+                if rounded.to_bits() == f64::MAX.to_bits() {
+                    Self::overflow(squared)
+                } else {
+                    Self::adjacent(rounded, rounded.next_up())
                 }
-                Ok(Self {
-                    lower: exact,
-                    upper: Some(ExactDyadic::try_from_f64(rounded.next_up())?),
-                })
             },
         }
+    }
+
+    fn candidate_from_squared(squared: &Rational) -> Result<Option<f64>> {
+        #[cfg(test)]
+        if exact_sqrt_path_forced() {
+            record_sqrt_fallback();
+            return Self::complete_candidate(squared);
+        }
+
+        if let Some(bracket) = Self::from_squared_fast(squared)? {
+            #[cfg(test)]
+            record_sqrt_fast_admission();
+            return bracket.nearest_candidate(squared);
+        }
+
+        #[cfg(test)]
+        record_sqrt_fallback();
+        Self::complete_candidate(squared)
+    }
+
+    fn complete_candidate(squared: &Rational) -> Result<Option<f64>> {
+        if squared.try_cmp(&square_f64(f64::MAX)?)? == Ordering::Greater {
+            return Ok(Some(f64::MAX));
+        }
+        let value = squared.try_clone()?.round_sqrt()?;
+        Ok(value.is_finite().then_some(value))
+    }
+
+    fn singleton(value: f64) -> Result<Self> {
+        let value = ExactDyadic::try_from_f64(value)?;
+        Ok(Self {
+            lower: value.try_clone()?,
+            upper: Some(value),
+            overflow_upper: None,
+        })
+    }
+
+    fn adjacent(lower: f64, upper: f64) -> Result<Self> {
+        debug_assert!(lower.is_finite() && upper.is_finite());
+        debug_assert_eq!(upper.to_bits() - lower.to_bits(), 1);
+        Ok(Self {
+            lower: ExactDyadic::try_from_f64(lower)?,
+            upper: Some(ExactDyadic::try_from_f64(upper)?),
+            overflow_upper: None,
+        })
+    }
+
+    fn overflow(squared: &Rational) -> Result<Self> {
+        Ok(Self {
+            lower: ExactDyadic::try_from_f64(f64::MAX)?,
+            upper: None,
+            // If max² < q, then q/max > sqrt(q) is an exact finite upper
+            // bound even though no binary64 endpoint exists above max.
+            overflow_upper: Some(squared.try_quotient(&Rational::from_f64(f64::MAX)?)?),
+        })
     }
 
     fn refine(&mut self, squared: &Rational, error: &Rational) -> Result<()> {
@@ -1275,9 +1539,12 @@ impl SqrtInterval {
     }
 
     fn upper_rational(&self) -> Result<Option<Rational>> {
-        self.upper
+        if let Some(value) = &self.upper {
+            return Ok(Some(Rational::from_dyadic(value.try_clone()?)?));
+        }
+        self.overflow_upper
             .as_ref()
-            .map(|value| Rational::from_dyadic(value.try_clone()?))
+            .map(Rational::try_clone)
             .transpose()
     }
 }
@@ -1418,11 +1685,14 @@ fn sqrt_upper(squared: &Rational, context: &mut SearchContext<'_>) -> Result<Sqr
 }
 
 fn sum_upper(left: &SqrtInterval, right: &SqrtInterval) -> Result<Option<Rational>> {
-    let (Some(left), Some(right)) = (&left.upper, &right.upper) else {
+    if let (Some(left), Some(right)) = (&left.upper, &right.upper) {
+        let sum = left.try_clone()?.try_add(right.try_clone()?)?;
+        return Ok(Some(Rational::from_dyadic(sum)?));
+    }
+    let (Some(left), Some(right)) = (left.upper_rational()?, right.upper_rational()?) else {
         return Ok(None);
     };
-    let sum = left.try_clone()?.try_add(right.try_clone()?)?;
-    Ok(Some(Rational::from_dyadic(sum)?))
+    Ok(Some(left.try_add(&right)?))
 }
 
 fn fixed_site_upper(
@@ -1621,13 +1891,7 @@ fn lower_candidate(context: &mut SearchContext<'_>) -> Result<Option<f64>> {
     let Some(lower) = &context.lower_squared else {
         return Ok(None);
     };
-    let lower = lower.try_clone()?;
-    let value = lower.round_sqrt()?;
-    if value.is_finite() {
-        Ok(Some(value))
-    } else {
-        Ok(None)
-    }
+    SqrtInterval::candidate_from_squared(lower)
 }
 
 fn candidate_certified(
@@ -1938,6 +2202,290 @@ mod tests {
             start,
             bounds,
         }
+    }
+
+    fn squared(value: f64) -> Rational {
+        Rational::from_f64(value)
+            .expect("finite value")
+            .try_square()
+            .expect("squared value")
+    }
+
+    fn squared_midpoint(lower: f64, upper: f64) -> Rational {
+        let midpoint = ExactDyadic::try_from_f64(lower)
+            .expect("finite lower")
+            .try_add(ExactDyadic::try_from_f64(upper).expect("finite upper"))
+            .expect("midpoint sum")
+            .try_product(&ExactDyadic::try_from_f64(0.5).expect("finite half"))
+            .expect("midpoint");
+        Rational::from_dyadic(midpoint)
+            .expect("dyadic midpoint")
+            .try_square()
+            .expect("squared midpoint")
+    }
+
+    fn assert_sqrt_certificate(name: &str, squared: &Rational) -> SqrtInterval {
+        let interval = SqrtInterval::from_squared(squared).expect("sqrt interval");
+        let lower = Rational::from_dyadic(interval.lower.try_clone().expect("lower clone"))
+            .expect("lower rational")
+            .try_square()
+            .expect("lower square");
+        assert_ne!(
+            lower.try_cmp(squared).expect("lower comparison"),
+            Ordering::Greater,
+            "{name}: lower endpoint is above the exact root"
+        );
+        let lower_value = dyadic_as_f64(&interval.lower).expect("lower binary64");
+        if let Some(upper) = &interval.upper {
+            let upper_squared = Rational::from_dyadic(upper.try_clone().expect("upper clone"))
+                .expect("upper rational")
+                .try_square()
+                .expect("upper square");
+            assert_ne!(
+                upper_squared.try_cmp(squared).expect("upper comparison"),
+                Ordering::Less,
+                "{name}: upper endpoint is below the exact root"
+            );
+            let upper_value = dyadic_as_f64(upper).expect("upper binary64");
+            if lower_value.to_bits() != upper_value.to_bits() {
+                assert_eq!(
+                    upper_value.to_bits() - lower_value.to_bits(),
+                    1,
+                    "{name}: finite endpoints must be adjacent"
+                );
+            }
+        } else {
+            assert_eq!(
+                lower_value.to_bits(),
+                f64::MAX.to_bits(),
+                "{name}: an overflow interval must start at f64::MAX"
+            );
+            let upper = interval
+                .upper_rational()
+                .expect("overflow upper")
+                .expect("finite exact overflow upper");
+            let upper_squared = upper.try_square().expect("overflow upper square");
+            assert_ne!(
+                upper_squared
+                    .try_cmp(squared)
+                    .expect("overflow upper comparison"),
+                Ordering::Less,
+                "{name}: exact overflow upper is below the root"
+            );
+        }
+        interval
+    }
+
+    #[test]
+    fn verified_sqrt_brackets_cover_irrational_exact_and_boundary_values() {
+        reset_sqrt_stats();
+        let minimum_subnormal = f64::from_bits(1);
+        let largest_subnormal = f64::from_bits(0x000F_FFFF_FFFF_FFFF);
+        let minimum_normal = f64::from_bits(0x0010_0000_0000_0000);
+        let maximum = f64::MAX;
+        let below_minimum = ExactDyadic::from_f64(minimum_subnormal)
+            .try_product(&ExactDyadic::from_f64(0.5))
+            .unwrap();
+        let underflowing_squared = squared(1.5e-162);
+        let cases = [
+            ("irrational two", Rational::from_f64(2.0).unwrap()),
+            ("exact square", squared(3.0)),
+            (
+                "normal rounding midpoint",
+                squared_midpoint(1.0, 1.0_f64.next_up()),
+            ),
+            (
+                "minimum subnormal rounding midpoint",
+                squared_midpoint(minimum_subnormal, f64::from_bits(2)),
+            ),
+            (
+                "subnormal normal rounding midpoint",
+                squared_midpoint(largest_subnormal, minimum_normal),
+            ),
+            ("minimum subnormal root", squared(minimum_subnormal)),
+            ("minimum normal root", squared(minimum_normal)),
+            ("rounded squared underflow", underflowing_squared),
+            (
+                "root below minimum subnormal",
+                Rational::from_dyadic(below_minimum)
+                    .unwrap()
+                    .try_square()
+                    .unwrap(),
+            ),
+            ("maximum square", squared(maximum)),
+            (
+                "root just beyond maximum",
+                Rational::from_dyadic(
+                    ExactDyadic::from_f64(maximum)
+                        .try_add(ExactDyadic::from_f64(2.0_f64.powi(969)))
+                        .unwrap(),
+                )
+                .unwrap()
+                .try_square()
+                .unwrap(),
+            ),
+            (
+                "root at overflow rounding midpoint",
+                Rational::from_dyadic(
+                    ExactDyadic::from_f64(maximum)
+                        .try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))
+                        .unwrap(),
+                )
+                .unwrap()
+                .try_square()
+                .unwrap(),
+            ),
+        ];
+        for (name, value) in &cases {
+            assert_sqrt_certificate(name, value);
+        }
+        assert!(
+            sqrt_stats().fast_admissions > 0,
+            "ordinary cases should admit the verified candidate"
+        );
+        assert!(
+            sqrt_stats().fallbacks > 0,
+            "underflow and overflow cases should use the exact fallback"
+        );
+    }
+
+    #[test]
+    fn endpoint_verification_rejects_a_reversed_sqrt_comparison() {
+        reset_sqrt_stats();
+        let squared = Rational::from_f64(2.0).unwrap();
+        let proposal = 2.0_f64.sqrt();
+        assert_eq!(
+            squared
+                .try_cmp(&square_f64(proposal).expect("proposal square"))
+                .unwrap(),
+            Ordering::Less,
+            "the deliberately chosen libm proposal is above the exact root"
+        );
+        assert_sqrt_certificate("reversed-comparison negative control", &squared);
+        assert_eq!(sqrt_stats().fast_admissions, 1);
+    }
+
+    #[test]
+    fn verified_sqrt_candidate_matches_complete_rounding_at_extrema() {
+        let minimum_subnormal = f64::from_bits(1);
+        let largest_subnormal = f64::from_bits(0x000F_FFFF_FFFF_FFFF);
+        let minimum_normal = f64::from_bits(0x0010_0000_0000_0000);
+        let maximum = f64::MAX;
+        let below_minimum = ExactDyadic::from_f64(minimum_subnormal)
+            .try_product(&ExactDyadic::from_f64(0.5))
+            .unwrap();
+        let cases = [
+            Rational::zero(),
+            Rational::from_f64(2.0).unwrap(),
+            Rational::from_f64(3.0).unwrap(),
+            Rational::from_f64(minimum_subnormal).unwrap(),
+            Rational::from_f64(minimum_normal).unwrap(),
+            Rational::from_f64(maximum).unwrap(),
+            squared(minimum_subnormal),
+            squared(minimum_normal),
+            squared_midpoint(1.0, 1.0_f64.next_up()),
+            squared_midpoint(minimum_subnormal, f64::from_bits(2)),
+            squared_midpoint(largest_subnormal, minimum_normal),
+            Rational::from_dyadic(below_minimum)
+                .unwrap()
+                .try_square()
+                .unwrap(),
+            squared(maximum),
+            Rational::from_dyadic(
+                ExactDyadic::from_f64(maximum)
+                    .try_add(ExactDyadic::from_f64(2.0_f64.powi(969)))
+                    .unwrap(),
+            )
+            .unwrap()
+            .try_square()
+            .unwrap(),
+            Rational::from_dyadic(
+                ExactDyadic::from_f64(maximum)
+                    .try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))
+                    .unwrap(),
+            )
+            .unwrap()
+            .try_square()
+            .unwrap(),
+        ];
+        for value in &cases {
+            let actual = SqrtInterval::candidate_from_squared(value).unwrap();
+            let expected = value.round_sqrt().unwrap();
+            if expected.is_infinite() {
+                assert_eq!(
+                    actual.map(f64::to_bits),
+                    Some(f64::MAX.to_bits()),
+                    "a finite tolerance candidate must retain f64::MAX above its range"
+                );
+            } else {
+                assert_eq!(
+                    actual.map(f64::to_bits),
+                    Some(expected.to_bits()),
+                    "candidate differs from complete exact rounding"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fast_and_complete_sqrt_paths_have_identical_bounded_results() {
+        let origin = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let diagonal = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+        let source_line = line(&[(0.0, 0.0), (2.0, 0.0)]);
+        let target_line = line(&[(0.0, 1.0), (2.0, 1.0)]);
+        let triangle = polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)]);
+        let tiny = Shape::Point(Point::new_raw_xy(1.5e-162, 0.0));
+        let length = 10.0_f64.powi(155);
+        let height = 10.0_f64.powi(-155);
+        let reciprocal_baseline = line(&[(0.0, 0.0), (length, 0.0)]);
+        let reciprocal_bend = line(&[
+            (0.0, height),
+            (length / 2.0, 2.0 * height),
+            (length, height),
+        ]);
+        let cases = [
+            (&origin, &diagonal, 1e-6, 1.0),
+            (&source_line, &target_line, 1e-6, 1.0),
+            (&triangle, &source_line, 1e-6, 1.0),
+            (&origin, &tiny, 1e-174, 1.0),
+            (
+                &reciprocal_baseline,
+                &reciprocal_bend,
+                2.0 * height * 1e-12,
+                1.0,
+            ),
+        ];
+
+        reset_sqrt_stats();
+        let fast: Vec<_> = cases
+            .iter()
+            .map(|(left, right, error, scale)| {
+                let _path = force_exact_sqrt_path(false);
+                distance(left, right, Some(*error), *scale).expect("fast bounded result")
+            })
+            .collect();
+        let fast_stats = sqrt_stats();
+        assert!(fast_stats.fast_admissions > 0);
+        assert!(fast_stats.fallbacks > 0);
+
+        reset_sqrt_stats();
+        let complete: Vec<_> = cases
+            .iter()
+            .map(|(left, right, error, scale)| {
+                let _path = force_exact_sqrt_path(true);
+                distance(left, right, Some(*error), *scale).expect("complete bounded result")
+            })
+            .collect();
+        let complete_stats = sqrt_stats();
+        assert_eq!(complete_stats.fast_admissions, 0);
+        assert!(complete_stats.fallbacks > 0);
+        assert_eq!(
+            fast.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            complete
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -2401,6 +2949,48 @@ mod tests {
         let expected = 100.0 * (7.0 - 24.0_f64.sqrt());
         let actual = distance(&polygon(&vertices), &line(&vertices), Some(0.01), 100.0).unwrap();
         assert!((actual - expected).abs() <= 0.01);
+    }
+
+    #[test]
+    fn overflowed_exact_point_distance_can_certify_maximum_with_large_error() {
+        let left = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let right = Shape::Point(Point::new_raw_xy(f64::MAX, 0.0));
+        let scale = 1.0_f64.next_up();
+        let maximum = Rational::from_f64(f64::MAX).unwrap();
+        let scaled_squared = maximum
+            .try_square()
+            .unwrap()
+            .try_product(&Rational::from_f64(scale).unwrap().try_square().unwrap())
+            .unwrap();
+        let interval = SqrtInterval::from_squared(&scaled_squared).unwrap();
+        let upper = interval
+            .upper_rational()
+            .unwrap()
+            .expect("finite exact overflow upper");
+        let expected_upper = scaled_squared.try_quotient(&maximum).unwrap();
+        assert_eq!(upper.try_cmp(&expected_upper).unwrap(), Ordering::Equal);
+        let sum = sum_upper(&interval, &SqrtInterval::singleton(1.0).unwrap())
+            .unwrap()
+            .expect("overflow upper remains finite when summed");
+        assert_eq!(
+            sum.try_cmp(&expected_upper.try_add(&Rational::one()).unwrap())
+                .unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            scaled_squared
+                .try_cmp(&maximum.try_square().unwrap())
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            distance(&left, &right, Some(1e300), scale)
+                .unwrap()
+                .to_bits(),
+            f64::MAX.to_bits()
+        );
+        distance(&left, &right, Some(1e292), scale)
+            .expect_err("an allowance below the exact max-to-upper gap must not certify f64::MAX");
     }
 
     #[test]
