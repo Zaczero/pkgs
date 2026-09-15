@@ -3290,6 +3290,73 @@ mod tests {
     }
 
     #[test]
+    fn metric_support_consumption_preserves_multipart_faces_and_mixed_points() {
+        for (wkt, inside, outside) in [
+            (
+                "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),\
+                               ((2 0,4 0,4 2,2 2,2 0)))",
+                [(1.0, 1.0), (3.0, 1.0), (2.0, 1.0)],
+                [(5.0, 1.0), (2.0, 3.0), (-1.0, 1.0)],
+            ),
+            (
+                "MULTIPOLYGON (((0 0,3 0,3 3,0 3,0 0)),\
+                               ((2 0,5 0,5 3,2 3,2 0)))",
+                [(1.0, 1.0), (2.5, 1.0), (4.0, 1.0)],
+                [(6.0, 1.0), (2.5, 4.0), (-1.0, 1.0)],
+            ),
+        ] {
+            let shape = crate::io::parse_wkt(wkt).unwrap();
+            let mut budget = ExpansionBudget::new("test", "metric support");
+            let support = PreparedSupport::from_shape(&shape, &mut budget).unwrap();
+            assert!(!support.faces.is_empty(), "{wkt}");
+            for (x, y) in inside {
+                assert!(
+                    support
+                        .contains_area(&exact_point_xy(x, y).unwrap())
+                        .unwrap(),
+                    "expected ({x}, {y}) inside {wkt}"
+                );
+            }
+            for (x, y) in outside {
+                assert!(
+                    !support
+                        .contains_area(&exact_point_xy(x, y).unwrap())
+                        .unwrap(),
+                    "expected ({x}, {y}) outside {wkt}"
+                );
+            }
+        }
+
+        let shape = crate::io::parse_wkt(
+            "GEOMETRYCOLLECTION(\
+             POLYGON ((0 0,4 0,4 4,0 4,0 0)),\
+             POINT (10 1))",
+        )
+        .unwrap();
+        let mut budget = ExpansionBudget::new("test", "metric support");
+        let support = PreparedSupport::from_shape(&shape, &mut budget).unwrap();
+        assert_eq!(support.spans.len(), 4);
+        assert_eq!(support.points.len(), 1);
+        assert_eq!(support.faces.len(), 1);
+        assert_eq!(support.faces[0].len(), 1);
+        assert!(
+            support
+                .contains_area(&exact_point_xy(2.0, 2.0).unwrap())
+                .unwrap()
+        );
+        assert!(
+            !support
+                .contains_area(&exact_point_xy(10.0, 1.0).unwrap())
+                .unwrap()
+        );
+        assert!(support.points.iter().any(|point| {
+            point
+                .same_position(&exact_point_xy(10.0, 1.0).unwrap())
+                .unwrap()
+        }));
+    }
+
+    #[test]
     fn allocation_failure_never_publishes_a_scalar() {
         let source = line(&[(0.0, 0.0), (2.0, 0.0)]);
         let target = Shape::Point(Point::new_raw_xy(1.0, 1.0));
@@ -3306,6 +3373,28 @@ mod tests {
                     crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
                 )),
                 Ok(value) => assert!((value - 2.0_f64.sqrt()).abs() <= 1e-6),
+            }
+        }
+    }
+
+    #[test]
+    fn area_metric_extraction_propagates_allocation_failures() {
+        let source = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let target = Shape::Point(Point::new_raw_xy(6.0, 2.0));
+        let (result, count) =
+            crate::test_support::allocation_count(|| distance(&source, &target, Some(1e-3), 1.0));
+        let value = result.unwrap();
+        assert!((value - 40.0_f64.sqrt()).abs() <= 1e-3);
+        assert!(count > 0);
+        for allowed in 0..=count {
+            match crate::test_support::fail_allocations_after(allowed, || {
+                distance(&source, &target, Some(1e-3), 1.0)
+            }) {
+                Err(error) => assert!(matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+                )),
+                Ok(value) => assert!((value - 40.0_f64.sqrt()).abs() <= 1e-3),
             }
         }
     }
