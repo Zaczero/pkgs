@@ -21,9 +21,6 @@ pub(crate) struct Facet {
     /// single chain can never hold >4G vertices.
     pub(crate) first_vertex: u32,
     pub(crate) segment_count: u8,
-    /// Global segment index of this facet's first edge. Witness queries must
-    /// return this packed-linework index without rescanning preceding facets.
-    first_segment: u32,
 }
 
 /// A shape's linework as per-chain [`CoordSeq`] views plus its facet
@@ -77,7 +74,6 @@ fn push_chain_facets(
             chain,
             first_vertex: offset as u32,
             segment_count: count as u8,
-            first_segment: (global_segments + offset) as u32,
         })?;
         offset += count;
     }
@@ -496,7 +492,6 @@ mod tests {
         assert_eq!(linework.segment_count(), 1);
         assert_eq!(linework.facets.len(), 1);
         assert_eq!(linework.facets[0].first_vertex, 0);
-        assert_eq!(linework.facets[0].first_segment, 0);
         assert_eq!(linework.facets[0].segment_count, 1);
         assert_eq!(linework.facets[0].chain, 0);
     }
@@ -510,7 +505,6 @@ mod tests {
         assert_eq!(linework.facets[0].segment_count, 8);
         assert_eq!(linework.facets[1].segment_count, 1);
         assert_eq!(linework.facets[1].first_vertex, 8);
-        assert_eq!(linework.facets[1].first_segment, 8);
     }
 
     #[test]
@@ -533,9 +527,6 @@ mod tests {
         let linework = PreparedLinework::build(&shape).unwrap();
         assert_eq!(linework.segment_count(), 3);
         assert_eq!(linework.facets.len(), 3);
-        assert_eq!(linework.facets[0].first_segment, 0);
-        assert_eq!(linework.facets[1].first_segment, 1);
-        assert_eq!(linework.facets[2].first_segment, 2);
         assert_eq!(linework.facets[0].chain, 0);
         assert_eq!(linework.facets[1].chain, 1);
         assert_eq!(linework.facets[2].chain, 2);
@@ -591,6 +582,7 @@ mod tests {
         let segments = push_chain_facets(&mut facets, 0, 2, u32::MAX as usize - 1).unwrap();
         assert_eq!(segments, 1);
         assert_eq!(facets.len(), 1);
-        assert_eq!(facets[0].first_segment, u32::MAX - 1);
+        assert_eq!(facets[0].first_vertex, 0);
+        assert_eq!(facets[0].segment_count, 1);
     }
 }
