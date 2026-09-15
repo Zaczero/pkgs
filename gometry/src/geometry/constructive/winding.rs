@@ -10,7 +10,7 @@ use crate::geometry::constructive::{
     Result, WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop,
     emit_cap, extend_cleaned, materialize_walk, raw_offset_loop, strict_cycle, winding_region,
 };
-use crate::geometry::overlay::{ExactSourceInventory, OverlayOp};
+use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
     BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HashSet, LineSeq, MultiPoint, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale,
@@ -286,51 +286,39 @@ pub(in crate::geometry) fn winding_erosion_budgeted(
 /// A stored polygon first goes through the same unmoved winding admission as
 /// `buffer(0)`: shell winding is negative after the erosion orientation flip,
 /// holes are positive, and only the selected `<= -1` region survives. This
-/// preserves self-crossing ring semantics. Those admitted polygon pieces are
-/// then unioned in one arrangement, so overlapping components cannot cancel
-/// and a shared edge is one boundary before erosion.
+/// preserves self-crossing ring semantics. All canonicalized source rings are
+/// then selected by polygon group in one arrangement, so overlapping
+/// components cannot cancel and a shared edge is one boundary before erosion.
 fn normalize_polygon_union(polygons: &[&Polygon]) -> Result<Vec<Polygon>> {
     if polygons.is_empty() {
         return Ok(Vec::new());
     }
-    let mut support = Vec::new();
-    for polygon in polygons {
-        for part in polygon_zero_support(polygon)? {
-            crate::try_push_vec(&mut support, part)?;
-        }
-    }
-    if support.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut operands = Vec::new();
-    crate::try_reserve_vec(&mut operands, support.len())?;
-    for polygon in &support {
-        crate::try_push_vec(&mut operands, polygon)?;
-    }
-    let empty: [&Polygon; 0] = [];
-    let inventory = ExactSourceInventory::from_polygon_operands(&operands, &empty)?;
-    let mut partition_budget = ExpansionBudget::new("buffer", "exact partition");
-    let partition = inventory.partition(&mut partition_budget)?;
-    let (_, _, parts) = inventory.overlay_parts(&partition, OverlayOp::Union)?;
-    Ok(parts)
-}
-
-/// Select one stored polygon's unmoved occupied support. The direct columns
-/// avoid charging input-sized coordinates as generated offset work; they are
-/// the distance-zero form of the erosion walk.
-fn polygon_zero_support(polygon: &Polygon) -> Result<Vec<Polygon>> {
     let mut loops = Vec::new();
-    let Some(shell) = strict_cycle(polygon.shell.coords(), true)? else {
-        return Ok(Vec::new());
-    };
-    crate::try_push_vec(&mut loops, cycle_columns(&shell)?)?;
-    for hole in polygon.holes.iter() {
-        let Some(hole) = strict_cycle(hole.coords(), false)? else {
+    let mut groups = Vec::new();
+    crate::try_reserve_vec(&mut loops, polygons.len())?;
+    crate::try_reserve_vec(&mut groups, polygons.len())?;
+    for polygon in polygons {
+        let start = loops.len();
+        let Some(shell) = strict_cycle(polygon.shell.coords(), true)? else {
             continue;
         };
-        crate::try_push_vec(&mut loops, cycle_columns(&hole)?)?;
+        crate::try_push_vec(&mut loops, cycle_columns(&shell)?)?;
+        for hole in polygon.holes.iter() {
+            let Some(hole) = strict_cycle(hole.coords(), false)? else {
+                continue;
+            };
+            crate::try_push_vec(&mut loops, cycle_columns(&hole)?)?;
+        }
+        let end = loops.len();
+        crate::try_push_vec(&mut groups, start..end)?;
     }
-    winding_region(&loops, |winding| winding <= -1)
+    if loops.is_empty() {
+        return Ok(Vec::new());
+    }
+    let inventory = ExactSourceInventory::from_raw_loops(&loops)?;
+    let mut partition_budget = ExpansionBudget::new("winding_region", "exact partition");
+    let partition = inventory.partition(&mut partition_budget)?;
+    inventory.winding_group_union_polygons(&partition, &groups)
 }
 
 fn cycle_columns(points: &[Point]) -> Result<LoopColumns> {

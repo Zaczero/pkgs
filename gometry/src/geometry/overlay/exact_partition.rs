@@ -3480,6 +3480,78 @@ impl ExactSourceInventory {
                 Ok(())
             },
         )?;
+        self.emit_selected_winding_polygons(partition, &topology, &edges, &global, selected)
+    }
+
+    /// Select the union of independently wound polygon groups from one exact
+    /// source partition. Each range contains one polygon's canonical shell
+    /// followed by its canonical holes; a face belongs when any group's
+    /// signed winding is negative.
+    pub(in crate::geometry) fn winding_group_union_polygons(
+        &self,
+        partition: &ExactPartition<'_>,
+        groups: &[Range<usize>],
+    ) -> Result<Vec<Polygon>> {
+        let mut cursor = 0_usize;
+        for group in groups {
+            if group.start != cursor || group.start >= group.end || group.end > self.ring_count {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact winding polygon groups are not contiguous".into(),
+                )
+                .into());
+            }
+            cursor = group.end;
+        }
+        if cursor != self.ring_count {
+            return Err(GeometryErrorKind::Invalid(
+                "exact winding polygon groups do not cover all rings".into(),
+            )
+            .into());
+        }
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let winding_rings = self.winding_source_rings()?;
+        let mut selected = Vec::new();
+        try_reserve_vec(&mut selected, global.count as usize)?;
+        selected.resize(global.count as usize, false);
+        partition.visit_face_windings(
+            &topology,
+            &edges,
+            &global,
+            &winding_rings,
+            self.ring_count,
+            |face, winding| {
+                let mut occupied = false;
+                for group in groups {
+                    let mut sum = 0_i64;
+                    for index in group.clone() {
+                        let value = *winding.get(index).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "exact winding group references an unknown ring".into(),
+                            )
+                        })?;
+                        sum = sum.checked_add(value).ok_or(ResourceError::SizeOverflow)?;
+                    }
+                    occupied |= sum <= -1;
+                    if occupied {
+                        break;
+                    }
+                }
+                selected[face as usize] = occupied;
+                Ok(())
+            },
+        )?;
+        self.emit_selected_winding_polygons(partition, &topology, &edges, &global, selected)
+    }
+
+    fn emit_selected_winding_polygons(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+        selected: Vec<bool>,
+    ) -> Result<Vec<Polygon>> {
         let cells = ArealCells {
             faces: selected,
             spans: {

@@ -12,6 +12,7 @@ use crate::geometry::constructive::{
     WalkJoinRule, reset_walk_plan_construction_count, walk_plan_construction_count, winding_buffer,
     winding_erosion, winding_stroke,
 };
+use crate::geometry::overlay::{partition_calls, reset_partition_calls};
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, CoordSeq, ExpansionBudget, GeometryErrorKind, LineSeq,
     MAX_NESTING, MultiPolygon, Point, Polygon, Ring, Segment, Shape, XY,
@@ -1007,6 +1008,90 @@ mod winding_buffer_tests {
         assert_eq!(eroded.area(), expected.area());
         assert!(eroded.equals(&expected).unwrap());
         assert!(multipart.buffer(0.0).unwrap().equals(&union).unwrap());
+    }
+
+    #[test]
+    fn grouped_zero_support_uses_one_partition_for_nested_signed_sources() {
+        let bowtie = Polygon::new(
+            ring(&[(0.0, 0.0), (4.0, 4.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
+            Vec::new(),
+        )
+        .unwrap();
+        let collapsed_shell = Polygon::new(
+            ring(&[(6.0, 0.0), (8.0, 0.0), (10.0, 0.0), (6.0, 0.0)]),
+            Vec::new(),
+        )
+        .unwrap();
+        let shell = ring(&[
+            (10.0, 0.0),
+            (14.0, 0.0),
+            (14.0, 4.0),
+            (10.0, 4.0),
+            (10.0, 0.0),
+        ]);
+        let collapsed_hole = Polygon::new(shell, vec![ring(&[
+            (11.0, 2.0),
+            (12.0, 2.0),
+            (13.0, 2.0),
+            (11.0, 2.0),
+        ])])
+        .unwrap();
+        let nested = Shape::geometry_collection(vec![
+            Shape::Polygon(bowtie),
+            Shape::geometry_collection(vec![
+                Shape::Polygon(collapsed_shell),
+                Shape::Polygon(collapsed_hole),
+            ])
+            .unwrap(),
+        ])
+        .unwrap();
+
+        reset_partition_calls();
+        let normalized = nested.buffer(0.0).unwrap();
+
+        assert_eq!(partition_calls(), 1);
+        assert_eq!(normalized.area(), 20.0);
+        assert!(!normalized.is_empty());
+    }
+
+    #[test]
+    fn grouped_union_fills_another_polygon_hole() {
+        let frame = Polygon::new(
+            ring(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ]),
+            vec![ring(&[
+                (3.0, 3.0),
+                (7.0, 3.0),
+                (7.0, 7.0),
+                (3.0, 7.0),
+                (3.0, 3.0),
+            ])],
+        )
+        .unwrap();
+        let filler = Polygon::new(
+            ring(&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]),
+            Vec::new(),
+        )
+        .unwrap();
+        let source = Shape::MultiPolygon(
+            MultiPolygon::from_dense(vec![frame, filler])
+                .unwrap()
+                .unwrap(),
+        );
+
+        let normalized = source.buffer(0.0).unwrap();
+
+        assert_eq!(normalized.area(), 100.0);
+        assert!(
+            normalized
+                .covers(&Shape::Point(Point::new(5.0, 5.0).unwrap()))
+                .unwrap()
+        );
     }
 
     #[test]
