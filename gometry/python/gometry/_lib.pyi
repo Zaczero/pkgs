@@ -902,7 +902,8 @@ class Geometry:
         container allocations such as multipart ``Vec``s, polygon hole
         ``Arc``s, and nested collection members), any attached
         *already-initialized* ``PreparedPlan`` products, and the Arc-owned
-        frame-cache sidecar with any products already built on it.
+        frame-cache sidecar with any products already built on it. Spilled CRS
+        frame text is included; inline CRS text is already part of the struct.
         Uninitialized lazy caches are not counted and this method never
         builds them — so two cold ``__sizeof__`` reads report the same
         size, and warming (``bounds``, ``prepare``, distance, …) can only
@@ -5494,7 +5495,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def __sizeof__(self) -> int:
         """`sys.getsizeof` support: the wrapper plus this array's logical
         Rust-side heap — coordinate payload, CSR offsets, row maps, missing
-        mask, and any already-materialized prepared-geometry / frame sidecars.
+        mask, cache owners and their already-materialized contents, spilled CRS
+        frame text, and any already-materialized prepared-geometry / frame
+        sidecars.
         Lazy cache slots that have not been populated do not inflate the total.
         Shared backing buffers are accounted like NumPy views: the logical view
         is reported, not the whole shared parent allocation.
@@ -11345,8 +11348,9 @@ class CellArray(Sequence[_CellT_co]):
     __array_ufunc__: ClassVar[None]
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the wrapper plus this array's logical
-        ``uint64`` id payload and any row-selection map. Shared backing buffers
-        are reported like NumPy views, not as the full parent allocation.
+        ``uint64`` id payload, missing flags, and any row-selection map. Shared
+        backing buffers are reported like NumPy views, not as the full parent
+        allocation.
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this cell array."""
