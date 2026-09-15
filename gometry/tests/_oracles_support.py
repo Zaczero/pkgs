@@ -32,22 +32,19 @@ def round_float(value: float) -> float:
 
 
 def geometries_match(left: gm.Geometry, right: gm.Geometry) -> bool:
-    """Normalized WKT equality with a parity-only Hausdorff fallback.
+    """Normalized WKT equality with a coordinate-tolerance fallback.
 
-    This helper compares snapshot representations; it is not a correctness
-    oracle for the Hausdorff implementation.
+    This helper compares serialized snapshot representations. Continuous
+    filled Hausdorff is both the wrong coordinate-order oracle and needlessly
+    expensive for dense constructive outputs.
     """
     if left.is_empty and right.is_empty:
         return left.geometry_type == right.geometry_type
-    if normalize_geometry_wkt(left) == normalize_geometry_wkt(right):
+    normalized_left = left.normalize()
+    normalized_right = right.normalize()
+    if normalized_left.to_wkt() == normalized_right.to_wkt():
         return True
-    try:
-        return (
-            gm.hausdorff_distance(left, right, max_error=GEOMETRY_MATCH_ATOL)
-            <= GEOMETRY_MATCH_ATOL
-        )
-    except Exception:
-        return False
+    return bool(gm.equals_exact(normalized_left, normalized_right, GEOMETRY_MATCH_ATOL))
 
 
 def floats_match(expected: Any, actual: Any) -> None:
