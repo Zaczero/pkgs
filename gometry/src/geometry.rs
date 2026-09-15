@@ -978,3 +978,27 @@ impl fmt::Display for Point {
         }
     }
 }
+
+#[cfg(test)]
+mod point_only_collection_tests {
+    use super::*;
+
+    #[test]
+    fn multipoint_append_uses_existing_additional_capacity() {
+        let points = MultiPoint::from_coordseq(
+            CoordSeq::try_from_points(&[Point::new_raw_xy(1.0, 0.0), Point::new_raw_xy(2.0, 0.0)])
+                .unwrap(),
+        )
+        .unwrap();
+        let shape = Shape::MultiPoint(points);
+        let mut output = Vec::with_capacity(3);
+        output.push(Point::new_raw_xy(0.0, 0.0));
+
+        let (result, allocations) =
+            crate::test_support::allocation_count(|| shape.append_point_only(&mut output));
+
+        result.unwrap();
+        assert_eq!(allocations, 0);
+        assert_eq!(output.len(), 3);
+    }
+}
