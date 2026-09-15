@@ -538,11 +538,11 @@ pub(crate) fn affine_about_origin_ordinate(
         return Err(GeometryErrorKind::NonFiniteCoordinate.into());
     }
     let mut sum = ExactSum::zero();
-    sum.add_product(1, coefficient_x, value_x);
-    sum.add_product(1, coefficient_y, value_y);
-    sum.add_product(1, output_origin, 1.0);
-    sum.add_product(-1, coefficient_x, origin_x);
-    sum.add_product(-1, coefficient_y, origin_y);
+    sum.add_product(coefficient_x, value_x);
+    sum.add_product(coefficient_y, value_y);
+    sum.add_product(output_origin, 1.0);
+    sum.subtract_product(coefficient_x, origin_x);
+    sum.subtract_product(coefficient_y, origin_y);
     let value = sum.round_to_binary64();
     value
         .is_finite()

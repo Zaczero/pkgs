@@ -2,14 +2,83 @@
 
 use std::cmp::Ordering;
 
-pub(crate) const LIMBS: usize = 68;
-pub(crate) const PRODUCT_MIN_EXP: i32 = -2148;
-const CUBIC_LIMBS: usize = 101;
-const CUBIC_MIN_EXP: i32 = -3222;
+const LIMB_BITS: usize = u64::BITS as usize;
+const ADDRESS_BITS: usize = usize::BITS as usize;
+const BINARY64_SIGNIFICAND_BITS: usize = 53;
+const BINARY64_MIN_EXPONENT: i32 = -1074;
+const BINARY64_MAX_DECOMPOSED_EXPONENT: i32 = 971;
+pub(crate) const PRODUCT_MIN_EXP: i32 = 2 * BINARY64_MIN_EXPONENT;
+const CUBIC_MIN_EXP: i32 = 3 * BINARY64_MIN_EXPONENT;
+const PAIR_PRODUCTS_PER_EDGE: usize = 2;
+const MOMENT_PRODUCTS_PER_EDGE: usize = 4;
+const CUBIC_POST_SUM_CARRY_BITS: usize = 2;
 
-/// Products share quantum 2^-2148 and have integer magnitude below 2^4196.
-/// Fewer than 2^65 signed unit-coefficient terms fit below 2^4261, within
-/// the 4352-bit accumulators. Sign is available without floating rounding.
+const fn max_product_shift(factors: usize, min_exponent: i32) -> usize {
+    let factor_count = factors as i32;
+    let exponent_span = factor_count
+        .checked_mul(BINARY64_MAX_DECOMPOSED_EXPONENT)
+        .expect("binary64 product exponent span fits i32");
+    let exponent_span = exponent_span
+        .checked_sub(min_exponent)
+        .expect("binary64 product exponent span fits i32");
+    assert!(exponent_span >= 0);
+    exponent_span as usize
+}
+
+const fn max_product_bits(factors: usize, min_exponent: i32) -> usize {
+    let significand_bits = factors
+        .checked_mul(BINARY64_SIGNIFICAND_BITS)
+        .expect("binary64 product significand width fits usize");
+    max_product_shift(factors, min_exponent)
+        .checked_add(significand_bits)
+        .expect("binary64 product width fits usize")
+}
+
+const PAIR_PRODUCT_BITS: usize = max_product_bits(2, PRODUCT_MIN_EXP);
+const CUBIC_PRODUCT_BITS: usize = max_product_bits(3, CUBIC_MIN_EXP);
+const PAIR_MAX_PRODUCT_SHIFT: usize = max_product_shift(2, PRODUCT_MIN_EXP);
+const CUBIC_MAX_PRODUCT_SHIFT: usize = max_product_shift(3, CUBIC_MIN_EXP);
+
+const fn power_of_two_bits(value: usize) -> usize {
+    assert!(value.is_power_of_two());
+    value.trailing_zeros() as usize
+}
+
+const fn required_limbs(
+    product_bits: usize,
+    address_bits: usize,
+    products_per_edge: usize,
+    extra_bits: usize,
+) -> usize {
+    let bits = product_bits
+        .checked_add(address_bits)
+        .expect("exact product-sum capacity arithmetic fits usize");
+    let bits = bits
+        .checked_add(power_of_two_bits(products_per_edge))
+        .expect("exact product-sum capacity arithmetic fits usize");
+    let bits = bits
+        .checked_add(extra_bits)
+        .expect("exact product-sum capacity arithmetic fits usize");
+    bits.checked_add(LIMB_BITS - 1)
+        .expect("exact product-sum limb rounding fits usize")
+        / LIMB_BITS
+}
+
+const _: () = assert!(ADDRESS_BITS == 32 || ADDRESS_BITS == 64);
+
+pub(crate) const LIMBS: usize =
+    required_limbs(PAIR_PRODUCT_BITS, ADDRESS_BITS, PAIR_PRODUCTS_PER_EDGE, 0);
+const CUBIC_LIMBS: usize = required_limbs(
+    CUBIC_PRODUCT_BITS,
+    ADDRESS_BITS,
+    MOMENT_PRODUCTS_PER_EDGE,
+    CUBIC_POST_SUM_CARRY_BITS,
+);
+
+/// Finite binary64 pair products share quantum 2^-2148 and have integer
+/// magnitude below 2^4196. A `usize`-addressable edge population has fewer
+/// than 2^ADDRESS_BITS edges; two products per edge therefore need
+/// `4196 + ADDRESS_BITS + 1` bits.
 #[derive(Clone)]
 pub(crate) struct ExactSum {
     positive: [u64; LIMBS],
@@ -32,14 +101,22 @@ impl ExactSum {
         }
     }
 
-    pub(crate) fn add_product(&mut self, coefficient: i8, lhs: f64, rhs: f64) {
+    pub(in crate::geometry) fn add_product(&mut self, lhs: f64, rhs: f64) {
+        self.accumulate_product(false, lhs, rhs);
+    }
+
+    pub(in crate::geometry) fn subtract_product(&mut self, lhs: f64, rhs: f64) {
+        self.accumulate_product(true, lhs, rhs);
+    }
+
+    fn accumulate_product(&mut self, subtract: bool, lhs: f64, rhs: f64) {
         debug_assert!(lhs.is_finite() && rhs.is_finite());
         let (lhs_negative, lhs_mantissa, lhs_exponent) = decompose(lhs);
         let (rhs_negative, rhs_mantissa, rhs_exponent) = decompose(rhs);
         if lhs_mantissa == 0 || rhs_mantissa == 0 {
             return;
         }
-        let negative = (coefficient < 0) ^ lhs_negative ^ rhs_negative;
+        let negative = subtract ^ lhs_negative ^ rhs_negative;
         let product = u128::from(lhs_mantissa) * u128::from(rhs_mantissa);
         let shift = usize::try_from(lhs_exponent + rhs_exponent - PRODUCT_MIN_EXP)
             .expect("finite f64 product fits the fixed exact accumulator");
@@ -55,8 +132,8 @@ impl ExactSum {
     }
 
     pub(crate) fn add_cross(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) {
-        self.add_product(1, x0, y1);
-        self.add_product(-1, x1, y0);
+        self.add_product(x0, y1);
+        self.subtract_product(x1, y0);
     }
 
     pub(crate) fn compare_unsigned(&self, other: &Self) -> Ordering {
@@ -147,18 +224,18 @@ impl ExactCentroidSums {
     }
 
     pub(crate) fn add_edge(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) {
-        self.area.add_product(1, x0, y1);
-        self.area.add_product(-1, x1, y0);
+        self.area.add_product(x0, y1);
+        self.area.subtract_product(x1, y0);
         // (x0*y1 - x1*y0) * (x0 + x1)
-        self.x.add_product(1, x0, x0, y1);
-        self.x.add_product(1, x0, x1, y1);
-        self.x.add_product(-1, x0, x1, y0);
-        self.x.add_product(-1, x1, x1, y0);
+        self.x.add_product(x0, x0, y1);
+        self.x.add_product(x0, x1, y1);
+        self.x.subtract_product(x0, x1, y0);
+        self.x.subtract_product(x1, x1, y0);
         // (x0*y1 - x1*y0) * (y0 + y1)
-        self.y.add_product(1, x0, y0, y1);
-        self.y.add_product(1, x0, y1, y1);
-        self.y.add_product(-1, x1, y0, y0);
-        self.y.add_product(-1, x1, y0, y1);
+        self.y.add_product(x0, y0, y1);
+        self.y.add_product(x0, y1, y1);
+        self.y.subtract_product(x1, y0, y0);
+        self.y.subtract_product(x1, y0, y1);
     }
 
     /// Shells contribute positive area and holes negative area, irrespective
@@ -193,10 +270,10 @@ impl ExactCentroidSums {
     }
 }
 
-/// Triple products share quantum 2^-3222. Four terms per moment edge over
-/// fewer than 2^128 possible traversed edges occupy fewer than 6424 bits.
-/// The doubled moment and adjacent-candidate boundary each add at most one bit,
-/// so their comparison still fits within the 6464-bit carrier.
+/// Triple products share quantum 2^-3222 and have integer magnitude below
+/// 2^6294. Four terms per `usize`-addressable edge, plus one carry bit for
+/// each later doubling and adjacent-candidate boundary, are included in
+/// [`CUBIC_LIMBS`].
 #[derive(Clone)]
 struct ExactCubicSum {
     positive: [u64; CUBIC_LIMBS],
@@ -211,7 +288,15 @@ impl ExactCubicSum {
         }
     }
 
-    fn add_product(&mut self, coefficient: i8, a: f64, b: f64, c: f64) {
+    fn add_product(&mut self, a: f64, b: f64, c: f64) {
+        self.accumulate_product(false, a, b, c);
+    }
+
+    fn subtract_product(&mut self, a: f64, b: f64, c: f64) {
+        self.accumulate_product(true, a, b, c);
+    }
+
+    fn accumulate_product(&mut self, subtract: bool, a: f64, b: f64, c: f64) {
         debug_assert!(a.is_finite() && b.is_finite() && c.is_finite());
         let (an, am, ae) = decompose(a);
         let (bn, bm, be) = decompose(b);
@@ -221,8 +306,9 @@ impl ExactCubicSum {
         }
         let shift =
             usize::try_from(ae + be + ce - CUBIC_MIN_EXP).expect("finite cubic product fits");
+        debug_assert!(shift <= CUBIC_MAX_PRODUCT_SHIFT);
         let product = multiply_three(am, bm, cm);
-        let negative = (coefficient < 0) ^ an ^ bn ^ cn;
+        let negative = subtract ^ an ^ bn ^ cn;
         add_shifted_words(
             if negative {
                 &mut self.negative
@@ -378,7 +464,7 @@ const fn decompose(value: f64) -> (bool, u64, i32) {
     let stored = ((bits >> 52) & 0x7FF) as i32;
     let fraction = bits & ((1_u64 << 52) - 1);
     if stored == 0 {
-        (negative, fraction, -1074)
+        (negative, fraction, BINARY64_MIN_EXPONENT)
     } else {
         (negative, (1_u64 << 52) | fraction, stored - 1075)
     }
@@ -397,11 +483,12 @@ fn add_shifted_words<const N: usize>(target: &mut [u64; N], words: &[u64], shift
 
 /// Place a 106-bit finite product at bit `shift` of the degree-2 accumulator.
 ///
-/// Finite binary64 products have `shift <= 4090`, so the 2- or 3-limb window
-/// ends at index 65, inside [`LIMBS`]. Carry uses the same 4352-bit capacity
-/// already proven for the signed accumulators.
+/// Finite binary64 products have `shift <= PAIR_MAX_PRODUCT_SHIFT`, so the
+/// 2- or 3-limb window ends at index 65, inside [`LIMBS`]. The carry has the
+/// same capacity as the signed accumulator, established by the term-count
+/// proof above.
 fn add_shifted_product(target: &mut [u64; LIMBS], product: u128, shift: usize) {
-    debug_assert!(shift <= 4090);
+    debug_assert!(shift <= PAIR_MAX_PRODUCT_SHIFT);
     let word = shift / 64;
     let bits = shift % 64;
     let lo = product as u64;
@@ -570,6 +657,57 @@ fn bits_from(limbs: &[u64; LIMBS], high: usize, width: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TestOperation {
+        Add,
+        Subtract,
+    }
+
+    #[test]
+    fn accumulator_capacity_closes_for_32_and_64_bit_address_spaces() {
+        for (address_bits, pair_limbs, cubic_limbs) in [(32, 67, 99), (64, 67, 100)] {
+            assert_eq!(
+                required_limbs(PAIR_PRODUCT_BITS, address_bits, PAIR_PRODUCTS_PER_EDGE, 0,),
+                pair_limbs
+            );
+            assert_eq!(
+                required_limbs(
+                    CUBIC_PRODUCT_BITS,
+                    address_bits,
+                    MOMENT_PRODUCTS_PER_EDGE,
+                    CUBIC_POST_SUM_CARRY_BITS,
+                ),
+                cubic_limbs
+            );
+        }
+        let highest_area_bit_32 =
+            PAIR_PRODUCT_BITS + 32 + power_of_two_bits(PAIR_PRODUCTS_PER_EDGE) - 1;
+        let centroid_carry_bit_32 = highest_area_bit_32 + 2100;
+        assert_eq!(
+            required_limbs(
+                CUBIC_PRODUCT_BITS,
+                32,
+                MOMENT_PRODUCTS_PER_EDGE,
+                CUBIC_POST_SUM_CARRY_BITS,
+            ),
+            99
+        );
+        assert!(centroid_carry_bit_32 < 99 * LIMB_BITS);
+        assert_eq!(
+            LIMBS,
+            required_limbs(PAIR_PRODUCT_BITS, ADDRESS_BITS, PAIR_PRODUCTS_PER_EDGE, 0,)
+        );
+        assert_eq!(
+            CUBIC_LIMBS,
+            required_limbs(
+                CUBIC_PRODUCT_BITS,
+                ADDRESS_BITS,
+                MOMENT_PRODUCTS_PER_EDGE,
+                CUBIC_POST_SUM_CARRY_BITS,
+            )
+        );
+    }
 
     #[expect(
         clippy::large_types_passed_by_value,
@@ -793,10 +931,10 @@ mod tests {
         }
     }
 
-    fn expected_sum(terms: &[(i8, f64, f64)]) -> ExactSum {
+    fn expected_sum(terms: &[(TestOperation, f64, f64)]) -> ExactSum {
         let mut positive = [0_u64; LIMBS];
         let mut negative = [0_u64; LIMBS];
-        for &(coefficient, lhs, rhs) in terms {
+        for &(sign, lhs, rhs) in terms {
             let (lhs_negative, lhs_mantissa, lhs_exponent) = decompose(lhs);
             let (rhs_negative, rhs_mantissa, rhs_exponent) = decompose(rhs);
             if lhs_mantissa == 0 || rhs_mantissa == 0 {
@@ -804,7 +942,11 @@ mod tests {
             }
             let product = u128::from(lhs_mantissa) * u128::from(rhs_mantissa);
             let shift = usize::try_from(lhs_exponent + rhs_exponent - PRODUCT_MIN_EXP).unwrap();
-            if (coefficient < 0) ^ lhs_negative ^ rhs_negative {
+            let sign_negative = match sign {
+                TestOperation::Add => false,
+                TestOperation::Subtract => true,
+            };
+            if sign_negative ^ lhs_negative ^ rhs_negative {
                 add_product_bits(&mut negative, product, shift);
             } else {
                 add_product_bits(&mut positive, product, shift);
@@ -813,15 +955,18 @@ mod tests {
         ExactSum { positive, negative }
     }
 
-    fn actual_sum(terms: &[(i8, f64, f64)]) -> ExactSum {
+    fn actual_sum(terms: &[(TestOperation, f64, f64)]) -> ExactSum {
         let mut sum = ExactSum::zero();
-        for &(coefficient, lhs, rhs) in terms {
-            sum.add_product(coefficient, lhs, rhs);
+        for &(operation, lhs, rhs) in terms {
+            match operation {
+                TestOperation::Add => sum.add_product(lhs, rhs),
+                TestOperation::Subtract => sum.subtract_product(lhs, rhs),
+            }
         }
         sum
     }
 
-    fn assert_terms(terms: &[(i8, f64, f64)]) {
+    fn assert_terms(terms: &[(TestOperation, f64, f64)]) {
         let expected = expected_sum(terms);
         let actual = actual_sum(terms);
         assert_eq!(actual.positive, expected.positive, "positive {terms:?}");
@@ -831,8 +976,8 @@ mod tests {
     #[test]
     fn add_product_places_min_subnormal_square_at_bit_zero() {
         let tiny = f64::from_bits(1);
-        assert_terms(&[(1, tiny, tiny)]);
-        let sum = actual_sum(&[(1, tiny, tiny)]);
+        assert_terms(&[(TestOperation::Add, tiny, tiny)]);
+        let sum = actual_sum(&[(TestOperation::Add, tiny, tiny)]);
         assert_eq!(sum.positive[0], 1);
         assert_eq!(sum.round_to_area().to_bits(), 0);
     }
@@ -841,8 +986,8 @@ mod tests {
     fn add_product_places_max_square_at_hand_computed_bits() {
         // (2^53-1)^2 * 2^4090 = (2^106 - 2^54 + 1) * 2^4090
         // = 2^4090 + 2^4144 * (2^52 - 1): bits 4090 and 4144..=4195.
-        assert_terms(&[(1, f64::MAX, f64::MAX)]);
-        let sum = actual_sum(&[(1, f64::MAX, f64::MAX)]);
+        assert_terms(&[(TestOperation::Add, f64::MAX, f64::MAX)]);
+        let sum = actual_sum(&[(TestOperation::Add, f64::MAX, f64::MAX)]);
         assert!(limb_bit(&sum.positive, 4090));
         assert!(limb_bit(&sum.positive, 4144));
         assert!(limb_bit(&sum.positive, 4195));
@@ -851,14 +996,77 @@ mod tests {
     }
 
     #[test]
+    fn pair_product_carries_into_the_highest_used_limb() {
+        // Mechanism test only: the prefilled penultimate limb models carry
+        // propagation without claiming a reachable allocation of this state.
+        let mut sum = ExactSum::zero();
+        sum.positive[LIMBS - 2] = u64::MAX;
+        sum.add_product(f64::MAX, f64::MAX);
+        assert_eq!(sum.positive[LIMBS - 1], 1);
+        assert!(sum.positive[LIMBS - 2] < u64::MAX);
+    }
+
+    #[test]
+    fn cubic_product_carries_into_the_highest_used_limb() {
+        // Mechanism test only: the prefilled penultimate limb models carry
+        // propagation without claiming a reachable allocation of this state.
+        let mut sum = ExactCubicSum::zero();
+        sum.positive[CUBIC_LIMBS - 2] = u64::MAX;
+        sum.add_product(f64::MAX, f64::MAX, f64::MAX);
+        assert_eq!(sum.positive[CUBIC_LIMBS - 1], 1);
+        assert!(sum.positive[CUBIC_LIMBS - 2] < u64::MAX);
+    }
+
+    #[test]
+    fn centroid_comparison_carries_into_the_highest_used_limb() {
+        // Mechanism test only: synthetic top bits exercise the comparison
+        // carrier without claiming a reachable allocation of this state.
+        let mut area = [0_u64; LIMBS];
+        let highest_area_bit =
+            PAIR_PRODUCT_BITS + ADDRESS_BITS + power_of_two_bits(PAIR_PRODUCTS_PER_EDGE) - 1;
+        set_bit(&mut area, highest_area_bit);
+        let mut boundary = area_candidate_product(&area, f64::MAX);
+        let virtual_product = area_scaled_product(&area, 1, 1024);
+        add_words(&mut boundary, &virtual_product);
+        let carry_bit = highest_area_bit + 2100;
+        assert_ne!(
+            boundary[carry_bit / LIMB_BITS] & (1_u64 << (carry_bit % LIMB_BITS)),
+            0
+        );
+    }
+
+    #[test]
+    fn signed_cancellation_reaches_the_highest_pair_and_cubic_limbs() {
+        // Mechanism test only: synthetic top bits exercise cancellation
+        // without claiming a reachable allocation of this state.
+        let mut pair = ExactSum::zero();
+        pair.positive[LIMBS - 1] = 1;
+        pair.negative[LIMBS - 1] = 1;
+        assert_eq!(pair.ordering(), Ordering::Equal);
+        assert_eq!(pair.signed_magnitude(), (Ordering::Equal, [0; LIMBS]));
+
+        let mut cubic = ExactCubicSum::zero();
+        cubic.positive[CUBIC_LIMBS - 1] = 1;
+        cubic.negative[CUBIC_LIMBS - 1] = 1;
+        assert_eq!(cubic.ordering(), Ordering::Equal);
+        assert_eq!(
+            cubic.signed_magnitude(),
+            (Ordering::Equal, [0; CUBIC_LIMBS])
+        );
+    }
+
+    #[test]
     fn raw_sum_rounds_at_midpoint_and_subnormal_boundaries() {
-        let midpoint = actual_sum(&[(1, 1.0, 1.0), (1, 2.0_f64.powi(-53), 1.0)]);
+        let midpoint = actual_sum(&[
+            (TestOperation::Add, 1.0, 1.0),
+            (TestOperation::Add, 2.0_f64.powi(-53), 1.0),
+        ]);
         assert_eq!(midpoint.round_to_binary64().to_bits(), 1.0_f64.to_bits());
 
-        let min_subnormal = actual_sum(&[(1, f64::from_bits(1), 1.0)]);
+        let min_subnormal = actual_sum(&[(TestOperation::Add, f64::from_bits(1), 1.0)]);
         assert_eq!(min_subnormal.round_to_binary64().to_bits(), 1_u64);
 
-        let negative_underflow = actual_sum(&[(-1, f64::from_bits(1), 0.5)]);
+        let negative_underflow = actual_sum(&[(TestOperation::Subtract, f64::from_bits(1), 0.5)]);
         assert_eq!(
             negative_underflow.round_to_binary64().to_bits(),
             (-0.0_f64).to_bits()
@@ -871,10 +1079,16 @@ mod tests {
 
     #[test]
     fn raw_sum_rounds_the_binary64_overflow_midpoint() {
-        let below = actual_sum(&[(1, f64::MAX, 1.0), (1, 2.0_f64.powi(969), 1.0)]);
+        let below = actual_sum(&[
+            (TestOperation::Add, f64::MAX, 1.0),
+            (TestOperation::Add, 2.0_f64.powi(969), 1.0),
+        ]);
         assert_eq!(below.round_to_binary64().to_bits(), f64::MAX.to_bits());
 
-        let midpoint = actual_sum(&[(1, f64::MAX, 1.0), (1, 2.0_f64.powi(970), 1.0)]);
+        let midpoint = actual_sum(&[
+            (TestOperation::Add, f64::MAX, 1.0),
+            (TestOperation::Add, 2.0_f64.powi(970), 1.0),
+        ]);
         assert!(midpoint.round_to_binary64().is_infinite());
     }
 
@@ -889,9 +1103,9 @@ mod tests {
         assert_eq!(product_bit_offset(1.0, 16.0) % 64, 0);
         assert_eq!(product_bit_offset(1.0, 32.0) % 64, 1);
         assert_eq!(product_bit_offset(1.0, 8.0) % 64, 63);
-        assert_terms(&[(1, 1.0, 16.0)]);
-        assert_terms(&[(1, 1.0, 32.0)]);
-        assert_terms(&[(1, 1.0, 8.0)]);
+        assert_terms(&[(TestOperation::Add, 1.0, 16.0)]);
+        assert_terms(&[(TestOperation::Add, 1.0, 32.0)]);
+        assert_terms(&[(TestOperation::Add, 1.0, 8.0)]);
     }
 
     #[test]
@@ -917,27 +1131,46 @@ mod tests {
         assert_eq!(higher[7], 0);
         assert_eq!(higher[8], 1);
 
-        assert_terms(&[(1, 1.0, 1.0), (1, 1.0, 1.0)]);
+        assert_terms(&[
+            (TestOperation::Add, 1.0, 1.0),
+            (TestOperation::Add, 1.0, 1.0),
+        ]);
     }
 
     #[test]
     fn add_product_cancels_across_sign_banks_to_plus_zero() {
-        assert_terms(&[(1, 3.0, 5.0), (-1, 3.0, 5.0)]);
-        assert_terms(&[(1, 3.0, 5.0), (1, -3.0, 5.0)]);
-        let cancelled = actual_sum(&[(1, 3.0, 5.0), (-1, 3.0, 5.0)]);
+        assert_terms(&[
+            (TestOperation::Add, 3.0, 5.0),
+            (TestOperation::Subtract, 3.0, 5.0),
+        ]);
+        assert_terms(&[
+            (TestOperation::Add, 3.0, 5.0),
+            (TestOperation::Add, -3.0, 5.0),
+        ]);
+        let cancelled = actual_sum(&[
+            (TestOperation::Add, 3.0, 5.0),
+            (TestOperation::Subtract, 3.0, 5.0),
+        ]);
         assert_eq!(cancelled.ordering(), Ordering::Equal);
         assert_eq!(cancelled.round_to_area().to_bits(), 0);
-        let opposite = actual_sum(&[(1, 3.0, 5.0), (1, -3.0, 5.0)]);
+        let opposite = actual_sum(&[
+            (TestOperation::Add, 3.0, 5.0),
+            (TestOperation::Add, -3.0, 5.0),
+        ]);
         assert_eq!(opposite.ordering(), Ordering::Equal);
         assert_eq!(opposite.round_to_area().to_bits(), 0);
     }
 
     #[test]
     fn add_product_signed_zero_is_a_no_op() {
-        assert_terms(&[(1, 0.0, 1.0), (1, -0.0, 1.0), (1, 1.0, -0.0)]);
+        assert_terms(&[
+            (TestOperation::Add, 0.0, 1.0),
+            (TestOperation::Add, -0.0, 1.0),
+            (TestOperation::Add, 1.0, -0.0),
+        ]);
         let mut sum = ExactSum::zero();
-        sum.add_product(1, 0.0, 1.0);
-        sum.add_product(1, -0.0, -0.0);
+        sum.add_product(0.0, 1.0);
+        sum.add_product(-0.0, -0.0);
         assert_eq!(sum.ordering(), Ordering::Equal);
         assert_eq!(sum.round_to_area().to_bits(), 0);
     }

@@ -95,10 +95,10 @@ fn any_bits_below(words: &[u64; LIMBS], bit: usize) -> bool {
 
 fn exact_dot_delta(direction: (f64, f64), current: Point, next: Point) -> ExactSum {
     let mut sum = ExactSum::zero();
-    sum.add_product(1, direction.0, next.x);
-    sum.add_product(-1, direction.0, current.x);
-    sum.add_product(1, direction.1, next.y);
-    sum.add_product(-1, direction.1, current.y);
+    sum.add_product(direction.0, next.x);
+    sum.subtract_product(direction.0, current.x);
+    sum.add_product(direction.1, next.y);
+    sum.subtract_product(direction.1, current.y);
     sum
 }
 
@@ -170,8 +170,8 @@ impl Basis {
 
     fn norm_exact(self) -> ExactSum {
         let mut norm = ExactSum::zero();
-        norm.add_product(1, self.along.0, self.along.0);
-        norm.add_product(1, self.along.1, self.along.1);
+        norm.add_product(self.along.0, self.along.0);
+        norm.add_product(self.along.1, self.along.1);
         norm
     }
 }
@@ -206,7 +206,7 @@ struct PreferredCorner {
 impl PreferredCorner {
     fn coordinate_difference(&self, axis: Axis, value: f64) -> ExactSum {
         let mut difference = self.numerator[axis.index()].clone();
-        difference.add_product(-1, value, self.denominator[axis.index()]);
+        difference.subtract_product(value, self.denominator[axis.index()]);
         difference
     }
 
@@ -907,13 +907,13 @@ impl Candidate {
             / determinant
             / sy;
         let mut x_numerator = ExactSum::zero();
-        x_numerator.add_product(1, origin_x, determinant);
-        x_numerator.add_product(1, along_residual, outward.1);
-        x_numerator.add_product(-1, along.1, outward_residual);
+        x_numerator.add_product(origin_x, determinant);
+        x_numerator.add_product(along_residual, outward.1);
+        x_numerator.subtract_product(along.1, outward_residual);
         let mut y_numerator = ExactSum::zero();
-        y_numerator.add_product(1, origin_y, determinant);
-        y_numerator.add_product(1, along.0, outward_residual);
-        y_numerator.add_product(-1, along_residual, outward.0);
+        y_numerator.add_product(origin_y, determinant);
+        y_numerator.add_product(along.0, outward_residual);
+        y_numerator.subtract_product(along_residual, outward.0);
         let denominator = [determinant * sx, determinant * sy];
         debug_assert!(
             denominator
@@ -934,14 +934,14 @@ fn exact_cross_delta(start: Point, end: Point, current: Point, next: Point) -> E
     // remains exact even when an intermediate world-coordinate difference
     // overflows.
     let mut sum = ExactSum::zero();
-    sum.add_product(1, end.x, next.y);
-    sum.add_product(-1, start.x, next.y);
-    sum.add_product(-1, end.x, current.y);
-    sum.add_product(1, start.x, current.y);
-    sum.add_product(-1, end.y, next.x);
-    sum.add_product(1, start.y, next.x);
-    sum.add_product(1, end.y, current.x);
-    sum.add_product(-1, start.y, current.x);
+    sum.add_product(end.x, next.y);
+    sum.subtract_product(start.x, next.y);
+    sum.subtract_product(end.x, current.y);
+    sum.add_product(start.x, current.y);
+    sum.subtract_product(end.y, next.x);
+    sum.add_product(start.y, next.x);
+    sum.add_product(end.y, current.x);
+    sum.subtract_product(start.y, current.x);
     sum
 }
 
@@ -1012,12 +1012,12 @@ fn legacy_rectangle_is_certified(
         // The support must lie on the inside of its actual edge.  The edge
         // orientation is CCW, so a negative cross is the outside halfplane.
         let mut inside = ExactSum::zero();
-        inside.add_product(1, end.x, current.y);
-        inside.add_product(-1, start.x, current.y);
-        inside.add_product(-1, end.y, current.x);
-        inside.add_product(1, start.y, current.x);
-        inside.add_product(-1, end.x, start.y);
-        inside.add_product(1, start.x, end.y);
+        inside.add_product(end.x, current.y);
+        inside.subtract_product(start.x, current.y);
+        inside.subtract_product(end.y, current.x);
+        inside.add_product(start.y, current.x);
+        inside.subtract_product(end.x, start.y);
+        inside.add_product(start.x, end.y);
         if inside.ordering().is_lt() {
             return false;
         }
@@ -1302,7 +1302,7 @@ fn positive_quotient_interval_binary(magnitude: &[u64; LIMBS], denominator: f64)
 
 fn magnitude_product_order(magnitude: &[u64; LIMBS], denominator: f64, candidate: f64) -> Ordering {
     let mut product = ExactSum::zero();
-    product.add_product(1, denominator, candidate);
+    product.add_product(denominator, candidate);
     product.compare_positive_magnitude(magnitude)
 }
 
@@ -1370,9 +1370,9 @@ fn finite_point_on_edge(
         // Construct the threshold as an anchored exact dyadic sum.  In
         // particular never evaluate `(fixed - support)` in f64.
         let mut numerator = ExactSum::zero();
-        numerator.add_product(1, free_coefficient, free_support);
-        numerator.add_product(-1, fixed_coefficient, fixed);
-        numerator.add_product(1, fixed_coefficient, fixed_support);
+        numerator.add_product(free_coefficient, free_support);
+        numerator.subtract_product(fixed_coefficient, fixed);
+        numerator.add_product(fixed_coefficient, fixed_support);
         let threshold = exact_quotient_interval(&numerator, free_coefficient);
         if free_coefficient > 0.0 {
             lower = lower.max(threshold.hi);
@@ -1465,7 +1465,7 @@ fn exact_squared_distance(point: Point, preferred: &PreferredCorner) -> [u64; TR
     let denominator_square = |axis: Axis| {
         let denominator = preferred.denominator[axis.index()];
         let mut square = ExactSum::zero();
-        square.add_product(1, denominator, denominator);
+        square.add_product(denominator, denominator);
         square.signed_magnitude().1
     };
     let x_denominator_square = denominator_square(Axis::X);
@@ -1581,8 +1581,8 @@ mod tests {
         let previous = f64::MAX.next_down();
         let ulp = f64::MAX - previous;
         let mut x_numerator = ExactSum::zero();
-        x_numerator.add_product(1, f64::MAX, 1.0);
-        x_numerator.add_product(1, f64::MAX, 1.0);
+        x_numerator.add_product(f64::MAX, 1.0);
+        x_numerator.add_product(f64::MAX, 1.0);
         let preferred = PreferredCorner {
             point: point(f64::INFINITY, 0.0),
             numerator: [x_numerator, ExactSum::zero()],
@@ -1622,8 +1622,8 @@ mod tests {
     #[test]
     fn overflowing_preferred_keeps_its_exact_magnitude_for_displacement() {
         let mut x_numerator = ExactSum::zero();
-        x_numerator.add_product(1, f64::MAX, 1.0);
-        x_numerator.add_product(1, f64::MAX, 1.0);
+        x_numerator.add_product(f64::MAX, 1.0);
+        x_numerator.add_product(f64::MAX, 1.0);
         let preferred = PreferredCorner {
             point: point(f64::INFINITY, 0.0),
             numerator: [x_numerator, ExactSum::zero()],
@@ -1721,7 +1721,7 @@ mod tests {
             ),
         ] {
             let mut exact = ExactSum::zero();
-            exact.add_product(1, numerator, 1.0);
+            exact.add_product(numerator, 1.0);
             let (_, magnitude) = exact.signed_magnitude();
             let fast = positive_quotient_interval(&magnitude, denominator);
             let oracle = positive_quotient_interval_binary(&magnitude, denominator);

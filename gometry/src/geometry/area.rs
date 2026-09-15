@@ -289,8 +289,6 @@ pub(crate) fn exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize)
 }
 
 fn cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> AreaSign {
-    use crate::geometry::exact_arith::product_sum::ExactSum;
-
     if edge_count == 0 {
         return AreaSign::Zero;
     }
@@ -301,8 +299,8 @@ fn cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> 
     let mut sum = ExactSum::zero();
     for index in 0..edge_count {
         let (a, b) = edge_at(index);
-        sum.add_product(1, a.x, b.y);
-        sum.add_product(-1, b.x, a.y);
+        sum.add_product(a.x, b.y);
+        sum.subtract_product(b.x, a.y);
     }
     match sum.ordering() {
         std::cmp::Ordering::Less => AreaSign::Negative,
@@ -754,9 +752,13 @@ fn exact_polygon_area_measure_with(visit: impl Fn(&mut dyn FnMut(&[f64], &[f64],
         }
         let negate = (ordering == std::cmp::Ordering::Less) ^ hole;
         for index in 0..pairs {
-            let coefficient = if negate { -1 } else { 1 };
-            total.add_product(coefficient, xs[index], ys[index + 1]);
-            total.add_product(-coefficient, xs[index + 1], ys[index]);
+            if negate {
+                total.subtract_product(xs[index], ys[index + 1]);
+                total.add_product(xs[index + 1], ys[index]);
+            } else {
+                total.add_product(xs[index], ys[index + 1]);
+                total.subtract_product(xs[index + 1], ys[index]);
+            }
         }
     });
     total.round_to_area()

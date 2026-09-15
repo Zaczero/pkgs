@@ -7,7 +7,7 @@ use crate::geometry::facet_bvh::{
 };
 use crate::geometry::{
     Bounds, CoordSeq, Point, Segment, Shape, XY, point_on_segment, point_segment_distance,
-    point_segment_distance_squared, segments_intersect, try_copy_slice, xy_bounds_columns,
+    point_segment_distance_squared, segments_intersect, xy_bounds_columns,
 };
 
 /// One run of up to [`FACET_SEGMENTS`] consecutive segments inside a single
@@ -102,31 +102,6 @@ impl PreparedLinework {
             segment_count: 0,
             aabb: None,
         }
-    }
-
-    /// One open chain from a column window — the Hausdorff column-target fast
-    /// path (no `Shape` staging, single-chain facet partition).
-    pub(crate) fn from_open_xy_columns(xs: &[f64], ys: &[f64]) -> Result<Self> {
-        debug_assert_eq!(xs.len(), ys.len());
-        if xs.len() < 2 {
-            return Ok(Self::empty());
-        }
-        let chain = CoordSeq::try_from_vecs(try_copy_slice(xs)?, try_copy_slice(ys)?, None, None)?;
-        let aabb = Bounds::from_coords(&chain).map(Bounds::into_array);
-        let mut facets = Vec::new();
-        let segments = push_chain_facets(&mut facets, 0, chain.len(), 0)?;
-        let mut chains = Vec::new();
-        crate::try_push_vec(&mut chains, chain)?;
-        let mut chain_vertex_offsets = Vec::new();
-        crate::try_push_vec(&mut chain_vertex_offsets, 0)?;
-        Ok(Self {
-            chains,
-            chain_vertex_offsets,
-            uniform_ordinates: true,
-            facets,
-            segment_count: segments,
-            aabb,
-        })
     }
 
     pub(crate) fn build(shape: &Shape) -> Result<Self> {
@@ -511,17 +486,13 @@ mod tests {
         LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap()
     }
 
-    #[test]
-    fn columns_shorter_than_two_vertices_are_empty() {
-        let linework = PreparedLinework::from_open_xy_columns(&[0.0], &[0.0]).unwrap();
-        assert_eq!(linework.segment_count(), 0);
-        assert!(linework.facets.is_empty());
-        assert!(linework.chains.is_empty());
+    fn linework_xy(points: &[(f64, f64)]) -> PreparedLinework {
+        PreparedLinework::build(&Shape::LineString(line_xy(points))).unwrap()
     }
 
     #[test]
-    fn columns_two_vertices_are_one_facet() {
-        let linework = PreparedLinework::from_open_xy_columns(&[0.0, 1.0], &[0.0, 0.0]).unwrap();
+    fn one_segment_linework_is_one_facet() {
+        let linework = linework_xy(&[(0.0, 0.0), (1.0, 0.0)]);
         assert_eq!(linework.segment_count(), 1);
         assert_eq!(linework.facets.len(), 1);
         assert_eq!(linework.facets[0].first_vertex, 0);
@@ -531,29 +502,15 @@ mod tests {
     }
 
     #[test]
-    fn columns_nine_segments_split_into_two_facets() {
-        let xs: Vec<f64> = (0..10).map(f64::from).collect();
-        let ys = vec![0.0; 10];
-        let linework = PreparedLinework::from_open_xy_columns(&xs, &ys).unwrap();
+    fn nine_segment_linework_splits_into_two_facets() {
+        let points: Vec<_> = (0..10).map(|value| (f64::from(value), 0.0)).collect();
+        let linework = linework_xy(&points);
         assert_eq!(linework.segment_count(), 9);
         assert_eq!(linework.facets.len(), 2);
         assert_eq!(linework.facets[0].segment_count, 8);
         assert_eq!(linework.facets[1].segment_count, 1);
         assert_eq!(linework.facets[1].first_vertex, 8);
         assert_eq!(linework.facets[1].first_segment, 8);
-    }
-
-    #[test]
-    fn columns_return_resource_on_allocation_failure() {
-        let xs = [0.0, 1.0];
-        let ys = [0.0, 0.0];
-        match fail_allocations_after(0, || PreparedLinework::from_open_xy_columns(&xs, &ys)) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )),
-            Ok(_) => panic!("expected allocation failure"),
-        }
     }
 
     #[test]

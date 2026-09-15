@@ -33,12 +33,12 @@ pub(in crate::geometry) fn stored_orientation_sign(
         return sign;
     }
     let mut sum = ExactSum::zero();
-    sum.add_product(1, bx, cy);
-    sum.add_product(-1, bx, ay);
-    sum.add_product(-1, ax, cy);
-    sum.add_product(-1, by, cx);
-    sum.add_product(1, by, ax);
-    sum.add_product(1, ay, cx);
+    sum.add_product(bx, cy);
+    sum.subtract_product(bx, ay);
+    sum.subtract_product(ax, cy);
+    sum.subtract_product(by, cx);
+    sum.add_product(by, ax);
+    sum.add_product(ay, cx);
     match sum.ordering() {
         std::cmp::Ordering::Less => ExactSign::Negative,
         std::cmp::Ordering::Equal => ExactSign::Zero,

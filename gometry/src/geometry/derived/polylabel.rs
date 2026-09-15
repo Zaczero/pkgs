@@ -1394,6 +1394,7 @@ impl<'a> PolylabelField<'a> {
 mod tests {
     use super::*;
     use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::LineSeq;
     use crate::{CoordSeq, Polygon, Ring};
 
     fn circle_points(center: Point, radius: f64) -> Vec<Point> {
@@ -1581,7 +1582,13 @@ mod tests {
     fn framed_subnormal_seed_stays_in_unsquared_distance_units() {
         let frame = AxisFrame::from_origin_extents(Point::new_raw_xy(0.0, 0.0), 1.0, 1.0e-320)
             .expect("positive frame extents");
-        let linework = PreparedLinework::from_open_xy_columns(&[0.0, 1.0], &[1.0, 1.0]).unwrap();
+        let shape = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_xy(&[XY::new(0.0, 1.0), XY::new(1.0, 1.0)]).unwrap(),
+            )
+            .unwrap(),
+        );
+        let linework = PreparedLinework::build(&shape).unwrap();
         let bvh = FacetBvh::build(&linework).expect("one facet has a tree root");
         let point = Point::new_raw_xy(0.0, 0.0);
         let expected =
