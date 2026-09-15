@@ -1,8 +1,7 @@
-"""Print-only C7 point-target lower-envelope scaling workload.
+"""Print-only bounded Hausdorff point-target scaling workload.
 
-The paired Rust operation-count test is the correctness gate. This case keeps
-the real Python entry point measurable without making machine speed a test
-assertion: it prints the warm median 800-point / 100-point ratio.
+This case keeps the real Python entry point measurable without making machine
+speed a test assertion: it prints the warm median 800-point / 100-point ratio.
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ def main() -> None:
             'numerator': {'count': 800, 'unit': 'target-points'},
             'denominator': {'count': 100, 'unit': 'target-points'},
         },
-        oracle_identity='case_hausdorff_point_envelope_scale:exact-distance',
+        oracle_identity='case_hausdorff_bounded_point_target_scale:exact-distance',
         warmup_iterations=3,
         calibration_iterations=9,
         calibration_strategy='median-of-repetitions-per-scaling-point',
@@ -55,7 +54,7 @@ def main() -> None:
 def validate_case() -> None:
     assert _median_hausdorff(2) > 0.0
     emit_validation(
-        'case_hausdorff_point_envelope_scale',
+        'case_hausdorff_bounded_point_target_scale',
         useful_output={'count': 2, 'unit': 'target-points'},
     )
 

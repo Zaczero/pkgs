@@ -340,9 +340,8 @@ def test_hausdorff_does_not_run_a_brute_force_oracle_per_call() -> None:
     right = gm.LineString(np.column_stack([7.0 * t, 1.0 + 8.0 * t]))
 
     # 6.60900136802594491... is the exact continuous Hausdorff distance for
-    # this pair. The tolerance is tight enough to exclude the guarded sweep's
-    # answer, which sat about 1.8e-14 away — the change is a precision gain as
-    # well as a cost removal.
+    # this pair. The requested bound is tight enough to exclude the previous
+    # answer, which sat about 1.8e-14 away.
     exact = 6.609001368025945
     assert abs(gm.hausdorff_distance(left, right, max_error=1e-15) - exact) < 5e-15
     assert abs(gm.hausdorff_distance(right, left, max_error=1e-15) - exact) < 5e-15

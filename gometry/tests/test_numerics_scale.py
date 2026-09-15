@@ -845,8 +845,8 @@ def test_hausdorff_packed_array_shares_extreme_finisher() -> None:
     assert _stored_fraction(float(frechet[0])) == exact
 
 
-def test_hausdorff_four_vertex_packed_exit_shares_extreme_finisher() -> None:
-    """The specialized four-vertex packed exit must not bypass framing."""
+def test_hausdorff_packed_and_scalar_share_extreme_certification() -> None:
+    """Packed and scalar bounded Hausdorff share output-unit certification."""
     base = 1e200
     sep = math.ulp(base) * 16
     coords = [0.0, 0.25, 0.75, 1.0]
