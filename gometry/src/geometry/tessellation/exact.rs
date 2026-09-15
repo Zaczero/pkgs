@@ -418,6 +418,10 @@ impl ExactDyadic {
         self.limbs.is_empty()
     }
 
+    fn is_one(&self) -> bool {
+        !self.negative && self.exponent == 0 && self.limbs.as_slice() == [1]
+    }
+
     pub(in crate::geometry) const fn sign(&self) -> ExactSign {
         if self.is_zero() {
             ExactSign::Zero
@@ -1084,6 +1088,16 @@ impl ExactRational {
     }
 
     pub(in crate::geometry) fn try_add(&self, other: &Self) -> Result<Self> {
+        if self.denominator.is_one() && other.denominator.is_one() {
+            let numerator = if self.numerator.is_zero() {
+                other.numerator.try_clone()?
+            } else if other.numerator.is_zero() {
+                self.numerator.try_clone()?
+            } else {
+                ExactDyadic::try_combine_refs(&self.numerator, &other.numerator, false)?
+            };
+            return Self::from_dyadic(numerator);
+        }
         let left = self.numerator.try_product(&other.denominator)?;
         let right = other.numerator.try_product(&self.denominator)?;
         let numerator = left.try_add(right)?;
@@ -1092,6 +1106,9 @@ impl ExactRational {
     }
 
     pub(in crate::geometry) fn try_subtract(&self, other: &Self) -> Result<Self> {
+        if self.denominator.is_one() && other.denominator.is_one() {
+            return Self::from_dyadic(self.numerator.try_subtract_ref(&other.numerator)?);
+        }
         let left = self.numerator.try_product(&other.denominator)?;
         let right = other.numerator.try_product(&self.denominator)?;
         let numerator = left.try_subtract(right)?;
@@ -1100,6 +1117,9 @@ impl ExactRational {
     }
 
     pub(in crate::geometry) fn try_product(&self, other: &Self) -> Result<Self> {
+        if self.denominator.is_one() && other.denominator.is_one() {
+            return Self::from_dyadic(self.numerator.try_product(&other.numerator)?);
+        }
         Self::new(
             self.numerator.try_product(&other.numerator)?,
             self.denominator.try_product(&other.denominator)?,
@@ -1107,6 +1127,9 @@ impl ExactRational {
     }
 
     pub(in crate::geometry) fn try_square(&self) -> Result<Self> {
+        if self.denominator.is_one() {
+            return Self::from_dyadic(self.numerator.try_product(&self.numerator)?);
+        }
         self.try_product(self)
     }
 
@@ -4498,6 +4521,80 @@ mod tests {
         let zero = half.try_subtract(&half).unwrap();
         assert!(zero.is_zero());
         assert_eq!(zero, ExactRational::zero());
+    }
+
+    #[test]
+    fn denominator_one_rational_arithmetic_avoids_cross_product_allocations() {
+        use crate::test_support::allocation_count;
+
+        let exponent = i64::MIN + 1024;
+        let positive =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![1, 3], exponent))
+                .unwrap();
+        let negative =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(true, vec![1, 3], exponent))
+                .unwrap();
+        let zero = ExactRational::zero();
+        let expected_subtraction =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![1, 3], exponent + 1))
+                .unwrap();
+
+        let (sum, allocations) = allocation_count(|| positive.try_add(&negative));
+        assert_eq!(allocations, 0);
+        assert_eq!(sum.unwrap(), zero);
+
+        let (difference, allocations) = allocation_count(|| positive.try_subtract(&negative));
+        assert_eq!(allocations, 0);
+        assert_eq!(difference.unwrap(), expected_subtraction);
+
+        let product_left =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(true, vec![3], i64::MAX / 4))
+                .unwrap();
+        let product_right =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![5], i64::MAX / 4))
+                .unwrap();
+        let expected_product =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(true, vec![15], (i64::MAX / 4) * 2))
+                .unwrap();
+        let (product, allocations) = allocation_count(|| product_left.try_product(&product_right));
+        assert_eq!(allocations, 0);
+        assert_eq!(product.unwrap(), expected_product);
+
+        let square_value =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![3], i64::MIN / 4))
+                .unwrap();
+        let expected_square =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![9], (i64::MIN / 4) * 2))
+                .unwrap();
+        let (square, allocations) = allocation_count(|| square_value.try_square());
+        assert_eq!(allocations, 0);
+        assert_eq!(square.unwrap(), expected_square);
+    }
+
+    #[test]
+    fn denominator_one_rational_heap_results_still_report_allocation_failures() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::{allocation_count, fail_allocations_after};
+
+        let left =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![u64::MAX, u64::MAX], 0))
+                .unwrap();
+        let right =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![1, 1], 0)).unwrap();
+        let expected =
+            ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![1, 1], 64)).unwrap();
+
+        let (result, allocations) = allocation_count(|| left.try_add(&right));
+        assert_eq!(allocations, 1);
+        assert_eq!(result.unwrap(), expected);
+
+        for prefix in 0..allocations {
+            let error = fail_allocations_after(prefix, || left.try_add(&right)).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
     }
 
     #[test]
