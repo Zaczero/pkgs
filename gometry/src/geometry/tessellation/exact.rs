@@ -332,7 +332,7 @@ impl<'a> Aligned<'a> {
 }
 
 impl ExactDyadic {
-    fn zero() -> Self {
+    pub(in crate::geometry) fn zero() -> Self {
         Self {
             negative: false,
             limbs: CompactLimbs::zero(),
@@ -418,7 +418,7 @@ impl ExactDyadic {
         self.limbs.is_empty()
     }
 
-    fn is_one(&self) -> bool {
+    pub(in crate::geometry) fn is_one(&self) -> bool {
         !self.negative && self.exponent == 0 && self.limbs.as_slice() == [1]
     }
 
@@ -600,6 +600,16 @@ impl ExactDyadic {
         Self::try_combine_refs(&self, &other, false)
     }
 
+    pub(in crate::geometry) fn try_add_refs(left: &Self, right: &Self) -> Result<Self> {
+        if left.is_zero() {
+            return right.try_clone();
+        }
+        if right.is_zero() {
+            return left.try_clone();
+        }
+        Self::try_combine_refs(left, right, false)
+    }
+
     fn try_combine_refs(left: &Self, right: &Self, negate_right: bool) -> Result<Self> {
         debug_assert!(!left.is_zero() && !right.is_zero());
         let exponent = left.exponent.min(right.exponent);
@@ -630,17 +640,21 @@ impl ExactDyadic {
     }
 
     fn try_subtract_ref(&self, other: &Self) -> Result<Self> {
-        if self.is_zero() {
-            let mut result = other.try_clone()?;
+        Self::try_subtract_refs(self, other)
+    }
+
+    pub(in crate::geometry) fn try_subtract_refs(left: &Self, right: &Self) -> Result<Self> {
+        if left.is_zero() {
+            let mut result = right.try_clone()?;
             if !result.is_zero() {
                 result.negative = !result.negative;
             }
             return Ok(result);
         }
-        if other.is_zero() {
-            return self.try_clone();
+        if right.is_zero() {
+            return left.try_clone();
         }
-        Self::try_combine_refs(self, other, true)
+        Self::try_combine_refs(left, right, true)
     }
 
     pub(in crate::geometry) fn try_subtract(self, other: Self) -> Result<Self> {
@@ -1155,6 +1169,10 @@ impl ExactRational {
             .numerator
             .try_product(&other.denominator)?
             .cmp(&other.numerator.try_product(&self.denominator)?))
+    }
+
+    pub(in crate::geometry) fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {
+        (&self.numerator, &self.denominator)
     }
 
     pub(in crate::geometry) fn round(&self) -> Result<f64> {

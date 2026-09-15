@@ -191,6 +191,217 @@ struct ExactCarrier {
     norm_squared: Rational,
 }
 
+/// An exact ratio kept unreduced across transient distance calculations.
+///
+/// The denominator is always positive. Deferring normalization until a value
+/// crosses back into the certificate path avoids paying for greatest-common-
+/// divisor work on every losing nearest-support candidate.
+#[derive(Debug)]
+struct UnreducedRatio {
+    numerator: ExactDyadic,
+    denominator: ExactDyadic,
+}
+
+impl UnreducedRatio {
+    fn zero() -> Self {
+        Self {
+            numerator: ExactDyadic::zero(),
+            denominator: ExactDyadic::one(),
+        }
+    }
+
+    fn new(numerator: ExactDyadic, denominator: ExactDyadic) -> Result<Self> {
+        if denominator.is_zero() {
+            return Err(crate::geometry::GeometryErrorKind::ExactRatioZeroDenominator.into());
+        }
+        if numerator.is_zero() {
+            return Ok(Self::zero());
+        }
+        let (numerator, denominator) = if denominator.sign() == ExactSign::Negative {
+            (numerator.neg(), denominator.neg())
+        } else {
+            (numerator, denominator)
+        };
+        Ok(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    fn from_rational(value: &Rational) -> Result<Self> {
+        let (numerator, denominator) = value.parts();
+        Self::new(numerator.try_clone()?, denominator.try_clone()?)
+    }
+
+    fn try_difference(left: &Rational, right: &Rational) -> Result<Self> {
+        Self::from_rational(left)?.try_subtract(&Self::from_rational(right)?)
+    }
+
+    fn is_zero(&self) -> bool {
+        self.numerator.is_zero()
+    }
+
+    fn try_clone(&self) -> Result<Self> {
+        Ok(Self {
+            numerator: self.numerator.try_clone()?,
+            denominator: self.denominator.try_clone()?,
+        })
+    }
+
+    fn to_rational(&self) -> Result<Rational> {
+        Rational::new(self.numerator.try_clone()?, self.denominator.try_clone()?)
+    }
+
+    fn try_add(&self, other: &Self) -> Result<Self> {
+        if self.is_zero() {
+            return other.try_clone();
+        }
+        if other.is_zero() {
+            return self.try_clone();
+        }
+        if self.denominator == other.denominator {
+            return Self::new(
+                ExactDyadic::try_add_refs(&self.numerator, &other.numerator)?,
+                self.denominator.try_clone()?,
+            );
+        }
+        if self.denominator.is_one() {
+            let scaled = self.numerator.try_product(&other.denominator)?;
+            return Self::new(
+                ExactDyadic::try_add_refs(&scaled, &other.numerator)?,
+                other.denominator.try_clone()?,
+            );
+        }
+        if other.denominator.is_one() {
+            let scaled = other.numerator.try_product(&self.denominator)?;
+            return Self::new(
+                ExactDyadic::try_add_refs(&self.numerator, &scaled)?,
+                self.denominator.try_clone()?,
+            );
+        }
+        Self::new(
+            self.numerator
+                .try_product(&other.denominator)?
+                .try_add(other.numerator.try_product(&self.denominator)?)?,
+            self.denominator.try_product(&other.denominator)?,
+        )
+    }
+
+    fn try_subtract(&self, other: &Self) -> Result<Self> {
+        if self.is_zero() {
+            let mut result = other.try_clone()?;
+            if !result.is_zero() {
+                result.numerator = result.numerator.neg();
+            }
+            return Ok(result);
+        }
+        if other.is_zero() {
+            return self.try_clone();
+        }
+        if self.denominator == other.denominator {
+            return Self::new(
+                ExactDyadic::try_subtract_refs(&self.numerator, &other.numerator)?,
+                self.denominator.try_clone()?,
+            );
+        }
+        if self.denominator.is_one() {
+            let scaled = self.numerator.try_product(&other.denominator)?;
+            return Self::new(
+                ExactDyadic::try_subtract_refs(&scaled, &other.numerator)?,
+                other.denominator.try_clone()?,
+            );
+        }
+        if other.denominator.is_one() {
+            let scaled = other.numerator.try_product(&self.denominator)?;
+            return Self::new(
+                ExactDyadic::try_subtract_refs(&self.numerator, &scaled)?,
+                self.denominator.try_clone()?,
+            );
+        }
+        Self::new(
+            self.numerator
+                .try_product(&other.denominator)?
+                .try_subtract(other.numerator.try_product(&self.denominator)?)?,
+            self.denominator.try_product(&other.denominator)?,
+        )
+    }
+
+    fn try_product(&self, other: &Self) -> Result<Self> {
+        if self.is_zero() || other.is_zero() {
+            return Ok(Self::zero());
+        }
+        let denominator = if self.denominator.is_one() {
+            other.denominator.try_clone()?
+        } else if other.denominator.is_one() {
+            self.denominator.try_clone()?
+        } else {
+            self.denominator.try_product(&other.denominator)?
+        };
+        Self::new(self.numerator.try_product(&other.numerator)?, denominator)
+    }
+
+    fn try_square(&self) -> Result<Self> {
+        if self.is_zero() {
+            return Ok(Self::zero());
+        }
+        let denominator = if self.denominator.is_one() {
+            ExactDyadic::one()
+        } else {
+            self.denominator.try_product(&self.denominator)?
+        };
+        Self::new(self.numerator.try_product(&self.numerator)?, denominator)
+    }
+
+    fn try_quotient(&self, other: &Self) -> Result<Self> {
+        if other.is_zero() {
+            return Err(crate::geometry::GeometryErrorKind::ExactRatioZeroDenominator.into());
+        }
+        Self::new(
+            self.numerator.try_product(&other.denominator)?,
+            self.denominator.try_product(&other.numerator)?,
+        )
+    }
+
+    fn try_cmp(&self, other: &Self) -> Result<Ordering> {
+        if self.denominator == other.denominator {
+            return Ok(self.numerator.cmp(&other.numerator));
+        }
+        if self.denominator.is_one() {
+            return Ok(self
+                .numerator
+                .try_product(&other.denominator)?
+                .cmp(&other.numerator));
+        }
+        if other.denominator.is_one() {
+            return Ok(self
+                .numerator
+                .cmp(&other.numerator.try_product(&self.denominator)?));
+        }
+        Ok(self
+            .numerator
+            .try_product(&other.denominator)?
+            .cmp(&other.numerator.try_product(&self.denominator)?))
+    }
+
+    fn outward_upper(&self) -> Result<f64> {
+        crate::geometry::tessellation::exact::outward_ratio_bounds(
+            &self.numerator,
+            &self.denominator,
+        )
+        .map(|(_, upper)| upper)
+    }
+
+    #[cfg(test)]
+    fn try_cmp_rational(&self, other: &Rational) -> Result<Ordering> {
+        Self::from_rational(other).and_then(|other| self.try_cmp(&other))
+    }
+
+    #[cfg(test)]
+    fn round(&self) -> Result<f64> {
+        crate::geometry::tessellation::exact::round_ratio(&self.numerator, &self.denominator)
+    }
+}
+
 #[derive(Debug)]
 struct BoundaryEdge {
     start: ExactPoint,
@@ -323,7 +534,7 @@ impl SupportIndex {
             })
     }
 
-    fn nearest(&self, support: &PreparedSupport, point: &ExactPoint) -> Result<Rational> {
+    fn nearest(&self, support: &PreparedSupport, point: &ExactPoint) -> Result<UnreducedRatio> {
         let Some(root) = self.root else {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty support",
@@ -355,7 +566,7 @@ impl SupportIndex {
         point: &ExactPoint,
         point_bounds: FloatBox,
 
-        best: &mut Option<Rational>,
+        best: &mut Option<UnreducedRatio>,
         best_upper: &mut f64,
     ) -> Result<()> {
         let node = self.nodes[node_index];
@@ -397,7 +608,7 @@ impl SupportIndex {
                 Some(current) => distance.try_cmp(current)? == Ordering::Less,
             };
             if replace {
-                *best_upper = nonnegative_upper_bound(&distance)?;
+                *best_upper = nonnegative_pair_upper_bound(&distance)?;
                 *best = Some(distance);
             }
         }
@@ -659,7 +870,7 @@ impl PreparedSupport {
         &self,
         primitive: PrimitiveId,
         point: &ExactPoint,
-    ) -> Result<Rational> {
+    ) -> Result<UnreducedRatio> {
         match primitive {
             PrimitiveId::Span(index) => {
                 #[cfg(test)]
@@ -667,9 +878,9 @@ impl PreparedSupport {
                 point_span_distance_squared(point, &self.spans[index])
             },
             PrimitiveId::Point(index) => {
-                let dx = (&point.x).try_subtract(&self.points[index].x)?;
-                let dy = (&point.y).try_subtract(&self.points[index].y)?;
-                (&(&dx).try_square()?).try_add(&(&dy).try_square()?)
+                let dx = UnreducedRatio::try_difference(&point.x, &self.points[index].x)?;
+                let dy = UnreducedRatio::try_difference(&point.y, &self.points[index].y)?;
+                dx.try_square()?.try_add(&dy.try_square()?)
             },
         }
     }
@@ -678,7 +889,9 @@ impl PreparedSupport {
         let result = if self.contains_area(point)? {
             Ok(Rational::zero())
         } else {
-            self.index.nearest(self, point)
+            self.index
+                .nearest(self, point)
+                .and_then(|distance| distance.to_rational())
         };
 
         result
@@ -774,29 +987,42 @@ fn span_projection_parameter(point: &ExactPoint, span: &SupportSpan) -> Result<R
     numerator.try_quotient(&carrier.norm_squared)
 }
 
-fn point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result<Rational> {
+fn span_coordinate_difference(
+    point: &Rational,
+    origin: &Rational,
+    direction: &Rational,
+    parameter: &Rational,
+) -> Result<UnreducedRatio> {
+    let point = UnreducedRatio::from_rational(point)?;
+    let origin = UnreducedRatio::from_rational(origin)?;
+    let direction = UnreducedRatio::from_rational(direction)?;
+    let parameter = UnreducedRatio::from_rational(parameter)?;
+    origin
+        .try_add(&direction.try_product(&parameter)?)?
+        .try_subtract(&point)
+}
+
+fn point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result<UnreducedRatio> {
     let carrier = &span.carrier;
-    let px = point.x.try_subtract(&carrier.ax)?;
-    let py = point.y.try_subtract(&carrier.ay)?;
-    let dot = px
-        .try_product(&carrier.dx)?
-        .try_add(&py.try_product(&carrier.dy)?)?;
-    let low = span.t_lo.try_product(&carrier.norm_squared)?;
-    let high = span.t_hi.try_product(&carrier.norm_squared)?;
+    let px = UnreducedRatio::try_difference(&point.x, &carrier.ax)?;
+    let py = UnreducedRatio::try_difference(&point.y, &carrier.ay)?;
+    let dx = UnreducedRatio::from_rational(&carrier.dx)?;
+    let dy = UnreducedRatio::from_rational(&carrier.dy)?;
+    let norm_squared = UnreducedRatio::from_rational(&carrier.norm_squared)?;
+    let dot = px.try_product(&dx)?.try_add(&py.try_product(&dy)?)?;
+    let low = UnreducedRatio::from_rational(&span.t_lo)?.try_product(&norm_squared)?;
+    let high = UnreducedRatio::from_rational(&span.t_hi)?.try_product(&norm_squared)?;
     let parameter = if carrier.norm_squared.is_zero() || dot.try_cmp(&low)? == Ordering::Less {
         &span.t_lo
     } else if dot.try_cmp(&high)? == Ordering::Greater {
         &span.t_hi
     } else {
-        let cross = px
-            .try_product(&carrier.dy)?
-            .try_subtract(&py.try_product(&carrier.dx)?)?;
-        return cross.try_square()?.try_quotient(&carrier.norm_squared);
+        let cross = px.try_product(&dy)?.try_subtract(&py.try_product(&dx)?)?;
+        return cross.try_square()?.try_quotient(&norm_squared);
     };
-    let projected = span_point(span, parameter)?;
-    let dx = (&point.x).try_subtract(&projected.x)?;
-    let dy = (&point.y).try_subtract(&projected.y)?;
-    (&(&dx).try_square()?).try_add(&(&dy).try_square()?)
+    let dx = span_coordinate_difference(&point.x, &carrier.ax, &carrier.dx, parameter)?;
+    let dy = span_coordinate_difference(&point.y, &carrier.ay, &carrier.dy, parameter)?;
+    dx.try_square()?.try_add(&dy.try_square()?)
 }
 
 /// Return a finite lower bound for the distance from an enclosed point to a
@@ -881,6 +1107,19 @@ fn nonnegative_upper_bound(value: &Rational) -> Result<f64> {
         Ok(f64::INFINITY)
     } else {
         Ok(value.outward_bounds()?.1)
+    }
+}
+
+fn nonnegative_pair_upper_bound(value: &UnreducedRatio) -> Result<f64> {
+    let maximum = ExactDyadic::try_from_f64(f64::MAX)?;
+    if value
+        .numerator
+        .cmp(&maximum.try_product(&value.denominator)?)
+        == Ordering::Greater
+    {
+        Ok(f64::INFINITY)
+    } else {
+        value.outward_upper()
     }
 }
 
@@ -1708,9 +1947,7 @@ impl<'a> SearchContext<'a> {
 
 fn sqrt_upper(squared: &Rational, context: &mut SearchContext<'_>) -> Result<SqrtInterval> {
     let mut interval = match &context.accuracy.error {
-        ErrorBound::Absolute(error) => {
-            SqrtInterval::from_squared_with_error(squared, Some(error))?
-        },
+        ErrorBound::Absolute(error) => SqrtInterval::from_squared_with_error(squared, Some(error))?,
         ErrorBound::Relative(relative) => {
             let mut interval = SqrtInterval::from_squared_with_error(squared, None)?;
             if interval.upper.is_none() {
@@ -1754,7 +1991,9 @@ fn fixed_site_upper(
     for &primitive in nominated {
         let mut site_upper = None;
         for corner in &corners {
-            let squared = target.primitive_distance_squared(primitive, corner)?;
+            let squared = target
+                .primitive_distance_squared(primitive, corner)?
+                .to_rational()?;
             max_rational(&mut site_upper, squared)?;
         }
         min_rational(&mut best, site_upper.expect("fixed site has corners"))?;
@@ -2246,6 +2485,34 @@ mod tests {
             start,
             bounds,
         }
+    }
+
+    fn reduced_point_span_distance_squared(
+        point: &ExactPoint,
+        span: &SupportSpan,
+    ) -> Result<Rational> {
+        let carrier = &span.carrier;
+        let px = point.x.try_subtract(&carrier.ax)?;
+        let py = point.y.try_subtract(&carrier.ay)?;
+        let dot = px
+            .try_product(&carrier.dx)?
+            .try_add(&py.try_product(&carrier.dy)?)?;
+        let low = span.t_lo.try_product(&carrier.norm_squared)?;
+        let high = span.t_hi.try_product(&carrier.norm_squared)?;
+        let parameter = if carrier.norm_squared.is_zero() || dot.try_cmp(&low)? == Ordering::Less {
+            &span.t_lo
+        } else if dot.try_cmp(&high)? == Ordering::Greater {
+            &span.t_hi
+        } else {
+            let cross = px
+                .try_product(&carrier.dy)?
+                .try_subtract(&py.try_product(&carrier.dx)?)?;
+            return cross.try_square()?.try_quotient(&carrier.norm_squared);
+        };
+        let projected = span_point(span, parameter)?;
+        let dx = point.x.try_subtract(&projected.x)?;
+        let dy = point.y.try_subtract(&projected.y)?;
+        dx.try_square()?.try_add(&dy.try_square()?)
     }
 
     fn squared(value: f64) -> Rational {
@@ -2779,7 +3046,10 @@ mod tests {
                     &span,
                 ))
                 .unwrap();
-                let exact = point_span_distance_squared(&point, &span).unwrap();
+                let exact = point_span_distance_squared(&point, &span)
+                    .unwrap()
+                    .to_rational()
+                    .unwrap();
                 assert_ne!(lower.try_cmp(&exact).unwrap(), Ordering::Greater);
             }
         }
@@ -2821,6 +3091,90 @@ mod tests {
     }
 
     #[test]
+    fn unreduced_distances_match_reduced_point_and_span_references() {
+        let point_support = PreparedSupport::from_line_columns(&[0.0], &[0.0]).unwrap();
+        for point in [
+            exact_point_xy(3.0, 4.0).unwrap(),
+            exact_point_xy(2.0_f64.powi(500), -2.0_f64.powi(500)).unwrap(),
+            exact_point_xy(f64::from_bits(1), -f64::from_bits(2)).unwrap(),
+        ] {
+            let actual = point_support
+                .primitive_distance_squared(PrimitiveId::Point(0), &point)
+                .unwrap();
+            let dx = point.x.try_subtract(&point_support.points[0].x).unwrap();
+            let dy = point.y.try_subtract(&point_support.points[0].y).unwrap();
+            let expected = dx
+                .try_square()
+                .unwrap()
+                .try_add(&dy.try_square().unwrap())
+                .unwrap();
+            assert_eq!(actual.try_cmp_rational(&expected).unwrap(), Ordering::Equal);
+        }
+
+        let cases = [
+            ([0.0, 3.0], [0.0, 4.0], (0.0, -1.0)),
+            ([0.0, 3.0], [0.0, 4.0], (1.0, 3.0)),
+            ([3.0, 0.0], [4.0, 0.0], (1.0, 3.0)),
+            (
+                [0.0, 2.0_f64.powi(500)],
+                [0.0, 0.0],
+                (0.0, 2.0_f64.powi(500)),
+            ),
+            (
+                [0.0, f64::from_bits(2)],
+                [0.0, 0.0],
+                (0.0, f64::from_bits(1)),
+            ),
+        ];
+        for (xs, ys, point) in cases {
+            let support = PreparedSupport::from_line_columns(&xs, &ys).unwrap();
+            let point = exact_point_xy(point.0, point.1).unwrap();
+            let actual = point_span_distance_squared(&point, &support.spans[0]).unwrap();
+            let expected = reduced_point_span_distance_squared(&point, &support.spans[0]).unwrap();
+            assert_eq!(actual.try_cmp_rational(&expected).unwrap(), Ordering::Equal);
+        }
+
+        let mut subspan = PreparedSupport::from_line_columns(&[0.0, 6.0], &[0.0, 0.0]).unwrap();
+        subspan.spans[0].t_lo = Rational::new(
+            ExactDyadic::try_from_f64(1.0).unwrap(),
+            ExactDyadic::try_from_f64(3.0).unwrap(),
+        )
+        .unwrap();
+        subspan.spans[0].t_hi = Rational::new(
+            ExactDyadic::try_from_f64(2.0).unwrap(),
+            ExactDyadic::try_from_f64(3.0).unwrap(),
+        )
+        .unwrap();
+        let point = exact_point_xy(0.0, 0.0).unwrap();
+        let actual = point_span_distance_squared(&point, &subspan.spans[0]).unwrap();
+        let expected = reduced_point_span_distance_squared(&point, &subspan.spans[0]).unwrap();
+        assert_eq!(actual.try_cmp_rational(&expected).unwrap(), Ordering::Equal);
+    }
+
+    #[test]
+    fn unreduced_distance_allocation_failures_propagate() {
+        let support =
+            PreparedSupport::from_line_columns(&[0.0, f64::MAX], &[0.0, f64::from_bits(2)])
+                .unwrap();
+        let point = exact_point_xy(f64::from_bits(1), f64::MAX).unwrap();
+        let (result, allocations) = crate::test_support::allocation_count(|| {
+            support.primitive_distance_squared(PrimitiveId::Span(0), &point)
+        });
+        result.unwrap();
+        assert!(allocations > 0);
+        for allowed in 0..allocations {
+            let error = crate::test_support::fail_allocations_after(allowed, || {
+                support.primitive_distance_squared(PrimitiveId::Span(0), &point)
+            })
+            .expect_err("every unreduced distance allocation must propagate");
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+            ));
+        }
+    }
+
+    #[test]
     fn selected_span_clamps_oblique_projection() {
         let mut support = PreparedSupport::from_line_columns(&[0.0, 3.0], &[0.0, 4.0]).unwrap();
         for (lo, hi, x, y, expected) in [
@@ -2837,7 +3191,7 @@ mod tests {
                     .unwrap();
             assert_eq!(
                 value
-                    .try_cmp(&Rational::from_f64(expected).unwrap())
+                    .try_cmp_rational(&Rational::from_f64(expected).unwrap())
                     .unwrap(),
                 Ordering::Equal
             );
