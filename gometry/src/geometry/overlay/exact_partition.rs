@@ -845,7 +845,7 @@ impl BoundaryPlan {
             }
             try_push_vec(&mut lines, CoordSeq::try_from_vecs(xs, ys, None, None)?)?;
         }
-        lines.sort_by(crate::geometry::compare_point_slices);
+        lines.sort_unstable_by(crate::geometry::compare_point_slices);
         let mut points = Vec::new();
         try_reserve_vec(&mut points, isolated.len())?;
         for item in isolated {
@@ -7550,6 +7550,40 @@ mod tests {
             let shape = crate::io::parse_wkt(wkt).expect("valid test WKT");
             let support = occupied_cartesian_support(&shape).expect("exact occupied support");
             assert_eq!(support.area(), expected, "{wkt}");
+        }
+    }
+
+    #[test]
+    fn occupied_support_line_ordering_propagates_allocation_failures() {
+        let mut parts = vec![crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap()];
+        for index in 0..64 {
+            let x = 4.0 + f64::from(index) * 2.0;
+            parts.push(Shape::LineString(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(x, 0.0),
+                        Point::new_raw_xy(x + 1.0, 0.0),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap(),
+            ));
+        }
+        let shape = Shape::geometry_collection(parts).unwrap();
+        let (result, count) =
+            crate::test_support::allocation_count(|| occupied_cartesian_support(&shape));
+        let expected = result.unwrap();
+        assert!(count > 0);
+        for allowed in 0..=count {
+            match crate::test_support::fail_allocations_after(allowed, || {
+                occupied_cartesian_support(&shape)
+            }) {
+                Err(error) => assert!(matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+                )),
+                Ok(actual) => assert!(actual.equals(&expected).unwrap()),
+            }
         }
     }
 

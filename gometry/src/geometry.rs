@@ -527,11 +527,7 @@ impl Shape {
         match self {
             Self::Point(point) => crate::try_push_vec(out, *point),
             Self::MultiPoint(points) => {
-                let additional = out
-                    .len()
-                    .checked_add(points.coord_count())
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                crate::boundary::try_reserve_vec(out, additional)?;
+                crate::boundary::try_reserve_vec(out, points.coord_count())?;
                 for point in points {
                     crate::try_push_vec(out, point)?;
                 }

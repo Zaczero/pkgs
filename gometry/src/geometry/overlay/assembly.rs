@@ -323,9 +323,9 @@ pub(crate) fn build_certified_overlay_shape_with_axes(
     mut polygons: Vec<Polygon>,
     axes: CoordinateAxes,
 ) -> crate::error::Result<Shape> {
-    points.sort_by(crate::geometry::compare_points);
-    lines.sort_by(crate::geometry::compare_point_slices);
-    polygons.sort_by(crate::geometry::compare_polygons);
+    points.sort_unstable_by(crate::geometry::compare_points);
+    lines.sort_unstable_by(crate::geometry::compare_point_slices);
+    polygons.sort_unstable_by(crate::geometry::compare_polygons);
     let point_part = (!points.is_empty())
         .then(|| Shape::narrow_points(axes, points))
         .transpose()?;
