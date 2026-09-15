@@ -10,6 +10,7 @@ use crate::geometry::constructive::{
     Result, WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop,
     emit_cap, extend_cleaned, materialize_walk, raw_offset_loop, strict_cycle, winding_region,
 };
+use crate::geometry::overlay::{ExactSourceInventory, OverlayOp};
 use crate::geometry::{
     BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HashSet, LineSeq, MultiPoint, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale,
@@ -255,13 +256,15 @@ pub(in crate::geometry) fn winding_buffer_budgeted(
     Ok(Some(polygon_parts_to_shape(parts)?))
 }
 
-/// Erosion (negative buffer) of polygonal input — the mirrored
-/// winding construction: every ring's walk orientation flips (shells CW,
-/// holes CCW), so the right-side offset goes INWARD for shells and grows
-/// holes; the eroded region is `winding <= -1`. The inverting side here
-/// is the SHELL (over-erosion pinches and vanishes), so shells take the
-/// per-loop cleaning that holes take under expansion. Fully eroded input
-/// legitimately yields the empty polygon.
+/// Erosion (negative buffer) of polygonal input — first normalize the complete
+/// occupied polygon union, then run the mirrored winding construction: every
+/// ring's walk orientation flips (shells CW, holes CCW), so the right-side
+/// offset goes INWARD for shells and grows holes; the eroded region is
+/// `winding <= -1`. Normalizing before offsetting is what makes a shared edge
+/// one source boundary rather than two independently eroded components.
+/// The inverting side here is the SHELL (over-erosion pinches and vanishes), so
+/// shells take the per-loop cleaning that holes take under expansion. Fully
+/// eroded input legitimately yields the empty polygon.
 pub(in crate::geometry) fn winding_erosion_budgeted(
     polygons: &[Polygon],
     distance: f64,
@@ -269,8 +272,96 @@ pub(in crate::geometry) fn winding_erosion_budgeted(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Shape>> {
-    let mut loops: Vec<LoopColumns> = Vec::new();
+    let mut operands = Vec::new();
+    crate::try_reserve_vec(&mut operands, polygons.len())?;
     for polygon in polygons {
+        crate::try_push_vec(&mut operands, polygon)?;
+    }
+    let normalized = normalize_polygon_union(&operands)?;
+    erosion_normalized_budgeted(normalized, distance, rule, quadrant_segments, budget)
+}
+
+/// Normalize the selected areal operands in one exact linear arrangement.
+///
+/// A stored polygon first goes through the same unmoved winding admission as
+/// `buffer(0)`: shell winding is negative after the erosion orientation flip,
+/// holes are positive, and only the selected `<= -1` region survives. This
+/// preserves self-crossing ring semantics. Those admitted polygon pieces are
+/// then unioned in one arrangement, so overlapping components cannot cancel
+/// and a shared edge is one boundary before erosion.
+fn normalize_polygon_union(polygons: &[&Polygon]) -> Result<Vec<Polygon>> {
+    if polygons.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut support = Vec::new();
+    for polygon in polygons {
+        for part in polygon_zero_support(polygon)? {
+            crate::try_push_vec(&mut support, part)?;
+        }
+    }
+    if support.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut operands = Vec::new();
+    crate::try_reserve_vec(&mut operands, support.len())?;
+    for polygon in &support {
+        crate::try_push_vec(&mut operands, polygon)?;
+    }
+    let empty: [&Polygon; 0] = [];
+    let inventory = ExactSourceInventory::from_polygon_operands(&operands, &empty)?;
+    let mut partition_budget = ExpansionBudget::new("buffer", "exact partition");
+    let partition = inventory.partition(&mut partition_budget)?;
+    let (_, _, parts) = inventory.overlay_parts(&partition, OverlayOp::Union)?;
+    Ok(parts)
+}
+
+/// Select one stored polygon's unmoved occupied support. The direct columns
+/// avoid charging input-sized coordinates as generated offset work; they are
+/// the distance-zero form of the erosion walk.
+fn polygon_zero_support(polygon: &Polygon) -> Result<Vec<Polygon>> {
+    let mut loops = Vec::new();
+    let Some(shell) = strict_cycle(polygon.shell.coords(), true)? else {
+        return Ok(Vec::new());
+    };
+    crate::try_push_vec(&mut loops, cycle_columns(&shell)?)?;
+    for hole in polygon.holes.iter() {
+        let Some(hole) = strict_cycle(hole.coords(), false)? else {
+            continue;
+        };
+        crate::try_push_vec(&mut loops, cycle_columns(&hole)?)?;
+    }
+    winding_region(&loops, |winding| winding <= -1)
+}
+
+fn cycle_columns(points: &[Point]) -> Result<LoopColumns> {
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    crate::try_reserve_pair(&mut xs, &mut ys, points.len())?;
+    for point in points {
+        crate::try_push_vec(&mut xs, point.x)?;
+        crate::try_push_vec(&mut ys, point.y)?;
+    }
+    Ok((xs, ys))
+}
+
+/// Erode an already-normalized polygon union. The input owns the normalized
+/// boundaries so distance zero can return the exact occupied support without
+/// rebuilding an unmoved offset arrangement.
+fn erosion_normalized_budgeted(
+    polygons: Vec<Polygon>,
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: std::num::NonZeroU32,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Shape>> {
+    if polygons.is_empty() {
+        return Ok(Some(Shape::empty_polygon()));
+    }
+    if distance == 0.0 {
+        return Ok(Some(polygon_parts_to_shape(polygons)?));
+    }
+    let mut loops: Vec<LoopColumns> = Vec::new();
+    for polygon in &polygons {
         if erosion_loops(
             &mut loops,
             polygon,
@@ -286,6 +377,36 @@ pub(in crate::geometry) fn winding_erosion_budgeted(
     }
     let parts = winding_region(&loops, |winding| winding <= -1)?;
     Ok(Some(polygon_parts_to_shape(parts)?))
+}
+
+/// Borrow every polygonal member of a collection without turning lineal or
+/// puntal members into erosion operands. An explicit stack keeps the
+/// collection traversal independent of nesting depth while preserving input
+/// order for budget and error determinism.
+fn collection_polygon_operands(parts: &[Shape]) -> Result<Vec<&Polygon>> {
+    let mut stack = Vec::new();
+    crate::try_reserve_vec(&mut stack, parts.len())?;
+    for part in parts.iter().rev() {
+        crate::try_push_vec(&mut stack, part)?;
+    }
+    let mut polygons = Vec::new();
+    while let Some(part) = stack.pop() {
+        match part {
+            Shape::Polygon(polygon) => crate::try_push_vec(&mut polygons, polygon)?,
+            Shape::MultiPolygon(more) => {
+                for polygon in more.iter() {
+                    crate::try_push_vec(&mut polygons, polygon)?;
+                }
+            },
+            Shape::GeometryCollection(inner) => {
+                for nested in inner.iter().rev() {
+                    crate::try_push_vec(&mut stack, nested)?;
+                }
+            },
+            _ => {},
+        }
+    }
+    Ok(polygons)
 }
 
 /// Stroke buffer of lineal input through the winding engine: every chain
@@ -387,8 +508,8 @@ fn simple_stroke_polygon(
 /// stroke loops for chains, offset loops for polygons — and the union of
 /// all the part buffers IS the `winding >= 1` region (GEOS instead
 /// buffers each part and runs a boolean union cascade). Negative
-/// distances erode the polygonal parts (their union of erosions is the
-/// `winding <= -1` region) and annihilate puntal/lineal parts exactly.
+/// distances first normalize the selected polygonal support, then erode that
+/// one union; puntal/lineal parts annihilate exactly.
 pub(in crate::geometry) fn winding_collection_budgeted(
     parts: &[Shape],
     distance: f64,
@@ -397,25 +518,12 @@ pub(in crate::geometry) fn winding_collection_budgeted(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Shape>> {
-    let mut loops: Vec<LoopColumns> = Vec::new();
     if distance <= 0.0 {
-        // Distance 0 included: the unmoved flipped rings select the
-        // valid region of the polygonal parts (see `winding_route`).
-        if collection_erosion_loops(
-            &mut loops,
-            parts,
-            -distance,
-            rule,
-            quadrant_segments,
-            budget,
-        )?
-        .is_none()
-        {
-            return Ok(None);
-        }
-        let pieces = winding_region(&loops, |winding| winding <= -1)?;
-        return Ok(Some(polygon_parts_to_shape(pieces)?));
+        let polygons = collection_polygon_operands(parts)?;
+        let normalized = normalize_polygon_union(&polygons)?;
+        return erosion_normalized_budgeted(normalized, -distance, rule, quadrant_segments, budget);
     }
+    let mut loops: Vec<LoopColumns> = Vec::new();
     if collection_loops(
         &mut loops,
         parts,
@@ -828,53 +936,6 @@ pub(crate) fn collection_loops(
                 }
             },
             Shape::Empty(..) => {},
-        }
-    }
-    Ok(Some(()))
-}
-
-/// Collect erosion loops across a collection's polygonal parts,
-/// recursively (puntal/lineal parts erode to nothing).
-pub(crate) fn collection_erosion_loops(
-    loops: &mut Vec<LoopColumns>,
-    parts: &[Shape],
-    distance: f64,
-    rule: WalkJoinRule,
-    quadrant_segments: std::num::NonZeroU32,
-    budget: &mut ExpansionBudget,
-) -> Result<Option<()>> {
-    for part in parts {
-        match part {
-            Shape::Polygon(polygon) => {
-                if erosion_loops(loops, polygon, distance, rule, quadrant_segments, budget)?
-                    .is_none()
-                {
-                    return Ok(None);
-                }
-            },
-            Shape::MultiPolygon(polygons) => {
-                for polygon in polygons {
-                    if erosion_loops(loops, polygon, distance, rule, quadrant_segments, budget)?
-                        .is_none()
-                    {
-                        return Ok(None);
-                    }
-                }
-            },
-            Shape::GeometryCollection(inner)
-                if collection_erosion_loops(
-                    loops,
-                    inner,
-                    distance,
-                    rule,
-                    quadrant_segments,
-                    budget,
-                )?
-                .is_none() =>
-            {
-                return Ok(None);
-            },
-            _ => {},
         }
     }
     Ok(Some(()))

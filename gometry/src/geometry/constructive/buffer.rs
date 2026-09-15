@@ -63,7 +63,7 @@ impl Shape {
         let miter_limit = miter_limit.get();
         let rule = WalkJoinRule::new(join_style, miter_limit);
         if same_topological_coordinate(distance, 0.0)
-            && matches!(self, Self::Polygon(_) | Self::MultiPolygon(_))
+            && matches!(self, Self::Polygon(_))
             && self.validate()?.is_none()
         {
             return Ok(self.clone());
@@ -115,9 +115,10 @@ impl Shape {
         budget: &mut ExpansionBudget,
     ) -> Result<Option<Self>> {
         if distance <= 0.0 {
-            // Erosion at distance 0 selects `winding <= -1` of the
-            // UNMOVED flipped rings — exactly the valid region, so
-            // `buffer(0)` is the d -> 0 limit for free.
+            // The erosion owner normalizes all selected polygonal support
+            // before offsetting. At distance zero that normalization itself
+            // is the occupied-support result; a valid simple Polygon was
+            // already returned unchanged above.
             return match self {
                 Self::Polygon(polygon) => winding_erosion_budgeted(
                     std::slice::from_ref(polygon),

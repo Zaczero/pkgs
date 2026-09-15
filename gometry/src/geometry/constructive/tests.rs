@@ -13,9 +13,9 @@ use crate::geometry::constructive::{
     winding_erosion, winding_stroke,
 };
 use crate::geometry::{
-    BufferCapStyle, BufferJoinStyle, CoordSeq, ExpansionBudget, LineSeq, MAX_NESTING, MultiPolygon,
-    Point, Polygon, Ring, Segment, Shape, XY, affine_about_origin_ordinate, axis_pow2_scale,
-    scaled_residual,
+    BufferCapStyle, BufferJoinStyle, CoordSeq, ExpansionBudget, GeometryErrorKind, LineSeq,
+    MAX_NESTING, MultiPolygon, Point, Polygon, Ring, Segment, Shape, XY,
+    affine_about_origin_ordinate, axis_pow2_scale, scaled_residual,
 };
 
 #[test]
@@ -974,6 +974,169 @@ mod winding_buffer_tests {
         assert!((eroded.area() - 9.0).abs() < 1e-12, "{}", eroded.area());
     }
 
+    #[test]
+    fn touching_multipolygon_erosion_matches_its_union() {
+        let rectangle = |min_x: f64, max_x: f64| {
+            Polygon::new(
+                ring(&[
+                    (min_x, 0.0),
+                    (max_x, 0.0),
+                    (max_x, 4.0),
+                    (min_x, 4.0),
+                    (min_x, 0.0),
+                ]),
+                Vec::new(),
+            )
+            .unwrap()
+        };
+        let left = rectangle(0.0, 2.0);
+        let right = rectangle(2.0, 4.0);
+        let multipart = Shape::MultiPolygon(
+            MultiPolygon::from_dense(vec![left.clone(), right.clone()])
+                .unwrap()
+                .unwrap(),
+        );
+        let union = Shape::Polygon(left)
+            .union(&Shape::Polygon(right), crate::geometry::Strictness::Lenient)
+            .unwrap();
+
+        let eroded = multipart.buffer(-0.5).unwrap();
+        let expected = union.buffer(-0.5).unwrap();
+
+        assert_eq!(expected.area(), 9.0);
+        assert_eq!(eroded.area(), expected.area());
+        assert!(eroded.equals(&expected).unwrap());
+        assert!(multipart.buffer(0.0).unwrap().equals(&union).unwrap());
+    }
+
+    #[test]
+    fn overlapping_separated_and_nested_areal_parts_erode_as_one_support() {
+        let rectangle = |min_x: f64, max_x: f64| {
+            Polygon::new(
+                ring(&[
+                    (min_x, 0.0),
+                    (max_x, 0.0),
+                    (max_x, 4.0),
+                    (min_x, 4.0),
+                    (min_x, 0.0),
+                ]),
+                Vec::new(),
+            )
+            .unwrap()
+        };
+        let matches_union = |left: Polygon, right: Polygon| {
+            let multipart = Shape::MultiPolygon(
+                MultiPolygon::from_dense(vec![left.clone(), right.clone()])
+                    .unwrap()
+                    .unwrap(),
+            );
+            let union = Shape::Polygon(left)
+                .union(&Shape::Polygon(right), crate::geometry::Strictness::Lenient)
+                .unwrap();
+            let eroded = multipart.buffer(-0.5).unwrap();
+            let expected = union.buffer(-0.5).unwrap();
+            assert!(eroded.equals(&expected).unwrap());
+            eroded
+        };
+
+        assert_eq!(
+            matches_union(rectangle(0.0, 3.0), rectangle(2.0, 5.0)).area(),
+            12.0
+        );
+        let separated = matches_union(rectangle(0.0, 2.0), rectangle(5.0, 7.0));
+        assert_eq!(separated.area(), 6.0);
+        assert!(matches!(separated, Shape::MultiPolygon(_)));
+
+        let nested = Shape::geometry_collection(vec![
+            Shape::Polygon(rectangle(0.0, 2.0)),
+            Shape::geometry_collection(vec![Shape::Polygon(rectangle(2.0, 4.0))]).unwrap(),
+        ])
+        .unwrap();
+        let nested_eroded = nested.buffer(-0.5).unwrap();
+        let nested_union = Shape::Polygon(rectangle(0.0, 2.0))
+            .union(
+                &Shape::Polygon(rectangle(2.0, 4.0)),
+                crate::geometry::Strictness::Lenient,
+            )
+            .unwrap();
+        assert!(
+            nested_eroded
+                .equals(&nested_union.buffer(-0.5).unwrap())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn erosion_opens_and_closes_polygon_holes_at_the_union_boundary() {
+        let holed = Shape::Polygon(
+            Polygon::new(
+                ring(&[
+                    (0.0, 0.0),
+                    (10.0, 0.0),
+                    (10.0, 10.0),
+                    (0.0, 10.0),
+                    (0.0, 0.0),
+                ]),
+                vec![ring(&[
+                    (4.0, 4.0),
+                    (6.0, 4.0),
+                    (6.0, 6.0),
+                    (4.0, 6.0),
+                    (4.0, 4.0),
+                ])],
+            )
+            .unwrap(),
+        );
+
+        let open = holed.buffer(-1.0).unwrap();
+        assert!(
+            !open
+                .covers(&Shape::Point(Point::new(5.0, 5.0).unwrap()))
+                .unwrap()
+        );
+        assert!(open.area() > 48.0);
+        let closed = holed.buffer(-2.5).unwrap();
+        assert!(closed.is_empty());
+    }
+
+    #[test]
+    fn collapsed_areal_support_is_empty_and_collapsed_holes_are_ignored() {
+        let collapsed = Shape::Polygon(
+            Polygon::new(
+                ring(&[(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (0.0, 0.0)]),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        assert!(collapsed.buffer(0.0).unwrap().is_empty());
+        assert!(collapsed.buffer(-1.0).unwrap().is_empty());
+
+        let shell = ring(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let collapsed_hole = Shape::Polygon(
+            Polygon::new(shell.clone(), vec![ring(&[
+                (2.0, 5.0),
+                (5.0, 5.0),
+                (8.0, 5.0),
+                (2.0, 5.0),
+            ])])
+            .unwrap(),
+        );
+        let solid = Shape::Polygon(Polygon::new(shell, Vec::new()).unwrap());
+        assert!(
+            collapsed_hole
+                .buffer(-1.0)
+                .unwrap()
+                .equals(&solid.buffer(-1.0).unwrap())
+                .unwrap()
+        );
+    }
+
     /// `buffer(0)` is the d -> 0 limit through the engine: a valid
     /// polygon is returned as-is (holes included), a self-crossing
     /// bowtie keeps its positively-wound lobe (NOT empty, the old geo
@@ -1600,6 +1763,25 @@ mod expansion_budget_threading_tests {
         .expect("line coordinate sequence must contain at least two vertices")
     }
 
+    fn square_polygon(min_x: f64) -> Shape {
+        Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        Point::new(min_x, 0.0).unwrap(),
+                        Point::new(min_x + 2.0, 0.0).unwrap(),
+                        Point::new(min_x + 2.0, 2.0).unwrap(),
+                        Point::new(min_x, 2.0).unwrap(),
+                        Point::new(min_x, 0.0).unwrap(),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+    }
+
     #[test]
     fn buffer_and_offset_collection_children_use_the_callers_budget() {
         let style = Positive::try_new("miter_limit", 5.0).unwrap();
@@ -1694,6 +1876,34 @@ mod expansion_budget_threading_tests {
             .unwrap_err();
         assert_eq!(rings_budget.used(), GENERATED_ITEM_LIMIT);
     }
+
+    #[test]
+    fn collection_erosion_consumes_one_caller_budget_across_all_parts() {
+        let collection = Shape::geometry_collection(vec![square_polygon(0.0), square_polygon(5.0)])
+            .expect("test collection is valid");
+        let style = Positive::try_new("miter_limit", 5.0).unwrap();
+        let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
+        budget.add(GENERATED_ITEM_LIMIT - 5).unwrap();
+        let error = collection
+            .buffer_with_style_budgeted(
+                -0.5,
+                BufferCapStyle::Round,
+                BufferJoinStyle::Round,
+                NonZeroU32::new(1).unwrap(),
+                style,
+                &mut budget,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge {
+                operation: "buffer",
+                parameter: "quadrant_segments",
+                ..
+            })
+        ));
+        assert_eq!(budget.used(), GENERATED_ITEM_LIMIT - 1);
+    }
 }
 
 #[cfg(test)]
@@ -1784,6 +1994,26 @@ mod winding_allocation_tests {
             )
         };
         assert_every_allocation_is_retryable(run, |value| assert!(value.is_some()));
+    }
+
+    #[test]
+    fn normalized_collection_erosion_allocation_failure_is_resource_and_retryable() {
+        let shape =
+            Shape::geometry_collection(vec![Shape::Polygon(square()), Shape::Polygon(square())])
+                .unwrap();
+        let style = Positive::try_new("miter_limit", 5.0).unwrap();
+        let run = || {
+            let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
+            shape.buffer_with_style_budgeted(
+                -1.0,
+                BufferCapStyle::Round,
+                BufferJoinStyle::Round,
+                NonZeroU32::new(4).unwrap(),
+                style,
+                &mut budget,
+            )
+        };
+        assert_every_allocation_is_retryable(run, |value| assert!(!value.is_empty()));
     }
 
     #[test]

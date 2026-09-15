@@ -296,6 +296,23 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
     assert overflow_offset.is_empty
 
 
+def test_multipart_buffer_normalizes_areal_union_before_erosion() -> None:
+    left = gm.box(0, 0, 2, 4)
+    right = gm.box(2, 0, 4, 4)
+    multipart = gm.MultiPolygon([left, right])
+    union = gm.union(left, right)
+
+    eroded = multipart.buffer(-0.5)
+    expected = union.buffer(-0.5)
+
+    assert eroded.area == pytest.approx(9.0)
+    assert gm.equals(eroded, expected)
+    assert gm.equals(multipart.buffer(0.0), union)
+
+    nested = gm.GeometryCollection([left, gm.GeometryCollection([right])])
+    assert gm.equals(nested.buffer(-0.5), expected)
+
+
 def test_array_disjoint_overlay_handles_mixed_ordinate_axes() -> None:
     z_line = gm.LineString([(0, 0), (1, 0)], z=[1, 2])
     xy_line = gm.LineString([(10, 0), (11, 0)])
