@@ -1856,8 +1856,9 @@ class Geometry:
         max_area : float, optional
             Maximum triangle area in square coordinate units; valid only with
             ``method='constrained'``. Setting either option enables refinement;
-            without either option, triangle corners preserve input ordinates.
-            Refinement inserts Steiner vertices and therefore returns XY.
+            without either option, duplicate XY sites use their first source
+            occurrence and triangle corners preserve the selected source ordinates.
+            Refinement inserts Steiner vertices and therefore returns uniform XY.
 
         Returns
         -------
@@ -2342,10 +2343,11 @@ class Geometry:
         Parameters
         ----------
         method : {'linework', 'structure'}, default linework
-            Repair strategy: ``linework`` nodes all boundary linework and
-            reassembles regions by even-odd parity, keeping every input edge;
-            ``structure`` rebuilds each ring's enclosed area and recombines them
-            as shells minus holes, discarding collapsed components.
+            Repair strategy: ``linework`` nodes all boundary linework and selects
+            regions from each original ring occurrence's winding modulo two before
+            recombining each polygon's shell minus its holes; distinct polygon members
+            are unioned. ``structure`` rebuilds each ring's nonzero-winding enclosed
+            area and recombines it as shells minus holes.
 
             Z/M are carried at vertices traceable to the input; a rebuild that needs
             unsourceable vertices returns the mathematically natural XY result.
@@ -6986,7 +6988,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         max_area : float or sequence of float, optional
             Maximum triangle area in square coordinate units; valid only with
             ``method='constrained'``. Setting either option enables refinement;
-            inserted Steiner vertices can return XY.
+            inserted Steiner vertices return uniform XY. Scalar and array rows use
+            the same first-occurrence source-site and ordinate policy.
 
         Returns
         -------
@@ -7687,7 +7690,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         overlap_rule : str, default 'longest_border'
             Which row keeps a region covered more than once:
             ``'longest_border'``, ``'max_area'``, ``'min_area'``, ``'min_index'``.
-            Cleaning rebuilds faces and returns their natural 2D geometry.
+            Cleaning rebuilds faces from one exact partition. Source Z/M
+            ordinates are retained for rows whose emitted nodes have one
+            consistent source value; an unavailable or conflicting axis is
+            dropped for that row.
 
         Returns
         -------
@@ -7741,10 +7747,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         method : {'linework', 'structure'}, default linework
-            Repair strategy: ``linework`` nodes all boundary linework and
-            reassembles regions by even-odd parity, keeping every input edge;
-            ``structure`` rebuilds each ring's enclosed area and recombines them
-            as shells minus holes, discarding collapsed components.
+            Repair strategy: ``linework`` nodes all boundary linework and selects
+            regions from each original ring occurrence's winding modulo two before
+            recombining each polygon's shell minus its holes; distinct polygon members
+            are unioned. ``structure`` rebuilds each ring's nonzero-winding enclosed
+            area and recombines it as shells minus holes.
 
             Z/M are carried at vertices traceable to the input; a rebuild that needs
             unsourceable vertices returns the mathematically natural XY result.
@@ -9687,11 +9694,8 @@ class SpatialIndex(Mapping[int, Geometry]):
     def __sizeof__(self) -> int:
         """`sys.getsizeof` support: the wrapper plus the retained Rust-side
         index payload — packed or boxed row geometry coordinates, the immutable
-        STR tree, overflow R-tree entries, frame metadata, and any built
-        geodesic cap cache. The overflow R-tree contributes occupied nodes
-        only: unused capacity reserved inside its child vectors is not counted,
-        so a mutated index's reported total is a lower bound on actual
-        retention. Shared buffers are reported as this index's logical retained
+        STR tree, overflow STR runs, frame metadata, and any built geodesic cap
+        cache. Shared buffers are reported as this index's logical retained
         footprint.
         """
     def __repr__(self) -> str:
@@ -16182,13 +16186,19 @@ def hausdorff_distance(
     CRS-aware: geodesic meters on a geographic CRS, native linear units on a
     projected CRS, coordinate units when CRS-free. Geographic Hausdorff
     distance supports point and linework operands only; filled polygon
-    interiors require ``unit='planar'`` or a projected CRS.
+    interiors require ``unit='planar'`` or a projected CRS. Planar results use
+    a certified relative bound by default or a caller-supplied absolute bound.
 
     Parameters
     ----------
     left, right : Geometry or GeometryArray
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
+    max_error : float, optional
+        Positive finite scalar absolute error bound in final result units.
+        Planar results default to a certified relative error of at most
+        ``1e-9``. Omit it for the numerical geodesic Hausdorff path; geodesic
+        results do not provide this certification contract.
     unit : {'planar', 'meters'}, default None
         Omitted follows the CRS: geodesic meters on a geographic CRS, native
         units on a projected one, coordinate units without a CRS.
@@ -16199,7 +16209,9 @@ def hausdorff_distance(
     Returns
     -------
     float or numpy.ndarray
-        One result per input pair.
+        One result per input pair. A planar result is zero exactly when the
+        operands have equal closed support; unequal positive distances remain
+        positive even when smaller than the effective error bound.
 
     Raises
     ------
@@ -16211,8 +16223,13 @@ def hausdorff_distance(
     InvalidGeometryError
         If either operand is empty; Hausdorff distance is undefined for an
         empty support.
+    ValueError
+        If ``max_error`` is not a positive finite scalar or is supplied for a
+        geodesic result.
     GeometryError
-        If ``unit='meters'`` is requested for a CRS-free geometry.
+        If ``unit='meters'`` is requested for a CRS-free geometry, or a finite
+        planar result cannot be certified within representable output and the
+        available generated-work or memory resources.
 
     See Also
     --------
@@ -16227,8 +16244,8 @@ def hausdorff_distance(
     >>> import gometry as gm
     >>> a = gm.LineString([(0, 0), (10, 0)])
     >>> b = gm.LineString([(0, 1), (10, 3)])
-    >>> gm.hausdorff_distance(a, b)
-    3.0
+    >>> abs(gm.hausdorff_distance(a, b, max_error=1e-12) - 3.0) <= 1e-12
+    True
     """
 
 @overload
@@ -17524,7 +17541,9 @@ def coverage_clean(
         Which row keeps a region covered more than once:
         ``'longest_border'``, ``'max_area'``, ``'min_area'``, or
         ``'min_index'``.
-        Cleaning rebuilds faces and returns their natural 2D geometry.
+        Cleaning rebuilds faces from one exact partition. Source Z/M ordinates
+        are retained for rows whose emitted nodes have one consistent source
+        value; an unavailable or conflicting axis is dropped for that row.
 
     Returns
     -------
