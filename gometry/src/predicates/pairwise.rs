@@ -278,13 +278,19 @@ pub(crate) fn distance_3d(
 /// CRS-aware: geodesic meters on a geographic CRS, native linear units on a
 /// projected CRS, coordinate units when CRS-free. Geographic Hausdorff
 /// distance supports point and linework operands only; filled polygon
-/// interiors require ``unit='planar'`` or a projected CRS.
+/// interiors require ``unit='planar'`` or a projected CRS. Planar results are
+/// certified to the requested absolute output-unit bound.
 ///
 /// Parameters
 /// ----------
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
+/// max_error : float, optional
+///     Positive finite scalar absolute error bound in final result units.
+///     Required for planar Hausdorff distance. Omit it for the numerical
+///     geodesic Hausdorff path; geodesic results do not provide this
+///     certification contract.
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
@@ -307,6 +313,9 @@ pub(crate) fn distance_3d(
 /// InvalidGeometryError
 ///     If either operand is empty; Hausdorff distance is undefined for an
 ///     empty support.
+/// ValueError
+///     If ``max_error`` is not a positive finite scalar, is omitted for a
+///     planar result, or is supplied for a geodesic result.
 /// GeometryError
 ///     If ``unit='meters'`` is requested for a CRS-free geometry.
 ///
@@ -323,17 +332,18 @@ pub(crate) fn distance_3d(
 /// >>> import gometry as gm
 /// >>> a = gm.LineString([(0, 0), (10, 0)])
 /// >>> b = gm.LineString([(0, 1), (10, 3)])
-/// >>> gm.hausdorff_distance(a, b)
+/// >>> gm.hausdorff_distance(a, b, max_error=1e-12)
 /// 3.0
 #[pyfunction]
-#[pyo3(signature = (left, right, *, unit = None))]
+#[pyo3(signature = (left, right, *, max_error = None, unit = None))]
 pub(crate) fn hausdorff_distance(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
+    max_error: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    crate::dispatch::dispatch_hausdorff_distance(py, left, right, unit)
+    crate::dispatch::dispatch_hausdorff_distance(py, left, right, max_error, unit)
 }
 
 /// Discrete Fréchet distance between two linestrings.

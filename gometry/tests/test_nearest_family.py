@@ -772,7 +772,7 @@ class TestFrechetMatchesTheFamilyDegradePolicy:
         self, name: str, left: gm.Geometry, right: gm.Geometry
     ) -> None:
         with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-            gm.hausdorff_distance(left, right)
+            gm.hausdorff_distance(left, right, max_error=1e-12)
         assert gm.frechet_distance(left, right) == math.inf, name
         assert gm.distance(left, right) == math.inf, name
 
@@ -780,13 +780,13 @@ class TestFrechetMatchesTheFamilyDegradePolicy:
         left = gm.GeometryArray([self.LINE, self.EMPTY, self.LINE])
         right = gm.GeometryArray([self.LINE, self.LINE, self.EMPTY])
         with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-            gm.hausdorff_distance(left, right)
+            gm.hausdorff_distance(left, right, max_error=1e-12)
         assert gm.frechet_distance(left, right).tolist() == [0.0, math.inf, math.inf]
         assert gm.distance(left, right).tolist() == [0.0, math.inf, math.inf]
 
     def test_missing_rows_keep_the_array_missing_result(self) -> None:
         masked = gm.GeometryArray([self.LINE, None])
-        result = gm.hausdorff_distance(masked, self.LINE)
+        result = gm.hausdorff_distance(masked, self.LINE, max_error=1e-12)
         assert result[0] == 0.0
         assert math.isnan(result[1])
 

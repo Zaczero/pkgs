@@ -32,7 +32,13 @@ def test_hausdorff_equidistant_metric_stable_above_feature_param_budget() -> Non
             eps = (i + 1) * 1e-12
             pts.append(gm.Point(0.0 + eps, 4.0))
             pts.append(gm.Point(10.0 + eps, 1.0))
-        return float(gm.hausdorff_distance(src, gm.GeometryCollection(pts)))
+        return float(
+            gm.hausdorff_distance(
+                src,
+                gm.GeometryCollection(pts),
+                max_error=1e-6,
+            )
+        )
 
     # The old full-pairs fallback admitted feature_count * param_count up to
     # 16_384. These adjacent counts straddle that historical boundary.

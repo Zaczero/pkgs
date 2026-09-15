@@ -759,8 +759,8 @@ def test_w4b_hausdorff_and_union_all_stable() -> None:
     right = gm.LineString([
         (float(i) + 0.5, math.cos(i * 0.1)) for i in range(hausdorff_vertices)
     ])
-    h1 = gm.hausdorff_distance(left, right)
-    h2 = gm.hausdorff_distance(left, right)
+    h1 = gm.hausdorff_distance(left, right, max_error=1e-12)
+    h2 = gm.hausdorff_distance(left, right, max_error=1e-12)
     assert h1 == h2
     assert h1 > 0.0
     polys = [

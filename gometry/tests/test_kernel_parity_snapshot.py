@@ -211,6 +211,8 @@ def _binary(
     def runner(geom: gm.Geometry) -> object:
         other = _secondary(geom)
         if distance is None:
+            if op == 'hausdorff_distance' and not _is_geo(_matching_crs(geom)):
+                return fn(geom, other, max_error=1e-12)
             return fn(geom, other)
         return fn(geom, other, distance)
 

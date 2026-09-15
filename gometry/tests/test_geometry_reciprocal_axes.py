@@ -67,7 +67,7 @@ def test_reciprocal_axis_identical_linework_has_no_exterior_residue(
         if frontend == 'relate':
             assert gm.relate(left, right) == '1FFF0FFF2'
         elif frontend == 'hausdorff':
-            assert gm.hausdorff_distance(left, right) == 0.0
+            assert gm.hausdorff_distance(left, right, max_error=1e-12) == 0.0
         elif frontend == 'equals_prepared':
             assert gm.equals(left.prepare(), right)
         elif frontend == 'covers_prepared':

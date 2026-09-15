@@ -1254,7 +1254,10 @@ def test_v1_api_convenience_and_ewkb_helpers() -> None:
         gm.LineString([(0, 1), (1, 1)]),
         gm.LineString([(1, 0), (1, 2)]),
     ])
-    np.testing.assert_allclose(gm.hausdorff_distance(lines, targets), [1.0, 1.0])
+    np.testing.assert_allclose(
+        gm.hausdorff_distance(lines, targets, max_error=1e-12),
+        [1.0, 1.0],
+    )
     assert gm.frechet_distance(lines, targets) == pytest.approx([1.0, 1.0])
     with pytest.raises(ValueError, match='same length'):
         gm.distance(gm.points([0, 3], [0, 4]), gm.points([0], [0]))

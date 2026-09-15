@@ -238,7 +238,7 @@ assert_type(POLY.polylabel(), gm.Point)
 assert_type(POLY.minimum_bounding_radius(), float)
 assert_type(POINTS.minimum_bounding_radius(), npt.NDArray[np.float64])
 assert_type(
-    gm.hausdorff_distance(LINES, LINE),
+    gm.hausdorff_distance(LINES, LINE, max_error=1e-12),
     npt.NDArray[np.float64],
 )
 assert_type(

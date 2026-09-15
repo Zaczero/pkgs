@@ -6,6 +6,8 @@ between predicates, DE-9IM transposition, overlay set algebra, and idempotent
 transforms. A corpus bug shows up here even when no hand-picked case covers it.
 """
 
+import math
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -310,9 +312,12 @@ def test_distance_hausdorff_extreme_coords_match_scalar_oracle() -> None:
     probe = gm.Point(0.0, 1.0)
     assert gm.distance(line, probe) == 1.0
     shifted = gm.LineString([(x + 1e149, y) for x, y in coords])
-    hd = gm.hausdorff_distance(line, shifted)
+    max_error = math.ulp(1e149)
+    hd = gm.hausdorff_distance(line, shifted, max_error=max_error)
     assert hd > 0.0
-    assert hd == pytest.approx(gm.hausdorff_distance(shifted, line))
+    assert hd == pytest.approx(
+        gm.hausdorff_distance(shifted, line, max_error=max_error)
+    )
     bulk = gm.distance(
         gm.GeometryArray([line, shifted]), gm.GeometryArray([probe, probe])
     )

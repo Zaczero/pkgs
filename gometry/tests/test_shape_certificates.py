@@ -10,16 +10,27 @@ import gometry as gm
 import pytest
 
 
-def _carrier_results(left: gm.Geometry, right: gm.Geometry) -> list[float]:
+def _carrier_results(
+    left: gm.Geometry,
+    right: gm.Geometry,
+    *,
+    max_error: float = 1e-12,
+) -> list[float]:
     left_array = gm.GeometryArray([left])
     right_array = gm.GeometryArray([right])
     return [
-        gm.hausdorff_distance(left, right),
-        gm.hausdorff_distance(left, right_array).tolist()[0],
-        gm.hausdorff_distance(left_array, right).tolist()[0],
-        gm.hausdorff_distance(left_array, right_array).tolist()[0],
+        gm.hausdorff_distance(left, right, max_error=max_error),
+        gm.hausdorff_distance(left, right_array, max_error=max_error).tolist()[0],
+        gm.hausdorff_distance(left_array, right, max_error=max_error).tolist()[0],
         gm.hausdorff_distance(
-            gm.GeometryCollection([left]), gm.GeometryCollection([right])
+            left_array,
+            right_array,
+            max_error=max_error,
+        ).tolist()[0],
+        gm.hausdorff_distance(
+            gm.GeometryCollection([left]),
+            gm.GeometryCollection([right]),
+            max_error=max_error,
         ),
     ]
 
@@ -59,8 +70,9 @@ def test_manufactured_normal_residual_falls_back_to_source_distance(
     left = gm.LineString([(x, 0.0) for x in xs])
     right = gm.LineString(list(zip(xs, ys, strict=True)))
     expected = float(Fraction(separation) * 2)
-    assert _carrier_results(left, right) == [expected] * 5
-    assert _carrier_results(right, left) == [expected] * 5
+    max_error = math.ulp(expected)
+    assert _carrier_results(left, right, max_error=max_error) == [expected] * 5
+    assert _carrier_results(right, left, max_error=max_error) == [expected] * 5
 
 
 def test_small_target_root_capacity_is_proved_at_ordinary_scale() -> None:
@@ -87,7 +99,8 @@ def test_normal_squared_residual_is_not_a_completeness_certificate(
     target = gm.MultiPoint([(-length, 1.0), (length / 7.0, 1.0), (length, 1.0)])
     expected = float((Fraction(target[1].x) - Fraction(target[0].x)) / 2)
     for first, second in ((source, target), (target, source)):
-        results = _carrier_results(first, second)
+        max_error = math.ulp(abs(expected)) or math.ulp(0.0)
+        results = _carrier_results(first, second, max_error=max_error)
         assert results == [results[0]] * len(results)
         assert all(math.isfinite(result) for result in results)
         assert results == [expected] * len(results)
@@ -100,11 +113,14 @@ def test_hausdorff_exact_power_of_two_similarity_homogeneity(exponent: int) -> N
     left_points = [(0.0, 0.0), (1.0, 0.5), (2.0, -0.25)]
     right_points = [(0.0, 1.0), (0.75, -0.5), (2.0, 0.75)]
     baseline = gm.hausdorff_distance(
-        gm.LineString(left_points), gm.LineString(right_points)
+        gm.LineString(left_points),
+        gm.LineString(right_points),
+        max_error=1e-12,
     )
     scale = 2.0**exponent
     left = gm.LineString([(x * scale, y * scale) for x, y in left_points])
     right = gm.LineString([(x * scale, y * scale) for x, y in right_points])
     expected = float(Fraction(baseline) * Fraction(scale))
     for first, second in ((left, right), (right, left)):
-        assert _carrier_results(first, second) == [expected] * 5
+        max_error = math.ulp(abs(expected)) or math.ulp(0.0)
+        assert _carrier_results(first, second, max_error=max_error) == [expected] * 5

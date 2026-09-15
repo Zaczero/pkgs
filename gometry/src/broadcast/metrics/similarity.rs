@@ -7,7 +7,9 @@
 use pyo3::types::{PyAny, PyAnyMethods as _};
 
 use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
-use crate::broadcast::metrics::pair::metric_hausdorff;
+use crate::broadcast::metrics::pair::{
+    contains_filled_area, ensure_hausdorff_geodesic_shape, metric_hausdorff,
+};
 use crate::broadcast::metrics::{
     Arc, Bound, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Py,
     PyGeometryArray, PyResult, Python, Shape, crs, float64_array, resolve_metric, rows_err,
@@ -18,7 +20,7 @@ use crate::geometry::{FrechetDpScratch, PackedLineColumnView, PreparedPlan};
 
 #[derive(Clone, Debug)]
 pub(crate) enum SimilarityOp {
-    Hausdorff,
+    Hausdorff { max_error: Option<f64> },
     Frechet { densify: SimilarityDensify },
 }
 
@@ -40,8 +42,10 @@ impl SimilarityDensify {
 }
 
 impl SimilarityOp {
-    pub(crate) const fn hausdorff() -> Self {
-        Self::Hausdorff
+    pub(crate) fn hausdorff(value: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        Ok(Self::Hausdorff {
+            max_error: parse_max_error(value)?,
+        })
     }
 
     pub(crate) fn frechet_with_densify(
@@ -54,24 +58,48 @@ impl SimilarityOp {
 
     pub(crate) const fn metric_op(&self) -> MetricOp {
         match self {
-            Self::Hausdorff => MetricOp::HausdorffDistance,
+            Self::Hausdorff { .. } => MetricOp::HausdorffDistance,
             Self::Frechet { .. } => MetricOp::FrechetDistance,
         }
     }
 
     pub(crate) const fn is_undensified(&self) -> bool {
         match self {
-            Self::Hausdorff => true,
+            Self::Hausdorff { .. } => true,
             Self::Frechet { densify } => matches!(densify, SimilarityDensify::None),
         }
     }
 
     pub(crate) const fn is_per_element(&self) -> bool {
         match self {
-            Self::Hausdorff => false,
+            Self::Hausdorff { .. } => false,
             Self::Frechet { densify } => {
                 matches!(densify, SimilarityDensify::PerElement(_))
             },
+        }
+    }
+
+    /// Bounded certification is planar-only. The geodesic sibling retains its
+    /// numerical contract and therefore must not receive a bound.
+    pub(crate) fn validate_model(&self, model: &crs::MetricModel) -> crate::error::Result<()> {
+        match self {
+            Self::Hausdorff { max_error: None }
+                if matches!(model, crs::MetricModel::Planar { .. }) =>
+            {
+                Err(crate::geometry::GeometryErrorKind::message(
+                    "hausdorff_distance requires max_error for planar metrics; \
+                     pass a positive finite max_error",
+                ))
+            },
+            Self::Hausdorff { max_error: Some(_) }
+                if matches!(model, crs::MetricModel::Geodesic { .. }) =>
+            {
+                Err(crate::geometry::GeometryErrorKind::message(
+                    "max_error is only supported for planar Hausdorff distance; \
+                     omit it for geodesic metrics",
+                ))
+            },
+            Self::Hausdorff { .. } | Self::Frechet { .. } => Ok(()),
         }
     }
 
@@ -84,7 +112,7 @@ impl SimilarityOp {
         scratch: &mut FrechetDpScratch,
     ) -> crate::error::Result<f64> {
         match self {
-            Self::Hausdorff => metric_hausdorff(model, left, right),
+            Self::Hausdorff { max_error } => metric_hausdorff(model, left, right, *max_error),
             Self::Frechet { densify } => {
                 crate::broadcast::metrics::metric_frechet_densified_with_scratch(
                     model,
@@ -104,6 +132,7 @@ impl SimilarityOp {
         context: &CachelessRowContext<'_>,
     ) -> crate::error::Result<f64> {
         let model = context.metric.require_model(self.metric_op())?;
+        self.validate_model(model)?;
         let mut scratch = FrechetDpScratch::default();
         self.eval_shapes_at(model, left.shape(), right.shape(), 0, &mut scratch)
     }
@@ -114,7 +143,7 @@ impl SimilarityOp {
         storage: &GeometryArrayStorage,
         missing: Option<&ValidityMask>,
     ) -> crate::error::Result<Option<Vec<f64>>> {
-        if !matches!(self, Self::Hausdorff) {
+        if !matches!(self, Self::Hausdorff { .. }) {
             return Ok(None);
         }
         let identity = match storage {
@@ -129,14 +158,23 @@ impl SimilarityOp {
         if !identity {
             return Ok(None);
         }
+        let mut has_areal_support = false;
         for (row_index, row) in storage.iter_rows().enumerate() {
             if missing.is_some_and(|mask| mask.is_missing(row_index)) {
                 continue;
             }
-            row.try_with_shape(crate::broadcast::metrics::require_nonempty_hausdorff)?;
-            if let crs::MetricModel::Geodesic { frame, .. } = model {
-                row.try_with_shape(|shape| crs::ensure_geographic_domain_in_frame(*frame, shape))?;
-            }
+            let areal = row.try_with_shape(|shape| -> crate::error::Result<bool> {
+                if let crs::MetricModel::Geodesic { frame, .. } = model {
+                    ensure_hausdorff_geodesic_shape(*frame, shape)?;
+                } else {
+                    crate::broadcast::metrics::require_nonempty_hausdorff(shape)?;
+                }
+                Ok(contains_filled_area(shape))
+            })?;
+            has_areal_support |= areal;
+        }
+        if has_areal_support && matches!(model, crs::MetricModel::Planar { .. }) {
+            return Ok(None);
         }
         Ok(Some(same_storage_similarity_metric_zeros(storage)))
     }
@@ -154,16 +192,31 @@ impl SimilarityOp {
         len: usize,
         scale: f64,
     ) -> crate::error::Result<Vec<f64>> {
-        let mut values = vec![0.0; len];
+        let mut values = Vec::new();
+        values.try_reserve_exact(len)?;
+        values.resize(len, 0.0);
         match self {
-            Self::Hausdorff => {
-                crate::geometry::hausdorff_distance_line_columns_batch(left, right, &mut values)?;
+            Self::Hausdorff {
+                max_error: Some(max_error),
+            } => {
+                crate::geometry::hausdorff_distance_line_columns_batch(
+                    left,
+                    right,
+                    &mut values,
+                    *max_error,
+                    scale,
+                )?;
+            },
+            Self::Hausdorff { max_error: None } => {
+                return Err(crate::geometry::GeometryErrorKind::message(
+                    "hausdorff_distance requires max_error for planar metrics",
+                ));
             },
             Self::Frechet { .. } => {
                 crate::geometry::frechet_distance_line_columns_batch(left, right, &mut values);
+                crate::geometry::scale_metric_values(&mut values, scale);
             },
         }
-        crate::geometry::scale_metric_values(&mut values, scale);
         Ok(values)
     }
 
@@ -175,15 +228,21 @@ impl SimilarityOp {
         right_ys: &[f64],
         scale: f64,
     ) -> crate::error::Result<f64> {
-        let value = match self {
-            Self::Hausdorff => crate::geometry::hausdorff_distance_line_columns(
-                left_xs, left_ys, right_xs, right_ys,
-            )?,
-            Self::Frechet { .. } => {
-                crate::geometry::frechet_distance_line_columns(left_xs, left_ys, right_xs, right_ys)
+        match self {
+            Self::Hausdorff {
+                max_error: Some(max_error),
+            } => crate::geometry::hausdorff_distance_line_columns(
+                left_xs, left_ys, right_xs, right_ys, *max_error, scale,
+            ),
+            Self::Hausdorff { max_error: None } => {
+                Err(crate::geometry::GeometryErrorKind::message(
+                    "hausdorff_distance requires max_error for planar metrics",
+                ))
             },
-        };
-        Ok(value * scale)
+            Self::Frechet { .. } => Ok(crate::geometry::frechet_distance_line_columns(
+                left_xs, left_ys, right_xs, right_ys,
+            ) * scale),
+        }
     }
 
     #[expect(
@@ -202,12 +261,35 @@ impl SimilarityOp {
             return Some(Ok(0.0));
         }
         match self {
-            Self::Hausdorff => Some(Err(crate::geometry::GeometryErrorKind::message(
+            Self::Hausdorff { .. } => Some(Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty geometries",
             ))),
             Self::Frechet { .. } => Some(Ok(f64::INFINITY * scale)),
         }
     }
+}
+
+fn parse_max_error(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<f64>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_none() {
+        return Ok(None);
+    }
+    let Some(value) = crate::f64_scalar_named("max_error", value)? else {
+        return Err(crate::py::errors::parameter_error(
+            "max_error must be a scalar positive finite float",
+            "max_error",
+        ));
+    };
+    if !(value.is_finite() && value > 0.0) {
+        return Err(crate::py::errors::float_parameter_error(
+            format!("max_error must be a positive finite scalar, got {value}"),
+            "max_error",
+            value,
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn parse_densify(value: Option<&Bound<'_, PyAny>>, len: usize) -> PyResult<SimilarityDensify> {

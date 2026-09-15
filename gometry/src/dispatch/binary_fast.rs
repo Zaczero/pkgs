@@ -353,9 +353,12 @@ pub(crate) fn dispatch_hausdorff_distance(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
+    max_error: Option<&Bound<'_, PyAny>>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    dispatch_similarity_metric(py, left, right, unit, |_| Ok(SimilarityOp::hausdorff()))
+    dispatch_similarity_metric(py, left, right, unit, |_| {
+        SimilarityOp::hausdorff(max_error)
+    })
 }
 
 /// Fréchet-distance free-function dispatch through the spine.
@@ -551,8 +554,10 @@ mod tests {
             let right = Bound::new(py, right).unwrap().into_any();
 
             reset_shape_iter_materializations();
-            let result = super::dispatch_hausdorff_distance(py, &left, &right, None)
-                .expect("masked pair is a valid Hausdorff broadcast");
+            let max_error = Bound::new(py, 1e-12).unwrap().into_any();
+            let result =
+                super::dispatch_hausdorff_distance(py, &left, &right, Some(&max_error), None)
+                    .expect("masked pair is a valid Hausdorff broadcast");
             let values = result
                 .bind(py)
                 .extract::<Vec<f64>>()

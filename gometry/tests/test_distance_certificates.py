@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 
 import gometry as gm
@@ -32,10 +33,13 @@ def test_continuous_hausdorff_preserves_reciprocal_axis_metric(
     exponent: int, swap_axes: bool
 ) -> None:
     baseline, bent, expected = _hausdorff_case(exponent, swap_axes)
+    max_error = math.ulp(expected)
     for left, right in ((baseline, bent), (bent, baseline)):
-        assert gm.hausdorff_distance(left, right) == expected
+        assert gm.hausdorff_distance(left, right, max_error=max_error) == expected
         assert gm.hausdorff_distance(
-            gm.GeometryArray([left]), gm.GeometryArray([right])
+            gm.GeometryArray([left]),
+            gm.GeometryArray([right]),
+            max_error=max_error,
         ).tolist() == [expected]
 
 
@@ -52,8 +56,9 @@ def test_continuous_hausdorff_reciprocal_axis_carriers(
         else (lambda geom: gm.GeometryCollection([geom]))
     )
     left, right = wrap(baseline), wrap(bent)
-    assert gm.hausdorff_distance(left, right) == expected
-    assert gm.hausdorff_distance(right, left) == expected
+    max_error = math.ulp(expected)
+    assert gm.hausdorff_distance(left, right, max_error=max_error) == expected
+    assert gm.hausdorff_distance(right, left, max_error=max_error) == expected
 
 
 _ZERO_AREA_DEGENERATE_SHELLS = [

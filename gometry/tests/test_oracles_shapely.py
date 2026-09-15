@@ -277,7 +277,9 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     assert gm.covered_by(left.point_on_surface(), left)
     assert covered_by(point_on_surface(shapely_left), shapely_left)
     assert gm.hausdorff_distance(
-        reference_line, gm.LineString([(0, 1), (3, 5), (6, 5)])
+        reference_line,
+        gm.LineString([(0, 1), (3, 5), (6, 5)]),
+        max_error=1e-12,
     ) == pytest.approx(
         hausdorff_distance(
             shapely_reference_line, from_wkt('LINESTRING (0 1, 3 5, 6 5)')
@@ -484,9 +486,12 @@ def test_geographic_hausdorff_uses_geodesic_path() -> None:
     geo_far = gm.LineString([(0, 0.001), (0.005, 0.05), (0.01, 0.001)], crs=4326)
     raw = gm.hausdorff_distance(geo_peak, geo_far)
     assert raw > 5000
-    assert gm.hausdorff_distance(geo_peak, geo_far, unit='planar') == pytest.approx(
-        0.05
-    )
+    assert gm.hausdorff_distance(
+        geo_peak,
+        geo_far,
+        max_error=1e-12,
+        unit='planar',
+    ) == pytest.approx(0.05)
 
 
 def test_repair_uses_exact_source_occurrence_winding() -> None:

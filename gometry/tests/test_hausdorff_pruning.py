@@ -318,14 +318,18 @@ def _assert_tolerance(actual: float, expected: float, key: str) -> None:
 def test_hausdorff_pruning_matches_preoptimization_tolerance(
     key: str, left: gm.Geometry, right: gm.Geometry
 ) -> None:
-    _assert_tolerance(gm.hausdorff_distance(left, right), _BASELINE[key], key)
+    _assert_tolerance(
+        gm.hausdorff_distance(left, right, max_error=1e-12),
+        _BASELINE[key],
+        key,
+    )
 
 
 def test_exact_hausdorff_exceeds_discrete_vertex_metric_on_long_segment() -> None:
     """Interior segment peaks are invisible to vertex-only (discrete) Hausdorff."""
     long_line = gm.LineString([(0, 0), (100, 0)])
     near_pt = gm.Point(50, 1)
-    exact = gm.hausdorff_distance(long_line, near_pt)
+    exact = gm.hausdorff_distance(long_line, near_pt, max_error=1e-12)
     discrete = 50.00999900019995
     _assert_tolerance(exact, _BASELINE['long_segment_exact'], 'long_segment_exact')
     assert exact > discrete - 1e-09
@@ -334,8 +338,12 @@ def test_exact_hausdorff_exceeds_discrete_vertex_metric_on_long_segment() -> Non
 
 def test_hausdorff_empty_and_degenerate_edges() -> None:
     with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-        gm.hausdorff_distance(gm.Point(0, 0), gm.GeometryCollection([]))
-    assert gm.hausdorff_distance(gm.Point(0, 0), gm.Point(0, 0)) == 0.0
+        gm.hausdorff_distance(
+            gm.Point(0, 0),
+            gm.GeometryCollection([]),
+            max_error=1e-12,
+        )
+    assert gm.hausdorff_distance(gm.Point(0, 0), gm.Point(0, 0), max_error=1e-12) == 0.0
 
 
 def test_hausdorff_packed_array_matches_scalar() -> None:
@@ -344,8 +352,9 @@ def test_hausdorff_packed_array_matches_scalar() -> None:
         gm.LineString([(0.0, 1.0), (5.0, 8.0), (10.0, 1.0)]),
     ])
     scalar = [
-        gm.hausdorff_distance(a, b) for a, b in zip(lines, lines[::-1], strict=True)
+        gm.hausdorff_distance(a, b, max_error=1e-12)
+        for a, b in zip(lines, lines[::-1], strict=True)
     ]
-    bulk = gm.hausdorff_distance(lines, lines[::-1]).tolist()
+    bulk = gm.hausdorff_distance(lines, lines[::-1], max_error=1e-12).tolist()
     for left, right in zip(scalar, bulk, strict=True):
         _assert_tolerance(left, right, 'packed_scalar_bulk')

@@ -65,6 +65,20 @@ pub(crate) fn ensure_geodesic_shape(
     Ok(())
 }
 
+pub(crate) fn ensure_hausdorff_geodesic_shape(
+    frame: GeographicFrame,
+    shape: &Shape,
+) -> crate::error::Result<()> {
+    crs::ensure_geographic_domain_in_frame(frame, shape)?;
+    require_nonempty_hausdorff(shape)?;
+    if contains_filled_area(shape) {
+        return Err(crs::CrsError::message(
+            "geodesic distance for polygon interiors is unsupported",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn geodesic_point_columns_to_shape_values(
     crs: &str,
     xs: &[f64],
@@ -426,7 +440,7 @@ fn split_geodesic_operands(
     Ok(None)
 }
 
-fn contains_filled_area(shape: &Shape) -> bool {
+pub(crate) fn contains_filled_area(shape: &Shape) -> bool {
     match shape {
         Shape::Polygon(_) | Shape::MultiPolygon(_) => true,
         Shape::GeometryCollection(geometries) => geometries.iter().any(contains_filled_area),
@@ -598,21 +612,33 @@ pub(crate) fn metric_hausdorff(
     model: &crs::MetricModel,
     a: &Shape,
     b: &Shape,
+    max_error: Option<f64>,
 ) -> crate::error::Result<f64> {
     // Domain validation BEFORE the identity exit: equal operands with
     // out-of-domain latitude must still raise on a geographic model.
-    if let crs::MetricModel::Geodesic { frame, .. } = model {
-        crs::ensure_geographic_domain_in_frame(*frame, a)?;
-        crs::ensure_geographic_domain_in_frame(*frame, b)?;
+    match model {
+        crs::MetricModel::Geodesic { frame, .. } => {
+            ensure_hausdorff_geodesic_shape(*frame, a)?;
+            ensure_hausdorff_geodesic_shape(*frame, b)?;
+        },
+        crs::MetricModel::Planar { .. } => {
+            require_nonempty_hausdorff(a)?;
+            require_nonempty_hausdorff(b)?;
+        },
     }
-    require_nonempty_hausdorff(a)?;
-    require_nonempty_hausdorff(b)?;
-    if a == b {
+    if a == b && !contains_filled_area(a) {
         return Ok(0.0);
     }
     dispatch_metric_model(
         model,
-        |to_metre| Ok(a.hausdorff_distance(b)? * to_metre),
+        |to_metre| {
+            crate::geometry::hausdorff_distance(
+                a,
+                b,
+                max_error.expect("planar Hausdorff model was validated before evaluation"),
+                to_metre,
+            )
+        },
         |crs, _, state| crs::geodesic_hausdorff_at(crs, a, b, state),
     )
 }

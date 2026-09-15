@@ -5,6 +5,7 @@ Deterministic Fraction-referenced fixtures. No wall-clock assertions.
 
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 
 import gometry as gm
@@ -117,12 +118,13 @@ def test_subnormal_hausdorff_matches_exact_separation() -> None:
     """Hausdorff finishers inherit the shared squared-norm trust rule."""
     origin = gm.Point(0.0, 0.0)
     for sep in (_SEP_EXACT_ZERO, _SEP_SUBNORMAL_SQ, _SEP_BOUNDARY_DW):
-        got = gm.hausdorff_distance(origin, gm.Point(sep, 0.0))
+        max_error = math.ulp(float(sep))
+        got = gm.hausdorff_distance(origin, gm.Point(sep, 0.0), max_error=max_error)
         assert got == float(sep), f'scalar sep={sep}: {got!r}'
         # Parallel unit lines: continuous HD equals the offset.
         left = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
         right = gm.LineString([(0.0, sep), (1.0, sep)])
-        got_line = gm.hausdorff_distance(left, right)
+        got_line = gm.hausdorff_distance(left, right, max_error=max_error)
         assert got_line == float(sep), f'parallel sep={sep}: {got_line!r}'
 
 
@@ -152,7 +154,7 @@ def test_subnormal_metric_family_is_monotone() -> None:
     for sep in seps:
         a = gm.Point(0.0, 0.0)
         b = gm.Point(sep, 0.0)
-        haus.append(gm.hausdorff_distance(a, b))
+        haus.append(gm.hausdorff_distance(a, b, max_error=math.ulp(sep)))
         left = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
         right = gm.LineString([(0.0, sep), (1.0, sep)])
         frech.append(gm.frechet_distance(left, right))

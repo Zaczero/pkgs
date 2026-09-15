@@ -52,6 +52,7 @@ pub(crate) fn array_crs_metric_float(
     match other {
         GeometryInput::One(right) => {
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
+            operation.validate_model(&model)?;
             let left = array.clone();
             let right = Arc::clone(&right.shape);
             float64_array(
@@ -84,6 +85,7 @@ pub(crate) fn array_crs_metric_float(
             let lefts = Arc::clone(array.storage_arc());
             let rights = Arc::clone(right.storage_arc());
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
+            operation.validate_model(&model)?;
             let missing = crate::array::missing::union_pair(array.missing(), right.missing())?;
             if Arc::ptr_eq(&lefts, &rights)
                 && let Some(values) =

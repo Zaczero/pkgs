@@ -326,7 +326,11 @@ def test_frechet_separates_kind_from_content() -> None:
         gm.frechet_distance(gm.box(0, 0, 1, 1), line)
     assert gm.frechet_distance(gm.from_wkt('LINESTRING EMPTY'), line) == math.inf
     with pytest.raises(errors.InvalidGeometryError, match='non-empty'):
-        gm.hausdorff_distance(gm.from_wkt('LINESTRING EMPTY'), line)
+        gm.hausdorff_distance(
+            gm.from_wkt('LINESTRING EMPTY'),
+            line,
+            max_error=1e-12,
+        )
 
     polygons = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 1, 2, 2)])
     with pytest.raises(errors.GeometryTypeError, match='Frechet distance requires'):

@@ -127,6 +127,14 @@ def test_geodesic_metrics_reject_filled_polygon_interiors() -> None:
     with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
         gm.hausdorff_distance(probe, target)
     with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.hausdorff_distance(target, target)
+    target_array = gm.GeometryArray([target])
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.hausdorff_distance(target_array, target_array)
+    empty_target = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
+        gm.hausdorff_distance(empty_target, empty_target)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
         gm.nearest_points(probe, target)
     with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
         gm.shortest_line(probe, target)

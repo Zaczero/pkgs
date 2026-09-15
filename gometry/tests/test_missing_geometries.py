@@ -453,17 +453,20 @@ def test_similarity_metrics_degrade_missing_rows_to_nan() -> None:
     dense = gm.GeometryArray([line0, line1, line1])
     right_missing = gm.GeometryArray([line0, line1, None])
 
-    for metric in (gm.hausdorff_distance, gm.frechet_distance):
-        scalar = metric(masked, line0)
+    for metric, kwargs in (
+        (gm.hausdorff_distance, {'max_error': 1e-12}),
+        (gm.frechet_distance, {}),
+    ):
+        scalar = metric(masked, line0, **kwargs)
         assert scalar[0] == pytest.approx(0.0)
         assert math.isnan(scalar[1])
 
-        same_storage = metric(masked, masked)
+        same_storage = metric(masked, masked, **kwargs)
         assert same_storage[0] == pytest.approx(0.0)
         assert math.isnan(same_storage[1])
         assert same_storage[2] == pytest.approx(0.0)
 
-        pair = metric(masked, right_missing)
+        pair = metric(masked, right_missing, **kwargs)
         assert pair[0] == pytest.approx(0.0)
         assert math.isnan(pair[1])
         assert math.isnan(pair[2])

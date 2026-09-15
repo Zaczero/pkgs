@@ -326,6 +326,16 @@ Filled `Polygon` and `MultiPolygon` interiors are unsupported and raise
 `unit='planar'` for coordinate-space areal distance, or reproject to a suitable
 projected CRS.
 
+Hausdorff's planar path is a certified computation rather than an unchecked
+floating-point approximation. Pass one positive, finite scalar
+`max_error` in the final result units: it is required for a CRS-free or
+projected planar result, and it is also required when `unit='planar'` selects
+coordinate-space distance on geographic data. A projected result uses native
+units by default or metres with `unit='meters'`, so the bound follows the same
+choice. Omit `max_error` only for the existing numerical geodesic path;
+supplying it to a geodesic result raises because geodesic Hausdorff is not
+certified by this parameter.
+
 ### Geographic box boundary fidelity
 
 For ordinary native-range, non-wrapping geographic [`gm.box`][gometry.box]
@@ -444,6 +454,8 @@ upper estimate. Backend position/inverse and parameter/arithmetic allowances
 remain separate from that algorithmic gap. The scalar is selected from an
 attained source/target sample; it is not an interval upper bound or a contact
 certificate.
+The geodesic path requires `max_error` to be omitted; its numerical quality
+budgets do not turn a requested bound into a certificate.
 
 Segment construction, curvature bounds, and search parameters are normalized
 to semi-major axis `1` and rescaled only for final metric outputs. Positive

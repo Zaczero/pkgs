@@ -363,11 +363,14 @@ def test_reciprocal_tessellation_family_has_no_similarity_axis_loss(
                 gm.GeometryCollection([shifted]),
             ),
         ):
-            forward = float(gm.hausdorff_distance(left, right))
-            reverse = float(gm.hausdorff_distance(right, left))
+            max_error = math.ulp(float(expected))
+            forward = float(gm.hausdorff_distance(left, right, max_error=max_error))
+            reverse = float(gm.hausdorff_distance(right, left, max_error=max_error))
             packed = float(
                 gm.hausdorff_distance(
-                    gm.GeometryArray([left]), gm.GeometryArray([right])
+                    gm.GeometryArray([left]),
+                    gm.GeometryArray([right]),
+                    max_error=max_error,
                 )[0]
             )
             for value in (forward, reverse, packed):
@@ -418,11 +421,25 @@ def test_extreme_hausdorff_general_finisher_is_finite_for_every_kind() -> None:
         ):
             right = origin if left is source else gm.GeometryCollection([origin])
             values = (
-                float(gm.hausdorff_distance(left, right)),
-                float(gm.hausdorff_distance(right, left)),
                 float(
                     gm.hausdorff_distance(
-                        gm.GeometryArray([left]), gm.GeometryArray([right])
+                        left,
+                        right,
+                        max_error=math.ulp(expected),
+                    )
+                ),
+                float(
+                    gm.hausdorff_distance(
+                        right,
+                        left,
+                        max_error=math.ulp(expected),
+                    )
+                ),
+                float(
+                    gm.hausdorff_distance(
+                        gm.GeometryArray([left]),
+                        gm.GeometryArray([right]),
+                        max_error=math.ulp(expected),
                     )[0]
                 ),
             )
@@ -469,11 +486,25 @@ def test_reciprocal_hausdorff_to_point_is_finite_for_every_kind() -> None:
         ):
             right = origin if left is source else gm.GeometryCollection([origin])
             values = (
-                float(gm.hausdorff_distance(left, right)),
-                float(gm.hausdorff_distance(right, left)),
                 float(
                     gm.hausdorff_distance(
-                        gm.GeometryArray([left]), gm.GeometryArray([right])
+                        left,
+                        right,
+                        max_error=math.ulp(expected),
+                    )
+                ),
+                float(
+                    gm.hausdorff_distance(
+                        right,
+                        left,
+                        max_error=math.ulp(expected),
+                    )
+                ),
+                float(
+                    gm.hausdorff_distance(
+                        gm.GeometryArray([left]),
+                        gm.GeometryArray([right]),
+                        max_error=math.ulp(expected),
                     )[0]
                 ),
             )
@@ -493,18 +524,32 @@ def test_hausdorff_cross_kind_identity_and_reciprocal_shared_baseline() -> None:
     """
     line = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
     multiline = gm.MultiLineString([[(0.0, 0.0), (1.0, 0.0)]])
-    assert gm.hausdorff_distance(line, multiline) == 0.0
-    assert gm.hausdorff_distance(multiline, line) == 0.0
+    assert gm.hausdorff_distance(line, multiline, max_error=1e-12) == 0.0
+    assert gm.hausdorff_distance(multiline, line, max_error=1e-12) == 0.0
 
     length, offset = 1e200, 1e-200
     baseline = gm.LineString([(0.0, 0.0), (length, 0.0)])
     bend = gm.LineString([(0.0, 0.0), (length / 2.0, offset), (length, 0.0)])
     values = (
-        float(gm.hausdorff_distance(baseline, bend)),
-        float(gm.hausdorff_distance(bend, baseline)),
         float(
             gm.hausdorff_distance(
-                gm.GeometryArray([baseline]), gm.GeometryArray([bend])
+                baseline,
+                bend,
+                max_error=math.ulp(offset),
+            )
+        ),
+        float(
+            gm.hausdorff_distance(
+                bend,
+                baseline,
+                max_error=math.ulp(offset),
+            )
+        ),
+        float(
+            gm.hausdorff_distance(
+                gm.GeometryArray([baseline]),
+                gm.GeometryArray([bend]),
+                max_error=math.ulp(offset),
             )[0]
         ),
     )
@@ -755,9 +800,9 @@ def test_hausdorff_frechet_huge_parallel_finite() -> None:
     sep = math.ulp(base) * 16
     a = gm.LineString([(0.0, base), (1.0, base)])
     b = gm.LineString([(0.0, base + sep), (1.0, base + sep)])
-    hd = gm.hausdorff_distance(a, b)
-    fd = gm.frechet_distance(a, b)
     exact = _stored_fraction(base + sep) - _stored_fraction(base)
+    hd = gm.hausdorff_distance(a, b, max_error=math.ulp(float(exact)))
+    fd = gm.frechet_distance(a, b)
     assert math.isfinite(hd) and math.isfinite(fd)
     assert _stored_fraction(float(hd)) == exact
     assert _stored_fraction(float(fd)) == exact
@@ -767,8 +812,12 @@ def test_hausdorff_line_vs_endpoints_tiny_and_huge() -> None:
     for length in (1e-200, 1e200):
         line = gm.LineString([(0.0, 0.0), (length, 0.0)])
         ends = gm.MultiPoint([(0.0, 0.0), (length, 0.0)])
-        got = gm.hausdorff_distance(line, ends)
         exact = _stored_fraction(length) / 2
+        got = gm.hausdorff_distance(
+            line,
+            ends,
+            max_error=math.ulp(float(exact)),
+        )
         assert math.isfinite(got)
         assert _stored_fraction(float(got)) == exact, f'L={length}: got={got}'
 
@@ -777,7 +826,7 @@ def test_hausdorff_parallel_unit_lines_1e_200() -> None:
     sep = 1e-200
     a = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
     b = gm.LineString([(0.0, sep), (1.0, sep)])
-    got = gm.hausdorff_distance(a, b)
+    got = gm.hausdorff_distance(a, b, max_error=math.ulp(sep))
     assert _stored_fraction(float(got)) == _stored_fraction(sep)
 
 
@@ -787,9 +836,9 @@ def test_hausdorff_packed_array_shares_extreme_finisher() -> None:
     sep = math.ulp(base) * 16
     left = gm.GeometryArray([gm.LineString([(0.0, base), (1.0, base)])])
     right = gm.GeometryArray([gm.LineString([(0.0, base + sep), (1.0, base + sep)])])
-    arr = gm.hausdorff_distance(left, right)
-    frechet = gm.frechet_distance(left, right)
     exact = _stored_fraction(base + sep) - _stored_fraction(base)
+    arr = gm.hausdorff_distance(left, right, max_error=math.ulp(float(exact)))
+    frechet = gm.frechet_distance(left, right)
     assert math.isfinite(float(arr[0])), f'packed HD nonfinite: {arr[0]!r}'
     assert math.isfinite(float(frechet[0])), f'packed Fréchet nonfinite: {frechet[0]!r}'
     assert _stored_fraction(float(arr[0])) == exact
@@ -806,9 +855,15 @@ def test_hausdorff_four_vertex_packed_exit_shares_extreme_finisher() -> None:
     packed = gm.hausdorff_distance(
         gm.GeometryArray([left]),
         gm.GeometryArray([right]),
+        max_error=math.ulp(sep),
     )
     exact = _stored_fraction(base + sep) - _stored_fraction(base)
-    assert _stored_fraction(float(gm.hausdorff_distance(left, right))) == exact
+    assert (
+        _stored_fraction(
+            float(gm.hausdorff_distance(left, right, max_error=math.ulp(sep)))
+        )
+        == exact
+    )
     assert _stored_fraction(float(packed[0])) == exact
 
 
@@ -833,10 +888,15 @@ def test_hausdorff_collinear_polyline_reduction_is_exact_and_symmetric(
         (3.0 * large, tiny),
     ])
     expected = math.hypot(large, tiny)
-    forward = float(gm.hausdorff_distance(left, right))
-    reverse = float(gm.hausdorff_distance(right, left))
+    max_error = math.ulp(expected)
+    forward = float(gm.hausdorff_distance(left, right, max_error=max_error))
+    reverse = float(gm.hausdorff_distance(right, left, max_error=max_error))
     packed = float(
-        gm.hausdorff_distance(gm.GeometryArray([left]), gm.GeometryArray([right]))[0]
+        gm.hausdorff_distance(
+            gm.GeometryArray([left]),
+            gm.GeometryArray([right]),
+            max_error=max_error,
+        )[0]
     )
     assert _stored_fraction(forward) == _stored_fraction(expected)
     assert _stored_fraction(reverse) == _stored_fraction(expected)
@@ -848,8 +908,8 @@ def test_hausdorff_backtracking_collinear_line_is_not_reduced_to_endpoints() -> 
     left = gm.LineString([(0.0, 0.0), (10.0, 0.0), (-5.0, 0.0)])
     right = gm.LineString([(-5.0, 1.0), (0.0, 1.0)])
     expected = math.sqrt(101.0)
-    assert gm.hausdorff_distance(left, right) == expected
-    assert gm.hausdorff_distance(right, left) == expected
+    assert gm.hausdorff_distance(left, right, max_error=1e-12) == expected
+    assert gm.hausdorff_distance(right, left, max_error=1e-12) == expected
 
 
 @pytest.mark.parametrize('power', [26, 27, 29])

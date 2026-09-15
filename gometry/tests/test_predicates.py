@@ -179,14 +179,19 @@ def test_planar_similarity_metrics_are_rust_backed() -> None:
     lonlat = gm.LineString([(0, 0), (1, 1)], crs=4326)
     peak_line = gm.LineString([(0, 0), (10, 0)])
     far_peak = gm.LineString([(0, 1), (5, 8), (10, 1)])
-    assert gm.hausdorff_distance(peak_line, far_peak) == pytest.approx(8)
-    assert gm.hausdorff_distance(left, right) == pytest.approx(1)
+    assert gm.hausdorff_distance(peak_line, far_peak, max_error=1e-12) == pytest.approx(
+        8
+    )
+    assert gm.hausdorff_distance(left, right, max_error=1e-12) == pytest.approx(1)
     assert gm.hausdorff_distance(
-        point, gm.MultiPoint([(0, 0), (1, 2)])
+        point, gm.MultiPoint([(0, 0), (1, 2)]), max_error=1e-12
     ) == pytest.approx(5**0.5)
-    assert gm.hausdorff_distance(left, values) == pytest.approx([1, 1])
-    assert gm.hausdorff_distance(values, left) == pytest.approx([1, 1])
-    assert gm.hausdorff_distance(values, values) == pytest.approx([0, 0])
+    assert gm.hausdorff_distance(left, values, max_error=1e-12) == pytest.approx([1, 1])
+    assert gm.hausdorff_distance(values, left, max_error=1e-12) == pytest.approx([1, 1])
+    assert gm.hausdorff_distance(values, values, max_error=1e-12) == pytest.approx([
+        0,
+        0,
+    ])
     assert gm.frechet_distance(left, right) == pytest.approx(1)
     assert gm.frechet_distance(left, values) == pytest.approx([1, 2**0.5])
     assert gm.frechet_distance(values, left) == pytest.approx([1, 2**0.5])
@@ -195,11 +200,20 @@ def test_planar_similarity_metrics_are_rust_backed() -> None:
     assert gm.hausdorff_distance(lonlat, geo_line) == pytest.approx(
         110575.06, rel=0.0001
     )
-    assert gm.hausdorff_distance(lonlat, geo_line, unit='planar') == pytest.approx(1)
+    assert gm.hausdorff_distance(
+        lonlat,
+        geo_line,
+        max_error=1e-12,
+        unit='planar',
+    ) == pytest.approx(1)
     assert gm.frechet_distance(lonlat, geo_line, unit='planar') == pytest.approx(1)
     assert gm.frechet_distance(lonlat, geo_line) == pytest.approx(110575.06, rel=0.0001)
     with pytest.raises(ValueError, match='same length'):
-        gm.hausdorff_distance(values, gm.GeometryArray([right]))
+        gm.hausdorff_distance(
+            values,
+            gm.GeometryArray([right]),
+            max_error=1e-12,
+        )
     with pytest.raises(TypeError, match='Frechet distance requires'):
         gm.frechet_distance(left, gm.box(0, 0, 1, 1))
 
@@ -263,8 +277,10 @@ def test_array_detached_map_and_metric_lanes_match_scalar_results() -> None:
         part.to_wkt() for geom in polygons for part in geom.triangulate(method='earcut')
     ]
     right = gm.LineString([(0, 1), (1, 1), (2, 1)])
-    assert list(gm.hausdorff_distance(line_array, right)) == pytest.approx([
-        gm.hausdorff_distance(geom, right) for geom in lines
+    assert list(
+        gm.hausdorff_distance(line_array, right, max_error=1e-12)
+    ) == pytest.approx([
+        gm.hausdorff_distance(geom, right, max_error=1e-12) for geom in lines
     ])
     assert list(gm.frechet_distance(line_array, right)) == pytest.approx([
         gm.frechet_distance(geom, right) for geom in lines

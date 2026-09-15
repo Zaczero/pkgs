@@ -198,9 +198,14 @@ def _exact_cases() -> list[ExactCase]:
     free_line2 = gm.LineString([(0.0, 1.0), (10.0, 1.0)])
     cases.append((
         'hausdorff_distance',
-        lambda: gm.hausdorff_distance(line, line2),
-        lambda: gm.hausdorff_distance(line, line2, unit='meters'),
-        lambda: gm.hausdorff_distance(free_line, free_line2, unit='meters'),
+        lambda: gm.hausdorff_distance(line, line2, max_error=1e-12),
+        lambda: gm.hausdorff_distance(line, line2, max_error=1e-12, unit='meters'),
+        lambda: gm.hausdorff_distance(
+            free_line,
+            free_line2,
+            max_error=1e-12,
+            unit='meters',
+        ),
         1.0,
     ))
     cases.append((

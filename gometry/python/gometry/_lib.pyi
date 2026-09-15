@@ -16149,6 +16149,7 @@ def hausdorff_distance(
     left: Geometry,
     right: Geometry,
     *,
+    max_error: float | None = None,
     unit: DistanceUnit | None = None,
 ) -> float: ...
 @overload
@@ -16156,6 +16157,7 @@ def hausdorff_distance(
     left: GeometryArray[Geometry | None],
     right: Geometry | GeometryArray[Geometry | None],
     *,
+    max_error: float | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
@@ -16163,6 +16165,7 @@ def hausdorff_distance(
     left: Geometry,
     right: GeometryArray[Geometry | None],
     *,
+    max_error: float | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
@@ -16170,6 +16173,7 @@ def hausdorff_distance(
     left: Geometry | GeometryArray[Geometry | None],
     right: Geometry | GeometryArray[Geometry | None],
     *,
+    max_error: float | None = None,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
     """Compute the continuous Hausdorff (set-to-set) distance between ``left``

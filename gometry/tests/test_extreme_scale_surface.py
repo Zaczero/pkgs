@@ -202,7 +202,13 @@ def test_parallel_metrics(scale_label: str, s: float) -> None:
     assert_finite_eq(
         'hausdorff/parallel',
         scale_label,
-        float(gm.hausdorff_distance(parallel_a, parallel_b)),
+        float(
+            gm.hausdorff_distance(
+                parallel_a,
+                parallel_b,
+                max_error=math.ulp(sep_ref),
+            )
+        ),
         sep_ref,
     )
     assert_finite_eq(

@@ -54,7 +54,7 @@ def _shared_fixtures() -> dict[str, Any]:
         'merc': merc,
         'union': gm.union(poly, line),
         'intersection': gm.intersection(poly, line),
-        'hausdorff': gm.hausdorff_distance(poly, line),
+        'hausdorff': gm.hausdorff_distance(poly, line, max_error=1e-12),
         'distance': gm.distance(poly, probe),
         'idx_hits': idx.query(probe).tolist(),
         'prepared_contains': gm.contains(prepared, hole),
@@ -92,7 +92,9 @@ def _worker(
         assert idx.query(probe).tolist() == fixtures['idx_hits']
         assert idx.candidates(probe).tolist() == fixtures['idx_hits']
         assert gm.distance(poly, probe) == fixtures['distance']
-        assert gm.hausdorff_distance(poly, line) == fixtures['hausdorff']
+        assert (
+            gm.hausdorff_distance(poly, line, max_error=1e-12) == fixtures['hausdorff']
+        )
         assert gm.union(poly, line) == fixtures['union']
         assert gm.intersection(poly, line) == fixtures['intersection']
         assert gm.covers(wgs, wgs_point) == fixtures['covers_expected']

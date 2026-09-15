@@ -344,5 +344,5 @@ def test_hausdorff_does_not_run_a_brute_force_oracle_per_call() -> None:
     # answer, which sat about 1.8e-14 away — the change is a precision gain as
     # well as a cost removal.
     exact = 6.609001368025945
-    assert abs(gm.hausdorff_distance(left, right) - exact) < 5e-15
-    assert abs(gm.hausdorff_distance(right, left) - exact) < 5e-15
+    assert abs(gm.hausdorff_distance(left, right, max_error=1e-15) - exact) < 5e-15
+    assert abs(gm.hausdorff_distance(right, left, max_error=1e-15) - exact) < 5e-15

@@ -38,7 +38,10 @@ def geometries_match(left: gm.Geometry, right: gm.Geometry) -> bool:
     if normalize_geometry_wkt(left) == normalize_geometry_wkt(right):
         return True
     try:
-        return gm.hausdorff_distance(left, right) <= HAUSDORFF_ATOL
+        return (
+            gm.hausdorff_distance(left, right, max_error=HAUSDORFF_ATOL)
+            <= HAUSDORFF_ATOL
+        )
     except Exception:
         return False
 

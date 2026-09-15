@@ -27,11 +27,11 @@ def _median_hausdorff(count: int) -> float:
     source, target = _case(count)
     expected = math.sqrt(1.25)
     for _ in range(3):
-        assert gm.hausdorff_distance(source, target) == expected
+        assert gm.hausdorff_distance(source, target, max_error=1e-12) == expected
     samples = []
     for _ in range(9):
         start = time.perf_counter()
-        result = gm.hausdorff_distance(source, target)
+        result = gm.hausdorff_distance(source, target, max_error=1e-12)
         samples.append(time.perf_counter() - start)
         assert result == expected
     return statistics.median(samples)

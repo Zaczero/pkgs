@@ -315,7 +315,7 @@ def test_hausdorff_extreme_parallel_separation_finite() -> None:
     # large enough to exercise overflow-prone naive paths.
     a = gm.LineString([(0.0, 0.0), (1e100, 0.0)])
     b = gm.LineString([(0.0, 1.0), (1e100, 1.0)])
-    d = gm.hausdorff_distance(a, b)
+    d = gm.hausdorff_distance(a, b, max_error=1e-12)
     assert math.isfinite(d)
     assert d == pytest.approx(1.0, rel=1e-9)
 
@@ -399,13 +399,13 @@ def test_hausdorff_frechet_tiny_parallel_separation() -> None:
     """B12: HD/FD on parallel lines 1e-200 apart must return ~1e-200, not 0."""
     a = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
     b = gm.LineString([(0.0, 1e-200), (1.0, 1e-200)])
-    hd = gm.hausdorff_distance(a, b)
+    hd = gm.hausdorff_distance(a, b, max_error=math.ulp(1e-200))
     fd = gm.frechet_distance(a, b)
     assert hd == pytest.approx(1e-200, rel=1e-6)
     assert fd == pytest.approx(1e-200, rel=1e-6)
     assert hd > 0.0 and fd > 0.0
     # Identical lines stay zero.
-    assert gm.hausdorff_distance(a, a) == 0.0
+    assert gm.hausdorff_distance(a, a, max_error=1e-12) == 0.0
     assert gm.frechet_distance(a, a) == 0.0
 
 
