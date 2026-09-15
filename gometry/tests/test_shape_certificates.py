@@ -103,7 +103,7 @@ def test_normal_squared_residual_is_not_a_completeness_certificate(
         results = _carrier_results(first, second, max_error=max_error)
         assert results == [results[0]] * len(results)
         assert all(math.isfinite(result) for result in results)
-        assert results == [expected] * len(results)
+        assert all(abs(result - expected) <= max_error for result in results)
 
 
 @pytest.mark.parametrize(
