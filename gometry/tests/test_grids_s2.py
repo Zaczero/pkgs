@@ -768,13 +768,11 @@ def test_s2_bounding_cell_single_point_uses_canonical_seam_owner() -> None:
     cells = []
     for lon in (-180.0, 180.0):
         point = gm.Point(lon, 0.0, crs=4326)
-        cells.extend(
-            [
-                gm.s2_bounding_cell(point),
-                gm.s2_bounding_cell(gm.GeometryCollection([point])),
-                gm.s2_bounding_cell(gm.GeometryArray([None, point, None])),
-            ]
-        )
+        cells.extend([
+            gm.s2_bounding_cell(point),
+            gm.s2_bounding_cell(gm.GeometryCollection([point])),
+            gm.s2_bounding_cell(gm.GeometryArray([None, point, None])),
+        ])
     assert {cell.token for cell in cells} == {expected}
     assert {cell.level for cell in cells} == {30}
 

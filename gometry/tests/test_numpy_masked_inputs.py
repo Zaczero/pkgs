@@ -75,7 +75,9 @@ def test_ordinary_ndarrays_and_subclasses_remain_accepted() -> None:
     assert list(gm.CellArray(ids, type=gm.H3Cell)) == [cell]
 
 
-def test_masked_array_subclasses_are_rejected_and_geometry_missing_rows_remain_native() -> None:
+def test_masked_array_subclasses_are_rejected_and_geometry_missing_rows_remain_native() -> (
+    None
+):
     class MaskedSubclass(np.ma.MaskedArray):
         pass
 

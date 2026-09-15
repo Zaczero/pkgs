@@ -229,12 +229,16 @@ def _dynamic_grid_source() -> tuple[gm.Geometry, gm.Geometry]:
     # emitted cells.
     from pyproj.transformer import TransformerGroup
 
-    operation = TransformerGroup(
-        7912,
-        7665,
-        always_xy=True,
-        allow_ballpark=False,
-    ).transformers[0].to_json_dict()
+    operation = (
+        TransformerGroup(
+            7912,
+            7665,
+            always_xy=True,
+            allow_ballpark=False,
+        )
+        .transformers[0]
+        .to_json_dict()
+    )
     crs = json.dumps({
         'type': 'BoundCRS',
         'source_crs': json.loads(gm.CRS(7912).to_projjson()),
@@ -280,7 +284,9 @@ def test_point_cell_array_admits_dynamic_source_frame_once(factory, kwargs) -> N
     source, _ = _dynamic_grid_source()
     values = gm.GeometryArray([source, None])
     explicit = values.to_crs(4326)
-    assert _cell_keys(factory(values, **kwargs)) == _cell_keys(factory(explicit, **kwargs))
+    assert _cell_keys(factory(values, **kwargs)) == _cell_keys(
+        factory(explicit, **kwargs)
+    )
 
 
 @pytest.mark.parametrize(
@@ -303,7 +309,9 @@ def test_dynamic_source_epoch_changes_a_boundary_cell() -> None:
     current, old = _dynamic_grid_source()
     current_lon = current.to_crs(4326)
     old_lon = old.to_crs(4326)
-    assert abs(current_lon.x - old_lon.x) > 1e-9 or abs(current_lon.y - old_lon.y) > 1e-9
+    assert (
+        abs(current_lon.x - old_lon.x) > 1e-9 or abs(current_lon.y - old_lon.y) > 1e-9
+    )
     assert _cell_keys(gm.tile_cover(current, zoom=29)) != _cell_keys(
         gm.tile_cover(old, zoom=29)
     )
@@ -789,13 +797,11 @@ def test_grid_cover_normalizes_projected_and_geographic_seam_sources(name, kwarg
 def test_grid_cover_array_empty_and_missing_rows_are_empty_groups(name, kwargs):
     """Present empty and missing rows preserve source-row association."""
     source = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326).to_crs(3857)
-    array = gm.GeometryArray(
-        [
-            source,
-            gm.from_wkt('POLYGON EMPTY', crs=3857),
-            None,
-        ]
-    )
+    array = gm.GeometryArray([
+        source,
+        gm.from_wkt('POLYGON EMPTY', crs=3857),
+        None,
+    ])
     cover = getattr(gm, f'{name}_cover')
     groups = cover(array, cell_rule='overlap', max_cells=None, **kwargs)
     assert [len(group) for group in groups] == [len(groups[0]), 0, 0]

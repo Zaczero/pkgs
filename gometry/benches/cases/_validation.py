@@ -12,10 +12,15 @@ from typing import Any
 
 
 def emit_validation(case_id: str, *, useful_output: dict[str, Any]) -> None:
-    print(json.dumps({
-        'schema_version': 1,
-        'artifact_type': 'gometry-focused-case-validation',
-        'case_id': case_id,
-        'timed': False,
-        'useful_output': useful_output,
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                'schema_version': 1,
+                'artifact_type': 'gometry-focused-case-validation',
+                'case_id': case_id,
+                'timed': False,
+                'useful_output': useful_output,
+            },
+            sort_keys=True,
+        )
+    )

@@ -280,11 +280,14 @@ def test_packed_polygon_per_row_bounds_include_external_hole() -> None:
 
 
 def test_packed_polygon_bounds_keep_empty_and_missing_rows() -> None:
-    values = gm.GeometryArray([
-        _external_hole_polygon(),
-        gm.Polygon([], crs=3857),
-        None,
-    ], crs=3857)
+    values = gm.GeometryArray(
+        [
+            _external_hole_polygon(),
+            gm.Polygon([], crs=3857),
+            None,
+        ],
+        crs=3857,
+    )
     np.testing.assert_array_equal(
         values.bounds,
         np.array([
@@ -305,7 +308,9 @@ def test_packed_polygon_warm_total_bounds_include_external_hole() -> None:
     assert values.total_bounds == _EXTERNAL_HOLE_BOUNDS
 
 
-def test_packed_polygon_duplicate_selection_total_bounds_include_external_hole() -> None:
+def test_packed_polygon_duplicate_selection_total_bounds_include_external_hole() -> (
+    None
+):
     values = _external_hole_array()
     assert values[[0, 0]].total_bounds == _EXTERNAL_HOLE_BOUNDS
 
@@ -318,10 +323,13 @@ def test_packed_polygon_envelope_fallback_bounds_include_external_hole() -> None
 @pytest.mark.parametrize('curve', ['hilbert', 'morton'])
 def test_packed_polygon_default_curve_frame_includes_external_hole(curve: str) -> None:
     values = _external_hole_array()
-    assert values.spatial_key(curve=curve).tolist() == values.spatial_key(
-        curve=curve,
-        bounds=_EXTERNAL_HOLE_BOUNDS,
-    ).tolist()
+    assert (
+        values.spatial_key(curve=curve).tolist()
+        == values.spatial_key(
+            curve=curve,
+            bounds=_EXTERNAL_HOLE_BOUNDS,
+        ).tolist()
+    )
 
 
 @pytest.mark.parametrize('kind', ROW_MAP_KINDS, ids=lambda k: k.name)
@@ -513,11 +521,14 @@ def test_masked_z_and_empty_lines_scatter_through_to_crs() -> None:
 
 
 def test_masked_packed_points_to_crs_preserves_rows_axes_and_order() -> None:
-    values = gm.GeometryArray([
-        gm.Point(-73.0, 41.0, z=10.0, m=7.0),
-        None,
-        gm.Point(-72.5, 41.25, z=20.0, m=8.0),
-    ], crs=4326)
+    values = gm.GeometryArray(
+        [
+            gm.Point(-73.0, 41.0, z=10.0, m=7.0),
+            None,
+            gm.Point(-72.5, 41.25, z=20.0, m=8.0),
+        ],
+        crs=4326,
+    )
 
     selected = values[[2, 1, 0]]
     transformed = selected.to_crs(3857)

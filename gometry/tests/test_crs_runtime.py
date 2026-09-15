@@ -16,9 +16,7 @@ _GOMETRY_PYTHON = str(Path(gm.__file__).resolve().parent.parent)
 _CHILD_TIMEOUT_SEC = 30
 
 _GRS80_LONLAT = '+proj=longlat +ellps=GRS80 +type=crs'
-_GRS80_TMERC = (
-    '+proj=tmerc +ellps=GRS80 +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 +type=crs'
-)
+_GRS80_TMERC = '+proj=tmerc +ellps=GRS80 +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 +type=crs'
 _GRS80_TMERC_PODER = (
     '+proj=tmerc +ellps=GRS80 +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 '
     '+algo=poder_engsager +type=crs'
@@ -28,9 +26,7 @@ _GRS80_TMERC_EVENDEN = (
     '+algo=evenden_snyder +type=crs'
 )
 _TMERC_AOI = (-10.0, 40.0, 30.0, 60.0)
-_HOSTILE_INI = (
-    '[general]\nnetwork = on\ntmerc_default_algo = evenden_snyder\n'
-)
+_HOSTILE_INI = '[general]\nnetwork = on\ntmerc_default_algo = evenden_snyder\n'
 
 
 def _proj_tmerc_xy(target: str) -> tuple[float, float]:
@@ -215,7 +211,9 @@ print('ok')
     assert list(tmp_path.glob('gometry-proj-*')) == []
 
 
-@pytest.mark.skipif(sys.platform != 'linux', reason='RLIMIT_FSIZE is a Linux write limit')
+@pytest.mark.skipif(
+    sys.platform != 'linux', reason='RLIMIT_FSIZE is a Linux write limit'
+)
 def test_crs_runtime_does_not_use_tmpdir_for_configuration(tmp_path: Path) -> None:
     """CRS operation succeeds without a usable temporary directory or writes."""
     unavailable = tmp_path / 'does-not-exist'

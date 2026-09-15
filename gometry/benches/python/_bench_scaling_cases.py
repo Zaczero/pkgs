@@ -60,15 +60,18 @@ def _candidate_case(operation: ScalingOperation) -> PublicCase:
         )
         for index in range(index_count)
     ])
-    boxes_sh = np.asarray([
-        shapely.box(
-            origin_x + index * spacing,
-            origin_y,
-            origin_x + index * spacing + 1.0,
-            origin_y + 1.0,
-        )
-        for index in range(index_count)
-    ], dtype=object)
+    boxes_sh = np.asarray(
+        [
+            shapely.box(
+                origin_x + index * spacing,
+                origin_y,
+                origin_x + index * spacing + 1.0,
+                origin_y + 1.0,
+            )
+            for index in range(index_count)
+        ],
+        dtype=object,
+    )
     index = gm.SpatialIndex(boxes_gm)
     tree = shapely.STRtree(boxes_sh)
 
@@ -85,15 +88,18 @@ def _candidate_case(operation: ScalingOperation) -> PublicCase:
             )
             for index in range(1_000)
         ])
-        queries_sh = np.asarray([
-            shapely.box(
-                origin_x + (index % point) * spacing + 0.1,
-                origin_y + 0.1,
-                origin_x + (index % point) * spacing + 0.2,
-                origin_y + 0.2,
-            )
-            for index in range(1_000)
-        ], dtype=object)
+        queries_sh = np.asarray(
+            [
+                shapely.box(
+                    origin_x + (index % point) * spacing + 0.1,
+                    origin_y + 0.1,
+                    origin_x + (index % point) * spacing + 0.2,
+                    origin_y + 0.2,
+                )
+                for index in range(1_000)
+            ],
+            dtype=object,
+        )
     elif operation.dimension == 'query-selectivity':
         matching = int(point * 1_000)
         queries_gm = gm.GeometryArray([
@@ -103,7 +109,9 @@ def _candidate_case(operation: ScalingOperation) -> PublicCase:
                 origin_x + index * spacing + 0.2,
                 origin_y + 0.2,
                 crs=32634,
-            ) if index < matching else gm.box(
+            )
+            if index < matching
+            else gm.box(
                 1_000_000.0,
                 1_000_000.0,
                 1_000_001.0,
@@ -112,20 +120,25 @@ def _candidate_case(operation: ScalingOperation) -> PublicCase:
             )
             for index in range(1_000)
         ])
-        queries_sh = np.asarray([
-            shapely.box(
-                origin_x + index * spacing + 0.1,
-                origin_y + 0.1,
-                origin_x + index * spacing + 0.2,
-                origin_y + 0.2,
-            ) if index < matching else shapely.box(
-                1_000_000.0,
-                1_000_000.0,
-                1_000_001.0,
-                1_000_001.0,
-            )
-            for index in range(1_000)
-        ], dtype=object)
+        queries_sh = np.asarray(
+            [
+                shapely.box(
+                    origin_x + index * spacing + 0.1,
+                    origin_y + 0.1,
+                    origin_x + index * spacing + 0.2,
+                    origin_y + 0.2,
+                )
+                if index < matching
+                else shapely.box(
+                    1_000_000.0,
+                    1_000_000.0,
+                    1_000_001.0,
+                    1_000_001.0,
+                )
+                for index in range(1_000)
+            ],
+            dtype=object,
+        )
     elif operation.dimension == 'candidate-pairs-per-query':
         query_gm = gm.box(
             origin_x - 0.5,

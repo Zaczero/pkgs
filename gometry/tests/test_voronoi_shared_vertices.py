@@ -54,8 +54,7 @@ def test_discarded_voronoi_centers_do_not_reject_representable_clip(
         clip = gm.box(4.125, 4.125, 4.25, 4.25)
     else:
         clip = gm.from_wkt(
-            'POLYGON ((3 3,7 3,7 7,3 7,3 3),'
-            '(4.5 4.5,4.5 5.5,5.5 5.5,5.5 4.5,4.5 4.5))'
+            'POLYGON ((3 3,7 3,7 7,3 7,3 3),(4.5 4.5,4.5 5.5,5.5 5.5,5.5 4.5,4.5 4.5))'
         )
     cells = _cells(source, clip, frontend)
     _assert_partition(cells, clip)

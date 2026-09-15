@@ -511,10 +511,7 @@ def test_raw_crs_apply_matches_pyproj_pipeline_oracle() -> None:
 
 
 def test_bundled_aea_validates_apex_before_zero_radius_shortcut() -> None:
-    invalid_apex = (
-        '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 '
-        '+lon_0=-96 +ellps=GRS80'
-    )
+    invalid_apex = '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 +lon_0=-96 +ellps=GRS80'
     with pytest.raises(gm.TransformError, match='projection'):
         gm.crs_apply(invalid_apex, 0.0, 9928937.004248787, direction='inverse')
 
@@ -528,13 +525,11 @@ def test_bundled_aea_validates_apex_before_zero_radius_shortcut() -> None:
     ('operation', 'expected_northing'),
     [
         (
-            '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 '
-            '+lon_0=-96 +R=6371000',
+            '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 +lon_0=-96 +R=6371000',
             1892300.4087848007,
         ),
         (
-            '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 '
-            '+lon_0=-96 +a=7000000 +rf=10',
+            '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 +lon_0=-96 +a=7000000 +rf=10',
             1826866.9650963421,
         ),
     ],
@@ -552,10 +547,11 @@ def test_bundled_aea_keeps_sphere_and_strong_flattening_paths(
     )
 
 
-def test_bundled_aea_strong_flattening_bracket_matches_high_precision_endpoint() -> None:
+def test_bundled_aea_strong_flattening_bracket_matches_high_precision_endpoint() -> (
+    None
+):
     operation = (
-        '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 '
-        '+lon_0=-96 +a=7000000 +rf=10'
+        '+proj=aea +lat_0=23 +lat_1=29.5 +lat_2=45.5 +lon_0=-96 +a=7000000 +rf=10'
     )
     projected = gm.crs_apply(operation, -2.0, math.radians(-89.9999))
     recovered = gm.crs_apply(operation, *projected, direction='inverse')

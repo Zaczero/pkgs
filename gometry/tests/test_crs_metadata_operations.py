@@ -105,7 +105,14 @@ def test_same_crs_unequal_epochs_use_a_real_plan_on_every_transform_surface() ->
         lambda: gm.crs_transform_bounds(
             7789,
             7789,
-            (1_000_000.0, 2_000_000.0, 3_000_000.0, 1_000_001.0, 2_000_001.0, 3_000_001.0),
+            (
+                1_000_000.0,
+                2_000_000.0,
+                3_000_000.0,
+                1_000_001.0,
+                2_000_001.0,
+                3_000_001.0,
+            ),
             densify=0,
             source_epoch=2010.0,
             target_epoch=2020.0,

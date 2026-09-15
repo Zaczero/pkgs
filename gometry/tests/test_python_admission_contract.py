@@ -37,8 +37,12 @@ def test_float_like_coordinates_reject_nonfinite_values(value: float) -> None:
 @pytest.mark.parametrize(
     ('construct', 'message'),
     [
-        pytest.param(lambda value: gm.points([value], [0]), 'x must be finite', id='points'),
-        pytest.param(lambda value: gm.box(value, 0, 1, 1), 'minx must be finite', id='box'),
+        pytest.param(
+            lambda value: gm.points([value], [0]), 'x must be finite', id='points'
+        ),
+        pytest.param(
+            lambda value: gm.box(value, 0, 1, 1), 'minx must be finite', id='box'
+        ),
         pytest.param(
             lambda value: gm.LineString([(value, 0), (1, 1)]),
             'coordinate must be finite',
@@ -123,7 +127,9 @@ def test_scalar_float_classification_does_not_reprobe_stateful_values() -> None:
     assert bounds_value.calls == 1
 
     at = OnceFloat(1.0)
-    assert gm.LineString([(0, 0), (10, 0)]).line_interpolate(at).to_wkt() == 'POINT (1 0)'
+    assert (
+        gm.LineString([(0, 0), (10, 0)]).line_interpolate(at).to_wkt() == 'POINT (1 0)'
+    )
     assert at.calls == 1
 
     lon1 = OnceFloat(0.0)
@@ -134,7 +140,9 @@ def test_scalar_float_classification_does_not_reprobe_stateful_values() -> None:
 @pytest.mark.parametrize(
     'operation',
     [
-        pytest.param(lambda: gm.nearest([gm.Point(0, 0)], gm.Point(0, 0), k=True), id='k'),
+        pytest.param(
+            lambda: gm.nearest([gm.Point(0, 0)], gm.Point(0, 0), k=True), id='k'
+        ),
         pytest.param(lambda: gm.s2_cover(gm.Point(0, 0), level=True), id='level'),
         pytest.param(
             lambda: gm.Point(0, 0).buffer(1, quadrant_segments=True), id='count'
@@ -142,9 +150,12 @@ def test_scalar_float_classification_does_not_reprobe_stateful_values() -> None:
         pytest.param(lambda: gm.crs_search('WGS', limit=True), id='limit'),
         pytest.param(lambda: gm.pluscode_encode(0, 0, length=True), id='length'),
         pytest.param(
-            lambda: gm.H3Cell('8928308280fffff').cell_from_local_ij(True, 0), id='local ij'
+            lambda: gm.H3Cell('8928308280fffff').cell_from_local_ij(True, 0),
+            id='local ij',
         ),
-        pytest.param(lambda: gm.CRS(4326).to_epsg(min_confidence=True), id='confidence'),
+        pytest.param(
+            lambda: gm.CRS(4326).to_epsg(min_confidence=True), id='confidence'
+        ),
     ],
 )
 def test_integer_parameter_lanes_reject_bool(operation) -> None:
@@ -374,9 +385,7 @@ def test_list_and_tuple_keep_distinct_mixed_provider_admission_order() -> None:
 
 
 def test_list_fancy_index_snapshots_before_ordered_provider_mutation() -> None:
-    array = gm.GeometryArray(
-        [gm.Point(0, 10), gm.Point(1, 11), gm.Point(2, 12)]
-    )
+    array = gm.GeometryArray([gm.Point(0, 10), gm.Point(1, 11), gm.Point(2, 12)])
     selectors: list[object] = []
     order: list[str] = []
 
@@ -509,7 +518,9 @@ def test_one_shot_coordinate_and_part_sources_are_consumed_once() -> None:
         Once([(0, 0), (4, 0), (4, 4), (0, 4)]),
         holes=Once([Once([(1, 1), (2, 1), (2, 2), (1, 2)])]),
     )
-    multi_polygon = gm.MultiPolygon(Once([Once([Once([(0, 0), (4, 0), (4, 4), (0, 4)])])]))
+    multi_polygon = gm.MultiPolygon(
+        Once([Once([Once([(0, 0), (4, 0), (4, 4), (0, 4)])])])
+    )
     assert len(multi_polygon.parts) == 1
     rings = gm.rings(Once([polygon]))
     assert len(rings) == 1 and len(rings[0]) == 2

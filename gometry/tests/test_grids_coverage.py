@@ -20,7 +20,9 @@ def test_empty_source_cover_requires_non_empty_geometry() -> None:
         gm.h3_cover(empty, resolution=5)
 
 
-@pytest.mark.parametrize('cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile'])
+@pytest.mark.parametrize(
+    'cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile']
+)
 def test_scalar_empty_errors_and_array_empty_is_a_group(cover, depth, label) -> None:
     empty = gm.from_wkt('POLYGON EMPTY', crs=4326)
     with pytest.raises(
@@ -55,7 +57,9 @@ def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth) -> No
 def test_array_later_row_invalid_latitude_after_successful_row(cover, depth) -> None:
     first = gm.box(-1, -1, 1, 1, crs=4326)
     later = gm.Point(0, 95, crs=4326)
-    with pytest.raises(gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
         cover(gm.GeometryArray([first, later], crs=4326), max_cells=None, **depth)
 
 
@@ -138,7 +142,9 @@ def test_public_grid_order_budget_and_array_parity(cover, depth, bounds) -> None
         assert keys == sorted(set(keys))
         assert keys
         at_limit = cover(polygon, cell_rule=rule, max_cells=len(keys), **depth)
-        assert [cell.token if hasattr(cell, 'token') else cell.id for cell in at_limit] == keys
+        assert [
+            cell.token if hasattr(cell, 'token') else cell.id for cell in at_limit
+        ] == keys
         with pytest.raises(gm.GeometryError):
             cover(polygon, cell_rule=rule, max_cells=len(keys) - 1, **depth)
 

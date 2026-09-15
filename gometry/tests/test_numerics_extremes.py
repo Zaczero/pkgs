@@ -165,7 +165,9 @@ def _stored_ring_area(vertices: list[tuple[float, float]]) -> Fraction:
     return abs(total) / 2
 
 
-def _assert_exact_centroid(geometry, expected_x: Fraction, expected_y: Fraction) -> None:
+def _assert_exact_centroid(
+    geometry, expected_x: Fraction, expected_y: Fraction
+) -> None:
     values = [geometry.centroid(), gm.GeometryArray([geometry]).centroid()[0]]
     for centroid in values:
         assert float(centroid.x) == float(expected_x)
@@ -186,7 +188,9 @@ def test_shared_centroid_retains_translated_primary_residual() -> None:
     k = 2**50
     vertices = [(-k, 0), (k, 0), (1, k)]
     translated = gm.Polygon([(x + k, y - k) for x, y in vertices])
-    _assert_exact_centroid(translated, Fraction(k) + Fraction(1, 3), Fraction(-2 * k, 3))
+    _assert_exact_centroid(
+        translated, Fraction(k) + Fraction(1, 3), Fraction(-2 * k, 3)
+    )
 
 
 def test_shared_centroid_uses_exact_hole_moments_and_canonical_zero() -> None:
@@ -202,7 +206,11 @@ def test_shared_centroid_uses_exact_hole_moments_and_canonical_zero() -> None:
 
 def test_shared_centroid_recovers_residual_lost_before_final_snap() -> None:
     cancellation_k = 2**54
-    cancellation = gm.Polygon([(-cancellation_k, 0), (cancellation_k, 0), (1, cancellation_k)])
+    cancellation = gm.Polygon([
+        (-cancellation_k, 0),
+        (cancellation_k, 0),
+        (1, cancellation_k),
+    ])
     _assert_exact_centroid(cancellation, Fraction(1, 3), Fraction(cancellation_k, 3))
 
 

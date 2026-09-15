@@ -56,9 +56,7 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
 
 
 def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
-    left = gm.from_wkt(
-        'POLYGON ((-10 -10, 10 -10, 10 10, -10 10, -10 -10))', crs=4326
-    )
+    left = gm.from_wkt('POLYGON ((-10 -10, 10 -10, 10 10, -10 10, -10 -10))', crs=4326)
     right = gm.from_wkt(
         'POLYGON ((350 -10, 370 -10, 370 10, 350 10, 350 -10))', crs=4326
     )
@@ -359,7 +357,10 @@ def test_split_antimeridian_affine_fraction_uses_native_units(
         ([(-150.0, 30.0), (170.0, 10.0)], [50.0, 10.0], [5.0, 1.0]),
     ):
         line = gm.LineString(
-            [(longitude / scale, latitude / scale) for longitude, latitude in coordinates],
+            [
+                (longitude / scale, latitude / scale)
+                for longitude, latitude in coordinates
+            ],
             z=z,
             m=m,
             crs=crs,
@@ -407,23 +408,27 @@ def test_split_antimeridian_normalizes_only_admitted_pole_ulp_in_chart(
     exterior = math.nextafter(sign * pole, math.copysign(math.inf, sign))
     interior = sign * (pole - half_turn / 18.0)
     line = gm.LineString(
-        [(half_turn - half_turn / 18.0, exterior), (-half_turn + half_turn / 18.0, interior)],
+        [
+            (half_turn - half_turn / 18.0, exterior),
+            (-half_turn + half_turn / 18.0, interior),
+        ],
         crs=crs,
     )
     split = line.split_antimeridian()
-    assert any(
-        y == sign * pole
-        for part in gm.parts(split)
-        for _, y in part.coords
-    )
+    assert any(y == sign * pole for part in gm.parts(split) for _, y in part.coords)
     assert split.split_antimeridian().to_wkt() == split.to_wkt()
 
     two_outside = math.nextafter(exterior, math.copysign(math.inf, sign))
     invalid = gm.LineString(
-        [(half_turn - half_turn / 18.0, two_outside), (-half_turn + half_turn / 18.0, interior)],
+        [
+            (half_turn - half_turn / 18.0, two_outside),
+            (-half_turn + half_turn / 18.0, interior),
+        ],
         crs=crs,
     )
-    with pytest.raises(gm.InvalidGeometryError, match='outside the physical axis limits'):
+    with pytest.raises(
+        gm.InvalidGeometryError, match='outside the physical axis limits'
+    ):
         invalid.split_antimeridian()
 
 
@@ -656,18 +661,18 @@ def test_crossing_polygon_concrete_contains_and_intersects() -> None:
 
 
 @pytest.mark.parametrize(
-    ("height", "longitude"),
+    ('height', 'longitude'),
     [
-        pytest.param(12.0, 175.0, id="north"),
-        pytest.param(12.0, -185.0, id="north-negative-alias"),
-        pytest.param(12.0, 535.0, id="north-positive-alias"),
-        pytest.param(12.0, 180.0, id="north-positive-seam"),
-        pytest.param(12.0, -180.0, id="north-negative-seam"),
-        pytest.param(-12.0, 175.0, id="south"),
-        pytest.param(-12.0, -185.0, id="south-negative-alias"),
-        pytest.param(-12.0, 535.0, id="south-positive-alias"),
-        pytest.param(-12.0, 180.0, id="south-positive-seam"),
-        pytest.param(-12.0, -180.0, id="south-negative-seam"),
+        pytest.param(12.0, 175.0, id='north'),
+        pytest.param(12.0, -185.0, id='north-negative-alias'),
+        pytest.param(12.0, 535.0, id='north-positive-alias'),
+        pytest.param(12.0, 180.0, id='north-positive-seam'),
+        pytest.param(12.0, -180.0, id='north-negative-seam'),
+        pytest.param(-12.0, 175.0, id='south'),
+        pytest.param(-12.0, -185.0, id='south-negative-alias'),
+        pytest.param(-12.0, 535.0, id='south-positive-alias'),
+        pytest.param(-12.0, 180.0, id='south-positive-seam'),
+        pytest.param(-12.0, -180.0, id='south-negative-seam'),
     ],
 )
 def test_crossing_polygon_chart_predicates_match_split(
@@ -824,9 +829,7 @@ def test_geographic_clip_by_rect_canonical_boundaries_match_scalar_and_array() -
     ]
     for shape, rect, expected in cases:
         assert gm.equals(shape.clip_by_rect(*rect), expected)
-        assert gm.equals(
-            gm.GeometryArray([shape]).clip_by_rect(*rect)[0], expected
-        )
+        assert gm.equals(gm.GeometryArray([shape]).clip_by_rect(*rect)[0], expected)
 
 
 def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
@@ -895,9 +898,7 @@ def test_geographic_clip_by_rect_rejects_unordered_latitudes_scalar_and_array() 
 def test_packed_geographic_clip_declines_crossing_grad_rectangle() -> None:
     grad_line = gm.LineString([(-2, 0), (2, 0)], crs=4807)
     grad_rect = (1, -1, -1, 1)
-    grad_expected = gm.from_wkt(
-        'MULTILINESTRING ((-2 0, -1 0), (1 0, 2 0))', crs=4807
-    )
+    grad_expected = gm.from_wkt('MULTILINESTRING ((-2 0, -1 0), (1 0, 2 0))', crs=4807)
     assert gm.equals(grad_line.clip_by_rect(*grad_rect), grad_expected)
     assert gm.equals(
         gm.GeometryArray([grad_line]).clip_by_rect(*grad_rect)[0], grad_expected
@@ -912,9 +913,11 @@ def test_packed_geographic_clip_preserves_canonical_rows_and_missingness() -> No
         canonical_expected,
     )
 
-    rows = gm.GeometryArray(
-        [canonical_line, gm.LineString([], crs=4326), canonical_line]
-    )
+    rows = gm.GeometryArray([
+        canonical_line,
+        gm.LineString([], crs=4326),
+        canonical_line,
+    ])
     rows = rows._with_missing([False, False, True]).clip_by_rect(-1, -1, 1, 1)
     assert gm.equals(rows[0], canonical_expected)
     assert rows[1].to_wkt() == 'LINESTRING EMPTY'
@@ -973,10 +976,10 @@ def test_nad83_crossing_polygon_predicates_match_split_form() -> None:
 
 
 @pytest.mark.parametrize(
-    "base_latitude",
+    'base_latitude',
     [
-        pytest.param(0.0, id="equator"),
-        pytest.param(40.0, id="mid-latitude"),
+        pytest.param(0.0, id='equator'),
+        pytest.param(40.0, id='mid-latitude'),
     ],
 )
 def test_thin_crossing_band_split_preserves_chart_area_and_support(

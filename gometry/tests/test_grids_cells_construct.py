@@ -240,8 +240,7 @@ def test_tile_boundary_owner_is_shared_by_scalar_and_array_construction() -> Non
         zoom=[case[0] for case in cases],
     )
     assert [(cell.zoom, cell.x, cell.y) for cell in cells] == [
-        (zoom, expected_x, expected_y)
-        for zoom, _, _, expected_x, expected_y in cases
+        (zoom, expected_x, expected_y) for zoom, _, _, expected_x, expected_y in cases
     ]
 
 
@@ -350,7 +349,9 @@ def test_max_depth_cell_array_children_are_empty_rows() -> None:
     assert len(cell.children()) == 0
 
 
-def test_cell_array_children_mixed_depth_matches_scalar_when_target_covers_all() -> None:
+def test_cell_array_children_mixed_depth_matches_scalar_when_target_covers_all() -> (
+    None
+):
     coarse = gm.H3Cell(13.4, 52.5, resolution=5)
     fine = gm.H3Cell(13.4, 52.5, resolution=6)
     cells = gm.CellArray([coarse, fine])
@@ -366,12 +367,15 @@ def test_cell_array_children_mixed_depth_matches_scalar_when_target_covers_all()
 
 @pytest.mark.parametrize('reverse', [False, True])
 def test_cell_array_children_rejects_target_below_any_present_depth(reverse) -> None:
-    cells = [gm.H3Cell(13.4, 52.5, resolution=5),
-             gm.H3Cell(13.4, 52.5, resolution=7)]
+    cells = [gm.H3Cell(13.4, 52.5, resolution=5), gm.H3Cell(13.4, 52.5, resolution=7)]
     if reverse:
         cells.reverse()
-    array = _lib._unpickle_cell_array([cell.token for cell in cells], 'h3', bytes([1, 0, 0]))
-    with pytest.raises(gm.GeometryError, match='children resolution must be >= cell resolution'):
+    array = _lib._unpickle_cell_array(
+        [cell.token for cell in cells], 'h3', bytes([1, 0, 0])
+    )
+    with pytest.raises(
+        gm.GeometryError, match='children resolution must be >= cell resolution'
+    ):
         array.children(5)
 
 

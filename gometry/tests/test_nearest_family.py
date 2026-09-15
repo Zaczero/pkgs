@@ -38,9 +38,7 @@ def _xy(point: gm.Geometry) -> tuple[float, float]:
 _ANTIMERIDIAN_LONGITUDES = frozenset({180.0, -180.0})
 
 
-def _assert_lonlat(
-    got: tuple[float, float], expected: tuple[float, float]
-) -> None:
+def _assert_lonlat(got: tuple[float, float], expected: tuple[float, float]) -> None:
     gx, gy = got
     ex, ey = expected
     assert gy == pytest.approx(ey, rel=0.0, abs=0.0)
@@ -430,7 +428,9 @@ class TestGeodesic:
         [1.0e-12, 1.0e-11, 1.0e-9],
         ids=['one-trillionth-degree', 'ten-trillionths-degree', 'one-billionth-degree'],
     )
-    def test_positive_geodesic_dwithin_refines_near_endpoint(self, delta: float) -> None:
+    def test_positive_geodesic_dwithin_refines_near_endpoint(
+        self, delta: float
+    ) -> None:
         line = gm.LineString([(0.0, 0.0), (5.0, 0.0)], crs=4326)
         endpoint = gm.Point(5.0, 0.0, crs=4326)
         query = gm.Point(5.0 + delta, 0.0, crs=4326)
@@ -443,7 +443,9 @@ class TestGeodesic:
         assert not gm.dwithin(query, line, math.nextafter(endpoint_distance, 0.0))
         assert gm.dwithin(query, line, endpoint_distance)
 
-    def test_geodesic_dwithin_rejects_a_point_1000_001_metres_beyond_radius(self) -> None:
+    def test_geodesic_dwithin_rejects_a_point_1000_001_metres_beyond_radius(
+        self,
+    ) -> None:
         line = gm.LineString([(0.0, 0.0), (5.0, 0.0)], crs=4326)
         endpoint = gm.Point(5.0, 0.0, crs=4326)
         query = endpoint.destination(90.0, 1000.001)
@@ -457,14 +459,18 @@ class TestGeodesic:
     @pytest.mark.parametrize(
         'segment_length',
         [0.25, 1.0, 5.0, 10.0, 30.0],
-        ids=['quarter-degree', 'one-degree', 'five-degrees', 'ten-degrees', 'thirty-degrees'],
+        ids=[
+            'quarter-degree',
+            'one-degree',
+            'five-degrees',
+            'ten-degrees',
+            'thirty-degrees',
+        ],
     )
     def test_geodesic_point_segment_sweep_is_attained(
         self, segment_length: float
     ) -> None:
-        line = gm.LineString(
-            [(0.0, 0.0), (segment_length, 0.0)], crs=4326
-        )
+        line = gm.LineString([(0.0, 0.0), (segment_length, 0.0)], crs=4326)
         exhibited = gm.Point(segment_length / 2.0, 0.0, crs=4326)
 
         for latitude in (1.0e-9, 1.0e-7, 1.0e-5, 1.0e-4, 1.0e-2, 1.0, 20.0):
@@ -489,9 +495,7 @@ class TestGeodesic:
         self, first_target: float, second_target: float, argmax: float
     ) -> None:
         source = gm.LineString([(0.0, 0.0), (10.0, 0.0)], crs=4326)
-        target = gm.MultiPoint(
-            [(first_target, 0.0), (second_target, 0.0)], crs=4326
-        )
+        target = gm.MultiPoint([(first_target, 0.0), (second_target, 0.0)], crs=4326)
 
         reported = gm.hausdorff_distance(source, target)
         exhibited = gm.distance(gm.Point(argmax, 0.0, crs=4326), target)
@@ -551,9 +555,7 @@ class TestGeodesic:
         # Equatorial 179→-179 is the 2° seam segment. (180, 1) sits on that
         # meridian, so the foot is (180, 0), the same meridian as (-180, 0).
         # The second row is point-point, so the vertices are the inputs.
-        crossing = gm.LineString(
-            [(179.0, 0.0), (-179.0, 0.0)], crs=4326, epoch=2020.0
-        )
+        crossing = gm.LineString([(179.0, 0.0), (-179.0, 0.0)], crs=4326, epoch=2020.0)
         plain = gm.Point(170.0, 1.0, crs=4326, epoch=2020.0)
         probe = gm.Point(180.0, 1.0, crs=4326, epoch=2020.0)
         if layout == 'dense':

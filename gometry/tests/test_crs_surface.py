@@ -241,7 +241,9 @@ def test_crs_input_forms_are_accepted_across_representative_params() -> None:
         assert gm.Point(0, 0, crs=form).crs.definition == definition
         assert gm.Point(0, 0).set_crs(form).crs.definition == definition
         assert gm.points([0.0], [0.0], crs=form).crs.definition == definition
-        assert gm.require(gm.Point(0, 0, crs=4326), crs=form).crs.definition == definition
+        assert (
+            gm.require(gm.Point(0, 0, crs=4326), crs=form).crs.definition == definition
+        )
     planar = gm.crs_transform_bounds(pyproj_crs, gm.CRS(3857), (-1.0, 50.0, 1.0, 51.0))
     assert planar[0] == pytest.approx(-111319.4907932736)
 

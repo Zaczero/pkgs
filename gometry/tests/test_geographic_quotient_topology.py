@@ -21,19 +21,36 @@ def test_quotient_seam_membership_reaches_every_topology_consumer() -> None:
     assert gm.intersects(source, point)
     assert gm.intersects(point, source)
     assert gm.intersects(source.prepare(), point)
-    assert gm.intersects(gm.GeometryArray([source, source]), point).tolist() == [True, True]
-    assert gm.intersects(source, gm.GeometryArray([point, outside])).tolist() == [True, False]
+    assert gm.intersects(gm.GeometryArray([source, source]), point).tolist() == [
+        True,
+        True,
+    ]
+    assert gm.intersects(source, gm.GeometryArray([point, outside])).tolist() == [
+        True,
+        False,
+    ]
     assert gm.relate_pattern(source, point, 'T*****FF*')
 
     index = gm.SpatialIndex([source])
     assert ids(index.query(point, predicate='intersects')) == [0]
-    assert [row.tolist() for row in index.query(gm.GeometryArray([point, outside]), predicate='intersects')] == [
+    assert [
+        row.tolist()
+        for row in index.query(
+            gm.GeometryArray([point, outside]), predicate='intersects'
+        )
+    ] == [
         [0],
         [],
     ]
-    assert pair_rows(index.join(gm.GeometryArray([point]), predicate='intersects')) == [(0, 0)]
-    assert pair_rows(gm.join(gm.GeometryArray([point]), [source], predicate='intersects')) == [(0, 0)]
-    assert pair_rows(gm.SpatialIndex([source, point]).self_join(predicate='intersects')) == [(0, 1)]
+    assert pair_rows(index.join(gm.GeometryArray([point]), predicate='intersects')) == [
+        (0, 0)
+    ]
+    assert pair_rows(
+        gm.join(gm.GeometryArray([point]), [source], predicate='intersects')
+    ) == [(0, 0)]
+    assert pair_rows(
+        gm.SpatialIndex([source, point]).self_join(predicate='intersects')
+    ) == [(0, 1)]
 
     assert gm.intersection(source, point).to_wkt() == point.to_wkt()
     assert len(gm.h3_cover(source, resolution=2, cell_rule='center')) > 0
@@ -112,9 +129,7 @@ def test_geographic_overlay_keeps_seam_and_polar_area_membership() -> None:
         holes=[[(-180, 80), (-90, 80), (0, 80), (90, 80), (180, 80), (-180, 80)]],
         crs=4326,
     )
-    polar_triangle = gm.Polygon(
-        [(120, 90), (110, 85), (130, 85), (120, 90)], crs=4326
-    )
+    polar_triangle = gm.Polygon([(120, 90), (110, 85), (130, 85), (120, 90)], crs=4326)
     full_band = gm.Polygon(
         [(-180, -10), (180, -10), (180, 10), (-180, 10), (-180, -10)], crs=4326
     )

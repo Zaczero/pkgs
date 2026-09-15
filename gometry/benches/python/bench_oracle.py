@@ -115,13 +115,17 @@ def run_oracle(
         # Fail closed before any verification work when the map is incomplete.
         validate_builders(base, PUBLIC_CASE_BUILDERS)
         if scaling:
-            validate_builders(
-                scaling,
-                PUBLIC_SCALING_CASE_BUILDERS,
-                public_operations=tuple(
-                    op for op in ALL_PUBLIC_OPERATIONS if isinstance(op, ScalingOperation)
+            (
+                validate_builders(
+                    scaling,
+                    PUBLIC_SCALING_CASE_BUILDERS,
+                    public_operations=tuple(
+                        op
+                        for op in ALL_PUBLIC_OPERATIONS
+                        if isinstance(op, ScalingOperation)
+                    ),
                 ),
-            ),
+            )
 
     from _bench_public_cases import PUBLIC_TIMED
     from _bench_public_fixtures import clear_public_fixture_cache

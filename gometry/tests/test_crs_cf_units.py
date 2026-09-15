@@ -176,7 +176,9 @@ def test_parse_aliases_and_precedence_unchanged() -> None:
     both = dict(base)
     both['units'] = 'us-ft'
     both['proj_units'] = 'm'
-    assert gm.CRS(both).axes[0]['unit_conversion_factor'] == pytest.approx(us_survey_foot)
+    assert gm.CRS(both).axes[0]['unit_conversion_factor'] == pytest.approx(
+        us_survey_foot
+    )
     proj_only = dict(base)
     proj_only.pop('units', None)
     proj_only['proj_units'] = 'ft'

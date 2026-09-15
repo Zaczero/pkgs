@@ -232,13 +232,17 @@ def test_public_frame_reference_epoch_retains_finite_years(
     assert point.epoch != datum['frame_reference_epoch']
 
 
-def test_unnamed_dynamic_geographic_plus_static_vertical_compound_admits_epoch() -> None:
+def test_unnamed_dynamic_geographic_plus_static_vertical_compound_admits_epoch() -> (
+    None
+):
     crs = f'COMPOUNDCRS["xyzzy-comp-dyn-h",{_DYN_GEO},{_STAT_VERT}]'
     point = gm.Point(10.0, 50.0, crs=crs, epoch=_GEOMETRY_EPOCH)
     assert point.epoch == _GEOMETRY_EPOCH
 
 
-def test_unnamed_static_geographic_plus_dynamic_vertical_compound_admits_epoch() -> None:
+def test_unnamed_static_geographic_plus_dynamic_vertical_compound_admits_epoch() -> (
+    None
+):
     crs = f'COMPOUNDCRS["xyzzy-comp-dyn-v",{_STAT_GEO},{_DYN_VERT}]'
     point = gm.Point(10.0, 50.0, crs=crs, epoch=_GEOMETRY_EPOCH)
     assert point.epoch == _GEOMETRY_EPOCH
@@ -250,7 +254,9 @@ def test_unnamed_static_compound_rejects_epoch() -> None:
 
 def test_bound_unnamed_dynamic_source_admits_epoch() -> None:
     crs = _bound_crs(
-        _geographic('xyzzy-dyn-geo', _dynamic_geodetic('Xyzzy Dynamic Geodetic', 2010.0)),
+        _geographic(
+            'xyzzy-dyn-geo', _dynamic_geodetic('Xyzzy Dynamic Geodetic', 2010.0)
+        ),
         _geographic('xyzzy-stat-hub', _static_geodetic('Xyzzy Static Hub')),
     )
     point = gm.Point(10.0, 50.0, crs=crs, epoch=_GEOMETRY_EPOCH)

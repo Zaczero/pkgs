@@ -164,7 +164,9 @@ def test_crs_free_geojson_uses_wgs84_antimeridian_rules() -> None:
     assert json.loads(crossing.to_geojson())['type'] == 'MultiLineString'
     assert json.loads(array.to_geojson()[0])['type'] == 'MultiLineString'
     assert crossing.__geo_interface__['type'] == 'MultiLineString'
-    assert array.__geo_interface__['features'][0]['geometry']['type'] == 'MultiLineString'
+    assert (
+        array.__geo_interface__['features'][0]['geometry']['type'] == 'MultiLineString'
+    )
     assert gm.to_feature(crossing)['geometry']['type'] == 'MultiLineString'
     assert (
         gm.to_feature_collection([crossing])['features'][0]['geometry']['type']
@@ -228,7 +230,9 @@ def test_geo_interface_uses_to_geojson_geographic_preparation() -> None:
     )
     assert json.loads(crossing.to_geojson()) == crossing.__geo_interface__
     array_interface = gm.GeometryArray([crossing]).__geo_interface__
-    assert array_interface['features'][0]['geometry'] == json.loads(crossing.to_geojson())
+    assert array_interface['features'][0]['geometry'] == json.loads(
+        crossing.to_geojson()
+    )
 
     projected = gm.Point(1, 2, crs=3857)
     with pytest.raises(gm.CRSError):

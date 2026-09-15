@@ -26,7 +26,9 @@ def test_geodesic_area_is_ellipsoidal_and_keeps_holes() -> None:
 
 def test_geodesic_area_preserves_empty_and_missing_rows() -> None:
     polygon = gm.box(0.0, 0.0, 1.0, 1.0, crs=4326)
-    values = gm.GeometryArray([polygon, gm.GeometryCollection([], crs=4326), None], crs=4326)
+    values = gm.GeometryArray(
+        [polygon, gm.GeometryCollection([], crs=4326), None], crs=4326
+    )
 
     np.testing.assert_allclose(values.area[:1], [polygon.area])
     assert values.area[1] == 0.0

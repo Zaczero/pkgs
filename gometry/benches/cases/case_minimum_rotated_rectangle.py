@@ -35,7 +35,9 @@ def _exact_mrr_area(vertices: list[tuple[float, float]]) -> Fraction:
     return best
 
 
-def _assert_exact_enclosure(result: gm.Geometry, points: list[tuple[float, float]]) -> None:
+def _assert_exact_enclosure(
+    result: gm.Geometry, points: list[tuple[float, float]]
+) -> None:
     corners = list(result.exterior.coords)
     assert len(corners) == 5 and corners[0] == corners[-1]
     ring = [(_stored_fraction(x), _stored_fraction(y)) for x, y in corners]

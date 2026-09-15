@@ -207,7 +207,9 @@ def test_stream_capsule_is_consumed_before_callbacks_and_reentrancy() -> None:
 
     del decoded, provider, Provider, capsule, source, keep
     gc.collect()
-    assert counts['release'] == 1, 'the original capsule destructor must not release twice'
+    assert counts['release'] == 1, (
+        'the original capsule destructor must not release twice'
+    )
 
 
 def test_native_admission_wkb_is_owned_before_release() -> None:

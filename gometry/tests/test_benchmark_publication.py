@@ -59,8 +59,15 @@ def _producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]
     packages = {
         name: _package(name)
         for name in (
-            'gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas',
-            'pyarrow', 'mercantile', 'pygeohash',
+            'gometry',
+            'numpy',
+            'shapely',
+            'pyproj',
+            'h3',
+            'geopandas',
+            'pyarrow',
+            'mercantile',
+            'pygeohash',
         )
     }
     extension = {
@@ -85,7 +92,13 @@ def _producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]
     native_libraries = (
         [{key: extension[key] for key in ('path', 'sha256', 'size_bytes')}]
         if runtime == 'gometry'
-        else ([geos] if package_name in {'shapely', 'geopandas'} else [proj] if package_name == 'pyproj' else [])
+        else (
+            [geos]
+            if package_name in {'shapely', 'geopandas'}
+            else [proj]
+            if package_name == 'pyproj'
+            else []
+        )
     )
     implementation = {
         'runtime': runtime,
@@ -137,7 +150,9 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
     scaling = scaling_record(operation)
     useful_work = {
         'count': max(1, int(scaling['point'])) if scaling else 1,
-        'unit': scaling['useful_work_unit'] if scaling else 'equivalent-case-invocation',
+        'unit': scaling['useful_work_unit']
+        if scaling
+        else 'equivalent-case-invocation',
     }
     observation_a = make_observation(
         metric='duration',
@@ -216,21 +231,25 @@ def _result(tmp_path: Path) -> dict[str, object]:
             operation_index = ALL_PUBLIC_OPERATIONS.index(operation)
             artifact = tmp_path / f'block-{operation_index:02d}-{index:02d}.json'
             artifact.write_text(
-                json.dumps(_block_payload(operation, index, lock_path)), encoding='utf-8'
+                json.dumps(_block_payload(operation, index, lock_path)),
+                encoding='utf-8',
             )
             artifacts.append(str(artifact))
     oracle = tmp_path / 'oracle.json'
-    oracle.write_text(json.dumps({
-        'schema_version': 1,
-        'artifact_type': 'gometry-public-oracle',
-        'operations': [operation.gometry for operation in ALL_PUBLIC_OPERATIONS],
-        'identities': [
-            f'public:{operation.gometry}:oracle'
-            for operation in ALL_PUBLIC_OPERATIONS
-        ],
-        'verified': len(ALL_PUBLIC_OPERATIONS),
-        'state_scope': 'external-fresh-process',
-    }), encoding='utf-8')
+    oracle.write_text(
+        json.dumps({
+            'schema_version': 1,
+            'artifact_type': 'gometry-public-oracle',
+            'operations': [operation.gometry for operation in ALL_PUBLIC_OPERATIONS],
+            'identities': [
+                f'public:{operation.gometry}:oracle'
+                for operation in ALL_PUBLIC_OPERATIONS
+            ],
+            'verified': len(ALL_PUBLIC_OPERATIONS),
+            'state_scope': 'external-fresh-process',
+        }),
+        encoding='utf-8',
+    )
     artifacts.insert(0, str(oracle))
     metadata = {
         'git_commit': 'deadbeef',
@@ -262,8 +281,15 @@ def _result(tmp_path: Path) -> dict[str, object]:
         'packages': {
             package: _package(package)
             for package in (
-                'gometry', 'numpy', 'shapely', 'pyproj', 'h3',
-                'geopandas', 'pyarrow', 'mercantile', 'pygeohash',
+                'gometry',
+                'numpy',
+                'shapely',
+                'pyproj',
+                'h3',
+                'geopandas',
+                'pyarrow',
+                'mercantile',
+                'pygeohash',
             )
         },
         'cpu_model': 'test',
@@ -304,7 +330,7 @@ def _result(tmp_path: Path) -> dict[str, object]:
             'phase': operation.phase,
             'scaling': scaling_record(operation),
         }
-            for operation in ALL_PUBLIC_OPERATIONS
+        for operation in ALL_PUBLIC_OPERATIONS
     ]
     return {
         'profile': 'release',
@@ -327,7 +353,11 @@ def _result(tmp_path: Path) -> dict[str, object]:
             'phase': 'warm',
             'oracle_state_scope': 'external-fresh-process',
         },
-        'doctor': {'metadata': metadata, 'hard_failures': [], 'warnings': ['load advisory']},
+        'doctor': {
+            'metadata': metadata,
+            'hard_failures': [],
+            'warnings': ['load advisory'],
+        },
     }
 
 
@@ -347,11 +377,14 @@ def _run_manifest(tmp_path: Path, result: dict[str, object] | None = None) -> Pa
         'schema_version': bench_driver._MANIFEST_SCHEMA_VERSION,
         'run_id': 'run-1-release',
         'artifacts': [f'raw/{path.name}' for path in copied],
-        'raw_artifacts': [{
-            'path': f'raw/{artifact.name}',
-            'sha256': bench_driver._file_sha256(artifact),
-            'size_bytes': artifact.stat().st_size,
-        } for artifact in copied],
+        'raw_artifacts': [
+            {
+                'path': f'raw/{artifact.name}',
+                'sha256': bench_driver._file_sha256(artifact),
+                'size_bytes': artifact.stat().st_size,
+            }
+            for artifact in copied
+        ],
     })
     matrix, matrix_digest = bench_driver._paired_matrix_identity(
         result['public_operations'], result['sampling']
@@ -359,7 +392,9 @@ def _run_manifest(tmp_path: Path, result: dict[str, object] | None = None) -> Pa
     result['paired_matrix'] = matrix
     result['paired_matrix_sha256'] = matrix_digest
     manifest = run_directory / 'run.json'
-    manifest.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    manifest.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
     return manifest
 
 
@@ -388,7 +423,9 @@ def _mutate_first_block(run_manifest: Path, mutate) -> None:
             record['sha256'] = bench_driver._file_sha256(raw)
             record['size_bytes'] = raw.stat().st_size
             break
-    run_manifest.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    run_manifest.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
 
 
 def test_release_measurement_cannot_publish_or_mutate_current(
@@ -403,7 +440,9 @@ def test_release_measurement_cannot_publish_or_mutate_current(
         if path.is_file()
     }
 
-    def fake_plans(*, output_dir: Path, **_: object) -> tuple[list[dict[str, object]], dict[str, list[Path]]]:
+    def fake_plans(
+        *, output_dir: Path, **_: object
+    ) -> tuple[list[dict[str, object]], dict[str, list[Path]]]:
         artifact = output_dir / 'release.json'
         artifact.write_text(json.dumps({'benchmarks': []}), encoding='utf-8')
         plan = {
@@ -446,9 +485,12 @@ def test_release_measurement_cannot_publish_or_mutate_current(
         'collect_contention',
         lambda: {'metadata': {}, 'warnings': []},
     )
+
     def fake_run(command: list[str], **_: object) -> dict[str, object]:
         if '--output' in command:
-            Path(command[command.index('--output') + 1]).write_text('{}', encoding='utf-8')
+            Path(command[command.index('--output') + 1]).write_text(
+                '{}', encoding='utf-8'
+            )
         return {
             'command': command,
             'returncode': 0,
@@ -490,7 +532,9 @@ def test_release_measurement_cannot_publish_or_mutate_current(
     assert not (manifests[0].parent / 'run.md').exists()
 
 
-def test_publication_rejects_filtered_run_without_touching_current(tmp_path: Path) -> None:
+def test_publication_rejects_filtered_run_without_touching_current(
+    tmp_path: Path,
+) -> None:
     result = _result(tmp_path)
     result['filter'] = 'gometry.points/10k_numpy_xy'
     run_manifest = _run_manifest(tmp_path, result)
@@ -540,11 +584,30 @@ def test_publication_rejects_missing_artifact_and_metadata(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ('mutation', 'message'),
     [
-        (lambda payload: payload['operation'].__setitem__('competitor', 'shapely.swapped'), 'extra or swapped'),
-        (lambda payload: payload.__setitem__('block_id', 'competitors-pair-01-block-01-ba'), 'extra or swapped'),
-        (lambda payload: payload.__setitem__('lead_order', ['B', 'A']), 'extra or swapped'),
-        (lambda payload: payload.__setitem__('profile', 'smoke'), 'profile identity mismatch'),
-        (lambda payload: payload.__setitem__('run_id', 'other-run-release'), 'run identity mismatch'),
+        (
+            lambda payload: payload['operation'].__setitem__(
+                'competitor', 'shapely.swapped'
+            ),
+            'extra or swapped',
+        ),
+        (
+            lambda payload: payload.__setitem__(
+                'block_id', 'competitors-pair-01-block-01-ba'
+            ),
+            'extra or swapped',
+        ),
+        (
+            lambda payload: payload.__setitem__('lead_order', ['B', 'A']),
+            'extra or swapped',
+        ),
+        (
+            lambda payload: payload.__setitem__('profile', 'smoke'),
+            'profile identity mismatch',
+        ),
+        (
+            lambda payload: payload.__setitem__('run_id', 'other-run-release'),
+            'run identity mismatch',
+        ),
     ],
     ids=('operation', 'block', 'lead', 'profile', 'run'),
 )
@@ -590,10 +653,12 @@ def test_analysis_rejects_comparator_native_library_mutation(tmp_path: Path) -> 
 
     def mutate(payload: dict[str, object]) -> None:
         identity = payload['arms']['B']['provenance_before']
-        identity['implementation']['native_libraries'] = [{
-            **_file('/checkout/libgeos_c.so'),
-            'sha256': '1' * 64,
-        }]
+        identity['implementation']['native_libraries'] = [
+            {
+                **_file('/checkout/libgeos_c.so'),
+                'sha256': '1' * 64,
+            }
+        ]
         identity['implementation']['native_library_status'] = 'identified'
         payload['arms']['B']['provenance_after'] = identity
         payload['arms']['B']['observation']['producer_identity'] = identity
@@ -622,7 +687,9 @@ def test_analysis_accepts_real_shape_engine_attribution(tmp_path: Path) -> None:
     _run_manifest_path, analysis_manifest = _analysis(tmp_path)
     summary = json.loads((analysis_manifest.parent / 'summary.json').read_text())
     first = summary['operations'][0]['blocks'][0]['producer_identities']['B']
-    assert first['implementation']['native_libraries'][0]['path'].endswith('libgeos_c.so')
+    assert first['implementation']['native_libraries'][0]['path'].endswith(
+        'libgeos_c.so'
+    )
 
 
 @pytest.mark.parametrize(
@@ -644,7 +711,9 @@ def test_analysis_rejects_geos_attribution_mutations(
             identity['implementation']['native_libraries'] = []
             identity['implementation']['native_library_status'] = 'not-applicable'
         elif mutation == 'unrelated':
-            identity['implementation']['native_libraries'] = [_file('/checkout/libpython.so')]
+            identity['implementation']['native_libraries'] = [
+                _file('/checkout/libpython.so')
+            ]
         else:
             identity['implementation']['native_libraries'][0]['sha256'] = '1' * 64
         payload['arms']['B']['provenance_after'] = identity
@@ -688,7 +757,9 @@ def test_analysis_rejects_extra_paired_artifact(tmp_path: Path) -> None:
         'sha256': bench_driver._file_sha256(extra),
         'size_bytes': extra.stat().st_size,
     })
-    run_manifest.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    run_manifest.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
     with pytest.raises(SystemExit, match='duplicate paired matrix identity'):
         bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
 
@@ -740,7 +811,8 @@ def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:
     assert all(operation['blocks'] for operation in summary['operations'])
     assert len(summary['scaling_curves']) == 6
     overlay = next(
-        curve for curve in summary['scaling_curves']
+        curve
+        for curve in summary['scaling_curves']
         if curve['curve_id'] == 'overlay-input-count'
     )
     assert [point['point'] for point in overlay['points']] == [64, 256, 1_024]
@@ -868,9 +940,7 @@ def test_cli_requires_explicit_analysis_then_publish_manifests(
 def test_publication_rejects_changed_raw_artifact(tmp_path: Path) -> None:
     _run_manifest_path, analysis_manifest = _analysis(tmp_path)
     source = Path(
-        json.loads(
-            analysis_manifest.read_text(encoding='utf-8')
-        )['source_run_manifest']
+        json.loads(analysis_manifest.read_text(encoding='utf-8'))['source_run_manifest']
     )
     artifact = next(source.parent.joinpath('raw').glob('block-*.json'))
     artifact.write_bytes(artifact.read_bytes() + b'\n')

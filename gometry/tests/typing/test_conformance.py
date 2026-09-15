@@ -362,8 +362,7 @@ if TYPE_CHECKING:
     coordinate_flag: bool = bool(len(POINTS))
     assert_type(
         gm.get_coordinates(POINTS, return_index=coordinate_flag),
-        npt.NDArray[np.float64]
-        | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
+        npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
     )
     assert_type(gm.parts(POINTS), gm.Groups[gm.GeometryArray[gm.Point]])
     assert_type(gm.rings(POLYS), gm.Groups[gm.GeometryArray[gm.LineString]])

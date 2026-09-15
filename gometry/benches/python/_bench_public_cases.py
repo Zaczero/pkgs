@@ -957,9 +957,13 @@ def build_bounds() -> PublicCase:
         a = np.asarray(left)
         b = np.asarray(right)
         if a.dtype != np.float64 or b.dtype != np.float64:
-            raise OracleMismatch('bounds requires float64 output', details=f'{a.dtype} vs {b.dtype}')
+            raise OracleMismatch(
+                'bounds requires float64 output', details=f'{a.dtype} vs {b.dtype}'
+            )
         if a.shape != (10_000, 4) or b.shape != (10_000, 4):
-            raise OracleMismatch('bounds shape mismatch', details=f'{a.shape} vs {b.shape}')
+            raise OracleMismatch(
+                'bounds shape mismatch', details=f'{a.shape} vs {b.shape}'
+            )
         if np.isnan(a).any() or np.isnan(b).any():
             raise OracleMismatch('bounds projected buildings unexpectedly masked')
         exact_coordinates(a, b, context, rtol=0.0, atol=0.0)
@@ -1229,7 +1233,9 @@ def build_clip_by_rect() -> PublicCase:
             import shapely
 
             if category == 'crossing':
-                if bool(shapely.is_empty(clipped_sh)) or bool(shapely.equals(source_sh, clipped_sh)):
+                if bool(shapely.is_empty(clipped_sh)) or bool(
+                    shapely.equals(source_sh, clipped_sh)
+                ):
                     raise OracleMismatch(
                         'clip_by_rect crossing category was not clipped',
                         details=f'row={i}',
@@ -1244,7 +1250,9 @@ def build_clip_by_rect() -> PublicCase:
                     'clip_by_rect outside category was not empty', details=f'row={i}'
                 )
         if counts != {'crossing': 4_000, 'inside': 4_000, 'outside': 2_000}:
-            raise OracleMismatch('clip_by_rect category distribution drifted', details=repr(counts))
+            raise OracleMismatch(
+                'clip_by_rect category distribution drifted', details=repr(counts)
+            )
 
     _reg('gometry.clip_by_rect/10k_realistic_linework_categories', gometry_call)
     _reg('shapely.clip_by_rect/10k_realistic_linework_categories', competitor_call)
@@ -1272,14 +1280,22 @@ def build_point_on_surface() -> PublicCase:
     def precondition() -> None:
         holes = sum(1 for geometry in gm_buildings if len(geometry.interiors) > 0)
         if holes != 2_000:
-            raise OracleMismatch('point_on_surface holed source count', details=str(holes))
+            raise OracleMismatch(
+                'point_on_surface holed source count', details=str(holes)
+            )
         if len(gm_buildings) != 10_000:
-            raise OracleMismatch('point_on_surface source count', details=str(len(gm_buildings)))
+            raise OracleMismatch(
+                'point_on_surface source count', details=str(len(gm_buildings))
+            )
         concave = False
         for geometry in gm_buildings:
-            coords = list(zip(geometry.exterior.coords.x, geometry.exterior.coords.y, strict=True))
+            coords = list(
+                zip(geometry.exterior.coords.x, geometry.exterior.coords.y, strict=True)
+            )
             turns = []
-            for first, second, third in zip(coords, coords[1:], coords[2:], strict=False):
+            for first, second, third in zip(
+                coords, coords[1:], coords[2:], strict=False
+            ):
                 turns.append(
                     (second[0] - first[0]) * (third[1] - second[1])
                     - (second[1] - first[1]) * (third[0] - second[0])

@@ -11,9 +11,9 @@ from tests._support import canon, floats, line_storage_twins
 def test_packed_lines_hausdorff_array_matches_mixed_storage() -> None:
     packed, mixed = line_storage_twins()
     assert packed.to_arrow().type.extension_name == 'geoarrow.linestring'
-    assert floats(gm.hausdorff_distance(packed, mixed, max_error=1e-12)) == [
-        0.0
-    ] * len(mixed)
+    assert floats(gm.hausdorff_distance(packed, mixed, max_error=1e-12)) == [0.0] * len(
+        mixed
+    )
 
 
 def test_packed_lines_frechet_array_matches_mixed_storage() -> None:

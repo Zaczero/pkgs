@@ -176,7 +176,12 @@ def test_compact_point_logical_rows_survive_gather_concat_and_kernels() -> None:
     ]
     assert gm.distance(rows, gm.Point(1.0, 1.0)).tolist()[0] == pytest.approx(0.0)
     assert math.isnan(gm.distance(rows, gm.Point(1.0, 1.0)).tolist()[1])
-    assert gm.intersects(rows, gm.Point(1.0, 1.0)).tolist() == [True, False, False, False]
+    assert gm.intersects(rows, gm.Point(1.0, 1.0)).tolist() == [
+        True,
+        False,
+        False,
+        False,
+    ]
     assert rows.geometry_type == ['Point', None, 'Point', 'Point']
 
 
@@ -202,9 +207,7 @@ def test_concat_mixed_missing_and_empty_point_preserves_logical_rows() -> None:
     for other, expected_wkt in cases:
         result = rows.concat(other)
         assert len(result) == len(expected_wkt)
-        assert result.is_missing.tolist() == [
-            value is None for value in expected_wkt
-        ]
+        assert result.is_missing.tolist() == [value is None for value in expected_wkt]
         assert result.to_wkt() == expected_wkt
 
 
@@ -1043,7 +1046,9 @@ def test_geographic_shortest_line_error_note_uses_logical_row_after_missing() ->
         gm.from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', crs=4326),
     ])
     probe = gm.Point(1.0, 1.0, crs=4326)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported') as excinfo:
+    with pytest.raises(
+        gm.CRSError, match='polygon interiors is unsupported'
+    ) as excinfo:
         gm.shortest_line(rows, probe)
     assert excinfo.value.__notes__ == ['while processing array element 2']
 

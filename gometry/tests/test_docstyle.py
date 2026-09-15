@@ -132,11 +132,15 @@ def test_empty_raises_description() -> None:
 
 def test_from_arrow_stream_errors_are_allowed_and_required() -> None:
     """Arrow-C stream status failures stay in the public doc contract."""
-    coverage = load_tool(
-        'doc_coverage', GOMETRY_ROOT / 'tools/stubs/_doc_coverage.py'
-    )
+    coverage = load_tool('doc_coverage', GOMETRY_ROOT / 'tools/stubs/_doc_coverage.py')
     expected = coverage.required_raises('from_arrow', {'data', 'crs', 'epoch'})
-    assert {'CRSError', 'GeometryError', 'ParseError', 'OSError', 'MemoryError'} <= expected
+    assert {
+        'CRSError',
+        'GeometryError',
+        'ParseError',
+        'OSError',
+        'MemoryError',
+    } <= expected
 
     errors: list[str] = []
     coverage._check_raises(

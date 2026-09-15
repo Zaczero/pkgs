@@ -41,7 +41,11 @@ def pair_units(rows: tuple[str, ...], *, suite: str) -> tuple[tuple[str, ...], .
 
     for row in rows:
         if row not in used:
-            competitor = find_competitor(row, available - used) if suite == 'competitors' else None
+            competitor = (
+                find_competitor(row, available - used)
+                if suite == 'competitors'
+                else None
+            )
             if competitor is not None:
                 units.append((row, competitor))
                 used.update((row, competitor))

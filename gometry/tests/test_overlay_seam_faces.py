@@ -20,13 +20,13 @@ def _thin_seam_polygon(west: float, east: float, height: float) -> gm.Polygon:
 
 
 @pytest.mark.parametrize(
-    ("west", "east", "height"),
+    ('west', 'east', 'height'),
     [
-        pytest.param(179.0, -179.0, 1e-8, id="two-degree-below-probe-step"),
-        pytest.param(179.0, -179.0, 1e-9, id="two-degree-well-below-probe-step"),
-        pytest.param(170.0, -170.0, 1e-6, id="twenty-degree-at-probe-step"),
-        pytest.param(170.0, -170.0, 1e-7, id="twenty-degree-at-half-step"),
-        pytest.param(170.0, -170.0, 1e-8, id="twenty-degree-below-probe-step"),
+        pytest.param(179.0, -179.0, 1e-8, id='two-degree-below-probe-step'),
+        pytest.param(179.0, -179.0, 1e-9, id='two-degree-well-below-probe-step'),
+        pytest.param(170.0, -170.0, 1e-6, id='twenty-degree-at-probe-step'),
+        pytest.param(170.0, -170.0, 1e-7, id='twenty-degree-at-half-step'),
+        pytest.param(170.0, -170.0, 1e-8, id='twenty-degree-below-probe-step'),
     ],
 )
 def test_thin_seam_faces_keep_source_support_below_probe_step(
@@ -83,4 +83,6 @@ def test_thin_seam_union_keeps_exclusions_and_disjoint_area() -> None:
         [(0.0, 0.0), (2.0, 0.0), (2.0, 1e-8), (0.0, 1e-8), (0.0, 0.0)],
         crs=4326,
     )
-    assert gm.GeometryCollection([ordinary], crs=4326).area == pytest.approx(ordinary.area)
+    assert gm.GeometryCollection([ordinary], crs=4326).area == pytest.approx(
+        ordinary.area
+    )

@@ -6,9 +6,9 @@ import gometry as gm
 
 
 def test_self_intersections_crossing_line_point_coords() -> None:
-    rows = gm.GeometryArray(
-        [gm.LineString([(0.0, 0.0), (2.0, 0.0), (1.0, 1.0), (1.0, -1.0)])]
-    )
+    rows = gm.GeometryArray([
+        gm.LineString([(0.0, 0.0), (2.0, 0.0), (1.0, 1.0), (1.0, -1.0)])
+    ])
     groups = rows.self_intersections()
     assert [(point.x, point.y) for point in groups[0]] == [(1.0, 0.0)]
     assert list(groups.offsets) == [0, 1]

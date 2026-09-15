@@ -128,7 +128,9 @@ def _resolve_artifact_paths(payload: dict[str, Any], manifest_path: Path) -> lis
     resolved: list[Path] = []
     for artifact in artifacts:
         if not isinstance(artifact, str):
-            raise SystemExit(f'run manifest {manifest_path} has a non-string artifact entry')
+            raise SystemExit(
+                f'run manifest {manifest_path} has a non-string artifact entry'
+            )
         candidate = Path(artifact)
         if not candidate.is_absolute():
             candidate = manifest_path.parent / candidate
@@ -144,11 +146,14 @@ def _resolve_run(pattern: str) -> tuple[dict[str, Any], list[Path]]:
     path = Path(pattern)
     if path.is_dir():
         manifests = [
-            candidate for candidate in sorted(path.glob('*.json'))
+            candidate
+            for candidate in sorted(path.glob('*.json'))
             if (_manifest_payload(candidate) or {}).get('profile')
         ]
         if len(manifests) > 1:
-            raise SystemExit(f'{path} contains multiple benchmark runs; pass one exact run manifest')
+            raise SystemExit(
+                f'{path} contains multiple benchmark runs; pass one exact run manifest'
+            )
         if not manifests:
             raise SystemExit(f'{path} has no bench.py run manifest')
         path = manifests[0]
@@ -190,21 +195,34 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
             competitor_label = str(item['competitor_label'])
             phase = str(item['phase'])
         except KeyError as exc:
-            raise SystemExit(f'public_operations[{index}] missing field: {exc.args[0]}') from exc
+            raise SystemExit(
+                f'public_operations[{index}] missing field: {exc.args[0]}'
+            ) from exc
         if phase not in {'warm', 'steady', 'first-use'}:
             raise SystemExit(f'public_operations[{index}] has an invalid phase')
         raw_scaling = item.get('scaling')
         scaling = raw_scaling if isinstance(raw_scaling, dict) else None
         if scaling is not None:
-            required = {'curve_id', 'dimension', 'unit', 'point', 'point_label', 'useful_work_unit'}
+            required = {
+                'curve_id',
+                'dimension',
+                'unit',
+                'point',
+                'point_label',
+                'useful_work_unit',
+            }
             if set(scaling) != required:
-                raise SystemExit(f'public_operations[{index}] has incomplete scaling metadata')
+                raise SystemExit(
+                    f'public_operations[{index}] has incomplete scaling metadata'
+                )
         if gometry in seen:
             raise SystemExit(f'duplicate public gometry row: {gometry}')
         if not competitor or not competitor_label:
             raise SystemExit(f'public_operations[{index}] must be fully paired')
         if not isinstance(raw_canonical, (list, tuple)) or not raw_canonical:
-            raise SystemExit(f'public_operations[{index}] must declare canonical_symbols')
+            raise SystemExit(
+                f'public_operations[{index}] must declare canonical_symbols'
+            )
         canonical_symbols = tuple(str(value) for value in raw_canonical)
         unknown = unknown_public_symbols(canonical_symbols, PUBLIC_API_SYMBOLS)
         if unknown:
@@ -213,24 +231,28 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
                 + ', '.join(unknown)
             )
         seen.add(gometry)
-        operations.append(PublicOpMeta(
-            domain=domain,
-            label=label,
-            workload=workload,
-            suite=suite,
-            canonical_symbols=canonical_symbols,
-            gometry=gometry,
-            competitor=competitor,
-            competitor_label=competitor_label,
-            footnotes=tuple(str(value) for value in (item.get('footnotes') or ())),
-            phase=phase,
-            scaling=scaling,
-        ))
+        operations.append(
+            PublicOpMeta(
+                domain=domain,
+                label=label,
+                workload=workload,
+                suite=suite,
+                canonical_symbols=canonical_symbols,
+                gometry=gometry,
+                competitor=competitor,
+                competitor_label=competitor_label,
+                footnotes=tuple(str(value) for value in (item.get('footnotes') or ())),
+                phase=phase,
+                scaling=scaling,
+            )
+        )
     _validate_scaling_metadata(operations)
     return operations
 
 
-def expected_paired_matrix(payload: dict[str, Any]) -> dict[tuple[str, str, str, str, str], dict[str, Any]]:
+def expected_paired_matrix(
+    payload: dict[str, Any],
+) -> dict[tuple[str, str, str, str, str], dict[str, Any]]:
     """Derive every accepted paired artifact identity from one run manifest."""
     operations = _parse_public_operations(payload.get('public_operations'))
     sampling = payload.get('sampling')
@@ -275,9 +297,13 @@ def validate_exact_paired_matrix(
             for key in expected
         ]
         if declared_matrix != expected_matrix:
-            raise SystemExit('run manifest paired matrix does not match its operation metadata')
+            raise SystemExit(
+                'run manifest paired matrix does not match its operation metadata'
+            )
         declared_digest = payload.get('paired_matrix_sha256')
-        encoded = json.dumps(declared_matrix, separators=(',', ':'), sort_keys=True).encode('utf-8')
+        encoded = json.dumps(
+            declared_matrix, separators=(',', ':'), sort_keys=True
+        ).encode('utf-8')
         expected_digest = hashlib.sha256(encoded).hexdigest()
         if declared_digest != expected_digest:
             raise SystemExit('run manifest paired matrix digest is stale')
@@ -311,9 +337,14 @@ def validate_exact_paired_matrix(
             raise SystemExit(f'duplicate paired matrix identity: {key!r}')
         expected_entry = expected.get(key)
         if expected_entry is None:
-            raise SystemExit(f'{path} is extra or swapped in the paired matrix: {key!r}')
+            raise SystemExit(
+                f'{path} is extra or swapped in the paired matrix: {key!r}'
+            )
         declared = expected_entry['operation']
-        if tuple(operation.get('canonical_symbols') or ()) != declared.canonical_symbols:
+        if (
+            tuple(operation.get('canonical_symbols') or ())
+            != declared.canonical_symbols
+        ):
             raise SystemExit(f'{path} canonical operation identity mismatch')
         if artifact.get('profile') != profile:
             raise SystemExit(f'{path} paired block profile identity mismatch')
@@ -358,7 +389,11 @@ def _validate_scaling_metadata(operations: list[PublicOpMeta]) -> None:
     for curve_id, rows in curves.items():
         if len(rows) != 3:
             raise SystemExit(f'scaling curve {curve_id} must have exactly three points')
-        dimensions = {(row.scaling['dimension'], row.scaling['unit']) for row in rows if row.scaling}
+        dimensions = {
+            (row.scaling['dimension'], row.scaling['unit'])
+            for row in rows
+            if row.scaling
+        }
         if len(dimensions) != 1:
             raise SystemExit(f'scaling curve {curve_id} mixes dimensions or units')
         useful_work_units = {
@@ -379,7 +414,10 @@ def _validate_block(
     expected_run_id: str | None = None,
 ) -> tuple[str, str, PairedBlock]:
     strict_identity = expected_profile is not None or expected_run_id is not None
-    if payload.get('schema_version') != 1 or payload.get('artifact_type') != 'gometry-paired-block':
+    if (
+        payload.get('schema_version') != 1
+        or payload.get('artifact_type') != 'gometry-paired-block'
+    ):
         raise SystemExit(f'{path} is not a typed paired block artifact')
     if expected_profile is not None and payload.get('profile') != expected_profile:
         raise SystemExit(f'{path} paired block profile identity mismatch')
@@ -392,17 +430,25 @@ def _validate_block(
     arms = payload.get('arms')
     timestamps = payload.get('timestamps_monotonic_ns')
     if (
-        not isinstance(block_id, str) or not block_id
-        or not isinstance(pair_id, str) or not pair_id
+        not isinstance(block_id, str)
+        or not block_id
+        or not isinstance(pair_id, str)
+        or not pair_id
         or not isinstance(operation, dict)
-        or not isinstance(order, list) or order not in (['A', 'B'], ['B', 'A'])
-        or not isinstance(arms, dict) or set(arms) != {'A', 'B'}
+        or not isinstance(order, list)
+        or order not in (['A', 'B'], ['B', 'A'])
+        or not isinstance(arms, dict)
+        or set(arms) != {'A', 'B'}
         or not isinstance(timestamps, dict)
     ):
         raise SystemExit(f'{path} has incomplete paired block identity')
     block_started = timestamps.get('block_started')
     block_ended = timestamps.get('block_ended')
-    if not isinstance(block_started, int) or not isinstance(block_ended, int) or block_started > block_ended:
+    if (
+        not isinstance(block_started, int)
+        or not isinstance(block_ended, int)
+        or block_started > block_ended
+    ):
         raise SystemExit(f'{path} has invalid monotonic block timestamps')
     summaries: dict[str, tuple[str, str, float]] = {}
     arm_times: dict[str, tuple[int, int]] = {}
@@ -418,8 +464,11 @@ def _validate_block(
         after = arm.get('provenance_after')
         observation = arm.get('observation')
         if (
-            not isinstance(row, str) or not isinstance(started, int) or not isinstance(ended, int)
-            or not isinstance(before, dict) or not isinstance(after, dict)
+            not isinstance(row, str)
+            or not isinstance(started, int)
+            or not isinstance(ended, int)
+            or not isinstance(before, dict)
+            or not isinstance(after, dict)
             or not isinstance(observation, dict)
         ):
             raise SystemExit(f'{path} arm {side} lacks typed timing/provenance')
@@ -430,11 +479,15 @@ def _validate_block(
         producer_identity = observation.get('producer_identity')
         if strict_identity:
             if producer_identity != before:
-                raise SystemExit(f'{path} arm {side} observation producer identity mismatch')
+                raise SystemExit(
+                    f'{path} arm {side} observation producer identity mismatch'
+                )
             try:
                 validate_producer_identity(before)
             except ValueError as exc:
-                raise SystemExit(f'{path} arm {side} producer identity rejected: {exc}') from exc
+                raise SystemExit(
+                    f'{path} arm {side} producer identity rejected: {exc}'
+                ) from exc
         try:
             validate_observation(observation)
             metric, unit, median, _raw = measurement_summary(observation)
@@ -445,7 +498,10 @@ def _validate_block(
         provenances[side] = (before, after)
     if summaries['A'][:2] != summaries['B'][:2]:
         raise SystemExit(f'{path} arms have mismatched metric types')
-    if arms['A']['observation']['useful_work'] != arms['B']['observation']['useful_work']:
+    if (
+        arms['A']['observation']['useful_work']
+        != arms['B']['observation']['useful_work']
+    ):
         raise SystemExit(f'{path} arms have mismatched useful work')
     sampling = payload.get('sampling')
     if not isinstance(sampling, dict):
@@ -454,11 +510,19 @@ def _validate_block(
     scaling = operation.get('scaling')
     if scaling is not None:
         required_scaling = {
-            'curve_id', 'dimension', 'unit', 'point', 'point_label', 'useful_work_unit'
+            'curve_id',
+            'dimension',
+            'unit',
+            'point',
+            'point_label',
+            'useful_work_unit',
         }
         if not isinstance(scaling, dict) or set(scaling) != required_scaling:
             raise SystemExit(f'{path} has incomplete scaling metadata')
-        if arms['A']['observation']['useful_work']['unit'] != scaling['useful_work_unit']:
+        if (
+            arms['A']['observation']['useful_work']['unit']
+            != scaling['useful_work_unit']
+        ):
             raise SystemExit(f'{path} has mismatched useful-work unit')
     if phase not in {'warm', 'steady', 'first-use'}:
         raise SystemExit(f'{path} has an invalid operation phase')
@@ -472,11 +536,15 @@ def _validate_block(
             raise SystemExit(f'{path} arm {side} has mismatched phase metadata')
         for field in ('warmup_iterations', 'repetitions'):
             expected = sampling.get(field)
-            observed = arms[side]['observation']['warmup' if field.startswith('warmup') else 'calibration']['iterations']
+            observed = arms[side]['observation'][
+                'warmup' if field.startswith('warmup') else 'calibration'
+            ]['iterations']
             if observed != expected:
                 raise SystemExit(f'{path} arm {side} has mismatched sampling {field}')
     if strict_identity:
-        if _identity_without_attribution(provenances['A'][0]) != _identity_without_attribution(provenances['B'][0]):
+        if _identity_without_attribution(
+            provenances['A'][0]
+        ) != _identity_without_attribution(provenances['B'][0]):
             raise SystemExit(f'{path} arms have mismatched common producer identities')
         for side, expected_side in (('A', 'A'), ('B', 'B')):
             identity = provenances[side][0]
@@ -486,13 +554,25 @@ def _validate_block(
         raise SystemExit(f'{path} arms have mismatched producer identities')
     gometry_row = arms['A']['row']
     competitor_row = arms['B']['row']
-    if operation.get('gometry') != gometry_row or operation.get('competitor') != competitor_row:
+    if (
+        operation.get('gometry') != gometry_row
+        or operation.get('competitor') != competitor_row
+    ):
         raise SystemExit(f'{path} operation and arm row identity disagree')
     first, second = order
     first_start, first_end = arm_times[first]
     second_start, second_end = arm_times[second]
-    if not block_started <= first_start <= first_end <= second_start <= second_end <= block_ended:
-        raise SystemExit(f'{path} lead order has overlapping or reversed monotonic timestamps')
+    if (
+        not block_started
+        <= first_start
+        <= first_end
+        <= second_start
+        <= second_end
+        <= block_ended
+    ):
+        raise SystemExit(
+            f'{path} lead order has overlapping or reversed monotonic timestamps'
+        )
     expected_oracle_identity = f'public:{gometry_row}:oracle'
     oracle_a = arms['A']['observation']['oracle']
     oracle_b = arms['B']['observation']['oracle']
@@ -502,26 +582,35 @@ def _validate_block(
     _other_metric, _other_unit, competitor_median = summaries['B']
     if gometry_median <= 0.0 or competitor_median <= 0.0:
         raise SystemExit(f'{path} contains a non-positive estimate')
-    return gometry_row, competitor_row, PairedBlock(
-        artifact=str(path),
-        block_id=block_id,
-        pair_id=pair_id,
-        lead='ab' if order == ['A', 'B'] else 'ba',
-        metric=metric,
-        unit=unit,
-        gometry_median=gometry_median,
-        competitor_median=competitor_median,
-        ratio=competitor_median / gometry_median,
-        producer_identity=provenances['A'][0],
-        phase=phase,
-        scaling=scaling,
-        arm_identities={side: provenance[0] for side, provenance in provenances.items()},
-        useful_work=arms['A']['observation']['useful_work'],
+    return (
+        gometry_row,
+        competitor_row,
+        PairedBlock(
+            artifact=str(path),
+            block_id=block_id,
+            pair_id=pair_id,
+            lead='ab' if order == ['A', 'B'] else 'ba',
+            metric=metric,
+            unit=unit,
+            gometry_median=gometry_median,
+            competitor_median=competitor_median,
+            ratio=competitor_median / gometry_median,
+            producer_identity=provenances['A'][0],
+            phase=phase,
+            scaling=scaling,
+            arm_identities={
+                side: provenance[0] for side, provenance in provenances.items()
+            },
+            useful_work=arms['A']['observation']['useful_work'],
+        ),
     )
 
 
 def _load_all_blocks(
-    paths: list[Path], *, expected_profile: str | None = None, expected_run_id: str | None = None
+    paths: list[Path],
+    *,
+    expected_profile: str | None = None,
+    expected_run_id: str | None = None,
 ) -> dict[str, BenchStats]:
     """Load one typed paired block per artifact; resource artifacts are ignored."""
     by_operation: dict[str, list[PairedBlock]] = {}
@@ -539,7 +628,9 @@ def _load_all_blocks(
         )
         for row in (gometry_row, competitor_row):
             if block.block_id in {item.block_id for item in by_operation.get(row, ())}:
-                raise SystemExit(f'duplicate paired block identity for {row}: {block.block_id}')
+                raise SystemExit(
+                    f'duplicate paired block identity for {row}: {block.block_id}'
+                )
             by_operation.setdefault(row, []).append(block)
     stats: dict[str, BenchStats] = {}
     for row, blocks in by_operation.items():
@@ -584,12 +675,18 @@ def _percentile(values: Sequence[float], quantile: float) -> float:
 
 
 def bootstrap_paired_ratio_ci(
-    ratios: Sequence[float], seed: int = DEFAULT_BOOTSTRAP_SEED, *, samples: int = BOOTSTRAP_SAMPLES
+    ratios: Sequence[float],
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    *,
+    samples: int = BOOTSTRAP_SAMPLES,
 ) -> tuple[float, float]:
     if not ratios:
         raise ValueError('paired bootstrap requires at least one ratio')
     rng = random.Random(seed)
-    medians = [statistics.median(ratios[rng.randrange(len(ratios))] for _ in ratios) for _ in range(samples)]
+    medians = [
+        statistics.median(ratios[rng.randrange(len(ratios))] for _ in ratios)
+        for _ in range(samples)
+    ]
     return _percentile(medians, 0.025), _percentile(medians, 0.975)
 
 
@@ -651,13 +748,17 @@ def _build_rows(
         if any(block.phase != meta.phase for block in blocks):
             raise SystemExit(f'{meta.gometry} has mismatched phase across blocks')
         if any(block.scaling != meta.scaling for block in blocks):
-            raise SystemExit(f'{meta.gometry} has mismatched scaling point across blocks')
+            raise SystemExit(
+                f'{meta.gometry} has mismatched scaling point across blocks'
+            )
         if meta.scaling is not None:
             block_work = [block.useful_work for block in blocks]
             if not block_work or any(not isinstance(work, dict) for work in block_work):
                 raise SystemExit(f'{meta.gometry} lacks useful-work evidence')
             if len({json.dumps(work, sort_keys=True) for work in block_work}) != 1:
-                raise SystemExit(f'{meta.gometry} has inconsistent useful-work evidence')
+                raise SystemExit(
+                    f'{meta.gometry} has inconsistent useful-work evidence'
+                )
             if block_work[0].get('unit') != meta.scaling['useful_work_unit']:
                 raise SystemExit(f'{meta.gometry} has mismatched useful-work unit')
         if expected_blocks is not None and len(blocks) != expected_blocks:
@@ -668,9 +769,13 @@ def _build_rows(
             actual = tuple(sorted(block.lead for block in blocks))
             expected = tuple(sorted(expected_leads))
             if actual != expected:
-                raise SystemExit(f'{meta.gometry} has incomplete lead-order matrix: {actual!r}')
+                raise SystemExit(
+                    f'{meta.gometry} has incomplete lead-order matrix: {actual!r}'
+                )
         if len({block.pair_id for block in blocks}) != 1:
-            raise SystemExit(f'{meta.gometry} has inconsistent pair identity across blocks')
+            raise SystemExit(
+                f'{meta.gometry} has inconsistent pair identity across blocks'
+            )
         identities = [
             json.dumps(
                 block.arm_identities or {'A': block.producer_identity}, sort_keys=True
@@ -678,24 +783,34 @@ def _build_rows(
             for block in blocks
         ]
         if len(set(identities)) != 1:
-            raise SystemExit(f'{meta.gometry} has inconsistent producer identities across blocks')
+            raise SystemExit(
+                f'{meta.gometry} has inconsistent producer identities across blocks'
+            )
         ratios = paired_block_ratios(blocks)
         ratio_ci95 = bootstrap_paired_ratio_ci(ratios, seed, samples=BOOTSTRAP_SAMPLES)
-        rows.append(OpRow(
-            meta=meta,
-            gometry=gometry,
-            competitor=competitor,
-            ratio=statistics.median(ratios),
-            ratio_ci95=ratio_ci95,
-            blocks=blocks,
-            status=classify_ratio(ratio_ci95, equivalence_margin),
-        ))
+        rows.append(
+            OpRow(
+                meta=meta,
+                gometry=gometry,
+                competitor=competitor,
+                ratio=statistics.median(ratios),
+                ratio_ci95=ratio_ci95,
+                blocks=blocks,
+                status=classify_ratio(ratio_ci95, equivalence_margin),
+            )
+        )
     if missing:
-        raise SystemExit('run is missing declared public benchmark rows (or artifacts):\n' + '\n'.join(f'  - {name}' for name in missing))
+        raise SystemExit(
+            'run is missing declared public benchmark rows (or artifacts):\n'
+            + '\n'.join(f'  - {name}' for name in missing)
+        )
     declared = {op.gometry for op in operations} | {op.competitor for op in operations}
     extras = sorted(name for name in stats if name not in declared)
     if extras:
-        raise SystemExit('run contains undeclared public benchmark rows:\n' + '\n'.join(f'  - {name}' for name in extras))
+        raise SystemExit(
+            'run contains undeclared public benchmark rows:\n'
+            + '\n'.join(f'  - {name}' for name in extras)
+        )
     return rows
 
 
@@ -823,7 +938,9 @@ def _run_environment(payload: dict[str, Any]) -> dict[str, Any]:
     }
     return {
         'cpu': metadata.get('selected_cpu', payload.get('selected_cpu')),
-        'cpu_source': metadata.get('selected_cpu_source', payload.get('selected_cpu_source')),
+        'cpu_source': metadata.get(
+            'selected_cpu_source', payload.get('selected_cpu_source')
+        ),
         'cpu_model': metadata.get('cpu_model'),
         'kernel': metadata.get('kernel'),
         'python': metadata.get('python_version', metadata.get('python')),
@@ -836,7 +953,11 @@ def _run_environment(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def render(
-    rows: list[OpRow], *, markdown: bool, publishable: bool, environment: dict[str, Any] | None = None
+    rows: list[OpRow],
+    *,
+    markdown: bool,
+    publishable: bool,
+    environment: dict[str, Any] | None = None,
 ) -> list[str]:
     del markdown
     lines: list[str] = []
@@ -844,9 +965,12 @@ def render(
         lines.extend((f'> **{SMOKE_BANNER}**', ''))
     if environment is not None and any(environment.values()):
         package_versions = environment.get('package_versions') or {}
-        package_text = ', '.join(f'{name} {package_versions[name]}' for name in sorted(package_versions))
+        package_text = ', '.join(
+            f'{name} {package_versions[name]}' for name in sorted(package_versions)
+        )
         lines.extend((
-            '## Run environment', '',
+            '## Run environment',
+            '',
             f'CPU `{environment.get("cpu_model") or "unknown CPU"}` on core '
             f'`{environment.get("cpu") if environment.get("cpu") is not None else "unknown"}`; '
             f'Linux kernel `{environment.get("kernel") or "unknown"}`; '
@@ -858,31 +982,45 @@ def render(
             lines.append(f'Core/comparator evidence: packages {package_text}.')
         if environment.get('geos_version') or environment.get('proj_version'):
             lines.append(
-                'Native engines ' + '; '.join(
-                    value for value in (
-                        f'GEOS {environment["geos_version"]}' if environment.get('geos_version') else '',
-                        f'PROJ {environment["proj_version"]}' if environment.get('proj_version') else '',
-                    ) if value
-                ) + '.'
+                'Native engines '
+                + '; '.join(
+                    value
+                    for value in (
+                        f'GEOS {environment["geos_version"]}'
+                        if environment.get('geos_version')
+                        else '',
+                        f'PROJ {environment["proj_version"]}'
+                        if environment.get('proj_version')
+                        else '',
+                    )
+                    if value
+                )
+                + '.'
             )
         lines.append('')
     by_domain: dict[str, list[OpRow]] = {}
     for row in rows:
         by_domain.setdefault(row.meta.domain, []).append(row)
     for domain in DOMAIN_ORDER:
-        domain_rows = [row for row in by_domain.get(domain, ()) if row.meta.scaling is None]
+        domain_rows = [
+            row for row in by_domain.get(domain, ()) if row.meta.scaling is None
+        ]
         if not domain_rows:
             continue
         lines.extend((
-            f'### {domain}', '',
+            f'### {domain}',
+            '',
             f'<div markdown="1" class="benchmark-table-scroll" role="region" tabindex="0" aria-label="{domain} benchmark results">',
             *_section_table(domain_rows),
-            '</div>', '',
+            '</div>',
+            '',
         ))
     if any('geodesic' in row.meta.footnotes for row in rows):
         lines.append('† geodesic/ellipsoidal metric.')
     if any('in_core' in row.meta.footnotes for row in rows):
-        lines.append('‡ gometry uses its admitted in-core projection path; this is not a claim about arbitrary CRS transforms.')
+        lines.append(
+            '‡ gometry uses its admitted in-core projection path; this is not a claim about arbitrary CRS transforms.'
+        )
     scaling_rows = [row for row in rows if row.meta.scaling is not None]
     if scaling_rows:
         lines.extend(('', '### Scaling Curves', '', *_scaling_sections(scaling_rows)))
@@ -892,7 +1030,10 @@ def render(
 
 
 def normalized_summary_payload(
-    payload: dict[str, Any], stats: dict[str, BenchStats], *, equivalence_margin: float = PRACTICAL_EQUIVALENCE_MARGIN,
+    payload: dict[str, Any],
+    stats: dict[str, BenchStats],
+    *,
+    equivalence_margin: float = PRACTICAL_EQUIVALENCE_MARGIN,
     seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> dict[str, Any]:
     operations = _parse_public_operations(payload.get('public_operations'))
@@ -923,13 +1064,17 @@ def normalized_summary_payload(
         for row in ordered:
             work = row.blocks[0].useful_work if row.blocks else None
             if not isinstance(work, dict):
-                raise SystemExit(f'{row.meta.gometry} has malformed useful-work evidence')
+                raise SystemExit(
+                    f'{row.meta.gometry} has malformed useful-work evidence'
+                )
             useful_work.append(work)
         gometry_medians = [row.gometry.median for row in ordered]
         competitor_medians = [row.competitor.median for row in ordered]
         work_counts = [int(work['count']) for work in useful_work]
         gometry_normalized = normalize_scaling_values(gometry_medians, work_counts)
-        competitor_normalized = normalize_scaling_values(competitor_medians, work_counts)
+        competitor_normalized = normalize_scaling_values(
+            competitor_medians, work_counts
+        )
         first = 0
         last = -1
         scaling_curves.append({
@@ -949,7 +1094,9 @@ def normalized_summary_payload(
                     'ratio_competitor_over_gometry': row.ratio,
                     'status': row.status,
                 }
-                for index, (row, work) in enumerate(zip(ordered, useful_work, strict=True))
+                for index, (row, work) in enumerate(
+                    zip(ordered, useful_work, strict=True)
+                )
             ],
             'endpoint_growth': {
                 'point_ratio': (
@@ -1033,17 +1180,27 @@ def normalized_summary_payload(
 
 
 def summarize_payload(
-    payload: dict[str, Any], stats: dict[str, BenchStats], *, equivalence_margin: float = PRACTICAL_EQUIVALENCE_MARGIN,
+    payload: dict[str, Any],
+    stats: dict[str, BenchStats],
+    *,
+    equivalence_margin: float = PRACTICAL_EQUIVALENCE_MARGIN,
     markdown: bool = True,
 ) -> list[str]:
     operations = _parse_public_operations(payload.get('public_operations'))
     rows = _build_rows(operations, stats, equivalence_margin=equivalence_margin)
-    return render(rows, markdown=markdown, publishable=bool(payload.get('publishable')), environment=_run_environment(payload))
+    return render(
+        rows,
+        markdown=markdown,
+        publishable=bool(payload.get('publishable')),
+        environment=_run_environment(payload),
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('results', help='one bench.py run manifest JSON or its directory')
+    parser.add_argument(
+        'results', help='one bench.py run manifest JSON or its directory'
+    )
     parser.add_argument('--format', choices=['table', 'md'], default='table')
     parser.add_argument(
         '--equivalence-margin',

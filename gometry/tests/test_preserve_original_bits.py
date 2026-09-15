@@ -70,7 +70,9 @@ def test_point_navigation_and_lrs_boundaries_preserve_endpoint_bits() -> None:
     assert _coords_xy_bits(substring) == _coords_xy_bits(line)
 
 
-def test_raw_crs_geodesic_direct_and_identity_bounds_use_frame_canonicalization() -> None:
+def test_raw_crs_geodesic_direct_and_identity_bounds_use_frame_canonicalization() -> (
+    None
+):
     crs = gm.CRS(4326)
     direct = crs.geodesic_direct(-0.0, -0.0, 90.0, 0.0)
     assert _bits(direct['longitude']) == _bits(-0.0)

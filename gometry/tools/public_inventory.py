@@ -52,9 +52,7 @@ def load_public_all(init_path: Path) -> frozenset[str]:
 
 
 def _is_public_name(name: str) -> bool:
-    return not name.startswith('_') or (
-        name.startswith('__') and name.endswith('__')
-    )
+    return not name.startswith('_') or (name.startswith('__') and name.endswith('__'))
 
 
 def _base_name(node: ast.expr) -> str | None:
@@ -68,9 +66,7 @@ def _base_name(node: ast.expr) -> str | None:
 
 
 def _class_declarations(tree: ast.Module) -> dict[str, ast.ClassDef]:
-    return {
-        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
-    }
+    return {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
 
 
 def _class_members(
@@ -141,7 +137,9 @@ def _facade_imports(
     for node in _tree(init_path).body:
         if not isinstance(node, ast.ImportFrom):
             continue
-        source_path = _module_path(node.module, init_path=init_path, stub_path=stub_path)
+        source_path = _module_path(
+            node.module, init_path=init_path, stub_path=stub_path
+        )
         if source_path is None:
             continue
         for alias in node.names:
@@ -161,8 +159,7 @@ def load_public_symbols(stub_path: Path, init_path: Path) -> frozenset[str]:
     for name in public_all:
         if name in stub_declarations:
             symbols.update(
-                f'{name}.{member}'
-                for member in _class_members(name, stub_declarations)
+                f'{name}.{member}' for member in _class_members(name, stub_declarations)
             )
 
     source_declarations: dict[Path, dict[str, ast.ClassDef]] = {}

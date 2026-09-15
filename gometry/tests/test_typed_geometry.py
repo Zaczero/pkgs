@@ -205,10 +205,14 @@ def test_every_class_no_args_builds_its_typed_empty(
 def test_multipart_constructors_preserve_explicit_empty_members() -> None:
     cases = [
         (gm.MultiPoint([gm.Point(), gm.Point(1, 2)]), 'MULTIPOINT (EMPTY, (1 2))'),
-        (gm.MultiLineString([gm.LineString(), [(0, 0), (1, 1)]]),
-         'MULTILINESTRING (EMPTY, (0 0, 1 1))'),
-        (gm.MultiPolygon([gm.Polygon(), gm.box(0, 0, 1, 1)]),
-         'MULTIPOLYGON (EMPTY, ((0 0, 1 0, 1 1, 0 1, 0 0)))'),
+        (
+            gm.MultiLineString([gm.LineString(), [(0, 0), (1, 1)]]),
+            'MULTILINESTRING (EMPTY, (0 0, 1 1))',
+        ),
+        (
+            gm.MultiPolygon([gm.Polygon(), gm.box(0, 0, 1, 1)]),
+            'MULTIPOLYGON (EMPTY, ((0 0, 1 0, 1 1, 0 1, 0 0)))',
+        ),
     ]
     for geometry, expected in cases:
         assert len(geometry) == 2

@@ -47,12 +47,15 @@ def _release_build_info(source_inputs_sha256: str) -> dict[str, object]:
 def test_source_identity_and_effective_release_facts_pass() -> None:
     source_inputs_sha256 = doctor._source_inputs_digest()
     assert source_inputs_sha256
-    assert doctor._build_info_failures(
-        _release_build_info(source_inputs_sha256),
-        source_inputs_sha256,
-        doctor._rustc_host_target(),
-        doctor._native_source_inputs_digest(),
-    ) == []
+    assert (
+        doctor._build_info_failures(
+            _release_build_info(source_inputs_sha256),
+            source_inputs_sha256,
+            doctor._rustc_host_target(),
+            doctor._native_source_inputs_digest(),
+        )
+        == []
+    )
 
 
 def test_source_identity_mutation_rejects_without_rebuild() -> None:
@@ -107,7 +110,10 @@ def test_private_runtime_build_info_matches_current_source() -> None:
         'gil_used',
     }.intersection(build_info)
     assert build_info['source_inputs_sha256'] == doctor._source_inputs_digest()
-    assert build_info['native_source_inputs_sha256'] == doctor._native_source_inputs_digest()
+    assert (
+        build_info['native_source_inputs_sha256']
+        == doctor._native_source_inputs_digest()
+    )
     extension = doctor._extension_identity()
     path = Path(extension['path'])
     assert extension['sha256'] == hashlib.sha256(path.read_bytes()).hexdigest()
@@ -148,7 +154,9 @@ def test_topology_fixture_preserves_smt_and_numa_boundaries(tmp_path: Path) -> N
         path = node_root / f'node{node}'
         path.mkdir(parents=True)
         (path / 'cpulist').write_text(cpus)
-        (path / 'meminfo').write_text('Node MemTotal:       1024 kB\nNode MemFree:         512 kB\n')
+        (path / 'meminfo').write_text(
+            'Node MemTotal:       1024 kB\nNode MemFree:         512 kB\n'
+        )
     numa = doctor.parse_numa_topology(node_root)
     assert numa['nodes']['0']['cpus'] == [0, 1]
     assert numa['nodes']['1']['cpus'] == [2]
@@ -210,23 +218,30 @@ def test_native_library_ownership_uses_record_and_engine_associations() -> None:
     shapely = doctor.implementation_identity(
         'shapely.area/1',
         file_identity('/site-packages/gometry/_lib.so'),
-        package_info=package('shapely', '/site-packages/shapely/__init__.py', shapely_extension),
+        package_info=package(
+            'shapely', '/site-packages/shapely/__init__.py', shapely_extension
+        ),
         loaded_native_libraries=loaded,
     )
     pyproj = doctor.implementation_identity(
         'pyproj.transform/1',
         file_identity('/site-packages/gometry/_lib.so'),
-        package_info=package('pyproj', '/site-packages/pyproj/__init__.py', pyproj_extension),
+        package_info=package(
+            'pyproj', '/site-packages/pyproj/__init__.py', pyproj_extension
+        ),
         loaded_native_libraries=loaded,
     )
     assert {item['path'] for item in shapely['native_libraries']} == {
-        shapely_extension, '/nix/store/libgeos_c.so.1'
+        shapely_extension,
+        '/nix/store/libgeos_c.so.1',
     }
     assert {item['path'] for item in pyproj['native_libraries']} == {
-        pyproj_extension, '/nix/store/libproj.so.25'
+        pyproj_extension,
+        '/nix/store/libproj.so.25',
     }
     assert '/nix/store/libpython3.13.so' not in {
-        item['path'] for item in shapely['native_libraries'] + pyproj['native_libraries']
+        item['path']
+        for item in shapely['native_libraries'] + pyproj['native_libraries']
     }
 
 
@@ -243,7 +258,11 @@ def test_installed_native_identity_keeps_real_engine_ownership_bounded() -> None
             except ImportError:
                 pass
     loaded = doctor._loaded_native_libraries()
-    extension = {'path': '/checkout/gometry/_lib.so', 'sha256': '0' * 64, 'size_bytes': 1}
+    extension = {
+        'path': '/checkout/gometry/_lib.so',
+        'sha256': '0' * 64,
+        'size_bytes': 1,
+    }
     for package_name, engine_token in (('shapely', 'geos'), ('pyproj', 'proj')):
         package = doctor._package_identity(package_name)
         if package is None:
@@ -285,9 +304,7 @@ def test_native_identity_walkers_drop_hidden_metadata_and_preserve_visible_input
 
     files, native = wheel_smoke._source_input_records(package)
     assert any(name == 'gometry/native/visible/input.c' for name, _ in native)
-    assert not any(
-        wheel_smoke._is_hidden_native_path(name) for name, _ in files
-    )
+    assert not any(wheel_smoke._is_hidden_native_path(name) for name, _ in files)
     before = wheel_smoke.source_input_digests(package)
     (package / 'native' / '.git').write_text('changed metadata\n')
     after = wheel_smoke.source_input_digests(package)
@@ -375,9 +392,7 @@ def test_release_build_env_does_not_embed_profile_or_source_declarations(
 ) -> None:
     monkeypatch.delenv('GOMETRY_RELEASE_PROFILE', raising=False)
     monkeypatch.delenv('GOMETRY_RELEASE_SOURCE_COMMIT', raising=False)
-    environment = wheel_smoke.release_build_env(
-        target='x86_64-unknown-linux-gnu'
-    )
+    environment = wheel_smoke.release_build_env(target='x86_64-unknown-linux-gnu')
     assert environment['MATURIN_PEP517_ARGS'] == '--locked --profile release-dist'
     assert 'GOMETRY_RELEASE_PROFILE' not in environment
     assert 'GOMETRY_RELEASE_SOURCE_COMMIT' not in environment
@@ -430,8 +445,7 @@ def _identity_wheel(path: Path) -> None:
     with zipfile.ZipFile(path, 'w') as archive:
         archive.writestr(
             'gometry-1.0.0.dist-info/WHEEL',
-            'Wheel-Version: 1.0\n'
-            'Tag: cp314-cp314-manylinux_2_17_x86_64\n',
+            'Wheel-Version: 1.0\nTag: cp314-cp314-manylinux_2_17_x86_64\n',
         )
 
 
@@ -446,11 +460,13 @@ def _identity_receipt(source_manifest: Path, wheel: Path) -> Path:
         'source': wheel_smoke._source_identity(manifest),
         'build': build,
         'planned_identifiers': ['cp314-manylinux_x86_64'],
-        'wheels': [{
-            'identifier': 'cp314-manylinux_x86_64',
-            'filename': wheel.name,
-            'sha256': wheel_smoke.sha256_file(wheel),
-        }],
+        'wheels': [
+            {
+                'identifier': 'cp314-manylinux_x86_64',
+                'filename': wheel.name,
+                'sha256': wheel_smoke.sha256_file(wheel),
+            }
+        ],
     }
     path = wheel.parent / wheel_smoke.RUNNER_RECEIPT_NAME
     path.write_text(json.dumps(receipt), encoding='utf-8')

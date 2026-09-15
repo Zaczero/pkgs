@@ -98,7 +98,9 @@ def test_geodesic_positive_infinite_dwithin_broadcasts_over_array_operands() -> 
     assert gm.dwithin(left, empty, math.inf).tolist() == [False, False]
 
 
-def test_positive_infinite_dwithin_preserves_many_to_many_missing_and_empty_rows() -> None:
+def test_positive_infinite_dwithin_preserves_many_to_many_missing_and_empty_rows() -> (
+    None
+):
     left = gm.GeometryArray([
         gm.Point(0.0, 0.0, crs=4326),
         None,

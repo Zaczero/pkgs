@@ -93,9 +93,7 @@ def _git_build_inputs_dirty() -> bool | None:
     return bool(result)
 
 
-def _source_input_files(
-    *, native_only: bool = False
-) -> list[tuple[str, Path]] | None:
+def _source_input_files(*, native_only: bool = False) -> list[tuple[str, Path]] | None:
     files: list[tuple[str, Path]] = []
     if not native_only:
         files.extend([
@@ -202,7 +200,9 @@ def _distribution_owned_paths(distribution: dict[str, Any]) -> set[str] | None:
         return None
     paths: set[str] = set()
     try:
-        with Path(record_path).open(newline='', encoding='utf-8', errors='replace') as stream:
+        with Path(record_path).open(
+            newline='', encoding='utf-8', errors='replace'
+        ) as stream:
             for row in csv.reader(stream):
                 if not row:
                     continue
@@ -294,10 +294,16 @@ def implementation_identity(
     """Attribute module, distribution, and loaded native files to one row."""
     runtime = 'gometry' if row.startswith('gometry.') else 'comparator'
     package = 'gometry' if runtime == 'gometry' else row.split('.', 1)[0]
-    package_info = package_info if package_info is not None else _package_identity(package)
+    package_info = (
+        package_info if package_info is not None else _package_identity(package)
+    )
     module = package_info.get('module') if package_info else None
     distribution = package_info.get('distribution') if package_info else None
-    libraries = loaded_native_libraries if loaded_native_libraries is not None else _loaded_native_libraries()
+    libraries = (
+        loaded_native_libraries
+        if loaded_native_libraries is not None
+        else _loaded_native_libraries()
+    )
     if runtime == 'gometry':
         extension_file = {
             key: extension[key]
@@ -314,10 +320,14 @@ def implementation_identity(
         module_path = module.get('path') if isinstance(module, dict) else None
         engine_tokens = _ENGINE_LIBRARY_TOKENS.get(package, ())
         libraries = [
-            item for item in libraries
+            item
+            for item in libraries
             if item.get('path') in owned_paths
             or item.get('path') == module_path
-            or any(token in Path(str(item.get('path'))).name.lower() for token in engine_tokens)
+            or any(
+                token in Path(str(item.get('path'))).name.lower()
+                for token in engine_tokens
+            )
         ]
         native_module = isinstance(module, dict) and any(
             suffix in str(module.get('path', '')).lower()
@@ -391,7 +401,9 @@ def _build_info_failures(
         return ['gometry extension build-info is missing: ' + ', '.join(missing)]
     extra = sorted(build_info.keys() - BUILD_INFO_KEYS)
     if extra:
-        return ['gometry extension build-info has unexpected fields: ' + ', '.join(extra)]
+        return [
+            'gometry extension build-info has unexpected fields: ' + ', '.join(extra)
+        ]
     failures: list[str] = []
     if build_info['schema_version'] != BUILD_INFO_SCHEMA_VERSION:
         failures.append(
@@ -535,11 +547,15 @@ def parse_cpu_topology(root: Path = Path('/sys/devices/system/cpu')) -> dict[str
     }
 
 
-def parse_cache_topology(root: Path = Path('/sys/devices/system/cpu')) -> list[dict[str, Any]]:
+def parse_cache_topology(
+    root: Path = Path('/sys/devices/system/cpu'),
+) -> list[dict[str, Any]]:
     caches: list[dict[str, Any]] = []
     seen: set[str] = set()
     for cpu_path in sorted(root.glob('cpu[0-9]*'), key=lambda path: path.name):
-        for cache in sorted((cpu_path / 'cache').glob('index*'), key=lambda path: path.name):
+        for cache in sorted(
+            (cpu_path / 'cache').glob('index*'), key=lambda path: path.name
+        ):
             identity = str(cache.resolve())
             if identity in seen:
                 continue
@@ -554,7 +570,9 @@ def parse_cache_topology(root: Path = Path('/sys/devices/system/cpu')) -> list[d
     return caches
 
 
-def parse_numa_topology(root: Path = Path('/sys/devices/system/node')) -> dict[str, Any]:
+def parse_numa_topology(
+    root: Path = Path('/sys/devices/system/node'),
+) -> dict[str, Any]:
     nodes: dict[str, Any] = {}
     for node_path in sorted(root.glob('node[0-9]*'), key=lambda path: path.name):
         name = node_path.name.removeprefix('node')
@@ -599,14 +617,30 @@ def parse_cgroup_v2(
     """Record cgroup v2 limits and pressure, or explicit unavailability."""
     relative = _proc_cgroup_path(proc_cgroup)
     if relative is None:
-        return {'available': False, 'path': None, 'reason': 'unified cgroup v2 path unavailable'}
+        return {
+            'available': False,
+            'path': None,
+            'reason': 'unified cgroup v2 path unavailable',
+        }
     path = (mount / relative.lstrip('/')).resolve()
     if not path.is_dir():
-        return {'available': False, 'path': relative, 'reason': 'cgroup v2 mount unavailable'}
+        return {
+            'available': False,
+            'path': relative,
+            'reason': 'cgroup v2 mount unavailable',
+        }
     names = (
-        'memory.max', 'memory.high', 'memory.current', 'memory.events',
-        'cpu.max', 'cpu.weight', 'cpu.stat', 'cpuset.cpus.effective',
-        'cpuset.mems.effective', 'memory.pressure', 'cpu.pressure',
+        'memory.max',
+        'memory.high',
+        'memory.current',
+        'memory.events',
+        'cpu.max',
+        'cpu.weight',
+        'cpu.stat',
+        'cpuset.cpus.effective',
+        'cpuset.mems.effective',
+        'memory.pressure',
+        'cpu.pressure',
     )
     values = {name: _read_text(path / name) for name in names}
     return {'available': True, 'path': relative, 'mount': str(mount), 'values': values}
@@ -952,7 +986,9 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         'native_library_identity': {
             'available': bool(loaded_native_libraries),
             'source': '/proc/self/maps' if Path('/proc/self/maps').is_file() else None,
-            'reason': None if loaded_native_libraries else 'loaded native-library mapping is unavailable',
+            'reason': None
+            if loaded_native_libraries
+            else 'loaded native-library mapping is unavailable',
         },
         'geos_version': _geos_version(),
         'proj_version': _proj_version(),
@@ -987,7 +1023,9 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
             # Optional inventory extension (e.g. rtree on internal filters).
             available = importlib.util.find_spec(package) is not None
             if not available:
-                hard_failures.append(f'competitor package {package!r} is not importable')
+                hard_failures.append(
+                    f'competitor package {package!r} is not importable'
+                )
             continue
         if not info['available']:
             if package in {'gometry', 'numpy'}:
@@ -1004,9 +1042,13 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
                 f'package {package!r} has no installed distribution version'
             )
     if {'shapely', 'geopandas'} & required and not metadata['geos_version']:
-        hard_failures.append('GEOS version is unavailable for the selected benchmark packages')
+        hard_failures.append(
+            'GEOS version is unavailable for the selected benchmark packages'
+        )
     if {'pyproj', 'geopandas'} & required and not metadata['proj_version']:
-        hard_failures.append('PROJ version is unavailable for the selected benchmark packages')
+        hard_failures.append(
+            'PROJ version is unavailable for the selected benchmark packages'
+        )
     return {
         'metadata': metadata,
         'warnings': warnings,

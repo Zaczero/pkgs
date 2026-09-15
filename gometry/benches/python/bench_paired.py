@@ -46,8 +46,15 @@ from benchmark_identity import (
 from benchmark_observation import make_observation
 
 _DEPENDENCIES = (
-    'gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas', 'pyarrow',
-    'mercantile', 'pygeohash',
+    'gometry',
+    'numpy',
+    'shapely',
+    'pyproj',
+    'h3',
+    'geopandas',
+    'pyarrow',
+    'mercantile',
+    'pygeohash',
 )
 _OUTPUT_SINK = 0
 PAIR_ARTIFACT_SCHEMA_VERSION = 1
@@ -181,7 +188,9 @@ def _measure_arm(
         try:
             output_validator(last_value)
         except Exception as exc:
-            raise SystemExit(f'paired block output validation failed for {row}: {exc}') from exc
+            raise SystemExit(
+                f'paired block output validation failed for {row}: {exc}'
+            ) from exc
     observation = make_observation(
         metric='duration',
         raw_values=raw_seconds,
@@ -223,7 +232,9 @@ def run_block(
     if lead not in {'ab', 'ba'}:
         raise SystemExit(f'paired block lead must be ab or ba, got {lead!r}')
     if warmups < 0 or repetitions < 1:
-        raise SystemExit('paired block warmups must be non-negative and repetitions positive')
+        raise SystemExit(
+            'paired block warmups must be non-negative and repetitions positive'
+        )
     if phase not in {'warm', 'steady', 'first-use'}:
         raise SystemExit(f'paired block phase is unsupported: {phase!r}')
     declared_phase = getattr(operation, 'phase', 'warm')
@@ -242,6 +253,7 @@ def run_block(
         # oracle-gate checks; importing it constructs native-backed fixtures.
         import _bench_public_cases as _public_cases  # noqa: F401
         import _bench_scaling_cases as _scaling_cases  # noqa: F401
+
         case_builder = (
             PUBLIC_SCALING_CASE_BUILDERS.get(operation.gometry)
             if hasattr(operation, 'curve_id')
@@ -256,7 +268,9 @@ def run_block(
     if pair is None or not callable(getattr(pair, 'gometry_call', None)):
         raise SystemExit(f'public paired case is malformed: {operation.gometry}')
     if not callable(getattr(pair, 'competitor_call', None)):
-        raise SystemExit(f'public paired case lacks competitor callable: {operation.gometry}')
+        raise SystemExit(
+            f'public paired case lacks competitor callable: {operation.gometry}'
+        )
     oracle_identity = public_oracle_identity(operation)
     useful_work = getattr(case, 'useful_work', None)
     if not isinstance(useful_work, dict):
@@ -298,7 +312,9 @@ def run_block(
     }
     common_after = identity()
     if common_before != common_after:
-        raise SystemExit('paired block producer identity changed during the timed block')
+        raise SystemExit(
+            'paired block producer identity changed during the timed block'
+        )
     if common_after.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION:
         arm_identity_after = {
             side: _arm_identity(
@@ -356,7 +372,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--lead', choices=('ab', 'ba'), required=True)
     parser.add_argument('--profile', choices=('smoke', 'release'), required=True)
     parser.add_argument('--run-id', required=True)
-    parser.add_argument('--phase', choices=('warm', 'steady', 'first-use'), required=True)
+    parser.add_argument(
+        '--phase', choices=('warm', 'steady', 'first-use'), required=True
+    )
     parser.add_argument('--warmups', type=int, required=True)
     parser.add_argument('--repetitions', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)

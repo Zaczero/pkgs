@@ -45,8 +45,7 @@ def test_release_operation_counts_and_five_domains() -> None:
     assert sum(len(op.rows) for op in RELEASE_OPERATIONS) == 74
     assert all(op.paired and op.competitor for op in RELEASE_OPERATIONS)
     assert [
-        sum(op.domain == domain for op in RELEASE_OPERATIONS)
-        for domain in DOMAIN_ORDER
+        sum(op.domain == domain for op in RELEASE_OPERATIONS) for domain in DOMAIN_ORDER
     ] == [7, 15, 6, 4, 5]
     assert len(DOMAIN_ORDER) == 5
     assert all('Real-world' not in op.domain for op in RELEASE_OPERATIONS)
@@ -97,7 +96,8 @@ def test_manifest_serialization_retains_canonical_endpoints() -> None:
     assert records[0]['canonical_symbols'] == ['from_wkb']
     assert all(record['canonical_symbols'] for record in records)
     endpoint = next(
-        record for record in records
+        record
+        for record in records
         if record['gometry'] == 'gometry.union_all/1024_service_areas'
     )
     assert endpoint['scaling']['point'] == 1_024
@@ -118,11 +118,13 @@ def test_scaling_curves_are_sparse_ordered_and_single_dimension() -> None:
 
 def test_scaling_curves_reuse_canonical_endpoint_rows() -> None:
     overlay = next(
-        operation for operation in RELEASE_OPERATIONS
+        operation
+        for operation in RELEASE_OPERATIONS
         if operation.gometry == 'gometry.union_all/1024_service_areas'
     )
     grid = next(
-        operation for operation in RELEASE_OPERATIONS
+        operation
+        for operation in RELEASE_OPERATIONS
         if operation.gometry == 'gometry.tile_cover.bbox/BR_z10_15340_tiles'
     )
     assert overlay.scaling is not None and overlay.scaling.point == 1_024
@@ -156,7 +158,10 @@ def test_all_public_rows_are_unique_and_fully_paired() -> None:
     assert len({op.competitor for op in RELEASE_OPERATIONS}) == 37
     assert len(RELEASE.rows('competitors')) == 106
     assert _bench_registry.SUITES == ('competitors',)
-    assert all(len(unit) == 2 for unit in pair_units(RELEASE.rows('competitors'), suite='competitors'))
+    assert all(
+        len(unit) == 2
+        for unit in pair_units(RELEASE.rows('competitors'), suite='competitors')
+    )
 
 
 def test_revised_operations_and_labels() -> None:
@@ -178,7 +183,8 @@ def test_revised_operations_and_labels() -> None:
     country_io = next(op for op in RELEASE_OPERATIONS if 'from_geojson' in op.gometry)
     assert country_io.domain == 'Array construction & I/O'
     assert all(
-        next(op for op in RELEASE_OPERATIONS if token in op.gometry).domain == 'CRS & geodesy'
+        next(op for op in RELEASE_OPERATIONS if token in op.gometry).domain
+        == 'CRS & geodesy'
         for token in ('geodesic_area', 'geodesic_length')
     )
 

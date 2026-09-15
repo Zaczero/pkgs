@@ -42,12 +42,14 @@ def main() -> None:
 def validate_case() -> None:
     text = json.dumps({
         'type': 'FeatureCollection',
-        'features': [{
-            'type': 'Feature',
-            'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
-            'properties': {'id': 1},
-            'id': 'one',
-        }],
+        'features': [
+            {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+                'properties': {'id': 1},
+                'id': 'one',
+            }
+        ],
     })
     features = parse(text)
     assert len(features.geometries) == 1 and list(features.ids) == ['one']

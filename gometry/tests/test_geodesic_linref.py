@@ -127,7 +127,9 @@ def test_geographic_refinement_validates_coordinates_and_skips_missing_rows() ->
     assert refined.is_missing.tolist() == [False, True]
 
 
-def test_geographic_segmentize_preserves_xyzm_and_array_metadata_with_missing_row() -> None:
+def test_geographic_segmentize_preserves_xyzm_and_array_metadata_with_missing_row() -> (
+    None
+):
     valid = gm.LineString(
         [(0.0, 0.0), (10.0, 10.0)],
         z=[10.0, 30.0],

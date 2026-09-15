@@ -300,9 +300,7 @@ def test_areal_result_equivalent_rejects_distinct_points() -> None:
     import gometry as gm
     import shapely
 
-    with pytest.raises(
-        OracleMismatch, match=r'(lower-dimensional|kind mismatch)'
-    ):
+    with pytest.raises(OracleMismatch, match=r'(lower-dimensional|kind mismatch)'):
         areal_result_equivalent(
             [gm.Point(0, 0)],
             [shapely.Point(100, 100)],
@@ -346,8 +344,7 @@ def test_areal_result_equivalent_rejects_wrong_empty_kind() -> None:
             id='far-line',
         ),
         pytest.param(
-            'GEOMETRYCOLLECTION (POLYGON ((0 0, 1 0, 1 1, 0 0)), '
-            'POINT (100 100))',
+            'GEOMETRYCOLLECTION (POLYGON ((0 0, 1 0, 1 1, 0 0)), POINT (100 100))',
             id='polygon-with-external-point',
         ),
         pytest.param(
@@ -361,9 +358,7 @@ def test_areal_result_equivalent_rejects_non_areal_support(right: str) -> None:
     import gometry as gm
     import shapely
 
-    with pytest.raises(
-        OracleMismatch, match=r'(lower-dimensional|kind mismatch)'
-    ):
+    with pytest.raises(OracleMismatch, match=r'(lower-dimensional|kind mismatch)'):
         areal_result_equivalent(
             [gm.box(0, 0, 1, 1)],
             [shapely.from_wkt(right)],

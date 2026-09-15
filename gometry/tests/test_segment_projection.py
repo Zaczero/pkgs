@@ -550,8 +550,7 @@ def test_source_selection_compares_the_continuum_foot_in_mixed_carriers() -> Non
         for row in range(2):
             assert _coords(nearest[0 if targets_are_left else 1][row]) == source_foot
             assert (
-                tuple(shortest[row].coords[0 if targets_are_left else 1])
-                == source_foot
+                tuple(shortest[row].coords[0 if targets_are_left else 1]) == source_foot
             )
 
 
@@ -700,11 +699,13 @@ def test_snap_index_keeps_latest_reference_on_an_exact_distance_tie() -> None:
 def test_snap_index_full_scans_a_min_subnormal_tolerance() -> None:
     minimum = 2.0**-1074
     line = gm.LineString([(-1.0, 0.0), (1.0, 0.0)])
-    references = [(minimum, 0.0)] + [
-        (10.0 + index, 10.0) for index in range(31)
-    ]
+    references = [(minimum, 0.0)] + [(10.0 + index, 10.0) for index in range(31)]
     snapped = gm.snap(line, gm.MultiPoint(references), minimum)
-    assert tuple(map(tuple, snapped.coords)) == ((-1.0, 0.0), (minimum, 0.0), (1.0, 0.0))
+    assert tuple(map(tuple, snapped.coords)) == (
+        (-1.0, 0.0),
+        (minimum, 0.0),
+        (1.0, 0.0),
+    )
 
 
 def test_snap_index_full_scans_a_tolerance_whose_square_overflows() -> None:
@@ -716,9 +717,7 @@ def test_snap_index_full_scans_a_tolerance_whose_square_overflows() -> None:
 
 
 def test_snap_index_keeps_an_exact_segment_distance_boundary_candidate() -> None:
-    references = [(1.0, 1.0)] + [
-        (10.0 + index, 10.0) for index in range(31)
-    ]
+    references = [(1.0, 1.0)] + [(10.0 + index, 10.0) for index in range(31)]
     line = gm.LineString([(0.0, 0.0), (2.0, 0.0)])
     snapped = gm.snap(line, gm.MultiPoint(references), 1.0)
     assert tuple(map(tuple, snapped.coords)) == ((0.0, 0.0), (1.0, 1.0), (2.0, 0.0))

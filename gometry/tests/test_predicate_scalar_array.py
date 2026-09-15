@@ -87,9 +87,7 @@ def test_relate_scalar_array_uses_logical_rows_for_compact_nulls() -> None:
         for row in range(65)
     ]
 
-    present = gm.GeometryArray([
-        gm.Point(float(row), 0.0) for row in range(0, 65, 2)
-    ])
+    present = gm.GeometryArray([gm.Point(float(row), 0.0) for row in range(0, 65, 2)])
     present_before = present.__sizeof__()
     gm.relate(scalar, present)
     present_growth = present.__sizeof__() - present_before

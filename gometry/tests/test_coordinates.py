@@ -347,14 +347,21 @@ def test_coordinate_columns_are_readonly_ndarrays() -> None:
     assert len(bare.z) == 1 == len(bare.m)
 
 
-@pytest.mark.parametrize('middle', [None, gm.from_wkt('POINT EMPTY')], ids=['missing', 'empty'])
-@pytest.mark.parametrize('axes, expected', [
-    ('XY', [[1, 2], [5, 6]]),
-    ('XYZ', [[1, 2, 3], [5, 6, np.nan]]),
-    ('XYM', [[1, 2, np.nan], [5, 6, 7]]),
-    ('XYZM', [[1, 2, 3, np.nan], [5, 6, np.nan, 7]]),
-])
-def test_get_coordinates_preserves_empty_rows_and_absent_ordinates(middle, axes, expected):
+@pytest.mark.parametrize(
+    'middle', [None, gm.from_wkt('POINT EMPTY')], ids=['missing', 'empty']
+)
+@pytest.mark.parametrize(
+    'axes, expected',
+    [
+        ('XY', [[1, 2], [5, 6]]),
+        ('XYZ', [[1, 2, 3], [5, 6, np.nan]]),
+        ('XYM', [[1, 2, np.nan], [5, 6, 7]]),
+        ('XYZM', [[1, 2, 3, np.nan], [5, 6, np.nan, 7]]),
+    ],
+)
+def test_get_coordinates_preserves_empty_rows_and_absent_ordinates(
+    middle, axes, expected
+):
     array = gm.GeometryArray([
         gm.from_wkt('POINT Z (1 2 3)'),
         middle,
@@ -520,7 +527,9 @@ def test_get_coordinates_return_index_gathered_selection() -> None:
     ])
     gathered = base[[2, 0]]
     matrix, indexes = gm.get_coordinates(gathered, return_index=True)
-    np.testing.assert_array_equal(matrix, [[5.0, 0.0], [6.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+    np.testing.assert_array_equal(
+        matrix, [[5.0, 0.0], [6.0, 0.0], [0.0, 0.0], [1.0, 0.0]]
+    )
     np.testing.assert_array_equal(indexes, [0, 0, 1, 1])
     # Window slice also keeps logical ids starting at 0.
     window = base[1:]
@@ -576,7 +585,9 @@ def test_compact_nullable_point_coordinate_indices_preserve_slices_and_edges() -
     reversed_array = array[::-1]
     assert len(reversed_array.coords) == 2
     np.testing.assert_array_equal(reversed_array.coords.row_index, [0, 2])
-    np.testing.assert_array_equal(reversed_array.coords.to_dict(index=True)['index'], [0, 2])
+    np.testing.assert_array_equal(
+        reversed_array.coords.to_dict(index=True)['index'], [0, 2]
+    )
     window = array[1:]
     assert len(window.coords) == 1
     np.testing.assert_array_equal(window.coords.row_index, [1])

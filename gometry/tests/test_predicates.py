@@ -14,9 +14,7 @@ from tests._support import ids, pair_rows
 
 
 def test_outlying_hole_boundary_is_not_polygon_support() -> None:
-    polygon = gm.from_wkt(
-        'POLYGON ((0 0,2 0,2 2,0 2,0 0),(5 5,6 5,6 6,5 6,5 5))'
-    )
+    polygon = gm.from_wkt('POLYGON ((0 0,2 0,2 2,0 2,0 0),(5 5,6 5,6 6,5 6,5 5))')
     point = gm.Point(5, 5)
     assert not polygon.is_valid
     assert polygon.bounds == (0, 0, 6, 6)
@@ -362,7 +360,9 @@ def test_de9im_predicates_are_exposed_for_scalar_array_index_and_join() -> None:
         ('1', False),
         ('2', False),
     ):
-        assert gm.relate_pattern(disjoint_a, disjoint_b, f'{literal}********') is expected
+        assert (
+            gm.relate_pattern(disjoint_a, disjoint_b, f'{literal}********') is expected
+        )
     assert gm.relate_pattern(disjoint_a, disjoint_b, 'FF2FF1212')
     with pytest.raises(gm.GeometryError, match='invalid DE-9IM pattern'):
         gm.relate_pattern(disjoint_a, disjoint_b, 'T*******')
@@ -541,8 +541,12 @@ def test_de9im_reviewer_correctness_cases_match_shapely() -> None:
     # two-dimensional interior, so this pair is deliberately kept outside the
     # ordinary differential cases.
     degenerate = ('POLYGON ((0 0, 0 0, 0 0, 0 0))', 'LINESTRING (0 0, 1 0)')
-    assert gm.relate(gm.from_wkt(degenerate[0]), gm.from_wkt(degenerate[1])) == 'F0FFFF102'
-    assert gm.relate(gm.from_wkt('POINT (0 0)'), gm.from_wkt(degenerate[1])) == 'F0FFFF102'
+    assert (
+        gm.relate(gm.from_wkt(degenerate[0]), gm.from_wkt(degenerate[1])) == 'F0FFFF102'
+    )
+    assert (
+        gm.relate(gm.from_wkt('POINT (0 0)'), gm.from_wkt(degenerate[1])) == 'F0FFFF102'
+    )
     assert (
         shapely.relate(shapely.from_wkt(degenerate[0]), shapely.from_wkt(degenerate[1]))
         == 'FF2F0F102'

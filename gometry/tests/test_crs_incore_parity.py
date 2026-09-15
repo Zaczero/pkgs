@@ -561,8 +561,7 @@ def test_aea_round_trip_keeps_coordinates_through_pole_approach(
     # conditioning while remaining far below the former kilometre-scale
     # collapse.
     assert error_m <= 0.2, (
-        f'AEA round-trip error {error_m} m at ({longitude}, {latitude}) '
-        f'-> {recovered}'
+        f'AEA round-trip error {error_m} m at ({longitude}, {latitude}) -> {recovered}'
     )
 
 
@@ -592,8 +591,23 @@ def test_aea_poles_accept_roundoff_but_reject_real_overshoot() -> None:
 
 @pytest.mark.parametrize(
     'latitude',
-    [89.98, 89.981942232, 89.99, 89.999, 89.9999, 89.99999, 89.999999, 90.0,
-     -89.98, -89.99, -89.999, -89.9999, -89.99999, -89.999999, -90.0],
+    [
+        89.98,
+        89.981942232,
+        89.99,
+        89.999,
+        89.9999,
+        89.99999,
+        89.999999,
+        90.0,
+        -89.98,
+        -89.99,
+        -89.999,
+        -89.9999,
+        -89.99999,
+        -89.999999,
+        -90.0,
+    ],
 )
 def test_bundled_proj_aea_keeps_cross_datum_pole_approach(
     latitude: float,
@@ -708,7 +722,9 @@ def test_projected_to_projected_generic_pair_matches_pyproj_in_coordinates_and_b
 
     gm.crs_clear_cache()
     actual_xy = gm.crs_transform(source, target, *source_xy)
-    _assert_xy_parity(actual_xy, expected_xy, tol=ABS_TOL_M, context=f'{source}->{target}')
+    _assert_xy_parity(
+        actual_xy, expected_xy, tol=ABS_TOL_M, context=f'{source}->{target}'
+    )
     assert last_transform_engine() == 'in_core'
 
     actual_back = gm.crs_transform(target, source, *actual_xy)

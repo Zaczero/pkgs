@@ -14,9 +14,12 @@ def _corner_xyz(triangle: gm.Polygon) -> list[tuple[float, float, float | None]]
 
 
 def test_earcut_keeps_first_duplicate_xy_z() -> None:
-    poly = gm.Polygon(
-        [(0.0, 0.0, 1.0), (0.0, 0.0, 2.0), (1.0, 0.0, 3.0), (0.0, 1.0, 4.0)]
-    )
+    poly = gm.Polygon([
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 2.0),
+        (1.0, 0.0, 3.0),
+        (0.0, 1.0, 4.0),
+    ])
     triangles = poly.triangulate(method='earcut')
     assert len(triangles) > 0
     origins = [

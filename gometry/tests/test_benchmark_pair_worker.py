@@ -140,11 +140,17 @@ def test_one_fresh_process_block_contains_both_arms_and_consumes_output() -> Non
     assert set(artifact['arms']) == {'A', 'B'}
     assert seen == ['A', 'A', 'A', 'B', 'B', 'B']
     assert artifact['arms']['A']['observation']['measurement']['unit'] == 'seconds'
-    assert artifact['arms']['A']['observation']['useful_work']['unit'] == 'equivalent-case-invocation'
+    assert (
+        artifact['arms']['A']['observation']['useful_work']['unit']
+        == 'equivalent-case-invocation'
+    )
     assert artifact['arms']['A']['observation']['oracle']['identity'] == (
         'public:gometry.fake/1:oracle'
     )
-    assert artifact['arms']['A']['observation']['oracle'] == artifact['arms']['B']['observation']['oracle']
+    assert (
+        artifact['arms']['A']['observation']['oracle']
+        == artifact['arms']['B']['observation']['oracle']
+    )
 
 
 def test_callable_mutation_fails_before_measured_acceptance() -> None:
@@ -192,7 +198,9 @@ def test_local_oracle_is_not_run_in_timed_worker() -> None:
 
     class _OracleCase(_Case):
         def verify(self, _context: object) -> None:
-            raise AssertionError('the timed worker must use the external oracle artifact')
+            raise AssertionError(
+                'the timed worker must use the external oracle artifact'
+            )
 
     artifact = worker.run_block(
         operation=_Operation(),
@@ -243,9 +251,9 @@ def test_first_use_is_not_claimed_for_a_shared_process_pair() -> None:
 
 def test_useful_output_mutation_fails_after_timing_before_artifact_acceptance() -> None:
     class _ValidatedCase(_Case):
-        output_validator = staticmethod(lambda _value: (_ for _ in ()).throw(
-            ValueError('mutated useful output')
-        ))
+        output_validator = staticmethod(
+            lambda _value: (_ for _ in ()).throw(ValueError('mutated useful output'))
+        )
 
     with pytest.raises(SystemExit, match='output validation failed'):
         worker.run_block(
@@ -281,7 +289,10 @@ def test_block_snapshots_common_identity_once_before_and_after_both_arms() -> No
         builder=lambda: _Case(_Pair(lambda: [1], lambda: [2])),
     )
     assert calls == 2
-    assert artifact['arms']['A']['provenance_before'] == artifact['arms']['A']['provenance_after']
+    assert (
+        artifact['arms']['A']['provenance_before']
+        == artifact['arms']['A']['provenance_after']
+    )
 
 
 def test_complete_arm_identity_uses_rows_from_tuple_backed_arms(
@@ -300,10 +311,11 @@ def test_complete_arm_identity_uses_rows_from_tuple_backed_arms(
         rows.append(row)
         package = package_info or {}
         runtime = 'gometry' if row.startswith('gometry.') else 'comparator'
-        native = [{
-            key: extension[key]
-            for key in ('path', 'sha256', 'size_bytes')
-        }] if runtime == 'gometry' else []
+        native = (
+            [{key: extension[key] for key in ('path', 'sha256', 'size_bytes')}]
+            if runtime == 'gometry'
+            else []
+        )
         return {
             'runtime': runtime,
             'row': row,
@@ -327,5 +339,11 @@ def test_complete_arm_identity_uses_rows_from_tuple_backed_arms(
     )
 
     assert rows == [operation.gometry, operation.competitor] * 2
-    assert artifact['arms']['A']['provenance_before']['implementation']['row'] == operation.gometry
-    assert artifact['arms']['B']['provenance_before']['implementation']['row'] == operation.competitor
+    assert (
+        artifact['arms']['A']['provenance_before']['implementation']['row']
+        == operation.gometry
+    )
+    assert (
+        artifact['arms']['B']['provenance_before']['implementation']['row']
+        == operation.competitor
+    )

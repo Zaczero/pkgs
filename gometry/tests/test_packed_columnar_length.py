@@ -61,7 +61,7 @@ def test_packed_length_mixed_short_and_long_rows_match_scalar() -> None:
     np.testing.assert_allclose(packed, scalar, rtol=1e-12, atol=0.0)
 
 
-@pytest.mark.parametrize("neighbour_first", [False, True])
+@pytest.mark.parametrize('neighbour_first', [False, True])
 def test_packed_short_rows_one_segment_neighbour_match_scalar(
     neighbour_first: bool,
 ) -> None:
@@ -109,9 +109,11 @@ def test_packed_short_3d_length_preserves_z_crs_scale_and_missing() -> None:
         for _ in range(100)
     ]
     arr = gm.GeometryArray([*rows, None], crs=2263)
-    planar = np.asarray(gm.length_3d(arr, unit="planar"), dtype=np.float64)
-    meters = np.asarray(gm.length_3d(arr, unit="meters"), dtype=np.float64)
-    scalar = np.array([gm.length_3d(row, unit="planar") for row in rows], dtype=np.float64)
+    planar = np.asarray(gm.length_3d(arr, unit='planar'), dtype=np.float64)
+    meters = np.asarray(gm.length_3d(arr, unit='meters'), dtype=np.float64)
+    scalar = np.array(
+        [gm.length_3d(row, unit='planar') for row in rows], dtype=np.float64
+    )
     np.testing.assert_allclose(planar[:-1], scalar, rtol=1e-12, atol=0.0)
     np.testing.assert_allclose(
         meters[:-1], planar[:-1] * 0.3048006096012192, rtol=1e-12, atol=0.0

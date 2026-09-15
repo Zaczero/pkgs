@@ -108,7 +108,9 @@ def _meta() -> sb.PublicOpMeta:
     )
 
 
-def test_real_block_populates_both_arm_stats_without_ordinal_matching(tmp_path: Path) -> None:
+def test_real_block_populates_both_arm_stats_without_ordinal_matching(
+    tmp_path: Path,
+) -> None:
     first = _block()
     second = _block(path='block-02.json', block_id='pair-1-block-02-ba', lead='ba')
     first_path = tmp_path / 'block-01.json'
@@ -124,18 +126,34 @@ def test_real_block_populates_both_arm_stats_without_ordinal_matching(tmp_path: 
 def test_missing_lead_or_one_block_rejects_declared_release_matrix() -> None:
     meta = _meta()
     first = sb.PairedBlock(
-        'a', 'block-a', 'pair-1', 'ab', 'duration', 'seconds', 1.0, 2.0, 2.0,
-        {'id': 'same'}, 'warm', None
+        'a',
+        'block-a',
+        'pair-1',
+        'ab',
+        'duration',
+        'seconds',
+        1.0,
+        2.0,
+        2.0,
+        {'id': 'same'},
+        'warm',
+        None,
     )
     stats = {
-        name: sb.BenchStats(name, 'duration', 'seconds', value, value, 0.0, 1, 1, (first,))
+        name: sb.BenchStats(
+            name, 'duration', 'seconds', value, value, 0.0, 1, 1, (first,)
+        )
         for name, value in ((meta.gometry, 1.0), (meta.competitor, 2.0))
     }
     with pytest.raises(SystemExit, match='exactly 6 paired blocks'):
         sb._build_rows([meta], stats, equivalence_margin=0.03, expected_blocks=6)
     with pytest.raises(SystemExit, match='incomplete lead-order matrix'):
         sb._build_rows(
-            [meta], stats, equivalence_margin=0.03, expected_blocks=1, expected_leads=('ab', 'ba')
+            [meta],
+            stats,
+            equivalence_margin=0.03,
+            expected_blocks=1,
+            expected_leads=('ab', 'ba'),
         )
 
 
@@ -245,8 +263,12 @@ def test_typed_ratio_cannot_be_rendered_as_seconds() -> None:
         sb._build_rows(
             [_meta()],
             {
-                'gometry.op/10k': sb.BenchStats('gometry.op/10k', 'scaling_ratio', 'ratio', 1.0, 1.0, 0.0, 1, 1, ()),
-                'shapely.op/10k': sb.BenchStats('shapely.op/10k', 'duration', 'seconds', 1.0, 1.0, 0.0, 1, 1, ()),
+                'gometry.op/10k': sb.BenchStats(
+                    'gometry.op/10k', 'scaling_ratio', 'ratio', 1.0, 1.0, 0.0, 1, 1, ()
+                ),
+                'shapely.op/10k': sb.BenchStats(
+                    'shapely.op/10k', 'duration', 'seconds', 1.0, 1.0, 0.0, 1, 1, ()
+                ),
             },
             equivalence_margin=0.03,
         )

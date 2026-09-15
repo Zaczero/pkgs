@@ -39,7 +39,9 @@ def test_cell_array_neighbors_cross_the_old_ragged_collector_limit() -> None:
     assert len(neighbors.values) > 1_000_000
 
 
-@pytest.mark.skipif(sys.platform in {'darwin', 'win32'}, reason='requires enforced RLIMIT_AS')
+@pytest.mark.skipif(
+    sys.platform in {'darwin', 'win32'}, reason='requires enforced RLIMIT_AS'
+)
 def test_untrusted_iterable_oom_is_a_complete_memoryerror_outcome() -> None:
     """A constrained child must report one complete, catchable outcome."""
     script = textwrap.dedent(
@@ -77,7 +79,9 @@ def test_untrusted_iterable_oom_is_a_complete_memoryerror_outcome() -> None:
             timeout=30.0,
         )
     except subprocess.TimeoutExpired as exc:
-        pytest.fail(f'constrained allocation child hung: stdout={exc.stdout!r} stderr={exc.stderr!r}')
+        pytest.fail(
+            f'constrained allocation child hung: stdout={exc.stdout!r} stderr={exc.stderr!r}'
+        )
     assert completed.returncode == 0, (
         f'child did not return cleanly: rc={completed.returncode} '
         f'stdout={completed.stdout!r} stderr={completed.stderr!r}'

@@ -67,7 +67,9 @@ def main() -> None:
 
 
 def validate_case() -> None:
-    result = gm.union(gm.MultiPolygon([_ring32()] * 2), gm.MultiPolygon([_ring32(0.5, 0.5)]))
+    result = gm.union(
+        gm.MultiPolygon([_ring32()] * 2), gm.MultiPolygon([_ring32(0.5, 0.5)])
+    )
     assert result.geometry_type in {'Polygon', 'MultiPolygon'} and result.area > 0.0
     emit_validation(
         'case_duplicate_noding_scale',

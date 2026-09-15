@@ -66,11 +66,11 @@ def test_exact_clip_rounds_thin_crossings(
 
 def test_exact_clip_rounds_mixed_exponent_crossings() -> None:
     tiny = 2.0**-601
-    line = gm.LineString([(2.0**-600, -tiny), (-2.0**500, 2.0**500)])
+    line = gm.LineString([(2.0**-600, -tiny), (-(2.0**500), 2.0**500)])
     clipped = line.clip_by_rect(0.0, 0.0, 1.0, 2.0**600)
     assert list(clipped.coords) == [(tiny, 0.0), (0.0, tiny)]
 
-    line = gm.LineString([(2.0**-1074, 2.0**-500), (-2.0**500, -2.0**1023)])
+    line = gm.LineString([(2.0**-1074, 2.0**-500), (-(2.0**500), -(2.0**1023))])
     clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
     assert list(clipped.coords) == [
         (2.0**-1074, 2.0**-500),
@@ -106,17 +106,25 @@ def test_exact_clip_rounds_thin_crossing_zm_and_packed_missing_rows() -> None:
     assert result.is_missing.tolist() == [False, True]
 
 
-def test_exact_clip_preserves_closed_boundaries_signed_zero_and_degenerate_rectangles() -> None:
+def test_exact_clip_preserves_closed_boundaries_signed_zero_and_degenerate_rectangles() -> (
+    None
+):
     signed = gm.LineString([(-2.0, -0.0), (2.0, -0.0)]).clip_by_rect(0.0, 0.0, 1.0, 1.0)
     assert [point[1].hex() for point in signed.coords] == ['-0x0.0p+0', '-0x0.0p+0']
 
-    collinear = gm.LineString([(-2.0, 0.0), (2.0, 0.0)]).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    collinear = gm.LineString([(-2.0, 0.0), (2.0, 0.0)]).clip_by_rect(
+        0.0, 0.0, 1.0, 1.0
+    )
     assert list(collinear.coords) == [(0.0, 0.0), (1.0, 0.0)]
-    corner_touch = gm.LineString([(-1.0, 1.0), (0.0, 0.0)]).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    corner_touch = gm.LineString([(-1.0, 1.0), (0.0, 0.0)]).clip_by_rect(
+        0.0, 0.0, 1.0, 1.0
+    )
     assert corner_touch.is_empty
 
     vertical = gm.LineString([(0.0, -1.0), (0.0, 2.0)]).clip_by_rect(0.0, 0.0, 0.0, 1.0)
-    horizontal = gm.LineString([(-1.0, 0.0), (2.0, 0.0)]).clip_by_rect(0.0, 0.0, 1.0, 0.0)
+    horizontal = gm.LineString([(-1.0, 0.0), (2.0, 0.0)]).clip_by_rect(
+        0.0, 0.0, 1.0, 0.0
+    )
     assert list(vertical.coords) == [(0.0, 0.0), (0.0, 1.0)]
     assert list(horizontal.coords) == [(0.0, 0.0), (1.0, 0.0)]
 

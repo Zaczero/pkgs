@@ -89,7 +89,10 @@ def validate_observation(value: Any) -> dict[str, Any]:
     metric, _unit, _estimate_key, _raw = _validate_raw(value.get('measurement', {}))
     useful_work = value.get('useful_work')
     if metric == 'scaling_ratio':
-        if not isinstance(useful_work, dict) or set(useful_work) != {'numerator', 'denominator'}:
+        if not isinstance(useful_work, dict) or set(useful_work) != {
+            'numerator',
+            'denominator',
+        }:
             raise _fail('scaling_ratio useful_work must name numerator and denominator')
         _work(useful_work['numerator'], label='useful_work.numerator')
         _work(useful_work['denominator'], label='useful_work.denominator')
@@ -103,13 +106,19 @@ def validate_observation(value: Any) -> dict[str, Any]:
         if not isinstance(section, dict):
             raise _fail(f'{name} must be an object')
         iterations = section.get('iterations')
-        if not isinstance(iterations, int) or isinstance(iterations, bool) or iterations < 0:
+        if (
+            not isinstance(iterations, int)
+            or isinstance(iterations, bool)
+            or iterations < 0
+        ):
             raise _fail(f'{name}.iterations must be a non-negative integer')
         if section.get('completed') is not True:
             raise _fail(f'{name}.completed must be true')
     warmup_iterations = value['warmup']['iterations']
     if phase == 'warm' and warmup_iterations < 1:
-        raise _fail('warm phase requires at least one explicit untimed prewarm iteration')
+        raise _fail(
+            'warm phase requires at least one explicit untimed prewarm iteration'
+        )
     if phase == 'first-use' and warmup_iterations != 0:
         raise _fail('first-use phase cannot contain prewarm iterations')
     oracle = value.get('oracle')
@@ -175,7 +184,9 @@ def make_observation(
     return validate_observation(observation)
 
 
-def measurement_summary(observation: dict[str, Any]) -> tuple[str, str, float, list[float]]:
+def measurement_summary(
+    observation: dict[str, Any],
+) -> tuple[str, str, float, list[float]]:
     """Return metric, unit, median estimate, and raw values after validation."""
     validated = validate_observation(observation)
     measurement = validated['measurement']

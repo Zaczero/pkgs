@@ -340,8 +340,7 @@ def _effective_release_policy(target: str | None = None) -> dict[str, Any]:
         expected = expected_flags[key]
         if value is not None and value != expected:
             raise AssertionError(
-                f'{key.upper()} disagrees with target policy: '
-                f'{value!r} != {expected!r}'
+                f'{key.upper()} disagrees with target policy: {value!r} != {expected!r}'
             )
     target_suffix = policy['target'].replace('-', '_')
     for key, prefix in (('cflags', 'CFLAGS'), ('cxxflags', 'CXXFLAGS')):
@@ -360,13 +359,12 @@ def _is_hidden_native_path(relative: str) -> bool:
         (
             index
             for index in range(len(parts) - 1)
-            if parts[index:index + 2] == ('gometry', 'native')
+            if parts[index : index + 2] == ('gometry', 'native')
         ),
         None,
     )
-    return (
-        native_index is not None
-        and any(part.startswith('.') for part in parts[native_index + 2:])
+    return native_index is not None and any(
+        part.startswith('.') for part in parts[native_index + 2 :]
     )
 
 
@@ -672,8 +670,7 @@ def _compare_restage_trees(bootstrap: Path, final: Path) -> None:
         relative for relative in after if _is_hidden_native_path(relative)
     ):
         raise AssertionError(
-            'maturin restaging admitted hidden native files: '
-            f'{admitted_hidden[:20]}'
+            f'maturin restaging admitted hidden native files: {admitted_hidden[:20]}'
         )
     changed = sorted(
         relative
@@ -995,9 +992,8 @@ def inspect_sdist(
         names = archive.getnames()
         if len(names) != len(set(names)):
             raise AssertionError(f'sdist contains duplicate members: {path}')
-        if (
-            not allow_hidden_native
-            and (hidden := sorted(name for name in names if _is_hidden_native_path(name)))
+        if not allow_hidden_native and (
+            hidden := sorted(name for name in names if _is_hidden_native_path(name))
         ):
             raise AssertionError(
                 f'sdist contains hidden native metadata files: {hidden[:20]}'
@@ -1150,9 +1146,7 @@ def inspect_libtiff_sdist_members(
             raise AssertionError(f'sdist contains invalid libtiff path: {member!r}')
     actual = set(members)
     if allow_hidden_native:
-        actual = {
-            member for member in actual if not _has_hidden_component(member)
-        }
+        actual = {member for member in actual if not _has_hidden_component(member)}
     expected = libtiff_source_members() if expected is None else expected
     if actual != expected:
         raise AssertionError(
@@ -1473,9 +1467,7 @@ def _elf_sections(payload: bytes, artifact: Path) -> list[str]:
         section_format = f'{byte_order}IIIIIIIIII'
     minimum_entry_size = struct.calcsize(section_format)
     if section_offset == 0 or section_entry_size < minimum_entry_size:
-        raise AssertionError(
-            f'{artifact} native ELF has no inspectable section table'
-        )
+        raise AssertionError(f'{artifact} native ELF has no inspectable section table')
     first = _unpack_native(
         section_format,
         payload,
@@ -1502,7 +1494,7 @@ def _elf_sections(payload: bytes, artifact: Path) -> list[str]:
     string_size = string_header[5]
     if string_offset + string_size > len(payload):
         raise AssertionError(f'{artifact} native ELF strings are truncated')
-    strings = payload[string_offset:string_offset + string_size]
+    strings = payload[string_offset : string_offset + string_size]
     names: list[str] = []
     for header in section_headers:
         name_offset = header[0]
@@ -1537,7 +1529,7 @@ def _macho_sections(payload: bytes, artifact: Path) -> list[str]:
             if size < 8 or cursor + size > command_end:
                 raise AssertionError(f'{artifact} native Mach-O command is invalid')
             if command == segment_command:
-                segment_name = _native_name(payload[cursor + 8:cursor + 24])
+                segment_name = _native_name(payload[cursor + 8 : cursor + 24])
                 section_count_offset = cursor + (64 if bits == 64 else 48)
                 section_start = cursor + (72 if bits == 64 else 56)
                 section_size = 80 if bits == 64 else 68
@@ -1552,7 +1544,9 @@ def _macho_sections(payload: bytes, artifact: Path) -> list[str]:
                         raise AssertionError(
                             f'{artifact} native Mach-O sections are truncated'
                         )
-                    sections.append(_native_name(payload[section_offset:section_offset + 16]))
+                    sections.append(
+                        _native_name(payload[section_offset : section_offset + 16])
+                    )
             cursor += size
         return sections
     fat = {
@@ -1580,7 +1574,7 @@ def _macho_sections(payload: bytes, artifact: Path) -> list[str]:
         if slice_offset + slice_size > len(payload):
             raise AssertionError(f'{artifact} native Mach-O slice is truncated')
         sections.extend(
-            _macho_sections(payload[slice_offset:slice_offset + slice_size], artifact)
+            _macho_sections(payload[slice_offset : slice_offset + slice_size], artifact)
         )
     return sections
 
@@ -1621,8 +1615,8 @@ def _verify_native_debug_sections(payload: bytes, artifact: Path) -> None:
     if payload.startswith(b'\x7fELF'):
         sections = _elf_sections(payload, artifact)
         format_name = 'ELF'
-        debug = (
-            lambda name: name.startswith(('.debug', '.zdebug'))
+        debug = lambda name: (
+            name.startswith(('.debug', '.zdebug'))
             or name in {'.gnu_debugdata', '.gnu_debuglink', '.gdb_index'}
         )
     elif payload[:4] in {
@@ -1637,8 +1631,8 @@ def _verify_native_debug_sections(payload: bytes, artifact: Path) -> None:
     }:
         sections = _macho_sections(payload, artifact)
         format_name = 'Mach-O'
-        debug = lambda name: name == '__DWARF' or name.startswith(
-            ('__debug', '__zdebug')
+        debug = lambda name: (
+            name == '__DWARF' or name.startswith(('__debug', '__zdebug'))
         )
     elif payload.startswith(b'MZ'):
         sections = _pe_sections(payload, artifact)
@@ -2362,7 +2356,9 @@ def validate_runner_receipt(
     if receipt.get('schema') != 2 or receipt.get('kind') != 'gometry-wheel-receipt':
         raise AssertionError(f'unsupported gometry wheel receipt: {receipt_path}')
     if receipt.get('profile') != RELEASE_PROFILE:
-        raise AssertionError(f'wheel receipt profile is not {RELEASE_PROFILE}: {receipt_path}')
+        raise AssertionError(
+            f'wheel receipt profile is not {RELEASE_PROFILE}: {receipt_path}'
+        )
     runner = receipt.get('runner')
     if not isinstance(runner, str) or not runner:
         raise AssertionError(f'wheel receipt has no runner: {receipt_path}')

@@ -57,7 +57,11 @@ def _asan_runtime() -> Path:
 
 def _extension_path(python: Path) -> Path:
     suffix = subprocess.run(
-        [python, '-c', 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))'],
+        [
+            python,
+            '-c',
+            'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))',
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -110,9 +114,13 @@ def _verify_bundled_archives(target_dir: Path) -> None:
                 text=True,
             )
             if result.returncode:
-                raise SystemExit(f'nm could not inspect bundled {name} archive: {archive}')
+                raise SystemExit(
+                    f'nm could not inspect bundled {name} archive: {archive}'
+                )
             if '__asan_' not in result.stdout:
-                raise SystemExit(f'bundled {name} archive lacks ASan references: {archive}')
+                raise SystemExit(
+                    f'bundled {name} archive lacks ASan references: {archive}'
+                )
             print(f'ASan-instrumented bundled archive: {archive}', flush=True)
 
 
@@ -156,33 +164,36 @@ def main() -> int:
     print(f'Python: {python} (GIL enabled: {probe.stdout.strip()})', flush=True)
 
     environment = os.environ.copy()
-    environment.update(
-        {
-            'CC': 'clang',
-            'CXX': 'clang++',
-            'CARGO_TARGET_DIR': str(target_dir),
-            'CARGO_BUILD_BUILD_DIR': str(target_dir / 'build'),
-            'VIRTUAL_ENV': str(python.parent.parent),
-            'PYTHONPATH': os.pathsep.join(
-                entry
-                for entry in (str(ROOT / 'python'), environment.get('PYTHONPATH', ''))
-                if entry
-            ),
-            # Match the repository's x86_64 target configuration while keeping
-            # the sanitizer off host/procedural-macro crates.
-            'RUSTFLAGS': '-C target-cpu=x86-64-v2',
-            'LD_PRELOAD': os.pathsep.join(
-                entry
-                for entry in (str(runtime), environment.get('LD_PRELOAD', ''))
-                if entry
-            ),
-        }
+    environment.update({
+        'CC': 'clang',
+        'CXX': 'clang++',
+        'CARGO_TARGET_DIR': str(target_dir),
+        'CARGO_BUILD_BUILD_DIR': str(target_dir / 'build'),
+        'VIRTUAL_ENV': str(python.parent.parent),
+        'PYTHONPATH': os.pathsep.join(
+            entry
+            for entry in (str(ROOT / 'python'), environment.get('PYTHONPATH', ''))
+            if entry
+        ),
+        # Match the repository's x86_64 target configuration while keeping
+        # the sanitizer off host/procedural-macro crates.
+        'RUSTFLAGS': '-C target-cpu=x86-64-v2',
+        'LD_PRELOAD': os.pathsep.join(
+            entry
+            for entry in (str(runtime), environment.get('LD_PRELOAD', ''))
+            if entry
+        ),
+    })
+    environment['PATH'] = os.pathsep.join((
+        str(python.parent),
+        environment.get('PATH', ''),
+    ))
+    _append_flags(
+        environment, 'CFLAGS', '-fsanitize=address', '-fno-omit-frame-pointer'
     )
-    environment['PATH'] = os.pathsep.join(
-        (str(python.parent), environment.get('PATH', ''))
+    _append_flags(
+        environment, 'CXXFLAGS', '-fsanitize=address', '-fno-omit-frame-pointer'
     )
-    _append_flags(environment, 'CFLAGS', '-fsanitize=address', '-fno-omit-frame-pointer')
-    _append_flags(environment, 'CXXFLAGS', '-fsanitize=address', '-fno-omit-frame-pointer')
     _append_flags(environment, 'LDFLAGS', '-fsanitize=address')
     environment.setdefault(
         'ASAN_OPTIONS',

@@ -232,8 +232,20 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
     ('wkt', 'axes', 'fields', 'depth', 'extension_name'),
     [
         ('MULTILINESTRING (EMPTY)', 'XY', ('x', 'y'), 2, 'geoarrow.multilinestring'),
-        ('MULTILINESTRING Z (EMPTY)', 'XYZ', ('x', 'y', 'z'), 2, 'geoarrow.multilinestring'),
-        ('MULTILINESTRING M (EMPTY)', 'XYM', ('x', 'y', 'm'), 2, 'geoarrow.multilinestring'),
+        (
+            'MULTILINESTRING Z (EMPTY)',
+            'XYZ',
+            ('x', 'y', 'z'),
+            2,
+            'geoarrow.multilinestring',
+        ),
+        (
+            'MULTILINESTRING M (EMPTY)',
+            'XYM',
+            ('x', 'y', 'm'),
+            2,
+            'geoarrow.multilinestring',
+        ),
         (
             'MULTILINESTRING ZM (EMPTY)',
             'XYZM',
@@ -305,14 +317,18 @@ def test_explicit_empty_multipart_arrow_export_preserves_axes(
             def __init__(self, source: object) -> None:
                 self.source = source
 
-            def __arrow_c_array__(self, requested_schema: object | None = None) -> object:
+            def __arrow_c_array__(
+                self, requested_schema: object | None = None
+            ) -> object:
                 return self.source.__arrow_c_array__(requested_schema)  # type: ignore[attr-defined]
 
         class StreamOnly:
             def __init__(self, source: object) -> None:
                 self.source = source
 
-            def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+            def __arrow_c_stream__(
+                self, requested_schema: object | None = None
+            ) -> object:
                 return self.source.__arrow_c_stream__(requested_schema)  # type: ignore[attr-defined]
 
         c_restored = cast('gm.GeometryArray', gm.from_arrow(ArrayOnly(owner)))
@@ -345,8 +361,7 @@ def test_explicit_empty_multipart_arrow_controls_preserve_other_contracts() -> N
     assert restored[0].coordinate_axes == 'XYZM'
 
     mixed = gm.from_wkt(
-        'MULTIPOLYGON ZM '
-        ' (EMPTY, ((0 0 1 2, 1 0 1 2, 0 1 1 2, 0 0 1 2)))'
+        'MULTIPOLYGON ZM  (EMPTY, ((0 0 1 2, 1 0 1 2, 0 1 1 2, 0 0 1 2)))'
     )
     mixed_arrow = mixed.to_arrow()
     assert mixed_arrow.type.storage_type == pa.list_(
@@ -818,7 +833,7 @@ def test_arrow_capsules_can_be_consumed_without_pyarrow_materialization() -> Non
 def test_arrow_c_array_import_does_not_import_pyarrow() -> None:
     code = "\nimport importlib.abc\nimport sys\n\nimport gometry as gm\n\nclass _CapsuleArrayOnly:\n    def __init__(self, schema, array):\n        self._schema = schema\n        self._array = array\n\n    def __arrow_c_array__(self, requested_schema=None):\n        return (self._schema, self._array)\n\nclass BlockPyArrow(importlib.abc.MetaPathFinder):\n    def find_spec(self, fullname, path=None, target=None):\n        if fullname == 'pyarrow' or fullname.startswith('pyarrow.'):\n            raise AssertionError('pyarrow import attempted')\n        return None\n\nsys.meta_path.insert(0, BlockPyArrow())\nvalues = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)\nschema, array = values.__arrow_c_array__()\nrestored = gm.from_arrow(_CapsuleArrayOnly(schema, array))\nassert 'pyarrow' not in sys.modules\nassert restored.crs == 'EPSG:4326'\nassert restored.epoch == 2020.0\nassert [str(value) for value in restored] == ['POINT (0 2)', 'POINT (1 3)']\n"
     code = code.replace(
-        "assert restored.crs == 'EPSG:4326'", "assert restored.crs.to_epsg() == 4326"
+        "assert restored.crs == 'EPSG:4326'", 'assert restored.crs.to_epsg() == 4326'
     )
     subprocess.run([sys.executable, '-c', code], check=True)
 
@@ -2688,7 +2703,8 @@ def test_point_outputs_of_mixed_arrays_export_packed_geoarrow() -> None:
     projected = gm.points([21.0, 22.0], [52.0, 53.0], crs=4326).to_crs(3857)
     assert projected.to_arrow().type.extension_name == 'geoarrow.point'
     assert (
-        cast('gm.GeometryArray', gm.from_arrow(projected.to_arrow())).crs.to_epsg() == 3857
+        cast('gm.GeometryArray', gm.from_arrow(projected.to_arrow())).crs.to_epsg()
+        == 3857
     )
 
 

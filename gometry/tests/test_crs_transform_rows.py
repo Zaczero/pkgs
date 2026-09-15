@@ -163,7 +163,9 @@ def test_successful_homogeneous_packed_transform_stays_one_batch_invocation() ->
     assert gm.crs_cache_info()['transform_invocations'] == 1
 
 
-def test_successful_mixed_xyz_and_xy_transform_preserves_known_values_and_engine() -> None:
+def test_successful_mixed_xyz_and_xy_transform_preserves_known_values_and_engine() -> (
+    None
+):
     gm.crs_clear_cache()
     values = gm.GeometryArray([
         gm.Point(1.0, 2.0, z=7.0, crs=4326),

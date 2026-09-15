@@ -176,7 +176,11 @@ def test_require_axes_preserves_logical_rows_for_null_leading_storage(
     missing = gm.GeometryArray([None, source[0], source[1]])
     with pytest.raises(gm.InvalidGeometryError) as missing_error:
         gm.require(missing, axes='XY')
-    assert (missing_error.value.row, missing_error.value.code, missing_error.value.path) == (
+    assert (
+        missing_error.value.row,
+        missing_error.value.code,
+        missing_error.value.path,
+    ) == (
         1,
         'coordinate_axes_mismatch',
         '$',
@@ -185,7 +189,11 @@ def test_require_axes_preserves_logical_rows_for_null_leading_storage(
     gathered = source[[1, 0]]
     with pytest.raises(gm.InvalidGeometryError) as gathered_error:
         gm.require(gathered, axes='XY')
-    assert (gathered_error.value.row, gathered_error.value.code, gathered_error.value.path) == (
+    assert (
+        gathered_error.value.row,
+        gathered_error.value.code,
+        gathered_error.value.path,
+    ) == (
         0,
         'coordinate_axes_mismatch',
         '$',
@@ -199,7 +207,11 @@ def test_require_axes_preserves_logical_row_for_sliced_groups() -> None:
     ]).parts[1:]
     with pytest.raises(gm.InvalidGeometryError) as groups_error:
         gm.require(groups, axes='XYZ')
-    assert (groups_error.value.row, groups_error.value.code, groups_error.value.path) == (
+    assert (
+        groups_error.value.row,
+        groups_error.value.code,
+        groups_error.value.path,
+    ) == (
         0,
         'coordinate_axes_mismatch',
         '$',
@@ -280,9 +292,11 @@ def test_fancy_index_preserves_nullable_axes_and_frame_metadata() -> None:
     )
 
     selected = array[[2, 1, 0]]
-    assert [
-        None if row is None else tuple(row.coords[0]) for row in selected
-    ] == [(5.0, 6.0, 7.0, 8.0), None, (1.0, 2.0, 3.0, 4.0)]
+    assert [None if row is None else tuple(row.coords[0]) for row in selected] == [
+        (5.0, 6.0, 7.0, 8.0),
+        None,
+        (1.0, 2.0, 3.0, 4.0),
+    ]
     assert selected.coordinate_axes == ['XYZM', None, 'XYZM']
     assert selected.is_missing.tolist() == [False, True, False]
     assert selected.crs is not None and selected.crs.to_epsg() == 4326
@@ -436,7 +450,9 @@ def test_geometry_array_fancy_getitem_routes_to_take_and_filter() -> None:
     empty = array[array.is_empty]
     assert [geom.geometry_type for geom in empty] == ['GeometryCollection']
     assert empty.is_empty.tolist() == [True]
-    assert [tuple(geom.coords[0]) for geom in array[np.array([2, 0], dtype=np.int32)]] == [
+    assert [
+        tuple(geom.coords[0]) for geom in array[np.array([2, 0], dtype=np.int32)]
+    ] == [
         (2.0, 2.0),
         (0.0, 0.0),
     ]
@@ -523,7 +539,9 @@ def test_opposite_endian_numpy_integer_indices_cover_all_receivers(dtype: str) -
         ]
 
 
-def test_opposite_endian_numpy_scalar_and_negative_indices_cover_all_receivers() -> None:
+def test_opposite_endian_numpy_scalar_and_negative_indices_cover_all_receivers() -> (
+    None
+):
     byteorder = '>' if sys.byteorder == 'little' else '<'
     receivers = _indexing_receivers()
     for array, identity in receivers:
@@ -630,9 +648,11 @@ def test_duplicate_replace_at_positions_apply_last_missing_state() -> None:
     present = array._replace_at([1, 1], [None, gm.Point(9.0, 19.0)])
     missing = array._replace_at([1, 1], [gm.Point(9.0, 19.0), None])
 
-    assert [
-        None if row is None else row.coords[0] for row in present
-    ] == [(0.0, 10.0), (9.0, 19.0), (2.0, 12.0)]
+    assert [None if row is None else row.coords[0] for row in present] == [
+        (0.0, 10.0),
+        (9.0, 19.0),
+        (2.0, 12.0),
+    ]
     assert present.is_missing.tolist() == [False, False, False]
     assert [None if row is None else row.coords[0] for row in missing] == [
         (0.0, 10.0),

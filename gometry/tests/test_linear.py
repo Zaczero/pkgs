@@ -419,7 +419,9 @@ def test_measured_lrs_keeps_zero_xy_vertices_multipart_windows_and_first_wins() 
 
     multipart = gm.from_wkt('MULTILINESTRING M ((0 0 0, 10 0 10), (20 0 20, 30 0 30))')
     assert multipart.line_interpolate(15.0, basis='m').to_wkt() == 'POINT M (15 0 15)'
-    bad_boundary = gm.from_wkt('MULTILINESTRING M ((0 0 0, 10 0 10), (20 0 9, 30 0 30))')
+    bad_boundary = gm.from_wkt(
+        'MULTILINESTRING M ((0 0 0, 10 0 10), (20 0 9, 30 0 30))'
+    )
     with pytest.raises(ValueError, match='monotonic'):
         bad_boundary.line_interpolate(10.0, basis='m')
 

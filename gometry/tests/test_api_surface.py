@@ -262,7 +262,11 @@ def test_crs_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
             gm.InvalidGeometryError,
             't must be finite',
         ),
-        (lambda: gm.CRS(3857).factors(huge, 0), gm.InvalidGeometryError, 'lon must be finite'),
+        (
+            lambda: gm.CRS(3857).factors(huge, 0),
+            gm.InvalidGeometryError,
+            'lon must be finite',
+        ),
         (
             lambda: gm.crs_transform(4326, 3857, huge, 0),
             gm.InvalidGeometryError,
@@ -353,7 +357,11 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: gm.box(0, 0, 1, 1, epoch=huge), 'epoch'),
         (lambda: gm.points([huge], [0]), gm.InvalidGeometryError, 'x must be finite'),
         (lambda: gm.points([0], [huge]), gm.InvalidGeometryError, 'y must be finite'),
-        (lambda: gm.points([0], [0], z=[huge]), gm.InvalidGeometryError, 'z must be finite'),
+        (
+            lambda: gm.points([0], [0], z=[huge]),
+            gm.InvalidGeometryError,
+            'z must be finite',
+        ),
         (lambda: gm.points([0], [0], epoch=huge), 'epoch'),
         (
             lambda: gm.LineString([(huge, 0), (1, 1)]),
@@ -402,15 +410,31 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: polygon.polylabel(tolerance=huge), 'tolerance'),
         (lambda: sites.voronoi_polygons(tolerance=huge), OverflowError, None),
         (lambda: sites.voronoi_edges(tolerance=huge), OverflowError, None),
-        (lambda: gm.contains_xy(geom, huge, 0), gm.InvalidGeometryError, 'x must be finite'),
-        (lambda: gm.intersects_xy(geom, huge, 0), gm.InvalidGeometryError, 'x must be finite'),
+        (
+            lambda: gm.contains_xy(geom, huge, 0),
+            gm.InvalidGeometryError,
+            'x must be finite',
+        ),
+        (
+            lambda: gm.intersects_xy(geom, huge, 0),
+            gm.InvalidGeometryError,
+            'x must be finite',
+        ),
         (
             lambda: gm.contains_xy(geom.prepare(), huge, 0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
-        (lambda: gm.contains_xy(geom, huge, 0), gm.InvalidGeometryError, 'x must be finite'),
-        (lambda: gm.intersects_xy(geom, huge, 0), gm.InvalidGeometryError, 'x must be finite'),
+        (
+            lambda: gm.contains_xy(geom, huge, 0),
+            gm.InvalidGeometryError,
+            'x must be finite',
+        ),
+        (
+            lambda: gm.intersects_xy(geom, huge, 0),
+            gm.InvalidGeometryError,
+            'x must be finite',
+        ),
         (lambda: gm.dwithin(geom, other, huge), 'distance'),
         (lambda: gm.dwithin(array, other, huge), 'distance'),
         (lambda: gm.dwithin(geom, other, huge), 'distance'),

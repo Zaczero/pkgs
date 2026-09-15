@@ -199,27 +199,25 @@ def test_internal_grid_operations_consume_reprojection_diagnostics(operation) ->
 
 
 def test_internal_grid_error_consumes_reprojection_diagnostic() -> None:
-    values = gm.GeometryArray(
-        [
-            gm.Point(-104.0, 40.0, crs=4267),
-            gm.Point(-104.0, 89.0, crs=4267),
-        ]
-    )
+    values = gm.GeometryArray([
+        gm.Point(-104.0, 40.0, crs=4267),
+        gm.Point(-104.0, 89.0, crs=4267),
+    ])
     with warnings.catch_warnings(record=True) as seen:
         warnings.simplefilter('always')
-        with pytest.raises(gm.InvalidGeometryError, match='square Web Mercator tile grid'):
+        with pytest.raises(
+            gm.InvalidGeometryError, match='square Web Mercator tile grid'
+        ):
             gm.tile_cells(values, zoom=5)
         gm.Point(0.0, 0.0, crs=4326).to_crs(3857)
     assert not [item for item in seen if item.category is gm.AccuracyWarning]
 
 
 def test_internal_transform_error_preserves_error_and_consumes_diagnostic() -> None:
-    values = gm.GeometryArray(
-        [
-            gm.Point(-104.0, 40.0, crs=4267),
-            gm.Point(-104.0, 91.0, crs=4267),
-        ]
-    )
+    values = gm.GeometryArray([
+        gm.Point(-104.0, 40.0, crs=4267),
+        gm.Point(-104.0, 91.0, crs=4267),
+    ])
     with warnings.catch_warnings(record=True) as seen:
         warnings.simplefilter('always')
         with pytest.raises(gm.InvalidGeometryError, match='invalid longitude/latitude'):

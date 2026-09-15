@@ -63,10 +63,7 @@ def expand_perf_events(events: Sequence[str] | None = None) -> tuple[str, ...]:
     if not events:
         return DEFAULT_PERF_EVENTS
     expanded = tuple(
-        part.strip()
-        for item in events
-        for part in item.split(',')
-        if part.strip()
+        part.strip() for item in events for part in item.split(',') if part.strip()
     )
     if not expanded:
         return DEFAULT_PERF_EVENTS
@@ -123,7 +120,9 @@ print(json.dumps({
     return json.loads(result.stdout)
 
 
-def _attribute_build(identity: dict[str, Any], *, side: str, row: str) -> dict[str, Any]:
+def _attribute_build(
+    identity: dict[str, Any], *, side: str, row: str
+) -> dict[str, Any]:
     packages = identity.get('packages')
     gometry = packages.get('gometry') if isinstance(packages, dict) else None
     if not isinstance(gometry, dict):
@@ -216,12 +215,8 @@ def run_case(python: str, case: Path, extra: list[str]) -> dict[str, Any]:
     if producer_before != producer_after:
         raise SystemExit(f'{case}: producer identity changed during the measured arm')
     observation = _parse_observation_stdout(case, result.stdout, result.stderr)
-    producer_before = _attribute_build(
-        producer_before, side='A', row=str(case)
-    )
-    producer_after = _attribute_build(
-        producer_after, side='A', row=str(case)
-    )
+    producer_before = _attribute_build(producer_before, side='A', row=str(case))
+    producer_after = _attribute_build(producer_after, side='A', row=str(case))
     if producer_before.get('identity_schema_version') == 1:
         observation['producer_identity'] = producer_before
     return {
@@ -317,8 +312,12 @@ def _counter_from_fields(
 ) -> dict[str, Any]:
     value_text = fields[event_index - 2].strip() if event_index >= 2 else ''
     unit = fields[event_index - 1].strip() if event_index >= 1 else None
-    runtime_text = fields[event_index + 1].strip() if len(fields) > event_index + 1 else ''
-    coverage_text = fields[event_index + 2].strip() if len(fields) > event_index + 2 else ''
+    runtime_text = (
+        fields[event_index + 1].strip() if len(fields) > event_index + 1 else ''
+    )
+    coverage_text = (
+        fields[event_index + 2].strip() if len(fields) > event_index + 2 else ''
+    )
     coverage_value = _number(coverage_text)
     coverage = float(coverage_value) / 100.0 if coverage_value is not None else None
     runtime = _number(runtime_text)
@@ -532,7 +531,9 @@ def _validate_counters(
                 'error': entry.get('error'),
             }
     if failures:
-        raise SystemExit(f'perf counters are not comparable; refusing result: {failures}')
+        raise SystemExit(
+            f'perf counters are not comparable; refusing result: {failures}'
+        )
 
 
 def _perf_control_command(
@@ -822,9 +823,16 @@ def run_case_with_perf(
     counters: dict[str, dict[str, Any]] = {}
     commands: list[list[str]] = []
     for _group, result in zip(groups, results, strict=True):
-        if _observation_identity(result['observation']) != _observation_identity(first_observation):
-            raise SystemExit('perf split groups produced mismatched observation identity')
-        if result['provenance_before'] != first_before or result['provenance_after'] != first_after:
+        if _observation_identity(result['observation']) != _observation_identity(
+            first_observation
+        ):
+            raise SystemExit(
+                'perf split groups produced mismatched observation identity'
+            )
+        if (
+            result['provenance_before'] != first_before
+            or result['provenance_after'] != first_after
+        ):
             raise SystemExit('perf split groups produced mismatched producer identity')
         for event, counter in result['counters'].items():
             if event in counters:
@@ -922,7 +930,9 @@ def run_blocks_with_perf(
     warmup: int,
     rounds: int,
     seed: int,
-    runner: Callable[[str, Path, list[str], Sequence[str]], dict[str, Any]] = run_case_with_perf,
+    runner: Callable[
+        [str, Path, list[str], Sequence[str]], dict[str, Any]
+    ] = run_case_with_perf,
     clock_ns: Callable[[], int] = time.monotonic_ns,
     event_groups: Sequence[Sequence[str]] | None = None,
 ) -> dict[str, Any]:
@@ -1016,7 +1026,13 @@ def validate_block_schedule(
         raise SystemExit('paired schedule must exercise both lead orders')
     if any(left[0] == right[0] for left, right in pairwise(leads)):
         raise SystemExit('paired schedule must alternate lead orders')
-    if abs(sum(lead[0] == 'A' for lead in leads) - sum(lead[0] == 'B' for lead in leads)) > 1:
+    if (
+        abs(
+            sum(lead[0] == 'A' for lead in leads)
+            - sum(lead[0] == 'B' for lead in leads)
+        )
+        > 1
+    ):
         raise SystemExit('paired schedule lead orders are unbalanced')
 
 
@@ -1037,10 +1053,10 @@ def compare_blocks(
         candidate_metric, candidate_unit, candidate, _raw = measurement_summary(
             candidate_observation
         )
-        if (
-            (baseline_metric, baseline_unit) != (metric, unit)
-            or (candidate_metric, candidate_unit) != (metric, unit)
-        ):
+        if (baseline_metric, baseline_unit) != (metric, unit) or (
+            candidate_metric,
+            candidate_unit,
+        ) != (metric, unit):
             raise SystemExit('paired blocks have inconsistent typed metric semantics')
         if candidate <= 0.0:
             raise ValueError('paired block candidate estimate must be positive')
@@ -1061,8 +1077,12 @@ def _validate_pair_arms(arms: dict[str, Any], case: Path) -> tuple[str, str]:
     try:
         left_observation = left['observation']
         right_observation = right['observation']
-        left_metric, left_unit, _left_estimate, _left_raw = measurement_summary(left_observation)
-        right_metric, right_unit, _right_estimate, _right_raw = measurement_summary(right_observation)
+        left_metric, left_unit, _left_estimate, _left_raw = measurement_summary(
+            left_observation
+        )
+        right_metric, right_unit, _right_estimate, _right_raw = measurement_summary(
+            right_observation
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise SystemExit(f'{case}: paired observation is malformed: {exc}') from exc
     if (left_metric, left_unit) != (right_metric, right_unit):
@@ -1077,11 +1097,21 @@ def _validate_pair_arms(arms: dict[str, Any], case: Path) -> tuple[str, str]:
         arm = arms[side]
         before = arm.get('provenance_before')
         after = arm.get('provenance_after')
-        if not isinstance(before, dict) or not isinstance(after, dict) or before != after:
-            raise SystemExit(f'{case}: {side} producer identity is incomplete or changed')
+        if (
+            not isinstance(before, dict)
+            or not isinstance(after, dict)
+            or before != after
+        ):
+            raise SystemExit(
+                f'{case}: {side} producer identity is incomplete or changed'
+            )
         started = arm.get('started_monotonic_ns')
         ended = arm.get('ended_monotonic_ns')
-        if not isinstance(started, int) or not isinstance(ended, int) or started > ended:
+        if (
+            not isinstance(started, int)
+            or not isinstance(ended, int)
+            or started > ended
+        ):
             raise SystemExit(f'{case}: {side} monotonic timestamps are invalid')
     return left_metric, left_unit
 
@@ -1102,10 +1132,17 @@ def _validate_arm_order(
     bounds = (
         block_started is None
         or block_ended is None
-        or block_started <= first_started <= first_ended <= second_started <= second_ended <= block_ended
+        or block_started
+        <= first_started
+        <= first_ended
+        <= second_started
+        <= second_ended
+        <= block_ended
     )
     if not bounds:
-        raise SystemExit(f'{case}: observed arm timestamps overlap or contradict lead order')
+        raise SystemExit(
+            f'{case}: observed arm timestamps overlap or contradict lead order'
+        )
 
 
 def _validate_block_timing(block: dict[str, Any], case: Path) -> None:
@@ -1174,8 +1211,12 @@ def summarize_counter_ratios(
         'ratios': {},
     }
     for event_index, event in enumerate(requested):
-        values_a = [block['arms']['A']['counters'][event]['counter_value'] for block in measured]
-        values_b = [block['arms']['B']['counters'][event]['counter_value'] for block in measured]
+        values_a = [
+            block['arms']['A']['counters'][event]['counter_value'] for block in measured
+        ]
+        values_b = [
+            block['arms']['B']['counters'][event]['counter_value'] for block in measured
+        ]
         if any(value is None for value in (*values_a, *values_b)):
             raise ValueError(f'counter {event!r} has an incomplete measured block')
         summary['A'][event] = summarize_counter_values(
@@ -1348,7 +1389,10 @@ def main() -> int:
     parser.add_argument('--a', required=True, help='Python of side A (baseline build)')
     parser.add_argument('--b', required=True, help='Python of side B (candidate build)')
     parser.add_argument(
-        '--case', required=True, type=Path, help='case script printing one typed observation JSON object'
+        '--case',
+        required=True,
+        type=Path,
+        help='case script printing one typed observation JSON object',
     )
     parser.add_argument('--rounds', type=int, default=MIN_MEASURED_ROUNDS)
     parser.add_argument('--warmup', type=int, default=2)
@@ -1382,9 +1426,7 @@ def main() -> int:
         parser.error(f'case does not exist: {args.case}')
 
     perf_events = (
-        expand_perf_events(args.perf_events)
-        if args.perf or args.perf_events
-        else None
+        expand_perf_events(args.perf_events) if args.perf or args.perf_events else None
     )
     cpu = pin_cpu(args.cpu)
     doctor_before = collect()
@@ -1454,9 +1496,7 @@ def main() -> int:
     unit = measured_blocks[0]['unit']
     summary_a = summarize(samples['A'], args.seed ^ 0xA, metric=metric, unit=unit)
     summary_b = summarize(samples['B'], args.seed ^ 0xB, metric=metric, unit=unit)
-    comparison = compare_blocks(
-        blocks, args.seed ^ 0xAB, metric=metric, unit=unit
-    )
+    comparison = compare_blocks(blocks, args.seed ^ 0xAB, metric=metric, unit=unit)
     ratio = comparison['relative_ratio_a_over_b']
     ratio_ci = comparison['relative_ratio_ci95']
     paired_delta = comparison['paired_difference']['median']
@@ -1508,7 +1548,9 @@ def main() -> int:
     }
     if perf_run is not None and perf_info is not None and perf_events is not None:
         counter_summary = summarize_counter_ratios(
-            perf_run['blocks'], perf_events, args.seed ^ 0xC0,
+            perf_run['blocks'],
+            perf_events,
+            args.seed ^ 0xC0,
         )
         record['perf'] = {
             'enabled': True,

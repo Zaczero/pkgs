@@ -244,7 +244,9 @@ def test_zero_exact_radius_returns_the_source_point(name: str) -> None:
     assert (result.x, result.y) == (float(source[0]), float(source[1]))
 
 
-@pytest.mark.parametrize('name', ['adjacent-at-one', 'adjacent-at-2^60', 'translated-acute'])
+@pytest.mark.parametrize(
+    'name', ['adjacent-at-one', 'adjacent-at-2^60', 'translated-acute']
+)
 def test_planar_circle_reports_the_declared_realization_budget(name: str) -> None:
     with pytest.raises(gm.GeometryError, match='reduce realization') as caught:
         gm.MultiPoint(CASES[name]).minimum_bounding_circle(unit='planar')

@@ -50,6 +50,7 @@ def _validate_manifest() -> None:
             f'stale={sorted(stale)!r}'
         )
 
+
 _validate_manifest()
 
 _FUNCTION_OPTIONS = (

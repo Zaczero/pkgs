@@ -37,9 +37,7 @@ def _assert_same_axis_meaning(left: gm.CRS, right: gm.CRS) -> None:
     right_axes = right.info['axes']
     assert [
         (axis['direction'], axis['unit_conversion_factor']) for axis in left_axes
-    ] == [
-        (axis['direction'], axis['unit_conversion_factor']) for axis in right_axes
-    ]
+    ] == [(axis['direction'], axis['unit_conversion_factor']) for axis in right_axes]
 
 
 @pytest.mark.parametrize(
@@ -90,7 +88,9 @@ def test_authored_axes_execute_independent_units_order_and_sign(
     ],
     ids=['degree-down', 'degree-up', 'near-minus', 'near-plus'],
 )
-def test_authored_near_degree_factor_survives_json_and_wkt_reentry(factor: float) -> None:
+def test_authored_near_degree_factor_survives_json_and_wkt_reentry(
+    factor: float,
+) -> None:
     definition = copy.deepcopy(gm.CRS(4326).to_projjson_dict())
     for axis in definition['coordinate_system']['axis']:
         axis['unit'] = _angular_unit(factor, 'authored degree')
@@ -109,7 +109,9 @@ def test_authored_near_degree_factor_survives_json_and_wkt_reentry(factor: float
     _assert_same_axis_meaning(crs, gm.CRS(crs.to_wkt()))
 
 
-def test_authored_projected_axes_use_independent_linear_factors_both_directions() -> None:
+def test_authored_projected_axes_use_independent_linear_factors_both_directions() -> (
+    None
+):
     definition = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
     axes = definition['coordinate_system']['axis']
     axes[0]['unit'] = {'type': 'LinearUnit', 'name': 'x unit', 'conversion_factor': 2.0}
@@ -151,7 +153,9 @@ def test_near_utm_parameters_do_not_use_approximate_compact_recognition(
     assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 
 
-def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name() -> None:
+def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name() -> (
+    None
+):
     geographic = copy.deepcopy(gm.CRS(4326).to_projjson_dict())
     ensemble = geographic.pop('datum_ensemble')
     ensemble['type'] = 'GeodeticReferenceFrame'
@@ -170,7 +174,9 @@ def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name()
     assert gm.crs_transform(prime_meridian, 3857, 100.0, 0.5) == expected
 
     projected = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
-    projected['base_crs']['datum_ensemble']['ellipsoid']['semi_major_axis'] = 7_000_000.0
+    projected['base_crs']['datum_ensemble']['ellipsoid']['semi_major_axis'] = (
+        7_000_000.0
+    )
     custom_ellipsoid = gm.CRS(projected)
     source_ellipsoid = copy.deepcopy(projected['base_crs'])
     source_ellipsoid['type'] = 'GeographicCRS'
@@ -190,7 +196,9 @@ def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name()
 def test_authored_projection_offset_keeps_exact_binary64_value(offset: float) -> None:
     definition = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
     parameter = next(
-        item for item in definition['conversion']['parameters'] if item['id']['code'] == 8806
+        item
+        for item in definition['conversion']['parameters']
+        if item['id']['code'] == 8806
     )
     parameter['value'] = offset
     crs = gm.CRS(definition)
@@ -201,9 +209,13 @@ def test_authored_projection_offset_keeps_exact_binary64_value(offset: float) ->
 def test_authored_near_pole_parameter_is_not_clamped() -> None:
     definition = copy.deepcopy(gm.CRS(32661).to_projjson_dict())
     parameter = next(
-        item for item in definition['conversion']['parameters'] if item['id']['code'] == 8801
+        item
+        for item in definition['conversion']['parameters']
+        if item['id']['code'] == 8801
     )
-    parameter['unit'] = _angular_unit(math.nextafter(DEGREE, math.inf), 'authored degree')
+    parameter['unit'] = _angular_unit(
+        math.nextafter(DEGREE, math.inf), 'authored degree'
+    )
     crs = gm.CRS(definition)
 
     assert crs.to_epsg() is None
@@ -214,20 +226,21 @@ def test_authored_near_pole_parameter_is_not_clamped() -> None:
 def test_authored_compound_child_definition_is_exposed_and_used_for_metrics() -> None:
     horizontal = _mixed_geographic('lat-lon', 'east-north').to_projjson_dict()
     vertical = gm.CRS(5703).to_projjson_dict()
-    compound = gm.CRS(
-        {
-            'type': 'CompoundCRS',
-            'name': 'authored compound',
-            'components': [horizontal, vertical],
-            'id': {'authority': 'EPSG', 'code': 6349},
-        }
-    )
+    compound = gm.CRS({
+        'type': 'CompoundCRS',
+        'name': 'authored compound',
+        'components': [horizontal, vertical],
+        'id': {'authority': 'EPSG', 'code': 6349},
+    })
 
     child = compound.info['sub_crs'][0]
     assert child['crs'] == 'EPSG:4326'
     assert 'definition' in child
     child_definition = json.loads(child['definition'])
-    assert child_definition['coordinate_system']['axis'][1]['unit']['conversion_factor'] == 0.02
+    assert (
+        child_definition['coordinate_system']['axis'][1]['unit']['conversion_factor']
+        == 0.02
+    )
     assert gm.crs_transform(compound, 3857, 100.0, 0.5, 0.0)[:2] == (
         WGS84_A * 100.0 * 0.02,
         WGS84_A * math.asinh(math.tan(0.5 * DEGREE)),
@@ -238,7 +251,9 @@ def test_authored_compound_child_definition_is_exposed_and_used_for_metrics() ->
     assert gm.distance(left, right) > 120_000.0
 
 
-def test_authored_definition_is_the_only_stored_label_and_never_enters_in_core() -> None:
+def test_authored_definition_is_the_only_stored_label_and_never_enters_in_core() -> (
+    None
+):
     authored = _mixed_geographic('lat-lon', 'east-north')
     assert authored.definition.startswith('{')
     assert not hasattr(authored, 'canonical')

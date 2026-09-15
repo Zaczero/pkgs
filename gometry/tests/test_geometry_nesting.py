@@ -88,9 +88,11 @@ def test_geojson_rejects_129() -> None:
 
 def test_geojson_structural_limit_precedes_default_serde_recursion() -> None:
     nested = '[' * 273 + '0' + ']' * 273
-    feature = json.dumps(
-        {'type': 'Feature', 'geometry': None, 'properties': json.loads(nested)}
-    )
+    feature = json.dumps({
+        'type': 'Feature',
+        'geometry': None,
+        'properties': json.loads(nested),
+    })
     for reader, payload in ((gm.from_geojson, nested), (gm.from_features, feature)):
         with pytest.raises(gm.ParseError, match='structural limit of 272'):
             reader(payload)

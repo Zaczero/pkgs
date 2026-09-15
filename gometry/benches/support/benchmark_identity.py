@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 IDENTITY_SCHEMA_VERSION = 1
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SHA256 = re.compile(r'^[0-9a-f]{64}$')
 
 
 def _fail(message: str) -> ValueError:
@@ -156,8 +156,14 @@ def common_identity(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def identity_for_arm(
-    common: dict[str, Any], *, side: str, row: str, runtime: str, module: dict[str, Any] | None,
-    distribution: dict[str, Any] | None, native_libraries: list[dict[str, Any]],
+    common: dict[str, Any],
+    *,
+    side: str,
+    row: str,
+    runtime: str,
+    module: dict[str, Any] | None,
+    distribution: dict[str, Any] | None,
+    native_libraries: list[dict[str, Any]],
     native_library_status: str,
 ) -> dict[str, Any]:
     """Attach explicit implementation and arm attribution to common facts."""
@@ -165,7 +171,9 @@ def identity_for_arm(
     value['implementation'] = {
         'runtime': runtime,
         'row': row,
-        'module_name': row.split('.', 1)[0] if runtime == 'comparator' else 'gometry._lib',
+        'module_name': row.split('.', 1)[0]
+        if runtime == 'comparator'
+        else 'gometry._lib',
         'module': module,
         'distribution': distribution,
         'native_libraries': native_libraries,

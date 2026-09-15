@@ -657,9 +657,9 @@ def test_non_degree_geographic_crs_uses_native_units_for_geodesic_metrics() -> N
     grad_crs = gm.CRS(4807)
     assert grad_crs.is_geographic
     assert [axis['unit_name'] for axis in grad_crs.axes[:2]] == ['grad', 'grad']
-    assert gm.distance(gm.Point(0, 0, crs=4807), gm.Point(1, 0, crs=4807)) == pytest.approx(
-        100189.3, rel=1e-6
-    )
+    assert gm.distance(
+        gm.Point(0, 0, crs=4807), gm.Point(1, 0, crs=4807)
+    ) == pytest.approx(100189.3, rel=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -693,7 +693,10 @@ def test_geographic_box_subdivision_uses_native_angular_ranges(
     if grad_longitude_above_180:
         assert grad_bounds[2] > 180.0
 
-    boxes = [gm.box(*bounds, crs=crs) for crs, bounds in zip(crss, native_bounds, strict=True)]
+    boxes = [
+        gm.box(*bounds, crs=crs)
+        for crs, bounds in zip(crss, native_bounds, strict=True)
+    ]
     for box, bounds in zip(boxes, native_bounds, strict=True):
         assert box.bounds == bounds
 
@@ -738,9 +741,10 @@ def test_geographic_native_aliases_reach_scalar_array_and_index_paths(
 ) -> None:
     """One native periodic turn is one location through every metric path."""
     origin = gm.Point(0.0, 0.0, crs=crs)
-    aliases = gm.GeometryArray(
-        [gm.Point(period, 0.0, crs=crs), gm.Point(-period, 0.0, crs=crs)]
-    )
+    aliases = gm.GeometryArray([
+        gm.Point(period, 0.0, crs=crs),
+        gm.Point(-period, 0.0, crs=crs),
+    ])
 
     assert gm.distance(origin, aliases).tolist() == pytest.approx([0.0, 0.0])
     assert bools(gm.dwithin(origin, aliases, 1.0)) == [True, True]
@@ -760,9 +764,10 @@ def test_grad_alias_transform_uses_the_same_prime_meridian_location() -> None:
     greenwich = origin.to_crs(4326)
     alias_greenwich = alias.to_crs(4326)
 
-    assert (alias_greenwich.x, alias_greenwich.y) == pytest.approx(
-        (greenwich.x, greenwich.y)
-    )
+    assert (alias_greenwich.x, alias_greenwich.y) == pytest.approx((
+        greenwich.x,
+        greenwich.y,
+    ))
 
 
 def test_geographic_native_aliases_preserve_empty_missing_and_epoch_contracts() -> None:

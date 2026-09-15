@@ -194,11 +194,7 @@ def _exterior_vertices(geometry: gm.Geometry) -> list[tuple[float, float]]:
         polygons = list(parsed.geoms)
     else:
         polygons = []
-    return [
-        (x, y)
-        for polygon in polygons
-        for x, y in polygon.exterior.coords
-    ]
+    return [(x, y) for polygon in polygons for x, y in polygon.exterior.coords]
 
 
 @pytest.mark.parametrize(
@@ -243,16 +239,15 @@ def test_round_buffer_boundary_vertices_follow_the_source_locus(
     assert vertices, f'{name} produced no exterior vertices'
     locus = source if source.geom_type == 'LineString' else source.boundary
     errors = [
-        abs(locus.distance(shapely.Point(x, y)) - abs(distance))
-        for x, y in vertices
+        abs(locus.distance(shapely.Point(x, y)) - abs(distance)) for x, y in vertices
     ]
     assert max(errors) <= BUFFER_LOCUS_TOLERANCE, (
         f'{name}: max distance-locus error {max(errors)} at '
         f'{vertices[errors.index(max(errors))]}'
     )
-    assert sum(
-        error > BUFFER_GENERATED_VERTEX_TOLERANCE for error in errors
-    ) == 0, f'{name}: a boundary vertex left the distance locus'
+    assert sum(error > BUFFER_GENERATED_VERTEX_TOLERANCE for error in errors) == 0, (
+        f'{name}: a boundary vertex left the distance locus'
+    )
 
     reference = shapely.buffer(
         source,

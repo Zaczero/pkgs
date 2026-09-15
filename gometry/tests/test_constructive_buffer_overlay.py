@@ -322,7 +322,9 @@ def test_array_disjoint_overlay_handles_mixed_ordinate_axes() -> None:
 
     assert forward[0].coordinate_axes == 'XY'
     assert reverse[0].coordinate_axes == 'XY'
-    assert sorted(forward[0].coords.to_nested()) == sorted(reverse[0].coords.to_nested())
+    assert sorted(forward[0].coords.to_nested()) == sorted(
+        reverse[0].coords.to_nested()
+    )
 
 
 def test_buffer_rejects_nonfinite_derived_coordinates_without_empty_fallback() -> None:
@@ -377,7 +379,11 @@ def test_buffer_keeps_a_finite_extreme_edge_after_raw_delta_overflow() -> None:
 
     def residual(value: float, origin: float) -> float:
         difference = value - origin
-        return difference * scale if math.isfinite(difference) else value * scale - origin * scale
+        return (
+            difference * scale
+            if math.isfinite(difference)
+            else value * scale - origin * scale
+        )
 
     source_span = residual(end, start)
     scaled_radius = radius * scale
@@ -759,7 +765,12 @@ def test_unique_points_preserves_heterogeneous_point_identity_and_order() -> Non
 
     assert result.geometry_type == 'GeometryCollection'
     assert result.coordinate_axes == 'XYZM'
-    assert [part.coordinate_axes for part in result.parts] == ['XY', 'XYZ', 'XYM', 'XYZM']
+    assert [part.coordinate_axes for part in result.parts] == [
+        'XY',
+        'XYZ',
+        'XYM',
+        'XYZM',
+    ]
     assert [list(part.coords) for part in result.parts] == [
         [(0.0, 0.0)],
         [(0.0, 0.0, 10.0)],
@@ -931,9 +942,14 @@ def test_clip_by_rect_line_array_keeps_categories_and_multipart_fallback() -> No
     crossing = gm.LineString([(-1, 0.5), (0.5, 0.6), (2, 0.5)])
     inside = gm.LineString([(0.1, 0.5), (0.5, 0.6), (0.9, 0.5)])
     outside = gm.LineString([(2, 0.5), (2.5, 0.6), (3, 0.5)])
-    multipart = gm.LineString(
-        [(-1, 0.5), (0.5, 0.5), (2, 0.5), (2.5, 0.7), (0.5, 0.8), (-1, 0.8)]
-    )
+    multipart = gm.LineString([
+        (-1, 0.5),
+        (0.5, 0.5),
+        (2, 0.5),
+        (2.5, 0.7),
+        (0.5, 0.8),
+        (-1, 0.8),
+    ])
 
     result = gm.GeometryArray([crossing, inside, outside]).clip_by_rect(0, 0, 1, 1)
 
@@ -953,9 +969,9 @@ def test_clip_by_rect_line_array_keeps_categories_and_multipart_fallback() -> No
 
 
 def test_clip_by_rect_line_array_preserves_axes_masks_selection_and_frame() -> None:
-    zm = gm.GeometryArray(
-        [gm.LineString([(-1, 0.5, 0, 10), (2, 0.5, 3, 13)])]
-    ).clip_by_rect(0, 0, 1, 1)
+    zm = gm.GeometryArray([
+        gm.LineString([(-1, 0.5, 0, 10), (2, 0.5, 3, 13)])
+    ]).clip_by_rect(0, 0, 1, 1)
     assert zm[0].to_wkt() == 'LINESTRING ZM (0 0.5 1 11, 1 0.5 2 12)'
 
     rows = gm.GeometryArray([
@@ -981,7 +997,9 @@ def test_clip_by_rect_line_array_preserves_axes_masks_selection_and_frame() -> N
         'LINESTRING (0 0.5, 1 0.5)',
     ]
 
-    framed = gm.GeometryArray([rows[0]], crs=4326, epoch=2020.0).clip_by_rect(0, 0, 1, 1)
+    framed = gm.GeometryArray([rows[0]], crs=4326, epoch=2020.0).clip_by_rect(
+        0, 0, 1, 1
+    )
     assert framed.crs == 'EPSG:4326'
     assert framed.epoch == 2020.0
 

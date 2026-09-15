@@ -146,7 +146,9 @@ def test_all_missing_compact_pickle_preserves_declared_native_kind(
     values = base._with_missing([True, True])
     restored = pickle.loads(pickle.dumps(values, protocol=5))
     assert restored.to_wkt() == [None, None]
-    assert restored.to_arrow().type.extension_name == values.to_arrow().type.extension_name
+    assert (
+        restored.to_arrow().type.extension_name == values.to_arrow().type.extension_name
+    )
     assert restored.coordinate_axes == values.coordinate_axes
 
 
@@ -204,7 +206,10 @@ def test_old_row_map_payloads_remain_readable_and_validated() -> None:
             None,
         )
     assert type(excinfo.value) is gm.GeometryError
-    assert str(excinfo.value) == 'point-array pickle row_map references a nonexistent physical row'
+    assert (
+        str(excinfo.value)
+        == 'point-array pickle row_map references a nonexistent physical row'
+    )
     with pytest.raises(
         gm.GeometryError, match='row_map references a nonexistent physical row'
     ) as excinfo:

@@ -427,7 +427,13 @@ def test_array_voronoi_edges_concat_preserves_missing_and_empty_groups() -> None
 
 
 def test_array_voronoi_edges_match_scalar_packed_chains() -> None:
-    sites = gm.MultiPoint([(-4.0, -3.0), (4.0, -2.0), (3.0, 4.0), (-3.0, 3.0), (0.0, 0.0)])
+    sites = gm.MultiPoint([
+        (-4.0, -3.0),
+        (4.0, -2.0),
+        (3.0, 4.0),
+        (-3.0, 3.0),
+        (0.0, 0.0),
+    ])
     clip = gm.box(-6.0, -6.0, 6.0, 6.0)
     scalar = sites.voronoi_edges(clip=clip)
     grouped = gm.GeometryArray([sites]).voronoi_edges(clip=clip)

@@ -341,7 +341,9 @@ def test_d22_geometry_array_adopts_embedded_when_crs_omitted() -> None:
     assert req.crs == 'EPSG:3857'
 
 
-def test_geojson_malformed_geometry_has_one_path_across_text_mapping_interface() -> None:
+def test_geojson_malformed_geometry_has_one_path_across_text_mapping_interface() -> (
+    None
+):
     """All GeoJSON carriers use the same structured geometry path."""
     payload = {
         'type': 'GeometryCollection',
@@ -753,10 +755,12 @@ def test_d24_mixed_multipolygon_ring_axes_reject_all_geojson_readers() -> None:
     """The nested MultiPolygon ring path uses the same admission owner."""
     geometry = {
         'type': 'MultiPolygon',
-        'coordinates': [[
-            [[0, 0, 1], [4, 0, 1], [0, 4, 1], [0, 0, 1]],
-            [[1, 1], [2, 1], [1, 2], [1, 1]],
-        ]],
+        'coordinates': [
+            [
+                [[0, 0, 1], [4, 0, 1], [0, 4, 1], [0, 0, 1]],
+                [[1, 1], [2, 1], [1, 2], [1, 1]],
+            ]
+        ],
     }
     encoded = [geometry, json.dumps(geometry), json.dumps(geometry).encode()]
     for data in encoded:

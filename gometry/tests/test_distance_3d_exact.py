@@ -9,7 +9,9 @@ import numpy as np
 import pytest
 
 
-def _line(a: tuple[float, float, float], b: tuple[float, float, float]) -> gm.LineString:
+def _line(
+    a: tuple[float, float, float], b: tuple[float, float, float]
+) -> gm.LineString:
     return gm.LineString([(a[0], a[1]), (b[0], b[1])], z=[a[2], b[2]])
 
 
@@ -59,7 +61,9 @@ def test_segment_distance_handles_overflow_and_subnormal_rounding() -> None:
     assert gm.distance_3d(left, offset) == 1.0
 
     minimum = math.ulp(0.0)
-    assert gm.distance_3d(_point((0.0, 0.0, 0.0)), _point((minimum, 0.0, 0.0))) == minimum
+    assert (
+        gm.distance_3d(_point((0.0, 0.0, 0.0)), _point((minimum, 0.0, 0.0))) == minimum
+    )
 
 
 def test_indexed_distance_preserves_subnormal_box_gap() -> None:
@@ -68,21 +72,17 @@ def test_indexed_distance_preserves_subnormal_box_gap() -> None:
     probe = _point((0.0, middle * math.sqrt(2.0), 0.0))
     target_lines = [
         gm.LineString([(gap, -100.0, 0.0), (gap, 100.0, 0.0)]),
-        *[
-            gm.LineString([(1.0, -100.0, 0.0), (1.0, -100.0, 0.0)])
-            for _ in range(31)
-        ],
+        *[gm.LineString([(1.0, -100.0, 0.0), (1.0, -100.0, 0.0)]) for _ in range(31)],
         gm.LineString([(-1.0, -1.0, 0.0), (1.0, 1.0, 0.0)]),
-        *[
-            gm.LineString([(1.0, 0.0, 0.0), (1.0, 0.0, 0.0)])
-            for _ in range(31)
-        ],
+        *[gm.LineString([(1.0, 0.0, 0.0), (1.0, 0.0, 0.0)]) for _ in range(31)],
     ]
     assert gm.distance_3d(probe, gm.MultiLineString(target_lines)) == gap
 
 
 def test_distance_3d_empty_operand_returns_infinity() -> None:
-    assert gm.distance_3d(gm.from_wkt('POINT EMPTY'), _point((0.0, 0.0, 0.0))) == math.inf
+    assert (
+        gm.distance_3d(gm.from_wkt('POINT EMPTY'), _point((0.0, 0.0, 0.0))) == math.inf
+    )
 
 
 def test_segment_distance_scalar_and_array_result_paths_match() -> None:
@@ -99,10 +99,13 @@ def test_segment_distance_handles_degenerate_parallel_and_outside_cases() -> Non
         _line((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
         _line((1.0, 2.0, 3.0), (1.0, 2.0, 3.0)),
     ) == pytest.approx(math.sqrt(14.0))
-    assert gm.distance_3d(
-        _line((0.0, 0.0, 0.0), (10.0, 0.0, 0.0)),
-        _line((5.0, 0.0, 0.0), (15.0, 0.0, 0.0)),
-    ) == 0.0
+    assert (
+        gm.distance_3d(
+            _line((0.0, 0.0, 0.0), (10.0, 0.0, 0.0)),
+            _line((5.0, 0.0, 0.0), (15.0, 0.0, 0.0)),
+        )
+        == 0.0
+    )
     assert gm.distance_3d(
         _line((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
         _line((2.0, 1.0, 0.0), (2.0, 2.0, 0.0)),

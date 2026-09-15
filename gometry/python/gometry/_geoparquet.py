@@ -159,8 +159,10 @@ def _embedded_frame_conflicts(
         or not CRS(embedded_crs).same_as(declared_crs, mode='ignore_axis_order')
     ):
         return True
-    return embedded_epoch is not None and declared_epoch_present and (
-        declared_epoch is None or embedded_epoch != declared_epoch
+    return (
+        embedded_epoch is not None
+        and declared_epoch_present
+        and (declared_epoch is None or embedded_epoch != declared_epoch)
     )
 
 
@@ -646,8 +648,8 @@ def _native_geoarrow_column(
         layout = _admit_geometry_storage(column.type, encoding, column_name, field)
     if layout.encoding != encoding:
         raise _layout_error(
-            f"admitted GeoParquet encoding {layout.encoding!r} does not match "
-            f"requested {encoding!r}"
+            f'admitted GeoParquet encoding {layout.encoding!r} does not match '
+            f'requested {encoding!r}'
         )
     extension_name = f'geoarrow.{layout.encoding}'
     # Native admission owns dictionary unwrap, extension reconcile (name +
@@ -670,9 +672,7 @@ def _native_geoarrow_column(
             'geoparquet metadata conflicts with Arrow extension metadata'
         )
     effective_epoch = (
-        epoch
-        if declared_epoch_present or embedded_epoch is None
-        else embedded_epoch
+        epoch if declared_epoch_present or embedded_epoch is None else embedded_epoch
     )
     try:
         storage_type = getattr(column.type, 'storage_type', column.type)
@@ -709,8 +709,8 @@ def _decode_geometry_column(
         layout = _admit_geometry_storage(column.type, encoding, column_name, field)
     if layout.encoding != encoding:
         raise _layout_error(
-            f"admitted GeoParquet encoding {layout.encoding!r} does not match "
-            f"requested {encoding!r}"
+            f'admitted GeoParquet encoding {layout.encoding!r} does not match '
+            f'requested {encoding!r}'
         )
     # Consume physical facts from the schema-admission record. The materialized
     # value may have been rewritten by extension registration or dictionary

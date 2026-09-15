@@ -34,7 +34,9 @@ import pytest
 )
 def test_wkt_rejects_nonfinite_coordinates_at_one_admission_boundary(wkt: str) -> None:
     """Every WKT geometry kind rejects non-finite parsed coordinate lanes."""
-    with pytest.raises(gm.ParseError, match='invalid WKT: coordinates must be finite') as raised:
+    with pytest.raises(
+        gm.ParseError, match='invalid WKT: coordinates must be finite'
+    ) as raised:
         gm.from_wkt(wkt)
     assert type(raised.value) is gm.ParseError
     assert raised.value.format == 'wkt'
@@ -94,7 +96,12 @@ def test_r17_empty_parenthesis_multipart_rejected() -> None:
         ('MULTIPOINT EMPTY', 'MultiPoint', 'XY', 'MULTIPOINT EMPTY'),
         ('MULTIPOINT M EMPTY', 'MultiPoint', 'XYM', 'MULTIPOINT M EMPTY'),
         ('MULTIPOINT (EMPTY)', 'MultiPoint', 'XY', 'MULTIPOINT (EMPTY)'),
-        ('MULTIPOINT M (EMPTY, EMPTY)', 'MultiPoint', 'XYM', 'MULTIPOINT M (EMPTY, EMPTY)'),
+        (
+            'MULTIPOINT M (EMPTY, EMPTY)',
+            'MultiPoint',
+            'XYM',
+            'MULTIPOINT M (EMPTY, EMPTY)',
+        ),
         # EXACT D16 repros: empty-member form keeps declared axes + kind.
         ('MULTIPOINT Z (EMPTY)', 'MultiPoint', 'XYZ', 'MULTIPOINT Z (EMPTY)'),
         ('MULTILINESTRING EMPTY', 'MultiLineString', 'XY', 'MULTILINESTRING EMPTY'),

@@ -224,9 +224,9 @@ def _oracle_command(
             seen.add(name)
             ordered.append(name)
     command = [
-            '.venv/bin/python',
-            'benches/python/bench_oracle.py',
-        ]
+        '.venv/bin/python',
+        'benches/python/bench_oracle.py',
+    ]
     if not ordered:
         command.append('--all')
     else:
@@ -361,7 +361,9 @@ def _benchmark_plans(
             command: list[str]
             if len(scheduled_rows) == 2 and label.startswith('pair-'):
                 gometry, competitor = scheduled_rows
-                pair_number, block_spec = label.removeprefix('pair-').split('-block-', 1)
+                pair_number, block_spec = label.removeprefix('pair-').split(
+                    '-block-', 1
+                )
                 _block_number, lead = block_spec.split('-', 1)
                 command = _paired_command(
                     gometry=gometry,
@@ -540,7 +542,9 @@ def _resolve_analysis_file(analysis_path: Path, value: str, *, label: str) -> Pa
     try:
         path.relative_to(analysis_path.parent.resolve())
     except ValueError as exc:
-        raise SystemExit(f'publication rejected: {label} is outside its manifest') from exc
+        raise SystemExit(
+            f'publication rejected: {label} is outside its manifest'
+        ) from exc
     return _manifest_path(path, label=label)
 
 
@@ -554,7 +558,9 @@ def _verified_run_artifacts(
     by_path: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(raw_records):
         if not isinstance(item, dict):
-            raise SystemExit(f'run manifest rejected: raw artifact {index} is not an object')
+            raise SystemExit(
+                f'run manifest rejected: raw artifact {index} is not an object'
+            )
         path_value = item.get('path')
         digest = item.get('sha256')
         size = item.get('size_bytes')
@@ -564,13 +570,17 @@ def _verified_run_artifacts(
             or not isinstance(size, int)
             or size < 0
         ):
-            raise SystemExit(f'run manifest rejected: raw artifact {index} is malformed')
+            raise SystemExit(
+                f'run manifest rejected: raw artifact {index} is malformed'
+            )
         path = _resolve_manifest_artifact(manifest_path, path_value)
         key = path.relative_to(manifest_path.parent.resolve()).as_posix()
         if key in by_path:
             raise SystemExit(f'run manifest rejected: duplicate raw artifact {key}')
         if not path.is_file():
-            raise SystemExit(f'run manifest rejected: missing raw artifact {path_value}')
+            raise SystemExit(
+                f'run manifest rejected: missing raw artifact {path_value}'
+            )
         actual_size = path.stat().st_size
         actual_digest = _file_sha256(path)
         if actual_size != size or actual_digest != digest:
@@ -600,7 +610,9 @@ def _verified_run_artifacts(
         _resolve_manifest_artifact(manifest_path, str(record['path']))
         for record in records
     }:
-        raise SystemExit('run manifest rejected: declared artifacts do not match digests')
+        raise SystemExit(
+            'run manifest rejected: declared artifacts do not match digests'
+        )
 
     return [
         _resolve_manifest_artifact(manifest_path, str(record['path']))
@@ -660,8 +672,13 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
     ):
         raise SystemExit('publication rejected: extension path/digest/size is missing')
     build_info = extension['build_info']
-    if build_info.get('profile_family') != 'release' or build_info.get('opt_level') != '3':
-        raise SystemExit('publication rejected: extension effective build facts are not release optimized')
+    if (
+        build_info.get('profile_family') != 'release'
+        or build_info.get('opt_level') != '3'
+    ):
+        raise SystemExit(
+            'publication rejected: extension effective build facts are not release optimized'
+        )
     if build_info.get('debug_assertions') is not False:
         raise SystemExit('publication rejected: extension has debug assertions enabled')
     if not isinstance(metadata['uv_lock'], dict):
@@ -677,21 +694,35 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
         or not isinstance(lock.get('size_bytes'), int)
         or lock.get('size_bytes', 0) <= 0
     ):
-        raise SystemExit('publication rejected: publishable evidence requires a lock file identity')
+        raise SystemExit(
+            'publication rejected: publishable evidence requires a lock file identity'
+        )
     lock_file = Path(lock_path)
     if not lock_file.is_file() or _file_sha256(lock_file) != lock_digest:
-        raise SystemExit('publication rejected: dependency lock identity is stale or unavailable')
+        raise SystemExit(
+            'publication rejected: dependency lock identity is stale or unavailable'
+        )
     if not metadata.get('git_commit') or not metadata.get('source_inputs_sha256'):
-        raise SystemExit('publication rejected: source commit/input identity is missing')
+        raise SystemExit(
+            'publication rejected: source commit/input identity is missing'
+        )
     packages = metadata['packages']
     required_packages = {
-        'gometry', 'numpy', 'shapely', 'pyproj', 'h3',
-        'geopandas', 'pyarrow', 'mercantile', 'pygeohash',
+        'gometry',
+        'numpy',
+        'shapely',
+        'pyproj',
+        'h3',
+        'geopandas',
+        'pyarrow',
+        'mercantile',
+        'pygeohash',
     }
     if not isinstance(packages, dict):
         raise SystemExit('publication rejected: package version inventory is missing')
     missing_versions = [
-        package for package in sorted(required_packages)
+        package
+        for package in sorted(required_packages)
         if not isinstance(packages.get(package), dict)
         or packages[package].get('available') is not True
         or not packages[package].get('version')
@@ -760,20 +791,28 @@ def _validate_publication_result(
             'publication rejected: release does not contain the complete paired row matrix'
         )
     operations = result.get('public_operations')
-    if not isinstance(operations, list) or len(operations) != len(ALL_PUBLIC_OPERATIONS):
+    if not isinstance(operations, list) or len(operations) != len(
+        ALL_PUBLIC_OPERATIONS
+    ):
         raise SystemExit(
             'publication rejected: release does not contain the complete operation matrix'
         )
     for operation in operations:
         if not isinstance(operation, dict) or not operation.get('competitor'):
-            raise SystemExit('publication rejected: operation matrix is not fully paired')
+            raise SystemExit(
+                'publication rejected: operation matrix is not fully paired'
+            )
     sampling = result.get('sampling')
     if not isinstance(sampling, dict):
         raise SystemExit('publication rejected: paired sampling matrix is missing')
-    if (
-        sampling.get('measured_blocks') != 6
-        or sampling.get('lead_orders') != ['ab', 'ba', 'ab', 'ba', 'ab', 'ba']
-    ):
+    if sampling.get('measured_blocks') != 6 or sampling.get('lead_orders') != [
+        'ab',
+        'ba',
+        'ab',
+        'ba',
+        'ab',
+        'ba',
+    ]:
         raise SystemExit(
             'publication rejected: release requires exactly six paired blocks '
             '(three ab and three ba)'
@@ -796,7 +835,9 @@ def _validate_oracle_artifact(result: dict[str, Any], artifacts: list[Path]) -> 
         path = path.resolve()
         path.relative_to(run_directory.resolve())
     except ValueError as exc:
-        raise SystemExit('analysis rejected: external oracle artifact is outside the run') from exc
+        raise SystemExit(
+            'analysis rejected: external oracle artifact is outside the run'
+        ) from exc
     if not path.is_file():
         raise SystemExit('analysis rejected: external oracle artifact is missing')
     payload = _read_json_object(path, label='external oracle artifact')
@@ -813,7 +854,9 @@ def _validate_oracle_artifact(result: dict[str, Any], artifacts: list[Path]) -> 
         or payload.get('identities') != [f'public:{name}:oracle' for name in expected]
         or payload.get('verified') != len(expected)
     ):
-        raise SystemExit('analysis rejected: external oracle artifact is incomplete or mismatched')
+        raise SystemExit(
+            'analysis rejected: external oracle artifact is incomplete or mismatched'
+        )
 
 
 def _analyze_result(
@@ -844,27 +887,37 @@ def _analyze_result(
     metadata = doctor.get('metadata', {}) if isinstance(doctor, dict) else {}
     expected_source = metadata.get('source_inputs_sha256')
     extension = metadata.get('extension') if isinstance(metadata, dict) else None
-    expected_extension = extension.get('sha256') if isinstance(extension, dict) else None
+    expected_extension = (
+        extension.get('sha256') if isinstance(extension, dict) else None
+    )
     expected_lock = metadata.get('uv_lock') if isinstance(metadata, dict) else None
-    expected_python = {
-        key: metadata.get(key)
-        for key in (
-            'python_executable',
-            'python_version',
-            'python_implementation',
-            'python_cache_tag',
-            'python_build',
-            'python_debug',
-        )
-    } if isinstance(metadata, dict) else {}
-    expected_packages = metadata.get('packages', {}) if isinstance(metadata, dict) else {}
+    expected_python = (
+        {
+            key: metadata.get(key)
+            for key in (
+                'python_executable',
+                'python_version',
+                'python_implementation',
+                'python_cache_tag',
+                'python_build',
+                'python_debug',
+            )
+        }
+        if isinstance(metadata, dict)
+        else {}
+    )
+    expected_packages = (
+        metadata.get('packages', {}) if isinstance(metadata, dict) else {}
+    )
     for operation_stats in stats.values():
         for block in operation_stats.blocks:
             identities = block.arm_identities or {'A': block.producer_identity}
             for identity in identities.values():
                 _validate_analysis_identity(
                     identity,
-                    expected_commit=metadata.get('git_commit') if isinstance(metadata, dict) else None,
+                    expected_commit=metadata.get('git_commit')
+                    if isinstance(metadata, dict)
+                    else None,
                     expected_source=expected_source,
                     expected_extension=expected_extension,
                     expected_extension_record=extension,
@@ -876,23 +929,30 @@ def _analyze_result(
     _normalize_artifact_paths(summary, artifact_mapping)
     parsed_operations = _parse_public_operations(result['public_operations'])
     sampling = result.get('sampling')
-    expected_blocks = sampling.get('measured_blocks') if isinstance(sampling, dict) else None
+    expected_blocks = (
+        sampling.get('measured_blocks') if isinstance(sampling, dict) else None
+    )
     expected_leads = sampling.get('lead_orders') if isinstance(sampling, dict) else None
     rows = _build_rows(
         parsed_operations,
         stats,
         equivalence_margin=0.03,
         expected_blocks=expected_blocks if isinstance(expected_blocks, int) else None,
-        expected_leads=tuple(expected_leads) if isinstance(expected_leads, list) else None,
+        expected_leads=tuple(expected_leads)
+        if isinstance(expected_leads, list)
+        else None,
     )
-    summary_md = '\n'.join(
-        render(
-            rows,
-            markdown=True,
-            publishable=True,
-            environment=summary.get('environment'),
+    summary_md = (
+        '\n'.join(
+            render(
+                rows,
+                markdown=True,
+                publishable=True,
+                environment=summary.get('environment'),
+            )
         )
-    ) + '\n'
+        + '\n'
+    )
     return summary, summary_md
 
 
@@ -923,30 +983,53 @@ def _validate_analysis_identity(
     if (
         isinstance(expected_extension_record, dict)
         and isinstance(observed_extension, dict)
-        and observed_extension.get('build_info') != expected_extension_record.get('build_info')
+        and observed_extension.get('build_info')
+        != expected_extension_record.get('build_info')
     ):
-        raise SystemExit('analysis rejected: paired block effective build identity mismatch')
+        raise SystemExit(
+            'analysis rejected: paired block effective build identity mismatch'
+        )
     if isinstance(expected_lock, dict) and identity.get('uv_lock') != expected_lock:
-        raise SystemExit('analysis rejected: paired block dependency lock identity mismatch')
+        raise SystemExit(
+            'analysis rejected: paired block dependency lock identity mismatch'
+        )
     observed_python = identity.get('python')
     if isinstance(observed_python, dict):
-        if observed_python.get('executable') != expected_python.get('python_executable'):
-            raise SystemExit('analysis rejected: paired block Python executable identity mismatch')
+        if observed_python.get('executable') != expected_python.get(
+            'python_executable'
+        ):
+            raise SystemExit(
+                'analysis rejected: paired block Python executable identity mismatch'
+            )
         if observed_python.get('version') != expected_python.get('python_version'):
-            raise SystemExit('analysis rejected: paired block Python build identity mismatch')
-        if observed_python.get('implementation') != expected_python.get('python_implementation'):
-            raise SystemExit('analysis rejected: paired block Python implementation identity mismatch')
+            raise SystemExit(
+                'analysis rejected: paired block Python build identity mismatch'
+            )
+        if observed_python.get('implementation') != expected_python.get(
+            'python_implementation'
+        ):
+            raise SystemExit(
+                'analysis rejected: paired block Python implementation identity mismatch'
+            )
         if observed_python.get('cache_tag') != expected_python.get('python_cache_tag'):
-            raise SystemExit('analysis rejected: paired block Python cache identity mismatch')
+            raise SystemExit(
+                'analysis rejected: paired block Python cache identity mismatch'
+            )
         observed_build = observed_python.get('build')
         if isinstance(observed_build, dict):
             if observed_build.get('build') != expected_python.get('python_build'):
-                raise SystemExit('analysis rejected: paired block Python build tuple mismatch')
+                raise SystemExit(
+                    'analysis rejected: paired block Python build tuple mismatch'
+                )
             if observed_build.get('debug') != expected_python.get('python_debug'):
-                raise SystemExit('analysis rejected: paired block Python debug identity mismatch')
+                raise SystemExit(
+                    'analysis rejected: paired block Python debug identity mismatch'
+                )
     loaded = identity.get('loaded_native_libraries')
     if not isinstance(loaded, list):
-        raise SystemExit('analysis rejected: paired block loaded native-library inventory is missing')
+        raise SystemExit(
+            'analysis rejected: paired block loaded native-library inventory is missing'
+        )
     loaded_by_path = {
         item.get('path'): item
         for item in loaded
@@ -954,10 +1037,14 @@ def _validate_analysis_identity(
     }
     implementation = identity.get('implementation')
     if not isinstance(implementation, dict):
-        raise SystemExit('analysis rejected: paired block implementation attribution is missing')
+        raise SystemExit(
+            'analysis rejected: paired block implementation attribution is missing'
+        )
     implementation_row = implementation.get('row')
     if not isinstance(implementation_row, str):
-        raise SystemExit('analysis rejected: paired block implementation row is missing')
+        raise SystemExit(
+            'analysis rejected: paired block implementation row is missing'
+        )
     package_name = (
         'gometry'
         if implementation.get('runtime') == 'gometry'
@@ -977,7 +1064,10 @@ def _validate_analysis_identity(
         if not isinstance(native, list) or any(
             not isinstance(item, dict)
             or item.get('path') not in loaded_by_path
-            or any(item.get(key) != loaded_by_path[item['path']].get(key) for key in ('sha256', 'size_bytes'))
+            or any(
+                item.get(key) != loaded_by_path[item['path']].get(key)
+                for key in ('sha256', 'size_bytes')
+            )
             for item in native
         ):
             raise SystemExit(
@@ -993,7 +1083,9 @@ def _validate_analysis_identity(
                 else None
             )
             if expected_extension_file is None or native != [expected_extension_file]:
-                raise SystemExit('analysis rejected: paired block gometry native identity mismatch')
+                raise SystemExit(
+                    'analysis rejected: paired block gometry native identity mismatch'
+                )
         else:
             distribution = implementation.get('distribution')
             owned_paths = (
@@ -1020,11 +1112,11 @@ def _validate_analysis_identity(
                     )
             for token in _REQUIRED_ENGINE_LIBRARY_TOKENS.get(package_name, ()):
                 loaded_engine = [
-                    path for path in loaded_by_path
-                    if token in Path(path).name.lower()
+                    path for path in loaded_by_path if token in Path(path).name.lower()
                 ]
                 attributed_engine = [
-                    item for item in native
+                    item
+                    for item in native
                     if token in Path(str(item.get('path'))).name.lower()
                 ]
                 if not loaded_engine:
@@ -1044,8 +1136,12 @@ def _validate_analysis_identity(
                 f'analysis rejected: paired block native-library capability is unavailable for {package_name}'
             )
     observed_packages = identity.get('packages')
-    if not isinstance(observed_packages, dict) or not isinstance(expected_packages, dict):
-        raise SystemExit('analysis rejected: paired block dependency identity is missing')
+    if not isinstance(observed_packages, dict) or not isinstance(
+        expected_packages, dict
+    ):
+        raise SystemExit(
+            'analysis rejected: paired block dependency identity is missing'
+        )
     for name, package in expected_packages.items():
         expected_version = package.get('version') if isinstance(package, dict) else None
         observed_package = observed_packages.get(name)
@@ -1140,11 +1236,15 @@ def analyze_run(
 
 def _load_analysis(
     analysis_manifest: Path | str,
-) -> tuple[Path, dict[str, Any], Path, dict[str, Any], list[Path], list[dict[str, Any]]]:
+) -> tuple[
+    Path, dict[str, Any], Path, dict[str, Any], list[Path], list[dict[str, Any]]
+]:
     analysis_path = _manifest_path(analysis_manifest, label='analysis manifest')
     analysis = _read_json_object(analysis_path, label='analysis manifest')
     if analysis.get('manifest_type') != _ANALYSIS_MANIFEST_TYPE:
-        raise SystemExit(f'{analysis_path} is not a gometry benchmark analysis manifest')
+        raise SystemExit(
+            f'{analysis_path} is not a gometry benchmark analysis manifest'
+        )
     if analysis.get('schema_version') != _MANIFEST_SCHEMA_VERSION:
         raise SystemExit(f'analysis manifest {analysis_path} has an unsupported schema')
     source_value = analysis.get('source_run_manifest')
@@ -1169,7 +1269,9 @@ def _load_analysis(
     if analysis.get('profile') != result.get('profile'):
         raise SystemExit('publication rejected: analysis profile identity mismatch')
     summary_info = analysis.get('summary')
-    if not isinstance(summary_info, dict) or not isinstance(summary_info.get('path'), str):
+    if not isinstance(summary_info, dict) or not isinstance(
+        summary_info.get('path'), str
+    ):
         raise SystemExit('publication rejected: analysis summary identity is missing')
     summary_path = _resolve_analysis_file(
         analysis_path, summary_info['path'], label='analysis summary'
@@ -1202,7 +1304,9 @@ def _load_analysis(
         result, artifacts, artifact_mapping=artifact_mapping
     )
     if recalculated != summary:
-        raise SystemExit('publication rejected: analysis summary does not match source evidence')
+        raise SystemExit(
+            'publication rejected: analysis summary does not match source evidence'
+        )
     return analysis_path, analysis, source_path, result, artifacts, records
 
 
@@ -1276,7 +1380,9 @@ def publish_current_run(
         label='analysis summary',
     )
     markdown_info = analysis.get('summary_markdown')
-    if not isinstance(markdown_info, dict) or not isinstance(markdown_info.get('path'), str):
+    if not isinstance(markdown_info, dict) or not isinstance(
+        markdown_info.get('path'), str
+    ):
         raise SystemExit('publication rejected: analysis Markdown is missing')
     summary_md_path = _resolve_analysis_file(
         analysis_path, markdown_info['path'], label='analysis Markdown'
@@ -1333,14 +1439,21 @@ def publish_current_run(
             'analysis_manifest_sha256': _file_sha256(analysis_path),
             'git_commit': metadata['git_commit'],
             'git_dirty_build_inputs': metadata.get('git_dirty_build_inputs'),
-            'clean_source_build_inputs': not bool(metadata.get('git_dirty_build_inputs')),
+            'clean_source_build_inputs': not bool(
+                metadata.get('git_dirty_build_inputs')
+            ),
             'source_inputs_sha256': metadata['source_inputs_sha256'],
             'uv_lock': metadata['uv_lock'],
             'python': {
                 key: metadata[key]
                 for key in (
-                    'python_executable', 'python', 'python_version', 'python_build',
-                    'python_implementation', 'python_debug', 'python_cache_tag',
+                    'python_executable',
+                    'python',
+                    'python_version',
+                    'python_build',
+                    'python_implementation',
+                    'python_debug',
+                    'python_cache_tag',
                 )
             },
             'extension': metadata['extension'],
@@ -1352,8 +1465,12 @@ def publish_current_run(
             'cpu': {
                 key: metadata[key]
                 for key in (
-                    'cpu_model', 'cpu_governor', 'cpu_affinity',
-                    'isolated_cpus', 'selected_cpu', 'selected_cpu_source',
+                    'cpu_model',
+                    'cpu_governor',
+                    'cpu_affinity',
+                    'isolated_cpus',
+                    'selected_cpu',
+                    'selected_cpu_source',
                     'selected_cpu_governor',
                     'cpu_frequency_state',
                 )
@@ -1370,7 +1487,12 @@ def publish_current_run(
 
         # Build and validate the complete replacement before touching the
         # tracked publication directory.
-        required = (stage / 'identity.json', stage / 'summary.json', stage / 'summary.md', raw_dir)
+        required = (
+            stage / 'identity.json',
+            stage / 'summary.json',
+            stage / 'summary.md',
+            raw_dir,
+        )
         if not all(path.exists() for path in required) or not any(raw_dir.iterdir()):
             raise SystemExit('publication rejected: staged output is incomplete')
         if _publication_path_exists(current_dir):
@@ -1381,10 +1503,9 @@ def publish_current_run(
             try:
                 current_dir.rename(backup)
             except BaseException:
-                current_moved = (
-                    not _publication_path_exists(current_dir)
-                    and _publication_path_exists(backup)
-                )
+                current_moved = not _publication_path_exists(
+                    current_dir
+                ) and _publication_path_exists(backup)
                 raise
             current_moved = True
         try:
@@ -1585,12 +1706,10 @@ def main() -> None:
         else None
     )
     doctor['metadata']['selected_cpu_governor'] = selected_governor
-    hard_failures: list[str] = [
-        str(value) for value in doctor.get('hard_failures', ())
-    ]
+    hard_failures: list[str] = [str(value) for value in doctor.get('hard_failures', ())]
     if args.profile == 'release' and selected_governor not in {None, 'performance'}:
         hard_failures.append(
-            f"selected benchmark CPU governor is {selected_governor!r}, "
+            f'selected benchmark CPU governor is {selected_governor!r}, '
             f"not 'performance': cpu={cpu}"
         )
     if args.profile == 'release' and cpu_selection.endswith('not-isolated'):
@@ -1706,8 +1825,7 @@ def main() -> None:
         'worker': PAIR_WORKER,
         'measured_blocks': profile.paired_blocks,
         'lead_orders': [
-            'ab' if index % 2 == 0 else 'ba'
-            for index in range(profile.paired_blocks)
+            'ab' if index % 2 == 0 else 'ba' for index in range(profile.paired_blocks)
         ],
         'warmup_iterations': int(profile.paired_sampling_args[1]),
         'repetitions': int(profile.paired_sampling_args[3]),
@@ -1716,7 +1834,9 @@ def main() -> None:
         'phase': 'warm',
         'oracle_state_scope': 'external-fresh-process',
     }
-    paired_matrix, paired_matrix_sha256 = _paired_matrix_identity(public_operations, sampling)
+    paired_matrix, paired_matrix_sha256 = _paired_matrix_identity(
+        public_operations, sampling
+    )
     result = {
         'manifest_type': _RUN_MANIFEST_TYPE,
         'schema_version': _MANIFEST_SCHEMA_VERSION,
@@ -1754,7 +1874,8 @@ def main() -> None:
         'oracle_ok': oracle_ok if not args.plan_only else None,
         'oracle_artifact': (
             _manifest_relative(oracle_output, run_directory)
-            if oracle_output.is_file() else None
+            if oracle_output.is_file()
+            else None
         ),
         'artifacts': artifacts,
         'resources': [] if args.plan_only else _resource_summaries(plans),
