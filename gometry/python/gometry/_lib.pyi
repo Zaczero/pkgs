@@ -9724,11 +9724,12 @@ class SpatialIndex(Mapping[int, Geometry]):
         int
         """
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        """Pickle as the full sparse row table plus live handles.
+        """Pickle as one sparse row table containing only live geometries.
 
         Handles are the public identity returned by ``query``/``nearest`` and
-        consumed by ``remove``/``__getitem__``; round-tripping must therefore
-        preserve tombstones instead of compactly renumbering live rows.
+        consumed by ``remove``/``__getitem__``. The row owner therefore writes
+        tombstones into the array's missing mask instead of replaying removed
+        source rows and filtering them after reconstruction.
         """
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
