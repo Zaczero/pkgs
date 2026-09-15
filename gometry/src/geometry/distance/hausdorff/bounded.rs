@@ -20,6 +20,8 @@ const NOMINATED_SITE_COUNT: usize = 4;
 thread_local! {
     static LINE_FILTER_ENABLED: Cell<bool> = const { Cell::new(true) };
     static EXACT_SPAN_EVALUATIONS: Cell<usize> = const { Cell::new(0) };
+    static REFINEMENT_WORK: Cell<usize> = const { Cell::new(0) };
+    static REFINEMENT_WORK_LIMIT: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -64,6 +66,66 @@ fn exact_span_evaluations() -> usize {
 #[cfg(test)]
 fn count_exact_span_evaluation() {
     EXACT_SPAN_EVALUATIONS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+struct RefinementWorkGuard {
+    previous_count: usize,
+    previous_limit: Option<usize>,
+}
+
+#[cfg(test)]
+impl Drop for RefinementWorkGuard {
+    fn drop(&mut self) {
+        REFINEMENT_WORK.with(|count| count.set(self.previous_count));
+        REFINEMENT_WORK_LIMIT.with(|limit| limit.set(self.previous_limit));
+    }
+}
+
+#[cfg(test)]
+fn limit_refinement_work(limit: usize) -> RefinementWorkGuard {
+    let previous_count = REFINEMENT_WORK.with(|count| {
+        let previous = count.get();
+        count.set(0);
+        previous
+    });
+    let previous_limit = REFINEMENT_WORK_LIMIT.with(|current| {
+        let previous = current.get();
+        current.set(Some(limit));
+        previous
+    });
+    RefinementWorkGuard {
+        previous_count,
+        previous_limit,
+    }
+}
+
+#[cfg(test)]
+fn refinement_work() -> usize {
+    REFINEMENT_WORK.with(Cell::get)
+}
+
+#[cfg(test)]
+fn count_refinement_work() -> Result<()> {
+    let count = REFINEMENT_WORK.with(|current| {
+        let next = current.get().saturating_add(1);
+        current.set(next);
+        next
+    });
+    if let Some(limit) = REFINEMENT_WORK_LIMIT.with(Cell::get)
+        && count > limit
+    {
+        return Err(
+            crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge {
+                operation: "hausdorff_distance",
+                parameter: "refinement_work",
+                produced: count,
+                limit,
+            }
+            .into(),
+        );
+    }
+    Ok(())
 }
 
 struct Accuracy {
@@ -1061,17 +1123,23 @@ impl PreparedSupport {
             .transpose()?)
     }
 
-    fn source_box_witness(&self, bounds: FloatBox) -> Result<Option<ExactPoint>> {
-        let min_x = Rational::from_f64(bounds.min_x)?;
-        let max_x = Rational::from_f64(bounds.max_x)?;
-        let min_y = Rational::from_f64(bounds.min_y)?;
-        let max_y = Rational::from_f64(bounds.max_y)?;
-        let center = ExactPoint {
-            x: min_x.try_midpoint(&max_x)?,
-            y: min_y.try_midpoint(&max_y)?,
-        };
-        if self.contains_area(&center)? {
-            return Ok(Some(center));
+    fn source_box_witness(
+        &self,
+        bounds: FloatBox,
+        center_first: bool,
+    ) -> Result<Option<ExactPoint>> {
+        if center_first {
+            let min_x = Rational::from_f64(bounds.min_x)?;
+            let max_x = Rational::from_f64(bounds.max_x)?;
+            let min_y = Rational::from_f64(bounds.min_y)?;
+            let max_y = Rational::from_f64(bounds.max_y)?;
+            let center = ExactPoint {
+                x: min_x.try_midpoint(&max_x)?,
+                y: min_y.try_midpoint(&max_y)?,
+            };
+            if self.contains_area(&center)? {
+                return Ok(Some(center));
+            }
         }
         for (x, y) in bounds.corners() {
             let point = exact_point_xy(x, y)?;
@@ -1673,13 +1741,13 @@ enum SourcePatch {
 }
 
 impl SourcePatch {
-    fn witness(&self, source: &PreparedSupport) -> Result<Option<ExactPoint>> {
+    fn witness(&self, source: &PreparedSupport, center_first: bool) -> Result<Option<ExactPoint>> {
         match self {
             Self::Span { span, lo, hi } => {
                 let midpoint = lo.try_midpoint(hi)?;
                 Ok(Some(span_point(&source.spans[*span], &midpoint)?))
             },
-            Self::Box(bounds) => source.source_box_witness(*bounds),
+            Self::Box(bounds) => source.source_box_witness(*bounds, center_first),
             Self::Point(point) => Ok(Some(source.points[*point].try_clone()?)),
         }
     }
@@ -2195,13 +2263,15 @@ impl Ord for QueueEntry {
 #[derive(Debug)]
 struct PatchQueue {
     heap: BinaryHeap<QueueEntry>,
+    stable_ties: bool,
     next_order: usize,
 }
 
 impl PatchQueue {
-    fn new() -> Self {
+    fn new(stable_ties: bool) -> Self {
         Self {
             heap: BinaryHeap::new(),
+            stable_ties,
             next_order: 0,
         }
     }
@@ -2211,11 +2281,16 @@ impl PatchQueue {
             Some(value) => nonnegative_upper_bound(value)?,
             None => f64::INFINITY,
         };
-        let order = self.next_order;
-        self.next_order = self
-            .next_order
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let order = if self.stable_ties {
+            let order = self.next_order;
+            self.next_order = self
+                .next_order
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            order
+        } else {
+            0
+        };
         crate::try_push_heap(&mut self.heap, QueueEntry { key, order, record })?;
 
         Ok(())
@@ -2454,7 +2529,8 @@ fn parallel_strip_upper(
         return Ok(None);
     }
     let corners = patch.corners(source)?;
-    let area_probe = matches!(patch, SourcePatch::Box(_)) && !source.faces.is_empty();
+    let area_probe =
+        context.exact_upper && matches!(patch, SourcePatch::Box(_)) && !source.faces.is_empty();
     let probe_count = if area_probe {
         source
             .faces
@@ -2591,7 +2667,7 @@ fn build_patch(
     target: &PreparedSupport,
     context: &mut SearchContext<'_>,
 ) -> Result<Option<PatchRecord>> {
-    let Some(witness) = patch.witness(source)? else {
+    let Some(witness) = patch.witness(source, context.exact_upper)? else {
         return Ok(None);
     };
     #[cfg(debug_assertions)]
@@ -2681,7 +2757,7 @@ fn run_direction(
     target: &PreparedSupport,
     context: &mut SearchContext<'_>,
 ) -> Result<Rational> {
-    let mut queue = PatchQueue::new();
+    let mut queue = PatchQueue::new(context.exact_upper);
     for patch in source.initial_patches()? {
         if let Some(record) = build_patch(patch, source, target, context)? {
             queue.push(record)?;
@@ -2707,6 +2783,8 @@ fn run_direction(
         {
             continue;
         }
+        #[cfg(test)]
+        count_refinement_work()?;
         let Some(children) = record.patch.split(&mut context.budget)? else {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance patch reached a nonrepresentable subdivision",
@@ -2895,7 +2973,7 @@ fn run_directed(
     context: &mut SearchContext<'_>,
 ) -> Result<DirectedCandidate> {
     context.require_positive_witness = source.has_positive_area()?;
-    let mut queue = PatchQueue::new();
+    let mut queue = PatchQueue::new(context.exact_upper);
     for patch in source.inradius_initial_patches()? {
         if let Some(record) = build_patch(patch, source, target, context)? {
             queue.push(record)?;
@@ -2920,6 +2998,8 @@ fn run_directed(
         {
             continue;
         }
+        #[cfg(test)]
+        count_refinement_work()?;
         let Some(children) = record.patch.split(&mut context.budget)? else {
             return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
                 "maximum_inscribed_circle",
@@ -3244,6 +3324,36 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_l_shape_refinement_work_stays_bounded() {
+        let coordinates = [
+            (0.0, 0.0),
+            (9.0, 0.0),
+            (9.0, 1.0),
+            (4.0, 1.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+            (0.0, 0.0),
+        ];
+        let source = polygon(&coordinates);
+        let target = line(&coordinates);
+        let limit = 1_000;
+        let _guard = limit_refinement_work(limit);
+        let result = distance(&source, &target, Some(1e-12), 1.0);
+        let work = refinement_work();
+        let actual = result.unwrap_or_else(|error| {
+            panic!("ordinary L-shape exceeded {limit} refinements at {work}: {error}")
+        });
+        assert!(
+            (actual - 2.0).abs() <= 1e-12,
+            "ordinary L-shape returned {actual}, expected 2.0 within 1e-12"
+        );
+        assert!(
+            work <= limit,
+            "ordinary L-shape used {work} refinements, limit {limit}"
+        );
+    }
+
+    #[test]
     fn ordinary_hausdorff_keeps_external_line_support_with_filled_area() {
         let area = polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]);
         let external = line(&[(10.0, 0.0), (12.0, 0.0)]);
@@ -3557,7 +3667,7 @@ mod tests {
     fn queue_enclosure_keeps_unbounded_patches_and_later_witnesses() {
         let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
         let mut context = SearchContext::new(&accuracy);
-        let mut queue = PatchQueue::new();
+        let mut queue = PatchQueue::new(false);
         let patch = || {
             SourcePatch::Box(FloatBox {
                 min_x: 0.0,
