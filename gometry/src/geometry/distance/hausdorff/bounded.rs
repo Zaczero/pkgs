@@ -82,11 +82,20 @@ impl FloatBox {
 
 #[derive(Debug)]
 struct SupportSpan {
-    source: Segment,
+    carrier: ExactCarrier,
     t_lo: Rational,
     t_hi: Rational,
     start: ExactPoint,
     bounds: FloatBox,
+}
+
+#[derive(Debug)]
+struct ExactCarrier {
+    ax: Rational,
+    ay: Rational,
+    dx: Rational,
+    dy: Rational,
+    norm_squared: Rational,
 }
 
 #[derive(Debug)]
@@ -590,7 +599,7 @@ fn push_raw_segment(
             min_y: source.start.y.min(source.end.y),
             max_y: source.start.y.max(source.end.y),
         },
-        source,
+        carrier: ExactCarrier::from_segment(source)?,
     })
 }
 
@@ -610,7 +619,7 @@ fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
     }
     let bounds = FloatBox::from_point(&start)?.include(FloatBox::from_point(&end)?);
     Ok(SupportSpan {
-        source: span.source,
+        carrier: ExactCarrier::from_segment(span.source)?,
         t_lo,
         t_hi,
         start,
@@ -622,53 +631,61 @@ fn exact_point_xy(x: f64, y: f64) -> Result<ExactPoint> {
     Ok(ExactPoint::from_xy(XY::new(x, y))?)
 }
 
-fn carrier_components(source: Segment) -> Result<(Rational, Rational, Rational, Rational)> {
-    let ax = Rational::from_f64(source.start.x)?;
-    let ay = Rational::from_f64(source.start.y)?;
-    let bx = Rational::from_f64(source.end.x)?;
-    let by = Rational::from_f64(source.end.y)?;
-    Ok((
-        ax.try_clone()?,
-        ay.try_clone()?,
-        (&bx).try_subtract(&ax)?,
-        (&by).try_subtract(&ay)?,
-    ))
+impl ExactCarrier {
+    fn from_segment(source: Segment) -> Result<Self> {
+        let ax = Rational::from_f64(source.start.x)?;
+        let ay = Rational::from_f64(source.start.y)?;
+        let dx = Rational::from_f64(source.end.x)?.try_subtract(&ax)?;
+        let dy = Rational::from_f64(source.end.y)?.try_subtract(&ay)?;
+        let norm_squared = dx.try_square()?.try_add(&dy.try_square()?)?;
+        Ok(Self {
+            ax,
+            ay,
+            dx,
+            dy,
+            norm_squared,
+        })
+    }
 }
 
 fn span_point(span: &SupportSpan, parameter: &Rational) -> Result<ExactPoint> {
-    let (ax, ay, dx, dy) = carrier_components(span.source)?;
-    let x = (&ax).try_add(&(&dx).try_product(parameter)?)?;
-    let y = (&ay).try_add(&(&dy).try_product(parameter)?)?;
+    let carrier = &span.carrier;
+    let x = carrier.ax.try_add(&carrier.dx.try_product(parameter)?)?;
+    let y = carrier.ay.try_add(&carrier.dy.try_product(parameter)?)?;
     Ok(ExactPoint { x, y })
 }
 
 fn span_projection_parameter(point: &ExactPoint, span: &SupportSpan) -> Result<Rational> {
-    let (ax, ay, dx, dy) = carrier_components(span.source)?;
-    let px = (&point.x).try_subtract(&ax)?;
-    let py = (&point.y).try_subtract(&ay)?;
-    let numerator = (&(&px).try_product(&dx)?).try_add(&(&py).try_product(&dy)?)?;
-    let denominator = (&(&dx).try_square()?).try_add(&(&dy).try_square()?)?;
-    if denominator.is_zero() {
+    let carrier = &span.carrier;
+    let px = point.x.try_subtract(&carrier.ax)?;
+    let py = point.y.try_subtract(&carrier.ay)?;
+    let numerator = px
+        .try_product(&carrier.dx)?
+        .try_add(&py.try_product(&carrier.dy)?)?;
+    if carrier.norm_squared.is_zero() {
         return Ok(Rational::zero());
     }
-    (&numerator).try_quotient(&denominator)
+    numerator.try_quotient(&carrier.norm_squared)
 }
 
 fn point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result<Rational> {
-    let (ax, ay, dx, dy) = carrier_components(span.source)?;
-    let px = (&point.x).try_subtract(&ax)?;
-    let py = (&point.y).try_subtract(&ay)?;
-    let dot = (&(&px).try_product(&dx)?).try_add(&(&py).try_product(&dy)?)?;
-    let norm = (&(&dx).try_square()?).try_add(&(&dy).try_square()?)?;
-    let low = (&span.t_lo).try_product(&norm)?;
-    let high = (&span.t_hi).try_product(&norm)?;
-    let parameter = if norm.is_zero() || dot.try_cmp(&low)? == Ordering::Less {
+    let carrier = &span.carrier;
+    let px = point.x.try_subtract(&carrier.ax)?;
+    let py = point.y.try_subtract(&carrier.ay)?;
+    let dot = px
+        .try_product(&carrier.dx)?
+        .try_add(&py.try_product(&carrier.dy)?)?;
+    let low = span.t_lo.try_product(&carrier.norm_squared)?;
+    let high = span.t_hi.try_product(&carrier.norm_squared)?;
+    let parameter = if carrier.norm_squared.is_zero() || dot.try_cmp(&low)? == Ordering::Less {
         &span.t_lo
     } else if dot.try_cmp(&high)? == Ordering::Greater {
         &span.t_hi
     } else {
-        let cross = (&(&px).try_product(&dy)?).try_subtract(&(&py).try_product(&dx)?)?;
-        return (&(&cross).try_square()?).try_quotient(&norm);
+        let cross = px
+            .try_product(&carrier.dy)?
+            .try_subtract(&py.try_product(&carrier.dx)?)?;
+        return cross.try_square()?.try_quotient(&carrier.norm_squared);
     };
     let projected = span_point(span, parameter)?;
     let dx = (&point.x).try_subtract(&projected.x)?;
@@ -991,11 +1008,9 @@ impl SourcePatch {
 }
 
 fn span_radius_squared(span: &SupportSpan, lo: &Rational, hi: &Rational) -> Result<Rational> {
-    let (_, _, dx, dy) = carrier_components(span.source)?;
-    let delta = (hi).try_subtract(lo)?;
-    let half = (&delta).try_quotient(&Rational::from_f64(2.0)?)?;
-    let direction_squared = (&(&dx).try_square()?).try_add(&(&dy).try_square()?)?;
-    (&direction_squared).try_product(&(&half).try_square()?)
+    let delta = hi.try_subtract(lo)?;
+    let half = delta.try_quotient(&Rational::from_f64(2.0)?)?;
+    span.carrier.norm_squared.try_product(&half.try_square()?)
 }
 
 #[derive(Debug)]
@@ -1167,14 +1182,13 @@ impl PatchQueue {
     }
 
     fn max_upper(&self) -> Result<Option<Rational>> {
-        let mut maximum = None;
-        for entry in &self.heap {
-            let Some(upper) = &entry.record.upper else {
-                return Ok(None);
-            };
-            max_rational(&mut maximum, upper.try_clone()?)?;
+        let Some(entry) = self.heap.peek() else {
+            return Ok(None);
+        };
+        if entry.key.is_infinite() {
+            return Ok(None);
         }
-        Ok(maximum)
+        Ok(Some(Rational::from_f64(entry.key)?))
     }
 
     fn is_empty(&self) -> bool {
@@ -1255,20 +1269,21 @@ fn fixed_site_upper(
 }
 
 fn carrier_line_value(span: &SupportSpan, point: &ExactPoint) -> Result<Rational> {
-    let (ax, ay, dx, dy) = carrier_components(span.source)?;
-    let px = (&point.x).try_subtract(&ax)?;
-    let py = (&point.y).try_subtract(&ay)?;
-    (&(&dx).try_product(&py)?).try_subtract(&(&dy).try_product(&px)?)
+    let carrier = &span.carrier;
+    let px = point.x.try_subtract(&carrier.ax)?;
+    let py = point.y.try_subtract(&carrier.ay)?;
+    carrier
+        .dx
+        .try_product(&py)?
+        .try_subtract(&carrier.dy.try_product(&px)?)
 }
 
 fn exact_parallel(left: &SupportSpan, right: &SupportSpan) -> Result<bool> {
-    let (_, _, left_dx, left_dy) = carrier_components(left.source)?;
-    let (_, _, right_dx, right_dy) = carrier_components(right.source)?;
-    if (left_dx.is_zero() && left_dy.is_zero()) || (right_dx.is_zero() && right_dy.is_zero()) {
-        return Ok(false);
-    }
-    Ok((&(&left_dx).try_product(&right_dy)?)
-        .try_subtract(&(&left_dy).try_product(&right_dx)?)?
+    Ok(left
+        .carrier
+        .dx
+        .try_product(&right.carrier.dy)?
+        .try_subtract(&left.carrier.dy.try_product(&right.carrier.dx)?)?
         .is_zero())
 }
 
@@ -1338,13 +1353,9 @@ fn parallel_strip_upper(
             if !valid || !signs_between_parallel_lines(&left_values, &right_values) {
                 continue;
             }
-            let (_, _, dx, dy) = carrier_components(left.source)?;
-            let direction_squared = (&(&dx).try_square()?).try_add(&(&dy).try_square()?)?;
-            if direction_squared.is_zero() {
-                continue;
-            }
-            let separation_squared =
-                (&(&separation).try_square()?).try_quotient(&direction_squared)?;
+            let separation_squared = separation
+                .try_square()?
+                .try_quotient(&left.carrier.norm_squared)?;
             let half = (&separation_squared).try_quotient(&Rational::from_f64(4.0)?)?;
             let squared = context.scaled_squared(&half)?;
             let Some(upper) = sqrt_upper(&squared, context)?.upper_rational()? else {

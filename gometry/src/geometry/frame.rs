@@ -89,41 +89,6 @@ pub(crate) struct AxisFrame {
     scale_y: f64,
 }
 
-/// A translation plus one exact binary scale shared by both axes.
-///
-/// This is deliberately a different type from [`AxisFrame`]: a Euclidean
-/// similarity preserves metric structure, while an anisotropic frame is only
-/// an arithmetic coordinate system. In particular, reciprocal-axis admission
-/// is not a meaningful question for this type and no such method exists.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SimilarityFrame {
-    origin: Point,
-    scale: f64,
-}
-
-impl SimilarityFrame {
-    pub(crate) fn from_points(points: &[Point]) -> Option<Self> {
-        let origin = *points.first()?;
-        let extent_x = axis_extent(points.iter().map(|point| point.x), origin.x)?;
-        let extent_y = axis_extent(points.iter().map(|point| point.y), origin.y)?;
-        ((extent_x > 0.0) || (extent_y > 0.0)).then_some(Self {
-            origin,
-            scale: axis_pow2_scale(extent_x.max(extent_y)),
-        })
-    }
-
-    pub(crate) const fn scale(self) -> f64 {
-        self.scale
-    }
-
-    pub(crate) fn frame_xy(self, x: f64, y: f64) -> XY {
-        XY::new(
-            scaled_residual(x, self.origin.x, self.scale),
-            scaled_residual(y, self.origin.y, self.scale),
-        )
-    }
-}
-
 impl AxisFrame {
     /// Construct directly from a caller-selected stable origin and axis
     /// drivers.  A zero driver deliberately keeps that axis unscaled.
