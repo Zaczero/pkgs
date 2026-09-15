@@ -69,6 +69,7 @@ mod scratch_tests {
 
     #[test]
     fn topology_scratch_is_aggregate_bounded_and_reuses_medium_columns() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         reserve(1024, 32);
         let ((), allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
         assert_eq!(allocations, 0);
@@ -92,6 +93,7 @@ mod scratch_tests {
 
     #[test]
     fn topology_scratch_drops_live_ring_sources_before_retention() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let source: std::sync::Arc<[XY]> = vec![XY::new(0.0, 0.0)].into();
         let weak = std::sync::Arc::downgrade(&source);
         {
@@ -112,6 +114,7 @@ mod scratch_tests {
 
     #[test]
     fn topology_scratch_clears_and_returns_during_unwind() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let unwind = std::panic::catch_unwind(|| {
             let mut pool = OperandPool::with_scratch(16, 0);
             pool.segments.push(Segment {

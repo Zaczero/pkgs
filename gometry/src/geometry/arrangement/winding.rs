@@ -272,6 +272,7 @@ mod tests {
 
     #[test]
     fn core_accounting_includes_every_vector_and_map() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let mut scratch = ArrangementSpares::default();
         scratch.points.reserve_exact(3);
         scratch.starts.reserve_exact(5);
@@ -327,6 +328,7 @@ mod tests {
 
     #[test]
     fn each_arrangement_owner_reuses_medium_and_drops_huge() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         clear_core_pool();
         assert_eq!(arrangement_spares().points.capacity(), 0);
         {
@@ -405,6 +407,7 @@ mod tests {
 
     #[test]
     fn map_alone_can_exceed_the_core_budget() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         clear_core_pool();
         {
             let mut scratch = arrangement_spares();

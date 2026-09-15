@@ -6,6 +6,11 @@ use std::thread::LocalKey;
 
 pub(crate) const SCRATCH_RETAIN_BYTES: usize = 8 * 1024 * 1024;
 
+thread_local! {
+    /// Retained bytes across all scratch pools on the current worker thread.
+    static RETAINED_BYTES: Cell<usize> = const { Cell::new(0) };
+}
+
 pub(crate) trait RetainScratch: Default {
     fn clear_for_reuse(&mut self);
 
@@ -50,6 +55,7 @@ pub(crate) fn hash_map_retained_bytes<K, V, S>(value: &HashMap<K, V, S>) -> usiz
 
 pub(crate) struct ScratchPool<T> {
     value: Cell<T>,
+    retained_charge: Cell<usize>,
     retain_bytes: usize,
 }
 
@@ -61,6 +67,7 @@ impl<T> ScratchPool<T> {
     pub(crate) const fn with_retain_bytes(value: T, retain_bytes: usize) -> Self {
         Self {
             value: Cell::new(value),
+            retained_charge: Cell::new(0),
             retain_bytes,
         }
     }
@@ -68,7 +75,14 @@ impl<T> ScratchPool<T> {
 
 impl<T: RetainScratch + 'static> ScratchPool<T> {
     pub(crate) fn checkout(key: &'static LocalKey<Self>) -> ScratchLease<T> {
-        let value = key.with(|pool| pool.value.take());
+        let value = key.with(|pool| {
+            let value = pool.value.take();
+            let charge = pool.retained_charge.replace(0);
+            let _ = RETAINED_BYTES.try_with(|retained| {
+                retained.set(retained.get().saturating_sub(charge));
+            });
+            value
+        });
         ScratchLease {
             key,
             value: Some(value),
@@ -106,10 +120,30 @@ impl<T: RetainScratch> Drop for ScratchLease<T> {
         };
         let return_value = || {
             value.clear_for_reuse();
+            let charge = value.retained_bytes();
             let _ = self.key.try_with(|pool| {
-                if value.retained_bytes() <= pool.retain_bytes {
-                    pool.value.set(value);
-                }
+                let old_charge = pool.retained_charge.get();
+                // During TLS teardown either key can already be unavailable;
+                // leaving `value` local in that case drops it without updating
+                // a destroyed pool or aggregate.
+                let _ = RETAINED_BYTES.try_with(|retained| {
+                    // A nested checkout may have returned an inner value to this
+                    // pool while the outer lease was still live. Remove that
+                    // value before reserving the outer replacement.
+                    let Some(total) = retained
+                        .get()
+                        .saturating_sub(old_charge)
+                        .checked_add(charge)
+                    else {
+                        return;
+                    };
+                    if charge <= pool.retain_bytes && total <= SCRATCH_RETAIN_BYTES {
+                        let old_value = pool.value.replace(value);
+                        pool.retained_charge.set(charge);
+                        retained.set(total);
+                        drop(old_value);
+                    }
+                });
             });
         };
         if std::thread::panicking() {
@@ -117,6 +151,28 @@ impl<T: RetainScratch> Drop for ScratchLease<T> {
         } else {
             return_value();
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct RetainBudgetGuard;
+
+#[cfg(test)]
+impl RetainBudgetGuard {
+    pub(crate) fn new() -> Self {
+        RETAINED_BYTES.with(|retained| retained.set(0));
+        Self
+    }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        RETAINED_BYTES.with(Cell::get)
+    }
+}
+
+#[cfg(test)]
+impl Drop for RetainBudgetGuard {
+    fn drop(&mut self) {
+        let _ = RETAINED_BYTES.try_with(|retained| retained.set(0));
     }
 }
 
@@ -150,13 +206,18 @@ mod tests {
         static SMALL_POOL: ScratchPool<ObservedScratch> = ScratchPool::with_retain_bytes(
             ObservedScratch::default(), 8
         );
+        static AGGREGATE_POOL_LEFT: ScratchPool<ObservedScratch> =
+            ScratchPool::new(ObservedScratch::default());
+        static AGGREGATE_POOL_RIGHT: ScratchPool<ObservedScratch> =
+            ScratchPool::new(ObservedScratch::default());
     }
 
     #[test]
     fn retains_under_and_at_budget_but_drops_over_budget_after_clearing() {
+        let _budget = RetainBudgetGuard::new();
         let clears = Rc::new(Cell::new(0));
         let live = Rc::new(());
-        for retained in [7, 8, 9] {
+        for retained in [7, 8, 9, usize::MAX] {
             let mut lease = ScratchPool::checkout(&SMALL_POOL);
             lease.clears = Rc::clone(&clears);
             lease.retained = retained;
@@ -164,25 +225,80 @@ mod tests {
             drop(lease);
             assert_eq!(Rc::strong_count(&live), 1);
         }
-        assert_eq!(clears.get(), 3);
+        assert_eq!(clears.get(), 4);
         let lease = ScratchPool::checkout(&SMALL_POOL);
         assert_eq!(lease.retained, 0, "the over-budget value was dropped");
     }
 
     #[test]
+    fn distinct_pools_share_one_thread_retention_budget() {
+        let budget = RetainBudgetGuard::new();
+        let retained = SCRATCH_RETAIN_BYTES / 2 + 1;
+
+        let mut left = ScratchPool::checkout(&AGGREGATE_POOL_LEFT);
+        left.retained = retained;
+        drop(left);
+        assert_eq!(budget.retained_bytes(), retained);
+
+        let mut right = ScratchPool::checkout(&AGGREGATE_POOL_RIGHT);
+        right.retained = retained;
+        drop(right);
+        assert_eq!(
+            budget.retained_bytes(),
+            retained,
+            "the second below-limit pool must be rejected by the shared budget"
+        );
+
+        let right = ScratchPool::checkout(&AGGREGATE_POOL_RIGHT);
+        assert_eq!(right.retained, 0);
+        drop(right);
+    }
+
+    #[test]
+    fn checkout_releases_retention_for_another_pool() {
+        let budget = RetainBudgetGuard::new();
+        let retained = SCRATCH_RETAIN_BYTES / 2 + 1;
+
+        let mut left = ScratchPool::checkout(&AGGREGATE_POOL_LEFT);
+        left.retained = retained;
+        drop(left);
+        assert_eq!(budget.retained_bytes(), retained);
+
+        let left = ScratchPool::checkout(&AGGREGATE_POOL_LEFT);
+        assert_eq!(budget.retained_bytes(), 0);
+
+        let mut right = ScratchPool::checkout(&AGGREGATE_POOL_RIGHT);
+        right.retained = retained;
+        drop(right);
+        assert_eq!(budget.retained_bytes(), retained);
+
+        let right = ScratchPool::checkout(&AGGREGATE_POOL_RIGHT);
+        assert_eq!(right.retained, retained);
+        drop(right);
+        drop(left);
+    }
+
+    #[test]
     fn nested_checkout_keeps_the_last_returned_outer_value() {
+        let budget = RetainBudgetGuard::new();
         let mut outer = ScratchPool::checkout(&SMALL_POOL);
         outer.retained = 3;
         {
             let mut inner = ScratchPool::checkout(&SMALL_POOL);
             inner.retained = 5;
         }
+        assert_eq!(budget.retained_bytes(), 5);
         drop(outer);
-        assert_eq!(ScratchPool::checkout(&SMALL_POOL).retained, 3);
+        assert_eq!(budget.retained_bytes(), 3);
+        let last = ScratchPool::checkout(&SMALL_POOL);
+        assert_eq!(last.retained, 3);
+        assert_eq!(budget.retained_bytes(), 0);
+        drop(last);
     }
 
     #[test]
     fn operation_panic_returns_cleared_scratch() {
+        let _budget = RetainBudgetGuard::new();
         let result = std::panic::catch_unwind(|| {
             let mut lease = ScratchPool::checkout(&SMALL_POOL);
             lease.retained = 4;
@@ -193,6 +309,44 @@ mod tests {
         let lease = ScratchPool::checkout(&SMALL_POOL);
         assert!(lease.values.is_empty());
         assert_eq!(lease.retained, 4);
+    }
+
+    #[test]
+    fn operation_error_returns_cleared_scratch() {
+        let _budget = RetainBudgetGuard::new();
+        let result: Result<(), &str> = {
+            let mut lease = ScratchPool::checkout(&SMALL_POOL);
+            lease.retained = 6;
+            lease.values.push(Rc::new(()));
+            Err("operation failed")
+        };
+        assert_eq!(result, Err("operation failed"));
+
+        let lease = ScratchPool::checkout(&SMALL_POOL);
+        assert!(lease.values.is_empty());
+        assert_eq!(lease.retained, 6);
+    }
+
+    #[test]
+    fn clear_and_reuse_updates_the_shared_charge_once() {
+        let budget = RetainBudgetGuard::new();
+        {
+            let mut lease = ScratchPool::checkout(&SMALL_POOL);
+            lease.retained = 4;
+        }
+        assert_eq!(budget.retained_bytes(), 4);
+
+        {
+            let mut lease = ScratchPool::checkout(&SMALL_POOL);
+            assert_eq!(lease.retained, 4);
+            lease.retained = 6;
+        }
+        assert_eq!(budget.retained_bytes(), 6);
+
+        let lease = ScratchPool::checkout(&SMALL_POOL);
+        assert_eq!(lease.retained, 6);
+        assert_eq!(budget.retained_bytes(), 0);
+        drop(lease);
     }
 
     #[derive(Default)]
@@ -214,6 +368,7 @@ mod tests {
 
     #[test]
     fn failing_cleanup_does_not_replace_an_operation_panic() {
+        let _budget = RetainBudgetGuard::new();
         let result = std::panic::catch_unwind(|| {
             let _lease = ScratchPool::checkout(&PANICKING_POOL);
             panic!("operation failed");
@@ -226,6 +381,7 @@ mod tests {
 
     #[test]
     fn accounting_is_saturating_and_includes_nested_allocations() {
+        let _budget = RetainBudgetGuard::new();
         let nested = vec![Vec::<u64>::with_capacity(3), Vec::<u64>::with_capacity(5)];
         assert_eq!(
             nested_vec_retained_bytes(&nested),
@@ -262,6 +418,7 @@ mod tests {
 
     #[test]
     fn medium_repeats_reuse_and_huge_then_medium_warms_once() {
+        let _budget = RetainBudgetGuard::new();
         let medium_capacity = {
             let mut lease = ScratchPool::checkout(&CAPACITY_POOL);
             lease.0.reserve_exact(64);
@@ -325,17 +482,23 @@ mod tests {
         THREAD_DROPS.store(0, Ordering::Relaxed);
 
         assert_eq!(
-            (1..=2)
-                .map(|capacity| {
-                    std::thread::spawn(move || {
-                        let mut lease = ScratchPool::checkout(&THREAD_POOL);
-                        lease.0.reserve_exact(capacity * 16);
-                        lease.0.capacity()
-                    })
+            std::iter::repeat_with(|| {
+                std::thread::spawn(move || {
+                    let budget = RetainBudgetGuard::new();
+                    let mut lease = ScratchPool::checkout(&THREAD_POOL);
+                    lease.0.reserve_exact(SCRATCH_RETAIN_BYTES / 2 + 1);
+                    let capacity = lease.0.capacity();
+                    drop(lease);
+                    (capacity, budget.retained_bytes())
                 })
-                .map(|h| h.join().unwrap())
-                .collect::<Vec<_>>(),
-            [16, 32]
+            })
+            .take(2)
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>(),
+            [
+                (SCRATCH_RETAIN_BYTES / 2 + 1, SCRATCH_RETAIN_BYTES / 2 + 1),
+                (SCRATCH_RETAIN_BYTES / 2 + 1, SCRATCH_RETAIN_BYTES / 2 + 1)
+            ]
         );
         assert_eq!(THREAD_DROPS.load(Ordering::Relaxed), 4);
     }
@@ -361,8 +524,8 @@ mod tests {
     #[test]
     fn lease_drop_during_tls_teardown_does_not_panic() {
         let handle = std::thread::spawn(|| {
-            // Initialize the lease holder first so the pool is destroyed before
-            // the holder tries to return its lease during reverse-order teardown.
+            // Initialize the holder first so the pool is destroyed before the
+            // holder tries to return its lease during reverse-order teardown.
             TEARDOWN_LEASE.with(|holder| assert!(holder.borrow().is_none()));
             let lease = ScratchPool::checkout(&TEARDOWN_POOL);
             TEARDOWN_LEASE.with(|holder| *holder.borrow_mut() = Some(lease));

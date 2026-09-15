@@ -73,6 +73,7 @@ mod scratch_tests {
 
     #[test]
     fn nested_cut_scratch_charges_and_reuses_inner_buffers() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         reserve(64, 16);
         let ((), allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
         assert_eq!(allocations, 0);

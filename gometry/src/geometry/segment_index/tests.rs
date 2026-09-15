@@ -112,6 +112,7 @@ mod sweep_characterization {
 
     #[test]
     fn sweep_covers_every_intersecting_pair() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         // Sizes spanning the brute branch (< SWEEP_MIN_ITEMS) and the two sweep
         // strategies, each of which is driven directly below rather than reached
         // through the run-density dispatch — so the corpus does not have to
@@ -161,6 +162,7 @@ mod sweep_characterization {
 
     #[test]
     fn for_each_candidate_pair_stops_on_break() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let pool = structured_pool(20);
         let mut visited = 0;
         let flow = for_each_candidate_pair(&pool, single_chain, |_, _| {
@@ -355,6 +357,7 @@ mod run_collapse_dispatch {
 
     #[test]
     fn smooth_linework_collapses_at_every_size() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         // 32 segments is far below every threshold this dispatch used to carry,
         // and is where the reduction was being thrown away.
         for n in [8_usize, 32, 128, 600] {
@@ -380,6 +383,7 @@ mod run_collapse_dispatch {
 
     #[test]
     fn linework_with_nothing_to_collapse_stays_linear() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         // The other end: one run per segment, so the decomposition saves no
         // pair at all. The sweep still has to stay near-linear in the pool —
         // this is the case a quadratic fallback would hide in.
@@ -454,6 +458,7 @@ mod sweep_entry_scratch {
 
     #[test]
     fn nested_candidate_sweep_does_not_drop_outer_bounds_pairs() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let bounds = overlapping_boxes(8);
         let segments = crossing_segments(8);
         let expected = bounds_pairs(&bounds);
@@ -477,6 +482,7 @@ mod sweep_entry_scratch {
 
     #[test]
     fn nested_early_break_releases_the_shared_lease() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let bounds = overlapping_boxes(8);
         let segments = crossing_segments(8);
         let expected = bounds_pairs(&bounds);
@@ -496,6 +502,7 @@ mod sweep_entry_scratch {
 
     #[test]
     fn nested_resource_error_releases_the_shared_lease() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let bounds = overlapping_boxes(8);
         let segments = crossing_segments(8);
         let expected = bounds_pairs(&bounds);
@@ -526,6 +533,7 @@ mod sweep_entry_scratch {
 
     #[test]
     fn candidate_sweep_rejects_each_cold_allocation_above_brute() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let segments = crossing_segments(8);
         assert!(segments.len() > 6);
         let ((), count) = cold_allocation_count({
@@ -554,6 +562,7 @@ mod sweep_entry_scratch {
 
     #[test]
     fn overlapping_bounds_sweep_rejects_each_cold_allocation_above_brute() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         let bounds = overlapping_boxes(8);
         assert!(bounds.len() > 6);
         let ((), count) = cold_allocation_count({

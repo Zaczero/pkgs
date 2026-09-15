@@ -335,6 +335,7 @@ fn fan_order_uses_geometry_after_a_pseudo_angle_collision() {
 
 #[test]
 fn nested_arrangements_keep_the_last_dropped_outer_scratch() {
+    let _budget = crate::scratch_pool::RetainBudgetGuard::new();
     let small = loop_segments(&[(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)]);
     let large = loop_segments(&[
         (0.0, 0.0),
@@ -355,6 +356,7 @@ fn nested_arrangements_keep_the_last_dropped_outer_scratch() {
 
 #[test]
 fn panicking_weight_callback_returns_cleared_leases() {
+    let _budget = crate::scratch_pool::RetainBudgetGuard::new();
     let segments = loop_segments(&[(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)]);
     let result = std::panic::catch_unwind(|| {
         Arrangement::<i32>::weighted(&segments, |_| panic!("weight failed"));
