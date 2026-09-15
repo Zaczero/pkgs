@@ -10,7 +10,7 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceInventory};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
-    CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Segment, Shape, XY,
+    CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point, Segment, Shape, XY,
 };
 use crate::{try_push_vec, try_reserve_vec};
 
@@ -189,6 +189,18 @@ struct ExactCarrier {
     dx: Rational,
     dy: Rational,
     norm_squared: Rational,
+}
+
+impl ExactCarrier {
+    fn try_clone(&self) -> Result<Self> {
+        Ok(Self {
+            ax: self.ax.try_clone()?,
+            ay: self.ay.try_clone()?,
+            dx: self.dx.try_clone()?,
+            dy: self.dy.try_clone()?,
+            norm_squared: self.norm_squared.try_clone()?,
+        })
+    }
 }
 
 /// An exact ratio kept unreduced across transient distance calculations.
@@ -394,11 +406,6 @@ impl UnreducedRatio {
     #[cfg(test)]
     fn try_cmp_rational(&self, other: &Rational) -> Result<Ordering> {
         Self::from_rational(other).and_then(|other| self.try_cmp(&other))
-    }
-
-    #[cfg(test)]
-    fn round(&self) -> Result<f64> {
-        crate::geometry::tessellation::exact::round_ratio(&self.numerator, &self.denominator)
     }
 }
 
@@ -659,17 +666,22 @@ impl SupportIndex {
 }
 
 #[derive(Debug)]
-struct PreparedSupport {
+pub(crate) struct PreparedSupport {
     spans: Vec<SupportSpan>,
     points: Vec<ExactPoint>,
     faces: Vec<Vec<Vec<ExactPoint>>>,
+    boundary_spans: Option<Vec<bool>>,
+    boundary_points: Option<Vec<bool>>,
     boundary_edges: Vec<BoundaryEdge>,
     area_bounds: Option<FloatBox>,
     index: SupportIndex,
 }
 
 impl PreparedSupport {
-    fn from_shape(shape: &Shape, budget: &mut ExpansionBudget) -> Result<Self> {
+    pub(in crate::geometry) fn from_shape(
+        shape: &Shape,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         if shape.is_empty() {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty support",
@@ -700,6 +712,24 @@ impl PreparedSupport {
         Self::from_metric_support(support)
     }
 
+    pub(in crate::geometry) fn from_shape_with_boundary(
+        shape: &Shape,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
+        if !shape.has_area_parts() {
+            return Self::from_shape(shape, budget);
+        }
+        if shape.is_empty() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "hausdorff_distance requires non-empty support",
+            ));
+        }
+        let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+        let partition = inventory.partition(budget)?;
+        let support = inventory.metric_support_with_boundary(&partition)?;
+        Self::from_metric_support(support)
+    }
+
     fn from_line_columns(xs: &[f64], ys: &[f64]) -> Result<Self> {
         debug_assert_eq!(xs.len(), ys.len());
         let mut spans = Vec::new();
@@ -726,20 +756,53 @@ impl PreparedSupport {
             spans: metric_spans,
             points: metric_points,
             faces: metric_faces,
+            boundary_spans: metric_boundary_spans,
+            boundary_points: metric_boundary_points,
         } = support;
+        if metric_boundary_spans
+            .as_ref()
+            .is_some_and(|values| values.len() != metric_spans.len())
+            || metric_boundary_points
+                .as_ref()
+                .is_some_and(|values| values.len() != metric_points.len())
+        {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "exact metric boundary incidence is not aligned with support",
+            ));
+        }
         let mut spans = Vec::new();
         try_reserve_vec(&mut spans, metric_spans.len())?;
-        for span in metric_spans {
+        let mut boundary_spans = metric_boundary_spans.as_ref().map(|_| Vec::new());
+        if let Some(boundary_spans) = boundary_spans.as_mut() {
+            try_reserve_vec(boundary_spans, metric_spans.len())?;
+        }
+        for (index, span) in metric_spans.into_iter().enumerate() {
             try_push_vec(&mut spans, support_span(span)?)?;
+            if let Some(boundary_spans) = boundary_spans.as_mut() {
+                try_push_vec(
+                    boundary_spans,
+                    metric_boundary_spans.as_ref().unwrap()[index],
+                )?;
+            }
         }
 
         let mut points = Vec::new();
         try_reserve_vec(&mut points, metric_points.len())?;
-        for point in metric_points {
+        let mut boundary_points = metric_boundary_points.as_ref().map(|_| Vec::new());
+        if let Some(boundary_points) = boundary_points.as_mut() {
+            try_reserve_vec(boundary_points, metric_points.len())?;
+        }
+        for (index, point) in metric_points.into_iter().enumerate() {
             try_push_vec(
                 &mut points,
                 ExactPoint::from_homogeneous(point.homogeneous)?,
             )?;
+            if let Some(boundary_points) = boundary_points.as_mut() {
+                try_push_vec(
+                    boundary_points,
+                    metric_boundary_points.as_ref().unwrap()[index],
+                )?;
+            }
         }
 
         let mut faces = Vec::new();
@@ -761,7 +824,10 @@ impl PreparedSupport {
             try_push_vec(&mut faces, cycles)?;
         }
 
-        Self::from_parts(spans, points, faces)
+        let mut prepared = Self::from_parts(spans, points, faces)?;
+        prepared.boundary_spans = boundary_spans;
+        prepared.boundary_points = boundary_points;
+        Ok(prepared)
     }
 
     fn from_parts(
@@ -800,14 +866,62 @@ impl PreparedSupport {
             ));
         }
 
+        let index = SupportIndex::build(&spans, &points)?;
         Ok(Self {
-            index: SupportIndex::build(&spans, &points)?,
+            index,
             spans,
             points,
             faces,
+            boundary_spans: None,
+            boundary_points: None,
             boundary_edges,
             area_bounds,
         })
+    }
+
+    /// Clone the exact boundary selected by the partition's face walks without
+    /// reconstructing it from rounded source coordinates. The aligned flags
+    /// already exclude shared/internal face edges and lower-dimensional
+    /// support hidden by a positive-area face.
+    pub(in crate::geometry) fn boundary_clone(&self) -> Result<Self> {
+        let mut spans = Vec::new();
+        try_reserve_vec(
+            &mut spans,
+            self.boundary_spans
+                .as_ref()
+                .map_or(self.spans.len(), |flags| {
+                    flags.iter().filter(|&&selected| selected).count()
+                }),
+        )?;
+        for (index, span) in self.spans.iter().enumerate() {
+            let selected = self
+                .boundary_spans
+                .as_ref()
+                .map_or(true, |flags| flags[index]);
+            if selected {
+                try_push_vec(&mut spans, span.try_clone()?)?;
+            }
+        }
+
+        let mut points = Vec::new();
+        try_reserve_vec(
+            &mut points,
+            self.boundary_points
+                .as_ref()
+                .map_or(self.points.len(), |flags| {
+                    flags.iter().filter(|&&selected| selected).count()
+                }),
+        )?;
+        for (index, point) in self.points.iter().enumerate() {
+            let selected = self
+                .boundary_points
+                .as_ref()
+                .map_or(true, |flags| flags[index]);
+            if selected {
+                try_push_vec(&mut points, point.try_clone()?)?;
+            }
+        }
+        Self::from_parts(spans, points, Vec::new())
     }
 
     fn initial_patches(&self) -> Result<Vec<SourcePatch>> {
@@ -833,6 +947,24 @@ impl PreparedSupport {
         Ok(patches)
     }
 
+    fn inradius_initial_patches(&self) -> Result<Vec<SourcePatch>> {
+        if self.has_positive_area()? {
+            let mut patches = Vec::new();
+            try_reserve_vec(&mut patches, 1)?;
+            if let Some(bounds) = self.area_bounds {
+                try_push_vec(&mut patches, SourcePatch::Box(bounds))?;
+            }
+            return Ok(patches);
+        }
+
+        let mut patches = self.initial_patches()?;
+        try_reserve_vec(&mut patches, self.points.len())?;
+        for index in 0..self.points.len() {
+            try_push_vec(&mut patches, SourcePatch::Point(index))?;
+        }
+        Ok(patches)
+    }
+
     fn contains_area(&self, point: &ExactPoint) -> Result<bool> {
         for face in &self.faces {
             let mut inside = false;
@@ -851,7 +983,96 @@ impl PreparedSupport {
         Ok(false)
     }
 
+    fn covers_support(&self, point: &ExactPoint) -> Result<bool> {
+        if self.contains_area(point)? {
+            return Ok(true);
+        }
+        if self.index.root.is_none() {
+            return Ok(false);
+        }
+        Ok(self.index.nearest(self, point)?.is_zero())
+    }
+
+    pub(in crate::geometry) fn candidate_is_contained(
+        &self,
+        boundary: &Self,
+        center: Point,
+        candidate: &[Point],
+        counter_clockwise: bool,
+    ) -> Result<bool> {
+        let center = ExactPoint::from_xy(center.xy())?;
+        if !self.contains_area(&center)? {
+            return Ok(false);
+        }
+        for &point in candidate {
+            let point = ExactPoint::from_xy(point.xy())?;
+            if !self.covers_support(&point)? {
+                return Ok(false);
+            }
+        }
+        // The selected boundary spans include retained hole cycles. Testing
+        // the whole segment, rather than only its endpoints, rejects both an
+        // inward chord crossing and a hole wholly enclosed by the candidate.
+        for span in &boundary.spans {
+            let start = span_point(span, &span.t_lo)?;
+            let end = span_point(span, &span.t_hi)?;
+            if exact_segment_enters_candidate(&start, &end, candidate, counter_clockwise)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn has_positive_area(&self) -> Result<bool> {
+        for face in &self.faces {
+            for cycle in face {
+                if cycle.len() < 3 {
+                    continue;
+                }
+                let mut area = Rational::zero();
+                for index in 0..cycle.len() {
+                    let left = &cycle[index];
+                    let right = &cycle[(index + 1) % cycle.len()];
+                    let cross = left
+                        .x
+                        .try_product(&right.y)?
+                        .try_subtract(&left.y.try_product(&right.x)?)?;
+                    area = area.try_add(&cross)?;
+                }
+                if !area.is_zero() {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn first_boundary_point(&self) -> Result<Option<ExactPoint>> {
+        if let Some(span) = self.spans.first() {
+            return Ok(Some(span.start.try_clone()?));
+        }
+        if let Some(point) = self.points.first() {
+            return Ok(Some(point.try_clone()?));
+        }
+        Ok(self
+            .boundary_edges
+            .first()
+            .map(|edge| edge.start.try_clone())
+            .transpose()?)
+    }
+
     fn source_box_witness(&self, bounds: FloatBox) -> Result<Option<ExactPoint>> {
+        let min_x = Rational::from_f64(bounds.min_x)?;
+        let max_x = Rational::from_f64(bounds.max_x)?;
+        let min_y = Rational::from_f64(bounds.min_y)?;
+        let max_y = Rational::from_f64(bounds.max_y)?;
+        let center = ExactPoint {
+            x: min_x.try_midpoint(&max_x)?,
+            y: min_y.try_midpoint(&max_y)?,
+        };
+        if self.contains_area(&center)? {
+            return Ok(Some(center));
+        }
         for (x, y) in bounds.corners() {
             let point = exact_point_xy(x, y)?;
             if self.contains_area(&point)? {
@@ -895,6 +1116,19 @@ impl PreparedSupport {
         };
 
         result
+    }
+}
+
+impl SupportSpan {
+    fn try_clone(&self) -> Result<Self> {
+        Ok(Self {
+            source: self.source,
+            carrier: self.carrier.try_clone()?,
+            t_lo: self.t_lo.try_clone()?,
+            t_hi: self.t_hi.try_clone()?,
+            start: self.start.try_clone()?,
+            bounds: self.bounds,
+        })
     }
 }
 
@@ -1355,6 +1589,78 @@ fn point_in_box(point: &ExactPoint, bounds: FloatBox) -> Result<bool> {
         && point.y.try_cmp(&max_y)? != Ordering::Greater)
 }
 
+fn exact_segment_enters_candidate(
+    start: &ExactPoint,
+    end: &ExactPoint,
+    candidate: &[Point],
+    counter_clockwise: bool,
+) -> Result<bool> {
+    let zero = Rational::zero();
+    let one = Rational::one();
+    let mut lower = zero.try_clone()?;
+    let mut upper = one.try_clone()?;
+    let mut lower_closed = true;
+    let mut upper_closed = true;
+    let source_x = end.x.try_subtract(&start.x)?;
+    let source_y = end.y.try_subtract(&start.y)?;
+
+    for index in 0..candidate.len() {
+        let left = candidate[index];
+        let right = candidate[(index + 1) % candidate.len()];
+        let edge_x = Rational::from_f64(right.x)?.try_subtract(&Rational::from_f64(left.x)?)?;
+        let edge_y = Rational::from_f64(right.y)?.try_subtract(&Rational::from_f64(left.y)?)?;
+        let start_x = start.x.try_subtract(&Rational::from_f64(left.x)?)?;
+        let start_y = start.y.try_subtract(&Rational::from_f64(left.y)?)?;
+        let mut c0 = edge_x
+            .try_product(&start_y)?
+            .try_subtract(&edge_y.try_product(&start_x)?)?;
+        let mut c1 = edge_x
+            .try_product(&source_y)?
+            .try_subtract(&edge_y.try_product(&source_x)?)?;
+        if !counter_clockwise {
+            c0 = zero.try_subtract(&c0)?;
+            c1 = zero.try_subtract(&c1)?;
+        }
+
+        match c1.sign() {
+            ExactSign::Zero => {
+                if c0.sign() != ExactSign::Positive {
+                    return Ok(false);
+                }
+            },
+            ExactSign::Positive => {
+                let bound = zero.try_subtract(&c0)?.try_quotient(&c1)?;
+                match bound.try_cmp(&lower)? {
+                    Ordering::Greater => {
+                        lower = bound;
+                        lower_closed = false;
+                    },
+                    Ordering::Equal => lower_closed = false,
+                    Ordering::Less => {},
+                }
+            },
+            ExactSign::Negative => {
+                let bound = c0.try_quotient(&zero.try_subtract(&c1)?)?;
+                match bound.try_cmp(&upper)? {
+                    Ordering::Less => {
+                        upper = bound;
+                        upper_closed = false;
+                    },
+                    Ordering::Equal => upper_closed = false,
+                    Ordering::Greater => {},
+                }
+            },
+        }
+        let order = lower.try_cmp(&upper)?;
+        if order == Ordering::Greater
+            || (order == Ordering::Equal && !(lower_closed && upper_closed))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 #[derive(Debug)]
 enum SourcePatch {
     Span {
@@ -1363,6 +1669,7 @@ enum SourcePatch {
         hi: Rational,
     },
     Box(FloatBox),
+    Point(usize),
 }
 
 impl SourcePatch {
@@ -1373,6 +1680,7 @@ impl SourcePatch {
                 Ok(Some(span_point(&source.spans[*span], &midpoint)?))
             },
             Self::Box(bounds) => source.source_box_witness(*bounds),
+            Self::Point(point) => Ok(Some(source.points[*point].try_clone()?)),
         }
     }
 
@@ -1403,6 +1711,7 @@ impl SourcePatch {
                 let radius = (&(&half_x).try_square()?).try_add(&(&half_y).try_square()?)?;
                 Ok((center, radius))
             },
+            Self::Point(point) => Ok((source.points[*point].try_clone()?, Rational::zero())),
         }
     }
 
@@ -1423,6 +1732,7 @@ impl SourcePatch {
             Self::Box(bounds) => {
                 Ok(point_in_box(witness, *bounds)? && source.contains_area(witness)?)
             },
+            Self::Point(point) => source.points[*point].same_position(witness),
         }
     }
 
@@ -1439,6 +1749,10 @@ impl SourcePatch {
                 for (x, y) in bounds.corners() {
                     try_push_vec(&mut corners, exact_point_xy(x, y)?)?;
                 }
+            },
+            Self::Point(point) => {
+                try_reserve_vec(&mut corners, 1)?;
+                try_push_vec(&mut corners, source.points[*point].try_clone()?)?;
             },
         }
         Ok(corners)
@@ -1500,6 +1814,7 @@ impl SourcePatch {
                 }
                 Ok(Some(children))
             },
+            Self::Point(_) => Ok(None),
         }
     }
 }
@@ -1849,12 +2164,13 @@ struct PatchRecord {
 #[derive(Debug)]
 struct QueueEntry {
     key: f64,
+    order: usize,
     record: PatchRecord,
 }
 
 impl PartialEq for QueueEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.key.to_bits() == other.key.to_bits()
+        self.key.to_bits() == other.key.to_bits() && self.order == other.order
     }
 }
 
@@ -1868,19 +2184,25 @@ impl PartialOrd for QueueEntry {
 
 impl Ord for QueueEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.key.total_cmp(&other.key)
+        self.key
+            .total_cmp(&other.key)
+            // Earlier extraction order wins an exact queue-key tie. This is
+            // part of the directed result's deterministic witness contract.
+            .then_with(|| other.order.cmp(&self.order))
     }
 }
 
 #[derive(Debug)]
 struct PatchQueue {
     heap: BinaryHeap<QueueEntry>,
+    next_order: usize,
 }
 
 impl PatchQueue {
     fn new() -> Self {
         Self {
             heap: BinaryHeap::new(),
+            next_order: 0,
         }
     }
 
@@ -1889,7 +2211,12 @@ impl PatchQueue {
             Some(value) => nonnegative_upper_bound(value)?,
             None => f64::INFINITY,
         };
-        crate::try_push_heap(&mut self.heap, QueueEntry { key, record })?;
+        let order = self.next_order;
+        self.next_order = self
+            .next_order
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        crate::try_push_heap(&mut self.heap, QueueEntry { key, order, record })?;
 
         Ok(())
     }
@@ -1918,6 +2245,11 @@ struct SearchContext<'a> {
     accuracy: &'a Accuracy,
     budget: ExpansionBudget,
     lower_squared: Option<Rational>,
+    lower_witness: Option<ExactPoint>,
+    exact_upper: bool,
+    require_positive_witness: bool,
+    output_scale: Rational,
+    output_tolerance: Rational,
 }
 
 impl<'a> SearchContext<'a> {
@@ -1926,6 +2258,28 @@ impl<'a> SearchContext<'a> {
             accuracy,
             budget: ExpansionBudget::new("hausdorff_distance", "max_error"),
             lower_squared: None,
+            lower_witness: None,
+            exact_upper: false,
+            require_positive_witness: false,
+            output_scale: Rational::one(),
+            output_tolerance: Rational::zero(),
+        }
+    }
+
+    fn new_directed(
+        accuracy: &'a Accuracy,
+        output_scale: Rational,
+        output_tolerance: Rational,
+    ) -> Self {
+        Self {
+            accuracy,
+            budget: ExpansionBudget::new("maximum_inscribed_circle", "tolerance"),
+            lower_squared: None,
+            lower_witness: None,
+            exact_upper: true,
+            require_positive_witness: false,
+            output_scale,
+            output_tolerance,
         }
     }
 
@@ -1940,12 +2294,32 @@ impl<'a> SearchContext<'a> {
         Ok(())
     }
 
+    fn update_lower_with_witness(&mut self, squared: Rational, witness: &ExactPoint) -> Result<()> {
+        let replace = match &self.lower_squared {
+            None => true,
+            Some(current) => squared.try_cmp(current)? == Ordering::Greater,
+        };
+        if replace {
+            // Clone before publishing either field: an allocation failure
+            // cannot leave a clearance paired with a different witness.
+            let witness = witness.try_clone()?;
+            self.lower_squared = Some(squared);
+            self.lower_witness = Some(witness);
+        }
+        // Equal exact clearances intentionally retain the first witness
+        // visited. Patch queue insertion order is monotonic and tie-stable.
+        Ok(())
+    }
+
     fn scaled_squared(&self, squared: &Rational) -> Result<Rational> {
         squared.try_product(&self.accuracy.scale_squared)
     }
 }
 
 fn sqrt_upper(squared: &Rational, context: &mut SearchContext<'_>) -> Result<SqrtInterval> {
+    if context.exact_upper {
+        return SqrtInterval::from_squared_with_error(squared, None);
+    }
     let mut interval = match &context.accuracy.error {
         ErrorBound::Absolute(error) => SqrtInterval::from_squared_with_error(squared, Some(error))?,
         ErrorBound::Relative(relative) => {
@@ -2043,6 +2417,25 @@ fn signs_between_parallel_lines(first: &[Rational], second: &[Rational]) -> bool
     (first_positive && second_negative) || (first_negative && second_positive)
 }
 
+fn add_parallel_probe(
+    point: &ExactPoint,
+    left: &SupportSpan,
+    right: &SupportSpan,
+    separation: &Rational,
+    left_values: &mut Vec<Rational>,
+    right_values: &mut Vec<Rational>,
+    valid: &mut bool,
+) -> Result<()> {
+    if !projection_is_in_span(point, left)? || !projection_is_in_span(point, right)? {
+        *valid = false;
+        return Ok(());
+    }
+    let left_value = carrier_line_value(left, point)?;
+    try_push_vec(right_values, left_value.try_subtract(separation)?)?;
+    try_push_vec(left_values, left_value)?;
+    Ok(())
+}
+
 fn parallel_strip_upper(
     patch: &SourcePatch,
     source: &PreparedSupport,
@@ -2061,6 +2454,20 @@ fn parallel_strip_upper(
         return Ok(None);
     }
     let corners = patch.corners(source)?;
+    let area_probe = matches!(patch, SourcePatch::Box(_)) && !source.faces.is_empty();
+    let probe_count = if area_probe {
+        source
+            .faces
+            .iter()
+            .flat_map(|face| face.iter().map(Vec::len))
+            .try_fold(0usize, |count, length| {
+                count
+                    .checked_add(length)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)
+            })?
+    } else {
+        corners.len()
+    };
     let mut best = None;
     for (left_offset, &left_index) in span_indices.iter().enumerate() {
         for &right_index in &span_indices[(left_offset + 1)..] {
@@ -2072,17 +2479,49 @@ fn parallel_strip_upper(
             let separation = carrier_line_value(left, &right.start)?;
             let mut left_values = Vec::new();
             let mut right_values = Vec::new();
-            try_reserve_vec(&mut left_values, corners.len())?;
-            try_reserve_vec(&mut right_values, corners.len())?;
+            try_reserve_vec(&mut left_values, probe_count)?;
+            try_reserve_vec(&mut right_values, probe_count)?;
             let mut valid = true;
-            for corner in &corners {
-                if !projection_is_in_span(corner, left)? || !projection_is_in_span(corner, right)? {
-                    valid = false;
-                    break;
+            if area_probe {
+                for face in &source.faces {
+                    for cycle in face {
+                        for point in cycle {
+                            add_parallel_probe(
+                                point,
+                                left,
+                                right,
+                                &separation,
+                                &mut left_values,
+                                &mut right_values,
+                                &mut valid,
+                            )?;
+                            if !valid {
+                                break;
+                            }
+                        }
+                        if !valid {
+                            break;
+                        }
+                    }
+                    if !valid {
+                        break;
+                    }
                 }
-                let left_value = carrier_line_value(left, corner)?;
-                try_push_vec(&mut right_values, (&left_value).try_subtract(&separation)?)?;
-                try_push_vec(&mut left_values, left_value)?;
+            } else {
+                for point in &corners {
+                    add_parallel_probe(
+                        point,
+                        left,
+                        right,
+                        &separation,
+                        &mut left_values,
+                        &mut right_values,
+                        &mut valid,
+                    )?;
+                    if !valid {
+                        break;
+                    }
+                }
             }
             if !valid || !signs_between_parallel_lines(&left_values, &right_values) {
                 continue;
@@ -2160,7 +2599,17 @@ fn build_patch(
 
     let witness_squared = target.distance_squared(&witness)?;
     let witness_squared = context.scaled_squared(&witness_squared)?;
-    context.update_lower(witness_squared)?;
+    // Boundary patches are useful for the global enclosure, but they cannot
+    // become a zero-clearance winner while a filled source has positive area.
+    let update_witness =
+        !(context.exact_upper && context.require_positive_witness && witness_squared.is_zero());
+    if update_witness {
+        if context.exact_upper {
+            context.update_lower_with_witness(witness_squared, &witness)?;
+        } else {
+            context.update_lower(witness_squared)?;
+        }
+    }
     let upper = patch_upper(&patch, source, target, context)?;
     if let Some(upper_value) = &upper
         && upper_is_below_lower(upper_value, context)?
@@ -2270,6 +2719,253 @@ fn run_direction(
             }
         }
     }
+}
+
+/// The rounded center and exact boundary clearance selected by one directed
+/// continuous-distance search. Test builds additionally retain the exact
+/// witness and enclosure inputs used to prove the rounded result.
+#[derive(Debug)]
+struct DirectedCandidate {
+    center: Point,
+    center_squared: Rational,
+    #[cfg(test)]
+    proof: DirectedCandidateProof,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct DirectedCandidateProof {
+    witness: ExactPoint,
+    witness_squared: Rational,
+    certified_squared: Rational,
+    upper: Rational,
+}
+
+#[derive(Debug)]
+pub(crate) struct DirectedOptimizationResult {
+    pub(in crate::geometry) center: Point,
+    pub(in crate::geometry) center_squared: Rational,
+    // The directed search owns both prepared views so the rounded-center
+    // recomputation and certified polygon emission cannot rebuild a different
+    // partition or boundary.
+    source: PreparedSupport,
+    boundary: PreparedSupport,
+}
+
+impl DirectedOptimizationResult {
+    pub(in crate::geometry) const fn center(&self) -> Point {
+        self.center
+    }
+
+    pub(in crate::geometry) fn source_support(&self) -> &PreparedSupport {
+        &self.source
+    }
+
+    pub(in crate::geometry) fn boundary_support(&self) -> &PreparedSupport {
+        &self.boundary
+    }
+
+    pub(in crate::geometry) fn radius_in_scale(&self, scale: f64) -> Result<f64> {
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "maximum_inscribed_circle scale must be positive and finite",
+            ));
+        }
+        let scale = Rational::from_f64(scale)?;
+        let squared = self
+            .center_squared
+            .try_product(&scale)?
+            .try_product(&scale)?;
+        downward_sqrt(&squared)
+    }
+}
+
+fn downward_sqrt(squared: &Rational) -> Result<f64> {
+    let interval = SqrtInterval::from_squared_with_error(squared, None)?;
+    Rational::from_dyadic(interval.lower)?.round()
+}
+
+fn movement_lower_squared(
+    witness_squared: &Rational,
+    movement_squared: &Rational,
+) -> Result<Rational> {
+    let witness_interval = SqrtInterval::from_squared_with_error(witness_squared, None)?;
+    let movement_interval = SqrtInterval::from_squared_with_error(movement_squared, None)?;
+    let witness_lower = Rational::from_dyadic(witness_interval.lower)?;
+    let Some(movement_upper) = movement_interval.upper_rational()? else {
+        return Ok(Rational::zero());
+    };
+    if witness_lower.try_cmp(&movement_upper)? != Ordering::Greater {
+        return Ok(Rational::zero());
+    }
+    let clearance = witness_lower.try_subtract(&movement_upper)?;
+    clearance.try_square()
+}
+
+fn exact_point_distance_squared(left: &ExactPoint, right: &ExactPoint) -> Result<Rational> {
+    let dx = left.x.try_subtract(&right.x)?;
+    let dy = left.y.try_subtract(&right.y)?;
+    dx.try_square()?.try_add(&dy.try_square()?)
+}
+
+fn directed_candidate(
+    source: &PreparedSupport,
+    target: &PreparedSupport,
+    upper: &Rational,
+    context: &mut SearchContext<'_>,
+) -> Result<Option<DirectedCandidate>> {
+    let (Some(witness), Some(witness_squared)) = (
+        context.lower_witness.as_ref(),
+        context.lower_squared.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+
+    let center_exact = if witness_squared.is_zero() {
+        match source.first_boundary_point()? {
+            Some(point) => point,
+            None => witness.try_clone()?,
+        }
+    } else {
+        ExactPoint {
+            x: Rational::from_f64(witness.x.round()?)?,
+            y: Rational::from_f64(witness.y.round()?)?,
+        }
+    };
+    let center = Point::new_raw_xy(center_exact.x.round()?, center_exact.y.round()?);
+    if !center.x.is_finite() || !center.y.is_finite() {
+        return Ok(None);
+    }
+    let center_exact = ExactPoint::from_xy(center.xy())?;
+    let center_squared = target.distance_squared(&center_exact)?;
+    let center_is_valid = if center_squared.is_zero() {
+        source.covers_support(&center_exact)?
+    } else {
+        source.contains_area(&center_exact)?
+    };
+    if !center_is_valid {
+        return Ok(None);
+    }
+
+    let movement_squared = exact_point_distance_squared(witness, &center_exact)?;
+    let movement_lower = movement_lower_squared(witness_squared, &movement_squared)?;
+    let mut certified_squared = center_squared.try_clone()?;
+    if movement_lower.try_cmp(&certified_squared)? == Ordering::Less {
+        certified_squared = movement_lower;
+    }
+    let scale_squared = context.output_scale.try_square()?;
+    let certified_scaled_squared = certified_squared.try_product(&scale_squared)?;
+    let center_scaled_squared = center_squared.try_product(&scale_squared)?;
+    let certified_radius = downward_sqrt(&certified_scaled_squared)?;
+    let output_radius = downward_sqrt(&center_scaled_squared)?;
+    if !(certified_radius.is_finite() && output_radius.is_finite()) {
+        return Ok(None);
+    }
+    let upper_scaled = upper.try_product(&context.output_scale)?;
+    let certified_radius = Rational::from_f64(certified_radius)?;
+    if upper_scaled.try_cmp(&certified_radius)? == Ordering::Less {
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "directed inradius upper enclosure fell below its emitted clearance",
+        )
+        .into());
+    }
+    let gap = upper_scaled.try_subtract(&certified_radius)?;
+    if gap.try_cmp(&context.output_tolerance)? == Ordering::Greater {
+        return Ok(None);
+    }
+
+    #[cfg(test)]
+    let proof = DirectedCandidateProof {
+        witness: witness.try_clone()?,
+        witness_squared: witness_squared.try_clone()?,
+        certified_squared,
+        upper: upper.try_clone()?,
+    };
+    Ok(Some(DirectedCandidate {
+        center,
+        center_squared,
+        #[cfg(test)]
+        proof,
+    }))
+}
+
+fn run_directed(
+    source: &PreparedSupport,
+    target: &PreparedSupport,
+    context: &mut SearchContext<'_>,
+) -> Result<DirectedCandidate> {
+    context.require_positive_witness = source.has_positive_area()?;
+    let mut queue = PatchQueue::new();
+    for patch in source.inradius_initial_patches()? {
+        if let Some(record) = build_patch(patch, source, target, context)? {
+            queue.push(record)?;
+        }
+    }
+
+    loop {
+        let upper = queue_upper(&queue, context)?;
+        if let Some(upper) = upper.as_ref()
+            && let Some(result) = directed_candidate(source, target, upper, context)?
+        {
+            return Ok(result);
+        }
+        if queue.is_empty() {
+            return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+                "maximum_inscribed_circle",
+            ));
+        }
+        let record = queue.pop().expect("nonempty patch queue");
+        if let Some(upper) = &record.upper
+            && upper_is_below_lower(upper, context)?
+        {
+            continue;
+        }
+        let Some(children) = record.patch.split(&mut context.budget)? else {
+            return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+                "maximum_inscribed_circle",
+            ));
+        };
+        for patch in children {
+            if let Some(child) = build_patch(patch, source, target, context)? {
+                queue.push(child)?;
+            }
+        }
+    }
+}
+
+/// Search the filled source support against its exact boundary support. The
+/// returned upper bound is not widened by the public tolerance; the caller
+/// compares it with the radius at the one rounded witness center.
+pub(crate) fn directed_inradius_scaled(
+    shape: &Shape,
+    tolerance: f64,
+    output_scale: f64,
+) -> Result<DirectedOptimizationResult> {
+    if !(tolerance.is_finite() && tolerance > 0.0) {
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "maximum inscribed circle tolerance must be positive and finite",
+        )
+        .into());
+    }
+    if !(output_scale.is_finite() && output_scale > 0.0) {
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "maximum inscribed circle scale must be positive and finite",
+        )
+        .into());
+    }
+    let accuracy = Accuracy::new(Some(1.0), 1.0)?;
+    let output_scale = Rational::from_f64(output_scale)?;
+    let output_tolerance = Rational::from_f64(tolerance)?;
+    let mut context = SearchContext::new_directed(&accuracy, output_scale, output_tolerance);
+    let source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget)?;
+    let target = source.boundary_clone()?;
+    let candidate = run_directed(&source, &target, &mut context)?;
+    Ok(DirectedOptimizationResult {
+        center: candidate.center,
+        center_squared: candidate.center_squared,
+        source,
+        boundary: target,
+    })
 }
 
 pub(crate) fn distance(
@@ -2413,7 +3109,7 @@ pub(crate) fn line_columns_batch(
 }
 
 #[derive(Debug)]
-struct ExactPoint {
+pub(in crate::geometry) struct ExactPoint {
     x: Rational,
     y: Rational,
 }
@@ -2469,6 +3165,18 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn directed_candidate_for(shape: &Shape, tolerance: f64, scale: f64) -> DirectedCandidate {
+        let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
+        let mut context = SearchContext::new_directed(
+            &accuracy,
+            Rational::from_f64(scale).unwrap(),
+            Rational::from_f64(tolerance).unwrap(),
+        );
+        let source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget).unwrap();
+        let boundary = source.boundary_clone().unwrap();
+        run_directed(&source, &boundary, &mut context).unwrap()
     }
 
     fn test_span(source: Segment) -> SupportSpan {
@@ -2533,6 +3241,52 @@ mod tests {
             .expect("dyadic midpoint")
             .try_square()
             .expect("squared midpoint")
+    }
+
+    #[test]
+    fn ordinary_hausdorff_keeps_external_line_support_with_filled_area() {
+        let area = polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]);
+        let external = line(&[(10.0, 0.0), (12.0, 0.0)]);
+        let mixed = Shape::geometry_collection(vec![area, external]).unwrap();
+        let target = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        assert!((distance(&mixed, &target, Some(1e-9), 1.0).unwrap() - 12.0).abs() <= 1e-9);
+
+        let mut budget = ExpansionBudget::new("hausdorff", "support");
+        let prepared = PreparedSupport::from_shape(&mixed, &mut budget).unwrap();
+        assert!(prepared.initial_patches().unwrap().iter().any(|patch| {
+            matches!(
+                patch,
+                SourcePatch::Span { span, .. }
+                    if prepared.spans[*span].source.start == XY::new(10.0, 0.0)
+                        && prepared.spans[*span].source.end == XY::new(12.0, 0.0)
+            )
+        }));
+    }
+
+    #[test]
+    fn misaligned_metric_boundary_incidence_is_rejected_before_consumption() {
+        for support in [
+            ExactMetricSupport {
+                spans: Vec::new(),
+                points: Vec::new(),
+                faces: Vec::new(),
+                boundary_spans: Some(vec![true]),
+                boundary_points: None,
+            },
+            ExactMetricSupport {
+                spans: Vec::new(),
+                points: Vec::new(),
+                faces: Vec::new(),
+                boundary_spans: None,
+                boundary_points: Some(vec![true]),
+            },
+        ] {
+            let error = PreparedSupport::from_metric_support(support).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))
+            ));
+        }
     }
 
     fn assert_sqrt_certificate(name: &str, squared: &Rational) -> SqrtInterval {
@@ -3248,6 +4002,324 @@ mod tests {
         let filled =
             Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), Vec::new()).unwrap());
         assert!((distance(&filled, &target, Some(1e-6), 1.0).unwrap() - 1.0).abs() <= 1e-6);
+    }
+
+    #[test]
+    fn directed_inradius_retains_the_rounded_center_and_global_enclosure() {
+        let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let result = directed_candidate_for(&shape, 1e-6, 1.0);
+        assert_eq!(result.proof.witness_squared.round().unwrap(), 4.0);
+        assert_eq!((result.center.x, result.center.y), (2.0, 2.0));
+        assert_eq!(result.center_squared.round().unwrap(), 4.0);
+        assert_eq!(result.proof.certified_squared.round().unwrap(), 4.0);
+        assert_ne!(
+            result
+                .proof
+                .upper
+                .try_cmp(&Rational::from_f64(2.0 + 1e-6).unwrap())
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            (
+                result.proof.witness.x.round().unwrap(),
+                result.proof.witness.y.round().unwrap()
+            ),
+            (2.0, 2.0)
+        );
+    }
+
+    #[test]
+    fn directed_inradius_uses_a_stable_center_on_a_parallel_plateau() {
+        let shape = polygon(&[(0.0, 0.0), (8.0, 0.0), (8.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let first = directed_candidate_for(&shape, 1e-9, 1.0);
+        let second = directed_candidate_for(&shape, 1e-9, 1.0);
+        assert_eq!(
+            (first.center.x.to_bits(), first.center.y.to_bits()),
+            (second.center.x.to_bits(), second.center.y.to_bits())
+        );
+        assert_eq!(
+            (
+                first.proof.witness.x.round().unwrap(),
+                first.proof.witness.y.round().unwrap()
+            ),
+            (
+                second.proof.witness.x.round().unwrap(),
+                second.proof.witness.y.round().unwrap()
+            )
+        );
+        assert_eq!(first.center.x, 4.0);
+        assert_eq!(first.center.y, 2.0);
+        assert_eq!(
+            first
+                .proof
+                .upper
+                .try_cmp(&Rational::from_f64(2.0 + 1e-9).unwrap())
+                .unwrap(),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn directed_inradius_selects_the_first_equal_multipart_winner() {
+        let shape = crate::io::parse_wkt(
+            "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),\
+                           ((10 0,14 0,14 4,10 4,10 0)))",
+        )
+        .unwrap();
+        let result = directed_candidate_for(&shape, 1e-9, 1.0);
+        assert!(result.center.x < 4.0 && result.center.y > 0.0 && result.center.y < 4.0);
+        assert_eq!(
+            result
+                .proof
+                .upper
+                .try_cmp(&Rational::from_f64(2.0 + 1e-9).unwrap())
+                .unwrap(),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn directed_inradius_accounts_for_rounding_an_exact_witness_center() {
+        let shape = polygon(&[
+            (1.0, 0.0),
+            (2.0_f64.powi(60), 0.0),
+            (2.0_f64.powi(60), 4.0),
+            (1.0, 4.0),
+            (1.0, 0.0),
+        ]);
+        let result = directed_candidate_for(&shape, 1.0, 1.0);
+        let rounded = ExactPoint::from_xy(result.center.xy()).unwrap();
+        assert!(
+            result.proof.witness.x.try_cmp(&rounded.x).unwrap() != Ordering::Equal
+                || result.proof.witness.y.try_cmp(&rounded.y).unwrap() != Ordering::Equal
+        );
+        assert_eq!(
+            result
+                .proof
+                .certified_squared
+                .try_cmp(&result.center_squared)
+                .unwrap(),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn directed_inradius_checks_the_final_output_scale_before_stopping() {
+        let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let scale_value = 0.1;
+        let tolerance = 1e-12;
+        let result = directed_candidate_for(&shape, tolerance, scale_value);
+        let scale = Rational::from_f64(scale_value).unwrap();
+        let radius = downward_sqrt(
+            &result
+                .center_squared
+                .try_product(&scale.try_square().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let upper = result.proof.upper.try_product(&scale).unwrap();
+        let gap = upper
+            .try_subtract(&Rational::from_f64(radius).unwrap())
+            .unwrap();
+        assert_ne!(
+            gap.try_cmp(&Rational::from_f64(tolerance).unwrap())
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert!(radius <= 0.2);
+    }
+
+    #[test]
+    fn boundary_clone_keeps_filled_source_separate_from_boundary_target() {
+        let ring = |points: &[XY]| {
+            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap())
+        };
+        let shape = Shape::Polygon(
+            crate::geometry::Polygon::new(
+                ring(&[
+                    XY::new(0.0, 0.0),
+                    XY::new(4.0, 0.0),
+                    XY::new(4.0, 4.0),
+                    XY::new(0.0, 4.0),
+                    XY::new(0.0, 0.0),
+                ]),
+                vec![ring(&[
+                    XY::new(1.0, 1.0),
+                    XY::new(3.0, 1.0),
+                    XY::new(3.0, 3.0),
+                    XY::new(1.0, 3.0),
+                    XY::new(1.0, 1.0),
+                ])],
+            )
+            .unwrap(),
+        );
+        let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
+        let mut context = SearchContext::new(&accuracy);
+        let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
+        let target = source.boundary_clone().unwrap();
+        let center = exact_point_xy(0.5, 0.5).unwrap();
+        assert!(!source.faces.is_empty());
+        assert!(target.faces.is_empty());
+        assert!(source.distance_squared(&center).unwrap().is_zero());
+        assert_eq!(
+            target.distance_squared(&center).unwrap().round().unwrap(),
+            0.25
+        );
+    }
+
+    #[test]
+    fn selected_source_candidate_proof_checks_vertices_chords_and_hole_cycles() {
+        let ring = |points: &[XY]| {
+            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap())
+        };
+        let shape = Shape::Polygon(
+            crate::geometry::Polygon::new(
+                ring(&[
+                    XY::new(-100.0, -100.0),
+                    XY::new(100.0, -100.0),
+                    XY::new(100.0, 100.0),
+                    XY::new(-100.0, 100.0),
+                    XY::new(-100.0, -100.0),
+                ]),
+                vec![ring(&[
+                    XY::new(-2.0, 8.0),
+                    XY::new(2.0, 8.0),
+                    XY::new(2.0, 10.0),
+                    XY::new(-2.0, 10.0),
+                    XY::new(-2.0, 8.0),
+                ])],
+            )
+            .unwrap(),
+        );
+        let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
+        let mut context = SearchContext::new(&accuracy);
+        let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
+        let boundary = source.boundary_clone().unwrap();
+        let valid = [
+            Point::new_raw_xy(3.0, 2.0),
+            Point::new_raw_xy(2.0, 3.0),
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(2.0, 1.0),
+        ];
+        assert!(
+            source
+                .candidate_is_contained(&boundary, Point::new_raw_xy(2.0, 2.0), &valid, true)
+                .unwrap()
+        );
+        let hole_enclosing = [
+            Point::new_raw_xy(12.0, 0.0),
+            Point::new_raw_xy(0.0, 12.0),
+            Point::new_raw_xy(-12.0, 0.0),
+            Point::new_raw_xy(0.0, -12.0),
+        ];
+        assert!(
+            !source
+                .candidate_is_contained(
+                    &boundary,
+                    Point::new_raw_xy(0.0, 0.0),
+                    &hole_enclosing,
+                    true,
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn boundary_target_cancels_shared_edges_of_filled_multipart_support() {
+        let shape = crate::io::parse_wkt(
+            "MULTIPOLYGON (((0 0,10 0,10 10,0 10,0 0),\
+                            (20 20,22 20,22 22,20 22,20 20)),\
+                           ((15 15,30 15,30 30,15 30,15 15)))",
+        )
+        .unwrap();
+        let mut budget = ExpansionBudget::new("test", "support");
+        let source = PreparedSupport::from_shape_with_boundary(&shape, &mut budget).unwrap();
+        let target = source.boundary_clone().unwrap();
+        assert_eq!(target.spans.len(), 8);
+        let result = directed_inradius_scaled(&shape, 1e-9, 1.0).unwrap();
+        assert_eq!((result.center.x, result.center.y), (22.5, 22.5));
+        assert_eq!(downward_sqrt(&result.center_squared).unwrap(), 7.5);
+        let center = ExactPoint::from_xy(result.center.xy()).unwrap();
+        assert_eq!(
+            result
+                .boundary
+                .distance_squared(&center)
+                .unwrap()
+                .try_cmp(&result.center_squared)
+                .unwrap(),
+            Ordering::Equal
+        );
+        assert!(result.source.contains_area(&center).unwrap());
+    }
+
+    #[test]
+    fn directed_inradius_ignores_collapsed_support_inside_positive_area() {
+        let outer = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let line = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_xy(&[XY::new(1.0, 1.0), XY::new(3.0, 1.0), XY::new(1.0, 1.0)])
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
+        let shape = Shape::geometry_collection(vec![
+            outer,
+            line,
+            Shape::Point(Point::new_raw_xy(2.0, 2.0)),
+        ])
+        .unwrap();
+        let result = directed_inradius_scaled(&shape, 1e-9, 1.0).unwrap();
+        assert_eq!(downward_sqrt(&result.center_squared).unwrap(), 2.0);
+        assert!(
+            result
+                .source
+                .contains_area(&ExactPoint::from_xy(result.center.xy()).unwrap())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn directed_inradius_propagates_allocation_failure_before_publication() {
+        let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let (result, allocations) =
+            crate::test_support::allocation_count(|| directed_inradius_scaled(&shape, 1e-6, 1.0));
+        result.unwrap();
+        assert!(allocations > 0);
+        for allowed in 0..allocations.min(16) {
+            let error = crate::test_support::fail_allocations_after(allowed, || {
+                directed_inradius_scaled(&shape, 1e-6, 1.0)
+            })
+            .expect_err("a rejected directed-search allocation must not publish a result");
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+            ));
+        }
+    }
+
+    #[test]
+    fn directed_inradius_propagates_the_subdivision_budget() {
+        let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]);
+        let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
+        let mut context = SearchContext::new_directed(&accuracy, Rational::one(), Rational::one());
+        let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
+        let target = source.boundary_clone().unwrap();
+        context
+            .budget
+            .add(crate::geometry::generated_budget::GENERATED_ITEM_LIMIT)
+            .unwrap();
+        let error = run_directed(&source, &target, &mut context).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge {
+                    operation: "maximum_inscribed_circle",
+                    parameter: "tolerance",
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]

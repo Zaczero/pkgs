@@ -9,12 +9,12 @@ use std::num::NonZeroU32;
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact::{
-    self, ExactDyadic, round_sqrt_ratio, try_compare_ratios,
+    self, ExactDyadic, ExactRational as Rational, try_compare_ratios,
 };
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
-    ExpansionBudget, FacetBvh, Orientation, Point, Polygon, PolylabelCell, PreparedLinework, Ring,
-    Segment, Shape, XY, orientation,
+    ExpansionBudget, FacetBvh, Orientation, Point, Polygon, PolylabelCell, PreparedLinework,
+    PreparedSupport, Ring, Segment, Shape, XY, orientation,
 };
 impl Eq for PolylabelCell {}
 
@@ -878,6 +878,19 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
     Ok(center)
 }
 
+/// The omitted search tolerance used by both polylabel and the certified
+/// maximum-inscribed-circle owner. The frame is only used to form stable
+/// extent differences; the returned value is in the caller's Euclidean units.
+pub(crate) fn scale_aware_default_tolerance(shape: &Shape) -> Result<f64> {
+    let Some(bounds) = shape.bounds() else {
+        return Ok(f64::from_bits(1));
+    };
+    let Some(frame) = normalized_polylabel_frame(shape, bounds)? else {
+        return Ok(f64::from_bits(1));
+    };
+    Ok(frame.default_tolerance.max(f64::from_bits(1)))
+}
+
 type ExactRatio = (ExactDyadic, ExactDyadic);
 
 fn compare_exact_ratios(left: &ExactRatio, right: &ExactRatio) -> Result<Ordering> {
@@ -928,7 +941,7 @@ fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactRa
     ))
 }
 
-fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
+fn exact_boundary_distance_ratio(shape: &Shape, center: Point) -> Result<Option<ExactRatio>> {
     let mut best: Option<ExactRatio> = None;
     let mut error = None;
     shape.for_each_segment(|segment| {
@@ -958,11 +971,21 @@ fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
     if let Some(error) = error {
         return Err(error);
     }
-    best.map_or(Ok(0.0), |distance| {
-        round_sqrt_ratio(&distance.0, &distance.1)
-    })
+    Ok(best)
 }
 
+pub(crate) fn exact_boundary_squared(shape: &Shape, center: Point) -> Result<Rational> {
+    exact_boundary_distance_ratio(shape, center)?.map_or_else(
+        || Ok(Rational::zero()),
+        |(numerator, denominator)| Rational::new(numerator, denominator),
+    )
+}
+
+fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
+    exact_boundary_squared(shape, center).and_then(|distance| distance.round_sqrt())
+}
+
+#[cfg(test)]
 fn exact_cross(
     left_x: &ExactDyadic,
     left_y: &ExactDyadic,
@@ -974,6 +997,7 @@ fn exact_cross(
         .try_subtract(left_y.try_product(right_x)?)
 }
 
+#[cfg(test)]
 fn update_lower(lower: &mut ExactRatio, lower_closed: &mut bool, bound: ExactRatio) -> Result<()> {
     match compare_exact_ratios(&bound, lower)? {
         Ordering::Greater => {
@@ -986,6 +1010,7 @@ fn update_lower(lower: &mut ExactRatio, lower_closed: &mut bool, bound: ExactRat
     Ok(())
 }
 
+#[cfg(test)]
 fn update_upper(upper: &mut ExactRatio, upper_closed: &mut bool, bound: ExactRatio) -> Result<()> {
     match compare_exact_ratios(&bound, upper)? {
         Ordering::Less => {
@@ -998,6 +1023,7 @@ fn update_upper(upper: &mut ExactRatio, upper_closed: &mut bool, bound: ExactRat
     Ok(())
 }
 
+#[cfg(test)]
 fn interval_is_empty(
     lower: &ExactRatio,
     lower_closed: bool,
@@ -1015,6 +1041,7 @@ fn interval_is_empty(
 /// The candidate is convex, so each edge contributes one exact affine strict
 /// half-plane in the source segment parameter. The interval remains closed at
 /// the source endpoints; only candidate boundary contacts are strict.
+#[cfg(test)]
 fn segment_enters_candidate(
     segment: Segment,
     candidate: &[Point],
@@ -1090,6 +1117,18 @@ fn candidate_center_is_strictly_inside(
     })
 }
 
+#[cfg(test)]
+fn candidate_covers_point(candidate: &[Point], point: Point, counter_clockwise: bool) -> bool {
+    candidate.iter().enumerate().all(|(index, &start)| {
+        let end = candidate[(index + 1) % candidate.len()];
+        match (counter_clockwise, orientation(start, end, point)) {
+            (true, Orientation::Clockwise) | (false, Orientation::CounterClockwise) => false,
+            _ => true,
+        }
+    })
+}
+
+#[cfg(test)]
 fn source_boundary_enters_candidate(
     shape: &Shape,
     candidate: &[Point],
@@ -1113,6 +1152,41 @@ fn source_boundary_enters_candidate(
     Ok(enters)
 }
 
+/// A crossing scan alone cannot establish that a candidate has not enclosed a
+/// complete hole cycle. Convexity makes the explicit cycle test cheap: if all
+/// vertices of a hole are covered by the candidate, its filled interior is
+/// covered as well. Rejecting this case is conservative for degenerate input
+/// and closes the hole-without-crossing gap in the source certificate.
+#[cfg(test)]
+fn source_hole_is_enclosed(shape: &Shape, candidate: &[Point], counter_clockwise: bool) -> bool {
+    match shape {
+        Shape::Polygon(polygon) => polygon.rings().skip(1).any(|hole| {
+            hole.iter()
+                .all(|point| candidate_covers_point(candidate, point, counter_clockwise))
+        }),
+        Shape::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
+            polygon.rings().skip(1).any(|hole| {
+                hole.iter()
+                    .all(|point| candidate_covers_point(candidate, point, counter_clockwise))
+            })
+        }),
+        Shape::GeometryCollection(geometries) => geometries
+            .iter()
+            .any(|geometry| source_hole_is_enclosed(geometry, candidate, counter_clockwise)),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+fn source_vertex_outside_candidate(shape: &Shape, candidate: &[Point]) -> Result<bool> {
+    for &point in candidate {
+        if !shape.covers_point(point)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) fn polylabel_center_radius(
     shape: &Shape,
     tolerance: Option<f64>,
@@ -1122,8 +1196,9 @@ pub(crate) fn polylabel_center_radius(
 }
 
 pub(crate) fn emit_zero_radius_point(shape: &Shape, center: Point) -> Result<Shape> {
-    // A positive subnormal clearance may round to zero; closed membership, not
-    // the rounded radius, decides whether the emitted point belongs to source.
+    // A zero or subnormal clearance cannot support a stable fixed-resolution
+    // ring; closed membership, not the rounded radius, decides whether the
+    // emitted point belongs to source.
     if center.x.is_finite() && center.y.is_finite() && shape.covers_point(center)? {
         Ok(Shape::Point(center))
     } else {
@@ -1133,12 +1208,15 @@ pub(crate) fn emit_zero_radius_point(shape: &Shape, center: Point) -> Result<Sha
     }
 }
 
+/// Build and source-certify one fixed-resolution inscribed ring. Planar
+/// callers pass the prepared filled/boundary pair retained by the directed
+/// search; `None` is the geographic local-projection path, which intentionally
+/// keeps its existing approximate containment contract.
 pub(crate) fn build_inscribed_circle(
-    shape: &Shape,
     center: Point,
     radius: f64,
     quadrant_segments: NonZeroU32,
-    certify_source: bool,
+    support: Option<(&PreparedSupport, &PreparedSupport)>,
 ) -> Result<Shape> {
     let steps = 4_usize
         .checked_mul(quadrant_segments.get() as usize)
@@ -1147,12 +1225,55 @@ pub(crate) fn build_inscribed_circle(
         .checked_add(1)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
     let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments");
-    budget.add(vertices)?;
+    budget.check_additional(vertices)?;
     if !center.x.is_finite() || !center.y.is_finite() || !radius.is_finite() {
         return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
             "maximum_inscribed_circle",
         ));
     }
+    let mut candidate_radius = radius;
+    loop {
+        budget.add(vertices)?;
+        let attempt = build_inscribed_circle_once(
+            center,
+            candidate_radius,
+            steps,
+            vertices,
+            quadrant_segments,
+            support,
+        );
+        match attempt {
+            Ok(output) => return Ok(output),
+            Err(error)
+                if support.is_some()
+                    && matches!(
+                        error.kind(),
+                        crate::error::ErrorKind::Geometry(
+                            crate::geometry::GeometryErrorKind::UnrepresentableOutput {
+                                operation: "maximum_inscribed_circle"
+                            }
+                        )
+                    ) =>
+            {
+                let next = candidate_radius.next_down();
+                if !(next > 0.0 && next.is_finite()) {
+                    return Err(error);
+                }
+                candidate_radius = next;
+            },
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn build_inscribed_circle_once(
+    center: Point,
+    radius: f64,
+    steps: usize,
+    vertices: usize,
+    quadrant_segments: NonZeroU32,
+    support: Option<(&PreparedSupport, &PreparedSupport)>,
+) -> Result<Shape> {
     let mut points = Vec::new();
     crate::try_reserve_vec(&mut points, steps)?;
     let quadrant = quadrant_segments.get() as usize;
@@ -1192,11 +1313,13 @@ pub(crate) fn build_inscribed_circle(
     let counter_clockwise = winding.is_ccw();
     let center_in_candidate =
         candidate_center_is_strictly_inside(&points, center, counter_clockwise);
-    if !center_in_candidate
-        || (certify_source
-            && (!shape.contains_point(center)?
-                || source_boundary_enters_candidate(shape, &points, counter_clockwise)?))
-    {
+    let source_contained = match support {
+        None => true,
+        Some((source, boundary)) => {
+            source.candidate_is_contained(boundary, center, &points, counter_clockwise)?
+        },
+    };
+    if !center_in_candidate || !source_contained {
         return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
             "maximum_inscribed_circle",
         ));
@@ -1223,8 +1346,9 @@ pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Result<Poin
 /// `O(segments)` scan it replaces. Containment (the distance sign) rides a
 /// direct ray cast — needed for only the seed and boundary-straddling cells,
 /// far below a full hierarchical `PointBatchTester` build's payoff. The
-/// maximum-inscribed-circle owner performs its own exact source-coordinate
-/// clearance fold after the public center is denormalized.
+/// The certified planar maximum-inscribed-circle owner uses the separate exact
+/// directed support search; this field remains the geographic/local-projection
+/// polylabel path.
 struct PolylabelField<'a> {
     shape: &'a Shape,
     linework: PreparedLinework,
@@ -1435,6 +1559,13 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn exact_inscribed_support(shape: &Shape) -> (PreparedSupport, PreparedSupport) {
+        let mut budget = ExpansionBudget::new("test", "support");
+        let source = PreparedSupport::from_shape(shape, &mut budget).unwrap();
+        let boundary = source.boundary_clone().unwrap();
+        (source, boundary)
     }
 
     fn dense_reciprocal_polygon(subdivisions: usize) -> Shape {
@@ -1842,6 +1973,174 @@ mod tests {
         let candidate = circle_points(Point::new_raw_xy(5.0, 3.0), 3.0);
         assert!(source.contains_point(Point::new_raw_xy(5.0, 3.0)).unwrap());
         assert!(source_boundary_enters_candidate(&source, &candidate, true).unwrap());
+    }
+
+    #[test]
+    fn enclosed_hole_cycle_is_rejected_even_when_candidate_endpoints_are_covered() {
+        let source = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(100.0, 0.0),
+                        Point::new_raw_xy(100.0, 100.0),
+                        Point::new_raw_xy(0.0, 100.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                vec![Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(48.0, 48.0),
+                        Point::new_raw_xy(52.0, 48.0),
+                        Point::new_raw_xy(52.0, 52.0),
+                        Point::new_raw_xy(48.0, 52.0),
+                        Point::new_raw_xy(48.0, 48.0),
+                    ])
+                    .unwrap(),
+                )],
+            )
+            .unwrap(),
+        );
+        let candidate = [
+            Point::new_raw_xy(55.0, 50.0),
+            Point::new_raw_xy(40.0, 65.0),
+            Point::new_raw_xy(25.0, 50.0),
+            Point::new_raw_xy(40.0, 35.0),
+        ];
+        assert!(
+            source
+                .contains_point(Point::new_raw_xy(40.0, 50.0))
+                .unwrap()
+        );
+        assert!(!source_vertex_outside_candidate(&source, &candidate).unwrap());
+        assert!(source_hole_is_enclosed(&source, &candidate, true));
+    }
+
+    #[test]
+    fn inward_chord_is_rejected_after_endpoint_only_checks_pass() {
+        let source = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(10.0, 0.0),
+                        Point::new_raw_xy(10.0, 5.0),
+                        Point::new_raw_xy(5.0, 5.0),
+                        Point::new_raw_xy(5.0, 10.0),
+                        Point::new_raw_xy(0.0, 10.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let candidate = [
+            Point::new_raw_xy(6.5, 4.0),
+            Point::new_raw_xy(4.0, 6.5),
+            Point::new_raw_xy(1.5, 4.0),
+            Point::new_raw_xy(4.0, 1.5),
+        ];
+        assert!(source.contains_point(Point::new_raw_xy(4.0, 4.0)).unwrap());
+        assert!(!source_vertex_outside_candidate(&source, &candidate).unwrap());
+        assert!(source_boundary_enters_candidate(&source, &candidate, true).unwrap());
+    }
+
+    #[test]
+    fn inscribed_circle_emission_propagates_allocation_prefixes() {
+        let source = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(4.0, 0.0),
+                        Point::new_raw_xy(4.0, 4.0),
+                        Point::new_raw_xy(0.0, 4.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let center = Point::new_raw_xy(2.0, 2.0);
+        let (prepared, boundary) = exact_inscribed_support(&source);
+        let support = Some((&prepared, &boundary));
+        let (_, allocations) = crate::test_support::allocation_count(|| {
+            build_inscribed_circle(center, 2.0, NonZeroU32::new(16).expect("non-zero"), support)
+        });
+        assert!(allocations > 0);
+        for allowed in 0..allocations.min(16) {
+            let error = crate::test_support::fail_allocations_after(allowed, || {
+                build_inscribed_circle(center, 2.0, NonZeroU32::new(16).expect("non-zero"), support)
+            })
+            .expect_err("an emission allocation must remain a native failure");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Resource(ResourceError::Allocation)
+            ));
+        }
+    }
+
+    #[test]
+    fn inscribed_circle_retries_after_a_rounded_radius_overrun() {
+        let source = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 1.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(1.0, 0.0),
+                        Point::new_raw_xy(1.0, 1.0),
+                        Point::new_raw_xy(0.0, 1.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let (prepared, boundary) = exact_inscribed_support(&source);
+        let support = Some((&prepared, &boundary));
+        let center = Point::new_raw_xy(0.5, 0.5);
+        let quadrants = NonZeroU32::new(16).expect("non-zero");
+        let steps = quadrants.get() as usize * 4;
+        let radius = 0.5_f64.next_up();
+        let first =
+            build_inscribed_circle_once(center, radius, steps, steps + 1, quadrants, support);
+        assert!(
+            first.is_err(),
+            "the rounded first radius must expose the boundary-rounding retry"
+        );
+        let emitted = build_inscribed_circle(center, radius, quadrants, support)
+            .expect("the one-ULP retry must produce a contained ring");
+        assert_eq!(emitted.geometry_type(), "Polygon");
+    }
+
+    #[test]
+    fn certified_inscribed_circle_reuses_the_directed_support_at_emission() {
+        let source = Shape::Polygon(
+            Polygon::new(
+                Ring::from_closed(
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(4.0, 0.0),
+                        Point::new_raw_xy(4.0, 4.0),
+                        Point::new_raw_xy(0.0, 4.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        crate::geometry::overlay::reset_partition_calls();
+        source.maximum_inscribed_circle(Some(1e-9)).unwrap();
+        assert_eq!(crate::geometry::overlay::partition_calls(), 1);
     }
 
     #[test]

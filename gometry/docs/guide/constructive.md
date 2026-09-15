@@ -324,7 +324,7 @@ print(panels(
 | [`centroid`][gometry.Geometry.centroid] | the geometry's center of mass |
 | [`point_on_surface`][gometry.Geometry.point_on_surface] | a point on the geometry (polygonal interior for areal input) |
 | [`polylabel`][gometry.Geometry.polylabel] | the [pole of inaccessibility](https://en.wikipedia.org/wiki/Pole_of_inaccessibility) — the most-interior point |
-| [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle] | largest inscribed circle as a filled disk; use [`maximum_inscribed_radius`][gometry.Geometry.maximum_inscribed_radius] for the radius |
+| [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle] | largest inscribed circle as a contained filled polygon; use [`maximum_inscribed_radius`][gometry.Geometry.maximum_inscribed_radius] for the underlying radius |
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -335,14 +335,15 @@ print('centroid:', (cloud.centroid()).to_wkt())
 ```
 
 `polylabel`, `maximum_inscribed_circle`, and `maximum_inscribed_radius` use a
-scale-aware `tolerance=None` default derived from each geometry's extent. Pass a
-positive tolerance only when you need an explicit error bound; array methods
-also accept one tolerance per row.
+scale-aware `tolerance=None` default derived from each geometry's extent. For
+the two maximum-inscribed operations, an explicit positive tolerance is an
+absolute bound on the planar global-inradius gap; array methods also accept one
+tolerance per row.
 
 For CRS-free and projected planar input, a positive-radius
 `maximum_inscribed_circle` returns a contained 64-vertex `Polygon`. It raises
 `GeometryError` when finite coordinates cannot emit that contained result.
-Empty polygonal input returns `POLYGON EMPTY`. A zero-radius result returns a finite
+Empty polygonal input returns `POLYGON EMPTY`. A zero or subnormal-radius result returns a finite
 `Point` only when its center is covered by the source; otherwise it raises
 `GeometryError`. Geographic results retain the documented local-projection
 approximation.

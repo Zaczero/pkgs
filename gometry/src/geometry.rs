@@ -135,7 +135,8 @@ pub(crate) use coverage::{
 };
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 pub(crate) use distance::{
-    Distance3dParts, FrechetDpScratch, bounds_distance_squared, distance_3d_with_parts,
+    DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
+    bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
     frechet_distance_line_columns_batch, hausdorff_distance_line_columns_batch,
 };
 use distance::{GeodesicSweepCaps, line_length_3d};

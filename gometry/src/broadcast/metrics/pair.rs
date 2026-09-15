@@ -922,11 +922,11 @@ pub(crate) fn metric_minimum_clearance(
     )
 }
 
-/// CRS-aware maximum inscribed radius — the pole-to-boundary distance, measured
-/// in the geometry's best local projection on a geographic CRS (a near-isometric
-/// frame) or in the active planar unit on a projected/planar one. The metric
-/// twin of the (metric) `maximum_inscribed_circle`, so the radius matches the
-/// disk.
+/// CRS-aware maximum inscribed radius — the maximum-clearance
+/// center-to-boundary distance, measured in the geometry's best local
+/// projection on a geographic CRS (a near-isometric frame) or in the active
+/// planar unit on a projected/planar one. The metric twin of the (metric)
+/// `maximum_inscribed_circle`, so the radius matches the disk.
 pub(crate) fn metric_maximum_inscribed_radius(
     model: &crs::MetricModel,
     crs: Option<&str>,
@@ -935,15 +935,13 @@ pub(crate) fn metric_maximum_inscribed_radius(
 ) -> crate::error::Result<f64> {
     dispatch_metric_model(
         model,
-        |to_metre| {
-            Ok(shape.maximum_inscribed_radius(tolerance.map(|value| value / to_metre))? * to_metre)
-        },
+        |to_metre| shape.maximum_inscribed_radius_in_scale(tolerance, true, to_metre),
         |_, _, state| {
             let source = crs.unwrap_or("EPSG:4326");
             let local = crs::estimate_local_crs_at(shape, source, state)?;
             crs::transform_at(shape, source, &local.definition, state)
                 .map_err(|error| local.annotate_error(error))?
-                .maximum_inscribed_radius(tolerance)
+                .maximum_inscribed_radius_in_frame(tolerance, false)
         },
     )
 }

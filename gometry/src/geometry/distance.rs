@@ -43,7 +43,8 @@ pub(crate) use geodesic_sweep::{
     geodesic_capped_sweep_with_parts, geodesic_witness_sweep_with_parts,
 };
 pub(crate) use hausdorff::{
-    hausdorff_distance, hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
+    DirectedOptimizationResult, PreparedSupport, directed_inradius_scaled, hausdorff_distance,
+    hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
 };
 pub(super) use intersects::{
     area_overlap_probe, bounds_squared_safe, coordinate_squared_safe, parts_boundary_contact,

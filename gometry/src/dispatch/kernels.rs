@@ -271,8 +271,9 @@ pub(crate) fn unary_maximum_inscribed_circle(
     )
 }
 
-/// Maximum-inscribed-radius kernel — CRS-aware, the metric twin of the inscribed
-/// circle (so the radius matches the disk, and the center is `polylabel`).
+/// Maximum-inscribed-radius kernel — CRS-aware, the metric twin of the
+/// inscribed circle (so both calls retain the same certified planar center and
+/// radius contract).
 pub(crate) fn unary_maximum_inscribed_radius(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,

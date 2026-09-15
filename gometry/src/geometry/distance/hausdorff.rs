@@ -3,6 +3,7 @@
 mod bounded;
 
 pub(crate) use bounded::{
+    DirectedOptimizationResult, PreparedSupport, directed_inradius_scaled,
     distance as hausdorff_distance, line_columns as hausdorff_distance_line_columns,
     line_columns_batch as hausdorff_distance_line_columns_batch,
 };

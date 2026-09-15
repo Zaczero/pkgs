@@ -21,7 +21,8 @@ pub(crate) use hull::{
 pub(crate) use minimum_rectangle::minimum_area_rectangle;
 pub(crate) use polylabel::{
     build_inscribed_circle, emit_minimum_bounding_circle, emit_zero_radius_point,
-    polylabel_center_radius, polylabel_point, smallest_enclosing_circle,
+    polylabel_center_radius, polylabel_point, scale_aware_default_tolerance,
+    smallest_enclosing_circle,
 };
 pub(crate) use surface::{
     collection_surface_point, lineal_surface_point, multipoint_surface_point,

@@ -6,12 +6,12 @@ use crate::geometry::derived::{
     collection_surface_point, emit_minimum_bounding_circle, emit_zero_radius_point,
     lineal_centroid, lineal_surface_point, minimum_area_rectangle, monotone_chain_hull,
     multipoint_surface_point, native_concave_hull, point_centroid, polygonal_surface_point,
-    polylabel_center_radius, polylabel_point, shape_from_open_hull, shape_from_selected_hull,
-    smallest_enclosing_circle,
+    polylabel_center_radius, polylabel_point, scale_aware_default_tolerance, shape_from_open_hull,
+    shape_from_selected_hull, smallest_enclosing_circle,
 };
 use crate::geometry::{
-    GeometryErrorKind, GeometryKind, LineSeq, Point, Polygon, Ring, Shape, bounds_to_shape,
-    carry_ordinates, empty_geometry,
+    DirectedOptimizationResult, GeometryErrorKind, GeometryKind, LineSeq, Point, Polygon, Ring,
+    Shape, bounds_to_shape, carry_ordinates, directed_inradius_scaled, empty_geometry,
 };
 use crate::{NonNegative, Positive};
 
@@ -234,18 +234,21 @@ impl Shape {
         circle.certified_disk(&points)?.radius()
     }
 
-    /// The largest circle inscribed in a polygonal geometry: the filled disk
-    /// centered at the pole of inaccessibility, with radius reaching the
-    /// nearest boundary point. Mirrors [`minimum_bounding_circle`](Self::minimum_bounding_circle)
-    /// (both are filled `Polygon`s); the radius alone is
+    /// The largest circle inscribed in a planar polygonal geometry, emitted as
+    /// a contained fixed-resolution filled disk. The center is one
+    /// representable point whose exact boundary clearance is within
+    /// `tolerance` of the global inradius; the radius alone is
     /// [`maximum_inscribed_radius`](Self::maximum_inscribed_radius).
+    ///
+    /// Geographic callers use the documented local-projection approximation
+    /// through the CRS-aware wrapper.
     pub fn maximum_inscribed_circle(&self, tolerance: Option<f64>) -> Result<Self> {
         self.maximum_inscribed_circle_in_frame(tolerance, true)
     }
 
-    /// Run the planar maximum-circle kernel in a local projected frame without
-    /// asserting source-frame literal containment. Geographic construction is
-    /// an explicitly approximate local-projection operation.
+    /// Run the planar maximum-circle kernel in a local projected frame. The
+    /// geographic caller opts out of source-frame containment because that
+    /// frame is an explicitly approximate local-projection operation.
     pub(crate) fn maximum_inscribed_circle_in_frame(
         &self,
         tolerance: Option<f64>,
@@ -259,16 +262,26 @@ impl Shape {
                 Ok(Self::empty_polygon())
             },
             Self::Polygon(_) | Self::MultiPolygon(_) => {
-                let (center, radius) = polylabel_center_radius(self, tolerance)?;
-                if radius == 0.0 {
+                let (center, radius, result) = if certify_source {
+                    let result =
+                        self.certified_inradius(tolerance, "maximum_inscribed_circle", 1.0)?;
+                    let center = result.center();
+                    let radius = result.radius_in_scale(1.0)?;
+                    (center, radius, Some(result))
+                } else {
+                    let (center, radius) = polylabel_center_radius(self, tolerance)?;
+                    (center, radius, None)
+                };
+                if radius == 0.0 || (radius > 0.0 && radius < f64::MIN_POSITIVE) {
                     return emit_zero_radius_point(self, center);
                 }
                 build_inscribed_circle(
-                    self,
                     center,
                     radius,
                     CIRCLE_QUADRANT_SEGMENTS,
-                    certify_source,
+                    result
+                        .as_ref()
+                        .map(|result| (result.source_support(), result.boundary_support())),
                 )
             },
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
@@ -278,20 +291,63 @@ impl Shape {
         }
     }
 
-    /// Radius of the largest inscribed circle — the distance from the pole of
-    /// inaccessibility to the nearest boundary point. Empty input returns
-    /// ``NaN``. Twin of [`minimum_bounding_radius`](Self::minimum_bounding_radius).
+    /// Radius of the largest inscribed circle. For planar input it is a
+    /// downward-rounded clearance at one deterministic representable center;
+    /// the global inradius is enclosed within the requested absolute
+    /// tolerance. Empty input returns ``NaN``. Twin of
+    /// [`minimum_bounding_radius`](Self::minimum_bounding_radius).
     pub fn maximum_inscribed_radius(&self, tolerance: Option<f64>) -> Result<f64> {
+        self.maximum_inscribed_radius_in_scale(tolerance, true, 1.0)
+    }
+
+    pub(crate) fn maximum_inscribed_radius_in_frame(
+        &self,
+        tolerance: Option<f64>,
+        certify_source: bool,
+    ) -> Result<f64> {
+        self.maximum_inscribed_radius_in_scale(tolerance, certify_source, 1.0)
+    }
+
+    pub(crate) fn maximum_inscribed_radius_in_scale(
+        &self,
+        tolerance: Option<f64>,
+        certify_source: bool,
+        scale: f64,
+    ) -> Result<f64> {
         let tolerance = tolerance
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
             .transpose()?;
         match self {
             Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => Ok(f64::NAN),
             Self::Polygon(_) | Self::MultiPolygon(_) => {
-                Ok(polylabel_center_radius(self, tolerance)?.1)
+                if certify_source {
+                    Ok(self
+                        .certified_inradius(tolerance, "maximum_inscribed_radius", scale)?
+                        .radius_in_scale(scale)?)
+                } else {
+                    Ok(polylabel_center_radius(self, tolerance)?.1 * scale)
+                }
             },
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(f64::NAN),
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
         }
+    }
+
+    fn certified_inradius(
+        &self,
+        tolerance: Option<f64>,
+        operation: &'static str,
+        scale: f64,
+    ) -> Result<DirectedOptimizationResult> {
+        let mut finite = true;
+        self.for_each_point(|point| {
+            finite &= point.x.is_finite() && point.y.is_finite();
+        });
+        if !finite {
+            return Err(GeometryErrorKind::unrepresentable_output(operation));
+        }
+        let default_tolerance = scale_aware_default_tolerance(self)?;
+        let tolerance = tolerance.unwrap_or(default_tolerance * scale);
+        directed_inradius_scaled(self, tolerance, scale)
     }
 }

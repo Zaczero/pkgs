@@ -1684,13 +1684,13 @@ class Geometry:
         tolerance: _FloatScalarInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> Point:
-        """Pole of inaccessibility: the most distant interior point. Center of the
-        largest inscribed circle — the best label anchor — measured for the CRS
-        exactly like maximum_inscribed_circle (whose center this is).
+        """Pole of inaccessibility: an approximate most-distant interior point
+        for label placement. Its CRS metric matches maximum_inscribed_circle, but the
+        certified planar circle search may retain a different representable center.
 
         See Also
         --------
-        maximum_inscribed_circle : Filled disk whose center this is.
+        maximum_inscribed_circle : Certified filled disk from its own center search.
         centroid : Area/length-weighted center (may fall outside).
         point_on_surface : A guaranteed-interior representative point.
 
@@ -2695,17 +2695,18 @@ class Geometry:
         tolerance: _FloatScalarInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> Point | Polygon:
-        """Largest circle inscribed in a polygonal geometry, as a filled disk.
-        CRS-aware via local projection (approximate). Centered at the pole of
-        inaccessibility (see polylabel), with radius reaching the nearest boundary
-        point. Mirrors minimum_bounding_circle; the radius alone is
+        """Largest circle inscribed in a polygonal geometry, as a contained filled disk.
+        Planar/projected input uses one deterministic representable center and
+        certifies the global inradius against the requested absolute tolerance.
+        Geographic input retains the documented local-projection approximation.
+        Mirrors minimum_bounding_circle; the radius alone is
         maximum_inscribed_radius.
 
         Parameters
         ----------
         tolerance : float, optional
-            Precision of the center search (pole-of-inaccessibility refinement).
-            Omitted selects a scale-aware tolerance from the geometry's extent.
+            Positive absolute bound on the planar global-inradius gap. Omitted
+            selects the existing scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS. ``planar`` forces
@@ -2714,12 +2715,13 @@ class Geometry:
         Returns
         -------
         Point or Polygon
-            The filled inscribed circle. A degenerate (zero-area) polygon returns
-            its center `Point`.
+            The fixed-resolution filled polygonal approximation of the inscribed
+            circle. A degenerate (zero-area) polygon, or a certified subnormal-radius
+            result, returns its center `Point`.
 
         See Also
         --------
-        polylabel : Pole of inaccessibility (the circle center alone).
+         polylabel : Approximate pole-of-inaccessibility label point.
         maximum_inscribed_radius : The radius alone.
         point_on_surface : A guaranteed-interior representative point.
         centroid : Area/length-weighted center (may fall outside).
@@ -2745,16 +2747,19 @@ class Geometry:
         tolerance: _FloatScalarInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> float:
-        """Radius of the largest inscribed circle — the distance from the pole of
-        inaccessibility (see polylabel) to the nearest boundary point. The numeric
-        twin of minimum_bounding_radius; the circle itself is
+        """Radius of the largest inscribed circle. For planar/projected input,
+        one deterministic representable center is retained and the returned
+        downward-rounded boundary clearance of that underlying circle certifies
+        the global inradius against the requested absolute tolerance. Geographic
+        input uses the documented local-projection approximation. The numeric twin
+        of minimum_bounding_radius; the polygonal approximation is
         maximum_inscribed_circle.
 
         Parameters
         ----------
         tolerance : float, optional
-            Precision of the center search (pole-of-inaccessibility refinement).
-            Omitted selects a scale-aware tolerance from the geometry's extent.
+            Positive absolute bound on the planar global-inradius gap. Omitted
+            selects the existing scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS. ``planar`` forces
@@ -6803,13 +6808,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | None]:
-        """Pole of inaccessibility: the most distant interior point. Center of the
-        largest inscribed circle — the best label anchor — measured for the CRS
-        exactly like maximum_inscribed_circle (whose center this is).
+        """Pole of inaccessibility: an approximate most-distant interior point
+        for label placement. Its CRS metric matches maximum_inscribed_circle, but the
+        certified planar circle search may retain a different representable center.
 
         See Also
         --------
-        maximum_inscribed_circle : Filled disk whose center this is.
+        maximum_inscribed_circle : Certified filled disk from its own center search.
         centroid : Area/length-weighted center (may fall outside).
         point_on_surface : A guaranteed-interior representative point.
 
@@ -8093,18 +8098,19 @@ class GeometryArray(Sequence[_GeometryT_co]):
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | Polygon | None]:
-        """Largest circle inscribed in a polygonal geometry, as a filled disk.
-        CRS-aware via local projection (approximate). Centered at the pole of
-        inaccessibility (see polylabel), with radius reaching the nearest boundary
-        point. Mirrors minimum_bounding_circle; the radius alone is
+        """Largest circle inscribed in a polygonal geometry, as a contained filled disk.
+        Planar/projected input uses one deterministic representable center and
+        certifies the global inradius against the requested absolute tolerance.
+        Geographic input retains the documented local-projection approximation.
+        Mirrors minimum_bounding_circle; the radius alone is
         maximum_inscribed_radius.
 
         Parameters
         ----------
         tolerance : float or sequence of float, optional
-            Precision of the center search — a scalar applies to every geometry,
-            or pass one value per geometry. Omitted selects a scale-aware tolerance
-            independently for each geometry.
+            Positive absolute bound on the planar global-inradius gap — a scalar
+            applies to every geometry, or pass one value per geometry. Omitted
+            selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS. ``planar`` forces
@@ -8118,7 +8124,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         See Also
         --------
-        polylabel : Pole of inaccessibility (the circle center alone).
+         polylabel : Approximate pole-of-inaccessibility label point.
         maximum_inscribed_radius : The radius alone.
         point_on_surface : A guaranteed-interior representative point.
         centroid : Area/length-weighted center (may fall outside).
@@ -8141,17 +8147,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def maximum_inscribed_radius(
         self, *, tolerance: FloatInput | None = None, unit: DistanceUnit | None = None
     ) -> npt.NDArray[np.float64]:
-        """Radius of the largest inscribed circle — the distance from the pole of
-        inaccessibility (see polylabel) to the nearest boundary point. The numeric
-        twin of minimum_bounding_radius; the circle itself is
+        """Radius of the largest inscribed circle. For planar/projected input,
+        one deterministic representable center is retained and the returned
+        downward-rounded boundary clearance of that underlying circle certifies
+        the global inradius against the requested absolute tolerance. Geographic
+        input uses the documented local-projection approximation. The numeric twin
+        of minimum_bounding_radius; the polygonal approximation is
         maximum_inscribed_circle.
 
         Parameters
         ----------
         tolerance : float or sequence of float, optional
-            Precision of the center search — a scalar applies to every geometry,
-            or pass one value per geometry. Omitted selects a scale-aware tolerance
-            independently for each geometry.
+            Positive absolute bound on the planar global-inradius gap — a scalar
+            applies to every geometry, or pass one value per geometry. Omitted
+            selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS. ``planar`` forces

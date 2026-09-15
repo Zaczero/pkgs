@@ -53,6 +53,26 @@ pub(crate) fn partition_calls() -> usize {
 }
 
 #[cfg(test)]
+thread_local! {
+    static BOUNDARY_PLAN_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_boundary_plan_calls() {
+    BOUNDARY_PLAN_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn boundary_plan_calls() -> usize {
+    BOUNDARY_PLAN_CALLS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn record_boundary_plan_call() {
+    BOUNDARY_PLAN_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+}
+
+#[cfg(test)]
 std::thread_local! {
     static PARTITION_METRICS: std::cell::Cell<PartitionMetrics> =
         const { std::cell::Cell::new(PartitionMetrics::ZERO) };
@@ -166,6 +186,31 @@ impl ArealCells {
         global: &GlobalFaces,
     ) -> Result<BoundaryPlan> {
         self.emission_plan_with_protected(partition, topology, edges, global, None)
+    }
+
+    fn selected_boundary_spans(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+    ) -> Result<Vec<bool>> {
+        #[cfg(test)]
+        record_boundary_plan_call();
+        // `walks` come only from occupied/unoccupied face adjacency. The
+        // separate `lines` list is produced by lower_dimensions for support
+        // with no occupied face on either side, so it cannot carry an areal
+        // shell or hole boundary.
+        let plan = self.emission_plan(partition, topology, edges, global)?;
+        let mut selected = Vec::new();
+        try_reserve_vec(&mut selected, partition.spans.len())?;
+        selected.resize(partition.spans.len(), false);
+        for chord in plan.walks.iter().flatten() {
+            for &slot in &plan.source_darts[chord.sources.clone()] {
+                selected[edges[slot as usize] as usize] = true;
+            }
+        }
+        Ok(selected)
     }
 
     fn emission_plan_with_protected(
@@ -419,6 +464,15 @@ pub(in crate::geometry) struct ExactMetricSupport {
     pub spans: Vec<ExactMetricSpan>,
     pub points: Vec<ExactMetricNode>,
     pub faces: Vec<Vec<Vec<ExactMetricNode>>>,
+    /// Partition-span incidence selected by the filled union's boundary
+    /// walks. The order is the same as `spans`; lower-dimensional support
+    /// hidden by a positive-area face is deliberately absent. Ordinary
+    /// metric support leaves this unbuilt.
+    pub boundary_spans: Option<Vec<bool>>,
+    /// Point incidence parallel to `points`. Positive-area support does not
+    /// retain isolated points as a metric boundary target. Ordinary metric
+    /// support leaves this unbuilt.
+    pub boundary_points: Option<Vec<bool>>,
 }
 
 /// One maximal walk over exact spans, cut at an incidence junction or at a
@@ -571,7 +625,11 @@ struct PlannedChord {
 
 struct BoundaryPlan {
     source_darts: Vec<u32>,
+    /// Chords on the boundary between an occupied and an unoccupied areal
+    /// face. These are the shell and hole cycles of the selected filled area.
     walks: Vec<Vec<PlannedChord>>,
+    /// Chords retained from lower-dimensional support with no occupied areal
+    /// face on either side. They are residual lines, not areal boundary cycles.
     lines: Vec<PlannedChord>,
     points: Vec<(NodeId, u32)>,
     face_quotient: Vec<u32>,
@@ -1901,6 +1959,24 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
     ) -> Result<ExactMetricSupport> {
+        self.metric_support_impl(partition, false)
+    }
+
+    /// Exact closed support plus the areal boundary incidence needed by
+    /// directed inradius. The boundary plan is built here, beside the face
+    /// selection, rather than reconstructed by a metric consumer.
+    pub(in crate::geometry) fn metric_support_with_boundary(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<ExactMetricSupport> {
+        self.metric_support_impl(partition, true)
+    }
+
+    fn metric_support_impl(
+        &self,
+        partition: &ExactPartition<'_>,
+        with_boundary: bool,
+    ) -> Result<ExactMetricSupport> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         let cells = self.select_cells(
@@ -1911,6 +1987,19 @@ impl ExactSourceInventory {
             crate::geometry::OverlayOp::Union,
             false,
         )?;
+        let mut selected_boundary_spans = if with_boundary {
+            Some(cells.selected_boundary_spans(partition, &topology, &edges, &global)?)
+        } else {
+            None
+        };
+        let has_selected_area = with_boundary && cells.faces.iter().any(|&selected| selected);
+        if !has_selected_area {
+            if let Some(selected_boundary_spans) = selected_boundary_spans.as_mut() {
+                for (selected, &cell) in selected_boundary_spans.iter_mut().zip(&cells.spans) {
+                    *selected = cell;
+                }
+            }
+        }
         let parameter = |unique: u32, homogeneous: &[ExactDyadic; 3]| -> Result<[ExactDyadic; 2]> {
             let source = partition.unique[unique as usize];
             let [x, y, w] = homogeneous;
@@ -1929,10 +2018,17 @@ impl ExactSourceInventory {
             ])
         };
         let mut spans = Vec::new();
+        let mut boundary_spans = with_boundary.then(Vec::new);
         try_reserve_vec(
             &mut spans,
             cells.spans.iter().filter(|&&value| value).count(),
         )?;
+        if let Some(boundary_spans) = boundary_spans.as_mut() {
+            try_reserve_vec(
+                boundary_spans,
+                cells.spans.iter().filter(|&&value| value).count(),
+            )?;
+        }
         let mut covered = Vec::new();
         try_reserve_vec(&mut covered, partition.recipes.len())?;
         covered.resize(partition.recipes.len(), false);
@@ -1954,8 +2050,17 @@ impl ExactSourceInventory {
                 end_parameter,
                 source: partition.unique[span.unique as usize],
             })?;
+            if let Some(boundary_spans) = boundary_spans.as_mut() {
+                try_push_vec(
+                    boundary_spans,
+                    selected_boundary_spans
+                        .as_ref()
+                        .expect("boundary incidence was requested")[index],
+                )?;
+            }
         }
         let mut points = Vec::new();
+        let mut boundary_points = with_boundary.then(Vec::new);
         try_reserve_vec(
             &mut points,
             cells.nodes.iter().filter(|&&value| value).count(),
@@ -1965,6 +2070,9 @@ impl ExactSourceInventory {
                 try_push_vec(&mut points, ExactMetricNode {
                     homogeneous: partition.homogeneous(NodeId(index as u32))?,
                 })?;
+                if let Some(boundary_points) = boundary_points.as_mut() {
+                    try_push_vec(boundary_points, !has_selected_area)?;
+                }
             }
         }
         let mut faces = Vec::new();
@@ -1992,6 +2100,8 @@ impl ExactSourceInventory {
             spans,
             points,
             faces,
+            boundary_spans,
+            boundary_points,
         })
     }
 
@@ -7014,6 +7124,8 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     #[test]
     fn line_contraction_preserves_bends_and_protected_points() {
         for protect in [false, true] {
@@ -7667,6 +7779,14 @@ mod tests {
         inventory.metric_support(&partition).unwrap()
     }
 
+    fn metric_support_with_boundary_for(wkt: &str) -> ExactMetricSupport {
+        let shape = crate::io::parse_wkt(wkt).expect("valid metric-support WKT");
+        let inventory = ExactSourceInventory::from_shapes(&[&shape]).unwrap();
+        let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "source");
+        let partition = inventory.partition(&mut budget).unwrap();
+        inventory.metric_support_with_boundary(&partition).unwrap()
+    }
+
     fn dyadic(value: f64) -> ExactDyadic {
         ExactDyadic::try_from_f64(value).unwrap()
     }
@@ -7726,6 +7846,7 @@ mod tests {
         );
         assert!(support.faces.is_empty());
         assert_eq!(support.spans.len(), 3);
+        assert!(support.boundary_spans.is_none());
         assert!(
             support
                 .spans
@@ -7745,6 +7866,7 @@ mod tests {
                 .any(|span| span_between(span, (2.0, 0.0), (4.0, 0.0)))
         );
         assert_eq!(support.points.len(), 1);
+        assert!(support.boundary_points.is_none());
         assert!(node_at(&support.points[0], 8.0, 1.0));
     }
 
@@ -7903,6 +8025,207 @@ mod tests {
         assert_eq!(mixed.faces[0].len(), 1);
         assert_eq!(mixed.points.len(), 1);
         assert!(node_at(&mixed.points[0], 10.0, 1.0));
+    }
+
+    #[test]
+    fn metric_support_boundary_incidence_excludes_internal_and_residual_items() {
+        let adjacent = metric_support_with_boundary_for(
+            "MULTIPOLYGON (\
+             ((0 0,2 0,2 2,0 2,0 0)),\
+             ((2 0,4 0,4 2,2 2,2 0)))",
+        );
+        let adjacent_boundary = adjacent
+            .boundary_spans
+            .as_ref()
+            .expect("boundary selection");
+        assert_eq!(adjacent_boundary.len(), adjacent.spans.len());
+        assert_eq!(
+            adjacent_boundary
+                .iter()
+                .filter(|&&selected| selected)
+                .count(),
+            6
+        );
+        assert!(
+            adjacent
+                .spans
+                .iter()
+                .zip(adjacent_boundary)
+                .any(|(span, &selected)| {
+                    !selected && span_between(span, (2.0, 0.0), (2.0, 2.0))
+                })
+        );
+
+        let overlapping = metric_support_with_boundary_for(
+            "MULTIPOLYGON (\
+             ((0 0,4 0,4 4,0 4,0 0)),\
+             ((2 0,6 0,6 4,2 4,2 0)))",
+        );
+        let overlapping_boundary = overlapping
+            .boundary_spans
+            .as_ref()
+            .expect("boundary selection");
+        assert!(
+            overlapping
+                .spans
+                .iter()
+                .zip(overlapping_boundary)
+                .any(|(span, &selected)| {
+                    !selected && span_between(span, (2.0, 0.0), (2.0, 4.0))
+                })
+        );
+        assert!(
+            overlapping
+                .spans
+                .iter()
+                .zip(overlapping_boundary)
+                .any(|(span, &selected)| {
+                    !selected && span_between(span, (4.0, 0.0), (4.0, 4.0))
+                })
+        );
+
+        let holed = metric_support_with_boundary_for(
+            "POLYGON ((0 0,10 0,10 10,0 10,0 0),\
+                      (4 4,6 4,6 6,4 6,4 4))",
+        );
+        let holed_boundary = holed.boundary_spans.as_ref().expect("boundary selection");
+        assert!(
+            holed
+                .spans
+                .iter()
+                .zip(holed_boundary)
+                .all(|(_, &selected)| selected)
+        );
+
+        let residual = metric_support_with_boundary_for(
+            "GEOMETRYCOLLECTION(\
+             POLYGON ((0 0,4 0,4 4,0 4,0 0)),\
+             LINESTRING (1 1,3 1,1 1),\
+             POINT (2 2))",
+        );
+        assert!(!residual.faces.is_empty());
+        assert_eq!(residual.points.len(), 1);
+        assert!(
+            residual
+                .boundary_points
+                .as_ref()
+                .expect("boundary selection")
+                .iter()
+                .all(|&selected| !selected)
+        );
+        let residual_boundary = residual
+            .boundary_spans
+            .as_ref()
+            .expect("boundary selection");
+        assert_eq!(
+            residual_boundary
+                .iter()
+                .filter(|&&selected| selected)
+                .count(),
+            4
+        );
+        assert!(
+            residual
+                .spans
+                .iter()
+                .zip(residual_boundary)
+                .any(|(span, &selected)| {
+                    !selected && span_between(span, (1.0, 1.0), (3.0, 1.0))
+                })
+        );
+        let external = metric_support_with_boundary_for(
+            "GEOMETRYCOLLECTION(\
+             POLYGON ((0 0,4 0,4 4,0 4,0 0)),\
+             LINESTRING (10 0,12 0))",
+        );
+        let external_boundary = external
+            .boundary_spans
+            .as_ref()
+            .expect("boundary selection");
+        assert!(
+            external
+                .spans
+                .iter()
+                .zip(external_boundary)
+                .any(|(span, &selected)| {
+                    !selected && span_between(span, (10.0, 0.0), (12.0, 0.0))
+                })
+        );
+        let collapsed_inside = metric_support_with_boundary_for(
+            "GEOMETRYCOLLECTION(\
+             POLYGON ((0 0,4 0,4 4,0 4,0 0)),\
+             POLYGON ((1 1,3 1,1 1,1 1)))",
+        );
+        let collapsed_inside_boundary = collapsed_inside
+            .boundary_spans
+            .as_ref()
+            .expect("boundary selection");
+        assert_eq!(
+            collapsed_inside_boundary
+                .iter()
+                .filter(|&&selected| selected)
+                .count(),
+            4
+        );
+        assert!(collapsed_inside_boundary.iter().any(|&selected| !selected));
+
+        let collapsed = metric_support_with_boundary_for("POLYGON ((0 0,4 0,2 0,0 0))");
+        assert!(collapsed.faces.is_empty());
+        assert!(
+            collapsed
+                .boundary_spans
+                .as_ref()
+                .expect("boundary selection")
+                .iter()
+                .all(|&selected| selected)
+        );
+    }
+
+    #[test]
+    fn metric_support_boundary_incidence_scales_without_pairwise_matching() {
+        let count = 128;
+        let mut wkt = String::from("MULTIPOLYGON (");
+        for index in 0..count {
+            if index != 0 {
+                wkt.push(',');
+            }
+            write!(
+                wkt,
+                "(({} 0,{} 0,{} 1,{} 1,{} 0))",
+                index,
+                index + 1,
+                index + 1,
+                index,
+                index
+            )
+            .unwrap();
+        }
+        wkt.push(')');
+        let support = metric_support_with_boundary_for(&wkt);
+        let boundary_spans = support.boundary_spans.as_ref().expect("boundary selection");
+        assert_eq!(boundary_spans.len(), support.spans.len());
+        assert_eq!(
+            boundary_spans.iter().filter(|&&selected| selected).count(),
+            2 * count + 2
+        );
+        assert_eq!(
+            boundary_spans.iter().filter(|&&selected| !selected).count(),
+            count - 1
+        );
+    }
+
+    #[test]
+    fn ordinary_metric_support_does_not_build_a_boundary_plan() {
+        let wkt = "POLYGON ((0 0,4 0,4 4,0 4,0 0))";
+        reset_boundary_plan_calls();
+        let ordinary = metric_support_for(wkt);
+        assert!(ordinary.boundary_spans.is_none());
+        assert_eq!(boundary_plan_calls(), 0);
+
+        reset_boundary_plan_calls();
+        let boundary = metric_support_with_boundary_for(wkt);
+        assert!(boundary.boundary_spans.is_some());
+        assert_eq!(boundary_plan_calls(), 1);
     }
 
     #[test]
