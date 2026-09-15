@@ -61,13 +61,6 @@ pub(crate) fn py_isize_required(name: &str, value: &Bound<'_, PyAny>) -> PyResul
         .map_err(|_| PyIndexError::new_err(format!("{name} is too large")))
 }
 
-pub(crate) fn py_usize_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<usize> {
-    let integer = py_index_object(name, value)?;
-    integer
-        .extract::<usize>()
-        .map_err(|_| GeometryError::new_err(format!("{name} is too large")))
-}
-
 pub(crate) fn strict_i64(value: &Bound<'_, PyAny>) -> PyResult<i64> {
     py_i64_required("integer", value)
 }

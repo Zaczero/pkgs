@@ -244,11 +244,12 @@ def test_d25_positive_geometry_pickle_roundtrip():
 
 def test_d29_forged_has_metadata_false_still_enforces_crs():
     # Exact audit repro: forged has_metadata=False must not disable the CRS gate.
-    # Reconstructors re-derive metadata from row storage; the flag is gone.
+    # Reconstructors re-derive metadata from row storage before consulting the
+    # private empty-index frame bit.
     arr = gm.GeometryArray([gm.Point(0, 0, crs=4326)])
     with pytest.raises(TypeError):
-        _lib._unpickle_spatial_index(arr, [0], False)  # type: ignore[call-arg]
-    idx = _lib._unpickle_spatial_index(arr, [0])
+        _lib._unpickle_spatial_index(arr, [0])  # type: ignore[call-arg]
+    idx = _lib._unpickle_spatial_index(arr, False)
     with pytest.raises(gm.CRSMismatchError):
         idx.query(gm.Point(0, 0, crs=3857))
 

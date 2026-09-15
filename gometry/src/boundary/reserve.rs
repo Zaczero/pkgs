@@ -787,11 +787,6 @@ pub(crate) fn collect_u64_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyRe
     collect_py_iter(value, |item| try_u64_item(&item, what))
 }
 
-/// Collect `usize` handles for pickle reconstructors (spatial index live rows).
-pub(crate) fn collect_usize_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<usize>> {
-    collect_py_iter(value, |item| try_usize_item(&item, what))
-}
-
 /// Collect `i64` CSR offsets / int groups for pickle reconstructors.
 pub(crate) fn collect_i64_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<i64>> {
     collect_py_iter(value, |item| try_i64_item(&item, what))
@@ -799,20 +794,6 @@ pub(crate) fn collect_i64_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyRe
 
 fn try_u64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<u64> {
     match crate::py_u64_required(what, value) {
-        Ok(value) => Ok(value),
-        Err(error)
-            if error.is_instance_of::<PyTypeError>(value.py()) && !crate::py_index_check(value) =>
-        {
-            Err(PyTypeError::new_err(format!(
-                "{what} elements have the wrong type"
-            )))
-        },
-        Err(error) => Err(error),
-    }
-}
-
-fn try_usize_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<usize> {
-    match crate::py_usize_required(what, value) {
         Ok(value) => Ok(value),
         Err(error)
             if error.is_instance_of::<PyTypeError>(value.py()) && !crate::py_index_check(value) =>

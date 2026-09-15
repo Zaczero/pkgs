@@ -622,6 +622,40 @@ impl IndexRows {
         handle
     }
 
+    /// Materialize the sparse row table used by pickle.
+    ///
+    /// The liveness bitmap is the handle owner, so removed and originally
+    /// missing rows become missing rows in the serialized array. Replaying
+    /// the source array and applying tombstones afterward is not equivalent
+    /// for compact nullable storage: its physical payload contains only
+    /// present rows and can otherwise make a removed logical row live again.
+    fn pickle_array(&self, frame: Frame) -> PyResult<PyGeometryArray> {
+        let mut shapes = Vec::new();
+        crate::try_reserve_vec(&mut shapes, self.live_count)?;
+        let mut missing = Vec::new();
+        crate::try_reserve_vec(&mut missing, self.len())?;
+        let mut rows = self.operation();
+        for handle in 0..self.len() {
+            if self.is_live(handle) {
+                let shape = rows
+                    .row(handle)?
+                    .with_shape(std::clone::Clone::clone)
+                    .map_err(pyo3::PyErr::from)?;
+                crate::try_push_vec(&mut shapes, shape).map_err(pyo3::PyErr::from)?;
+                crate::try_push_vec(&mut missing, false).map_err(pyo3::PyErr::from)?;
+            } else {
+                crate::try_push_vec(&mut missing, true).map_err(pyo3::PyErr::from)?;
+            }
+        }
+        let present = PyGeometryArray::from_shapes(shapes, frame)?;
+        let Some(missing) =
+            crate::array::ValidityMask::from_vec(self.len(), missing).map_err(pyo3::PyErr::from)?
+        else {
+            return Ok(present);
+        };
+        Ok(PyGeometryArray::scatter_present_rows(&present, missing)?)
+    }
+
     /// Reserve both persistent columns before mutating either one. Unlike the
     /// disposable-output helpers, a failed reserve must leave an existing
     /// index intact, so this deliberately preserves the current buffers.

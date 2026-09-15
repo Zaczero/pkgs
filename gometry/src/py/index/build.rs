@@ -270,48 +270,22 @@ pub(crate) fn build_spatial_index(
 
 pub(crate) fn restore_spatial_index(
     values: &PyGeometryArray,
-    live_handles: &[usize],
+    has_metadata: bool,
 ) -> PyResult<PySpatialIndex> {
     if let Some(mut index) = packed_spatial_index(values)? {
-        let mut seen = crate::try_vec_with_capacity(values.len())?;
-        seen.resize(values.len(), 0_u8);
-        for &handle in live_handles {
-            let Some(slot) = seen.get_mut(handle) else {
-                return Err(GeometryError::new_err(format!(
-                    "spatial index pickle payload live handle {handle} is out of range"
-                )));
-            };
-            if std::mem::replace(slot, 1) != 0 {
-                return Err(GeometryError::new_err(format!(
-                    "spatial index pickle payload repeats live handle {handle}"
-                )));
-            }
-            if !index.rows.is_live(handle) {
-                return Err(GeometryError::new_err(format!(
-                    "spatial index pickle payload marks empty handle {handle} as live"
-                )));
-            }
-        }
-        for handle in index.live_handles_sorted()? {
-            if seen[handle] != 0 {
-                continue;
-            }
-            let non_prunable = {
-                let mut rows = index.rows.operation();
-                rows.row(handle)?
-                    .with_shape(|shape| !geodesic_prunable_point(shape))?
-            };
-            debug_assert!(index.rows.mark_removed(handle));
-            if non_prunable {
-                debug_assert!(index.non_prunable_live > 0);
-                index.non_prunable_live -= 1;
-            }
-        }
+        let has_present_rows = values
+            .missing()
+            .map_or(values.len() != 0, |missing| missing.present_count() != 0);
+        index.metadata = (has_metadata || has_present_rows).then(|| values.frame.clone());
         return Ok(index);
     }
     let mut rows = crate::try_vec_with_capacity_hint(values.len())?;
+    let mut live = crate::try_vec_with_capacity_hint(values.len())?;
     let mut present = false;
     let mut row_operation = values.row_operation();
+    let domain = crate::geometry::topology_domain(&values.frame)?;
+    let mut entries = crate::try_vec_with_capacity_hint(values.len())?;
+    let mut non_prunable_live = 0;
     for logical in 0..values.len() {
         let geometry = if let Some(row) = row_operation.present_row_at(logical)? {
             present = true;
@@ -319,51 +293,39 @@ pub(crate) fn restore_spatial_index(
                 row.row().with_shape(std::clone::Clone::clone)?,
             ))?)
             .map_err(crate::error::Error::from)?;
-            PyGeometry::from_prepared_plan(plan, values.frame.clone())?
+            let geometry = PyGeometry::from_prepared_plan(plan, values.frame.clone())?;
+            let bounds = geometry.shape.bounds().ok_or_else(|| {
+                GeometryError::new_err(format!(
+                    "spatial index pickle payload marks empty handle {logical} as live"
+                ))
+            })?;
+            let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
+            for &envelope in cover.entries() {
+                crate::try_push(&mut entries, IndexEntry {
+                    idx: logical,
+                    envelope,
+                })?;
+            }
+            non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
+            crate::try_push_vec(&mut live, 1).map_err(pyo3::PyErr::from)?;
+            geometry
         } else {
+            crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
             PyGeometry::with_frame(PyGeometryArray::missing_placeholder(), values.frame.clone())?
         };
         crate::try_push(&mut rows, geometry)?;
     }
     let total_rows = rows.len();
-    let mut seen = crate::try_vec_with_capacity(total_rows)?;
-    seen.resize(total_rows, 0_u8);
-    let mut entries = crate::try_vec_with_capacity_hint(live_handles.len())?;
-    let mut non_prunable_live = 0;
-    for &handle in live_handles {
-        let Some(item) = rows.get(handle) else {
-            return Err(GeometryError::new_err(format!(
-                "spatial index pickle payload live handle {handle} is out of range"
-            )));
-        };
-        if std::mem::replace(&mut seen[handle], 1) != 0 {
-            return Err(GeometryError::new_err(format!(
-                "spatial index pickle payload repeats live handle {handle}"
-            )));
-        }
-        let bounds = item.shape.bounds().ok_or_else(|| {
-            GeometryError::new_err(format!(
-                "spatial index pickle payload marks empty handle {handle} as live"
-            ))
-        })?;
-        let domain = crate::geometry::topology_domain(&values.frame)?;
-        let cover = index_envelopes(item.shape.shape(), bounds, domain)?;
-        for &envelope in cover.entries() {
-            crate::try_push(&mut entries, IndexEntry {
-                idx: handle,
-                envelope,
-            })?;
-        }
-        non_prunable_live += usize::from(!geodesic_prunable_point(&item.shape));
-    }
-    // Re-derive metadata from the row storage — never trust a serialized flag.
-    let metadata = present.then(|| values.frame.clone());
+    let live_count = live.iter().filter(|&&live| live != 0).count();
+    // Re-derive metadata from the row storage, while retaining an explicitly
+    // framed index after its last live row is removed.
+    let metadata = (has_metadata || present).then(|| values.frame.clone());
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
             boxed: rows,
-            live: seen,
-            live_count: live_handles.len(),
+            live,
+            live_count,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
         overflow: StaticStrForest::new(total_rows),
@@ -649,8 +611,18 @@ mod ownership_tests {
 
     #[test]
     fn pickle_restore_keeps_sparse_handles_on_the_packed_owner() {
-        let source = points();
-        let restored = restore_spatial_index(&source, &[1]).unwrap();
+        let source = PyGeometryArray::scatter_present_rows(
+            &PyGeometryArray::packed_points(
+                CoordSeq::try_from_vecs(vec![10.0], vec![10.0], None, None).unwrap(),
+                Frame::None,
+            )
+            .unwrap(),
+            crate::array::ValidityMask::from_vec(2, vec![true, false])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let restored = restore_spatial_index(&source, false).unwrap();
         assert!(restored.rows.packed.is_some());
         assert!(restored.rows.boxed.is_empty());
         assert!(!restored.rows.is_live(0));

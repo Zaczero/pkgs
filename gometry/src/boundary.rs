@@ -27,7 +27,7 @@ pub(crate) use input::{
     finite_f64_required, non_negative_int, parse_affine_matrix, parse_area, parse_cdt_refinement,
     parse_grid_size, parse_sample_count, parse_sample_seed, positive_int, py_i64_bounded,
     py_i64_required, py_index_check, py_index_object, py_isize_required, py_u64_if_index,
-    py_u64_required, py_usize_required, strict_i32, strict_i32_overflow, strict_i64,
+    py_u64_required, strict_i32, strict_i32_overflow, strict_i64,
     strict_i64_overflow, strict_i128, strict_optional_i64, strict_u64,
     validate_subdivide_max_vertices,
 };
@@ -41,7 +41,7 @@ pub(crate) use reserve::{
     CsrBuilder, advisory_len, check_python_signals, collect_bool_mask, collect_bytes_rows,
     collect_i64_sequence, collect_py_iter, collect_py_iter_at_most_from_iter,
     collect_py_iter_exact, collect_py_iter_exact_from_iter, collect_py_iter_from_iter,
-    collect_py_strings, collect_sequence_items, collect_u64_sequence, collect_usize_sequence,
+    collect_py_strings, collect_sequence_items, collect_u64_sequence,
     copy_one_byte_buffer, is_one_byte_buffer, py_iter_or_error, try_boxed_str, try_collect_results,
     try_format, try_push, try_push_heap, try_push_pair, try_push_vec, try_reserve_heap,
     try_reserve_hint, try_reserve_pair, try_reserve_triple, try_reserve_vec, try_string_from_str,

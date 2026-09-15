@@ -18,7 +18,7 @@ use crate::py::index::{
 };
 use crate::{CsrBuilder, parse_spatial_index_handle};
 
-type SpatialIndexReduce = (Py<PyAny>, (crate::PyGeometryArray, Vec<usize>));
+type SpatialIndexReduce = (Py<PyAny>, (crate::PyGeometryArray, bool));
 
 fn append_nearest_candidates(
     builder: &mut CsrBuilder<usize>,
@@ -55,13 +55,11 @@ fn mapping_view(slf: Bound<'_, PySpatialIndex>, class_name: &str) -> PyResult<Py
 #[pyfunction]
 pub(crate) fn _unpickle_spatial_index(
     values: &crate::PyGeometryArray,
-    live_handles: &Bound<'_, PyAny>,
+    has_metadata: bool,
 ) -> PyResult<PySpatialIndex> {
-    // Never trust a lying `__len__` for live-handle capacity.
-    let live_handles = crate::collect_usize_sequence(live_handles, "spatial index live handles")?;
     // Metadata presence is re-derived from the row storage — a forged
-    // has_metadata=false flag must not disable the CRS gate.
-    restore_spatial_index(values, &live_handles)
+    // has_metadata=false flag must not disable the CRS gate for present rows.
+    restore_spatial_index(values, has_metadata)
 }
 
 fn parse_handle_like(value: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -151,66 +149,19 @@ impl PySpatialIndex {
         self.rows.live_count()
     }
 
-    /// Pickle as the full sparse row table plus live handles.
+    /// Pickle as one sparse row table containing only live geometries.
     ///
     /// Handles are the public identity returned by ``query``/``nearest`` and
-    /// consumed by ``remove``/``__getitem__``; round-tripping must therefore
-    /// preserve tombstones instead of compactly renumbering live rows.
+    /// consumed by ``remove``/``__getitem__``. The row owner therefore writes
+    /// tombstones into the array's missing mask instead of replaying removed
+    /// source rows and filtering them after reconstruction.
     pub(crate) fn __reduce__(&self, py: Python<'_>) -> PyResult<SpatialIndexReduce> {
-        let frame = self.metadata.clone().unwrap_or_default();
         let callable = crate::gometry_lib_module(py)?
             .getattr(pyo3::intern!(py, "_unpickle_spatial_index"))?
             .unbind();
-        if self.rows.boxed.is_empty()
-            && let Some(packed) = &self.rows.packed
-        {
-            return Ok((
-                callable,
-                (packed.source.clone(), self.live_handles_sorted()?),
-            ));
-        }
-        let array = if let Some(packed) = &self.rows.packed {
-            let mut shapes = Vec::new();
-            let mut missing = Vec::new();
-            crate::try_reserve_pair(&mut shapes, &mut missing, self.rows.len())?;
-            let mut rows = packed.source.row_operation();
-            for logical in 0..packed.source.len() {
-                let Some(row) = rows.present_row_at(logical)? else {
-                    crate::try_push_vec(&mut missing, true).map_err(PyErr::from)?;
-                    continue;
-                };
-                crate::try_push_vec(&mut missing, false).map_err(PyErr::from)?;
-                crate::try_push_vec(
-                    &mut shapes,
-                    row.row()
-                        .with_shape(std::clone::Clone::clone)
-                        .map_err(PyErr::from)?,
-                )
-                .map_err(PyErr::from)?;
-            }
-            for item in &self.rows.boxed {
-                crate::try_push_vec(&mut missing, false).map_err(PyErr::from)?;
-                crate::try_push_vec(&mut shapes, item.shape.shape().clone())
-                    .map_err(PyErr::from)?;
-            }
-            let present = crate::PyGeometryArray::from_shapes(shapes, frame)?;
-            let missing = crate::array::ValidityMask::from_vec(self.rows.len(), missing)
-                .map_err(PyErr::from)?;
-            if let Some(missing) = missing {
-                crate::PyGeometryArray::scatter_present_rows(&present, missing)?
-            } else {
-                present
-            }
-        } else {
-            let shapes = crate::try_collect_results(
-                self.rows
-                    .boxed
-                    .iter()
-                    .map(|item| Ok::<_, pyo3::PyErr>(item.shape.shape().clone())),
-            )?;
-            crate::PyGeometryArray::from_shapes(shapes, frame)?
-        };
-        Ok((callable, (array, self.live_handles_sorted()?)))
+        let frame = self.metadata.clone().unwrap_or_default();
+        let array = self.rows.pickle_array(frame)?;
+        Ok((callable, (array, self.metadata.is_some())))
     }
 
     pub(crate) fn __copy__(&self, py: Python<'_>) -> PyResult<Py<Self>> {

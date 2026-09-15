@@ -970,7 +970,9 @@ def test_spatial_index_read_only_mapping_views_and_lazy_iterator() -> None:
         next(invalidated)
 
 
-def test_spatial_index_compact_nullable_rows_keep_logical_handles_through_mutation() -> None:
+def test_spatial_index_compact_nullable_rows_keep_logical_handles_through_mutation() -> (
+    None
+):
     values = gm.GeometryArray([
         None,
         gm.Point(0.0, 0.0),
@@ -1007,6 +1009,87 @@ def test_spatial_index_compact_nullable_rows_keep_logical_handles_through_mutati
     restored = pickle.loads(pickle.dumps(index))
     assert list(restored) == [3, 4]
     assert ids(restored.query(gm.Point(4.0, 4.0))) == [4]
+
+
+@pytest.mark.parametrize(
+    'compact_nullable', [False, True], ids=['ordinary', 'compact-nullable']
+)
+def test_spatial_index_pickle_preserves_mutated_live_rows(
+    compact_nullable: bool,
+) -> None:
+    import pickle
+
+    point_zero = gm.Point(0.0, 0.0, crs=4326)
+    point_one = gm.Point(2.0, 2.0, crs=4326)
+    point_two = gm.Point(4.0, 4.0, crs=4326)
+    if compact_nullable:
+        source = gm.GeometryArray([None, point_zero, None, point_one])
+        removed_base = 1
+        survivor = 3
+        survivor_geometry = point_one
+        expected_insert = 4
+        expected_next = 5
+    else:
+        box = gm.box(2.0, 2.0, 3.0, 3.0, crs=4326)
+        source = [point_zero, box, point_two]
+        removed_base = 0
+        survivor = 1
+        survivor_geometry = box
+        expected_insert = 3
+        expected_next = 4
+    expected_live = [survivor] if compact_nullable else [1, 2]
+
+    index = gm.SpatialIndex(source)
+    assert index.remove(removed_base)
+    inserted = index.insert(point_two)
+    assert inserted == expected_insert
+    assert index.remove(inserted)
+    assert list(index) == expected_live
+    assert ids(index.query(survivor_geometry)) == [survivor]
+    assert ids(index.query(point_zero)) == []
+    with pytest.raises(KeyError):
+        index[removed_base]
+
+    copied = copy.copy(index)
+    assert copied.remove(survivor)
+    assert list(index) == expected_live
+
+    restored = pickle.loads(pickle.dumps(index))
+    assert restored.crs == index.crs
+    assert list(restored) == expected_live
+    assert ids(restored.query(survivor_geometry)) == [survivor]
+    assert ids(restored.query(point_zero)) == []
+    assert restored[survivor].to_wkt() == survivor_geometry.to_wkt()
+    with pytest.raises(KeyError):
+        restored[removed_base]
+    assert restored.get(inserted) is None
+
+    next_handle = restored.insert(gm.Point(6.0, 6.0, crs=4326))
+    assert next_handle == expected_next
+    assert restored[next_handle].to_wkt() == 'POINT (6 6)'
+    assert ids(restored.query(gm.Point(6.0, 6.0, crs=4326))) == [expected_next]
+
+
+@pytest.mark.parametrize(
+    'compact_nullable', [False, True], ids=['ordinary', 'compact-nullable']
+)
+def test_spatial_index_pickle_preserves_empty_live_set_and_frame(
+    compact_nullable: bool,
+) -> None:
+    import pickle
+
+    point = gm.Point(1.0, 1.0, crs=4326, epoch=2020.0)
+    source = gm.GeometryArray([None, point, None]) if compact_nullable else [point]
+    index = gm.SpatialIndex(source)
+    for handle in list(index):
+        assert index.remove(handle)
+    assert list(index) == []
+
+    restored = pickle.loads(pickle.dumps(index))
+    assert list(restored) == []
+    assert restored.crs == index.crs
+    assert restored.epoch == index.epoch
+    assert restored.insert(gm.Point(5.0, 5.0, crs=4326, epoch=2020.0)) == len(source)
 
 
 def test_spatial_index_all_missing_compact_owner_stays_unframed_until_append() -> None:
