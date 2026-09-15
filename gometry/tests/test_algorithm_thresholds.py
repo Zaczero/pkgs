@@ -23,8 +23,8 @@ def test_hausdorff_equidistant_metric_stable_above_feature_param_budget() -> Non
     src = gm.LineString([(0.0, 0.0), (10.0, 0.0)])
     true = math.sqrt(100.0 * (4.25 / 10.0) ** 2 + 16.0)
     mid_wrong = min(math.hypot(5.0, 4.0), math.hypot(5.0, 1.0))
-    assert true == pytest.approx(5.836308764964376)
-    assert mid_wrong == pytest.approx(5.0990195135927845)
+    assert true == pytest.approx(5.836308764964376, rel=0.0, abs=1e-15)
+    assert mid_wrong == pytest.approx(5.0990195135927845, rel=0.0, abs=1e-15)
 
     def distance_for(n_extra: int) -> float:
         pts: list[gm.Point] = [gm.Point(0.0, 4.0), gm.Point(10.0, 1.0)]
@@ -44,11 +44,11 @@ def test_hausdorff_equidistant_metric_stable_above_feature_param_budget() -> Non
     # 16_384. These adjacent counts straddle that historical boundary.
     for n_extra in (89, 90):
         got = distance_for(n_extra)
-        assert got == pytest.approx(true, abs=1e-6), (
+        assert got == pytest.approx(true, rel=0.0, abs=1e-6), (
             f'n_extra={n_extra}: got {got}, want continuous {true} '
             f'(must not collapse to midpoint sample {mid_wrong})'
         )
-        assert got != pytest.approx(mid_wrong, abs=1e-3)
+        assert got != pytest.approx(mid_wrong, rel=0.0, abs=1e-6)
 
 
 _PREDICATES = (

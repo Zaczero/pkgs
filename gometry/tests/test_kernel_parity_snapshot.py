@@ -8,6 +8,11 @@ slices can prove behavior is unchanged within tolerance. Re-capture with:
 Recapture rewrites a checked-in golden, so it is its own command rather than a
 mode of the suite: one process, one write, and no way to trigger it by setting
 something in the environment of an ordinary run.
+
+The Hausdorff values here are plumbing parity snapshots, not geometry
+correctness or correctly rounded results. Independent bounded Hausdorff
+assertions live in ``test_api_discoverability.py`` and
+``test_hausdorff_pruning.py``.
 """
 
 from __future__ import annotations
@@ -211,6 +216,8 @@ def _binary(
     def runner(geom: gm.Geometry) -> object:
         other = _secondary(geom)
         if distance is None:
+            # Planar Hausdorff correctness is covered by independent analytic
+            # assertions; this dispatch runner only records parity plumbing.
             if op == 'hausdorff_distance' and not _is_geo(_matching_crs(geom)):
                 return fn(geom, other, max_error=1e-12)
             return fn(geom, other)

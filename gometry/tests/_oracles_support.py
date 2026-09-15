@@ -9,7 +9,7 @@ import pytest
 
 FLOAT_RTOL = 1e-09
 FLOAT_ATOL = 1e-12
-HAUSDORFF_ATOL = 1e-09
+GEOMETRY_MATCH_ATOL = 1e-09
 
 
 def normalize_geometry_wkt(geom: gm.Geometry) -> str:
@@ -32,15 +32,19 @@ def round_float(value: float) -> float:
 
 
 def geometries_match(left: gm.Geometry, right: gm.Geometry) -> bool:
-    """Normalized WKT equality with a Hausdorff fallback."""
+    """Normalized WKT equality with a parity-only Hausdorff fallback.
+
+    This helper compares snapshot representations; it is not a correctness
+    oracle for the Hausdorff implementation.
+    """
     if left.is_empty and right.is_empty:
         return left.geometry_type == right.geometry_type
     if normalize_geometry_wkt(left) == normalize_geometry_wkt(right):
         return True
     try:
         return (
-            gm.hausdorff_distance(left, right, max_error=HAUSDORFF_ATOL)
-            <= HAUSDORFF_ATOL
+            gm.hausdorff_distance(left, right, max_error=GEOMETRY_MATCH_ATOL)
+            <= GEOMETRY_MATCH_ATOL
         )
     except Exception:
         return False

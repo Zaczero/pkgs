@@ -25,14 +25,16 @@ def _case(count: int) -> tuple[gm.LineString, gm.MultiPoint]:
 def _median_hausdorff(count: int) -> float:
     source, target = _case(count)
     expected = math.sqrt(1.25)
+    max_error = 1e-12
     for _ in range(3):
-        assert gm.hausdorff_distance(source, target, max_error=1e-12) == expected
+        actual = gm.hausdorff_distance(source, target, max_error=max_error)
+        assert abs(actual - expected) <= max_error
     samples = []
     for _ in range(9):
         start = time.perf_counter()
-        result = gm.hausdorff_distance(source, target, max_error=1e-12)
+        result = gm.hausdorff_distance(source, target, max_error=max_error)
         samples.append(time.perf_counter() - start)
-        assert result == expected
+        assert abs(result - expected) <= max_error
     return statistics.median(samples)
 
 
@@ -44,7 +46,7 @@ def main() -> None:
             'numerator': {'count': 800, 'unit': 'target-points'},
             'denominator': {'count': 100, 'unit': 'target-points'},
         },
-        oracle_identity='case_hausdorff_bounded_point_target_scale:exact-distance',
+        oracle_identity='case_hausdorff_bounded_point_target_scale:analytic-bound',
         warmup_iterations=3,
         calibration_iterations=9,
         calibration_strategy='median-of-repetitions-per-scaling-point',

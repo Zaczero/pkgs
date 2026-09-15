@@ -19,7 +19,6 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         delaunay_triangles,
         frechet_distance,
         from_wkt,
-        hausdorff_distance,
         intersection,
         is_closed,
         is_empty,
@@ -276,14 +275,20 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         )
     assert gm.covered_by(left.point_on_surface(), left)
     assert covered_by(point_on_surface(shapely_left), shapely_left)
-    assert gm.hausdorff_distance(
-        reference_line,
-        gm.LineString([(0, 1), (3, 5), (6, 5)]),
-        max_error=1e-12,
-    ) == pytest.approx(
-        hausdorff_distance(
-            shapely_reference_line, from_wkt('LINESTRING (0 1, 3 5, 6 5)')
+    # The second target segment is the horizontal translate y=5 of the
+    # reference's y=4 segment, so the continuous Hausdorff maximum is the
+    # vertical gap 1.0. Shapely's discrete vertex metric is not the oracle.
+    hausdorff_max_error = 1e-12
+    assert (
+        abs(
+            gm.hausdorff_distance(
+                reference_line,
+                gm.LineString([(0, 1), (3, 5), (6, 5)]),
+                max_error=hausdorff_max_error,
+            )
+            - 1.0
         )
+        <= hausdorff_max_error
     )
     assert gm.frechet_distance(
         reference_line, gm.LineString([(0, 1), (3, 5), (6, 5)])
@@ -404,7 +409,10 @@ def test_multipart_point_intersection_matches_shapely_oracle() -> None:
         for forward, reverse in ((left, right), (right, left)):
             got = gm.intersection(forward, reverse)
             want = from_wkt(forward.to_wkt()).intersection(from_wkt(reverse.to_wkt()))
-            assert got.is_empty == bool(want.is_empty), (forward.to_wkt(), reverse.to_wkt())
+            assert got.is_empty == bool(want.is_empty), (
+                forward.to_wkt(),
+                reverse.to_wkt(),
+            )
             if got.is_empty:
                 continue
             assert equals(from_wkt(got.to_wkt()), want), (

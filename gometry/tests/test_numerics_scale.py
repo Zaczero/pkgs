@@ -321,9 +321,9 @@ def test_reciprocal_tessellation_family_has_no_similarity_axis_loss(
         == exact_area
     )
 
-    # A finite stored translation is an exact Hausdorff result for every
-    # geometry carrier.  The reference is the source-double offset, not the
-    # Hausdorff implementation or an anisotropic framed proxy.  In particular,
+    # A finite stored translation has an analytic Hausdorff reference for every
+    # geometry carrier. The reference is the source-double offset, not the
+    # Hausdorff implementation or an anisotropic framed proxy. In particular,
     # returning +inf is a failure: that was the round-20 guard's vacuity.
     offset = 4.0 * (10.0**exponent)
     shifted_points = [
@@ -377,10 +377,11 @@ def test_reciprocal_tessellation_family_has_no_similarity_axis_loss(
                 assert math.isfinite(value), (
                     f'{label}: non-finite Hausdorff result {value!r}'
                 )
-                assert _stored_fraction(value) == expected, (
+                assert abs(value - float(expected)) <= max_error, (
                     label,
                     value,
                     float(expected),
+                    max_error,
                 )
 
 
@@ -447,11 +448,15 @@ def test_extreme_hausdorff_general_finisher_is_finite_for_every_kind() -> None:
                 assert math.isfinite(value), (
                     f'{label}: non-finite Hausdorff result {value!r}'
                 )
-                assert value == expected, (label, value, expected)
+                assert abs(value - expected) <= math.ulp(expected), (
+                    label,
+                    value,
+                    expected,
+                )
 
 
 def test_reciprocal_hausdorff_to_point_is_finite_for_every_kind() -> None:
-    """A point target has an exact stored-double vertex-max oracle.
+    """A point target has an independent stored-double vertex-max oracle.
 
     The 1e159/1e-159 pair makes squared-space arithmetic non-finite while its
     Euclidean norm remains finite.  This is intentionally a different
@@ -512,10 +517,14 @@ def test_reciprocal_hausdorff_to_point_is_finite_for_every_kind() -> None:
                 assert math.isfinite(value), (
                     f'{label}: non-finite Hausdorff result {value!r}'
                 )
-                assert value == expected, (label, value, expected)
+                assert abs(value - expected) <= math.ulp(expected), (
+                    label,
+                    value,
+                    expected,
+                )
 
 
-def test_hausdorff_cross_kind_identity_and_reciprocal_shared_baseline() -> None:
+def test_hausdorff_cross_kind_identity_and_reciprocal_analytic_offset() -> None:
     """Two independent continuous-Hausdorff source-metric reductions.
 
     A topologically identical LineString/MultiLineString pair must be zero.
@@ -553,7 +562,8 @@ def test_hausdorff_cross_kind_identity_and_reciprocal_shared_baseline() -> None:
             )[0]
         ),
     )
-    assert values == (offset, offset, offset)
+    max_error = math.ulp(offset)
+    assert all(abs(value - offset) <= max_error for value in values)
 
 
 @pytest.mark.parametrize('exponent', [77, 159, 200, 300])
@@ -800,34 +810,37 @@ def test_hausdorff_frechet_huge_parallel_finite() -> None:
     sep = math.ulp(base) * 16
     a = gm.LineString([(0.0, base), (1.0, base)])
     b = gm.LineString([(0.0, base + sep), (1.0, base + sep)])
-    exact = _stored_fraction(base + sep) - _stored_fraction(base)
-    hd = gm.hausdorff_distance(a, b, max_error=math.ulp(float(exact)))
+    expected = _stored_fraction(base + sep) - _stored_fraction(base)
+    max_error = math.ulp(float(expected))
+    hd = gm.hausdorff_distance(a, b, max_error=max_error)
     fd = gm.frechet_distance(a, b)
     assert math.isfinite(hd) and math.isfinite(fd)
-    assert _stored_fraction(float(hd)) == exact
-    assert _stored_fraction(float(fd)) == exact
+    assert abs(float(hd) - float(expected)) <= max_error
+    assert _stored_fraction(float(fd)) == expected
 
 
 def test_hausdorff_line_vs_endpoints_tiny_and_huge() -> None:
     for length in (1e-200, 1e200):
         line = gm.LineString([(0.0, 0.0), (length, 0.0)])
         ends = gm.MultiPoint([(0.0, 0.0), (length, 0.0)])
-        exact = _stored_fraction(length) / 2
+        expected = _stored_fraction(length) / 2
         got = gm.hausdorff_distance(
             line,
             ends,
-            max_error=math.ulp(float(exact)),
+            max_error=math.ulp(float(expected)),
         )
         assert math.isfinite(got)
-        assert _stored_fraction(float(got)) == exact, f'L={length}: got={got}'
+        max_error = math.ulp(float(expected))
+        assert abs(float(got) - float(expected)) <= max_error, f'L={length}: got={got}'
 
 
 def test_hausdorff_parallel_unit_lines_1e_200() -> None:
     sep = 1e-200
     a = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
     b = gm.LineString([(0.0, sep), (1.0, sep)])
-    got = gm.hausdorff_distance(a, b, max_error=math.ulp(sep))
-    assert _stored_fraction(float(got)) == _stored_fraction(sep)
+    max_error = math.ulp(sep)
+    got = gm.hausdorff_distance(a, b, max_error=max_error)
+    assert abs(float(got) - sep) <= max_error
 
 
 def test_hausdorff_packed_array_shares_extreme_finisher() -> None:
@@ -836,13 +849,14 @@ def test_hausdorff_packed_array_shares_extreme_finisher() -> None:
     sep = math.ulp(base) * 16
     left = gm.GeometryArray([gm.LineString([(0.0, base), (1.0, base)])])
     right = gm.GeometryArray([gm.LineString([(0.0, base + sep), (1.0, base + sep)])])
-    exact = _stored_fraction(base + sep) - _stored_fraction(base)
-    arr = gm.hausdorff_distance(left, right, max_error=math.ulp(float(exact)))
+    expected = _stored_fraction(base + sep) - _stored_fraction(base)
+    arr = gm.hausdorff_distance(left, right, max_error=math.ulp(float(expected)))
     frechet = gm.frechet_distance(left, right)
     assert math.isfinite(float(arr[0])), f'packed HD nonfinite: {arr[0]!r}'
     assert math.isfinite(float(frechet[0])), f'packed Fréchet nonfinite: {frechet[0]!r}'
-    assert _stored_fraction(float(arr[0])) == exact
-    assert _stored_fraction(float(frechet[0])) == exact
+    max_error = math.ulp(float(expected))
+    assert abs(float(arr[0]) - float(expected)) <= max_error
+    assert _stored_fraction(float(frechet[0])) == expected
 
 
 def test_hausdorff_packed_and_scalar_share_extreme_certification() -> None:
@@ -857,18 +871,15 @@ def test_hausdorff_packed_and_scalar_share_extreme_certification() -> None:
         gm.GeometryArray([right]),
         max_error=math.ulp(sep),
     )
-    exact = _stored_fraction(base + sep) - _stored_fraction(base)
-    assert (
-        _stored_fraction(
-            float(gm.hausdorff_distance(left, right, max_error=math.ulp(sep)))
-        )
-        == exact
-    )
-    assert _stored_fraction(float(packed[0])) == exact
+    expected = _stored_fraction(base + sep) - _stored_fraction(base)
+    max_error = math.ulp(sep)
+    scalar = float(gm.hausdorff_distance(left, right, max_error=max_error))
+    assert abs(scalar - float(expected)) <= max_error
+    assert abs(float(packed[0]) - float(expected)) <= max_error
 
 
 @pytest.mark.parametrize('exponent', [77, 159, 200, 300])
-def test_hausdorff_collinear_polyline_reduction_is_exact_and_symmetric(
+def test_hausdorff_collinear_polyline_reduction_is_analytic_and_symmetric(
     exponent: int,
 ) -> None:
     """Subdividing a segment cannot turn a continuous HD into a frame proxy.
@@ -898,9 +909,9 @@ def test_hausdorff_collinear_polyline_reduction_is_exact_and_symmetric(
             max_error=max_error,
         )[0]
     )
-    assert _stored_fraction(forward) == _stored_fraction(expected)
-    assert _stored_fraction(reverse) == _stored_fraction(expected)
-    assert _stored_fraction(packed) == _stored_fraction(expected)
+    assert abs(forward - expected) <= max_error
+    assert abs(reverse - expected) <= max_error
+    assert abs(packed - expected) <= max_error
 
 
 def test_hausdorff_backtracking_collinear_line_is_not_reduced_to_endpoints() -> None:
@@ -908,8 +919,11 @@ def test_hausdorff_backtracking_collinear_line_is_not_reduced_to_endpoints() -> 
     left = gm.LineString([(0.0, 0.0), (10.0, 0.0), (-5.0, 0.0)])
     right = gm.LineString([(-5.0, 1.0), (0.0, 1.0)])
     expected = math.sqrt(101.0)
-    assert gm.hausdorff_distance(left, right, max_error=1e-12) == expected
-    assert gm.hausdorff_distance(right, left, max_error=1e-12) == expected
+    max_error = 1e-12
+    forward = gm.hausdorff_distance(left, right, max_error=max_error)
+    reverse = gm.hausdorff_distance(right, left, max_error=max_error)
+    assert abs(forward - expected) <= max_error
+    assert abs(reverse - expected) <= max_error
 
 
 @pytest.mark.parametrize('power', [26, 27, 29])

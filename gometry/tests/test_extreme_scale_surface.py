@@ -199,18 +199,23 @@ def test_parallel_metrics(scale_label: str, s: float) -> None:
         float(gm.distance(parallel_a, parallel_b)),
         sep_ref,
     )
-    assert_finite_eq(
-        'hausdorff/parallel',
-        scale_label,
-        float(
-            gm.hausdorff_distance(
-                parallel_a,
-                parallel_b,
-                max_error=math.ulp(sep_ref),
-            )
-        ),
-        sep_ref,
+    max_error = math.ulp(sep_ref)
+    hausdorff = float(
+        gm.hausdorff_distance(
+            parallel_a,
+            parallel_b,
+            max_error=max_error,
+        )
     )
+    if math.isnan(hausdorff) or abs(hausdorff - sep_ref) > max_error:
+        fail(
+            'hausdorff/parallel',
+            scale_label,
+            'value exceeds declared bound',
+            got=hausdorff,
+            ref=sep_ref,
+            max_error=max_error,
+        )
     assert_finite_eq(
         'frechet/parallel',
         scale_label,

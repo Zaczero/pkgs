@@ -302,7 +302,7 @@ def test_point_probe_lanes_agree_with_scalar_engine_on_area_containment() -> Non
     np.testing.assert_array_equal(gm.dwithin(on_line, line, 1e-12), [True, False])
 
 
-def test_distance_hausdorff_extreme_coords_match_scalar_oracle() -> None:
+def test_distance_hausdorff_extreme_coords_match_interval_oracle() -> None:
     scale = 1e150
     segment_count = 64
     coords = [
@@ -312,12 +312,15 @@ def test_distance_hausdorff_extreme_coords_match_scalar_oracle() -> None:
     probe = gm.Point(0.0, 1.0)
     assert gm.distance(line, probe) == 1.0
     shifted = gm.LineString([(x + 1e149, y) for x, y in coords])
-    max_error = math.ulp(1e149)
-    hd = gm.hausdorff_distance(line, shifted, max_error=max_error)
-    assert hd > 0.0
-    assert hd == pytest.approx(
-        gm.hausdorff_distance(shifted, line, max_error=max_error)
+    expected = max(
+        abs(float(shifted.coords[index][0]) - float(line.coords[index][0]))
+        for index in (0, -1)
     )
+    max_error = math.ulp(expected)
+    hd = gm.hausdorff_distance(line, shifted, max_error=max_error)
+    assert abs(hd - expected) <= max_error
+    reverse = gm.hausdorff_distance(shifted, line, max_error=max_error)
+    assert abs(reverse - expected) <= max_error
     bulk = gm.distance(
         gm.GeometryArray([line, shifted]), gm.GeometryArray([probe, probe])
     )

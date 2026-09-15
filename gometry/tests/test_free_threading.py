@@ -92,6 +92,8 @@ def _worker(
         assert idx.query(probe).tolist() == fixtures['idx_hits']
         assert idx.candidates(probe).tolist() == fixtures['idx_hits']
         assert gm.distance(poly, probe) == fixtures['distance']
+        # Shared-fixture equality is a thread-safety/determinism check, not a
+        # Hausdorff correctness oracle.
         assert (
             gm.hausdorff_distance(poly, line, max_error=1e-12) == fixtures['hausdorff']
         )

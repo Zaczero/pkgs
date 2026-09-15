@@ -761,6 +761,8 @@ def test_w4b_hausdorff_and_union_all_stable() -> None:
     ])
     h1 = gm.hausdorff_distance(left, right, max_error=1e-12)
     h2 = gm.hausdorff_distance(left, right, max_error=1e-12)
+    # Repeated-call equality is the determinism contract; correctness is
+    # covered by independent analytic Hausdorff tests.
     assert h1 == h2
     assert h1 > 0.0
     polys = [
