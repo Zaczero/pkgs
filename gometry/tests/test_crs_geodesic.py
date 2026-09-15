@@ -98,6 +98,40 @@ def test_geodesic_positive_infinite_dwithin_broadcasts_over_array_operands() -> 
     assert gm.dwithin(left, empty, math.inf).tolist() == [False, False]
 
 
+def test_positive_infinite_dwithin_preserves_many_to_many_missing_and_empty_rows() -> None:
+    left = gm.GeometryArray([
+        gm.Point(0.0, 0.0, crs=4326),
+        None,
+        gm.from_wkt('POINT EMPTY', crs=4326),
+    ])
+    right = gm.GeometryArray([
+        gm.Point(180.0, 0.0, crs=4326),
+        gm.Point(1.0, 0.0, crs=4326),
+        gm.Point(2.0, 0.0, crs=4326),
+    ])
+
+    assert gm.dwithin(left, right, math.inf).tolist() == [True, False, False]
+    assert gm.dwithin(left, right, [math.inf, math.inf, math.inf]).tolist() == [
+        True,
+        False,
+        False,
+    ]
+
+
+@pytest.mark.parametrize('bad', [math.nan, -math.inf, -1.0])
+def test_dwithin_rejects_nan_negative_infinity_and_negative_thresholds(
+    bad: float,
+) -> None:
+    left = gm.Point(0.0, 0.0, crs=4326)
+    right = gm.Point(1.0, 0.0, crs=4326)
+    rows = gm.points([0.0, 1.0], [0.0, 0.0], crs=4326)
+
+    with pytest.raises(gm.GeometryError, match='non-negative finite'):
+        gm.dwithin(left, right, bad)
+    with pytest.raises(gm.GeometryError, match='non-negative finite'):
+        gm.dwithin(rows, right, [0.0, bad])
+
+
 @pytest.mark.parametrize('radius', [1.0, 1e8, 1e9, 1e12])
 def test_geodesic_hausdorff_gap_scales_with_radius(radius: float) -> None:
     crs = f'+proj=longlat +a={radius!r} +b={radius!r} +type=crs'

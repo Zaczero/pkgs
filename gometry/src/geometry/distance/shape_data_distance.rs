@@ -61,6 +61,9 @@ impl PreparedPlan {
 
     /// Planar `dwithin` on cached prepared state — see [`Self::distance`].
     pub fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {
+        if distance == f64::INFINITY {
+            return Ok(!self.shape().is_empty() && !other.shape().is_empty());
+        }
         // Point pairs answer directly (mirrors `Shape::dwithin`).
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
             return Ok(points_dwithin(*a, *b, distance));
@@ -300,6 +303,9 @@ impl PreparedPlan {
     /// at distance 0 even though every ring edge is farther). See
     /// [`Self::dwithin_points`] for the batch lane.
     pub fn dwithin_point(&self, point: Point, distance: f64) -> Result<bool> {
+        if distance == f64::INFINITY {
+            return Ok(!self.shape().is_empty());
+        }
         self.dwithin_point_with(point, distance, &mut Vec::new())
     }
 
@@ -314,6 +320,14 @@ impl PreparedPlan {
         probes: impl Iterator<Item = (f64, f64)>,
         distance: f64,
     ) -> Result<Vec<bool>> {
+        if distance == f64::INFINITY {
+            let present = !self.shape().is_empty();
+            let mut matches = Vec::new();
+            for _ in probes {
+                crate::try_push_vec(&mut matches, present)?;
+            }
+            return Ok(matches);
+        }
         let tester = self.point_tester_required(RequiredPointTester(()))?;
         let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);

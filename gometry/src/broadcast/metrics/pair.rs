@@ -523,6 +523,14 @@ pub(crate) fn pair_dwithin_geodesic(
     } else {
         NonNegative::try_new("distance", distance)?.get()
     };
+    if a.shape().is_empty() || b.shape().is_empty() {
+        return Ok(false);
+    }
+    if distance == f64::INFINITY {
+        ensure_geodesic_shape(metric.frame, a.shape())?;
+        ensure_geodesic_shape(metric.frame, b.shape())?;
+        return Ok(true);
+    }
     if let Some((a, b)) = split_geodesic_operands(metric.frame, a, b)? {
         return pair_dwithin_geodesic(
             metric,
@@ -532,9 +540,6 @@ pub(crate) fn pair_dwithin_geodesic(
             &FrameDependentCaches::default(),
             distance,
         );
-    }
-    if a.shape().is_empty() || b.shape().is_empty() {
-        return Ok(false);
     }
     let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
         &metric.geodesic,

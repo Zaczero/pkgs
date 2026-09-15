@@ -17,6 +17,12 @@ pub(crate) struct Finite(f64);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct NonNegative(f64);
 
+/// A `dwithin` distance threshold: finite and non-negative, or positive
+/// infinity.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DwithinDistance(f64);
+
 /// A finite positive `f64` (`> 0.0`).
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,6 +50,20 @@ impl Finite {
 impl NonNegative {
     pub(crate) fn try_new(name: &'static str, value: f64) -> Result<Self> {
         if value.is_finite() && value >= 0.0 {
+            Ok(Self(value))
+        } else {
+            Err(GeometryErrorKind::non_negative_finite(name, value))
+        }
+    }
+
+    pub(crate) const fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl DwithinDistance {
+    pub(crate) fn try_new(name: &'static str, value: f64) -> Result<Self> {
+        if value == f64::INFINITY || (value.is_finite() && value >= 0.0) {
             Ok(Self(value))
         } else {
             Err(GeometryErrorKind::non_negative_finite(name, value))
@@ -136,7 +156,23 @@ impl Deref for Positive {
 
 #[cfg(test)]
 mod tests {
-    use super::AxisScale;
+    use super::{AxisScale, DwithinDistance};
+
+    #[test]
+    fn dwithin_distance_admits_positive_infinity_only() {
+        assert_eq!(
+            DwithinDistance::try_new("distance", f64::INFINITY)
+                .expect("positive infinity is a valid dwithin threshold")
+                .get(),
+            f64::INFINITY
+        );
+        for value in [f64::NAN, f64::NEG_INFINITY, -1.0] {
+            assert!(
+                DwithinDistance::try_new("distance", value).is_err(),
+                "{value:?} must not be admitted as a dwithin threshold"
+            );
+        }
+    }
 
     #[test]
     fn unframe_keeps_finite_shared_origins_finite() {

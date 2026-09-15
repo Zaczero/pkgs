@@ -13,9 +13,9 @@ use pyo3::types::PyString;
 use crate::io::WktDimension;
 use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
-    Bound, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny, PyAnyMethods as _,
-    PyErr, PyResult, Python, Shape, finite_f64_required, non_negative_int, py_i64_bounded,
-    py_i64_required,
+    Bound, DwithinDistance, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny,
+    PyAnyMethods as _, PyErr, PyResult, Python, Shape, finite_f64_required, non_negative_int,
+    py_i64_bounded, py_i64_required,
 };
 
 pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
@@ -246,16 +246,12 @@ pub(crate) fn validate_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<NonNeg
     validate_distance(finite_f64_required("distance", value)?)
 }
 
-pub(crate) fn validate_dwithin_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<f64> {
+pub(crate) fn validate_dwithin_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<DwithinDistance> {
     validate_dwithin_distance(crate::f64_required("distance", value)?)
 }
 
-pub(crate) fn validate_dwithin_distance(distance: f64) -> PyResult<f64> {
-    if distance.is_infinite() && distance.is_sign_positive() {
-        Ok(distance)
-    } else {
-        Ok(NonNegative::try_new("distance", distance)?.get())
-    }
+pub(crate) fn validate_dwithin_distance(distance: f64) -> PyResult<DwithinDistance> {
+    Ok(DwithinDistance::try_new("distance", distance)?)
 }
 
 pub(crate) fn validate_distance(distance: f64) -> PyResult<NonNegative> {

@@ -17,7 +17,7 @@ use crate::dispatch::kernels;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::{GeometryKind, PreparedPlan};
 use crate::predicates::engine::Predicate;
-use crate::{DistanceUnit, NonNegative, OverlayOp};
+use crate::{DistanceUnit, DwithinDistance, OverlayOp};
 
 /// Predicate array-lane fast path using the shared batch engine.
 pub(crate) struct PredicateFastPath {
@@ -311,7 +311,7 @@ pub(crate) fn dispatch_distance(
 pub(crate) fn dispatch_dwithin_admitted(
     py: Python<'_>,
     admission: &super::binary::BinaryAdmission<'_>,
-    distance: NonNegative,
+    distance: DwithinDistance,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     dispatch_metric_binary_admitted(

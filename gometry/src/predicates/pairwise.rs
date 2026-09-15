@@ -656,12 +656,7 @@ pub(crate) fn dwithin(
         let left_input = classify_required(left)?;
         let right_input = classify_required(right)?;
         let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;
-        return crate::dispatch::dispatch_dwithin_admitted(
-            py,
-            &admission,
-            crate::NonNegative::try_new("distance", distance)?,
-            unit,
-        );
+        return crate::dispatch::dispatch_dwithin_admitted(py, &admission, distance, unit);
     };
     let distance = crate::F64Param::parse_raw(distance, "distance", len)?;
     distance.try_validate(|value| validate_dwithin_distance(value).map(|_| ()))?;
@@ -691,7 +686,7 @@ pub(crate) fn dwithin(
     crate::dispatch::dispatch_dwithin_admitted(
         py,
         &admission,
-        crate::NonNegative::try_new("distance", scalar)?,
+        validate_dwithin_distance(scalar)?,
         unit,
     )
 }

@@ -82,7 +82,7 @@ mod pymethod_macros;
 mod io;
 mod measures;
 mod numeric;
-use numeric::{Finite, NonNegative, Positive};
+use numeric::{DwithinDistance, Finite, NonNegative, Positive};
 mod text;
 mod tokens;
 use measures::{

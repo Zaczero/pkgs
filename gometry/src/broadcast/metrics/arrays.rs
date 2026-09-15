@@ -1201,6 +1201,19 @@ pub(crate) fn array_crs_dwithin_scalar(
                     |crs, metric| {
                         ensure_geodesic_array_rows(&array_owned, metric.frame())?;
                         ensure_geodesic_shape(metric.frame(), other_shape.shape())?;
+                        if distance == f64::INFINITY {
+                            let other_present = !other_shape.shape().is_empty();
+                            let rows = array_owned.row_operation();
+                            return Ok(try_collect_dwithin_rows(
+                                row_count,
+                                rows.rows_with_missing(|| false).map(|row| match row {
+                                    ArrayRow::Present(row) => row
+                                        .row()
+                                        .with_shape(|shape| other_present && !shape.is_empty()),
+                                    ArrayRow::Missing { value, .. } => Ok(value),
+                                }),
+                            ));
+                        }
                         let (semi_major, flattening) = metric.ellipsoid_parameters();
                         other_shape.prepare_geodesic_parts(
                             &other_cache,
